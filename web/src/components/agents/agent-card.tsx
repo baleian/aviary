@@ -2,57 +2,68 @@
 
 import Link from "next/link";
 import type { Agent } from "@/types";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 
 interface AgentCardProps {
   agent: Agent;
 }
 
 const backendLabels: Record<string, string> = {
-  claude: "Claude API",
+  claude: "Claude",
   ollama: "Ollama",
   vllm: "vLLM",
 };
 
-const visibilityLabels: Record<string, string> = {
-  public: "Public",
-  team: "Team",
-  private: "Private",
+const visibilityConfig: Record<string, { label: string; className: string }> = {
+  public: { label: "Public", className: "bg-success/10 text-success" },
+  team: { label: "Team", className: "bg-warning/10 text-warning" },
+  private: { label: "Private", className: "bg-secondary text-muted-foreground" },
 };
 
 export function AgentCard({ agent }: AgentCardProps) {
+  const vis = visibilityConfig[agent.visibility] || visibilityConfig.private;
+
   return (
-    <Card className="flex flex-col">
-      <CardHeader>
-        <div className="flex items-start justify-between">
-          <div className="flex items-center gap-2">
-            {agent.icon && <span className="text-2xl">{agent.icon}</span>}
-            <CardTitle className="text-lg">{agent.name}</CardTitle>
+    <Link href={`/agents/${agent.id}`} className="group block">
+      <div className="flex h-full flex-col rounded-xl border border-border/50 bg-card p-5 transition-all duration-200 hover:border-primary/30 hover:bg-card/80 hover:shadow-lg hover:shadow-primary/5">
+        {/* Header */}
+        <div className="mb-3 flex items-start justify-between">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-lg">
+              {agent.icon || "🤖"}
+            </div>
+            <div className="min-w-0">
+              <h3 className="truncate text-sm font-semibold text-foreground group-hover:text-primary transition-colors">
+                {agent.name}
+              </h3>
+              <span className="text-xs text-muted-foreground">
+                {backendLabels[agent.model_config?.backend] || agent.model_config?.backend}
+              </span>
+            </div>
           </div>
-          <span className="rounded-full bg-secondary px-2 py-0.5 text-xs text-secondary-foreground">
-            {visibilityLabels[agent.visibility] || agent.visibility}
+          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${vis.className}`}>
+            {vis.label}
           </span>
         </div>
-        <CardDescription className="line-clamp-2">
-          {agent.description || "No description"}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="mt-auto flex items-center justify-between">
-        <div className="flex gap-2">
-          <span className="rounded bg-muted px-2 py-0.5 text-xs">
-            {backendLabels[agent.model_config?.backend] || agent.model_config?.backend}
-          </span>
-          {agent.category && (
-            <span className="rounded bg-muted px-2 py-0.5 text-xs">{agent.category}</span>
+
+        {/* Description */}
+        <p className="mb-4 line-clamp-2 flex-1 text-sm leading-relaxed text-muted-foreground">
+          {agent.description || "No description provided"}
+        </p>
+
+        {/* Footer */}
+        <div className="flex items-center justify-between border-t border-border/40 pt-3">
+          {agent.category ? (
+            <span className="rounded-md bg-secondary px-2 py-0.5 text-[11px] text-muted-foreground">
+              {agent.category}
+            </span>
+          ) : (
+            <span />
           )}
+          <span className="text-xs text-muted-foreground/60 group-hover:text-primary/60 transition-colors">
+            Open →
+          </span>
         </div>
-        <div className="flex gap-2">
-          <Link href={`/agents/${agent.id}`}>
-            <Button variant="outline" size="sm">Open</Button>
-          </Link>
-        </div>
-      </CardContent>
-    </Card>
+      </div>
+    </Link>
   );
 }

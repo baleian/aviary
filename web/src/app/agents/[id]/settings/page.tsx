@@ -28,8 +28,6 @@ export default function AgentSettingsPage() {
   const [agent, setAgent] = useState<Agent | null>(null);
   const [aclEntries, setAclEntries] = useState<ACLEntry[]>([]);
   const [loading, setLoading] = useState(true);
-
-  // New ACL form
   const [newUserId, setNewUserId] = useState("");
   const [newRole, setNewRole] = useState("user");
 
@@ -55,7 +53,13 @@ export default function AgentSettingsPage() {
   if (isLoading || loading || !agent) {
     return (
       <div className="flex h-screen items-center justify-center">
-        <div className="text-muted-foreground">Loading...</div>
+        <div className="flex items-center gap-3 text-muted-foreground">
+          <svg className="h-5 w-5 animate-spin" viewBox="0 0 24 24" fill="none">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+          <span className="text-sm">Loading...</span>
+        </div>
       </div>
     );
   }
@@ -77,85 +81,114 @@ export default function AgentSettingsPage() {
     setAclEntries((prev) => prev.filter((a) => a.id !== aclId));
   };
 
+  const roleColors: Record<string, string> = {
+    owner: "bg-primary/10 text-primary",
+    admin: "bg-warning/10 text-warning",
+    user: "bg-success/10 text-success",
+    viewer: "bg-secondary text-muted-foreground",
+  };
+
   return (
-    <div className="mx-auto max-w-3xl p-8">
-      <Link href={`/agents/${agent.id}`} className="text-sm text-muted-foreground hover:underline">
-        &larr; Back to {agent.name}
-      </Link>
-      <h1 className="mb-8 mt-2 text-2xl font-bold">Agent Settings</h1>
+    <div className="min-h-screen">
+      <nav className="sticky top-0 z-30 border-b border-border/50 glass">
+        <div className="mx-auto flex max-w-3xl items-center px-6 py-3">
+          <Link href={`/agents/${agent.id}`} className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5"/><polyline points="12 19 5 12 12 5"/></svg>
+            {agent.name}
+          </Link>
+        </div>
+      </nav>
 
-      <Card className="mb-8">
-        <CardHeader>
-          <CardTitle className="text-base">Access Control</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {aclEntries.length > 0 ? (
-            <div className="space-y-2">
-              {aclEntries.map((entry) => (
-                <div
-                  key={entry.id}
-                  className="flex items-center justify-between rounded-md border p-3"
-                >
-                  <div className="text-sm">
-                    <span className="font-medium">
-                      {entry.user_id ? `User: ${entry.user_id}` : `Team: ${entry.team_id}`}
-                    </span>
-                    <span className="ml-2 rounded bg-muted px-2 py-0.5 text-xs capitalize">
-                      {entry.role}
-                    </span>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => handleDeleteACL(entry.id)}
-                  >
-                    Remove
-                  </Button>
+      <div className="mx-auto max-w-3xl px-6 py-8">
+        <h1 className="mb-2 text-xl font-bold text-foreground">Settings</h1>
+        <p className="mb-8 text-sm text-muted-foreground">Manage access control and credentials for {agent.name}</p>
+
+        <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Access Control</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {aclEntries.length > 0 ? (
+                <div className="space-y-2">
+                  {aclEntries.map((entry) => (
+                    <div
+                      key={entry.id}
+                      className="flex items-center justify-between rounded-lg border border-border/40 bg-secondary/30 p-3"
+                    >
+                      <div className="flex items-center gap-3 text-sm">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-secondary text-xs text-muted-foreground">
+                          {entry.user_id ? "U" : "T"}
+                        </div>
+                        <div>
+                          <span className="font-medium text-foreground/90">
+                            {entry.user_id ? entry.user_id : entry.team_id}
+                          </span>
+                          <p className="text-xs text-muted-foreground">
+                            {entry.user_id ? "User" : "Team"}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium capitalize ${roleColors[entry.role] || roleColors.viewer}`}>
+                          {entry.role}
+                        </span>
+                        <Button variant="ghost" size="sm" onClick={() => handleDeleteACL(entry.id)} className="text-muted-foreground hover:text-destructive">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">No access entries yet.</p>
-          )}
+              ) : (
+                <p className="text-sm text-muted-foreground">No access entries. Add users or teams below.</p>
+              )}
 
-          <form onSubmit={handleAddACL} className="flex items-end gap-3 pt-4 border-t">
-            <div className="flex-1 space-y-2">
-              <Label htmlFor="user_id">User ID</Label>
-              <Input
-                id="user_id"
-                value={newUserId}
-                onChange={(e) => setNewUserId(e.target.value)}
-                placeholder="Enter user UUID"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="role">Role</Label>
-              <Select
-                id="role"
-                value={newRole}
-                onChange={(e) => setNewRole(e.target.value)}
-              >
-                <option value="viewer">Viewer</option>
-                <option value="user">User</option>
-                <option value="admin">Admin</option>
-                <option value="owner">Owner</option>
-              </Select>
-            </div>
-            <Button type="submit">Add</Button>
-          </form>
-        </CardContent>
-      </Card>
+              <form onSubmit={handleAddACL} className="flex items-end gap-3 border-t border-border/40 pt-4">
+                <div className="flex-1 space-y-2">
+                  <Label htmlFor="user_id">User ID</Label>
+                  <Input
+                    id="user_id"
+                    value={newUserId}
+                    onChange={(e) => setNewUserId(e.target.value)}
+                    placeholder="Paste user UUID"
+                  />
+                </div>
+                <div className="w-32 space-y-2">
+                  <Label htmlFor="role">Role</Label>
+                  <Select
+                    id="role"
+                    value={newRole}
+                    onChange={(e) => setNewRole(e.target.value)}
+                  >
+                    <option value="viewer">Viewer</option>
+                    <option value="user">User</option>
+                    <option value="admin">Admin</option>
+                    <option value="owner">Owner</option>
+                  </Select>
+                </div>
+                <Button type="submit">Add</Button>
+              </form>
+            </CardContent>
+          </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Credentials</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground">
-            Credential management will be available in Phase 4.
-          </p>
-        </CardContent>
-      </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>Credentials</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center gap-3 rounded-lg bg-secondary/30 p-4">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground">
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                </svg>
+                <p className="text-sm text-muted-foreground">
+                  Credential management will be available in a future release.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
     </div>
   );
 }
