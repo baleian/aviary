@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/providers/auth-provider";
+import { SessionStatusProvider } from "@/components/providers/session-status-provider";
 import { AppShell } from "@/components/layout/app-shell";
 
 export default function AuthenticatedLayout({
@@ -33,5 +34,9 @@ export default function AuthenticatedLayout({
     );
   }
 
-  return <AppShell>{children}</AppShell>;
+  return (
+    <SessionStatusProvider>
+      <AppShell>{children}</AppShell>
+    </SessionStatusProvider>
+  );
 }

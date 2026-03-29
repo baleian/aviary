@@ -16,7 +16,10 @@ export type WSMessage =
   | { type: "user_message"; sender_id: string; content: string }
   | { type: "tool_use"; name: string; input: Record<string, unknown> }
   | { type: "done"; messageId: string }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  | { type: "replay_start" }
+  | { type: "replay_end" }
+  | { type: "stream_complete"; content: string; messageId: string };
 
 export async function createSessionWebSocket(
   sessionId: string,

@@ -100,10 +100,13 @@ export default function ChatPage() {
             streamingRef.current = "";
             setStreamingContent("");
             if (finalContent) {
-              setMessages((msgs) => [...msgs, {
-                id: msg.messageId, session_id: session.id, sender_type: "agent",
-                content: finalContent, metadata: {}, created_at: new Date().toISOString(),
-              }]);
+              setMessages((msgs) => {
+                if (msgs.some((m) => m.id === msg.messageId)) return msgs;
+                return [...msgs, {
+                  id: msg.messageId, session_id: session.id, sender_type: "agent",
+                  content: finalContent, metadata: {}, created_at: new Date().toISOString(),
+                }];
+              });
             }
             setIsStreaming(false);
             break;
@@ -116,6 +119,26 @@ export default function ChatPage() {
               id: crypto.randomUUID(), session_id: session.id, sender_type: "agent",
               content: `Error: ${msg.message}`, metadata: {}, created_at: new Date().toISOString(),
             }]);
+            break;
+          case "replay_start":
+            // Reconnected during active stream — replay buffered chunks
+            setIsStreaming(true);
+            streamingRef.current = "";
+            setStreamingContent("");
+            break;
+          case "replay_end":
+            // Replay complete, now receiving live chunks via pub/sub
+            break;
+          case "stream_complete":
+            // Agent finished responding while we were on another page
+            setMessages((msgs) => {
+              if (msgs.some((m) => m.id === msg.messageId)) return msgs;
+              return [...msgs, {
+                id: msg.messageId, session_id: session.id, sender_type: "agent",
+                content: msg.content, metadata: {}, created_at: new Date().toISOString(),
+              }];
+            });
+            setIsStreaming(false);
             break;
         }
       },

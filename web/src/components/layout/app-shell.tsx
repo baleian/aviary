@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@/components/providers/auth-provider";
+import { useSessionStatus, useSetSessionIds } from "@/components/providers/session-status-provider";
 import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/api";
 import type { Agent, Session } from "@/types";
@@ -60,6 +61,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       refreshSidebar();
     }
   }, [pathname, refreshSidebar]);
+
+  // Feed session IDs to the status provider for polling
+  const setSessionIds = useSetSessionIds();
+  useEffect(() => {
+    const allSessionIds = sidebarData
+      .flatMap((d) => d.sessions)
+      .map((s) => s.id);
+    setSessionIds(allSessionIds);
+  }, [sidebarData, setSessionIds]);
 
   const isActive = (href: string) => pathname === href;
   const isSessionActive = (sessionId: string) =>
@@ -214,20 +224,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                         {/* Session list */}
                         <div className="ml-5 space-y-0.5 border-l border-border/30 pl-3">
                           {sessions.map((session) => (
-                            <Link
+                            <SidebarSessionItem
                               key={session.id}
-                              href={`/sessions/${session.id}`}
-                              className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors ${
-                                isSessionActive(session.id)
-                                  ? "bg-primary/10 text-primary"
-                                  : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
-                              }`}
-                            >
-                              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-success" />
-                              <span className="truncate">
-                                {session.title || "Untitled"}
-                              </span>
-                            </Link>
+                              session={session}
+                              isActive={isSessionActive(session.id)}
+                            />
                           ))}
                         </div>
                       </div>
@@ -289,5 +290,43 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {/* Main content */}
       <main className="flex-1 overflow-hidden">{children}</main>
     </div>
+  );
+}
+
+const STATUS_DOT_STYLES: Record<string, string> = {
+  streaming: "bg-primary animate-pulse-soft",
+  idle: "bg-success",
+  offline: "bg-muted-foreground/50",
+};
+
+function SidebarSessionItem({
+  session,
+  isActive,
+}: {
+  session: Session;
+  isActive: boolean;
+}) {
+  const { status, unread } = useSessionStatus(session.id);
+  const dotClass = STATUS_DOT_STYLES[status] || STATUS_DOT_STYLES.offline;
+
+  return (
+    <Link
+      href={`/sessions/${session.id}`}
+      className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors ${
+        isActive
+          ? "bg-primary/10 text-primary"
+          : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
+      }`}
+    >
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} />
+      <span className="truncate flex-1">
+        {session.title || "Untitled"}
+      </span>
+      {unread > 0 && !isActive && (
+        <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[9px] font-semibold text-primary-foreground">
+          {unread > 99 ? "99+" : unread}
+        </span>
+      )}
+    </Link>
   );
 }
