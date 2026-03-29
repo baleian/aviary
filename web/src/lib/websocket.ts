@@ -1,4 +1,4 @@
-import { getAccessToken } from "./auth";
+import { ensureValidToken } from "./auth";
 
 export type ConnectionStatus =
   | "connecting"
@@ -16,14 +16,18 @@ export type WSMessage =
   | { type: "user_message"; sender_id: string; content: string }
   | { type: "tool_use"; name: string; input: Record<string, unknown> }
   | { type: "done"; messageId: string }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  | { type: "replay_start" }
+  | { type: "replay_end" }
+  | { type: "stream_complete"; content: string; messageId: string };
 
-export function createSessionWebSocket(
+export async function createSessionWebSocket(
   sessionId: string,
   onMessage: (msg: WSMessage) => void,
   onClose?: () => void
-): WebSocket {
-  const token = getAccessToken();
+): Promise<WebSocket> {
+  // Ensure token is valid before establishing WebSocket connection
+  const token = await ensureValidToken();
   const wsUrl =
     process.env.NEXT_PUBLIC_WS_URL || `ws://${window.location.hostname}:8000`;
   const ws = new WebSocket(`${wsUrl}/api/sessions/${sessionId}/ws?token=${token}`);

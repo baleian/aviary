@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import uuid
 
 import httpx
@@ -19,7 +20,9 @@ from app.schemas.session import (
     SessionListResponse,
     SessionResponse,
 )
-from app.services import acl_service, redis_service, session_service
+from app.services import acl_service, redis_service, session_service, stream_manager
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -63,6 +66,25 @@ async def create_session(
     team_id = uuid.UUID(body.team_id) if body.team_id else None
     session = await session_service.create_session(db, user, agent, body.type, team_id)
     return SessionResponse.from_orm_session(session)
+
+
+# ── Session status polling (for sidebar) ─────────────────────
+# IMPORTANT: must be registered BEFORE /sessions/{session_id} to avoid
+# FastAPI matching "status" as a UUID path parameter.
+
+@router.get("/sessions/status")
+async def get_sessions_status(
+    ids: str = Query(..., description="Comma-separated session IDs"),
+    user: User = Depends(get_current_user),
+):
+    """Batch get session statuses and unread counts for sidebar polling."""
+    session_ids = [s.strip() for s in ids.split(",") if s.strip()]
+    if not session_ids:
+        return {"statuses": {}, "unread": {}}
+
+    statuses = await redis_service.get_sessions_status(session_ids)
+    unread = await redis_service.get_bulk_unread(session_ids, str(user.id))
+    return {"statuses": statuses, "unread": unread}
 
 
 @router.get("/sessions/{session_id}", response_model=SessionDetailResponse)
@@ -211,15 +233,22 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
 
         await websocket.send_json({"type": "status", "status": "ready"})
 
-        # Track presence in Redis
+        # Track presence and clear unread
         await redis_service.add_ws_connection(session_id_str, user_id_str)
+        await redis_service.clear_unread(session_id_str, user_id_str)
+
+        # Set session status to idle (if not currently streaming)
+        if not stream_manager.is_streaming(session_id_str):
+            await redis_service.set_session_status(session_id_str, "idle")
+
+        # Replay buffered stream if reconnecting during/after streaming
+        await _replay_stream_if_needed(websocket, session_id_str)
 
         # Subscribe to Redis pub/sub channel for this session
         pubsub = await redis_service.subscribe(session_id_str)
 
         # Background task: relay Redis pub/sub messages to this WebSocket client
         async def _relay_from_redis():
-            """Listen for messages published by other connections and forward to this client."""
             if not pubsub:
                 return
             try:
@@ -228,10 +257,8 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
                         continue
                     try:
                         data = json.loads(raw_msg["data"])
-                        # Skip messages originating from this connection
                         if data.get("_sender") == user_id_str:
                             continue
-                        # Strip internal fields before forwarding
                         data.pop("_sender", None)
                         await websocket.send_json(data)
                     except Exception:
@@ -241,7 +268,7 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
 
         relay_task = asyncio.create_task(_relay_from_redis())
 
-        # Main message loop: receive from client → process → broadcast via Redis
+        # Main message loop
         try:
             while True:
                 data = await websocket.receive_json()
@@ -273,32 +300,19 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
                     result = await db.execute(select(Agent).where(Agent.id == session.agent_id))
                     agent = result.scalar_one()
 
-                # Forward to runtime Pod and stream response
-                try:
-                    agent_response = await _forward_to_pod_with_broadcast(
-                        websocket, session, agent, content, session_id_str, user_id_str
-                    )
-
-                    # Save agent response to DB
-                    async with async_session_factory() as db:
-                        msg = await session_service.save_message(
-                            db, session_id, "agent", agent_response
-                        )
-                        await db.commit()
-
-                    done_event = {"type": "done", "messageId": str(msg.id)}
-                    await websocket.send_json(done_event)
-
-                    # Broadcast completion to other participants
-                    await redis_service.publish_message(session_id_str, {
-                        **done_event,
-                        "_sender": user_id_str,
-                    })
-                except Exception as e:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": f"Agent error: {e}",
-                    })
+                # Start background stream (non-blocking)
+                await stream_manager.start_stream(
+                    session_id=session_id_str,
+                    namespace=agent.namespace,
+                    pod_name=session.pod_name,
+                    agent_model_config=agent.model_config_json,
+                    agent_instruction=agent.instruction,
+                    agent_tools=agent.tools,
+                    agent_mcp_servers=agent.mcp_servers,
+                    agent_policy=agent.policy,
+                    content=content,
+                    sender_id=user_id_str,
+                )
         finally:
             relay_task.cancel()
             try:
@@ -309,8 +323,7 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
     except WebSocketDisconnect:
         pass
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).exception("WebSocket handler error for session %s", session_id)
+        logger.exception("WebSocket handler error for session %s", session_id)
         try:
             await websocket.send_json({"type": "error", "message": str(e)})
         except Exception:
@@ -324,76 +337,28 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
             await pubsub.aclose()
 
 
-async def _forward_to_pod_with_broadcast(
-    websocket: WebSocket,
-    session: SessionModel,
-    agent: Agent,
-    content: str,
-    session_id_str: str,
-    sender_id: str,
-) -> str:
-    """Forward message to the session Pod, stream chunks to this client,
-    and broadcast via Redis pub/sub to other connected participants.
+async def _replay_stream_if_needed(websocket: WebSocket, session_id: str) -> None:
+    """Replay buffered stream chunks or completed response to a reconnecting client."""
+    stream_status = await redis_service.get_stream_status(session_id)
 
-    Returns the full concatenated agent response.
-    """
-    # In local dev without a running Pod, return a placeholder
-    if not session.pod_name or not agent.namespace:
-        placeholder = (
-            f"[Agent '{agent.name}' would respond here. "
-            f"Pod not running — runtime container needed for actual inference.]"
-        )
-        chunk_event = {"type": "chunk", "content": placeholder}
-        await websocket.send_json(chunk_event)
-        # Broadcast to other participants
-        await redis_service.publish_message(session_id_str, {
-            **chunk_event, "_sender": sender_id,
-        })
-        return placeholder
+    if stream_status == "streaming":
+        # Active stream — replay buffered chunks, then live chunks continue via pub/sub
+        await websocket.send_json({"type": "replay_start"})
+        chunks = await redis_service.get_stream_chunks(session_id)
+        for chunk in chunks:
+            await websocket.send_json(chunk)
+        await websocket.send_json({"type": "replay_end"})
 
-    # Route to Pod via K8s API proxy (API container is outside K3s network)
-    # K8s proxy endpoint: /api/v1/namespaces/{ns}/pods/{pod}:{port}/proxy/{path}
-    from app.services.k8s_service import _get_k8s_client
-
-    proxy_path = f"/api/v1/namespaces/{agent.namespace}/pods/{session.pod_name}:3000/proxy/message"
-    full_response = ""
-
-    async with _get_k8s_client() as client:
-        async with client.stream(
-            "POST",
-            proxy_path,
-            json={
-                "content": content,
-                "session_id": str(session.id),
-                "model_config_data": agent.model_config_json,
-                "agent_config": {
-                    "instruction": agent.instruction,
-                    "tools": agent.tools,
-                    "mcp_servers": agent.mcp_servers,
-                    "policy": agent.policy,
-                },
-            },
-            timeout=300,
-        ) as resp:
-            async for line in resp.aiter_lines():
-                if line.startswith("data: "):
-                    chunk_data = json.loads(line[6:])
-                    if chunk_data.get("type") == "chunk":
-                        chunk_text = chunk_data["content"]
-                        full_response += chunk_text
-                        chunk_event = {"type": "chunk", "content": chunk_text}
-                        await websocket.send_json(chunk_event)
-                        # Broadcast chunk to other participants via Redis
-                        await redis_service.publish_message(session_id_str, {
-                            **chunk_event, "_sender": sender_id,
-                        })
-                    elif chunk_data.get("type") == "tool_use":
-                        await websocket.send_json(chunk_data)
-                        await redis_service.publish_message(session_id_str, {
-                            **chunk_data, "_sender": sender_id,
-                        })
-
-    return full_response
+    elif stream_status == "complete":
+        # Stream finished while user was away — send completed response
+        result = await redis_service.get_stream_result(session_id)
+        if result:
+            await websocket.send_json({
+                "type": "stream_complete",
+                "content": result["content"],
+                "messageId": result["messageId"],
+            })
+        await redis_service.clear_stream_buffer(session_id)
 
 
 async def _wait_for_pod_ready(namespace: str, pod_name: str, timeout: int = 120) -> bool:

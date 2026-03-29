@@ -127,3 +127,153 @@ async def get_online_users(session_id: str) -> set[str]:
         return set()
     key = f"session:{session_id}:online"
     return await client.smembers(key)
+
+
+# ── Stream buffer (chunk replay for reconnecting clients) ───
+
+_STREAM_BUFFER_TTL = 600  # 10 minutes
+
+
+async def append_stream_chunk(session_id: str, chunk_event: dict) -> None:
+    """Append a streaming chunk to the session's replay buffer."""
+    client = get_client()
+    if not client:
+        return
+    key = f"session:{session_id}:stream:chunks"
+    await client.rpush(key, json.dumps(chunk_event))
+    await client.expire(key, _STREAM_BUFFER_TTL)
+
+
+async def get_stream_chunks(session_id: str) -> list[dict]:
+    """Get all buffered chunks for replay."""
+    client = get_client()
+    if not client:
+        return []
+    key = f"session:{session_id}:stream:chunks"
+    raw = await client.lrange(key, 0, -1)
+    return [json.loads(r) for r in raw]
+
+
+async def set_stream_status(session_id: str, status: str) -> None:
+    """Set stream status: 'streaming', 'complete', 'error'."""
+    client = get_client()
+    if not client:
+        return
+    key = f"session:{session_id}:stream:status"
+    await client.set(key, status, ex=_STREAM_BUFFER_TTL)
+
+
+async def get_stream_status(session_id: str) -> str | None:
+    """Get current stream status."""
+    client = get_client()
+    if not client:
+        return None
+    key = f"session:{session_id}:stream:status"
+    return await client.get(key)
+
+
+async def set_stream_result(session_id: str, result: str, message_id: str) -> None:
+    """Store the completed agent response for late-joining clients."""
+    client = get_client()
+    if not client:
+        return
+    key = f"session:{session_id}:stream:result"
+    await client.set(key, json.dumps({"content": result, "messageId": message_id}), ex=120)
+
+
+async def get_stream_result(session_id: str) -> dict | None:
+    """Get the completed stream result (content + messageId)."""
+    client = get_client()
+    if not client:
+        return None
+    key = f"session:{session_id}:stream:result"
+    raw = await client.get(key)
+    return json.loads(raw) if raw else None
+
+
+async def clear_stream_buffer(session_id: str) -> None:
+    """Remove all stream buffer keys for a session."""
+    client = get_client()
+    if not client:
+        return
+    keys = [
+        f"session:{session_id}:stream:chunks",
+        f"session:{session_id}:stream:status",
+        f"session:{session_id}:stream:result",
+    ]
+    await client.delete(*keys)
+
+
+# ── Session status (for sidebar) ────────────────────────────
+
+async def set_session_status(session_id: str, status: str) -> None:
+    """Set session-level status: 'streaming', 'idle', 'offline'."""
+    client = get_client()
+    if not client:
+        return
+    key = f"session:{session_id}:status"
+    await client.set(key, status, ex=3600)
+
+
+async def get_session_status(session_id: str) -> str:
+    """Get session status."""
+    client = get_client()
+    if not client:
+        return "offline"
+    key = f"session:{session_id}:status"
+    return await client.get(key) or "offline"
+
+
+async def get_sessions_status(session_ids: list[str]) -> dict[str, str]:
+    """Batch get status for multiple sessions."""
+    client = get_client()
+    if not client or not session_ids:
+        return {}
+    pipe = client.pipeline()
+    for sid in session_ids:
+        pipe.get(f"session:{sid}:status")
+    results = await pipe.execute()
+    return {sid: (r or "offline") for sid, r in zip(session_ids, results)}
+
+
+# ── Unread message tracking ─────────────────────────────────
+
+async def increment_unread(session_id: str, user_id: str) -> None:
+    """Increment unread count for a user in a session."""
+    client = get_client()
+    if not client:
+        return
+    key = f"session:{session_id}:unread:{user_id}"
+    await client.incr(key)
+    await client.expire(key, 86400)
+
+
+async def get_unread(session_id: str, user_id: str) -> int:
+    """Get unread count for a user in a session."""
+    client = get_client()
+    if not client:
+        return 0
+    key = f"session:{session_id}:unread:{user_id}"
+    val = await client.get(key)
+    return int(val) if val else 0
+
+
+async def clear_unread(session_id: str, user_id: str) -> None:
+    """Clear unread count when user opens a session."""
+    client = get_client()
+    if not client:
+        return
+    key = f"session:{session_id}:unread:{user_id}"
+    await client.delete(key)
+
+
+async def get_bulk_unread(session_ids: list[str], user_id: str) -> dict[str, int]:
+    """Batch get unread counts for multiple sessions."""
+    client = get_client()
+    if not client or not session_ids:
+        return {}
+    pipe = client.pipeline()
+    for sid in session_ids:
+        pipe.get(f"session:{sid}:unread:{user_id}")
+    results = await pipe.execute()
+    return {sid: int(r) if r else 0 for sid, r in zip(session_ids, results)}

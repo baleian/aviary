@@ -79,7 +79,6 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
     }));
   };
 
-  // Auto-generate slug from name
   const handleNameChange = (name: string) => {
     updateField("name", name);
     if (!initialData?.slug) {
@@ -92,146 +91,193 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-6">
+    <form onSubmit={handleSubmit} className="space-y-8">
       {error && (
-        <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">{error}</div>
+        <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-4 text-sm text-destructive">
+          {error}
+        </div>
       )}
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div className="space-y-2">
-          <Label htmlFor="name">Name</Label>
-          <Input
-            id="name"
-            value={data.name}
-            onChange={(e) => handleNameChange(e.target.value)}
-            placeholder="My Agent"
-            required
-          />
+      {/* Basic info */}
+      <section className="space-y-5">
+        <div className="mb-1">
+          <h2 className="text-sm font-semibold text-foreground">Basic Information</h2>
+          <p className="text-xs text-muted-foreground">Name and identity for your agent</p>
         </div>
-        <div className="space-y-2">
-          <Label htmlFor="slug">Slug</Label>
-          <Input
-            id="slug"
-            value={data.slug}
-            onChange={(e) => updateField("slug", e.target.value)}
-            placeholder="my-agent"
-            pattern="[a-z0-9][a-z0-9\-]*[a-z0-9]"
-            required
-          />
-        </div>
-      </div>
 
-      <div className="space-y-2">
-        <Label htmlFor="description">Description</Label>
-        <Input
-          id="description"
-          value={data.description}
-          onChange={(e) => updateField("description", e.target.value)}
-          placeholder="A helpful agent that..."
-        />
-      </div>
-
-      <div className="space-y-2">
-        <Label htmlFor="instruction">System Instruction</Label>
-        <Textarea
-          id="instruction"
-          value={data.instruction}
-          onChange={(e) => updateField("instruction", e.target.value)}
-          placeholder="You are a helpful assistant..."
-          rows={8}
-          required
-        />
-      </div>
-
-      <fieldset className="space-y-4 rounded-lg border p-4">
-        <legend className="px-2 text-sm font-medium">Model Configuration</legend>
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid gap-5 sm:grid-cols-2">
           <div className="space-y-2">
-            <Label htmlFor="backend">Backend</Label>
+            <Label htmlFor="name">Name</Label>
+            <Input
+              id="name"
+              value={data.name}
+              onChange={(e) => handleNameChange(e.target.value)}
+              placeholder="e.g. Code Reviewer"
+              required
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="slug">Slug</Label>
+            <Input
+              id="slug"
+              value={data.slug}
+              onChange={(e) => updateField("slug", e.target.value)}
+              placeholder="code-reviewer"
+              pattern="[a-z0-9][a-z0-9\-]*[a-z0-9]"
+              required
+            />
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="description">Description</Label>
+          <Input
+            id="description"
+            value={data.description}
+            onChange={(e) => updateField("description", e.target.value)}
+            placeholder="A brief description of what this agent does"
+          />
+        </div>
+      </section>
+
+      {/* System instruction */}
+      <section className="space-y-5">
+        <div className="mb-1">
+          <h2 className="text-sm font-semibold text-foreground">Behavior</h2>
+          <p className="text-xs text-muted-foreground">Define how the agent should behave and respond</p>
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="instruction">System Instruction</Label>
+          <Textarea
+            id="instruction"
+            value={data.instruction}
+            onChange={(e) => updateField("instruction", e.target.value)}
+            placeholder="You are a helpful assistant that specializes in..."
+            rows={8}
+            className="font-mono text-xs leading-relaxed"
+            required
+          />
+        </div>
+      </section>
+
+      {/* Model config */}
+      <section className="space-y-5">
+        <div className="mb-1">
+          <h2 className="text-sm font-semibold text-foreground">Model Configuration</h2>
+          <p className="text-xs text-muted-foreground">Choose the LLM backend and tuning parameters</p>
+        </div>
+
+        <div className="rounded-xl border border-border/60 bg-card p-5 space-y-5">
+          <div className="grid gap-5 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="backend">Backend</Label>
+              <Select
+                id="backend"
+                value={data.model_config.backend}
+                onChange={(e) => updateModelConfig("backend", e.target.value)}
+              >
+                <option value="claude">Claude API</option>
+                <option value="ollama">Ollama (Local)</option>
+                <option value="vllm">vLLM (Local)</option>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="model">Model</Label>
+              {data.model_config.backend === "claude" ? (
+                <Select
+                  id="model"
+                  value={data.model_config.model}
+                  onChange={(e) => updateModelConfig("model", e.target.value)}
+                >
+                  {claudeModels.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </Select>
+              ) : (
+                <Input
+                  id="model"
+                  value={data.model_config.model}
+                  onChange={(e) => updateModelConfig("model", e.target.value)}
+                  placeholder={data.model_config.backend === "ollama" ? "llama3.3:70b" : "meta-llama/Llama-3.3-70B-Instruct"}
+                />
+              )}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="temperature">Temperature</Label>
+              <Input
+                id="temperature"
+                type="number"
+                min={0}
+                max={2}
+                step={0.1}
+                value={data.model_config.temperature}
+                onChange={(e) => updateModelConfig("temperature", parseFloat(e.target.value))}
+              />
+              <p className="text-[11px] text-muted-foreground/60">0 = deterministic, 1+ = more creative</p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="maxTokens">Max Tokens</Label>
+              <Input
+                id="maxTokens"
+                type="number"
+                min={1}
+                max={200000}
+                value={data.model_config.maxTokens}
+                onChange={(e) => updateModelConfig("maxTokens", parseInt(e.target.value))}
+              />
+              <p className="text-[11px] text-muted-foreground/60">Maximum response length per turn</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Access & category */}
+      <section className="space-y-5">
+        <div className="mb-1">
+          <h2 className="text-sm font-semibold text-foreground">Access & Organization</h2>
+          <p className="text-xs text-muted-foreground">Control who can discover and use this agent</p>
+        </div>
+
+        <div className="grid gap-5 sm:grid-cols-2">
+          <div className="space-y-2">
+            <Label htmlFor="visibility">Visibility</Label>
             <Select
-              id="backend"
-              value={data.model_config.backend}
-              onChange={(e) => updateModelConfig("backend", e.target.value)}
+              id="visibility"
+              value={data.visibility}
+              onChange={(e) => updateField("visibility", e.target.value)}
             >
-              <option value="claude">Claude API</option>
-              <option value="ollama">Ollama (Local)</option>
-              <option value="vllm">vLLM (Local)</option>
+              <option value="private">Private — Only you</option>
+              <option value="team">Team — Your team members</option>
+              <option value="public">Public — Everyone</option>
             </Select>
           </div>
           <div className="space-y-2">
-            <Label htmlFor="model">Model</Label>
-            {data.model_config.backend === "claude" ? (
-              <Select
-                id="model"
-                value={data.model_config.model}
-                onChange={(e) => updateModelConfig("model", e.target.value)}
-              >
-                {claudeModels.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </Select>
-            ) : (
-              <Input
-                id="model"
-                value={data.model_config.model}
-                onChange={(e) => updateModelConfig("model", e.target.value)}
-                placeholder={data.model_config.backend === "ollama" ? "llama3.3:70b" : "meta-llama/Llama-3.3-70B-Instruct"}
-              />
-            )}
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="temperature">Temperature</Label>
+            <Label htmlFor="category">Category</Label>
             <Input
-              id="temperature"
-              type="number"
-              min={0}
-              max={2}
-              step={0.1}
-              value={data.model_config.temperature}
-              onChange={(e) => updateModelConfig("temperature", parseFloat(e.target.value))}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="maxTokens">Max Tokens</Label>
-            <Input
-              id="maxTokens"
-              type="number"
-              min={1}
-              max={200000}
-              value={data.model_config.maxTokens}
-              onChange={(e) => updateModelConfig("maxTokens", parseInt(e.target.value))}
+              id="category"
+              value={data.category}
+              onChange={(e) => updateField("category", e.target.value)}
+              placeholder="e.g. coding, writing, research"
             />
           </div>
         </div>
-      </fieldset>
+      </section>
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div className="space-y-2">
-          <Label htmlFor="visibility">Visibility</Label>
-          <Select
-            id="visibility"
-            value={data.visibility}
-            onChange={(e) => updateField("visibility", e.target.value)}
-          >
-            <option value="private">Private</option>
-            <option value="team">Team</option>
-            <option value="public">Public</option>
-          </Select>
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="category">Category</Label>
-          <Input
-            id="category"
-            value={data.category}
-            onChange={(e) => updateField("category", e.target.value)}
-            placeholder="coding, writing, research..."
-          />
-        </div>
-      </div>
-
-      <div className="flex justify-end gap-3">
-        <Button type="submit" disabled={loading}>
-          {loading ? "Saving..." : submitLabel}
+      {/* Submit */}
+      <div className="flex items-center justify-end gap-3 border-t border-border/40 pt-6">
+        <Button type="submit" disabled={loading} size="lg">
+          {loading ? (
+            <span className="flex items-center gap-2">
+              <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              Saving...
+            </span>
+          ) : (
+            submitLabel
+          )}
         </Button>
       </div>
     </form>

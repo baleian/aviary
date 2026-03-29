@@ -12,9 +12,12 @@ Multi-turn conversation is maintained via the SDK's session management:
 """
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import AsyncGenerator
+
+logger = logging.getLogger(__name__)
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -76,6 +79,13 @@ def _save_session_id(session_id: str) -> None:
     SESSION_ID_FILE.write_text(session_id)
 
 
+def _clear_session_id() -> None:
+    """Remove a stale SDK session ID (e.g. after cluster restart)."""
+    if SESSION_ID_FILE.exists():
+        SESSION_ID_FILE.unlink()
+        logger.info("Cleared stale session ID file")
+
+
 def _build_options(agent_config: dict, model_config: dict) -> ClaudeAgentOptions:
     """Build ClaudeAgentOptions routing all inference through the Inference Router."""
     model = model_config.get("model", "claude-sonnet-4-20250514")
@@ -131,8 +141,9 @@ async def process_message(
 
     full_response = ""
 
-    try:
-        async for message in query(prompt=content, options=options):
+    async def _run_query(opts: ClaudeAgentOptions) -> AsyncGenerator[dict, None]:
+        nonlocal full_response
+        async for message in query(prompt=content, options=opts):
             if isinstance(message, AssistantMessage):
                 for block in message.content:
                     if isinstance(block, TextBlock):
@@ -161,11 +172,36 @@ async def process_message(
                     full_response = message.result
                     yield {"type": "chunk", "content": message.result}
 
-        append_message("assistant", full_response)
-
+    try:
+        async for chunk in _run_query(options):
+            yield chunk
     except Exception as e:
-        backend = mc.get("backend", "claude")
-        model = mc.get("model", "unknown")
-        error_msg = f"[{backend}/{model}] Error: {e}"
-        yield {"type": "chunk", "content": error_msg}
-        append_message("assistant", error_msg)
+        # If resume failed (stale session after pod/cluster restart),
+        # clear the stale session ID and retry as a fresh session
+        if options.resume is not None:
+            logger.warning(
+                "Session resume failed (session_id=%s), retrying as new session: %s",
+                options.resume, e,
+            )
+            _clear_session_id()
+            options.resume = None
+            full_response = ""
+            try:
+                async for chunk in _run_query(options):
+                    yield chunk
+            except Exception as retry_err:
+                backend = mc.get("backend", "claude")
+                model = mc.get("model", "unknown")
+                error_msg = f"[{backend}/{model}] Error: {retry_err}"
+                yield {"type": "chunk", "content": error_msg}
+                append_message("assistant", error_msg)
+                return
+        else:
+            backend = mc.get("backend", "claude")
+            model = mc.get("model", "unknown")
+            error_msg = f"[{backend}/{model}] Error: {e}"
+            yield {"type": "chunk", "content": error_msg}
+            append_message("assistant", error_msg)
+            return
+
+    append_message("assistant", full_response)
