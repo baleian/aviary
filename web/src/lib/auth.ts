@@ -162,10 +162,18 @@ export async function refreshAccessToken(): Promise<boolean> {
     if (!refreshToken) return false;
 
     try {
-      const res = await fetch("/api/auth/refresh", {
+      // Refresh directly with Keycloak's token endpoint (browser → localhost:8080).
+      // This avoids the issuer mismatch that occurs when the API container
+      // sends the request via the internal URL (keycloak:8080).
+      const config = await fetchAuthConfig();
+      const res = await fetch(config.token_endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refresh_token: refreshToken }),
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          client_id: config.client_id,
+          refresh_token: refreshToken,
+        }),
       });
 
       if (!res.ok) return false;
