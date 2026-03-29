@@ -1,0 +1,42 @@
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    # Database
+    database_url: str = "postgresql+asyncpg://agentbox:agentbox@localhost:5432/agentbox"
+
+    # Redis
+    redis_url: str = "redis://localhost:6379/0"
+
+    # OIDC
+    oidc_issuer: str = "http://localhost:8080/realms/agentbox"
+    # Internal URL for fetching OIDC discovery/JWKS (container-to-container)
+    # If unset, falls back to oidc_issuer
+    oidc_internal_issuer: str | None = None
+    oidc_client_id: str = "agentbox-web"
+    oidc_audience: str | None = None
+
+    # Vault
+    vault_addr: str = "http://localhost:8200"
+    vault_token: str = "dev-root-token"
+
+    # CORS
+    cors_origins: list[str] = ["http://localhost:3000"]
+
+    # K8s
+    kubeconfig: str | None = None
+
+    # Agent Runtime
+    agent_runtime_image: str = "agentbox-runtime:latest"
+    default_session_timeout: int = 1800
+    default_max_sessions_per_agent: int = 20
+
+    # Inference
+    anthropic_api_key: str | None = None
+    inference_ollama_url: str = "http://localhost:11434"
+    inference_vllm_url: str = "http://localhost:8001"
+
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+
+
+settings = Settings()
