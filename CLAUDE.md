@@ -56,6 +56,9 @@ API container is outside K3s network. Communicates with agent Pods via K8s Servi
 ### Multi-Session Runtime
 Each runtime Pod runs a `SessionManager` that tracks active sessions, enforces concurrency limits (`MAX_CONCURRENT_SESSIONS` env var, default 10), and serializes messages per-session. The readiness probe returns 503 when at capacity, preventing new session routing.
 
+### Session Isolation (bubblewrap)
+The `claude` binary in PATH is a wrapper script (`scripts/claude-sandbox.sh`). The real binary is renamed to `claude-real` at build time (see Dockerfile). When the SDK invokes `claude`, the wrapper reads `SESSION_WORKSPACE` from env (set per-session in `agent.py`) and runs `claude-real` inside a bwrap mount namespace where `/workspace/sessions/` is an empty tmpfs with only the current session's directory bind-mounted back. Other sessions' files don't exist. PID namespace is also isolated.
+
 ### Auto-Scaling
 Custom scaling loop in `scaling_service.py` (background task, 30s interval). Queries each Pod's `GET /metrics` endpoint for session counts. Scales up when sessions/pod > 5, down when < 2. Clamped to `[min_pods, max_pods]` per agent.
 

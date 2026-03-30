@@ -2,12 +2,12 @@
 
 Each session is isolated in its own workspace directory (/workspace/sessions/{session_id}/)
 and serialized via per-session asyncio locks to prevent concurrent SDK calls.
+Filesystem isolation enforced by bubblewrap sandbox (see scripts/claude-sandbox.sh).
 """
 
 import json
 import time
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, StreamingResponse

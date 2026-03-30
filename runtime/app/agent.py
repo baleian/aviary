@@ -10,8 +10,9 @@ Multi-turn conversation is maintained via the SDK's session management:
   - Subsequent messages: resume=<sdk_session_id> resumes the session
   - Pod restart with same PVC: session_id recovered from file
 
-Session isolation: each session gets its own workspace directory at
-  /workspace/sessions/{session_id}/ with independent .session_id and .history/
+Session isolation: each claude-agent-sdk subprocess runs inside a bubblewrap
+sandbox where only its own workspace directory is visible. Other sessions'
+directories don't exist in the mount namespace. See scripts/claude-sandbox.sh.
 """
 
 import json
@@ -96,10 +97,13 @@ def _clear_session_id(workspace: Path) -> None:
 
 
 def _build_options(agent_config: dict, model_config: dict, workspace: Path) -> ClaudeAgentOptions:
-    """Build ClaudeAgentOptions routing all inference through the Inference Router."""
-    model = model_config.get("model", "claude-sonnet-4-20250514")
+    """Build ClaudeAgentOptions with bubblewrap sandbox isolation.
 
-    # Check if we have an existing session to continue
+    The `claude` binary in PATH is a wrapper script (installed by Dockerfile)
+    that reads SESSION_WORKSPACE env and runs claude-real inside a bwrap
+    mount namespace where only this session's directory is visible.
+    """
+    model = model_config.get("model", "claude-sonnet-4-20250514")
     existing_session_id = _load_session_id(workspace)
 
     opts = ClaudeAgentOptions(
@@ -108,17 +112,14 @@ def _build_options(agent_config: dict, model_config: dict, workspace: Path) -> C
         cwd=workspace,
         permission_mode="bypassPermissions",
         include_partial_messages=False,
-        # Multi-turn: resume existing session or start new one
-        # resume=<session_id> continues the specific session (not continue_conversation)
         resume=existing_session_id,
-        # Route all Anthropic API calls through the Inference Router
         env={
             "ANTHROPIC_BASE_URL": INFERENCE_ROUTER_URL,
             "ANTHROPIC_API_KEY": "routed-via-inference-router",
+            "SESSION_WORKSPACE": str(workspace),
         },
     )
 
-    # Tools
     tools_list = agent_config.get("tools")
     if tools_list:
         opts.allowed_tools = tools_list
@@ -179,7 +180,6 @@ async def process_message(
                         }
 
             elif isinstance(message, ResultMessage):
-                # Save session_id for multi-turn continuation
                 if message.session_id:
                     _save_session_id(workspace, message.session_id)
 
@@ -191,8 +191,6 @@ async def process_message(
         async for chunk in _run_query(options):
             yield chunk
     except Exception as e:
-        # If resume failed (stale session after pod/cluster restart),
-        # clear the stale session ID and retry as a fresh session
         if options.resume is not None:
             logger.warning(
                 "Session resume failed (session_id=%s), retrying as new session: %s",
