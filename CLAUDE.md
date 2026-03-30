@@ -45,7 +45,7 @@ Keycloak tokens have `iss=http://localhost:8080/...` (browser URL), but API cont
 `model_config` is a reserved Pydantic class variable. Use `Field(alias="model_config")` with `model_config_data` as the Python field name. The `model_config = {...}` class var must be declared BEFORE field definitions. See `schemas/agent.py`.
 
 ### claude-agent-sdk Multi-Turn
-Uses `resume=<session_id>` (NOT `continue_conversation + session_id`). Session ID stored at `/workspace/sessions/{session_id}/.session_id` on PVC, survives Pod restarts. Each session has its own workspace directory within the shared PVC.
+Uses `ClaudeSDKClient` (NOT the `query()` function). Aviary session_id is passed directly as CLI session_id via `session_id=` option (first message) or `resume=` option (subsequent messages). No `.session_id` file needed — resume is determined by checking for existing JSONL in `<workspace>/.claude/projects/`. CLI session data is persisted to PVC via bwrap bind-mount of `<workspace>/.claude/` to `/tmp/.claude`, enabling conversation resume across Pod restarts.
 
 ### K8s Service Proxy for Pod Communication
 API container is outside K3s network. Communicates with agent Pods via K8s Service proxy: `POST /api/v1/namespaces/{ns}/services/agent-runtime-svc:3000/proxy/message`. K8s load-balances across replicas. See `stream_manager.py` and `deployment_service.py`.
@@ -57,7 +57,7 @@ API container is outside K3s network. Communicates with agent Pods via K8s Servi
 Each runtime Pod runs a `SessionManager` that tracks active sessions, enforces concurrency limits (`MAX_CONCURRENT_SESSIONS` env var, default 10), and serializes messages per-session. The readiness probe returns 503 when at capacity, preventing new session routing.
 
 ### Session Isolation (bubblewrap)
-The `claude` binary in PATH is a wrapper script (`scripts/claude-sandbox.sh`). The real binary is renamed to `claude-real` at build time (see Dockerfile). When the SDK invokes `claude`, the wrapper reads `SESSION_WORKSPACE` from env (set per-session in `agent.py`) and runs `claude-real` inside a bwrap mount namespace where `/workspace/sessions/` is an empty tmpfs with only the current session's directory bind-mounted back. Other sessions' files don't exist. PID namespace is also isolated.
+The `claude` binary in PATH is a wrapper script (`scripts/claude-sandbox.sh`). The real binary is renamed to `claude-real` at build time (see Dockerfile). SDK must use `cli_path="/usr/bin/claude"` to bypass the bundled binary and use the wrapper. When the SDK invokes `claude`, the wrapper reads `SESSION_WORKSPACE` from env (set per-session in `agent.py`) and runs `claude-real` inside a bwrap mount namespace where `/workspace/sessions/` is an empty tmpfs with only the current session's directory bind-mounted back. `$SESSION_WORKSPACE/.claude` is bind-mounted to `/tmp/.claude` (HOME=/tmp) so CLI session data persists on PVC. Other sessions' files don't exist. PID namespace is also isolated.
 
 ### Auto-Scaling
 Custom scaling loop in `scaling_service.py` (background task, 30s interval). Queries each Pod's `GET /metrics` endpoint for session counts. Scales up when sessions/pod > 5, down when < 2. Clamped to `[min_pods, max_pods]` per agent.

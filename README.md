@@ -4,7 +4,7 @@
 
 [한국어](./README.ko.md)
 
-Aviary is an enterprise platform where users can create, configure, deploy, and use purpose-built AI agents through a web UI. Each agent runs in an isolated Kubernetes namespace, and each user session gets a dedicated Pod for kernel-level isolation.
+Aviary is an enterprise platform where users can create, configure, deploy, and use purpose-built AI agents through a web UI. Each agent runs in an isolated Kubernetes namespace with long-running Pods that serve multiple sessions concurrently, isolated at the kernel level via bubblewrap sandboxing.
 
 ## Architecture
 
@@ -34,9 +34,10 @@ Aviary is an enterprise platform where users can create, configure, deploy, and 
 │                                                                │
 │  NS: agent-{id}           NS: agent-{id}                      │
 │  ┌─────────────────┐     ┌─────────────────┐                  │
-│  │ Session Pod      │     │ Session Pod      │                  │
+│  │ Agent Pod (1-N)  │     │ Agent Pod (1-N)  │                  │
 │  │ claude-agent-sdk │     │ claude-agent-sdk │                  │
 │  │ + Claude Code CLI│     │ + Claude Code CLI│                  │
+│  │ + bwrap sandbox  │     │ + bwrap sandbox  │                  │
 │  │ PVC: /workspace  │     │ PVC: /workspace  │                  │
 │  └─────────────────┘     └─────────────────┘                  │
 └───────────────────────────────────────────────────────────────┘
@@ -44,9 +45,10 @@ Aviary is an enterprise platform where users can create, configure, deploy, and 
 
 ## Key Features
 
-- **Per-Session Pod Isolation** — Each chat session runs in its own K8s Pod with a persistent workspace (PVC)
+- **Agent-per-Pod with Multi-Session** — Each agent gets a long-running Deployment (1-N replicas) serving multiple sessions concurrently, auto-scaled based on session load
+- **Bubblewrap Session Isolation** — Each session runs inside a bwrap mount namespace; other sessions' files are invisible at the kernel level
 - **Namespace-per-Agent** — NetworkPolicy, ResourceQuota, and ServiceAccount scoped per agent
-- **claude-agent-sdk Powered** — Full [Claude Code](https://docs.anthropic.com/en/docs/claude-code) harness including tools, sub-agents, MCP servers, file I/O, and shell execution
+- **claude-agent-sdk Powered** — Full [Claude Code](https://docs.anthropic.com/en/docs/claude-code) harness via `ClaudeSDKClient` including tools, sub-agents, MCP servers, file I/O, and shell execution
 - **Inference Router** — Centralized LLM gateway; model name determines backend routing transparently
 - **Multi-Backend Inference** — Claude API, Ollama, vLLM, AWS Bedrock; new backends require no NetworkPolicy changes
 - **Live Config Updates** — Agent config (instruction, tools) is passed from DB on every message; edits take effect immediately without Pod restarts
@@ -87,8 +89,8 @@ aviary/
 │       ├── app/             # Pages (agents, sessions, login)
 │       ├── components/      # Chat, agent management, UI primitives
 │       └── lib/             # API client, auth, WebSocket
-├── runtime/                 # Agent Runtime (runs in session Pods)
-│   └── app/                 # claude-agent-sdk harness, history
+├── runtime/                 # Agent Runtime (runs in agent Pods)
+│   └── app/                 # claude-agent-sdk harness, session manager
 ├── inference-router/        # LLM Gateway (platform namespace)
 │   └── app/                 # Anthropic API proxy, backend routing
 ├── credential-proxy/        # Secret injection proxy (platform namespace)
@@ -204,8 +206,11 @@ Agent configuration (instruction, tools, policy) is passed from the database to 
 ### ACL Resolution
 Permission resolution follows 7 steps: platform admin → agent owner → direct user ACL → team ACL → public visibility → team visibility → deny. Roles form a hierarchy: `viewer` < `user` < `admin` < `owner`.
 
-### Session Pod Lifecycle
-Pods are created on first message and reuse existing PVCs for workspace persistence. On restart, stale Pod references are detected and cleaned up automatically — the application self-heals without external intervention.
+### Agent Pod Strategy
+Each agent gets a long-running Deployment with configurable spawn strategy: `lazy` (default, created on first message), `eager` (created with agent), or `manual` (admin-activated). Multiple sessions share the same Pod(s), isolated by workspace directory and bubblewrap sandbox. Idle agents (7 days) are scaled to 0, not deleted — re-activated on next message. Auto-scaling adjusts replicas based on session count per Pod.
+
+### Session Isolation (bubblewrap)
+The `claude` CLI binary in PATH is a wrapper script that runs the real binary inside a bubblewrap mount namespace. Each session sees only its own workspace directory (`/workspace/sessions/{session_id}/`); other sessions' files don't exist in the mount namespace. CLI session data is persisted to PVC at `<workspace>/.claude/` via bind-mount, enabling conversation resume across Pod restarts.
 
 ## Docker Compose Services
 

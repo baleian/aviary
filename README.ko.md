@@ -4,7 +4,7 @@
 
 [English](./README.md)
 
-Aviary는 웹 UI를 통해 AI 에이전트를 생성, 설정, 배포, 사용할 수 있는 엔터프라이즈 플랫폼입니다. 각 에이전트는 격리된 Kubernetes 네임스페이스에서 실행되며, 각 사용자 세션은 전용 Pod에서 구동되어 커널 수준의 격리를 제공합니다.
+Aviary는 웹 UI를 통해 AI 에이전트를 생성, 설정, 배포, 사용할 수 있는 엔터프라이즈 플랫폼입니다. 각 에이전트는 격리된 Kubernetes 네임스페이스에서 장기 실행 Pod으로 구동되며, 여러 세션이 동일 Pod을 공유하면서 bubblewrap 샌드박싱으로 커널 수준의 격리를 제공합니다.
 
 ## 아키텍처
 
@@ -34,9 +34,10 @@ Aviary는 웹 UI를 통해 AI 에이전트를 생성, 설정, 배포, 사용할 
 │                                                                │
 │  NS: agent-{id}           NS: agent-{id}                      │
 │  ┌─────────────────┐     ┌─────────────────┐                  │
-│  │ 세션 Pod          │     │ 세션 Pod          │                  │
+│  │ Agent Pod (1-N)  │     │ Agent Pod (1-N)  │                  │
 │  │ claude-agent-sdk │     │ claude-agent-sdk │                  │
 │  │ + Claude Code CLI│     │ + Claude Code CLI│                  │
+│  │ + bwrap 샌드박스  │     │ + bwrap 샌드박스  │                  │
 │  │ PVC: /workspace  │     │ PVC: /workspace  │                  │
 │  └─────────────────┘     └─────────────────┘                  │
 └───────────────────────────────────────────────────────────────┘
@@ -44,9 +45,10 @@ Aviary는 웹 UI를 통해 AI 에이전트를 생성, 설정, 배포, 사용할 
 
 ## 주요 기능
 
-- **세션별 Pod 격리** — 각 채팅 세션이 전용 K8s Pod에서 실행되며 영속 워크스페이스(PVC) 보유
+- **에이전트별 Pod (멀티 세션)** — 각 에이전트가 장기 실행 Deployment(1-N 레플리카)로 여러 세션을 동시 처리, 세션 부하 기반 자동 스케일링
+- **bubblewrap 세션 격리** — 각 세션이 bwrap 마운트 네임스페이스 내에서 실행되어 다른 세션의 파일이 커널 수준에서 비가시
 - **에이전트별 네임스페이스** — NetworkPolicy, ResourceQuota, ServiceAccount가 에이전트 단위로 격리
-- **claude-agent-sdk 기반** — [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 하네스의 전체 기능: 도구, 서브 에이전트, MCP 서버, 파일 I/O, 셸 실행
+- **claude-agent-sdk 기반** — `ClaudeSDKClient`를 통한 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 하네스의 전체 기능: 도구, 서브 에이전트, MCP 서버, 파일 I/O, 셸 실행
 - **Inference Router** — 중앙 집중식 LLM 게이트웨이; 모델명으로 백엔드가 투명하게 라우팅
 - **멀티 백엔드 추론** — Claude API, Ollama, vLLM, AWS Bedrock; 새 백엔드 추가 시 NetworkPolicy 변경 불필요
 - **실시간 설정 반영** — 에이전트 설정(instruction, tools)이 매 메시지마다 DB에서 전달되어 Pod 재시작 없이 즉시 적용
@@ -87,8 +89,8 @@ aviary/
 │       ├── app/             # 페이지 (agents, sessions, login)
 │       ├── components/      # 채팅, 에이전트 관리, UI 기본 요소
 │       └── lib/             # API 클라이언트, 인증, WebSocket
-├── runtime/                 # 에이전트 런타임 (세션 Pod 내부에서 실행)
-│   └── app/                 # claude-agent-sdk 하네스, 히스토리
+├── runtime/                 # 에이전트 런타임 (에이전트 Pod 내부에서 실행)
+│   └── app/                 # claude-agent-sdk 하네스, 세션 매니저
 ├── inference-router/        # LLM 게이트웨이 (platform 네임스페이스)
 │   └── app/                 # Anthropic API 프록시, 백엔드 라우팅
 ├── credential-proxy/        # 시크릿 주입 프록시 (platform 네임스페이스)
@@ -204,8 +206,11 @@ docker compose exec api pytest tests/ -v
 ### ACL 해석
 권한은 7단계로 해석됩니다: 플랫폼 관리자 → 에이전트 소유자 → 직접 사용자 ACL → 팀 ACL → 공개 가시성 → 팀 가시성 → 거부. 역할 계층: `viewer` < `user` < `admin` < `owner`.
 
-### 세션 Pod 생명주기
-Pod는 첫 메시지 시 생성되며 기존 PVC를 재사용하여 워크스페이스를 보존합니다. 재시작 시 stale Pod 참조를 자동 감지하고 정리하여, 외부 개입 없이 자가 복구합니다.
+### 에이전트 Pod 전략
+각 에이전트는 장기 실행 Deployment로 구동되며, 스폰 전략을 설정할 수 있습니다: `lazy` (기본값, 첫 메시지 시 생성), `eager` (에이전트 생성 시), `manual` (관리자가 활성화). 여러 세션이 동일 Pod을 공유하며 워크스페이스 디렉토리와 bubblewrap 샌드박스로 격리됩니다. 유휴 에이전트(7일)는 삭제되지 않고 0으로 스케일 다운되며, 다음 메시지에서 재활성화됩니다. 자동 스케일링이 Pod당 세션 수에 따라 레플리카를 조정합니다.
+
+### 세션 격리 (bubblewrap)
+PATH의 `claude` CLI 바이너리는 실제 바이너리를 bubblewrap 마운트 네임스페이스 내에서 실행하는 래퍼 스크립트입니다. 각 세션은 자신의 워크스페이스 디렉토리(`/workspace/sessions/{session_id}/`)만 볼 수 있으며, 다른 세션의 파일은 마운트 네임스페이스에 존재하지 않습니다. CLI 세션 데이터는 bind-mount를 통해 PVC의 `<workspace>/.claude/`에 저장되어 Pod 재시작 후에도 대화를 재개할 수 있습니다.
 
 ## Docker Compose 서비스
 
