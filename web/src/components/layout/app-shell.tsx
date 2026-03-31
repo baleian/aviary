@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@/components/providers/auth-provider";
+import { useAgentStatus, useSetAgentIds } from "@/components/providers/agent-status-provider";
 import { useSessionStatus, useSetSessionIds } from "@/components/providers/session-status-provider";
 import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/api";
@@ -70,6 +71,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       .map((s) => s.id);
     setSessionIds(allSessionIds);
   }, [sidebarData, setSessionIds]);
+
+  // Feed agent IDs to the agent status provider for polling
+  const setAgentIds = useSetAgentIds();
+  useEffect(() => {
+    const allAgentIds = sidebarData
+      .filter((d) => d.sessions.length > 0)
+      .map((d) => d.agent.id);
+    setAgentIds(allAgentIds);
+  }, [sidebarData, setAgentIds]);
 
   const isActive = (href: string) => pathname === href;
   const isSessionActive = (sessionId: string) =>
@@ -209,17 +219,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     .map(({ agent, sessions }) => (
                       <div key={agent.id}>
                         {/* Agent group header */}
-                        <Link
-                          href={`/agents/${agent.id}`}
-                          className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-                            isAgentActive(agent.id)
-                              ? "text-foreground"
-                              : "text-muted-foreground hover:text-foreground"
-                          }`}
-                        >
-                          <span className="text-sm">{agent.icon || "🤖"}</span>
-                          <span className="truncate">{agent.name}</span>
-                        </Link>
+                        <SidebarAgentHeader
+                          agent={agent}
+                          isActive={isAgentActive(agent.id)}
+                        />
 
                         {/* Session list */}
                         <div className="ml-5 space-y-0.5 border-l border-border/30 pl-3">
@@ -293,11 +296,35 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-const STATUS_DOT_STYLES: Record<string, string> = {
-  streaming: "bg-primary animate-pulse-soft",
-  idle: "bg-success",
-  offline: "bg-muted-foreground/50",
-};
+function SidebarAgentHeader({
+  agent,
+  isActive,
+}: {
+  agent: Agent;
+  isActive: boolean;
+}) {
+  const readiness = useAgentStatus(agent.id);
+
+  return (
+    <Link
+      href={`/agents/${agent.id}`}
+      className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+        isActive
+          ? "text-foreground"
+          : "text-muted-foreground hover:text-foreground"
+      }`}
+    >
+      <span className="text-sm">{agent.icon || "🤖"}</span>
+      <span className="truncate flex-1">{agent.name}</span>
+      <span
+        className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+          readiness === "ready" ? "bg-success" : "bg-muted-foreground/50"
+        }`}
+        title={readiness === "ready" ? "Agent ready" : "Agent offline"}
+      />
+    </Link>
+  );
+}
 
 function SidebarSessionItem({
   session,
@@ -307,7 +334,6 @@ function SidebarSessionItem({
   isActive: boolean;
 }) {
   const { status, unread } = useSessionStatus(session.id);
-  const dotClass = STATUS_DOT_STYLES[status] || STATUS_DOT_STYLES.offline;
 
   return (
     <Link
@@ -318,11 +344,31 @@ function SidebarSessionItem({
           : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
       }`}
     >
-      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} />
       <span className="truncate flex-1">
         {session.title || "Untitled"}
       </span>
-      {unread > 0 && !isActive && (
+      {status === "streaming" && (
+        <svg
+          className="h-3.5 w-3.5 shrink-0 animate-spin text-primary"
+          viewBox="0 0 24 24"
+          fill="none"
+        >
+          <circle
+            className="opacity-25"
+            cx="12"
+            cy="12"
+            r="10"
+            stroke="currentColor"
+            strokeWidth="3"
+          />
+          <path
+            className="opacity-75"
+            fill="currentColor"
+            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+          />
+        </svg>
+      )}
+      {unread > 0 && !isActive && status !== "streaming" && (
         <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[9px] font-semibold text-primary-foreground">
           {unread > 99 ? "99+" : unread}
         </span>

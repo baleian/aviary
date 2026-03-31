@@ -41,6 +41,64 @@ async def create_agent(
     return AgentResponse.from_orm_agent(agent)
 
 
+@router.get("/status")
+async def get_agents_status(
+    ids: str = Query(..., description="Comma-separated agent IDs"),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Batch check agent readiness (has ready pods) for sidebar display.
+
+    Results are cached in Redis (10s TTL) per agent to avoid hitting the
+    K8s API on every poll from every connected user.
+    """
+    import asyncio
+    from app.services import deployment_service, redis_service
+
+    agent_ids = [s.strip() for s in ids.split(",") if s.strip()]
+    if not agent_ids:
+        return {"statuses": {}}
+
+    rc = redis_service.get_client()
+    cache_ttl = 10
+
+    async def check_one(aid: str) -> tuple[str, str]:
+        cache_key = f"agent_readiness:{aid}"
+
+        # Try cache first
+        if rc:
+            try:
+                cached = await rc.get(cache_key)
+                if cached is not None:
+                    return aid, cached
+            except Exception:
+                pass
+
+        # Cache miss — query K8s
+        try:
+            agent = await agent_service.get_agent(db, uuid.UUID(aid))
+            if not agent or not agent.deployment_active:
+                result = "offline"
+            else:
+                status_info = await deployment_service.get_deployment_status(agent)
+                ready = status_info.get("ready_replicas", 0)
+                result = "ready" if ready and ready >= 1 else "offline"
+        except Exception:
+            result = "offline"
+
+        # Write cache
+        if rc:
+            try:
+                await rc.set(cache_key, result, ex=cache_ttl)
+            except Exception:
+                pass
+
+        return aid, result
+
+    results = await asyncio.gather(*[check_one(aid) for aid in agent_ids])
+    return {"statuses": dict(results)}
+
+
 @router.get("/{agent_id}", response_model=AgentResponse)
 async def get_agent(
     agent_id: uuid.UUID,

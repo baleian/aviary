@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/providers/auth-provider";
+import { AgentStatusProvider } from "@/components/providers/agent-status-provider";
 import { SessionStatusProvider } from "@/components/providers/session-status-provider";
 import { AppShell } from "@/components/layout/app-shell";
 
@@ -35,8 +36,10 @@ export default function AuthenticatedLayout({
   }
 
   return (
-    <SessionStatusProvider>
-      <AppShell>{children}</AppShell>
-    </SessionStatusProvider>
+    <AgentStatusProvider>
+      <SessionStatusProvider>
+        <AppShell>{children}</AppShell>
+      </SessionStatusProvider>
+    </AgentStatusProvider>
   );
 }
