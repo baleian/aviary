@@ -49,6 +49,18 @@ export interface McpServer {
   args: string[];
 }
 
+export interface EgressPort {
+  port: number;
+  protocol: "TCP" | "UDP";
+}
+
+export interface EgressRule {
+  name: string;
+  cidr?: string;
+  domain?: string;
+  ports: EgressPort[];
+}
+
 export interface AgentPolicy {
   maxConcurrentSessions: number;
   sessionTimeout: number;
@@ -56,6 +68,7 @@ export interface AgentPolicy {
   maxMemoryPerSession: string;
   maxCpuPerSession: string;
   allowedDomains: string[];
+  allowedEgress: EgressRule[];
   allowShellExec: boolean;
   allowFileWrite: boolean;
   containerImage: string;
