@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/components/providers/auth-provider";
 import { MessageBubble } from "@/components/chat/message-bubble";
+import { MarkdownContent } from "@/components/chat/markdown-content";
 import { ChatInput } from "@/components/chat/chat-input";
 import { apiFetch } from "@/lib/api";
 import {
@@ -256,8 +257,8 @@ export default function ChatPage() {
                 <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-secondary text-xs font-semibold text-muted-foreground">AI</div>
                 <div className="max-w-[75%]">
                   <div className="rounded-2xl rounded-tl-md bg-chat-agent px-4 py-3 text-[14px] leading-[1.7] text-chat-agent-fg">
-                    <div className="whitespace-pre-wrap break-words">
-                      {streamingContent}
+                    <div className="markdown-body break-words">
+                      <MarkdownContent content={streamingContent} />
                       <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse-soft bg-primary" />
                     </div>
                   </div>
