@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { apiFetch } from "@/lib/api";
 import type { EgressRule } from "@/types";
 
 interface AgentFormData {
@@ -40,7 +41,7 @@ const defaultData: AgentFormData = {
   instruction: "",
   model_config: {
     backend: "claude",
-    model: "claude-sonnet-4-20250514",
+    model: "default",
     temperature: 0.7,
     maxTokens: 8192,
   },
@@ -52,15 +53,33 @@ const defaultData: AgentFormData = {
   },
 };
 
-const claudeModels = [
-  "claude-sonnet-4-20250514",
-  "claude-opus-4-20250514",
-];
+interface ModelOption {
+  id: string;
+  name: string;
+}
 
 export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps) {
   const [data, setData] = useState<AgentFormData>({ ...defaultData, ...initialData });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [models, setModels] = useState<ModelOption[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+
+  const fetchModels = useCallback(async (backend: string) => {
+    setModelsLoading(true);
+    try {
+      const res = await apiFetch<{ models: ModelOption[]; error?: string }>(`/inference/${backend}/models`);
+      setModels(res.models);
+    } catch {
+      setModels([]);
+    } finally {
+      setModelsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchModels(data.model_config.backend);
+  }, [data.model_config.backend, fetchModels]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -217,7 +236,10 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
               <Select
                 id="backend"
                 value={data.model_config.backend}
-                onChange={(e) => updateModelConfig("backend", e.target.value)}
+                onChange={(e) => {
+                  updateModelConfig("backend", e.target.value);
+                  updateModelConfig("model", "default");
+                }}
               >
                 <option value="claude">Claude API</option>
                 <option value="ollama">Ollama (Local)</option>
@@ -226,24 +248,17 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
             </div>
             <div className="space-y-2">
               <Label htmlFor="model">Model</Label>
-              {data.model_config.backend === "claude" ? (
-                <Select
-                  id="model"
-                  value={data.model_config.model}
-                  onChange={(e) => updateModelConfig("model", e.target.value)}
-                >
-                  {claudeModels.map((m) => (
-                    <option key={m} value={m}>{m}</option>
-                  ))}
-                </Select>
-              ) : (
-                <Input
-                  id="model"
-                  value={data.model_config.model}
-                  onChange={(e) => updateModelConfig("model", e.target.value)}
-                  placeholder={data.model_config.backend === "ollama" ? "llama3.3:70b" : "meta-llama/Llama-3.3-70B-Instruct"}
-                />
-              )}
+              <Select
+                id="model"
+                value={data.model_config.model}
+                onChange={(e) => updateModelConfig("model", e.target.value)}
+                disabled={modelsLoading}
+              >
+                <option value="default">Default</option>
+                {models.map((m) => (
+                  <option key={m.id} value={m.id}>{m.name}</option>
+                ))}
+              </Select>
             </div>
             <div className="space-y-2">
               <Label htmlFor="temperature">Temperature</Label>
