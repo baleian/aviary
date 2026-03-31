@@ -23,7 +23,7 @@ export function MessageBubble({ message, currentUserId }: MessageBubbleProps) {
         className={cn(
           "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xs font-semibold",
           isUser
-            ? "bg-primary/15 text-primary"
+            ? "bg-chat-user/20 text-chat-user-fg"
             : "bg-secondary text-muted-foreground"
         )}
       >
@@ -36,7 +36,7 @@ export function MessageBubble({ message, currentUserId }: MessageBubbleProps) {
           className={cn(
             "rounded-2xl px-4 py-3 text-[14px] leading-[1.7]",
             isUser
-              ? "bg-primary text-primary-foreground rounded-tr-md"
+              ? "bg-chat-user text-chat-user-fg rounded-tr-md"
               : "bg-chat-agent text-chat-agent-fg rounded-tl-md"
           )}
         >
