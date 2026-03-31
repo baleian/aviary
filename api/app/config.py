@@ -42,10 +42,9 @@ class Settings(BaseSettings):
     sessions_per_pod_scale_up: int = 5  # scale up when sessions/pod exceeds this
     sessions_per_pod_scale_down: int = 2  # scale down when sessions/pod below this
 
-    # Inference
-    anthropic_api_key: str | None = None
-    inference_ollama_url: str = "http://localhost:11434"
-    inference_vllm_url: str = "http://localhost:8001"
+    # Platform services
+    inference_router_url: str = "http://inference-router:8080"
+    credential_proxy_url: str = "http://credential-proxy:8080"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

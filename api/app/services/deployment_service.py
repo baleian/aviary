@@ -18,8 +18,9 @@ from app.services import k8s_service
 
 logger = logging.getLogger(__name__)
 
-# Platform service URLs (K8s internal DNS)
-_CREDENTIAL_PROXY_URL = "http://credential-proxy.platform.svc:8080"
+# Platform service URLs
+# Credential proxy and inference router run outside K8s (docker compose),
+# reachable from pods via host gateway. Egress proxy stays in K8s.
 _EGRESS_PROXY_URL = "http://egress-proxy.platform.svc:8080"
 _NO_PROXY = (
     "credential-proxy.platform.svc,"
@@ -33,11 +34,11 @@ _NODE_OPTIONS = "--require /app/scripts/proxy-bootstrap.js"
 
 @lru_cache(maxsize=1)
 def _get_host_gateway_ip() -> str:
-    """Get the Docker/K3s host gateway IP for Pod -> host communication."""
-    gateway = os.environ.get("HOST_GATEWAY_IP")
-    if gateway:
-        return gateway
-    return "172.17.0.1"
+    """Get the Docker/K8s host gateway IP for Pod -> host communication."""
+    gateway = os.environ.get("K8S_GATEWAY_IP")
+    if not gateway:
+        raise RuntimeError("K8S_GATEWAY_IP environment variable is required")
+    return gateway
 
 
 def _service_proxy_path(namespace: str) -> str:
@@ -77,7 +78,7 @@ async def ensure_agent_deployment(db: AsyncSession, agent: Agent) -> str:
             # Deployment gone but DB says active — recreate
             logger.warning("Deployment not found for agent %s despite deployment_active=True, recreating", agent.id)
 
-    # Ensure namespace exists (may have been lost on K3s reset)
+    # Ensure namespace exists (may have been lost on K8s reset)
     await _ensure_namespace(namespace, agent)
 
     # Create resources (idempotent — 409 Conflict is handled gracefully)
@@ -96,7 +97,7 @@ async def ensure_agent_deployment(db: AsyncSession, agent: Agent) -> str:
 async def _ensure_namespace(namespace: str, agent: Agent) -> None:
     """Ensure the agent namespace and its base resources exist.
 
-    After a K3s reset, the namespace may be gone while the DB still references it.
+    After a K8s reset, the namespace may be gone while the DB still references it.
     Re-provisions Namespace + NetworkPolicy + ResourceQuota + ServiceAccount.
     Uses POST which returns 409 if already exists (handled by _k8s_apply).
     """
@@ -183,7 +184,7 @@ async def _create_agent_deployment(namespace: str, agent: Agent) -> None:
                         "hostAliases": [
                             {
                                 "ip": _get_host_gateway_ip(),
-                                "hostnames": ["host.k3s.internal"],
+                                "hostnames": ["host.k8s.internal"],
                             }
                         ],
                         "containers": [
@@ -195,9 +196,8 @@ async def _create_agent_deployment(namespace: str, agent: Agent) -> None:
                                 "env": [
                                     {"name": "AGENT_ID", "value": str(agent.id)},
                                     {"name": "MAX_CONCURRENT_SESSIONS", "value": str(max_sessions_per_pod)},
-                                    {"name": "CREDENTIAL_PROXY_URL", "value": _CREDENTIAL_PROXY_URL},
-                                    {"name": "INFERENCE_OLLAMA_URL", "value": settings.inference_ollama_url},
-                                    {"name": "INFERENCE_VLLM_URL", "value": settings.inference_vllm_url},
+                                    {"name": "CREDENTIAL_PROXY_URL", "value": "http://credential-proxy.platform.svc:8080"},
+                                    {"name": "INFERENCE_ROUTER_URL", "value": "http://inference-router.platform.svc:8080"},
                                     {"name": "HOME", "value": "/tmp"},
                                     {"name": "HTTP_PROXY", "value": _EGRESS_PROXY_URL},
                                     {"name": "HTTPS_PROXY", "value": _EGRESS_PROXY_URL},
