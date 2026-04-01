@@ -99,10 +99,24 @@ async def save_message(
     session.last_message_at = datetime.now(timezone.utc)
 
     if session.title is None and sender_type == "user":
-        session.title = content[:100]
+        title = content.strip().split("\n")[0]
+        if len(title) > 60:
+            title = title[:57] + "..."
+        session.title = title
 
     await db.flush()
     return msg
+
+
+async def update_session_title(
+    db: AsyncSession, session_id: uuid.UUID, title: str
+) -> Session:
+    """Update session title."""
+    result = await db.execute(select(Session).where(Session.id == session_id))
+    session = result.scalar_one()
+    session.title = title
+    await db.flush()
+    return session
 
 
 async def invite_user_to_session(

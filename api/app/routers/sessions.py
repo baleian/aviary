@@ -18,6 +18,7 @@ from app.schemas.session import (
     SessionDetailResponse,
     SessionListResponse,
     SessionResponse,
+    SessionTitleUpdate,
 )
 from app.services import acl_service, controller_client, redis_service, session_service, stream_manager
 
@@ -117,6 +118,24 @@ async def archive_session(
         raise HTTPException(status_code=403, detail="Only session creator can archive")
     session.status = "archived"
     return None
+
+
+@router.patch("/sessions/{session_id}/title", response_model=SessionResponse)
+async def update_session_title(
+    session_id: uuid.UUID,
+    body: SessionTitleUpdate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    session = await session_service.get_session(db, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.created_by != user.id and not user.is_platform_admin:
+        is_participant = await session_service.is_session_participant(db, session_id, user.id)
+        if not is_participant:
+            raise HTTPException(status_code=403, detail="Not a participant of this session")
+    session = await session_service.update_session_title(db, session_id, body.title)
+    return SessionResponse.from_orm_session(session)
 
 
 @router.post("/sessions/{session_id}/invite", status_code=status.HTTP_201_CREATED)

@@ -71,5 +71,9 @@ class SessionDetailResponse(BaseModel):
     messages: list[MessageResponse]
 
 
+class SessionTitleUpdate(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+
+
 class InviteRequest(BaseModel):
     email: str

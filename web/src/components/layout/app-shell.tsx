@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@/components/providers/auth-provider";
@@ -13,6 +13,18 @@ import type { Agent, Session } from "@/types";
 interface SidebarAgent {
   agent: Agent;
   sessions: Session[];
+}
+
+interface SidebarContextValue {
+  updateSessionTitle: (sessionId: string, title: string) => void;
+}
+
+const SidebarContext = createContext<SidebarContextValue>({
+  updateSessionTitle: () => {},
+});
+
+export function useSidebar() {
+  return useContext(SidebarContext);
 }
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -81,6 +93,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setAgentIds(allAgentIds);
   }, [sidebarData, setAgentIds]);
 
+  const updateSessionTitle = useCallback((sessionId: string, title: string) => {
+    setSidebarData((prev) =>
+      prev.map((d) => ({
+        ...d,
+        sessions: d.sessions.map((s) =>
+          s.id === sessionId ? { ...s, title } : s
+        ),
+      }))
+    );
+  }, []);
+
   const isActive = (href: string) => pathname === href;
   const isSessionActive = (sessionId: string) =>
     pathname === `/sessions/${sessionId}`;
@@ -93,7 +116,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <div className="flex h-screen overflow-hidden">
+    <SidebarContext.Provider value={{ updateSessionTitle }}>
+      <div className="flex h-screen overflow-hidden">
       {/* Sidebar */}
       <aside
         className={`flex shrink-0 flex-col border-r border-border/40 bg-card transition-all duration-200 ${
@@ -290,9 +314,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      {/* Main content */}
-      <main className="flex-1 overflow-hidden">{children}</main>
-    </div>
+        {/* Main content */}
+        <main className="flex-1 overflow-hidden">{children}</main>
+      </div>
+    </SidebarContext.Provider>
   );
 }
 
