@@ -133,13 +133,14 @@ export default function ChatPage() {
             const partialBlocks = getBlocksMeta();
             const cancelMeta: Record<string, unknown> = partialBlocks.length > 0 ? { blocks: partialBlocks } : {};
             resetBlocks();
-            if (partialContent) {
+            if (partialContent || partialBlocks.length > 0) {
               const cancelledId = msg.messageId || crypto.randomUUID();
               setMessages((msgs) => {
                 if (msgs.some((m) => m.id === cancelledId)) return msgs;
                 return [...msgs, {
                   id: cancelledId, session_id: session.id, sender_type: "agent",
-                  content: partialContent, metadata: cancelMeta, created_at: new Date().toISOString(),
+                  content: partialContent,
+                  metadata: cancelMeta, created_at: new Date().toISOString(),
                 }];
               });
             }
