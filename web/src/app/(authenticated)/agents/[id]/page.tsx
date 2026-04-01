@@ -83,15 +83,27 @@ export default function AgentDetailPage() {
             <Link href={`/agents/${agent.id}/settings`}>
               <Button variant="ghost" size="sm">Settings</Button>
             </Link>
-            <Button variant="destructive" size="sm" onClick={handleDelete}>
-              Delete
-            </Button>
+            {agent.status !== "deleted" && (
+              <Button variant="destructive" size="sm" onClick={handleDelete}>
+                Delete
+              </Button>
+            )}
           </div>
         </div>
 
+        {/* Deleted banner */}
+        {agent.status === "deleted" && (
+          <div className="mb-6 flex items-center gap-2.5 rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-destructive">
+              <circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" />
+            </svg>
+            <span className="text-sm text-destructive">This agent has been deleted. Existing sessions remain active, but no new sessions can be created.</span>
+          </div>
+        )}
+
         {/* Agent header */}
         <div className="mb-8 flex items-start gap-4">
-          <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-primary/10 text-2xl">
+          <div className={`flex h-14 w-14 items-center justify-center rounded-xl text-2xl ${agent.status === "deleted" ? "bg-secondary" : "bg-primary/10"}`}>
             {agent.icon || "🤖"}
           </div>
           <div className="flex-1">
@@ -190,7 +202,7 @@ export default function AgentDetailPage() {
 
         {/* Quick actions */}
         <div className="mt-8 flex gap-3">
-          <Button size="lg" className="flex-1" onClick={handleNewSession}>
+          <Button size="lg" className="flex-1" onClick={handleNewSession} disabled={agent.status === "deleted"}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
             </svg>
