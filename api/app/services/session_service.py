@@ -5,12 +5,12 @@ import uuid
 
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db.models import Agent, Message, Session, SessionParticipant, User
-from app.services import controller_client
+from app.services import controller_client, redis_service
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +146,57 @@ async def is_session_participant(
         )
     )
     return result.scalar_one_or_none() is not None
+
+
+async def count_active_sessions(db: AsyncSession, agent_id: uuid.UUID) -> int:
+    """Count active (non-archived) sessions for an agent."""
+    result = await db.execute(
+        select(func.count())
+        .select_from(Session)
+        .where(Session.agent_id == agent_id, Session.status == "active")
+    )
+    return result.scalar() or 0
+
+
+async def delete_session(db: AsyncSession, session: Session) -> None:
+    """Full session deletion: cancel stream, clean Redis, hard-delete from DB,
+    and conditionally tear down agent K8s resources if this was the last session
+    of a soft-deleted agent."""
+    from app.services import agent_service, stream_manager
+
+    session_id_str = str(session.id)
+    agent_id = session.agent_id
+
+    # 1. Cancel any active stream for this session
+    if stream_manager.is_streaming(session_id_str):
+        result = await db.execute(select(Agent).where(Agent.id == agent_id))
+        agent = result.scalar_one_or_none()
+        namespace = agent.namespace if agent else None
+        await stream_manager.cancel_stream(session_id_str, namespace)
+
+    # 2. Clean up all Redis keys for this session
+    await redis_service.delete_all_session_keys(session_id_str)
+
+    # 3. Hard-delete session from DB (CASCADE removes messages + participants)
+    await db.delete(session)
+    await db.flush()
+
+    # 4. PVC session workspace cleanup
+    # Session workspace lives at /workspace/sessions/{session_id}/ on the shared
+    # agent PVC (agent-workspace). Cleaning individual session directories requires
+    # exec-ing into a running pod or a dedicated K8s Job.
+    # For now, orphaned directories remain on the PVC and are cleaned up when the
+    # PVC is deleted (agent K8s teardown).
+    # TODO: Add controller endpoint POST /v1/deployments/{ns}/cleanup-session/{session_id}
+    #       that execs `rm -rf /workspace/sessions/{session_id}` in a running pod.
+
+    # 5. If owning agent is soft-deleted and this was the last session, clean up K8s
+    result = await db.execute(select(Agent).where(Agent.id == agent_id))
+    agent = result.scalar_one_or_none()
+    if agent and agent.status == "deleted":
+        remaining = await count_active_sessions(db, agent_id)
+        if remaining == 0:
+            await agent_service.cleanup_agent_k8s_resources(db, agent)
 
 
 async def ensure_agent_ready(db: AsyncSession, agent: Agent) -> str:

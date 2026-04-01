@@ -106,7 +106,7 @@ async def get_session(
 
 
 @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def archive_session(
+async def delete_session(
     session_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -115,8 +115,8 @@ async def archive_session(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     if session.created_by != user.id and not user.is_platform_admin:
-        raise HTTPException(status_code=403, detail="Only session creator can archive")
-    session.status = "archived"
+        raise HTTPException(status_code=403, detail="Only session creator or admin can delete")
+    await session_service.delete_session(db, session)
     return None
 
 

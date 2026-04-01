@@ -267,6 +267,36 @@ async def deactivate_agent(db: AsyncSession, agent: Agent) -> None:
     await db.flush()
 
 
+async def cleanup_agent_k8s_resources(db: AsyncSession, agent: Agent) -> None:
+    """Destroy all K8s resources and Redis egress policy for an agent.
+
+    Called when a deleted agent has zero remaining sessions, or when an agent
+    with no sessions is deleted. Idempotent — safe to call multiple times.
+    """
+    agent_id_str = str(agent.id)
+
+    if agent.deployment_active and agent.namespace:
+        try:
+            await controller_client.delete_deployment(agent.namespace)
+        except Exception:
+            logger.warning("Deployment deletion failed for agent %s", agent.id, exc_info=True)
+
+    if agent.namespace:
+        try:
+            await controller_client.delete_namespace(agent_id_str)
+        except Exception:
+            logger.warning("K8s namespace deletion failed for agent %s", agent.id, exc_info=True)
+
+    try:
+        await redis_service.delete_egress_policy(agent_id_str)
+    except Exception:
+        logger.warning("Redis egress policy cleanup failed for agent %s", agent.id, exc_info=True)
+
+    agent.deployment_active = False
+    agent.namespace = None
+    await db.flush()
+
+
 async def delete_agent(db: AsyncSession, agent: Agent) -> None:
     """Soft-delete an agent and clean up K8s resources."""
     agent.status = "deleted"
