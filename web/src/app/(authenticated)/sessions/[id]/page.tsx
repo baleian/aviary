@@ -5,7 +5,9 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/components/providers/auth-provider";
 import { MessageBubble } from "@/components/chat/message-bubble";
-import { MarkdownContent } from "@/components/chat/markdown-content";
+import { StreamingResponse } from "@/components/chat/streaming-response";
+import { useStreamingBlocks } from "@/components/chat/use-streaming-blocks";
+import { TodoPanel } from "@/components/chat/todo-panel";
 import { ChatInput } from "@/components/chat/chat-input";
 import { apiFetch } from "@/lib/api";
 import {
@@ -45,21 +47,20 @@ export default function ChatPage() {
   const params = useParams();
   const [session, setSession] = useState<Session | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [streamingContent, setStreamingContent] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [loading, setLoading] = useState(true);
   const [connStatus, setConnStatus] = useState<ConnectionStatus>("connecting");
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const streamingRef = useRef("");
+  const { blocks, todos, handleMessage: handleStreamMsg, reset: resetBlocks, flattenText, getBlocksMeta, finalize } = useStreamingBlocks();
 
   const isReady = connStatus === "ready";
   const isInputDisabled = !isReady || isStreaming;
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, streamingContent]);
+  }, [messages, blocks]);
 
   useEffect(() => {
     if (!user) return;
@@ -89,23 +90,23 @@ export default function ChatPage() {
             setStatusMessage(msg.message || null);
             break;
           case "chunk":
-            streamingRef.current += msg.content;
-            setStreamingContent(streamingRef.current);
-            break;
           case "tool_use":
-            streamingRef.current += `\n[Tool: ${msg.name}]\n`;
-            setStreamingContent(streamingRef.current);
+          case "tool_result":
+          case "tool_progress":
+            handleStreamMsg(msg);
             break;
           case "done": {
-            const finalContent = streamingRef.current;
-            streamingRef.current = "";
-            setStreamingContent("");
+            finalize();
+            const finalContent = flattenText();
+            const savedBlocks = getBlocksMeta();
+            const metadata: Record<string, unknown> = savedBlocks.length > 0 ? { blocks: savedBlocks } : {};
+            resetBlocks();
             if (finalContent) {
               setMessages((msgs) => {
                 if (msgs.some((m) => m.id === msg.messageId)) return msgs;
                 return [...msgs, {
                   id: msg.messageId, session_id: session.id, sender_type: "agent",
-                  content: finalContent, metadata: {}, created_at: new Date().toISOString(),
+                  content: finalContent, metadata, created_at: new Date().toISOString(),
                 }];
               });
             }
@@ -113,8 +114,7 @@ export default function ChatPage() {
             break;
           }
           case "error":
-            streamingRef.current = "";
-            setStreamingContent("");
+            resetBlocks();
             setIsStreaming(false);
             setMessages((msgs) => [...msgs, {
               id: crypto.randomUUID(), session_id: session.id, sender_type: "agent",
@@ -122,25 +122,25 @@ export default function ChatPage() {
             }]);
             break;
           case "replay_start":
-            // Reconnected during active stream — replay buffered chunks
             setIsStreaming(true);
-            streamingRef.current = "";
-            setStreamingContent("");
+            resetBlocks();
             break;
           case "replay_end":
-            // Replay complete, now receiving live chunks via pub/sub
             break;
           case "cancelled": {
-            const partialContent = streamingRef.current;
-            streamingRef.current = "";
-            setStreamingContent("");
-            if (partialContent) {
+            finalize();
+            const partialContent = flattenText();
+            const partialBlocks = getBlocksMeta();
+            const cancelMeta: Record<string, unknown> = partialBlocks.length > 0 ? { blocks: partialBlocks } : {};
+            resetBlocks();
+            if (partialContent || partialBlocks.length > 0) {
               const cancelledId = msg.messageId || crypto.randomUUID();
               setMessages((msgs) => {
                 if (msgs.some((m) => m.id === cancelledId)) return msgs;
                 return [...msgs, {
                   id: cancelledId, session_id: session.id, sender_type: "agent",
-                  content: partialContent, metadata: {}, created_at: new Date().toISOString(),
+                  content: partialContent,
+                  metadata: cancelMeta, created_at: new Date().toISOString(),
                 }];
               });
             }
@@ -148,7 +148,6 @@ export default function ChatPage() {
             break;
           }
           case "stream_complete":
-            // Agent finished responding while we were on another page
             setMessages((msgs) => {
               if (msgs.some((m) => m.id === msg.messageId)) return msgs;
               return [...msgs, {
@@ -172,8 +171,7 @@ export default function ChatPage() {
   const handleSend = useCallback(
     (content: string) => {
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || !isReady) return;
-      streamingRef.current = "";
-      setStreamingContent("");
+      resetBlocks();
       setMessages((prev) => [...prev, {
         id: crypto.randomUUID(), session_id: session!.id, sender_type: "user",
         sender_id: user!.id, content, metadata: {}, created_at: new Date().toISOString(),
@@ -181,7 +179,7 @@ export default function ChatPage() {
       setIsStreaming(true);
       wsRef.current.send(JSON.stringify({ type: "message", content }));
     },
-    [session, user, isReady]
+    [session, user, isReady, resetBlocks]
   );
 
   const handleCancel = useCallback(() => {
@@ -274,31 +272,8 @@ export default function ChatPage() {
               <MessageBubble key={msg.id} message={msg} currentUserId={user?.id} />
             ))}
 
-            {streamingContent && (
-              <div className="flex gap-3 animate-fade-in">
-                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-secondary text-xs font-semibold text-muted-foreground">AI</div>
-                <div className="max-w-[75%]">
-                  <div className="rounded-2xl rounded-tl-md bg-chat-agent px-4 py-3 text-[14px] leading-[1.7] text-chat-agent-fg">
-                    <div className="markdown-body break-words">
-                      <MarkdownContent content={streamingContent} />
-                      <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse-soft bg-primary" />
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {isStreaming && !streamingContent && (
-              <div className="flex gap-3 animate-fade-in">
-                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-secondary text-xs font-semibold text-muted-foreground">AI</div>
-                <div className="rounded-2xl rounded-tl-md bg-chat-agent px-4 py-3">
-                  <div className="flex items-center gap-1.5">
-                    <span className="h-1.5 w-1.5 animate-pulse-soft rounded-full bg-muted-foreground/50" style={{ animationDelay: "0ms" }} />
-                    <span className="h-1.5 w-1.5 animate-pulse-soft rounded-full bg-muted-foreground/50" style={{ animationDelay: "200ms" }} />
-                    <span className="h-1.5 w-1.5 animate-pulse-soft rounded-full bg-muted-foreground/50" style={{ animationDelay: "400ms" }} />
-                  </div>
-                </div>
-              </div>
+            {(blocks.length > 0 || isStreaming) && (
+              <StreamingResponse blocks={blocks} isStreaming={isStreaming} />
             )}
           </div>
         </div>
@@ -306,7 +281,8 @@ export default function ChatPage() {
 
       {/* Input */}
       <div className="shrink-0 border-t border-border/30 px-6 py-4">
-        <div className="mx-auto max-w-4xl">
+        <div className="mx-auto max-w-4xl space-y-2">
+          {todos.length > 0 && <TodoPanel todos={todos} />}
           <ChatInput
             onSend={handleSend}
             onCancel={handleCancel}
