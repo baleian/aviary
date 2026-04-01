@@ -272,6 +272,18 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
         try:
             while True:
                 data = await websocket.receive_json()
+
+                if data.get("type") == "cancel":
+                    # Cancel active stream for this session
+                    agent_ns = None
+                    async with async_session_factory() as db:
+                        result = await db.execute(select(Agent).where(Agent.id == session.agent_id))
+                        ag = result.scalar_one_or_none()
+                        if ag:
+                            agent_ns = ag.namespace
+                    await stream_manager.cancel_stream(session_id_str, agent_ns)
+                    continue
+
                 if data.get("type") != "message":
                     continue
 

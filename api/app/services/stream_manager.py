@@ -74,6 +74,56 @@ def is_streaming(session_id: str) -> bool:
     return task is not None and not task.done()
 
 
+async def cancel_stream(session_id: str, namespace: str | None = None) -> bool:
+    """Cancel an active stream and abort the runtime Pod's SDK call.
+
+    Returns True if a stream was cancelled, False if none was active.
+    """
+    task = _active_streams.get(session_id)
+    if not task or task.done():
+        return False
+
+    # 1. Send abort request to the runtime Pod to trigger AbortController
+    if namespace:
+        try:
+            proxy_path = f"/api/v1/namespaces/{namespace}/services/agent-runtime-svc:3000/proxy/abort/{session_id}"
+            async with _get_k8s_client() as client:
+                await client.post(proxy_path, timeout=5)
+        except Exception:
+            logger.warning("Failed to send abort to runtime Pod for session %s", session_id)
+
+    # 2. Cancel the asyncio background task
+    task.cancel()
+
+    # 3. Save partial response and broadcast cancellation with messageId
+    message_id: str | None = None
+    try:
+        partial = await redis_service.get_stream_chunks(session_id)
+        partial_text = "".join(
+            chunk.get("content", "") for chunk in partial if chunk.get("type") == "chunk"
+        )
+        if partial_text:
+            async with async_session_factory() as db:
+                msg = await session_service.save_message(
+                    db, uuid.UUID(session_id), "agent", partial_text
+                )
+                await db.commit()
+                message_id = str(msg.id)
+    except Exception:
+        logger.warning("Failed to save partial response for cancelled session %s", session_id)
+
+    cancelled_event: dict = {"type": "cancelled"}
+    if message_id:
+        cancelled_event["messageId"] = message_id
+    await redis_service.publish_message(session_id, cancelled_event)
+
+    await redis_service.set_stream_status(session_id, "complete")
+    await redis_service.set_session_status(session_id, "idle")
+    await redis_service.clear_stream_buffer(session_id)
+
+    return True
+
+
 async def _run_stream(
     session_id: str,
     namespace: str,
