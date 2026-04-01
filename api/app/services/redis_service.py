@@ -323,6 +323,33 @@ async def sync_egress_policy(agent_id: str, policy: dict) -> None:
     await client.set(key, json.dumps(policy))
 
 
+async def delete_all_session_keys(session_id: str) -> None:
+    """Remove all Redis keys associated with a session (cleanup on deletion)."""
+    client = get_client()
+    if not client:
+        return
+    fixed_keys = [
+        f"session:{session_id}:pod",
+        f"session:{session_id}:online",
+        f"session:{session_id}:stream:chunks",
+        f"session:{session_id}:stream:status",
+        f"session:{session_id}:stream:result",
+        f"session:{session_id}:status",
+    ]
+    # Scan for per-user unread keys (session:{id}:unread:{user_id})
+    unread_pattern = f"session:{session_id}:unread:*"
+    unread_keys: list[str] = []
+    cursor: int | str = 0
+    while True:
+        cursor, keys = await client.scan(cursor, match=unread_pattern, count=100)
+        unread_keys.extend(keys)
+        if cursor == 0:
+            break
+    all_keys = fixed_keys + unread_keys
+    if all_keys:
+        await client.delete(*all_keys)
+
+
 async def delete_egress_policy(agent_id: str) -> None:
     """Remove agent egress policy from Redis."""
     client = get_client()

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/components/providers/auth-provider";
@@ -9,6 +9,7 @@ import { StreamingResponse } from "@/components/chat/streaming-response";
 import { useStreamingBlocks } from "@/components/chat/use-streaming-blocks";
 import { TodoPanel } from "@/components/chat/todo-panel";
 import { ChatInput } from "@/components/chat/chat-input";
+import { useSidebar } from "@/components/layout/app-shell";
 import { apiFetch } from "@/lib/api";
 import {
   createSessionWebSocket,
@@ -45,6 +46,7 @@ const STATUS_STYLES: Record<ConnectionStatus, { dot: string; text: string }> = {
 export default function ChatPage() {
   const { user } = useAuth();
   const params = useParams();
+  const { updateSessionTitle: updateSidebarTitle } = useSidebar();
   const [session, setSession] = useState<Session | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
@@ -54,6 +56,10 @@ export default function ChatPage() {
   const wsRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const { blocks, todos, handleMessage: handleStreamMsg, reset: resetBlocks, flattenText, getBlocksMeta, finalize } = useStreamingBlocks();
+
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [editingTitle, setEditingTitle] = useState("");
+  const titleInputRef = useRef<HTMLInputElement>(null);
 
   const isReady = connStatus === "ready";
   const isInputDisabled = !isReady || isStreaming;
@@ -178,9 +184,50 @@ export default function ChatPage() {
       }]);
       setIsStreaming(true);
       wsRef.current.send(JSON.stringify({ type: "message", content }));
+
+      if (!session!.title) {
+        const firstLine = content.trim().split("\n")[0];
+        const autoTitle = firstLine.length > 60 ? firstLine.slice(0, 57) + "..." : firstLine;
+        setSession((prev) => prev ? { ...prev, title: autoTitle } : prev);
+        updateSidebarTitle(session!.id, autoTitle);
+      }
     },
-    [session, user, isReady, resetBlocks]
+    [session, user, isReady, resetBlocks, updateSidebarTitle]
   );
+
+  const handleTitleClick = useCallback(() => {
+    if (!session) return;
+    setEditingTitle(session.title || "");
+    setIsEditingTitle(true);
+    setTimeout(() => titleInputRef.current?.focus(), 0);
+  }, [session]);
+
+  const handleTitleSave = useCallback(async () => {
+    if (!session) return;
+    setIsEditingTitle(false);
+    const trimmed = editingTitle.trim();
+    if (!trimmed || trimmed === session.title) return;
+    setSession((prev) => prev ? { ...prev, title: trimmed } : prev);
+    updateSidebarTitle(session.id, trimmed);
+    try {
+      await apiFetch(`/sessions/${session.id}/title`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: trimmed }),
+      });
+    } catch {
+      setSession((prev) => prev ? { ...prev, title: session.title } : prev);
+      updateSidebarTitle(session.id, session.title || "");
+    }
+  }, [session, editingTitle, updateSidebarTitle]);
+
+  const handleTitleKeyDown = useCallback((e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.currentTarget.blur();
+    } else if (e.key === "Escape") {
+      setIsEditingTitle(false);
+    }
+  }, []);
 
   const handleCancel = useCallback(() => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
@@ -221,7 +268,38 @@ export default function ChatPage() {
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5"/><polyline points="12 19 5 12 12 5"/></svg>
             </Link>
-            <h1 className="text-sm font-semibold text-foreground">{session.title || "New Session"}</h1>
+            {isEditingTitle ? (
+              <input
+                ref={titleInputRef}
+                className="text-sm font-semibold text-foreground bg-transparent border-b border-primary outline-none w-[500px] max-w-[60vw]"
+                value={editingTitle}
+                onChange={(e) => setEditingTitle(e.target.value)}
+                onBlur={handleTitleSave}
+                onKeyDown={handleTitleKeyDown}
+                maxLength={200}
+              />
+            ) : (
+              <button
+                className="group flex items-center gap-1.5 text-sm font-semibold text-foreground hover:text-foreground/70 transition-colors"
+                onClick={handleTitleClick}
+              >
+                <span>{session.title || "New Session"}</span>
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="text-muted-foreground/40 group-hover:text-muted-foreground transition-colors"
+                >
+                  <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+                  <path d="m15 5 4 4" />
+                </svg>
+              </button>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <span className={`h-2 w-2 rounded-full ${statusStyle.dot}`} />

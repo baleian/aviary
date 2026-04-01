@@ -31,7 +31,9 @@ export default function AgentsPage() {
 
     apiFetch<AgentListResponse>(path)
       .then((data) => {
-        setAgents(data.items);
+        setAgents(data.items.filter((a) =>
+          a.status !== "deleted" || a.owner_id === user.id
+        ));
         setTotal(data.total);
       })
       .catch(() => {})
@@ -79,37 +81,67 @@ export default function AgentsPage() {
         </div>
 
         {/* Content */}
-        {loadingAgents ? (
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {[...Array(6)].map((_, i) => (
-              <div key={i} className="h-44 animate-shimmer rounded-xl" />
-            ))}
-          </div>
-        ) : agents.length === 0 ? (
-          <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border/60 py-20">
-            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-secondary text-muted-foreground">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="3" width="18" height="18" rx="2" />
-                <line x1="12" y1="8" x2="12" y2="16" />
-                <line x1="8" y1="12" x2="16" y2="12" />
-              </svg>
-            </div>
-            <p className="mt-4 text-sm text-muted-foreground">
-              {search ? "No agents match your search" : "No agents yet"}
-            </p>
-            {!search && (
-              <Link href="/agents/new" className="mt-3">
-                <Button variant="outline" size="sm">Create your first agent</Button>
-              </Link>
-            )}
-          </div>
-        ) : (
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {agents.map((agent) => (
-              <AgentCard key={agent.id} agent={agent} />
-            ))}
-          </div>
-        )}
+        {(() => {
+          const activeAgents = agents.filter((a) => a.status !== "deleted");
+          const deletedAgents = agents.filter((a) => a.status === "deleted");
+
+          if (loadingAgents) {
+            return (
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                {[...Array(6)].map((_, i) => (
+                  <div key={i} className="h-44 animate-shimmer rounded-xl" />
+                ))}
+              </div>
+            );
+          }
+
+          if (agents.length === 0) {
+            return (
+              <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border/60 py-20">
+                <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-secondary text-muted-foreground">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="3" width="18" height="18" rx="2" />
+                    <line x1="12" y1="8" x2="12" y2="16" />
+                    <line x1="8" y1="12" x2="16" y2="12" />
+                  </svg>
+                </div>
+                <p className="mt-4 text-sm text-muted-foreground">
+                  {search ? "No agents match your search" : "No agents yet"}
+                </p>
+                {!search && (
+                  <Link href="/agents/new" className="mt-3">
+                    <Button variant="outline" size="sm">Create your first agent</Button>
+                  </Link>
+                )}
+              </div>
+            );
+          }
+
+          return (
+            <>
+              {activeAgents.length > 0 && (
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                  {activeAgents.map((agent) => (
+                    <AgentCard key={agent.id} agent={agent} />
+                  ))}
+                </div>
+              )}
+
+              {deletedAgents.length > 0 && (
+                <div className={activeAgents.length > 0 ? "mt-10" : ""}>
+                  <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider text-muted-foreground/60">
+                    Archived
+                  </h2>
+                  <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                    {deletedAgents.map((agent) => (
+                      <AgentCard key={agent.id} agent={agent} deleted />
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          );
+        })()}
       </div>
     </div>
   );

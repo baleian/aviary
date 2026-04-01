@@ -1,3 +1,5 @@
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from httpx import AsyncClient
 
@@ -66,11 +68,16 @@ async def test_non_participant_cannot_access_session(admin_client: AsyncClient, 
 
 
 @pytest.mark.asyncio
-async def test_archive_session(admin_client: AsyncClient):
+async def test_delete_session(admin_client: AsyncClient):
     agent_id = await _create_public_agent(admin_client)
 
     session_resp = await admin_client.post(f"/api/agents/{agent_id}/sessions", json={"type": "private"})
     session_id = session_resp.json()["id"]
 
-    resp = await admin_client.delete(f"/api/sessions/{session_id}")
+    with patch("app.services.controller_client.cleanup_session_workspace", new_callable=AsyncMock):
+        resp = await admin_client.delete(f"/api/sessions/{session_id}")
     assert resp.status_code == 204
+
+    # Session should be fully deleted (not archived)
+    resp = await admin_client.get(f"/api/sessions/{session_id}")
+    assert resp.status_code == 404

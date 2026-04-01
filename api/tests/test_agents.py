@@ -96,7 +96,7 @@ async def test_delete_agent(admin_client: AsyncClient):
     resp = await admin_client.delete(f"/api/agents/{agent_id}")
     assert resp.status_code == 204
 
-    # Should not appear in list anymore
+    # Agent with no sessions is hard-deleted
     resp = await admin_client.get(f"/api/agents/{agent_id}")
     assert resp.status_code == 404
 

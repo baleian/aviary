@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/components/providers/auth-provider";
 import { useAgentStatus, useSetAgentIds } from "@/components/providers/agent-status-provider";
 import { useSessionStatus, useSetSessionIds } from "@/components/providers/session-status-provider";
@@ -13,6 +13,20 @@ import type { Agent, Session } from "@/types";
 interface SidebarAgent {
   agent: Agent;
   sessions: Session[];
+}
+
+interface SidebarContextValue {
+  updateSessionTitle: (sessionId: string, title: string) => void;
+  deleteSession: (sessionId: string) => Promise<void>;
+}
+
+const SidebarContext = createContext<SidebarContextValue>({
+  updateSessionTitle: () => {},
+  deleteSession: async () => {},
+});
+
+export function useSidebar() {
+  return useContext(SidebarContext);
 }
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -81,6 +95,27 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setAgentIds(allAgentIds);
   }, [sidebarData, setAgentIds]);
 
+  const updateSessionTitle = useCallback((sessionId: string, title: string) => {
+    setSidebarData((prev) =>
+      prev.map((d) => ({
+        ...d,
+        sessions: d.sessions.map((s) =>
+          s.id === sessionId ? { ...s, title } : s
+        ),
+      }))
+    );
+  }, []);
+
+  const deleteSession = useCallback(async (sessionId: string) => {
+    await apiFetch(`/sessions/${sessionId}`, { method: "DELETE" });
+    setSidebarData((prev) =>
+      prev.map((d) => ({
+        ...d,
+        sessions: d.sessions.filter((s) => s.id !== sessionId),
+      }))
+    );
+  }, []);
+
   const isActive = (href: string) => pathname === href;
   const isSessionActive = (sessionId: string) =>
     pathname === `/sessions/${sessionId}`;
@@ -93,7 +128,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <div className="flex h-screen overflow-hidden">
+    <SidebarContext.Provider value={{ updateSessionTitle, deleteSession }}>
+      <div className="flex h-screen overflow-hidden">
       {/* Sidebar */}
       <aside
         className={`flex shrink-0 flex-col border-r border-border/40 bg-card transition-all duration-200 ${
@@ -290,9 +326,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      {/* Main content */}
-      <main className="flex-1 overflow-hidden">{children}</main>
-    </div>
+        {/* Main content */}
+        <main className="flex-1 overflow-hidden">{children}</main>
+      </div>
+    </SidebarContext.Provider>
   );
 }
 
@@ -304,6 +341,7 @@ function SidebarAgentHeader({
   isActive: boolean;
 }) {
   const readiness = useAgentStatus(agent.id);
+  const isDeleted = agent.status === "deleted";
 
   return (
     <Link
@@ -314,14 +352,20 @@ function SidebarAgentHeader({
           : "text-muted-foreground hover:text-foreground"
       }`}
     >
-      <span className="text-sm">{agent.icon || "🤖"}</span>
-      <span className="truncate flex-1">{agent.name}</span>
-      <span
-        className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-          readiness === "ready" ? "bg-success" : "bg-muted-foreground/50"
-        }`}
-        title={readiness === "ready" ? "Agent ready" : "Agent offline"}
-      />
+      <span className={`text-sm ${isDeleted ? "grayscale opacity-40" : ""}`}>{agent.icon || "🤖"}</span>
+      <span className={`truncate flex-1 ${isDeleted ? "text-muted-foreground/50 line-through decoration-muted-foreground/70 decoration-1" : ""}`}>
+        {agent.name}
+      </span>
+      {isDeleted ? (
+        <span className="shrink-0 text-[9px] text-destructive/50">deleted</span>
+      ) : (
+        <span
+          className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+            readiness === "ready" ? "bg-success" : "bg-muted-foreground/50"
+          }`}
+          title={readiness === "ready" ? "Agent ready" : "Agent offline"}
+        />
+      )}
     </Link>
   );
 }
@@ -334,20 +378,46 @@ function SidebarSessionItem({
   isActive: boolean;
 }) {
   const { status, unread } = useSessionStatus(session.id);
+  const { deleteSession } = useSidebar();
+  const router = useRouter();
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const handleDelete = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!confirming) {
+      setConfirming(true);
+      return;
+    }
+    setDeleting(true);
+    try {
+      await deleteSession(session.id);
+      if (isActive) router.push("/agents");
+    } catch {
+      setDeleting(false);
+      setConfirming(false);
+    }
+  };
 
   return (
     <Link
       href={`/sessions/${session.id}`}
-      className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors ${
+      className={`group flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors ${
         isActive
           ? "bg-primary/10 text-primary"
           : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
-      }`}
+      } ${deleting ? "opacity-50 pointer-events-none" : ""}`}
+      onMouseLeave={() => setConfirming(false)}
     >
-      <span className="truncate flex-1">
-        {session.title || "Untitled"}
-      </span>
-      {status === "streaming" && (
+      {confirming ? (
+        <span className="truncate flex-1 text-destructive">Delete?</span>
+      ) : (
+        <span className="truncate flex-1">
+          {session.title || "Untitled"}
+        </span>
+      )}
+      {status === "streaming" && !confirming && (
         <svg
           className="h-3.5 w-3.5 shrink-0 animate-spin text-primary"
           viewBox="0 0 24 24"
@@ -368,11 +438,43 @@ function SidebarSessionItem({
           />
         </svg>
       )}
-      {unread > 0 && !isActive && status !== "streaming" && (
+      {unread > 0 && !isActive && status !== "streaming" && !confirming && (
         <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[9px] font-semibold text-primary-foreground">
           {unread > 99 ? "99+" : unread}
         </span>
       )}
+      <button
+        onClick={handleDelete}
+        className={`flex h-4 w-4 shrink-0 items-center justify-center rounded transition-colors ${
+          confirming
+            ? "text-destructive hover:text-destructive"
+            : "opacity-0 group-hover:opacity-100 text-muted-foreground/50 hover:text-destructive"
+        }`}
+        title={confirming ? "Click to confirm" : "Delete session"}
+      >
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          {confirming ? (
+            <>
+              <polyline points="20 6 9 17 4 12" />
+            </>
+          ) : (
+            <>
+              <path d="M3 6h18" />
+              <path d="M8 6V4h8v2" />
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+            </>
+          )}
+        </svg>
+      </button>
     </Link>
   );
 }
