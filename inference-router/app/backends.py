@@ -21,14 +21,14 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 VLLM_URL = os.environ.get("VLLM_URL", "http://localhost:8001")
 CLAUDE_API_URL = os.environ.get("CLAUDE_API_URL", "https://api.anthropic.com")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-BEDROCK_REGION = os.environ.get("BEDROCK_REGION", "us-east-1")
+BEDROCK_REGION = os.environ.get("BEDROCK_REGION", "ap-northeast-2")
 
 # Default model per backend — resolved when model is "default"
 DEFAULT_MODELS: dict[str, str] = {
-    "claude": os.environ.get("DEFAULT_MODEL_CLAUDE", "claude-sonnet-4-20250514"),
-    "ollama": os.environ.get("DEFAULT_MODEL_OLLAMA", "qwen3:8b"),
+    "claude": os.environ.get("DEFAULT_MODEL_CLAUDE", "claude-sonnet-4-6"),
+    "ollama": os.environ.get("DEFAULT_MODEL_OLLAMA", "qwen3.5:35b"),
     "vllm": os.environ.get("DEFAULT_MODEL_VLLM", "meta-llama/Llama-3.3-70B-Instruct"),
-    "bedrock": os.environ.get("DEFAULT_MODEL_BEDROCK", "anthropic.claude-sonnet-4-20250514-v1:0"),
+    "bedrock": os.environ.get("DEFAULT_MODEL_BEDROCK", "anthropic.claude-sonnet-4-5-20250929-v1:0"),
 }
 
 

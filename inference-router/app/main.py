@@ -212,8 +212,8 @@ async def list_models(backend: str):
         # TODO: Fetch dynamically from Anthropic API (GET /v1/models)
         # once API key management (platform key / per-tenant key from Vault) is in place.
         return {"models": [
-            {"id": "claude-opus-4-20250514", "name": "claude-opus-4-20250514"},
-            {"id": "claude-sonnet-4-20250514", "name": "claude-sonnet-4-20250514"},
+            {"id": "claude-sonnet-4-6", "name": "claude-sonnet-4-6"},
+            {"id": "claude-opus-4-6", "name": "claude-opus-4-6"},
         ]}
     elif backend == "ollama":
         try:
