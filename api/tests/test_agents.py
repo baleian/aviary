@@ -96,9 +96,15 @@ async def test_delete_agent(admin_client: AsyncClient):
     resp = await admin_client.delete(f"/api/agents/{agent_id}")
     assert resp.status_code == 204
 
-    # Should not appear in list anymore
+    # Agent is soft-deleted: still accessible via GET but marked as deleted
     resp = await admin_client.get(f"/api/agents/{agent_id}")
-    assert resp.status_code == 404
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "deleted"
+
+    # Should not appear in list (no active sessions)
+    resp = await admin_client.get("/api/agents")
+    agent_ids = [a["id"] for a in resp.json()["items"]]
+    assert agent_id not in agent_ids
 
 
 @pytest.mark.asyncio
