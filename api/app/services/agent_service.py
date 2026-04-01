@@ -314,15 +314,18 @@ async def cleanup_agent_k8s_resources(db: AsyncSession, agent: Agent) -> None:
 
     agent.deployment_active = False
     agent.namespace = None
+
+    # Hard-delete the agent row since all sessions are gone
+    await db.delete(agent)
     await db.flush()
 
 
 async def delete_agent(db: AsyncSession, agent: Agent) -> None:
-    """Soft-delete an agent. K8s resources remain until all sessions are deleted.
+    """Delete an agent. If active sessions remain, soft-delete (status=deleted)
+    and keep K8s resources alive. Otherwise, clean up everything and hard-delete.
 
-    If the agent has no active sessions, K8s resources are cleaned up immediately.
-    Otherwise, cleanup is deferred to session deletion (see session_service.delete_session).
-    Future: admin force-delete will bulk-delete all sessions then call cleanup.
+    Deferred cleanup is triggered by session_service.delete_session when the
+    last session of a soft-deleted agent is removed.
     """
     from app.services import session_service
 

@@ -146,6 +146,8 @@ async def test_delete_agent_with_sessions_keeps_sessions(admin_client: AsyncClie
 async def test_deleted_agent_blocks_new_sessions(admin_client: AsyncClient):
     """Cannot create new sessions on a deleted agent (HTTP 410)."""
     agent_id = await _create_agent(admin_client, "no-new-sess")
+    # Create a session first so the agent is soft-deleted (not hard-deleted)
+    await _create_session(admin_client, agent_id)
 
     resp = await admin_client.delete(f"/api/agents/{agent_id}")
     assert resp.status_code == 204
@@ -185,32 +187,38 @@ async def test_deleted_agent_visible_in_list_with_sessions(admin_client: AsyncCl
 
 
 @pytest.mark.asyncio
-async def test_deleted_agent_hidden_after_all_sessions_removed(admin_client: AsyncClient):
-    """Once all sessions of a deleted agent are removed, agent disappears from list."""
+async def test_deleted_agent_hard_deleted_after_all_sessions_removed(admin_client: AsyncClient):
+    """Once all sessions of a deleted agent are removed, agent is hard-deleted."""
     agent_id = await _create_agent(admin_client, "hidden-del")
     session_id = await _create_session(admin_client, agent_id)
 
     resp = await admin_client.delete(f"/api/agents/{agent_id}")
     assert resp.status_code == 204
 
+    # Agent still exists (soft-deleted, has sessions)
+    resp = await admin_client.get(f"/api/agents/{agent_id}")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "deleted"
+
     with patch("app.services.controller_client.cleanup_session_workspace", new_callable=AsyncMock), \
-         patch("app.services.agent_service.cleanup_agent_k8s_resources", new_callable=AsyncMock):
+         patch("app.services.controller_client.delete_deployment", new_callable=AsyncMock), \
+         patch("app.services.controller_client.delete_namespace", new_callable=AsyncMock), \
+         patch("app.services.redis_service.delete_egress_policy", new_callable=AsyncMock):
         resp = await admin_client.delete(f"/api/sessions/{session_id}")
     assert resp.status_code == 204
 
-    resp = await admin_client.get("/api/agents")
-    agent_ids = [a["id"] for a in resp.json()["items"]]
-    assert agent_id not in agent_ids
+    # Agent is now hard-deleted
+    resp = await admin_client.get(f"/api/agents/{agent_id}")
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
-async def test_delete_agent_without_sessions_is_immediate(admin_client: AsyncClient):
-    """Agent with no sessions is fully deleted (not visible at all)."""
+async def test_delete_agent_without_sessions_is_hard_deleted(admin_client: AsyncClient):
+    """Agent with no sessions is hard-deleted immediately."""
     agent_id = await _create_agent(admin_client, "imm-del")
 
     resp = await admin_client.delete(f"/api/agents/{agent_id}")
     assert resp.status_code == 204
 
-    resp = await admin_client.get("/api/agents")
-    agent_ids = [a["id"] for a in resp.json()["items"]]
-    assert agent_id not in agent_ids
+    resp = await admin_client.get(f"/api/agents/{agent_id}")
+    assert resp.status_code == 404

@@ -120,8 +120,12 @@ class Agent(Base):
     )
 
     owner: Mapped["User"] = relationship(back_populates="owned_agents")
-    acl_entries: Mapped[list["AgentACL"]] = relationship(back_populates="agent")
-    credentials: Mapped[list["AgentCredential"]] = relationship(back_populates="agent")
+    acl_entries: Mapped[list["AgentACL"]] = relationship(
+        back_populates="agent", cascade="all, delete-orphan", passive_deletes=True,
+    )
+    credentials: Mapped[list["AgentCredential"]] = relationship(
+        back_populates="agent", cascade="all, delete-orphan", passive_deletes=True,
+    )
     sessions: Mapped[list["Session"]] = relationship(back_populates="agent")
 
 
