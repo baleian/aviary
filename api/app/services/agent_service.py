@@ -7,7 +7,9 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Agent, User
+from sqlalchemy import or_, exists
+
+from app.db.models import Agent, Session, User
 from app.schemas.agent import AgentCreate, AgentUpdate
 from app.services import acl_service, controller_client, redis_service
 
@@ -89,9 +91,14 @@ async def create_agent(db: AsyncSession, user: User, data: AgentCreate) -> Agent
     return agent
 
 
-async def get_agent(db: AsyncSession, agent_id: uuid.UUID) -> Agent | None:
-    """Get an agent by ID."""
-    result = await db.execute(select(Agent).where(Agent.id == agent_id, Agent.status != "deleted"))
+async def get_agent(
+    db: AsyncSession, agent_id: uuid.UUID, include_deleted: bool = False
+) -> Agent | None:
+    """Get an agent by ID. Set include_deleted=True to also return soft-deleted agents."""
+    query = select(Agent).where(Agent.id == agent_id)
+    if not include_deleted:
+        query = query.where(Agent.status != "deleted")
+    result = await db.execute(query)
     return result.scalar_one_or_none()
 
 
@@ -101,20 +108,35 @@ async def get_agent_by_slug(db: AsyncSession, slug: str) -> Agent | None:
     return result.scalar_one_or_none()
 
 
+def _agent_visible_filter():
+    """Include active agents + deleted agents that still have active sessions."""
+    return or_(
+        Agent.status != "deleted",
+        exists(
+            select(Session.id).where(
+                Session.agent_id == Agent.id,
+                Session.status == "active",
+            )
+        ),
+    )
+
+
 async def list_agents_for_user(
     db: AsyncSession, user: User, offset: int = 0, limit: int = 50
 ) -> tuple[list[Agent], int]:
     """List agents visible to a user based on ACL + visibility rules."""
     from app.db.models import AgentACL, TeamMember
 
+    visible = _agent_visible_filter()
+
     if user.is_platform_admin:
         count_result = await db.execute(
-            select(func.count()).select_from(Agent).where(Agent.status != "deleted")
+            select(func.count()).select_from(Agent).where(visible)
         )
         total = count_result.scalar() or 0
         result = await db.execute(
             select(Agent)
-            .where(Agent.status != "deleted")
+            .where(visible)
             .order_by(Agent.created_at.desc())
             .offset(offset)
             .limit(limit)
@@ -125,8 +147,6 @@ async def list_agents_for_user(
         select(TeamMember.team_id).where(TeamMember.user_id == user.id)
     )
     user_team_ids = [row[0] for row in team_ids_result.all()]
-
-    from sqlalchemy import or_, exists
 
     conditions = [
         Agent.owner_id == user.id,
@@ -155,7 +175,7 @@ async def list_agents_for_user(
             Agent.visibility == "team",
         )
 
-    base_query = select(Agent).where(Agent.status != "deleted", or_(*conditions))
+    base_query = select(Agent).where(visible, or_(*conditions))
 
     count_result = await db.execute(
         select(func.count()).select_from(base_query.subquery())
@@ -298,23 +318,17 @@ async def cleanup_agent_k8s_resources(db: AsyncSession, agent: Agent) -> None:
 
 
 async def delete_agent(db: AsyncSession, agent: Agent) -> None:
-    """Soft-delete an agent and clean up K8s resources."""
+    """Soft-delete an agent. K8s resources remain until all sessions are deleted.
+
+    If the agent has no active sessions, K8s resources are cleaned up immediately.
+    Otherwise, cleanup is deferred to session deletion (see session_service.delete_session).
+    Future: admin force-delete will bulk-delete all sessions then call cleanup.
+    """
+    from app.services import session_service
+
     agent.status = "deleted"
     await db.flush()
 
-    if agent.deployment_active and agent.namespace:
-        try:
-            await controller_client.delete_deployment(agent.namespace)
-        except Exception:
-            logger.warning("Deployment deletion failed for agent %s", agent.id, exc_info=True)
-
-    if agent.namespace:
-        try:
-            await controller_client.delete_namespace(str(agent.id))
-        except Exception:
-            logger.warning("K8s namespace deletion failed for agent %s", agent.id, exc_info=True)
-
-    try:
-        await redis_service.delete_egress_policy(str(agent.id))
-    except Exception:
-        logger.warning("Redis egress policy cleanup failed for agent %s", agent.id, exc_info=True)
+    remaining = await session_service.count_active_sessions(db, agent.id)
+    if remaining == 0:
+        await cleanup_agent_k8s_resources(db, agent)

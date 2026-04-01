@@ -98,8 +98,8 @@ async def get_agent(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get agent details."""
-    agent = await agent_service.get_agent(db, agent_id)
+    """Get agent details (includes deleted agents that still have active sessions)."""
+    agent = await agent_service.get_agent(db, agent_id, include_deleted=True)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     try:
@@ -116,8 +116,8 @@ async def update_agent(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Update agent configuration."""
-    agent = await agent_service.get_agent(db, agent_id)
+    """Update agent configuration (works on deleted agents too)."""
+    agent = await agent_service.get_agent(db, agent_id, include_deleted=True)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     try:

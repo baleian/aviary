@@ -56,6 +56,8 @@ async def create_session(
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
+    if agent.status == "deleted":
+        raise HTTPException(status_code=410, detail="Agent has been deleted — no new sessions allowed")
 
     try:
         await acl_service.check_agent_permission(db, user, agent, "chat")

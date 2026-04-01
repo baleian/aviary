@@ -341,24 +341,33 @@ function SidebarAgentHeader({
   isActive: boolean;
 }) {
   const readiness = useAgentStatus(agent.id);
+  const isDeleted = agent.status === "deleted";
 
   return (
     <Link
       href={`/agents/${agent.id}`}
       className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+        isDeleted ? "opacity-50" : ""
+      } ${
         isActive
           ? "text-foreground"
           : "text-muted-foreground hover:text-foreground"
       }`}
     >
       <span className="text-sm">{agent.icon || "🤖"}</span>
-      <span className="truncate flex-1">{agent.name}</span>
-      <span
-        className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-          readiness === "ready" ? "bg-success" : "bg-muted-foreground/50"
-        }`}
-        title={readiness === "ready" ? "Agent ready" : "Agent offline"}
-      />
+      <span className={`truncate flex-1 ${isDeleted ? "line-through decoration-muted-foreground/40" : ""}`}>
+        {agent.name}
+      </span>
+      {isDeleted ? (
+        <span className="shrink-0 text-[9px] text-destructive/60 font-medium">deleted</span>
+      ) : (
+        <span
+          className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+            readiness === "ready" ? "bg-success" : "bg-muted-foreground/50"
+          }`}
+          title={readiness === "ready" ? "Agent ready" : "Agent offline"}
+        />
+      )}
     </Link>
   );
 }
