@@ -1,12 +1,19 @@
-FROM python:3.12-slim
+# --- Build stage: compile TypeScript ---
+FROM node:22-slim AS build
+
+WORKDIR /app
+COPY package.json /app/
+RUN npm install
+
+COPY tsconfig.json /app/
+COPY src/ /app/src/
+RUN npx tsc
+
+# --- Runtime stage ---
+FROM node:22-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl ca-certificates bubblewrap \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Node.js (required by claude-agent-sdk — it spawns Claude Code CLI)
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Claude Code CLI globally + undici for proxy support
@@ -24,10 +31,12 @@ RUN CLAUDE_BIN=$(which claude) && \
 # Actual wrapper content copied below after COPY scripts/
 
 WORKDIR /app
-COPY requirements.txt /app/
-RUN pip install --no-cache-dir -r requirements.txt
+COPY package.json /app/
+RUN npm install --omit=dev
 
-COPY app/ /app/app/
+# Copy compiled JS from build stage (no TypeScript needed at runtime)
+COPY --from=build /app/dist/ /app/dist/
+
 COPY scripts/ /app/scripts/
 COPY config/managed-settings.json /etc/claude-code/managed-settings.json
 
@@ -36,11 +45,11 @@ RUN CLAUDE_BIN=$(which claude-real) && \
     cp /app/scripts/claude-sandbox.sh "$(dirname "$CLAUDE_BIN")/claude" && \
     chmod +x "$(dirname "$CLAUDE_BIN")/claude"
 
-# Create non-root user (Claude Code CLI refuses --dangerously-skip-permissions as root)
-RUN useradd -m -u 1000 aviary && \
-    chown -R aviary:aviary /app
-USER aviary
+# Use built-in non-root `node` user (UID 1000)
+# Claude Code CLI refuses --dangerously-skip-permissions as root
+RUN chown -R node:node /app
+USER node
 
 EXPOSE 3000
 
-CMD ["python", "-m", "uvicorn", "app.server:app", "--host", "0.0.0.0", "--port", "3000"]
+CMD ["node", "dist/server.js"]

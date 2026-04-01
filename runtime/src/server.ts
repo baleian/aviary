@@ -1,0 +1,126 @@
+/**
+ * Agent Runtime HTTP server — multi-session server that processes messages
+ * via Claude Agent SDK (TypeScript).
+ *
+ * Each session is isolated in its own workspace directory (/workspace/sessions/{session_id}/)
+ * and serialized via per-session mutex locks to prevent concurrent SDK calls.
+ * Filesystem isolation enforced by bubblewrap sandbox (see scripts/claude-sandbox.sh).
+ */
+
+import * as fs from "node:fs";
+import express from "express";
+import { SessionManager, SessionState, WORKSPACE_ROOT } from "./session-manager.js";
+import { healthRouter, setManager, setReady } from "./health.js";
+import { processMessage } from "./agent.js";
+
+const app = express();
+app.use(express.json());
+app.use(healthRouter);
+
+const manager = new SessionManager();
+
+// Startup
+fs.mkdirSync(WORKSPACE_ROOT, { recursive: true });
+setManager(manager);
+setReady(true);
+
+interface MessageRequestBody {
+  content: string;
+  session_id: string;
+  model_config_data?: Record<string, unknown> | null;
+  agent_config?: Record<string, unknown> | null;
+}
+
+app.post("/message", async (req, res) => {
+  const body = req.body as MessageRequestBody;
+
+  if (!body.content || !body.session_id) {
+    res.status(400).json({ error: "content and session_id are required" });
+    return;
+  }
+
+  let entry;
+  try {
+    entry = manager.getOrCreate(body.session_id);
+  } catch (e: any) {
+    res.status(503).json({ error: e.message });
+    return;
+  }
+
+  // SSE headers
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+
+  const release = await entry._lock.acquire();
+  entry.state = SessionState.STREAMING;
+  entry.lastActiveAt = Date.now() / 1000;
+
+  try {
+    for await (const chunk of processMessage(
+      body.session_id,
+      body.content,
+      body.model_config_data as any,
+      body.agent_config as any,
+    )) {
+      res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    }
+  } finally {
+    entry.state = SessionState.IDLE;
+    release();
+  }
+
+  res.end();
+});
+
+app.get("/sessions", (_req, res) => {
+  res.json({
+    sessions: manager.listSessions(),
+    capacity: manager.maxSessions,
+    active: manager.activeCount,
+    streaming: manager.streamingCount,
+  });
+});
+
+app.delete("/sessions/:sessionId", (req, res) => {
+  const removed = manager.remove(req.params.sessionId, true);
+  if (!removed) {
+    res.status(404).json({ error: "session not found" });
+    return;
+  }
+  res.json({ status: "removed" });
+});
+
+app.get("/metrics", (_req, res) => {
+  res.json({
+    sessions_active: manager.activeCount,
+    sessions_streaming: manager.streamingCount,
+    sessions_max: manager.maxSessions,
+  });
+});
+
+app.post("/shutdown", (_req, res) => {
+  setReady(false);
+  res.json({
+    status: "shutting_down",
+    streaming_sessions: manager.streamingCount,
+  });
+});
+
+const PORT = parseInt(process.env.PORT ?? "3000", 10);
+const server = app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Aviary Runtime listening on :${PORT}`);
+});
+
+// Graceful shutdown
+for (const signal of ["SIGTERM", "SIGINT"] as const) {
+  process.on(signal, async () => {
+    console.log(`Received ${signal}, shutting down gracefully...`);
+    setReady(false);
+    server.close();
+    await manager.gracefulShutdown(30_000);
+    process.exit(0);
+  });
+}
