@@ -271,7 +271,7 @@ export default function ChatPage() {
             {isEditingTitle ? (
               <input
                 ref={titleInputRef}
-                className="text-sm font-semibold text-foreground bg-transparent border-b border-primary outline-none min-w-[120px] max-w-[300px]"
+                className="text-sm font-semibold text-foreground bg-transparent border-b border-primary outline-none w-[500px] max-w-[60vw]"
                 value={editingTitle}
                 onChange={(e) => setEditingTitle(e.target.value)}
                 onBlur={handleTitleSave}
