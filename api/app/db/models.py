@@ -201,8 +201,12 @@ class Session(Base):
 
     agent: Mapped["Agent"] = relationship(back_populates="sessions")
     creator: Mapped["User"] = relationship(foreign_keys=[created_by])
-    participants: Mapped[list["SessionParticipant"]] = relationship(back_populates="session")
-    messages: Mapped[list["Message"]] = relationship(back_populates="session")
+    participants: Mapped[list["SessionParticipant"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan", passive_deletes=True,
+    )
+    messages: Mapped[list["Message"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan", passive_deletes=True,
+    )
 
 
 class SessionParticipant(Base):
