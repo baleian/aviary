@@ -4,7 +4,7 @@
 <div style="margin-top: 16px;">
   <div class="flex items-center justify-between mb-4">
     <h2 style="font-size: 18px; font-weight: 600;">Agents</h2>
-    <span class="text-dim text-sm">{{ agents | length }} total</span>
+    <span class="text-dim text-sm">{{ total }} total</span>
   </div>
 
   {% if agents %}
@@ -15,21 +15,45 @@
         <th>Slug</th>
         <th>Visibility</th>
         <th>Status</th>
+        <th>Deployment</th>
         <th></th>
       </tr>
     </thead>
     <tbody>
       {% for agent in agents %}
+      {% set dep = deployments.get(agent.id | string, {}) %}
       <tr>
         <td><a href="/agents/{{ agent.id }}">{{ agent.name }}</a></td>
         <td class="mono">{{ agent.slug }}</td>
         <td><span class="badge badge-{{ agent.visibility }}">{{ agent.visibility }}</span></td>
         <td><span class="badge badge-{{ agent.status }}">{{ agent.status }}</span></td>
+        <td>
+          {% if dep.active %}
+            <span class="badge badge-ready">running</span>
+          {% else %}
+            <span class="badge badge-offline">offline</span>
+          {% endif %}
+        </td>
         <td><a href="/agents/{{ agent.id }}" class="btn btn-sm">Manage</a></td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
+
+  {% if total_pages > 1 %}
+  <div class="flex items-center justify-between mt-4">
+    <span class="text-dim text-sm">Page {{ page }} of {{ total_pages }}</span>
+    <div class="btn-group">
+      {% if page > 1 %}
+      <a href="/?page={{ page - 1 }}" class="btn btn-sm">Previous</a>
+      {% endif %}
+      {% if page < total_pages %}
+      <a href="/?page={{ page + 1 }}" class="btn btn-sm">Next</a>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
   {% else %}
   <div class="empty">No agents registered.</div>
   {% endif %}

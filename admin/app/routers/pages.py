@@ -22,10 +22,42 @@ templates = Jinja2Templates(directory="app/templates")
 # ── Agent List ────────────────────────────────────────────────
 
 @router.get("/", response_class=HTMLResponse)
-async def agent_list(request: Request, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Agent).order_by(Agent.created_at.desc()))
-    agents = result.scalars().all()
-    return templates.TemplateResponse(request, "agents.html", {"agents": agents})
+async def agent_list(
+    request: Request,
+    page: int = 1,
+    db: AsyncSession = Depends(get_db),
+):
+    per_page = 20
+    offset = (page - 1) * per_page
+
+    from sqlalchemy import func
+    count_result = await db.execute(select(func.count()).select_from(Agent))
+    total = count_result.scalar() or 0
+    total_pages = max(1, (total + per_page - 1) // per_page)
+
+    result = await db.execute(
+        select(Agent).order_by(Agent.created_at.desc()).offset(offset).limit(per_page)
+    )
+    agents = list(result.scalars().all())
+
+    # Query live deployment status for each agent
+    deployment_map: dict[str, dict] = {}
+    for agent in agents:
+        ns = f"agent-{agent.id}"
+        try:
+            status_info = await controller_client.get_deployment_status(ns)
+            ready = status_info.get("ready_replicas") or 0
+            deployment_map[str(agent.id)] = {"active": ready > 0, "ready": ready}
+        except Exception:
+            deployment_map[str(agent.id)] = {"active": False, "ready": 0}
+
+    return templates.TemplateResponse(request, "agents.html", {
+        "agents": agents,
+        "deployments": deployment_map,
+        "page": page,
+        "total_pages": total_pages,
+        "total": total,
+    })
 
 
 # ── Agent Detail ──────────────────────────────────────────────
