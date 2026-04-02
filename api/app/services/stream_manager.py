@@ -244,11 +244,10 @@ async def _run_stream(
         await redis_service.set_stream_result(session_id, full_response, message_id)
         await redis_service.set_session_status(session_id, "idle")
 
-        done_event = {"type": "done", "messageId": message_id}
-        await redis_service.publish_message(session_id, done_event)
-
-        # Increment unread for offline participants
-        online_users = await redis_service.get_online_users(session_id)
+        # Increment unread for ALL participants first, then publish done.
+        # Connected clients clear their own unread when they receive the done
+        # event via WS relay — this ensures multi-tab scenarios work correctly
+        # (same user online in one tab, viewing sidebar in another).
         async with async_session_factory() as db:
             result = await db.execute(
                 select(SessionParticipant.user_id).where(
@@ -257,9 +256,11 @@ async def _run_stream(
             )
             all_participants = {str(row[0]) for row in result.all()}
 
-        offline_participants = all_participants - online_users
-        for uid in offline_participants:
+        for uid in all_participants:
             await redis_service.increment_unread(session_id, uid)
+
+        done_event = {"type": "done", "messageId": message_id}
+        await redis_service.publish_message(session_id, done_event)
 
     except asyncio.CancelledError:
         logger.info("Stream cancelled for session %s", session_id)

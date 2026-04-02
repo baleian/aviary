@@ -75,14 +75,18 @@ async def create_session(
 async def get_sessions_status(
     ids: str = Query(..., description="Comma-separated session IDs"),
     user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     session_ids = [s.strip() for s in ids.split(",") if s.strip()]
     if not session_ids:
-        return {"statuses": {}, "unread": {}}
+        return {"statuses": {}, "unread": {}, "titles": {}}
 
     statuses = await redis_service.get_sessions_status(session_ids)
     unread = await redis_service.get_bulk_unread(session_ids, str(user.id))
-    return {"statuses": statuses, "unread": unread}
+    titles = await session_service.get_session_titles(
+        db, [uuid.UUID(sid) for sid in session_ids]
+    )
+    return {"statuses": statuses, "unread": unread, "titles": titles}
 
 
 @router.get("/sessions/{session_id}", response_model=SessionDetailResponse)
@@ -250,6 +254,10 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
                     try:
                         data = json.loads(raw_msg["data"])
                         await websocket.send_json(data)
+                        # Clear unread for this user when they receive the done
+                        # event in real-time (they're actively viewing the session)
+                        if data.get("type") == "done":
+                            await redis_service.clear_unread(session_id_str, user_id_str)
                     except Exception:
                         pass
             except asyncio.CancelledError:
