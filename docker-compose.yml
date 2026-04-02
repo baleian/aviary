@@ -210,6 +210,33 @@ services:
       api:
         condition: service_healthy
 
+  admin:
+    build:
+      context: .
+      dockerfile: admin/Dockerfile
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./admin:/app
+      - ./shared:/shared
+      - /app/.venv
+      - /app/*.egg-info
+    environment:
+      DATABASE_URL: postgresql+asyncpg://aviary:aviary@postgres:5432/aviary
+      REDIS_URL: redis://redis:6379/0
+      AGENT_CONTROLLER_URL: http://k8s:30900
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8001/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
 volumes:
   pgdata:
   k8sdata:
