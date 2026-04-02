@@ -131,7 +131,9 @@ async def scale_agent(
 
     ns = f"agent-{agent.id}"
     try:
-        await supervisor_client.scale_deployment(ns, body.replicas, agent.min_pods, agent.max_pods)
+        status = await supervisor_client.get_deployment_status(ns)
+        if status.get("replicas", 0) > 0 or status.get("ready_replicas", 0) > 0:
+            await supervisor_client.scale_deployment(ns, body.replicas, agent.min_pods, agent.max_pods)
     except Exception:
         logger.warning("Scale failed for agent %s", agent.id, exc_info=True)
 

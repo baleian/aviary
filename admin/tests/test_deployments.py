@@ -86,7 +86,8 @@ async def test_scale_agent(client: AsyncClient, seed_agent: Agent):
          patch("app.services.supervisor_client.ensure_deployment", new_callable=AsyncMock, return_value={"created": True}):
         await client.post(f"/api/agents/{seed_agent.id}/activate")
 
-    with patch("app.services.supervisor_client.scale_deployment", new_callable=AsyncMock) as mock_scale:
+    with patch("app.services.supervisor_client.get_deployment_status", new_callable=AsyncMock, return_value={"replicas": 1, "ready_replicas": 1}), \
+         patch("app.services.supervisor_client.scale_deployment", new_callable=AsyncMock) as mock_scale:
         resp = await client.patch(f"/api/agents/{seed_agent.id}/scale", json={
             "replicas": 3,
             "min_pods": 2,
