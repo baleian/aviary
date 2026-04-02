@@ -83,7 +83,7 @@ Aviary is an enterprise platform where users can create, configure, and use purp
 - **Namespace-per-Agent** — NetworkPolicy, ResourceQuota, and ServiceAccount scoped per agent
 - **Egress Proxy** — All outbound HTTP/HTTPS from agent Pods routed through a centralized proxy with per-agent allowlists (CIDR, exact domain, wildcard `*.example.com`); deny-by-default, policy changes take effect immediately without Pod restarts
 - **claude-agent-sdk Powered** — Full [Claude Code](https://docs.anthropic.com/en/docs/claude-code) harness via `ClaudeSDKClient` including tools, sub-agents, MCP servers, file I/O, and shell execution
-- **Inference Router** — Centralized LLM gateway; model name determines backend routing transparently
+- **Inference Router** — Centralized LLM gateway; `X-Backend` header (injected by runtime via `ANTHROPIC_CUSTOM_HEADERS`) determines backend routing transparently
 - **Multi-Backend Inference** — Claude API, Ollama, vLLM, AWS Bedrock; new backends require no NetworkPolicy changes
 - **Live Config Updates** — Agent config (instruction, tools) is passed from DB on every message; edits take effect immediately without Pod restarts
 - **OIDC Auth + Team Sync** — Keycloak (dev) / Okta (prod); IdP groups auto-sync to Aviary teams on login
@@ -98,7 +98,7 @@ Aviary is an enterprise platform where users can create, configure, and use purp
 |-----------|-----------|
 | Web UI | Next.js 15 (App Router), TypeScript, Tailwind CSS, shadcn/ui |
 | API Server | Python 3.12, FastAPI, SQLAlchemy 2.0 (async), Pydantic v2 |
-| Agent Runtime | Python 3.12, claude-agent-sdk, Claude Code CLI, Node.js 22 |
+| Agent Runtime | TypeScript, Node.js 22, claude-agent-sdk, Claude Code CLI |
 | Inference Router | Python 3.12, FastAPI — Anthropic Messages API proxy |
 | Egress Proxy | Python 3.12, asyncio — HTTP/HTTPS forward proxy with policy enforcement |
 | Database | PostgreSQL 16 |
@@ -199,19 +199,24 @@ Source code is bind-mounted into containers. Edits to `api/`, `web/`, `inference
 docker compose up -d --build api
 docker compose up -d --build web
 
-# Rebuild K8s images (runtime, egress-proxy)
+# Rebuild K8s images (runtime, egress-proxy, agent-controller)
 docker build -t aviary-runtime:latest ./runtime/
 docker build -t aviary-egress-proxy:latest ./egress-proxy/
-docker save aviary-runtime:latest aviary-egress-proxy:latest | docker compose exec -T k8s ctr images import -
+docker build -t aviary-agent-controller:latest -f controller/Dockerfile .
+docker save aviary-runtime:latest aviary-egress-proxy:latest aviary-agent-controller:latest | docker compose exec -T k8s ctr images import -
 ```
 
 ## Testing
 
 ```bash
+# API server tests
 docker compose exec api pytest tests/ -v
+
+# Admin console tests
+docker compose exec admin pytest tests/ -v
 ```
 
-16 tests covering health, agent CRUD, ACL (visibility, grants, permission deny), and sessions (create, list, access control, archive). Uses a dedicated `aviary_test` database and token-based mock auth for multi-user scenarios.
+API and admin tests covering health, agent CRUD, ACL (visibility, grants, permission deny), sessions (create, list, access control, archive), policies, and deployments. Uses a dedicated `aviary_test` database and token-based mock auth for multi-user scenarios.
 
 ## API Endpoints
 
@@ -248,7 +253,7 @@ docker compose exec api pytest tests/ -v
 ## Key Design Decisions
 
 ### Inference Router
-Session Pods never call LLM backends directly. All inference goes through a centralized router that determines the backend from the model name (e.g., `claude-*` → Claude API, `qwen:*` → Ollama). This centralizes API credentials and preserves full claude-agent-sdk capabilities since the router speaks the Anthropic Messages API natively. The API server also queries the inference router for model listing, ensuring a single enforcement point for access control.
+Session Pods never call LLM backends directly. All inference goes through a centralized router that determines the backend from the `X-Backend` header injected by the runtime via `ANTHROPIC_CUSTOM_HEADERS` (e.g., `claude` → Claude API, `ollama` → Ollama). This centralizes API credentials and preserves full claude-agent-sdk capabilities since the router speaks the Anthropic Messages API natively. The API server also queries the inference router for model listing, ensuring a single enforcement point for access control.
 
 ### Egress Proxy
 All outbound HTTP/HTTPS from agent Pods is routed through a centralized forward proxy via `HTTP_PROXY`/`HTTPS_PROXY` environment variables. The proxy identifies the source agent by resolving the pod's IP to its K8s namespace, then enforces per-agent egress policies stored in Redis. Supported rule types: CIDR ranges, exact domains, wildcard domains (`*.example.com`), and catch-all. Policies are deny-by-default and changes take effect immediately via Redis cache invalidation, with no Pod restarts needed.
@@ -260,7 +265,7 @@ Agent configuration (instruction, tools, policy) is passed from the database to 
 Permission resolution follows 6 steps: agent owner → direct user ACL → team ACL → public visibility → team visibility → deny. Roles form a hierarchy: `viewer` < `user` < `admin` < `owner`.
 
 ### Agent Pod Strategy
-Each agent gets a long-running Deployment with configurable spawn strategy: `lazy` (default, created on first message), `eager` (created with agent), or `manual` (admin-activated). Multiple sessions share the same Pod(s), isolated by workspace directory and bubblewrap sandbox. Idle agents (7 days) are scaled to 0, not deleted — re-activated on next message.
+Each agent gets a long-running Deployment with configurable spawn strategy: `lazy` (default, created on first message) or `eager` (created with agent). Multiple sessions share the same Pod(s), isolated by workspace directory and bubblewrap sandbox. Idle agents (7 days) are scaled to 0, not deleted — re-activated on next message.
 
 ### Session Isolation (bubblewrap)
 The `claude` CLI binary in PATH is a wrapper script that runs the real binary inside a bubblewrap mount namespace. Each session sees only its own workspace directory (`/workspace/sessions/{session_id}/`); other sessions' files don't exist in the mount namespace. CLI session data is persisted to PVC, enabling conversation resume across Pod restarts.

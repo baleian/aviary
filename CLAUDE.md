@@ -57,7 +57,7 @@ Three backend services with distinct roles:
 
 **Pod Strategy (agent-per-pod):** Each agent gets a long-running Deployment with 1-N replicas. Multiple sessions share the same Pod(s), isolated by working directory (`/workspace/sessions/{session_id}/`). Pods auto-scale based on session load and are released after 7 days of inactivity (both managed by the agent controller).
 
-**Inference Router** (docker compose, `:8090`): All LLM calls go through a centralized proxy. Model name determines backend: `claude-*` → Claude API, `name:tag` → Ollama, `org/model` → vLLM, `anthropic.*` → Bedrock. Speaks Anthropic Messages API so claude-agent-sdk works transparently. API server also queries it for model listing (`/v1/backends/{backend}/models`).
+**Inference Router** (docker compose, `:8090`): All LLM calls go through a centralized proxy. Backend is determined by the `X-Backend` header injected by the runtime via `ANTHROPIC_CUSTOM_HEADERS` (e.g., `claude` → Claude API, `ollama` → Ollama, `vllm` → vLLM, `bedrock` → Bedrock). Speaks Anthropic Messages API so claude-agent-sdk works transparently. API server also queries it for model listing (`/v1/backends/{backend}/models`).
 
 **Credential Proxy** (docker compose, `:8091`): Session Pods never hold secrets. External API calls go through proxy which injects credentials from Vault.
 

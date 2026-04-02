@@ -48,7 +48,7 @@ async def _startup():
 async def proxy_messages(request: Request):
     """Transparent proxy for Anthropic Messages API.
 
-    Reads the model name from the request body, determines the backend,
+    Reads the X-Backend header to determine the backend,
     and proxies the entire request (including tools, system, etc.) as-is.
     """
     backend = request.headers.get("x-backend")
