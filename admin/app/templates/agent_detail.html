@@ -148,19 +148,6 @@
       </div>
     </div>
 
-    <div class="form-row">
-      <div class="form-group">
-        <label>
-          <input type="checkbox" name="allow_shell_exec" {{ 'checked' if policy.allowShellExec | default(false) }}> Allow Shell Execution
-        </label>
-      </div>
-      <div class="form-group">
-        <label>
-          <input type="checkbox" name="allow_file_write" {{ 'checked' if policy.allowFileWrite | default(true) }}> Allow File Write
-        </label>
-      </div>
-    </div>
-
     <div class="section-title">Network Policy (Egress Rules)</div>
     <p class="text-sm text-dim mb-4">All outbound traffic is blocked by default. Add rules to allow specific destinations.</p>
 

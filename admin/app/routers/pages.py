@@ -123,9 +123,6 @@ async def update_policy(
     policy["maxTokensPerTurn"] = int(form.get("max_tokens_per_turn", 100000))
     policy["containerImage"] = form.get("container_image", "aviary-runtime:latest")
     policy["maxConcurrentSessionsPerPod"] = int(form.get("max_sessions_per_pod", 10))
-    policy["allowShellExec"] = "allow_shell_exec" in form
-    policy["allowFileWrite"] = "allow_file_write" in form
-
     # Parse egress rules
     names = form.getlist("egress_name[]")
     types = form.getlist("egress_type[]")

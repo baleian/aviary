@@ -124,7 +124,6 @@ async def test_update_resource_limits(client: AsyncClient, seed_agent: Agent):
             "maxMemoryPerSession": "8Gi",
             "maxCpuPerSession": "8",
             "maxConcurrentSessions": 50,
-            "allowShellExec": True,
         },
     })
     assert resp.status_code == 200
@@ -132,7 +131,6 @@ async def test_update_resource_limits(client: AsyncClient, seed_agent: Agent):
     assert policy["maxMemoryPerSession"] == "8Gi"
     assert policy["maxCpuPerSession"] == "8"
     assert policy["maxConcurrentSessions"] == 50
-    assert policy["allowShellExec"] is True
 
 
 @pytest.mark.asyncio
