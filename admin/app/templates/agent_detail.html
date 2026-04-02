@@ -48,6 +48,10 @@
       {% endif %}
       <span class="text-muted">Namespace</span>
       <span class="text-mono">agent-{{ agent.id }}</span>
+      <span class="text-muted">Created</span>
+      <span>{{ agent.created_at.strftime('%Y-%m-%d %H:%M') }}</span>
+      <span class="text-muted">Last Activity</span>
+      <span>{{ agent.last_activity_at.strftime('%Y-%m-%d %H:%M') if agent.last_activity_at else '—' }}</span>
     </div>
   </div>
   <div class="card">
