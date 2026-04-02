@@ -34,7 +34,6 @@ async def create_agent(db: AsyncSession, user: User, data: AgentCreate) -> Agent
         model_config_json=data.model_config_data.model_dump(),
         tools=data.tools,
         mcp_servers=[s.model_dump() for s in data.mcp_servers],
-        policy=data.policy.model_dump(),
         visibility=data.visibility,
         category=data.category,
         icon=data.icon,
@@ -161,8 +160,6 @@ async def update_agent(
         agent.tools = data.tools
     if data.mcp_servers is not None:
         agent.mcp_servers = [s.model_dump() for s in data.mcp_servers]
-    if data.policy is not None:
-        agent.policy = data.policy.model_dump()
     if data.visibility is not None:
         agent.visibility = data.visibility
     if data.category is not None:
