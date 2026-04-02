@@ -104,9 +104,10 @@ export default function ChatPage() {
       .finally(() => setLoading(false));
   }, [user, params.id]);
 
+  const sessionId = session?.id;
   const wsConnected = useRef(false);
   useEffect(() => {
-    if (!session || !user) return;
+    if (!sessionId || !user) return;
     if (wsConnected.current) return;
     wsConnected.current = true;
 
@@ -116,7 +117,7 @@ export default function ChatPage() {
     let cancelled = false;
 
     createSessionWebSocket(
-      session.id,
+      sessionId,
       (msg: WSMessage) => {
         if (cancelled) return;
         switch (msg.type) {
@@ -126,7 +127,7 @@ export default function ChatPage() {
             break;
           case "user_message":
             setMessages((prev) => [...prev, {
-              id: crypto.randomUUID(), session_id: session.id, sender_type: "user",
+              id: crypto.randomUUID(), session_id: sessionId, sender_type: "user",
               sender_id: msg.sender_id, content: msg.content, metadata: {}, created_at: new Date().toISOString(),
             }]);
             break;
@@ -146,7 +147,7 @@ export default function ChatPage() {
               setMessages((msgs) => {
                 if (msgs.some((m) => m.id === msg.messageId)) return msgs;
                 return [...msgs, {
-                  id: msg.messageId, session_id: session.id, sender_type: "agent",
+                  id: msg.messageId, session_id: sessionId, sender_type: "agent",
                   content: finalContent, metadata, created_at: new Date().toISOString(),
                 }];
               });
@@ -158,7 +159,7 @@ export default function ChatPage() {
             resetBlocks();
             setIsStreaming(false);
             setMessages((msgs) => [...msgs, {
-              id: crypto.randomUUID(), session_id: session.id, sender_type: "agent",
+              id: crypto.randomUUID(), session_id: sessionId, sender_type: "agent",
               content: `Error: ${msg.message}`, metadata: {}, created_at: new Date().toISOString(),
             }]);
             break;
@@ -179,7 +180,7 @@ export default function ChatPage() {
               setMessages((msgs) => {
                 if (msgs.some((m) => m.id === cancelledId)) return msgs;
                 return [...msgs, {
-                  id: cancelledId, session_id: session.id, sender_type: "agent",
+                  id: cancelledId, session_id: sessionId, sender_type: "agent",
                   content: partialContent,
                   metadata: cancelMeta, created_at: new Date().toISOString(),
                 }];
@@ -192,7 +193,7 @@ export default function ChatPage() {
             setMessages((msgs) => {
               if (msgs.some((m) => m.id === msg.messageId)) return msgs;
               return [...msgs, {
-                id: msg.messageId, session_id: session.id, sender_type: "agent",
+                id: msg.messageId, session_id: sessionId, sender_type: "agent",
                 content: msg.content, metadata: {}, created_at: new Date().toISOString(),
               }];
             });
@@ -207,7 +208,7 @@ export default function ChatPage() {
     });
 
     return () => { cancelled = true; wsRef.current?.close(); wsConnected.current = false; };
-  }, [session, user]);
+  }, [sessionId, user]);
 
   const handleSend = useCallback(
     (content: string) => {
