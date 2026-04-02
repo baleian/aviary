@@ -172,24 +172,27 @@ async def update_agent(
 @router.delete("/{agent_id}", status_code=204)
 async def delete_agent(agent_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """Hard-delete an agent and all its K8s resources."""
+    from aviary_shared.db.models import Session as SessionModel
+    from sqlalchemy import delete
+
     result = await db.execute(select(Agent).where(Agent.id == agent_id))
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    agent_id_str = str(agent.id)
-
     # Clean up K8s resources
-    if agent.namespace:
-        try:
-            await controller_client.delete_deployment(agent.namespace)
-        except Exception:
-            pass
-        try:
-            await controller_client.delete_namespace(agent_id_str)
-        except Exception:
-            pass
+    ns = f"agent-{agent.id}"
+    try:
+        await controller_client.delete_deployment(ns)
+    except Exception:
+        pass
+    try:
+        await controller_client.delete_namespace(str(agent.id))
+    except Exception:
+        pass
 
+    # Delete all sessions, then the agent
+    await db.execute(delete(SessionModel).where(SessionModel.agent_id == agent.id))
     await db.delete(agent)
     await db.flush()
     return None
