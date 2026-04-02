@@ -201,12 +201,15 @@ async def _run_stream(
                             if current_text:
                                 blocks_meta.append({"type": "text", "content": current_text})
                                 current_text = ""
-                            blocks_meta.append({
+                            tool_block: dict = {
                                 "type": "tool_call",
                                 "name": chunk_data.get("name"),
                                 "input": chunk_data.get("input"),
                                 "tool_use_id": chunk_data.get("tool_use_id"),
-                            })
+                            }
+                            if chunk_data.get("parent_tool_use_id"):
+                                tool_block["parent_tool_use_id"] = chunk_data["parent_tool_use_id"]
+                            blocks_meta.append(tool_block)
                             await redis_service.append_stream_chunk(session_id, chunk_data)
                             await redis_service.publish_message(session_id, chunk_data)
                         elif chunk_type == "tool_result":

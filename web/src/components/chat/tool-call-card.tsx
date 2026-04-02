@@ -39,6 +39,7 @@ export const ToolCallCard = memo(function ToolCallCard({ block }: ToolCallCardPr
   const isError = block.is_error === true;
   const summary = inputSummary(block.name, block.input);
   const isSubagent = block.name === "Agent";
+  const hasChildren = block.children && block.children.length > 0;
 
   return (
     <div
@@ -143,6 +144,13 @@ export const ToolCallCard = memo(function ToolCallCard({ block }: ToolCallCardPr
           <span className="truncate text-muted-foreground/60">{summary}</span>
         )}
 
+        {/* Children count badge for subagent */}
+        {isSubagent && hasChildren && (
+          <span className="rounded-full bg-primary/10 px-1.5 text-[9px] font-medium text-primary">
+            {block.children!.length} tool{block.children!.length !== 1 ? "s" : ""}
+          </span>
+        )}
+
         {/* Spacer */}
         <span className="flex-1" />
 
@@ -170,9 +178,18 @@ export const ToolCallCard = memo(function ToolCallCard({ block }: ToolCallCardPr
         </svg>
       </button>
 
-      {/* Expanded detail */}
+      {/* Nested subagent tool calls — always visible */}
+      {hasChildren && (
+        <div className="border-t border-border/20 px-3 py-2 space-y-1">
+          {block.children!.map((child) => (
+            <ToolCallCard key={child.id} block={child} />
+          ))}
+        </div>
+      )}
+
+      {/* Expanded detail (input/result) */}
       {expanded && (
-        <div className="border-t border-border/20 px-3 py-2 text-xs">
+        <div className={cn("border-t border-border/20 px-3 py-2 text-xs", hasChildren && "border-t-0 pt-0")}>
           {/* Input */}
           <div className="mb-1.5 font-medium text-muted-foreground/70">Input</div>
           <pre className="mb-2 max-h-40 overflow-auto rounded bg-[hsl(222_22%_6%)] p-2 text-[11px] leading-relaxed text-muted-foreground">

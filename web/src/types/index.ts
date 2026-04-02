@@ -86,6 +86,8 @@ export interface ToolCallBlock {
   result?: string;
   is_error?: boolean;
   elapsed?: number;
+  parent_tool_use_id?: string;
+  children?: ToolCallBlock[];
 }
 
 export type StreamBlock = TextBlock | ToolCallBlock;
