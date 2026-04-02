@@ -39,6 +39,21 @@ async def agent_detail(
     if not agent:
         return HTMLResponse("<h1>Agent not found</h1>", status_code=404)
 
+    # Query live deployment status from controller
+    ns = f"agent-{agent.id}"
+    deployment_status = {"active": False, "replicas": 0, "ready_replicas": 0}
+    try:
+        status_info = await controller_client.get_deployment_status(ns)
+        replicas = status_info.get("replicas", 0)
+        ready = status_info.get("ready_replicas", 0)
+        deployment_status = {
+            "active": ready > 0,
+            "replicas": replicas,
+            "ready_replicas": ready,
+        }
+    except Exception:
+        pass
+
     policy = agent.policy or {}
     egress_rules = policy.get("allowedEgress", [])
     flash = request.query_params.get("flash")
@@ -51,6 +66,7 @@ async def agent_detail(
 
     return templates.TemplateResponse(request, "agent_detail.html", {
         "agent": agent,
+        "deployment": deployment_status,
         "policy": policy,
         "egress_rules": egress_rules,
         "flash": flash_data,

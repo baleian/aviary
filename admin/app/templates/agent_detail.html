@@ -18,7 +18,7 @@
     <p class="text-sm text-muted">{{ agent.slug }} · {{ agent.description or 'No description' }}</p>
   </div>
   <div class="btn-group">
-    {% if agent.deployment_active %}
+    {% if deployment.active %}
     <form method="POST" action="/agents/{{ agent.id }}/deactivate" style="display:inline">
       <button type="submit" class="btn btn-sm btn-danger">Deactivate</button>
     </form>
@@ -41,13 +41,13 @@
       <span class="text-muted">Agent Status</span>
       <span class="badge badge-{{ agent.status }}">{{ agent.status }}</span>
       <span class="text-muted">Deployment</span>
-      {% if agent.deployment_active %}
-        <span class="badge badge-ready">active</span>
+      {% if deployment.active %}
+        <span class="badge badge-ready">active ({{ deployment.ready_replicas }}/{{ deployment.replicas }})</span>
       {% else %}
         <span class="badge badge-offline">inactive</span>
       {% endif %}
       <span class="text-muted">Namespace</span>
-      <span class="text-mono">{{ agent.namespace or '—' }}</span>
+      <span class="text-mono">agent-{{ agent.id }}</span>
     </div>
   </div>
   <div class="card">
