@@ -16,10 +16,10 @@ async def _create_public_agent(client: AsyncClient) -> str:
 
 
 @pytest.mark.asyncio
-async def test_create_session(admin_client: AsyncClient):
-    agent_id = await _create_public_agent(admin_client)
+async def test_create_session(user1_client: AsyncClient):
+    agent_id = await _create_public_agent(user1_client)
 
-    resp = await admin_client.post(f"/api/agents/{agent_id}/sessions", json={
+    resp = await user1_client.post(f"/api/agents/{agent_id}/sessions", json={
         "type": "private",
     })
     assert resp.status_code == 201
@@ -30,25 +30,25 @@ async def test_create_session(admin_client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_list_sessions(admin_client: AsyncClient):
-    agent_id = await _create_public_agent(admin_client)
+async def test_list_sessions(user1_client: AsyncClient):
+    agent_id = await _create_public_agent(user1_client)
 
-    await admin_client.post(f"/api/agents/{agent_id}/sessions", json={"type": "private"})
-    await admin_client.post(f"/api/agents/{agent_id}/sessions", json={"type": "private"})
+    await user1_client.post(f"/api/agents/{agent_id}/sessions", json={"type": "private"})
+    await user1_client.post(f"/api/agents/{agent_id}/sessions", json={"type": "private"})
 
-    resp = await admin_client.get(f"/api/agents/{agent_id}/sessions")
+    resp = await user1_client.get(f"/api/agents/{agent_id}/sessions")
     assert resp.status_code == 200
     assert len(resp.json()["items"]) == 2
 
 
 @pytest.mark.asyncio
-async def test_get_session_with_messages(admin_client: AsyncClient):
-    agent_id = await _create_public_agent(admin_client)
+async def test_get_session_with_messages(user1_client: AsyncClient):
+    agent_id = await _create_public_agent(user1_client)
 
-    session_resp = await admin_client.post(f"/api/agents/{agent_id}/sessions", json={"type": "private"})
+    session_resp = await user1_client.post(f"/api/agents/{agent_id}/sessions", json={"type": "private"})
     session_id = session_resp.json()["id"]
 
-    resp = await admin_client.get(f"/api/sessions/{session_id}")
+    resp = await user1_client.get(f"/api/sessions/{session_id}")
     assert resp.status_code == 200
     data = resp.json()
     assert data["session"]["id"] == session_id
@@ -56,28 +56,28 @@ async def test_get_session_with_messages(admin_client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_non_participant_cannot_access_session(admin_client: AsyncClient, user2_client: AsyncClient):
-    agent_id = await _create_public_agent(admin_client)
+async def test_non_participant_cannot_access_session(user1_client: AsyncClient, user3_client: AsyncClient):
+    agent_id = await _create_public_agent(user1_client)
 
-    session_resp = await admin_client.post(f"/api/agents/{agent_id}/sessions", json={"type": "private"})
+    session_resp = await user1_client.post(f"/api/agents/{agent_id}/sessions", json={"type": "private"})
     session_id = session_resp.json()["id"]
 
-    # user2 is not a participant
-    resp = await user2_client.get(f"/api/sessions/{session_id}")
+    # user3 is not a participant
+    resp = await user3_client.get(f"/api/sessions/{session_id}")
     assert resp.status_code == 403
 
 
 @pytest.mark.asyncio
-async def test_delete_session(admin_client: AsyncClient):
-    agent_id = await _create_public_agent(admin_client)
+async def test_delete_session(user1_client: AsyncClient):
+    agent_id = await _create_public_agent(user1_client)
 
-    session_resp = await admin_client.post(f"/api/agents/{agent_id}/sessions", json={"type": "private"})
+    session_resp = await user1_client.post(f"/api/agents/{agent_id}/sessions", json={"type": "private"})
     session_id = session_resp.json()["id"]
 
-    with patch("app.services.controller_client.cleanup_session_workspace", new_callable=AsyncMock):
-        resp = await admin_client.delete(f"/api/sessions/{session_id}")
+    with patch("app.services.agent_controller.cleanup_session", new_callable=AsyncMock):
+        resp = await user1_client.delete(f"/api/sessions/{session_id}")
     assert resp.status_code == 204
 
     # Session should be fully deleted (not archived)
-    resp = await admin_client.get(f"/api/sessions/{session_id}")
+    resp = await user1_client.get(f"/api/sessions/{session_id}")
     assert resp.status_code == 404

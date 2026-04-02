@@ -22,22 +22,22 @@ async def main():
 
     try:
         # Create test users (normally created on OIDC login, but useful for seeding)
-        admin_id = uuid.uuid4()
         user1_id = uuid.uuid4()
         user2_id = uuid.uuid4()
+        user3_id = uuid.uuid4()
 
-        for user_id, ext_id, email, name, is_admin in [
-            (admin_id, "admin-sub-001", "admin@test.com", "Admin User", True),
-            (user1_id, "user1-sub-002", "user1@test.com", "User One", False),
-            (user2_id, "user2-sub-003", "user2@test.com", "User Two", False),
+        for user_id, ext_id, email, name in [
+            (user1_id, "user1-sub-001", "user1@test.com", "User One"),
+            (user2_id, "user2-sub-002", "user2@test.com", "User Two"),
+            (user3_id, "user3-sub-003", "user3@test.com", "User Three"),
         ]:
             await conn.execute(
                 """
-                INSERT INTO users (id, external_id, email, display_name, is_platform_admin)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO users (id, external_id, email, display_name)
+                VALUES ($1, $2, $3, $4)
                 ON CONFLICT (external_id) DO NOTHING
                 """,
-                user_id, ext_id, email, name, is_admin,
+                user_id, ext_id, email, name,
             )
 
         # Create a test team
@@ -52,7 +52,7 @@ async def main():
         )
 
         # Add members to team
-        for uid in [admin_id, user1_id]:
+        for uid in [user1_id, user2_id]:
             await conn.execute(
                 """
                 INSERT INTO team_members (team_id, user_id, role)
@@ -74,18 +74,18 @@ async def main():
             "Code Assistant",
             "code-assistant",
             "A helpful coding assistant",
-            admin_id,
+            user1_id,
             "You are a helpful coding assistant. Help users write, debug, and review code.",
             '{"backend": "claude", "model": "default", "temperature": 0.7, "maxTokens": 8192}',
             '["read_file", "write_file", "run_command"]',
-            '{"maxConcurrentSessions": 20, "sessionTimeout": 30, "allowShellExec": true}',
+            '{}',
             "public",
         )
 
         print("Test data seeded successfully.")
-        print(f"  Admin user:  {admin_id}")
         print(f"  User 1:      {user1_id}")
         print(f"  User 2:      {user2_id}")
+        print(f"  User 3:      {user3_id}")
         print(f"  Team:        {team_id}")
         print(f"  Agent:       {agent_id}")
 

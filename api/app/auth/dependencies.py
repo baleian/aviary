@@ -16,21 +16,17 @@ async def _upsert_user(db: AsyncSession, claims: TokenClaims) -> User:
     result = await db.execute(select(User).where(User.external_id == claims.sub))
     user = result.scalar_one_or_none()
 
-    is_admin = "platform_admin" in claims.roles
-
     if user is None:
         user = User(
             external_id=claims.sub,
             email=claims.email,
             display_name=claims.display_name,
-            is_platform_admin=is_admin,
         )
         db.add(user)
         await db.flush()
     else:
         user.email = claims.email
         user.display_name = claims.display_name
-        user.is_platform_admin = is_admin
         await db.flush()
 
     # Sync OIDC groups → Aviary teams

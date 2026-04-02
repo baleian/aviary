@@ -14,10 +14,6 @@
   "roles": {
     "realm": [
       {
-        "name": "platform_admin",
-        "description": "Global admin with full access to all agents and sessions"
-      },
-      {
         "name": "regular_user",
         "description": "Default role for authenticated users"
       }
@@ -119,23 +115,6 @@
     }
   ],
   "users": [
-    {
-      "username": "admin@test.com",
-      "email": "admin@test.com",
-      "emailVerified": true,
-      "enabled": true,
-      "firstName": "Admin",
-      "lastName": "User",
-      "groups": ["engineering"],
-      "credentials": [
-        {
-          "type": "password",
-          "value": "password",
-          "temporary": false
-        }
-      ],
-      "realmRoles": ["platform_admin", "regular_user"]
-    },
     {
       "username": "user1@test.com",
       "email": "user1@test.com",
