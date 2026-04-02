@@ -31,4 +31,6 @@ kubeconfig.yaml
 # OS
 .DS_Store
 Thumbs.db
+
+# Build
 shared/build/
