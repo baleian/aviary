@@ -94,6 +94,17 @@ services:
       - k8sdata:/var/lib/rancher/k3s
       - ./config/k3s/registries.yaml:/etc/rancher/k3s/registries.yaml
 
+  db-migrate:
+    build:
+      context: ./shared
+      args:
+        UV_INDEX_URL: ${UV_INDEX_URL:-}
+    environment:
+      DATABASE_URL: postgresql+asyncpg://aviary:aviary@postgres:5432/aviary
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # ── Platform Services ───────────────────────────────────────
 
   inference-router:
@@ -177,8 +188,8 @@ services:
       CREDENTIAL_PROXY_URL: http://credential-proxy:8080
       CORS_ORIGINS: '["http://localhost:3000"]'
     depends_on:
-      postgres:
-        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       vault:
@@ -234,8 +245,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       AGENT_CONTROLLER_URL: http://k8s:30900
     depends_on:
-      postgres:
-        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     healthcheck:

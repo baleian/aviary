@@ -180,7 +180,6 @@ name = "aviary-api"
 version = "0.1.0"
 source = { editable = "api" }
 dependencies = [
-    { name = "alembic" },
     { name = "asyncpg" },
     { name = "aviary-shared" },
     { name = "fastapi" },
@@ -209,7 +208,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", marker = "extra == 'dev'", specifier = ">=0.20.0" },
-    { name = "alembic", specifier = ">=1.14.0" },
     { name = "asyncpg", specifier = ">=0.30.0" },
     { name = "aviary-shared", editable = "shared" },
     { name = "fastapi", specifier = ">=0.115.0" },
