@@ -1,11 +1,11 @@
 """Background streaming task manager.
 
-Decouples Pod-forwarding from WebSocket lifecycle so that:
+Decouples agent response streaming from WebSocket lifecycle so that:
 - Streaming continues even if the client disconnects
 - Chunks are buffered in Redis for replay on reconnect
 - Agent response is always saved to DB on completion
 
-Routes to agent Pods via the Agent Controller's SSE proxy endpoint.
+Routes to agents via the Agent Controller's SSE proxy endpoint.
 """
 
 import asyncio
@@ -18,7 +18,7 @@ from sqlalchemy import select
 
 from app.db.models import SessionParticipant
 from app.db.session import async_session_factory
-from app.services import controller_client, redis_service, session_service
+from app.services import agent_controller, redis_service, session_service
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ _active_streams: dict[str, asyncio.Task] = {}
 
 async def start_stream(
     session_id: str,
-    namespace: str,
+    agent_id: str,
     agent_model_config: dict,
     agent_instruction: str,
     agent_tools: list,
@@ -37,7 +37,7 @@ async def start_stream(
     content: str,
     sender_id: str,
 ) -> None:
-    """Launch a background task that streams the Pod response."""
+    """Launch a background task that streams the agent response."""
     # Cancel any existing stream for this session
     existing = _active_streams.get(session_id)
     if existing and not existing.done():
@@ -49,7 +49,7 @@ async def start_stream(
 
     task = asyncio.create_task(
         _run_stream(
-            session_id, namespace,
+            session_id, agent_id,
             agent_model_config, agent_instruction,
             agent_tools, agent_mcp_servers, agent_policy,
             content, sender_id,
@@ -68,15 +68,15 @@ def is_streaming(session_id: str) -> bool:
     return task is not None and not task.done()
 
 
-async def cancel_stream(session_id: str, namespace: str | None = None) -> bool:
-    """Cancel an active stream and abort the runtime Pod's SDK call."""
+async def cancel_stream(session_id: str, agent_id: str | None = None) -> bool:
+    """Cancel an active stream and abort the agent's session."""
     task = _active_streams.get(session_id)
     if not task or task.done():
         return False
 
-    # 1. Send abort request to the runtime Pod via Controller
-    if namespace:
-        await controller_client.abort_stream(namespace, session_id)
+    # 1. Send abort request to the agent via controller
+    if agent_id:
+        await agent_controller.abort_session(agent_id, session_id)
 
     # 2. Cancel the asyncio background task
     task.cancel()
@@ -112,7 +112,7 @@ async def cancel_stream(session_id: str, namespace: str | None = None) -> bool:
 
 async def _run_stream(
     session_id: str,
-    namespace: str,
+    agent_id: str,
     agent_model_config: dict,
     agent_instruction: str,
     agent_tools: list,
@@ -121,11 +121,32 @@ async def _run_stream(
     content: str,
     sender_id: str,
 ) -> None:
-    """Execute the Pod-forwarding stream as a background task."""
+    """Execute the agent response stream as a background task."""
     session_uuid = uuid.UUID(session_id)
 
     await redis_service.set_stream_status(session_id, "streaming")
     await redis_service.set_session_status(session_id, "streaming")
+
+    # Ensure agent is running before streaming (handles pod-killed-while-chatting case)
+    try:
+        await agent_controller.ensure_agent_running(
+            agent_id=agent_id,
+            owner_id="",  # Not needed for re-activation
+            config={
+                "instruction": agent_instruction,
+                "tools": agent_tools,
+                "mcp_servers": agent_mcp_servers,
+            },
+        )
+        ready = await agent_controller.wait_for_agent_ready(agent_id, timeout=90)
+        if not ready:
+            error_event = {"type": "error", "message": "Agent did not become ready in time"}
+            await redis_service.publish_message(session_id, {**error_event, "_sender": sender_id})
+            await redis_service.set_stream_status(session_id, "error")
+            await redis_service.set_session_status(session_id, "idle")
+            return
+    except Exception:
+        logger.warning("Failed to ensure agent running for session %s", session_id, exc_info=True)
 
     full_response = ""
     blocks_meta: list[dict] = []  # Ordered blocks (text + tool_call) for UI replay
@@ -133,16 +154,16 @@ async def _run_stream(
     tool_results: dict[str, str] = {}  # tool_use_id → result content
 
     try:
-        if not namespace:
-            placeholder = "[Agent Pod not running — runtime container needed for inference.]"
+        stream_url = agent_controller.get_stream_url(agent_id, session_id)
+
+        if not stream_url:
+            placeholder = "[Agent not running — runtime container needed for inference.]"
             chunk_event = {"type": "chunk", "content": placeholder}
             await redis_service.append_stream_chunk(session_id, chunk_event)
             await redis_service.publish_message(session_id, chunk_event)
             full_response = placeholder
         else:
             # Stream via Controller's SSE proxy
-            stream_url = controller_client.get_stream_url(namespace)
-
             async with httpx.AsyncClient() as client:
                 async with client.stream(
                     "POST",

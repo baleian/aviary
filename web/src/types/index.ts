@@ -4,7 +4,6 @@ export interface User {
   email: string;
   display_name: string;
   avatar_url?: string;
-  is_platform_admin: boolean;
   created_at: string;
 }
 
@@ -26,11 +25,9 @@ export interface Agent {
   model_config: ModelConfig;
   tools: string[];
   mcp_servers: McpServer[];
-  policy: AgentPolicy;
   visibility: "public" | "team" | "private";
   category?: string;
   icon?: string;
-  namespace?: string;
   status: "active" | "disabled" | "deleted";
   created_at: string;
   updated_at: string;
@@ -47,30 +44,6 @@ export interface McpServer {
   name: string;
   command: string;
   args: string[];
-}
-
-export interface EgressPort {
-  port: number;
-  protocol: "TCP" | "UDP";
-}
-
-export interface EgressRule {
-  name: string;
-  cidr?: string;
-  domain?: string;
-  ports: EgressPort[];
-}
-
-export interface AgentPolicy {
-  maxConcurrentSessions: number;
-  sessionTimeout: number;
-  maxTokensPerTurn: number;
-  maxMemoryPerSession: string;
-  maxCpuPerSession: string;
-  allowedEgress: EgressRule[];
-  allowShellExec: boolean;
-  allowFileWrite: boolean;
-  containerImage: string;
 }
 
 export interface Session {

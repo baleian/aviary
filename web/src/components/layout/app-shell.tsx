@@ -307,11 +307,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <p className="truncate text-xs font-medium text-foreground/80">
                   {user?.display_name || user?.email}
                 </p>
-                {user?.is_platform_admin && (
-                  <span className="text-[9px] font-semibold uppercase tracking-wider text-primary">
-                    Admin
-                  </span>
-                )}
               </div>
               <Button
                 variant="ghost"

@@ -123,26 +123,26 @@ app.dependency_overrides[get_db] = _override_get_db
 # ── Auth fixtures ─────────────────────────────────────────────
 
 @pytest.fixture
-def admin_claims() -> TokenClaims:
-    return TokenClaims(
-        sub="admin-sub-001", email="admin@test.com",
-        display_name="Admin User", roles=["platform_admin"], groups=["engineering"],
-    )
-
-
-@pytest.fixture
 def user1_claims() -> TokenClaims:
     return TokenClaims(
-        sub="user1-sub-002", email="user1@test.com",
-        display_name="User One", roles=[], groups=["engineering", "product"],
+        sub="user1-sub-001", email="user1@test.com",
+        display_name="User One", roles=[], groups=["engineering"],
     )
 
 
 @pytest.fixture
 def user2_claims() -> TokenClaims:
     return TokenClaims(
-        sub="user2-sub-003", email="user2@test.com",
-        display_name="User Two", roles=[], groups=["data-science"],
+        sub="user2-sub-002", email="user2@test.com",
+        display_name="User Two", roles=[], groups=["engineering", "product"],
+    )
+
+
+@pytest.fixture
+def user3_claims() -> TokenClaims:
+    return TokenClaims(
+        sub="user3-sub-003", email="user3@test.com",
+        display_name="User Three", roles=[], groups=["data-science"],
     )
 
 
@@ -153,7 +153,7 @@ _TOKEN_CLAIMS: dict[str, TokenClaims] = {}
 def _setup_auth_override():
     """Install a single get_current_user override that dispatches by Bearer token."""
     from app.auth.dependencies import get_current_user, _upsert_user
-    from fastapi import Depends, Request
+    from fastapi import Depends
     from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
     from sqlalchemy import select
 
@@ -188,11 +188,6 @@ def _make_client(claims: TokenClaims, token: str) -> AsyncClient:
 
 
 @pytest.fixture
-def admin_client(admin_claims) -> AsyncClient:
-    return _make_client(admin_claims, "test-token-admin")
-
-
-@pytest.fixture
 def user1_client(user1_claims) -> AsyncClient:
     return _make_client(user1_claims, "test-token-user1")
 
@@ -200,3 +195,8 @@ def user1_client(user1_claims) -> AsyncClient:
 @pytest.fixture
 def user2_client(user2_claims) -> AsyncClient:
     return _make_client(user2_claims, "test-token-user2")
+
+
+@pytest.fixture
+def user3_client(user3_claims) -> AsyncClient:
+    return _make_client(user3_claims, "test-token-user3")
