@@ -74,7 +74,7 @@ Aviary is an enterprise platform where users can create, configure, and use purp
        └───────────────┘  └──────────────┘  └────────────────┘
 ```
 
-The platform separates user-facing operations (**API Server**) from infrastructure management (**Admin Console**). **Platform Services** (Inference Router, Credential Proxy) are stateless HTTP proxies that run outside K8s. **Agent Controller** runs inside K8s (platform namespace) and serves as the single gateway for all K8s operations. **Egress Proxy** runs inside K8s for pod IP resolution and NetworkPolicy enforcement.
+**API Server** handles user-facing operations (auth, chat, agent config). **Admin Console** edits infrastructure configuration (policies, deployments). **Agent Controller** manages runtime resources, auto-scaling, and idle cleanup inside K8s. **Egress Proxy** enforces per-agent outbound traffic rules.
 
 ## Key Features
 
