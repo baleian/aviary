@@ -43,6 +43,10 @@ const STATUS_STYLES: Record<ConnectionStatus, { dot: string; text: string }> = {
   disconnected: { dot: "bg-muted-foreground/50", text: "text-muted-foreground" },
 };
 
+// Statuses that resolve immediately (no delay)
+const IMMEDIATE_STATUSES = new Set<ConnectionStatus>(["ready", "offline", "disconnected"]);
+const STATUS_SHOW_DELAY = 500; // ms before showing intermediate states
+
 export default function ChatPage() {
   const { user } = useAuth();
   const params = useParams();
@@ -52,6 +56,7 @@ export default function ChatPage() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [loading, setLoading] = useState(true);
   const [connStatus, setConnStatus] = useState<ConnectionStatus>("connecting");
+  const [visibleStatus, setVisibleStatus] = useState<ConnectionStatus | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -60,6 +65,29 @@ export default function ChatPage() {
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [editingTitle, setEditingTitle] = useState("");
   const titleInputRef = useRef<HTMLInputElement>(null);
+
+  // Debounce intermediate statuses so fast connections don't flicker
+  const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (IMMEDIATE_STATUSES.has(connStatus)) {
+      if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+      setVisibleStatus(connStatus);
+    } else {
+      // Only show intermediate status after a delay
+      if (!statusTimerRef.current) {
+        statusTimerRef.current = setTimeout(() => {
+          statusTimerRef.current = null;
+          setVisibleStatus(connStatus);
+        }, STATUS_SHOW_DELAY);
+      }
+    }
+    return () => {
+      if (statusTimerRef.current) {
+        clearTimeout(statusTimerRef.current);
+        statusTimerRef.current = null;
+      }
+    };
+  }, [connStatus]);
 
   const isReady = connStatus === "ready";
   const isInputDisabled = !isReady || isStreaming;
@@ -90,6 +118,7 @@ export default function ChatPage() {
     createSessionWebSocket(
       session.id,
       (msg: WSMessage) => {
+        if (cancelled) return;
         switch (msg.type) {
           case "status":
             setConnStatus(msg.status);
@@ -254,7 +283,10 @@ export default function ChatPage() {
     );
   }
 
-  const statusStyle = STATUS_STYLES[connStatus];
+  // Use visibleStatus for all UI rendering (debounced intermediate states)
+  const displayStatus = visibleStatus ?? "ready";
+  const statusStyle = STATUS_STYLES[displayStatus];
+  const showConnecting = !isReady && visibleStatus !== null && !IMMEDIATE_STATUSES.has(displayStatus);
 
   return (
     <div className="flex h-full flex-col">
@@ -302,29 +334,29 @@ export default function ChatPage() {
             )}
           </div>
           <div className="flex items-center gap-2">
-            <span className={`h-2 w-2 rounded-full ${statusStyle.dot}`} />
-            <span className={`text-xs font-medium ${statusStyle.text}`}>{STATUS_LABELS[connStatus]}</span>
+            <span className={`h-2 w-2 rounded-full transition-colors duration-300 ${statusStyle.dot}`} />
+            <span className={`text-xs font-medium transition-colors duration-300 ${statusStyle.text}`}>{STATUS_LABELS[displayStatus]}</span>
           </div>
         </div>
       </header>
 
-      {/* Status banners */}
-      {!isReady && connStatus !== "disconnected" && connStatus !== "offline" && (
-        <div className="shrink-0 border-b border-warning/10 bg-warning/5 px-6 py-2.5">
+      {/* Status banners — only shown after debounce delay for intermediate states */}
+      {showConnecting && (
+        <div className="shrink-0 border-b border-warning/10 bg-warning/5 px-6 py-2.5 animate-fade-in">
           <div className="mx-auto flex max-w-4xl items-center justify-center gap-2">
             <svg className="h-4 w-4 animate-spin text-warning" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
-            <span className="text-xs text-warning">{STATUS_LABELS[connStatus]}{statusMessage && ` — ${statusMessage}`}</span>
+            <span className="text-xs text-warning">{STATUS_LABELS[displayStatus]}{statusMessage && ` — ${statusMessage}`}</span>
           </div>
         </div>
       )}
-      {connStatus === "offline" && (
+      {displayStatus === "offline" && (
         <div className="shrink-0 border-b border-destructive/10 bg-destructive/5 px-6 py-2.5">
           <div className="mx-auto flex max-w-4xl items-center justify-center gap-2">
             <span className="text-xs text-destructive">Agent is offline{statusMessage && ` — ${statusMessage}`}</span>
           </div>
         </div>
       )}
-      {connStatus === "disconnected" && (
+      {displayStatus === "disconnected" && (
         <div className="shrink-0 border-b border-border/30 bg-secondary/50 px-6 py-2.5">
           <div className="mx-auto flex max-w-4xl items-center justify-center">
             <span className="text-xs text-muted-foreground">Connection lost. Refresh to reconnect.</span>
