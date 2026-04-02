@@ -229,7 +229,7 @@ for line in sys.stdin:
     fi
   else
     info "Using Python for WebSocket test"
-    uv run --with websockets python3 -c "
+    uv run python -c "
 import asyncio, json, sys, websockets
 
 async def ws_chat():
