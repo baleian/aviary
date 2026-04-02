@@ -15,6 +15,13 @@ dependencies = [
     "redis[hiredis]>=5.2.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24.0",
+    "aiosqlite>=0.20.0",
+]
+
 [build-system]
 requires = ["setuptools>=75.0"]
 build-backend = "setuptools.build_meta"
@@ -22,3 +29,6 @@ build-backend = "setuptools.build_meta"
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
