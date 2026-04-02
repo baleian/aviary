@@ -127,6 +127,27 @@ async def _run_stream(
     await redis_service.set_stream_status(session_id, "streaming")
     await redis_service.set_session_status(session_id, "streaming")
 
+    # Ensure agent is running before streaming (handles pod-killed-while-chatting case)
+    try:
+        await agent_controller.ensure_agent_running(
+            agent_id=agent_id,
+            owner_id="",  # Not needed for re-activation
+            config={
+                "instruction": agent_instruction,
+                "tools": agent_tools,
+                "mcp_servers": agent_mcp_servers,
+            },
+        )
+        ready = await agent_controller.wait_for_agent_ready(agent_id, timeout=90)
+        if not ready:
+            error_event = {"type": "error", "message": "Agent did not become ready in time"}
+            await redis_service.publish_message(session_id, {**error_event, "_sender": sender_id})
+            await redis_service.set_stream_status(session_id, "error")
+            await redis_service.set_session_status(session_id, "idle")
+            return
+    except Exception:
+        logger.warning("Failed to ensure agent running for session %s", session_id, exc_info=True)
+
     full_response = ""
     blocks_meta: list[dict] = []  # Ordered blocks (text + tool_call) for UI replay
     current_text = ""  # Accumulates text chunks between tool calls
