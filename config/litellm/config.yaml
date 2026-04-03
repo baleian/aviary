@@ -20,7 +20,7 @@ model_list:
   - model_name: "hosted_vllm/cyankiwi/gemma-4-31B-it-AWQ-4bit"
     litellm_params:
       model: "hosted_vllm/cyankiwi/gemma-4-31B-it-AWQ-4bit"
-      api_base: "http://host.docker.internal:8191"
+      api_base: "http://host.docker.internal:8191/v1"
 
   # --- Bedrock ---
   - model_name: "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0"
