@@ -13,7 +13,6 @@ Architecture:
 
 import json
 import logging
-import os
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -69,8 +68,11 @@ async def proxy_messages(request: Request):
         "x-sampling-temperature": ("temperature", float),
         "x-sampling-top-p": ("top_p", float),
         "x-sampling-top-k": ("top_k", int),
-        "x-sampling-num-ctx": ("num_ctx", int),
     }
+    # num_ctx is Ollama-only
+    if backend == "ollama":
+        _SAMPLING_HEADERS["x-sampling-num-ctx"] = ("num_ctx", int)
+
     has_sampling_headers = False
     for header, (body_key, cast) in _SAMPLING_HEADERS.items():
         val = request.headers.get(header)
@@ -91,13 +93,10 @@ async def proxy_messages(request: Request):
 
     logger.info("Routing model=%s → backend=%s stream=%s", model, backend, is_stream)
 
-    if backend == "vllm":
-        return await _proxy_vllm(body, request.headers)
-
     if backend == "bedrock":
         return await _proxy_bedrock(body, request.headers)
 
-    # Claude and Ollama both speak Anthropic Messages API — transparent proxy
+    # Claude, Ollama, and vLLM all speak Anthropic Messages API — transparent proxy
     upstream_url = get_proxy_url(backend)
     target_url = f"{upstream_url}/v1/messages"
 
@@ -113,6 +112,8 @@ async def proxy_messages(request: Request):
         upstream_headers["x-api-key"] = api_key or ANTHROPIC_API_KEY
     elif backend == "ollama":
         upstream_headers["x-api-key"] = "ollama"
+    elif backend == "vllm":
+        upstream_headers["x-api-key"] = "vllm"
 
     # Forward any anthropic-beta header (for extended thinking, etc.)
     beta = request.headers.get("anthropic-beta")
@@ -126,7 +127,7 @@ async def proxy_messages(request: Request):
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
     else:
-        async with httpx.AsyncClient(timeout=300) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(target_url, headers=upstream_headers, content=body_bytes)
             return Response(
                 content=resp.content,
@@ -137,84 +138,10 @@ async def proxy_messages(request: Request):
 
 async def _stream_proxy(url: str, headers: dict, body: bytes):
     """Stream an upstream SSE response, yielding each line as-is."""
-    async with httpx.AsyncClient(timeout=300) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=120, write=10, pool=10)) as client:
         async with client.stream("POST", url, headers=headers, content=body) as resp:
             async for chunk in resp.aiter_bytes():
                 yield chunk
-
-
-async def _proxy_vllm(body: dict, req_headers):
-    """Translate Anthropic Messages API → OpenAI Chat Completions API for vLLM,
-    then translate the response back to Anthropic format."""
-    # Convert Anthropic messages to OpenAI format
-    oai_messages = []
-    system = body.get("system")
-    if system:
-        if isinstance(system, str):
-            oai_messages.append({"role": "system", "content": system})
-        elif isinstance(system, list):
-            text = " ".join(b.get("text", "") for b in system if b.get("type") == "text")
-            oai_messages.append({"role": "system", "content": text})
-
-    for msg in body.get("messages", []):
-        content = msg.get("content", "")
-        if isinstance(content, list):
-            # Extract text blocks
-            text = " ".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
-            content = text
-        oai_messages.append({"role": msg["role"], "content": content})
-
-    oai_body = {
-        "model": body["model"],
-        "messages": oai_messages,
-        "temperature": body.get("temperature", 0.7),
-        "stream": body.get("stream", False),
-    }
-
-    if body.get("stream"):
-        return StreamingResponse(
-            _vllm_stream_to_anthropic(oai_body),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache"},
-        )
-    else:
-        async with httpx.AsyncClient(timeout=300) as client:
-            resp = await client.post(f"{VLLM_URL}/v1/chat/completions", json=oai_body)
-            oai_resp = resp.json()
-            # Convert to Anthropic format
-            anthropic_resp = {
-                "id": oai_resp.get("id", ""),
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "text", "text": oai_resp["choices"][0]["message"]["content"]}],
-                "model": body["model"],
-                "stop_reason": "end_turn",
-            }
-            return Response(content=json.dumps(anthropic_resp), media_type="application/json")
-
-
-async def _vllm_stream_to_anthropic(oai_body: dict):
-    """Stream vLLM OpenAI response, converting to Anthropic SSE format."""
-    # Emit Anthropic-format event stream
-    yield f"event: message_start\ndata: {json.dumps({'type': 'message_start', 'message': {'id': 'msg_router', 'type': 'message', 'role': 'assistant', 'content': [], 'model': oai_body['model']}})}\n\n"
-    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
-
-    async with httpx.AsyncClient(timeout=300) as client:
-        async with client.stream("POST", f"{VLLM_URL}/v1/chat/completions", json=oai_body) as resp:
-            async for line in resp.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                data_str = line[6:]
-                if data_str.strip() == "[DONE]":
-                    break
-                chunk = json.loads(data_str)
-                text = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                if text:
-                    yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': text}})}\n\n"
-
-    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
-    yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': 'end_turn'}})}\n\n"
-    yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
 
 
 async def _proxy_bedrock(body: dict, req_headers):
@@ -266,10 +193,18 @@ async def list_models(backend: str):
             logger.warning("Ollama not reachable: %s", e)
             return {"models": [], "error": "Ollama not reachable"}
     elif backend == "vllm":
-        # TODO: Fetch from vLLM API (GET /v1/models) when a serving engine is available.
-        return {"models": [
-            {"id": "meta-llama/Llama-3.3-70B-Instruct", "name": "meta-llama/Llama-3.3-70B-Instruct"},
-        ]}
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(f"{VLLM_URL}/v1/models")
+                resp.raise_for_status()
+                models = [
+                    {"id": m["id"], "name": m["id"], "max_model_len": m.get("max_model_len")}
+                    for m in resp.json().get("data", [])
+                ]
+                return {"models": models}
+        except Exception as e:
+            logger.warning("vLLM not reachable: %s", e)
+            return {"models": [], "error": "vLLM not reachable"}
     return {"models": []}
 
 
@@ -331,12 +266,23 @@ async def get_model_info(backend: str, model: str):
             "capabilities": ["vision", "tools"],
         }
     elif backend == "vllm":
+        max_ctx = None
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(f"{VLLM_URL}/v1/models")
+                resp.raise_for_status()
+                for m in resp.json().get("data", []):
+                    if m["id"] == model:
+                        max_ctx = m.get("max_model_len")
+                        break
+        except Exception:
+            pass
         return {
             "model": model,
             "backend": backend,
             "defaults": {"temperature": 0.7, "top_p": None, "top_k": None, "num_ctx": None},
-            "limits": {"max_context_length": None},
-            "capabilities": [],
+            "limits": {"max_context_length": max_ctx},
+            "capabilities": ["vision", "tools"],
         }
     else:
         raise HTTPException(status_code=400, detail=f"Unknown backend: {backend}")

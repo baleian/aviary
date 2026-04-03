@@ -7,14 +7,14 @@ Backend is determined by the X-Backend header (required), set via
 ANTHROPIC_CUSTOM_HEADERS in the runtime Pod environment.
 Supported backends: claude, ollama, vllm, bedrock.
 
-Claude and Ollama both speak the Anthropic Messages API natively,
-so requests are proxied as-is. vLLM requires translation to OpenAI format.
+Claude, Ollama, and vLLM (gemma4 image) all speak the Anthropic Messages API
+natively, so requests are proxied as-is.
 """
 
 import os
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-VLLM_URL = os.environ.get("VLLM_URL", "http://localhost:8001")
+VLLM_URL = os.environ.get("VLLM_URL", "http://localhost:8191")
 CLAUDE_API_URL = os.environ.get("CLAUDE_API_URL", "https://api.anthropic.com")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 BEDROCK_REGION = os.environ.get("BEDROCK_REGION", "ap-northeast-2")
@@ -25,7 +25,7 @@ VALID_BACKENDS = {"claude", "ollama", "vllm", "bedrock"}
 DEFAULT_MODELS: dict[str, str] = {
     "claude": os.environ.get("DEFAULT_MODEL_CLAUDE", "claude-sonnet-4-6"),
     "ollama": os.environ.get("DEFAULT_MODEL_OLLAMA", "gemma4:26b"),
-    "vllm": os.environ.get("DEFAULT_MODEL_VLLM", "meta-llama/Llama-3.3-70B-Instruct"),
+    "vllm": os.environ.get("DEFAULT_MODEL_VLLM", "cyankiwi/gemma-4-26B-A4B-it-AWQ-4bit"),
     "bedrock": os.environ.get("DEFAULT_MODEL_BEDROCK", "anthropic.claude-sonnet-4-5-20250929-v1:0"),
 }
 
@@ -75,6 +75,24 @@ async def fetch_default_model_params():
             }
         except Exception:
             pass  # Ollama may not be running at startup
+
+    # vLLM
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{VLLM_URL}/v1/models")
+            resp.raise_for_status()
+            models = resp.json().get("data", [])
+            if models:
+                model_id = models[0]["id"]
+                # Query max_model_len from /v1/models detail
+                max_len = models[0].get("max_model_len")
+                DEFAULT_MODEL_PARAMS["vllm"] = {
+                    k: v for k, v in {
+                        "max_model_len": max_len,
+                    }.items() if v is not None
+                }
+    except Exception:
+        pass  # vLLM may not be running at startup
 
 
 def resolve_model(model: str, backend: str) -> str:

@@ -40,6 +40,7 @@ export interface ModelConfig {
   top_p?: number;
   top_k?: number;
   num_ctx?: number;
+  max_output_tokens?: number;
 }
 
 export interface ModelInfo {

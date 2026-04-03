@@ -11,7 +11,8 @@
 #   6. Cleanup (optional)
 #
 # Usage:
-#   ./scripts/smoke-test.sh                  # Full test
+#   ./scripts/smoke-test.sh                  # Full test (default: ollama)
+#   ./scripts/smoke-test.sh --backend vllm   # Use vLLM backend
 #   ./scripts/smoke-test.sh --no-cleanup     # Keep test agent after run
 #   ./scripts/smoke-test.sh --skip-chat      # Skip WebSocket chat (API-only)
 # ─────────────────────────────────────────────────────────
@@ -25,13 +26,16 @@ CLIENT_ID="aviary-web"
 TEST_USER="${TEST_USER:-user1@test.com}"
 TEST_PASSWORD="${TEST_PASSWORD:-password}"
 WS_TIMEOUT="${WS_TIMEOUT:-120}"   # seconds to wait for agent response
+BACKEND="${SMOKE_BACKEND:-ollama}"
 CLEANUP=true
 SKIP_CHAT=false
 
-for arg in "$@"; do
-  case "$arg" in
-    --no-cleanup) CLEANUP=false ;;
-    --skip-chat)  SKIP_CHAT=true ;;
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-cleanup) CLEANUP=false; shift ;;
+    --skip-chat)  SKIP_CHAT=true; shift ;;
+    --backend)    BACKEND="$2"; shift 2 ;;
+    *)            shift ;;
   esac
 done
 
@@ -114,7 +118,7 @@ else
 fi
 
 # ── 3. Create Test Agent ───────────────────────────────
-header "3/6" "Create test agent (ollama/default)"
+header "3/6" "Create test agent (${BACKEND}/default)"
 
 SLUG="smoke-test-$(date +%s)"
 AGENT_PAYLOAD=$(cat <<EOF
@@ -124,7 +128,7 @@ AGENT_PAYLOAD=$(cat <<EOF
   "description": "Automated smoke test — safe to delete",
   "instruction": "You are a test assistant. Reply briefly to any message.",
   "model_config": {
-    "backend": "ollama",
+    "backend": "${BACKEND}",
     "model": "default"
   },
   "tools": [],

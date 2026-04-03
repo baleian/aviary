@@ -133,6 +133,9 @@ export default function AgentDetailPage() {
               {agent.model_config.num_ctx != null && (
                 <InfoRow label="Context Window" value={agent.model_config.num_ctx >= 1024 ? `${Math.round(agent.model_config.num_ctx / 1024)}K` : String(agent.model_config.num_ctx)} />
               )}
+              {agent.model_config.max_output_tokens != null && (
+                <InfoRow label="Max Output Tokens" value={`${(agent.model_config.max_output_tokens / 1000).toFixed(0)}K`} />
+              )}
             </CardContent>
           </Card>
 

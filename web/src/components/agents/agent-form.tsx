@@ -21,6 +21,7 @@ interface AgentFormData {
     top_p: number | null;
     top_k: number | null;
     num_ctx: number | null;
+    max_output_tokens: number;
   };
   tools: string[];
   visibility: string;
@@ -45,6 +46,7 @@ const defaultData: AgentFormData = {
     top_p: null,
     top_k: null,
     num_ctx: null,
+    max_output_tokens: 4000,
   },
   tools: [],
   visibility: "private",
@@ -187,7 +189,7 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
   const availableCtxSteps = CTX_STEPS.filter((s) => !maxCtx || s <= maxCtx);
   const availableCtxLabels = CTX_LABELS.slice(0, availableCtxSteps.length);
   const isSpecificModel = data.model_config.model !== "default";
-  const showSamplingControls = isSpecificModel && data.model_config.backend !== "claude";
+  const showSamplingControls = isSpecificModel && data.model_config.backend === "ollama";
 
   return (
     <form onSubmit={handleSubmit} className="space-y-8">
@@ -282,8 +284,8 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
                 }}
               >
                 <option value="claude">Claude API</option>
-                <option value="ollama">Ollama (Local)</option>
                 <option value="vllm">vLLM (Local)</option>
+                <option value="ollama">Ollama (Local)</option>
               </Select>
             </div>
             <div className="space-y-2">
@@ -322,8 +324,8 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
             </div>
           )}
 
-          {/* Context Window (non-Claude) */}
-          {showSamplingControls && (
+          {/* Context Window (Ollama only) */}
+          {showSamplingControls && data.model_config.backend === "ollama" && (
             <div className="space-y-2">
               <Label>Context Window</Label>
               <div className="flex items-center gap-3">
@@ -439,6 +441,30 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
                   <p className="text-[11px] text-muted-foreground/60">Top-K sampling (0 = disabled)</p>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* Max Output Tokens (all backends, always visible) */}
+          {(
+            <div className="space-y-2 border-t border-border/40 pt-5">
+              <Label>Max Output Tokens</Label>
+              <div className="flex items-center gap-3">
+                <input
+                  type="range"
+                  min={1000}
+                  max={32000}
+                  step={1000}
+                  value={data.model_config.max_output_tokens ?? 4000}
+                  onChange={(e) => updateModelConfig("max_output_tokens", parseInt(e.target.value))}
+                  className="flex-1 h-2 rounded-full appearance-none bg-secondary cursor-pointer accent-primary"
+                />
+                <span className="w-20 text-center text-sm font-mono text-foreground">
+                  {((data.model_config.max_output_tokens ?? 4000) / 1000).toFixed(0)}K
+                </span>
+              </div>
+              <p className="text-[11px] text-muted-foreground/60">
+                Max tokens per response. Lower values save context for local models.
+              </p>
             </div>
           )}
         </div>

@@ -25,6 +25,7 @@ NC='\033[0m'; BOLD='\033[1m'
 
 TARGET="${1:-help}"
 RUN_SMOKE=false
+SMOKE_BACKEND=""
 
 # Load .env for registry settings (UV_INDEX_URL, NPM_CONFIG_REGISTRY)
 if [ -f "$PROJECT_DIR/.env" ]; then
@@ -39,8 +40,17 @@ BUILD_ARGS=()
 [ -n "${UV_INDEX_URL:-}" ]        && BUILD_ARGS+=(--build-arg "UV_INDEX_URL=$UV_INDEX_URL")
 [ -n "${NPM_CONFIG_REGISTRY:-}" ] && BUILD_ARGS+=(--build-arg "NPM_CONFIG_REGISTRY=$NPM_CONFIG_REGISTRY")
 
+NO_SMOKE=false
+
 for arg in "$@"; do
-  [ "$arg" = "--smoke" ] && RUN_SMOKE=true
+  if [ "$arg" = "--smoke" ]; then
+    RUN_SMOKE=true
+  elif [ "$arg" = "--no-smoke" ]; then
+    NO_SMOKE=true
+  elif [ "${prev_arg:-}" = "--backend" ]; then
+    SMOKE_BACKEND="$arg"
+  fi
+  prev_arg="$arg"
 done
 
 load_k8s_image() {
@@ -109,7 +119,7 @@ case "$TARGET" in
     echo -e "${BOLD}Full rebuild (down -v + setup-dev.sh)...${NC}"
     docker compose down -v
     ./scripts/setup-dev.sh
-    RUN_SMOKE=true
+    [ "$NO_SMOKE" = false ] && RUN_SMOKE=true
     ;;
   smoke)
     RUN_SMOKE=true
@@ -128,13 +138,19 @@ case "$TARGET" in
     echo "  smoke              Just run smoke test"
     echo ""
     echo "Options:"
-    echo "  --smoke      Run smoke test after rebuild"
+    echo "  --smoke              Run smoke test after rebuild (requires --backend)"
+    echo "  --no-smoke           Skip smoke test (for 'full' target)"
+    echo "  --backend <name>     Inference backend for smoke test (ollama|vllm, required)"
     exit 0
     ;;
 esac
 
 if [ "$RUN_SMOKE" = true ]; then
+  if [ -z "$SMOKE_BACKEND" ]; then
+    echo -e "${RED}ERROR:${NC} --backend <ollama|vllm> is required when running smoke test"
+    exit 1
+  fi
   echo ""
-  echo -e "${BOLD}Running smoke test...${NC}"
-  ./scripts/smoke-test.sh --no-cleanup
+  echo -e "${BOLD}Running smoke test (backend=${SMOKE_BACKEND})...${NC}"
+  ./scripts/smoke-test.sh --no-cleanup --backend "$SMOKE_BACKEND"
 fi

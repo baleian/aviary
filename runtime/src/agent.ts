@@ -65,6 +65,7 @@ interface ModelConfig {
   top_p?: number;
   top_k?: number;
   num_ctx?: number;
+  max_output_tokens?: number;
 }
 
 export function loadAgentConfig(): AgentConfig {
@@ -186,6 +187,9 @@ export async function* processMessage(
     ].join("\n"),
     SESSION_WORKSPACE: workspace,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+    ...(mc.max_output_tokens != null
+      ? { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(mc.max_output_tokens) }
+      : {}),
     ...Object.fromEntries(MODEL_TIER_KEYS.map((k) => [k, model])),
     ...Object.fromEntries(
       PASSTHROUGH_KEYS.filter((k) => process.env[k]).map((k) => [k, process.env[k]!]),
@@ -199,6 +203,7 @@ export async function* processMessage(
     pathToClaudeCodeExecutable: CLAUDE_CLI_PATH,
     permissionMode: "bypassPermissions" as const,
     allowedTools: agentConfig.tools,
+    disallowedTools: ["WebSearch"],
     mcpServers: agentConfig.mcp_servers as Record<string, any> | undefined,
     env,
     // TS SDK doesn't expose sessionId as an option, but CLI supports --session-id.

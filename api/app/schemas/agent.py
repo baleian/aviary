@@ -10,6 +10,7 @@ class ModelConfig(BaseModel):
     top_p: float | None = None
     top_k: int | None = None
     num_ctx: int | None = None
+    max_output_tokens: int | None = Field(None, ge=1000, le=32000)
 
 
 class McpServerConfig(BaseModel):
