@@ -130,13 +130,3 @@ async def get_pod_metrics(namespace: str) -> dict:
     resp = await _get_client().get(f"/v1/pods/{namespace}/metrics")
     resp.raise_for_status()
     return resp.json()
-
-
-# ── Egress ────────────────────────────────────────────────────
-
-
-async def invalidate_egress_cache(agent_id: str) -> None:
-    try:
-        await _get_client().post(f"/v1/egress/invalidate/{agent_id}")
-    except Exception:
-        logger.debug("Egress cache invalidation failed for agent %s (non-critical)", agent_id)

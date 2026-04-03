@@ -56,14 +56,14 @@ spec:
             - containerPort: 8080
               name: proxy
             - containerPort: 8081
-              name: admin
+              name: health
           env:
             - name: PROXY_PORT
               value: "8080"
-            - name: ADMIN_PORT
+            - name: HEALTH_PORT
               value: "8081"
-            - name: REDIS_URL
-              value: "redis://host.k8s.internal:6379/0"
+            - name: DATABASE_URL
+              value: "postgresql://aviary:aviary@host.k8s.internal:5432/aviary"
           livenessProbe:
             httpGet:
               path: /health
@@ -92,8 +92,4 @@ spec:
     - name: proxy
       port: 8080
       targetPort: 8080
-      protocol: TCP
-    - name: admin
-      port: 8081
-      targetPort: 8081
       protocol: TCP

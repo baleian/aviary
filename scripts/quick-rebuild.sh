@@ -74,6 +74,14 @@ rebuild_egress() {
   docker compose exec -T k8s kubectl rollout restart deployment/egress-proxy -n platform
 }
 
+rebuild_secret_provider() {
+  echo -e "${BOLD}Rebuilding secret-provider...${NC}"
+  docker build "${BUILD_ARGS[@]}" -t aviary-secret-provider:latest ./secret-provider/
+  load_k8s_image "aviary-secret-provider:latest"
+  echo -e "${CYAN}Restarting secret-provider deployment...${NC}"
+  docker compose exec -T k8s kubectl rollout restart deployment/secret-provider -n platform
+}
+
 case "$TARGET" in
   runtime)
     rebuild_runtime
@@ -84,10 +92,14 @@ case "$TARGET" in
   egress)
     rebuild_egress
     ;;
+  secret-provider)
+    rebuild_secret_provider
+    ;;
   k8s)
     rebuild_runtime
     rebuild_agent_supervisor
     rebuild_egress
+    rebuild_secret_provider
     ;;
   compose)
     echo -e "${BOLD}Rebuilding compose services...${NC}"
@@ -109,7 +121,8 @@ case "$TARGET" in
     echo "  runtime            Rebuild runtime image + load to K8s + rolling restart"
     echo "  agent-supervisor   Rebuild agent-supervisor + load to K8s + restart"
     echo "  egress             Rebuild egress-proxy + load to K8s + restart"
-    echo "  k8s                All K8s images (runtime + agent-supervisor + egress)"
+    echo "  secret-provider    Rebuild secret-provider + load to K8s + restart"
+    echo "  k8s                All K8s images (runtime + agent-supervisor + egress + secret-provider)"
     echo "  compose            Rebuild docker compose services (hot-reload)"
     echo "  full               Complete teardown + setup-dev.sh"
     echo "  smoke              Just run smoke test"

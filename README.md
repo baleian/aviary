@@ -30,7 +30,7 @@ Aviary is an enterprise platform where users can create, configure, and use purp
     │           │   │           Platform Services                │
     │           │   │                                            │
     │           │   │  ┌─────────────────┐  ┌──────────────────┐ │
-    │           │   │  │ Inference Router │  │ Credential Proxy │ │
+    │           │   │  │ Inference Router │  │ Secret Provider │ │
     │           │   │  │  (LLM gateway)  │  │  (Vault secrets) │ │
     │           │   │  └────────┬────────┘  └──────────────────┘ │
     │           │   │           │                                 │
@@ -62,7 +62,7 @@ Aviary is an enterprise platform where users can create, configure, and use purp
     │   │  │  PVC: /workspace         │  │  PVC: /workspace    │ │
     │   │  │                          │  │                     │ │
     │   │  │  LLM ──▶ Inference Router│  │                     │ │
-    │   │  │  Secrets ▶ Cred. Proxy   │  │  NetworkPolicy:     │ │
+    │   │  │  Secrets ▶ Secret Prov.   │  │  NetworkPolicy:     │ │
     │   │  │  HTTP ──▶ Egress Proxy   │  │    deny-by-default  │ │
     │   │  └──────────────────────────┘  └─────────────────────┘ │
     │   └────────────────────────────────────────────────────────┘
@@ -70,7 +70,7 @@ Aviary is an enterprise platform where users can create, configure, and use purp
     │  ┌───────────────┐  ┌──────────────┐  ┌────────────────┐
     └─▶│  PostgreSQL    │  │    Redis      │  │   Keycloak     │
        │  DB, sessions  │  │  pub/sub,     │  │   OIDC auth    │
-       │  ACL, agents   │  │  egress rules │  │   team sync    │
+       │  ACL, agents   │  │  presence │  │   team sync    │
        └───────────────┘  └──────────────┘  └────────────────┘
 ```
 
@@ -89,7 +89,7 @@ Aviary is an enterprise platform where users can create, configure, and use purp
 - **OIDC Auth + Team Sync** — Keycloak (dev) / Okta (prod); IdP groups auto-sync to Aviary teams on login
 - **API / Admin Separation** — Separate services for user operations (API) and infrastructure management (Admin Console)
 - **Granular ACL** — Permission resolution with role hierarchy (`viewer` < `user` < `admin` < `owner`)
-- **Credential Proxy** — Secrets never enter session Pods; injected from Vault via a shared proxy
+- **Secret Provider** — Secrets never enter session Pods; injected from Vault via a shared proxy
 - **Real-time Chat** — WebSocket streaming with Redis pub/sub for multi-user shared sessions
 
 ## Tech Stack
@@ -140,7 +140,7 @@ aviary/
 ├── runtime/                 # Agent Runtime (runs in agent Pods)
 │   └── src/                 # claude-agent-sdk harness, session manager
 ├── inference-router/        # LLM Gateway
-├── credential-proxy/        # Secret injection proxy
+├── secret-provider/        # Secret injection proxy
 ├── egress-proxy/            # HTTP/HTTPS egress proxy
 ├── config/                  # Keycloak realm, K3s config
 ├── k8s/platform/            # K8s manifests
@@ -170,7 +170,6 @@ This single command builds all images, starts all services, runs DB migrations, 
 | API Server | http://localhost:8000 |
 | Admin Console | http://localhost:8001 |
 | Inference Router | http://localhost:8090 |
-| Credential Proxy | http://localhost:8091 |
 | Keycloak Admin | http://localhost:8080 (admin/admin) |
 | Vault | http://localhost:8200 |
 
@@ -192,7 +191,7 @@ docker compose logs -f api    # Tail logs
 
 ### Development
 
-Source code is bind-mounted into containers. Edits to `api/`, `web/`, `inference-router/`, and `credential-proxy/` are reflected automatically via hot reload.
+Source code is bind-mounted into containers. Edits to `api/`, `web/`, and `inference-router/` are reflected automatically via hot reload.
 
 ```bash
 # Rebuild after dependency changes
@@ -256,7 +255,7 @@ API and admin tests covering health, agent CRUD, ACL (visibility, grants, permis
 Session Pods never call LLM backends directly. All inference goes through a centralized router that determines the backend from the `X-Backend` header injected by the runtime via `ANTHROPIC_CUSTOM_HEADERS` (e.g., `claude` → Claude API, `ollama` → Ollama). This centralizes API credentials and preserves full claude-agent-sdk capabilities since the router speaks the Anthropic Messages API natively. The API server also queries the inference router for model listing, ensuring a single enforcement point for access control.
 
 ### Egress Proxy
-All outbound HTTP/HTTPS from agent Pods is routed through a centralized forward proxy via `HTTP_PROXY`/`HTTPS_PROXY` environment variables. The proxy identifies the source agent by resolving the pod's IP to its K8s namespace, then enforces per-agent egress policies stored in Redis. Supported rule types: CIDR ranges, exact domains, wildcard domains (`*.example.com`), and catch-all. Policies are deny-by-default and changes take effect immediately via Redis cache invalidation, with no Pod restarts needed.
+All outbound HTTP/HTTPS from agent Pods is routed through a centralized forward proxy via `HTTP_PROXY`/`HTTPS_PROXY` environment variables. The proxy identifies the source agent by resolving the pod's IP to its K8s namespace, then enforces per-agent egress policies. Supported rule types: CIDR ranges, exact domains, wildcard domains (`*.example.com`), and catch-all. Policies are deny-by-default and changes take effect immediately without Pod restarts.
 
 ### Live Agent Config
 Agent configuration (instruction, tools, policy) is passed from the database to the runtime on every message turn. Edits take effect immediately on the next message without restarting Pods or affecting other users' sessions.
@@ -278,7 +277,7 @@ The `claude` CLI binary in PATH is a wrapper script that runs the real binary in
 | `admin` | 8001 | Admin Console (operator-facing, no auth) |
 | `web` | 3000 | Web UI |
 | `inference-router` | 8090 | LLM gateway |
-| `credential-proxy` | 8091 | Secret injection proxy |
+| `secret-provider` | K8s internal | Secret injection (Vault)|
 | `postgres` | 5432 | Database |
 | `redis` | 6379 | Cache, pub/sub, presence |
 | `keycloak` | 8080 | OIDC provider |

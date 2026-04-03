@@ -9,7 +9,7 @@ Multi-tenant AI agent platform. Users create/configure agents via Web UI, each r
 docker compose up -d      # Subsequent: just start services
 ```
 
-Services: Web (`:3000`), API (`:8000`), Admin (`:8001`), Keycloak (`:8080`, admin/admin), Vault (`:8200`), Inference Router (`:8090`), Credential Proxy (`:8091`), Agent Supervisor (`:9000`).
+Services: Web (`:3000`), API (`:8000`), Admin (`:8001`), Keycloak (`:8080`, admin/admin), Vault (`:8200`), Inference Router (`:8090`), Secret Provider (K8s internal), Agent Supervisor (`:9000`).
 Test accounts: `user1@test.com`, `user2@test.com` (all `password`).
 
 ## Architecture
@@ -25,7 +25,7 @@ PostgreSQL / Redis
 
 Platform services (docker compose):
   Inference Router (:8090) → Claude API / Ollama / vLLM / Bedrock
-  Credential Proxy (:8091) → Vault
+  Secret Provider (K8s platform NS) → Vault
 
 Platform services (K8s, platform namespace):
   Agent Supervisor (:9000, NodePort 30900) → K8s API (namespace/deployment/pod management)
@@ -33,7 +33,7 @@ Platform services (K8s, platform namespace):
 
 Agent Pod outbound:
   LLM calls  → Inference Router (host:8090) → Claude API / Ollama / vLLM / Bedrock
-  Secrets    → Credential Proxy (host:8091) → Vault
+  Secrets    → Secret Provider (K8s platform NS) → Vault
   HTTP/HTTPS → Egress Proxy (K8s platform NS, per-agent policy) → External APIs
 ```
 
@@ -43,7 +43,7 @@ Three backend services with distinct roles:
 
 **API Server (`:8000`)** — User-facing. Agent CRUD (config only), OIDC auth, ACL, sessions, chat. Communicates with the Agent Supervisor via an abstract interface (`agent_supervisor.py`) using only `agent_id` and `session_id`. No infrastructure knowledge — does not read or write policy, namespace, deployment, or scaling fields.
 
-**Admin Console (`:8001`)** — Operator-facing. No authentication (local-only). Edits and applies infrastructure configuration: network policies (egress rules), resource allocation, deployment lifecycle (activate/deactivate/restart). Syncs policy changes to Redis (egress-proxy) and K8s (NetworkPolicy) via the supervisor. Includes a built-in web UI (Jinja2 templates).
+**Admin Console (`:8001`)** — Operator-facing. No authentication (local-only). Edits and applies infrastructure configuration: network policies (egress rules), resource allocation, deployment lifecycle (activate/deactivate/restart). Syncs policy changes to K8s (NetworkPolicy) via the supervisor. Egress proxy reads policies directly from DB. Includes a built-in web UI (Jinja2 templates).
 
 **Agent Supervisor (`:9000`)** — Infrastructure manager. Runs inside K8s. Manages all runtime resources: namespace/deployment/service/PVC lifecycle, auto-scaling based on session load, idle cleanup (scale to zero after inactivity). Has DB access for reading agent config (`min_pods`, `max_pods`) and updating `last_activity_at` on every agent request.
 
@@ -52,22 +52,22 @@ Three backend services with distinct roles:
 **Key flows:**
 - Agent creation → API saves config to DB + registers with supervisor (secure defaults) → admin later configures policy/scaling
 - Chat message → WebSocket → API asks supervisor to ensure agent running → Supervisor SSE proxy to agent Pod → claude-agent-sdk → Inference Router → LLM backend
-- Policy edit → Admin updates DB + syncs to Redis (egress-proxy) + updates K8s NetworkPolicy via supervisor. Immediate effect, no Pod restart.
+- Policy edit → Admin updates DB + updates K8s NetworkPolicy via supervisor. Egress proxy reads policy from DB on every request. Immediate effect, no Pod restart.
 - Agent config edit (instruction, tools) → API updates DB only. Passed to runtime on every message request body. Immediate effect, no Pod restart.
 
 **Pod Strategy (agent-per-pod):** Each agent gets a long-running Deployment with 1-N replicas. Multiple sessions share the same Pod(s), isolated by working directory (`/workspace/sessions/{session_id}/`). Pods auto-scale based on session load and are released after 7 days of inactivity (both managed by the agent supervisor).
 
 **Inference Router** (docker compose, `:8090`): All LLM calls go through a centralized proxy. Backend is determined by the `X-Backend` header injected by the runtime via `ANTHROPIC_CUSTOM_HEADERS` (e.g., `claude` → Claude API, `ollama` → Ollama, `vllm` → vLLM, `bedrock` → Bedrock). Speaks Anthropic Messages API so claude-agent-sdk works transparently. API server also queries it for model listing (`/v1/backends/{backend}/models`).
 
-**Credential Proxy** (docker compose, `:8091`): Session Pods never hold secrets. External API calls go through proxy which injects credentials from Vault.
+**Secret Provider** (K8s platform namespace): Session Pods never hold secrets. External API calls go through proxy which injects credentials from Vault.
 
 **Agent Supervisor** (K8s platform namespace, `:9000`): Manages all K8s resources and runtime operations. Has DB access for agent config and activity tracking. Exposes two API layers:
 - **Agent-centric API** (`/v1/agents/{id}/...`) — Used by the API server. Abstract operations: register, run, ready, wait, session message/abort/cleanup. Updates `last_activity_at` on every request. No K8s concepts exposed.
-- **K8s-specific API** (`/v1/namespaces/`, `/v1/deployments/`, `/v1/egress/`) — Used by the admin console. Direct namespace/deployment/NetworkPolicy management.
+- **K8s-specific API** (`/v1/namespaces/`, `/v1/deployments/`) — Used by the admin console. Direct namespace/deployment/NetworkPolicy management.
 
 Runs background tasks: auto-scaling (30s interval, based on pod metrics vs `min_pods`/`max_pods`) and idle cleanup (5min interval, scales to zero when `last_activity_at` exceeds timeout).
 
-**Egress Proxy** (K8s platform namespace): All outbound HTTP/HTTPS from agent Pods is routed through a centralized forward proxy via `HTTP_PROXY`/`HTTPS_PROXY` env vars. Stays in K8s because it needs pod IP → namespace resolution for agent identification. Identifies source agent by resolving pod IP → K8s namespace → agent ID. Per-agent egress policies stored in Redis (`egress:{agent_id}`). Supports CIDR, exact domain, wildcard domain (`*.example.com`, `.example.com`), and catch-all (`*`). Deny-by-default. Admin API on port 8081 (`/health`, `/invalidate/{agent_id}`). CIDR rules are also enforced at NetworkPolicy level for non-HTTP traffic.
+**Egress Proxy** (K8s platform namespace): All outbound HTTP/HTTPS from agent Pods is routed through a centralized forward proxy via `HTTP_PROXY`/`HTTPS_PROXY` env vars. Stays in K8s because it needs pod IP → namespace resolution for agent identification. Identifies source agent by resolving pod IP → K8s namespace → agent ID. Per-agent egress policies read directly from PostgreSQL (`agents.policy` column) on every request. Supports CIDR, exact domain, wildcard domain (`*.example.com`, `.example.com`), and catch-all (`*`). Deny-by-default. Health endpoint on port 8081 (`/health`). CIDR rules are also enforced at NetworkPolicy level for non-HTTP traffic.
 
 ## Critical Patterns & Gotchas
 
@@ -102,7 +102,7 @@ Both run as background tasks in the agent supervisor (`agent-supervisor/app/scal
 - **Idle cleanup** (5min interval): checks `last_activity_at` from DB against the configured timeout (default 7 days). Scales to zero if expired. The supervisor updates `last_activity_at` on every agent-centric API call, so any user interaction resets the idle timer.
 
 ### Egress Proxy Policy Enforcement
-Two-layer enforcement: (1) K8s NetworkPolicy blocks all egress except DNS, platform NS (port 8080), and explicitly allowed CIDRs. (2) Egress proxy (HTTP-level) enforces domain-based rules. Agent pods have `HTTP_PROXY`/`HTTPS_PROXY` pointing to `egress-proxy.platform.svc:8080`, with `NO_PROXY` excluding internal platform services. Policy flow: Admin writes to DB + Redis `egress:{agent_id}` key → calls Agent Supervisor `/v1/egress/invalidate/{agent_id}` → Supervisor relays to egress-proxy admin API → proxy re-reads from Redis on next request. See `admin/app/routers/policies.py`, `admin/app/services/redis_service.py`, `egress-proxy/app/policy.py`.
+Two-layer enforcement: (1) K8s NetworkPolicy blocks all egress except DNS, platform NS (port 8080), and explicitly allowed CIDRs. (2) Egress proxy (HTTP-level) enforces domain-based rules. Agent pods have `HTTP_PROXY`/`HTTPS_PROXY` pointing to `egress-proxy.platform.svc:8080`, with `NO_PROXY` excluding internal platform services. Policy flow: Admin writes policy to DB → egress proxy reads `agents.policy` directly from PostgreSQL on every request. No caching, no invalidation needed. See `admin/app/routers/policies.py`, `egress-proxy/app/policy.py`.
 
 ### Egress Rule Schema
 Egress rules are stored in the agent's `policy` JSONB field in DB (managed exclusively by the admin console). Domain patterns: `"example.com"` (exact), `"*.example.com"` (wildcard subdomain), `".example.com"` (same as `*`), `"*"` (all). Both CIDR and domain types can be mixed in the same `allowedEgress` list. Optional `ports` field restricts to specific ports; empty means all ports allowed.
@@ -111,7 +111,7 @@ Egress rules are stored in the agent's `policy` JSONB field in DB (managed exclu
 `runtime/config/managed-settings.json` is installed to `/etc/claude-code/managed-settings.json` (the hardcoded path Claude Code CLI reads on Linux). Currently sets `skipWebFetchPreflight: true` to prevent CLI from calling `api.anthropic.com/api/web/domain_info` before each WebFetch — this endpoint is unreachable in air-gapped/fintech environments where all external traffic must go through the egress proxy. All model tiers (`ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, etc.) are remapped to the agent's configured model in `src/agent.ts` so that CLI internal tasks (WebFetch summarization, subagents) route through the inference router.
 
 ### K8s Image Loading
-All K8s custom images use `imagePullPolicy: Never`. Loaded via `docker save | docker compose exec -T k8s ctr images import -`. The `setup-dev.sh` handles this for runtime, egress-proxy, and agent-supervisor images. Inference router and credential proxy run outside K8s and don't need image loading.
+All K8s custom images use `imagePullPolicy: Never`. Loaded via `docker save | docker compose exec -T k8s ctr images import -`. The `setup-dev.sh` handles this for runtime, egress-proxy, agent-supervisor, and secret-provider images. Inference router runs outside K8s and doesn't need image loading.
 
 ### K8s Fixed Node Name
 `--node-name=aviary-node` in docker-compose.yml prevents stale node accumulation on container restart. Without it, PVCs bind to old node names causing scheduling failures.
@@ -154,7 +154,7 @@ Admin: Tests use the same test database pattern. No auth mocking needed (admin h
 
 ## Rebuilding Images
 
-**K8s images** (runtime, egress-proxy, agent-supervisor) — after modifying `runtime/`, `egress-proxy/`, or `agent-supervisor/`:
+**K8s images** (runtime, egress-proxy, agent-supervisor, secret-provider) — after modifying `runtime/`, `egress-proxy/`, `agent-supervisor/`, or `secret-provider/`:
 
 ```bash
 docker build -t aviary-runtime:latest ./runtime/
@@ -163,10 +163,10 @@ docker save aviary-runtime:latest aviary-agent-supervisor:latest | docker compos
 # Repeat pattern for egress-proxy if changed
 ```
 
-**Docker Compose services** (api, admin, inference-router, credential-proxy) — hot reload via bind-mount, or rebuild:
+**Docker Compose services** (api, admin, inference-router) — hot reload via bind-mount, or rebuild:
 
 ```bash
-docker compose up -d --build api admin inference-router credential-proxy
+docker compose up -d --build api admin inference-router
 ```
 
 ## Key Environment Variables (API)
@@ -180,14 +180,12 @@ docker compose up -d --build api admin inference-router credential-proxy
 | `VAULT_ADDR` / `VAULT_TOKEN` | Vault connection |
 | `AGENT_SUPERVISOR_URL` | Agent Supervisor URL (default: `http://localhost:9000`) |
 | `INFERENCE_ROUTER_URL` | Inference router URL (default: `http://inference-router:8080`) |
-| `CREDENTIAL_PROXY_URL` | Credential proxy URL (default: `http://credential-proxy:8080`) |
 
 ## Key Environment Variables (Admin)
 
 | Variable | Purpose |
 |----------|---------|
 | `DATABASE_URL` | PostgreSQL async connection |
-| `REDIS_URL` | Redis for egress policy sync |
 | `AGENT_SUPERVISOR_URL` | Agent Supervisor URL (default: `http://localhost:9000`) |
 
 ## Key Environment Variables (Runtime Pod)
@@ -196,7 +194,7 @@ docker compose up -d --build api admin inference-router credential-proxy
 |----------|---------|
 | `AGENT_ID` | Agent UUID |
 | `MAX_CONCURRENT_SESSIONS` | Max sessions per pod (default: 10) |
-| `CREDENTIAL_PROXY_URL` | Credential proxy URL (`http://credential-proxy.platform.svc:8080`) |
+| `SECRET_PROVIDER_URL` | Secret provider URL (`http://secret-provider.platform.svc:8080`) |
 | `INFERENCE_ROUTER_URL` | Inference router URL (`http://inference-router.platform.svc:8080`) |
 | `HTTP_PROXY` / `HTTPS_PROXY` | Egress proxy URL (`http://egress-proxy.platform.svc:8080`) |
 | `NO_PROXY` | Bypass proxy for internal services (platform SVCs, localhost) |
@@ -217,5 +215,5 @@ docker compose up -d --build api admin inference-router credential-proxy
 | Variable | Purpose |
 |----------|---------|
 | `PROXY_PORT` | Forward proxy listen port (default: 8080) |
-| `ADMIN_PORT` | Admin API listen port (default: 8081) |
-| `REDIS_URL` | Redis for per-agent egress policies |
+| `HEALTH_PORT` | Health endpoint listen port (default: 8081) |
+| `DATABASE_URL` | PostgreSQL connection for policy lookup |

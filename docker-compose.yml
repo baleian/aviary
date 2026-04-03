@@ -131,32 +131,6 @@ services:
       retries: 5
       start_period: 5s
 
-  credential-proxy:
-    build:
-      context: ./credential-proxy
-      args:
-        UV_INDEX_URL: ${UV_INDEX_URL:-}
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
-    ports:
-      - "8091:8080"
-    volumes:
-      - ./credential-proxy/app:/app/app
-    environment:
-      DATABASE_URL: postgresql://aviary:aviary@postgres:5432/aviary
-      VAULT_ADDR: http://vault:8200
-      VAULT_TOKEN: dev-root-token
-    depends_on:
-      postgres:
-        condition: service_healthy
-      vault:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health')\""]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 5s
-
   # ── Application ─────────────────────────────────────────────
 
   api:
@@ -185,7 +159,6 @@ services:
       VAULT_TOKEN: dev-root-token
       AGENT_SUPERVISOR_URL: http://k8s:30900
       INFERENCE_ROUTER_URL: http://inference-router:8080
-      CREDENTIAL_PROXY_URL: http://credential-proxy:8080
       CORS_ORIGINS: '["http://localhost:3000"]'
     depends_on:
       db-migrate:
@@ -242,13 +215,10 @@ services:
       - /workspace/.venv
     environment:
       DATABASE_URL: postgresql+asyncpg://aviary:aviary@postgres:5432/aviary
-      REDIS_URL: redis://redis:6379/0
       AGENT_SUPERVISOR_URL: http://k8s:30900
     depends_on:
       db-migrate:
         condition: service_completed_successfully
-      redis:
-        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8001/health || exit 1"]
       interval: 10s

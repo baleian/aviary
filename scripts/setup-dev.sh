@@ -49,17 +49,19 @@ echo "  K8s is ready."
 K8S_GATEWAY_IP=$(docker compose exec -T k8s ip route | awk '/default/ {print $3}' | head -1)
 echo "  K8s gateway IP: $K8S_GATEWAY_IP"
 
-# 5. Build K8s images and load them (runtime, egress-proxy, agent-supervisor)
-echo "[5/7] Building K8s images (runtime, egress-proxy, agent-supervisor)..."
+# 5. Build K8s images and load them (runtime, egress-proxy, agent-supervisor, secret-provider)
+echo "[5/7] Building K8s images (runtime, egress-proxy, agent-supervisor, secret-provider)..."
 docker build "${BUILD_ARGS[@]}" -t aviary-runtime:latest          ./runtime/
 docker build "${BUILD_ARGS[@]}" -t aviary-egress-proxy:latest     ./egress-proxy/
 docker build "${BUILD_ARGS[@]}" -t aviary-agent-supervisor:latest -f agent-supervisor/Dockerfile .
+docker build "${BUILD_ARGS[@]}" -t aviary-secret-provider:latest  ./secret-provider/
 
 echo "  Loading images into K8s..."
 docker save \
   aviary-runtime:latest \
   aviary-egress-proxy:latest \
   aviary-agent-supervisor:latest \
+  aviary-secret-provider:latest \
   | docker compose exec -T k8s ctr images import -
 echo "  All images loaded."
 
@@ -87,11 +89,6 @@ until curl -sf http://localhost:8090/health > /dev/null 2>&1; do
   sleep 2
 done
 echo " ready."
-echo -n "  Credential proxy..."
-until curl -sf http://localhost:8091/health > /dev/null 2>&1; do
-  sleep 2
-done
-echo " ready."
 echo -n "  API server..."
 until curl -sf http://localhost:8000/api/health > /dev/null 2>&1; do
   sleep 2
@@ -114,7 +111,7 @@ echo ""
 echo "Platform Services:"
 echo "  Agent Supervisor:  http://localhost:9000"
 echo "  Inference Router:  http://localhost:8090"
-echo "  Credential Proxy:  http://localhost:8091"
+echo "  Secret Provider:  (K8s internal only)"
 echo ""
 echo "Infrastructure:"
 echo "  PostgreSQL:  localhost:5432  (aviary/aviary)"
@@ -129,7 +126,7 @@ echo "  user1@test.com / password  (regular_user,   team: engineering, product)"
 echo "  user2@test.com / password  (regular_user,   team: data-science)"
 echo ""
 echo "Hot reload:"
-echo "  Edit files in api/, web/, inference-router/, or credential-proxy/"
+echo "  Edit files in api/, web/, inference-router/, or secret-provider/"
 echo "  — changes apply automatically via bind-mount."
 echo "  If you change dependencies:"
 echo "    docker compose up -d --build <service>"

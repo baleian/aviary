@@ -319,16 +319,6 @@ async def get_bulk_unread(session_ids: list[str], user_id: str) -> dict[str, int
     return {sid: int(r) if r else 0 for sid, r in zip(session_ids, results)}
 
 
-# ── Egress policy sync (for egress-proxy) ─────────────────────
-
-async def sync_egress_policy(agent_id: str, policy: dict) -> None:
-    """Write agent egress policy to Redis so the egress-proxy can read it."""
-    client = get_client()
-    if not client:
-        return
-    key = f"egress:{agent_id}"
-    await client.set(key, json.dumps(policy))
-
 
 async def delete_all_session_keys(session_id: str) -> None:
     """Remove all Redis keys associated with a session (cleanup on deletion)."""
@@ -355,13 +345,5 @@ async def delete_all_session_keys(session_id: str) -> None:
     all_keys = fixed_keys + unread_keys
     if all_keys:
         await client.delete(*all_keys)
-
-
-async def delete_egress_policy(agent_id: str) -> None:
-    """Remove agent egress policy from Redis."""
-    client = get_client()
-    if not client:
-        return
-    await client.delete(f"egress:{agent_id}")
 
 

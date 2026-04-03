@@ -28,7 +28,6 @@ class Settings(BaseSettings):
 
     # Platform services
     inference_router_url: str = "http://inference-router:8080"
-    credential_proxy_url: str = "http://credential-proxy:8080"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

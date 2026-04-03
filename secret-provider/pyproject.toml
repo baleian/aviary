@@ -1,7 +1,7 @@
 [project]
-name = "aviary-credential-proxy"
+name = "aviary-secret-provider"
 version = "0.1.0"
-description = "Aviary Credential Proxy — injects secrets from Vault into outbound requests"
+description = "Aviary Secret Provider — resolves credential references to secrets from Vault"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi",

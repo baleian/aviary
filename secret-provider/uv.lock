@@ -74,7 +74,7 @@ wheels = [
 ]
 
 [[package]]
-name = "aviary-credential-proxy"
+name = "aviary-secret-provider"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

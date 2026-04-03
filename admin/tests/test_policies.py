@@ -135,17 +135,14 @@ async def test_update_resource_limits(client: AsyncClient, seed_agent: Agent):
 
 @pytest.mark.asyncio
 async def test_force_sync_policy_without_namespace(client: AsyncClient, seed_agent: Agent):
-    """Force sync when agent has no namespace — Redis syncs, K8s skipped."""
+    """Force sync when agent has no namespace — K8s sync fails gracefully."""
     # Set a policy first
     await client.put(f"/api/agents/{seed_agent.id}/policy", json={
         "policy": {"allowedEgress": [{"name": "test", "domain": "example.com"}]},
     })
 
-    with patch("app.services.redis_service.sync_egress_policy", new_callable=AsyncMock) as mock_redis:
-        resp = await client.post(f"/api/agents/{seed_agent.id}/policy/sync")
+    resp = await client.post(f"/api/agents/{seed_agent.id}/policy/sync")
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["synced"]["redis"] is True
     assert data["synced"]["network_policy"] is False  # No namespace
-    mock_redis.assert_called_once()

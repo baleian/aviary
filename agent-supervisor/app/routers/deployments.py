@@ -19,7 +19,7 @@ router = APIRouter()
 # Platform service URLs (used in Pod env vars)
 _EGRESS_PROXY_URL = "http://egress-proxy.platform.svc:8080"
 _NO_PROXY = (
-    "credential-proxy.platform.svc,"
+    "secret-provider.platform.svc,"
     "inference-router.platform.svc,"
     "egress-proxy.platform.svc,"
     ".svc,.svc.cluster.local,"
@@ -342,7 +342,7 @@ async def _create_deployment(namespace: str, body: EnsureDeploymentRequest) -> N
                                 "env": [
                                     {"name": "AGENT_ID", "value": body.agent_id},
                                     {"name": "MAX_CONCURRENT_SESSIONS", "value": str(max_sessions)},
-                                    {"name": "CREDENTIAL_PROXY_URL", "value": "http://credential-proxy.platform.svc:8080"},
+                                    {"name": "SECRET_PROVIDER_URL", "value": "http://secret-provider.platform.svc:8080"},
                                     {"name": "INFERENCE_ROUTER_URL", "value": "http://inference-router.platform.svc:8080"},
                                     {"name": "HOME", "value": "/tmp"},
                                     {"name": "HTTP_PROXY", "value": _EGRESS_PROXY_URL},
