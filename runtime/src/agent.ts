@@ -86,7 +86,7 @@ async function preflightCheck(model: string): Promise<string | null> {
   try {
     const resp = await fetch(`${LITELLM_URL}/health`, {
       headers: { Authorization: `Bearer ${LITELLM_API_KEY}` },
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(30_000),
     });
     if (!resp.ok) return `LiteLLM health check failed (${resp.status})`;
 
