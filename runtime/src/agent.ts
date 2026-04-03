@@ -73,6 +73,49 @@ function resolveModelName(backend: string, model: string): string {
   return model.includes("/") ? model : `${prefix}${model}`;
 }
 
+/**
+ * Pre-flight check: send a minimal streaming request to LiteLLM and inspect
+ * the HTTP status before spawning the heavy claude-code CLI subprocess.
+ * Auth errors (401), bad model names (404), etc. return immediately with
+ * zero token cost. On success the streaming connection is aborted before
+ * any output tokens are generated.
+ */
+async function preflightCheck(model: string): Promise<string | null> {
+  let intentionalAbort = false;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const resp = await fetch(`${LITELLM_URL}/v1/messages`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": LITELLM_API_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 1,
+        messages: [{ role: "user", content: "." }],
+        stream: true,
+      }),
+      signal: controller.signal,
+    });
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      return `Backend error (${resp.status}): ${body}`;
+    }
+    // Auth/routing OK — abort before LLM generates output tokens
+    intentionalAbort = true;
+    controller.abort();
+    return null;
+  } catch (e: any) {
+    if (intentionalAbort) return null;
+    return `Backend unreachable: ${e.message ?? e}`;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 interface AgentConfig {
   instruction?: string;
   tools?: string[];
@@ -226,6 +269,14 @@ export async function* processMessage(
     ...(canResume ? { resume: sessionId } : {}),
     ...(abortController ? { abortController } : {}),
   };
+
+  // Pre-flight: validate model/backend before spawning the heavy CLI subprocess.
+  // Catches auth errors, unreachable backends, and bad model names immediately.
+  const preflightError = await preflightCheck(resolvedModel);
+  if (preflightError) {
+    yield { type: "chunk", content: `[${resolvedModel}] ${preflightError}` };
+    return;
+  }
 
   let fullResponse = "";
 
