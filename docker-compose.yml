@@ -131,16 +131,16 @@ services:
       retries: 5
       start_period: 5s
 
-  credential-proxy:
+  secret-provider:
     build:
-      context: ./credential-proxy
+      context: ./secret-provider
       args:
         UV_INDEX_URL: ${UV_INDEX_URL:-}
     command: uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
     ports:
       - "8091:8080"
     volumes:
-      - ./credential-proxy/app:/app/app
+      - ./secret-provider/app:/app/app
     environment:
       DATABASE_URL: postgresql://aviary:aviary@postgres:5432/aviary
       VAULT_ADDR: http://vault:8200
@@ -185,7 +185,6 @@ services:
       VAULT_TOKEN: dev-root-token
       AGENT_SUPERVISOR_URL: http://k8s:30900
       INFERENCE_ROUTER_URL: http://inference-router:8080
-      CREDENTIAL_PROXY_URL: http://credential-proxy:8080
       CORS_ORIGINS: '["http://localhost:3000"]'
     depends_on:
       db-migrate:

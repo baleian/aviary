@@ -87,7 +87,7 @@ until curl -sf http://localhost:8090/health > /dev/null 2>&1; do
   sleep 2
 done
 echo " ready."
-echo -n "  Credential proxy..."
+echo -n "  Secret provider..."
 until curl -sf http://localhost:8091/health > /dev/null 2>&1; do
   sleep 2
 done
@@ -114,7 +114,7 @@ echo ""
 echo "Platform Services:"
 echo "  Agent Supervisor:  http://localhost:9000"
 echo "  Inference Router:  http://localhost:8090"
-echo "  Credential Proxy:  http://localhost:8091"
+echo "  Secret Provider:  http://localhost:8091"
 echo ""
 echo "Infrastructure:"
 echo "  PostgreSQL:  localhost:5432  (aviary/aviary)"
@@ -129,7 +129,7 @@ echo "  user1@test.com / password  (regular_user,   team: engineering, product)"
 echo "  user2@test.com / password  (regular_user,   team: data-science)"
 echo ""
 echo "Hot reload:"
-echo "  Edit files in api/, web/, inference-router/, or credential-proxy/"
+echo "  Edit files in api/, web/, inference-router/, or secret-provider/"
 echo "  — changes apply automatically via bind-mount."
 echo "  If you change dependencies:"
 echo "    docker compose up -d --build <service>"

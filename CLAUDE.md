@@ -9,7 +9,7 @@ Multi-tenant AI agent platform. Users create/configure agents via Web UI, each r
 docker compose up -d      # Subsequent: just start services
 ```
 
-Services: Web (`:3000`), API (`:8000`), Admin (`:8001`), Keycloak (`:8080`, admin/admin), Vault (`:8200`), Inference Router (`:8090`), Credential Proxy (`:8091`), Agent Supervisor (`:9000`).
+Services: Web (`:3000`), API (`:8000`), Admin (`:8001`), Keycloak (`:8080`, admin/admin), Vault (`:8200`), Inference Router (`:8090`), Secret Provider (`:8091`), Agent Supervisor (`:9000`).
 Test accounts: `user1@test.com`, `user2@test.com` (all `password`).
 
 ## Architecture
@@ -25,7 +25,7 @@ PostgreSQL / Redis
 
 Platform services (docker compose):
   Inference Router (:8090) → Claude API / Ollama / vLLM / Bedrock
-  Credential Proxy (:8091) → Vault
+  Secret Provider (:8091) → Vault
 
 Platform services (K8s, platform namespace):
   Agent Supervisor (:9000, NodePort 30900) → K8s API (namespace/deployment/pod management)
@@ -33,7 +33,7 @@ Platform services (K8s, platform namespace):
 
 Agent Pod outbound:
   LLM calls  → Inference Router (host:8090) → Claude API / Ollama / vLLM / Bedrock
-  Secrets    → Credential Proxy (host:8091) → Vault
+  Secrets    → Secret Provider (host:8091) → Vault
   HTTP/HTTPS → Egress Proxy (K8s platform NS, per-agent policy) → External APIs
 ```
 
@@ -59,7 +59,7 @@ Three backend services with distinct roles:
 
 **Inference Router** (docker compose, `:8090`): All LLM calls go through a centralized proxy. Backend is determined by the `X-Backend` header injected by the runtime via `ANTHROPIC_CUSTOM_HEADERS` (e.g., `claude` → Claude API, `ollama` → Ollama, `vllm` → vLLM, `bedrock` → Bedrock). Speaks Anthropic Messages API so claude-agent-sdk works transparently. API server also queries it for model listing (`/v1/backends/{backend}/models`).
 
-**Credential Proxy** (docker compose, `:8091`): Session Pods never hold secrets. External API calls go through proxy which injects credentials from Vault.
+**Secret Provider** (docker compose, `:8091`): Session Pods never hold secrets. External API calls go through proxy which injects credentials from Vault.
 
 **Agent Supervisor** (K8s platform namespace, `:9000`): Manages all K8s resources and runtime operations. Has DB access for agent config and activity tracking. Exposes two API layers:
 - **Agent-centric API** (`/v1/agents/{id}/...`) — Used by the API server. Abstract operations: register, run, ready, wait, session message/abort/cleanup. Updates `last_activity_at` on every request. No K8s concepts exposed.
@@ -111,7 +111,7 @@ Egress rules are stored in the agent's `policy` JSONB field in DB (managed exclu
 `runtime/config/managed-settings.json` is installed to `/etc/claude-code/managed-settings.json` (the hardcoded path Claude Code CLI reads on Linux). Currently sets `skipWebFetchPreflight: true` to prevent CLI from calling `api.anthropic.com/api/web/domain_info` before each WebFetch — this endpoint is unreachable in air-gapped/fintech environments where all external traffic must go through the egress proxy. All model tiers (`ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, etc.) are remapped to the agent's configured model in `src/agent.ts` so that CLI internal tasks (WebFetch summarization, subagents) route through the inference router.
 
 ### K8s Image Loading
-All K8s custom images use `imagePullPolicy: Never`. Loaded via `docker save | docker compose exec -T k8s ctr images import -`. The `setup-dev.sh` handles this for runtime, egress-proxy, and agent-supervisor images. Inference router and credential proxy run outside K8s and don't need image loading.
+All K8s custom images use `imagePullPolicy: Never`. Loaded via `docker save | docker compose exec -T k8s ctr images import -`. The `setup-dev.sh` handles this for runtime, egress-proxy, and agent-supervisor images. Inference router and secret provider run outside K8s and don't need image loading.
 
 ### K8s Fixed Node Name
 `--node-name=aviary-node` in docker-compose.yml prevents stale node accumulation on container restart. Without it, PVCs bind to old node names causing scheduling failures.
@@ -163,10 +163,10 @@ docker save aviary-runtime:latest aviary-agent-supervisor:latest | docker compos
 # Repeat pattern for egress-proxy if changed
 ```
 
-**Docker Compose services** (api, admin, inference-router, credential-proxy) — hot reload via bind-mount, or rebuild:
+**Docker Compose services** (api, admin, inference-router, secret-provider) — hot reload via bind-mount, or rebuild:
 
 ```bash
-docker compose up -d --build api admin inference-router credential-proxy
+docker compose up -d --build api admin inference-router secret-provider
 ```
 
 ## Key Environment Variables (API)
@@ -180,7 +180,7 @@ docker compose up -d --build api admin inference-router credential-proxy
 | `VAULT_ADDR` / `VAULT_TOKEN` | Vault connection |
 | `AGENT_SUPERVISOR_URL` | Agent Supervisor URL (default: `http://localhost:9000`) |
 | `INFERENCE_ROUTER_URL` | Inference router URL (default: `http://inference-router:8080`) |
-| `CREDENTIAL_PROXY_URL` | Credential proxy URL (default: `http://credential-proxy:8080`) |
+| `SECRET_PROVIDER_URL` | Secret provider URL (default: `http://secret-provider:8080`) |
 
 ## Key Environment Variables (Admin)
 
@@ -195,7 +195,7 @@ docker compose up -d --build api admin inference-router credential-proxy
 |----------|---------|
 | `AGENT_ID` | Agent UUID |
 | `MAX_CONCURRENT_SESSIONS` | Max sessions per pod (default: 10) |
-| `CREDENTIAL_PROXY_URL` | Credential proxy URL (`http://credential-proxy.platform.svc:8080`) |
+| `SECRET_PROVIDER_URL` | Secret provider URL (`http://secret-provider.platform.svc:8080`) |
 | `INFERENCE_ROUTER_URL` | Inference router URL (`http://inference-router.platform.svc:8080`) |
 | `HTTP_PROXY` / `HTTPS_PROXY` | Egress proxy URL (`http://egress-proxy.platform.svc:8080`) |
 | `NO_PROXY` | Bypass proxy for internal services (platform SVCs, localhost) |

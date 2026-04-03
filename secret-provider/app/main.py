@@ -1,4 +1,4 @@
-"""Credential Proxy — intercepts requests from session Pods, injects secrets from Vault.
+"""Secret Provider — intercepts requests from session Pods, injects secrets from Vault.
 
 Session Pods send requests to this proxy with headers:
   X-Session-ID: <session_id>
@@ -18,7 +18,7 @@ from fastapi import FastAPI, Request, Response
 from app.session_resolver import get_credentials_for_session
 from app.vault_client import get_secret
 
-app = FastAPI(title="Aviary Credential Proxy", version="0.1.0")
+app = FastAPI(title="Aviary Secret Provider", version="0.1.0")
 
 
 @app.get("/health")
