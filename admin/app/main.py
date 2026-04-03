@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.routers import agents, deployments, pages, policies
-from app.services import supervisor_client, redis_service
+from app.services import supervisor_client
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -20,11 +20,9 @@ logging.basicConfig(level=logging.INFO)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await redis_service.init_redis()
     await supervisor_client.init_client()
     yield
     await supervisor_client.close_client()
-    await redis_service.close_redis()
 
 
 app = FastAPI(
@@ -43,15 +41,4 @@ app.include_router(pages.router, tags=["pages"])
 
 @app.get("/health")
 async def health():
-    redis_ok = False
-    client = redis_service.get_client()
-    if client:
-        try:
-            redis_ok = await client.ping()
-        except Exception:
-            pass
-
-    return {
-        "status": "ok",
-        "redis": "connected" if redis_ok else "unavailable",
-    }
+    return {"status": "ok"}

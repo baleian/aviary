@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.routers import agents, deployments, egress, namespaces, streaming
+from app.routers import agents, deployments, namespaces, streaming
 from app import scaling
 
 logging.basicConfig(level=logging.INFO)
@@ -44,7 +44,6 @@ app.include_router(agents.router, prefix="/v1", tags=["agents"])
 app.include_router(namespaces.router, prefix="/v1", tags=["namespaces"])
 app.include_router(deployments.router, prefix="/v1", tags=["deployments"])
 app.include_router(streaming.router, prefix="/v1", tags=["streaming"])
-app.include_router(egress.router, prefix="/v1", tags=["egress"])
 
 
 @app.get("/v1/health")

@@ -4,7 +4,7 @@ All external HTTP/HTTPS traffic from agent pods is routed through this proxy.
 Per-agent egress policies (domain wildcards + CIDR) are enforced here.
 
 Agent identification: source pod IP → K8s API lookup → namespace → agent ID.
-Policy source: Redis key ``egress:{agent_id}`` (JSON of policy dict).
+Policy source: PostgreSQL ``agents.policy`` column (queried on every request).
 """
 
 import asyncio
@@ -15,8 +15,8 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
+import asyncpg
 import httpx
-import redis.asyncio as aioredis
 
 from app.policy import PolicyChecker
 
@@ -24,15 +24,13 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger("egress-proxy")
 
 PROXY_PORT = int(os.environ.get("PROXY_PORT", "8080"))
-REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
-ADMIN_PORT = int(os.environ.get("ADMIN_PORT", "8081"))
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://aviary:aviary@localhost:5432/aviary")
+HEALTH_PORT = int(os.environ.get("HEALTH_PORT", "8081"))
 
 # ── Caches ──────────────────────────────────────────────────────
-_redis: aioredis.Redis | None = None
+_db_pool: asyncpg.Pool | None = None
 _ip_to_agent: dict[str, tuple[float, str]] = {}  # pod IP → (timestamp, agent_id)
 _IP_CACHE_TTL = 300  # seconds — pod IPs can be reassigned
-_policy_cache: dict[str, tuple[float, PolicyChecker]] = {}  # agent_id → (timestamp, checker)
-_POLICY_CACHE_TTL = 30  # seconds — re-read from Redis after this
 
 # K8s in-cluster config
 _K8S_HOST = os.environ.get("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
@@ -41,36 +39,27 @@ _K8S_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 _K8S_CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 
 
-# ── Redis helpers ───────────────────────────────────────────────
-async def _get_redis() -> aioredis.Redis:
-    global _redis
-    if _redis is None:
-        _redis = aioredis.from_url(REDIS_URL, decode_responses=True)
-    return _redis
+# ── DB helpers ─────────────────────────────────────────────────
+async def _get_pool() -> asyncpg.Pool:
+    global _db_pool
+    if _db_pool is None:
+        # Strip +asyncpg suffix if present (shared DATABASE_URL format)
+        dsn = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+        _db_pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3)
+    return _db_pool
 
 
 async def _get_policy(agent_id: str) -> PolicyChecker:
-    """Load per-agent policy from Redis, with TTL-based local cache."""
-    now = time.monotonic()
-    if agent_id in _policy_cache:
-        ts, checker = _policy_cache[agent_id]
-        if now - ts < _POLICY_CACHE_TTL:
-            return checker
-
-    r = await _get_redis()
-    raw = await r.get(f"egress:{agent_id}")
-    if raw:
-        policy = json.loads(raw)
+    """Load per-agent policy from DB on every request."""
+    pool = await _get_pool()
+    row = await pool.fetchrow(
+        "SELECT policy FROM agents WHERE id = $1::uuid", agent_id,
+    )
+    if row and row["policy"]:
+        policy = row["policy"] if isinstance(row["policy"], dict) else json.loads(row["policy"])
     else:
         policy = {}  # no policy = deny all custom egress
-    checker = PolicyChecker.from_policy(policy)
-    _policy_cache[agent_id] = (now, checker)
-    return checker
-
-
-async def invalidate_policy(agent_id: str) -> None:
-    """Remove cached policy so next request re-reads from Redis."""
-    _policy_cache.pop(agent_id, None)
+    return PolicyChecker.from_policy(policy)
 
 
 # ── K8s pod IP → agent ID resolution ───────────────────────────
@@ -245,22 +234,15 @@ async def _handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWri
             pass
 
 
-# ── Admin API (health, cache invalidation) ──────────────────────
+# ── Health endpoint ───────────────────────────────────────────
 from fastapi import FastAPI
 
-admin_app = FastAPI(title="Egress Proxy Admin")
+health_app = FastAPI(title="Egress Proxy Health")
 
 
-@admin_app.get("/health")
+@health_app.get("/health")
 async def health():
     return {"status": "ok"}
-
-
-@admin_app.post("/invalidate/{agent_id}")
-async def invalidate(agent_id: str):
-    """Invalidate cached policy for an agent. Called by API on policy update."""
-    await invalidate_policy(agent_id)
-    return {"invalidated": agent_id}
 
 
 # ── Entrypoint ──────────────────────────────────────────────────
@@ -269,14 +251,14 @@ async def main():
     proxy_server = await asyncio.start_server(_handle_client, "0.0.0.0", PROXY_PORT)
     logger.info("Egress proxy listening on :%d", PROXY_PORT)
 
-    # Start admin API (health + cache invalidation) on separate port
+    # Start health endpoint on separate port
     import uvicorn
-    admin_config = uvicorn.Config(admin_app, host="0.0.0.0", port=ADMIN_PORT, log_level="warning")
-    admin_server = uvicorn.Server(admin_config)
+    health_config = uvicorn.Config(health_app, host="0.0.0.0", port=HEALTH_PORT, log_level="warning")
+    health_server = uvicorn.Server(health_config)
 
     await asyncio.gather(
         proxy_server.serve_forever(),
-        admin_server.serve(),
+        health_server.serve(),
     )
 
 

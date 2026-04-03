@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aviary_shared.db.models import Agent
 from app.db import get_db
-from app.services import supervisor_client, redis_service
+from app.services import supervisor_client
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ async def update_policy(
     body: PolicyUpdateRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Update policy: DB + Redis egress sync + K8s NetworkPolicy."""
+    """Update policy: DB + K8s NetworkPolicy."""
     result = await db.execute(select(Agent).where(Agent.id == agent_id))
     agent = result.scalar_one_or_none()
     if not agent:
@@ -64,27 +64,15 @@ async def update_policy(
 
     await db.flush()
 
-    agent_id_str = str(agent.id)
-
-    # Sync egress policy to Redis
-    try:
-        await redis_service.sync_egress_policy(agent_id_str, agent.policy)
-    except Exception:
-        logger.warning("Redis egress sync failed for agent %s", agent.id, exc_info=True)
-
     # Update K8s NetworkPolicy
     ns = f"agent-{agent.id}"
     try:
         await supervisor_client.update_network_policy(ns, agent.policy)
     except Exception:
         logger.warning("NetworkPolicy update failed for agent %s", agent.id, exc_info=True)
-    try:
-        await supervisor_client.invalidate_egress_cache(agent_id_str)
-    except Exception:
-        pass
 
     return {
-        "agent_id": agent_id_str,
+        "agent_id": str(agent.id),
         "policy": agent.policy,
         "pod_strategy": agent.pod_strategy,
         "min_pods": agent.min_pods,
@@ -94,20 +82,13 @@ async def update_policy(
 
 @router.post("/{agent_id}/policy/sync")
 async def force_sync_policy(agent_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Force re-sync policy to Redis and K8s (reconciliation)."""
+    """Force re-sync policy to K8s (reconciliation)."""
     result = await db.execute(select(Agent).where(Agent.id == agent_id))
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    agent_id_str = str(agent.id)
-    synced = {"redis": False, "network_policy": False, "egress_cache": False}
-
-    try:
-        await redis_service.sync_egress_policy(agent_id_str, agent.policy)
-        synced["redis"] = True
-    except Exception:
-        logger.warning("Redis sync failed for agent %s", agent.id, exc_info=True)
+    synced = {"network_policy": False}
 
     ns = f"agent-{agent.id}"
     try:
@@ -115,10 +96,5 @@ async def force_sync_policy(agent_id: uuid.UUID, db: AsyncSession = Depends(get_
         synced["network_policy"] = True
     except Exception:
         logger.warning("NetworkPolicy sync failed for agent %s", agent.id, exc_info=True)
-    try:
-        await supervisor_client.invalidate_egress_cache(agent_id_str)
-        synced["egress_cache"] = True
-    except Exception:
-        pass
 
-    return {"agent_id": agent_id_str, "synced": synced}
+    return {"agent_id": str(agent.id), "synced": synced}

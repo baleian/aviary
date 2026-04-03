@@ -18,6 +18,6 @@ RUN uv sync --frozen --no-dev
 ENV PATH="/app/.venv/bin:$PATH"
 
 USER nobody
-EXPOSE 8080 8081
+EXPOSE 8080
 
 CMD ["python", "-m", "app.main"]

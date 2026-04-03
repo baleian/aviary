@@ -13,7 +13,7 @@ from sqlalchemy import or_, exists
 
 from app.db.models import Agent, Session, User
 from app.schemas.agent import AgentCreate, AgentUpdate
-from app.services import acl_service, agent_supervisor, redis_service
+from app.services import acl_service, agent_supervisor
 
 logger = logging.getLogger(__name__)
 
@@ -184,12 +184,6 @@ async def cleanup_agent_resources(db: AsyncSession, agent: Agent) -> None:
         await agent_supervisor.unregister_agent(agent_id_str)
     except Exception:
         logger.warning("Agent supervisor cleanup failed for agent %s", agent.id, exc_info=True)
-
-    # Clean up Redis egress policy
-    try:
-        await redis_service.delete_egress_policy(agent_id_str)
-    except Exception:
-        logger.warning("Redis egress policy cleanup failed for agent %s", agent.id, exc_info=True)
 
     # Hard-delete the agent row since all sessions are gone
     await db.delete(agent)

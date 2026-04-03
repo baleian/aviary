@@ -242,13 +242,10 @@ services:
       - /workspace/.venv
     environment:
       DATABASE_URL: postgresql+asyncpg://aviary:aviary@postgres:5432/aviary
-      REDIS_URL: redis://redis:6379/0
       AGENT_SUPERVISOR_URL: http://k8s:30900
     depends_on:
       db-migrate:
         condition: service_completed_successfully
-      redis:
-        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8001/health || exit 1"]
       interval: 10s

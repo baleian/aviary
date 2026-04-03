@@ -70,7 +70,7 @@ Aviary is an enterprise platform where users can create, configure, and use purp
     │  ┌───────────────┐  ┌──────────────┐  ┌────────────────┐
     └─▶│  PostgreSQL    │  │    Redis      │  │   Keycloak     │
        │  DB, sessions  │  │  pub/sub,     │  │   OIDC auth    │
-       │  ACL, agents   │  │  egress rules │  │   team sync    │
+       │  ACL, agents   │  │  presence │  │   team sync    │
        └───────────────┘  └──────────────┘  └────────────────┘
 ```
 
@@ -256,7 +256,7 @@ API and admin tests covering health, agent CRUD, ACL (visibility, grants, permis
 Session Pods never call LLM backends directly. All inference goes through a centralized router that determines the backend from the `X-Backend` header injected by the runtime via `ANTHROPIC_CUSTOM_HEADERS` (e.g., `claude` → Claude API, `ollama` → Ollama). This centralizes API credentials and preserves full claude-agent-sdk capabilities since the router speaks the Anthropic Messages API natively. The API server also queries the inference router for model listing, ensuring a single enforcement point for access control.
 
 ### Egress Proxy
-All outbound HTTP/HTTPS from agent Pods is routed through a centralized forward proxy via `HTTP_PROXY`/`HTTPS_PROXY` environment variables. The proxy identifies the source agent by resolving the pod's IP to its K8s namespace, then enforces per-agent egress policies stored in Redis. Supported rule types: CIDR ranges, exact domains, wildcard domains (`*.example.com`), and catch-all. Policies are deny-by-default and changes take effect immediately via Redis cache invalidation, with no Pod restarts needed.
+All outbound HTTP/HTTPS from agent Pods is routed through a centralized forward proxy via `HTTP_PROXY`/`HTTPS_PROXY` environment variables. The proxy identifies the source agent by resolving the pod's IP to its K8s namespace, then enforces per-agent egress policies. Supported rule types: CIDR ranges, exact domains, wildcard domains (`*.example.com`), and catch-all. Policies are deny-by-default and changes take effect immediately without Pod restarts.
 
 ### Live Agent Config
 Agent configuration (instruction, tools, policy) is passed from the database to the runtime on every message turn. Edits take effect immediately on the next message without restarting Pods or affecting other users' sessions.
