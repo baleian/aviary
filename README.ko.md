@@ -170,7 +170,6 @@ cd aviary
 | API 서버 | http://localhost:8000 |
 | Admin 콘솔 | http://localhost:8001 |
 | Inference Router | http://localhost:8090 |
-| Secret Provider | http://localhost:8091 |
 | Keycloak 관리자 | http://localhost:8080 (admin/admin) |
 | Vault | http://localhost:8200 |
 
@@ -192,7 +191,7 @@ docker compose logs -f api    # 로그 확인
 
 ### 개발
 
-소스 코드가 컨테이너에 bind mount되어 있어서 `api/`, `web/`, `inference-router/`, `secret-provider/` 파일 수정이 핫 리로드로 자동 반영됩니다.
+소스 코드가 컨테이너에 bind mount되어 있어서 `api/`, `web/`, `inference-router/` 파일 수정이 핫 리로드로 자동 반영됩니다.
 
 ```bash
 # 의존성 변경 시 리빌드
@@ -277,7 +276,7 @@ PATH의 `claude` CLI 바이너리는 실제 바이너리를 bubblewrap 마운트
 | `api` | 8000 | API 서버 |
 | `web` | 3000 | Web UI |
 | `inference-router` | 8090 | LLM 게이트웨이 |
-| `secret-provider` | 8091 | 시크릿 주입 프록시 |
+| `secret-provider` | K8s internal | 시크릿 주입 (Vault) |
 | `postgres` | 5432 | 데이터베이스 |
 | `redis` | 6379 | 캐시, pub/sub, 프레즌스 |
 | `keycloak` | 8080 | OIDC 프로바이더 |

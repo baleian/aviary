@@ -170,7 +170,6 @@ This single command builds all images, starts all services, runs DB migrations, 
 | API Server | http://localhost:8000 |
 | Admin Console | http://localhost:8001 |
 | Inference Router | http://localhost:8090 |
-| Secret Provider | http://localhost:8091 |
 | Keycloak Admin | http://localhost:8080 (admin/admin) |
 | Vault | http://localhost:8200 |
 
@@ -192,7 +191,7 @@ docker compose logs -f api    # Tail logs
 
 ### Development
 
-Source code is bind-mounted into containers. Edits to `api/`, `web/`, `inference-router/`, and `secret-provider/` are reflected automatically via hot reload.
+Source code is bind-mounted into containers. Edits to `api/`, `web/`, and `inference-router/` are reflected automatically via hot reload.
 
 ```bash
 # Rebuild after dependency changes
@@ -278,7 +277,7 @@ The `claude` CLI binary in PATH is a wrapper script that runs the real binary in
 | `admin` | 8001 | Admin Console (operator-facing, no auth) |
 | `web` | 3000 | Web UI |
 | `inference-router` | 8090 | LLM gateway |
-| `secret-provider` | 8091 | Secret injection proxy |
+| `secret-provider` | K8s internal | Secret injection (Vault)|
 | `postgres` | 5432 | Database |
 | `redis` | 6379 | Cache, pub/sub, presence |
 | `keycloak` | 8080 | OIDC provider |

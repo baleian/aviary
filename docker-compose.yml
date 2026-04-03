@@ -131,32 +131,6 @@ services:
       retries: 5
       start_period: 5s
 
-  secret-provider:
-    build:
-      context: ./secret-provider
-      args:
-        UV_INDEX_URL: ${UV_INDEX_URL:-}
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
-    ports:
-      - "8091:8080"
-    volumes:
-      - ./secret-provider/app:/app/app
-    environment:
-      DATABASE_URL: postgresql://aviary:aviary@postgres:5432/aviary
-      VAULT_ADDR: http://vault:8200
-      VAULT_TOKEN: dev-root-token
-    depends_on:
-      postgres:
-        condition: service_healthy
-      vault:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health')\""]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 5s
-
   # ── Application ─────────────────────────────────────────────
 
   api:
