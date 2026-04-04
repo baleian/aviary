@@ -202,7 +202,10 @@ async def _run_stream(
                             await redis_service.append_stream_chunk(session_id, chunk_event)
                             await redis_service.publish_message(session_id, chunk_event)
                         elif chunk_type == "tool_use":
-                            # Flush accumulated text as a block before the tool call
+                            # Flush accumulated thinking and text before the tool call
+                            if current_thinking:
+                                blocks_meta.append({"type": "thinking", "content": current_thinking})
+                                current_thinking = ""
                             if current_text:
                                 blocks_meta.append({"type": "text", "content": current_text})
                                 current_text = ""

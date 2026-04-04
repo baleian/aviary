@@ -116,7 +116,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./config/litellm/config.yaml:/app/config.yaml
-      - ./config/litellm/patches/force_non_streaming.py:/usr/lib/python3.13/site-packages/aviary_force_non_streaming.py
+      - ./config/litellm/patches/fix_adapter_streaming.py:/usr/lib/python3.13/site-packages/aviary_fix_adapter_streaming.py
       - ./config/litellm/patches/aviary_patches.pth:/usr/lib/python3.13/site-packages/aviary_patches.pth
     environment:
       LITELLM_MASTER_KEY: "sk-aviary-dev"

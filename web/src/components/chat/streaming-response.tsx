@@ -40,7 +40,7 @@ const ThinkingChip = memo(function ThinkingChip({
   content: string;
   isActive: boolean;
 }) {
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(true);
   const toggle = useCallback(() => setIsOpen((v) => !v), []);
 
   return (

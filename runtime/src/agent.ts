@@ -222,32 +222,60 @@ export async function* processMessage(
 
   let fullResponse = "";
   // Track cumulative lengths to extract deltas from partial snapshots.
-  // The SDK delivers cumulative assistant snapshots (not raw stream deltas),
-  // so we diff against previously emitted lengths per content type.
   let emittedTextLen = 0;
   let emittedThinkingLen = 0;
   // Track tool_use IDs already emitted to avoid duplicates from partial messages
   const emittedToolIds = new Set<string>();
+  // Whether we've received any stream_event deltas. When true (Anthropic),
+  // text/thinking are handled via stream_event and assistant snapshots are
+  // only used for tool_use. When false (ollama/vllm), assistant snapshots
+  // are the sole source for all content types.
+  let hasStreamDeltas = false;
 
   try {
     for await (const message of query({ prompt: content, options })) {
       const msg = message as SDKMessage & Record<string, any>;
 
-      if (msg.type === "assistant" && msg.message?.content) {
-        // Cumulative assistant snapshot — SDK delivers the full content array
-        // on each partial update. We diff to extract new deltas.
+      if (msg.type === "stream_event") {
+        // Real-time token-level streaming — emitted by Anthropic backends.
+        // Non-Anthropic backends (ollama, vllm) don't emit these; they
+        // fall through to the assistant snapshot handler below.
+        const event = msg.event as Record<string, any>;
+        if (event.type === "content_block_delta" && event.delta) {
+          if (event.delta.type === "text_delta" && event.delta.text) {
+            hasStreamDeltas = true;
+            const delta = event.delta.text as string;
+            emittedTextLen += delta.length;
+            fullResponse += delta;
+            yield { type: "chunk", content: delta };
+          } else if (event.delta.type === "thinking_delta" && event.delta.thinking) {
+            hasStreamDeltas = true;
+            const delta = event.delta.thinking as string;
+            emittedThinkingLen += delta.length;
+            yield { type: "thinking", content: delta };
+          }
+        }
+      } else if (msg.type === "assistant" && msg.message?.content) {
         const parentId = msg.parent_tool_use_id ?? null;
         for (const block of msg.message.content) {
-          if (block.type === "thinking") {
-            // Thinking block: cumulative thinking text in `block.thinking`
+          if (block.type === "thinking" && !hasStreamDeltas) {
+            // Fallback path (ollama/vllm): no stream_event deltas available.
+            // Block flushing creates multiple short blocks, each with its own
+            // cumulative content. Detect new block when content is shorter.
             const thinking = (block.thinking ?? "") as string;
+            if (thinking.length < emittedThinkingLen) {
+              emittedThinkingLen = 0;
+            }
             if (thinking.length > emittedThinkingLen) {
               const delta = thinking.slice(emittedThinkingLen);
               emittedThinkingLen = thinking.length;
               yield { type: "thinking", content: delta };
             }
-          } else if (block.type === "text") {
+          } else if (block.type === "text" && !hasStreamDeltas) {
             const text = block.text as string;
+            if (text.length < emittedTextLen) {
+              emittedTextLen = 0;
+            }
             if (text.length > emittedTextLen) {
               const delta = text.slice(emittedTextLen);
               emittedTextLen = text.length;
