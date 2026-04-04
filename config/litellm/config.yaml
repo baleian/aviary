@@ -65,20 +65,20 @@ model_list:
           - thinking
 
   # --- Bedrock ---
-  - model_name: "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0"
-    litellm_params:
-      model: "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0"
-      aws_region_name: "ap-northeast-2"
-    model_info:
-      max_input_tokens: 229376
-      max_output_tokens: 32768
-      max_tokens: 32000
-      _ui:
-        default_model: true
-        capabilities:
-          - vision
-          - tools
-          - thinking
+  # - model_name: "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0"
+  #   litellm_params:
+  #     model: "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0"
+  #     aws_region_name: "ap-northeast-2"
+  #   model_info:
+  #     max_input_tokens: 229376
+  #     max_output_tokens: 32768
+  #     max_tokens: 32000
+  #     _ui:
+  #       default_model: true
+  #       capabilities:
+  #         - vision
+  #         - tools
+  #         - thinking
 
 general_settings:
   master_key: "os.environ/LITELLM_MASTER_KEY"
