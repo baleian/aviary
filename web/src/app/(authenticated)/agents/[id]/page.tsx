@@ -124,7 +124,7 @@ export default function AgentDetailPage() {
               <InfoRow label="Backend" value={agent.model_config.backend} />
               <InfoRow label="Model" value={agent.model_config.model} mono />
               {agent.model_config.max_output_tokens != null && (
-                <InfoRow label="Max Output Tokens" value={`${(agent.model_config.max_output_tokens / 1000).toFixed(1)}K`} />
+                <InfoRow label="Max Output Tokens" value={`${(agent.model_config.max_output_tokens / 1000).toFixed(0)}k`} />
               )}
             </CardContent>
           </Card>

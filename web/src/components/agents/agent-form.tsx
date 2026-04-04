@@ -37,7 +37,7 @@ const defaultData: AgentFormData = {
   model_config: {
     backend: "claude",
     model: "",
-    max_output_tokens: 4096,
+    max_output_tokens: 4000,
   },
   tools: [],
   visibility: "private",
@@ -96,7 +96,7 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
     if (models.length === 0) return;
     const currentValid = models.some((m) => m.id === data.model_config.model);
     if (!currentValid) {
-      const defaultModel = models.find((m) => m.model_info?.default_model) ?? models[0];
+      const defaultModel = models.find((m) => m.model_info?._ui?.default_model) ?? models[0];
       if (defaultModel) {
         setData((prev) => ({
           ...prev,
@@ -111,17 +111,14 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
 
   // Auto-set max_output_tokens default when selected model changes
   useEffect(() => {
-    const maxLen = selectedModelInfo.max_model_len as number | undefined;
-    const maxInput = selectedModelInfo.max_input_tokens as number | undefined;
-    const limit = maxLen != null && maxInput != null && maxLen > maxInput
-      ? maxLen - maxInput : null;
-    const maxLimit = limit != null && limit > 0 ? limit : 4096;
-    const defaultVal = Math.min(4096, maxLimit);
+    const maxTokens = selectedModelInfo.max_tokens as number | undefined;
+    const maxLimit = maxTokens != null && maxTokens > 0 ? maxTokens : 4000;
+    const defaultVal = Math.min(4000, maxLimit);
     setData((prev) => ({
       ...prev,
       model_config: { ...prev.model_config, max_output_tokens: defaultVal },
     }));
-  }, [data.model_config.model, selectedModelInfo.max_model_len, selectedModelInfo.max_input_tokens]);
+  }, [data.model_config.model, selectedModelInfo.max_tokens]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -270,10 +267,10 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
           </div>
 
           {/* Capabilities badges */}
-          {(selectedModelInfo.capabilities as string[] ?? []).length > 0 && (
+          {(selectedModelInfo._ui?.capabilities as string[] ?? []).length > 0 && (
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-[11px] text-muted-foreground/60">Capabilities:</span>
-              {(selectedModelInfo.capabilities as string[]).map((cap) => {
+              {(selectedModelInfo._ui.capabilities as string[]).map((cap) => {
                 const style = CAP_STYLES[cap] ?? CAP_STYLES._default;
                 return (
                   <span key={cap} className={`inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${style}`}>
@@ -286,33 +283,28 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
 
           {/* Max Output Tokens */}
           {(() => {
-            const maxLen = selectedModelInfo.max_model_len as number | undefined;
-            const maxInput = selectedModelInfo.max_input_tokens as number | undefined;
-            const limit = maxLen != null && maxInput != null && maxLen > maxInput
-              ? maxLen - maxInput : null;
-            const maxVal = limit != null && limit > 0 ? limit : 4096;
-            const step = maxVal <= 4096 ? 256 : 1024;
+            const maxTokens = selectedModelInfo.max_tokens as number | undefined;
+            const maxVal = maxTokens != null && maxTokens > 0 ? maxTokens : 4000;
+            const current = Math.min(data.model_config.max_output_tokens, maxVal);
             return (
               <div className="space-y-2">
                 <Label>Max Output Tokens</Label>
                 <div className="flex items-center gap-3">
                   <input
                     type="range"
-                    min={step}
+                    min={1000}
                     max={maxVal}
-                    step={step}
-                    value={Math.min(data.model_config.max_output_tokens, maxVal)}
+                    step={1000}
+                    value={current}
                     onChange={(e) => updateModelConfig("max_output_tokens", parseInt(e.target.value))}
                     className="flex-1 h-2 rounded-full appearance-none bg-secondary cursor-pointer accent-primary"
                   />
                   <span className="w-20 text-center text-sm font-mono text-foreground">
-                    {data.model_config.max_output_tokens >= 1000
-                      ? `${(Math.min(data.model_config.max_output_tokens, maxVal) / 1000).toFixed(1)}K`
-                      : data.model_config.max_output_tokens}
+                    {`${(current / 1000).toFixed(0)}k`}
                   </span>
                 </div>
                 <p className="text-[11px] text-muted-foreground/60">
-                  Maximum tokens per response (up to {maxVal >= 1000 ? `${(maxVal / 1000).toFixed(0)}K` : maxVal})
+                  Maximum tokens per response (up to {`${(maxVal / 1000).toFixed(0)}k`})
                 </p>
               </div>
             );

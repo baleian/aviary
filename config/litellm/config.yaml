@@ -5,25 +5,29 @@ model_list:
       model: "anthropic/claude-sonnet-4-6"
       api_key: "os.environ/ANTHROPIC_API_KEY"
     model_info:
-      max_model_len: 1048576
-      max_input_tokens: 1040384
-      default_model: true
-      capabilities:
-        - vision
-        - tools
-        - thinking
+      max_input_tokens: 1015808
+      max_output_tokens: 32768
+      max_tokens: 32000
+      _ui:
+        default_model: true
+        capabilities:
+          - vision
+          - tools
+          - thinking
 
   - model_name: "anthropic/claude-opus-4-6"
     litellm_params:
       model: "anthropic/claude-opus-4-6"
       api_key: "os.environ/ANTHROPIC_API_KEY"
     model_info:
-      max_model_len: 1048576
-      max_input_tokens: 1040384
-      capabilities:
-        - vision
-        - tools
-        - thinking
+      max_input_tokens: 1015808
+      max_output_tokens: 32768
+      max_tokens: 32000
+      _ui:
+        capabilities:
+          - vision
+          - tools
+          - thinking
 
   # --- Ollama ---
   - model_name: "ollama/gemma4:26b"
@@ -33,13 +37,15 @@ model_list:
       api_key: "ollama"
       num_ctx: 131072
     model_info:
-      max_model_len: 131072
       max_input_tokens: 122880
-      default_model: true
-      capabilities:
-        - vision
-        - tools
-        - thinking
+      max_output_tokens: 8192
+      max_tokens: 8000
+      _ui:
+        default_model: true
+        capabilities:
+          - vision
+          - tools
+          - thinking
 
   # --- vLLM ---
   - model_name: "vllm/gemma-4-31B-it-AWQ-4bit"
@@ -48,13 +54,15 @@ model_list:
       api_base: "http://host.docker.internal:8191/v1"
       api_key: "vllm"
     model_info:
-      max_model_len: 65536
       max_input_tokens: 57344
-      default_model: true
-      capabilities:
-        - vision
-        - tools
-        - thinking
+      max_output_tokens: 8192
+      max_tokens: 8000
+      _ui:
+        default_model: true
+        capabilities:
+          - vision
+          - tools
+          - thinking
 
   # --- Bedrock ---
   - model_name: "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0"
@@ -62,13 +70,15 @@ model_list:
       model: "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0"
       aws_region_name: "ap-northeast-2"
     model_info:
-      max_model_len: 1048576
-      max_input_tokens: 1040384
-      default_model: true
-      capabilities:
-        - vision
-        - tools
-        - thinking
+      max_input_tokens: 229376
+      max_output_tokens: 32768
+      max_tokens: 32000
+      _ui:
+        default_model: true
+        capabilities:
+          - vision
+          - tools
+          - thinking
 
 general_settings:
   master_key: "os.environ/LITELLM_MASTER_KEY"
@@ -82,4 +92,4 @@ litellm_settings:
 router_settings:
   enable_pre_call_checks: true
   default_litellm_params:
-    max_tokens: 8192
+    max_tokens: 8000

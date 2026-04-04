@@ -125,7 +125,7 @@ MODEL=$(curl -sf "${API_URL}/api/inference/models" \
   | python3 -c "
 import sys, json
 models = [m for m in json.load(sys.stdin).get('models', []) if m.get('backend') == '${BACKEND}']
-default = next((m for m in models if m.get('model_info', {}).get('default_model')), models[0] if models else None)
+default = next((m for m in models if m.get('model_info', {}).get('_ui', {}).get('default_model')), models[0] if models else None)
 print(default['id'] if default else '')
 ")
 
