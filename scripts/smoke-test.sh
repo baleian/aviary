@@ -120,12 +120,12 @@ fi
 # ── 3. Create Test Agent ───────────────────────────────
 
 # Resolve default model for the backend from LiteLLM
-MODEL=$(curl -sf "${API_URL}/api/inference/${BACKEND}/models" \
+MODEL=$(curl -sf "${API_URL}/api/inference/models" \
   -H "Authorization: Bearer ${ACCESS_TOKEN}" \
   | python3 -c "
 import sys, json
-models = json.load(sys.stdin).get('models', [])
-default = next((m for m in models if m.get('is_default')), models[0] if models else None)
+models = [m for m in json.load(sys.stdin).get('models', []) if m.get('backend') == '${BACKEND}']
+default = next((m for m in models if m.get('model_info', {}).get('default_model')), models[0] if models else None)
 print(default['id'] if default else '')
 ")
 

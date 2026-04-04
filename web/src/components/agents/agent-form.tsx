@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -47,6 +47,7 @@ const defaultData: AgentFormData = {
 interface ModelOption {
   id: string;
   name: string;
+  backend: string;
   model_info: Record<string, any>;
 }
 
@@ -67,34 +68,43 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [models, setModels] = useState<ModelOption[]>([]);
+  const [allModels, setAllModels] = useState<ModelOption[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
 
-  const fetchModels = useCallback(async (backend: string, currentModel?: string) => {
-    setModelsLoading(true);
-    try {
-      const res = await apiFetch<{ models: ModelOption[] }>(`/inference/${backend}/models`);
-      setModels(res.models);
-      // Auto-select: keep current model if it exists in the list, otherwise pick the default-flagged model or first
-      if (!currentModel || !res.models.some((m) => m.id === currentModel)) {
-        const defaultModel = res.models.find((m) => m.model_info?.default_model) ?? res.models[0];
-        if (defaultModel) {
-          setData((prev) => ({
-            ...prev,
-            model_config: { ...prev.model_config, model: defaultModel.id },
-          }));
-        }
+  // Fetch all models once on mount
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setModelsLoading(true);
+      try {
+        const res = await apiFetch<{ models: ModelOption[] }>("/inference/models");
+        if (!cancelled) setAllModels(res.models);
+      } catch {
+        if (!cancelled) setAllModels([]);
+      } finally {
+        if (!cancelled) setModelsLoading(false);
       }
-    } catch {
-      setModels([]);
-    } finally {
-      setModelsLoading(false);
-    }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
+  // Filter models by selected backend
+  const models = allModels.filter((m) => m.backend === data.model_config.backend);
+
+  // Auto-select model when backend changes or models load
   useEffect(() => {
-    fetchModels(data.model_config.backend, data.model_config.model);
-  }, [data.model_config.backend, fetchModels]);
+    if (models.length === 0) return;
+    const currentValid = models.some((m) => m.id === data.model_config.model);
+    if (!currentValid) {
+      const defaultModel = models.find((m) => m.model_info?.default_model) ?? models[0];
+      if (defaultModel) {
+        setData((prev) => ({
+          ...prev,
+          model_config: { ...prev.model_config, model: defaultModel.id },
+        }));
+      }
+    }
+  }, [data.model_config.backend, models.length]);
 
   // Derive selected model info from models list
   const selectedModelInfo = models.find((m) => m.id === data.model_config.model)?.model_info ?? {};

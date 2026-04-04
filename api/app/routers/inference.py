@@ -37,41 +37,27 @@ async def _fetch_model_info() -> list[dict]:
         return resp.json().get("data", [])
 
 
-@router.get("/backends")
-async def list_backends(user: User = Depends(get_current_user)):
-    """List available inference backends (derived from LiteLLM model list)."""
-    models = await _fetch_model_info()
-    backends = set()
-    for m in models:
+@router.get("/models")
+async def list_models(user: User = Depends(get_current_user)):
+    """List all available models across all backends.
+
+    Each item includes the backend name and full model_info dict from LiteLLM
+    so that clients can derive capabilities, token limits, etc. in a single call.
+    """
+    raw = await _fetch_model_info()
+    models = []
+    for m in raw:
         name = m.get("model_name", "")
         prefix = name.split("/")[0] if "/" in name else ""
-        if prefix in _PREFIX_TO_BACKEND:
-            backends.add(_PREFIX_TO_BACKEND[prefix])
-    return {"backends": sorted(backends)}
-
-
-@router.get("/{backend}/models")
-async def list_models(backend: str, user: User = Depends(get_current_user)):
-    """List available models for a backend (filtered from LiteLLM model list).
-
-    Each item includes the full model_info dict from LiteLLM config so that
-    clients can derive capabilities, token limits, etc. without a second call.
-    """
-    prefix = _BACKEND_TO_PREFIX.get(backend)
-    if not prefix:
-        raise HTTPException(status_code=400, detail=f"Unknown backend: {backend}")
-    models = await _fetch_model_info()
-    return {
-        "models": [
-            {
-                "id": m["model_name"],
-                "name": m["model_name"],
+        backend = _PREFIX_TO_BACKEND.get(prefix)
+        if backend:
+            models.append({
+                "id": name,
+                "name": name,
+                "backend": backend,
                 "model_info": m.get("model_info", {}),
-            }
-            for m in models
-            if m.get("model_name", "").startswith(prefix)
-        ]
-    }
+            })
+    return {"models": models}
 
 
 @router.get("/{backend}/health")
