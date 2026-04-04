@@ -35,17 +35,17 @@ Loaded at Python startup via .pth file. Remove when upstream issues are fixed.
 import json
 import re
 
-# Matches the "no-thinking" wrapper: <|\"|"VALUE<|\"|
-_WRAPPER_RE = re.compile(r'<\|\\"\|"(.*?)<\|\\"\|')
-# Matches <|\" when followed by a word character (thinking-on pattern).
+# Matches <|\" followed by a word character (thinking-on value start).
 _TOKEN_QUOTE_BEFORE_WORD = re.compile(r'<\|\\"(?=\w)')
+# Matches "" followed by a word character (leftover from no-thinking cleanup).
+_DOUBLE_QUOTE_BEFORE_WORD = re.compile(r'""(?=\w)')
 
 
 def _clean_tool_json(raw: str) -> str:
     """Strip Gemma4 special token fragments from accumulated tool call JSON.
 
     vLLM's Gemma4 tool parser leaks ``<|channel>`` / ``<channel|>`` token
-    fragments into streaming argument deltas. Two patterns:
+    fragments into streaming argument deltas. Two corruption patterns:
 
     * Thinking ON:  ``<|\\value<|\\"|`` / ``<|\\"value<|\\"``
     * Thinking OFF: ``<|\\"|"value<|\\"|`` (full wrapper around each value)
@@ -57,14 +57,15 @@ def _clean_tool_json(raw: str) -> str:
         return raw
     except (json.JSONDecodeError, ValueError):
         pass
-    # Step 1: no-thinking wrapper: <|\"|"VALUE<|\"| -> VALUE
-    cleaned = _WRAPPER_RE.sub(r'\1', raw)
-    # Step 2: thinking-on end pattern: <|\"|  (5 chars)
-    cleaned = cleaned.replace('<|\\"|', '')
-    # Step 3: thinking-on start with quote: <|\" + word char
+    # Step 1: <|\"| (5 chars) — common end-of-value marker
+    cleaned = raw.replace('<|\\"|', '')
+    # Step 2: <|\" before word char — thinking-on start with leaked quote
     cleaned = _TOKEN_QUOTE_BEFORE_WORD.sub('', cleaned)
-    # Step 4: remaining token prefixes: <|\  (3 chars)
+    # Step 3: <|\ (3 chars) — remaining token prefixes
     cleaned = cleaned.replace('<|\\', '')
+    # Step 4: "" before word char — leftover double quote from no-thinking
+    #         pattern where opening <|\"| removal leaves extra "
+    cleaned = _DOUBLE_QUOTE_BEFORE_WORD.sub('"', cleaned)
     return cleaned
 
 
