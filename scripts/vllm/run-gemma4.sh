@@ -17,8 +17,8 @@ GPU_MEM="${VLLM_GPU_MEM:-0.90}"
 MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-8}"
 MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-32768}"
 
-IMAGE=vllm/vllm-openai:gemma4
-MODEL=cyankiwi/gemma-4-31B-it-AWQ-4bit
+IMAGE=vllm/vllm-openai:gemma4-cu130
+MODEL=lcu0312/gemma-4-26B-A4B-it-AWQ-4bit
 
 if [[ -z "${HF_TOKEN:-}" ]]; then
     echo "ERROR: HF_TOKEN not set. Export it or add to .env"
@@ -46,12 +46,11 @@ docker run -itd \
     --tensor-parallel-size "$GPU_NUM" \
     --gpu-memory-utilization "$GPU_MEM" \
     --max-num-seqs "$MAX_NUM_SEQS" \
+    --max-model-len "$MAX_MODEL_LEN" \
     --reasoning-parser gemma4  \
-    --reasoning-config '{}' \
     --tool-call-parser gemma4  \
     --enable-auto-tool-choice \
     --async-scheduling \
-    --max-model-len "$MAX_MODEL_LEN" \
     --kv-cache-dtype fp8 \
     --host 0.0.0.0 \
     --port "$PORT"

@@ -63,9 +63,9 @@ model_list:
           - thinking
 
   # --- vLLM ---
-  - model_name: "vllm/gemma-4-31B-it-AWQ-4bit"
+  - model_name: "vllm/gemma-4-26B-A4B-it-AWQ-4bit"
     litellm_params:
-      model: "openai/cyankiwi/gemma-4-31B-it-AWQ-4bit"
+      model: "openai/lcu0312/gemma-4-26B-A4B-it-AWQ-4bit"
       api_base: "http://host.docker.internal:8191/v1"
       api_key: "vllm"
       chat_template_kwargs:
