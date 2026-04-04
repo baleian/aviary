@@ -18,11 +18,19 @@ to the backend and wrap the response in a fake Anthropic SSE stream when the
 client requested streaming. This guarantees correct response translation at
 the cost of slightly higher TTFT (time to first token).
 
+Controlled by AVIARY_FORCE_NON_STREAMING env var (default: "0" = disabled).
+Set to "1" to force non-streaming for adapter-path requests.
+
 Loaded at Python startup via .pth file. Remove when upstream issues are fixed.
 """
 
+import os
+
 
 def _apply():
+    if os.environ.get("AVIARY_FORCE_NON_STREAMING", "0") != "1":
+        return
+
     from typing import AsyncIterator, Dict, List, Optional, Union, cast
 
     import litellm

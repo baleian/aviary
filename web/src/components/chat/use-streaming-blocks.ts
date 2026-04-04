@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import type { StreamBlock, TextBlock, ToolCallBlock, TodoItem } from "@/types";
+import type { StreamBlock, TextBlock, ThinkingBlock, ToolCallBlock, TodoItem } from "@/types";
 import type { WSMessage } from "@/lib/websocket";
 
 /**
@@ -70,6 +70,19 @@ export function useStreamingBlocks() {
   const handleMessage = useCallback(
     (msg: WSMessage) => {
       switch (msg.type) {
+        case "thinking": {
+          updateBlocks((prev) => {
+            const last = prev[prev.length - 1];
+            if (last?.type === "thinking") {
+              const updated: ThinkingBlock = { ...last, content: last.content + msg.content };
+              return [...prev.slice(0, -1), updated];
+            }
+            const id = `thinking-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+            return [...prev, { type: "thinking", id, content: msg.content }];
+          });
+          break;
+        }
+
         case "chunk": {
           updateBlocks((prev) => {
             // When new text arrives after tool calls, mark all running tools as complete
@@ -171,6 +184,9 @@ export function useStreamingBlocks() {
     return blocksRef.current.map((b) => {
       if (b.type === "text") {
         return { type: "text", content: b.content };
+      }
+      if (b.type === "thinking") {
+        return { type: "thinking", content: b.content };
       }
       return {
         type: "tool_call",

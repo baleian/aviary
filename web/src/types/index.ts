@@ -89,7 +89,13 @@ export interface ToolCallBlock {
   children?: ToolCallBlock[];
 }
 
-export type StreamBlock = TextBlock | ToolCallBlock;
+export interface ThinkingBlock {
+  type: "thinking";
+  id: string;
+  content: string;
+}
+
+export type StreamBlock = TextBlock | ToolCallBlock | ThinkingBlock;
 
 export interface TodoItem {
   content: string;

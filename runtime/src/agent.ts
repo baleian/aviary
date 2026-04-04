@@ -116,7 +116,7 @@ function hasSessionHistory(workspace: string, sessionId: string): boolean {
 }
 
 export interface SSEChunk {
-  type: "chunk" | "tool_use" | "tool_result" | "tool_progress" | "result";
+  type: "chunk" | "tool_use" | "tool_result" | "tool_progress" | "result" | "heartbeat" | "thinking";
   content?: string;
   name?: string;
   input?: unknown;
@@ -214,35 +214,64 @@ export async function* processMessage(
     env,
     // TS SDK doesn't expose sessionId as an option, but CLI supports --session-id.
     // Use extraArgs to inject it on first message, resume on subsequent messages.
+    includePartialMessages: true,
     ...(canResume ? {} : { extraArgs: { "session-id": sessionId } }),
     ...(canResume ? { resume: sessionId } : {}),
     ...(abortController ? { abortController } : {}),
   };
 
   let fullResponse = "";
+  // Track cumulative lengths to extract deltas from partial snapshots.
+  // The SDK delivers cumulative assistant snapshots (not raw stream deltas),
+  // so we diff against previously emitted lengths per content type.
+  let emittedTextLen = 0;
+  let emittedThinkingLen = 0;
+  // Track tool_use IDs already emitted to avoid duplicates from partial messages
+  const emittedToolIds = new Set<string>();
 
   try {
     for await (const message of query({ prompt: content, options })) {
       const msg = message as SDKMessage & Record<string, any>;
 
       if (msg.type === "assistant" && msg.message?.content) {
+        // Cumulative assistant snapshot — SDK delivers the full content array
+        // on each partial update. We diff to extract new deltas.
         const parentId = msg.parent_tool_use_id ?? null;
         for (const block of msg.message.content) {
-          if (block.type === "text") {
-            fullResponse += block.text;
-            yield { type: "chunk", content: block.text };
+          if (block.type === "thinking") {
+            // Thinking block: cumulative thinking text in `block.thinking`
+            const thinking = (block.thinking ?? "") as string;
+            if (thinking.length > emittedThinkingLen) {
+              const delta = thinking.slice(emittedThinkingLen);
+              emittedThinkingLen = thinking.length;
+              yield { type: "thinking", content: delta };
+            }
+          } else if (block.type === "text") {
+            const text = block.text as string;
+            if (text.length > emittedTextLen) {
+              const delta = text.slice(emittedTextLen);
+              emittedTextLen = text.length;
+              fullResponse += delta;
+              yield { type: "chunk", content: delta };
+            }
           } else if (block.type === "tool_use") {
-            yield {
-              type: "tool_use",
-              name: block.name,
-              input: block.input,
-              tool_use_id: block.id,
-              ...(parentId ? { parent_tool_use_id: parentId } : {}),
-            };
+            if (!emittedToolIds.has(block.id)) {
+              emittedToolIds.add(block.id);
+              yield {
+                type: "tool_use",
+                name: block.name,
+                input: block.input,
+                tool_use_id: block.id,
+                ...(parentId ? { parent_tool_use_id: parentId } : {}),
+              };
+            }
           }
         }
       } else if (msg.type === "user" && msg.message?.content) {
         // SDKUserMessage — tool results sent back to the model after execution.
+        // New assistant turn starts after this, so reset tracking.
+        emittedTextLen = 0;
+        emittedThinkingLen = 0;
         const parentId = msg.parent_tool_use_id ?? null;
         const content = msg.message.content;
         if (Array.isArray(content)) {

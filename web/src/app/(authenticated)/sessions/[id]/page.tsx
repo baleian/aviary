@@ -54,6 +54,7 @@ export default function ChatPage() {
   const [session, setSession] = useState<Session | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [lastEventAt, setLastEventAt] = useState<number>(0);
   const [loading, setLoading] = useState(true);
   const [connStatus, setConnStatus] = useState<ConnectionStatus>("connecting");
   const [visibleStatus, setVisibleStatus] = useState<ConnectionStatus | null>(null);
@@ -131,11 +132,16 @@ export default function ChatPage() {
               sender_id: msg.sender_id, content: msg.content, metadata: {}, created_at: new Date().toISOString(),
             }]);
             break;
+          case "thinking":
           case "chunk":
           case "tool_use":
           case "tool_result":
           case "tool_progress":
+            setLastEventAt(Date.now());
             handleStreamMsg(msg);
+            break;
+          case "heartbeat":
+            setLastEventAt(Date.now());
             break;
           case "done": {
             finalize();
@@ -153,11 +159,13 @@ export default function ChatPage() {
               });
             }
             setIsStreaming(false);
+
             break;
           }
           case "error":
             resetBlocks();
             setIsStreaming(false);
+
             setMessages((msgs) => [...msgs, {
               id: crypto.randomUUID(), session_id: sessionId, sender_type: "agent",
               content: `Error: ${msg.message}`, metadata: {}, created_at: new Date().toISOString(),
@@ -165,6 +173,8 @@ export default function ChatPage() {
             break;
           case "replay_start":
             setIsStreaming(true);
+
+            setLastEventAt(Date.now());
             resetBlocks();
             break;
           case "replay_end":
@@ -187,6 +197,7 @@ export default function ChatPage() {
               });
             }
             setIsStreaming(false);
+
             break;
           }
           case "stream_complete":
@@ -384,7 +395,7 @@ export default function ChatPage() {
             ))}
 
             {(blocks.length > 0 || isStreaming) && (
-              <StreamingResponse blocks={blocks} isStreaming={isStreaming} />
+              <StreamingResponse blocks={blocks} isStreaming={isStreaming} lastEventAt={lastEventAt} />
             )}
           </div>
         </div>

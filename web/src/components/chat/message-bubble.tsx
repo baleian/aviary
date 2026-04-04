@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 import { MarkdownContent } from "@/components/chat/markdown-content";
 import { ToolCallCard } from "@/components/chat/tool-call-card";
 import { buildTree } from "@/components/chat/use-streaming-blocks";
-import type { Message, StreamBlock, ToolCallBlock } from "@/types";
+import type { Message, StreamBlock, ThinkingBlock, ToolCallBlock } from "@/types";
 
 interface MessageBubbleProps {
   message: Message;
@@ -57,6 +57,13 @@ function restoreBlocks(raw: Array<Record<string, unknown>>): StreamBlock[] {
         parent_tool_use_id: block.parent_tool_use_id ? String(block.parent_tool_use_id) : undefined,
       };
     }
+    if (block.type === "thinking") {
+      return {
+        type: "thinking" as const,
+        id: `thinking-${i}`,
+        content: String(block.content ?? ""),
+      };
+    }
     return {
       type: "text" as const,
       id: `text-${i}`,
@@ -64,6 +71,42 @@ function restoreBlocks(raw: Array<Record<string, unknown>>): StreamBlock[] {
     };
   });
   return buildTree(flat);
+}
+
+function SavedThinkingChip({ content }: { content: string }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const toggle = useCallback(() => setIsOpen((v) => !v), []);
+
+  return (
+    <div className="rounded-2xl rounded-tl-md bg-chat-agent">
+      <button
+        onClick={toggle}
+        className="flex w-full items-center gap-2 px-4 py-2.5 text-left"
+      >
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className={`shrink-0 text-amber-400 transition-transform duration-200 ${isOpen ? "rotate-90" : ""}`}
+        >
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+        <span className="text-[12px] font-medium text-amber-400/90">Thinking</span>
+      </button>
+      {isOpen && (
+        <div className="border-t border-border/20 px-4 py-3">
+          <div className="max-h-60 overflow-y-auto text-[12px] leading-relaxed text-muted-foreground/70 whitespace-pre-wrap break-words">
+            {content}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function MessageBubble({ message, currentUserId }: MessageBubbleProps) {
@@ -102,6 +145,9 @@ export function MessageBubble({ message, currentUserId }: MessageBubbleProps) {
             {restoreBlocks(savedBlocks!).map((block) => {
               if (block.type === "tool_call") {
                 return <ToolCallCard key={block.id} block={block} />;
+              }
+              if (block.type === "thinking") {
+                return <SavedThinkingChip key={block.id} content={block.content} />;
               }
               return (
                 <div key={block.id} className="rounded-2xl rounded-tl-md bg-chat-agent px-4 py-3 text-[14px] leading-[1.7] text-chat-agent-fg">
