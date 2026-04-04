@@ -30,12 +30,11 @@ model_list:
           - thinking
 
   # --- Ollama ---
-  - model_name: "ollama/gemma4:26b"
+  - model_name: "ollama/gemma4:26b-128k"
     litellm_params:
-      model: "openai/gemma4:26b"
+      model: "openai/gemma4:26b-128k"
       api_base: "http://host.docker.internal:11434/v1"
       api_key: "ollama"
-      num_ctx: 131072
     model_info:
       max_input_tokens: 122880
       max_output_tokens: 8192
