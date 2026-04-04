@@ -54,7 +54,6 @@ export default function ChatPage() {
   const [session, setSession] = useState<Session | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
-  const [lastEventAt, setLastEventAt] = useState<number>(0);
   const [loading, setLoading] = useState(true);
   const [connStatus, setConnStatus] = useState<ConnectionStatus>("connecting");
   const [visibleStatus, setVisibleStatus] = useState<ConnectionStatus | null>(null);
@@ -137,7 +136,7 @@ export default function ChatPage() {
           case "tool_use":
           case "tool_result":
           case "tool_progress":
-            setLastEventAt(Date.now());
+
             handleStreamMsg(msg);
             break;
           case "done": {
@@ -171,7 +170,7 @@ export default function ChatPage() {
           case "replay_start":
             setIsStreaming(true);
 
-            setLastEventAt(Date.now());
+
             resetBlocks();
             break;
           case "replay_end":
@@ -392,7 +391,7 @@ export default function ChatPage() {
             ))}
 
             {(blocks.length > 0 || isStreaming) && (
-              <StreamingResponse blocks={blocks} isStreaming={isStreaming} lastEventAt={lastEventAt} />
+              <StreamingResponse blocks={blocks} isStreaming={isStreaming} />
             )}
           </div>
         </div>
