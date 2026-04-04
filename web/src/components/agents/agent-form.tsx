@@ -109,8 +109,12 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
   // Derive selected model info from models list
   const selectedModelInfo = models.find((m) => m.id === data.model_config.model)?.model_info ?? {};
 
-  // Auto-set max_output_tokens default when selected model changes
+  // Track whether the user has manually changed the model (skip reset on initial load)
+  const [userChangedModel, setUserChangedModel] = useState(false);
+
+  // Auto-set max_output_tokens default only when user explicitly changes model
   useEffect(() => {
+    if (!userChangedModel) return;
     const maxTokens = selectedModelInfo.max_tokens as number | undefined;
     const maxLimit = maxTokens != null && maxTokens > 0 ? maxTokens : 4000;
     const defaultVal = Math.min(4000, maxLimit);
@@ -118,7 +122,7 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
       ...prev,
       model_config: { ...prev.model_config, max_output_tokens: defaultVal },
     }));
-  }, [data.model_config.model, selectedModelInfo.max_tokens]);
+  }, [data.model_config.model, selectedModelInfo.max_tokens, userChangedModel]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -242,6 +246,7 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
                 id="backend"
                 value={data.model_config.backend}
                 onChange={(e) => {
+                  setUserChangedModel(true);
                   updateModelConfig("backend", e.target.value);
                   updateModelConfig("model", "");
                 }}
@@ -256,7 +261,7 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
               <Select
                 id="model"
                 value={data.model_config.model}
-                onChange={(e) => updateModelConfig("model", e.target.value)}
+                onChange={(e) => { setUserChangedModel(true); updateModelConfig("model", e.target.value); }}
                 disabled={modelsLoading}
               >
                 {models.map((m) => (
