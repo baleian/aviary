@@ -68,6 +68,8 @@ model_list:
       model: "openai/cyankiwi/gemma-4-31B-it-AWQ-4bit"
       api_base: "http://host.docker.internal:8191/v1"
       api_key: "vllm"
+      chat_template_kwargs:
+        enable_thinking: true
     model_info:
       max_input_tokens: 28672
       max_output_tokens: 4096

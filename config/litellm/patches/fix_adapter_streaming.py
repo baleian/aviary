@@ -23,10 +23,43 @@ back to Anthropic SSE format:
    internal CLI calls (WebFetch, subagents) expect a single text block and
    would truncate results if text were split across multiple blocks.
 
+4. Tool call special token leak (vLLM/Gemma4): vLLM's Gemma4 tool parser
+   leaks special tokens (<|, |>, etc.) into streaming argument deltas,
+   producing invalid JSON. Non-streaming is unaffected because vLLM
+   post-processes the final output. This patch strips the leaked tokens
+   from input_json_delta events. Safe no-op when vLLM fixes this upstream.
+
 Loaded at Python startup via .pth file. Remove when upstream issues are fixed.
 """
 
 import json
+import re
+
+# Matches <|\" when followed by a word character. The " belongs to the
+# leaked token (not JSON structure) and should be removed with it.
+_TOKEN_QUOTE_BEFORE_WORD = re.compile(r'<\|\\"(?=\w)')
+
+
+def _clean_tool_json(raw: str) -> str:
+    """Strip Gemma4 special token fragments from accumulated tool call JSON.
+
+    vLLM's Gemma4 tool parser leaks <|channel>/<channel|> token fragments
+    into streaming argument deltas. The corruption pattern wraps string
+    values: ``<|\\value<|\\"|`` or ``<|\\value<|\\"``.
+
+    Applied only when json.loads() fails on the raw string, so clean JSON
+    from other backends passes through untouched.
+    """
+    try:
+        json.loads(raw)
+        return raw  # already valid — no cleanup needed
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # Order matters: remove longer patterns first
+    cleaned = raw.replace('<|\\"|', '')  # end-of-value with trailing pipe
+    cleaned = _TOKEN_QUOTE_BEFORE_WORD.sub('', cleaned)
+    cleaned = cleaned.replace('<|\\', '')
+    return cleaned
 
 
 def _apply():
@@ -147,18 +180,30 @@ def _apply():
     def _make_sse(event_type, data):
         return f"event: {event_type}\ndata: {json.dumps(data)}\n\n".encode()
 
+    def _flush_tool_buffer(tool_json_buf, block_idx):
+        """Clean accumulated tool JSON and emit as a single delta."""
+        raw = "".join(tool_json_buf)
+        cleaned = _clean_tool_json(raw)
+        if cleaned:
+            return [_make_sse("content_block_delta", {
+                "type": "content_block_delta",
+                "index": block_idx,
+                "delta": {"type": "input_json_delta", "partial_json": cleaned},
+            })]
+        return []
+
     async def _patched_async_sse(self):
         counter = 0
-        idx_offset = 0  # added to all indices for consistency
+        idx_offset = 0
+        tool_json_buf = []    # buffer for input_json_delta partial_json
+        tool_block_idx = -1   # index of the current tool_use block
 
         async for chunk in _orig_async_sse(self):
             if not isinstance(chunk, bytes):
                 yield chunk
                 continue
 
-            # Parse the SSE payload
             text = chunk.decode("utf-8", errors="replace")
-            # Extract JSON from "data: {...}" line
             data_line = None
             for line in text.split("\n"):
                 if line.startswith("data: "):
@@ -180,13 +225,33 @@ def _apply():
             if "index" in d and idx_offset > 0:
                 d = {**d, "index": d["index"] + idx_offset}
 
-            # Flush logic — only for thinking_delta.
-            # Text blocks are NOT flushed because internal CLI calls
-            # (WebFetch, subagents) expect a single text block per response.
-            # Flushing text would cause the CLI to keep only the last block,
-            # truncating tool results.
-            if rtype == "content_block_delta":
+            if rtype == "content_block_start":
+                counter = 0
+                cb = d.get("content_block", {})
+                if cb.get("type") == "tool_use":
+                    tool_block_idx = d.get("index", -1)
+                    tool_json_buf = []
+
+            elif rtype == "content_block_stop":
+                counter = 0
+                stop_idx = d.get("index", -1)
+                # Fix 4: flush buffered tool JSON with cleanup before stop
+                if stop_idx == tool_block_idx and tool_json_buf:
+                    for evt in _flush_tool_buffer(tool_json_buf, tool_block_idx):
+                        yield evt
+                    tool_json_buf = []
+                    tool_block_idx = -1
+
+            elif rtype == "content_block_delta":
                 delta_type = d.get("delta", {}).get("type", "")
+
+                # Fix 4: buffer tool call JSON deltas instead of emitting
+                if delta_type == "input_json_delta":
+                    pj = d.get("delta", {}).get("partial_json", "")
+                    tool_json_buf.append(pj)
+                    continue  # don't emit yet — flushed at content_block_stop
+
+                # Fix 3: Flush thinking blocks periodically
                 if delta_type == "thinking_delta":
                     counter += 1
                     if counter >= FLUSH_EVERY:
@@ -207,10 +272,7 @@ def _apply():
                         continue
                 else:
                     counter = 0
-            elif rtype in ("content_block_start", "content_block_stop"):
-                counter = 0
 
-            # Re-serialize with potentially updated index
             event_type = str(d.get("type", "message"))
             yield _make_sse(event_type, d)
 
@@ -222,6 +284,8 @@ def _apply():
     def _patched_sync_sse(self):
         counter = 0
         idx_offset = 0
+        tool_json_buf = []
+        tool_block_idx = -1
 
         for chunk in _orig_sync_sse(self):
             if not isinstance(chunk, bytes):
@@ -249,8 +313,28 @@ def _apply():
             if "index" in d and idx_offset > 0:
                 d = {**d, "index": d["index"] + idx_offset}
 
-            if rtype == "content_block_delta":
+            if rtype == "content_block_start":
+                counter = 0
+                cb = d.get("content_block", {})
+                if cb.get("type") == "tool_use":
+                    tool_block_idx = d.get("index", -1)
+                    tool_json_buf = []
+
+            elif rtype == "content_block_stop":
+                counter = 0
+                if d.get("index") == tool_block_idx and tool_json_buf:
+                    for evt in _flush_tool_buffer(tool_json_buf, tool_block_idx):
+                        yield evt
+                    tool_json_buf = []
+                    tool_block_idx = -1
+
+            elif rtype == "content_block_delta":
                 delta_type = d.get("delta", {}).get("type", "")
+
+                if delta_type == "input_json_delta":
+                    tool_json_buf.append(d.get("delta", {}).get("partial_json", ""))
+                    continue
+
                 if delta_type == "thinking_delta":
                     counter += 1
                     if counter >= FLUSH_EVERY:
@@ -271,8 +355,6 @@ def _apply():
                         continue
                 else:
                     counter = 0
-            elif rtype in ("content_block_start", "content_block_stop"):
-                counter = 0
 
             event_type = str(d.get("type", "message"))
             yield _make_sse(event_type, d)
