@@ -83,7 +83,7 @@ check_health() {
 
 check_health "API"              "${API_URL}/api/health"
 check_health "Keycloak"         "${KEYCLOAK_URL}/realms/${REALM}/.well-known/openid-configuration"
-check_health "Inference Router"  "http://localhost:8090/health"
+check_health "LiteLLM Gateway"   "http://localhost:8090/health/liveliness"
 
 # ── 2. Keycloak Token ──────────────────────────────────
 header "2/6" "Authenticate as ${TEST_USER}"
@@ -118,7 +118,24 @@ else
 fi
 
 # ── 3. Create Test Agent ───────────────────────────────
-header "3/6" "Create test agent (${BACKEND}/default)"
+
+# Resolve default model for the backend from LiteLLM
+MODEL=$(curl -sf "${API_URL}/api/inference/models" \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  | python3 -c "
+import sys, json
+models = [m for m in json.load(sys.stdin).get('models', []) if m.get('backend') == '${BACKEND}']
+default = next((m for m in models if m.get('model_info', {}).get('_ui', {}).get('default_model')), models[0] if models else None)
+print(default['id'] if default else '')
+")
+
+if [ -z "$MODEL" ]; then
+  fail "No models available for backend: ${BACKEND}"
+  ERRORS=1
+  exit 1
+fi
+
+header "3/6" "Create test agent (${BACKEND}/${MODEL})"
 
 SLUG="smoke-test-$(date +%s)"
 AGENT_PAYLOAD=$(cat <<EOF
@@ -129,7 +146,7 @@ AGENT_PAYLOAD=$(cat <<EOF
   "instruction": "You are a test assistant. Reply briefly to any message.",
   "model_config": {
     "backend": "${BACKEND}",
-    "model": "default"
+    "model": "${MODEL}"
   },
   "tools": [],
   "mcp_servers": [],

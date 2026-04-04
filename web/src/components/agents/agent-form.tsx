@@ -1,13 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { apiFetch } from "@/lib/api";
-import type { ModelInfo } from "@/types";
 
 interface AgentFormData {
   name: string;
@@ -17,10 +16,6 @@ interface AgentFormData {
   model_config: {
     backend: string;
     model: string;
-    temperature: number | null;
-    top_p: number | null;
-    top_k: number | null;
-    num_ctx: number | null;
     max_output_tokens: number;
   };
   tools: string[];
@@ -41,11 +36,7 @@ const defaultData: AgentFormData = {
   instruction: "",
   model_config: {
     backend: "claude",
-    model: "default",
-    temperature: null,
-    top_p: null,
-    top_k: null,
-    num_ctx: null,
+    model: "",
     max_output_tokens: 4000,
   },
   tools: [],
@@ -56,6 +47,8 @@ const defaultData: AgentFormData = {
 interface ModelOption {
   id: string;
   name: string;
+  backend: string;
+  model_info: Record<string, any>;
 }
 
 // Capability badge styles — known caps get distinct colors, others get a muted style
@@ -67,28 +60,6 @@ const CAP_STYLES: Record<string, string> = {
   _default: "bg-zinc-500/10 text-zinc-400 ring-zinc-500/20",
 };
 
-// Discrete context window steps
-const CTX_STEPS = [4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576];
-const CTX_LABELS = ["4K", "8K", "16K", "32K", "64K", "128K", "256K", "512K", "1M"];
-
-function ctxValueToIndex(value: number | null, maxCtx: number | null): number {
-  if (value == null) return 3; // default to 32K
-  const available = CTX_STEPS.filter((s) => !maxCtx || s <= maxCtx);
-  let closest = 0;
-  for (let i = 0; i < available.length; i++) {
-    if (Math.abs(available[i] - value) < Math.abs(available[closest] - value)) closest = i;
-  }
-  return closest;
-}
-
-function formatCtxLabel(value: number | null): string {
-  if (value == null) return "Default";
-  const idx = CTX_STEPS.indexOf(value);
-  if (idx >= 0) return CTX_LABELS[idx];
-  if (value >= 1048576) return `${(value / 1048576).toFixed(1)}M`;
-  return `${Math.round(value / 1024)}K`;
-}
-
 export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps) {
   const [data, setData] = useState<AgentFormData>(() => {
     const merged = { ...defaultData, ...initialData };
@@ -97,58 +68,61 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [models, setModels] = useState<ModelOption[]>([]);
+  const [allModels, setAllModels] = useState<ModelOption[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
-  const [modelInfo, setModelInfo] = useState<ModelInfo | null>(null);
-  const fetchSeq = useRef(0);
 
-  const fetchModels = useCallback(async (backend: string) => {
-    setModelsLoading(true);
-    try {
-      const res = await apiFetch<{ models: ModelOption[]; error?: string }>(`/inference/${backend}/models`);
-      setModels(res.models);
-    } catch {
-      setModels([]);
-    } finally {
-      setModelsLoading(false);
-    }
-  }, []);
-
+  // Fetch all models once on mount
   useEffect(() => {
-    fetchModels(data.model_config.backend);
-  }, [data.model_config.backend, fetchModels]);
-
-  // Fetch model info when model changes, auto-populate defaults
-  useEffect(() => {
-    const { backend, model } = data.model_config;
-    if (model === "default") {
-      setModelInfo(null);
-      return;
-    }
-    const seq = ++fetchSeq.current;
+    let cancelled = false;
     (async () => {
+      setModelsLoading(true);
       try {
-        const info = await apiFetch<ModelInfo>(
-          `/inference/${backend}/model-info?model=${encodeURIComponent(model)}`
-        );
-        if (seq !== fetchSeq.current) return; // stale
-        setModelInfo(info);
-        // Auto-populate defaults (only for fields the user hasn't manually set yet on this model)
-        setData((prev) => ({
-          ...prev,
-          model_config: {
-            ...prev.model_config,
-            temperature: info.defaults.temperature ?? prev.model_config.temperature,
-            top_p: info.defaults.top_p ?? prev.model_config.top_p,
-            top_k: info.defaults.top_k != null ? info.defaults.top_k : prev.model_config.top_k,
-            num_ctx: info.defaults.num_ctx ?? info.limits.max_context_length ?? prev.model_config.num_ctx,
-          },
-        }));
+        const res = await apiFetch<{ models: ModelOption[] }>("/inference/models");
+        if (!cancelled) setAllModels(res.models);
       } catch {
-        if (seq === fetchSeq.current) setModelInfo(null);
+        if (!cancelled) setAllModels([]);
+      } finally {
+        if (!cancelled) setModelsLoading(false);
       }
     })();
-  }, [data.model_config.backend, data.model_config.model]);
+    return () => { cancelled = true; };
+  }, []);
+
+  // Filter models by selected backend
+  const models = allModels.filter((m) => m.backend === data.model_config.backend);
+
+  // Auto-select model when backend changes or models load
+  useEffect(() => {
+    if (models.length === 0) return;
+    const currentValid = models.some((m) => m.id === data.model_config.model);
+    if (!currentValid) {
+      const defaultModel = models.find((m) => m.model_info?._ui?.default_model) ?? models[0];
+      if (defaultModel) {
+        setData((prev) => ({
+          ...prev,
+          model_config: { ...prev.model_config, model: defaultModel.id },
+        }));
+      }
+    }
+  }, [data.model_config.backend, models.length]);
+
+  // Derive selected model info from models list
+  const selectedModelInfo = models.find((m) => m.id === data.model_config.model)?.model_info ?? {};
+
+  // Track whether the user has manually changed the model (skip reset on initial load)
+  const [userChangedModel, setUserChangedModel] = useState(false);
+
+  // Auto-set max_output_tokens default only when user explicitly changes model
+  useEffect(() => {
+    if (!userChangedModel) return;
+    const maxTokens = selectedModelInfo.max_tokens as number | undefined;
+    const maxLimit = maxTokens != null && maxTokens > 0 ? maxTokens : 4000;
+    const defaultVal = Math.min(4000, maxLimit);
+    setData((prev) => ({
+      ...prev,
+      model_config: { ...prev.model_config, max_output_tokens: defaultVal },
+    }));
+  }, [data.model_config.model, selectedModelInfo.max_tokens, userChangedModel]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -167,7 +141,7 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
     setData((prev) => ({ ...prev, [key]: value }));
   };
 
-  const updateModelConfig = (key: string, value: string | number | null) => {
+  const updateModelConfig = (key: string, value: string | number) => {
     setData((prev) => ({
       ...prev,
       model_config: { ...prev.model_config, [key]: value },
@@ -184,12 +158,6 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
       updateField("slug", slug);
     }
   };
-
-  const maxCtx = modelInfo?.limits.max_context_length ?? null;
-  const availableCtxSteps = CTX_STEPS.filter((s) => !maxCtx || s <= maxCtx);
-  const availableCtxLabels = CTX_LABELS.slice(0, availableCtxSteps.length);
-  const isSpecificModel = data.model_config.model !== "default";
-  const showSamplingControls = isSpecificModel && data.model_config.backend === "ollama";
 
   return (
     <form onSubmit={handleSubmit} className="space-y-8">
@@ -266,7 +234,7 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
       <section className="space-y-5">
         <div className="mb-1">
           <h2 className="text-sm font-semibold text-foreground">Model Configuration</h2>
-          <p className="text-xs text-muted-foreground">Choose the LLM backend and tuning parameters</p>
+          <p className="text-xs text-muted-foreground">Choose the LLM backend and model</p>
         </div>
 
         <div className="rounded-xl border border-border/60 bg-card p-5 space-y-5">
@@ -278,9 +246,9 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
                 id="backend"
                 value={data.model_config.backend}
                 onChange={(e) => {
+                  setUserChangedModel(true);
                   updateModelConfig("backend", e.target.value);
-                  updateModelConfig("model", "default");
-                  setModelInfo(null);
+                  updateModelConfig("model", "");
                 }}
               >
                 <option value="claude">Claude API</option>
@@ -293,10 +261,9 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
               <Select
                 id="model"
                 value={data.model_config.model}
-                onChange={(e) => updateModelConfig("model", e.target.value)}
+                onChange={(e) => { setUserChangedModel(true); updateModelConfig("model", e.target.value); }}
                 disabled={modelsLoading}
               >
-                <option value="default">Default</option>
                 {models.map((m) => (
                   <option key={m.id} value={m.id}>{m.name}</option>
                 ))}
@@ -305,10 +272,10 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
           </div>
 
           {/* Capabilities badges */}
-          {modelInfo && modelInfo.capabilities.length > 0 && (
+          {(selectedModelInfo._ui?.capabilities as string[] ?? []).length > 0 && (
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-[11px] text-muted-foreground/60">Capabilities:</span>
-              {modelInfo.capabilities.map((cap) => {
+              {(selectedModelInfo._ui.capabilities as string[]).map((cap) => {
                 const style = CAP_STYLES[cap] ?? CAP_STYLES._default;
                 return (
                   <span key={cap} className={`inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${style}`}>
@@ -316,157 +283,38 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
                   </span>
                 );
               })}
-              {maxCtx && (
-                <span className="ml-auto text-[11px] text-muted-foreground/50">
-                  Max context: {formatCtxLabel(maxCtx)}
-                </span>
-              )}
             </div>
           )}
 
-          {/* Context Window (Ollama only) */}
-          {showSamplingControls && data.model_config.backend === "ollama" && (
-            <div className="space-y-2">
-              <Label>Context Window</Label>
-              <div className="flex items-center gap-3">
-                <input
-                  type="range"
-                  min={0}
-                  max={availableCtxSteps.length - 1}
-                  step={1}
-                  value={ctxValueToIndex(data.model_config.num_ctx, maxCtx)}
-                  onChange={(e) => {
-                    const idx = parseInt(e.target.value);
-                    updateModelConfig("num_ctx", availableCtxSteps[idx]);
-                  }}
-                  className="flex-1 h-2 rounded-full appearance-none bg-secondary cursor-pointer accent-primary"
-                />
-                <span className="w-16 text-center text-sm font-mono text-foreground">
-                  {formatCtxLabel(data.model_config.num_ctx)}
-                </span>
-              </div>
-              <div className="flex items-center gap-3">
-                <div className="flex-1 flex justify-between text-[10px] text-muted-foreground/40 px-0.5">
-                  {availableCtxLabels.map((label) => (
-                    <span key={label}>{label}</span>
-                  ))}
-                </div>
-                <span className="w-16" />
-              </div>
-            </div>
-          )}
-
-          {/* Advanced Sampling (non-Claude only) */}
-          {showSamplingControls && (
-            <div className="space-y-5 border-t border-border/40 pt-5">
-              <p className="text-[11px] font-medium text-muted-foreground/70 uppercase tracking-wider">Advanced Sampling</p>
-
-              {/* Temperature */}
+          {/* Max Output Tokens */}
+          {(() => {
+            const maxTokens = selectedModelInfo.max_tokens as number | undefined;
+            const maxVal = maxTokens != null && maxTokens > 0 ? maxTokens : 4000;
+            const current = Math.min(data.model_config.max_output_tokens, maxVal);
+            return (
               <div className="space-y-2">
-                <Label htmlFor="temperature">Temperature</Label>
+                <Label>Max Output Tokens</Label>
                 <div className="flex items-center gap-3">
                   <input
                     type="range"
-                    min={0}
-                    max={2}
-                    step={0.05}
-                    value={data.model_config.temperature ?? 1.0}
-                    onChange={(e) => updateModelConfig("temperature", parseFloat(e.target.value))}
+                    min={1000}
+                    max={maxVal}
+                    step={1000}
+                    value={current}
+                    onChange={(e) => updateModelConfig("max_output_tokens", parseInt(e.target.value))}
                     className="flex-1 h-2 rounded-full appearance-none bg-secondary cursor-pointer accent-primary"
                   />
-                  <Input
-                    id="temperature"
-                    type="number"
-                    min={0}
-                    max={2}
-                    step={0.05}
-                    value={data.model_config.temperature ?? ""}
-                    onChange={(e) => {
-                      const v = parseFloat(e.target.value);
-                      if (!isNaN(v)) updateModelConfig("temperature", v);
-                    }}
-                    className="w-20 text-center"
-                  />
+                  <span className="w-20 text-center text-sm font-mono text-foreground">
+                    {`${(current / 1000).toFixed(0)}k`}
+                  </span>
                 </div>
-                <p className="text-[11px] text-muted-foreground/60">0 = deterministic, 1+ = more creative</p>
+                <p className="text-[11px] text-muted-foreground/60">
+                  Maximum tokens per response (up to {`${(maxVal / 1000).toFixed(0)}k`})
+                </p>
               </div>
+            );
+          })()}
 
-              <div className="grid gap-5 sm:grid-cols-2">
-                {/* top_p */}
-                <div className="space-y-2">
-                  <Label htmlFor="top_p">Top P</Label>
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="range"
-                      min={0}
-                      max={1}
-                      step={0.05}
-                      value={data.model_config.top_p ?? 0.95}
-                      onChange={(e) => updateModelConfig("top_p", parseFloat(e.target.value))}
-                      className="flex-1 h-2 rounded-full appearance-none bg-secondary cursor-pointer accent-primary"
-                    />
-                    <Input
-                      id="top_p"
-                      type="number"
-                      min={0}
-                      max={1}
-                      step={0.05}
-                      value={data.model_config.top_p ?? ""}
-                      onChange={(e) => {
-                        const v = parseFloat(e.target.value);
-                        updateModelConfig("top_p", isNaN(v) ? null : v);
-                      }}
-                      placeholder="auto"
-                      className="w-20 text-center"
-                    />
-                  </div>
-                  <p className="text-[11px] text-muted-foreground/60">Nucleus sampling threshold</p>
-                </div>
-
-                {/* top_k */}
-                <div className="space-y-2">
-                  <Label htmlFor="top_k">Top K</Label>
-                  <Input
-                    id="top_k"
-                    type="number"
-                    min={0}
-                    max={500}
-                    value={data.model_config.top_k ?? ""}
-                    onChange={(e) => {
-                      const v = parseInt(e.target.value);
-                      updateModelConfig("top_k", isNaN(v) ? null : v);
-                    }}
-                    placeholder="auto"
-                  />
-                  <p className="text-[11px] text-muted-foreground/60">Top-K sampling (0 = disabled)</p>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Max Output Tokens (all backends, always visible) */}
-          {(
-            <div className="space-y-2 border-t border-border/40 pt-5">
-              <Label>Max Output Tokens</Label>
-              <div className="flex items-center gap-3">
-                <input
-                  type="range"
-                  min={1000}
-                  max={32000}
-                  step={1000}
-                  value={data.model_config.max_output_tokens ?? 4000}
-                  onChange={(e) => updateModelConfig("max_output_tokens", parseInt(e.target.value))}
-                  className="flex-1 h-2 rounded-full appearance-none bg-secondary cursor-pointer accent-primary"
-                />
-                <span className="w-20 text-center text-sm font-mono text-foreground">
-                  {((data.model_config.max_output_tokens ?? 4000) / 1000).toFixed(0)}K
-                </span>
-              </div>
-              <p className="text-[11px] text-muted-foreground/60">
-                Max tokens per response. Lower values save context for local models.
-              </p>
-            </div>
-          )}
         </div>
       </section>
 

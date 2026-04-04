@@ -131,10 +131,12 @@ export default function ChatPage() {
               sender_id: msg.sender_id, content: msg.content, metadata: {}, created_at: new Date().toISOString(),
             }]);
             break;
+          case "thinking":
           case "chunk":
           case "tool_use":
           case "tool_result":
           case "tool_progress":
+
             handleStreamMsg(msg);
             break;
           case "done": {
@@ -153,11 +155,13 @@ export default function ChatPage() {
               });
             }
             setIsStreaming(false);
+
             break;
           }
           case "error":
             resetBlocks();
             setIsStreaming(false);
+
             setMessages((msgs) => [...msgs, {
               id: crypto.randomUUID(), session_id: sessionId, sender_type: "agent",
               content: `Error: ${msg.message}`, metadata: {}, created_at: new Date().toISOString(),
@@ -165,6 +169,8 @@ export default function ChatPage() {
             break;
           case "replay_start":
             setIsStreaming(true);
+
+
             resetBlocks();
             break;
           case "replay_end":
@@ -187,6 +193,7 @@ export default function ChatPage() {
               });
             }
             setIsStreaming(false);
+
             break;
           }
           case "stream_complete":

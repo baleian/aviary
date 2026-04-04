@@ -1,0 +1,110 @@
+model_list:
+  # --- Anthropic (Claude) ---
+  - model_name: "anthropic/claude-sonnet-4-6"
+    litellm_params:
+      model: "anthropic/claude-sonnet-4-6"
+      api_key: "os.environ/ANTHROPIC_API_KEY"
+    model_info:
+      max_input_tokens: 1015808
+      max_output_tokens: 32768
+      max_tokens: 32000
+      _ui:
+        default_model: true
+        capabilities:
+          - vision
+          - tools
+          - thinking
+
+  - model_name: "anthropic/claude-opus-4-6"
+    litellm_params:
+      model: "anthropic/claude-opus-4-6"
+      api_key: "os.environ/ANTHROPIC_API_KEY"
+    model_info:
+      max_input_tokens: 1015808
+      max_output_tokens: 32768
+      max_tokens: 32000
+      _ui:
+        capabilities:
+          - vision
+          - tools
+          - thinking
+
+  # --- Ollama ---
+  - model_name: "ollama/gemma4:26b"
+    litellm_params:
+      model: "openai/gemma4:26b"
+      api_base: "http://host.docker.internal:11434/v1"
+      api_key: "ollama"
+    model_info:
+      max_input_tokens: 28672
+      max_output_tokens: 4096
+      max_tokens: 4000
+      _ui:
+        default_model: true
+        capabilities:
+          - vision
+          - tools
+          - thinking
+
+  - model_name: "ollama/qwen3.5:35b"
+    litellm_params:
+      model: "openai/qwen3.5:35b"
+      api_base: "http://host.docker.internal:11434/v1"
+      api_key: "ollama"
+    model_info:
+      max_input_tokens: 57344
+      max_output_tokens: 8192
+      max_tokens: 8000
+      _ui:
+        default_model: true
+        capabilities:
+          - vision
+          - tools
+          - thinking
+
+  # --- vLLM ---
+  - model_name: "vllm/gemma-4-31B-it-AWQ-4bit"
+    litellm_params:
+      model: "openai/cyankiwi/gemma-4-31B-it-AWQ-4bit"
+      api_base: "http://host.docker.internal:8191/v1"
+      api_key: "vllm"
+    model_info:
+      max_input_tokens: 57344
+      max_output_tokens: 8192
+      max_tokens: 8000
+      _ui:
+        default_model: true
+        capabilities:
+          - vision
+          - tools
+          - thinking
+
+  # --- Bedrock ---
+  - model_name: "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0"
+    litellm_params:
+      model: "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0"
+      aws_region_name: "ap-northeast-2"
+    model_info:
+      max_input_tokens: 229376
+      max_output_tokens: 32768
+      max_tokens: 32000
+      _ui:
+        default_model: true
+        capabilities:
+          - vision
+          - tools
+          - thinking
+
+general_settings:
+  master_key: "os.environ/LITELLM_MASTER_KEY"
+
+litellm_settings:
+  drop_params: true
+  request_timeout: 120
+  num_retries: 0
+  use_chat_completions_url_for_anthropic_messages: true
+
+router_settings:
+  enable_pre_call_checks: true
+  default_litellm_params:
+    max_tokens: 8000

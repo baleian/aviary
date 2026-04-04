@@ -4,13 +4,9 @@ from pydantic import BaseModel, Field
 
 
 class ModelConfig(BaseModel):
-    backend: str = Field("claude", pattern="^(claude|ollama|vllm)$")
-    model: str = "default"
-    temperature: float | None = None
-    top_p: float | None = None
-    top_k: int | None = None
-    num_ctx: int | None = None
-    max_output_tokens: int | None = Field(None, ge=1000, le=32000)
+    backend: str = Field(..., pattern="^(claude|ollama|vllm|bedrock)$")
+    model: str = Field(..., min_length=1)
+    max_output_tokens: int | None = None
 
 
 class McpServerConfig(BaseModel):

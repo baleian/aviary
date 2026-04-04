@@ -1,10 +1,10 @@
 /**
  * Agent runner using the official @anthropic-ai/claude-agent-sdk (TypeScript).
  *
- * All inference is routed through the Inference Router:
+ * All inference is routed through LiteLLM:
  *   claude-agent-sdk -> Claude Code CLI -> Anthropic SDK
- *     -> POST http://inference-router.platform.svc:8080/v1/messages
- *     -> Router inspects model name -> proxies to correct backend
+ *     -> POST http://litellm.platform.svc:4000/v1/messages
+ *     -> LiteLLM routes by model name prefix (anthropic/, ollama/, vllm/, bedrock/)
  *
  * Multi-turn conversation is maintained via the SDK's session management:
  *   - Aviary session_id is passed directly as CLI session_id
@@ -24,16 +24,17 @@ import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 const CONFIG_DIR = "/agent/config";
 const WORKSPACE_ROOT = "/workspace/sessions";
 
-const INFERENCE_ROUTER_URL =
+const LITELLM_URL =
   process.env.INFERENCE_ROUTER_URL ??
-  "http://inference-router.platform.svc:8080";
+  "http://litellm.platform.svc:4000";
+const LITELLM_API_KEY = process.env.LITELLM_API_KEY ?? "sk-aviary-dev";
 
 // Force SDK to use our bwrap wrapper instead of its bundled binary.
 // TS SDK option is `pathToClaudeCodeExecutable` (not `cliPath` like Python).
 const CLAUDE_CLI_PATH = "/usr/local/bin/claude";
 
 // Model tier env vars — all remapped to agent's configured model so CLI
-// internal tasks (WebFetch summarization, subagents) route through inference router
+// internal tasks (WebFetch summarization, subagents) route through LiteLLM
 const MODEL_TIER_KEYS = [
   "ANTHROPIC_MODEL",
   "ANTHROPIC_SMALL_FAST_MODEL",
@@ -51,6 +52,19 @@ function sessionWorkspace(sessionId: string): string {
   return path.join(WORKSPACE_ROOT, sessionId);
 }
 
+/** Resolve backend + model into a LiteLLM model name with provider prefix. */
+function resolveModelName(backend: string, model: string): string {
+  const prefixMap: Record<string, string> = {
+    claude: "anthropic/",
+    ollama: "ollama/",
+    vllm: "vllm/",
+    bedrock: "bedrock/",
+  };
+  const prefix = prefixMap[backend] ?? "anthropic/";
+  return model.includes("/") ? model : `${prefix}${model}`;
+}
+
+
 interface AgentConfig {
   instruction?: string;
   tools?: string[];
@@ -61,10 +75,6 @@ interface AgentConfig {
 interface ModelConfig {
   model?: string;
   backend?: string;
-  temperature?: number;
-  top_p?: number;
-  top_k?: number;
-  num_ctx?: number;
   max_output_tokens?: number;
 }
 
@@ -106,7 +116,7 @@ function hasSessionHistory(workspace: string, sessionId: string): boolean {
 }
 
 export interface SSEChunk {
-  type: "chunk" | "tool_use" | "tool_result" | "tool_progress" | "result";
+  type: "chunk" | "tool_use" | "tool_result" | "tool_progress" | "result" | "thinking";
   content?: string;
   name?: string;
   input?: unknown;
@@ -169,35 +179,31 @@ export async function* processMessage(
   }
 
   const agentConfig = agentConfigFromApi ?? loadAgentConfig();
-  const mc: ModelConfig = modelConfig ?? { backend: "claude", model: "default" };
-  const model = mc.model ?? "default";
-  const backend = mc.backend ?? "claude";
+  const mc: ModelConfig = modelConfig ?? {};
+  if (!mc.model || !mc.backend) {
+    yield { type: "chunk", content: "Error: model and backend are required in model_config." };
+    return;
+  }
+  const backend = mc.backend;
+  const resolvedModel = resolveModelName(backend, mc.model);
   const canResume = hasSessionHistory(workspace, sessionId);
 
   const env: Record<string, string> = {
-    ANTHROPIC_BASE_URL: INFERENCE_ROUTER_URL,
-    ANTHROPIC_API_KEY: "routed-via-inference-router",
-    ANTHROPIC_CUSTOM_HEADERS: [
-      `X-Backend: ${backend}`,
-      // Only send sampling headers for specific models; "default" uses server-side cached defaults
-      ...(model !== "default" && mc.temperature != null ? [`X-Sampling-Temperature: ${mc.temperature}`] : []),
-      ...(model !== "default" && mc.top_p != null ? [`X-Sampling-Top-P: ${mc.top_p}`] : []),
-      ...(model !== "default" && mc.top_k != null ? [`X-Sampling-Top-K: ${mc.top_k}`] : []),
-      ...(model !== "default" && mc.num_ctx != null ? [`X-Sampling-Num-Ctx: ${mc.num_ctx}`] : []),
-    ].join("\n"),
+    ANTHROPIC_BASE_URL: LITELLM_URL,
+    ANTHROPIC_API_KEY: LITELLM_API_KEY,
     SESSION_WORKSPACE: workspace,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     ...(mc.max_output_tokens != null
       ? { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(mc.max_output_tokens) }
       : {}),
-    ...Object.fromEntries(MODEL_TIER_KEYS.map((k) => [k, model])),
+    ...Object.fromEntries(MODEL_TIER_KEYS.map((k) => [k, resolvedModel])),
     ...Object.fromEntries(
       PASSTHROUGH_KEYS.filter((k) => process.env[k]).map((k) => [k, process.env[k]!]),
     ),
   };
 
   const options = {
-    model,
+    model: resolvedModel,
     systemPrompt: agentConfig.instruction,
     cwd: workspace,
     pathToClaudeCodeExecutable: CLAUDE_CLI_PATH,
@@ -208,35 +214,92 @@ export async function* processMessage(
     env,
     // TS SDK doesn't expose sessionId as an option, but CLI supports --session-id.
     // Use extraArgs to inject it on first message, resume on subsequent messages.
+    includePartialMessages: true,
     ...(canResume ? {} : { extraArgs: { "session-id": sessionId } }),
     ...(canResume ? { resume: sessionId } : {}),
     ...(abortController ? { abortController } : {}),
   };
 
   let fullResponse = "";
+  // Track cumulative lengths to extract deltas from partial snapshots.
+  let emittedTextLen = 0;
+  let emittedThinkingLen = 0;
+  // Track tool_use IDs already emitted to avoid duplicates from partial messages
+  const emittedToolIds = new Set<string>();
+  // Whether we've received any stream_event deltas. When true (Anthropic),
+  // text/thinking are handled via stream_event and assistant snapshots are
+  // only used for tool_use. When false (ollama/vllm), assistant snapshots
+  // are the sole source for all content types.
+  let hasStreamDeltas = false;
 
   try {
     for await (const message of query({ prompt: content, options })) {
       const msg = message as SDKMessage & Record<string, any>;
 
-      if (msg.type === "assistant" && msg.message?.content) {
+      if (msg.type === "stream_event") {
+        // Real-time token-level streaming — emitted by Anthropic backends.
+        // Non-Anthropic backends (ollama, vllm) don't emit these; they
+        // fall through to the assistant snapshot handler below.
+        const event = msg.event as Record<string, any>;
+        if (event.type === "content_block_delta" && event.delta) {
+          if (event.delta.type === "text_delta" && event.delta.text) {
+            hasStreamDeltas = true;
+            const delta = event.delta.text as string;
+            emittedTextLen += delta.length;
+            fullResponse += delta;
+            yield { type: "chunk", content: delta };
+          } else if (event.delta.type === "thinking_delta" && event.delta.thinking) {
+            hasStreamDeltas = true;
+            const delta = event.delta.thinking as string;
+            emittedThinkingLen += delta.length;
+            yield { type: "thinking", content: delta };
+          }
+        }
+      } else if (msg.type === "assistant" && msg.message?.content) {
         const parentId = msg.parent_tool_use_id ?? null;
         for (const block of msg.message.content) {
-          if (block.type === "text") {
-            fullResponse += block.text;
-            yield { type: "chunk", content: block.text };
+          if (block.type === "thinking" && !hasStreamDeltas) {
+            // Fallback path (ollama/vllm): no stream_event deltas available.
+            // Block flushing creates multiple short blocks, each with its own
+            // cumulative content. Detect new block when content is shorter.
+            const thinking = (block.thinking ?? "") as string;
+            if (thinking.length < emittedThinkingLen) {
+              emittedThinkingLen = 0;
+            }
+            if (thinking.length > emittedThinkingLen) {
+              const delta = thinking.slice(emittedThinkingLen);
+              emittedThinkingLen = thinking.length;
+              yield { type: "thinking", content: delta };
+            }
+          } else if (block.type === "text" && !hasStreamDeltas) {
+            const text = block.text as string;
+            if (text.length < emittedTextLen) {
+              emittedTextLen = 0;
+            }
+            if (text.length > emittedTextLen) {
+              const delta = text.slice(emittedTextLen);
+              emittedTextLen = text.length;
+              fullResponse += delta;
+              yield { type: "chunk", content: delta };
+            }
           } else if (block.type === "tool_use") {
-            yield {
-              type: "tool_use",
-              name: block.name,
-              input: block.input,
-              tool_use_id: block.id,
-              ...(parentId ? { parent_tool_use_id: parentId } : {}),
-            };
+            if (!emittedToolIds.has(block.id)) {
+              emittedToolIds.add(block.id);
+              yield {
+                type: "tool_use",
+                name: block.name,
+                input: block.input,
+                tool_use_id: block.id,
+                ...(parentId ? { parent_tool_use_id: parentId } : {}),
+              };
+            }
           }
         }
       } else if (msg.type === "user" && msg.message?.content) {
         // SDKUserMessage — tool results sent back to the model after execution.
+        // New assistant turn starts after this, so reset tracking.
+        emittedTextLen = 0;
+        emittedThinkingLen = 0;
         const parentId = msg.parent_tool_use_id ?? null;
         const content = msg.message.content;
         if (Array.isArray(content)) {
@@ -285,7 +348,7 @@ export async function* processMessage(
       yield { type: "chunk", content: "[Cancelled by user]" };
       return;
     }
-    const errorMsg = `[${backend}/${model}] Error: ${e}`;
+    const errorMsg = `[${resolvedModel}] Error: ${e}`;
     yield { type: "chunk", content: errorMsg };
   }
 }

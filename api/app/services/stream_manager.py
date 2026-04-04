@@ -150,7 +150,8 @@ async def _run_stream(
         logger.warning("Failed to ensure agent running for session %s", session_id, exc_info=True)
 
     full_response = ""
-    blocks_meta: list[dict] = []  # Ordered blocks (text + tool_call) for UI replay
+    blocks_meta: list[dict] = []  # Ordered blocks (thinking + text + tool_call) for UI replay
+    current_thinking = ""  # Accumulates thinking chunks
     current_text = ""  # Accumulates text chunks between tool calls
     tool_results: dict[str, dict] = {}  # tool_use_id → {content, is_error}
 
@@ -190,6 +191,10 @@ async def _run_stream(
                         chunk_type = chunk_data.get("type")
 
                         if chunk_type == "chunk":
+                            # Flush thinking into blocks on first text chunk
+                            if current_thinking:
+                                blocks_meta.append({"type": "thinking", "content": current_thinking})
+                                current_thinking = ""
                             chunk_text = chunk_data["content"]
                             full_response += chunk_text
                             current_text += chunk_text
@@ -197,7 +202,10 @@ async def _run_stream(
                             await redis_service.append_stream_chunk(session_id, chunk_event)
                             await redis_service.publish_message(session_id, chunk_event)
                         elif chunk_type == "tool_use":
-                            # Flush accumulated text as a block before the tool call
+                            # Flush accumulated thinking and text before the tool call
+                            if current_thinking:
+                                blocks_meta.append({"type": "thinking", "content": current_thinking})
+                                current_thinking = ""
                             if current_text:
                                 blocks_meta.append({"type": "text", "content": current_text})
                                 current_text = ""
@@ -229,8 +237,17 @@ async def _run_stream(
                         elif chunk_type == "tool_progress":
                             # Ephemeral — publish for live clients, don't buffer
                             await redis_service.publish_message(session_id, chunk_data)
+                        elif chunk_type == "thinking":
+                            # Thinking content — buffer + publish so it appears
+                            # in replay and is saved into message metadata.
+                            thinking_text = chunk_data.get("content", "")
+                            current_thinking += thinking_text
+                            await redis_service.append_stream_chunk(session_id, chunk_data)
+                            await redis_service.publish_message(session_id, chunk_data)
 
-        # Flush remaining text and attach tool results to blocks
+        # Flush remaining thinking and text, then attach tool results to blocks
+        if current_thinking:
+            blocks_meta.append({"type": "thinking", "content": current_thinking})
         if current_text:
             blocks_meta.append({"type": "text", "content": current_text})
         for block in blocks_meta:
