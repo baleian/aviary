@@ -30,14 +30,6 @@ router = APIRouter()
 TOOL_NAME_SEPARATOR = "__"
 
 
-async def _get_user(db: AsyncSession, external_id: str) -> User:
-    result = await db.execute(select(User).where(User.external_id == external_id))
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=403, detail="User not found")
-    return user
-
-
 async def _accessible_server_ids(db: AsyncSession, user: User) -> set[uuid.UUID]:
     """Return set of server IDs the user can see (via direct or team ACL)."""
     if user.is_platform_admin:
@@ -143,11 +135,10 @@ async def _check_tool_access(db: AsyncSession, user: User, server_id: uuid.UUID,
 
 @router.get("/servers", response_model=list[McpServerResponse])
 async def list_servers(
-    claims=Depends(get_current_user),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List MCP servers visible to the current user (ACL-filtered)."""
-    user = await _get_user(db, claims.sub)
     accessible = await _accessible_server_ids(db, user)
 
     if not accessible:
@@ -179,11 +170,10 @@ async def list_servers(
 @router.get("/servers/{server_id}/tools", response_model=list[McpToolResponse])
 async def list_server_tools(
     server_id: uuid.UUID,
-    claims=Depends(get_current_user),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List tools from an MCP server (ACL-filtered)."""
-    user = await _get_user(db, claims.sub)
     accessible = await _accessible_server_ids(db, user)
 
     if server_id not in accessible:
@@ -216,11 +206,10 @@ async def list_server_tools(
 @router.get("/tools/search", response_model=list[McpToolResponse])
 async def search_tools(
     q: str = Query(..., min_length=1),
-    claims=Depends(get_current_user),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Search tools by name or description (ACL-filtered)."""
-    user = await _get_user(db, claims.sub)
     accessible = await _accessible_server_ids(db, user)
 
     if not accessible:
@@ -264,7 +253,7 @@ async def search_tools(
 @router.get("/agents/{agent_id}/tools", response_model=list[McpToolBindingResponse])
 async def list_agent_tools(
     agent_id: uuid.UUID,
-    claims=Depends(get_current_user),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List tools bound to an agent."""
@@ -303,15 +292,13 @@ async def list_agent_tools(
 async def set_agent_tools(
     agent_id: uuid.UUID,
     body: McpToolBindRequest,
-    claims=Depends(get_current_user),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Set the tool bindings for an agent (replaces existing bindings).
 
     ACL check: user must have 'use' permission on each tool being bound.
     """
-    user = await _get_user(db, claims.sub)
-
     result = await db.execute(select(Agent).where(Agent.id == agent_id))
     agent = result.scalar_one_or_none()
     if not agent:
@@ -353,19 +340,17 @@ async def set_agent_tools(
     await db.flush()
 
     # Return updated bindings
-    return await list_agent_tools(agent_id, claims, db)
+    return await list_agent_tools(agent_id, user, db)
 
 
 @router.delete("/agents/{agent_id}/tools/{tool_id}", status_code=204)
 async def unbind_tool(
     agent_id: uuid.UUID,
     tool_id: uuid.UUID,
-    claims=Depends(get_current_user),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Unbind a single tool from an agent."""
-    user = await _get_user(db, claims.sub)
-
     result = await db.execute(select(Agent).where(Agent.id == agent_id))
     agent = result.scalar_one_or_none()
     if not agent:
