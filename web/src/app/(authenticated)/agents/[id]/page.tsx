@@ -7,20 +7,27 @@ import { useAuth } from "@/components/providers/auth-provider";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { apiFetch } from "@/lib/api";
-import type { Agent } from "@/types";
+import type { Agent, McpToolBinding } from "@/types";
 
 export default function AgentDetailPage() {
   const { user } = useAuth();
   const params = useParams();
   const router = useRouter();
   const [agent, setAgent] = useState<Agent | null>(null);
+  const [mcpTools, setMcpTools] = useState<McpToolBinding[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!user) return;
-    apiFetch<Agent>(`/agents/${params.id}`)
-      .then(setAgent)
+    Promise.all([
+      apiFetch<Agent>(`/agents/${params.id}`),
+      apiFetch<McpToolBinding[]>(`/mcp/agents/${params.id}/tools`).catch(() => []),
+    ])
+      .then(([agentData, bindings]) => {
+        setAgent(agentData);
+        setMcpTools(bindings);
+      })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   }, [user, params.id]);
@@ -155,16 +162,32 @@ export default function AgentDetailPage() {
             <CardHeader>
               <CardTitle>Tools</CardTitle>
             </CardHeader>
-            <CardContent>
-              {agent.tools.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
-                  {agent.tools.map((tool: string) => (
-                    <span key={tool} className="rounded-lg bg-accent px-2.5 py-1 text-xs font-medium text-accent-foreground">
-                      {tool}
-                    </span>
-                  ))}
+            <CardContent className="space-y-4">
+              {agent.tools.length > 0 && (
+                <div>
+                  <p className="text-xs text-muted-foreground mb-2">Built-in</p>
+                  <div className="flex flex-wrap gap-2">
+                    {agent.tools.map((tool: string) => (
+                      <span key={tool} className="rounded-lg bg-accent px-2.5 py-1 text-xs font-medium text-accent-foreground">
+                        {tool}
+                      </span>
+                    ))}
+                  </div>
                 </div>
-              ) : (
+              )}
+              {mcpTools.length > 0 && (
+                <div>
+                  <p className="text-xs text-muted-foreground mb-2">MCP Tools</p>
+                  <div className="flex flex-wrap gap-2">
+                    {mcpTools.map((b) => (
+                      <span key={b.id} className="rounded-lg bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary ring-1 ring-inset ring-primary/20" title={b.tool.description || ""}>
+                        {b.tool.qualified_name}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {agent.tools.length === 0 && mcpTools.length === 0 && (
                 <p className="text-sm text-muted-foreground">No tools configured</p>
               )}
             </CardContent>

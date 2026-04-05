@@ -28,6 +28,7 @@ interface AgentFormData {
 
 interface AgentFormProps {
   initialData?: Partial<AgentFormData>;
+  initialToolInfo?: Map<string, McpToolInfo>;
   onSubmit: (data: AgentFormData) => Promise<void>;
   submitLabel: string;
 }
@@ -64,7 +65,7 @@ const CAP_STYLES: Record<string, string> = {
   _default: "bg-zinc-500/10 text-zinc-400 ring-zinc-500/20",
 };
 
-export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps) {
+export function AgentForm({ initialData, initialToolInfo, onSubmit, submitLabel }: AgentFormProps) {
   const [data, setData] = useState<AgentFormData>(() => {
     const merged = { ...defaultData, ...initialData };
     merged.model_config = { ...defaultData.model_config, ...initialData?.model_config };
@@ -75,7 +76,8 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
   const [allModels, setAllModels] = useState<ModelOption[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [toolSelectorOpen, setToolSelectorOpen] = useState(false);
-  const [boundToolNames, setBoundToolNames] = useState<Map<string, string>>(new Map());
+  const [toolInfoMap, setToolInfoMap] = useState<Map<string, McpToolInfo>>(initialToolInfo ?? new Map());
+  const [hoveredTool, setHoveredTool] = useState<string | null>(null);
 
   // Fetch all models once on mount
   useEffect(() => {
@@ -334,24 +336,36 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
         <div className="rounded-xl border border-border/60 bg-card p-5 space-y-4">
           {data.mcp_tool_ids.length > 0 ? (
             <div className="flex flex-wrap gap-2">
-              {data.mcp_tool_ids.map((id) => (
-                <span
-                  key={id}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary ring-1 ring-inset ring-primary/20"
-                >
-                  {boundToolNames.get(id) || id.slice(0, 8)}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const next = data.mcp_tool_ids.filter((t) => t !== id);
-                      updateField("mcp_tool_ids", next);
-                    }}
-                    className="ml-0.5 text-primary/60 hover:text-primary"
+              {data.mcp_tool_ids.map((id) => {
+                const info = toolInfoMap.get(id);
+                const label = info?.qualified_name || id.slice(0, 8);
+                return (
+                  <span
+                    key={id}
+                    className="group relative inline-flex items-center gap-1.5 rounded-lg bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary ring-1 ring-inset ring-primary/20 cursor-default"
+                    onMouseEnter={() => setHoveredTool(id)}
+                    onMouseLeave={() => setHoveredTool(null)}
                   >
-                    &times;
-                  </button>
-                </span>
-              ))}
+                    {label}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = data.mcp_tool_ids.filter((t) => t !== id);
+                        updateField("mcp_tool_ids", next);
+                      }}
+                      className="ml-0.5 text-primary/60 hover:text-primary"
+                    >
+                      &times;
+                    </button>
+                    {hoveredTool === id && info?.description && (
+                      <div className="absolute bottom-full left-0 mb-2 w-64 rounded-lg border border-border bg-popover p-3 text-xs text-popover-foreground shadow-lg z-50">
+                        <div className="font-semibold mb-1">{info.qualified_name}</div>
+                        <div className="text-muted-foreground">{info.description}</div>
+                      </div>
+                    )}
+                  </span>
+                );
+              })}
             </div>
           ) : (
             <p className="text-xs text-muted-foreground">No tools connected yet.</p>
@@ -369,7 +383,10 @@ export function AgentForm({ initialData, onSubmit, submitLabel }: AgentFormProps
 
         <ToolSelector
           selectedToolIds={data.mcp_tool_ids}
-          onChange={(ids) => updateField("mcp_tool_ids", ids)}
+          onChange={(ids, toolMap) => {
+            updateField("mcp_tool_ids", ids);
+            if (toolMap) setToolInfoMap(toolMap);
+          }}
           open={toolSelectorOpen}
           onClose={() => setToolSelectorOpen(false)}
         />

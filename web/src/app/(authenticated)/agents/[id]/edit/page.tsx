@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useAuth } from "@/components/providers/auth-provider";
 import { AgentForm } from "@/components/agents/agent-form";
 import { apiFetch } from "@/lib/api";
-import type { Agent, McpToolBinding } from "@/types";
+import type { Agent, McpToolBinding, McpToolInfo } from "@/types";
 
 export default function EditAgentPage() {
   const { user } = useAuth();
@@ -15,6 +15,7 @@ export default function EditAgentPage() {
   const [agent, setAgent] = useState<Agent | null>(null);
   const [loading, setLoading] = useState(true);
   const [existingToolIds, setExistingToolIds] = useState<string[]>([]);
+  const [existingToolInfo, setExistingToolInfo] = useState<Map<string, McpToolInfo>>(new Map());
 
   useEffect(() => {
     if (!user) return;
@@ -25,6 +26,9 @@ export default function EditAgentPage() {
       .then(([agentData, bindings]) => {
         setAgent(agentData);
         setExistingToolIds(bindings.map((b) => b.tool.id));
+        const infoMap = new Map<string, McpToolInfo>();
+        for (const b of bindings) infoMap.set(b.tool.id, b.tool);
+        setExistingToolInfo(infoMap);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -75,6 +79,7 @@ export default function EditAgentPage() {
             tools: agent.tools as string[], mcp_tool_ids: existingToolIds,
             visibility: agent.visibility, category: agent.category || "",
           }}
+          initialToolInfo={existingToolInfo}
           onSubmit={handleSubmit}
           submitLabel="Save Changes"
         />

@@ -8,7 +8,7 @@ import type { McpServerInfo, McpToolInfo } from "@/types";
 
 interface ToolSelectorProps {
   selectedToolIds: string[];
-  onChange: (toolIds: string[]) => void;
+  onChange: (toolIds: string[], toolMap: Map<string, McpToolInfo>) => void;
   open: boolean;
   onClose: () => void;
 }
@@ -20,6 +20,7 @@ export function ToolSelector({ selectedToolIds, onChange, open, onClose }: ToolS
   const [searchResults, setSearchResults] = useState<McpToolInfo[] | null>(null);
   const [expandedServer, setExpandedServer] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [allToolInfo, setAllToolInfo] = useState<Map<string, McpToolInfo>>(new Map());
   const selected = new Set(selectedToolIds);
 
   // Fetch servers on open
@@ -44,6 +45,11 @@ export function ToolSelector({ selectedToolIds, onChange, open, onClose }: ToolS
     try {
       const tools = await apiFetch<McpToolInfo[]>(`/mcp/servers/${serverId}/tools`);
       setServerTools((prev) => ({ ...prev, [serverId]: tools }));
+      setAllToolInfo((prev) => {
+        const next = new Map(prev);
+        for (const t of tools) next.set(t.id, t);
+        return next;
+      });
     } catch {
       setServerTools((prev) => ({ ...prev, [serverId]: [] }));
     }
@@ -56,7 +62,7 @@ export function ToolSelector({ selectedToolIds, onChange, open, onClose }: ToolS
     } else {
       next.add(toolId);
     }
-    onChange(Array.from(next));
+    onChange(Array.from(next), allToolInfo);
   };
 
   // Search
@@ -71,6 +77,11 @@ export function ToolSelector({ selectedToolIds, onChange, open, onClose }: ToolS
           `/mcp/tools/search?q=${encodeURIComponent(searchQuery)}`
         );
         setSearchResults(results);
+        setAllToolInfo((prev) => {
+          const next = new Map(prev);
+          for (const t of results) next.set(t.id, t);
+          return next;
+        });
       } catch {
         setSearchResults([]);
       }
@@ -88,7 +99,7 @@ export function ToolSelector({ selectedToolIds, onChange, open, onClose }: ToolS
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border/60 px-6 py-4">
           <h2 className="text-sm font-semibold">Browse Tools</h2>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-lg">&times;</button>
+          <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground text-lg">&times;</button>
         </div>
 
         {/* Search */}
@@ -120,6 +131,7 @@ export function ToolSelector({ selectedToolIds, onChange, open, onClose }: ToolS
             servers.map((srv) => (
               <div key={srv.id} className="rounded-lg border border-border/50">
                 <button
+                  type="button"
                   className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-muted/30 rounded-lg"
                   onClick={() => {
                     const next = expandedServer === srv.id ? null : srv.id;
