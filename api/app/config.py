@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     vault_addr: str = "http://localhost:8200"
     vault_token: str = "dev-root-token"
 
+    # MCP Gateway
+    mcp_gateway_url: str = "http://mcp-gateway:8100"
+
     # CORS
     cors_origins: list[str] = ["http://localhost:3000"]
 

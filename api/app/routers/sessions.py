@@ -306,6 +306,7 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
                     agent_mcp_servers=agent.mcp_servers,
                     agent_policy=agent.policy,
                     content=content,
+                    user_token=token,
                 )
         finally:
             relay_task.cancel()

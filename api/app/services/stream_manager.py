@@ -16,6 +16,7 @@ import uuid
 import httpx
 from sqlalchemy import select
 
+from app.config import settings
 from app.db.models import SessionParticipant
 from app.db.session import async_session_factory
 from app.services import agent_supervisor, redis_service, session_service
@@ -24,6 +25,28 @@ logger = logging.getLogger(__name__)
 
 # In-memory registry of active streaming tasks (per API server process)
 _active_streams: dict[str, asyncio.Task] = {}
+
+
+def _build_mcp_config(
+    agent_id: str, user_token: str, legacy_mcp_servers: list
+) -> dict:
+    """Build MCP servers config with the gateway entry + legacy stdio servers."""
+    config = {}
+
+    # Legacy stdio servers (backward compatibility)
+    for srv in legacy_mcp_servers:
+        config[srv["name"]] = {"command": srv["command"], "args": srv.get("args", [])}
+
+    # MCP Gateway — inject user's OIDC JWT for authentication
+    config["aviary-gateway"] = {
+        "type": "http",
+        "url": f"{settings.mcp_gateway_url}/mcp/v1/{agent_id}",
+        "headers": {
+            "Authorization": f"Bearer {user_token}",
+        },
+    }
+
+    return config
 
 
 async def start_stream(
@@ -35,6 +58,7 @@ async def start_stream(
     agent_mcp_servers: list,
     agent_policy: dict,
     content: str,
+    user_token: str = "",
 ) -> None:
     """Launch a background task that streams the agent response."""
     # Cancel any existing stream for this session
@@ -51,7 +75,7 @@ async def start_stream(
             session_id, agent_id,
             agent_model_config, agent_instruction,
             agent_tools, agent_mcp_servers, agent_policy,
-            content,
+            content, user_token,
         )
     )
     _active_streams[session_id] = task
@@ -118,6 +142,7 @@ async def _run_stream(
     agent_mcp_servers: list,
     agent_policy: dict,
     content: str,
+    user_token: str = "",
 ) -> None:
     """Execute the agent response stream as a background task."""
     session_uuid = uuid.UUID(session_id)
@@ -177,7 +202,9 @@ async def _run_stream(
                         "agent_config": {
                             "instruction": agent_instruction,
                             "tools": agent_tools,
-                            "mcp_servers": agent_mcp_servers,
+                            "mcp_servers": _build_mcp_config(
+                                agent_id, user_token, agent_mcp_servers
+                            ),
                             "policy": agent_policy,
                         },
                     },
