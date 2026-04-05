@@ -1,7 +1,7 @@
-"""Vault client for fetching per-user MCP credentials.
+"""Vault client for fetching per-user credentials.
 
 Convention: credentials are stored at
-  secret/aviary/mcp-credentials/{user_external_id}/{server_name}
+  secret/aviary/credentials/{user_external_id}/{key_name}
 with a JSON body containing at least {"token": "..."}.
 """
 
@@ -23,7 +23,7 @@ async def get_mcp_credential(user_external_id: str, server_name: str) -> str | N
         logger.warning("Vault not configured — cannot fetch MCP credentials")
         return None
 
-    vault_path = f"aviary/mcp-credentials/{user_external_id}/{server_name}"
+    vault_path = f"aviary/credentials/{user_external_id}/{server_name}"
     url = f"{settings.vault_addr}/v1/secret/data/{vault_path}"
 
     try:

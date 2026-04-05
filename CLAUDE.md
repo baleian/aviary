@@ -9,7 +9,7 @@ Multi-tenant AI agent platform. Users create/configure agents via Web UI, each r
 docker compose up -d      # Subsequent: just start services
 ```
 
-Services: Web (`:3000`), API (`:8000`), Admin (`:8001`), Keycloak (`:8080`, admin/admin), Vault (`:8200`), LiteLLM Gateway (`:8090`), MCP Gateway (`:8100`), Secret Provider (K8s internal), Agent Supervisor (`:9000`).
+Services: Web (`:3000`), API (`:8000`), Admin (`:8001`), Keycloak (`:8080`, admin/admin), Vault (`:8200`), LiteLLM Gateway (`:8090`), MCP Gateway (`:8100`), Agent Supervisor (`:9000`).
 Test accounts: `user1@test.com`, `user2@test.com` (all `password`).
 
 ## Architecture
@@ -26,7 +26,6 @@ PostgreSQL / Redis
 Platform services (docker compose):
   LiteLLM Gateway (:8090) → Claude API / Ollama / vLLM / Bedrock
   MCP Gateway (:8100) → Backend MCP Servers (tool proxy with OIDC auth + ACL)
-  Secret Provider (K8s platform NS) → Vault
 
 Platform services (K8s, platform namespace):
   Agent Supervisor (:9000, NodePort 30900) → K8s API (namespace/deployment/pod management)
@@ -34,7 +33,7 @@ Platform services (K8s, platform namespace):
 
 Agent Pod outbound:
   LLM calls  → LiteLLM Gateway (host:8090) → Claude API / Ollama / vLLM / Bedrock
-  Secrets    → Secret Provider (K8s platform NS) → Vault
+  MCP tools  → MCP Gateway (host:8100) → Backend MCP Servers
   HTTP/HTTPS → Egress Proxy (K8s platform NS, per-agent policy) → External APIs
 ```
 
@@ -58,9 +57,7 @@ Three backend services with distinct roles:
 
 **Pod Strategy (agent-per-pod):** Each agent gets a long-running Deployment with 1-N replicas. Multiple sessions share the same Pod(s), isolated by working directory (`/workspace/sessions/{session_id}/`). Pods auto-scale based on session load and are released after 7 days of inactivity (both managed by the agent supervisor).
 
-**LiteLLM Gateway** (docker compose, `:8090`): All LLM calls go through LiteLLM OSS proxy. Backend is determined by the model name prefix (e.g., `anthropic/claude-sonnet-4-6` → Claude API, `ollama/gemma4:26b` → Ollama, `vllm/...` → vLLM, `bedrock/...` → Bedrock). Natively compatible with Anthropic SDK (`/v1/messages`), so claude-agent-sdk works transparently. Configuration in `config/litellm/config.yaml`. API server queries it for model listing (`/model/info`). Supports virtual keys, rate limiting, guardrails, and observability via LiteLLM's built-in features. A startup patch (`config/litellm/patches/fix_adapter_streaming.py`) fixes issues in LiteLLM's Anthropic-to-OpenAI adapter for non-Anthropic backends — see "LiteLLM Adapter Streaming Patch" below.
-
-**Secret Provider** (K8s platform namespace): Session Pods never hold secrets. External API calls go through proxy which injects credentials from Vault.
+**LiteLLM Gateway** (docker compose, `:8090`): All LLM calls go through LiteLLM OSS proxy. Backend is determined by the model name prefix (e.g., `anthropic/claude-sonnet-4-6` → Claude API, `ollama/gemma4:26b` → Ollama, `vllm/...` → vLLM, `bedrock/...` → Bedrock). Natively compatible with Anthropic SDK (`/v1/messages`), so claude-agent-sdk works transparently. Configuration in `config/litellm/config.yaml`. API server queries it for model listing (`/model/info`). Supports virtual keys, rate limiting, guardrails, and observability via LiteLLM's built-in features. Two startup patches loaded via `.pth` file: `fix_adapter_streaming.py` fixes Anthropic-to-OpenAI adapter streaming for non-Anthropic backends (see "LiteLLM Adapter Streaming Patch" below); `aviary_user_api_key.py` injects per-user Anthropic API keys from Vault (see "Per-User Anthropic API Key" below).
 
 **Agent Supervisor** (K8s platform namespace, `:9000`): Manages all K8s resources and runtime operations. Has DB access for agent config and activity tracking. Exposes two API layers:
 - **Agent-centric API** (`/v1/agents/{id}/...`) — Used by the API server. Abstract operations: register, run, ready, wait, session message/abort/cleanup. Updates `last_activity_at` on every request. No K8s concepts exposed.
@@ -119,6 +116,12 @@ Non-Anthropic backends (Ollama, vLLM) use LiteLLM's Anthropic-to-OpenAI adapter 
 3. **Thinking block flushing**: Periodically closes/reopens thinking blocks (every 10 deltas) at the SSE byte layer so the CLI emits intermediate `assistant` snapshots for real-time thinking streaming. Text blocks are NOT flushed — internal CLI calls (WebFetch, subagents) expect a single text block.
 4. **Tool call JSON cleanup**: Buffers `input_json_delta` events and cleans leaked Gemma4 special tokens (`<|\`, `<|\"|`) from the accumulated JSON before emitting. Uses `json.loads()` as a guard — clean JSON from other backends passes through untouched.
 
+### Per-User Anthropic API Key
+For Anthropic backends, each user's personal API key is injected from Vault via a LiteLLM `CustomLogger.async_pre_call_hook` (`config/litellm/patches/aviary_user_api_key.py`). The user's OIDC JWT is propagated from runtime to LiteLLM via `ANTHROPIC_CUSTOM_HEADERS` env var (set in `runtime/src/agent.ts`), which the Anthropic SDK includes as the `X-Aviary-User-Token` header. The hook validates the JWT against Keycloak JWKS, extracts the `sub` claim, and fetches the user's Anthropic API key from Vault at `secret/aviary/credentials/{sub}/anthropic-api-key`. If no key is found, the request is rejected with an error (no fallback to project default). Non-Anthropic backends (Ollama, vLLM) skip the hook entirely. Caching: JWKS 1h, JWT→sub 30min, Vault key 5min.
+
+### Vault Credential Path Convention
+All per-user credentials (MCP tool secrets, API keys) are stored at `secret/aviary/credentials/{user_external_id}/{key_name}` with JSON body `{"token": "..."}`. The `user_external_id` is the OIDC `sub` claim from Keycloak. Admin console provides a UI for managing these credentials per user. Used by both MCP Gateway (tool credential injection) and LiteLLM (per-user API key).
+
 ### Streaming Architecture (Runtime)
 The runtime (`runtime/src/agent.ts`) handles two distinct streaming paths based on backend:
 
@@ -134,7 +137,7 @@ Thinking content flows through the full pipeline: runtime → supervisor (transp
 - **Frontend**: `ThinkingChip` component (collapsible, default open during streaming) renders real-time thinking content. Saved messages restore thinking blocks via `SavedThinkingChip` (default closed). Thinking blocks are part of the `StreamBlock` union type alongside `TextBlock` and `ToolCallBlock`.
 
 ### K8s Image Loading
-All K8s custom images use `imagePullPolicy: Never`. Loaded via `docker save | docker compose exec -T k8s ctr images import -`. The `setup-dev.sh` handles this for runtime, egress-proxy, agent-supervisor, and secret-provider images. LiteLLM runs outside K8s as a docker compose service using the official image and doesn't need image loading.
+All K8s custom images use `imagePullPolicy: Never`. Loaded via `docker save | docker compose exec -T k8s ctr images import -`. The `setup-dev.sh` handles this for runtime, egress-proxy, and agent-supervisor images. LiteLLM runs outside K8s as a docker compose service using the official image and doesn't need image loading.
 
 ### K8s Fixed Node Name
 `--node-name=aviary-node` in docker-compose.yml prevents stale node accumulation on container restart. Without it, PVCs bind to old node names causing scheduling failures.
@@ -177,7 +180,7 @@ Admin: Tests use the same test database pattern. No auth mocking needed (admin h
 
 ## Rebuilding Images
 
-**K8s images** (runtime, egress-proxy, agent-supervisor, secret-provider) — after modifying `runtime/`, `egress-proxy/`, `agent-supervisor/`, or `secret-provider/`:
+**K8s images** (runtime, egress-proxy, agent-supervisor) — after modifying `runtime/`, `egress-proxy/`, or `agent-supervisor/`:
 
 ```bash
 docker build -t aviary-runtime:latest ./runtime/
@@ -224,7 +227,6 @@ docker compose restart litellm
 |----------|---------|
 | `AGENT_ID` | Agent UUID |
 | `MAX_CONCURRENT_SESSIONS` | Max sessions per pod (default: 10) |
-| `SECRET_PROVIDER_URL` | Secret provider URL (`http://secret-provider.platform.svc:8080`) |
 | `INFERENCE_ROUTER_URL` | LiteLLM gateway URL (`http://litellm.platform.svc:4000`) |
 | `LITELLM_API_KEY` | LiteLLM master key (`sk-aviary-dev`) |
 | `HTTP_PROXY` / `HTTPS_PROXY` | Egress proxy URL (`http://egress-proxy.platform.svc:8080`) |
@@ -248,6 +250,15 @@ docker compose restart litellm
 | `PROXY_PORT` | Forward proxy listen port (default: 8080) |
 | `HEALTH_PORT` | Health endpoint listen port (default: 8081) |
 | `DATABASE_URL` | PostgreSQL connection for policy lookup |
+
+## Key Environment Variables (LiteLLM Gateway)
+
+| Variable | Purpose |
+|----------|---------|
+| `LITELLM_MASTER_KEY` | LiteLLM proxy auth key (default: `sk-aviary-dev`) |
+| `VAULT_ADDR` / `VAULT_TOKEN` | Vault connection for per-user API key lookup |
+| `OIDC_ISSUER` | Public Keycloak URL (JWT `iss` validation) |
+| `OIDC_INTERNAL_ISSUER` | Internal Keycloak URL (JWKS fetch) |
 
 ## Key Environment Variables (MCP Gateway)
 

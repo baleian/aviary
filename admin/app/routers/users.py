@@ -133,12 +133,12 @@ async def _create_keycloak_user(
 
 # ── Vault helpers ────────────────────────────────────────────
 
-# MCP credential vault path convention:
-#   secret/aviary/mcp-credentials/{user_external_id}/{key}
+# Vault credential path convention:
+#   secret/aviary/credentials/{user_external_id}/{key}
 
 
 def _vault_mcp_base(user_external_id: str) -> str:
-    return f"aviary/mcp-credentials/{user_external_id}"
+    return f"aviary/credentials/{user_external_id}"
 
 
 async def _vault_list_keys(user_external_id: str) -> list[str]:
