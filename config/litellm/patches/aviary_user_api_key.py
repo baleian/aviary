@@ -166,11 +166,11 @@ def _find_key(jwks: dict, kid: str | None) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# Vault API key cache (5-min TTL, keyed by sub)
+# Vault API key cache (30-sec TTL, keyed by sub)
 # ---------------------------------------------------------------------------
 
 _api_key_cache: dict[str, tuple[str | None, float]] = {}
-_API_KEY_TTL = 300
+_API_KEY_TTL = 30
 
 VAULT_CREDENTIAL_NAME = "anthropic-api-key"
 
