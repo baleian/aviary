@@ -29,18 +29,18 @@ Aviary is an enterprise platform where users can create, configure, and use purp
     │           │   ┌───────▼────────────────────────────────────┐
     │           │   │           Platform Services                │
     │           │   │                                            │
-    │           │   │  ┌─────────────────┐  ┌──────────────────┐ │
-    │           │   │  │ LiteLLM Gateway │  │ Secret Provider │ │
-    │           │   │  │  (LLM proxy)    │  │  (Vault secrets) │ │
-    │           │   │  └────────┬────────┘  └──────────────────┘ │
+    │           │   │  ┌─────────────────┐                       │
+    │           │   │  │ LiteLLM Gateway │◀── Vault              │
+    │           │   │  │  (LLM proxy)    │    (per-user API keys)│
+    │           │   │  └────────┬────────┘                       │
     │           │   │           │                                 │
     │           │   │     ┌─────┴───────────────────┐            │
     │           │   │     ▼            ▼            ▼            │
     │           │   │  Claude API   Ollama/vLLM   Bedrock        │
     │           │   │                                            │
     │           │   │  ┌─────────────────────────────────────┐   │
-    │           │   │  │ MCP Gateway (tool proxy + catalog)  │   │
-    │           │   │  │  OIDC auth · ACL · tool discovery   │   │
+    │           │   │  │ MCP Gateway (tool proxy + catalog)  │◀─ Vault
+    │           │   │  │  OIDC auth · ACL · tool discovery   │   (tool credentials)
     │           │   │  └────────┬────────────────────────────┘   │
     │           │   │           ▼                                 │
     │           │   │     Backend MCP Servers                     │
@@ -70,8 +70,8 @@ Aviary is an enterprise platform where users can create, configure, and use purp
     │   │  │                          │  │                     │ │
     │   │  │  LLM ──▶ LiteLLM Gateway│  │                     │ │
     │   │  │  Tools ▶ MCP Gateway    │  │                     │ │
-    │   │  │  Secrets ▶ Secret Prov.   │  │  NetworkPolicy:     │ │
-    │   │  │  HTTP ──▶ Egress Proxy   │  │    deny-by-default  │ │
+    │   │  │  HTTP ──▶ Egress Proxy   │  │  NetworkPolicy:     │ │
+    │   │  │                          │  │    deny-by-default  │ │
     │   │  └──────────────────────────┘  └─────────────────────┘ │
     │   └────────────────────────────────────────────────────────┘
     │
@@ -98,7 +98,7 @@ Aviary is an enterprise platform where users can create, configure, and use purp
 - **OIDC Auth + Team Sync** — Keycloak (dev) / Okta (prod); IdP groups auto-sync to Aviary teams on login
 - **API / Admin Separation** — Separate services for user operations (API) and infrastructure management (Admin Console)
 - **Granular ACL** — Permission resolution with role hierarchy (`viewer` < `user` < `admin` < `owner`)
-- **Secret Provider** — Secrets never enter session Pods; injected from Vault via a shared proxy
+- **Vault-Backed Credential Injection** — Per-user Anthropic API keys injected at LiteLLM Gateway, MCP tool credentials injected at MCP Gateway; all secrets fetched from Vault via OIDC token propagation, never exposed to agent Pods
 - **Real-time Chat** — WebSocket streaming with Redis pub/sub for multi-user shared sessions
 
 ## Tech Stack
@@ -152,7 +152,7 @@ aviary/
 ├── runtime/                 # Agent Runtime (runs in agent Pods)
 │   └── src/                 # claude-agent-sdk harness, session manager
 ├── config/litellm/          # LiteLLM Gateway config
-├── secret-provider/        # Secret injection proxy
+├── mcp-servers/             # Platform-provided MCP server stubs (GitHub, Jira, Confluence)
 ├── egress-proxy/            # HTTP/HTTPS egress proxy
 ├── config/                  # Keycloak realm, K3s config
 ├── k8s/platform/            # K8s manifests
@@ -303,7 +303,6 @@ The `claude` CLI binary in PATH is a wrapper script that runs the real binary in
 | `web` | 3000 | Web UI |
 | `litellm` | 8090 | LLM gateway (LiteLLM) |
 | `mcp-gateway` | 8100 | MCP tool proxy, catalog, ACL |
-| `secret-provider` | K8s internal | Secret injection (Vault)|
 | `postgres` | 5432 | Database |
 | `redis` | 6379 | Cache, pub/sub, presence |
 | `keycloak` | 8080 | OIDC provider |
