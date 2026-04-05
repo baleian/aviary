@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
-from mcp.server.streamable_http import StreamableHTTPServerTransport
+from mcp.types import ListToolsRequest, CallToolRequest
 
 from app.auth.dependencies import get_current_user
 from app.auth.oidc import init_oidc
@@ -60,17 +60,7 @@ async def mcp_proxy(agent_id: str, request: Request):
         "user_external_id": claims.sub,
     }
 
-    # Handle MCP Streamable HTTP protocol
-    # GET = SSE stream (server-to-client notifications)
-    # POST = JSON-RPC request
-    # DELETE = session termination
-    transport = StreamableHTTPServerTransport(
-        mcp_session_id=None,  # Stateless mode
-        is_json_response_enabled=True,
-    )
-
     if request.method == "GET":
-        # SSE endpoint for server-initiated messages
         return Response(status_code=405, content="SSE not supported in stateless mode")
 
     if request.method == "DELETE":
@@ -124,9 +114,10 @@ async def _handle_mcp_request(json_body: dict) -> dict:
         return {"jsonrpc": "2.0", "id": req_id, "result": {}}
 
     if method == "tools/list":
-        tools_handler = gateway_server.request_handlers.get("tools/list")
+        tools_handler = gateway_server.request_handlers.get(ListToolsRequest)
         if tools_handler:
-            tools = await tools_handler()
+            result = await tools_handler(ListToolsRequest(method="tools/list", params=params))
+            tools = result.root.tools if hasattr(result, "root") else []
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,
@@ -150,10 +141,12 @@ async def _handle_mcp_request(json_body: dict) -> dict:
     if method == "tools/call":
         tool_name = params.get("name", "")
         arguments = params.get("arguments", {})
-        call_handler = gateway_server.request_handlers.get("tools/call")
+        call_handler = gateway_server.request_handlers.get(CallToolRequest)
         if call_handler:
-            contents = await call_handler(tool_name, arguments)
-            is_error = any(
+            result = await call_handler(CallToolRequest(method="tools/call", params={"name": tool_name, "arguments": arguments}))
+            call_result = result.root if hasattr(result, "root") else result
+            contents = call_result.content if hasattr(call_result, "content") else []
+            is_error = getattr(call_result, "isError", False) or any(
                 hasattr(c, "text") and c.text.startswith("Error:") for c in contents
             )
             return {
