@@ -20,6 +20,16 @@ gateway_server = create_gateway_server()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_oidc()
+
+    # Auto-register platform-provided MCP servers and discover tools
+    from app.db.session import async_session_factory
+    from app.services.platform_servers import register_platform_servers
+    try:
+        async with async_session_factory() as db:
+            await register_platform_servers(db)
+    except Exception:
+        logger.warning("Platform MCP server registration failed — will retry on next startup", exc_info=True)
+
     yield
 
 
