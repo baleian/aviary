@@ -114,7 +114,7 @@ function buildMcpServers(agentConfig: AgentConfig): Record<string, any> | undefi
   // URL comes from K8s env var; auth token comes from API per-request.
   if (MCP_GATEWAY_URL && agentConfig.user_token) {
     const agentId = process.env.AGENT_ID || "";
-    servers["aviary-gateway"] = {
+    servers["gateway"] = {
       type: "http",
       url: `${MCP_GATEWAY_URL}/mcp/v1/${agentId}`,
       headers: {
