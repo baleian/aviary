@@ -9,7 +9,7 @@ Multi-tenant AI agent platform. Users create/configure agents via Web UI, each r
 docker compose up -d      # Subsequent: just start services
 ```
 
-Services: Web (`:3000`), API (`:8000`), Admin (`:8001`), Keycloak (`:8080`, admin/admin), Vault (`:8200`), LiteLLM Gateway (`:8090`), Secret Provider (K8s internal), Agent Supervisor (`:9000`).
+Services: Web (`:3000`), API (`:8000`), Admin (`:8001`), Keycloak (`:8080`, admin/admin), Vault (`:8200`), LiteLLM Gateway (`:8090`), MCP Gateway (`:8100`), Secret Provider (K8s internal), Agent Supervisor (`:9000`).
 Test accounts: `user1@test.com`, `user2@test.com` (all `password`).
 
 ## Architecture
@@ -25,6 +25,7 @@ PostgreSQL / Redis
 
 Platform services (docker compose):
   LiteLLM Gateway (:8090) → Claude API / Ollama / vLLM / Bedrock
+  MCP Gateway (:8100) → Backend MCP Servers (tool proxy with OIDC auth + ACL)
   Secret Provider (K8s platform NS) → Vault
 
 Platform services (K8s, platform namespace):
@@ -247,3 +248,36 @@ docker compose restart litellm
 | `PROXY_PORT` | Forward proxy listen port (default: 8080) |
 | `HEALTH_PORT` | Health endpoint listen port (default: 8081) |
 | `DATABASE_URL` | PostgreSQL connection for policy lookup |
+
+## Key Environment Variables (MCP Gateway)
+
+| Variable | Purpose |
+|----------|---------|
+| `DATABASE_URL` | PostgreSQL async connection |
+| `MCP_GATEWAY_PORT` | Listen port (default: 8100) |
+| `OIDC_ISSUER` | Public Keycloak URL (token `iss` validation) |
+| `OIDC_INTERNAL_ISSUER` | Internal Keycloak URL (JWKS fetch) |
+| `OIDC_CLIENT_ID` | OIDC client ID (default: `aviary-web`) |
+
+### MCP Gateway
+
+**MCP Gateway** (docker compose, `:8100`): Centralized tool proxy for all agent MCP tool calls. Acts as a single MCP server (Streamable HTTP) from the claude-agent-sdk's perspective, internally proxying to multiple backend MCP servers.
+
+**Key features:**
+- **Tool catalog**: Admin registers backend MCP servers via Admin Console. Tools are auto-discovered via MCP `tools/list` protocol.
+- **ACL (default-deny)**: Admin grants server-level or tool-level access to users/teams. Users can only see and bind tools they have `use` permission for.
+- **Agent tool bindings**: Users select tools from the catalog and bind them to their agents. Bindings stored in `mcp_agent_tool_bindings` table.
+- **OIDC auth**: User's Keycloak JWT is propagated from browser → API → stream_manager → runtime → MCP Gateway. Gateway validates the JWT directly via Keycloak JWKS (same dual-URL pattern as API server).
+- **Tool namespacing**: Tools are exposed as `{server_name}__{tool_name}` (double underscore separator).
+
+**Data flow:**
+1. Admin registers MCP server (Admin Console → DB) and triggers tool discovery
+2. Admin creates ACL rules granting users/teams access to servers/tools
+3. User browses tools (API → DB, ACL-filtered) and binds them to agent
+4. On chat message: API constructs `mcpServers` config with gateway URL + user JWT in headers
+5. Runtime passes config to claude-agent-sdk; SDK connects to gateway as HTTP MCP server
+6. Gateway validates JWT, checks ACL, returns filtered `tools/list`, proxies `tools/call` to backend
+
+**DB tables:** `mcp_servers`, `mcp_tools`, `mcp_agent_tool_bindings`, `mcp_tool_acl`
+
+**Architecture principle:** Agent ID is NOT used for ACL — the user's permission to use a tool (verified at both bind-time and call-time) is the access control. User token is NOT forwarded to backend MCP servers.

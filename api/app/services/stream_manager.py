@@ -26,6 +26,24 @@ logger = logging.getLogger(__name__)
 _active_streams: dict[str, asyncio.Task] = {}
 
 
+def _build_mcp_config(
+    agent_id: str, user_token: str, legacy_mcp_servers: list
+) -> dict:
+    """Build MCP servers config with legacy stdio servers + gateway auth token.
+
+    The MCP Gateway URL is NOT included here — the runtime constructs it
+    from its own MCP_GATEWAY_URL env var (K8s service DNS). The API server
+    only passes the user token so the runtime can authenticate.
+    """
+    config: dict = {}
+
+    # Legacy stdio servers (backward compatibility)
+    for srv in legacy_mcp_servers:
+        config[srv["name"]] = {"command": srv["command"], "args": srv.get("args", [])}
+
+    return config
+
+
 async def start_stream(
     session_id: str,
     agent_id: str,
@@ -35,6 +53,7 @@ async def start_stream(
     agent_mcp_servers: list,
     agent_policy: dict,
     content: str,
+    user_token: str = "",
 ) -> None:
     """Launch a background task that streams the agent response."""
     # Cancel any existing stream for this session
@@ -51,7 +70,7 @@ async def start_stream(
             session_id, agent_id,
             agent_model_config, agent_instruction,
             agent_tools, agent_mcp_servers, agent_policy,
-            content,
+            content, user_token,
         )
     )
     _active_streams[session_id] = task
@@ -118,6 +137,7 @@ async def _run_stream(
     agent_mcp_servers: list,
     agent_policy: dict,
     content: str,
+    user_token: str = "",
 ) -> None:
     """Execute the agent response stream as a background task."""
     session_uuid = uuid.UUID(session_id)
@@ -177,8 +197,11 @@ async def _run_stream(
                         "agent_config": {
                             "instruction": agent_instruction,
                             "tools": agent_tools,
-                            "mcp_servers": agent_mcp_servers,
+                            "mcp_servers": _build_mcp_config(
+                                agent_id, user_token, agent_mcp_servers
+                            ),
                             "policy": agent_policy,
+                            "user_token": user_token,
                         },
                     },
                     timeout=300,

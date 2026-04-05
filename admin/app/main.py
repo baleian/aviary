@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from app.routers import agents, deployments, pages, policies
+from app.routers import agents, deployments, mcp, pages, policies, users
 from app.services import supervisor_client
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,8 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 app.include_router(agents.router, prefix="/api/agents", tags=["agents"])
 app.include_router(deployments.router, prefix="/api/agents", tags=["deployments"])
 app.include_router(policies.router, prefix="/api/agents", tags=["policies"])
+app.include_router(mcp.router, prefix="/api/mcp", tags=["mcp"])
+app.include_router(users.router, prefix="/api/users", tags=["users"])
 app.include_router(pages.router, tags=["pages"])
 
 

@@ -9,7 +9,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aviary_shared.db.models import Agent
+from aviary_shared.db.models import Agent, McpServer, McpTool, McpToolAcl, Team, TeamMember, User
 from app.db import get_db
 from app.services import supervisor_client
 
@@ -276,6 +276,174 @@ async def deploy_agent(agent_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     except Exception:
         pass
     return RedirectResponse(f"/agents/{agent_id}?flash=Rolling+restart+triggered", status_code=303)
+
+
+# ── User Pages ──────────────────────────────────���─────────────
+
+
+@router.get("/users", response_class=HTMLResponse)
+async def user_list(request: Request, db: AsyncSession = Depends(get_db)):
+    from app.routers.users import _sync_keycloak_users
+    await _sync_keycloak_users(db)
+
+    result = await db.execute(select(User).order_by(User.created_at.desc()))
+    all_users = list(result.scalars().all())
+
+    user_data = []
+    for u in all_users:
+        result = await db.execute(
+            select(Team.name)
+            .join(TeamMember, TeamMember.team_id == Team.id)
+            .where(TeamMember.user_id == u.id)
+        )
+        teams = list(result.scalars().all())
+        user_data.append({
+            "id": str(u.id),
+            "external_id": u.external_id,
+            "email": u.email,
+            "display_name": u.display_name,
+            "is_platform_admin": u.is_platform_admin,
+            "teams": teams,
+            "created_at": u.created_at.isoformat(),
+        })
+
+    return templates.TemplateResponse(request, "users.html", {"users": user_data})
+
+
+@router.get("/users/{user_id}", response_class=HTMLResponse)
+async def user_detail(request: Request, user_id: str, db: AsyncSession = Depends(get_db)):
+    from app.routers.users import _vault_list_keys, _vault_get_key
+
+    u_uuid = uuid.UUID(user_id)
+    result = await db.execute(select(User).where(User.id == u_uuid))
+    user = result.scalar_one_or_none()
+    if not user:
+        return HTMLResponse("<h1>User not found</h1>", status_code=404)
+
+    result = await db.execute(
+        select(Team.name)
+        .join(TeamMember, TeamMember.team_id == Team.id)
+        .where(TeamMember.user_id == user.id)
+    )
+    teams = list(result.scalars().all())
+
+    user_data = {
+        "id": str(user.id),
+        "external_id": user.external_id,
+        "email": user.email,
+        "display_name": user.display_name,
+        "is_platform_admin": user.is_platform_admin,
+        "teams": teams,
+        "created_at": user.created_at.isoformat(),
+    }
+
+    # Fetch Vault credentials
+    credentials = []
+    try:
+        keys = await _vault_list_keys(user.external_id)
+        for key in keys:
+            key = key.rstrip("/")
+            data = await _vault_get_key(user.external_id, key)
+            if data:
+                token = data.get("token", "")
+                masked = token[:8] + "..." + token[-4:] if len(token) > 16 else "***"
+                credentials.append({"key": key, "value": masked})
+    except Exception:
+        pass  # Vault may not be reachable
+
+    return templates.TemplateResponse(request, "user_detail.html", {
+        "user": user_data,
+        "credentials": credentials,
+    })
+
+
+# ── MCP Server Pages ─────────────────────────────���────────────
+
+
+@router.get("/mcp", response_class=HTMLResponse)
+async def mcp_server_list(request: Request, db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import func as sa_func
+
+    result = await db.execute(
+        select(McpServer).order_by(McpServer.created_at.desc())
+    )
+    servers = list(result.scalars().all())
+
+    server_data = []
+    for srv in servers:
+        count_result = await db.execute(
+            select(sa_func.count()).select_from(McpTool).where(McpTool.server_id == srv.id)
+        )
+        tool_count = count_result.scalar() or 0
+        server_data.append({
+            "id": str(srv.id),
+            "name": srv.name,
+            "description": srv.description,
+            "transport_type": srv.transport_type,
+            "status": srv.status,
+            "tool_count": tool_count,
+            "last_discovered_at": srv.last_discovered_at.isoformat() if srv.last_discovered_at else None,
+        })
+
+    return templates.TemplateResponse(request, "mcp_servers.html", {
+        "servers": server_data,
+    })
+
+
+@router.get("/mcp/{server_id}", response_class=HTMLResponse)
+async def mcp_server_detail(
+    request: Request, server_id: str, db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import func as sa_func
+
+    srv_uuid = uuid.UUID(server_id)
+    result = await db.execute(select(McpServer).where(McpServer.id == srv_uuid))
+    srv = result.scalar_one_or_none()
+    if not srv:
+        return HTMLResponse("<h1>Server not found</h1>", status_code=404)
+
+    count_result = await db.execute(
+        select(sa_func.count()).select_from(McpTool).where(McpTool.server_id == srv.id)
+    )
+    tool_count = count_result.scalar() or 0
+
+    server_data = {
+        "id": str(srv.id),
+        "name": srv.name,
+        "description": srv.description,
+        "transport_type": srv.transport_type,
+        "status": srv.status,
+        "tool_count": tool_count,
+        "last_discovered_at": srv.last_discovered_at.isoformat() if srv.last_discovered_at else None,
+    }
+
+    result = await db.execute(
+        select(McpTool).where(McpTool.server_id == srv.id).order_by(McpTool.name)
+    )
+    tools = [
+        {"id": str(t.id), "name": t.name, "description": t.description}
+        for t in result.scalars().all()
+    ]
+
+    result = await db.execute(
+        select(McpToolAcl).where(McpToolAcl.server_id == srv.id).order_by(McpToolAcl.created_at.desc())
+    )
+    acl_rules = [
+        {
+            "id": str(r.id),
+            "user_id": str(r.user_id) if r.user_id else None,
+            "team_id": str(r.team_id) if r.team_id else None,
+            "tool_id": str(r.tool_id) if r.tool_id else None,
+            "permission": r.permission,
+        }
+        for r in result.scalars().all()
+    ]
+
+    return templates.TemplateResponse(request, "mcp_server_detail.html", {
+        "server": server_data,
+        "tools": tools,
+        "acl_rules": acl_rules,
+    })
 
 
 @router.post("/agents/{agent_id}/delete")

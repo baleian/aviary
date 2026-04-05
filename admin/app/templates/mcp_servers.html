@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}MCP Servers — Aviary Admin{% endblock %}
+{% block content %}
+<div style="margin-top: 16px;">
+  <div class="flex items-center justify-between mb-4">
+    <h2 style="font-size: 18px; font-weight: 600;">MCP Servers</h2>
+    <button class="btn btn-sm" onclick="document.getElementById('add-dialog').showModal()">+ Add Server</button>
+  </div>
+
+  {% if servers %}
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Transport</th>
+        <th>Status</th>
+        <th>Tools</th>
+        <th>Last Discovery</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for srv in servers %}
+      <tr>
+        <td><a href="/mcp/{{ srv.id }}">{{ srv.name }}</a></td>
+        <td class="mono text-sm">{{ srv.transport_type }}</td>
+        <td><span class="badge badge-{{ srv.status }}">{{ srv.status }}</span></td>
+        <td>{{ srv.tool_count }}</td>
+        <td class="text-sm text-muted">{{ srv.last_discovered_at or '—' }}</td>
+        <td>
+          <a href="/mcp/{{ srv.id }}" class="btn btn-sm">Manage</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">No MCP servers registered.</div>
+  {% endif %}
+</div>
+
+<dialog id="add-dialog">
+  <form id="add-form">
+    <h3>Register MCP Server</h3>
+    <label>Name<br><input type="text" id="srv-name" required></label>
+    <label>Description<br><textarea id="srv-desc" rows="2"></textarea></label>
+    <label>Transport<br>
+      <select id="srv-transport">
+        <option value="streamable_http">Streamable HTTP</option>
+        <option value="sse">SSE</option>
+      </select>
+    </label>
+    <label>URL<br><input type="url" id="srv-url" required></label>
+    <label>Tags (comma-separated)<br><input type="text" id="srv-tags"></label>
+    <div class="dialog-actions">
+      <button type="button" class="btn btn-sm" onclick="document.getElementById('add-dialog').close()">Cancel</button>
+      <button type="submit" class="btn btn-sm btn-primary">Create</button>
+    </div>
+  </form>
+</dialog>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('add-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const body = {
+    name: document.getElementById('srv-name').value,
+    description: document.getElementById('srv-desc').value || null,
+    transport_type: document.getElementById('srv-transport').value,
+    connection_config: { url: document.getElementById('srv-url').value },
+    tags: document.getElementById('srv-tags').value.split(',').map(t => t.trim()).filter(Boolean),
+  };
+  const resp = await fetch('/api/mcp/servers', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (resp.ok) {
+    window.location.reload();
+  } else {
+    const err = await resp.json();
+    alert('Error: ' + (err.detail || JSON.stringify(err)));
+  }
+});
+</script>
+{% endblock %}

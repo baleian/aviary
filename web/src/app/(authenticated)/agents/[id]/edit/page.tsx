@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useAuth } from "@/components/providers/auth-provider";
 import { AgentForm } from "@/components/agents/agent-form";
 import { apiFetch } from "@/lib/api";
-import type { Agent } from "@/types";
+import type { Agent, McpToolBinding, McpToolInfo } from "@/types";
 
 export default function EditAgentPage() {
   const { user } = useAuth();
@@ -14,11 +14,22 @@ export default function EditAgentPage() {
   const router = useRouter();
   const [agent, setAgent] = useState<Agent | null>(null);
   const [loading, setLoading] = useState(true);
+  const [existingToolIds, setExistingToolIds] = useState<string[]>([]);
+  const [existingToolInfo, setExistingToolInfo] = useState<Map<string, McpToolInfo>>(new Map());
 
   useEffect(() => {
     if (!user) return;
-    apiFetch<Agent>(`/agents/${params.id}`)
-      .then(setAgent)
+    Promise.all([
+      apiFetch<Agent>(`/agents/${params.id}`),
+      apiFetch<McpToolBinding[]>(`/mcp/agents/${params.id}/tools`).catch(() => []),
+    ])
+      .then(([agentData, bindings]) => {
+        setAgent(agentData);
+        setExistingToolIds(bindings.map((b) => b.tool.id));
+        const infoMap = new Map<string, McpToolInfo>();
+        for (const b of bindings) infoMap.set(b.tool.id, b.tool);
+        setExistingToolInfo(infoMap);
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [user, params.id]);
@@ -38,7 +49,17 @@ export default function EditAgentPage() {
   }
 
   const handleSubmit = async (data: any) => {
-    await apiFetch(`/agents/${agent.id}`, { method: "PUT", body: JSON.stringify(data) });
+    const { mcp_tool_ids, ...agentData } = data;
+    await apiFetch(`/agents/${agent.id}`, { method: "PUT", body: JSON.stringify(agentData) });
+
+    // Update MCP tool bindings
+    if (mcp_tool_ids) {
+      await apiFetch(`/mcp/agents/${agent.id}/tools`, {
+        method: "PUT",
+        body: JSON.stringify({ tool_ids: mcp_tool_ids }),
+      });
+    }
+
     router.push(`/agents/${agent.id}`);
   };
 
@@ -55,8 +76,10 @@ export default function EditAgentPage() {
           initialData={{
             name: agent.name, slug: agent.slug, description: agent.description || "",
             instruction: agent.instruction, model_config: agent.model_config as any,
-            tools: agent.tools as string[], visibility: agent.visibility, category: agent.category || "",
+            tools: agent.tools as string[], mcp_tool_ids: existingToolIds,
+            visibility: agent.visibility, category: agent.category || "",
           }}
+          initialToolInfo={existingToolInfo}
           onSubmit={handleSubmit}
           submitLabel="Save Changes"
         />

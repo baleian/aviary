@@ -105,6 +105,44 @@ services:
       postgres:
         condition: service_healthy
 
+  # ── Platform MCP Servers ────────────────────────────────────
+
+  mcp-github:
+    build:
+      context: ./mcp-servers
+      args:
+        MCP_SERVER_NAME: github
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('localhost',8000),2); s.close()\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  mcp-jira:
+    build:
+      context: ./mcp-servers
+      args:
+        MCP_SERVER_NAME: jira
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('localhost',8000),2); s.close()\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  mcp-confluence:
+    build:
+      context: ./mcp-servers
+      args:
+        MCP_SERVER_NAME: confluence
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('localhost',8000),2); s.close()\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
   # ── Platform Services ───────────────────────────────────────
 
   litellm:
@@ -160,6 +198,7 @@ services:
       AGENT_SUPERVISOR_URL: http://k8s:30900
       LITELLM_URL: http://litellm:4000
       LITELLM_API_KEY: "sk-aviary-dev"
+      MCP_GATEWAY_URL: http://mcp-gateway:8100
       CORS_ORIGINS: '["http://localhost:3000"]'
     depends_on:
       db-migrate:
@@ -202,6 +241,44 @@ services:
       api:
         condition: service_healthy
 
+  mcp-gateway:
+    build:
+      context: .
+      dockerfile: mcp-gateway/Dockerfile
+      args:
+        UV_INDEX_URL: ${UV_INDEX_URL:-}
+    ports:
+      - "8100:8100"
+    volumes:
+      - ./mcp-gateway:/workspace/mcp-gateway
+      - ./shared:/workspace/shared
+      - /workspace/.venv
+    environment:
+      DATABASE_URL: postgresql+asyncpg://aviary:aviary@postgres:5432/aviary
+      MCP_GATEWAY_PORT: "8100"
+      OIDC_ISSUER: http://localhost:8080/realms/aviary
+      OIDC_INTERNAL_ISSUER: http://keycloak:8080/realms/aviary
+      OIDC_CLIENT_ID: aviary-web
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: dev-root-token
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      vault:
+        condition: service_healthy
+      mcp-github:
+        condition: service_healthy
+      mcp-jira:
+        condition: service_healthy
+      mcp-confluence:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8100/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   admin:
     build:
       context: .
@@ -217,9 +294,17 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://aviary:aviary@postgres:5432/aviary
       AGENT_SUPERVISOR_URL: http://k8s:30900
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: dev-root-token
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KEYCLOAK_REALM: aviary
     depends_on:
       db-migrate:
         condition: service_completed_successfully
+      vault:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8001/health || exit 1"]
       interval: 10s
