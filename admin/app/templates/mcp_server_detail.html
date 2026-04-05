@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+{% block title %}{{ server.name }} — MCP Server{% endblock %}
+{% block content %}
+<div style="margin-top: 16px;">
+  <div class="flex items-center justify-between mb-4">
+    <div>
+      <a href="/mcp" class="text-sm text-dim">&larr; All Servers</a>
+      <h2 style="font-size: 18px; font-weight: 600; margin-top: 4px;">{{ server.name }}</h2>
+      {% if server.description %}
+      <p class="text-sm text-muted">{{ server.description }}</p>
+      {% endif %}
+    </div>
+    <div style="display: flex; gap: 8px;">
+      <button class="btn btn-sm" onclick="discoverTools()">Discover Tools</button>
+      <button class="btn btn-sm" style="color: red;" onclick="deleteServer()">Delete</button>
+    </div>
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 24px;">
+    <div class="card" style="padding: 12px;">
+      <div class="text-sm text-dim">Transport</div>
+      <div class="mono">{{ server.transport_type }}</div>
+    </div>
+    <div class="card" style="padding: 12px;">
+      <div class="text-sm text-dim">Status</div>
+      <span class="badge badge-{{ server.status }}">{{ server.status }}</span>
+    </div>
+    <div class="card" style="padding: 12px;">
+      <div class="text-sm text-dim">Tools</div>
+      <div>{{ server.tool_count }}</div>
+    </div>
+    <div class="card" style="padding: 12px;">
+      <div class="text-sm text-dim">Last Discovery</div>
+      <div class="text-sm">{{ server.last_discovered_at or '—' }}</div>
+    </div>
+  </div>
+
+  <h3 style="font-size: 16px; font-weight: 600; margin-bottom: 12px;">Discovered Tools</h3>
+  {% if tools %}
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Description</th>
+        <th>Qualified Name</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for tool in tools %}
+      <tr>
+        <td class="mono">{{ tool.name }}</td>
+        <td class="text-sm">{{ tool.description or '—' }}</td>
+        <td class="mono text-sm text-dim">{{ server.name }}__{{ tool.name }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">No tools discovered yet. Click "Discover Tools" to connect to the server.</div>
+  {% endif %}
+
+  <h3 style="font-size: 16px; font-weight: 600; margin: 24px 0 12px;">ACL Rules</h3>
+  <div style="margin-bottom: 12px;">
+    <button class="btn btn-sm" onclick="document.getElementById('acl-dialog').showModal()">+ Add Rule</button>
+  </div>
+  {% if acl_rules %}
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Grantee</th>
+        <th>Scope</th>
+        <th>Permission</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for rule in acl_rules %}
+      <tr>
+        <td class="text-sm">
+          {% if rule.user_id %}User: {{ rule.user_id }}{% endif %}
+          {% if rule.team_id %}Team: {{ rule.team_id }}{% endif %}
+        </td>
+        <td class="text-sm">{{ 'Tool: ' + rule.tool_id if rule.tool_id else 'All tools' }}</td>
+        <td><span class="badge">{{ rule.permission }}</span></td>
+        <td>
+          <button class="btn btn-sm" style="color: red;" onclick="deleteAcl('{{ rule.id }}')">Delete</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">No ACL rules. Default-deny: no user can access this server's tools.</div>
+  {% endif %}
+</div>
+
+<dialog id="acl-dialog" style="max-width: 400px; border-radius: 8px; border: 1px solid var(--border);">
+  <form id="acl-form" method="dialog">
+    <h3 style="margin-bottom: 16px;">Add ACL Rule</h3>
+    <label style="display: block; margin-bottom: 8px;">
+      User ID (UUID, optional)<br>
+      <input type="text" id="acl-user-id" style="width: 100%; padding: 6px;">
+    </label>
+    <label style="display: block; margin-bottom: 8px;">
+      Team ID (UUID, optional)<br>
+      <input type="text" id="acl-team-id" style="width: 100%; padding: 6px;">
+    </label>
+    <label style="display: block; margin-bottom: 8px;">
+      Tool (optional — leave blank for server-level)
+      <select id="acl-tool-id" style="padding: 6px; width: 100%;">
+        <option value="">All tools on this server</option>
+        {% for tool in tools %}
+        <option value="{{ tool.id }}">{{ tool.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label style="display: block; margin-bottom: 16px;">
+      Permission
+      <select id="acl-perm" style="padding: 6px;">
+        <option value="use">use</option>
+        <option value="view">view</option>
+      </select>
+    </label>
+    <div style="display: flex; gap: 8px; justify-content: flex-end;">
+      <button type="button" class="btn btn-sm" onclick="document.getElementById('acl-dialog').close()">Cancel</button>
+      <button type="submit" class="btn btn-sm" style="background: var(--accent); color: white;">Create</button>
+    </div>
+  </form>
+</dialog>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const serverId = '{{ server.id }}';
+
+async function discoverTools() {
+  const resp = await fetch(`/api/mcp/servers/${serverId}/discover`, { method: 'POST' });
+  if (resp.ok) {
+    const data = await resp.json();
+    alert(`Discovered ${data.discovered} tools, removed ${data.removed}`);
+    window.location.reload();
+  } else {
+    const err = await resp.json();
+    alert('Error: ' + (err.detail || JSON.stringify(err)));
+  }
+}
+
+async function deleteServer() {
+  if (!confirm('Delete this MCP server? All tools, bindings, and ACL rules will be removed.')) return;
+  const resp = await fetch(`/api/mcp/servers/${serverId}`, { method: 'DELETE' });
+  if (resp.ok) window.location.href = '/mcp';
+  else alert('Failed to delete server');
+}
+
+async function deleteAcl(aclId) {
+  if (!confirm('Delete this ACL rule?')) return;
+  const resp = await fetch(`/api/mcp/acl/${aclId}`, { method: 'DELETE' });
+  if (resp.ok) window.location.reload();
+  else alert('Failed to delete ACL rule');
+}
+
+document.getElementById('acl-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const userId = document.getElementById('acl-user-id').value.trim() || null;
+  const teamId = document.getElementById('acl-team-id').value.trim() || null;
+  const toolId = document.getElementById('acl-tool-id').value || null;
+  const permission = document.getElementById('acl-perm').value;
+
+  const resp = await fetch('/api/mcp/acl', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      server_id: serverId,
+      tool_id: toolId,
+      user_id: userId,
+      team_id: teamId,
+      permission: permission,
+    }),
+  });
+  if (resp.ok) window.location.reload();
+  else {
+    const err = await resp.json();
+    alert('Error: ' + (err.detail || JSON.stringify(err)));
+  }
+});
+</script>
+{% endblock %}
