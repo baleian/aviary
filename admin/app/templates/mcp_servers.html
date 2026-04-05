@@ -39,35 +39,22 @@
   {% endif %}
 </div>
 
-<dialog id="add-dialog" style="max-width: 500px; border-radius: 8px; border: 1px solid var(--border);">
-  <form method="dialog" id="add-form">
-    <h3 style="margin-bottom: 16px;">Register MCP Server</h3>
-    <label style="display: block; margin-bottom: 8px;">
-      Name<br>
-      <input type="text" id="srv-name" required style="width: 100%; padding: 6px;">
-    </label>
-    <label style="display: block; margin-bottom: 8px;">
-      Description<br>
-      <textarea id="srv-desc" rows="2" style="width: 100%; padding: 6px;"></textarea>
-    </label>
-    <label style="display: block; margin-bottom: 8px;">
-      Transport
-      <select id="srv-transport" style="padding: 6px;">
+<dialog id="add-dialog">
+  <form id="add-form">
+    <h3>Register MCP Server</h3>
+    <label>Name<br><input type="text" id="srv-name" required></label>
+    <label>Description<br><textarea id="srv-desc" rows="2"></textarea></label>
+    <label>Transport<br>
+      <select id="srv-transport">
         <option value="streamable_http">Streamable HTTP</option>
         <option value="sse">SSE</option>
       </select>
     </label>
-    <label style="display: block; margin-bottom: 8px;">
-      URL<br>
-      <input type="url" id="srv-url" required style="width: 100%; padding: 6px;">
-    </label>
-    <label style="display: block; margin-bottom: 16px;">
-      Tags (comma-separated)<br>
-      <input type="text" id="srv-tags" style="width: 100%; padding: 6px;">
-    </label>
-    <div style="display: flex; gap: 8px; justify-content: flex-end;">
+    <label>URL<br><input type="url" id="srv-url" required></label>
+    <label>Tags (comma-separated)<br><input type="text" id="srv-tags"></label>
+    <div class="dialog-actions">
       <button type="button" class="btn btn-sm" onclick="document.getElementById('add-dialog').close()">Cancel</button>
-      <button type="submit" class="btn btn-sm" style="background: var(--accent); color: white;">Create</button>
+      <button type="submit" class="btn btn-sm btn-primary">Create</button>
     </div>
   </form>
 </dialog>
