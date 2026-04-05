@@ -23,7 +23,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # standalone package allows proxy-bootstrap.js to set EnvHttpProxyAgent
 # as the global dispatcher via require('undici'). (Node 24+ has NODE_USE_ENV_PROXY.)
 ARG NPM_CONFIG_REGISTRY
-RUN npm install -g @anthropic-ai/claude-code undici
+RUN npm install -g @anthropic-ai/claude-code undici \
+    && chmod +x /usr/local/lib/node_modules/@anthropic-ai/claude-code/vendor/ripgrep/*/rg
 
 # Replace `claude` binary with bubblewrap sandbox wrapper.
 # SDK invokes `claude` → wrapper → bwrap namespace → `claude-real`.
