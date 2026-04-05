@@ -37,6 +37,13 @@ Aviary is an enterprise platform where users can create, configure, and use purp
     │           │   │     ┌─────┴───────────────────┐            │
     │           │   │     ▼            ▼            ▼            │
     │           │   │  Claude API   Ollama/vLLM   Bedrock        │
+    │           │   │                                            │
+    │           │   │  ┌─────────────────────────────────────┐   │
+    │           │   │  │ MCP Gateway (tool proxy + catalog)  │   │
+    │           │   │  │  OIDC auth · ACL · tool discovery   │   │
+    │           │   │  └────────┬────────────────────────────┘   │
+    │           │   │           ▼                                 │
+    │           │   │     Backend MCP Servers                     │
     │           │   └────────────────────────────────────────────┘
     │           │
     │           │ HTTP (:9000)
@@ -62,6 +69,7 @@ Aviary is an enterprise platform where users can create, configure, and use purp
     │   │  │  PVC: /workspace         │  │  PVC: /workspace    │ │
     │   │  │                          │  │                     │ │
     │   │  │  LLM ──▶ LiteLLM Gateway│  │                     │ │
+    │   │  │  Tools ▶ MCP Gateway    │  │                     │ │
     │   │  │  Secrets ▶ Secret Prov.   │  │  NetworkPolicy:     │ │
     │   │  │  HTTP ──▶ Egress Proxy   │  │    deny-by-default  │ │
     │   │  └──────────────────────────┘  └─────────────────────┘ │
@@ -74,7 +82,7 @@ Aviary is an enterprise platform where users can create, configure, and use purp
        └───────────────┘  └──────────────┘  └────────────────┘
 ```
 
-**API Server** handles user-facing operations (auth, chat, agent config). **Admin Console** edits infrastructure configuration (policies, deployments). **Agent Supervisor** manages runtime resources, auto-scaling, and idle cleanup inside K8s. **Egress Proxy** enforces per-agent outbound traffic rules.
+**API Server** handles user-facing operations (auth, chat, agent config). **Admin Console** edits infrastructure configuration (policies, deployments). **Agent Supervisor** manages runtime resources, auto-scaling, and idle cleanup inside K8s. **Egress Proxy** enforces per-agent outbound traffic rules. **MCP Gateway** provides centralized tool management — catalog, discovery, per-user ACL, and proxying of all MCP tool calls.
 
 ## Key Features
 
@@ -83,6 +91,7 @@ Aviary is an enterprise platform where users can create, configure, and use purp
 - **Namespace-per-Agent** — NetworkPolicy, ResourceQuota, and ServiceAccount scoped per agent
 - **Egress Proxy** — All outbound HTTP/HTTPS from agent Pods routed through a centralized proxy with per-agent allowlists (CIDR, exact domain, wildcard `*.example.com`); deny-by-default, policy changes take effect immediately without Pod restarts
 - **claude-agent-sdk Powered** — Full [Claude Code](https://docs.anthropic.com/en/docs/claude-code) harness via `ClaudeSDKClient` including tools, sub-agents, MCP servers, file I/O, and shell execution
+- **MCP Gateway** — Centralized tool management via [Model Context Protocol](https://modelcontextprotocol.io/); admin registers MCP servers, tools are auto-discovered, users browse and bind tools to agents with per-user ACL enforcement (default-deny)
 - **LiteLLM Gateway** — All LLM calls routed through [LiteLLM](https://github.com/BerriAI/litellm) OSS proxy; backend determined by model name prefix (`anthropic/`, `ollama/`, `vllm/`, `bedrock/`), natively compatible with Anthropic SDK
 - **Multi-Backend Inference** — Claude API, Ollama, vLLM, AWS Bedrock; add new backends via config, no code or NetworkPolicy changes required
 - **Live Config Updates** — Agent config (instruction, tools) is passed from DB on every message; edits take effect immediately without Pod restarts
@@ -100,6 +109,7 @@ Aviary is an enterprise platform where users can create, configure, and use purp
 | API Server | Python 3.12, FastAPI, SQLAlchemy 2.0 (async), Pydantic v2 |
 | Agent Runtime | TypeScript, Node.js 22, claude-agent-sdk, Claude Code CLI |
 | LLM Gateway | [LiteLLM](https://github.com/BerriAI/litellm) — unified LLM proxy (Anthropic, OpenAI, Bedrock, Ollama, vLLM) |
+| MCP Gateway | Python 3.12, FastAPI, [MCP SDK](https://github.com/modelcontextprotocol/python-sdk) — tool catalog, ACL, and proxy |
 | Egress Proxy | Python 3.12, asyncio — HTTP/HTTPS forward proxy with policy enforcement |
 | Database | PostgreSQL 16 |
 | Cache / PubSub | Redis 7 |
@@ -135,6 +145,8 @@ aviary/
 │       ├── app/             # Pages (agents, sessions, login)
 │       ├── components/      # Chat, agent management, UI primitives
 │       └── lib/             # API client, auth, WebSocket
+├── mcp-gateway/             # MCP Gateway (FastAPI) — tool catalog, ACL, proxy
+│   └── app/                 # OIDC auth, MCP protocol proxy, tool discovery
 ├── agent-supervisor/         # Agent Supervisor (FastAPI, runs in K8s)
 │   └── app/                 # K8s gateway, agent-centric + K8s-specific APIs
 ├── runtime/                 # Agent Runtime (runs in agent Pods)
@@ -170,6 +182,7 @@ This single command builds all images, starts all services, runs DB migrations, 
 | API Server | http://localhost:8000 |
 | Admin Console | http://localhost:8001 |
 | LiteLLM Gateway | http://localhost:8090 |
+| MCP Gateway | http://localhost:8100 |
 | Keycloak Admin | http://localhost:8080 (admin/admin) |
 | Vault | http://localhost:8200 |
 
@@ -247,12 +260,24 @@ API and admin tests covering health, agent CRUD, ACL (visibility, grants, permis
 | CRUD | `/api/agents/{id}/acl` | Access control management |
 | CRUD | `/api/agents/{id}/credentials` | Secret management (Vault-backed) |
 | GET | `/api/catalog`, `/api/catalog/search` | Browse / search agents |
-| GET | `/api/inference/backends`, `/{backend}/models` | Inference backend info |
+| GET | `/api/inference/models` | Available models across all backends |
+
+### MCP Tools
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/mcp/servers` | List available MCP servers (ACL-filtered) |
+| GET | `/api/mcp/servers/{id}/tools` | List tools from a server |
+| GET | `/api/mcp/tools/search?q=...` | Search tools by name or description |
+| GET/PUT | `/api/mcp/agents/{id}/tools` | List / set tool bindings for an agent |
+| DELETE | `/api/mcp/agents/{id}/tools/{tool_id}` | Unbind a tool |
 
 ## Key Design Decisions
 
 ### LiteLLM Gateway
 Session Pods never call LLM backends directly. All inference goes through a [LiteLLM](https://github.com/BerriAI/litellm) OSS proxy that routes requests based on the model name prefix (e.g., `anthropic/claude-sonnet-4-6` → Claude API, `ollama/gemma4:26b` → Ollama, `vllm/...` → vLLM). LiteLLM natively supports the Anthropic Messages API (`/v1/messages`), so claude-agent-sdk works transparently without protocol translation. This centralizes API credentials, rate limiting, and observability. New backends are added via config file (`config/litellm/config.yaml`) without code changes.
+
+### MCP Gateway
+Agent tool calls are routed through a centralized [MCP](https://modelcontextprotocol.io/) Gateway that acts as a single MCP server from the claude-agent-sdk's perspective. Operators register backend MCP servers via the Admin Console, and tools are auto-discovered via the MCP protocol. Users browse the tool catalog (ACL-filtered) and bind selected tools to their agents. At runtime, the user's OIDC token is propagated from the browser through the API to the gateway, which validates permissions on every `tools/list` and `tools/call` request. The gateway proxies calls to the correct backend server, and user tokens are never forwarded to external services.
 
 ### Egress Proxy
 All outbound HTTP/HTTPS from agent Pods is routed through a centralized forward proxy via `HTTP_PROXY`/`HTTPS_PROXY` environment variables. The proxy identifies the source agent by resolving the pod's IP to its K8s namespace, then enforces per-agent egress policies. Supported rule types: CIDR ranges, exact domains, wildcard domains (`*.example.com`), and catch-all. Policies are deny-by-default and changes take effect immediately without Pod restarts.
@@ -277,6 +302,7 @@ The `claude` CLI binary in PATH is a wrapper script that runs the real binary in
 | `admin` | 8001 | Admin Console (operator-facing, no auth) |
 | `web` | 3000 | Web UI |
 | `litellm` | 8090 | LLM gateway (LiteLLM) |
+| `mcp-gateway` | 8100 | MCP tool proxy, catalog, ACL |
 | `secret-provider` | K8s internal | Secret injection (Vault)|
 | `postgres` | 5432 | Database |
 | `redis` | 6379 | Cache, pub/sub, presence |
