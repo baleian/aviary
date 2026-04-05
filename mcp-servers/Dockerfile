@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-RUN pip install --no-cache-dir "mcp>=1.0.0" uvicorn starlette
+RUN pip install --no-cache-dir "mcp[cli]>=1.0.0"
 
 WORKDIR /app
 

@@ -6,9 +6,8 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
 
 from aviary_shared.db.models import McpServer, McpTool, McpToolAcl
 from app.db import get_db
@@ -208,29 +207,14 @@ async def delete_server(server_id: uuid.UUID, db: AsyncSession = Depends(get_db)
 
 @router.post("/servers/{server_id}/discover")
 async def discover_tools(server_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Connect to an MCP server and discover its tools."""
-    from mcp_gateway_discovery import discover_tools as _discover
+    """Connect to an MCP server via MCP SDK and discover its tools."""
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
 
-    # Import from the gateway service's discovery module.
-    # Since admin runs in a separate container, we call the MCP Gateway's
-    # discovery endpoint instead. For now, we do it inline via shared code.
-    # In production, this would be an HTTP call to the gateway service.
-
-    # Inline discovery using the shared models
     result = await db.execute(select(McpServer).where(McpServer.id == server_id))
     srv = result.scalar_one_or_none()
     if not srv:
         raise HTTPException(status_code=404, detail="Server not found")
-
-    # Use httpx to call the MCP server's tools/list directly
-    # (admin doesn't have the mcp SDK; we do a simple HTTP JSON-RPC call)
-    import httpx
-
-    if srv.transport_type not in ("streamable_http", "sse"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Discovery not supported for transport: {srv.transport_type}",
-        )
 
     url = srv.connection_config.get("url")
     if not url:
@@ -239,35 +223,22 @@ async def discover_tools(server_id: uuid.UUID, db: AsyncSession = Depends(get_db
     headers = srv.connection_config.get("headers", {})
 
     try:
-        async with httpx.AsyncClient() as client:
-            # Initialize
-            resp = await client.post(
-                url,
-                json={"jsonrpc": "2.0", "method": "initialize", "id": 1, "params": {
-                    "protocolVersion": "2025-03-26",
-                    "capabilities": {},
-                    "clientInfo": {"name": "aviary-admin-discovery", "version": "0.1.0"},
-                }},
-                headers={**headers, "Content-Type": "application/json"},
-                timeout=30,
-            )
-            resp.raise_for_status()
-
-            # List tools
-            resp = await client.post(
-                url,
-                json={"jsonrpc": "2.0", "method": "tools/list", "id": 2, "params": {}},
-                headers={**headers, "Content-Type": "application/json"},
-                timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        async with streamablehttp_client(url=url, headers=headers) as (
+            read_stream, write_stream, _,
+        ):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                tools_result = await session.list_tools()
     except Exception as e:
         srv.status = "error"
         await db.flush()
         raise HTTPException(status_code=502, detail=f"Failed to connect to MCP server: {e}")
 
-    raw_tools = data.get("result", {}).get("tools", [])
+    raw_tools = [
+        {"name": t.name, "description": t.description or "",
+         "inputSchema": t.inputSchema if hasattr(t, "inputSchema") else {}}
+        for t in tools_result.tools
+    ]
 
     # Upsert tools
     existing_result = await db.execute(
@@ -279,7 +250,6 @@ async def discover_tools(server_id: uuid.UUID, db: AsyncSession = Depends(get_db
     for raw in raw_tools:
         name = raw["name"]
         discovered_names.add(name)
-
         if name in existing:
             existing[name].description = raw.get("description", "")
             existing[name].input_schema = raw.get("inputSchema", {})
@@ -291,7 +261,6 @@ async def discover_tools(server_id: uuid.UUID, db: AsyncSession = Depends(get_db
                 input_schema=raw.get("inputSchema", {}),
             ))
 
-    # Remove tools no longer on server
     for name in set(existing.keys()) - discovered_names:
         await db.delete(existing[name])
 

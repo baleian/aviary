@@ -1,270 +1,125 @@
-"""Confluence MCP Server — platform-provided stub.
+"""Confluence MCP Server.
 
-Provides Confluence wiki operations: page CRUD, search, space management,
-and content hierarchy navigation.
+Standard FastMCP server for Confluence wiki operations.
+The `confluence_token` argument on every tool is injected by the MCP Gateway.
 """
 
 import json
+from mcp.server.fastmcp import FastMCP
 
-from mcp.server import Server
-from mcp.types import TextContent, Tool
+mcp = FastMCP("confluence", host="0.0.0.0", port=8000, stateless_http=True)
 
-server = Server("confluence")
 
-TOOLS = [
-    Tool(
-        name="get_page",
-        description="Get a Confluence page by ID or title",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "page_id": {"type": "string", "description": "Page ID"},
-                "space_key": {"type": "string", "description": "Space key (used with title)"},
-                "title": {"type": "string", "description": "Page title (used with space_key)"},
-                "expand": {"type": "array", "items": {"type": "string"}, "description": "Fields to expand (e.g., body.storage, version)"},
-            },
-        },
-    ),
-    Tool(
-        name="create_page",
-        description="Create a new Confluence page",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "space_key": {"type": "string", "description": "Space key"},
-                "title": {"type": "string", "description": "Page title"},
-                "body": {"type": "string", "description": "Page content (Confluence storage format or plain text)"},
-                "parent_id": {"type": "string", "description": "Parent page ID for hierarchy"},
-                "content_format": {"type": "string", "enum": ["storage", "wiki", "plain"], "default": "storage"},
-            },
-            "required": ["space_key", "title", "body"],
-        },
-    ),
-    Tool(
-        name="update_page",
-        description="Update an existing Confluence page",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "page_id": {"type": "string", "description": "Page ID to update"},
-                "title": {"type": "string", "description": "New title (optional)"},
-                "body": {"type": "string", "description": "New content"},
-                "version_comment": {"type": "string", "description": "Version comment"},
-                "content_format": {"type": "string", "enum": ["storage", "wiki", "plain"], "default": "storage"},
-            },
-            "required": ["page_id", "body"],
-        },
-    ),
-    Tool(
-        name="delete_page",
-        description="Delete a Confluence page",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "page_id": {"type": "string", "description": "Page ID to delete"},
-            },
-            "required": ["page_id"],
-        },
-    ),
-    Tool(
-        name="search",
-        description="Search Confluence content using CQL (Confluence Query Language)",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "cql": {"type": "string", "description": "CQL query (e.g., 'type=page AND space=DEV AND text~\"auth\"')"},
-                "limit": {"type": "integer", "default": 20, "description": "Maximum results"},
-            },
-            "required": ["cql"],
-        },
-    ),
-    Tool(
-        name="get_child_pages",
-        description="Get child pages of a parent page",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "page_id": {"type": "string", "description": "Parent page ID"},
-                "limit": {"type": "integer", "default": 25},
-            },
-            "required": ["page_id"],
-        },
-    ),
-    Tool(
-        name="list_spaces",
-        description="List all Confluence spaces",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "type": {"type": "string", "enum": ["global", "personal"], "description": "Space type filter"},
-                "limit": {"type": "integer", "default": 25},
-            },
-        },
-    ),
-    Tool(
-        name="get_space",
-        description="Get details of a Confluence space",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "space_key": {"type": "string", "description": "Space key"},
-            },
-            "required": ["space_key"],
-        },
-    ),
-    Tool(
-        name="add_label",
-        description="Add a label to a Confluence page",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "page_id": {"type": "string", "description": "Page ID"},
-                "label": {"type": "string", "description": "Label to add"},
-            },
-            "required": ["page_id", "label"],
-        },
-    ),
-    Tool(
-        name="get_page_history",
-        description="Get version history of a page",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "page_id": {"type": "string", "description": "Page ID"},
-                "limit": {"type": "integer", "default": 10},
-            },
-            "required": ["page_id"],
-        },
-    ),
-    Tool(
-        name="add_comment",
-        description="Add a comment to a Confluence page",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "page_id": {"type": "string", "description": "Page ID"},
-                "body": {"type": "string", "description": "Comment content"},
-            },
-            "required": ["page_id", "body"],
-        },
-    ),
-]
-
-FAKE_RESPONSES = {
-    "get_page": json.dumps({
-        "id": "12345",
-        "title": "Architecture Overview",
-        "space": {"key": "ENG", "name": "Engineering"},
+@mcp.tool()
+async def get_page(
+    confluence_token: str,
+    page_id: str | None = None, space_key: str | None = None,
+    title: str | None = None, expand: list[str] | None = None,
+) -> str:
+    """Get a Confluence page by ID or title."""
+    # TODO: GET /rest/api/content/{page_id} or ?spaceKey=...&title=...
+    return json.dumps({
+        "id": page_id or "12345", "title": title or "Architecture Overview",
+        "space": {"key": space_key or "ENG", "name": "Engineering"},
         "version": {"number": 5, "when": "2026-03-30T14:00:00Z"},
-        "body": {"storage": {"value": "<h1>Architecture</h1><p>This document describes the system architecture...</p>"}},
-    }, indent=2),
-    "create_page": json.dumps({
-        "id": "12346",
-        "title": "New Page",
-        "space": {"key": "ENG"},
-        "_links": {"webui": "/spaces/ENG/pages/12346/New+Page"},
-    }, indent=2),
-    "update_page": json.dumps({
-        "id": "12345",
-        "title": "Architecture Overview",
-        "version": {"number": 6, "when": "2026-04-05T10:00:00Z"},
-    }, indent=2),
-    "delete_page": "Page 12345 deleted successfully.",
-    "search": json.dumps({
-        "totalSize": 3,
-        "results": [
-            {"id": "12345", "title": "Architecture Overview", "space": {"key": "ENG"}, "type": "page"},
-            {"id": "12350", "title": "API Design Guide", "space": {"key": "ENG"}, "type": "page"},
-            {"id": "12360", "title": "Auth Flow Diagram", "space": {"key": "SEC"}, "type": "page"},
-        ],
-    }, indent=2),
-    "get_child_pages": json.dumps({
-        "results": [
-            {"id": "12346", "title": "Backend Architecture"},
-            {"id": "12347", "title": "Frontend Architecture"},
-            {"id": "12348", "title": "Infrastructure"},
-        ],
-    }, indent=2),
-    "list_spaces": json.dumps([
+        "body": {"storage": {"value": "<h1>Architecture</h1><p>System architecture overview...</p>"}},
+    })
+
+
+@mcp.tool()
+async def create_page(
+    confluence_token: str, space_key: str, title: str, body: str,
+    parent_id: str | None = None, content_format: str = "storage",
+) -> str:
+    """Create a new Confluence page."""
+    # TODO: POST /rest/api/content
+    return json.dumps({"id": "12346", "title": title, "space": {"key": space_key},
+                        "_links": {"webui": f"/spaces/{space_key}/pages/12346/{title}"}})
+
+
+@mcp.tool()
+async def update_page(
+    confluence_token: str, page_id: str, body: str,
+    title: str | None = None, version_comment: str | None = None,
+    content_format: str = "storage",
+) -> str:
+    """Update an existing Confluence page."""
+    # TODO: PUT /rest/api/content/{page_id}
+    return json.dumps({"id": page_id, "title": title or "Updated Page",
+                        "version": {"number": 6, "when": "2026-04-05T10:00:00Z"}})
+
+
+@mcp.tool()
+async def delete_page(confluence_token: str, page_id: str) -> str:
+    """Delete a Confluence page."""
+    # TODO: DELETE /rest/api/content/{page_id}
+    return f"Page {page_id} deleted successfully."
+
+
+@mcp.tool()
+async def search(confluence_token: str, cql: str, limit: int = 20) -> str:
+    """Search Confluence content using CQL (Confluence Query Language)."""
+    # TODO: GET /rest/api/content/search?cql={cql}
+    return json.dumps({"totalSize": 3, "results": [
+        {"id": "12345", "title": "Architecture Overview", "space": {"key": "ENG"}, "type": "page"},
+        {"id": "12350", "title": "API Design Guide", "space": {"key": "ENG"}, "type": "page"},
+        {"id": "12360", "title": "Auth Flow Diagram", "space": {"key": "SEC"}, "type": "page"},
+    ]})
+
+
+@mcp.tool()
+async def get_child_pages(confluence_token: str, page_id: str, limit: int = 25) -> str:
+    """Get child pages of a parent page."""
+    # TODO: GET /rest/api/content/{page_id}/child/page
+    return json.dumps({"results": [
+        {"id": "12346", "title": "Backend Architecture"},
+        {"id": "12347", "title": "Frontend Architecture"},
+        {"id": "12348", "title": "Infrastructure"},
+    ]})
+
+
+@mcp.tool()
+async def list_spaces(confluence_token: str, type: str | None = None, limit: int = 25) -> str:
+    """List all Confluence spaces."""
+    # TODO: GET /rest/api/space
+    return json.dumps([
         {"key": "ENG", "name": "Engineering", "type": "global"},
         {"key": "SEC", "name": "Security", "type": "global"},
         {"key": "OPS", "name": "Operations", "type": "global"},
-    ], indent=2),
-    "get_space": json.dumps({
-        "key": "ENG",
-        "name": "Engineering",
-        "type": "global",
-        "description": "Engineering team documentation",
-        "_links": {"webui": "/spaces/ENG"},
-    }, indent=2),
-    "add_label": "Label 'architecture' added to page 12345.",
-    "get_page_history": json.dumps({
-        "results": [
-            {"number": 5, "when": "2026-03-30T14:00:00Z", "by": {"displayName": "Alice"}, "message": "Updated diagrams"},
-            {"number": 4, "when": "2026-03-28T09:00:00Z", "by": {"displayName": "Bob"}, "message": "Added API section"},
-        ],
-    }, indent=2),
-    "add_comment": "Comment added to page 12345.",
-}
-
-
-@server.list_tools()
-async def list_tools() -> list[Tool]:
-    return TOOLS
-
-
-@server.call_tool()
-async def call_tool(name: str, arguments: dict | None) -> list[TextContent]:
-    response = FAKE_RESPONSES.get(name, f"[stub] Tool '{name}' called with: {json.dumps(arguments)}")
-    return [TextContent(type="text", text=response)]
-
-
-def create_app():
-    """Create a Starlette ASGI app for Streamable HTTP transport."""
-    import json as _json
-    from starlette.applications import Starlette
-    from starlette.requests import Request
-    from starlette.responses import JSONResponse
-    from starlette.routing import Route
-
-    async def health(request: Request):
-        return JSONResponse({"status": "ok"})
-
-    async def mcp_endpoint(request: Request):
-        body = await request.json()
-        method = body.get("method", "")
-        params = body.get("params", {})
-        req_id = body.get("id")
-
-        if method == "initialize":
-            return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": {
-                "protocolVersion": "2025-03-26",
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": "confluence", "version": "0.1.0"},
-            }})
-        if method == "notifications/initialized":
-            return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": {}})
-        if method == "tools/list":
-            tools = await list_tools()
-            return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": {
-                "tools": [{"name": t.name, "description": t.description, "inputSchema": t.inputSchema} for t in tools]
-            }})
-        if method == "tools/call":
-            contents = await call_tool(params.get("name", ""), params.get("arguments", {}))
-            return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": {
-                "content": [{"type": "text", "text": c.text} for c in contents],
-                "isError": False,
-            }})
-        return JSONResponse({"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": f"Unknown method: {method}"}})
-
-    return Starlette(routes=[
-        Route("/health", health),
-        Route("/mcp", mcp_endpoint, methods=["GET", "POST"]),
     ])
 
 
+@mcp.tool()
+async def get_space(confluence_token: str, space_key: str) -> str:
+    """Get details of a Confluence space."""
+    # TODO: GET /rest/api/space/{space_key}
+    return json.dumps({"key": space_key, "name": "Engineering", "type": "global",
+                        "description": "Engineering team documentation"})
+
+
+@mcp.tool()
+async def add_label(confluence_token: str, page_id: str, label: str) -> str:
+    """Add a label to a Confluence page."""
+    # TODO: POST /rest/api/content/{page_id}/label
+    return f"Label '{label}' added to page {page_id}."
+
+
+@mcp.tool()
+async def get_page_history(confluence_token: str, page_id: str, limit: int = 10) -> str:
+    """Get version history of a page."""
+    # TODO: GET /rest/api/content/{page_id}/history
+    return json.dumps({"results": [
+        {"number": 5, "when": "2026-03-30T14:00:00Z", "by": {"displayName": "Alice"}, "message": "Updated diagrams"},
+        {"number": 4, "when": "2026-03-28T09:00:00Z", "by": {"displayName": "Bob"}, "message": "Added API section"},
+    ]})
+
+
+@mcp.tool()
+async def add_comment(confluence_token: str, page_id: str, body: str) -> str:
+    """Add a comment to a Confluence page."""
+    # TODO: POST /rest/api/content/{page_id}/child/comment
+    return f"Comment added to page {page_id}."
+
+
 if __name__ == "__main__":
-    import os
-    import uvicorn
-    port = int(os.environ.get("MCP_SERVER_PORT", "8003"))
-    uvicorn.run(create_app(), host="0.0.0.0", port=port)
+    mcp.run(transport="streamable-http")
