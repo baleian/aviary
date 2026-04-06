@@ -243,9 +243,16 @@ def _register():
             data: dict[str, Any],
             call_type: str,
         ) -> dict[str, Any]:
-            # Only intercept Anthropic backend requests
+            # Only intercept direct Anthropic backend requests.
+            # Bedrock models routed through Portkey use anthropic/ prefix
+            # but authenticate via AWS credentials, not Anthropic API keys.
             model = data.get("model", "")
             if not model.startswith("anthropic/"):
+                return data
+
+            # Skip Bedrock models — they use AWS credentials via Portkey
+            extra_headers = data.get("extra_headers") or {}
+            if extra_headers.get("x-portkey-provider") == "aws-bedrock":
                 return data
 
             # Extract user JWT from request headers.

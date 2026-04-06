@@ -33,6 +33,10 @@ Aviary is an enterprise platform where users can create, configure, and use purp
     │           │   │  │ LiteLLM Gateway │◀── Vault              │
     │           │   │  │  (LLM proxy)    │    (per-user API keys)│
     │           │   │  └────────┬────────┘                       │
+    │           │   │  ┌────────▼────────┐                       │
+    │           │   │  │ Portkey Gateway │                       │
+    │           │   │  │ (AI gateway)    │                       │
+    │           │   │  └────────┬────────┘                       │
     │           │   │           │                                 │
     │           │   │     ┌─────┴───────────────────┐            │
     │           │   │     ▼            ▼            ▼            │
@@ -92,7 +96,7 @@ Aviary is an enterprise platform where users can create, configure, and use purp
 - **Egress Proxy** — All outbound HTTP/HTTPS from agent Pods routed through a centralized proxy with per-agent allowlists (CIDR, exact domain, wildcard `*.example.com`); deny-by-default, policy changes take effect immediately without Pod restarts
 - **claude-agent-sdk Powered** — Full [Claude Code](https://docs.anthropic.com/en/docs/claude-code) harness via `ClaudeSDKClient` including tools, sub-agents, MCP servers, file I/O, and shell execution
 - **MCP Gateway** — Centralized tool management via [Model Context Protocol](https://modelcontextprotocol.io/); admin registers MCP servers, tools are auto-discovered, users browse and bind tools to agents with per-user ACL enforcement (default-deny)
-- **LiteLLM Gateway** — All LLM calls routed through [LiteLLM](https://github.com/BerriAI/litellm) OSS proxy; backend determined by model name prefix (`anthropic/`, `ollama/`, `vllm/`, `bedrock/`), natively compatible with Anthropic SDK
+- **LiteLLM + Portkey Gateway** — All LLM calls routed through [LiteLLM](https://github.com/BerriAI/litellm) and [Portkey AI Gateway](https://github.com/portkey-ai/gateway); LiteLLM handles model routing and per-user API key injection, Portkey provides guardrails, OpenTelemetry tracing, request logging, and caching
 - **Multi-Backend Inference** — Claude API, Ollama, vLLM, AWS Bedrock; add new backends via config, no code or NetworkPolicy changes required
 - **Live Config Updates** — Agent config (instruction, tools) is passed from DB on every message; edits take effect immediately without Pod restarts
 - **OIDC Auth + Team Sync** — Keycloak (dev) / Okta (prod); IdP groups auto-sync to Aviary teams on login
@@ -108,7 +112,7 @@ Aviary is an enterprise platform where users can create, configure, and use purp
 | Web UI | Next.js 15 (App Router), TypeScript, Tailwind CSS, shadcn/ui |
 | API Server | Python 3.12, FastAPI, SQLAlchemy 2.0 (async), Pydantic v2 |
 | Agent Runtime | TypeScript, Node.js 22, claude-agent-sdk, Claude Code CLI |
-| LLM Gateway | [LiteLLM](https://github.com/BerriAI/litellm) — unified LLM proxy (Anthropic, OpenAI, Bedrock, Ollama, vLLM) |
+| LLM Gateway | [LiteLLM](https://github.com/BerriAI/litellm) + [Portkey](https://github.com/portkey-ai/gateway) — unified LLM proxy with AI gateway (guardrails, tracing, caching) |
 | MCP Gateway | Python 3.12, FastAPI, [MCP SDK](https://github.com/modelcontextprotocol/python-sdk) — tool catalog, ACL, and proxy |
 | Egress Proxy | Python 3.12, asyncio — HTTP/HTTPS forward proxy with policy enforcement |
 | Database | PostgreSQL 16 |
@@ -273,8 +277,8 @@ API and admin tests covering health, agent CRUD, ACL (visibility, grants, permis
 
 ## Key Design Decisions
 
-### LiteLLM Gateway
-Session Pods never call LLM backends directly. All inference goes through a [LiteLLM](https://github.com/BerriAI/litellm) OSS proxy that routes requests based on the model name prefix (e.g., `anthropic/claude-sonnet-4-6` → Claude API, `ollama/gemma4:26b` → Ollama, `vllm/...` → vLLM). LiteLLM natively supports the Anthropic Messages API (`/v1/messages`), so claude-agent-sdk works transparently without protocol translation. This centralizes API credentials, rate limiting, and observability. New backends are added via config file (`config/litellm/config.yaml`) without code changes.
+### LiteLLM + Portkey Gateway
+Session Pods never call LLM backends directly. All inference goes through a two-layer gateway: [LiteLLM](https://github.com/BerriAI/litellm) OSS proxy routes requests based on the model name prefix (e.g., `anthropic/claude-sonnet-4-6` → Claude API, `ollama/gemma4:26b` → Ollama, `vllm/...` → vLLM), then [Portkey AI Gateway](https://github.com/portkey-ai/gateway) forwards to the actual LLM backend while providing guardrails, OpenTelemetry-based tracing, request/response logging, and caching. LiteLLM natively supports the Anthropic Messages API (`/v1/messages`), so claude-agent-sdk works transparently without protocol translation. This centralizes API credentials, rate limiting, and observability. New backends are added via config file (`config/litellm/config.yaml`) without code changes.
 
 ### MCP Gateway
 Agent tool calls are routed through a centralized [MCP](https://modelcontextprotocol.io/) Gateway that acts as a single MCP server from the claude-agent-sdk's perspective. Operators register backend MCP servers via the Admin Console, and tools are auto-discovered via the MCP protocol. Users browse the tool catalog (ACL-filtered) and bind selected tools to their agents. At runtime, the user's OIDC token is propagated from the browser through the API to the gateway, which validates permissions on every `tools/list` and `tools/call` request. The gateway proxies calls to the correct backend server, and user tokens are never forwarded to external services.
@@ -301,7 +305,7 @@ The `claude` CLI binary in PATH is a wrapper script that runs the real binary in
 | `api` | 8000 | API Server (user-facing) |
 | `admin` | 8001 | Admin Console (operator-facing, no auth) |
 | `web` | 3000 | Web UI |
-| `litellm` | 8090 | LLM gateway (LiteLLM) |
+| `litellm` | 8090 | LLM gateway (LiteLLM + Portkey) |
 | `mcp-gateway` | 8100 | MCP tool proxy, catalog, ACL |
 | `postgres` | 5432 | Database |
 | `redis` | 6379 | Cache, pub/sub, presence |
