@@ -330,7 +330,7 @@ async def user_detail(request: Request, user_id: str, db: AsyncSession = Depends
             key = key.rstrip("/")
             data = await _vault_get_key(user.external_id, key)
             if data:
-                token = data.get("token", "")
+                token = data.get("value", "")
                 masked = token[:8] + "..." + token[-4:] if len(token) > 16 else "***"
                 credentials.append({"key": key, "value": masked})
     except Exception:
