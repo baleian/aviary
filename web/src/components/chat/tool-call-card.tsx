@@ -26,6 +26,12 @@ function inputSummary(name: string, input: Record<string, unknown>): string {
   if (name === "Glob") return String(input.description ?? input.pattern ?? "").slice(0, 60);
   if (name === "WebFetch") return String(input.description ?? input.url ?? "").slice(0, 60);
   if (name === "Agent") return String(input.description ?? "").slice(0, 60);
+  // A2A tool calls: mcp__a2a__ask_{slug} — show the message being sent
+  if (name.startsWith("mcp__a2a__ask_")) {
+    const slug = name.replace("mcp__a2a__ask_", "");
+    const msg = String(input.message ?? "").slice(0, 50);
+    return `@${slug}: ${msg}`;
+  }
   if (name === "TodoWrite") {
     const todos = input.todos as Array<Record<string, string>> | undefined;
     if (todos) return `${todos.length} item${todos.length !== 1 ? "s" : ""}`;
@@ -44,7 +50,8 @@ export const ToolCallCard = memo(function ToolCallCard({ block }: ToolCallCardPr
   const isRunning = block.status === "running";
   const isError = block.is_error === true;
   const summary = inputSummary(block.name, block.input);
-  const isSubagent = block.name === "Agent";
+  const isSubagent = block.name === "Agent" || block.name.startsWith("mcp__a2a__ask_");
+  const a2aSlug = block.name.startsWith("mcp__a2a__ask_") ? block.name.replace("mcp__a2a__ask_", "") : null;
   const hasChildren = block.children && block.children.length > 0;
 
   return (
@@ -142,7 +149,7 @@ export const ToolCallCard = memo(function ToolCallCard({ block }: ToolCallCardPr
 
         {/* Name */}
         <span className="font-mono font-medium text-foreground/80">
-          {block.name}
+          {a2aSlug ? `@${a2aSlug}` : block.name}
         </span>
 
         {/* Summary */}

@@ -559,6 +559,7 @@ export default function ChatPage() {
             disabled={isInputDisabled}
             isStreaming={isStreaming}
             placeholder={!isReady ? "Waiting for agent..." : isStreaming ? "Agent is responding..." : undefined}
+            agentId={session?.agent_id}
           />
         </div>
       </div>

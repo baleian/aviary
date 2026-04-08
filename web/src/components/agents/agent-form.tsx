@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -8,6 +8,7 @@ import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { apiFetch } from "@/lib/api";
 import { ToolSelector } from "./tool-selector";
+import { MentionAutocomplete } from "@/components/shared/mention-autocomplete";
 import type { McpToolInfo } from "@/types";
 
 interface AgentFormData {
@@ -78,6 +79,7 @@ export function AgentForm({ initialData, initialToolInfo, onSubmit, submitLabel 
   const [toolSelectorOpen, setToolSelectorOpen] = useState(false);
   const [toolInfoMap, setToolInfoMap] = useState<Map<string, McpToolInfo>>(initialToolInfo ?? new Map());
   const [hoveredTool, setHoveredTool] = useState<string | null>(null);
+  const instructionRef = useRef<HTMLTextAreaElement>(null);
 
   // Fetch all models once on mount
   useEffect(() => {
@@ -228,12 +230,19 @@ export function AgentForm({ initialData, initialToolInfo, onSubmit, submitLabel 
           <Label htmlFor="instruction">System Instruction</Label>
           <Textarea
             id="instruction"
+            ref={instructionRef}
             value={data.instruction}
             onChange={(e) => updateField("instruction", e.target.value)}
-            placeholder="You are a helpful assistant that specializes in..."
+            placeholder="You are a helpful assistant that specializes in... (Type @ to reference another agent)"
             rows={8}
             className="font-mono text-xs leading-relaxed"
             required
+          />
+          <MentionAutocomplete
+            textareaRef={instructionRef}
+            value={data.instruction}
+            onChange={(v) => updateField("instruction", v)}
+            excludeSlug={data.slug}
           />
         </div>
       </section>
