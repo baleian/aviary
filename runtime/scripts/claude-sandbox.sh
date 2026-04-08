@@ -6,9 +6,9 @@
 #
 # Creates a mount namespace where:
 #   - / is the host filesystem (read-only)
-#   - /workspace/sessions/ is an empty tmpfs (hides ALL sessions)
-#   - $SESSION_WORKSPACE is bind-mounted back (only THIS session visible)
-#   - /tmp is a fresh tmpfs
+#   - $SESSION_WORKSPACE (hostPath) is bind-mounted to /home/usr (shared home)
+#   - $SESSION_CLAUDE_DIR (PVC) is bind-mounted to /home/usr/.claude (per-agent overlay)
+#   - $SESSION_TMP (hostPath) is bind-mounted to /tmp (shared /tmp)
 #   - PID namespace isolated
 #
 # If SESSION_WORKSPACE is not set (e.g. direct CLI usage), runs without sandbox.
@@ -21,21 +21,9 @@ if [ -z "${SESSION_WORKSPACE:-}" ]; then
     exec "$REAL_CLAUDE" "$@"
 fi
 
-if [ ! -d "$SESSION_WORKSPACE" ]; then
-    mkdir -p "$SESSION_WORKSPACE"
-fi
-
-# Per-session /tmp isolation: physical path /tmp/{sessionId}/, not shared tmpfs.
-# Each session gets its own /tmp that persists across messages but is invisible
-# to other sessions.
-SESSION_TMP="/tmp/$(basename "$SESSION_WORKSPACE")"
-mkdir -p "$SESSION_TMP"
-
-# Shared workspace for multi-agent collaboration within the same session.
-# Uses a hostPath volume (/workspace-shared) shared by ALL agent Pods on the node,
-# so files written by a sub-agent are immediately visible to the main agent.
-SESSION_SHARED="${SESSION_SHARED_WORKSPACE:?SESSION_SHARED_WORKSPACE must be set}"
-mkdir -p "$SESSION_SHARED"
+mkdir -p "$SESSION_WORKSPACE"
+mkdir -p "${SESSION_CLAUDE_DIR:?SESSION_CLAUDE_DIR must be set}"
+mkdir -p "${SESSION_TMP:?SESSION_TMP must be set}"
 
 # Ensure Node.js fetch() respects proxy env vars inside the sandbox.
 # NODE_OPTIONS with --require is set here (not just in pod env) to guarantee
@@ -49,10 +37,10 @@ exec bwrap \
     --ro-bind / / \
     --dev /dev \
     --proc /proc \
-    --bind "$SESSION_TMP" /tmp \
-    --tmpfs /workspace/sessions \
+    --tmpfs /workspace-shared \
     --bind "$SESSION_WORKSPACE" /home/usr \
-    --bind "$SESSION_SHARED" /home/shared \
+    --bind "$SESSION_CLAUDE_DIR" /home/usr/.claude \
+    --bind "$SESSION_TMP" /tmp \
     --unshare-pid \
     --die-with-parent \
     --setenv HOME /home/usr \

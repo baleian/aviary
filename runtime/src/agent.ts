@@ -22,7 +22,7 @@ import * as path from "node:path";
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { startA2AServer, type AccessibleAgent, type A2AServer } from "./a2a-tools.js";
 
-const WORKSPACE_ROOT = "/workspace/sessions";
+const WORKSPACE_ROOT = "/workspace";
 const SHARED_WORKSPACE_ROOT = "/workspace-shared";
 
 const LITELLM_URL =
@@ -49,12 +49,19 @@ const MODEL_TIER_KEYS = [
 // PATH is required for the subprocess to find `node` and `claude` binaries.
 const PASSTHROUGH_KEYS = ["PATH", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "NODE_OPTIONS"] as const;
 
-function sessionWorkspace(sessionId: string, agentId: string): string {
-  return path.join(WORKSPACE_ROOT, sessionId, agentId);
+/** Shared home directory — same for all agents in the session (hostPath). */
+function sessionHome(sessionId: string): string {
+  return path.join(SHARED_WORKSPACE_ROOT, sessionId);
 }
 
-function sharedWorkspace(sessionId: string): string {
-  return path.join(SHARED_WORKSPACE_ROOT, sessionId);
+/** Per-agent .claude context directory (PVC — private to this Pod). */
+function sessionClaudeDir(sessionId: string): string {
+  return path.join(WORKSPACE_ROOT, ".claude", sessionId);
+}
+
+/** Shared /tmp — same for all agents in the session (hostPath). */
+function sessionTmp(sessionId: string): string {
+  return `/tmp/${sessionId}`;
 }
 
 /** Resolve backend + model into a LiteLLM model name with provider prefix. */
@@ -114,8 +121,8 @@ function buildMcpServers(agentConfig: AgentConfig): Record<string, any> | undefi
   return Object.keys(servers).length > 0 ? servers : undefined;
 }
 
-function hasSessionHistory(workspace: string, sessionId: string): boolean {
-  const projectsDir = path.join(workspace, ".claude", "projects");
+function hasSessionHistory(claudeDir: string, sessionId: string): boolean {
+  const projectsDir = path.join(claudeDir, "projects");
   if (!fs.existsSync(projectsDir)) return false;
 
   try {
@@ -171,10 +178,12 @@ export async function* processMessage(
   agentConfig: AgentConfig,
   abortController?: AbortController,
 ): AsyncGenerator<SSEChunk> {
-  const workspace = sessionWorkspace(sessionId, agentId);
-  const shared = sharedWorkspace(sessionId);
-  fs.mkdirSync(workspace, { recursive: true });
-  fs.mkdirSync(shared, { recursive: true });
+  const home = sessionHome(sessionId);
+  const claudeDir = sessionClaudeDir(sessionId);
+  const tmpDir = sessionTmp(sessionId);
+  fs.mkdirSync(home, { recursive: true });
+  fs.mkdirSync(claudeDir, { recursive: true });
+  fs.mkdirSync(tmpDir, { recursive: true });
 
   const mc: ModelConfig = modelConfig ?? {};
   if (!mc.model || !mc.backend) {
@@ -183,7 +192,7 @@ export async function* processMessage(
   }
   const backend = mc.backend;
   const resolvedModel = resolveModelName(backend, mc.model);
-  const canResume = hasSessionHistory(workspace, sessionId);
+  const canResume = hasSessionHistory(claudeDir, sessionId);
 
   const env: Record<string, string> = {
     ANTHROPIC_BASE_URL: LITELLM_URL,
@@ -192,8 +201,9 @@ export async function* processMessage(
     ...(agentConfig.user_token
       ? { ANTHROPIC_CUSTOM_HEADERS: `X-Aviary-User-Token: ${agentConfig.user_token}` }
       : {}),
-    SESSION_WORKSPACE: workspace,
-    SESSION_SHARED_WORKSPACE: shared,
+    SESSION_WORKSPACE: home,
+    SESSION_CLAUDE_DIR: claudeDir,
+    SESSION_TMP: tmpDir,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     CLAUDE_CODE_MAX_RETRIES: "2",
     ...(mc.max_output_tokens != null
@@ -237,18 +247,15 @@ export async function* processMessage(
   }
 
   // Build system prompt — use preset with append so SDK built-in tools
-  // (like Agent) also receive the shared folder guidance.
+  // (like Agent) also receive the instruction.
   let appendPrompt = agentConfig.instruction || "";
-
-  // Shared workspace guidance (always present)
-  appendPrompt += "\n\n## Shared Workspace\nA shared directory is available at /home/shared/ for exchanging files with other agents or sub-agents in this session. Use it for large data, code, or results.";
 
   // Append sub-agent catalog (for main agents with A2A tools)
   if (a2aToolNames.length > 0) {
     const agentList = accessibleAgents
       .map((a) => `- @${a.slug}: ${a.description || a.name}`)
       .join("\n");
-    appendPrompt += `\n\n## Available Sub-Agents\nYou can delegate tasks to these agents using the corresponding ask_{slug} tool:\n${agentList}\n\nWhen calling a sub-agent, provide a clear task description. For large data exchange, write files to /home/shared/ and instruct the sub-agent to read from there.`;
+    appendPrompt += `\n\n## Available Sub-Agents\nYou can delegate tasks to these agents using the corresponding ask_{slug} tool:\n${agentList}`;
   }
 
   const systemPrompt = {

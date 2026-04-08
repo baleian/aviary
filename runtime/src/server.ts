@@ -127,16 +127,16 @@ app.delete("/sessions/:sessionId", (req, res) => {
 
 app.delete("/sessions/:sessionId/workspace", (req, res) => {
   const { sessionId } = req.params;
-  const workspace = `${WORKSPACE_ROOT}/${sessionId}/${AGENT_ID}`;
+  const claudeDir = `${WORKSPACE_ROOT}/.claude/${sessionId}`;
 
   // Also remove from manager if tracked (idempotent)
   manager.remove(sessionId, AGENT_ID, false);
 
-  if (!fs.existsSync(workspace)) {
+  if (!fs.existsSync(claudeDir)) {
     res.json({ status: "not_found", session_id: sessionId });
     return;
   }
-  fs.rmSync(workspace, { recursive: true, force: true });
+  fs.rmSync(claudeDir, { recursive: true, force: true });
   res.json({ status: "cleaned", session_id: sessionId });
 });
 

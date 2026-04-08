@@ -11,7 +11,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-export const WORKSPACE_ROOT = "/workspace/sessions";
+export const WORKSPACE_ROOT = "/workspace";
 export const SHARED_WORKSPACE_ROOT = "/workspace-shared";
 const MAX_CONCURRENT_SESSIONS = parseInt(
   process.env.MAX_CONCURRENT_SESSIONS ?? "5",
@@ -79,17 +79,21 @@ export class SessionManager {
       throw new Error(`Pod at capacity (${this.maxSessions} sessions)`);
     }
 
-    const workspace = path.join(WORKSPACE_ROOT, sessionId, agentId);
-    fs.mkdirSync(workspace, { recursive: true });
+    // Shared home directory (hostPath — visible to all agent Pods in same session)
+    const home = path.join(SHARED_WORKSPACE_ROOT, sessionId);
+    fs.mkdirSync(home, { recursive: true });
 
-    // Shared workspace for multi-agent collaboration within the same session.
-    // Uses a separate hostPath volume so all agent Pods see the same files.
-    const shared = path.join(SHARED_WORKSPACE_ROOT, sessionId);
-    fs.mkdirSync(shared, { recursive: true });
+    // Per-agent .claude context (PVC — private to this Pod)
+    const claudeDir = path.join(WORKSPACE_ROOT, ".claude", sessionId);
+    fs.mkdirSync(claudeDir, { recursive: true });
+
+    // Shared /tmp (hostPath — visible to all agent Pods, auto-cleaned)
+    const tmpDir = `/tmp/${sessionId}`;
+    fs.mkdirSync(tmpDir, { recursive: true });
 
     const entry: SessionEntry = {
       sessionId,
-      workspace,
+      workspace: home,
       createdAt: Date.now() / 1000,
       _lock: createMutex(),
     };
