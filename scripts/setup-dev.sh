@@ -77,6 +77,11 @@ docker compose exec -T k8s sh -c 'mkdir -p /workspace-shared && chown 1000:1000 
 
 # Restart platform pods to pick up freshly loaded images
 docker compose exec -T k8s kubectl rollout restart deployment -n platform 2>/dev/null || true
+# Also restart any existing agent runtime pods so they pick up the new image
+docker compose exec -T k8s sh -c \
+  'for ns in $(kubectl get ns -l aviary/managed=true -o name 2>/dev/null); do
+     kubectl rollout restart deployment -n "${ns#namespace/}" 2>/dev/null || true
+   done' 2>/dev/null || true
 echo "  Platform namespace ready."
 
 # 7. Wait for application services

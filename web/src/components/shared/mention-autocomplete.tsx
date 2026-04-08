@@ -216,7 +216,7 @@ export function MentionAutocomplete({ textareaRef, value, onChange, excludeSlug,
               @
             </div>
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium truncate">{agent.slug}</div>
+              <div className="text-sm font-medium truncate">{agent.name} <span className="text-muted-foreground/60 font-normal">@{agent.slug}</span></div>
               {agent.description && (
                 <div className="text-xs text-muted-foreground truncate">{agent.description}</div>
               )}

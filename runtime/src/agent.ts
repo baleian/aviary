@@ -236,16 +236,26 @@ export async function* processMessage(
     a2aToolNames.push(...a2aServer.toolNames);
   }
 
-  // Build system prompt
-  let systemPrompt = agentConfig.instruction || "";
+  // Build system prompt — use preset with append so SDK built-in tools
+  // (like Agent) also receive the shared folder guidance.
+  let appendPrompt = agentConfig.instruction || "";
 
-  // Append sub-agent catalog to system prompt (for main agents with A2A tools)
+  // Shared workspace guidance (always present)
+  appendPrompt += "\n\n## Shared Workspace\nA shared directory is available at /home/shared/ for exchanging files with other agents or sub-agents in this session. Use it for large data, code, or results.";
+
+  // Append sub-agent catalog (for main agents with A2A tools)
   if (a2aToolNames.length > 0) {
     const agentList = accessibleAgents
       .map((a) => `- @${a.slug}: ${a.description || a.name}`)
       .join("\n");
-    systemPrompt += `\n\n## Available Sub-Agents\nYou can delegate tasks to these agents using the corresponding ask_{slug} tool:\n${agentList}\n\nWhen calling a sub-agent, provide a clear task description. For large data exchange, write files to /home/shared/ and instruct the sub-agent to read from there.`;
+    appendPrompt += `\n\n## Available Sub-Agents\nYou can delegate tasks to these agents using the corresponding ask_{slug} tool:\n${agentList}\n\nWhen calling a sub-agent, provide a clear task description. For large data exchange, write files to /home/shared/ and instruct the sub-agent to read from there.`;
   }
+
+  const systemPrompt = {
+    type: "preset" as const,
+    preset: "claude_code" as const,
+    append: appendPrompt,
+  };
 
   // Merge allowed tools with A2A tool names
   const allowedTools = [
@@ -256,6 +266,7 @@ export async function* processMessage(
   const options: Record<string, unknown> = {
     model: resolvedModel,
     systemPrompt,
+    settingSources: ["user"],
     cwd: "/home/usr",
     pathToClaudeCodeExecutable: CLAUDE_CLI_PATH,
     permissionMode: "bypassPermissions" as const,

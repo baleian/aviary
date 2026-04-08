@@ -61,7 +61,10 @@ rebuild_runtime() {
   docker build "${BUILD_ARGS[@]}" -t aviary-runtime:latest ./runtime/
   load_k8s_image "aviary-runtime:latest"
   echo -e "${CYAN}Rolling restart runtime pods...${NC}"
-  docker compose exec -T k8s kubectl rollout restart deployment -l app=aviary-agent -A 2>/dev/null || true
+  docker compose exec -T k8s sh -c \
+    'for ns in $(kubectl get ns -l aviary/managed=true -o name 2>/dev/null); do
+       kubectl rollout restart deployment -n "${ns#namespace/}" 2>/dev/null || true
+     done' 2>/dev/null || true
 }
 
 rebuild_agent_supervisor() {
