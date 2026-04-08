@@ -18,8 +18,7 @@ const SUB_AGENT_PREFIX = `[SUB-AGENT MODE]
 You are being invoked as a sub-agent by another agent to perform a specific task.
 Guidelines:
 - Focus exclusively on the task described in the message below.
-- For large outputs (data, code, detailed results), write files to /tmp/ and return a concise summary with file paths.
-- The calling agent shares the same /home/usr/ and /tmp/ directories with you.
+- Your /workspace directory is shared with the calling agent. Write output files there if needed and return a summary with file paths.
 - Keep your response focused and actionable.
 
 ---

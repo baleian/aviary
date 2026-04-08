@@ -274,7 +274,7 @@ export async function* processMessage(
     model: resolvedModel,
     systemPrompt,
     settingSources: ["user"],
-    cwd: "/home/usr",
+    cwd: "/workspace",
     pathToClaudeCodeExecutable: CLAUDE_CLI_PATH,
     permissionMode: "bypassPermissions" as const,
     allowedTools: allowedTools.length > 0 ? allowedTools : undefined,
