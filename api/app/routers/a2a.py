@@ -149,10 +149,9 @@ async def a2a_message(
                         # Publish and persist tool_use/tool_result only (not text/thinking).
                         if chunk_type in ("tool_use", "tool_result"):
                             await redis_service.publish_message(session_id, tagged)
-                            if chunk_type == "tool_use":
-                                await redis_service.append_a2a_event(
-                                    session_id, parent_tool_use_id, tagged
-                                )
+                            await redis_service.append_a2a_event(
+                                session_id, parent_tool_use_id, tagged
+                            )
 
                         # Forward SSE to the A2A tool caller
                         yield f"data: {json.dumps(chunk_data)}\n\n"

@@ -312,9 +312,11 @@ async def _run_stream(
                 if tr.get("is_error"):
                     block["is_error"] = True
 
-        # Fetch sub-agent tool_use events for A2A tool calls and insert as flat blocks.
-        # These were accumulated by the A2A endpoint during streaming.
+        # Fetch sub-agent tool_use/tool_result events for A2A tool calls.
+        # Normalize SSE format to blocks_meta format, then merge results
+        # into their matching tool_call blocks.
         a2a_extra_blocks: list[dict] = []
+        a2a_results: dict[str, dict] = {}  # tool_use_id → {content, is_error}
         for block in blocks_meta:
             if (
                 block.get("type") == "tool_call"
@@ -323,10 +325,33 @@ async def _run_stream(
                 tool_use_id = block.get("tool_use_id")
                 if tool_use_id:
                     events = await redis_service.get_a2a_events(session_id, tool_use_id)
-                    a2a_extra_blocks.extend(events)
+                    for evt in events:
+                        if evt.get("type") == "tool_use":
+                            a2a_extra_blocks.append({
+                                "type": "tool_call",
+                                "name": evt.get("name"),
+                                "input": evt.get("input", {}),
+                                "tool_use_id": evt.get("tool_use_id"),
+                                "parent_tool_use_id": evt.get("parent_tool_use_id"),
+                            })
+                        elif evt.get("type") == "tool_result":
+                            tid = evt.get("tool_use_id")
+                            if tid:
+                                a2a_results[tid] = {
+                                    "content": evt.get("content", ""),
+                                    "is_error": evt.get("is_error", False),
+                                }
                     await redis_service.clear_a2a_events(session_id, tool_use_id)
         if a2a_extra_blocks:
             blocks_meta.extend(a2a_extra_blocks)
+            # Attach results to the sub-agent tool_call blocks
+            for block in a2a_extra_blocks:
+                tid = block.get("tool_use_id")
+                if tid and tid in a2a_results:
+                    tr = a2a_results[tid]
+                    block["result"] = tr["content"]
+                    if tr.get("is_error"):
+                        block["is_error"] = True
 
         # Save completed response to DB (with ordered blocks for UI replay)
         meta = {"blocks": blocks_meta} if blocks_meta else None
