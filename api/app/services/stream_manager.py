@@ -231,6 +231,7 @@ async def _run_stream(
                             ),
                             "policy": agent_policy,
                             "user_token": user_token,
+                            "user_external_id": user_external_id,
                             **({"credentials": credentials} if credentials else {}),
                             **({"accessible_agents": accessible_agents} if accessible_agents else {}),
                         },

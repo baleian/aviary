@@ -51,10 +51,3 @@ async def get_current_user(
         ) from e
 
     return await _upsert_user(db, claims)
-
-
-async def get_raw_token(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-) -> str:
-    """Return the raw Bearer token string for forwarding to downstream services."""
-    return credentials.credentials

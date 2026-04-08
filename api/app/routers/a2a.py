@@ -1,21 +1,25 @@
 """Agent-to-Agent (A2A) HTTP endpoint.
 
 Called by runtime A2A tools to invoke sub-agents through the normal API flow.
-Streams the sub-agent's response as SSE while simultaneously publishing events
-to the parent session's Redis pub/sub channel (tagged with parent_tool_use_id)
-so the frontend can render sub-agent work inline under the calling tool card.
+Uses internal API key authentication (not user JWT) since the runtime is a
+trusted internal service and user tokens may expire during long sessions.
+
+Streams the sub-agent's response as SSE while simultaneously publishing
+tool_use/tool_result events to the parent session's Redis pub/sub channel
+(tagged with parent_tool_use_id) for frontend inline rendering.
 """
 
 import json
 import logging
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import get_current_user, get_raw_token
+from app.config import settings
 from app.db.models import User
 from app.db.session import get_db
 from app.services import acl_service, agent_service, agent_supervisor, redis_service
@@ -30,22 +34,37 @@ class A2AMessageRequest(BaseModel):
     content: str
     session_id: str
     parent_tool_use_id: str
+    user_external_id: str
+
+
+def _verify_internal_key(x_internal_key: str = Header(..., alias="X-Internal-Key")) -> str:
+    """Verify the internal API key for service-to-service calls."""
+    if x_internal_key != settings.internal_api_key:
+        raise HTTPException(status_code=401, detail="Invalid internal API key")
+    return x_internal_key
 
 
 @router.post("/{agent_slug}/message")
 async def a2a_message(
     agent_slug: str,
     body: A2AMessageRequest,
-    user: User = Depends(get_current_user),
-    token: str = Depends(get_raw_token),
+    _key: str = Depends(_verify_internal_key),
     db: AsyncSession = Depends(get_db),
 ):
     """Send a message to a sub-agent and stream the response.
 
-    Dual-streams: SSE response to the caller (A2A tool) AND Redis pub/sub
-    to the parent session channel for frontend real-time rendering.
+    Authenticated via internal API key (not user JWT) since runtime is a
+    trusted service and user tokens expire during long sessions.
     """
-    # 1. Resolve agent by slug + ACL check
+    # 1. Resolve user by external_id
+    result = await db.execute(
+        select(User).where(User.external_id == body.user_external_id)
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    # 2. Resolve agent by slug + ACL check
     agent = await agent_service.get_agent_by_slug(db, agent_slug)
     if not agent or agent.status != "active":
         raise HTTPException(status_code=404, detail=f"Agent '{agent_slug}' not found")
@@ -59,7 +78,7 @@ async def a2a_message(
     session_id = body.session_id
     parent_tool_use_id = body.parent_tool_use_id
 
-    # 2. Ensure sub-agent is running
+    # 3. Ensure sub-agent is running
     try:
         await agent_supervisor.ensure_agent_running(
             agent_id=agent_id,
@@ -79,14 +98,14 @@ async def a2a_message(
         logger.warning("Failed to ensure sub-agent running: %s", e, exc_info=True)
         raise HTTPException(status_code=503, detail="Failed to start sub-agent") from e
 
-    # 3. Fetch credentials and build config
+    # 4. Fetch credentials and build config
     credentials = await _fetch_user_credentials(user.external_id)
     stream_url = agent_supervisor.get_stream_url(agent_id, session_id)
 
     if not stream_url:
         raise HTTPException(status_code=503, detail="Sub-agent stream URL not available")
 
-    # 4. Stream sub-agent response — dual output
+    # 5. Stream sub-agent response — dual output
     async def generate():
         try:
             async with httpx.AsyncClient() as client:
@@ -101,10 +120,9 @@ async def a2a_message(
                             "instruction": agent.instruction,
                             "tools": agent.tools,
                             "mcp_servers": _build_mcp_config(
-                                agent_id, token, agent.mcp_servers or []
+                                agent_id, "", agent.mcp_servers or []
                             ),
                             "policy": agent.policy,
-                            "user_token": token,
                             **({"credentials": credentials} if credentials else {}),
                             "is_sub_agent": True,
                         },
@@ -128,13 +146,13 @@ async def a2a_message(
                         # Tag with parent_tool_use_id for frontend scoping
                         tagged = {**chunk_data, "parent_tool_use_id": parent_tool_use_id}
 
-                        # Publish and persist tool_use + tool_result (not text/thinking).
-                        # Shows which tools the sub-agent called and their results.
+                        # Publish and persist tool_use/tool_result only (not text/thinking).
                         if chunk_type in ("tool_use", "tool_result"):
                             await redis_service.publish_message(session_id, tagged)
-                            await redis_service.append_a2a_event(
-                                session_id, parent_tool_use_id, tagged
-                            )
+                            if chunk_type == "tool_use":
+                                await redis_service.append_a2a_event(
+                                    session_id, parent_tool_use_id, tagged
+                                )
 
                         # Forward SSE to the A2A tool caller
                         yield f"data: {json.dumps(chunk_data)}\n\n"

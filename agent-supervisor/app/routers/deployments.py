@@ -344,6 +344,7 @@ async def _create_deployment(namespace: str, body: EnsureDeploymentRequest) -> N
                                     {"name": "NO_PROXY", "value": _NO_PROXY},
                                     {"name": "NODE_OPTIONS", "value": _NODE_OPTIONS},
                                     {"name": "AVIARY_API_URL", "value": "http://host.k8s.internal:8000/api"},
+                                    {"name": "AVIARY_INTERNAL_API_KEY", "value": "sk-aviary-internal"},
                                 ],
                                 "volumeMounts": [
                                     {"name": "agent-workspace", "mountPath": "/workspace"},

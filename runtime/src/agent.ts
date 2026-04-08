@@ -76,6 +76,7 @@ interface AgentConfig {
   policy?: Record<string, unknown>;
   mcp_servers?: Record<string, unknown>;
   user_token?: string;
+  user_external_id?: string;
   credentials?: Record<string, string>;
   accessible_agents?: AccessibleAgent[];
   is_sub_agent?: boolean;
@@ -226,11 +227,10 @@ export async function* processMessage(
   let a2aServer: A2AServer | null = null;
   const a2aToolNames: string[] = [];
 
-  if (accessibleAgents.length > 0 && !isSubAgent && agentConfig.user_token) {
+  if (accessibleAgents.length > 0 && !isSubAgent && agentConfig.user_external_id) {
     a2aServer = await startA2AServer(accessibleAgents, {
       sessionId,
-      userToken: agentConfig.user_token,
-      credentials: agentConfig.credentials,
+      userExternalId: agentConfig.user_external_id,
     });
     mcpServers["a2a"] = { type: "http", url: a2aServer.url };
     a2aToolNames.push(...a2aServer.toolNames);

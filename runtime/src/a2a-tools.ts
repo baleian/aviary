@@ -11,6 +11,7 @@ import * as http from "node:http";
 import * as crypto from "node:crypto";
 
 const API_URL = process.env.AVIARY_API_URL || "";
+const INTERNAL_API_KEY = process.env.AVIARY_INTERNAL_API_KEY || "sk-aviary-internal";
 const A2A_TIMEOUT = parseInt(process.env.A2A_CALL_TIMEOUT_SECONDS ?? "120", 10) * 1000;
 
 const SUB_AGENT_PREFIX = `[SUB-AGENT MODE]
@@ -33,8 +34,7 @@ export interface AccessibleAgent {
 
 export interface A2AContext {
   sessionId: string;
-  userToken: string;
-  credentials?: Record<string, string>;
+  userExternalId: string;
 }
 
 /**
@@ -57,6 +57,7 @@ async function callSubAgent(
     content: message,
     session_id: ctx.sessionId,
     parent_tool_use_id: parentToolUseId,
+    user_external_id: ctx.userExternalId,
   };
 
   const controller = new AbortController();
@@ -67,7 +68,7 @@ async function callSubAgent(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${ctx.userToken}`,
+        "X-Internal-Key": INTERNAL_API_KEY,
       },
       body: JSON.stringify(body),
       signal: controller.signal,
