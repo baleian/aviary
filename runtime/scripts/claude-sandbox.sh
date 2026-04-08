@@ -31,6 +31,12 @@ fi
 SESSION_TMP="/tmp/$(basename "$SESSION_WORKSPACE")"
 mkdir -p "$SESSION_TMP"
 
+# Shared workspace for multi-agent collaboration within the same session.
+# Uses a hostPath volume (/workspace-shared) shared by ALL agent Pods on the node,
+# so files written by a sub-agent are immediately visible to the main agent.
+SESSION_SHARED="${SESSION_SHARED_WORKSPACE:?SESSION_SHARED_WORKSPACE must be set}"
+mkdir -p "$SESSION_SHARED"
+
 # Ensure Node.js fetch() respects proxy env vars inside the sandbox.
 # NODE_OPTIONS with --require is set here (not just in pod env) to guarantee
 # it reaches the CLI process regardless of how the SDK passes environment.
@@ -46,6 +52,7 @@ exec bwrap \
     --bind "$SESSION_TMP" /tmp \
     --tmpfs /workspace/sessions \
     --bind "$SESSION_WORKSPACE" /home/usr \
+    --bind "$SESSION_SHARED" /home/shared \
     --unshare-pid \
     --die-with-parent \
     --setenv HOME /home/usr \

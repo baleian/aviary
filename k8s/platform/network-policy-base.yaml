@@ -20,7 +20,7 @@ data:
       },
       {
         "to": [{"namespaceSelector": {"matchLabels": {"aviary/namespace": "platform"}}}],
-        "ports": [{"port": 8080, "protocol": "TCP"}]
+        "ports": [{"port": 8080, "protocol": "TCP"}, {"port": 9000, "protocol": "TCP"}]
       },
       {
         "to": [{"ipBlock": {"cidr": "${HOST_GATEWAY_IP}/32"}}],

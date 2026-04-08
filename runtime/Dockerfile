@@ -55,9 +55,10 @@ RUN CLAUDE_BIN=$(which claude-real) && \
     cp /app/scripts/claude-sandbox.sh "$(dirname "$CLAUDE_BIN")/claude" && \
     chmod +x "$(dirname "$CLAUDE_BIN")/claude"
 
-# Create /home/usr mount point for bwrap sandbox.
-# bwrap bind-mounts the session workspace here so HOME=/home/usr inside the sandbox.
-RUN mkdir -p /home/usr
+# Create mount points for bwrap sandbox.
+# /home/usr — agent's own workspace (bind-mounted from session workspace)
+# /home/shared — shared workspace for multi-agent collaboration within a session
+RUN mkdir -p /home/usr /home/shared
 
 # Global git config — available inside bwrap via --ro-bind / /
 RUN git config --system user.name "aviary" \

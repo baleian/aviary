@@ -9,7 +9,7 @@
 
 import * as fs from "node:fs";
 import express from "express";
-import { SessionManager, WORKSPACE_ROOT } from "./session-manager.js";
+import { SessionManager, WORKSPACE_ROOT, SHARED_WORKSPACE_ROOT } from "./session-manager.js";
 import { healthRouter, setManager, setReady } from "./health.js";
 import { processMessage } from "./agent.js";
 
@@ -18,12 +18,14 @@ app.use(express.json());
 app.use(healthRouter);
 
 const manager = new SessionManager();
+const AGENT_ID = process.env.AGENT_ID || "default";
 
 // Track active AbortControllers per session for cancellation support
 const activeAbortControllers = new Map<string, AbortController>();
 
 // Startup
 fs.mkdirSync(WORKSPACE_ROOT, { recursive: true });
+fs.mkdirSync(SHARED_WORKSPACE_ROOT, { recursive: true });
 setManager(manager);
 setReady(true);
 
@@ -44,7 +46,7 @@ app.post("/message", async (req, res) => {
 
   let entry;
   try {
-    entry = manager.getOrCreate(body.session_id);
+    entry = manager.getOrCreate(body.session_id, AGENT_ID);
   } catch (e: any) {
     res.status(503).json({ error: e.message });
     return;
@@ -72,6 +74,7 @@ app.post("/message", async (req, res) => {
   try {
     for await (const chunk of processMessage(
       body.session_id,
+      AGENT_ID,
       body.content,
       body.model_config_data as any,
       body.agent_config as any,
@@ -85,7 +88,7 @@ app.post("/message", async (req, res) => {
     release();
     // Release slot immediately — PVC files are preserved for resume.
     // Next message will re-acquire a slot via getOrCreate().
-    manager.remove(body.session_id, false);
+    manager.remove(body.session_id, AGENT_ID, false);
   }
 
   if (!res.writableEnded) {
@@ -114,7 +117,7 @@ app.get("/sessions", (_req, res) => {
 });
 
 app.delete("/sessions/:sessionId", (req, res) => {
-  const removed = manager.remove(req.params.sessionId, true);
+  const removed = manager.remove(req.params.sessionId, AGENT_ID, true);
   if (!removed) {
     res.status(404).json({ error: "session not found" });
     return;
@@ -124,10 +127,10 @@ app.delete("/sessions/:sessionId", (req, res) => {
 
 app.delete("/sessions/:sessionId/workspace", (req, res) => {
   const { sessionId } = req.params;
-  const workspace = `${WORKSPACE_ROOT}/${sessionId}`;
+  const workspace = `${WORKSPACE_ROOT}/${sessionId}/${AGENT_ID}`;
 
   // Also remove from manager if tracked (idempotent)
-  manager.remove(sessionId, false);
+  manager.remove(sessionId, AGENT_ID, false);
 
   if (!fs.existsSync(workspace)) {
     res.json({ status: "not_found", session_id: sessionId });
