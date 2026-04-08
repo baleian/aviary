@@ -74,6 +74,7 @@ async def start_stream(
     content: str,
     user_token: str = "",
     user_external_id: str = "",
+    accessible_agents: list[dict] | None = None,
 ) -> None:
     """Launch a background task that streams the agent response."""
     # Cancel any existing stream for this session
@@ -91,6 +92,7 @@ async def start_stream(
             agent_model_config, agent_instruction,
             agent_tools, agent_mcp_servers, agent_policy,
             content, user_token, user_external_id,
+            accessible_agents=accessible_agents,
         )
     )
     _active_streams[session_id] = task
@@ -106,7 +108,9 @@ def is_streaming(session_id: str) -> bool:
     return task is not None and not task.done()
 
 
-async def cancel_stream(session_id: str, agent_id: str | None = None) -> bool:
+async def cancel_stream(
+    session_id: str, agent_id: str | None = None, user_token: str = ""
+) -> bool:
     """Cancel an active stream and abort the agent's session."""
     task = _active_streams.get(session_id)
     if not task or task.done():
@@ -114,7 +118,7 @@ async def cancel_stream(session_id: str, agent_id: str | None = None) -> bool:
 
     # 1. Send abort request to the agent via supervisor
     if agent_id:
-        await agent_supervisor.abort_session(agent_id, session_id)
+        await agent_supervisor.abort_session(agent_id, session_id, user_token=user_token)
 
     # 2. Cancel the asyncio background task
     task.cancel()
@@ -159,6 +163,7 @@ async def _run_stream(
     content: str,
     user_token: str = "",
     user_external_id: str = "",
+    accessible_agents: list[dict] | None = None,
 ) -> None:
     """Execute the agent response stream as a background task."""
     session_uuid = uuid.UUID(session_id)
@@ -179,8 +184,11 @@ async def _run_stream(
                 "tools": agent_tools,
                 "mcp_servers": agent_mcp_servers,
             },
+            user_token=user_token,
         )
-        ready = await agent_supervisor.wait_for_agent_ready(agent_id, timeout=90)
+        ready = await agent_supervisor.wait_for_agent_ready(
+            agent_id, timeout=90, user_token=user_token
+        )
         if not ready:
             error_event = {"type": "error", "message": "Agent did not become ready in time"}
             await redis_service.publish_message(session_id, error_event)
@@ -229,6 +237,7 @@ async def _run_stream(
                             "policy": agent_policy,
                             "user_token": user_token,
                             **({"credentials": credentials} if credentials else {}),
+                            **({"accessible_agents": accessible_agents} if accessible_agents else {}),
                         },
                     },
                     timeout=300,

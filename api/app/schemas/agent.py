@@ -87,3 +87,16 @@ class AgentResponse(BaseModel):
 class AgentListResponse(BaseModel):
     items: list[AgentResponse]
     total: int
+
+
+class AccessibleAgent(BaseModel):
+    """Agent config passed to runtime for A2A tool construction."""
+
+    slug: str
+    agent_id: str
+    name: str
+    description: str | None = None
+    instruction: str
+    model_config_data: dict
+    tools: list[str]
+    mcp_servers: list

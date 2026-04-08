@@ -20,8 +20,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import { startA2AServer, type AccessibleAgent, type A2AServer } from "./a2a-tools.js";
 
 const WORKSPACE_ROOT = "/workspace/sessions";
+const SHARED_WORKSPACE_ROOT = "/workspace-shared";
 
 const LITELLM_URL =
   process.env.INFERENCE_ROUTER_URL ??
@@ -47,8 +49,12 @@ const MODEL_TIER_KEYS = [
 // PATH is required for the subprocess to find `node` and `claude` binaries.
 const PASSTHROUGH_KEYS = ["PATH", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "NODE_OPTIONS"] as const;
 
-function sessionWorkspace(sessionId: string): string {
-  return path.join(WORKSPACE_ROOT, sessionId);
+function sessionWorkspace(sessionId: string, agentId: string): string {
+  return path.join(WORKSPACE_ROOT, sessionId, agentId);
+}
+
+function sharedWorkspace(sessionId: string): string {
+  return path.join(SHARED_WORKSPACE_ROOT, sessionId);
 }
 
 /** Resolve backend + model into a LiteLLM model name with provider prefix. */
@@ -71,6 +77,8 @@ interface AgentConfig {
   mcp_servers?: Record<string, unknown>;
   user_token?: string;
   credentials?: Record<string, string>;
+  accessible_agents?: AccessibleAgent[];
+  is_sub_agent?: boolean;
 }
 
 interface ModelConfig {
@@ -156,13 +164,16 @@ export interface SSEChunk {
  */
 export async function* processMessage(
   sessionId: string,
+  agentId: string,
   content: string,
   modelConfig: ModelConfig | null | undefined,
   agentConfig: AgentConfig,
   abortController?: AbortController,
 ): AsyncGenerator<SSEChunk> {
-  const workspace = sessionWorkspace(sessionId);
+  const workspace = sessionWorkspace(sessionId, agentId);
+  const shared = sharedWorkspace(sessionId);
   fs.mkdirSync(workspace, { recursive: true });
+  fs.mkdirSync(shared, { recursive: true });
 
   const mc: ModelConfig = modelConfig ?? {};
   if (!mc.model || !mc.backend) {
@@ -181,6 +192,7 @@ export async function* processMessage(
       ? { ANTHROPIC_CUSTOM_HEADERS: `X-Aviary-User-Token: ${agentConfig.user_token}` }
       : {}),
     SESSION_WORKSPACE: workspace,
+    SESSION_SHARED_WORKSPACE: shared,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     CLAUDE_CODE_MAX_RETRIES: "2",
     ...(mc.max_output_tokens != null
@@ -204,15 +216,52 @@ export async function* processMessage(
       : {}),
   };
 
+  // Build MCP servers (gateway + legacy)
+  const mcpServers: Record<string, any> = buildMcpServers(agentConfig) ?? {};
+
+  // A2A tools: start a local HTTP MCP server if accessible_agents is present and NOT a sub-agent.
+  // Uses HTTP type (not SDK in-process type) so the CLI can reconnect on session resume.
+  const accessibleAgents = agentConfig.accessible_agents ?? [];
+  const isSubAgent = agentConfig.is_sub_agent === true;
+  let a2aServer: A2AServer | null = null;
+  const a2aToolNames: string[] = [];
+
+  if (accessibleAgents.length > 0 && !isSubAgent && agentConfig.user_token) {
+    a2aServer = await startA2AServer(accessibleAgents, {
+      sessionId,
+      userToken: agentConfig.user_token,
+      credentials: agentConfig.credentials,
+    });
+    mcpServers["a2a"] = { type: "http", url: a2aServer.url };
+    a2aToolNames.push(...a2aServer.toolNames);
+  }
+
+  // Build system prompt
+  let systemPrompt = agentConfig.instruction || "";
+
+  // Append sub-agent catalog to system prompt (for main agents with A2A tools)
+  if (a2aToolNames.length > 0) {
+    const agentList = accessibleAgents
+      .map((a) => `- @${a.slug}: ${a.description || a.name}`)
+      .join("\n");
+    systemPrompt += `\n\n## Available Sub-Agents\nYou can delegate tasks to these agents using the corresponding ask_{slug} tool:\n${agentList}\n\nWhen calling a sub-agent, provide a clear task description. For large data exchange, write files to /home/shared/ and instruct the sub-agent to read from there.`;
+  }
+
+  // Merge allowed tools with A2A tool names
+  const allowedTools = [
+    ...(agentConfig.tools ?? []),
+    ...a2aToolNames,
+  ];
+
   const options = {
     model: resolvedModel,
-    systemPrompt: agentConfig.instruction,
+    systemPrompt,
     cwd: "/home/usr",
     pathToClaudeCodeExecutable: CLAUDE_CLI_PATH,
     permissionMode: "bypassPermissions" as const,
-    allowedTools: agentConfig.tools,
+    allowedTools: allowedTools.length > 0 ? allowedTools : undefined,
     disallowedTools: ["WebSearch"],
-    mcpServers: buildMcpServers(agentConfig),
+    mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
     env,
     // TS SDK doesn't expose sessionId as an option, but CLI supports --session-id.
     // Use extraArgs to inject it on first message, resume on subsequent messages.
@@ -221,6 +270,16 @@ export async function* processMessage(
     ...(canResume ? { resume: sessionId } : {}),
     ...(abortController ? { abortController } : {}),
   };
+
+  // Use async generator for prompt — required by SDK when using custom MCP tools
+  async function* promptGenerator() {
+    yield {
+      type: "user" as const,
+      message: { role: "user" as const, content },
+      parent_tool_use_id: null,
+      session_id: sessionId,
+    };
+  }
 
   let fullResponse = "";
   // Track cumulative lengths to extract deltas from partial snapshots.
@@ -235,7 +294,7 @@ export async function* processMessage(
   let hasStreamDeltas = false;
 
   try {
-    for await (const message of query({ prompt: content, options })) {
+    for await (const message of query({ prompt: promptGenerator(), options })) {
       const msg = message as SDKMessage & Record<string, any>;
 
       if (msg.type === "stream_event") {
@@ -352,5 +411,8 @@ export async function* processMessage(
     }
     const errorMsg = `[${resolvedModel}] Error: ${e}`;
     yield { type: "chunk", content: errorMsg };
+  } finally {
+    // Shut down the A2A HTTP server after the message is fully processed
+    a2aServer?.close();
   }
 }
