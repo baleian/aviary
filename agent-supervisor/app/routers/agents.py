@@ -2,19 +2,14 @@
 
 Used by the API server which doesn't know about K8s internals.
 Translates agent_id/session_id into namespace/deployment operations.
-
-All endpoints require a valid user token with appropriate permissions.
-Token is extracted from request body (agent_config.user_token) or
-Authorization header.
 """
 
 import logging
 
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.auth import enforce_agent_permission
 from app.scaling import touch_activity
 from app.k8s import _get_k8s_client, k8s_apply
 from app.routers.namespaces import CreateNamespaceRequest, create_namespace
@@ -35,20 +30,6 @@ def _namespace(agent_id: str) -> str:
     return f"agent-{agent_id}"
 
 
-def _extract_token(request: Request, body: dict | None = None) -> str | None:
-    """Extract user token from Authorization header or request body."""
-    # Try Authorization header first
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        return auth_header[7:]
-    # Fall back to agent_config.user_token in body
-    if body:
-        agent_config = body.get("agent_config", {})
-        if isinstance(agent_config, dict):
-            return agent_config.get("user_token")
-    return None
-
-
 # ── Agent lifecycle ──────────────────────────────────────────
 
 
@@ -57,14 +38,11 @@ class RegisterAgentRequest(BaseModel):
     instruction: str = ""
     tools: list = []
     mcp_servers: list = []
-    user_token: str | None = None
 
 
 @router.post("/agents/{agent_id}/register")
-async def register_agent(agent_id: str, body: RegisterAgentRequest, request: Request):
+async def register_agent(agent_id: str, body: RegisterAgentRequest):
     """Register a new agent. Provisions resources with secure defaults (all network blocked)."""
-    token = body.user_token or _extract_token(request)
-    await enforce_agent_permission(token, agent_id)
     await touch_activity(agent_id)
     result = await create_namespace(CreateNamespaceRequest(
         agent_id=agent_id,
@@ -78,11 +56,8 @@ async def register_agent(agent_id: str, body: RegisterAgentRequest, request: Req
 
 
 @router.delete("/agents/{agent_id}")
-async def unregister_agent(agent_id: str, request: Request):
+async def unregister_agent(agent_id: str):
     """Remove all resources for an agent."""
-    token = _extract_token(request)
-    await enforce_agent_permission(token, agent_id)
-
     ns = _namespace(agent_id)
 
     # Delete deployment resources first
@@ -114,14 +89,11 @@ class RunAgentRequest(BaseModel):
     instruction: str = ""
     tools: list = []
     mcp_servers: list = []
-    user_token: str | None = None
 
 
 @router.post("/agents/{agent_id}/run")
-async def run_agent(agent_id: str, body: RunAgentRequest, request: Request):
+async def run_agent(agent_id: str, body: RunAgentRequest):
     """Ensure agent is running. Lazily creates resources with secure defaults if needed."""
-    token = body.user_token or _extract_token(request)
-    await enforce_agent_permission(token, agent_id)
     await touch_activity(agent_id)
     ns = _namespace(agent_id)
     result = await ensure_deployment(ns, EnsureDeploymentRequest(
@@ -138,10 +110,8 @@ async def run_agent(agent_id: str, body: RunAgentRequest, request: Request):
 
 
 @router.get("/agents/{agent_id}/ready")
-async def check_agent_ready(agent_id: str, request: Request):
+async def check_agent_ready(agent_id: str):
     """Check if agent has ready instances."""
-    token = _extract_token(request)
-    await enforce_agent_permission(token, agent_id)
     ns = _namespace(agent_id)
     status = await get_deployment_status(ns)
     ready = (status.get("ready_replicas") or 0) >= 1
@@ -149,11 +119,8 @@ async def check_agent_ready(agent_id: str, request: Request):
 
 
 @router.get("/agents/{agent_id}/wait")
-async def wait_agent_ready(agent_id: str, timeout: int = 90, request: Request = None):
+async def wait_agent_ready(agent_id: str, timeout: int = 90):
     """Block until agent is ready or timeout."""
-    if request:
-        token = _extract_token(request)
-        await enforce_agent_permission(token, agent_id)
     ns = _namespace(agent_id)
     return await wait_for_ready(ns, timeout)
 
@@ -164,12 +131,9 @@ async def wait_agent_ready(agent_id: str, timeout: int = 90, request: Request = 
 @router.post("/agents/{agent_id}/sessions/{session_id}/message")
 async def proxy_session_message(agent_id: str, session_id: str, request: Request):
     """Transparent SSE proxy to agent runtime for a session message."""
-    body = await request.json()
-    token = _extract_token(request, body)
-    await enforce_agent_permission(token, agent_id)
     await touch_activity(agent_id)
-
     ns = _namespace(agent_id)
+    body = await request.json()
     proxy_path = (
         f"/api/v1/namespaces/{ns}/services/agent-runtime-svc:3000/proxy/message"
     )
@@ -202,11 +166,8 @@ async def proxy_session_message(agent_id: str, session_id: str, request: Request
 
 
 @router.post("/agents/{agent_id}/sessions/{session_id}/abort")
-async def abort_session(agent_id: str, session_id: str, request: Request):
+async def abort_session(agent_id: str, session_id: str):
     """Abort an active session stream."""
-    token = _extract_token(request)
-    await enforce_agent_permission(token, agent_id)
-
     ns = _namespace(agent_id)
     proxy_path = (
         f"/api/v1/namespaces/{ns}/services/agent-runtime-svc:3000/proxy/abort/{session_id}"
@@ -221,10 +182,7 @@ async def abort_session(agent_id: str, session_id: str, request: Request):
 
 
 @router.delete("/agents/{agent_id}/sessions/{session_id}")
-async def cleanup_session(agent_id: str, session_id: str, request: Request):
+async def cleanup_session(agent_id: str, session_id: str):
     """Clean up session workspace. Best-effort."""
-    token = _extract_token(request)
-    await enforce_agent_permission(token, agent_id)
-
     ns = _namespace(agent_id)
     return await cleanup_session_workspace(ns, session_id)

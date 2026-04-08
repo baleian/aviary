@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSock
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import get_current_user, get_raw_token
+from app.auth.dependencies import get_current_user
 from app.auth.oidc import validate_token
 from app.services.mention_service import extract_mentions, resolve_mentioned_agents
 from app.db.models import Agent, Session as SessionModel, User
@@ -115,7 +115,6 @@ async def get_session(
 async def delete_session(
     session_id: uuid.UUID,
     user: User = Depends(get_current_user),
-    token: str = Depends(get_raw_token),
     db: AsyncSession = Depends(get_db),
 ):
     session = await session_service.get_session(db, session_id)
@@ -123,7 +122,7 @@ async def delete_session(
         raise HTTPException(status_code=404, detail="Session not found")
     if session.created_by != user.id:
         raise HTTPException(status_code=403, detail="Only session creator can delete")
-    await session_service.delete_session(db, session, user_token=token)
+    await session_service.delete_session(db, session)
     return None
 
 
@@ -219,7 +218,7 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
             # Ensure agent is running (supervisor handles all provisioning)
             await websocket.send_json({"type": "status", "status": "spawning"})
             try:
-                await session_service.ensure_agent_ready(db, agent, user_token=token)
+                await session_service.ensure_agent_ready(db, agent)
             except Exception as e:
                 await websocket.send_json({"type": "status", "status": "offline", "message": f"Failed to start agent: {e}"})
                 return
@@ -228,7 +227,7 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
 
         # Wait for agent readiness via supervisor
         await websocket.send_json({"type": "status", "status": "waiting"})
-        ready = await agent_supervisor.wait_for_agent_ready(agent_id_str, timeout=90, user_token=token)
+        ready = await agent_supervisor.wait_for_agent_ready(agent_id_str, timeout=90)
         if not ready:
             await websocket.send_json({"type": "status", "status": "offline", "message": "Agent did not become ready in time"})
             return
@@ -273,7 +272,7 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
                 data = await websocket.receive_json()
 
                 if data.get("type") == "cancel":
-                    await stream_manager.cancel_stream(session_id_str, agent_id_str, user_token=token)
+                    await stream_manager.cancel_stream(session_id_str, agent_id_str)
                     continue
 
                 if data.get("type") != "message":
