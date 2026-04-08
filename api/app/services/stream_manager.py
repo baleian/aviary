@@ -108,9 +108,7 @@ def is_streaming(session_id: str) -> bool:
     return task is not None and not task.done()
 
 
-async def cancel_stream(
-    session_id: str, agent_id: str | None = None, user_token: str = ""
-) -> bool:
+async def cancel_stream(session_id: str, agent_id: str | None = None) -> bool:
     """Cancel an active stream and abort the agent's session."""
     task = _active_streams.get(session_id)
     if not task or task.done():
@@ -118,7 +116,7 @@ async def cancel_stream(
 
     # 1. Send abort request to the agent via supervisor
     if agent_id:
-        await agent_supervisor.abort_session(agent_id, session_id, user_token=user_token)
+        await agent_supervisor.abort_session(agent_id, session_id)
 
     # 2. Cancel the asyncio background task
     task.cancel()
@@ -184,11 +182,8 @@ async def _run_stream(
                 "tools": agent_tools,
                 "mcp_servers": agent_mcp_servers,
             },
-            user_token=user_token,
         )
-        ready = await agent_supervisor.wait_for_agent_ready(
-            agent_id, timeout=90, user_token=user_token
-        )
+        ready = await agent_supervisor.wait_for_agent_ready(agent_id, timeout=90)
         if not ready:
             error_event = {"type": "error", "message": "Agent did not become ready in time"}
             await redis_service.publish_message(session_id, error_event)
@@ -315,6 +310,22 @@ async def _run_stream(
                 block["result"] = tr["content"]
                 if tr.get("is_error"):
                     block["is_error"] = True
+
+        # Fetch sub-agent tool_use events for A2A tool calls and insert as flat blocks.
+        # These were accumulated by the A2A endpoint during streaming.
+        a2a_extra_blocks: list[dict] = []
+        for block in blocks_meta:
+            if (
+                block.get("type") == "tool_call"
+                and block.get("name", "").startswith("mcp__a2a__ask_")
+            ):
+                tool_use_id = block.get("tool_use_id")
+                if tool_use_id:
+                    events = await redis_service.get_a2a_events(session_id, tool_use_id)
+                    a2a_extra_blocks.extend(events)
+                    await redis_service.clear_a2a_events(session_id, tool_use_id)
+        if a2a_extra_blocks:
+            blocks_meta.extend(a2a_extra_blocks)
 
         # Save completed response to DB (with ordered blocks for UI replay)
         meta = {"blocks": blocks_meta} if blocks_meta else None

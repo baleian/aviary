@@ -343,7 +343,7 @@ async def _create_deployment(namespace: str, body: EnsureDeploymentRequest) -> N
                                     {"name": "HTTPS_PROXY", "value": _EGRESS_PROXY_URL},
                                     {"name": "NO_PROXY", "value": _NO_PROXY},
                                     {"name": "NODE_OPTIONS", "value": _NODE_OPTIONS},
-                                    {"name": "AGENT_SUPERVISOR_URL", "value": "http://agent-supervisor.platform.svc:9000"},
+                                    {"name": "AVIARY_API_URL", "value": "http://host.k8s.internal:8000/api"},
                                 ],
                                 "volumeMounts": [
                                     {"name": "agent-workspace", "mountPath": "/workspace"},

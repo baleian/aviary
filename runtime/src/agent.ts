@@ -253,7 +253,7 @@ export async function* processMessage(
     ...a2aToolNames,
   ];
 
-  const options = {
+  const options: Record<string, unknown> = {
     model: resolvedModel,
     systemPrompt,
     cwd: "/home/usr",
@@ -263,13 +263,28 @@ export async function* processMessage(
     disallowedTools: ["WebSearch"],
     mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
     env,
-    // TS SDK doesn't expose sessionId as an option, but CLI supports --session-id.
-    // Use extraArgs to inject it on first message, resume on subsequent messages.
     includePartialMessages: true,
     ...(canResume ? {} : { extraArgs: { "session-id": sessionId } }),
     ...(canResume ? { resume: sessionId } : {}),
     ...(abortController ? { abortController } : {}),
   };
+
+  // PreToolUse hook: when SDK is about to call an A2A tool, capture the real
+  // tool_use_id and pass it to the A2A server. This is the SDK's official hook
+  // mechanism — guaranteed to fire before tools/call, no timing assumptions.
+  if (a2aServer) {
+    options.hooks = {
+      PreToolUse: [{
+        matcher: "mcp__a2a__ask_*",
+        hooks: [async (input: any, toolUseID: string | undefined) => {
+          if (toolUseID && input.tool_name?.startsWith("mcp__a2a__ask_")) {
+            a2aServer!.enqueueToolUseId(input.tool_name, toolUseID);
+          }
+          return { continue: true };
+        }],
+      }],
+    };
+  }
 
   // Use async generator for prompt — required by SDK when using custom MCP tools
   async function* promptGenerator() {
