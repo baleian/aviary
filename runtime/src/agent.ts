@@ -255,7 +255,7 @@ export async function* processMessage(
     const agentList = accessibleAgents
       .map((a) => `- @${a.slug}: ${a.description || a.name}`)
       .join("\n");
-    appendPrompt += `\n\n## Available Sub-Agents\nYou can delegate tasks to these agents using the corresponding ask_{slug} tool:\n${agentList}`;
+    appendPrompt += `\n\n## Available Sub-Agents\nYou can delegate tasks to these agents using the corresponding mcp__a2a__ask_{slug} tool:\n${agentList}`;
   }
 
   const systemPrompt = {
