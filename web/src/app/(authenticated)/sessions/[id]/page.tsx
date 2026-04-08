@@ -186,10 +186,11 @@ export default function ChatPage() {
           case "replay_end":
             break;
           case "cancelled": {
-            finalize();
+            // Don't finalize — leave running tools as-is so they show cancelled state
             const partialContent = flattenText();
             const partialBlocks = getBlocksMeta();
-            const cancelMeta: Record<string, unknown> = partialBlocks.length > 0 ? { blocks: partialBlocks } : {};
+            const cancelMeta: Record<string, unknown> = { cancelled: true };
+            if (partialBlocks.length > 0) cancelMeta.blocks = partialBlocks;
             resetBlocks();
             if (partialContent || partialBlocks.length > 0) {
               const cancelledId = msg.messageId || crypto.randomUUID();

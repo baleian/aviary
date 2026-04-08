@@ -26,11 +26,59 @@ logger = logging.getLogger(__name__)
 _active_streams: dict[str, asyncio.Task] = {}
 
 
-def _rebuild_blocks_from_chunks(chunks: list[dict]) -> tuple[str, list[dict]]:
-    """Reconstruct full_response text and blocks_meta from buffered Redis chunks.
+def _attach_tool_results(
+    blocks: list[dict], results: dict[str, dict]
+) -> None:
+    """Attach tool_result content to matching tool_call blocks (in-place)."""
+    for block in blocks:
+        tid = block.get("tool_use_id")
+        if block.get("type") == "tool_call" and tid and tid in results:
+            tr = results[tid]
+            block["result"] = tr["content"]
+            if tr.get("is_error"):
+                block["is_error"] = True
 
-    Used by cancel_stream to save partial progress on abort.
-    """
+
+async def _merge_a2a_events(session_id: str, blocks: list[dict]) -> None:
+    """Fetch sub-agent tool_use/tool_result events from Redis, normalize to
+    blocks_meta format, append to blocks, and attach results. In-place."""
+    extra: list[dict] = []
+    extra_results: dict[str, dict] = {}
+
+    for block in list(blocks):
+        if (
+            block.get("type") == "tool_call"
+            and block.get("name", "").startswith("mcp__a2a__ask_")
+        ):
+            tool_use_id = block.get("tool_use_id")
+            if not tool_use_id:
+                continue
+            events = await redis_service.get_a2a_events(session_id, tool_use_id)
+            for evt in events:
+                if evt.get("type") == "tool_use":
+                    extra.append({
+                        "type": "tool_call",
+                        "name": evt.get("name"),
+                        "input": evt.get("input", {}),
+                        "tool_use_id": evt.get("tool_use_id"),
+                        "parent_tool_use_id": evt.get("parent_tool_use_id"),
+                    })
+                elif evt.get("type") == "tool_result":
+                    tid = evt.get("tool_use_id")
+                    if tid:
+                        extra_results[tid] = {
+                            "content": evt.get("content", ""),
+                            "is_error": evt.get("is_error", False),
+                        }
+            await redis_service.clear_a2a_events(session_id, tool_use_id)
+
+    if extra:
+        blocks.extend(extra)
+        _attach_tool_results(extra, extra_results)
+
+
+def _rebuild_blocks_from_chunks(chunks: list[dict]) -> tuple[str, list[dict]]:
+    """Reconstruct full_response text and blocks_meta from buffered Redis chunks."""
     full_text = ""
     blocks: list[dict] = []
     current_thinking = ""
@@ -76,13 +124,7 @@ def _rebuild_blocks_from_chunks(chunks: list[dict]) -> tuple[str, list[dict]]:
     if current_text:
         blocks.append({"type": "text", "content": current_text})
 
-    for block in blocks:
-        if block.get("type") == "tool_call" and block.get("tool_use_id") in tool_results:
-            tr = tool_results[block["tool_use_id"]]
-            block["result"] = tr["content"]
-            if tr.get("is_error"):
-                block["is_error"] = True
-
+    _attach_tool_results(blocks, tool_results)
     return full_text, blocks
 
 
@@ -187,44 +229,11 @@ async def cancel_stream(session_id: str, agent_id: str | None = None) -> bool:
         partial = await redis_service.get_stream_chunks(session_id)
         if partial:
             partial_text, blocks_meta = _rebuild_blocks_from_chunks(partial)
+            await _merge_a2a_events(session_id, blocks_meta)
 
-            # Fetch sub-agent events for any A2A tool calls
-            for block in list(blocks_meta):
-                if (
-                    block.get("type") == "tool_call"
-                    and block.get("name", "").startswith("mcp__a2a__ask_")
-                ):
-                    tool_use_id = block.get("tool_use_id")
-                    if tool_use_id:
-                        events = await redis_service.get_a2a_events(
-                            session_id, tool_use_id
-                        )
-                        a2a_results: dict[str, dict] = {}
-                        for evt in events:
-                            if evt.get("type") == "tool_use":
-                                blocks_meta.append({
-                                    "type": "tool_call",
-                                    "name": evt.get("name"),
-                                    "input": evt.get("input", {}),
-                                    "tool_use_id": evt.get("tool_use_id"),
-                                    "parent_tool_use_id": evt.get("parent_tool_use_id"),
-                                })
-                            elif evt.get("type") == "tool_result":
-                                tid = evt.get("tool_use_id")
-                                if tid:
-                                    a2a_results[tid] = {
-                                        "content": evt.get("content", ""),
-                                        "is_error": evt.get("is_error", False),
-                                    }
-                        for b in blocks_meta:
-                            tid = b.get("tool_use_id")
-                            if tid and tid in a2a_results:
-                                b["result"] = a2a_results[tid]["content"]
-                                if a2a_results[tid].get("is_error"):
-                                    b["is_error"] = True
-                        await redis_service.clear_a2a_events(session_id, tool_use_id)
-
-            meta = {"blocks": blocks_meta} if blocks_meta else None
+            meta: dict = {"cancelled": True}
+            if blocks_meta:
+                meta["blocks"] = blocks_meta
             async with async_session_factory() as db:
                 msg = await session_service.save_message(
                     db, uuid.UUID(session_id), "agent",
@@ -402,53 +411,10 @@ async def _run_stream(
             blocks_meta.append({"type": "thinking", "content": current_thinking})
         if current_text:
             blocks_meta.append({"type": "text", "content": current_text})
-        for block in blocks_meta:
-            if block.get("type") == "tool_call" and block.get("tool_use_id") in tool_results:
-                tr = tool_results[block["tool_use_id"]]
-                block["result"] = tr["content"]
-                if tr.get("is_error"):
-                    block["is_error"] = True
+        _attach_tool_results(blocks_meta, tool_results)
 
-        # Fetch sub-agent tool_use/tool_result events for A2A tool calls.
-        # Normalize SSE format to blocks_meta format, then merge results
-        # into their matching tool_call blocks.
-        a2a_extra_blocks: list[dict] = []
-        a2a_results: dict[str, dict] = {}  # tool_use_id → {content, is_error}
-        for block in blocks_meta:
-            if (
-                block.get("type") == "tool_call"
-                and block.get("name", "").startswith("mcp__a2a__ask_")
-            ):
-                tool_use_id = block.get("tool_use_id")
-                if tool_use_id:
-                    events = await redis_service.get_a2a_events(session_id, tool_use_id)
-                    for evt in events:
-                        if evt.get("type") == "tool_use":
-                            a2a_extra_blocks.append({
-                                "type": "tool_call",
-                                "name": evt.get("name"),
-                                "input": evt.get("input", {}),
-                                "tool_use_id": evt.get("tool_use_id"),
-                                "parent_tool_use_id": evt.get("parent_tool_use_id"),
-                            })
-                        elif evt.get("type") == "tool_result":
-                            tid = evt.get("tool_use_id")
-                            if tid:
-                                a2a_results[tid] = {
-                                    "content": evt.get("content", ""),
-                                    "is_error": evt.get("is_error", False),
-                                }
-                    await redis_service.clear_a2a_events(session_id, tool_use_id)
-        if a2a_extra_blocks:
-            blocks_meta.extend(a2a_extra_blocks)
-            # Attach results to the sub-agent tool_call blocks
-            for block in a2a_extra_blocks:
-                tid = block.get("tool_use_id")
-                if tid and tid in a2a_results:
-                    tr = a2a_results[tid]
-                    block["result"] = tr["content"]
-                    if tr.get("is_error"):
-                        block["is_error"] = True
+        # Merge sub-agent tool_use/tool_result events from A2A calls
+        await _merge_a2a_events(session_id, blocks_meta)
 
         # Save completed response to DB (with ordered blocks for UI replay)
         meta = {"blocks": blocks_meta} if blocks_meta else None
