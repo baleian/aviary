@@ -87,3 +87,11 @@ class AgentResponse(BaseModel):
 class AgentListResponse(BaseModel):
     items: list[AgentResponse]
     total: int
+
+
+class AccessibleAgent(BaseModel):
+    """Minimal agent info passed to runtime for A2A tool construction."""
+
+    slug: str
+    name: str
+    description: str | None = None

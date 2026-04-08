@@ -10,167 +10,121 @@ Aviary is an enterprise platform where users can create, configure, and use purp
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│                        Web UI (Next.js 15)                     │
+│                        Web UI (Next.js)                        │
 │    Agent Catalog · Create/Edit · Chat Sessions · ACL Settings  │
 └───────────────┬────────────────────────────────────────────────┘
                 │ REST + WebSocket
 ┌───────────────▼────────────────────────────────────────────────┐
 │                     API Server (FastAPI)                        │
-│      OIDC Auth · Agent CRUD · Session Mgr · ACL · Chat         │
+│       OIDC Auth · Agent CRUD · Session Mgr · ACL · A2A         │
 └───┬───────────┬───────────┬────────────────────────────────────┘
     │           │           │
     │           │           │           ┌────────────────────────┐
-    │           │           │           │  Admin Console (:8001) │
+    │           │           │           │  Admin Console         │
     │           │           │           │  Policy · Scaling ·    │
     │           │           │           │  Deployments · Web UI  │
     │           │           │           └───────────┬────────────┘
     │           │           │                       │
-    │           │           │
     │           │   ┌───────▼────────────────────────────────────┐
     │           │   │           Platform Services                │
     │           │   │                                            │
     │           │   │  ┌─────────────────┐                       │
     │           │   │  │ LiteLLM Gateway │◀── Vault              │
-    │           │   │  │  (LLM proxy)    │    (per-user API keys)│
+    │           │   │  │ (model routing, │    (per-user API keys)│
+    │           │   │  │  API key inject)│                       │
     │           │   │  └────────┬────────┘                       │
     │           │   │  ┌────────▼────────┐                       │
     │           │   │  │ Portkey Gateway │                       │
-    │           │   │  │ (AI gateway)    │                       │
+    │           │   │  │ (guardrails,    │                       │
+    │           │   │  │  tracing, cache)│                       │
     │           │   │  └────────┬────────┘                       │
-    │           │   │           │                                 │
     │           │   │     ┌─────┴───────────────────┐            │
     │           │   │     ▼            ▼            ▼            │
     │           │   │  Claude API   Ollama/vLLM   Bedrock        │
     │           │   │                                            │
     │           │   │  ┌─────────────────────────────────────┐   │
-    │           │   │  │ MCP Gateway (tool proxy + catalog)  │◀─ Vault
-    │           │   │  │  OIDC auth · ACL · tool discovery   │   (tool credentials)
+    │           │   │  │ MCP Gateway                         │◀─ Vault
+    │           │   │  │ (tool catalog, ACL, proxy,          │   (tool creds)
+    │           │   │  │  OIDC auth, auto-discovery)         │   │
     │           │   │  └────────┬────────────────────────────┘   │
     │           │   │           ▼                                 │
     │           │   │     Backend MCP Servers                     │
     │           │   └────────────────────────────────────────────┘
     │           │
-    │           │ HTTP (:9000)
     │   ┌───────▼────────────────────────────────────────────────┐
     │   │                   Kubernetes Cluster                    │
     │   │                                                        │
     │   │  ┌─── NS: platform ──────────────────────────────────┐ │
     │   │  │  ┌─────────────────┐  ┌────────────────────────┐  │ │
-    │   │  │  │  Egress Proxy   │  │   Agent Supervisor     │  │ │
-    │   │  │  │  (forward proxy │  │   (K8s gateway,         │  │ │
-    │   │  │  │   + allowlist)  │  │    NodePort 30900)      │  │ │
+    │   │  │  │  Egress Proxy   │  │  Agent Supervisor      │  │ │
+    │   │  │  │  (forward proxy │  │  (K8s lifecycle,       │  │ │
+    │   │  │  │   + allowlist)  │  │   auto-scaling,        │  │ │
+    │   │  │  │                 │  │   idle cleanup)        │  │ │
     │   │  │  └────────┬────────┘  └────────────────────────┘  │ │
-    │   │  │           │                                        │ │
     │   │  │           ▼                                        │ │
     │   │  │     External APIs (GitHub, S3, ...)                │ │
     │   │  └────────────────────────────────────────────────────┘ │
     │   │                                                        │
-    │   │  ┌─── NS: agent-{id} ──────┐  ┌── NS: agent-{id} ──┐ │
-    │   │  │  Agent Pod (1-N)         │  │  Agent Pod (1-N)    │ │
-    │   │  │  claude-agent-sdk        │  │  claude-agent-sdk   │ │
-    │   │  │  + Claude Code CLI       │  │  + Claude Code CLI  │ │
-    │   │  │  + bwrap sandbox         │  │  + bwrap sandbox    │ │
-    │   │  │  PVC: /workspace         │  │  PVC: /workspace    │ │
-    │   │  │                          │  │                     │ │
-    │   │  │  LLM ──▶ LiteLLM Gateway│  │                     │ │
-    │   │  │  Tools ▶ MCP Gateway    │  │                     │ │
-    │   │  │  HTTP ──▶ Egress Proxy   │  │  NetworkPolicy:     │ │
-    │   │  │                          │  │    deny-by-default  │ │
-    │   │  └──────────────────────────┘  └─────────────────────┘ │
+    │   │  ┌─── NS: agent-{id} ──────────────────────────────┐   │
+    │   │  │  Agent Pod (1-N replicas)                        │   │
+    │   │  │  claude-agent-sdk + Claude Code CLI + Python     │   │
+    │   │  │  bwrap sandbox · shared home · per-agent .claude │   │
+    │   │  │                                                  │   │
+    │   │  │  LLM ──▶ LiteLLM    NetworkPolicy:              │   │
+    │   │  │  Tools ▶ MCP GW     deny-by-default             │   │
+    │   │  │  HTTP ──▶ Egress    A2A ──▶ API Server           │   │
+    │   │  └──────────────────────────────────────────────────┘   │
     │   └────────────────────────────────────────────────────────┘
     │
-    │  ┌───────────────┐  ┌──────────────┐  ┌────────────────┐
-    └─▶│  PostgreSQL    │  │    Redis      │  │   Keycloak     │
-       │  DB, sessions  │  │  pub/sub,     │  │   OIDC auth    │
-       │  ACL, agents   │  │  presence │  │   team sync    │
-       └───────────────┘  └──────────────┘  └────────────────┘
+    └─▶ PostgreSQL · Redis · Keycloak · Vault
 ```
-
-**API Server** handles user-facing operations (auth, chat, agent config). **Admin Console** edits infrastructure configuration (policies, deployments). **Agent Supervisor** manages runtime resources, auto-scaling, and idle cleanup inside K8s. **Egress Proxy** enforces per-agent outbound traffic rules. **MCP Gateway** provides centralized tool management — catalog, discovery, per-user ACL, and proxying of all MCP tool calls.
 
 ## Key Features
 
 - **Agent-per-Pod with Multi-Session** — Each agent gets a long-running Deployment (1-N replicas) serving multiple sessions concurrently, auto-scaled based on session load
-- **Bubblewrap Session Isolation** — Each session runs inside a bwrap mount namespace; other sessions' files are invisible at the kernel level
-- **Namespace-per-Agent** — NetworkPolicy, ResourceQuota, and ServiceAccount scoped per agent
-- **Egress Proxy** — All outbound HTTP/HTTPS from agent Pods routed through a centralized proxy with per-agent allowlists (CIDR, exact domain, wildcard `*.example.com`); deny-by-default, policy changes take effect immediately without Pod restarts
-- **claude-agent-sdk Powered** — Full [Claude Code](https://docs.anthropic.com/en/docs/claude-code) harness via `ClaudeSDKClient` including tools, sub-agents, MCP servers, file I/O, and shell execution
-- **MCP Gateway** — Centralized tool management via [Model Context Protocol](https://modelcontextprotocol.io/); admin registers MCP servers, tools are auto-discovered, users browse and bind tools to agents with per-user ACL enforcement (default-deny)
-- **LiteLLM + Portkey Gateway** — All LLM calls routed through [LiteLLM](https://github.com/BerriAI/litellm) and [Portkey AI Gateway](https://github.com/portkey-ai/gateway); LiteLLM handles model routing and per-user API key injection, Portkey provides guardrails, OpenTelemetry tracing, request logging, and caching
-- **Multi-Backend Inference** — Claude API, Ollama, vLLM, AWS Bedrock; add new backends via config, no code or NetworkPolicy changes required
-- **Live Config Updates** — Agent config (instruction, tools) is passed from DB on every message; edits take effect immediately without Pod restarts
-- **OIDC Auth + Team Sync** — Keycloak (dev) / Okta (prod); IdP groups auto-sync to Aviary teams on login
-- **API / Admin Separation** — Separate services for user operations (API) and infrastructure management (Admin Console)
-- **Granular ACL** — Permission resolution with role hierarchy (`viewer` < `user` < `admin` < `owner`)
-- **Vault-Backed Credential Injection** — Per-user Anthropic API keys injected at LiteLLM Gateway, MCP tool credentials injected at MCP Gateway; all secrets fetched from Vault via OIDC token propagation, never exposed to agent Pods
-- **Real-time Chat** — WebSocket streaming with Redis pub/sub for multi-user shared sessions
+- **Bubblewrap Session Isolation** — Each session runs in a kernel-level mount namespace; agents in the same session share a workspace directory for file exchange, while each agent's `.claude/` context is isolated via PVC overlay
+- **Agent-to-Agent (A2A)** — Agents invoke other agents via `@mention` in instructions or chat messages; sub-agent tool calls render inline under the parent tool card in real-time
+- **MCP Gateway** — Centralized tool management via [Model Context Protocol](https://modelcontextprotocol.io/); admin registers MCP servers, tools are auto-discovered, users bind tools to agents with per-user ACL (default-deny)
+- **LiteLLM + Portkey Gateway** — Two-layer LLM gateway: [LiteLLM](https://github.com/BerriAI/litellm) for model routing and per-user API key injection, [Portkey](https://github.com/portkey-ai/gateway) for guardrails, tracing, and caching
+- **Multi-Backend Inference** — Claude API, Ollama, vLLM, AWS Bedrock; add new backends via config
+- **Egress Control** — Deny-by-default outbound proxy with per-agent allowlists (CIDR, domain, wildcard); changes apply immediately
+- **Live Config** — Agent instruction and tools update from DB on every message turn, no Pod restarts
+- **OIDC + ACL** — Keycloak/Okta auth with team sync; role hierarchy (`viewer` < `user` < `admin` < `owner`)
+- **Vault Secrets** — Per-user API keys and tool credentials injected at gateway level, never exposed to Pods
 
 ## Tech Stack
 
 | Component | Technology |
 |-----------|-----------|
-| Web UI | Next.js 15 (App Router), TypeScript, Tailwind CSS, shadcn/ui |
-| API Server | Python 3.12, FastAPI, SQLAlchemy 2.0 (async), Pydantic v2 |
-| Agent Runtime | TypeScript, Node.js 22, claude-agent-sdk, Claude Code CLI |
-| LLM Gateway | [LiteLLM](https://github.com/BerriAI/litellm) + [Portkey](https://github.com/portkey-ai/gateway) — unified LLM proxy with AI gateway (guardrails, tracing, caching) |
-| MCP Gateway | Python 3.12, FastAPI, [MCP SDK](https://github.com/modelcontextprotocol/python-sdk) — tool catalog, ACL, and proxy |
-| Egress Proxy | Python 3.12, asyncio — HTTP/HTTPS forward proxy with policy enforcement |
-| Database | PostgreSQL 16 |
-| Cache / PubSub | Redis 7 |
-| Auth | Keycloak 25 (dev) / Okta (prod) — OIDC |
-| Secrets | HashiCorp Vault |
-| Orchestration | Kubernetes (K3s for local dev) |
-| Inference Backends | Claude API, Ollama, vLLM, AWS Bedrock |
+| Web UI | Next.js 15, TypeScript, Tailwind CSS, shadcn/ui |
+| API Server | Python, FastAPI, SQLAlchemy 2.0 (async), Pydantic v2 |
+| Agent Runtime | Node.js, Python, claude-agent-sdk, Claude Code CLI |
+| LLM Gateway | [LiteLLM](https://github.com/BerriAI/litellm) + [Portkey](https://github.com/portkey-ai/gateway) |
+| MCP Gateway | Python, FastAPI, [MCP SDK](https://github.com/modelcontextprotocol/python-sdk) |
+| Infrastructure | PostgreSQL, Redis, Keycloak, Vault, Kubernetes (K3s for dev) |
 
 ## Project Structure
 
 ```
 aviary/
-├── api/                     # API Server (FastAPI) — user-facing
-│   ├── app/
-│   │   ├── auth/            # OIDC validation, team sync
-│   │   ├── db/              # Re-exports shared DB models
-│   │   ├── routers/         # REST + WebSocket endpoints
-│   │   ├── services/        # Business logic (agent, session, vault, acl, redis)
-│   │   └── schemas/         # Pydantic models
-│   └── tests/
-├── admin/                   # Admin Console (FastAPI) — operator-facing
-│   ├── app/
-│   │   ├── routers/         # Agent, deployment, policy management
-│   │   ├── services/        # Controller client, redis, scaling
-│   │   ├── templates/       # Jinja2 web UI
-│   │   └── static/          # CSS
-│   └── tests/
-├── shared/                  # Shared DB package (used by api + admin)
-│   └── aviary_shared/
-│       └── db/              # SQLAlchemy models, session factory, migrations
-├── web/                     # Web UI (Next.js 15)
-│   └── src/
-│       ├── app/             # Pages (agents, sessions, login)
-│       ├── components/      # Chat, agent management, UI primitives
-│       └── lib/             # API client, auth, WebSocket
-├── mcp-gateway/             # MCP Gateway (FastAPI) — tool catalog, ACL, proxy
-│   └── app/                 # OIDC auth, MCP protocol proxy, tool discovery
-├── agent-supervisor/         # Agent Supervisor (FastAPI, runs in K8s)
-│   └── app/                 # K8s gateway, agent-centric + K8s-specific APIs
-├── runtime/                 # Agent Runtime (runs in agent Pods)
-│   └── src/                 # claude-agent-sdk harness, session manager
-├── config/litellm/          # LiteLLM Gateway config
-├── mcp-servers/             # Platform-provided MCP server stubs (GitHub, Jira, Confluence)
-├── egress-proxy/            # HTTP/HTTPS egress proxy
-├── config/                  # Keycloak realm, K3s config
-├── k8s/platform/            # K8s manifests
-├── scripts/                 # Dev setup, DB init, seeding
-└── docker-compose.yml       # Full dev environment
+├── api/                  # API Server — user-facing REST + WebSocket + A2A
+├── admin/                # Admin Console — operator-facing web UI
+├── web/                  # Web UI (Next.js)
+├── runtime/              # Agent Runtime (runs in K8s agent Pods)
+├── shared/               # Shared package (OIDC, ACL, DB models)
+├── mcp-gateway/          # MCP tool catalog, ACL, and proxy
+├── agent-supervisor/     # K8s lifecycle manager (runs in K8s)
+├── egress-proxy/         # HTTP/HTTPS outbound proxy
+├── mcp-servers/          # Platform-provided MCP server stubs
+├── k8s/                  # K8s manifests
+├── config/               # LiteLLM, Keycloak, K3s config
+├── scripts/              # Dev setup and utilities
+└── docker-compose.yml
 ```
 
 ## Getting Started
 
-### Prerequisites
-
-- Docker Desktop (or equivalent container runtime)
-
-### Quick Start
+**Prerequisites:** Docker Desktop (or equivalent container runtime)
 
 ```bash
 git clone <repository-url>
@@ -185,134 +139,38 @@ This single command builds all images, starts all services, runs DB migrations, 
 | Web UI | http://localhost:3000 |
 | API Server | http://localhost:8000 |
 | Admin Console | http://localhost:8001 |
-| LiteLLM Gateway | http://localhost:8090 |
-| MCP Gateway | http://localhost:8100 |
-| Keycloak Admin | http://localhost:8080 (admin/admin) |
-| Vault | http://localhost:8200 |
+| Keycloak Admin | http://localhost:8080 |
 
-### Test Accounts
-
-| Email | Password | Teams |
-|-------|----------|-------|
-| user1@test.com | password | engineering, product |
-| user2@test.com | password | data-science |
-
-### Everyday Commands
+Test accounts: `user1@test.com` / `user2@test.com` (password: `password`)
 
 ```bash
 docker compose up -d          # Start
 docker compose down           # Stop (data preserved)
-docker compose down -v        # Stop + delete all data
-docker compose logs -f api    # Tail logs
+docker compose down -v        # Full reset
 ```
 
-### Development
-
-Source code is bind-mounted into containers. Edits to `api/` and `web/` are reflected automatically via hot reload. LiteLLM config changes require `docker compose restart litellm`.
-
-```bash
-# Rebuild after dependency changes
-docker compose up -d --build api
-docker compose up -d --build web
-
-# Rebuild K8s images (runtime, egress-proxy, agent-supervisor)
-docker build -t aviary-runtime:latest ./runtime/
-docker build -t aviary-egress-proxy:latest ./egress-proxy/
-docker build -t aviary-agent-supervisor:latest -f agent-supervisor/Dockerfile .
-docker save aviary-runtime:latest aviary-egress-proxy:latest aviary-agent-supervisor:latest | docker compose exec -T k8s ctr images import -
-```
+Source code is bind-mounted — edits to `api/` and `web/` are reflected via hot reload.
 
 ## Testing
 
 ```bash
-# API server tests
 docker compose exec api pytest tests/ -v
-
-# Admin console tests
 docker compose exec admin pytest tests/ -v
 ```
-
-API and admin tests covering health, agent CRUD, ACL (visibility, grants, permission deny), sessions (create, list, access control, archive), policies, and deployments. Uses a dedicated `aviary_test` database and token-based mock auth for multi-user scenarios.
-
-## API Endpoints
-
-### Auth
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/auth/config` | OIDC provider configuration |
-| POST | `/api/auth/callback` | Exchange auth code for tokens |
-| GET | `/api/auth/me` | Current user info |
-
-### Agents
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/agents` | List agents (ACL-filtered) |
-| POST | `/api/agents` | Create agent (config only) |
-| GET/PUT/DELETE | `/api/agents/{id}` | Get / update / soft-delete agent |
-
-### Sessions & Chat
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/agents/{id}/sessions` | Create session (private or team) |
-| GET | `/api/sessions/{id}` | Session details + message history |
-| WS | `/api/sessions/{id}/ws` | Real-time chat |
-| POST | `/api/sessions/{id}/invite` | Invite user by email |
-
-### ACL, Credentials, Catalog
-| Method | Path | Description |
-|--------|------|-------------|
-| CRUD | `/api/agents/{id}/acl` | Access control management |
-| CRUD | `/api/agents/{id}/credentials` | Secret management (Vault-backed) |
-| GET | `/api/catalog`, `/api/catalog/search` | Browse / search agents |
-| GET | `/api/inference/models` | Available models across all backends |
-
-### MCP Tools
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/mcp/servers` | List available MCP servers (ACL-filtered) |
-| GET | `/api/mcp/servers/{id}/tools` | List tools from a server |
-| GET | `/api/mcp/tools/search?q=...` | Search tools by name or description |
-| GET/PUT | `/api/mcp/agents/{id}/tools` | List / set tool bindings for an agent |
-| DELETE | `/api/mcp/agents/{id}/tools/{tool_id}` | Unbind a tool |
 
 ## Key Design Decisions
 
 ### LiteLLM + Portkey Gateway
-Session Pods never call LLM backends directly. All inference goes through a two-layer gateway: [LiteLLM](https://github.com/BerriAI/litellm) OSS proxy routes requests based on the model name prefix (e.g., `anthropic/claude-sonnet-4-6` → Claude API, `ollama/gemma4:26b` → Ollama, `vllm/...` → vLLM), then [Portkey AI Gateway](https://github.com/portkey-ai/gateway) forwards to the actual LLM backend while providing guardrails, OpenTelemetry-based tracing, request/response logging, and caching. LiteLLM natively supports the Anthropic Messages API (`/v1/messages`), so claude-agent-sdk works transparently without protocol translation. This centralizes API credentials, rate limiting, and observability. New backends are added via config file (`config/litellm/config.yaml`) without code changes.
+Agent Pods never call LLM backends directly. [LiteLLM](https://github.com/BerriAI/litellm) routes requests by model name prefix to the appropriate backend, then [Portkey AI Gateway](https://github.com/portkey-ai/gateway) provides guardrails, tracing, logging, and caching. LiteLLM natively supports the Anthropic Messages API, so claude-agent-sdk works transparently. This centralizes credentials, rate limiting, and observability.
 
 ### MCP Gateway
-Agent tool calls are routed through a centralized [MCP](https://modelcontextprotocol.io/) Gateway that acts as a single MCP server from the claude-agent-sdk's perspective. Operators register backend MCP servers via the Admin Console, and tools are auto-discovered via the MCP protocol. Users browse the tool catalog (ACL-filtered) and bind selected tools to their agents. At runtime, the user's OIDC token is propagated from the browser through the API to the gateway, which validates permissions on every `tools/list` and `tools/call` request. The gateway proxies calls to the correct backend server, and user tokens are never forwarded to external services.
+Agent tool calls are routed through a centralized [MCP](https://modelcontextprotocol.io/) Gateway. Operators register backend MCP servers via the Admin Console, and tools are auto-discovered. Users browse an ACL-filtered catalog and bind tools to agents. The user's OIDC token is propagated end-to-end for permission validation and never forwarded to external services.
 
-### Egress Proxy
-All outbound HTTP/HTTPS from agent Pods is routed through a centralized forward proxy via `HTTP_PROXY`/`HTTPS_PROXY` environment variables. The proxy identifies the source agent by resolving the pod's IP to its K8s namespace, then enforces per-agent egress policies. Supported rule types: CIDR ranges, exact domains, wildcard domains (`*.example.com`), and catch-all. Policies are deny-by-default and changes take effect immediately without Pod restarts.
+### Agent-to-Agent (A2A)
+Agents can call other agents as sub-agents via `@mention`. The runtime exposes a per-message HTTP MCP server with one tool per accessible agent. Calls route through the API server for auth and ACL. Sub-agent tool calls are published to the parent session's Redis channel and rendered inline. All agents in a session share the same home directory via hostPath volumes.
 
-### Live Agent Config
-Agent configuration (instruction, tools, policy) is passed from the database to the runtime on every message turn. Edits take effect immediately on the next message without restarting Pods or affecting other users' sessions.
+### Session Isolation
+The Claude CLI runs inside a bubblewrap mount namespace. All agents in a session share `/workspace` via hostPath for file exchange. Each agent's `.claude/` is isolated via PVC overlay so conversation histories stay independent. Other sessions are invisible at the namespace level.
 
 ### ACL Resolution
-Permission resolution follows 6 steps: agent owner → direct user ACL → team ACL → public visibility → team visibility → deny. Roles form a hierarchy: `viewer` < `user` < `admin` < `owner`.
-
-### Agent Pod Strategy
-Each agent gets a long-running Deployment with configurable spawn strategy: `lazy` (default, created on first message) or `eager` (created with agent). Multiple sessions share the same Pod(s), isolated by workspace directory and bubblewrap sandbox. Idle agents (7 days) are scaled to 0, not deleted — re-activated on next message.
-
-### Session Isolation (bubblewrap)
-The `claude` CLI binary in PATH is a wrapper script that runs the real binary inside a bubblewrap mount namespace. Each session sees only its own workspace directory (`/workspace/sessions/{session_id}/`); other sessions' files don't exist in the mount namespace. CLI session data is persisted to PVC, enabling conversation resume across Pod restarts.
-
-## Services
-
-| Service | Port | Role |
-|---------|------|------|
-| `api` | 8000 | API Server (user-facing) |
-| `admin` | 8001 | Admin Console (operator-facing, no auth) |
-| `web` | 3000 | Web UI |
-| `litellm` | 8090 | LLM gateway (LiteLLM + Portkey) |
-| `mcp-gateway` | 8100 | MCP tool proxy, catalog, ACL |
-| `postgres` | 5432 | Database |
-| `redis` | 6379 | Cache, pub/sub, presence |
-| `keycloak` | 8080 | OIDC provider |
-| `vault` | 8200 | Secret management |
-| `k8s` | 6443 | Kubernetes cluster |
-
-## License
-
-Private — Internal use only.
+Permission follows 6 steps: agent owner → direct user ACL → team ACL → public visibility → team visibility → deny. Roles: `viewer` < `user` < `admin` < `owner`.

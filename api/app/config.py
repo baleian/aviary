@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: list[str] = ["http://localhost:3000"]
 
+    # Internal API key for service-to-service calls (runtime → API)
+    internal_api_key: str = "sk-aviary-internal"
+
     # Agent Supervisor
     agent_supervisor_url: str = "http://localhost:9000"
 

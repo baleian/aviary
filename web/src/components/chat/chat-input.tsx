@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
+import { MentionAutocomplete } from "@/components/shared/mention-autocomplete";
 
 interface ChatInputProps {
   onSend: (content: string) => void;
@@ -9,11 +10,17 @@ interface ChatInputProps {
   disabled?: boolean;
   isStreaming?: boolean;
   placeholder?: string;
+  /** Agent ID of the current chat agent (excluded from @ mention list) */
+  agentId?: string;
 }
 
-export function ChatInput({ onSend, onCancel, disabled, isStreaming, placeholder }: ChatInputProps) {
+export function ChatInput({ onSend, onCancel, disabled, isStreaming, placeholder, agentId }: ChatInputProps) {
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const mentionOpenRef = useRef(false);
+  const handleMentionOpenChange = useCallback((open: boolean) => {
+    mentionOpenRef.current = open;
+  }, []);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -32,6 +39,8 @@ export function ChatInput({ onSend, onCancel, disabled, isStreaming, placeholder
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // When mention dropdown is open, let it handle Enter/Tab/Arrow keys
+    if (mentionOpenRef.current) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSubmit(e);
@@ -77,8 +86,15 @@ export function ChatInput({ onSend, onCancel, disabled, isStreaming, placeholder
           </Button>
         )}
       </div>
+      <MentionAutocomplete
+        textareaRef={textareaRef}
+        value={value}
+        onChange={setValue}
+        excludeAgentId={agentId}
+        onOpenChange={handleMentionOpenChange}
+      />
       <p className="mt-1.5 px-2 text-[10px] text-muted-foreground/40">
-        Press Enter to send, Shift+Enter for new line
+        Press Enter to send, Shift+Enter for new line. Type @ to mention an agent.
       </p>
     </form>
   );

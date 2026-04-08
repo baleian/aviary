@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_user
 from app.auth.oidc import validate_token
+from app.services.mention_service import extract_mentions, resolve_mentioned_agents
 from app.db.models import Agent, Session as SessionModel, User
 from app.db.session import get_db, async_session_factory
 from app.schemas.session import (
@@ -297,6 +298,28 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
                     result = await db.execute(select(Agent).where(Agent.id == session.agent_id))
                     agent = result.scalar_one()
 
+                    # Parse @mentions from instruction + current message
+                    mentioned_slugs = list(dict.fromkeys(
+                        extract_mentions(agent.instruction or "")
+                        + extract_mentions(content)
+                    ))
+
+                    accessible_agents_list: list[dict] = []
+                    if mentioned_slugs:
+                        # Resolve user in this DB session for ACL checks
+                        user_result = await db.execute(
+                            select(User).where(User.external_id == claims.sub)
+                        )
+                        mention_user = user_result.scalar_one_or_none()
+                        if mention_user:
+                            agents_resolved = await resolve_mentioned_agents(
+                                db, mention_user, mentioned_slugs,
+                                exclude_agent_id=str(agent.id),
+                            )
+                            accessible_agents_list = [
+                                a.model_dump() for a in agents_resolved
+                            ]
+
                 await stream_manager.start_stream(
                     session_id=session_id_str,
                     agent_id=str(agent.id),
@@ -308,6 +331,7 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
                     content=content,
                     user_token=token,
                     user_external_id=claims.sub,
+                    accessible_agents=accessible_agents_list or None,
                 )
         finally:
             relay_task.cancel()

@@ -25,6 +25,7 @@ data:
       {
         "to": [{"ipBlock": {"cidr": "${HOST_GATEWAY_IP}/32"}}],
         "ports": [
+          {"port": 8000, "protocol": "TCP"},
           {"port": 8090, "protocol": "TCP"},
           {"port": 8100, "protocol": "TCP"}
         ]

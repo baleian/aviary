@@ -11,7 +11,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-export const WORKSPACE_ROOT = "/workspace/sessions";
+export const WORKSPACE_ROOT = "/workspace";
+export const SHARED_WORKSPACE_ROOT = "/workspace-shared";
 const MAX_CONCURRENT_SESSIONS = parseInt(
   process.env.MAX_CONCURRENT_SESSIONS ?? "5",
   10,
@@ -69,35 +70,46 @@ export class SessionManager {
     return this.activeCount < this.maxSessions;
   }
 
-  getOrCreate(sessionId: string): SessionEntry {
-    const existing = this._sessions.get(sessionId);
+  getOrCreate(sessionId: string, agentId: string): SessionEntry {
+    const key = `${sessionId}/${agentId}`;
+    const existing = this._sessions.get(key);
     if (existing) return existing;
 
     if (!this.hasCapacity) {
       throw new Error(`Pod at capacity (${this.maxSessions} sessions)`);
     }
 
-    const workspace = path.join(WORKSPACE_ROOT, sessionId);
-    fs.mkdirSync(workspace, { recursive: true });
+    // Shared home directory (hostPath — visible to all agent Pods in same session)
+    const home = path.join(SHARED_WORKSPACE_ROOT, sessionId);
+    fs.mkdirSync(home, { recursive: true });
+
+    // Per-agent .claude context (PVC — private to this Pod)
+    const claudeDir = path.join(WORKSPACE_ROOT, ".claude", sessionId);
+    fs.mkdirSync(claudeDir, { recursive: true });
+
+    // Shared /tmp (hostPath — visible to all agent Pods, auto-cleaned)
+    const tmpDir = `/tmp/${sessionId}`;
+    fs.mkdirSync(tmpDir, { recursive: true });
 
     const entry: SessionEntry = {
       sessionId,
-      workspace,
+      workspace: home,
       createdAt: Date.now() / 1000,
       _lock: createMutex(),
     };
-    this._sessions.set(sessionId, entry);
+    this._sessions.set(key, entry);
     return entry;
   }
 
-  get(sessionId: string): SessionEntry | undefined {
-    return this._sessions.get(sessionId);
+  get(sessionId: string, agentId: string): SessionEntry | undefined {
+    return this._sessions.get(`${sessionId}/${agentId}`);
   }
 
-  remove(sessionId: string, cleanupFiles = false): boolean {
-    const entry = this._sessions.get(sessionId);
+  remove(sessionId: string, agentId: string, cleanupFiles = false): boolean {
+    const key = `${sessionId}/${agentId}`;
+    const entry = this._sessions.get(key);
     if (!entry) return false;
-    this._sessions.delete(sessionId);
+    this._sessions.delete(key);
     if (cleanupFiles && fs.existsSync(entry.workspace)) {
       fs.rmSync(entry.workspace, { recursive: true, force: true });
     }

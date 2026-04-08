@@ -343,9 +343,12 @@ async def _create_deployment(namespace: str, body: EnsureDeploymentRequest) -> N
                                     {"name": "HTTPS_PROXY", "value": _EGRESS_PROXY_URL},
                                     {"name": "NO_PROXY", "value": _NO_PROXY},
                                     {"name": "NODE_OPTIONS", "value": _NODE_OPTIONS},
+                                    {"name": "AVIARY_API_URL", "value": "http://host.k8s.internal:8000/api"},
+                                    {"name": "AVIARY_INTERNAL_API_KEY", "value": "sk-aviary-internal"},
                                 ],
                                 "volumeMounts": [
                                     {"name": "agent-workspace", "mountPath": "/workspace"},
+                                    {"name": "shared-workspace", "mountPath": "/workspace-shared"},
                                 ],
                                 "resources": {
                                     "requests": {"cpu": "1", "memory": "1Gi"},
@@ -366,6 +369,10 @@ async def _create_deployment(namespace: str, body: EnsureDeploymentRequest) -> N
                             {
                                 "name": "agent-workspace",
                                 "persistentVolumeClaim": {"claimName": "agent-workspace"},
+                            },
+                            {
+                                "name": "shared-workspace",
+                                "hostPath": {"path": "/workspace-shared", "type": "DirectoryOrCreate"},
                             },
                         ],
                     },

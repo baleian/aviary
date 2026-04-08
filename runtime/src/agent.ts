@@ -20,8 +20,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import { startA2AServer, type AccessibleAgent, type A2AServer } from "./a2a-tools.js";
 
-const WORKSPACE_ROOT = "/workspace/sessions";
+const WORKSPACE_ROOT = "/workspace";
+const SHARED_WORKSPACE_ROOT = "/workspace-shared";
 
 const LITELLM_URL =
   process.env.INFERENCE_ROUTER_URL ??
@@ -47,8 +49,19 @@ const MODEL_TIER_KEYS = [
 // PATH is required for the subprocess to find `node` and `claude` binaries.
 const PASSTHROUGH_KEYS = ["PATH", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "NODE_OPTIONS"] as const;
 
-function sessionWorkspace(sessionId: string): string {
-  return path.join(WORKSPACE_ROOT, sessionId);
+/** Shared home directory — same for all agents in the session (hostPath). */
+function sessionHome(sessionId: string): string {
+  return path.join(SHARED_WORKSPACE_ROOT, sessionId);
+}
+
+/** Per-agent .claude context directory (PVC — private to this Pod). */
+function sessionClaudeDir(sessionId: string): string {
+  return path.join(WORKSPACE_ROOT, ".claude", sessionId);
+}
+
+/** Shared /tmp — same for all agents in the session (hostPath). */
+function sessionTmp(sessionId: string): string {
+  return `/tmp/${sessionId}`;
 }
 
 /** Resolve backend + model into a LiteLLM model name with provider prefix. */
@@ -70,7 +83,10 @@ interface AgentConfig {
   policy?: Record<string, unknown>;
   mcp_servers?: Record<string, unknown>;
   user_token?: string;
+  user_external_id?: string;
   credentials?: Record<string, string>;
+  accessible_agents?: AccessibleAgent[];
+  is_sub_agent?: boolean;
 }
 
 interface ModelConfig {
@@ -105,8 +121,8 @@ function buildMcpServers(agentConfig: AgentConfig): Record<string, any> | undefi
   return Object.keys(servers).length > 0 ? servers : undefined;
 }
 
-function hasSessionHistory(workspace: string, sessionId: string): boolean {
-  const projectsDir = path.join(workspace, ".claude", "projects");
+function hasSessionHistory(claudeDir: string, sessionId: string): boolean {
+  const projectsDir = path.join(claudeDir, "projects");
   if (!fs.existsSync(projectsDir)) return false;
 
   try {
@@ -156,13 +172,18 @@ export interface SSEChunk {
  */
 export async function* processMessage(
   sessionId: string,
+  agentId: string,
   content: string,
   modelConfig: ModelConfig | null | undefined,
   agentConfig: AgentConfig,
   abortController?: AbortController,
 ): AsyncGenerator<SSEChunk> {
-  const workspace = sessionWorkspace(sessionId);
-  fs.mkdirSync(workspace, { recursive: true });
+  const home = sessionHome(sessionId);
+  const claudeDir = sessionClaudeDir(sessionId);
+  const tmpDir = sessionTmp(sessionId);
+  fs.mkdirSync(home, { recursive: true });
+  fs.mkdirSync(claudeDir, { recursive: true });
+  fs.mkdirSync(tmpDir, { recursive: true });
 
   const mc: ModelConfig = modelConfig ?? {};
   if (!mc.model || !mc.backend) {
@@ -171,7 +192,7 @@ export async function* processMessage(
   }
   const backend = mc.backend;
   const resolvedModel = resolveModelName(backend, mc.model);
-  const canResume = hasSessionHistory(workspace, sessionId);
+  const canResume = hasSessionHistory(claudeDir, sessionId);
 
   const env: Record<string, string> = {
     ANTHROPIC_BASE_URL: LITELLM_URL,
@@ -180,7 +201,9 @@ export async function* processMessage(
     ...(agentConfig.user_token
       ? { ANTHROPIC_CUSTOM_HEADERS: `X-Aviary-User-Token: ${agentConfig.user_token}` }
       : {}),
-    SESSION_WORKSPACE: workspace,
+    SESSION_WORKSPACE: home,
+    SESSION_CLAUDE_DIR: claudeDir,
+    SESSION_TMP: tmpDir,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     CLAUDE_CODE_MAX_RETRIES: "2",
     ...(mc.max_output_tokens != null
@@ -204,23 +227,92 @@ export async function* processMessage(
       : {}),
   };
 
-  const options = {
+  // Build MCP servers (gateway + legacy)
+  const mcpServers: Record<string, any> = buildMcpServers(agentConfig) ?? {};
+
+  // A2A tools: start a local HTTP MCP server if accessible_agents is present and NOT a sub-agent.
+  // Uses HTTP type (not SDK in-process type) so the CLI can reconnect on session resume.
+  const accessibleAgents = agentConfig.accessible_agents ?? [];
+  const isSubAgent = agentConfig.is_sub_agent === true;
+  let a2aServer: A2AServer | null = null;
+  const a2aToolNames: string[] = [];
+
+  if (accessibleAgents.length > 0 && !isSubAgent && agentConfig.user_external_id) {
+    a2aServer = await startA2AServer(accessibleAgents, {
+      sessionId,
+      userExternalId: agentConfig.user_external_id,
+    });
+    mcpServers["a2a"] = { type: "http", url: a2aServer.url };
+    a2aToolNames.push(...a2aServer.toolNames);
+  }
+
+  // Build system prompt — use preset with append so SDK built-in tools
+  // (like Agent) also receive the instruction.
+  let appendPrompt = agentConfig.instruction || "";
+
+  // Append sub-agent catalog (for main agents with A2A tools)
+  if (a2aToolNames.length > 0) {
+    const agentList = accessibleAgents
+      .map((a) => `- @${a.slug}: ${a.description || a.name}`)
+      .join("\n");
+    appendPrompt += `\n\n## Available Sub-Agents\nYou can delegate tasks to these agents using the corresponding mcp__a2a__ask_{slug} tool:\n${agentList}`;
+  }
+
+  const systemPrompt = {
+    type: "preset" as const,
+    preset: "claude_code" as const,
+    append: appendPrompt,
+  };
+
+  // Merge allowed tools with A2A tool names
+  const allowedTools = [
+    ...(agentConfig.tools ?? []),
+    ...a2aToolNames,
+  ];
+
+  const options: Record<string, unknown> = {
     model: resolvedModel,
-    systemPrompt: agentConfig.instruction,
-    cwd: "/home/usr",
+    systemPrompt,
+    settingSources: ["user"],
+    cwd: "/workspace",
     pathToClaudeCodeExecutable: CLAUDE_CLI_PATH,
     permissionMode: "bypassPermissions" as const,
-    allowedTools: agentConfig.tools,
+    allowedTools: allowedTools.length > 0 ? allowedTools : undefined,
     disallowedTools: ["WebSearch"],
-    mcpServers: buildMcpServers(agentConfig),
+    mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
     env,
-    // TS SDK doesn't expose sessionId as an option, but CLI supports --session-id.
-    // Use extraArgs to inject it on first message, resume on subsequent messages.
     includePartialMessages: true,
     ...(canResume ? {} : { extraArgs: { "session-id": sessionId } }),
     ...(canResume ? { resume: sessionId } : {}),
     ...(abortController ? { abortController } : {}),
   };
+
+  // PreToolUse hook: when SDK is about to call an A2A tool, capture the real
+  // tool_use_id and pass it to the A2A server. This is the SDK's official hook
+  // mechanism — guaranteed to fire before tools/call, no timing assumptions.
+  if (a2aServer) {
+    options.hooks = {
+      PreToolUse: [{
+        matcher: "mcp__a2a__ask_*",
+        hooks: [async (input: any, toolUseID: string | undefined) => {
+          if (toolUseID && input.tool_name?.startsWith("mcp__a2a__ask_")) {
+            a2aServer!.enqueueToolUseId(input.tool_name, toolUseID);
+          }
+          return { continue: true };
+        }],
+      }],
+    };
+  }
+
+  // Use async generator for prompt — required by SDK when using custom MCP tools
+  async function* promptGenerator() {
+    yield {
+      type: "user" as const,
+      message: { role: "user" as const, content },
+      parent_tool_use_id: null,
+      session_id: sessionId,
+    };
+  }
 
   let fullResponse = "";
   // Track cumulative lengths to extract deltas from partial snapshots.
@@ -235,7 +327,7 @@ export async function* processMessage(
   let hasStreamDeltas = false;
 
   try {
-    for await (const message of query({ prompt: content, options })) {
+    for await (const message of query({ prompt: promptGenerator(), options })) {
       const msg = message as SDKMessage & Record<string, any>;
 
       if (msg.type === "stream_event") {
@@ -352,5 +444,8 @@ export async function* processMessage(
     }
     const errorMsg = `[${resolvedModel}] Error: ${e}`;
     yield { type: "chunk", content: errorMsg };
+  } finally {
+    // Shut down the A2A HTTP server after the message is fully processed
+    a2aServer?.close();
   }
 }

@@ -43,17 +43,18 @@ function MessageCopyButton({ text }: { text: string }) {
 }
 
 /** Convert raw saved block metadata into a StreamBlock tree */
-function restoreBlocks(raw: Array<Record<string, unknown>>): StreamBlock[] {
+function restoreBlocks(raw: Array<Record<string, unknown>>, cancelled = false): StreamBlock[] {
   const flat: StreamBlock[] = raw.map((block, i) => {
     if (block.type === "tool_call") {
+      const hasResult = block.result != null;
       return {
         type: "tool_call" as const,
         id: String(block.tool_use_id ?? `saved-${i}`),
         name: String(block.name ?? "unknown"),
         input: (block.input as Record<string, unknown>) ?? {},
         status: "complete" as const,
-        result: block.result != null ? String(block.result) : undefined,
-        is_error: block.is_error === true ? true : undefined,
+        result: hasResult ? String(block.result) : cancelled ? "[Cancelled]" : undefined,
+        is_error: block.is_error === true ? true : (!hasResult && cancelled) ? true : undefined,
         parent_tool_use_id: block.parent_tool_use_id ? String(block.parent_tool_use_id) : undefined,
       };
     }
@@ -113,6 +114,7 @@ export function MessageBubble({ message, currentUserId }: MessageBubbleProps) {
   const isUser = message.sender_type === "user";
   const savedBlocks = !isUser ? (message.metadata?.blocks as Array<Record<string, unknown>> | undefined) : undefined;
   const hasBlocks = Array.isArray(savedBlocks) && savedBlocks.length > 0;
+  const isCancelled = !isUser && message.metadata?.cancelled === true;
 
   return (
     <div
@@ -142,7 +144,7 @@ export function MessageBubble({ message, currentUserId }: MessageBubbleProps) {
         ) : hasBlocks ? (
           /* Render saved blocks as tree (subagent tools nested under Agent) */
           <>
-            {restoreBlocks(savedBlocks!).map((block) => {
+            {restoreBlocks(savedBlocks!, isCancelled).map((block) => {
               if (block.type === "tool_call") {
                 return <ToolCallCard key={block.id} block={block} />;
               }
@@ -164,6 +166,12 @@ export function MessageBubble({ message, currentUserId }: MessageBubbleProps) {
             <div className="markdown-body break-words">
               <MarkdownContent content={message.content} />
             </div>
+          </div>
+        )}
+
+        {isCancelled && (
+          <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-1.5 text-xs text-amber-400/80">
+            Cancelled by user
           </div>
         )}
 

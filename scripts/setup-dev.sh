@@ -71,8 +71,17 @@ for f in ./k8s/platform/*.yaml; do
   HOST_GATEWAY_IP="$K8S_GATEWAY_IP" envsubst '${HOST_GATEWAY_IP}' < "$f" \
     | docker compose exec -T k8s kubectl apply -f -
 done
+# Create shared workspace directory on K8s node (hostPath for A2A file sharing).
+# Owned by UID 1000 (node user) so agent Pods can write without root.
+docker compose exec -T k8s sh -c 'mkdir -p /workspace-shared && chown 1000:1000 /workspace-shared'
+
 # Restart platform pods to pick up freshly loaded images
 docker compose exec -T k8s kubectl rollout restart deployment -n platform 2>/dev/null || true
+# Also restart any existing agent runtime pods so they pick up the new image
+docker compose exec -T k8s sh -c \
+  'for ns in $(kubectl get ns -l aviary/managed=true -o name 2>/dev/null); do
+     kubectl rollout restart deployment -n "${ns#namespace/}" 2>/dev/null || true
+   done' 2>/dev/null || true
 echo "  Platform namespace ready."
 
 # 7. Wait for application services

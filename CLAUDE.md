@@ -95,12 +95,13 @@ Each runtime Pod runs a `SessionManager` that tracks active sessions, enforces c
 
 ### Session Isolation (bubblewrap)
 The `claude` binary in PATH is a wrapper script (`scripts/claude-sandbox.sh`). The real binary is renamed to `claude-real` at build time (see Dockerfile). SDK must use `pathToClaudeCodeExecutable: "/usr/local/bin/claude"` to bypass the bundled binary and use the wrapper. (node:22-slim puts npm global binaries in `/usr/local/bin/`, unlike the old python:3.12-slim + nodesource setup which used `/usr/bin/`.) When the SDK invokes `claude`, the wrapper reads `SESSION_WORKSPACE` from env (set per-session in `src/agent.ts`) and runs `claude-real` inside a bwrap mount namespace where:
-- `/workspace/sessions/` is an empty tmpfs (hides ALL sessions)
-- `$SESSION_WORKSPACE` is bind-mounted to `/home/usr` (HOME and cwd)
-- `/tmp` is bind-mounted to `/tmp/{sessionId}/` on the host (per-session tmp isolation)
+- `/workspace-shared/` is an empty tmpfs (hides other sessions' shared homes)
+- `$SESSION_WORKSPACE` (`/workspace-shared/{session_id}`) is bind-mounted to `/workspace` — shared across all agents in the session (hostPath)
+- `$SESSION_CLAUDE_DIR` (`/workspace/.claude/{session_id}`) is bind-mounted to `/workspace/.claude` — per-agent CLI context overlay (PVC)
+- `$SESSION_TMP` (`/tmp/{session_id}`) is bind-mounted to `/tmp` — per-agent temp files (NOT shared across agents)
 - PID namespace is isolated
 
-CLI session data (`.claude/`) persists on PVC at `$SESSION_WORKSPACE/.claude`, naturally accessible at `/home/usr/.claude` inside the sandbox. Other sessions' files and tmp directories are invisible.
+All agents in the same session share `/workspace` via hostPath, enabling seamless file exchange. `/tmp` is per-agent (not shared across Pods). CLI session data (`.claude/`) is per-agent (PVC overlay), so conversation histories don't collide. Other sessions' files are invisible.
 
 ### GitHub Token Injection
 The API server fetches the user's GitHub token from Vault (`secret/aviary/credentials/{sub}/github-token`) on every message and passes it in `agent_config.credentials.github_token`. The runtime injects it as `GITHUB_TOKEN` and `GH_TOKEN` env vars, and configures a git credential helper (`scripts/git-credential-github.sh`) via `GIT_CONFIG_*` env vars. Inside the sandbox, both `git` and `gh` CLI are pre-authenticated — no MCP server needed for GitHub operations.
