@@ -263,6 +263,7 @@ services:
     volumes:
       - ./mcp-gateway:/workspace/mcp-gateway
       - ./shared:/workspace/shared
+      - ./config/mcp-gateway/platform-servers.yaml:/app/config/platform-servers.yaml
       - /workspace/.venv
     environment:
       DATABASE_URL: postgresql+asyncpg://aviary:aviary@postgres:5432/aviary
