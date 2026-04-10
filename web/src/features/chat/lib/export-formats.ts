@@ -1,9 +1,16 @@
 /**
  * Export helpers — turn a list of messages into printable HTML.
  *
- * Two flavours:
- *   - renderChatHTML: visual export (clones the live DOM with stylesheets)
- *   - renderChatMarkdownHTML: structured markdown rendered to HTML for print
+ * The pipeline produces final HTML directly (not markdown) so that tool
+ * call results can be rendered as raw `<pre>` text without going through
+ * any markdown parser. Only user/agent text-block content is passed
+ * through the markdown renderer (`mdToHtml`) — tool blocks, thinking,
+ * and structural chrome are built as plain HTML strings.
+ *
+ * Why: a previous version mixed everything into one markdown string and
+ * fed it to marked, which then re-interpreted markdown syntax inside
+ * tool result `<pre>` blocks (asterisks, backticks, etc were being
+ * formatted instead of shown literally).
  */
 
 type Block = Record<string, unknown>;
@@ -11,23 +18,28 @@ type Block = Record<string, unknown>;
 function escapeHtml(str: string): string {
   return str.replace(/[&<>"']/g, (c) => {
     switch (c) {
-      case "&": return "&amp;";
-      case "<": return "&lt;";
-      case ">": return "&gt;";
-      case '"': return "&quot;";
-      default: return "&#39;";
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      default:
+        return "&#39;";
     }
   });
 }
 
-function renderToolTree(tools: Block[], indent: number): string {
+function renderToolTreeHtml(tools: Block[], indent: number): string {
   return tools
     .map((t) => {
       const parts: string[] = [];
-      const name = t.name ?? "unknown";
+      const name = String(t.name ?? "unknown");
       const err = t.is_error ? " [ERROR]" : "";
       parts.push(`<div class="tool-block" style="margin-left:${indent * 12}px">`);
-      parts.push(`<strong>Tool: ${escapeHtml(String(name))}</strong>${err}`);
+      parts.push(`<strong>Tool: ${escapeHtml(name)}</strong>${err}`);
 
       const input = t.input as Record<string, unknown> | undefined;
       if (input && Object.keys(input).length > 0) {
@@ -40,7 +52,7 @@ function renderToolTree(tools: Block[], indent: number): string {
       }
       const children = t.children as Block[] | undefined;
       if (children && children.length > 0) {
-        parts.push(renderToolTree(children, indent + 1));
+        parts.push(renderToolTreeHtml(children, indent + 1));
       }
       parts.push("</div>");
       return parts.join("\n");
@@ -48,8 +60,8 @@ function renderToolTree(tools: Block[], indent: number): string {
     .join("\n");
 }
 
-function renderBlocks(blocks: Block[]): string {
-  // Build tree from flat blocks (same logic as build-block-tree, inlined to keep this pure)
+function renderBlocksHtml(blocks: Block[], mdToHtml: (md: string) => string): string {
+  // Build subagent nesting tree (mirrors `buildBlockTree` but on raw saved metadata)
   const toolMap = new Map<string, Block & { children: Block[] }>();
   const roots: Block[] = [];
   for (const b of blocks) {
@@ -74,12 +86,15 @@ function renderBlocks(blocks: Block[]): string {
       if (b.type === "thinking") {
         const text = String(b.content ?? "").slice(0, 300);
         const ellipsis = String(b.content ?? "").length > 300 ? "..." : "";
-        return `<div class="thinking">Thinking: ${escapeHtml(text)}${ellipsis}</div>`;
+        return `<div class="thinking">Thinking: ${escapeHtml(text + ellipsis)}</div>`;
       }
-      if (b.type === "tool_call") return renderToolTree([b], 0);
-      return escapeHtml(String(b.content ?? ""));
+      if (b.type === "tool_call") {
+        return renderToolTreeHtml([b], 0);
+      }
+      // Text block — only this branch goes through markdown rendering.
+      return `<div class="text-block">${mdToHtml(String(b.content ?? ""))}</div>`;
     })
-    .join("\n\n");
+    .join("\n");
 }
 
 export interface ExportableMessage {
@@ -88,18 +103,30 @@ export interface ExportableMessage {
   metadata?: Record<string, unknown>;
 }
 
-export function buildMarkdownExport(messages: ExportableMessage[], title: string): string {
-  const lines = messages
+/**
+ * Build the full HTML body for a chat export.
+ *
+ * `mdToHtml` is injected so this module stays free of the marked dependency
+ * and the dynamic-import boundary lives in the calling hook.
+ */
+export function buildExportHTML(
+  messages: ExportableMessage[],
+  title: string,
+  mdToHtml: (md: string) => string,
+): string {
+  const messagesHtml = messages
     .map((msg) => {
       const role = msg.sender_type === "user" ? "User" : "Agent";
-      const header = `### ${role}\n`;
       const blocks = msg.metadata?.blocks as Block[] | undefined;
-      const body = blocks && blocks.length > 0 ? renderBlocks(blocks) : msg.content;
-      return header + "\n" + body;
+      const body =
+        blocks && blocks.length > 0
+          ? renderBlocksHtml(blocks, mdToHtml)
+          : `<div class="text-block">${mdToHtml(msg.content)}</div>`;
+      return `<section><h3>${escapeHtml(role)}</h3>${body}</section>`;
     })
-    .join("\n\n---\n\n");
+    .join("<hr />");
 
-  return `# ${title}\n\n${lines}`;
+  return `<h1>${escapeHtml(title)}</h1>${messagesHtml}`;
 }
 
 export const PRINT_STYLES = `
@@ -114,5 +141,6 @@ export const PRINT_STYLES = `
   .thinking { background: #f9f9f0; border-left: 3px solid #d4c87a; padding: 4px 8px; margin: 4px 0; font-size: 10px; color: #666; line-height: 1.4; white-space: pre-wrap; }
   .tool-block { font-size: 10px; color: #555; margin: 2px 0; }
   .tool-block pre { font-size: 9px; margin: 2px 0; padding: 4px 6px; }
+  .text-block { margin: 4px 0; }
   @media print { body { margin: 10px; } }
 `;

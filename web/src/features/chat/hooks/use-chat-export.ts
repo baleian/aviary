@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, type RefObject } from "react";
-import { buildMarkdownExport, PRINT_STYLES } from "@/features/chat/lib/export-formats";
+import { buildExportHTML, PRINT_STYLES } from "@/features/chat/lib/export-formats";
 import type { Message, Session } from "@/types";
 
 interface UseChatExportOptions {
@@ -48,20 +48,22 @@ export function useChatExport({ containerRef, messages, session }: UseChatExport
     if (messages.length === 0) return;
 
     const title = session?.title || "Chat Export";
-    const md = buildMarkdownExport(messages, title);
 
-    // marked is dynamically imported to keep it out of the main bundle
+    // marked is dynamically imported to keep it out of the main bundle.
+    // It's only used for the inner content of text blocks — tool blocks
+    // bypass it entirely so their results render as raw <pre> text.
     const { marked } = await import("marked");
+    const mdToHtml = (md: string) => marked.parse(md) as string;
+    const bodyHtml = buildExportHTML(messages, title, mdToHtml);
 
     const win = window.open("", "_blank");
     if (!win) return;
 
     win.document.write(`<!DOCTYPE html><html><head>
       <style>${PRINT_STYLES}</style>
-    </head><body></body></html>`);
+    </head><body>${bodyHtml}</body></html>`);
     win.document.close();
 
-    win.document.body.innerHTML = marked.parse(md) as string;
     setTimeout(() => win.print(), 500);
   }, [messages, session]);
 
