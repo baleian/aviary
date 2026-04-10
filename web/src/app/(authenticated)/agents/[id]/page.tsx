@@ -3,15 +3,27 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { useAuth } from "@/components/providers/auth-provider";
+import { ArrowLeft, Trash2, Settings, MessageSquare, AlertCircle } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { apiFetch } from "@/lib/api";
+import { Badge } from "@/components/ui/badge";
+import { LoadingState } from "@/components/feedback/loading-state";
+import { ErrorState } from "@/components/feedback/error-state";
+import { agentsApi } from "@/features/agents/api/agents-api";
+import { useAuth } from "@/features/auth/providers/auth-provider";
+import { routes } from "@/lib/constants/routes";
+import { formatTokens } from "@/lib/utils/format";
 import type { Agent, McpToolBinding } from "@/types";
 
+/**
+ * Agent detail page — read-only overview of an agent's configuration.
+ *
+ * Layout: breadcrumb + actions row, hero header, info cards grid, footer
+ * action bar. Deleted agents show a banner and disable session creation.
+ */
 export default function AgentDetailPage() {
   const { user } = useAuth();
-  const params = useParams();
+  const params = useParams<{ id: string }>();
   const router = useRouter();
   const [agent, setAgent] = useState<Agent | null>(null);
   const [mcpTools, setMcpTools] = useState<McpToolBinding[]>([]);
@@ -20,40 +32,28 @@ export default function AgentDetailPage() {
 
   useEffect(() => {
     if (!user) return;
-    Promise.all([
-      apiFetch<Agent>(`/agents/${params.id}`),
-      apiFetch<McpToolBinding[]>(`/mcp/agents/${params.id}/tools`).catch(() => []),
-    ])
+    Promise.all([agentsApi.get(params.id), agentsApi.getMcpTools(params.id)])
       .then(([agentData, bindings]) => {
         setAgent(agentData);
         setMcpTools(bindings);
       })
-      .catch((err) => setError(err.message))
+      .catch((err: Error) => setError(err.message))
       .finally(() => setLoading(false));
   }, [user, params.id]);
 
   if (loading) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <div className="flex items-center gap-3 text-muted-foreground">
-          <svg className="h-5 w-5 animate-spin" viewBox="0 0 24 24" fill="none">
-            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-          </svg>
-          <span className="text-sm">Loading agent...</span>
-        </div>
-      </div>
-    );
+    return <LoadingState fullHeight label="Loading agent…" />;
   }
 
   if (error || !agent) {
     return (
-      <div className="mx-auto max-w-3xl p-8">
-        <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-5 text-sm text-destructive">
-          {error || "Agent not found"}
-        </div>
-        <Link href="/agents" className="mt-4 inline-flex items-center gap-1 text-sm text-primary hover:underline">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5"/><polyline points="12 19 5 12 12 5"/></svg>
+      <div className="mx-auto max-w-container-sm p-8">
+        <ErrorState title="Couldn't load agent" description={error || "Agent not found"} />
+        <Link
+          href={routes.agents}
+          className="mt-4 inline-flex items-center gap-1.5 type-caption text-info hover:opacity-80"
+        >
+          <ArrowLeft size={12} strokeWidth={2} />
           Back to agents
         </Link>
       </div>
@@ -62,36 +62,42 @@ export default function AgentDetailPage() {
 
   const handleDelete = async () => {
     if (!confirm("Are you sure you want to delete this agent? This action cannot be undone.")) return;
-    await apiFetch(`/agents/${agent.id}`, { method: "DELETE" });
-    router.push("/agents");
+    await agentsApi.remove(agent.id);
+    router.push(routes.agents);
   };
 
   const handleNewSession = async () => {
-    const session = await apiFetch<any>(`/agents/${agent.id}/sessions`, {
-      method: "POST",
-      body: JSON.stringify({ type: "private" }),
-    });
-    router.push(`/sessions/${session.id}`);
+    const session = await agentsApi.createSession(agent.id);
+    router.push(routes.session(session.id));
   };
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-4xl px-8 py-8">
+    <div className="h-full overflow-y-auto bg-canvas">
+      <div className="mx-auto max-w-container px-8 py-8">
         {/* Breadcrumb + actions */}
         <div className="mb-6 flex items-center justify-between">
-          <Link href="/agents" className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5"/><polyline points="12 19 5 12 12 5"/></svg>
+          <Link
+            href={routes.agents}
+            className="inline-flex items-center gap-1.5 type-caption text-fg-muted hover:text-fg-primary transition-colors"
+          >
+            <ArrowLeft size={12} strokeWidth={2} />
             Agents
           </Link>
           <div className="flex items-center gap-2">
-            <Link href={`/agents/${agent.id}/edit`}>
-              <Button variant="ghost" size="sm">Edit</Button>
+            <Link href={routes.agentEdit(agent.id)}>
+              <Button variant="ghost" size="sm">
+                Edit
+              </Button>
             </Link>
-            <Link href={`/agents/${agent.id}/settings`}>
-              <Button variant="ghost" size="sm">Settings</Button>
+            <Link href={routes.agentSettings(agent.id)}>
+              <Button variant="ghost" size="sm">
+                <Settings size={13} strokeWidth={1.75} />
+                Settings
+              </Button>
             </Link>
             {agent.status !== "deleted" && (
-              <Button variant="destructive" size="sm" onClick={handleDelete}>
+              <Button variant="danger" size="sm" onClick={handleDelete}>
+                <Trash2 size={13} strokeWidth={1.75} />
                 Delete
               </Button>
             )}
@@ -100,22 +106,26 @@ export default function AgentDetailPage() {
 
         {/* Deleted banner */}
         {agent.status === "deleted" && (
-          <div className="mb-6 flex items-center gap-2.5 rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-destructive">
-              <circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" />
-            </svg>
-            <span className="text-sm text-destructive">This agent has been deleted. Existing sessions remain active, but no new sessions can be created.</span>
+          <div className="mb-6 flex items-center gap-2.5 rounded-md border border-danger/20 bg-danger/[0.04] px-4 py-3">
+            <AlertCircle size={14} strokeWidth={2} className="shrink-0 text-danger" />
+            <span className="type-caption text-danger">
+              This agent has been deleted. Existing sessions remain active, but no new sessions can be created.
+            </span>
           </div>
         )}
 
-        {/* Agent header */}
+        {/* Hero header */}
         <div className="mb-8 flex items-start gap-4">
-          <div className={`flex h-14 w-14 items-center justify-center rounded-xl text-2xl ${agent.status === "deleted" ? "bg-secondary" : "bg-primary/10"}`}>
+          <div
+            className={`flex h-14 w-14 items-center justify-center rounded-lg bg-elevated shadow-2 text-2xl ${
+              agent.status === "deleted" ? "grayscale" : ""
+            }`}
+          >
             {agent.icon || "🤖"}
           </div>
           <div className="flex-1">
-            <h1 className="text-xl font-bold text-foreground">{agent.name}</h1>
-            <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+            <h1 className="type-card-heading text-fg-primary">{agent.name}</h1>
+            <p className="mt-1 type-body-tight text-fg-muted">
               {agent.description || "No description"}
             </p>
           </div>
@@ -123,7 +133,7 @@ export default function AgentDetailPage() {
 
         {/* Info cards */}
         <div className="grid gap-4 md:grid-cols-2">
-          <Card>
+          <Card variant="elevated">
             <CardHeader>
               <CardTitle>Model</CardTitle>
             </CardHeader>
@@ -131,12 +141,15 @@ export default function AgentDetailPage() {
               <InfoRow label="Backend" value={agent.model_config.backend} />
               <InfoRow label="Model" value={agent.model_config.model} mono />
               {agent.model_config.max_output_tokens != null && (
-                <InfoRow label="Max Output Tokens" value={`${(agent.model_config.max_output_tokens / 1000).toFixed(0)}k`} />
+                <InfoRow
+                  label="Max Output Tokens"
+                  value={formatTokens(agent.model_config.max_output_tokens)}
+                />
               )}
             </CardContent>
           </Card>
 
-          <Card>
+          <Card variant="elevated">
             <CardHeader>
               <CardTitle>Configuration</CardTitle>
             </CardHeader>
@@ -147,64 +160,67 @@ export default function AgentDetailPage() {
             </CardContent>
           </Card>
 
-          <Card className="md:col-span-2">
+          <Card variant="elevated" className="md:col-span-2">
             <CardHeader>
               <CardTitle>System Instruction</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="rounded-lg bg-secondary/50 p-4 text-sm leading-relaxed text-foreground/80">
+              <div className="rounded-md bg-canvas p-4 type-body-tight text-fg-secondary">
                 <pre className="whitespace-pre-wrap font-sans">{agent.instruction}</pre>
               </div>
             </CardContent>
           </Card>
 
-          <Card className="md:col-span-2">
+          <Card variant="elevated" className="md:col-span-2">
             <CardHeader>
               <CardTitle>Tools</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               {agent.tools.length > 0 && (
                 <div>
-                  <p className="text-xs text-muted-foreground mb-2">Built-in</p>
+                  <p className="type-caption text-fg-muted mb-2">Built-in</p>
                   <div className="flex flex-wrap gap-2">
-                    {agent.tools.map((tool: string) => (
-                      <span key={tool} className="rounded-lg bg-accent px-2.5 py-1 text-xs font-medium text-accent-foreground">
+                    {agent.tools.map((tool) => (
+                      <Badge key={tool} variant="muted">
                         {tool}
-                      </span>
+                      </Badge>
                     ))}
                   </div>
                 </div>
               )}
               {mcpTools.length > 0 && (
                 <div>
-                  <p className="text-xs text-muted-foreground mb-2">MCP Tools</p>
+                  <p className="type-caption text-fg-muted mb-2">MCP Tools</p>
                   <div className="flex flex-wrap gap-2">
                     {mcpTools.map((b) => (
-                      <span key={b.id} className="rounded-lg bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary ring-1 ring-inset ring-primary/20" title={b.tool.description || ""}>
+                      <Badge key={b.id} variant="info" title={b.tool.description || ""}>
                         {b.tool.qualified_name}
-                      </span>
+                      </Badge>
                     ))}
                   </div>
                 </div>
               )}
               {agent.tools.length === 0 && mcpTools.length === 0 && (
-                <p className="text-sm text-muted-foreground">No tools configured</p>
+                <p className="type-caption text-fg-muted">No tools configured</p>
               )}
             </CardContent>
           </Card>
-
         </div>
 
-        {/* Quick actions */}
+        {/* Footer actions */}
         <div className="mt-8 flex gap-3">
-          <Button size="lg" className="flex-1" onClick={handleNewSession} disabled={agent.status === "deleted"}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-            </svg>
+          <Button
+            variant="cta"
+            size="lg"
+            className="flex-1"
+            onClick={handleNewSession}
+            disabled={agent.status === "deleted"}
+          >
+            <MessageSquare size={16} strokeWidth={1.75} />
             New Chat
           </Button>
-          <Link href={`/agents/${agent.id}/sessions`} className="flex-1">
-            <Button size="lg" variant="outline" className="w-full">
+          <Link href={routes.agentSessions(agent.id)} className="flex-1">
+            <Button variant="secondary" size="lg" className="w-full">
               View All Sessions
             </Button>
           </Link>
@@ -214,11 +230,25 @@ export default function AgentDetailPage() {
   );
 }
 
-function InfoRow({ label, value, mono, capitalize: cap }: { label: string; value: string; mono?: boolean; capitalize?: boolean }) {
+function InfoRow({
+  label,
+  value,
+  mono,
+  capitalize: cap,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  capitalize?: boolean;
+}) {
   return (
-    <div className="flex items-center justify-between text-sm">
-      <span className="text-muted-foreground">{label}</span>
-      <span className={`text-foreground/90 ${mono ? "font-mono text-xs" : ""} ${cap ? "capitalize" : ""}`}>{value}</span>
+    <div className="flex items-center justify-between type-body-tight">
+      <span className="text-fg-muted">{label}</span>
+      <span
+        className={`text-fg-secondary ${mono ? "font-mono type-code-sm" : ""} ${cap ? "capitalize" : ""}`}
+      >
+        {value}
+      </span>
     </div>
   );
 }

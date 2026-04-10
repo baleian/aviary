@@ -1,0 +1,73 @@
+/**
+ * Icon barrel — re-export all lucide-react icons used across the app.
+ *
+ * Centralizes the import surface so we can swap icon libraries or add
+ * brand icons in one place. Default stroke-width 1.75 matches the
+ * Raycast aesthetic better than lucide's 2 default.
+ */
+export {
+  // Navigation
+  ArrowLeft,
+  ArrowRight,
+  ChevronLeft,
+  ChevronRight,
+  ChevronDown,
+  ChevronUp,
+  X,
+
+  // Actions
+  Plus,
+  Trash2,
+  Pencil,
+  Copy,
+  Check,
+  Search,
+  Settings,
+  LogOut,
+  Filter,
+  RefreshCw,
+
+  // Files / IO
+  FileText,
+  Printer,
+  Download,
+  Upload,
+  Folder,
+  FolderOpen,
+
+  // Communication
+  MessageSquare,
+  Send,
+  AtSign,
+
+  // Status / Indicators
+  Circle,
+  CircleDot,
+  AlertCircle,
+  AlertTriangle,
+  Info,
+  CheckCircle2,
+  XCircle,
+  Loader2,
+
+  // Domain
+  Bot,
+  Users,
+  Shield,
+  Lock,
+  Globe,
+  Wrench,
+  Terminal,
+  Code2,
+  Sparkles,
+  Brain,
+  Eye,
+  Ear,
+  Layers,
+
+  // Layout
+  LayoutGrid,
+  PanelLeft,
+  PanelLeftClose,
+  Square,
+} from "lucide-react";
