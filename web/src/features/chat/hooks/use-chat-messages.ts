@@ -22,6 +22,8 @@ interface UseChatMessagesResult {
   todos: ReturnType<typeof useStreamingBlocks>["todos"];
   status: ReturnType<typeof useSessionWebSocket>["status"];
   statusMessage: ReturnType<typeof useSessionWebSocket>["statusMessage"];
+  reconnectIn: ReturnType<typeof useSessionWebSocket>["reconnectIn"];
+  retryNow: ReturnType<typeof useSessionWebSocket>["retryNow"];
   send: (content: string) => boolean;
   cancel: () => void;
   patchSession: (patch: Partial<Session>) => void;
@@ -214,10 +216,17 @@ export function useChatMessages(sessionId: string): UseChatMessagesResult {
     [sessionId, reloadHistory],
   );
 
-  const { ws, status, statusMessage } = useSessionWebSocket({
+  const { ws, status, statusMessage, reconnectIn, retryNow } = useSessionWebSocket({
     sessionId,
     enabled: !!session,
     onMessage: handleMessage,
+    // After every successful (re)connect, refresh history so anything that
+    // happened during the offline window appears in the UI.
+    onReconnected: () => {
+      reloadHistory().catch(() => {
+        /* non-fatal */
+      });
+    },
   });
 
   const send = useCallback(
@@ -247,6 +256,8 @@ export function useChatMessages(sessionId: string): UseChatMessagesResult {
     todos: blockState.todos,
     status,
     statusMessage,
+    reconnectIn,
+    retryNow,
     send,
     cancel,
     patchSession,

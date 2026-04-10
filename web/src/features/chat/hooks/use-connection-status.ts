@@ -7,11 +7,22 @@ import type { ConnectionStatus } from "@/lib/ws";
  * useConnectionStatus — debounces intermediate "still connecting" states
  * so fast connections don't flicker their banner UI.
  *
- * Only the terminal states (ready / offline / disconnected) flip immediately.
- * Intermediate states (connecting / provisioning / etc) wait `delayMs`
- * before being surfaced.
+ * Terminal / failure states flip immediately:
+ *   - ready, offline, disconnected, reconnecting
+ *
+ * Intermediate states (connecting / provisioning / spawning / waiting)
+ * wait `delayMs` before being surfaced.
+ *
+ * `reconnecting` is treated as immediate because the user explicitly needs
+ * to know recovery is happening — debouncing it would hide the banner
+ * during the very window the user is most likely to look at it.
  */
-const IMMEDIATE = new Set<ConnectionStatus>(["ready", "offline", "disconnected"]);
+const IMMEDIATE = new Set<ConnectionStatus>([
+  "ready",
+  "offline",
+  "disconnected",
+  "reconnecting",
+]);
 
 export function useConnectionStatus(raw: ConnectionStatus, delayMs = 500) {
   const [visible, setVisible] = useState<ConnectionStatus | null>(null);

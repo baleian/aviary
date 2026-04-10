@@ -68,12 +68,15 @@ export function ChatView({ sessionId }: { sessionId: string }) {
   const isReady = chat.status === "ready";
   const isInputDisabled = !isReady || chat.isStreaming;
   const displayStatus = visibleStatus ?? "ready";
+  // Banner shows "Connecting…" only for fresh first-connect intermediates.
+  // Reconnecting / offline / disconnected get their own dedicated banners.
   const showConnecting =
     !isReady &&
     visibleStatus !== null &&
     visibleStatus !== "ready" &&
     visibleStatus !== "offline" &&
-    visibleStatus !== "disconnected";
+    visibleStatus !== "disconnected" &&
+    visibleStatus !== "reconnecting";
 
   return (
     <div className="flex h-full flex-col bg-canvas">
@@ -90,6 +93,8 @@ export function ChatView({ sessionId }: { sessionId: string }) {
         status={displayStatus}
         statusMessage={chat.statusMessage}
         showConnecting={showConnecting}
+        reconnectIn={chat.reconnectIn}
+        onRetryNow={chat.retryNow}
       />
 
       <MessageList

@@ -11,22 +11,57 @@ const STATUS_LABELS: Record<ConnectionStatus, string> = {
   ready: "Online",
   offline: "Offline",
   disconnected: "Disconnected",
+  reconnecting: "Reconnecting",
 };
 
 interface ChatStatusBannerProps {
   status: ConnectionStatus;
   statusMessage: string | null;
   showConnecting: boolean;
+  /** Seconds until next reconnect attempt (null when not in backoff) */
+  reconnectIn: number | null;
+  /** Bypass the backoff and try immediately */
+  onRetryNow: () => void;
 }
 
 /**
- * ChatStatusBanner — slim banner above the message list showing
- * connection state when not ready. Three rendered variants:
- *   - intermediate (warning, spinner)
- *   - offline      (danger)
- *   - disconnected (neutral, "refresh to reconnect")
+ * ChatStatusBanner — slim banner above the message list showing connection
+ * state when not ready. Variants:
+ *   - intermediate connecting (warning, spinner) — debounced 500ms
+ *   - reconnecting (warning, spinner, countdown, [Retry now] button)
+ *   - offline (danger)
+ *   - disconnected — should be transient now that auto-reconnect runs;
+ *     kept as a fallback for edge cases
  */
-export function ChatStatusBanner({ status, statusMessage, showConnecting }: ChatStatusBannerProps) {
+export function ChatStatusBanner({
+  status,
+  statusMessage,
+  showConnecting,
+  reconnectIn,
+  onRetryNow,
+}: ChatStatusBannerProps) {
+  if (status === "reconnecting") {
+    return (
+      <div className="shrink-0 border-b border-warning/10 bg-warning/[0.04] px-6 py-2.5 animate-fade-in">
+        <div className="mx-auto flex max-w-container-prose items-center justify-center gap-2">
+          <Spinner size={14} className="text-warning" />
+          <span className="type-caption text-warning">
+            {reconnectIn != null
+              ? `Reconnecting in ${reconnectIn}s…`
+              : "Reconnecting…"}
+          </span>
+          <button
+            type="button"
+            onClick={onRetryNow}
+            className="ml-1 rounded-xs px-2 py-0.5 type-caption-bold text-warning underline underline-offset-2 hover:opacity-80 transition-opacity"
+          >
+            Retry now
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (showConnecting) {
     return (
       <div className="shrink-0 border-b border-warning/10 bg-warning/[0.04] px-6 py-2.5 animate-fade-in">
@@ -56,10 +91,15 @@ export function ChatStatusBanner({ status, statusMessage, showConnecting }: Chat
   if (status === "disconnected") {
     return (
       <div className="shrink-0 border-b border-white/[0.06] bg-raised/50 px-6 py-2.5">
-        <div className="mx-auto flex max-w-container-prose items-center justify-center">
-          <span className="type-caption text-fg-muted">
-            Connection lost. Refresh to reconnect.
-          </span>
+        <div className="mx-auto flex max-w-container-prose items-center justify-center gap-2">
+          <span className="type-caption text-fg-muted">Connection lost.</span>
+          <button
+            type="button"
+            onClick={onRetryNow}
+            className="rounded-xs px-2 py-0.5 type-caption-bold text-info underline underline-offset-2 hover:opacity-80 transition-opacity"
+          >
+            Reconnect
+          </button>
         </div>
       </div>
     );

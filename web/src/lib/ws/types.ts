@@ -12,7 +12,8 @@ export type ConnectionStatus =
   | "waiting"
   | "ready"
   | "offline"
-  | "disconnected";
+  | "disconnected"
+  | "reconnecting";
 
 export type WSMessage =
   | { type: "status"; status: ConnectionStatus; message?: string }

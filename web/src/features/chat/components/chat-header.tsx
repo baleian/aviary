@@ -17,6 +17,7 @@ const STATUS_DOT: Record<ConnectionStatus, string> = {
   ready: "bg-success",
   offline: "bg-danger",
   disconnected: "bg-fg-disabled",
+  reconnecting: "bg-warning animate-pulse-soft",
 };
 
 const STATUS_TEXT: Record<ConnectionStatus, string> = {
@@ -27,6 +28,7 @@ const STATUS_TEXT: Record<ConnectionStatus, string> = {
   ready: "text-success",
   offline: "text-danger",
   disconnected: "text-fg-muted",
+  reconnecting: "text-warning",
 };
 
 interface ChatHeaderProps {

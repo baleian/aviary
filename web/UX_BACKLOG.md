@@ -619,7 +619,11 @@ URL paste → "Fetch this URL?" 칩 제안 (WebFetch 자동).
 
 ## CONN-2 🔥 자동 재연결
 
-**상태**: pending
+**상태**: accepted
+
+**v1 범위**: WS close 감지시 exponential backoff (500ms → 30s cap) 자동
+재시도. 새 status `"reconnecting"` 도입. 재연결 성공시 메시지 history
+재동기화. Retry now 수동 버튼. 메시지 큐잉, presence, heartbeat은 v2.
 
 끊김 → 자동 재시도 + 토스트 알림. (인프라는 깔아둠 — 적용만 필요)
 
