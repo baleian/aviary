@@ -517,7 +517,12 @@ hover preview, 클릭 점프. 100+ 메시지 세션에 결정적.
 
 ## SIDE-2 🔥 그룹화 토글: By Agent / By Date
 
-**상태**: pending
+**상태**: accepted
+
+**v1 범위**: 사이드바 sessions 상단 segmented toggle [By Agent | By Date].
+By Date 모드는 모든 세션 flat → last_message_at desc → 5개 bucket
+(Today / Yesterday / This week / This month / Older). 각 row에 agent
+icon prefix + tooltip. localStorage 저장. 검색 filter 적용 유지.
 
 현재 "By Agent"만 가능. "By Date" 모드: Today / Yesterday / This week / This month / Older.
 사람들이 실제로 떠올리는 방식.

@@ -13,11 +13,17 @@ export interface SidebarAgentGroup {
   sessions: Session[];
 }
 
+export type SidebarViewMode = "agent" | "date";
+
+const VIEW_MODE_STORAGE_KEY = "aviary_sidebar_view_mode";
+
 interface SidebarContextValue {
   groups: SidebarAgentGroup[];
   loading: boolean;
   collapsed: boolean;
   toggleCollapsed: () => void;
+  viewMode: SidebarViewMode;
+  setViewMode: (mode: SidebarViewMode) => void;
   refresh: () => Promise<void>;
   updateSessionTitle: (sessionId: string, title: string) => void;
   deleteSession: (sessionId: string) => Promise<void>;
@@ -40,8 +46,25 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const [groups, setGroups] = useState<SidebarAgentGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [collapsed, setCollapsed] = useState(false);
+  const [viewMode, setViewModeState] = useState<SidebarViewMode>("agent");
   const setAgentIds = useSetAgentIds();
   const setSessionIds = useSetSessionIds();
+
+  // Read persisted viewMode after mount (avoid SSR localStorage access)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const stored = window.localStorage.getItem(VIEW_MODE_STORAGE_KEY);
+    if (stored === "date" || stored === "agent") {
+      setViewModeState(stored);
+    }
+  }, []);
+
+  const setViewMode = useCallback((mode: SidebarViewMode) => {
+    setViewModeState(mode);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, mode);
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     if (!user) return;
@@ -115,6 +138,8 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
         loading,
         collapsed,
         toggleCollapsed,
+        viewMode,
+        setViewMode,
         refresh,
         updateSessionTitle,
         deleteSession,

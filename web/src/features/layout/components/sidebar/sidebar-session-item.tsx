@@ -16,13 +16,24 @@ import type { Session } from "@/types";
  *
  * Two-step delete: first click marks "confirming", second confirms.
  * The confirming state resets on mouse leave so accidents are easy to undo.
+ *
+ * In "by date" view, the parent agent group is not shown, so each row
+ * receives an optional `agentIcon` prefix (with `agentName` as tooltip)
+ * to identify which agent the session belongs to. In "by agent" view
+ * the prefix is omitted (the parent group header carries that context).
  */
 export function SidebarSessionItem({
   session,
   isActive,
+  agentIcon,
+  agentName,
 }: {
   session: Session;
   isActive: boolean;
+  /** Optional agent icon prefix shown in date-grouped view */
+  agentIcon?: string;
+  /** Tooltip for the icon prefix */
+  agentName?: string;
 }) {
   const { status, unread, title: polledTitle } = useSessionStatus(session.id);
   const { deleteSession } = useSidebar();
@@ -59,6 +70,15 @@ export function SidebarSessionItem({
       )}
       onMouseLeave={() => setConfirming(false)}
     >
+      {agentIcon && (
+        <span
+          className="shrink-0 text-[11px] leading-none"
+          title={agentName || undefined}
+          aria-label={agentName || undefined}
+        >
+          {agentIcon}
+        </span>
+      )}
       {confirming ? (
         <span className="truncate flex-1 text-danger">Delete?</span>
       ) : (

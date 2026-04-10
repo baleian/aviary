@@ -5,8 +5,10 @@ import { useSidebarSearch } from "@/features/search/hooks/use-sidebar-search";
 import { SearchResults } from "@/features/search/components/search-results";
 import { SidebarBrand } from "./sidebar-brand";
 import { SidebarSearch } from "./sidebar-search";
+import { SidebarViewToggle } from "./sidebar-view-toggle";
 import { SidebarNav } from "./sidebar-nav";
 import { SidebarSessions } from "./sidebar-sessions";
+import { SidebarSessionsByDate } from "./sidebar-sessions-by-date";
 import { SidebarUser } from "./sidebar-user";
 import { cn } from "@/lib/utils";
 
@@ -17,10 +19,12 @@ import { cn } from "@/lib/utils";
  *   - Filter the in-memory groups (instant, used by SidebarSessions)
  *   - Trigger debounced backend message search (results in SearchResults)
  *
- * Other state still comes from SidebarProvider (groups, collapsed, …).
+ * View mode (by-agent vs by-date) is controlled by SidebarProvider and
+ * persisted to localStorage. SidebarViewToggle flips between the two
+ * dedicated rendering components.
  */
 export function Sidebar() {
-  const { groups, collapsed } = useSidebar();
+  const { groups, collapsed, viewMode } = useSidebar();
   const search = useSidebarSearch(groups);
 
   return (
@@ -40,10 +44,18 @@ export function Sidebar() {
 
       <div className="flex-1 overflow-y-auto pb-3">
         <SidebarNav />
-        <SidebarSessions
-          groups={search.filteredGroups}
-          searchActive={search.isActive}
-        />
+        <SidebarViewToggle />
+        {viewMode === "agent" ? (
+          <SidebarSessions
+            groups={search.filteredGroups}
+            searchActive={search.isActive}
+          />
+        ) : (
+          <SidebarSessionsByDate
+            groups={search.filteredGroups}
+            searchActive={search.isActive}
+          />
+        )}
         {search.isActive && (
           <SearchResults
             hits={search.messageHits}
