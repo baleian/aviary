@@ -62,7 +62,17 @@
 
 ## ENTRY-1 ⭐🔥 카드에서 바로 채팅 시작
 
-**상태**: pending
+**상태**: accepted (commit 다음)
+
+**Rework note (1차 테스트 후)**: 카드 전체 클릭 = 세션 생성 방식은 매번
+새 세션을 만들어 누적되는 부작용이 큼. 기존 세션 resume 의도가 사라짐.
+→ 카드 클릭은 detail 페이지로 (browse), 별도 "Start chat" 버튼 클릭만
+세션 생성으로 분리. (원래 제안 시점의 대안 A로 전환)
+
+**최종 동작**:
+- 카드 본체 클릭 → `/agents/{id}` (detail, resume용)
+- "Start chat" 버튼 → 새 세션 생성 + `/sessions/{id}`
+- cmd/middle-click → detail 새 탭 (Link 유지)
 
 현재 `/agents` 그리드 → 카드 클릭 → `/agents/{id}` detail 페이지 →
 "New Chat" 버튼 → `/sessions/{id}`. 4 클릭, 3 페이지 전환.
