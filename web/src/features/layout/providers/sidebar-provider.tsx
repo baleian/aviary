@@ -16,6 +16,7 @@ export interface SidebarAgentGroup {
 export type SidebarViewMode = "agent" | "date";
 
 const VIEW_MODE_STORAGE_KEY = "aviary_sidebar_view_mode";
+const COLLAPSED_AGENTS_STORAGE_KEY = "aviary_collapsed_agents";
 
 interface SidebarContextValue {
   groups: SidebarAgentGroup[];
@@ -24,10 +25,18 @@ interface SidebarContextValue {
   toggleCollapsed: () => void;
   viewMode: SidebarViewMode;
   setViewMode: (mode: SidebarViewMode) => void;
+  /** Set of agent IDs whose nested session lists are collapsed in
+   *  By Agent view. Persisted to localStorage. */
+  collapsedAgents: Set<string>;
+  toggleAgentCollapsed: (agentId: string) => void;
   refresh: () => Promise<void>;
   updateSessionTitle: (sessionId: string, title: string) => void;
   deleteSession: (sessionId: string) => Promise<void>;
 }
+
+// Note: deleted-at-bottom + user-defined ordering now lives in
+// `features/layout/lib/sidebar-ordering.ts` (orderGroupsByPreference).
+// The provider only owns raw data and persistence — sorting is a view concern.
 
 const SidebarContext = createContext<SidebarContextValue | null>(null);
 
@@ -47,15 +56,29 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [collapsed, setCollapsed] = useState(false);
   const [viewMode, setViewModeState] = useState<SidebarViewMode>("agent");
+  const [collapsedAgents, setCollapsedAgents] = useState<Set<string>>(() => new Set());
   const setAgentIds = useSetAgentIds();
   const setSessionIds = useSetSessionIds();
 
-  // Read persisted viewMode after mount (avoid SSR localStorage access)
+  // Read persisted preferences after mount (avoid SSR localStorage access)
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const stored = window.localStorage.getItem(VIEW_MODE_STORAGE_KEY);
-    if (stored === "date" || stored === "agent") {
-      setViewModeState(stored);
+
+    const storedMode = window.localStorage.getItem(VIEW_MODE_STORAGE_KEY);
+    if (storedMode === "date" || storedMode === "agent") {
+      setViewModeState(storedMode);
+    }
+
+    const storedCollapsed = window.localStorage.getItem(COLLAPSED_AGENTS_STORAGE_KEY);
+    if (storedCollapsed) {
+      try {
+        const parsed = JSON.parse(storedCollapsed);
+        if (Array.isArray(parsed)) {
+          setCollapsedAgents(new Set(parsed.filter((id): id is string => typeof id === "string")));
+        }
+      } catch {
+        // Corrupt JSON — ignore and start fresh. Will be overwritten on first toggle.
+      }
     }
   }, []);
 
@@ -64,6 +87,21 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     if (typeof window !== "undefined") {
       window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, mode);
     }
+  }, []);
+
+  const toggleAgentCollapsed = useCallback((agentId: string) => {
+    setCollapsedAgents((prev) => {
+      const next = new Set(prev);
+      if (next.has(agentId)) next.delete(agentId);
+      else next.add(agentId);
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(
+          COLLAPSED_AGENTS_STORAGE_KEY,
+          JSON.stringify(Array.from(next)),
+        );
+      }
+      return next;
+    });
   }, []);
 
   const refresh = useCallback(async () => {
@@ -140,6 +178,8 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
         toggleCollapsed,
         viewMode,
         setViewMode,
+        collapsedAgents,
+        toggleAgentCollapsed,
         refresh,
         updateSessionTitle,
         deleteSession,

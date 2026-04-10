@@ -1,9 +1,29 @@
 "use client";
 
+import {
+  DndContext,
+  PointerSensor,
+  KeyboardSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
 import { useSidebar } from "@/features/layout/providers/sidebar-provider";
+import { usePreferences } from "@/features/auth/hooks/use-preferences";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { SidebarAgentGroup } from "./sidebar-agent-group";
+import { SortableAgentGroup } from "./sortable-agent-group";
+import {
+  orderGroupsByPreference,
+  orderSessionsByPreference,
+} from "@/features/layout/lib/sidebar-ordering";
 import type { SidebarAgentGroup as SidebarAgentGroupData } from "@/features/layout/providers/sidebar-provider";
 
 interface SidebarSessionsProps {
@@ -17,16 +37,90 @@ interface SidebarSessionsProps {
 
 /**
  * SidebarSessions — the section of the sidebar that lists active sessions
- * grouped by their agent. Hidden when the sidebar is collapsed.
+ * grouped by their agent.
+ *
+ * Owns a single DndContext that handles BOTH levels of reordering:
+ *   - Agent groups (top-level SortableContext at this component)
+ *   - Sessions within an agent group (per-agent SortableContext nested
+ *     inside SidebarAgentGroup; their drag events bubble up here)
+ *
+ * Each draggable tags itself via `data: { type: "agent" | "session", … }`
+ * so this single drop handler can route to the right preference key.
+ *
+ * Reorder is persisted via `usePreferences` → PATCH /auth/me/preferences
+ * with optimistic local updates so it survives logout / login / cross-device.
+ *
+ * Deleted agents are excluded from the sortable id list — they always
+ * sit at the bottom and can't be reordered.
  */
 export function SidebarSessions({ groups: groupsProp, searchActive }: SidebarSessionsProps) {
   const { groups: providerGroups, loading, collapsed } = useSidebar();
+  const { preferences, updatePreferences } = usePreferences();
   const groups = groupsProp ?? providerGroups;
+
+  // 5px distance threshold lets simple clicks (links, buttons) pass through
+  // to their default handlers — drag only activates after sustained movement.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
 
   if (collapsed) return null;
 
-  const groupsWithSessions = groups.filter((g) => g.sessions.length > 0);
+  const visibleGroups = groups.filter((g) => g.sessions.length > 0);
+  const orderedGroups = orderGroupsByPreference(
+    visibleGroups,
+    preferences.sidebar_agent_order,
+  );
+  // Apply per-agent session ordering on top of the group ordering
+  const orderedGroupsWithSortedSessions = orderedGroups.map((g) => ({
+    ...g,
+    sessions: orderSessionsByPreference(
+      g.sessions,
+      preferences.sidebar_session_order?.[g.agent.id],
+    ),
+  }));
+
   const totalSessions = groups.reduce((sum, g) => sum + g.sessions.length, 0);
+
+  // Only non-deleted agents participate in the sortable id list
+  const sortableAgentIds = orderedGroupsWithSortedSessions
+    .filter((g) => g.agent.status !== "deleted")
+    .map((g) => g.agent.id);
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+
+    const activeType = active.data.current?.type;
+
+    if (activeType === "agent") {
+      const oldIndex = sortableAgentIds.indexOf(String(active.id));
+      const newIndex = sortableAgentIds.indexOf(String(over.id));
+      if (oldIndex === -1 || newIndex === -1) return;
+      const newOrder = arrayMove(sortableAgentIds, oldIndex, newIndex);
+      void updatePreferences({ sidebar_agent_order: newOrder });
+      return;
+    }
+
+    if (activeType === "session") {
+      const agentId = active.data.current?.agentId as string | undefined;
+      if (!agentId) return;
+      const group = orderedGroupsWithSortedSessions.find((g) => g.agent.id === agentId);
+      if (!group) return;
+      const ids = group.sessions.map((s) => s.id);
+      const oldIndex = ids.indexOf(String(active.id));
+      const newIndex = ids.indexOf(String(over.id));
+      if (oldIndex === -1 || newIndex === -1) return;
+      const newSessionOrder = arrayMove(ids, oldIndex, newIndex);
+      void updatePreferences({
+        sidebar_session_order: {
+          ...(preferences.sidebar_session_order ?? {}),
+          [agentId]: newSessionOrder,
+        },
+      });
+    }
+  };
 
   return (
     <div className="px-3 pt-2">
@@ -47,16 +141,29 @@ export function SidebarSessions({ groups: groupsProp, searchActive }: SidebarSes
             <Skeleton key={i} className="h-6" />
           ))}
         </div>
-      ) : groupsWithSessions.length === 0 ? (
+      ) : orderedGroupsWithSortedSessions.length === 0 ? (
         <p className="px-3 type-caption text-fg-disabled">
           {searchActive ? "No matches" : "No active sessions"}
         </p>
       ) : (
-        <div className="space-y-1">
-          {groupsWithSessions.map(({ agent, sessions }) => (
-            <SidebarAgentGroup key={agent.id} agent={agent} sessions={sessions} />
-          ))}
-        </div>
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragEnd={handleDragEnd}
+        >
+          <SortableContext items={sortableAgentIds} strategy={verticalListSortingStrategy}>
+            <div className="space-y-1">
+              {orderedGroupsWithSortedSessions.map(({ agent, sessions }) => (
+                <SortableAgentGroup
+                  key={agent.id}
+                  agent={agent}
+                  sessions={sessions}
+                  sortable={agent.status !== "deleted"}
+                />
+              ))}
+            </div>
+          </SortableContext>
+        </DndContext>
       )}
     </div>
   );
