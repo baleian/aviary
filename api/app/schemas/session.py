@@ -69,6 +69,12 @@ class MessageResponse(BaseModel):
 class SessionDetailResponse(BaseModel):
     session: SessionResponse
     messages: list[MessageResponse]
+    has_more: bool = False
+
+
+class MessagePageResponse(BaseModel):
+    messages: list[MessageResponse]
+    has_more: bool = False
 
 
 class SessionTitleUpdate(BaseModel):

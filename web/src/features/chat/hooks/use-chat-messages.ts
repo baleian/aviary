@@ -11,6 +11,12 @@ import { useSessionWebSocket } from "./use-session-websocket";
 interface SessionDetail {
   session: Session;
   messages: Message[];
+  has_more: boolean;
+}
+
+interface MessagePage {
+  messages: Message[];
+  has_more: boolean;
 }
 
 interface UseChatMessagesResult {
@@ -18,6 +24,9 @@ interface UseChatMessagesResult {
   messages: Message[];
   loading: boolean;
   isStreaming: boolean;
+  hasMore: boolean;
+  loadingEarlier: boolean;
+  loadEarlier: () => Promise<void>;
   blocks: ReturnType<typeof useStreamingBlocks>["blocks"];
   todos: ReturnType<typeof useStreamingBlocks>["todos"];
   status: ReturnType<typeof useSessionWebSocket>["status"];
@@ -43,23 +52,36 @@ export function useChatMessages(sessionId: string): UseChatMessagesResult {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
   const blockState = useStreamingBlocks();
 
+  // Guards against stacked loadEarlier calls if the sentinel briefly
+  // re-intersects before React commits the prepended state.
+  const loadingEarlierRef = useRef(false);
+
   const reloadHistory = useCallback(async () => {
+    // Reloads only the most recent page — any "show earlier" expansion is
+    // lost on purpose, since the WS disconnect case it's called from is
+    // effectively a fresh start.
     const data = await http.get<SessionDetail>(`/sessions/${sessionId}`);
     setMessages(data.messages);
+    setHasMore(data.has_more);
     return data;
   }, [sessionId]);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setMessages([]);
+    setHasMore(false);
     http
       .get<SessionDetail>(`/sessions/${sessionId}`)
       .then((data) => {
         if (cancelled) return;
         setSession(data.session);
         setMessages(data.messages);
+        setHasMore(data.has_more);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -68,6 +90,30 @@ export function useChatMessages(sessionId: string): UseChatMessagesResult {
       cancelled = true;
     };
   }, [sessionId]);
+
+  const loadEarlier = useCallback(async () => {
+    if (loadingEarlierRef.current) return;
+    if (!hasMore) return;
+    const oldest = messages[0];
+    if (!oldest) return;
+    loadingEarlierRef.current = true;
+    setLoadingEarlier(true);
+    try {
+      const page = await http.get<MessagePage>(
+        `/sessions/${sessionId}/messages?before=${encodeURIComponent(oldest.created_at)}`,
+      );
+      setMessages((prev) => {
+        // Dedupe by id in case a message lands exactly at the cursor boundary.
+        const existingIds = new Set(prev.map((m) => m.id));
+        const newOnes = page.messages.filter((m) => !existingIds.has(m.id));
+        return [...newOnes, ...prev];
+      });
+      setHasMore(page.has_more);
+    } finally {
+      setLoadingEarlier(false);
+      loadingEarlierRef.current = false;
+    }
+  }, [sessionId, hasMore, messages]);
 
   // Stable handler that avoids stale closures via refs
   const blockStateRef = useRef(blockState);
@@ -252,6 +298,9 @@ export function useChatMessages(sessionId: string): UseChatMessagesResult {
     messages,
     loading,
     isStreaming,
+    hasMore,
+    loadingEarlier,
+    loadEarlier,
     blocks: blockState.blocks,
     todos: blockState.todos,
     status,

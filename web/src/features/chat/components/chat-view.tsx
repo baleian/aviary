@@ -6,7 +6,6 @@ import { useChatMessages } from "@/features/chat/hooks/use-chat-messages";
 import { useConnectionStatus } from "@/features/chat/hooks/use-connection-status";
 import { useTitleEditor } from "@/features/chat/hooks/use-title-editor";
 import { useChatExport } from "@/features/chat/hooks/use-chat-export";
-import { useMessageScroll } from "@/features/chat/hooks/use-message-scroll";
 import { ChatHeader } from "./chat-header";
 import { ChatStatusBanner } from "./chat-status-banner";
 import { MessageList } from "./message-list/message-list";
@@ -38,8 +37,6 @@ export function ChatView({ sessionId }: { sessionId: string }) {
     messages: chat.messages,
     session: chat.session,
   });
-
-  useMessageScroll(scrollRef, [chat.messages, chat.blocks]);
 
   const handleSend = useCallback(
     (content: string) => {
@@ -103,6 +100,9 @@ export function ChatView({ sessionId }: { sessionId: string }) {
         blocks={chat.blocks}
         isStreaming={chat.isStreaming}
         isReady={isReady}
+        hasMore={chat.hasMore}
+        loadingEarlier={chat.loadingEarlier}
+        onLoadEarlier={chat.loadEarlier}
       />
 
       <div className="shrink-0 border-t border-white/[0.06] px-6 py-4">

@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import uuid
+from datetime import datetime
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
@@ -15,6 +16,7 @@ from app.db.models import Agent, Session as SessionModel, User
 from app.db.session import get_db, async_session_factory
 from app.schemas.session import (
     InviteRequest,
+    MessagePageResponse,
     MessageResponse,
     SessionCreate,
     SessionDetailResponse,
@@ -106,10 +108,43 @@ async def get_session(
     if not is_participant:
         raise HTTPException(status_code=403, detail="Not a participant of this session")
 
-    messages = await session_service.get_session_messages(db, session_id)
+    messages, has_more = await session_service.get_session_messages(db, session_id)
     return SessionDetailResponse(
         session=SessionResponse.from_orm_session(session),
         messages=[MessageResponse.from_orm_message(m) for m in messages],
+        has_more=has_more,
+    )
+
+
+@router.get("/sessions/{session_id}/messages", response_model=MessagePageResponse)
+async def get_session_messages_page(
+    session_id: uuid.UUID,
+    before: datetime | None = Query(None, description="ISO timestamp cursor; returns messages older than this"),
+    limit: int = Query(50, ge=1, le=200),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Paginated message loader for "Show earlier" in chat view.
+
+    Uses `before` as a timestamp cursor (exclusive). The caller passes the
+    `created_at` of the currently-oldest loaded message to fetch the previous
+    page. Ties on `created_at` are extremely rare (microsecond precision in
+    Postgres); accepted as a pragmatic trade-off over a composite cursor.
+    """
+    session = await session_service.get_session(db, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    is_participant = await session_service.is_session_participant(db, session_id, user.id)
+    if not is_participant:
+        raise HTTPException(status_code=403, detail="Not a participant of this session")
+
+    messages, has_more = await session_service.get_session_messages(
+        db, session_id, limit=limit, before=before
+    )
+    return MessagePageResponse(
+        messages=[MessageResponse.from_orm_message(m) for m in messages],
+        has_more=has_more,
     )
 
 
