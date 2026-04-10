@@ -26,6 +26,7 @@ export {
   LogOut,
   Filter,
   RefreshCw,
+  WrapText,
 
   // Files / IO
   FileText,
