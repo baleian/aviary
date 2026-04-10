@@ -302,11 +302,20 @@ ML 없이 키워드 매칭 휴리스틱만으로 충분.
 
 ## CHAT-2 너비 토글 버튼
 
-**상태**: pending
+**상태**: accepted
 
-헤더에 `[narrow] [comfort] [wide]` segmented control. localStorage 저장.
+**v1 범위**:
+- 헤더 우측에 segmented control 2개 옵션: comfort / wide
+- 아이콘: `RectangleVertical` (comfort), `RectangleHorizontal` (wide)
+- Width 매핑: 768px / 1024px (comfort = 기존 container-prose와 동일)
+- `ChatWidthProvider` context로 헤더, banner, message list, input 모두 동일 너비 유지
+- localStorage 키 `aviary_chat_width`로 영속
 
-**파일**: `chat-header.tsx`
+**파일**:
+- 신규 `web/src/features/chat/hooks/use-chat-width.tsx`
+- 신규 `web/src/features/chat/components/chat-width-toggle.tsx`
+- `chat-view.tsx`, `chat-header.tsx`, `chat-status-banner.tsx`,
+  `message-list.tsx` — `max-w-container-prose` → `widthClass`
 
 ---
 

@@ -1,6 +1,8 @@
 "use client";
 
 import { Spinner } from "@/components/ui/spinner";
+import { useChatWidth } from "@/features/chat/hooks/use-chat-width";
+import { cn } from "@/lib/utils";
 import type { ConnectionStatus } from "@/lib/ws";
 
 const STATUS_LABELS: Record<ConnectionStatus, string> = {
@@ -40,10 +42,12 @@ export function ChatStatusBanner({
   reconnectIn,
   onRetryNow,
 }: ChatStatusBannerProps) {
+  const { widthClass } = useChatWidth();
+
   if (status === "reconnecting") {
     return (
       <div className="shrink-0 border-b border-warning/10 bg-warning/[0.04] px-6 py-2.5 animate-fade-in">
-        <div className="mx-auto flex max-w-container-prose items-center justify-center gap-2">
+        <div className={cn("mx-auto flex items-center justify-center gap-2", widthClass)}>
           <Spinner size={14} className="text-warning" />
           <span className="type-caption text-warning">
             {reconnectIn != null
@@ -65,7 +69,7 @@ export function ChatStatusBanner({
   if (showConnecting) {
     return (
       <div className="shrink-0 border-b border-warning/10 bg-warning/[0.04] px-6 py-2.5 animate-fade-in">
-        <div className="mx-auto flex max-w-container-prose items-center justify-center gap-2">
+        <div className={cn("mx-auto flex items-center justify-center gap-2", widthClass)}>
           <Spinner size={14} className="text-warning" />
           <span className="type-caption text-warning">
             {STATUS_LABELS[status]}
@@ -79,7 +83,7 @@ export function ChatStatusBanner({
   if (status === "offline") {
     return (
       <div className="shrink-0 border-b border-danger/10 bg-danger/[0.04] px-6 py-2.5">
-        <div className="mx-auto flex max-w-container-prose items-center justify-center">
+        <div className={cn("mx-auto flex items-center justify-center", widthClass)}>
           <span className="type-caption text-danger">
             Agent is offline{statusMessage && ` — ${statusMessage}`}
           </span>
@@ -91,7 +95,7 @@ export function ChatStatusBanner({
   if (status === "disconnected") {
     return (
       <div className="shrink-0 border-b border-white/[0.06] bg-raised/50 px-6 py-2.5">
-        <div className="mx-auto flex max-w-container-prose items-center justify-center gap-2">
+        <div className={cn("mx-auto flex items-center justify-center gap-2", widthClass)}>
           <span className="type-caption text-fg-muted">Connection lost.</span>
           <button
             type="button"

@@ -6,6 +6,7 @@ import { useChatMessages } from "@/features/chat/hooks/use-chat-messages";
 import { useConnectionStatus } from "@/features/chat/hooks/use-connection-status";
 import { useTitleEditor } from "@/features/chat/hooks/use-title-editor";
 import { useChatExport } from "@/features/chat/hooks/use-chat-export";
+import { ChatWidthProvider, useChatWidth } from "@/features/chat/hooks/use-chat-width";
 import { ChatHeader } from "./chat-header";
 import { ChatStatusBanner } from "./chat-status-banner";
 import { MessageList } from "./message-list/message-list";
@@ -21,8 +22,21 @@ import { routes } from "@/lib/constants/routes";
  * and child components but contains no business logic of its own. The
  * old 570-line page is fully decomposed into hooks/components under
  * features/chat.
+ *
+ * The width preference (narrow / comfort / wide) is owned by
+ * ChatWidthProvider so the header, banner, message list, and input all
+ * stay aligned without prop-drilling.
  */
 export function ChatView({ sessionId }: { sessionId: string }) {
+  return (
+    <ChatWidthProvider>
+      <ChatViewInner sessionId={sessionId} />
+    </ChatWidthProvider>
+  );
+}
+
+function ChatViewInner({ sessionId }: { sessionId: string }) {
+  const { widthClass } = useChatWidth();
   const chat = useChatMessages(sessionId);
   const visibleStatus = useConnectionStatus(chat.status);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -106,7 +120,7 @@ export function ChatView({ sessionId }: { sessionId: string }) {
       />
 
       <div className="shrink-0 border-t border-white/[0.06] px-6 py-4">
-        <div className="mx-auto max-w-container-prose space-y-2">
+        <div className={`mx-auto ${widthClass} space-y-2`}>
           {chat.todos.length > 0 && <TodoPanel todos={chat.todos} />}
           <ChatInput
             onSend={handleSend}

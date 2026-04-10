@@ -4,9 +4,11 @@ import Link from "next/link";
 import { ArrowLeft, Pencil, Printer, FileText } from "@/components/icons";
 import { routes } from "@/lib/constants/routes";
 import { STATUS_LABELS } from "./chat-status-banner";
+import { ChatWidthToggle } from "./chat-width-toggle";
 import type { ConnectionStatus } from "@/lib/ws";
 import type { Session } from "@/types";
 import { useTitleEditor } from "@/features/chat/hooks/use-title-editor";
+import { useChatWidth } from "@/features/chat/hooks/use-chat-width";
 import { cn } from "@/lib/utils";
 
 const STATUS_DOT: Record<ConnectionStatus, string> = {
@@ -53,10 +55,11 @@ export function ChatHeader({
   titleEditor,
 }: ChatHeaderProps) {
   const { isEditing, draft, setDraft, inputRef, startEditing, save, handleKeyDown } = titleEditor;
+  const { widthClass } = useChatWidth();
 
   return (
     <header className="shrink-0 border-b border-white/[0.06] px-6 py-3">
-      <div className="mx-auto flex max-w-container-prose items-center justify-between">
+      <div className={cn("mx-auto flex items-center justify-between", widthClass)}>
         <div className="flex items-center gap-3 min-w-0">
           <Link
             href={routes.agent(session.agent_id)}
@@ -93,6 +96,8 @@ export function ChatHeader({
         </div>
 
         <div className="flex items-center gap-3">
+          <ChatWidthToggle />
+
           <button
             type="button"
             onClick={onPrintVisual}

@@ -71,4 +71,6 @@ export {
   PanelLeft,
   PanelLeftClose,
   Square,
+  RectangleVertical,
+  RectangleHorizontal,
 } from "lucide-react";

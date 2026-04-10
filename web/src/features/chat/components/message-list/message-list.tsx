@@ -16,6 +16,8 @@ import { StreamingResponse } from "@/features/chat/components/blocks/streaming-r
 import { ChatEmptyState } from "@/features/chat/components/chat-empty-state";
 import { Spinner } from "@/components/ui/spinner";
 import { computeTimeDividerLabel } from "@/features/chat/lib/relative-time";
+import { useChatWidth } from "@/features/chat/hooks/use-chat-width";
+import { cn } from "@/lib/utils";
 import type { Message, StreamBlock } from "@/types";
 
 /** Distance from the top (px) at which we begin pre-loading older
@@ -66,6 +68,7 @@ export const MessageList = forwardRef<HTMLDivElement, MessageListProps>(
   ) {
     const scrollRef = useRef<HTMLDivElement>(null);
     useImperativeHandle(forwardedRef, () => scrollRef.current as HTMLDivElement);
+    const { widthClass } = useChatWidth();
 
     // Track identity of first/last message + previous scroll height so we
     // can discriminate append vs prepend vs initial mount in one effect.
@@ -167,7 +170,7 @@ export const MessageList = forwardRef<HTMLDivElement, MessageListProps>(
           // scrollTop adjust isn't double-corrected on prepend.
           style={{ overflowAnchor: "none" }}
         >
-          <div className="mx-auto max-w-container-prose px-6 py-6">
+          <div className={cn("mx-auto px-6 py-6", widthClass)}>
             {/* Manual pagination affordance. Auto pre-fetch usually
                 covers it, but the button stays as an explicit fallback
                 and a visible signal that more history exists. */}
