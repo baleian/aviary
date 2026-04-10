@@ -40,11 +40,15 @@ export const MessageList = forwardRef<HTMLDivElement, MessageListProps>(
               const dividerLabel = prev
                 ? computeTimeDividerLabel(prev.created_at, msg.created_at)
                 : null;
+              // Show avatar only on the first message of a same-sender run.
+              // A time divider also resets the run because it's a visual break.
+              const showAvatar =
+                !prev || prev.sender_type !== msg.sender_type || dividerLabel !== null;
 
               return (
                 <Fragment key={msg.id}>
                   {dividerLabel && <TimeDivider label={dividerLabel} />}
-                  <MessageBubble message={msg} />
+                  <MessageBubble message={msg} showAvatar={showAvatar} />
                 </Fragment>
               );
             })}

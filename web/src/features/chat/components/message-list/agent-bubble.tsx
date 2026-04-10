@@ -12,6 +12,9 @@ import type { Message } from "@/types";
 
 interface AgentBubbleProps {
   message: Message;
+  /** When false, render an invisible spacer in the avatar slot so the
+   *  bubble stays horizontally aligned with the run's first message. */
+  showAvatar?: boolean;
 }
 
 /**
@@ -25,8 +28,12 @@ interface AgentBubbleProps {
  *   3. View renders text / thinking / tool / tool-group inline
  *
  * Falls back to plain markdown for legacy messages without saved blocks.
+ *
+ * Width is constrained to 88% (vs 60% for user) — agent messages are
+ * usually long, structured, and contain code blocks / tool cards that
+ * benefit from horizontal room.
  */
-export function AgentBubble({ message }: AgentBubbleProps) {
+export function AgentBubble({ message, showAvatar = true }: AgentBubbleProps) {
   const savedBlocks = message.metadata?.blocks as Array<Record<string, unknown>> | undefined;
   const hasBlocks = Array.isArray(savedBlocks) && savedBlocks.length > 0;
   const isCancelled = message.metadata?.cancelled === true;
@@ -39,11 +46,15 @@ export function AgentBubble({ message }: AgentBubbleProps) {
 
   return (
     <div className="flex gap-3 group animate-fade-in">
-      <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-raised type-small text-fg-muted">
-        AI
-      </div>
+      {showAvatar ? (
+        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-raised type-small text-fg-muted">
+          AI
+        </div>
+      ) : (
+        <div className="h-8 w-8 shrink-0" aria-hidden="true" />
+      )}
 
-      <div className="max-w-[75%] space-y-1.5">
+      <div className="min-w-0 max-w-[80%] space-y-1.5">
         {hasBlocks ? (
           items.map((item) => {
             if (item.kind === "tool-group") {

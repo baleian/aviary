@@ -38,7 +38,7 @@ export const StreamingResponse = memo(function StreamingResponse({
         AI
       </div>
 
-      <div className="min-w-0 max-w-[75%] space-y-2">
+      <div className="min-w-0 max-w-[80%] space-y-2">
         {items.map((item, idx) => {
           const isLast = idx === items.length - 1;
 

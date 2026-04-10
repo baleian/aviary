@@ -39,10 +39,14 @@ export const ToolCallCard = memo(function ToolCallCard({ block }: ToolCallCardPr
       className={cn(
         "rounded-md border transition-colors",
         isRunning
-          ? "border-info/30 bg-info/[0.04]"
+          ? "border-info/30 bg-info/[0.06]"
           : isError
             ? "border-danger/30 bg-danger/[0.04]"
-            : "border-white/[0.06] bg-elevated",
+            : // Default (done) tool cards get a very faint cool-blue tint
+              // — enough tone shift to differentiate from the warmer
+              // text-bubble surface, but not enough fill to overwhelm
+              // the short tool-call content.
+              "border-white/[0.06] bg-info/[0.025] hover:bg-info/[0.05]",
       )}
     >
       <button
@@ -113,6 +117,8 @@ export const ToolCallCard = memo(function ToolCallCard({ block }: ToolCallCardPr
           )}
         >
           <div className="mb-1.5 type-caption-bold text-fg-muted">Input</div>
+          {/* Pre blocks revert to bg-canvas so they sit slightly *darker*
+              than the info-tinted card, creating an inset look. */}
           <pre className="mb-2 max-h-40 overflow-auto rounded-xs bg-canvas p-2 type-code-sm text-fg-secondary">
             {JSON.stringify(block.input, null, 2)}
           </pre>
