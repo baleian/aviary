@@ -30,7 +30,11 @@ services:
 
   keycloak:
     image: quay.io/keycloak/keycloak:25.0
-    command: start-dev --import-realm
+    command:
+      - start-dev
+      - --import-realm
+      - --hostname=http://localhost:8080
+      - --hostname-backchannel-dynamic=true
     environment:
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
@@ -223,6 +227,7 @@ services:
       # Anonymous volume protects container's installed packages from host's .venv
       - /workspace/.venv
     environment:
+      ENV: ${ENV:-development}
       DATABASE_URL: postgresql+asyncpg://aviary:aviary@postgres:5432/aviary
       REDIS_URL: redis://redis:6379/0
       # Public issuer (must match token's iss claim — browser URL)
