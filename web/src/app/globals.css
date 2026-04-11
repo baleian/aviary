@@ -384,6 +384,10 @@
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }
   }
+  @keyframes pulse-bg-info {
+    0%, 100% { background-color: rgb(var(--intent-info) / 0.04); }
+    50%      { background-color: rgb(var(--intent-info) / 0.12); }
+  }
   @keyframes shimmer {
     0% { background-position: -200% 0; }
     100% { background-position: 200% 0; }
@@ -403,6 +407,9 @@
   }
   .animate-pulse-soft {
     animation: pulse-soft 2s ease-in-out infinite;
+  }
+  .animate-pulse-bg-info {
+    animation: pulse-bg-info 2s ease-in-out infinite;
   }
   .animate-shimmer {
     background: linear-gradient(

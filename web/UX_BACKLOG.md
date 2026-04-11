@@ -650,21 +650,25 @@ shift-click 다중 선택, bulk delete/archive/export.
 
 ## SIDE-6 ⭐ Streaming 시각화 강화
 
-**상태**: pending
+**상태**: accepted
 
-다른 세션이 응답 중이면 사이드바 행 자체가 미세하게 pulse + spinner.
-백그라운드 작업 알림성 부족 해소.
-
-**파일**: `sidebar-session-item.tsx`
+**v1 범위**:
+- 비-active 세션이 streaming 중이면 row 배경이 `rgb(--intent-info)`의
+  0.04 ↔ 0.12 사이를 2초 주기로 부드럽게 pulse (`pulse-bg-info` keyframe)
+- 제목은 `text-fg-primary`로 또렷, spinner는 `text-info/80`로 표시
+- Active 세션은 기존 `bg-info/10` 고정 (내가 보는 화면은 과한 강조 불필요)
 
 ---
 
 ## SIDE-7 Unread bubble 명확화
 
-**상태**: pending
+**상태**: accepted
 
-마지막 본 시점 이후 새 메시지 수 + dot.
-클릭하면 unread 카운터 리셋.
+**v1 범위**:
+- Unread 있으면 row 제목을 `text-fg-primary font-medium`으로 또렷하게
+- 숫자 badge는 기존대로 유지
+- 활성 세션 / streaming 중에는 unread 상태 숨김 (기존 동작 유지)
+- 사이드바 폭 `w-64` → `w-72` 살짝 확대
 
 ---
 

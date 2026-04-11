@@ -41,6 +41,9 @@ export function SidebarSessionItem({
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
+  const isStreaming = status === "streaming" && !isActive && !confirming;
+  const hasUnread = unread > 0 && !isActive && status !== "streaming" && !confirming;
+
   const handleDelete = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -65,7 +68,11 @@ export function SidebarSessionItem({
         "group flex items-center gap-1.5 rounded-xs px-2 py-1.5 type-caption transition-colors",
         isActive
           ? "bg-info/10 text-info"
-          : "text-fg-muted hover:bg-white/[0.03] hover:text-fg-primary",
+          : isStreaming
+            ? "text-fg-primary animate-pulse-bg-info"
+            : hasUnread
+              ? "text-fg-primary hover:bg-white/[0.03]"
+              : "text-fg-muted hover:bg-white/[0.03] hover:text-fg-primary",
         deleting && "opacity-50 pointer-events-none",
       )}
       onMouseLeave={() => setConfirming(false)}
@@ -82,16 +89,16 @@ export function SidebarSessionItem({
       {confirming ? (
         <span className="truncate flex-1 text-danger">Delete?</span>
       ) : (
-        <span className="truncate flex-1">
+        <span className={cn("truncate flex-1", hasUnread && "font-medium")}>
           {polledTitle || session.title || "Untitled"}
         </span>
       )}
 
       {status === "streaming" && !confirming && (
-        <Spinner size={12} className="text-info shrink-0" />
+        <Spinner size={12} className={cn("shrink-0", isActive ? "text-info" : "text-info/80")} />
       )}
 
-      {unread > 0 && !isActive && status !== "streaming" && !confirming && (
+      {hasUnread && (
         <span className="flex h-4 min-w-4 items-center justify-center rounded-pill bg-info px-1 text-[9px] font-semibold text-canvas">
           {unread > 99 ? "99+" : unread}
         </span>
