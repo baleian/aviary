@@ -755,10 +755,17 @@ URL paste → "Fetch this URL?" 칩 제안 (WebFetch 자동).
 
 ## INPUT-6 File dropzone (visual placeholder)
 
-**상태**: pending
+**상태**: accepted
 
-백엔드 첨부 지원 전에도 dropzone UI 마련.
-"Drop files here to attach" hover state.
+**v1 범위**:
+- `ChatInput` form에 drag 이벤트 핸들러 — `dataTransfer.types`에 `"Files"`가 있을 때만 활성
+- Nested child dragenter/leave flicker 방지를 위해 depth counter ref 사용
+- Drag 활성 시 input 위에 absolute 오버레이:
+  `border-dashed border-info/60` + upload 아이콘 + "Drop files to attach"
+  + "Attachments coming soon" subtitle. `pointer-events-none`로 textarea 포커스 유지
+- Drop 시 브라우저 기본(파일 열기) 방지 + 2.5초 동안 keyboard hint 라인이
+  "File attachments aren't supported yet" warning으로 전환
+- disabled 상태(streaming 중)에서는 dropzone 비활성
 
 ---
 

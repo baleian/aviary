@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Send, Square } from "@/components/icons";
+import { Send, Square, Upload } from "@/components/icons";
 import { Kbd } from "@/components/ui/kbd";
 import { MentionAutocomplete } from "./mention-autocomplete";
+import { cn } from "@/lib/utils";
 
 interface ChatInputProps {
   onSend: (content: string) => void;
@@ -31,10 +32,49 @@ export function ChatInput({
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const mentionOpenRef = useRef(false);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [showDropFeedback, setShowDropFeedback] = useState(false);
+  // Nested children flip dragenter/leave events — track the depth so
+  // the overlay only disappears when the pointer actually leaves the
+  // form root, not when moving between its children.
+  const dragDepthRef = useRef(0);
 
   const handleMentionOpenChange = useCallback((open: boolean) => {
     mentionOpenRef.current = open;
   }, []);
+
+  const hasFiles = (e: React.DragEvent) =>
+    Array.from(e.dataTransfer.types).includes("Files");
+
+  const handleDragEnter = (e: React.DragEvent) => {
+    if (!hasFiles(e) || disabled) return;
+    e.preventDefault();
+    dragDepthRef.current += 1;
+    setIsDraggingFile(true);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    if (!hasFiles(e) || disabled) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    if (!hasFiles(e) || disabled) return;
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setIsDraggingFile(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    if (!hasFiles(e) || disabled) return;
+    e.preventDefault();
+    dragDepthRef.current = 0;
+    setIsDraggingFile(false);
+    // Placeholder — attachments aren't wired up yet. Flash a short
+    // inline message so the user knows the drop was seen.
+    setShowDropFeedback(true);
+    window.setTimeout(() => setShowDropFeedback(false), 2500);
+  };
 
   // Auto-resize textarea (max 200px)
   useEffect(() => {
@@ -61,8 +101,20 @@ export function ChatInput({
   };
 
   return (
-    <form onSubmit={handleSubmit} className="relative">
-      <div className="flex items-end gap-2 rounded-xl bg-elevated shadow-2 p-2 transition-shadow focus-within:glow-info">
+    <form
+      onSubmit={handleSubmit}
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      className="relative"
+    >
+      <div
+        className={cn(
+          "flex items-end gap-2 rounded-xl bg-elevated shadow-2 p-2 transition-shadow",
+          !isDraggingFile && "focus-within:glow-info",
+        )}
+      >
         <textarea
           ref={textareaRef}
           value={value}
@@ -95,6 +147,18 @@ export function ChatInput({
         )}
       </div>
 
+      {/* Drop-zone overlay — visual placeholder. File uploads aren't
+          wired up yet; dropping a file just flashes the inline notice
+          below. `pointer-events-none` keeps the underlying textarea
+          focusable while dragging. */}
+      {isDraggingFile && (
+        <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-info/60 bg-info/10 animate-fade-in-fast">
+          <Upload size={18} strokeWidth={1.75} className="text-info" />
+          <span className="type-caption-bold text-info">Drop files to attach</span>
+          <span className="type-caption text-info/70">Attachments coming soon</span>
+        </div>
+      )}
+
       <MentionAutocomplete
         textareaRef={textareaRef}
         value={value}
@@ -103,15 +167,21 @@ export function ChatInput({
         onOpenChange={handleMentionOpenChange}
       />
 
-      <p className="mt-1.5 px-2 type-caption text-fg-disabled flex items-center gap-1.5">
-        <Kbd>↵</Kbd>
-        <span>to send,</span>
-        <Kbd>⇧</Kbd>
-        <Kbd>↵</Kbd>
-        <span>for new line, type</span>
-        <Kbd>@</Kbd>
-        <span>to mention an agent.</span>
-      </p>
+      {showDropFeedback ? (
+        <p className="mt-1.5 px-2 type-caption text-warning animate-fade-in-fast">
+          File attachments aren&apos;t supported yet — this dropzone is a preview.
+        </p>
+      ) : (
+        <p className="mt-1.5 px-2 type-caption text-fg-disabled flex items-center gap-1.5">
+          <Kbd>↵</Kbd>
+          <span>to send,</span>
+          <Kbd>⇧</Kbd>
+          <Kbd>↵</Kbd>
+          <span>for new line, type</span>
+          <Kbd>@</Kbd>
+          <span>to mention an agent.</span>
+        </p>
+      )}
     </form>
   );
 }
