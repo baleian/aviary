@@ -8,6 +8,7 @@ Policy source: PostgreSQL ``agents.policy`` column (queried on every request).
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -50,15 +51,18 @@ async def _get_pool() -> asyncpg.Pool:
 
 
 async def _get_policy(agent_id: str) -> PolicyChecker:
-    """Load per-agent policy from DB on every request."""
+    """Load per-agent policy from DB. Both missing row and empty policy deny by default."""
     pool = await _get_pool()
     row = await pool.fetchrow(
         "SELECT policy FROM agents WHERE id = $1::uuid", agent_id,
     )
-    if row and row["policy"]:
-        policy = row["policy"] if isinstance(row["policy"], dict) else json.loads(row["policy"])
-    else:
-        policy = {}  # no policy = deny all custom egress
+    if row is None:
+        logger.warning("No agent row for id=%s — denying egress by default", agent_id)
+        return PolicyChecker.from_policy({})
+    if not row["policy"]:
+        logger.warning("Agent %s has no policy configured — denying egress by default", agent_id)
+        return PolicyChecker.from_policy({})
+    policy = row["policy"] if isinstance(row["policy"], dict) else json.loads(row["policy"])
     return PolicyChecker.from_policy(policy)
 
 
@@ -224,14 +228,12 @@ async def _handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWri
 
     except (asyncio.TimeoutError, ConnectionResetError, BrokenPipeError):
         pass
-    except Exception:  # Best-effort: catch-all for unexpected proxy errors, logged for debugging
+    except Exception:
         logger.exception("Unexpected error handling connection from %s", source_ip)
     finally:
-        try:
+        with contextlib.suppress(Exception):
             writer.close()
             await writer.wait_closed()
-        except Exception:  # Best-effort: connection cleanup may fail if already closed
-            pass
 
 
 # ── Health endpoint ───────────────────────────────────────────

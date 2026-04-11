@@ -10,8 +10,8 @@
 import * as http from "node:http";
 import * as crypto from "node:crypto";
 
-const API_URL = process.env.AVIARY_API_URL || "";
-const INTERNAL_API_KEY = process.env.AVIARY_INTERNAL_API_KEY || "sk-aviary-internal";
+const API_URL = process.env.AVIARY_API_URL;
+const INTERNAL_API_KEY = process.env.AVIARY_INTERNAL_API_KEY;
 const A2A_TIMEOUT = parseInt(process.env.A2A_CALL_TIMEOUT_SECONDS ?? "1800", 10) * 1000;
 
 const SUB_AGENT_PREFIX = `[SUB-AGENT MODE]
@@ -46,10 +46,8 @@ async function callSubAgent(
   ctx: A2AContext,
   parentToolUseId: string,
 ): Promise<string> {
-  if (!API_URL) {
-    return "Error: AVIARY_API_URL not configured — cannot call sub-agents.";
-  }
-
+  // API_URL/INTERNAL_API_KEY are validated at startA2AServer; reaching here without
+  // them means the runtime was misconfigured.
   const url = `${API_URL}/a2a/${agent.slug}/message`;
 
   const body = {
@@ -67,7 +65,7 @@ async function callSubAgent(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Internal-Key": INTERNAL_API_KEY,
+        "X-Internal-Key": INTERNAL_API_KEY!,
       },
       body: JSON.stringify(body),
       signal: controller.signal,
@@ -75,6 +73,7 @@ async function callSubAgent(
 
     if (!resp.ok) {
       const errText = await resp.text();
+      console.error(`A2A call failed: ${agent.slug} HTTP ${resp.status}`, errText);
       return `Error calling agent @${agent.slug}: HTTP ${resp.status} — ${errText}`;
     }
 
@@ -225,6 +224,11 @@ export async function startA2AServer(
   agents: AccessibleAgent[],
   ctx: A2AContext,
 ): Promise<A2AServer> {
+  if (!API_URL || !INTERNAL_API_KEY) {
+    throw new Error(
+      "AVIARY_API_URL and AVIARY_INTERNAL_API_KEY must be set when accessible_agents is provided",
+    );
+  }
   // Per-tool FIFO queues of tool_use_ids, populated by PreToolUse hook (agent.ts).
   // SDK guarantees PreToolUse fires before tools/call, so the queue always has
   // an entry when the handler runs. Keyed by tool name for parallel safety.

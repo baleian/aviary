@@ -1,20 +1,21 @@
 /**
- * Session manager for multi-session runtime Pod.
- *
- * Tracks active sessions (currently streaming), enforces concurrency limits,
- * and provides per-session message serialization via mutex locks.
- *
- * Sessions are registered on message start and removed on completion.
- * PVC files are preserved for resume across messages.
+ * Per-Pod concurrency limiter and per-session mutex for the agent runtime.
  */
 
 import * as fs from "node:fs";
-import * as path from "node:path";
+import {
+  DEFAULT_MAX_CONCURRENT_SESSIONS,
+  SHARED_WORKSPACE_ROOT,
+  WORKSPACE_ROOT,
+  sessionClaudeDir,
+  sessionHome,
+  sessionTmp,
+} from "./constants.js";
 
-export const WORKSPACE_ROOT = "/workspace";
-export const SHARED_WORKSPACE_ROOT = "/workspace-shared";
+export { WORKSPACE_ROOT, SHARED_WORKSPACE_ROOT };
+
 const MAX_CONCURRENT_SESSIONS = parseInt(
-  process.env.MAX_CONCURRENT_SESSIONS ?? "5",
+  process.env.MAX_CONCURRENT_SESSIONS ?? String(DEFAULT_MAX_CONCURRENT_SESSIONS),
   10,
 );
 
@@ -79,17 +80,10 @@ export class SessionManager {
       throw new Error(`Pod at capacity (${this.maxSessions} sessions)`);
     }
 
-    // Shared home directory (hostPath — visible to all agent Pods in same session)
-    const home = path.join(SHARED_WORKSPACE_ROOT, sessionId);
+    const home = sessionHome(sessionId);
     fs.mkdirSync(home, { recursive: true });
-
-    // Per-agent .claude context (PVC — private to this Pod)
-    const claudeDir = path.join(WORKSPACE_ROOT, ".claude", sessionId);
-    fs.mkdirSync(claudeDir, { recursive: true });
-
-    // Shared /tmp (hostPath — visible to all agent Pods, auto-cleaned)
-    const tmpDir = `/tmp/${sessionId}`;
-    fs.mkdirSync(tmpDir, { recursive: true });
+    fs.mkdirSync(sessionClaudeDir(sessionId), { recursive: true });
+    fs.mkdirSync(sessionTmp(sessionId), { recursive: true });
 
     const entry: SessionEntry = {
       sessionId,

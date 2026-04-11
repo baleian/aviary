@@ -10,9 +10,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aviary_shared.db.models import Agent
-from aviary_shared.naming import agent_namespace
 from app.db import get_db
-from app.services import supervisor_client
+from app.services import agent_lifecycle
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +91,6 @@ async def list_agents(
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all agents (no ACL filtering)."""
     count_result = await db.execute(select(func.count()).select_from(Agent))
     total = count_result.scalar() or 0
 
@@ -109,7 +107,6 @@ async def list_agents(
 
 @router.get("/{agent_id}", response_model=AgentResponse)
 async def get_agent(agent_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Get agent detail including infrastructure fields."""
     result = await db.execute(select(Agent).where(Agent.id == agent_id))
     agent = result.scalar_one_or_none()
     if not agent:
@@ -123,30 +120,15 @@ async def update_agent(
     body: AgentUpdateRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Update agent config and sync to K8s."""
     result = await db.execute(select(Agent).where(Agent.id == agent_id))
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    if body.name is not None:
-        agent.name = body.name
-    if body.description is not None:
-        agent.description = body.description
-    if body.instruction is not None:
-        agent.instruction = body.instruction
-    if body.model_config_data is not None:
-        agent.model_config_json = body.model_config_data
-    if body.tools is not None:
-        agent.tools = body.tools
-    if body.mcp_servers is not None:
-        agent.mcp_servers = body.mcp_servers
-    if body.visibility is not None:
-        agent.visibility = body.visibility
-    if body.category is not None:
-        agent.category = body.category
-    if body.icon is not None:
-        agent.icon = body.icon
+    # Apply only fields the caller explicitly set; map model_config_data → model_config_json.
+    field_map = {"model_config_data": "model_config_json"}
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(agent, field_map.get(field, field), value)
 
     await db.flush()
     await db.refresh(agent)
@@ -156,27 +138,11 @@ async def update_agent(
 @router.delete("/{agent_id}", status_code=204)
 async def delete_agent(agent_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """Hard-delete an agent and all its K8s resources."""
-    from aviary_shared.db.models import Session as SessionModel
-    from sqlalchemy import delete
-
-    result = await db.execute(select(Agent).where(Agent.id == agent_id))
-    agent = result.scalar_one_or_none()
+    agent = await agent_lifecycle.find_agent_or_none(db, agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
-
-    # Clean up K8s resources
-    ns = agent_namespace(str(agent.id))
     try:
-        await supervisor_client.delete_deployment(ns)
-    except httpx.HTTPError:  # Best-effort: K8s resources may already be gone
-        pass
-    try:
-        await supervisor_client.delete_namespace(str(agent.id))
-    except httpx.HTTPError:  # Best-effort: namespace may already be gone
-        pass
-
-    # Delete all sessions, then the agent
-    await db.execute(delete(SessionModel).where(SessionModel.agent_id == agent.id))
-    await db.delete(agent)
-    await db.flush()
+        await agent_lifecycle.delete_agent(db, agent)
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Delete failed: {e}") from e
     return None

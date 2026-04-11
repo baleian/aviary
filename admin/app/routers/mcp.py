@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aviary_shared.db.models import McpServer, McpTool, McpToolAcl
+from aviary_shared.mcp_tools import upsert_tools
 from app.db import get_db
 
 logger = logging.getLogger(__name__)
@@ -17,7 +18,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# ── Schemas ──────────────────────────────────────────────────
 
 
 class McpServerCreate(BaseModel):
@@ -79,7 +79,6 @@ class McpAclResponse(BaseModel):
     created_at: str
 
 
-# ── Server CRUD ──────────────────────────────────────────────
 
 
 @router.get("/servers", response_model=list[McpServerResponse])
@@ -202,7 +201,6 @@ async def delete_server(server_id: uuid.UUID, db: AsyncSession = Depends(get_db)
     return None
 
 
-# ── Tool Discovery ───────────────────────────────────────────
 
 
 @router.post("/servers/{server_id}/discover")
@@ -240,35 +238,8 @@ async def discover_tools(server_id: uuid.UUID, db: AsyncSession = Depends(get_db
         for t in tools_result.tools
     ]
 
-    # Upsert tools
-    existing_result = await db.execute(
-        select(McpTool).where(McpTool.server_id == server_id)
-    )
-    existing = {t.name: t for t in existing_result.scalars().all()}
-
-    discovered_names = set()
-    for raw in raw_tools:
-        name = raw["name"]
-        discovered_names.add(name)
-        if name in existing:
-            existing[name].description = raw.get("description", "")
-            existing[name].input_schema = raw.get("inputSchema", {})
-        else:
-            db.add(McpTool(
-                server_id=server_id,
-                name=name,
-                description=raw.get("description", ""),
-                input_schema=raw.get("inputSchema", {}),
-            ))
-
-    for name in set(existing.keys()) - discovered_names:
-        await db.delete(existing[name])
-
-    srv.last_discovered_at = datetime.now(timezone.utc)
-    srv.status = "active"
-    await db.flush()
-
-    return {"discovered": len(raw_tools), "removed": len(set(existing.keys()) - discovered_names)}
+    discovered, removed = await upsert_tools(db, srv, raw_tools)
+    return {"discovered": discovered, "removed": removed}
 
 
 @router.get("/servers/{server_id}/tools", response_model=list[McpToolResponse])
@@ -298,7 +269,6 @@ async def list_server_tools(server_id: uuid.UUID, db: AsyncSession = Depends(get
     ]
 
 
-# ── ACL Management ───────────────────────────────────────────
 
 
 @router.get("/acl", response_model=list[McpAclResponse])

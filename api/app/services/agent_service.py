@@ -47,11 +47,6 @@ async def create_agent(db: AsyncSession, user: User, data: AgentCreate) -> Agent
         await agent_supervisor.register_agent(
             agent_id=str(agent.id),
             owner_id=str(user.id),
-            config={
-                "instruction": data.instruction,
-                "tools": data.tools,
-                "mcp_servers": [s.model_dump() for s in data.mcp_servers],
-            },
         )
     except httpx.HTTPError:  # Best-effort: will retry on first message
         logger.warning(

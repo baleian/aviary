@@ -1,19 +1,26 @@
 /**
  * Health and readiness probes for the agent runtime.
+ *
+ * Capacity is reported by the server via setCapacityProbe() so this module
+ * does not import SessionManager directly.
  */
 
 import { Router, type Request, type Response } from "express";
-import type { SessionManager } from "./session-manager.js";
+
+interface CapacityProbe {
+  hasCapacity: boolean;
+  activeCount: number;
+}
 
 let _ready = false;
-let _manager: SessionManager | null = null;
+let _capacityProbe: (() => CapacityProbe) | null = null;
 
 export function setReady(ready = true): void {
   _ready = ready;
 }
 
-export function setManager(mgr: SessionManager): void {
-  _manager = mgr;
+export function setCapacityProbe(probe: () => CapacityProbe): void {
+  _capacityProbe = probe;
 }
 
 export const healthRouter = Router();
@@ -27,9 +34,13 @@ healthRouter.get("/ready", (_req: Request, res: Response) => {
     res.status(503).json({ status: "not_ready" });
     return;
   }
-  if (_manager && !_manager.hasCapacity) {
-    res.status(503).json({ status: "at_capacity", active: _manager.activeCount });
+  if (!_capacityProbe) {
+    throw new Error("Health: capacity probe not registered");
+  }
+  const probe = _capacityProbe();
+  if (!probe.hasCapacity) {
+    res.status(503).json({ status: "at_capacity", active: probe.activeCount });
     return;
   }
-  res.json({ status: "ready", active: _manager?.activeCount ?? 0 });
+  res.json({ status: "ready", active: probe.activeCount });
 });

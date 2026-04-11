@@ -66,11 +66,22 @@ async def update_policy(
 
     await db.flush()
 
-    # Update K8s NetworkPolicy
+    # The DB write alone is enough for HTTP-level enforcement (egress proxy reads
+    # policy from DB on every request); the NetworkPolicy sync is the CIDR-level
+    # second layer. Failures are reported instead of rolled back.
     ns = agent_namespace(str(agent.id))
+    network_policy_synced = True
+    sync_error: str | None = None
     try:
         await supervisor_client.update_network_policy(ns, agent.policy)
-    except httpx.HTTPError:
+    except httpx.HTTPStatusError as e:
+        network_policy_synced = False
+        if e.response.status_code != 404:
+            sync_error = str(e)
+            logger.warning("NetworkPolicy update failed for agent %s", agent.id, exc_info=True)
+    except httpx.HTTPError as e:
+        network_policy_synced = False
+        sync_error = str(e)
         logger.warning("NetworkPolicy update failed for agent %s", agent.id, exc_info=True)
 
     return {
@@ -79,24 +90,33 @@ async def update_policy(
         "pod_strategy": agent.pod_strategy,
         "min_pods": agent.min_pods,
         "max_pods": agent.max_pods,
+        "network_policy_synced": network_policy_synced,
+        "sync_error": sync_error,
     }
 
 
 @router.post("/{agent_id}/policy/sync")
 async def force_sync_policy(agent_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Force re-sync policy to K8s (reconciliation)."""
+    """Force re-sync policy to K8s (reconciliation).
+
+    A missing namespace (404) is not an error — it simply means the agent has never
+    been activated, so there is nothing to reconcile. Any other supervisor error
+    is surfaced as 502.
+    """
     result = await db.execute(select(Agent).where(Agent.id == agent_id))
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    synced = {"network_policy": False}
-
     ns = agent_namespace(str(agent.id))
+    synced = True
     try:
         await supervisor_client.update_network_policy(ns, agent.policy)
-        synced["network_policy"] = True
-    except httpx.HTTPError:
-        logger.warning("NetworkPolicy sync failed for agent %s", agent.id, exc_info=True)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code != 404:
+            raise HTTPException(status_code=502, detail=f"NetworkPolicy sync failed: {e}") from e
+        synced = False
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"NetworkPolicy sync failed: {e}") from e
 
-    return {"agent_id": str(agent.id), "synced": synced}
+    return {"agent_id": str(agent.id), "synced": {"network_policy": synced}}

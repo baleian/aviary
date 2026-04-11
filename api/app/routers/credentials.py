@@ -1,4 +1,4 @@
-import uuid
+import logging
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -11,6 +11,8 @@ from app.auth.dependencies import require_agent_permission
 from app.db.models import Agent, AgentCredential
 from app.db.session import get_db
 from app.services import vault_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -108,8 +110,9 @@ async def delete_credential(
 
     try:
         await vault_service.delete_secret(cred.vault_path)
-    except httpx.HTTPError:  # Best-effort: DB record removal is more important
-        pass
+    except httpx.HTTPError as e:
+        logger.warning("Vault delete failed for %s", cred.vault_path, exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Vault delete failed: {e}") from e
 
     await db.delete(cred)
     return None

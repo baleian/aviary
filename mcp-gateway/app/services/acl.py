@@ -132,7 +132,7 @@ async def get_accessible_servers(
     result = await db.execute(
         select(McpToolAcl.server_id).where(McpToolAcl.user_id == user.id).distinct()
     )
-    server_ids = set(result.scalars().all())
+    server_ids.update(result.scalars().all())
 
     # Team ACL
     result = await db.execute(

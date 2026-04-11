@@ -29,8 +29,10 @@
         <td><span class="badge badge-{{ agent.visibility }}">{{ agent.visibility }}</span></td>
         <td><span class="badge badge-{{ agent.status }}">{{ agent.status }}</span></td>
         <td>
-          {% if dep.active %}
+          {% if dep.state == 'active' %}
             <span class="badge badge-ready">running</span>
+          {% elif dep.state == 'unknown' %}
+            <span class="badge badge-warning">unknown</span>
           {% else %}
             <span class="badge badge-offline">offline</span>
           {% endif %}

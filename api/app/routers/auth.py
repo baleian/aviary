@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_user
 from app.auth.oidc import exchange_code, get_oidc_config, refresh_tokens, to_public_url, validate_token
+from app.config import settings
 from app.db.models import User
 from app.db.session import get_db
 from app.schemas.common import (
@@ -27,7 +28,7 @@ async def auth_config():
     # Rewrite them to public URLs (localhost:8080) for the browser.
     return AuthConfigResponse(
         issuer=to_public_url(config["issuer"]),
-        client_id="aviary-web",
+        client_id=settings.oidc_client_id,
         authorization_endpoint=to_public_url(config["authorization_endpoint"]),
         token_endpoint=to_public_url(config["token_endpoint"]),
         end_session_endpoint=to_public_url(config.get("end_session_endpoint", "")),

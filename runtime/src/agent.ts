@@ -21,9 +21,7 @@ import * as path from "node:path";
 
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { startA2AServer, type AccessibleAgent, type A2AServer } from "./a2a-tools.js";
-
-const WORKSPACE_ROOT = "/workspace";
-const SHARED_WORKSPACE_ROOT = "/workspace-shared";
+import { WORKSPACE_ROOT, sessionClaudeDir, sessionHome, sessionTmp } from "./constants.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -37,11 +35,10 @@ const LITELLM_URL = requireEnv("INFERENCE_ROUTER_URL");
 const LITELLM_API_KEY = requireEnv("LITELLM_API_KEY");
 
 // Force SDK to use our bwrap wrapper instead of its bundled binary.
-// TS SDK option is `pathToClaudeCodeExecutable` (not `cliPath` like Python).
 const CLAUDE_CLI_PATH = "/usr/local/bin/claude";
 
 // Model tier env vars — all remapped to agent's configured model so CLI
-// internal tasks (WebFetch summarization, subagents) route through LiteLLM
+// internal tasks (WebFetch summarization, subagents) route through LiteLLM.
 const MODEL_TIER_KEYS = [
   "ANTHROPIC_MODEL",
   "ANTHROPIC_SMALL_FAST_MODEL",
@@ -54,21 +51,6 @@ const MODEL_TIER_KEYS = [
 // Pass-through env vars — must be explicit because SDK env dict replaces parent env.
 // PATH is required for the subprocess to find `node` and `claude` binaries.
 const PASSTHROUGH_KEYS = ["PATH", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "NODE_OPTIONS"] as const;
-
-/** Shared home directory — same for all agents in the session (hostPath). */
-function sessionHome(sessionId: string): string {
-  return path.join(SHARED_WORKSPACE_ROOT, sessionId);
-}
-
-/** Per-agent .claude context directory (PVC — private to this Pod). */
-function sessionClaudeDir(sessionId: string): string {
-  return path.join(WORKSPACE_ROOT, ".claude", sessionId);
-}
-
-/** Shared /tmp — same for all agents in the session (hostPath). */
-function sessionTmp(sessionId: string): string {
-  return `/tmp/${sessionId}`;
-}
 
 
 
@@ -182,8 +164,7 @@ export async function* processMessage(
 
   const mc: ModelConfig = modelConfig ?? {};
   if (!mc.model || !mc.backend) {
-    yield { type: "chunk", content: "Error: model and backend are required in model_config." };
-    return;
+    throw new Error("model_config.model and model_config.backend are required");
   }
   // Backend is the LiteLLM model-name prefix. If the stored model
   // already includes a prefix we use it verbatim, otherwise we join
@@ -271,7 +252,7 @@ export async function* processMessage(
     model: resolvedModel,
     systemPrompt,
     settingSources: ["user"],
-    cwd: "/workspace",
+    cwd: WORKSPACE_ROOT,
     pathToClaudeCodeExecutable: CLAUDE_CLI_PATH,
     permissionMode: "bypassPermissions" as const,
     allowedTools: allowedTools.length > 0 ? allowedTools : undefined,
@@ -439,8 +420,9 @@ export async function* processMessage(
       yield { type: "chunk", content: "[Cancelled by user]" };
       return;
     }
-    const errorMsg = `[${resolvedModel}] Error: ${e}`;
-    yield { type: "chunk", content: errorMsg };
+    console.error(`[agent ${agentId}/${sessionId}] SDK query error:`, e);
+    const stack = e instanceof Error && e.stack ? e.stack : String(e);
+    yield { type: "chunk", content: `[${resolvedModel}] Error: ${stack}` };
   } finally {
     // Shut down the A2A HTTP server after the message is fully processed
     a2aServer?.close();
