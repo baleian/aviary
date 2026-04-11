@@ -446,9 +446,6 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
                 if not content:
                     continue
 
-                # Auth check BEFORE persisting anything — otherwise an
-                # expired session leaves a dangling user message in the
-                # DB and the user comes back to a half-conversation.
                 fresh = await get_fresh_session(aviary_session_id)
                 if fresh is None:
                     await websocket.send_json({
@@ -459,9 +456,10 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
                     return
 
                 async with async_session_factory() as db:
-                    await session_service.save_message(
-                        db, session_id, "user", content, sender_id=user.id
+                    user_msg = await session_service.save_message(
+                        db, session_id, "user", content, sender_id=user.id,
                     )
+                    user_message_id = user_msg.id
                     await db.commit()
 
                 await redis_service.publish_message(session_id_str, {
@@ -505,6 +503,7 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
                     agent_mcp_servers=agent.mcp_servers,
                     agent_policy=agent.policy,
                     content=content,
+                    user_message_id=user_message_id,
                     user_token=fresh.access_token,
                     user_external_id=claims.sub,
                     accessible_agents=accessible_agents_list or None,

@@ -20,6 +20,17 @@ interface MessagePage {
   has_more: boolean;
 }
 
+function makeAgentError(sessionId: string, message: string): Message {
+  return {
+    id: crypto.randomUUID(),
+    session_id: sessionId,
+    sender_type: "agent",
+    content: `Error: ${message}`,
+    metadata: { transient: true },
+    created_at: new Date().toISOString(),
+  };
+}
+
 interface UseChatMessagesResult {
   session: Session | null;
   messages: Message[];
@@ -192,6 +203,24 @@ export function useChatMessages(sessionId: string): UseChatMessagesResult {
           // half-broken chat with a dangling error bubble.
           if (msg.message?.toLowerCase().includes("session expired")) {
             void refreshUser();
+            break;
+          }
+          // Pre-stream failure: backend rolled back the user message it
+          // had just persisted, so drop the matching local copy too.
+          // The trailing user message is always the one that triggered
+          // the failure since errors are emitted synchronously after a
+          // failed start_stream.
+          if (msg.rollback_message_id) {
+            setMessages((prev) => {
+              const lastUserIdx = [...prev].reverse().findIndex((m) => m.sender_type === "user");
+              if (lastUserIdx === -1) return [...prev, makeAgentError(sessionId, msg.message)];
+              const idx = prev.length - 1 - lastUserIdx;
+              return [
+                ...prev.slice(0, idx),
+                ...prev.slice(idx + 1),
+                makeAgentError(sessionId, msg.message),
+              ];
+            });
             break;
           }
           setMessages((prev) => [
