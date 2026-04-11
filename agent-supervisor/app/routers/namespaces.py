@@ -1,6 +1,5 @@
-"""Namespace lifecycle: create/update/delete agent K8s resources."""
+"""K8s-specific namespace endpoints used by the admin console."""
 
-import json
 import logging
 
 import httpx
@@ -10,69 +9,11 @@ from pydantic import BaseModel
 from aviary_shared.naming import agent_namespace
 
 from app.k8s import k8s_apply
+from app.provisioning import apply_network_policy, provision_namespace
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-_base_egress_rules: list[dict] | None = None
-
-
-async def _get_base_egress_rules() -> list[dict]:
-    """Read base egress rules from the network-policy-base ConfigMap in platform namespace."""
-    global _base_egress_rules
-    if _base_egress_rules is not None:
-        return _base_egress_rules
-
-    data = await k8s_apply("GET", "/api/v1/namespaces/platform/configmaps/network-policy-base")
-    raw = data.get("data", {}).get("rules.json")
-    if not raw:
-        raise RuntimeError("network-policy-base ConfigMap missing or empty in platform namespace")
-    _base_egress_rules = json.loads(raw)
-    logger.info("Loaded %d base egress rules from ConfigMap", len(_base_egress_rules))
-    return _base_egress_rules
-
-
-async def _build_egress_rules(policy: dict) -> list[dict]:
-    """Build K8s NetworkPolicy egress rules from agent policy."""
-    rules = list(await _get_base_egress_rules())
-
-    for entry in policy.get("allowedEgress", []):
-        cidr = entry.get("cidr")
-        if not cidr:
-            continue
-        rule: dict = {"to": [{"ipBlock": {"cidr": cidr}}]}
-        if entry.get("ports"):
-            rule["ports"] = [
-                {"port": p["port"], "protocol": p.get("protocol", "TCP")}
-                for p in entry["ports"]
-            ]
-        rules.append(rule)
-
-    return rules
-
-
-def _network_policy_manifest(namespace: str, egress_rules: list[dict]) -> dict:
-    return {
-        "apiVersion": "networking.k8s.io/v1",
-        "kind": "NetworkPolicy",
-        "metadata": {"name": "session-egress", "namespace": namespace},
-        "spec": {
-            "podSelector": {"matchLabels": {"aviary/role": "agent-runtime"}},
-            "policyTypes": ["Egress", "Ingress"],
-            "ingress": [],
-            "egress": egress_rules,
-        },
-    }
-
-
-async def _apply_network_policy(namespace: str, policy: dict) -> None:
-    egress_rules = await _build_egress_rules(policy)
-    manifest = _network_policy_manifest(namespace, egress_rules)
-    path = f"/apis/networking.k8s.io/v1/namespaces/{namespace}/networkpolicies"
-    result = await k8s_apply("POST", path, manifest)
-    if result.get("code") == 409 or result.get("reason") == "AlreadyExists":
-        await k8s_apply("PUT", f"{path}/session-egress", manifest)
 
 
 class CreateNamespaceRequest(BaseModel):
@@ -84,57 +25,11 @@ class CreateNamespaceRequest(BaseModel):
 @router.post("/namespaces")
 async def create_namespace(body: CreateNamespaceRequest):
     """Provision all K8s resources for a new agent."""
-    ns_name = agent_namespace(body.agent_id)
-
     try:
-        # 1. Namespace
-        await k8s_apply("POST", "/api/v1/namespaces", {
-            "apiVersion": "v1",
-            "kind": "Namespace",
-            "metadata": {
-                "name": ns_name,
-                "labels": {
-                    "aviary/agent-id": body.agent_id,
-                    "aviary/owner": body.owner_id,
-                    "aviary/managed": "true",
-                },
-            },
-        })
-
-        # 2. NetworkPolicy
-        await _apply_network_policy(ns_name, body.policy)
-
-        # 3. ResourceQuota
-        max_pods = body.policy.get("maxPods", 3)
-        await k8s_apply("POST", f"/api/v1/namespaces/{ns_name}/resourcequotas", {
-            "apiVersion": "v1",
-            "kind": "ResourceQuota",
-            "metadata": {"name": "session-quota", "namespace": ns_name},
-            "spec": {
-                "hard": {
-                    "pods": str(max_pods + 2),
-                    "requests.cpu": "10",
-                    "requests.memory": "10Gi",
-                    "limits.cpu": "20",
-                    "limits.memory": "20Gi",
-                    "persistentvolumeclaims": "10",
-                },
-            },
-        })
-
-        # 4. ServiceAccount
-        await k8s_apply("POST", f"/api/v1/namespaces/{ns_name}/serviceaccounts", {
-            "apiVersion": "v1",
-            "kind": "ServiceAccount",
-            "metadata": {"name": "session-runner", "namespace": ns_name},
-            "automountServiceAccountToken": False,
-        })
-
-        logger.info("Created K8s resources for agent %s in namespace %s", body.agent_id, ns_name)
-        return {"namespace": ns_name}
-
+        ns_name = await provision_namespace(body.agent_id, body.owner_id, body.policy)
     except httpx.HTTPError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
+    return {"namespace": ns_name}
 
 
 class UpdateNetworkPolicyRequest(BaseModel):
@@ -145,7 +40,7 @@ class UpdateNetworkPolicyRequest(BaseModel):
 async def update_network_policy(namespace: str, body: UpdateNetworkPolicyRequest):
     """Update the NetworkPolicy for an agent namespace."""
     try:
-        await _apply_network_policy(namespace, body.policy)
+        await apply_network_policy(namespace, body.policy)
         logger.info("Updated NetworkPolicy in namespace %s", namespace)
         return {"ok": True}
     except httpx.HTTPError as e:

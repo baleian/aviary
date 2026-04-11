@@ -1,5 +1,17 @@
 """K8s resource manifest builders for agent deployments."""
 
+from aviary_shared.naming import (
+    DEPLOYMENT_NAME,
+    LABEL_AGENT_ID,
+    LABEL_ROLE,
+    PVC_NAME,
+    PVC_SIZE,
+    PVC_STORAGE_CLASS,
+    RUNTIME_PORT,
+    SERVICE_ACCOUNT_NAME,
+    SERVICE_NAME,
+)
+
 from app.config import settings
 
 _NODE_OPTIONS = "--require /app/scripts/proxy-bootstrap.js"
@@ -10,14 +22,14 @@ def build_pvc_manifest(namespace: str, agent_id: str) -> dict:
         "apiVersion": "v1",
         "kind": "PersistentVolumeClaim",
         "metadata": {
-            "name": "agent-workspace",
+            "name": PVC_NAME,
             "namespace": namespace,
-            "labels": {"aviary/agent-id": agent_id},
+            "labels": {LABEL_AGENT_ID: agent_id},
         },
         "spec": {
             "accessModes": ["ReadWriteOnce"],
-            "resources": {"requests": {"storage": "5Gi"}},
-            "storageClassName": "local-path",
+            "resources": {"requests": {"storage": PVC_SIZE}},
+            "storageClassName": PVC_STORAGE_CLASS,
         },
     }
 
@@ -28,8 +40,8 @@ def build_deployment_manifest(
     min_pods: int,
     policy: dict,
 ) -> dict:
-    memory_limit = policy.get("maxMemoryPerSession", "4Gi")
-    cpu_limit = policy.get("maxCpuPerSession", "4")
+    memory_limit = policy.get("maxMemoryPerSession", settings.default_memory_limit)
+    cpu_limit = policy.get("maxCpuPerSession", settings.default_cpu_limit)
     container_image = policy.get("containerImage", settings.agent_runtime_image)
     max_sessions = policy.get(
         "maxConcurrentSessionsPerPod", settings.max_concurrent_sessions_per_pod
@@ -39,25 +51,25 @@ def build_deployment_manifest(
         "apiVersion": "apps/v1",
         "kind": "Deployment",
         "metadata": {
-            "name": "agent-runtime",
+            "name": DEPLOYMENT_NAME,
             "namespace": namespace,
             "labels": {
-                "aviary/agent-id": agent_id,
-                "aviary/role": "agent-runtime",
+                LABEL_AGENT_ID: agent_id,
+                LABEL_ROLE: DEPLOYMENT_NAME,
             },
         },
         "spec": {
             "replicas": min_pods,
-            "selector": {"matchLabels": {"aviary/role": "agent-runtime"}},
+            "selector": {"matchLabels": {LABEL_ROLE: DEPLOYMENT_NAME}},
             "template": {
                 "metadata": {
                     "labels": {
-                        "aviary/role": "agent-runtime",
-                        "aviary/agent-id": agent_id,
+                        LABEL_ROLE: DEPLOYMENT_NAME,
+                        LABEL_AGENT_ID: agent_id,
                     },
                 },
                 "spec": {
-                    "serviceAccountName": "session-runner",
+                    "serviceAccountName": SERVICE_ACCOUNT_NAME,
                     "securityContext": {
                         "runAsUser": 1000,
                         "runAsGroup": 1000,
@@ -71,10 +83,10 @@ def build_deployment_manifest(
                     ],
                     "containers": [
                         {
-                            "name": "agent-runtime",
+                            "name": DEPLOYMENT_NAME,
                             "image": container_image,
                             "imagePullPolicy": "Never",
-                            "ports": [{"containerPort": 3000}],
+                            "ports": [{"containerPort": RUNTIME_PORT}],
                             "env": [
                                 {"name": "AGENT_ID", "value": agent_id},
                                 {"name": "MAX_CONCURRENT_SESSIONS", "value": str(max_sessions)},
@@ -90,7 +102,7 @@ def build_deployment_manifest(
                                 {"name": "AVIARY_INTERNAL_API_KEY", "value": settings.internal_api_key},
                             ],
                             "volumeMounts": [
-                                {"name": "agent-workspace", "mountPath": "/workspace"},
+                                {"name": PVC_NAME, "mountPath": "/workspace"},
                                 {"name": "shared-workspace", "mountPath": "/workspace-shared"},
                             ],
                             "resources": {
@@ -98,20 +110,20 @@ def build_deployment_manifest(
                                 "limits": {"cpu": cpu_limit, "memory": memory_limit},
                             },
                             "livenessProbe": {
-                                "httpGet": {"path": "/health", "port": 3000},
+                                "httpGet": {"path": "/health", "port": RUNTIME_PORT},
                                 "initialDelaySeconds": 5,
                                 "periodSeconds": 30,
                             },
                             "readinessProbe": {
-                                "httpGet": {"path": "/ready", "port": 3000},
+                                "httpGet": {"path": "/ready", "port": RUNTIME_PORT},
                                 "initialDelaySeconds": 3,
                             },
                         }
                     ],
                     "volumes": [
                         {
-                            "name": "agent-workspace",
-                            "persistentVolumeClaim": {"claimName": "agent-workspace"},
+                            "name": PVC_NAME,
+                            "persistentVolumeClaim": {"claimName": PVC_NAME},
                         },
                         {
                             "name": "shared-workspace",
@@ -128,9 +140,9 @@ def build_service_manifest(namespace: str) -> dict:
     return {
         "apiVersion": "v1",
         "kind": "Service",
-        "metadata": {"name": "agent-runtime-svc", "namespace": namespace},
+        "metadata": {"name": SERVICE_NAME, "namespace": namespace},
         "spec": {
-            "selector": {"aviary/role": "agent-runtime"},
-            "ports": [{"port": 3000, "targetPort": 3000, "protocol": "TCP"}],
+            "selector": {LABEL_ROLE: DEPLOYMENT_NAME},
+            "ports": [{"port": RUNTIME_PORT, "targetPort": RUNTIME_PORT, "protocol": "TCP"}],
         },
     }

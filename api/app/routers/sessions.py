@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import logging
 import uuid
@@ -402,12 +403,15 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
                     try:
                         data = json.loads(raw_msg["data"])
                         await websocket.send_json(data)
-                        # Clear unread for this user when they receive the done
-                        # event in real-time (they're actively viewing the session)
+                        # Clear unread when this user receives the done event in
+                        # real-time (they're actively viewing the session).
                         if data.get("type") == "done":
                             await redis_service.clear_unread(session_id_str, user_id_str)
-                    except Exception:  # Best-effort: WebSocket send may fail if client disconnected
-                        pass
+                    except WebSocketDisconnect:
+                        return
+                    except Exception:
+                        logger.debug("Relay send failed for session %s", session_id_str, exc_info=True)
+                        return
             except asyncio.CancelledError:
                 pass
 
@@ -489,12 +493,10 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
 
     except WebSocketDisconnect:
         pass
-    except Exception as e:  # Best-effort: catch-all for unexpected WebSocket errors
+    except Exception as e:
         logger.exception("WebSocket handler error for session %s", session_id)
-        try:
+        with contextlib.suppress(Exception):
             await websocket.send_json({"type": "error", "message": str(e)})
-        except Exception:  # Best-effort: WebSocket may already be closed
-            pass
     finally:
         if user_id_str:
             await redis_service.remove_ws_connection(session_id_str, user_id_str)

@@ -23,7 +23,7 @@ from app.config import settings
 from app.db.models import User
 from app.db.session import get_db
 from app.services import acl_service, agent_service, agent_supervisor, redis_service
-from app.services.stream.manager import _build_mcp_config, _fetch_user_credentials
+from app.services.stream.manager import build_mcp_config, fetch_user_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -81,13 +81,7 @@ async def a2a_message(
     # 3. Ensure sub-agent is running
     try:
         await agent_supervisor.ensure_agent_running(
-            agent_id=agent_id,
-            owner_id=str(agent.owner_id),
-            config={
-                "instruction": agent.instruction,
-                "tools": agent.tools,
-                "mcp_servers": agent.mcp_servers or [],
-            },
+            agent_id=agent_id, owner_id=str(agent.owner_id),
         )
         ready = await agent_supervisor.wait_for_agent_ready(agent_id, timeout=90)
         if not ready:
@@ -99,7 +93,7 @@ async def a2a_message(
         raise HTTPException(status_code=503, detail="Failed to start sub-agent") from e
 
     # 4. Fetch credentials and build config
-    credentials = await _fetch_user_credentials(user.external_id)
+    credentials = await fetch_user_credentials(user.external_id)
     stream_url = agent_supervisor.get_stream_url(agent_id, session_id)
 
     if not stream_url:
@@ -119,9 +113,7 @@ async def a2a_message(
                         "agent_config": {
                             "instruction": agent.instruction,
                             "tools": agent.tools,
-                            "mcp_servers": _build_mcp_config(
-                                agent_id, "", agent.mcp_servers or []
-                            ),
+                            "mcp_servers": build_mcp_config(agent.mcp_servers or []),
                             "policy": agent.policy,
                             **({"credentials": credentials} if credentials else {}),
                             "is_sub_agent": True,

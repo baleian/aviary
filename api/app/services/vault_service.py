@@ -1,49 +1,26 @@
-"""HashiCorp Vault integration for secret management."""
+"""Lazy Vault client used by the API server."""
 
-import httpx
+from aviary_shared.vault import VaultClient
 
 from app.config import settings
 
+_client: VaultClient | None = None
 
-async def read_secret(path: str) -> dict:
-    """Read a secret from Vault KV v2.
 
-    path: e.g. 'aviary/agents/{agent_id}/credentials/{name}'
-    Returns the secret data dict.
-    """
-    url = f"{settings.vault_addr}/v1/secret/data/{path}"
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            url,
-            headers={"X-Vault-Token": settings.vault_token},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        return resp.json()["data"]["data"]
+def _vault() -> VaultClient:
+    global _client
+    if _client is None:
+        _client = VaultClient(settings.vault_addr, settings.vault_token)
+    return _client
+
+
+async def read_secret(path: str) -> dict | None:
+    return await _vault().read(path)
 
 
 async def write_secret(path: str, data: dict) -> None:
-    """Write a secret to Vault KV v2."""
-    url = f"{settings.vault_addr}/v1/secret/data/{path}"
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            url,
-            headers={"X-Vault-Token": settings.vault_token},
-            json={"data": data},
-            timeout=10,
-        )
-        resp.raise_for_status()
+    await _vault().write(path, data)
 
 
 async def delete_secret(path: str) -> None:
-    """Delete a secret from Vault KV v2."""
-    url = f"{settings.vault_addr}/v1/secret/data/{path}"
-    async with httpx.AsyncClient() as client:
-        resp = await client.delete(
-            url,
-            headers={"X-Vault-Token": settings.vault_token},
-            timeout=10,
-        )
-        # 404 = already deleted, not an error
-        if resp.status_code != 404:
-            resp.raise_for_status()
+    await _vault().delete(path)

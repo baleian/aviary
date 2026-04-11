@@ -42,8 +42,10 @@
       <span class="badge badge-{{ agent.status }}">{{ agent.status }}</span>
       <span class="text-muted">Deployment</span>
       <span id="deployment-badge">
-      {% if deployment.active %}
+      {% if deployment.state == 'active' %}
         <span class="badge badge-ready">active ({{ deployment.ready_replicas }}/{{ deployment.replicas }})</span>
+      {% elif deployment.state == 'unknown' %}
+        <span class="badge badge-warning">unknown (supervisor unreachable)</span>
       {% else %}
         <span class="badge badge-offline">inactive</span>
       {% endif %}

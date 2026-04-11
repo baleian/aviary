@@ -7,6 +7,18 @@ class Settings(BaseSettings):
     max_concurrent_sessions_per_pod: int = 5
     host_gateway_ip: str
 
+    # Default per-pod resource limits — overridable via per-agent policy.
+    default_memory_limit: str = "4Gi"
+    default_cpu_limit: str = "4"
+
+    # Default ResourceQuota for an agent namespace.
+    quota_pods_buffer: int = 2  # added to maxPods
+    quota_requests_cpu: str = "10"
+    quota_requests_memory: str = "10Gi"
+    quota_limits_cpu: str = "20"
+    quota_limits_memory: str = "20Gi"
+    quota_pvcs: int = 10
+
     # Database
     database_url: str
 

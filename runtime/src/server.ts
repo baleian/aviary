@@ -9,8 +9,9 @@
 
 import * as fs from "node:fs";
 import express from "express";
-import { SessionManager, WORKSPACE_ROOT, SHARED_WORKSPACE_ROOT } from "./session-manager.js";
-import { healthRouter, setManager, setReady } from "./health.js";
+import { SessionManager } from "./session-manager.js";
+import { SHARED_WORKSPACE_ROOT, WORKSPACE_ROOT } from "./constants.js";
+import { healthRouter, setCapacityProbe, setReady } from "./health.js";
 import { processMessage } from "./agent.js";
 
 const app = express();
@@ -29,7 +30,10 @@ const activeAbortControllers = new Map<string, AbortController>();
 // Startup
 fs.mkdirSync(WORKSPACE_ROOT, { recursive: true });
 fs.mkdirSync(SHARED_WORKSPACE_ROOT, { recursive: true });
-setManager(manager);
+setCapacityProbe(() => ({
+  hasCapacity: manager.hasCapacity,
+  activeCount: manager.activeCount,
+}));
 setReady(true);
 
 interface MessageRequestBody {

@@ -1,5 +1,16 @@
 """Block reconstruction and tool result attachment — pure data transformation."""
 
+# Tool result content larger than this is truncated before persisting / display.
+# Avoids storing megabytes of grep/find output in Postgres JSONB.
+MAX_TOOL_RESULT_BYTES = 10240
+
+
+def truncate_tool_result(content: object) -> object:
+    """Truncate string tool results above the persistence cap; pass-through otherwise."""
+    if isinstance(content, str) and len(content) > MAX_TOOL_RESULT_BYTES:
+        return content[:MAX_TOOL_RESULT_BYTES] + "\n... (truncated)"
+    return content
+
 
 def attach_tool_results(
     blocks: list[dict], results: dict[str, dict]
@@ -47,12 +58,9 @@ def rebuild_blocks_from_chunks(chunks: list[dict]) -> tuple[str, list[dict]]:
             blocks.append(tool_block)
         elif ct == "tool_result":
             tid = chunk.get("tool_use_id")
-            result_content = chunk.get("content", "")
-            if isinstance(result_content, str) and len(result_content) > 10240:
-                result_content = result_content[:10240] + "\n... (truncated)"
             if tid:
                 tool_results[tid] = {
-                    "content": result_content,
+                    "content": truncate_tool_result(chunk.get("content", "")),
                     "is_error": chunk.get("is_error", False),
                 }
 

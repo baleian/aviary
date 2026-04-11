@@ -14,11 +14,17 @@ import uuid
 import httpx
 from sqlalchemy import select
 
+from aviary_shared.vault import credential_path
+
 from app.db.models import SessionParticipant
 from app.db.session import async_session_factory
 from app.services import agent_supervisor, redis_service, session_service, vault_service
 from app.services.stream.a2a import merge_a2a_events
-from app.services.stream.blocks import attach_tool_results, rebuild_blocks_from_chunks
+from app.services.stream.blocks import (
+    attach_tool_results,
+    rebuild_blocks_from_chunks,
+    truncate_tool_result,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +32,7 @@ logger = logging.getLogger(__name__)
 _active_streams: dict[str, asyncio.Task] = {}
 
 
-def _build_mcp_config(legacy_mcp_servers: list) -> dict:
+def build_mcp_config(legacy_mcp_servers: list) -> dict:
     """Build MCP servers config from legacy stdio servers."""
     config: dict = {}
     for srv in legacy_mcp_servers:
@@ -34,18 +40,18 @@ def _build_mcp_config(legacy_mcp_servers: list) -> dict:
     return config
 
 
-async def _fetch_user_credentials(user_external_id: str) -> dict[str, str]:
-    """Fetch user credentials from Vault for injection into agent sandbox."""
-    credentials: dict[str, str] = {}
-    try:
-        secret = await vault_service.read_secret(
-            f"aviary/credentials/{user_external_id}/github-token"
-        )
-        if token := secret.get("value"):
-            credentials["github_token"] = token
-    except httpx.HTTPError:  # Best-effort: no GitHub token configured for this user
-        pass
-    return credentials
+async def fetch_user_credentials(user_external_id: str) -> dict[str, str]:
+    """Fetch user credentials from Vault for injection into agent sandbox.
+
+    Returns an empty dict if the user has no GitHub token stored. Vault errors
+    other than 404 propagate so a Vault outage is never silently treated as
+    "no credentials".
+    """
+    secret = await vault_service.read_secret(credential_path(user_external_id, "github-token"))
+    if secret is None:
+        return {}
+    token = secret.get("value")
+    return {"github_token": token} if token else {}
 
 
 async def start_stream(
@@ -155,28 +161,28 @@ async def _run_stream(
     await redis_service.publish_message(session_id, {"type": "replay_start"})
 
     try:
-        await agent_supervisor.ensure_agent_running(
-            agent_id=agent_id,
-            owner_id="",
-            config={
-                "instruction": agent_instruction,
-                "tools": agent_tools,
-                "mcp_servers": agent_mcp_servers,
-            },
-        )
+        await agent_supervisor.ensure_agent_running(agent_id=agent_id, owner_id="")
         ready = await agent_supervisor.wait_for_agent_ready(agent_id, timeout=90)
-        if not ready:
-            error_event = {"type": "error", "message": "Agent did not become ready in time"}
-            await redis_service.publish_message(session_id, error_event)
-            await redis_service.set_stream_status(session_id, "error")
-            await redis_service.set_session_status(session_id, "idle")
-            return
-    except httpx.HTTPError:
+    except httpx.HTTPError as e:
         logger.warning("Failed to ensure agent running for session %s", session_id, exc_info=True)
+        await redis_service.publish_message(
+            session_id, {"type": "error", "message": f"Failed to start agent: {e}"}
+        )
+        await redis_service.set_stream_status(session_id, "error")
+        await redis_service.set_session_status(session_id, "idle")
+        return
+
+    if not ready:
+        await redis_service.publish_message(
+            session_id, {"type": "error", "message": "Agent did not become ready in time"}
+        )
+        await redis_service.set_stream_status(session_id, "error")
+        await redis_service.set_session_status(session_id, "idle")
+        return
 
     credentials: dict[str, str] = {}
     if user_external_id:
-        credentials = await _fetch_user_credentials(user_external_id)
+        credentials = await fetch_user_credentials(user_external_id)
 
     full_response = ""
     blocks_meta: list[dict] = []
@@ -201,7 +207,7 @@ async def _run_stream(
                     "agent_config": {
                         "instruction": agent_instruction,
                         "tools": agent_tools,
-                        "mcp_servers": _build_mcp_config(agent_mcp_servers),
+                        "mcp_servers": build_mcp_config(agent_mcp_servers),
                         "policy": agent_policy,
                         "user_token": user_token,
                         "user_external_id": user_external_id,
@@ -247,9 +253,7 @@ async def _run_stream(
                         await redis_service.publish_message(session_id, chunk_data)
                     elif chunk_type == "tool_result":
                         tid = chunk_data.get("tool_use_id")
-                        result_content = chunk_data.get("content", "")
-                        if isinstance(result_content, str) and len(result_content) > 10240:
-                            result_content = result_content[:10240] + "\n... (truncated)"
+                        result_content = truncate_tool_result(chunk_data.get("content", ""))
                         if tid:
                             tool_results[tid] = {
                                 "content": result_content,

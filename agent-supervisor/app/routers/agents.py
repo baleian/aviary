@@ -11,47 +11,39 @@ from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from aviary_shared.naming import agent_namespace
+from aviary_shared.naming import (
+    DEPLOYMENT_NAME,
+    PVC_NAME,
+    RUNTIME_PORT,
+    SERVICE_NAME,
+    agent_namespace,
+)
 
+from app import provisioning
 from app.scaling import touch_activity
 from app.k8s import _get_k8s_client, k8s_apply
-from app.routers.namespaces import CreateNamespaceRequest, create_namespace
-from app.routers.deployments import (
-    EnsureDeploymentRequest,
-    ensure_deployment,
-    get_deployment_status,
-    wait_for_ready,
-    cleanup_session_workspace,
-)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-# ── Agent lifecycle ──────────────────────────────────────────
-
-
 class RegisterAgentRequest(BaseModel):
     owner_id: str
-    instruction: str = ""
-    tools: list = []
-    mcp_servers: list = []
 
 
 @router.post("/agents/{agent_id}/register")
 async def register_agent(agent_id: str, body: RegisterAgentRequest):
-    """Register a new agent. Provisions resources with secure defaults (all network blocked)."""
+    """Register a new agent. Provisions resources with secure defaults (all network blocked).
+
+    Agent config (instruction, tools, mcp_servers) is sent in every message body
+    and not stored anywhere here, so we don't accept it on register.
+    """
     await touch_activity(agent_id)
-    result = await create_namespace(CreateNamespaceRequest(
-        agent_id=agent_id,
-        owner_id=body.owner_id,
-        instruction=body.instruction,
-        tools=body.tools,
-        policy={},  # Secure defaults
-        mcp_servers=body.mcp_servers,
-    ))
-    return {"ok": True, **result}
+    ns_name = await provisioning.provision_namespace(
+        agent_id=agent_id, owner_id=body.owner_id, policy={},
+    )
+    return {"ok": True, "namespace": ns_name}
 
 
 @router.delete("/agents/{agent_id}")
@@ -59,35 +51,22 @@ async def unregister_agent(agent_id: str):
     """Remove all resources for an agent."""
     ns = agent_namespace(agent_id)
 
-    # Delete deployment resources first
+    # k8s_apply already treats DELETE 404 as a no-op. Other errors must surface
+    # so the API caller knows resources are still leaking.
     for path in [
-        f"/apis/apps/v1/namespaces/{ns}/deployments/agent-runtime",
-        f"/api/v1/namespaces/{ns}/services/agent-runtime-svc",
-        f"/api/v1/namespaces/{ns}/persistentvolumeclaims/agent-workspace",
+        f"/apis/apps/v1/namespaces/{ns}/deployments/{DEPLOYMENT_NAME}",
+        f"/api/v1/namespaces/{ns}/services/{SERVICE_NAME}",
+        f"/api/v1/namespaces/{ns}/persistentvolumeclaims/{PVC_NAME}",
+        f"/api/v1/namespaces/{ns}",
     ]:
-        try:
-            await k8s_apply("DELETE", path)
-        except httpx.HTTPError:  # Best-effort: resource may already be gone
-            pass
-
-    # Then delete namespace
-    try:
-        await k8s_apply("DELETE", f"/api/v1/namespaces/{ns}")
-    except httpx.HTTPError:  # Best-effort: namespace may already be gone
-        pass
+        await k8s_apply("DELETE", path)
 
     logger.info("Unregistered agent %s", agent_id)
     return {"ok": True}
 
 
-# ── Agent runtime ────────────────────────────────────────────
-
-
 class RunAgentRequest(BaseModel):
     owner_id: str
-    instruction: str = ""
-    tools: list = []
-    mcp_servers: list = []
 
 
 @router.post("/agents/{agent_id}/run")
@@ -95,24 +74,26 @@ async def run_agent(agent_id: str, body: RunAgentRequest):
     """Ensure agent is running. Lazily creates resources with secure defaults if needed."""
     await touch_activity(agent_id)
     ns = agent_namespace(agent_id)
-    result = await ensure_deployment(ns, EnsureDeploymentRequest(
+    return await provisioning.ensure_deployment(
+        namespace=ns,
         agent_id=agent_id,
         owner_id=body.owner_id,
-        instruction=body.instruction,
-        tools=body.tools,
-        policy={},  # Secure defaults
-        mcp_servers=body.mcp_servers,
+        policy={},
         min_pods=1,
         max_pods=1,
-    ))
-    return result
+    )
 
 
 @router.get("/agents/{agent_id}/ready")
 async def check_agent_ready(agent_id: str):
-    """Check if agent has ready instances."""
+    """Check if agent has ready instances. Returns ready=False when no Deployment exists."""
     ns = agent_namespace(agent_id)
-    status = await get_deployment_status(ns)
+    try:
+        status = await provisioning.get_deployment_status(ns)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return {"ready": False, "replicas": 0, "ready_replicas": 0, "updated_replicas": 0}
+        raise
     ready = (status.get("ready_replicas") or 0) >= 1
     return {"ready": ready, **status}
 
@@ -121,10 +102,7 @@ async def check_agent_ready(agent_id: str):
 async def wait_agent_ready(agent_id: str, timeout: int = 90):
     """Block until agent is ready or timeout."""
     ns = agent_namespace(agent_id)
-    return await wait_for_ready(ns, timeout)
-
-
-# ── Session operations ───────────────────────────────────────
+    return await provisioning.wait_for_ready(ns, timeout)
 
 
 @router.post("/agents/{agent_id}/sessions/{session_id}/message")
@@ -134,7 +112,7 @@ async def proxy_session_message(agent_id: str, session_id: str, request: Request
     ns = agent_namespace(agent_id)
     body = await request.json()
     proxy_path = (
-        f"/api/v1/namespaces/{ns}/services/agent-runtime-svc:3000/proxy/message"
+        f"/api/v1/namespaces/{ns}/services/{SERVICE_NAME}:{RUNTIME_PORT}/proxy/message"
     )
 
     async def generate():
@@ -169,14 +147,14 @@ async def abort_session(agent_id: str, session_id: str):
     """Abort an active session stream."""
     ns = agent_namespace(agent_id)
     proxy_path = (
-        f"/api/v1/namespaces/{ns}/services/agent-runtime-svc:3000/proxy/abort/{session_id}"
+        f"/api/v1/namespaces/{ns}/services/{SERVICE_NAME}:{RUNTIME_PORT}/proxy/abort/{session_id}"
     )
     try:
         async with _get_k8s_client() as client:
             resp = await client.post(proxy_path, timeout=5)
             return {"ok": True, "status": resp.status_code}
     except httpx.HTTPError:
-        logger.warning("Failed to abort session %s for agent %s", session_id, agent_id)
+        logger.warning("Failed to abort session %s for agent %s", session_id, agent_id, exc_info=True)
         return {"ok": False, "reason": "agent_not_reachable"}
 
 
@@ -184,4 +162,4 @@ async def abort_session(agent_id: str, session_id: str):
 async def cleanup_session(agent_id: str, session_id: str):
     """Clean up session workspace. Best-effort."""
     ns = agent_namespace(agent_id)
-    return await cleanup_session_workspace(ns, session_id)
+    return await provisioning.cleanup_session_workspace(ns, session_id)

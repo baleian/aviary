@@ -24,9 +24,6 @@ async def close_client() -> None:
     await _supervisor.close()
 
 
-# ── Namespace operations ──────────────────────────────────────
-
-
 async def create_namespace(
     agent_id: str, owner_id: str, policy: dict,
 ) -> str:
@@ -48,9 +45,6 @@ async def update_network_policy(namespace: str, policy: dict) -> None:
 async def delete_namespace(agent_id: str) -> None:
     resp = await _supervisor.client.delete(f"/v1/namespaces/{agent_id}")
     resp.raise_for_status()
-
-
-# ── Deployment operations ─────────────────────────────────────
 
 
 async def ensure_deployment(

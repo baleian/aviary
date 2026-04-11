@@ -66,11 +66,27 @@ async def update_policy(
 
     await db.flush()
 
-    # Update K8s NetworkPolicy
+    # Sync NetworkPolicy to K8s. The egress proxy reads policy directly from DB on
+    # every request, so the DB write alone is sufficient for HTTP-level enforcement —
+    # but the NetworkPolicy is the second layer (CIDR enforcement for non-HTTP
+    # traffic). Sync failures are reported back so the admin knows the two layers
+    # are out of sync; the DB write is left intact (no rollback).
     ns = agent_namespace(str(agent.id))
+    network_policy_synced = True
+    sync_error: str | None = None
     try:
         await supervisor_client.update_network_policy(ns, agent.policy)
-    except httpx.HTTPError:
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            # Deployment not yet activated — NetworkPolicy will be created on activate.
+            network_policy_synced = False
+        else:
+            network_policy_synced = False
+            sync_error = str(e)
+            logger.warning("NetworkPolicy update failed for agent %s", agent.id, exc_info=True)
+    except httpx.HTTPError as e:
+        network_policy_synced = False
+        sync_error = str(e)
         logger.warning("NetworkPolicy update failed for agent %s", agent.id, exc_info=True)
 
     return {
@@ -79,6 +95,8 @@ async def update_policy(
         "pod_strategy": agent.pod_strategy,
         "min_pods": agent.min_pods,
         "max_pods": agent.max_pods,
+        "network_policy_synced": network_policy_synced,
+        "sync_error": sync_error,
     }
 
 
@@ -90,13 +108,10 @@ async def force_sync_policy(agent_id: uuid.UUID, db: AsyncSession = Depends(get_
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    synced = {"network_policy": False}
-
     ns = agent_namespace(str(agent.id))
     try:
         await supervisor_client.update_network_policy(ns, agent.policy)
-        synced["network_policy"] = True
-    except httpx.HTTPError:
-        logger.warning("NetworkPolicy sync failed for agent %s", agent.id, exc_info=True)
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"NetworkPolicy sync failed: {e}") from e
 
-    return {"agent_id": str(agent.id), "synced": synced}
+    return {"agent_id": str(agent.id), "synced": {"network_policy": True}}

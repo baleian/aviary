@@ -228,9 +228,4 @@ async def ensure_agent_ready(db: AsyncSession, agent: Agent) -> None:
     await agent_supervisor.ensure_agent_running(
         agent_id=str(agent.id),
         owner_id=str(agent.owner_id),
-        config={
-            "instruction": agent.instruction,
-            "tools": agent.tools,
-            "mcp_servers": agent.mcp_servers or [],
-        },
     )

@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aviary_shared.db.models import Agent
 from aviary_shared.naming import agent_namespace
 from app.db import get_db
-from app.services import supervisor_client
+from app.services import agent_lifecycle, supervisor_client
 from app.routers.pages._templates import templates
 
 logger = logging.getLogger(__name__)
@@ -41,16 +41,25 @@ async def agent_list(
     )
     agents = list(result.scalars().all())
 
-    # Query live deployment status for each agent
+    # Query live deployment status for each agent. 404 = never activated;
+    # any other error = supervisor unreachable, surfaced as "unknown" so the
+    # UI never confuses a real outage with a deactivated agent.
     deployment_map: dict[str, dict] = {}
     for agent in agents:
         ns = agent_namespace(str(agent.id))
         try:
             status_info = await supervisor_client.get_deployment_status(ns)
             ready = status_info.get("ready_replicas") or 0
-            deployment_map[str(agent.id)] = {"active": ready > 0, "ready": ready}
-        except httpx.HTTPError:  # Best-effort: deployment may not exist
-            deployment_map[str(agent.id)] = {"active": False, "ready": 0}
+            deployment_map[str(agent.id)] = {"state": "active" if ready > 0 else "inactive", "ready": ready}
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                deployment_map[str(agent.id)] = {"state": "inactive", "ready": 0}
+            else:
+                logger.warning("Status fetch failed for agent %s", agent.id, exc_info=True)
+                deployment_map[str(agent.id)] = {"state": "unknown", "ready": 0}
+        except httpx.HTTPError:
+            logger.warning("Status fetch failed for agent %s", agent.id, exc_info=True)
+            deployment_map[str(agent.id)] = {"state": "unknown", "ready": 0}
 
     return templates.TemplateResponse(request, "agents.html", {
         "agents": agents,
@@ -72,20 +81,27 @@ async def agent_detail(
     if not agent:
         return HTMLResponse("<h1>Agent not found</h1>", status_code=404)
 
-    # Query live deployment status from supervisor
+    # Query live deployment status from supervisor. 404 = inactive (never deployed
+    # or torn down); other errors = supervisor unreachable, surfaced via state="unknown".
     ns = agent_namespace(str(agent.id))
-    deployment_status = {"active": False, "replicas": 0, "ready_replicas": 0}
+    deployment_status = {"state": "inactive", "active": False, "replicas": 0, "ready_replicas": 0}
     try:
         status_info = await supervisor_client.get_deployment_status(ns)
         replicas = status_info.get("replicas", 0)
         ready = status_info.get("ready_replicas", 0)
         deployment_status = {
+            "state": "active" if ready > 0 else "inactive",
             "active": ready > 0,
             "replicas": replicas,
             "ready_replicas": ready,
         }
-    except httpx.HTTPError:  # Best-effort: deployment may not exist
-        pass
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code != 404:
+            logger.warning("Status fetch failed for agent %s", agent.id, exc_info=True)
+            deployment_status = {"state": "unknown", "active": False, "replicas": 0, "ready_replicas": 0}
+    except httpx.HTTPError:
+        logger.warning("Status fetch failed for agent %s", agent.id, exc_info=True)
+        deployment_status = {"state": "unknown", "active": False, "replicas": 0, "ready_replicas": 0}
 
     policy = agent.policy or {}
     egress_rules = policy.get("allowedEgress", [])
@@ -192,104 +208,71 @@ async def update_policy(
     agent.policy = policy
     await db.flush()
 
-    # Sync K8s NetworkPolicy
+    # Sync K8s NetworkPolicy. 404 = deployment not yet activated (policy will apply
+    # on activate). Other errors are surfaced to the operator via flash error.
     ns = agent_namespace(str(agent.id))
     try:
         await supervisor_client.update_network_policy(ns, policy)
-    except httpx.HTTPError:
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code != 404:
+            logger.warning("NetworkPolicy update failed for agent %s", agent.id, exc_info=True)
+            return RedirectResponse(f"/agents/{agent_id}?error=Policy+saved+but+K8s+sync+failed:+{e}", status_code=303)
+    except httpx.HTTPError as e:
         logger.warning("NetworkPolicy update failed for agent %s", agent.id, exc_info=True)
+        return RedirectResponse(f"/agents/{agent_id}?error=Policy+saved+but+K8s+sync+failed:+{e}", status_code=303)
 
     return RedirectResponse(f"/agents/{agent_id}?flash=Policy+saved", status_code=303)
 
 
 # ── Deployment Actions ────────────────────────────────────────
 
+def _flash_error(agent_id, message: str) -> RedirectResponse:
+    return RedirectResponse(f"/agents/{agent_id}?error={message}", status_code=303)
+
+
 @router.post("/agents/{agent_id}/activate")
 async def activate_agent(agent_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    from datetime import datetime, timezone
-
-    result = await db.execute(select(Agent).where(Agent.id == agent_id))
-    agent = result.scalar_one_or_none()
+    agent = await agent_lifecycle.find_agent_or_none(db, agent_id)
     if not agent:
-        return RedirectResponse(f"/agents/{agent_id}?error=Agent+not+found", status_code=303)
-
-    ns = agent_namespace(str(agent.id))
+        return _flash_error(agent_id, "Agent+not+found")
     try:
-        # Ensure namespace exists
-        try:
-            await supervisor_client.create_namespace(
-                agent_id=str(agent.id), owner_id=str(agent.owner_id),
-                policy=agent.policy or {},
-            )
-        except httpx.HTTPError:  # Best-effort: namespace may already exist
-            pass
-
-        await supervisor_client.ensure_deployment(
-            namespace=ns, agent_id=str(agent.id), owner_id=str(agent.owner_id),
-            policy=agent.policy or {},
-            min_pods=agent.min_pods, max_pods=agent.max_pods,
-        )
-        return RedirectResponse(f"/agents/{agent_id}?flash=Agent+activated", status_code=303)
+        await agent_lifecycle.activate(agent)
     except httpx.HTTPError as e:
-        return RedirectResponse(f"/agents/{agent_id}?error=Activation+failed:+{e}", status_code=303)
+        return _flash_error(agent_id, f"Activation+failed:+{e}")
+    return RedirectResponse(f"/agents/{agent_id}?flash=Agent+activated", status_code=303)
 
 
 @router.post("/agents/{agent_id}/deactivate")
 async def deactivate_agent(agent_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Agent).where(Agent.id == agent_id))
-    agent = result.scalar_one_or_none()
+    agent = await agent_lifecycle.find_agent_or_none(db, agent_id)
     if not agent:
-        return RedirectResponse(f"/agents/{agent_id}?error=Agent+not+found", status_code=303)
-
-    ns = agent_namespace(str(agent.id))
+        return _flash_error(agent_id, "Agent+not+found")
     try:
-        await supervisor_client.scale_to_zero(ns)
-    except httpx.HTTPError:  # Best-effort: scale-down failure is non-critical
-        pass
+        await agent_lifecycle.deactivate(agent)
+    except httpx.HTTPError as e:
+        return _flash_error(agent_id, f"Deactivation+failed:+{e}")
     return RedirectResponse(f"/agents/{agent_id}?flash=Agent+deactivated", status_code=303)
 
 
 @router.post("/agents/{agent_id}/deploy")
 async def deploy_agent(agent_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Agent).where(Agent.id == agent_id))
-    agent = result.scalar_one_or_none()
+    agent = await agent_lifecycle.find_agent_or_none(db, agent_id)
     if not agent:
-        return RedirectResponse(f"/agents/{agent_id}?error=Agent+not+found", status_code=303)
-
-    ns = agent_namespace(str(agent.id))
+        return _flash_error(agent_id, "Agent+not+found")
     try:
-        await supervisor_client.rolling_restart(ns)
-    except httpx.HTTPError:  # Best-effort: restart failure is non-critical for UI redirect
-        pass
+        await agent_lifecycle.rolling_restart(agent)
+    except httpx.HTTPError as e:
+        return _flash_error(agent_id, f"Rolling+restart+failed:+{e}")
     return RedirectResponse(f"/agents/{agent_id}?flash=Rolling+restart+triggered", status_code=303)
 
 
 @router.post("/agents/{agent_id}/delete")
 async def delete_agent(agent_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    from aviary_shared.db.models import Session as SessionModel
-
-    result = await db.execute(select(Agent).where(Agent.id == agent_id))
-    agent = result.scalar_one_or_none()
+    agent = await agent_lifecycle.find_agent_or_none(db, agent_id)
     if not agent:
         return RedirectResponse("/?error=Agent+not+found", status_code=303)
-
-    # Clean up K8s resources
-    ns = agent_namespace(str(agent.id))
     try:
-        await supervisor_client.delete_deployment(ns)
-    except httpx.HTTPError:  # Best-effort: K8s resources may already be gone
-        pass
-    try:
-        await supervisor_client.delete_namespace(str(agent.id))
-    except httpx.HTTPError:  # Best-effort: namespace may already be gone
-        pass
-
-    # Delete all sessions for this agent, then the agent itself
-    await db.execute(
-        select(SessionModel).where(SessionModel.agent_id == agent.id).execution_options(synchronize_session="fetch")
-    )
-    from sqlalchemy import delete
-    await db.execute(delete(SessionModel).where(SessionModel.agent_id == agent.id))
-    await db.delete(agent)
-    await db.flush()
+        await agent_lifecycle.delete_agent(db, agent)
+    except httpx.HTTPError as e:
+        return _flash_error(agent_id, f"Delete+failed:+{e}")
     return RedirectResponse("/?flash=Agent+deleted", status_code=303)

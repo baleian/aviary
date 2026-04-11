@@ -10,16 +10,23 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aviary_shared.db.models import User, TeamMember, Team
+from aviary_shared.vault import VaultClient
 from app.config import settings
 from app.db import get_db
 from app.services import keycloak_client
 
+_vault_client: VaultClient | None = None
+
+
+def _vault() -> VaultClient:
+    global _vault_client
+    if _vault_client is None:
+        _vault_client = VaultClient(settings.vault_addr, settings.vault_token)
+    return _vault_client
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-# ── Schemas ──────────────────────────────────────────────────
 
 
 class UserResponse(BaseModel):
@@ -35,7 +42,7 @@ class UserResponse(BaseModel):
 class UserCreateRequest(BaseModel):
     email: str
     display_name: str
-    password: str = "password"
+    password: str
     groups: list[str] = []
     is_platform_admin: bool = False
 
@@ -48,80 +55,6 @@ class VaultKeyResponse(BaseModel):
 class VaultKeyRequest(BaseModel):
     key: str
     value: str
-
-
-# ── Vault helpers ────────────────────────────────────────────
-
-# Vault credential path convention:
-#   secret/aviary/credentials/{user_external_id}/{key}
-
-
-def _vault_mcp_base(user_external_id: str) -> str:
-    return f"aviary/credentials/{user_external_id}"
-
-
-async def _vault_list_keys(user_external_id: str) -> list[str]:
-    """List all MCP credential keys for a user."""
-    path = _vault_mcp_base(user_external_id)
-    url = f"{settings.vault_addr}/v1/secret/metadata/{path}"
-    async with httpx.AsyncClient() as client:
-        resp = await client.request(
-            "LIST", url,
-            headers={"X-Vault-Token": settings.vault_token},
-            timeout=10,
-        )
-        if resp.status_code == 404:
-            return []
-        resp.raise_for_status()
-        return resp.json().get("data", {}).get("keys", [])
-
-
-async def _vault_get_key(user_external_id: str, key: str) -> dict | None:
-    """Get a single MCP credential from Vault."""
-    path = f"{_vault_mcp_base(user_external_id)}/{key}"
-    url = f"{settings.vault_addr}/v1/secret/data/{path}"
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            url,
-            headers={"X-Vault-Token": settings.vault_token},
-            timeout=10,
-        )
-        if resp.status_code == 404:
-            return None
-        resp.raise_for_status()
-        return resp.json()["data"]["data"]
-
-
-async def _vault_put_key(user_external_id: str, key: str, value: str) -> None:
-    """Store an MCP credential in Vault."""
-    path = f"{_vault_mcp_base(user_external_id)}/{key}"
-    url = f"{settings.vault_addr}/v1/secret/data/{path}"
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            url,
-            headers={"X-Vault-Token": settings.vault_token, "Content-Type": "application/json"},
-            json={"data": {"value": value}},
-            timeout=10,
-        )
-        resp.raise_for_status()
-
-
-async def _vault_delete_key(user_external_id: str, key: str) -> None:
-    """Delete an MCP credential from Vault."""
-    path = f"{_vault_mcp_base(user_external_id)}/{key}"
-    url = f"{settings.vault_addr}/v1/secret/metadata/{path}"
-    async with httpx.AsyncClient() as client:
-        resp = await client.delete(
-            url,
-            headers={"X-Vault-Token": settings.vault_token},
-            timeout=10,
-        )
-        # 404 is fine (already deleted)
-        if resp.status_code not in (200, 204, 404):
-            resp.raise_for_status()
-
-
-# ── Keycloak sync ────────────────────────────────────────────
 
 
 async def _sync_keycloak_users(db: AsyncSession) -> None:
@@ -179,9 +112,6 @@ async def _sync_keycloak_users(db: AsyncSession) -> None:
                 db.add(TeamMember(team_id=team.id, user_id=user.id))
 
     await db.flush()
-
-
-# ── User CRUD ────────────────────────────────────────────────
 
 
 @router.get("", response_model=list[UserResponse])
@@ -276,9 +206,6 @@ async def create_user(body: UserCreateRequest, db: AsyncSession = Depends(get_db
     )
 
 
-# ── Vault MCP Credentials ───────────────────────────────────
-
-
 @router.get("/{user_id}/credentials", response_model=list[VaultKeyResponse])
 async def list_user_credentials(user_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """List all MCP credentials stored in Vault for a user."""
@@ -287,20 +214,14 @@ async def list_user_credentials(user_id: uuid.UUID, db: AsyncSession = Depends(g
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    keys = await _vault_list_keys(user.external_id)
+    keys = await _vault().list_user_credentials(user.external_id)
     credentials = []
     for key in keys:
-        # Strip trailing slash from LIST response
-        key = key.rstrip("/")
-        data = await _vault_get_key(user.external_id, key)
-        if data:
-            token = data.get("value", "")
-            # Mask token for display (show first 8 and last 4 chars)
-            if len(token) > 16:
-                masked = token[:8] + "..." + token[-4:]
-            else:
-                masked = "***"
-            credentials.append(VaultKeyResponse(key=key, value=masked))
+        token = await _vault().read_user_credential(user.external_id, key)
+        if token is None:
+            continue
+        masked = token[:8] + "..." + token[-4:] if len(token) > 16 else "***"
+        credentials.append(VaultKeyResponse(key=key, value=masked))
     return credentials
 
 
@@ -314,7 +235,7 @@ async def set_user_credential(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    await _vault_put_key(user.external_id, body.key, body.value)
+    await _vault().write_user_credential(user.external_id, body.key, body.value)
     return {"status": "ok", "key": body.key}
 
 
@@ -328,5 +249,5 @@ async def delete_user_credential(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    await _vault_delete_key(user.external_id, key)
+    await _vault().delete_user_credential(user.external_id, key)
     return None
