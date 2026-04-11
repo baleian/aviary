@@ -114,6 +114,8 @@ services:
       context: ./mcp-servers
       args:
         MCP_SERVER_NAME: jira
+    environment:
+      JIRA_BASE_URL: ${JIRA_BASE_URL:-https://your-corp.atlassian.net}
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('localhost',8000),2); s.close()\""]
       interval: 10s
@@ -126,6 +128,8 @@ services:
       context: ./mcp-servers
       args:
         MCP_SERVER_NAME: confluence
+    environment:
+      CONFLUENCE_BASE_URL: ${CONFLUENCE_BASE_URL:-https://your-corp.atlassian.net}
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('localhost',8000),2); s.close()\""]
       interval: 10s
