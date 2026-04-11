@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useAuth } from "@/features/auth/providers/auth-provider";
 import { http } from "@/lib/http";
 import { sendWsMessage } from "@/lib/ws";
 import type { WSMessage } from "@/lib/ws";
@@ -43,6 +44,7 @@ interface UseChatMessagesResult {
  * block accumulation, and persistence of completed messages.
  */
 export function useChatMessages(sessionId: string): UseChatMessagesResult {
+  const { refreshUser } = useAuth();
   const [session, setSession] = useState<Session | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
@@ -184,6 +186,14 @@ export function useChatMessages(sessionId: string): UseChatMessagesResult {
         case "error":
           bs.reset();
           setIsStreaming(false);
+          // "Session expired" is the backend's signal that the auth
+          // session is dead — bounce through refreshUser so AuthGuard
+          // sends the user to /login instead of leaving them on a
+          // half-broken chat with a dangling error bubble.
+          if (msg.message?.toLowerCase().includes("session expired")) {
+            void refreshUser();
+            break;
+          }
           setMessages((prev) => [
             ...prev,
             {
@@ -252,7 +262,7 @@ export function useChatMessages(sessionId: string): UseChatMessagesResult {
           break;
       }
     },
-    [sessionId, reloadHistory],
+    [sessionId, reloadHistory, refreshUser],
   );
 
   const { ws, status, statusMessage, reconnectIn, retryNow } = useSessionWebSocket({
