@@ -3,6 +3,7 @@
  */
 
 import * as fs from "node:fs";
+import * as path from "node:path";
 import {
   DEFAULT_MAX_CONCURRENT_SESSIONS,
   SHARED_WORKSPACE_ROOT,
@@ -10,6 +11,7 @@ import {
   sessionClaudeDir,
   sessionHome,
   sessionTmp,
+  sessionVenvDir,
 } from "./constants.js";
 
 export { WORKSPACE_ROOT, SHARED_WORKSPACE_ROOT };
@@ -84,6 +86,8 @@ export class SessionManager {
     fs.mkdirSync(home, { recursive: true });
     fs.mkdirSync(sessionClaudeDir(sessionId), { recursive: true });
     fs.mkdirSync(sessionTmp(sessionId), { recursive: true });
+    // venv parent only — claude-sandbox.sh creates the venv itself.
+    fs.mkdirSync(path.dirname(sessionVenvDir(sessionId)), { recursive: true });
 
     const entry: SessionEntry = {
       sessionId,

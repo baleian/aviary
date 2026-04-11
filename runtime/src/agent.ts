@@ -21,7 +21,13 @@ import * as path from "node:path";
 
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { startA2AServer, type AccessibleAgent, type A2AServer } from "./a2a-tools.js";
-import { WORKSPACE_ROOT, sessionClaudeDir, sessionHome, sessionTmp } from "./constants.js";
+import {
+  WORKSPACE_ROOT,
+  sessionClaudeDir,
+  sessionHome,
+  sessionTmp,
+  sessionVenvDir,
+} from "./constants.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -158,9 +164,11 @@ export async function* processMessage(
   const home = sessionHome(sessionId);
   const claudeDir = sessionClaudeDir(sessionId);
   const tmpDir = sessionTmp(sessionId);
+  const venvDir = sessionVenvDir(sessionId);
   fs.mkdirSync(home, { recursive: true });
   fs.mkdirSync(claudeDir, { recursive: true });
   fs.mkdirSync(tmpDir, { recursive: true });
+  fs.mkdirSync(path.dirname(venvDir), { recursive: true });
 
   const mc: ModelConfig = modelConfig ?? {};
   if (!mc.model || !mc.backend) {
@@ -181,6 +189,7 @@ export async function* processMessage(
       : {}),
     SESSION_WORKSPACE: home,
     SESSION_CLAUDE_DIR: claudeDir,
+    SESSION_VENV_DIR: venvDir,
     SESSION_TMP: tmpDir,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     CLAUDE_CODE_MAX_RETRIES: "2",

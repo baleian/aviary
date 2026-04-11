@@ -15,6 +15,10 @@ export function sessionClaudeDir(sessionId: string): string {
   return path.join(WORKSPACE_ROOT, ".claude", sessionId);
 }
 
+export function sessionVenvDir(sessionId: string): string {
+  return path.join(WORKSPACE_ROOT, ".venvs", sessionId);
+}
+
 export function sessionTmp(sessionId: string): string {
   return `/tmp/${sessionId}`;
 }
