@@ -190,8 +190,10 @@ async def _run_stream(
     if user_external_id:
         credentials = await fetch_user_credentials(user_external_id)
 
-    # Resolve file attachments: fetch binary from DB and base64-encode for runtime
-    resolved_attachments: list[dict] | None = None
+    # Build content_parts for runtime: resolve file attachments to base64
+    content_part: dict = {}
+    if content:
+        content_part["text"] = content
     if attachments:
         from aviary_shared.db.models import FileUpload
         file_ids = [uuid.UUID(att["file_id"]) for att in attachments]
@@ -200,15 +202,18 @@ async def _run_stream(
                 select(FileUpload).where(FileUpload.id.in_(file_ids))
             )
             uploads = {str(u.id): u for u in result.scalars().all()}
-        resolved_attachments = []
+        resolved = []
         for att in attachments:
             upload = uploads.get(att["file_id"])
             if upload:
-                resolved_attachments.append({
+                resolved.append({
                     "type": "image",
                     "media_type": upload.content_type,
                     "data": base64.b64encode(upload.data).decode("ascii"),
                 })
+        if resolved:
+            content_part["attachments"] = resolved
+    content_parts = [content_part] if content_part else []
 
     full_response = ""
     blocks_meta: list[dict] = []
@@ -230,7 +235,7 @@ async def _run_stream(
                 "POST",
                 stream_url,
                 json={
-                    "content": content,
+                    "content_parts": content_parts,
                     "session_id": session_id,
                     "model_config_data": agent_model_config,
                     "agent_config": {
@@ -243,7 +248,6 @@ async def _run_stream(
                         **({"credentials": credentials} if credentials else {}),
                         **({"accessible_agents": accessible_agents} if accessible_agents else {}),
                     },
-                    **({"attachments": resolved_attachments} if resolved_attachments else {}),
                 },
                 timeout=None,
             ) as resp:

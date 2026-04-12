@@ -36,19 +36,23 @@ setCapacityProbe(() => ({
 }));
 setReady(true);
 
+interface ContentPart {
+  text?: string;
+  attachments?: Array<{ type: string; media_type: string; data: string }>;
+}
+
 interface MessageRequestBody {
-  content: string;
+  content_parts: ContentPart[];
   session_id: string;
   model_config_data?: Record<string, unknown> | null;
   agent_config: Record<string, unknown>;
-  attachments?: Array<{ type: string; media_type: string; data: string }>;
 }
 
 app.post("/message", async (req, res) => {
   const body = req.body as MessageRequestBody;
 
-  if (!body.content || !body.session_id || !body.agent_config) {
-    res.status(400).json({ error: "content, session_id, and agent_config are required" });
+  if (!body.content_parts?.length || !body.session_id || !body.agent_config) {
+    res.status(400).json({ error: "content_parts, session_id, and agent_config are required" });
     return;
   }
 
@@ -83,11 +87,10 @@ app.post("/message", async (req, res) => {
     for await (const chunk of processMessage(
       body.session_id,
       AGENT_ID,
-      body.content,
+      body.content_parts,
       body.model_config_data as any,
       body.agent_config as any,
       abortController,
-      body.attachments,
     )) {
       if (res.writableEnded || abortController.signal.aborted) break;
       res.write(`data: ${JSON.stringify(chunk)}\n\n`);

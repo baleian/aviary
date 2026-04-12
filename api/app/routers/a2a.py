@@ -107,7 +107,7 @@ async def a2a_message(
                     "POST",
                     stream_url,
                     json={
-                        "content": body.content,
+                        "content_parts": [{"text": body.content}],
                         "session_id": session_id,
                         "model_config_data": agent.model_config_json,
                         "agent_config": {

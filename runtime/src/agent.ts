@@ -159,14 +159,50 @@ interface Attachment {
   data: string; // base64
 }
 
+/** A self-contained content segment with optional text and attachments.
+ *  Used by workflow orchestration to combine multiple agent outputs. */
+interface ContentPart {
+  text?: string;
+  attachments?: Attachment[];
+}
+
+function attachmentsToBlocks(atts: Attachment[]): Array<Record<string, unknown>> {
+  return atts
+    .filter((a) => a.type === "image")
+    .map((a) => ({
+      type: "image",
+      source: { type: "base64", media_type: a.media_type, data: a.data },
+    }));
+}
+
+/** Assemble SDK-compatible content from content_parts. */
+function buildMessageContent(
+  parts: ContentPart[],
+): string | Array<Record<string, unknown>> {
+  const hasAttachments = parts.some((p) => p.attachments?.length);
+  // Single text-only part — pass as plain string (most common case)
+  if (!hasAttachments && parts.length === 1 && parts[0].text) {
+    return parts[0].text;
+  }
+  const blocks: Array<Record<string, unknown>> = [];
+  for (const part of parts) {
+    if (part.attachments?.length) {
+      blocks.push(...attachmentsToBlocks(part.attachments));
+    }
+    if (part.text) {
+      blocks.push({ type: "text", text: part.text });
+    }
+  }
+  return blocks;
+}
+
 export async function* processMessage(
   sessionId: string,
   agentId: string,
-  content: string,
+  contentParts: ContentPart[],
   modelConfig: ModelConfig | null | undefined,
   agentConfig: AgentConfig,
   abortController?: AbortController,
-  attachments?: Attachment[],
 ): AsyncGenerator<SSEChunk> {
   const home = sessionHome(sessionId);
   const claudeDir = sessionClaudeDir(sessionId);
@@ -300,23 +336,7 @@ export async function* processMessage(
 
   // Use async generator for prompt — required by SDK when using custom MCP tools
   async function* promptGenerator() {
-    // Build multimodal content array when attachments are present
-    let messageContent: string | Array<Record<string, unknown>> = content;
-    if (attachments && attachments.length > 0) {
-      const blocks: Array<Record<string, unknown>> = [];
-      for (const att of attachments) {
-        if (att.type === "image") {
-          blocks.push({
-            type: "image",
-            source: { type: "base64", media_type: att.media_type, data: att.data },
-          });
-        }
-      }
-      if (content) {
-        blocks.push({ type: "text", text: content });
-      }
-      messageContent = blocks;
-    }
+    const messageContent = buildMessageContent(contentParts);
 
     yield {
       type: "user" as const,
