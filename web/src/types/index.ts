@@ -114,6 +114,22 @@ export interface TodoItem {
   status: "pending" | "in_progress" | "completed";
 }
 
+// --- File attachment types ---
+
+export interface FileRef {
+  file_id: string;
+  filename: string;
+  content_type: string;
+}
+
+export interface PendingAttachment {
+  localId: string;
+  file: File;
+  preview: string;
+  status: "uploading" | "done" | "error";
+  fileRef?: FileRef;
+}
+
 // --- MCP Gateway types ---
 
 export interface McpServerInfo {

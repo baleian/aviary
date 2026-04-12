@@ -443,7 +443,8 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
                     continue
 
                 content = data.get("content", "").strip()
-                if not content:
+                attachments = data.get("attachments")  # list[{file_id, filename, content_type}] or None
+                if not content and not attachments:
                     continue
 
                 fresh = await get_fresh_session(aviary_session_id)
@@ -455,18 +456,23 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
                     await websocket.close(code=4001, reason="Session expired")
                     return
 
+                metadata = {"attachments": attachments} if attachments else None
                 async with async_session_factory() as db:
                     user_msg = await session_service.save_message(
                         db, session_id, "user", content, sender_id=user.id,
+                        metadata=metadata,
                     )
                     user_message_id = user_msg.id
                     await db.commit()
 
-                await redis_service.publish_message(session_id_str, {
+                user_message_event: dict = {
                     "type": "user_message",
                     "sender_id": user_id_str,
                     "content": content,
-                })
+                }
+                if attachments:
+                    user_message_event["attachments"] = attachments
+                await redis_service.publish_message(session_id_str, user_message_event)
 
                 async with async_session_factory() as db:
                     result = await db.execute(select(Agent).where(Agent.id == session.agent_id))
@@ -507,6 +513,7 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
                     user_token=fresh.access_token,
                     user_external_id=claims.sub,
                     accessible_agents=accessible_agents_list or None,
+                    attachments=attachments,
                 )
         finally:
             relay_task.cancel()

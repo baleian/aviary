@@ -121,7 +121,7 @@ function hasSessionHistory(claudeDir: string, sessionId: string): boolean {
 }
 
 export interface SSEChunk {
-  type: "chunk" | "tool_use" | "tool_result" | "tool_progress" | "result" | "thinking";
+  type: "chunk" | "tool_use" | "tool_result" | "tool_progress" | "result" | "thinking" | "query_started";
   content?: string;
   name?: string;
   input?: unknown;
@@ -153,10 +153,53 @@ export interface SSEChunk {
  *   {type: "tool_progress", tool_use_id, tool_name, parent_tool_use_id, elapsed_time_seconds}
  *   {type: "result", session_id, duration_ms, num_turns, total_cost_usd, usage}
  */
+interface Attachment {
+  type: string;
+  media_type: string;
+  data: string; // base64
+}
+
+/** A self-contained content segment with optional text and attachments.
+ *  Used by workflow orchestration to combine multiple agent outputs. */
+interface ContentPart {
+  text?: string;
+  attachments?: Attachment[];
+}
+
+function attachmentsToBlocks(atts: Attachment[]): Array<Record<string, unknown>> {
+  return atts
+    .filter((a) => a.type === "image")
+    .map((a) => ({
+      type: "image",
+      source: { type: "base64", media_type: a.media_type, data: a.data },
+    }));
+}
+
+/** Assemble SDK-compatible content from content_parts. */
+function buildMessageContent(
+  parts: ContentPart[],
+): string | Array<Record<string, unknown>> {
+  const hasAttachments = parts.some((p) => p.attachments?.length);
+  // Single text-only part — pass as plain string (most common case)
+  if (!hasAttachments && parts.length === 1 && parts[0].text) {
+    return parts[0].text;
+  }
+  const blocks: Array<Record<string, unknown>> = [];
+  for (const part of parts) {
+    if (part.attachments?.length) {
+      blocks.push(...attachmentsToBlocks(part.attachments));
+    }
+    if (part.text) {
+      blocks.push({ type: "text", text: part.text });
+    }
+  }
+  return blocks;
+}
+
 export async function* processMessage(
   sessionId: string,
   agentId: string,
-  content: string,
+  contentParts: ContentPart[],
   modelConfig: ModelConfig | null | undefined,
   agentConfig: AgentConfig,
   abortController?: AbortController,
@@ -293,9 +336,11 @@ export async function* processMessage(
 
   // Use async generator for prompt — required by SDK when using custom MCP tools
   async function* promptGenerator() {
+    const messageContent = buildMessageContent(contentParts);
+
     yield {
       type: "user" as const,
-      message: { role: "user" as const, content },
+      message: { role: "user" as const, content: messageContent },
       parent_tool_use_id: null,
       session_id: sessionId,
     };
@@ -314,7 +359,10 @@ export async function* processMessage(
   let hasStreamDeltas = false;
 
   try {
-    for await (const message of query({ prompt: promptGenerator(), options })) {
+    const stream = query({ prompt: promptGenerator(), options });
+    yield { type: "query_started" } as SSEChunk;
+
+    for await (const message of stream) {
       const msg = message as SDKMessage & Record<string, any>;
 
       if (msg.type === "stream_event") {

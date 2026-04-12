@@ -8,6 +8,7 @@ from aviary_shared.db.models.user import User, Team, TeamMember
 from aviary_shared.db.models.agent import Agent, AgentACL, AgentCredential
 from aviary_shared.db.models.session import Session, SessionParticipant, Message
 from aviary_shared.db.models.mcp import McpServer, McpTool, McpAgentToolBinding, McpToolAcl
+from aviary_shared.db.models.upload import FileUpload
 
 __all__ = [
     "Base",
@@ -15,4 +16,5 @@ __all__ = [
     "Agent", "AgentACL", "AgentCredential",
     "Session", "SessionParticipant", "Message",
     "McpServer", "McpTool", "McpAgentToolBinding", "McpToolAcl",
+    "FileUpload",
 ]

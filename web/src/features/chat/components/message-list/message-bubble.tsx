@@ -1,28 +1,38 @@
+import { AlertCircle } from "@/components/icons";
 import { UserBubble } from "./user-bubble";
 import { AgentBubble } from "./agent-bubble";
-import type { Message } from "@/types";
+import type { FileRef, Message } from "@/types";
 
 interface MessageBubbleProps {
   message: Message;
-  /** Hide the avatar when this message is part of a same-sender run.
-   *  When false, the avatar slot is rendered as an invisible spacer so
-   *  content stays horizontally aligned with the run's first message. */
   showAvatar?: boolean;
 }
 
-/**
- * MessageBubble — dispatches to the appropriate bubble based on sender_type.
- * The two bubble types intentionally don't share a common shell because
- * their layouts are mirrored (left vs right) and their internal content
- * differs (markdown blocks vs plain text).
- */
+function UserErrorBubble({ content }: { content: string }) {
+  return (
+    <div className="flex flex-row-reverse gap-3 animate-fade-in">
+      <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-danger/15 text-danger">
+        <AlertCircle size={16} />
+      </div>
+      <div className="max-w-[60%] rounded-xl rounded-tr-sm border border-danger/20 bg-danger/5 px-4 py-3 type-body text-danger">
+        {content}
+      </div>
+    </div>
+  );
+}
+
 export function MessageBubble({ message, showAvatar = true }: MessageBubbleProps) {
+  if (message.metadata?.transient) {
+    return <UserErrorBubble content={message.content} />;
+  }
   if (message.sender_type === "user") {
+    const attachments = message.metadata?.attachments as FileRef[] | undefined;
     return (
       <UserBubble
         content={message.content}
         showAvatar={showAvatar}
         targetId={`${message.id}/user`}
+        attachments={attachments}
       />
     );
   }

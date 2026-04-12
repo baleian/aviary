@@ -30,6 +30,7 @@ export {
 
   // Files / IO
   FileText,
+  ImagePlus,
   Printer,
   Download,
   Upload,

@@ -5,6 +5,8 @@
  * use `type` to discriminate.
  */
 
+import type { FileRef } from "@/types";
+
 export type ConnectionStatus =
   | "connecting"
   | "provisioning"
@@ -17,9 +19,9 @@ export type ConnectionStatus =
 
 export type WSMessage =
   | { type: "status"; status: ConnectionStatus; message?: string }
-  | { type: "message"; content: string }
+  | { type: "message"; content: string; attachments?: FileRef[] }
   | { type: "chunk"; content: string }
-  | { type: "user_message"; sender_id: string; content: string }
+  | { type: "user_message"; sender_id: string; content: string; attachments?: FileRef[] }
   | {
       type: "tool_use";
       name: string;

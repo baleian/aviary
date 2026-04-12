@@ -5,7 +5,7 @@ import { useAuth } from "@/features/auth/providers/auth-provider";
 import { http } from "@/lib/http";
 import { sendWsMessage } from "@/lib/ws";
 import type { WSMessage } from "@/lib/ws";
-import type { Message, Session } from "@/types";
+import type { FileRef, Message, Session } from "@/types";
 import { useStreamingBlocks } from "./use-streaming-blocks";
 import { useSessionWebSocket } from "./use-session-websocket";
 
@@ -20,16 +20,6 @@ interface MessagePage {
   has_more: boolean;
 }
 
-function makeAgentError(sessionId: string, message: string): Message {
-  return {
-    id: crypto.randomUUID(),
-    session_id: sessionId,
-    sender_type: "agent",
-    content: `Error: ${message}`,
-    metadata: { transient: true },
-    created_at: new Date().toISOString(),
-  };
-}
 
 interface UseChatMessagesResult {
   session: Session | null;
@@ -45,9 +35,12 @@ interface UseChatMessagesResult {
   statusMessage: ReturnType<typeof useSessionWebSocket>["statusMessage"];
   reconnectIn: ReturnType<typeof useSessionWebSocket>["reconnectIn"];
   retryNow: ReturnType<typeof useSessionWebSocket>["retryNow"];
-  send: (content: string) => boolean;
+  send: (content: string, attachments?: FileRef[]) => boolean;
   cancel: () => void;
   patchSession: (patch: Partial<Session>) => void;
+  /** Content to restore into the input after a rollback error. */
+  restoreDraft: { content: string; attachments?: FileRef[]; error?: string } | null;
+  clearRestoreDraft: () => void;
 }
 
 /**
@@ -61,6 +54,7 @@ export function useChatMessages(sessionId: string): UseChatMessagesResult {
   const [loading, setLoading] = useState(true);
   const [isStreaming, setIsStreaming] = useState(false);
   const [hasMore, setHasMore] = useState(false);
+  const [restoreDraft, setRestoreDraft] = useState<{ content: string; attachments?: FileRef[]; error?: string } | null>(null);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const blockState = useStreamingBlocks();
 
@@ -152,7 +146,7 @@ export function useChatMessages(sessionId: string): UseChatMessagesResult {
               sender_type: "user",
               sender_id: msg.sender_id,
               content: msg.content,
-              metadata: {},
+              metadata: msg.attachments ? { attachments: msg.attachments } : {},
               created_at: new Date().toISOString(),
             },
           ]);
@@ -205,20 +199,31 @@ export function useChatMessages(sessionId: string): UseChatMessagesResult {
             void refreshUser();
             break;
           }
-          // Pre-stream failure: backend rolled back the user message it
-          // had just persisted, so drop the matching local copy too.
-          // The trailing user message is always the one that triggered
-          // the failure since errors are emitted synchronously after a
-          // failed start_stream.
+          // Pre-query failure: backend rolled back the user message from DB.
+          // Restore the content to the input field so the user can retry,
+          // and show a transient error that disappears on next successful send.
           if (msg.rollback_message_id) {
             setMessages((prev) => {
               const lastUserIdx = [...prev].reverse().findIndex((m) => m.sender_type === "user");
-              if (lastUserIdx === -1) return [...prev, makeAgentError(sessionId, msg.message)];
+              if (lastUserIdx === -1) return prev;
               const idx = prev.length - 1 - lastUserIdx;
+              const removed = prev[idx];
+              setRestoreDraft({
+                content: removed.content,
+                attachments: removed.metadata?.attachments as FileRef[] | undefined,
+              });
+              // Replace the user message with a transient error bubble
               return [
                 ...prev.slice(0, idx),
                 ...prev.slice(idx + 1),
-                makeAgentError(sessionId, msg.message),
+                {
+                  id: crypto.randomUUID(),
+                  session_id: sessionId,
+                  sender_type: "user",
+                  content: msg.message,
+                  metadata: { transient: true },
+                  created_at: new Date().toISOString(),
+                },
               ];
             });
             break;
@@ -306,14 +311,20 @@ export function useChatMessages(sessionId: string): UseChatMessagesResult {
   });
 
   const send = useCallback(
-    (content: string) => {
+    (content: string, attachments?: FileRef[]) => {
       if (status !== "ready") return false;
-      const ok = sendWsMessage(ws, { type: "message", content });
+      setMessages((prev) => prev.filter((m) => !m.metadata?.transient));
+      setRestoreDraft(null);
+      const msg: Record<string, unknown> = { type: "message", content };
+      if (attachments?.length) msg.attachments = attachments;
+      const ok = sendWsMessage(ws, msg);
       if (ok) setIsStreaming(true);
       return ok;
     },
     [ws, status],
   );
+
+  const clearRestoreDraft = useCallback(() => setRestoreDraft(null), []);
 
   const cancel = useCallback(() => {
     sendWsMessage(ws, { type: "cancel" });
@@ -340,5 +351,7 @@ export function useChatMessages(sessionId: string): UseChatMessagesResult {
     send,
     cancel,
     patchSession,
+    restoreDraft,
+    clearRestoreDraft,
   };
 }

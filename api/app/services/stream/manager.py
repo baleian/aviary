@@ -11,6 +11,8 @@ import json
 import logging
 import uuid
 
+import base64
+
 import httpx
 from sqlalchemy import select
 
@@ -61,6 +63,7 @@ async def start_stream(
     user_token: str = "",
     user_external_id: str = "",
     accessible_agents: list[dict] | None = None,
+    attachments: list[dict] | None = None,
 ) -> None:
     """Launch a background task that streams the agent response."""
     existing = _active_streams.get(session_id)
@@ -77,6 +80,7 @@ async def start_stream(
             agent_tools, agent_mcp_servers, agent_policy,
             content, user_message_id, user_token, user_external_id,
             accessible_agents=accessible_agents,
+            attachments=attachments,
         )
     )
     _active_streams[session_id] = task
@@ -148,6 +152,7 @@ async def _run_stream(
     user_token: str = "",
     user_external_id: str = "",
     accessible_agents: list[dict] | None = None,
+    attachments: list[dict] | None = None,
 ) -> None:
     """Execute the agent response stream as a background task."""
     session_uuid = uuid.UUID(session_id)
@@ -185,24 +190,52 @@ async def _run_stream(
     if user_external_id:
         credentials = await fetch_user_credentials(user_external_id)
 
+    # Build content_parts for runtime: resolve file attachments to base64
+    content_part: dict = {}
+    if content:
+        content_part["text"] = content
+    if attachments:
+        from aviary_shared.db.models import FileUpload
+        file_ids = [uuid.UUID(att["file_id"]) for att in attachments]
+        async with async_session_factory() as db:
+            result = await db.execute(
+                select(FileUpload).where(FileUpload.id.in_(file_ids))
+            )
+            uploads = {str(u.id): u for u in result.scalars().all()}
+        resolved = []
+        for att in attachments:
+            upload = uploads.get(att["file_id"])
+            if upload:
+                resolved.append({
+                    "type": "image",
+                    "media_type": upload.content_type,
+                    "data": base64.b64encode(upload.data).decode("ascii"),
+                })
+        if resolved:
+            content_part["attachments"] = resolved
+    content_parts = [content_part] if content_part else []
+
     full_response = ""
     blocks_meta: list[dict] = []
     current_thinking = ""
     current_text = ""
     tool_results: dict[str, dict] = {}
+    # True once runtime emits a real SSE event (not an error), meaning
+    # query() was invoked and the message is in SDK conversation history.
+    reached_runtime = False
 
     try:
         stream_url = agent_supervisor.get_stream_url(agent_id, session_id)
 
         if not stream_url:
             raise RuntimeError("Agent stream URL not available")
-
+        
         async with httpx.AsyncClient() as client:
             async with client.stream(
                 "POST",
                 stream_url,
                 json={
-                    "content": content,
+                    "content_parts": content_parts,
                     "session_id": session_id,
                     "model_config_data": agent_model_config,
                     "agent_config": {
@@ -223,6 +256,10 @@ async def _run_stream(
                         continue
                     chunk_data = json.loads(line[6:])
                     chunk_type = chunk_data.get("type")
+
+                    if chunk_type == "query_started":
+                        reached_runtime = True
+                        continue
 
                     if chunk_type == "chunk":
                         if current_thinking:
@@ -265,6 +302,8 @@ async def _run_stream(
                         await redis_service.publish_message(session_id, result_data)
                     elif chunk_type == "tool_progress":
                         await redis_service.publish_message(session_id, chunk_data)
+                    elif chunk_type == "error":
+                        raise RuntimeError(chunk_data.get("message", "Agent runtime error"))
                     elif chunk_type == "thinking":
                         thinking_text = chunk_data.get("content", "")
                         current_thinking += thinking_text
@@ -310,10 +349,21 @@ async def _run_stream(
         logger.info("Stream cancelled for session %s", session_id)
         await redis_service.set_stream_status(session_id, "error")
         await redis_service.set_session_status(session_id, "idle")
-    except Exception:  # Best-effort: background task must not crash unhandled
+    except Exception as exc:  # Best-effort: background task must not crash unhandled
         logger.exception("Stream failed for session %s", session_id)
         await redis_service.set_stream_status(session_id, "error")
         await redis_service.set_session_status(session_id, "idle")
 
-        error_event = {"type": "error", "message": "Agent streaming failed"}
+        reason = str(exc) if str(exc) else "Agent streaming failed"
+        error_event: dict = {"type": "error", "message": reason}
+        # query() was never invoked — the message is not in SDK conversation
+        # history, so rollback the user message to keep DB in sync.
+        if not reached_runtime:
+            try:
+                async with async_session_factory() as db:
+                    await session_service.delete_message(db, user_message_id)
+                    await db.commit()
+                error_event["rollback_message_id"] = str(user_message_id)
+            except Exception:
+                logger.warning("Failed to rollback user message %s", user_message_id)
         await redis_service.publish_message(session_id, error_event)
