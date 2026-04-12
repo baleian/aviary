@@ -41,10 +41,7 @@ class WorkflowResponse(BaseModel):
     updated_at: datetime
 
     @classmethod
-    def from_orm_workflow(cls, workflow, worker_agent=None) -> "WorkflowResponse":
-        mc = {}
-        if worker_agent and worker_agent.model_config_json:
-            mc = worker_agent.model_config_json
+    def from_orm_workflow(cls, workflow) -> "WorkflowResponse":
         return cls(
             id=str(workflow.id),
             name=workflow.name,
@@ -53,7 +50,7 @@ class WorkflowResponse(BaseModel):
             owner_id=str(workflow.owner_id),
             visibility=workflow.visibility,
             definition=workflow.definition,
-            model_config=mc,
+            model_config=workflow.model_config_json or {},
             status=workflow.status,
             created_at=workflow.created_at,
             updated_at=workflow.updated_at,

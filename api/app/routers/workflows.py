@@ -28,11 +28,6 @@ from aviary_shared.db.models import Workflow, WorkflowRun
 router = APIRouter()
 
 
-async def _workflow_response(db: AsyncSession, workflow: Workflow) -> WorkflowResponse:
-    worker = await workflow_service.get_worker_agent(db, workflow)
-    return WorkflowResponse.from_orm_workflow(workflow, worker)
-
-
 # --- CRUD ---
 
 
@@ -44,10 +39,10 @@ async def list_workflows(
     db: AsyncSession = Depends(get_db),
 ):
     workflows, total = await workflow_service.list_workflows_for_user(db, user, offset, limit)
-    items = []
-    for w in workflows:
-        items.append(await _workflow_response(db, w))
-    return WorkflowListResponse(items=items, total=total)
+    return WorkflowListResponse(
+        items=[WorkflowResponse.from_orm_workflow(w) for w in workflows],
+        total=total,
+    )
 
 
 @router.post("", response_model=WorkflowResponse, status_code=status.HTTP_201_CREATED)
@@ -60,7 +55,7 @@ async def create_workflow(
         workflow = await workflow_service.create_workflow(db, user, body)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
-    return await _workflow_response(db, workflow)
+    return WorkflowResponse.from_orm_workflow(workflow)
 
 
 @router.get("/{workflow_id}", response_model=WorkflowResponse)
@@ -68,7 +63,7 @@ async def get_workflow(
     workflow: Workflow = Depends(require_workflow_permission("view")),
     db: AsyncSession = Depends(get_db),
 ):
-    return await _workflow_response(db, workflow)
+    return WorkflowResponse.from_orm_workflow(workflow)
 
 
 @router.put("/{workflow_id}", response_model=WorkflowResponse)
@@ -81,7 +76,7 @@ async def update_workflow(
         raise HTTPException(status_code=409, detail="Cannot edit active workflow. Use edit endpoint first.")
     workflow = await workflow_service.update_workflow(db, workflow, body)
     await db.refresh(workflow)
-    return await _workflow_response(db, workflow)
+    return WorkflowResponse.from_orm_workflow(workflow)
 
 
 @router.delete("/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -121,7 +116,7 @@ async def edit_workflow(
     if workflow.status != "active":
         raise HTTPException(status_code=409, detail="Workflow is not active")
     workflow = await workflow_service.edit_workflow(db, workflow)
-    return await _workflow_response(db, workflow)
+    return WorkflowResponse.from_orm_workflow(workflow)
 
 
 @router.get("/{workflow_id}/versions")
@@ -160,7 +155,8 @@ async def trigger_run(
     await db.flush()
 
     run_id = str(run.id)
-    worker_agent_id = str(workflow.worker_agent_id) if workflow.worker_agent_id else None
+    # Supervisor treats workflow.id as agent_id — same namespace/deployment pattern
+    worker_agent_id = str(workflow.id)
 
     await db.commit()
 

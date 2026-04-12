@@ -15,52 +15,13 @@ from datetime import datetime, timezone
 import httpx
 from sqlalchemy import select, update
 
-from aviary_shared.db.models import Agent, Workflow, WorkflowRun, WorkflowNodeRun
+from aviary_shared.db.models import WorkflowRun, WorkflowNodeRun
 from app.db.session import async_session_factory
 from app.services import agent_supervisor, redis_service
 
 logger = logging.getLogger(__name__)
 
 _active_runs: dict[str, asyncio.Task] = {}
-
-
-async def _ensure_worker_agent(workflow_id: str, owner_id: uuid.UUID) -> str:
-    """Lazily create a worker agent for the workflow if one doesn't exist."""
-    wf_uuid = uuid.UUID(workflow_id)
-
-    async with async_session_factory() as db:
-        result = await db.execute(select(Workflow).where(Workflow.id == wf_uuid))
-        workflow = result.scalar_one_or_none()
-        if not workflow:
-            raise RuntimeError("Workflow not found")
-
-        if workflow.worker_agent_id:
-            return str(workflow.worker_agent_id)
-
-        # Create an internal worker agent
-        worker = Agent(
-            name=f"_workflow_{workflow.slug}",
-            slug=f"_wf-{workflow_id[:8]}-{uuid.uuid4().hex[:6]}",
-            owner_id=owner_id,
-            instruction="Workflow worker agent",
-            model_config_json={},
-            visibility="private",
-        )
-        db.add(worker)
-        await db.flush()
-
-        workflow.worker_agent_id = worker.id
-        await db.commit()
-
-        worker_id = str(worker.id)
-
-    # Register with supervisor (best-effort)
-    try:
-        await agent_supervisor.register_agent(agent_id=worker_id, owner_id=str(owner_id))
-    except httpx.HTTPError:
-        logger.warning("Worker agent supervisor registration failed for workflow %s", workflow_id, exc_info=True)
-
-    return worker_id
 
 
 def _channel(run_id: str) -> str:
@@ -376,11 +337,6 @@ async def execute_run(
         nodes_list: list[dict] = definition.get("nodes", [])
         edges_list: list[dict] = definition.get("edges", [])
         nodes_by_id = {n["id"]: n for n in nodes_list}
-
-        # Lazily create worker agent if any Agent Step nodes exist
-        has_agent_steps = any(n.get("type") == "agent_step" for n in nodes_list)
-        if has_agent_steps and not worker_agent_id:
-            worker_agent_id = await _ensure_worker_agent(workflow_id, run.triggered_by)
 
         await _publish(run_id, {"type": "run_status", "status": "running"})
 

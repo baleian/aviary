@@ -1,4 +1,4 @@
-"""Workflow, WorkflowACL, WorkflowRun, and WorkflowNodeRun models."""
+"""Workflow, WorkflowACL, WorkflowRun, WorkflowNodeRun, and WorkflowVersion models."""
 
 from __future__ import annotations
 
@@ -34,12 +34,16 @@ class Workflow(Base):
     )
 
     visibility: Mapped[str] = mapped_column(String(20), default="private", server_default="private")
-    definition: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default='{"nodes":[],"edges":[],"viewport":{"x":0,"y":0,"zoom":1}}')
-    worker_agent_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True
+    model_config_json: Mapped[dict] = mapped_column(
+        "model_config", JSONB, nullable=False, server_default="{}"
+    )
+    policy_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("policies.id", ondelete="SET NULL"), nullable=True
     )
 
+    definition: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default='{"nodes":[],"edges":[],"viewport":{"x":0,"y":0,"zoom":1}}')
     status: Mapped[str] = mapped_column(String(20), default="draft", server_default="draft")
+
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now()
     )
@@ -48,7 +52,7 @@ class Workflow(Base):
     )
 
     owner: Mapped["User"] = relationship()  # noqa: F821
-    worker_agent: Mapped["Agent | None"] = relationship()  # noqa: F821
+    policy: Mapped["Policy | None"] = relationship()  # noqa: F821
     acl_entries: Mapped[list["WorkflowACL"]] = relationship(
         back_populates="workflow", cascade="all, delete-orphan", passive_deletes=True,
     )

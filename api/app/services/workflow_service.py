@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from aviary_shared.db.models import (
-    Agent, Workflow, WorkflowACL, WorkflowRun, WorkflowNodeRun,
+    Workflow, WorkflowACL, WorkflowRun, WorkflowNodeRun,
     WorkflowVersion, TeamMember, User,
 )
 from app.schemas.workflow import WorkflowCreate, WorkflowUpdate
@@ -16,25 +16,13 @@ async def create_workflow(db: AsyncSession, user: User, data: WorkflowCreate) ->
     if existing.scalar_one_or_none():
         raise ValueError(f"Workflow slug '{data.slug}' already exists")
 
-    # Create worker agent (DB record only, no K8s provisioning)
-    worker = Agent(
-        name=f"_wf_{data.slug}",
-        slug=f"_wf-{uuid.uuid4().hex[:12]}",
-        owner_id=user.id,
-        instruction="Workflow worker agent",
-        model_config_json=data.model_config_data.model_dump(),
-        visibility="private",
-    )
-    db.add(worker)
-    await db.flush()
-
     workflow = Workflow(
         name=data.name,
         slug=data.slug,
         description=data.description,
         owner_id=user.id,
         visibility=data.visibility,
-        worker_agent_id=worker.id,
+        model_config_json=data.model_config_data.model_dump(),
     )
     db.add(workflow)
     await db.flush()
@@ -48,13 +36,6 @@ async def get_workflow(
     if not include_deleted:
         query = query.where(Workflow.status != "deleted")
     result = await db.execute(query)
-    return result.scalar_one_or_none()
-
-
-async def get_worker_agent(db: AsyncSession, workflow: Workflow) -> Agent | None:
-    if not workflow.worker_agent_id:
-        return None
-    result = await db.execute(select(Agent).where(Agent.id == workflow.worker_agent_id))
     return result.scalar_one_or_none()
 
 
@@ -110,22 +91,16 @@ async def update_workflow(db: AsyncSession, workflow: Workflow, data: WorkflowUp
         workflow.description = data.description
     if data.definition is not None:
         workflow.definition = data.definition
+    if data.model_config_data is not None:
+        workflow.model_config_json = data.model_config_data.model_dump()
     if data.visibility is not None:
         workflow.visibility = data.visibility
-
-    # Update worker agent's model_config if provided
-    if data.model_config_data is not None and workflow.worker_agent_id:
-        result = await db.execute(select(Agent).where(Agent.id == workflow.worker_agent_id))
-        worker = result.scalar_one_or_none()
-        if worker:
-            worker.model_config_json = data.model_config_data.model_dump()
 
     await db.flush()
     return workflow
 
 
 async def deploy_workflow(db: AsyncSession, workflow: Workflow, user: User) -> WorkflowVersion:
-    # Get next version number
     result = await db.execute(
         select(func.coalesce(func.max(WorkflowVersion.version), 0))
         .where(WorkflowVersion.workflow_id == workflow.id)
