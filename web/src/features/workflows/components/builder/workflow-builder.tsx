@@ -20,6 +20,7 @@ import { workflowsApi } from "@/features/workflows/api/workflows-api";
 import { SettingsPanel } from "./settings-panel";
 import { NodePalette } from "./node-palette";
 import { InspectorPanel } from "./inspector-panel";
+import { TestPanel } from "./test-panel";
 import { ConsolePanel } from "./console-panel";
 import { Toolbar } from "./toolbar";
 import { ManualTriggerNode, WebhookTriggerNode } from "./nodes/trigger-node";
