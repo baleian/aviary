@@ -5,7 +5,7 @@ import { useAuth } from "@/features/auth/providers/auth-provider";
 import { http } from "@/lib/http";
 import { sendWsMessage } from "@/lib/ws";
 import type { WSMessage } from "@/lib/ws";
-import type { Message, Session } from "@/types";
+import type { FileRef, Message, Session } from "@/types";
 import { useStreamingBlocks } from "./use-streaming-blocks";
 import { useSessionWebSocket } from "./use-session-websocket";
 
@@ -45,7 +45,7 @@ interface UseChatMessagesResult {
   statusMessage: ReturnType<typeof useSessionWebSocket>["statusMessage"];
   reconnectIn: ReturnType<typeof useSessionWebSocket>["reconnectIn"];
   retryNow: ReturnType<typeof useSessionWebSocket>["retryNow"];
-  send: (content: string) => boolean;
+  send: (content: string, attachments?: FileRef[]) => boolean;
   cancel: () => void;
   patchSession: (patch: Partial<Session>) => void;
 }
@@ -152,7 +152,7 @@ export function useChatMessages(sessionId: string): UseChatMessagesResult {
               sender_type: "user",
               sender_id: msg.sender_id,
               content: msg.content,
-              metadata: {},
+              metadata: msg.attachments ? { attachments: msg.attachments } : {},
               created_at: new Date().toISOString(),
             },
           ]);
@@ -306,9 +306,11 @@ export function useChatMessages(sessionId: string): UseChatMessagesResult {
   });
 
   const send = useCallback(
-    (content: string) => {
+    (content: string, attachments?: FileRef[]) => {
       if (status !== "ready") return false;
-      const ok = sendWsMessage(ws, { type: "message", content });
+      const msg: Record<string, unknown> = { type: "message", content };
+      if (attachments?.length) msg.attachments = attachments;
+      const ok = sendWsMessage(ws, msg);
       if (ok) setIsStreaming(true);
       return ok;
     },

@@ -1,5 +1,6 @@
 """Agent-centric API used by the API server — translates agent_id to K8s ops."""
 
+import json
 import logging
 
 import httpx
@@ -118,11 +119,15 @@ async def proxy_session_message(agent_id: str, session_id: str, request: Request
                         logger.error(
                             "Agent stream returned %d: %s", resp.status_code, error_body
                         )
+                        error_msg = json.dumps({"type": "error", "message": f"Agent runtime error ({resp.status_code})"})
+                        yield f"data: {error_msg}\n\n".encode()
                         return
                     async for chunk in resp.aiter_bytes():
                         yield chunk
         except httpx.HTTPError:
             logger.exception("SSE proxy error for agent %s", agent_id)
+            error_msg = json.dumps({"type": "error", "message": "Agent runtime connection failed"})
+            yield f"data: {error_msg}\n\n".encode()
 
     return StreamingResponse(
         generate(),

@@ -9,11 +9,13 @@ import { useChatExport } from "@/features/chat/hooks/use-chat-export";
 import { ChatWidthProvider, useChatWidth } from "@/features/chat/hooks/use-chat-width";
 import { useChatSearch } from "@/features/chat/hooks/use-chat-search";
 import { ChatSearchContextProvider } from "@/features/chat/hooks/chat-search-context";
+import { useAgentCapabilities } from "@/features/chat/hooks/use-agent-capabilities";
 import { ChatHeader } from "./chat-header";
 import { ChatStatusBanner } from "./chat-status-banner";
 import { ChatSearchBar } from "./chat-search-bar";
 import { MessageList } from "./message-list/message-list";
 import { ChatInput } from "./input/chat-input";
+import type { FileRef } from "@/types";
 import { TodoPanel } from "./todos/todo-panel";
 import { LoadingState } from "@/components/feedback/loading-state";
 import { routes } from "@/lib/constants/routes";
@@ -42,6 +44,7 @@ function ChatViewInner({ sessionId }: { sessionId: string }) {
   const { widthClass } = useChatWidth();
   const chat = useChatMessages(sessionId);
   const visibleStatus = useConnectionStatus(chat.status);
+  const { visionEnabled } = useAgentCapabilities(chat.session?.agent_id);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const titleEditor = useTitleEditor({
@@ -76,8 +79,8 @@ function ChatViewInner({ sessionId }: { sessionId: string }) {
   }, [search]);
 
   const handleSend = useCallback(
-    (content: string) => {
-      if (chat.send(content)) {
+    (content: string, attachments?: FileRef[]) => {
+      if (chat.send(content, attachments)) {
         titleEditor.setAutoTitleFromMessage(content);
       }
     },
@@ -164,6 +167,7 @@ function ChatViewInner({ sessionId }: { sessionId: string }) {
                 !isReady ? "Waiting for agent…" : chat.isStreaming ? "Agent is responding…" : undefined
               }
               agentId={chat.session.agent_id}
+              visionEnabled={visionEnabled}
             />
           </div>
         </div>

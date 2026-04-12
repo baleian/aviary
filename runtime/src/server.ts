@@ -15,7 +15,7 @@ import { healthRouter, setCapacityProbe, setReady } from "./health.js";
 import { processMessage } from "./agent.js";
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "50mb" }));
 app.use(healthRouter);
 
 const manager = new SessionManager();
@@ -41,6 +41,7 @@ interface MessageRequestBody {
   session_id: string;
   model_config_data?: Record<string, unknown> | null;
   agent_config: Record<string, unknown>;
+  attachments?: Array<{ type: string; media_type: string; data: string }>;
 }
 
 app.post("/message", async (req, res) => {
@@ -86,6 +87,7 @@ app.post("/message", async (req, res) => {
       body.model_config_data as any,
       body.agent_config as any,
       abortController,
+      body.attachments,
     )) {
       if (res.writableEnded || abortController.signal.aborted) break;
       res.write(`data: ${JSON.stringify(chunk)}\n\n`);

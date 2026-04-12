@@ -121,7 +121,7 @@ function hasSessionHistory(claudeDir: string, sessionId: string): boolean {
 }
 
 export interface SSEChunk {
-  type: "chunk" | "tool_use" | "tool_result" | "tool_progress" | "result" | "thinking";
+  type: "chunk" | "tool_use" | "tool_result" | "tool_progress" | "result" | "thinking" | "query_started";
   content?: string;
   name?: string;
   input?: unknown;
@@ -153,6 +153,12 @@ export interface SSEChunk {
  *   {type: "tool_progress", tool_use_id, tool_name, parent_tool_use_id, elapsed_time_seconds}
  *   {type: "result", session_id, duration_ms, num_turns, total_cost_usd, usage}
  */
+interface Attachment {
+  type: string;
+  media_type: string;
+  data: string; // base64
+}
+
 export async function* processMessage(
   sessionId: string,
   agentId: string,
@@ -160,6 +166,7 @@ export async function* processMessage(
   modelConfig: ModelConfig | null | undefined,
   agentConfig: AgentConfig,
   abortController?: AbortController,
+  attachments?: Attachment[],
 ): AsyncGenerator<SSEChunk> {
   const home = sessionHome(sessionId);
   const claudeDir = sessionClaudeDir(sessionId);
@@ -293,9 +300,27 @@ export async function* processMessage(
 
   // Use async generator for prompt — required by SDK when using custom MCP tools
   async function* promptGenerator() {
+    // Build multimodal content array when attachments are present
+    let messageContent: string | Array<Record<string, unknown>> = content;
+    if (attachments && attachments.length > 0) {
+      const blocks: Array<Record<string, unknown>> = [];
+      for (const att of attachments) {
+        if (att.type === "image") {
+          blocks.push({
+            type: "image",
+            source: { type: "base64", media_type: att.media_type, data: att.data },
+          });
+        }
+      }
+      if (content) {
+        blocks.push({ type: "text", text: content });
+      }
+      messageContent = blocks;
+    }
+
     yield {
       type: "user" as const,
-      message: { role: "user" as const, content },
+      message: { role: "user" as const, content: messageContent },
       parent_tool_use_id: null,
       session_id: sessionId,
     };
@@ -314,7 +339,10 @@ export async function* processMessage(
   let hasStreamDeltas = false;
 
   try {
-    for await (const message of query({ prompt: promptGenerator(), options })) {
+    const stream = query({ prompt: promptGenerator(), options });
+    yield { type: "query_started" } as SSEChunk;
+
+    for await (const message of stream) {
       const msg = message as SDKMessage & Record<string, any>;
 
       if (msg.type === "stream_event") {

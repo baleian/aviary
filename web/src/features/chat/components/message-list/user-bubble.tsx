@@ -1,28 +1,27 @@
 "use client";
 
+import { useCallback, useState } from "react";
 import { useChatSearchTargetId } from "@/features/chat/hooks/chat-search-context";
+import { getUploadUrl } from "@/features/chat/lib/attachment-utils";
+import { ImageLightbox } from "./image-lightbox";
 import { cn } from "@/lib/utils";
+import type { FileRef } from "@/types";
 
 interface UserBubbleProps {
   content: string;
-  /** When false, render an invisible spacer in the avatar slot so the
-   *  bubble stays horizontally aligned with the run's first message. */
   showAvatar?: boolean;
-  /** `data-search-target` for in-chat search ring + scroll. */
   targetId: string;
+  attachments?: FileRef[];
 }
 
-/**
- * UserBubble — right-aligned user message with brand-tinted background.
- * Pure presentation, no markdown rendering (user input is plain text).
- *
- * Width is constrained to 60% (vs 88% for agent) — user messages are
- * usually short prompts and the asymmetry creates a more natural rhythm
- * than equal-width bubbles on both sides.
- */
-export function UserBubble({ content, showAvatar = true, targetId }: UserBubbleProps) {
+export function UserBubble({ content, showAvatar = true, targetId, attachments }: UserBubbleProps) {
   const activeTargetId = useChatSearchTargetId();
   const isActiveMatch = activeTargetId === targetId;
+  const [lightbox, setLightbox] = useState<{ src: string; alt: string } | null>(null);
+
+  const openLightbox = useCallback((att: FileRef) => {
+    setLightbox({ src: getUploadUrl(att.file_id), alt: att.filename });
+  }, []);
 
   return (
     <div className="flex flex-row-reverse gap-3 group animate-fade-in">
@@ -42,9 +41,36 @@ export function UserBubble({ content, showAvatar = true, targetId }: UserBubbleP
         )}
       >
         <div className="rounded-xl rounded-tr-sm bg-info/10 px-4 py-3 type-body text-fg-primary">
-          <div className="whitespace-pre-wrap break-words">{content}</div>
+          {attachments && attachments.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-2">
+              {attachments.map((att) => (
+                <button
+                  key={att.file_id}
+                  type="button"
+                  onClick={() => openLightbox(att)}
+                  className="block rounded-lg overflow-hidden border border-white/10 hover:border-info/40 transition-colors cursor-zoom-in"
+                >
+                  <img
+                    src={getUploadUrl(att.file_id)}
+                    alt={att.filename}
+                    loading="lazy"
+                    className="max-h-48 max-w-full object-contain rounded-lg"
+                  />
+                </button>
+              ))}
+            </div>
+          )}
+          {content && <div className="whitespace-pre-wrap break-words">{content}</div>}
         </div>
       </div>
+
+      {lightbox && (
+        <ImageLightbox
+          src={lightbox.src}
+          alt={lightbox.alt}
+          onClose={() => setLightbox(null)}
+        />
+      )}
     </div>
   );
 }
