@@ -15,4 +15,5 @@ from aviary_shared.db.models import (  # noqa: F401
     WorkflowACL,
     WorkflowNodeRun,
     WorkflowRun,
+    WorkflowVersion,
 )

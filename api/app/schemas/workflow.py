@@ -2,24 +2,31 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from app.schemas.agent import ModelConfig
+
 
 class WorkflowCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     slug: str = Field(..., min_length=1, max_length=255, pattern="^[a-z0-9][a-z0-9-]*[a-z0-9]$")
     description: str | None = None
+    model_config_data: ModelConfig = Field(..., alias="model_config")
     visibility: str = Field("private", pattern="^(public|team|private)$")
+
+    model_config = {"populate_by_name": True}
 
 
 class WorkflowUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=255)
     description: str | None = None
     definition: dict | None = None
+    model_config_data: ModelConfig | None = Field(None, alias="model_config")
     visibility: str | None = Field(None, pattern="^(public|team|private)$")
-    status: str | None = Field(None, pattern="^(draft|active|deleted)$")
+
+    model_config = {"populate_by_name": True}
 
 
 class WorkflowResponse(BaseModel):
-    model_config = {"from_attributes": True}
+    model_config = {"from_attributes": True, "populate_by_name": True}
 
     id: str
     name: str
@@ -28,12 +35,16 @@ class WorkflowResponse(BaseModel):
     owner_id: str
     visibility: str
     definition: dict
+    model_config_data: dict = Field(alias="model_config")
     status: str
     created_at: datetime
     updated_at: datetime
 
     @classmethod
-    def from_orm_workflow(cls, workflow) -> "WorkflowResponse":
+    def from_orm_workflow(cls, workflow, worker_agent=None) -> "WorkflowResponse":
+        mc = {}
+        if worker_agent and worker_agent.model_config_json:
+            mc = worker_agent.model_config_json
         return cls(
             id=str(workflow.id),
             name=workflow.name,
@@ -42,6 +53,7 @@ class WorkflowResponse(BaseModel):
             owner_id=str(workflow.owner_id),
             visibility=workflow.visibility,
             definition=workflow.definition,
+            model_config=mc,
             status=workflow.status,
             created_at=workflow.created_at,
             updated_at=workflow.updated_at,
@@ -122,3 +134,10 @@ class WorkflowRunResponse(BaseModel):
 class WorkflowRunListResponse(BaseModel):
     items: list[WorkflowRunResponse]
     total: int
+
+
+class WorkflowVersionResponse(BaseModel):
+    id: str
+    version: int
+    deployed_by: str
+    deployed_at: datetime

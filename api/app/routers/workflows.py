@@ -18,6 +18,7 @@ from app.schemas.workflow import (
     WorkflowRunListResponse,
     WorkflowRunResponse,
     WorkflowUpdate,
+    WorkflowVersionResponse,
 )
 from app.services import redis_service, workflow_service
 from app.services.workflow_engine import start_run, cancel_run
@@ -25,6 +26,11 @@ from app.services.workflow_engine import start_run, cancel_run
 from aviary_shared.db.models import Workflow, WorkflowRun
 
 router = APIRouter()
+
+
+async def _workflow_response(db: AsyncSession, workflow: Workflow) -> WorkflowResponse:
+    worker = await workflow_service.get_worker_agent(db, workflow)
+    return WorkflowResponse.from_orm_workflow(workflow, worker)
 
 
 # --- CRUD ---
@@ -38,10 +44,10 @@ async def list_workflows(
     db: AsyncSession = Depends(get_db),
 ):
     workflows, total = await workflow_service.list_workflows_for_user(db, user, offset, limit)
-    return WorkflowListResponse(
-        items=[WorkflowResponse.from_orm_workflow(w) for w in workflows],
-        total=total,
-    )
+    items = []
+    for w in workflows:
+        items.append(await _workflow_response(db, w))
+    return WorkflowListResponse(items=items, total=total)
 
 
 @router.post("", response_model=WorkflowResponse, status_code=status.HTTP_201_CREATED)
@@ -54,34 +60,83 @@ async def create_workflow(
         workflow = await workflow_service.create_workflow(db, user, body)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
-    return WorkflowResponse.from_orm_workflow(workflow)
+    return await _workflow_response(db, workflow)
 
 
 @router.get("/{workflow_id}", response_model=WorkflowResponse)
 async def get_workflow(
-    workflow=Depends(require_workflow_permission("view")),
+    workflow: Workflow = Depends(require_workflow_permission("view")),
+    db: AsyncSession = Depends(get_db),
 ):
-    return WorkflowResponse.from_orm_workflow(workflow)
+    return await _workflow_response(db, workflow)
 
 
 @router.put("/{workflow_id}", response_model=WorkflowResponse)
 async def update_workflow(
     body: WorkflowUpdate,
-    workflow=Depends(require_workflow_permission("edit_config")),
+    workflow: Workflow = Depends(require_workflow_permission("edit_config")),
     db: AsyncSession = Depends(get_db),
 ):
+    if workflow.status == "active":
+        raise HTTPException(status_code=409, detail="Cannot edit active workflow. Use edit endpoint first.")
     workflow = await workflow_service.update_workflow(db, workflow, body)
     await db.refresh(workflow)
-    return WorkflowResponse.from_orm_workflow(workflow)
+    return await _workflow_response(db, workflow)
 
 
 @router.delete("/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_workflow(
-    workflow=Depends(require_workflow_permission("delete")),
+    workflow: Workflow = Depends(require_workflow_permission("delete")),
     db: AsyncSession = Depends(get_db),
 ):
     await workflow_service.delete_workflow(db, workflow)
     return None
+
+
+# --- Deploy / Edit ---
+
+
+@router.post("/{workflow_id}/deploy", response_model=WorkflowVersionResponse)
+async def deploy_workflow(
+    workflow: Workflow = Depends(require_workflow_permission("edit_config")),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if workflow.status == "active":
+        raise HTTPException(status_code=409, detail="Workflow is already deployed")
+    version = await workflow_service.deploy_workflow(db, workflow, user)
+    return WorkflowVersionResponse(
+        id=str(version.id),
+        version=version.version,
+        deployed_by=str(version.deployed_by),
+        deployed_at=version.deployed_at,
+    )
+
+
+@router.post("/{workflow_id}/edit", response_model=WorkflowResponse)
+async def edit_workflow(
+    workflow: Workflow = Depends(require_workflow_permission("edit_config")),
+    db: AsyncSession = Depends(get_db),
+):
+    if workflow.status != "active":
+        raise HTTPException(status_code=409, detail="Workflow is not active")
+    workflow = await workflow_service.edit_workflow(db, workflow)
+    return await _workflow_response(db, workflow)
+
+
+@router.get("/{workflow_id}/versions")
+async def list_versions(
+    workflow: Workflow = Depends(require_workflow_permission("view")),
+    db: AsyncSession = Depends(get_db),
+):
+    versions = await workflow_service.list_versions(db, workflow.id)
+    return [
+        WorkflowVersionResponse(
+            id=str(v.id), version=v.version,
+            deployed_by=str(v.deployed_by), deployed_at=v.deployed_at,
+        )
+        for v in versions
+    ]
 
 
 # --- Runs ---
@@ -107,7 +162,6 @@ async def trigger_run(
     run_id = str(run.id)
     worker_agent_id = str(workflow.worker_agent_id) if workflow.worker_agent_id else None
 
-    # Commit before launching background task so it can read the run
     await db.commit()
 
     start_run(run_id, str(workflow.id), worker_agent_id, body.trigger_data)
@@ -117,7 +171,7 @@ async def trigger_run(
 
 @router.get("/{workflow_id}/runs", response_model=WorkflowRunListResponse)
 async def list_runs(
-    workflow=Depends(require_workflow_permission("view")),
+    workflow: Workflow = Depends(require_workflow_permission("view")),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
@@ -132,7 +186,7 @@ async def list_runs(
 @router.get("/{workflow_id}/runs/{run_id}", response_model=WorkflowRunResponse)
 async def get_run(
     run_id: uuid.UUID,
-    workflow=Depends(require_workflow_permission("view")),
+    workflow: Workflow = Depends(require_workflow_permission("view")),
     db: AsyncSession = Depends(get_db),
 ):
     run = await workflow_service.get_run(db, run_id, with_node_runs=True)
@@ -144,7 +198,7 @@ async def get_run(
 @router.post("/{workflow_id}/runs/{run_id}/cancel", status_code=status.HTTP_204_NO_CONTENT)
 async def cancel_run_endpoint(
     run_id: uuid.UUID,
-    workflow=Depends(require_workflow_permission("execute")),
+    workflow: Workflow = Depends(require_workflow_permission("execute")),
 ):
     cancelled = cancel_run(str(run_id))
     if not cancelled:
@@ -161,7 +215,6 @@ async def run_ws(
     workflow_id: str,
     run_id: str,
 ):
-    # Auth via session cookie
     cookie = websocket.cookies.get(SESSION_COOKIE_NAME)
     if not cookie:
         await websocket.close(code=4001, reason="Not authenticated")
@@ -180,7 +233,6 @@ async def run_ws(
 
     await websocket.accept()
 
-    # Subscribe to run channel
     client = redis_service.get_client()
     if not client:
         await websocket.send_json({"type": "error", "message": "Redis unavailable"})
@@ -198,13 +250,11 @@ async def run_ws(
                 data = json.loads(message["data"])
                 await websocket.send_json(data)
 
-                # Close after terminal status
                 if data.get("type") == "run_status" and data.get("status") in (
                     "completed", "failed", "cancelled",
                 ):
                     break
 
-            # Check if client disconnected
             try:
                 await asyncio.wait_for(websocket.receive_text(), timeout=0.01)
             except asyncio.TimeoutError:
