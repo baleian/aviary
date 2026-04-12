@@ -1,22 +1,33 @@
+import asyncio
+import json
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_user, require_workflow_permission
+from app.auth.oidc import validate_token
+from app.auth.session_store import SESSION_COOKIE_NAME, get_fresh_session
 from app.db.models import User
 from app.db.session import get_db
 from app.schemas.workflow import (
     WorkflowCreate,
     WorkflowListResponse,
     WorkflowResponse,
+    WorkflowRunCreate,
     WorkflowRunListResponse,
     WorkflowRunResponse,
     WorkflowUpdate,
 )
-from app.services import workflow_service
+from app.services import redis_service, workflow_service
+from app.services.workflow_engine import start_run, cancel_run
+
+from aviary_shared.db.models import Workflow, WorkflowRun
 
 router = APIRouter()
+
+
+# --- CRUD ---
 
 
 @router.get("", response_model=WorkflowListResponse)
@@ -76,6 +87,34 @@ async def delete_workflow(
 # --- Runs ---
 
 
+@router.post("/{workflow_id}/runs", response_model=WorkflowRunResponse, status_code=status.HTTP_201_CREATED)
+async def trigger_run(
+    body: WorkflowRunCreate,
+    workflow: Workflow = Depends(require_workflow_permission("execute")),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    run = WorkflowRun(
+        workflow_id=workflow.id,
+        triggered_by=user.id,
+        trigger_type=body.trigger_type,
+        trigger_data=body.trigger_data,
+        definition_snapshot=workflow.definition,
+    )
+    db.add(run)
+    await db.flush()
+
+    run_id = str(run.id)
+    worker_agent_id = str(workflow.worker_agent_id) if workflow.worker_agent_id else None
+
+    # Commit before launching background task so it can read the run
+    await db.commit()
+
+    start_run(run_id, str(workflow.id), worker_agent_id, body.trigger_data)
+
+    return WorkflowRunResponse.from_orm_run(run)
+
+
 @router.get("/{workflow_id}/runs", response_model=WorkflowRunListResponse)
 async def list_runs(
     workflow=Depends(require_workflow_permission("view")),
@@ -100,3 +139,79 @@ async def get_run(
     if not run or run.workflow_id != workflow.id:
         raise HTTPException(status_code=404, detail="Run not found")
     return WorkflowRunResponse.from_orm_run(run, include_node_runs=True)
+
+
+@router.post("/{workflow_id}/runs/{run_id}/cancel", status_code=status.HTTP_204_NO_CONTENT)
+async def cancel_run_endpoint(
+    run_id: uuid.UUID,
+    workflow=Depends(require_workflow_permission("execute")),
+):
+    cancelled = cancel_run(str(run_id))
+    if not cancelled:
+        raise HTTPException(status_code=409, detail="Run is not active")
+    return None
+
+
+# --- WebSocket for run status ---
+
+
+@router.websocket("/{workflow_id}/runs/{run_id}/ws")
+async def run_ws(
+    websocket: WebSocket,
+    workflow_id: str,
+    run_id: str,
+):
+    # Auth via session cookie
+    cookie = websocket.cookies.get(SESSION_COOKIE_NAME)
+    if not cookie:
+        await websocket.close(code=4001, reason="Not authenticated")
+        return
+
+    session_data = await get_fresh_session(cookie)
+    if not session_data:
+        await websocket.close(code=4001, reason="Session expired")
+        return
+
+    try:
+        await validate_token(session_data.access_token)
+    except ValueError:
+        await websocket.close(code=4001, reason="Invalid token")
+        return
+
+    await websocket.accept()
+
+    # Subscribe to run channel
+    client = redis_service.get_client()
+    if not client:
+        await websocket.send_json({"type": "error", "message": "Redis unavailable"})
+        await websocket.close()
+        return
+
+    pubsub = client.pubsub()
+    channel = f"workflow_run:{run_id}"
+    await pubsub.subscribe(channel)
+
+    try:
+        while True:
+            message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+            if message and message["type"] == "message":
+                data = json.loads(message["data"])
+                await websocket.send_json(data)
+
+                # Close after terminal status
+                if data.get("type") == "run_status" and data.get("status") in (
+                    "completed", "failed", "cancelled",
+                ):
+                    break
+
+            # Check if client disconnected
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=0.01)
+            except asyncio.TimeoutError:
+                pass
+            except WebSocketDisconnect:
+                break
+
+    finally:
+        await pubsub.unsubscribe(channel)
+        await pubsub.close()
