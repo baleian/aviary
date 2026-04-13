@@ -14,10 +14,11 @@ The codebase is being rewritten from scratch. v1 used K3s-in-Docker + per-agent 
 - Network policy via `agent.policy.network_profile` — profile-to-networks mapping in supervisor config (Docker `internal` network = default-sg blocked egress; extra networks = approved-SG analogue)
 - End-to-end test suite covering streaming, isolation, resume, A2A, abort, scaling, mutex, persistence, network policy
 
-### Phase 2 — next up (not yet started)
+### Phase 2 — in progress
+- **LLM gateway (DONE)** — LiteLLM on `aviary-agent-default` + `platform` networks; runtime → `http://litellm:4000` (Anthropic `/v1/messages` passthrough). LiteLLM config in [config/litellm/config.yaml](config/litellm/config.yaml). Local model backend is developer-specific (llama-swap + llama-server on host, scripts in [scripts/llama-swap/](scripts/llama-swap/)); in prod LiteLLM is an external service reached via SG allowlist.
 - API server rewrite (OIDC, WebSocket streaming from Redis Pub/Sub, agent CRUD, sessions)
 - Web frontend reconnect
-- LLM gateway + MCP gateway reintroduction
+- MCP gateway reintroduction
 - Temporal for durable workflow execution
 - Fargate backend implementation + Terraform for production deploy
 
@@ -40,16 +41,17 @@ Runtime container (agent-runtime):
   - bubblewrap sandbox for session-level filesystem isolation
 ```
 
-## Services (Phase 1)
+## Services
 
-Only the runtime execution layer is active. Docker Compose (`docker-compose.yml`) runs:
+Docker Compose (`docker-compose.yml`) runs:
 
 - **PostgreSQL** (`:5432`) — agents, policies, sessions, messages
 - **Redis** (`:6379`) — Pub/Sub (realtime streaming) + Streams (durable events)
 - **Agent Supervisor** (`:9000`) — container lifecycle + API
+- **LiteLLM** (`:4000`) — LLM gateway, attached to `platform` (for host-gateway → upstream model backends) and `aviary-agent-default` (so runtime containers resolve `litellm:4000` within the otherwise internal-only network)
 - **db-migrate** — Alembic migrations (one-shot)
 
-Not in Phase 1: Keycloak, Vault, LiteLLM, Portkey, MCP gateway, web, admin, K3s, egress proxy.
+Not yet in stack: Keycloak, Vault, Portkey, MCP gateway, web, admin, Temporal.
 
 ## RuntimeBackend abstraction
 
@@ -198,10 +200,12 @@ Full suite ~90s (bounded by scaling interval + scenario sleep durations).
 | agent-supervisor | `IDLE_CLEANUP_INTERVAL` | 30 (dev) / 300 | Idle scan period (seconds) |
 | agent-supervisor | `AGENT_IDLE_TIMEOUT` | 604800 | 7 days |
 | agent-supervisor | `MAX_CONCURRENT_SESSIONS_PER_TASK` | 5 | Per-container session cap |
+| agent-supervisor | `LITELLM_API_KEY` | `sk-aviary-dev` | Forwarded to runtime as `ANTHROPIC_API_KEY` |
+| litellm | `LITELLM_MASTER_KEY` | `sk-aviary-dev` | Must match `LITELLM_API_KEY` |
 | runtime | `AGENT_ID` | required | UUID from supervisor |
 | runtime | `MAX_CONCURRENT_SESSIONS` | 5 | From supervisor settings |
-| runtime | `INFERENCE_ROUTER_URL` | `https://api.anthropic.com` | Real agent path (Phase 2 will point to LiteLLM) |
-| runtime | `ANTHROPIC_API_KEY` | "" | Real agent path only |
+| runtime | `INFERENCE_ROUTER_URL` | `http://litellm:4000` | Used as `ANTHROPIC_BASE_URL` by claude-agent-sdk |
+| runtime | `ANTHROPIC_API_KEY` | "" | Injected by supervisor from `LITELLM_API_KEY` |
 
 ## DB schema (Phase 1, simplified from v1)
 
@@ -219,8 +223,9 @@ agent-supervisor/     # Supervisor service (Phase 1 rewrite)
 runtime/              # Runtime container (claude-agent-sdk + mock + bwrap)
 shared/               # SQLAlchemy models, Redis utils, naming helpers
 test-client/          # End-to-end test suite
-scripts/              # setup-dev.sh, init-db.sql
-docker-compose.yml    # Phase 1 stack: postgres, redis, db-migrate, agent-supervisor
+config/litellm/       # LiteLLM gateway config (model routing)
+scripts/              # setup-dev.sh, init-db.sql, llama-swap/ (dev-only host-run LLM)
+docker-compose.yml    # postgres, redis, db-migrate, agent-supervisor, litellm
 v1/                   # Archived v1 codebase (reference only)
 ```
 
