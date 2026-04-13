@@ -203,7 +203,6 @@ async def _drive_stream(req: StreamRequest) -> None:
     agent_config: dict = {
         "instruction": agent.instruction or "",
         "tools": agent.tools or [],
-        "mcp_servers": {},
         "policy": agent.policy.policy_rules if agent.policy else {},
     }
     if req.mock_scenario:

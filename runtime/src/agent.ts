@@ -1,8 +1,8 @@
 /**
  * Agent runner — claude-agent-sdk query with SSE streaming.
  *
- * Simplified for Phase 1: no A2A, no MCP gateway, no git credentials,
- * no per-user API key injection. Direct LLM routing via LLM_GATEWAY_URL.
+ * MCP tool access runs through the platform MCP gateway (single HTTP endpoint
+ * exposing all platform-provided servers, auth via the per-user OIDC token).
  */
 
 import * as fs from "node:fs";
@@ -13,6 +13,7 @@ import { WORKSPACE_ROOT, sessionClaudeDir, sessionTmp, sessionWorkspace } from "
 
 const LLM_GATEWAY_URL = process.env.LLM_GATEWAY_URL ?? (() => { throw new Error("LLM_GATEWAY_URL is required"); })();
 const LLM_GATEWAY_API_KEY = process.env.LLM_GATEWAY_API_KEY ?? (() => { throw new Error("LLM_GATEWAY_API_KEY is required"); })();
+const MCP_GATEWAY_URL = process.env.MCP_GATEWAY_URL;
 const CLAUDE_CLI_PATH = "/usr/local/bin/claude";
 
 const MODEL_TIER_KEYS = [
@@ -142,6 +143,15 @@ export async function* processMessage(
     append: agentConfig.instruction || "",
   };
 
+  const mcpServers: Record<string, unknown> = {};
+  if (MCP_GATEWAY_URL && user.token) {
+    mcpServers["aviary"] = {
+      type: "http",
+      url: `${MCP_GATEWAY_URL}/mcp/v1/${agentId}`,
+      headers: { Authorization: `Bearer ${user.token}` },
+    };
+  }
+
   const options: Record<string, unknown> = {
     model: resolvedModel,
     systemPrompt,
@@ -151,6 +161,7 @@ export async function* processMessage(
     permissionMode: "bypassPermissions" as const,
     allowedTools: agentConfig.tools?.length ? agentConfig.tools : undefined,
     disallowedTools: ["WebSearch"],
+    mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
     env,
     includePartialMessages: true,
     ...(canResume ? {} : { extraArgs: { "session-id": sessionId } }),

@@ -18,9 +18,9 @@ The codebase is being rewritten from scratch. v1 used K3s-in-Docker + per-agent 
 - **LLM gateway (DONE)** — LiteLLM on `aviary-agent-default` + `platform` networks; runtime → `http://litellm:4000` (Anthropic `/v1/messages` passthrough). LiteLLM config in [config/litellm/config.yaml](config/litellm/config.yaml). Local model backend is developer-specific (llama-swap + llama-server on host, scripts in [scripts/llama-swap/](scripts/llama-swap/)); in prod LiteLLM is an external service reached via SG allowlist. Provider routing for Anthropic/Bedrock goes via Portkey; local llama-swap uses the openai-compat provider directly. The runtime never references "Anthropic" externally — it only knows `LLM_GATEWAY_URL` / `LLM_GATEWAY_API_KEY`, mapped internally to `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` for claude-agent-sdk.
 - **API server (MVP DONE)** — [api/](api/) FastAPI service (`:8000`): OIDC auth (Keycloak PKCE), user/agent/session CRUD, WebSocket chat streaming via supervisor SSE → Redis Pub/Sub + list-buffered replay. Owner-only authorization (no ACL yet — RBAC redesign deferred). **Lazy spawn**: agent create only prepares storage; session create triggers `/run` (prewarm); WS message falls back to `/run` as a re-spawn safety net. **Soft-delete lifecycle**: DELETE on an agent with active sessions flips `status=deleted` and keeps replicas serving orphan sessions (detail still viewable, new sessions blocked); the last session removal cascades to hard-delete (DB row, policy, replicas, agent workspace subpath). Deferred from v1: A2A, ACL/teams, MCP catalog, workflows, search, uploads.
 - **Per-user credentials (DONE)** — Vault (KV v2, file backend) holds per-user secrets at `secret/aviary/credentials/{sub}/{name}`. API exposes `/api/users/me/credentials` (list/put/delete; values write-only). LiteLLM CustomLogger hook ([config/litellm/patches/aviary_user_api_key.py](config/litellm/patches/aviary_user_api_key.py)) intercepts `anthropic/`-prefixed model requests, validates the `X-Aviary-User-Token` header against Keycloak JWKS, looks up the user's `anthropic-api-key` in Vault, and overrides `data["api_key"]` for the upstream call. Bedrock-via-Portkey requests are skipped (use AWS creds). `local/` prefix bypasses the hook entirely. The runtime injects the JWT via `ANTHROPIC_CUSTOM_HEADERS`; the API forwards the user's access token through the supervisor body's top-level `user: {external_id, token}` field (separate from `agent_config` — the user identity is request-scoped, not agent-scoped).
+- **MCP gateway (DONE)** — [mcp-gateway/](mcp-gateway/) FastAPI service (`:8100`) with JSON-RPC `/mcp/v1/{agent_id}` (OIDC Bearer auth via the per-user token). Platform-provided servers (`jira`, `confluence` in [mcp-servers/](mcp-servers/)) auto-register from [config/mcp-gateway/platform-servers.yaml](config/mcp-gateway/platform-servers.yaml) on startup and tools are discovered via `tools/list`. Vault-managed args (per [config/mcp-gateway/secret-injection.yaml](config/mcp-gateway/secret-injection.yaml)) are stripped from the schema Claude sees and filled from `secret/aviary/credentials/{sub}/{vault_key}` at call time. Supervisor injects `MCP_GATEWAY_URL` into runtime containers; runtime adds `mcpServers.aviary` (http transport, `Authorization: Bearer {user_token}`) to the claude-agent-sdk options when both env var and per-request user token are present. DB tables kept minimal (`mcp_servers`, `mcp_tools`) — ACL + per-agent tool binding deferred to RBAC. For now platform servers are universally accessible and non-platform servers are denied at the edge. Users must PUT `jira-email`/`jira-token` (and confluence equivalents) via `/api/users/me/credentials` before calls succeed.
 - Web frontend reconnect
-- RBAC redesign (proper role/permission model replacing v1's agent-owner/user/viewer)
-- MCP gateway reintroduction
+- RBAC redesign (role/permission model replacing v1's agent-owner/user/viewer; will reintroduce `mcp_tool_acl` + `mcp_agent_tool_bindings` and flip user-registered MCP servers from deny-by-default to opt-in)
 - Temporal for durable workflow execution
 - Fargate backend implementation + Terraform for production deploy
 
@@ -55,9 +55,11 @@ Docker Compose (`docker-compose.yml`) runs:
 - **API** (`:8000`) — FastAPI user-facing REST + WebSocket
 - **Agent Supervisor** (`:9000`) — container lifecycle + internal API
 - **LiteLLM** (`:4000`) — LLM gateway, attached to `platform` and `aviary-agent-default`; loads the per-user API key hook from [config/litellm/patches/](config/litellm/patches/)
+- **MCP Gateway** (`:8100`) — tool catalog + proxy, attached to `platform` and `aviary-agent-default`; runtime reaches it via `MCP_GATEWAY_URL`
+- **mcp-jira**, **mcp-confluence** — platform MCP backends ([mcp-servers/](mcp-servers/)), `platform` network only
 - **db-migrate** — Alembic migrations (one-shot)
 
-Not yet in stack: MCP gateway, web, admin, Temporal.
+Not yet in stack: web, admin, Temporal.
 
 ## RuntimeBackend abstraction
 
@@ -249,11 +251,16 @@ Scenarios covered:
 | agent-supervisor | `AGENT_IDLE_TIMEOUT` | 604800 | 7 days |
 | agent-supervisor | `MAX_CONCURRENT_SESSIONS_PER_TASK` | 5 | Per-container session cap |
 | agent-supervisor | `LLM_GATEWAY_API_KEY` | `sk-aviary-dev` | Forwarded to runtime as `ANTHROPIC_API_KEY` |
+| agent-supervisor | `MCP_GATEWAY_URL` | `http://mcp-gateway:8100` | Forwarded to runtime; enables `mcpServers.aviary` when user token present |
+| mcp-gateway | `DATABASE_URL` | postgres://... | Reads `mcp_servers` / `mcp_tools` |
+| mcp-gateway | `VAULT_ADDR` / `VAULT_TOKEN` | same as api | Per-user secret injection on `tools/call` |
+| mcp-gateway | `OIDC_ISSUER` / `OIDC_INTERNAL_ISSUER` | same as api | Validates `Authorization: Bearer` from runtime |
 | litellm | `LITELLM_MASTER_KEY` | `sk-aviary-dev` | LiteLLM upstream env name; must match `LLM_GATEWAY_API_KEY` |
 | runtime | `AGENT_ID` | required | UUID from supervisor |
 | runtime | `MAX_CONCURRENT_SESSIONS` | 5 | From supervisor settings |
 | runtime | `LLM_GATEWAY_URL` | required | LiteLLM endpoint (mapped internally to `ANTHROPIC_BASE_URL` for claude-agent-sdk) |
 | runtime | `LLM_GATEWAY_API_KEY` | required | Gateway auth key (mapped internally to `ANTHROPIC_API_KEY`) |
+| runtime | `MCP_GATEWAY_URL` | optional | When set + user token in request body, runtime wires `mcpServers.aviary` http transport |
 | api | `SUPERVISOR_URL` | `http://agent-supervisor:9000` | Internal supervisor endpoint |
 | api | `OIDC_ISSUER` | `http://localhost:8180/realms/aviary` | Browser-facing issuer URL |
 | api | `OIDC_INTERNAL_ISSUER` | `http://keycloak:8080/realms/aviary` | Container-to-container URL |
@@ -272,24 +279,29 @@ Scenarios covered:
 - `sessions` — id, agent_id, created_by, title, status, last_message_at
 - `messages` — id, session_id, sender_type, sender_id, content, metadata (JSONB)
 - `users` — id, external_id (OIDC sub), email, display_name
+- `mcp_servers` — id, name, description, transport_type, connection_config (JSONB), tags (JSONB), is_platform_provided, status, last_discovered_at
+- `mcp_tools` — id, server_id (FK CASCADE), name, description, input_schema (JSONB); unique on `(server_id, name)`
 
 Per-user secrets live in **Vault**, not Postgres: `secret/aviary/credentials/{sub}/{name}`.
 
-Phase 2 will add back teams, ACL, workflows, MCP tool catalog from v1.
+Phase 2 will add back teams, ACL (`mcp_tool_acl`), per-agent tool bindings (`mcp_agent_tool_bindings`), and workflows from v1 as RBAC lands.
 
 ## Project layout
 
 ```
 api/                  # User-facing API (FastAPI, OIDC, WebSocket chat)
 agent-supervisor/     # Internal supervisor (container lifecycle, SSE relay)
+mcp-gateway/          # MCP tool catalog + proxy (FastAPI :8100, JSON-RPC)
+mcp-servers/          # Platform MCP backends (jira, confluence)
 runtime/              # Runtime container (claude-agent-sdk + mock + bwrap)
 shared/               # SQLAlchemy models, OIDC validator, redis/http helpers
 tests/                # Test suites — `tests/e2e/` for whole-stack tests; `tests/unit/` reserved for future
 config/litellm/       # LiteLLM gateway config + patches/ (per-user API key hook loaded via .pth)
+config/mcp-gateway/   # Platform-servers catalog + Vault secret-injection mappings
 config/keycloak/      # Keycloak realm auto-import (dev)
 config/vault/         # Vault HCL config (file backend)
 scripts/              # setup-dev.sh, init-db.sql, vault-init.sh, llama-swap/ (dev-only host-run LLM)
-docker-compose.yml    # postgres, redis, db-migrate, keycloak, vault(+init), portkey, litellm, api, agent-supervisor
+docker-compose.yml    # postgres, redis, db-migrate, keycloak, vault(+init), portkey, litellm, mcp-{jira,confluence,gateway}, api, agent-supervisor
 v1/                   # Archived v1 codebase (reference only)
 ```
 

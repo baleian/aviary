@@ -16,6 +16,7 @@ class Settings(BaseSettings):
 
     llm_gateway_url: str = ""
     llm_gateway_api_key: str = ""
+    mcp_gateway_url: str = ""
 
     scaling_check_interval: int = 30
     sessions_per_task_scale_up: int = 3

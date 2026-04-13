@@ -207,6 +207,80 @@ services:
       retries: 5
       start_period: 10s
 
+  # -- MCP backend servers (platform-provided) --
+  mcp-jira:
+    build:
+      context: ./mcp-servers
+      args:
+        MCP_SERVER_NAME: jira
+    environment:
+      JIRA_BASE_URL: ${JIRA_BASE_URL:-https://your-corp.atlassian.net}
+    networks: [platform]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('localhost',8000),2); s.close()\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  mcp-confluence:
+    build:
+      context: ./mcp-servers
+      args:
+        MCP_SERVER_NAME: confluence
+    environment:
+      CONFLUENCE_BASE_URL: ${CONFLUENCE_BASE_URL:-https://your-corp.atlassian.net}
+    networks: [platform]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('localhost',8000),2); s.close()\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # -- MCP Gateway (tool catalog + proxy) --
+  mcp-gateway:
+    build:
+      context: .
+      dockerfile: mcp-gateway/Dockerfile
+      args:
+        UV_INDEX_URL: ${UV_INDEX_URL:-}
+    ports:
+      - "8100:8100"
+    volumes:
+      - ./mcp-gateway:/workspace/mcp-gateway
+      - ./shared:/workspace/shared
+      - ./config/mcp-gateway/platform-servers.yaml:/app/config/platform-servers.yaml:ro
+      - ./config/mcp-gateway/secret-injection.yaml:/app/config/secret-injection.yaml:ro
+    environment:
+      DATABASE_URL: postgresql+asyncpg://aviary:aviary@postgres:5432/aviary
+      MCP_GATEWAY_PORT: "8100"
+      OIDC_ISSUER: http://localhost:8180/realms/aviary
+      OIDC_INTERNAL_ISSUER: http://keycloak:8080/realms/aviary
+      OIDC_CLIENT_ID: aviary-web
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: dev-root-token
+    networks: [platform, agent]
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      vault:
+        condition: service_healthy
+      vault-init:
+        condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
+      mcp-jira:
+        condition: service_healthy
+      mcp-confluence:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8100/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   # -- Agent Supervisor --
   agent-supervisor:
     build:
@@ -230,6 +304,7 @@ services:
       DOCKER_SOCKET: /var/run/docker.sock
       LLM_GATEWAY_URL: ${LLM_GATEWAY_URL:-http://litellm:4000}
       LLM_GATEWAY_API_KEY: ${LLM_GATEWAY_API_KEY:-sk-aviary-dev}
+      MCP_GATEWAY_URL: ${MCP_GATEWAY_URL:-http://mcp-gateway:8100}
       AGENT_PRIMARY_NETWORK: aviary-agent-default
       # Production-sensible defaults; override via env for test runs
       # (see scripts/test.sh for the short values used by the e2e suites).
