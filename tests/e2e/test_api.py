@@ -156,7 +156,7 @@ async def create_agent(http: httpx.AsyncClient, slug_suffix: str) -> dict:
 
 
 async def create_session(http: httpx.AsyncClient, agent_id: str) -> dict:
-    r = await http.post(f"/api/agents/{agent_id}/sessions", json={"agent_id": agent_id})
+    r = await http.post(f"/api/agents/{agent_id}/sessions", json={})
     assert r.status_code == 201, f"create session: {r.status_code} {r.text}"
     return r.json()
 
@@ -462,9 +462,7 @@ async def test_agent_soft_delete_keeps_orphan_sessions_working(sid: str) -> None
             assert r.status_code == 200, "soft-deleted agent detail must remain viewable"
             assert r.json()["status"] == "deleted"
 
-            r = await http.post(
-                f"/api/agents/{aid}/sessions", json={"agent_id": aid},
-            )
+            r = await http.post(f"/api/agents/{aid}/sessions", json={})
             assert r.status_code == 404, "new session on soft-deleted agent must be blocked"
 
             async with await ws_connect(session["id"], sid) as ws:

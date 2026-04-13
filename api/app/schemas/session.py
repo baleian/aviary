@@ -5,7 +5,6 @@ from pydantic import BaseModel, ConfigDict
 
 
 class SessionCreate(BaseModel):
-    agent_id: uuid.UUID
     title: str | None = None
 
 

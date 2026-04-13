@@ -56,8 +56,9 @@ async def create(db: AsyncSession, user: User, body: AgentCreate) -> Agent:
         name=body.name,
         slug=body.slug,
         owner_id=str(user.id),
+        description=body.description,
         instruction=body.instruction,
-        model_config_data=body.model_config_data,
+        model_config_data=body.model_config_data.model_dump(),
         tools=body.tools,
     )
     db.add(agent)
@@ -77,10 +78,12 @@ async def create(db: AsyncSession, user: User, body: AgentCreate) -> Agent:
 async def update(db: AsyncSession, agent: Agent, body: AgentUpdate) -> Agent:
     if body.name is not None:
         agent.name = body.name
+    if body.description is not None:
+        agent.description = body.description
     if body.instruction is not None:
         agent.instruction = body.instruction
     if body.model_config_data is not None:
-        agent.model_config_data = body.model_config_data
+        agent.model_config_data = body.model_config_data.model_dump()
     if body.tools is not None:
         agent.tools = body.tools
     await db.flush()
