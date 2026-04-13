@@ -7,7 +7,7 @@ members = [
     "aviary-agent-supervisor",
     "aviary-api",
     "aviary-shared",
-    "aviary-test-client",
+    "aviary-tests",
 ]
 
 [[package]]
@@ -169,9 +169,9 @@ requires-dist = [
 ]
 
 [[package]]
-name = "aviary-test-client"
+name = "aviary-tests"
 version = "0.2.0"
-source = { editable = "test-client" }
+source = { editable = "tests" }
 dependencies = [
     { name = "asyncpg" },
     { name = "httpx" },

@@ -44,8 +44,8 @@ done
 docker ps --filter "label=aviary.managed=true" --format '{{.Names}}' \
   | xargs -r docker rm -f >/dev/null 2>&1 || true
 
-echo "[test] running test-client/test_api.py"
-uv run python test-client/test_api.py
+echo "[test] running tests/e2e/test_api.py"
+uv run python tests/e2e/test_api.py
 
-echo "[test] running test-client/test_e2e.py"
-uv run python test-client/test_e2e.py
+echo "[test] running tests/e2e/test_supervisor.py"
+uv run python tests/e2e/test_supervisor.py

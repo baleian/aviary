@@ -1,5 +1,5 @@
 [tool.uv.workspace]
-members = ["shared", "agent-supervisor", "api", "test-client"]
+members = ["shared", "agent-supervisor", "api", "tests"]
 
 [tool.uv.sources]
 aviary-shared = { workspace = true }

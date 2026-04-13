@@ -367,9 +367,23 @@ async def test_context_across_scaling(ctx: Ctx, agent_id: str) -> None:
     await register_and_run(ctx.client, agent_id)
     session_id = str(uuid.uuid4())
 
-    await send_scenario(ctx.client, agent_id, session_id, [
+    write_events = await send_scenario(ctx.client, agent_id, session_id, [
         {"type": "write", "path": "/workspace/history.txt", "content": "turn-1"},
     ])
+    # Catch the failure mode at its source: if the write step never happened
+    # (or errored), there's nothing to "preserve" later — surface that here
+    # rather than blaming the scale-up dance for the missing file.
+    require(
+        not any(e.get("type") == "error" for e in write_events),
+        "initial write succeeded without error",
+    )
+    verify_events = await send_scenario(ctx.client, agent_id, session_id, [
+        {"type": "read", "path": "/workspace/history.txt"},
+    ])
+    require(
+        "turn-1" in "".join(chunks_of(verify_events)),
+        "initial write is readable before any scale event",
+    )
 
     async def hold_session(sid: str):
         return await send_scenario(ctx.client, agent_id, sid, [

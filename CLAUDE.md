@@ -159,13 +159,13 @@ bubblewrap needs unprivileged user namespaces which the default Docker seccomp p
 `aviary-sessions-workspace` root is chowned to `1000:1000` once per supervisor process (tracked in `DockerBackend._chowned`) so the `node` user can mkdir session subdirs.
 
 ### Redis Pub/Sub subscribe timing
-In tests, you must drain the `subscribe` confirmation message before `get_message(ignore_subscribe_messages=True, timeout=N)` will reliably return published events. See [test_e2e.py](test-client/test_e2e.py) `test_basic_streaming`.
+In tests, you must drain the `subscribe` confirmation message before `get_message(ignore_subscribe_messages=True, timeout=N)` will reliably return published events. See [test_e2e.py](tests/e2e/test_supervisor.py) `test_basic_streaming`.
 
 ### Session stickiness + shared storage
 pick_replica is deterministic per session_id, so sequential messages go to the same replica (prevents concurrent JSONL writes to `.claude/{sid}/`). But because AGENTS_WORKSPACE_VOLUME is shared across replicas, if a replica dies or the hash remaps after scale events, any other replica sees the same history — no per-replica local state.
 
 ### Per-session mutex (runtime)
-`SessionManager` gives each session its own mutex. Two messages racing on the same session serialize automatically. Verified by [test_concurrent_same_session_serialized](test-client/test_e2e.py).
+`SessionManager` gives each session its own mutex. Two messages racing on the same session serialize automatically. Verified by [test_concurrent_same_session_serialized](tests/e2e/test_supervisor.py).
 
 ## Testing
 
@@ -182,7 +182,7 @@ can size its waits proportionally. The compose file's defaults are
 production-sensible (30 / 300 / 604800 seconds); restore them with
 `docker compose up -d --force-recreate agent-supervisor` after testing.
 
-Test suite ([test-client/test_e2e.py](test-client/test_e2e.py)):
+Supervisor + runtime e2e suite ([tests/e2e/test_supervisor.py](tests/e2e/test_supervisor.py)):
 
 1. `test_basic_streaming` — chunk/thinking/result SSE, Redis Pub/Sub realtime, Redis Streams durable
 2. `test_session_isolation` — sandbox-level file isolation
@@ -199,11 +199,11 @@ Test suite ([test-client/test_e2e.py](test-client/test_e2e.py)):
 
 Full suite ~90s (bounded by scaling interval + scenario sleep durations).
 
-### Phase 2 API suite ([test-client/test_api.py](test-client/test_api.py))
+### Phase 2 API suite ([tests/e2e/test_api.py](tests/e2e/test_api.py))
 
 ```bash
 docker compose up -d
-uv run python test-client/test_api.py
+uv run python tests/e2e/test_api.py
 ```
 
 Obtains a real JWT from Keycloak via direct-grant (dev realm, `aviary-web`
@@ -274,7 +274,7 @@ api/                  # User-facing API (FastAPI, OIDC, WebSocket chat)
 agent-supervisor/     # Internal supervisor (container lifecycle, SSE relay)
 runtime/              # Runtime container (claude-agent-sdk + mock + bwrap)
 shared/               # SQLAlchemy models, OIDC validator, redis/http helpers
-test-client/          # End-to-end test suite
+tests/                # Test suites — `tests/e2e/` for whole-stack tests; `tests/unit/` reserved for future
 config/litellm/       # LiteLLM gateway config
 config/keycloak/      # Keycloak realm auto-import (dev)
 scripts/              # setup-dev.sh, init-db.sql, llama-swap/ (dev-only host-run LLM)

@@ -1,7 +1,7 @@
 [project]
-name = "aviary-test-client"
+name = "aviary-tests"
 version = "0.2.0"
-description = "End-to-end test suite for aviary"
+description = "Aviary test suites"
 requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.28.0",
