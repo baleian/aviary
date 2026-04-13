@@ -49,8 +49,9 @@ class SupervisorClient:
         r.raise_for_status()
         return r.json()
 
-    async def delete(self, agent_id: str) -> None:
-        r = await self._require().delete(f"/v1/agents/{agent_id}")
+    async def delete(self, agent_id: str, *, purge: bool = False) -> None:
+        params = {"purge": "true"} if purge else None
+        r = await self._require().delete(f"/v1/agents/{agent_id}", params=params)
         r.raise_for_status()
 
     async def wait_ready(self, agent_id: str, timeout: int | None = None) -> bool:
@@ -61,7 +62,7 @@ class SupervisorClient:
                 params={"timeout": timeout},
                 timeout=timeout + 5,
             )
-            return r.status_code == 200 and r.json().get("ready", False)
+            return r.status_code == 200 and r.json().get("status") == "ready"
         except httpx.HTTPError:
             return False
 

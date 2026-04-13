@@ -497,6 +497,66 @@ async def test_network_policy_approved_profile_allows_egress(
     require(body.startswith("2") or body.startswith("3"), f"external HTTP allowed (curl code={body!r})")
 
 
+async def test_rapid_agent_churn_keeps_supervisor_responsive(ctx: Ctx) -> None:
+    """Regression: synchronous `container.stop(timeout=30)` used to block the
+    supervisor event loop, so back-to-back agent deletes stalled the service
+    for tens of seconds. Offloading to a thread must keep `/v1/health`
+    responsive during churn.
+    """
+    print("\n[test] rapid agent churn — supervisor stays responsive during deletes")
+
+    n = 3
+    ids = [str(uuid.uuid4()) for _ in range(n)]
+    for aid in ids:
+        await seed_agent(aid, "churn", min_tasks=1, max_tasks=1)
+
+    latencies: list[float] = []
+    stop_probe = asyncio.Event()
+
+    async def probe_health() -> None:
+        async with httpx.AsyncClient(timeout=3) as c:
+            while not stop_probe.is_set():
+                t0 = asyncio.get_event_loop().time()
+                try:
+                    r = await c.get(f"{SUPERVISOR_URL}/v1/health")
+                    r.raise_for_status()
+                    latencies.append(asyncio.get_event_loop().time() - t0)
+                except Exception as e:
+                    latencies.append(999.0)
+                    print(f"    probe error: {type(e).__name__}")
+                await asyncio.sleep(0.25)
+
+    try:
+        await asyncio.gather(*[register_and_run(ctx.client, aid) for aid in ids])
+        for aid in ids:
+            require(await replica_count(ctx.client, aid) == 1, f"{aid[:8]} spawned")
+
+        probe_task = asyncio.create_task(probe_health())
+        try:
+            # Fire all deletes concurrently — this is what used to wedge the loop.
+            await asyncio.gather(*[
+                ctx.client.delete(f"{SUPERVISOR_URL}/v1/agents/{aid}")
+                for aid in ids
+            ])
+            # Give the probe time to catch the stall window if there is one.
+            await asyncio.sleep(1.0)
+        finally:
+            stop_probe.set()
+            await probe_task
+
+        worst = max(latencies) if latencies else 0
+        require(
+            worst < 2.0,
+            f"health probe max latency {worst:.2f}s stayed under 2s during churn"
+            f" ({len(latencies)} samples)",
+        )
+        for aid in ids:
+            require(await replica_count(ctx.client, aid) == 0, f"{aid[:8]} replicas torn down")
+    finally:
+        for aid in ids:
+            await cleanup_agent(ctx.client, aid)
+
+
 async def test_abort(ctx: Ctx, agent_id: str) -> None:
     print("\n[test] abort mid-stream")
     session_id = str(uuid.uuid4())
@@ -557,6 +617,7 @@ async def main():
             await test_persist_after_container_removal(ctx, agent_a)
             await test_scale_up_under_load(ctx, agent_scale)
             await test_context_across_scaling(ctx, agent_scale)
+            await test_rapid_agent_churn_keeps_supervisor_responsive(ctx)
         finally:
             await cleanup_agent(client, agent_a)
             await cleanup_agent(client, agent_b)

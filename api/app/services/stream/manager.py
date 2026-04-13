@@ -36,6 +36,10 @@ class StreamRequest:
     agent_id: str
     content: str
     user_message_id: uuid.UUID
+    # Optional runtime override — sent verbatim as `agent_config.mock_scenario`.
+    # Request-scoped (never persisted); lets tests script deterministic SSE
+    # without invoking an LLM. Runtime checks presence to dispatch mock path.
+    mock_scenario: dict | None = None
 
 
 def is_streaming(session_id: str) -> bool:
@@ -90,18 +94,22 @@ async def _run(req: StreamRequest) -> None:
         await _fail_pre_runtime(req, "Agent did not become ready in time")
         return
 
+    agent_config: dict = {
+        "instruction": agent.instruction or "",
+        "tools": agent.tools or [],
+        "mcp_servers": {},
+        "policy": agent.policy.policy_rules if agent.policy else {},
+        "user_external_id": "",
+        "user_token": "",
+    }
+    if req.mock_scenario:
+        agent_config["mock_scenario"] = req.mock_scenario
+
     supervisor_body = {
         "content_parts": [{"text": req.content}],
         "session_id": session_id,
         "model_config_data": agent.model_config_data or {},
-        "agent_config": {
-            "instruction": agent.instruction or "",
-            "tools": agent.tools or [],
-            "mcp_servers": {},
-            "policy": agent.policy.policy_rules if agent.policy else {},
-            "user_external_id": "",
-            "user_token": "",
-        },
+        "agent_config": agent_config,
     }
 
     full_text = ""

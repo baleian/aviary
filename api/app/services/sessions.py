@@ -3,10 +3,11 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import desc, func, select
+from fastapi import HTTPException
+from sqlalchemy import delete as sql_delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aviary_shared.db.models import Message, Session, User
+from aviary_shared.db.models import Agent, Message, Session, User
 
 
 async def list_for_agent(db: AsyncSession, agent_id: uuid.UUID, user: User) -> list[Session]:
@@ -28,8 +29,6 @@ async def get(db: AsyncSession, session_id: uuid.UUID) -> Session | None:
 
 
 async def require_owner(db: AsyncSession, session_id: uuid.UUID, user: User) -> Session:
-    from fastapi import HTTPException
-
     session = await get(db, session_id)
     if not session or session.status == "deleted":
         raise HTTPException(404, "Session not found")
@@ -39,18 +38,46 @@ async def require_owner(db: AsyncSession, session_id: uuid.UUID, user: User) -> 
 
 
 async def create(db: AsyncSession, agent_id: uuid.UUID, user: User, title: str | None) -> Session:
+    """Create a session and eagerly start provisioning the runtime.
+
+    We call supervisor `/run` here (not on first message) so a user clicking
+    "New Session" gets a warm container ready by the time they start typing.
+    """
+    from app.services.supervisor import supervisor_client
+
     session = Session(agent_id=agent_id, created_by=str(user.id), title=title)
     db.add(session)
     await db.flush()
+    await supervisor_client.run(str(agent_id))
     return session
 
 
 async def delete(db: AsyncSession, session: Session) -> None:
+    """Hard-delete the session (row + messages), clean its workspace, and —
+    if the owning agent is already soft-deleted and this was its last
+    session — cascade to agent hard-delete (replicas + volume + agent row)."""
+    from app.services import agents as agent_svc
+    from app.services.stream.manager import cancel as cancel_stream, is_streaming
     from app.services.supervisor import supervisor_client
 
-    session.status = "deleted"
+    agent_id = session.agent_id
+    session_id = session.id
+    session_id_str = str(session_id)
+
+    if is_streaming(session_id_str):
+        await cancel_stream(session_id_str, str(agent_id))
+
+    await supervisor_client.cleanup_session(str(agent_id), session_id_str)
+
+    # No FK CASCADE in the current schema — delete messages first.
+    await db.execute(sql_delete(Message).where(Message.session_id == session_id))
+    await db.delete(session)
     await db.flush()
-    await supervisor_client.cleanup_session(str(session.agent_id), str(session.id))
+
+    agent = await db.get(Agent, agent_id)
+    if agent is not None and agent.status == "deleted":
+        if await agent_svc.session_count(db, agent_id) == 0:
+            await agent_svc.hard_delete(db, agent)
 
 
 async def update_title(db: AsyncSession, session: Session, title: str) -> Session:

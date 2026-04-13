@@ -20,6 +20,7 @@ import asyncio
 import hashlib
 import logging
 import time
+from datetime import datetime
 from typing import AsyncIterator
 
 import docker
@@ -104,6 +105,16 @@ class DockerBackend:
             detach=False,
         )
 
+    def _purge_agent_subpath(self, agent_id: str) -> None:
+        sub = agent_subpath(agent_id)
+        self._client.containers.run(
+            _INIT_IMAGE,
+            command=["sh", "-c", f"rm -rf /mnt/{sub}"],
+            volumes={AGENTS_WORKSPACE_VOLUME: {"bind": "/mnt", "mode": "rw"}},
+            remove=True,
+            detach=False,
+        )
+
     # ── container helpers ─────────────────────────────────────────
     def _labels(self, agent_id: str, replica: int) -> dict[str, str]:
         return {
@@ -140,24 +151,48 @@ class DockerBackend:
         ]
 
     def _to_task_info(self, container: Container, agent_id: str, replica: int) -> TaskInfo:
+        attrs = container.attrs
+        # sparse list response: "Created" is a unix epoch int; inspect
+        # response uses an ISO string. Handle both.
+        created_raw = attrs.get("Created", 0)
+        if isinstance(created_raw, (int, float)):
+            created_ts = float(created_raw)
+        else:
+            try:
+                created_ts = datetime.fromisoformat(str(created_raw).rstrip("Z")).timestamp()
+            except ValueError:
+                created_ts = time.time()
+        # status: sparse → attrs["State"] short string; inspect → attrs["State"]["Status"].
+        state = attrs.get("State")
+        status = state.get("Status", "unknown") if isinstance(state, dict) else (state or "unknown")
+        # name: sparse → attrs["Names"][0] (with leading "/"); inspect → attrs["Name"].
+        name = attrs.get("Name") or (attrs.get("Names") or [""])[0]
+        name = name.lstrip("/") if name else container_name(agent_id, replica)
         return TaskInfo(
             task_id=container.id or "",
             agent_id=agent_id,
             replica=replica,
-            host=container.name or container_name(agent_id, replica),
+            host=name,
             port=RUNTIME_PORT,
-            status=container.status,
-            created_at=time.time(),
+            status=status,
+            created_at=created_ts,
         )
 
     def _list_replica_containers(self, agent_id: str) -> list[tuple[Container, int]]:
+        # sparse=True returns Container objects with list-endpoint attrs only
+        # (no per-container inspect). Avoids 404 races when containers are
+        # removed concurrently with the list call.
         containers = self._client.containers.list(
             all=True,
+            sparse=True,
             filters={"label": [f"{LABEL_AGENT_ID}={agent_id}", f"{LABEL_MANAGED}=true"]},
         )
         result: list[tuple[Container, int]] = []
         for c in containers:
-            replica_str = c.labels.get(LABEL_REPLICA, "0")
+            # sparse containers expose labels under attrs["Labels"], not the
+            # nested attrs["Config"]["Labels"] path that `.labels` reads from.
+            labels = c.attrs.get("Labels") or {}
+            replica_str = labels.get(LABEL_REPLICA, "0")
             try:
                 replica = int(replica_str)
             except ValueError:
@@ -237,18 +272,23 @@ class DockerBackend:
         return self._to_task_info(container, agent_id, replica)
 
     async def stop_replica(self, task: TaskInfo) -> bool:
-        try:
-            c = self._client.containers.get(task.task_id)
-        except docker.errors.NotFound:
-            return False
-        try:
-            c.stop(timeout=30)
-            c.remove(force=True)
-            logger.info("Stopped replica %s (agent %s)", c.name, task.agent_id)
-            return True
-        except docker.errors.APIError as e:
-            logger.warning("Failed to stop replica %s: %s", task.task_id, e)
-            return False
+        def _do_stop() -> bool:
+            try:
+                c = self._client.containers.get(task.task_id)
+            except docker.errors.NotFound:
+                return False
+            try:
+                c.stop(timeout=5)
+                c.remove(force=True)
+                logger.info("Stopped replica %s (agent %s)", c.name, task.agent_id)
+                return True
+            except docker.errors.APIError as e:
+                logger.warning("Failed to stop replica %s: %s", task.task_id, e)
+                return False
+
+        # Docker SDK calls are blocking; offload so the supervisor event loop
+        # can keep serving other requests (tests notably stack up deletes).
+        return await asyncio.to_thread(_do_stop)
 
     async def scale_to(
         self,
@@ -279,6 +319,9 @@ class DockerBackend:
                 await self.stop_replica(r)
 
         return len(await self.list_replicas(agent_id))
+
+    async def purge_agent_storage(self, agent_id: str) -> None:
+        await asyncio.to_thread(self._purge_agent_subpath, agent_id)
 
     async def stop_all_replicas(self, agent_id: str) -> int:
         replicas = await self.list_replicas(agent_id)

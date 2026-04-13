@@ -146,7 +146,8 @@ services:
       LITELLM_API_KEY: ${LITELLM_API_KEY:-sk-aviary-dev}
       AGENT_PRIMARY_NETWORK: aviary-agent-default
       SCALING_CHECK_INTERVAL: "5"
-      IDLE_CLEANUP_INTERVAL: "30"
+      IDLE_CLEANUP_INTERVAL: "10"
+      AGENT_IDLE_TIMEOUT: "20"
     depends_on:
       db-migrate:
         condition: service_completed_successfully

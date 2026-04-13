@@ -38,9 +38,7 @@ async def scaling_loop(backend: RuntimeBackend) -> None:
 async def _check_and_scale(backend: RuntimeBackend) -> None:
     async with async_session() as db:
         result = await db.execute(
-            select(Agent)
-            .where(Agent.status == "active")
-            .options(selectinload(Agent.policy)),
+            select(Agent).options(selectinload(Agent.policy)),
         )
         agents = result.scalars().all()
 

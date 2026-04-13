@@ -48,10 +48,21 @@ async def register_agent(agent_id: str, request: Request):
 
 
 @router.delete("/agents/{agent_id}")
-async def delete_agent(agent_id: str, request: Request):
+async def delete_agent(
+    agent_id: str,
+    request: Request,
+    purge: bool = Query(default=False, description="Also purge agent workspace storage"),
+):
     backend = _get_backend(request)
     stopped = await backend.stop_all_replicas(agent_id)
-    return {"status": "deleted", "agent_id": agent_id, "replicas_stopped": stopped}
+    if purge:
+        await backend.purge_agent_storage(agent_id)
+    return {
+        "status": "deleted",
+        "agent_id": agent_id,
+        "replicas_stopped": stopped,
+        "purged": purge,
+    }
 
 
 @router.post("/agents/{agent_id}/run")

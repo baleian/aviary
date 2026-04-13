@@ -16,7 +16,7 @@ The codebase is being rewritten from scratch. v1 used K3s-in-Docker + per-agent 
 
 ### Phase 2 — in progress
 - **LLM gateway (DONE)** — LiteLLM on `aviary-agent-default` + `platform` networks; runtime → `http://litellm:4000` (Anthropic `/v1/messages` passthrough). LiteLLM config in [config/litellm/config.yaml](config/litellm/config.yaml). Local model backend is developer-specific (llama-swap + llama-server on host, scripts in [scripts/llama-swap/](scripts/llama-swap/)); in prod LiteLLM is an external service reached via SG allowlist.
-- **API server (MVP DONE)** — [api/](api/) FastAPI service (`:8000`): OIDC auth (Keycloak PKCE), user/agent/session CRUD, WebSocket chat streaming via supervisor SSE → Redis Pub/Sub + list-buffered replay. Owner-only authorization (no ACL yet — RBAC redesign deferred). Deferred from v1: A2A, ACL/teams, MCP catalog, credentials/Vault, workflows, search, uploads.
+- **API server (MVP DONE)** — [api/](api/) FastAPI service (`:8000`): OIDC auth (Keycloak PKCE), user/agent/session CRUD, WebSocket chat streaming via supervisor SSE → Redis Pub/Sub + list-buffered replay. Owner-only authorization (no ACL yet — RBAC redesign deferred). **Lazy spawn**: agent create only prepares storage; session create triggers `/run` (prewarm); WS message falls back to `/run` as a re-spawn safety net. **Soft-delete lifecycle**: DELETE on an agent with active sessions flips `status=deleted` and keeps replicas serving orphan sessions (detail still viewable, new sessions blocked); the last session removal cascades to hard-delete (DB row, policy, replicas, agent workspace subpath). Deferred from v1: A2A, ACL/teams, MCP catalog, credentials/Vault, workflows, search, uploads.
 - Web frontend reconnect
 - RBAC redesign (proper role/permission model replacing v1's agent-owner/user/viewer)
 - MCP gateway reintroduction
@@ -96,9 +96,9 @@ Policy changes are picked up by the next `create_replica` (via `/run`, scale-up,
 
 Containers named `aviary-agent-{agent_id}-{replica_idx}`. Labels: `aviary.agent-id`, `aviary.replica`, `aviary.managed=true`, `aviary.role=agent-runtime`.
 
-- **Scaling** ([scaling.py](agent-supervisor/app/services/scaling.py), ported from v1): every `SCALING_CHECK_INTERVAL` (5s dev / 30s default), compute `sessions_per_replica = sum(sessions_active) / replicas`. Above `sessions_per_task_scale_up` (default 3) → +1 replica (up to `policies.max_tasks`). Below `sessions_per_task_scale_down` (default 1) AND no streaming → −1 (down to `policies.min_tasks`).
+- **Scaling** ([scaling.py](agent-supervisor/app/services/scaling.py), ported from v1): every `SCALING_CHECK_INTERVAL` (5s dev / 30s default), compute `sessions_per_replica = sum(sessions_active) / replicas`. Above `sessions_per_task_scale_up` (default 3) → +1 replica (up to `policies.max_tasks`). Below `sessions_per_task_scale_down` (default 1) AND no streaming → −1, but never below `policies.min_tasks`. Soft-deleted agents are included so orphan sessions keep scaling normally.
 - **LB** ([docker.py `pick_replica`](agent-supervisor/app/backends/docker.py)): SHA256 hash of `session_id` anchors to a replica; if at capacity, walks the ring for the next available. Session stickiness prevents concurrent JSONL writes to the same session's `.claude/{session_id}/` state; shared storage means any replica can pick up if the primary is gone.
-- **Idle cleanup** ([cleanup.py](agent-supervisor/app/services/cleanup.py)): every `IDLE_CLEANUP_INTERVAL` (30s dev / 300s default), agents whose `policies.last_activity_at` is older than `AGENT_IDLE_TIMEOUT` (7 days) get `stop_all_replicas` — volumes retained, containers go away. Next message triggers re-creation.
+- **Idle cleanup / zero-scale** ([cleanup.py](agent-supervisor/app/services/cleanup.py)): the only path that takes replicas **below `min_tasks`**. Every `IDLE_CLEANUP_INTERVAL` (10s dev / 300s default), any agent (active or soft-deleted) whose `policies.last_activity_at` is older than `AGENT_IDLE_TIMEOUT` (20s dev / 7 days default) gets `stop_all_replicas` — volumes retained, next session-create `/run` re-spawns. Keeping this separate from the scaling loop means scale-down during active conversations is UX-neutral (floor stays at `min_tasks=1`).
 
 ## Runtime: single image, per-request mock dispatch
 
@@ -130,6 +130,7 @@ Changes to bwrap setup apply to both paths.
 |--------|------|-------------|
 | POST | `/agents/{id}/register` | Ensure storage (volumes + subpath) |
 | DELETE | `/agents/{id}` | `stop_all_replicas` (volumes retained) |
+| DELETE | `/agents/{id}?purge=true` | stop replicas **and** remove the agent's workspace subpath from shared storage (used by API hard-delete) |
 | POST | `/agents/{id}/run` | `scale_to(min_replicas)` |
 | GET | `/agents/{id}/replicas` | List all replicas |
 | GET | `/agents/{id}/ready` | Readiness summary |
@@ -187,8 +188,42 @@ Test suite ([test-client/test_e2e.py](test-client/test_e2e.py)):
 9. `test_persist_after_container_removal` — DELETE agent → re-run → state intact
 10. `test_scale_up_under_load` — 5 concurrent sessions trigger replica scale-up then scale-down
 11. `test_context_across_scaling` — session files survive scale-up/scale-down cycles
+12. `test_rapid_agent_churn_keeps_supervisor_responsive` — concurrent agent deletes must not stall the supervisor event loop (regression: sync Docker SDK offloaded via `asyncio.to_thread`)
 
 Full suite ~90s (bounded by scaling interval + scenario sleep durations).
+
+### Phase 2 API suite ([test-client/test_api.py](test-client/test_api.py))
+
+```bash
+docker compose up -d
+uv run python test-client/test_api.py
+```
+
+Obtains a real JWT from Keycloak via direct-grant (dev realm, `aviary-web`
+client with `directAccessGrantsEnabled: true`), then plants a session
+entry directly into Redis using the API's session format. All subsequent
+calls flow through the API normally.
+
+Mock runtime: each WS message body carries optional `mock_scenario`
+that the API forwards verbatim as `agent_config.mock_scenario` — purely
+request-scoped so agent definitions stay clean.
+
+Scenarios covered:
+1. `test_auth_me` — cookie → `/api/auth/me` resolves the dev user
+2. `test_agent_crud` — create/list/get/patch/delete
+3. `test_agent_create_does_not_spawn` — agent creation alone must not start any replica
+4. `test_session_create_triggers_spawn` — "New Session" prewarms a replica via `/run`
+5. `test_ws_message_round_trip` — user message → chunks → done + persisted to DB
+6. `test_ws_reconnect_replay` — disconnect mid-stream → reconnect replays buffered events
+7. `test_ws_cancel` — `{type: cancel}` → cancelled event
+8. `test_multi_session_isolation` — two concurrent sessions on one agent produce isolated responses
+9. `test_session_delete_blocks_reaccess` — DELETE session → 404 on re-GET + WS rejected
+10. `test_delete_one_session_keeps_other_working` — partial session delete leaves siblings functional
+11. `test_agent_delete_with_no_sessions_hard_deletes` — DELETE on an agent with zero sessions skips soft-delete
+12. `test_agent_soft_delete_keeps_orphan_sessions_working` — soft-deleted agent: detail viewable, new sessions blocked, orphan sessions chat
+13. `test_last_session_delete_hard_deletes_soft_deleted_agent` — cascade: final session delete hard-deletes agent + replicas + workspace
+14. `test_idle_agent_zero_scales` — idle_cleanup drops replicas to 0 once `last_activity_at` exceeds `AGENT_IDLE_TIMEOUT`
+15. `test_unauthorized_ws` — missing/wrong origin or cookie rejected at handshake
 
 ## Key env vars
 

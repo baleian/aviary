@@ -43,7 +43,7 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
             await websocket.close(code=4003, reason=str(e))
             return
         agent = await agent_svc.get(db, session.agent_id)
-        if not agent or agent.status == "deleted":
+        if agent is None:
             await websocket.close(code=4004, reason="Agent not found")
             return
         agent_id = str(agent.id)
@@ -97,6 +97,7 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
                     agent_id=agent_id,
                     content=content,
                     user_message_id=user_message_id,
+                    mock_scenario=data.get("mock_scenario"),
                 ))
 
         finally:

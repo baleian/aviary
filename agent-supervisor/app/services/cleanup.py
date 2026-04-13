@@ -40,9 +40,7 @@ async def _idle_cleanup(backend: RuntimeBackend) -> int:
 
     async with async_session() as db:
         result = await db.execute(
-            select(Agent)
-            .where(Agent.status == "active")
-            .options(selectinload(Agent.policy)),
+            select(Agent).options(selectinload(Agent.policy)),
         )
         agents = result.scalars().all()
 

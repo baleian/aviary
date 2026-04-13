@@ -37,7 +37,7 @@ async def get_agent(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    agent = await svc.require_owner(db, agent_id, user)
+    agent = await svc.require_owner_viewable(db, agent_id, user)
     return AgentResponse.model_validate(agent)
 
 
@@ -48,7 +48,7 @@ async def update_agent(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    agent = await svc.require_owner(db, agent_id, user)
+    agent = await svc.require_owner_active(db, agent_id, user)
     agent = await svc.update(db, agent, body)
     return AgentResponse.model_validate(agent)
 
@@ -59,5 +59,5 @@ async def delete_agent(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    agent = await svc.require_owner(db, agent_id, user)
+    agent = await svc.require_owner_active(db, agent_id, user)
     await svc.soft_delete(db, agent)

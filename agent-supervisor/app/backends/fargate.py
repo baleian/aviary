@@ -47,6 +47,9 @@ class FargateBackend:
     async def stop_all_replicas(self, agent_id: str) -> int:
         raise NotImplementedError
 
+    async def purge_agent_storage(self, agent_id: str) -> None:
+        raise NotImplementedError
+
     async def wait_for_ready(self, task: TaskInfo, timeout: int = 90) -> bool:
         raise NotImplementedError
 

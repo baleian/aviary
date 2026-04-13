@@ -26,7 +26,7 @@ async def list_sessions(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await agent_svc.require_owner(db, agent_id, user)
+    await agent_svc.require_owner_viewable(db, agent_id, user)
     items = await svc.list_for_agent(db, agent_id, user)
     return SessionListResponse(items=[SessionResponse.model_validate(s) for s in items])
 
@@ -42,7 +42,7 @@ async def create_session(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    agent = await agent_svc.require_owner(db, agent_id, user)
+    agent = await agent_svc.require_owner_active(db, agent_id, user)
     session = await svc.create(db, agent.id, user, body.title)
     return SessionResponse.model_validate(session)
 
