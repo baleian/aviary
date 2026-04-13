@@ -15,8 +15,9 @@ The codebase is being rewritten from scratch. v1 used K3s-in-Docker + per-agent 
 - End-to-end test suite covering streaming, isolation, resume, A2A, abort, scaling, mutex, persistence, network policy
 
 ### Phase 2 — in progress
-- **LLM gateway (DONE)** — LiteLLM on `aviary-agent-default` + `platform` networks; runtime → `http://litellm:4000` (Anthropic `/v1/messages` passthrough). LiteLLM config in [config/litellm/config.yaml](config/litellm/config.yaml). Local model backend is developer-specific (llama-swap + llama-server on host, scripts in [scripts/llama-swap/](scripts/llama-swap/)); in prod LiteLLM is an external service reached via SG allowlist.
-- **API server (MVP DONE)** — [api/](api/) FastAPI service (`:8000`): OIDC auth (Keycloak PKCE), user/agent/session CRUD, WebSocket chat streaming via supervisor SSE → Redis Pub/Sub + list-buffered replay. Owner-only authorization (no ACL yet — RBAC redesign deferred). **Lazy spawn**: agent create only prepares storage; session create triggers `/run` (prewarm); WS message falls back to `/run` as a re-spawn safety net. **Soft-delete lifecycle**: DELETE on an agent with active sessions flips `status=deleted` and keeps replicas serving orphan sessions (detail still viewable, new sessions blocked); the last session removal cascades to hard-delete (DB row, policy, replicas, agent workspace subpath). Deferred from v1: A2A, ACL/teams, MCP catalog, credentials/Vault, workflows, search, uploads.
+- **LLM gateway (DONE)** — LiteLLM on `aviary-agent-default` + `platform` networks; runtime → `http://litellm:4000` (Anthropic `/v1/messages` passthrough). LiteLLM config in [config/litellm/config.yaml](config/litellm/config.yaml). Local model backend is developer-specific (llama-swap + llama-server on host, scripts in [scripts/llama-swap/](scripts/llama-swap/)); in prod LiteLLM is an external service reached via SG allowlist. Provider routing for Anthropic/Bedrock goes via Portkey; local llama-swap uses the openai-compat provider directly. The runtime never references "Anthropic" externally — it only knows `LLM_GATEWAY_URL` / `LLM_GATEWAY_API_KEY`, mapped internally to `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` for claude-agent-sdk.
+- **API server (MVP DONE)** — [api/](api/) FastAPI service (`:8000`): OIDC auth (Keycloak PKCE), user/agent/session CRUD, WebSocket chat streaming via supervisor SSE → Redis Pub/Sub + list-buffered replay. Owner-only authorization (no ACL yet — RBAC redesign deferred). **Lazy spawn**: agent create only prepares storage; session create triggers `/run` (prewarm); WS message falls back to `/run` as a re-spawn safety net. **Soft-delete lifecycle**: DELETE on an agent with active sessions flips `status=deleted` and keeps replicas serving orphan sessions (detail still viewable, new sessions blocked); the last session removal cascades to hard-delete (DB row, policy, replicas, agent workspace subpath). Deferred from v1: A2A, ACL/teams, MCP catalog, workflows, search, uploads.
+- **Per-user credentials (DONE)** — Vault (KV v2, file backend) holds per-user secrets at `secret/aviary/credentials/{sub}/{name}`. API exposes `/api/users/me/credentials` (list/put/delete; values write-only). LiteLLM CustomLogger hook ([config/litellm/patches/aviary_user_api_key.py](config/litellm/patches/aviary_user_api_key.py)) intercepts `anthropic/`-prefixed model requests, validates the `X-Aviary-User-Token` header against Keycloak JWKS, looks up the user's `anthropic-api-key` in Vault, and overrides `data["api_key"]` for the upstream call. Bedrock-via-Portkey requests are skipped (use AWS creds). `local/` prefix bypasses the hook entirely. The runtime injects the JWT via `ANTHROPIC_CUSTOM_HEADERS`; the API forwards the user's access token through the supervisor body's top-level `user: {external_id, token}` field (separate from `agent_config` — the user identity is request-scoped, not agent-scoped).
 - Web frontend reconnect
 - RBAC redesign (proper role/permission model replacing v1's agent-owner/user/viewer)
 - MCP gateway reintroduction
@@ -49,12 +50,14 @@ Docker Compose (`docker-compose.yml`) runs:
 - **PostgreSQL** (`:5432`) — agents, policies, sessions, messages, users
 - **Redis** (`:6379`) — Pub/Sub (realtime streaming) + list-buffer replay + auth session store
 - **Keycloak** (`:8180` host → `:8080` container) — OIDC provider; realm `aviary` auto-imported from [config/keycloak/aviary-realm.json](config/keycloak/aviary-realm.json); dev user `dev/dev`
+- **Vault** (`:8200`) — KV v2 (file backend) for per-user credentials; bootstrapped by `vault-init` (one-shot) on first boot, dev token `dev-root-token`
+- **Portkey** (`:8787` internal) — provider gateway used by LiteLLM for Anthropic / Bedrock routing
 - **API** (`:8000`) — FastAPI user-facing REST + WebSocket
 - **Agent Supervisor** (`:9000`) — container lifecycle + internal API
-- **LiteLLM** (`:4000`) — LLM gateway, attached to `platform` and `aviary-agent-default`
+- **LiteLLM** (`:4000`) — LLM gateway, attached to `platform` and `aviary-agent-default`; loads the per-user API key hook from [config/litellm/patches/](config/litellm/patches/)
 - **db-migrate** — Alembic migrations (one-shot)
 
-Not yet in stack: Vault, Portkey, MCP gateway, web, admin, Temporal.
+Not yet in stack: MCP gateway, web, admin, Temporal.
 
 ## RuntimeBackend abstraction
 
@@ -110,7 +113,7 @@ function pickProcessMessage(agentConfig) {
 }
 ```
 
-- **Real path** ([agent.ts](runtime/src/agent.ts)) — invokes claude-agent-sdk with LiteLLM routing via `ANTHROPIC_BASE_URL` env.
+- **Real path** ([agent.ts](runtime/src/agent.ts)) — invokes claude-agent-sdk with `LLM_GATEWAY_URL`/`LLM_GATEWAY_API_KEY` mapped internally to `ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`. When the supervisor body carries `user.token`, runtime adds `ANTHROPIC_CUSTOM_HEADERS: X-Aviary-User-Token: <jwt>` so LiteLLM's hook can resolve the per-user Anthropic key from Vault.
 - **Mock path** ([mock-agent.ts](runtime/src/mock-agent.ts)) — executes scripted steps (`chunk`, `thinking`, `tool_use`, `write`, `read`, `ls`, `exec`, `sleep`, `error`). File I/O steps go through the **same** bwrap sandbox as prod, so session isolation, resume, and A2A are tested end-to-end.
 
 No `RUNTIME_MODE` env var, no separate image, no docker-compose override. Tests just include `agent_config.mock_scenario` in the message body.
@@ -257,15 +260,22 @@ Scenarios covered:
 | api | `OIDC_CLIENT_ID` | `aviary-web` | Public client in Keycloak realm |
 | api | `CORS_ORIGINS` | `["http://localhost:3000"]` | SPA origins (JSON array) |
 | api | `COOKIE_SECURE` | `false` | Set true behind HTTPS |
+| api | `VAULT_ADDR` | `http://vault:8200` | Vault endpoint for per-user credentials |
+| api | `VAULT_TOKEN` | `dev-root-token` | Bootstrapped by `vault-init` |
+| litellm | `VAULT_ADDR` / `VAULT_TOKEN` | same as api | Hook reads per-user keys from here |
+| litellm | `OIDC_ISSUER` / `OIDC_INTERNAL_ISSUER` | same as api | Hook validates `X-Aviary-User-Token` against this realm |
 
 ## DB schema (Phase 1, simplified from v1)
 
-- `agents` — id, name, slug, owner_id, instruction, model_config (JSONB), tools (JSONB), status, policy_id
-- `policies` — id, min_tasks, max_tasks, resource_limits (JSONB), policy_rules (JSONB — includes `network.extra_networks`, `network.subnets`), last_activity_at
+- `agents` — id, name, slug, owner_id, description, instruction, model_config (JSONB; typed as `{backend, model, max_output_tokens?}`), tools (JSONB array of tool names), status
+- `policies` — id, agent_id (FK, ON DELETE CASCADE, unique), min_tasks, max_tasks, resource_limits (JSONB), policy_rules (JSONB — includes `network.extra_networks`, `network.subnets`), last_activity_at
 - `sessions` — id, agent_id, created_by, title, status, last_message_at
 - `messages` — id, session_id, sender_type, sender_id, content, metadata (JSONB)
+- `users` — id, external_id (OIDC sub), email, display_name
 
-Phase 2 will add back users/teams, ACL, workflows, MCP tool catalog from v1.
+Per-user secrets live in **Vault**, not Postgres: `secret/aviary/credentials/{sub}/{name}`.
+
+Phase 2 will add back teams, ACL, workflows, MCP tool catalog from v1.
 
 ## Project layout
 
@@ -275,10 +285,11 @@ agent-supervisor/     # Internal supervisor (container lifecycle, SSE relay)
 runtime/              # Runtime container (claude-agent-sdk + mock + bwrap)
 shared/               # SQLAlchemy models, OIDC validator, redis/http helpers
 tests/                # Test suites — `tests/e2e/` for whole-stack tests; `tests/unit/` reserved for future
-config/litellm/       # LiteLLM gateway config
+config/litellm/       # LiteLLM gateway config + patches/ (per-user API key hook loaded via .pth)
 config/keycloak/      # Keycloak realm auto-import (dev)
-scripts/              # setup-dev.sh, init-db.sql, llama-swap/ (dev-only host-run LLM)
-docker-compose.yml    # postgres, redis, db-migrate, keycloak, api, agent-supervisor, litellm
+config/vault/         # Vault HCL config (file backend)
+scripts/              # setup-dev.sh, init-db.sql, vault-init.sh, llama-swap/ (dev-only host-run LLM)
+docker-compose.yml    # postgres, redis, db-migrate, keycloak, vault(+init), portkey, litellm, api, agent-supervisor
 v1/                   # Archived v1 codebase (reference only)
 ```
 
@@ -286,8 +297,8 @@ v1/                   # Archived v1 codebase (reference only)
 
 [api/app/](api/app/) is layered to keep future features additive:
 
-- **[routers/](api/app/routers/)** — thin HTTP/WS handlers. No business logic.
-- **[services/](api/app/services/)** — one module per concern: `agents`, `sessions`, `supervisor` (typed client), `stream/` (package).
+- **[routers/](api/app/routers/)** — thin HTTP/WS handlers. No business logic. Includes `credentials` (per-user Vault-backed secret CRUD).
+- **[services/](api/app/services/)** — one module per concern: `agents`, `sessions`, `supervisor` (typed client), `vault_service` (lazy singleton VaultClient), `stream/` (package).
 - **[services/stream/](api/app/services/stream/)** — all authoritative state lives in Redis so any API replica can service any stream:
   - `events.py` — wire constants.
   - `buffer.py` — Pub/Sub + list-based replay buffer + a control channel for cross-pod signals, keyed by an opaque `stream_id` (currently `== session_id`; future workflow runs can use composite ids without changes here).
