@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
 
     inference_router_url: str = ""
+    litellm_api_key: str = ""
 
     scaling_check_interval: int = 30
     sessions_per_task_scale_up: int = 3

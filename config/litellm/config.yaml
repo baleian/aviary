@@ -1,0 +1,18 @@
+model_list:
+  - model_name: "gemma-4-26b"
+    litellm_params:
+      model: "anthropic/gemma-4-26b"
+      api_base: "http://host.docker.internal:9292"
+      api_key: "none"
+    model_info:
+      max_input_tokens: 65536
+      max_output_tokens: 8192
+
+general_settings:
+  master_key: "os.environ/LITELLM_MASTER_KEY"
+
+litellm_settings:
+  drop_params: true
+  request_timeout: 600
+  num_retries: 0
+

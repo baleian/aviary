@@ -42,6 +42,26 @@ services:
       postgres:
         condition: service_healthy
 
+  # -- LLM Gateway (LiteLLM → host llama-swap → host llama-server) --
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    ports:
+      - "4000:4000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config/litellm/config.yaml:/app/config.yaml:ro
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-aviary-dev}
+    networks: [platform, agent]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:4000/health/liveliness || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
   # -- Agent Supervisor --
   agent-supervisor:
     build:
@@ -63,7 +83,8 @@ services:
       DATABASE_URL: postgresql+asyncpg://aviary:aviary@postgres:5432/aviary
       REDIS_URL: redis://redis:6379/0
       DOCKER_SOCKET: /var/run/docker.sock
-      INFERENCE_ROUTER_URL: ${INFERENCE_ROUTER_URL:-}
+      INFERENCE_ROUTER_URL: ${INFERENCE_ROUTER_URL:-http://litellm:4000}
+      LITELLM_API_KEY: ${LITELLM_API_KEY:-sk-aviary-dev}
       AGENT_PRIMARY_NETWORK: aviary-agent-default
       SCALING_CHECK_INTERVAL: "5"
       IDLE_CLEANUP_INTERVAL: "30"
