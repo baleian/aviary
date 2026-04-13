@@ -281,11 +281,21 @@ v1/                   # Archived v1 codebase (reference only)
 
 - **[routers/](api/app/routers/)** — thin HTTP/WS handlers. No business logic.
 - **[services/](api/app/services/)** — one module per concern: `agents`, `sessions`, `supervisor` (typed client), `stream/` (package).
-- **[services/stream/](api/app/services/stream/)** — `events.py` (wire constants), `buffer.py` (Redis Pub/Sub + list-based replay buffer), `manager.py` (background streaming task + user-message rollback), `relay.py` (WebSocket ↔ Pub/Sub forwarding + reconnect replay).
+- **[services/stream/](api/app/services/stream/)** — all authoritative state lives in Redis so any API replica can service any stream:
+  - `events.py` — wire constants.
+  - `buffer.py` — Pub/Sub + list-based replay buffer + a control channel for cross-pod signals, keyed by an opaque `stream_id` (currently `== session_id`; future workflow runs can use composite ids without changes here).
+  - `lock.py` — exclusive per-`stream_id` lease with a fencing token (CAS Lua for refresh/release). TTL-bounded so a crashed holder's lease expires automatically.
+  - `manager.py` — cancel-and-replace start (publishes `cancel` on the control channel, waits up to 3 s for the previous owner to release, then acquires the lease), background `_run` that heartbeats the lease every 5 s while streaming and always releases it in `finally`.
+  - `relay.py` — WebSocket ↔ Pub/Sub forwarding + reconnect replay (reads buffer state via Redis, no pod-local coupling).
 - **[auth/](api/app/auth/)** — `oidc.py` (singleton validator), `session_store.py` (Redis-backed sessions with auto-refresh), `dependencies.py` (single entry point: `get_current_user` for REST, `authenticate_ws` for WebSocket).
 - **[schemas/](api/app/schemas/)** — Pydantic request/response contracts, isolated from SQLAlchemy models.
 
-Design choices vs v1: (1) typed supervisor client instead of scattered httpx calls, (2) single auth dependency covering REST and WS instead of duplicating cookie parsing, (3) stream package split into producer (`manager`) + consumer (`relay`) + transport (`buffer`) so each can be replaced in isolation, (4) MVP-first feature set so the surface area stays compact.
+Design choices vs v1: (1) typed supervisor client instead of scattered httpx calls, (2) single auth dependency covering REST and WS instead of duplicating cookie parsing, (3) stream package split into producer (`manager`) + consumer (`relay`) + transport (`buffer`) so each can be replaced in isolation, (4) **no process-local streaming state** — the API is horizontally scalable because the lease, control channel, and replay buffer all live in Redis; cross-pod cancel/preempt/reconnect work uniformly regardless of which replica serves each request.
+
+Pod-identity helper: [api/app/identity.py](api/app/identity.py) returns a
+`hostname-{uuid8}` stable per process boot. Works identically on Docker
+(container short id) and ECS/Fargate (task DNS), so lock holder-ids stay
+meaningful after backend swap without any business-logic changes.
 
 ## Commit & workflow conventions
 

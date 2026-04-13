@@ -330,15 +330,17 @@ async def test_scale_up_under_load(ctx: Ctx, agent_id: str) -> None:
         for t in tasks:
             await t
 
-    # After load drops, scale-down should eventually return to min_tasks (1).
+    # After load drops, scaling returns to min_tasks (1). Idle cleanup may
+    # then take it to 0 if activity stays quiet past AGENT_IDLE_TIMEOUT —
+    # both outcomes are correct; we just assert we dropped below the peak.
     end = await wait_until(
         lambda: replica_count(ctx.client, agent_id),
         lambda n: n <= 1,
         timeout=40,
         interval=2.0,
-        desc="scale back down to 1",
+        desc="scale back down to ≤1",
     )
-    require(end == 1, f"scaled back down to {end} replica(s)")
+    require(end <= 1, f"scaled back down to {end} replica(s)")
 
 
 async def test_context_across_scaling(ctx: Ctx, agent_id: str) -> None:

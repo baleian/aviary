@@ -38,11 +38,7 @@ async def require_owner(db: AsyncSession, session_id: uuid.UUID, user: User) -> 
 
 
 async def create(db: AsyncSession, agent_id: uuid.UUID, user: User, title: str | None) -> Session:
-    """Create a session and eagerly start provisioning the runtime.
-
-    We call supervisor `/run` here (not on first message) so a user clicking
-    "New Session" gets a warm container ready by the time they start typing.
-    """
+    """Create a session and eagerly start provisioning the runtime."""
     from app.services.supervisor import supervisor_client
 
     session = Session(agent_id=agent_id, created_by=str(user.id), title=title)
@@ -64,7 +60,7 @@ async def delete(db: AsyncSession, session: Session) -> None:
     session_id = session.id
     session_id_str = str(session_id)
 
-    if is_streaming(session_id_str):
+    if await is_streaming(session_id_str):
         await cancel_stream(session_id_str, str(agent_id))
 
     await supervisor_client.cleanup_session(str(agent_id), session_id_str)

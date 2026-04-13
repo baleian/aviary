@@ -20,9 +20,7 @@ from app.deps import db_factory
 from app.services import agents as agent_svc
 from app.services import sessions as session_svc
 from app.services.stream import buffer, events
-from app.services.stream.manager import StreamRequest
-from app.services.stream.manager import start as start_stream
-from app.services.stream.manager import cancel as cancel_stream
+from app.services.stream.manager import StreamRequest, cancel as cancel_stream, start as start_stream
 from app.services.stream.relay import replay, run_relay
 from app.services.supervisor import supervisor_client
 
@@ -92,13 +90,21 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
                     "content": content,
                 })
 
-                await start_stream(StreamRequest(
-                    session_id=session_id_str,
-                    agent_id=agent_id,
-                    content=content,
-                    user_message_id=user_message_id,
-                    mock_scenario=data.get("mock_scenario"),
-                ))
+                try:
+                    await start_stream(StreamRequest(
+                        stream_id=session_id_str,
+                        agent_id=agent_id,
+                        content=content,
+                        user_message_id=user_message_id,
+                        mock_scenario=data.get("mock_scenario"),
+                    ))
+                except Exception as exc:
+                    # stream.busy and other start-path failures: surface to
+                    # the client without tearing down the socket.
+                    await websocket.send_json({
+                        "type": events.ERROR,
+                        "message": str(exc.detail if hasattr(exc, "detail") else exc),
+                    })
 
         finally:
             relay_task.cancel()

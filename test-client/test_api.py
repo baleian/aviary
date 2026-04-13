@@ -527,6 +527,124 @@ async def test_idle_agent_zero_scales(sid: str) -> None:
             await delete_agent(http, aid)
 
 
+async def test_concurrent_start_preempts(sid: str) -> None:
+    """A second message that arrives while a stream is in flight must
+    preempt the first (cancel-and-replace). The first stream's
+    `cancelled` event surfaces; the second runs cleanly to `done`."""
+    async with _api_client(sid) as http:
+        agent = await create_agent(http, "preempt")
+        aid = agent["id"]
+        try:
+            session = await create_session(http, aid)
+            long_scenario = [
+                {"type": "chunk", "content": "first"},
+                {"type": "sleep", "ms": 4000},
+                {"type": "chunk", "content": "never-arrives"},
+            ]
+
+            async with await ws_connect(session["id"], sid) as ws:
+                await ws_skip_status(ws)
+                await ws.send(json.dumps(mock_message("one", long_scenario)))
+                await ws_recv_until(ws, lambda e: e.get("type") == "chunk")
+
+                # Second message arrives while stream 1 is mid-sleep.
+                await ws.send(json.dumps(mock_message("two", [
+                    {"type": "chunk", "content": "second-ok"},
+                ])))
+
+                types_seen: list[str] = []
+                second_done = False
+                deadline = time.monotonic() + 15
+                while time.monotonic() < deadline and not second_done:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=deadline - time.monotonic())
+                    e = json.loads(raw)
+                    types_seen.append(e.get("type"))
+                    if e.get("type") == "chunk" and e.get("content") == "second-ok":
+                        pass
+                    if e.get("type") == "done":
+                        second_done = True
+                assert second_done, f"second stream never reached done: {types_seen}"
+                assert "cancelled" in types_seen, f"first stream's cancellation not reported: {types_seen}"
+        finally:
+            await delete_agent(http, aid)
+
+
+async def test_supervisor_abort_releases_lease(sid: str) -> None:
+    """Calling supervisor `/abort` directly must unblock the owner pod's
+    stream so the Redis lease is released and a follow-up message can start."""
+    async with _api_client(sid) as http:
+        agent = await create_agent(http, "abort-release")
+        aid = agent["id"]
+        try:
+            session = await create_session(http, aid)
+            slow = [
+                {"type": "chunk", "content": "slow"},
+                {"type": "sleep", "ms": 5000},
+                {"type": "chunk", "content": "never"},
+            ]
+            async with await ws_connect(session["id"], sid) as ws:
+                await ws_skip_status(ws)
+                await ws.send(json.dumps(mock_message("hi", slow)))
+                await ws_recv_until(ws, lambda e: e.get("type") == "chunk")
+
+                # External abort — simulates cancel routed to a different pod.
+                async with httpx.AsyncClient() as c:
+                    r = await c.post(
+                        f"{SUPERVISOR_URL}/v1/agents/{aid}/sessions/{session['id']}/abort"
+                    )
+                    assert r.status_code == 200
+
+                # Lease is released promptly, so a new message starts without
+                # hitting stream.busy.
+                await asyncio.sleep(0.3)
+                await ws.send(json.dumps(mock_message("second", [
+                    {"type": "chunk", "content": "fresh"},
+                ])))
+                events = await ws_recv_until(
+                    ws, lambda e: e.get("type") == "chunk" and e.get("content") == "fresh",
+                    timeout=15,
+                )
+                assert any(
+                    e.get("type") == "chunk" and e.get("content") == "fresh"
+                    for e in events
+                )
+        finally:
+            await delete_agent(http, aid)
+
+
+async def test_stale_lease_auto_recovers(sid: str) -> None:
+    """A lease left behind by a dead pod must not block new streams.
+    We plant one directly into Redis with a short TTL, then send a message
+    after the TTL elapses; preempt logic should then succeed."""
+    redis = aioredis.from_url(REDIS_URL, decode_responses=True)
+    async with _api_client(sid) as http:
+        agent = await create_agent(http, "stale-lease")
+        aid = agent["id"]
+        try:
+            session = await create_session(http, aid)
+            sid_str = session["id"]
+
+            # Simulate a ghost owner: lease key with unknown holder, 2s TTL.
+            ghost = {"holder_id": "ghost-pod-dead", "acquired_at": time.time()}
+            await redis.set(f"stream:{sid_str}:owner", json.dumps(ghost), ex=2)
+            await redis.set(f"stream:{sid_str}:status", "streaming", ex=600)
+
+            # Wait past TTL so preempt sees an empty lease.
+            await asyncio.sleep(2.5)
+
+            async with await ws_connect(sid_str, sid) as ws:
+                await ws_skip_status(ws)
+                await ws.send(json.dumps(mock_message("fresh", [
+                    {"type": "chunk", "content": "recovered"},
+                ])))
+                events = await ws_recv_until(ws, lambda e: e.get("type") == "done", timeout=15)
+                chunks = [e["content"] for e in events if e.get("type") == "chunk"]
+                assert "recovered" in chunks, f"expected fresh stream, got {events}"
+        finally:
+            await delete_agent(http, aid)
+            await redis.aclose()
+
+
 async def test_unauthorized_ws(sid: str) -> None:
     """Missing cookie / wrong origin must be rejected at the handshake."""
     async with _api_client(sid) as http:
@@ -597,6 +715,9 @@ TESTS = [
     test_agent_soft_delete_keeps_orphan_sessions_working,
     test_last_session_delete_hard_deletes_soft_deleted_agent,
     test_idle_agent_zero_scales,
+    test_concurrent_start_preempts,
+    test_supervisor_abort_releases_lease,
+    test_stale_lease_auto_recovers,
     test_unauthorized_ws,
 ]
 

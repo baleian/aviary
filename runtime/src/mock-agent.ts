@@ -155,7 +155,12 @@ export async function* processMessageMock(
       }
 
       case "sleep":
-        await new Promise((r) => setTimeout(r, step.ms));
+        await new Promise<void>((resolve) => {
+          if (abortController?.signal.aborted) return resolve();
+          const t = setTimeout(resolve, step.ms);
+          const onAbort = () => { clearTimeout(t); resolve(); };
+          abortController?.signal.addEventListener("abort", onAbort, { once: true });
+        });
         break;
 
       case "error":
