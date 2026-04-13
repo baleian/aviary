@@ -1,309 +1,215 @@
 # Aviary
 
-Multi-tenant AI agent platform. Users create/configure agents via Web UI, each running in isolated K8s namespaces with long-running agent Pods powered by claude-agent-sdk.
+Multi-tenant AI agent platform. Users will create/configure agents via Web UI; each agent runs in isolated runtime containers (Docker locally, Fargate in production) driven by claude-agent-sdk.
 
-## Quick Start
+## Rearchitecting status (in progress)
 
-```bash
-./scripts/setup-dev.sh   # First time: builds everything, loads K8s images
-docker compose up -d      # Subsequent: just start services
-```
+The codebase is being rewritten from scratch. v1 used K3s-in-Docker + per-agent namespaces/PVCs/NetworkPolicy; the rewrite replaces that with a `RuntimeBackend` abstraction that runs on plain Docker locally and AWS Fargate in production. **The v1 code is archived at [v1/](v1/) for reference** (also tagged `v1-archive` in git).
 
-Services: Web (`:3000`), API (`:8000`), Admin (`:8001`), Keycloak (`:8080`, admin/admin), Vault (`:8200`), LiteLLM Gateway (`:8090`), MCP Gateway (`:8100`), Agent Supervisor (`:9000`).
-Test accounts: `user1@test.com`, `user2@test.com` (all `password`).
+### Phase 1 — decoupled runtime (DONE)
+- Agent Supervisor with `RuntimeBackend` abstraction ([DockerBackend](agent-supervisor/app/backends/docker.py), [FargateBackend stub](agent-supervisor/app/backends/fargate.py))
+- Multi-replica per agent, consistent-hash load balancing, auto-scaling, idle cleanup
+- Shared-volume storage model (subpath per agent) that maps 1:1 to Fargate + EFS Access Points
+- Runtime with scenario-driven mock mode for integration tests (same image as prod)
+- End-to-end test suite covering streaming, isolation, resume, A2A, abort, scaling, mutex, persistence
+
+### Phase 2 — next up (not yet started)
+- API server rewrite (OIDC, WebSocket streaming from Redis Pub/Sub, agent CRUD, sessions)
+- Web frontend reconnect
+- LLM gateway + MCP gateway reintroduction
+- Temporal for durable workflow execution
+- Fargate backend implementation + Terraform for production deploy
 
 ## Architecture
 
 ```
-Browser → Next.js (:3000) → API rewrite proxy → FastAPI (:8000) → Agent Supervisor (:9000) → Agent Pods
-                                                      ↓
-                                               PostgreSQL / Redis / Vault / Keycloak
+Browser (future) → API (future, Phase 2) → Agent Supervisor (:9000) → Docker/Fargate runtime containers
+                                                  ↓
+                                         PostgreSQL / Redis
 
-Admin Console (:8001) → Agent Supervisor (:9000) → K8s API
-      ↓
-PostgreSQL / Redis
+Supervisor responsibilities:
+  - Agent-centric REST API (register/run/wait/message/abort/cleanup/metrics)
+  - RuntimeBackend: replica lifecycle, consistent-hash LB, scale-to, idle cleanup
+  - SSE proxy from runtime → Redis Pub/Sub (realtime) + Redis Streams (durable)
 
-Platform services (docker compose):
-  LiteLLM Gateway (:8090) → Portkey AI Gateway → Claude API / Ollama / vLLM / Bedrock
-  MCP Gateway (:8100) → Backend MCP Servers (tool proxy with OIDC auth + ACL)
-
-Platform services (K8s, platform namespace):
-  Agent Supervisor (:9000, NodePort 30900) → K8s API (namespace/deployment/pod management)
-  Egress Proxy → per-agent outbound policy enforcement
-
-Agent Pod outbound:
-  LLM calls  → LiteLLM Gateway (host:8090) → Portkey AI Gateway → Claude API / Ollama / vLLM / Bedrock
-  MCP tools  → MCP Gateway (host:8100) → Backend MCP Servers
-  HTTP/HTTPS → Egress Proxy (K8s platform NS, per-agent policy) → External APIs
+Runtime container (agent-runtime):
+  - Express server with multi-session mutex
+  - claude-agent-sdk query() — real LLM path
+  - Mock agent — scenario-driven, same bwrap sandbox as prod (dispatched per-request)
+  - bubblewrap sandbox for session-level filesystem isolation
 ```
 
-### Service Responsibilities
+## Services (Phase 1)
 
-Three backend services with distinct roles:
+Only the runtime execution layer is active. Docker Compose (`docker-compose.yml`) runs:
 
-**API Server (`:8000`)** — User-facing. Agent CRUD (config only), OIDC auth, ACL, sessions, chat. Communicates with the Agent Supervisor via an abstract interface (`agent_supervisor.py`) using only `agent_id` and `session_id`. No infrastructure knowledge — does not read or write policy, namespace, deployment, or scaling fields.
+- **PostgreSQL** (`:5432`) — agents, policies, sessions, messages
+- **Redis** (`:6379`) — Pub/Sub (realtime streaming) + Streams (durable events)
+- **Agent Supervisor** (`:9000`) — container lifecycle + API
+- **db-migrate** — Alembic migrations (one-shot)
 
-**Admin Console (`:8001`)** — Operator-facing. No authentication (local-only). Edits and applies infrastructure configuration: network policies (egress rules), resource allocation, deployment lifecycle (activate/deactivate/restart). Syncs policy changes to K8s (NetworkPolicy) via the supervisor. Egress proxy reads policies directly from DB. Includes a built-in web UI (Jinja2 templates).
+Not in Phase 1: Keycloak, Vault, LiteLLM, Portkey, MCP gateway, web, admin, K3s, egress proxy.
 
-**Agent Supervisor (`:9000`)** — Infrastructure manager. Runs inside K8s. Manages all runtime resources: namespace/deployment/service/PVC lifecycle, auto-scaling based on session load, idle cleanup (scale to zero after inactivity). Has DB access for reading agent config (`min_pods`, `max_pods`) and updating `last_activity_at` on every agent request.
+## RuntimeBackend abstraction
 
-**Shared DB package** (`shared/aviary_shared/`) — SQLAlchemy models and session factory used by all three services.
+[agent-supervisor/app/backends/protocol.py](agent-supervisor/app/backends/protocol.py) defines the protocol. Key methods:
 
-**Key flows:**
-- Agent creation → API saves config to DB + registers with supervisor (secure defaults) → admin later configures policy/scaling
-- Chat message → WebSocket → API asks supervisor to ensure agent running → Supervisor SSE proxy to agent Pod → claude-agent-sdk → LiteLLM Gateway → LLM backend
-- Policy edit → Admin updates DB + updates K8s NetworkPolicy via supervisor. Egress proxy reads policy from DB on every request. Immediate effect, no Pod restart.
-- Agent config edit (instruction, tools) → API updates DB only. Passed to runtime on every message request body. Immediate effect, no Pod restart.
+- `list_replicas(agent_id)` / `create_replica(...)` / `stop_replica(...)` / `scale_to(...)` — lifecycle
+- `pick_replica(agent_id, session_id)` — consistent hash with capacity-aware ring walk
+- `stream_message(...)` / `abort_session(...)` / `cleanup_session(...)` — auto-pick replica
+- `ensure_storage(agent_id)` — volume + subpath preparation
+- `get_replica_metrics(task)` / `wait_for_ready(task)` — health
 
-**Pod Strategy (agent-per-pod):** Each agent gets a long-running Deployment with 1-N replicas. Multiple sessions share the same Pod(s), isolated by working directory (`/workspace/sessions/{session_id}/`). Pods auto-scale based on session load and are released after 7 days of inactivity (both managed by the agent supervisor).
+DockerBackend is implemented; FargateBackend is a stub (Phase 2).
 
-**LiteLLM Gateway** (docker compose, `:8090`): All LLM calls go through LiteLLM OSS proxy. Backend is determined by the model name prefix (e.g., `anthropic/claude-sonnet-4-6` → Claude API, `ollama/gemma4:26b` → Ollama, `vllm/...` → vLLM, `bedrock/...` → Bedrock). Natively compatible with Anthropic SDK (`/v1/messages`), so claude-agent-sdk works transparently. Configuration in `config/litellm/config.yaml`. API server queries it for model listing (`/model/info`). Supports virtual keys, rate limiting, and per-user API key injection. Two startup patches loaded via `.pth` file: `fix_adapter_streaming.py` fixes Anthropic-to-OpenAI adapter streaming for non-Anthropic backends (see "LiteLLM Adapter Streaming Patch" below); `aviary_user_api_key.py` injects per-user Anthropic API keys from Vault (see "Per-User Anthropic API Key" below).
+## Storage model (mirrors Fargate + EFS)
 
-**Portkey AI Gateway** (docker compose, internal `:8787`): Sits between LiteLLM and LLM backends as an AI gateway. LiteLLM routes all requests to Portkey via `api_base`, and Portkey forwards to the actual provider based on `x-portkey-provider` header. Provides guardrails, OpenTelemetry-based observability and tracing, request/response logging, and caching. Not exposed externally — only accessed by LiteLLM within the docker network.
+Two named volumes, both subpath-compatible:
 
-**Agent Supervisor** (K8s platform namespace, `:9000`): Manages all K8s resources and runtime operations. Has DB access for agent config and activity tracking. Exposes two API layers:
-- **Agent-centric API** (`/v1/agents/{id}/...`) — Used by the API server. Abstract operations: register, run, ready, wait, session message/abort/cleanup. Updates `last_activity_at` on every request. No K8s concepts exposed.
-- **K8s-specific API** (`/v1/namespaces/`, `/v1/deployments/`) — Used by the admin console. Direct namespace/deployment/NetworkPolicy management.
+- `aviary-agents-workspace` — per-agent subpath `{agent_id}/` → mounted at `/workspace` in runtime. All replicas of the same agent share this subpath, so conversation history (`.claude/`) lives on shared storage. Enables horizontal scale-out and replica substitution.
+- `aviary-sessions-workspace` — mounted whole at `/workspace-shared`. Per-session subdirs (`{session_id}/`) enable A2A file sharing across agents in the same session. bwrap in the runtime tmpfs-overlays this path so other sessions are invisible from within the sandbox.
 
-Runs background tasks: auto-scaling (30s interval, based on pod metrics vs `min_pods`/`max_pods`) and idle cleanup (5min interval, scales to zero when `last_activity_at` exceeds timeout).
+Uses **Docker volume subpath mount** (`VolumeOptions.Subpath`), requires Docker 25.0+. On Fargate this maps to **EFS Access Points** with root_directory per agent — no code change needed beyond the `FargateBackend` implementation.
 
-**Egress Proxy** (K8s platform namespace): All outbound HTTP/HTTPS from agent Pods is routed through a centralized forward proxy via `HTTP_PROXY`/`HTTPS_PROXY` env vars. Stays in K8s because it needs pod IP → namespace resolution for agent identification. Identifies source agent by resolving pod IP → K8s namespace → agent ID. Per-agent egress policies read directly from PostgreSQL (`agents.policy` column) on every request. Supports CIDR, exact domain, wildcard domain (`*.example.com`, `.example.com`), and catch-all (`*`). Deny-by-default. Health endpoint on port 8081 (`/health`). CIDR rules are also enforced at NetworkPolicy level for non-HTTP traffic.
+## Multi-replica + load balancing
 
-## Critical Patterns & Gotchas
+Containers named `aviary-agent-{agent_id}-{replica_idx}`. Labels: `aviary.agent-id`, `aviary.replica`, `aviary.managed=true`, `aviary.role=agent-runtime`.
 
-### OIDC Dual-URL Pattern
-Keycloak tokens have `iss=http://localhost:8080/...` (browser URL), but API container must fetch OIDC metadata from `http://keycloak:8080/...` (internal DNS). Two env vars: `OIDC_ISSUER` (public, for token validation) and `OIDC_INTERNAL_ISSUER` (internal, for discovery/JWKS/exchange). See `_rewrite_url()` / `to_public_url()` in `auth/oidc.py`.
+- **Scaling** ([scaling.py](agent-supervisor/app/services/scaling.py), ported from v1): every `SCALING_CHECK_INTERVAL` (5s dev / 30s default), compute `sessions_per_replica = sum(sessions_active) / replicas`. Above `sessions_per_task_scale_up` (default 3) → +1 replica (up to `policies.max_tasks`). Below `sessions_per_task_scale_down` (default 1) AND no streaming → −1 (down to `policies.min_tasks`).
+- **LB** ([docker.py `pick_replica`](agent-supervisor/app/backends/docker.py)): SHA256 hash of `session_id` anchors to a replica; if at capacity, walks the ring for the next available. Session stickiness prevents concurrent JSONL writes to the same session's `.claude/{session_id}/` state; shared storage means any replica can pick up if the primary is gone.
+- **Idle cleanup** ([cleanup.py](agent-supervisor/app/services/cleanup.py)): every `IDLE_CLEANUP_INTERVAL` (30s dev / 300s default), agents whose `policies.last_activity_at` is older than `AGENT_IDLE_TIMEOUT` (7 days) get `stop_all_replicas` — volumes retained, containers go away. Next message triggers re-creation.
 
-### Pydantic v2 `model_config` Conflict
-`model_config` is a reserved Pydantic class variable. Use `Field(alias="model_config")` with `model_config_data` as the Python field name. The `model_config = {...}` class var must be declared BEFORE field definitions. See `api/app/schemas/agent.py`.
+## Runtime: single image, per-request mock dispatch
 
-### API Server Knows Nothing About Infrastructure
-The API server (`api/`) has no references to K8s concepts (namespace, pod, deployment, NetworkPolicy). It communicates with the agent supervisor via `agent_supervisor.py` which uses only `agent_id` and `session_id`. The Agent model's infrastructure fields (`namespace`, `pod_strategy`, `min_pods`, `max_pods`, `deployment_active`) exist in the shared DB model but the API never reads or writes them. Policy is not part of the API's schema — the API does not accept, return, or store policy data. Policy management is exclusively handled by the admin console.
+One image (`aviary-runtime:latest`) is used in both prod and tests. Dispatch in [server.ts](runtime/src/server.ts):
 
-### Agent Supervisor Dual API
-The supervisor exposes two layers:
-- `/v1/agents/{id}/register`, `/v1/agents/{id}/run`, `/v1/agents/{id}/ready`, `/v1/agents/{id}/sessions/{sid}/message` — agent-centric, used by API server. Updates `last_activity_at` in DB on every call.
-- `/v1/namespaces/`, `/v1/deployments/{ns}/ensure`, `/v1/deployments/{ns}/scale` — K8s-specific, used by admin console.
+```ts
+function pickProcessMessage(agentConfig) {
+  return agentConfig?.mock_scenario ? processMessageMock : processMessageReal;
+}
+```
 
-The agent-centric API internally delegates to the K8s-specific endpoints, deriving namespace as `agent-{agent_id}`. The supervisor also has DB access (`shared/aviary_shared`) for reading agent scaling config and tracking activity.
+- **Real path** ([agent.ts](runtime/src/agent.ts)) — invokes claude-agent-sdk with LiteLLM routing via `ANTHROPIC_BASE_URL` env.
+- **Mock path** ([mock-agent.ts](runtime/src/mock-agent.ts)) — executes scripted steps (`chunk`, `thinking`, `tool_use`, `write`, `read`, `ls`, `exec`, `sleep`, `error`). File I/O steps go through the **same** bwrap sandbox as prod, so session isolation, resume, and A2A are tested end-to-end.
 
-### claude-agent-sdk Multi-Turn (TypeScript)
-Uses the `query()` function from `@anthropic-ai/claude-agent-sdk` (TypeScript). TS SDK doesn't expose a `sessionId` option — Aviary session_id is injected via `extraArgs: { "session-id": sessionId }` which passes `--session-id <uuid>` to the CLI on the first message. Subsequent messages use `resume: sessionId` to load existing conversation history. Resume is determined by checking for existing JSONL in `<workspace>/.claude/projects/`. CLI session data persists on PVC at `<workspace>/.claude/`, accessible inside the bwrap sandbox at `/home/usr/.claude` (HOME=/home/usr). Runtime is a Node.js/Express server (`src/server.ts`) — no Python dependency. Agent config (instruction, tools, MCP servers) is sent by the API server in every message request body — no ConfigMap or on-disk config. MCP servers from agent config are passed through to the SDK via `mcpServers` option. The runtime emits a final `result` SSE event with metadata (`total_cost_usd`, `usage`, `duration_ms`, `num_turns`) from the SDK's `ResultMessage` — the API can opt in to consuming this for billing/logging.
+No `RUNTIME_MODE` env var, no separate image, no docker-compose override. Tests just include `agent_config.mock_scenario` in the message body.
 
-### Multi-Session Runtime
-Each runtime Pod runs a `SessionManager` that tracks active sessions, enforces concurrency limits (`MAX_CONCURRENT_SESSIONS` env var, default 10), and serializes messages per-session. The readiness probe returns 503 when at capacity, preventing new session routing.
+## Sandbox (single source of truth)
 
-### Session Isolation (bubblewrap)
-The `claude` binary in PATH is a wrapper script (`scripts/claude-sandbox.sh`). The real binary is renamed to `claude-real` at build time (see Dockerfile). SDK must use `pathToClaudeCodeExecutable: "/usr/local/bin/claude"` to bypass the bundled binary and use the wrapper. (node:22-slim puts npm global binaries in `/usr/local/bin/`, unlike the old python:3.12-slim + nodesource setup which used `/usr/bin/`.) When the SDK invokes `claude`, the wrapper reads `SESSION_WORKSPACE` from env (set per-session in `src/agent.ts`) and runs `claude-real` inside a bwrap mount namespace where:
-- `/workspace-shared/` is an empty tmpfs (hides other sessions' shared homes)
-- `$SESSION_WORKSPACE` (`/workspace-shared/{session_id}`) is bind-mounted to `/workspace` — shared across all agents in the session (hostPath, backed by `shared_workspace` docker volume in dev so it survives K3s container rebuilds)
-- `$SESSION_CLAUDE_DIR` (`/workspace/.claude/{session_id}`) is bind-mounted to `/workspace/.claude` — per-agent CLI context overlay (PVC)
-- `$SESSION_VENV_DIR` (`/workspace/.venvs/{session_id}`) is bind-mounted to `/workspace/.venv` — per-(agent, session) Python venv overlay (PVC). Per-agent so concurrent `pip install`s from different agents on the same session don't race on a shared venv. `PIP_CACHE_DIR` lives in the shared workspace so wheel downloads are still reused across agents.
-- `$SESSION_TMP` (`/tmp/{session_id}`) is bind-mounted to `/tmp` — per-agent temp files (NOT shared across agents)
-- PID namespace is isolated
+bwrap flags live in [scripts/sandbox.sh](runtime/scripts/sandbox.sh). Two entry points share it:
 
-All agents in the same session share `/workspace` via hostPath, enabling seamless file exchange. `/tmp` is per-agent (not shared across Pods). CLI session data (`.claude/`) and the Python venv (`.venv/`) are per-agent (PVC overlays), so conversation histories and pip installs don't collide. Other sessions' files are invisible.
+- **[claude-sandbox.sh](runtime/scripts/claude-sandbox.sh)** — installed as `/usr/local/bin/claude`; the SDK invokes `claude` → `sandbox.sh claude-real "$@"`.
+- **mock-agent.ts `runInSandbox`** — spawns `/app/scripts/sandbox.sh <cmd>` with `SESSION_WORKSPACE`/`SESSION_CLAUDE_DIR`/`SESSION_TMP` env.
 
-### GitHub Token Injection
-The API server fetches the user's GitHub token from Vault (`secret/aviary/credentials/{sub}/github-token`) on every message and passes it in `agent_config.credentials.github_token`. The runtime injects it as `GITHUB_TOKEN` and `GH_TOKEN` env vars, and configures a git credential helper (`scripts/git-credential-github.sh`) via `GIT_CONFIG_*` env vars. Inside the sandbox, both `git` and `gh` CLI are pre-authenticated — no MCP server needed for GitHub operations.
+Changes to bwrap setup apply to both paths.
 
-### Auto-Scaling and Idle Cleanup
-Both run as background tasks in the agent supervisor (`agent-supervisor/app/scaling.py`):
-- **Auto-scaling** (30s interval): queries pod metrics directly from K8s, scales up/down based on sessions/pod vs `min_pods`/`max_pods` from DB.
-- **Idle cleanup** (5min interval): checks `last_activity_at` from DB against the configured timeout (default 7 days). Scales to zero if expired. The supervisor updates `last_activity_at` on every agent-centric API call, so any user interaction resets the idle timer.
+## Supervisor API endpoints (`/v1`)
 
-### Egress Proxy Policy Enforcement
-Two-layer enforcement: (1) K8s NetworkPolicy blocks all egress except DNS, platform NS (port 8080), and explicitly allowed CIDRs. (2) Egress proxy (HTTP-level) enforces domain-based rules. Agent pods have `HTTP_PROXY`/`HTTPS_PROXY` pointing to `egress-proxy.platform.svc:8080`, with `NO_PROXY` excluding internal platform services. Policy flow: Admin writes policy to DB → egress proxy reads `agents.policy` directly from PostgreSQL on every request. No caching, no invalidation needed. See `admin/app/routers/policies.py`, `egress-proxy/app/policy.py`.
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/agents/{id}/register` | Ensure storage (volumes + subpath) |
+| DELETE | `/agents/{id}` | `stop_all_replicas` (volumes retained) |
+| POST | `/agents/{id}/run` | `scale_to(min_replicas)` |
+| GET | `/agents/{id}/replicas` | List all replicas |
+| GET | `/agents/{id}/ready` | Readiness summary |
+| GET | `/agents/{id}/wait?timeout=N` | Long-poll until first replica ready |
+| POST | `/agents/{id}/sessions/{sid}/message` | SSE proxy + Redis publish |
+| POST | `/agents/{id}/sessions/{sid}/abort` | Abort active stream |
+| DELETE | `/agents/{id}/sessions/{sid}` | Cleanup session workspace (broadcast to all replicas) |
+| GET | `/agents/{id}/metrics` | Aggregated metrics across replicas |
+| GET | `/health` | Backend health |
 
-### Egress Rule Schema
-Egress rules are stored in the agent's `policy` JSONB field in DB (managed exclusively by the admin console). Domain patterns: `"example.com"` (exact), `"*.example.com"` (wildcard subdomain), `".example.com"` (same as `*`), `"*"` (all). Both CIDR and domain types can be mixed in the same `allowedEgress` list. Optional `ports` field restricts to specific ports; empty means all ports allowed.
+## Critical patterns & gotchas
 
-### Claude Code Managed Settings
-`runtime/config/managed-settings.json` is installed to `/etc/claude-code/managed-settings.json` (the hardcoded path Claude Code CLI reads on Linux). Currently sets `skipWebFetchPreflight: true` to prevent CLI from calling `api.anthropic.com/api/web/domain_info` before each WebFetch — this endpoint is unreachable in air-gapped/fintech environments where all external traffic must go through the egress proxy. All model tiers (`ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, etc.) are remapped to the agent's configured model in `src/agent.ts` so that CLI internal tasks (WebFetch summarization, subagents) route through LiteLLM.
+### Docker network auto-detection
+DockerBackend inspects its own container (`HOSTNAME` env → `self.containers.get(hostname)`) to find the compose network and spawns agent containers on the same one. Set `DOCKER_NETWORK` env to override.
 
-### LiteLLM Adapter Streaming Patch
-Non-Anthropic backends (Ollama, vLLM) use LiteLLM's Anthropic-to-OpenAI adapter (`/v1/messages` → `/v1/chat/completions`). The adapter has streaming issues that are fixed by a monkeypatch loaded at startup via `.pth` file. The patch file is `config/litellm/patches/fix_adapter_streaming.py`, mounted into the LiteLLM container. It fixes four issues:
+### Volume ownership on first mount
+Named volumes Docker-copy the image's target directory contents (including root ownership) on first mount. Three guards prevent this clobbering supervisor-prepared subpath permissions:
+1. Runtime Dockerfile `chown node:node /workspace /workspace-shared`
+2. `Mount(..., no_copy=True)` in DockerBackend
+3. `_ensure_agent_subpath` init container `chown 1000:1000 /mnt/{agent_id}`
 
-1. **Block type detection**: Adds `reasoning_content` check so thinking content from Ollama/OpenRouter gets its own `thinking` content block instead of being mixed into `text`.
-2. **Dropped trigger delta**: Recovers the first delta lost during block transitions (e.g., thinking → text).
-3. **Thinking block flushing**: Periodically closes/reopens thinking blocks (every 10 deltas) at the SSE byte layer so the CLI emits intermediate `assistant` snapshots for real-time thinking streaming. Text blocks are NOT flushed — internal CLI calls (WebFetch, subagents) expect a single text block.
-4. **Tool call JSON cleanup**: Buffers `input_json_delta` events and cleans leaked Gemma4 special tokens (`<|\`, `<|\"|`) from the accumulated JSON before emitting. Uses `json.loads()` as a guard — clean JSON from other backends passes through untouched.
+### bwrap + Docker seccomp
+bubblewrap needs unprivileged user namespaces which the default Docker seccomp profile blocks. Agent containers are spawned with `security_opt=["seccomp=unconfined"]`.
 
-### Per-User Anthropic API Key
-For Anthropic backends, each user's personal API key is injected from Vault via a LiteLLM `CustomLogger.async_pre_call_hook` (`config/litellm/patches/aviary_user_api_key.py`). The user's OIDC JWT is propagated from runtime to LiteLLM via `ANTHROPIC_CUSTOM_HEADERS` env var (set in `runtime/src/agent.ts`), which the Anthropic SDK includes as the `X-Aviary-User-Token` header. The hook validates the JWT against Keycloak JWKS, extracts the `sub` claim, and fetches the user's Anthropic API key from Vault at `secret/aviary/credentials/{sub}/anthropic-api-key`. If no key is found, the request is rejected with an error (no fallback to project default). Non-Anthropic backends (Ollama, vLLM) skip the hook entirely. Caching: JWKS 1h, JWT→sub 30min, Vault key 5min.
+### Sessions volume root ownership
+`aviary-sessions-workspace` root is chowned to `1000:1000` once per supervisor process (tracked in `DockerBackend._chowned`) so the `node` user can mkdir session subdirs.
 
-### Vault Credential Path Convention
-All per-user credentials (MCP tool secrets, API keys) are stored at `secret/aviary/credentials/{user_external_id}/{key_name}` with JSON body `{"value": "<secret_string>"}`. Key names use `{service}-token` convention (e.g., `github-token`, `anthropic-api-key`, `jira-token`). The `user_external_id` is the OIDC `sub` claim from Keycloak. Admin console provides a UI for managing these credentials per user. Used by MCP Gateway (tool credential injection), LiteLLM (per-user API key), and the API server (GitHub token injection into sandbox).
+### Redis Pub/Sub subscribe timing
+In tests, you must drain the `subscribe` confirmation message before `get_message(ignore_subscribe_messages=True, timeout=N)` will reliably return published events. See [test_e2e.py](test-client/test_e2e.py) `test_basic_streaming`.
 
-### Streaming Architecture (Runtime)
-The runtime (`runtime/src/agent.ts`) handles two distinct streaming paths based on backend:
+### Session stickiness + shared storage
+pick_replica is deterministic per session_id, so sequential messages go to the same replica (prevents concurrent JSONL writes to `.claude/{sid}/`). But because AGENTS_WORKSPACE_VOLUME is shared across replicas, if a replica dies or the hash remaps after scale events, any other replica sees the same history — no per-replica local state.
 
-- **Anthropic backends**: Emit `stream_event` messages with raw `content_block_delta` events (token-level `text_delta` and `thinking_delta`). These are forwarded directly for real-time streaming. A `hasStreamDeltas` flag is set on first `stream_event`, causing `assistant` snapshot text/thinking to be skipped (only `tool_use` is extracted from snapshots).
-- **Non-Anthropic backends** (Ollama, vLLM): Don't emit `stream_event` deltas. Text and thinking are extracted from cumulative `assistant` snapshots by diffing against previously emitted lengths (`emittedTextLen`, `emittedThinkingLen`). When content length is shorter than tracked (= new block from flushing), the counter resets.
-
-Both paths share the same counters so they never double-emit.
-
-### Thinking Block Support
-Thinking content flows through the full pipeline: runtime → supervisor (transparent SSE proxy) → API stream_manager → Redis pub/sub → WebSocket → frontend.
-
-- **stream_manager** (`api/app/services/stream_manager.py`): Buffers `thinking` events and flushes to `blocks_meta` before `chunk` (text) events and before `tool_use` events, preserving correct block ordering in saved messages.
-- **Frontend**: `ThinkingChip` component (collapsible, default open during streaming) renders real-time thinking content. Saved messages restore thinking blocks via `SavedThinkingChip` (default closed). Thinking blocks are part of the `StreamBlock` union type alongside `TextBlock` and `ToolCallBlock`.
-
-### K8s Image Loading
-All K8s custom images use `imagePullPolicy: Never`. Loaded via `docker save | docker compose exec -T k8s ctr images import -`. The `setup-dev.sh` handles this for runtime, egress-proxy, and agent-supervisor images. LiteLLM runs outside K8s as a docker compose service using the official image and doesn't need image loading.
-
-### K8s Fixed Node Name
-`--node-name=aviary-node` in docker-compose.yml prevents stale node accumulation on container restart. Without it, PVCs bind to old node names causing scheduling failures.
-
-### PVC Strategy
-Each agent gets a static, cluster-scoped PV (`agent-{agent_id}-workspace`) bound 1:1 to a per-namespace PVC (`agent-workspace`, 5Gi, `ReadWriteOnce`). The PV uses a deterministic hostPath at `/var/lib/aviary/agent-workspace/{agent_id}/` instead of going through the `local-path` provisioner — this is what lets `quick-rebuild full` wipe `k8sdata` (etcd + image cache) without losing chat history or per-agent Python venvs (which live on this PVC at `.venvs/{session_id}/`). The host directory is backed by a dedicated docker volume (`agent_workspace_pv`) so it's independent of the K3s cluster state. The cross-agent shared session workspace (`/workspace-shared`) is similarly backed by a separate `shared_workspace` docker volume so files an agent dropped for another agent in the same session also survive `quick-rebuild full`. Reclaim policy is `Retain`, so the host directory survives an accidental PV delete (e.g. cluster-state wipes) and can be re-bound on the next provisioning. Multi-node migration would replace the hostPath with `ReadWriteMany` storage (NFS, Longhorn) and drop the per-agent PV definition.
-
-`delete_deployment` is the full agent teardown — it removes the Deployment, Service, PVC, and PV. The host directory still survives because reclaim is `Retain`; ops can clean up `/var/lib/aviary/agent-workspace/{agent_id}/` separately if disk pressure becomes an issue.
-
-### React Strict Mode
-Use `useRef` guards for WebSocket connections and OIDC callbacks to prevent duplicate execution in dev mode.
-
-### Team Sync
-Teams auto-synced from Keycloak/Okta `groups` claim on every login via `team_sync_service.py`. No manual team management.
-
-## ACL Resolution (6 steps)
-
-1. Agent owner → full access
-2. Direct user ACL entry
-3. Team ACL entries (highest role wins)
-4. `visibility=public` → implicit `user` role
-5. `visibility=team` → implicit `user` role if shared team with owner
-6. Deny
-
-Role hierarchy: `viewer` < `user` < `admin` < `owner`.
-
-Note: There is no platform admin role in the API server. All administrative operations (infrastructure, policy, scaling) are performed via the admin console which has no authentication.
+### Per-session mutex (runtime)
+`SessionManager` gives each session its own mutex. Two messages racing on the same session serialize automatically. Verified by [test_concurrent_same_session_serialized](test-client/test_e2e.py).
 
 ## Testing
 
 ```bash
-# API server tests
-docker compose exec api pytest tests/ -v
-
-# Admin console tests
-docker compose exec admin pytest tests/ -v
-```
-
-API: Tests using dedicated `aviary_test` database with `NullPool` (avoids asyncpg conflicts). Test app has no lifespan (no background tasks). Mock auth via `_TOKEN_CLAIMS` dict mapping tokens to claims for multi-user scenarios.
-
-Admin: Tests use the same test database pattern. No auth mocking needed (admin has no authentication). Supervisor calls are mocked.
-
-## Rebuilding Images
-
-**K8s images** (runtime, egress-proxy, agent-supervisor) — after modifying `runtime/`, `egress-proxy/`, or `agent-supervisor/`:
-
-```bash
 docker build -t aviary-runtime:latest ./runtime/
-docker build -t aviary-agent-supervisor:latest -f agent-supervisor/Dockerfile .
-docker save aviary-runtime:latest aviary-agent-supervisor:latest | docker compose exec -T k8s ctr images import -
-# Repeat pattern for egress-proxy if changed
+docker compose up -d
+uv run python test-client/test_e2e.py
 ```
 
-**Docker Compose services** (api, admin) — hot reload via bind-mount, or rebuild:
+Test suite ([test-client/test_e2e.py](test-client/test_e2e.py)):
 
-```bash
-docker compose up -d --build api admin
+1. `test_basic_streaming` — chunk/thinking/result SSE, Redis Pub/Sub realtime, Redis Streams durable
+2. `test_session_isolation` — sandbox-level file isolation
+3. `test_session_resume` — files persist across sequential messages
+4. `test_concurrent_same_session_serialized` — per-session mutex (no interleaving)
+5. `test_a2a_sharing` — cross-agent file sharing within a session; cross-session isolation
+6. `test_abort` — abort in the middle of a sleep step
+7. `test_persist_after_container_removal` — DELETE agent → re-run → state intact
+8. `test_scale_up_under_load` — 5 concurrent sessions trigger replica scale-up then scale-down
+9. `test_context_across_scaling` — session files survive scale-up/scale-down cycles
+
+Full suite ~90s (bounded by scaling interval + scenario sleep durations).
+
+## Key env vars
+
+| Service | Var | Default | Notes |
+|---------|-----|---------|-------|
+| agent-supervisor | `RUNTIME_BACKEND` | `docker` | `docker` or `fargate` |
+| agent-supervisor | `RUNTIME_IMAGE` | `aviary-runtime:latest` | Image for spawned containers |
+| agent-supervisor | `DOCKER_NETWORK` | auto | Defaults to supervisor's own compose network |
+| agent-supervisor | `DATABASE_URL` | postgres://... | asyncpg DSN |
+| agent-supervisor | `REDIS_URL` | redis://redis:6379/0 | Pub/Sub + Streams |
+| agent-supervisor | `SCALING_CHECK_INTERVAL` | 5 (dev) / 30 | Scaling loop period (seconds) |
+| agent-supervisor | `IDLE_CLEANUP_INTERVAL` | 30 (dev) / 300 | Idle scan period (seconds) |
+| agent-supervisor | `AGENT_IDLE_TIMEOUT` | 604800 | 7 days |
+| agent-supervisor | `MAX_CONCURRENT_SESSIONS_PER_TASK` | 5 | Per-container session cap |
+| runtime | `AGENT_ID` | required | UUID from supervisor |
+| runtime | `MAX_CONCURRENT_SESSIONS` | 5 | From supervisor settings |
+| runtime | `INFERENCE_ROUTER_URL` | `https://api.anthropic.com` | Real agent path (Phase 2 will point to LiteLLM) |
+| runtime | `ANTHROPIC_API_KEY` | "" | Real agent path only |
+
+## DB schema (Phase 1, simplified from v1)
+
+- `agents` — id, name, slug, owner_id, instruction, model_config (JSONB), tools (JSONB), status, policy_id
+- `policies` — id, min_tasks, max_tasks, resource_limits (JSONB), policy_rules (JSONB), last_activity_at
+- `sessions` — id, agent_id, created_by, title, status, last_message_at
+- `messages` — id, session_id, sender_type, sender_id, content, metadata (JSONB)
+
+Phase 2 will add back users/teams, ACL, workflows, MCP tool catalog from v1.
+
+## Project layout
+
+```
+agent-supervisor/     # Supervisor service (Phase 1 rewrite)
+runtime/              # Runtime container (claude-agent-sdk + mock + bwrap)
+shared/               # SQLAlchemy models, Redis utils, naming helpers
+test-client/          # End-to-end test suite
+scripts/              # setup-dev.sh, init-db.sql
+docker-compose.yml    # Phase 1 stack: postgres, redis, db-migrate, agent-supervisor
+v1/                   # Archived v1 codebase (reference only)
 ```
 
-**LiteLLM Gateway** — edit `config/litellm/config.yaml` and restart:
+## Commit & workflow conventions
 
-```bash
-docker compose restart litellm
-```
-
-## Key Environment Variables (API)
-
-| Variable | Purpose |
-|----------|---------|
-| `OIDC_ISSUER` | Public Keycloak URL (token `iss` validation) |
-| `OIDC_INTERNAL_ISSUER` | Internal Keycloak URL (discovery/JWKS fetch) |
-| `DATABASE_URL` | PostgreSQL async connection |
-| `REDIS_URL` | Redis for pub/sub, caching, presence |
-| `VAULT_ADDR` / `VAULT_TOKEN` | Vault connection |
-| `AGENT_SUPERVISOR_URL` | Agent Supervisor URL (default: `http://localhost:9000`) |
-| `LITELLM_URL` | LiteLLM gateway URL (default: `http://litellm:4000`) |
-| `LITELLM_API_KEY` | LiteLLM master key (default: `sk-aviary-dev`) |
-
-## Key Environment Variables (Admin)
-
-| Variable | Purpose |
-|----------|---------|
-| `DATABASE_URL` | PostgreSQL async connection |
-| `AGENT_SUPERVISOR_URL` | Agent Supervisor URL (default: `http://localhost:9000`) |
-
-## Key Environment Variables (Runtime Pod)
-
-| Variable | Purpose |
-|----------|---------|
-| `AGENT_ID` | Agent UUID |
-| `MAX_CONCURRENT_SESSIONS` | Max sessions per pod (default: 10) |
-| `INFERENCE_ROUTER_URL` | LiteLLM gateway URL (`http://litellm.platform.svc:4000`) |
-| `LITELLM_API_KEY` | LiteLLM master key (`sk-aviary-dev`) |
-| `HTTP_PROXY` / `HTTPS_PROXY` | Egress proxy URL (`http://egress-proxy.platform.svc:8080`) |
-| `NO_PROXY` | Bypass proxy for internal services (platform SVCs, localhost) |
-
-## Key Environment Variables (Agent Supervisor)
-
-| Variable | Purpose |
-|----------|---------|
-| `DATABASE_URL` | PostgreSQL async connection (for agent config + activity tracking) |
-| `AGENT_RUNTIME_IMAGE` | Container image for agent Pods (default: `aviary-runtime:latest`) |
-| `HOST_GATEWAY_IP` | Host IP for Pod hostAliases (injected by setup script) |
-| `MAX_CONCURRENT_SESSIONS_PER_POD` | Max sessions per pod (default: 10) |
-| `SCALING_CHECK_INTERVAL` | Auto-scaling check interval in seconds (default: 30) |
-| `AGENT_IDLE_TIMEOUT` | Agent idle timeout in seconds (default: 604800 = 7 days) |
-
-## Key Environment Variables (Egress Proxy)
-
-| Variable | Purpose |
-|----------|---------|
-| `PROXY_PORT` | Forward proxy listen port (default: 8080) |
-| `HEALTH_PORT` | Health endpoint listen port (default: 8081) |
-| `DATABASE_URL` | PostgreSQL connection for policy lookup |
-
-## Key Environment Variables (LiteLLM Gateway)
-
-| Variable | Purpose |
-|----------|---------|
-| `LITELLM_MASTER_KEY` | LiteLLM proxy auth key (default: `sk-aviary-dev`) |
-| `VAULT_ADDR` / `VAULT_TOKEN` | Vault connection for per-user API key lookup |
-| `OIDC_ISSUER` | Public Keycloak URL (JWT `iss` validation) |
-| `OIDC_INTERNAL_ISSUER` | Internal Keycloak URL (JWKS fetch) |
-
-## Key Environment Variables (MCP Gateway)
-
-| Variable | Purpose |
-|----------|---------|
-| `DATABASE_URL` | PostgreSQL async connection |
-| `MCP_GATEWAY_PORT` | Listen port (default: 8100) |
-| `OIDC_ISSUER` | Public Keycloak URL (token `iss` validation) |
-| `OIDC_INTERNAL_ISSUER` | Internal Keycloak URL (JWKS fetch) |
-| `OIDC_CLIENT_ID` | OIDC client ID (default: `aviary-web`) |
-
-### MCP Gateway
-
-**MCP Gateway** (docker compose, `:8100`): Centralized tool proxy for all agent MCP tool calls. Acts as a single MCP server (Streamable HTTP) from the claude-agent-sdk's perspective, internally proxying to multiple backend MCP servers.
-
-**Key features:**
-- **Tool catalog**: Admin registers backend MCP servers via Admin Console. Tools are auto-discovered via MCP `tools/list` protocol.
-- **ACL (default-deny)**: Admin grants server-level or tool-level access to users/teams. Users can only see and bind tools they have `use` permission for.
-- **Agent tool bindings**: Users select tools from the catalog and bind them to their agents. Bindings stored in `mcp_agent_tool_bindings` table.
-- **OIDC auth**: User's Keycloak JWT is propagated from browser → API → stream_manager → runtime → MCP Gateway. Gateway validates the JWT directly via Keycloak JWKS (same dual-URL pattern as API server).
-- **Tool namespacing**: Tools are exposed as `{server_name}__{tool_name}` (double underscore separator).
-
-**Data flow:**
-1. Admin registers MCP server (Admin Console → DB) and triggers tool discovery
-2. Admin creates ACL rules granting users/teams access to servers/tools
-3. User browses tools (API → DB, ACL-filtered) and binds them to agent
-4. On chat message: API constructs `mcpServers` config with gateway URL + user JWT in headers
-5. Runtime passes config to claude-agent-sdk; SDK connects to gateway as HTTP MCP server
-6. Gateway validates JWT, checks ACL, returns filtered `tools/list`, proxies `tools/call` to backend
-
-**DB tables:** `mcp_servers`, `mcp_tools`, `mcp_agent_tool_bindings`, `mcp_tool_acl`
-
-**Architecture principle:** Agent ID is NOT used for ACL — the user's permission to use a tool (verified at both bind-time and call-time) is the access control. User token is NOT forwarded to backend MCP servers.
+- Single-line commit messages, no Co-Authored-By footer.
+- Always use `uv run` for Python commands (never direct pip/python).
+- Default to writing no comments. Only add when the WHY is non-obvious.
+- No fallback logic or hardcoded maps — reject bad requests, fix root causes.
+- Weigh code/dep cost against proven workflow need before proposing power-user features.
