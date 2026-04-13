@@ -1,162 +1,187 @@
-"""Agent-centric API used by the API server — translates agent_id to K8s ops."""
+"""Agent-centric API endpoints."""
 
-import json
 import logging
 
-import httpx
-from fastapi import APIRouter, Request
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from fastapi import APIRouter, Query, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 
-from aviary_shared.naming import (
-    DEPLOYMENT_NAME,
-    PVC_NAME,
-    RUNTIME_PORT,
-    SERVICE_NAME,
-    agent_namespace,
-    agent_pv_name,
-)
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
-from app import provisioning
-from app.scaling import touch_activity
-from app.k8s import _get_k8s_client, k8s_apply
+from aviary_shared.db.models import Agent
+from app.config import settings
+from app.db import async_session
+from app.services.activity import touch_activity
+from app.services.runtime_env import build_task_env
+from app.services.streaming import proxy_and_publish
 
+router = APIRouter(prefix="/v1")
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+
+def _get_backend(request: Request):
+    return request.app.state.backend
 
 
-class RegisterAgentRequest(BaseModel):
-    owner_id: str
+def _get_redis(request: Request):
+    return request.app.state.redis_publisher
+
+
+async def _min_replicas_for(agent_id: str) -> int:
+    async with async_session() as db:
+        result = await db.execute(
+            select(Agent).where(Agent.id == agent_id).options(selectinload(Agent.policy)),
+        )
+        agent = result.scalar_one_or_none()
+    if agent and agent.policy:
+        return max(1, agent.policy.min_tasks)
+    return 1
 
 
 @router.post("/agents/{agent_id}/register")
-async def register_agent(agent_id: str, body: RegisterAgentRequest):
-    """Provision K8s resources with secure defaults (all egress blocked)."""
+async def register_agent(agent_id: str, request: Request):
+    backend = _get_backend(request)
+    volumes = await backend.ensure_storage(agent_id)
     await touch_activity(agent_id)
-    ns_name = await provisioning.provision_namespace(
-        agent_id=agent_id, owner_id=body.owner_id, policy={},
-    )
-    return {"ok": True, "namespace": ns_name}
+    return {"status": "registered", "agent_id": agent_id, "volumes": volumes}
 
 
 @router.delete("/agents/{agent_id}")
-async def unregister_agent(agent_id: str):
-    """Remove all resources for an agent."""
-    ns = agent_namespace(agent_id)
-
-    # k8s_apply treats DELETE 404 as a no-op; other errors propagate.
-    for path in [
-        f"/apis/apps/v1/namespaces/{ns}/deployments/{DEPLOYMENT_NAME}",
-        f"/api/v1/namespaces/{ns}/services/{SERVICE_NAME}",
-        f"/api/v1/namespaces/{ns}/persistentvolumeclaims/{PVC_NAME}",
-        f"/api/v1/namespaces/{ns}",
-        f"/api/v1/persistentvolumes/{agent_pv_name(agent_id)}",
-    ]:
-        await k8s_apply("DELETE", path)
-
-    logger.info("Unregistered agent %s", agent_id)
-    return {"ok": True}
-
-
-class RunAgentRequest(BaseModel):
-    owner_id: str
+async def delete_agent(agent_id: str, request: Request):
+    backend = _get_backend(request)
+    stopped = await backend.stop_all_replicas(agent_id)
+    return {"status": "deleted", "agent_id": agent_id, "replicas_stopped": stopped}
 
 
 @router.post("/agents/{agent_id}/run")
-async def run_agent(agent_id: str, body: RunAgentRequest):
-    """Ensure agent is running. Lazily creates resources with secure defaults if needed."""
-    await touch_activity(agent_id)
-    ns = agent_namespace(agent_id)
-    return await provisioning.ensure_deployment(
-        namespace=ns,
-        agent_id=agent_id,
-        owner_id=body.owner_id,
-        policy={},
-        min_pods=1,
-        max_pods=1,
+async def run_agent(agent_id: str, request: Request):
+    """Ensure at least min_replicas running for this agent."""
+    backend = _get_backend(request)
+    target = await _min_replicas_for(agent_id)
+    actual = await backend.scale_to(
+        agent_id, target, settings.runtime_image, build_task_env(agent_id),
     )
+    await touch_activity(agent_id)
+    return {"status": "running", "agent_id": agent_id, "replicas": actual}
+
+
+@router.get("/agents/{agent_id}/replicas")
+async def list_replicas(agent_id: str, request: Request):
+    backend = _get_backend(request)
+    replicas = await backend.list_replicas(agent_id)
+    return {
+        "agent_id": agent_id,
+        "replicas": [
+            {"replica": r.replica, "task_id": r.task_id, "host": r.host, "status": r.status}
+            for r in replicas
+        ],
+    }
 
 
 @router.get("/agents/{agent_id}/ready")
-async def check_agent_ready(agent_id: str):
-    ns = agent_namespace(agent_id)
-    try:
-        status = await provisioning.get_deployment_status(ns)
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 404:
-            return {"ready": False, "replicas": 0, "ready_replicas": 0, "updated_replicas": 0}
-        raise
-    ready = (status.get("ready_replicas") or 0) >= 1
-    return {"ready": ready, **status}
+async def agent_ready(agent_id: str, request: Request):
+    backend = _get_backend(request)
+    replicas = await backend.list_replicas(agent_id)
+    running = [r for r in replicas if r.status == "running"]
+    if not running:
+        return JSONResponse(status_code=404, content={"error": "no running replicas"})
+    return {
+        "agent_id": agent_id,
+        "ready": len(running) > 0,
+        "replicas_total": len(replicas),
+        "replicas_running": len(running),
+    }
 
 
 @router.get("/agents/{agent_id}/wait")
-async def wait_agent_ready(agent_id: str, timeout: int = 90):
-    """Block until agent is ready or timeout."""
-    ns = agent_namespace(agent_id)
-    return await provisioning.wait_for_ready(ns, timeout)
+async def wait_for_agent(
+    agent_id: str,
+    request: Request,
+    timeout: int = Query(default=90, le=300),
+):
+    backend = _get_backend(request)
+    replicas = await backend.list_replicas(agent_id)
+    if not replicas:
+        return JSONResponse(status_code=404, content={"error": "no replicas"})
+
+    # Wait until at least one replica is ready.
+    for r in replicas:
+        if await backend.wait_for_ready(r, timeout=timeout):
+            return {"status": "ready", "agent_id": agent_id, "replica": r.replica}
+    return JSONResponse(status_code=408, content={"error": "timeout waiting for agent"})
 
 
 @router.post("/agents/{agent_id}/sessions/{session_id}/message")
-async def proxy_session_message(agent_id: str, session_id: str, request: Request):
-    """Transparent SSE proxy to agent runtime for a session message."""
-    await touch_activity(agent_id)
-    ns = agent_namespace(agent_id)
+async def send_message(agent_id: str, session_id: str, request: Request):
+    backend = _get_backend(request)
+    redis_pub = _get_redis(request)
     body = await request.json()
-    proxy_path = (
-        f"/api/v1/namespaces/{ns}/services/{SERVICE_NAME}:{RUNTIME_PORT}/proxy/message"
-    )
 
-    async def generate():
-        try:
-            async with _get_k8s_client() as client:
-                async with client.stream(
-                    "POST", proxy_path, json=body, timeout=None
-                ) as resp:
-                    if resp.status_code != 200:
-                        error_body = await resp.aread()
-                        logger.error(
-                            "Agent stream returned %d: %s", resp.status_code, error_body
-                        )
-                        error_msg = json.dumps({"type": "error", "message": f"Agent runtime error ({resp.status_code})"})
-                        yield f"data: {error_msg}\n\n".encode()
-                        return
-                    async for chunk in resp.aiter_bytes():
-                        yield chunk
-        except httpx.HTTPError:
-            logger.exception("SSE proxy error for agent %s", agent_id)
-            error_msg = json.dumps({"type": "error", "message": "Agent runtime connection failed"})
-            yield f"data: {error_msg}\n\n".encode()
+    await touch_activity(agent_id)
 
     return StreamingResponse(
-        generate(),
+        proxy_and_publish(backend, redis_pub, agent_id, session_id, body),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
 @router.post("/agents/{agent_id}/sessions/{session_id}/abort")
-async def abort_session(agent_id: str, session_id: str):
-    """Abort an active session stream."""
-    ns = agent_namespace(agent_id)
-    proxy_path = (
-        f"/api/v1/namespaces/{ns}/services/{SERVICE_NAME}:{RUNTIME_PORT}/proxy/abort/{session_id}"
-    )
-    try:
-        async with _get_k8s_client() as client:
-            resp = await client.post(proxy_path, timeout=5)
-            return {"ok": True, "status": resp.status_code}
-    except httpx.HTTPError:
-        logger.warning("Failed to abort session %s for agent %s", session_id, agent_id, exc_info=True)
-        return {"ok": False, "reason": "agent_not_reachable"}
+async def abort_session(agent_id: str, session_id: str, request: Request):
+    backend = _get_backend(request)
+    ok = await backend.abort_session(agent_id, session_id)
+    return {"ok": ok, "agent_id": agent_id, "session_id": session_id}
 
 
 @router.delete("/agents/{agent_id}/sessions/{session_id}")
-async def cleanup_session(agent_id: str, session_id: str):
-    """Clean up session workspace. Best-effort."""
-    ns = agent_namespace(agent_id)
-    return await provisioning.cleanup_session_workspace(ns, session_id)
+async def cleanup_session(agent_id: str, session_id: str, request: Request):
+    backend = _get_backend(request)
+    result = await backend.cleanup_session(agent_id, session_id)
+    return result
+
+
+@router.get("/agents/{agent_id}/metrics")
+async def agent_metrics(agent_id: str, request: Request):
+    """Aggregated metrics across all replicas."""
+    backend = _get_backend(request)
+    replicas = await backend.list_replicas(agent_id)
+    if not replicas:
+        return JSONResponse(status_code=404, content={"error": "no replicas"})
+
+    total_active = 0
+    total_streaming = 0
+    total_max = 0
+    per_replica = []
+    for r in replicas:
+        m = await backend.get_replica_metrics(r)
+        if m is None:
+            per_replica.append({"replica": r.replica, "status": r.status, "metrics": None})
+            continue
+        total_active += m.sessions_active
+        total_streaming += m.sessions_streaming
+        total_max += m.sessions_max
+        per_replica.append({
+            "replica": r.replica,
+            "status": r.status,
+            "metrics": {
+                "sessions_active": m.sessions_active,
+                "sessions_streaming": m.sessions_streaming,
+                "sessions_max": m.sessions_max,
+            },
+        })
+
+    return {
+        "agent_id": agent_id,
+        "replicas": per_replica,
+        "total": {
+            "sessions_active": total_active,
+            "sessions_streaming": total_streaming,
+            "sessions_max": total_max,
+        },
+    }
+
+
+@router.get("/health")
+async def health(request: Request):
+    backend = _get_backend(request)
+    return await backend.health_check()

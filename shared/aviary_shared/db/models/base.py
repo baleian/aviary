@@ -1,18 +1,9 @@
-"""SQLAlchemy declarative base and common imports."""
+"""SQLAlchemy declarative base."""
 
 import uuid
 from datetime import datetime
 
-from sqlalchemy import (
-    Boolean,
-    CheckConstraint,
-    ForeignKey,
-    Index,
-    String,
-    Text,
-    UniqueConstraint,
-    func,
-)
+from sqlalchemy import ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 

@@ -1,4 +1,4 @@
-"""Shared DB session factory. Both API and backoffice use this."""
+"""Shared DB session factory."""
 
 from collections.abc import AsyncGenerator
 
@@ -11,10 +11,6 @@ def create_session_factory(
     max_overflow: int = 10,
     echo: bool = False,
 ) -> tuple:
-    """Create engine and session factory for the given database URL.
-
-    Returns (engine, async_session_factory).
-    """
     engine = create_async_engine(
         database_url,
         echo=echo,
@@ -26,7 +22,6 @@ def create_session_factory(
 
 
 async def get_db_dependency(factory: async_sessionmaker) -> AsyncGenerator[AsyncSession, None]:
-    """Create a FastAPI dependency for DB sessions using the given factory."""
     async with factory() as session:
         try:
             yield session

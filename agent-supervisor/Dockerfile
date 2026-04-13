@@ -4,31 +4,17 @@ COPY --from=ghcr.io/astral-sh/uv:0.7 /uv /usr/local/bin/uv
 
 WORKDIR /workspace
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+COPY shared/pyproject.toml shared/pyproject.toml
+COPY shared/aviary_shared/ shared/aviary_shared/
 
-# Copy workspace layout for dependency resolution (cached layer)
-COPY pyproject.toml uv.lock ./
-COPY shared/pyproject.toml ./shared/pyproject.toml
-COPY api/pyproject.toml ./api/pyproject.toml
-COPY admin/pyproject.toml ./admin/pyproject.toml
-COPY agent-supervisor/pyproject.toml ./agent-supervisor/pyproject.toml
+COPY agent-supervisor/pyproject.toml agent-supervisor/pyproject.toml
+COPY agent-supervisor/app/ agent-supervisor/app/
 
-# Shared source needed for workspace install
-COPY shared/ ./shared/
-
-# Install deps from lock file
 ARG UV_INDEX_URL
 ENV UV_LINK_MODE=copy
-RUN uv sync --frozen --package aviary-agent-supervisor --no-dev --no-install-project
 
-# Copy app source
-COPY agent-supervisor/ ./agent-supervisor/
-RUN uv sync --frozen --package aviary-agent-supervisor --no-dev
-
-# Activate virtual environment via PATH
-ENV PATH="/workspace/.venv/bin:$PATH"
+RUN cd shared && uv pip install --system . \
+    && cd /workspace/agent-supervisor && uv pip install --system .
 
 WORKDIR /workspace/agent-supervisor
 

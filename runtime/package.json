@@ -1,7 +1,7 @@
 {
   "name": "aviary-runtime",
-  "version": "0.2.0",
-  "description": "Aviary Agent Runtime — runs inside session Pods",
+  "version": "0.3.0",
+  "description": "Aviary Agent Runtime — runs inside containers managed by Agent Supervisor",
   "type": "module",
   "scripts": {
     "build": "tsc",

@@ -1,11 +1,4 @@
-"""Aviary Agent Supervisor — K8s gateway + infrastructure manager.
-
-Runs inside the K8s platform namespace. Manages agent runtime resources:
-- K8s namespace/deployment/service/PVC lifecycle
-- Auto-scaling based on session load
-- Idle cleanup (scale to zero after inactivity)
-- Activity tracking via DB (last_activity_at)
-"""
+"""Agent Supervisor — manages runtime containers via RuntimeBackend abstraction."""
 
 import asyncio
 import logging
@@ -13,52 +6,50 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.routers import agents, deployments, namespaces, streaming
-from app import scaling
+from aviary_shared.redis import RedisPublisher
+from app.config import settings
+from app.backends.docker import DockerBackend
+from app.routers.agents import router as agents_router
+from app.services.scaling import scaling_loop
+from app.services.cleanup import idle_cleanup_loop
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+def create_backend():
+    if settings.runtime_backend == "docker":
+        return DockerBackend(socket=settings.docker_socket)
+    elif settings.runtime_backend == "fargate":
+        from app.backends.fargate import FargateBackend
+        raise NotImplementedError("FargateBackend not yet available")
+    else:
+        raise ValueError(f"Unknown runtime backend: {settings.runtime_backend}")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    scaling_task = asyncio.create_task(scaling.scaling_loop())
-    cleanup_task = asyncio.create_task(scaling.idle_cleanup_loop())
+    backend = create_backend()
+    redis_pub = RedisPublisher(settings.redis_url)
+
+    app.state.backend = backend
+    app.state.redis_publisher = redis_pub
+
+    scaling_task = asyncio.create_task(scaling_loop(backend))
+    cleanup_task = asyncio.create_task(idle_cleanup_loop(backend))
+
+    logger.info("Agent Supervisor started (backend=%s)", settings.runtime_backend)
 
     yield
 
     scaling_task.cancel()
     cleanup_task.cancel()
-    try:
-        await scaling_task
-    except asyncio.CancelledError:
-        pass
-    try:
-        await cleanup_task
-    except asyncio.CancelledError:
-        pass
+    await redis_pub.close()
+    logger.info("Agent Supervisor shutting down")
 
 
-app = FastAPI(title="Aviary Agent Supervisor", version="0.1.0", lifespan=lifespan)
-
-app.include_router(agents.router, prefix="/v1", tags=["agents"])
-app.include_router(namespaces.router, prefix="/v1", tags=["namespaces"])
-app.include_router(deployments.router, prefix="/v1", tags=["deployments"])
-app.include_router(streaming.router, prefix="/v1", tags=["streaming"])
-
-
-@app.get("/v1/health")
-async def health():
-    """Health check — verifies K8s API connectivity."""
-    from app.k8s import k8s_apply
-
-    k8s_ok = False
-    try:
-        await k8s_apply("GET", "/api/v1/namespaces/platform")
-        k8s_ok = True
-    except Exception:  # Best-effort: health check probes K8s connectivity
-        pass
-
-    return {
-        "status": "ok" if k8s_ok else "degraded",
-        "k8s": "connected" if k8s_ok else "unavailable",
-    }
+app = FastAPI(title="Aviary Agent Supervisor", lifespan=lifespan)
+app.include_router(agents_router)

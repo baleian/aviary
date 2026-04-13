@@ -1,42 +1,31 @@
-"""Centralized naming conventions for Aviary resources."""
+"""Centralized naming conventions for Aviary resources (Docker/Fargate).
 
-# K8s resource names — used by agent-supervisor and admin console
-DEPLOYMENT_NAME = "agent-runtime"
-SERVICE_NAME = "agent-runtime-svc"
-PVC_NAME = "agent-workspace"
-PVC_SIZE = "5Gi"
+Shared-volume model (mirrors Fargate + EFS with Access Points):
+  - AGENTS_WORKSPACE_VOLUME: one volume, per-agent subpath → /workspace.
+    All replicas of the same agent share this subpath, so any replica can
+    serve any session (conversation history lives on shared storage).
+  - SESSIONS_WORKSPACE_VOLUME: one volume, mounted whole at /workspace-shared;
+    bwrap overlays in the runtime expose only the current session's subdir
+    (enables A2A file sharing across agents within the same session).
+"""
+
 RUNTIME_PORT = 3000
-NETWORK_POLICY_NAME = "session-egress"
-RESOURCE_QUOTA_NAME = "session-quota"
-SERVICE_ACCOUNT_NAME = "session-runner"
-PLATFORM_NAMESPACE = "platform"
-NETWORK_POLICY_BASE_CONFIGMAP = "network-policy-base"
 
-PV_HOST_ROOT = "/var/lib/aviary/agent-workspace"
+AGENTS_WORKSPACE_VOLUME = "aviary-agents-workspace"
+SESSIONS_WORKSPACE_VOLUME = "aviary-sessions-workspace"
 
-
-def agent_pv_name(agent_id: str) -> str:
-    return f"agent-{agent_id}-workspace"
-
-
-def agent_pv_host_path(agent_id: str) -> str:
-    return f"{PV_HOST_ROOT}/{agent_id}"
+# Docker labels
+LABEL_AGENT_ID = "aviary.agent-id"
+LABEL_REPLICA = "aviary.replica"
+LABEL_MANAGED = "aviary.managed"
+LABEL_ROLE = "aviary.role"
+ROLE_AGENT_RUNTIME = "agent-runtime"
 
 
-# K8s labels
-LABEL_ROLE = "aviary/role"
-LABEL_AGENT_ID = "aviary/agent-id"
-LABEL_OWNER = "aviary/owner"
-LABEL_MANAGED = "aviary/managed"
+def container_name(agent_id: str, replica: int) -> str:
+    return f"aviary-agent-{agent_id}-{replica}"
 
 
-def agent_namespace(agent_id: str | object) -> str:
-    return f"agent-{agent_id}"
-
-
-def agent_id_from_namespace(namespace: str) -> str:
-    return namespace.removeprefix("agent-")
-
-
-def runtime_label_selector() -> str:
-    return f"{LABEL_ROLE}={DEPLOYMENT_NAME}"
+def agent_subpath(agent_id: str) -> str:
+    """Subpath inside AGENTS_WORKSPACE_VOLUME. Shared across all replicas of an agent."""
+    return agent_id

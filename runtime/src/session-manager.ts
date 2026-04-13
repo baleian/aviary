@@ -1,37 +1,18 @@
-/**
- * Per-Pod concurrency limiter and per-session mutex for the agent runtime.
- */
-
 import * as fs from "node:fs";
-import * as path from "node:path";
 import {
   DEFAULT_MAX_CONCURRENT_SESSIONS,
-  SHARED_WORKSPACE_ROOT,
-  WORKSPACE_ROOT,
   sessionClaudeDir,
-  sessionHome,
   sessionTmp,
-  sessionVenvDir,
+  sessionWorkspace,
 } from "./constants.js";
-
-export { WORKSPACE_ROOT, SHARED_WORKSPACE_ROOT };
-
-const MAX_CONCURRENT_SESSIONS = parseInt(
-  process.env.MAX_CONCURRENT_SESSIONS ?? String(DEFAULT_MAX_CONCURRENT_SESSIONS),
-  10,
-);
 
 export interface SessionEntry {
   sessionId: string;
   workspace: string;
   createdAt: number;
-  /** Simple mutex: resolves when the lock is released. */
-  _lock: {
-    acquire(): Promise<() => void>;
-  };
+  _lock: { acquire(): Promise<() => void> };
 }
 
-/** Creates a simple async mutex. */
 function createMutex() {
   let _queue: Array<() => void> = [];
   let _locked = false;
@@ -57,6 +38,11 @@ function createMutex() {
   };
 }
 
+const MAX_CONCURRENT_SESSIONS = parseInt(
+  process.env.MAX_CONCURRENT_SESSIONS ?? String(DEFAULT_MAX_CONCURRENT_SESSIONS),
+  10,
+);
+
 export class SessionManager {
   private _sessions = new Map<string, SessionEntry>();
   readonly maxSessions: number;
@@ -79,19 +65,17 @@ export class SessionManager {
     if (existing) return existing;
 
     if (!this.hasCapacity) {
-      throw new Error(`Pod at capacity (${this.maxSessions} sessions)`);
+      throw new Error(`Container at capacity (${this.maxSessions} sessions)`);
     }
 
-    const home = sessionHome(sessionId);
-    fs.mkdirSync(home, { recursive: true });
+    const workspace = sessionWorkspace(sessionId);
+    fs.mkdirSync(workspace, { recursive: true });
     fs.mkdirSync(sessionClaudeDir(sessionId), { recursive: true });
     fs.mkdirSync(sessionTmp(sessionId), { recursive: true });
-    // venv parent only — claude-sandbox.sh creates the venv itself.
-    fs.mkdirSync(path.dirname(sessionVenvDir(sessionId)), { recursive: true });
 
     const entry: SessionEntry = {
       sessionId,
-      workspace: home,
+      workspace,
       createdAt: Date.now() / 1000,
       _lock: createMutex(),
     };
@@ -127,8 +111,6 @@ export class SessionManager {
       if (this.activeCount === 0) return;
       await new Promise((r) => setTimeout(r, 500));
     }
-    console.warn(
-      `Shutdown timeout: ${this.activeCount} sessions still active`,
-    );
+    console.warn(`Shutdown timeout: ${this.activeCount} sessions still active`);
   }
 }

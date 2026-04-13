@@ -2,51 +2,24 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # Agent runtime
-    agent_runtime_image: str = "aviary-runtime:latest"
-    max_concurrent_sessions_per_pod: int = 5
-    host_gateway_ip: str
+    runtime_backend: str = "docker"
+    runtime_image: str = "aviary-runtime:latest"
+    runtime_port: int = 3000
+    max_concurrent_sessions_per_task: int = 5
 
-    # Default per-pod resource limits — overridable via per-agent policy.
-    default_memory_limit: str = "4Gi"
-    default_cpu_limit: str = "4"
+    docker_socket: str = "/var/run/docker.sock"
 
-    # Default ResourceQuota for an agent namespace.
-    quota_pods_buffer: int = 2  # added to maxPods
-    quota_requests_cpu: str = "10"
-    quota_requests_memory: str = "10Gi"
-    quota_limits_cpu: str = "20"
-    quota_limits_memory: str = "20Gi"
-    quota_pvcs: int = 10
+    database_url: str = "postgresql+asyncpg://aviary:aviary@postgres:5432/aviary"
+    redis_url: str = "redis://redis:6379/0"
 
-    # Database
-    database_url: str
+    inference_router_url: str = ""
 
-    # Pod environment — injected into agent runtime containers
-    inference_router_url: str
-    mcp_gateway_url: str
-    litellm_api_key: str
-    egress_proxy_url: str
-    aviary_api_url: str
-    internal_api_key: str
-    no_proxy: str = (
-        "litellm.platform.svc,"
-        "mcp-gateway.platform.svc,"
-        "egress-proxy.platform.svc,"
-        ".svc,.svc.cluster.local,"
-        "localhost,127.0.0.1"
-    )
-
-    # Scaling
     scaling_check_interval: int = 30
-    sessions_per_pod_scale_up: int = 3
-    sessions_per_pod_scale_down: int = 1
+    sessions_per_task_scale_up: int = 3
+    sessions_per_task_scale_down: int = 1
 
-    # Idle cleanup
-    agent_idle_timeout: int = 604800  # 7 days in seconds
-    idle_cleanup_interval: int = 300  # 5 minutes
-
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    agent_idle_timeout: int = 604800
+    idle_cleanup_interval: int = 300
 
 
 settings = Settings()

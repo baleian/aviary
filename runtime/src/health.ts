@@ -1,10 +1,3 @@
-/**
- * Health and readiness probes for the agent runtime.
- *
- * Capacity is reported by the server via setCapacityProbe() so this module
- * does not import SessionManager directly.
- */
-
 import { Router, type Request, type Response } from "express";
 
 interface CapacityProbe {
