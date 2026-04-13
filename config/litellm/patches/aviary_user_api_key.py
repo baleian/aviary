@@ -197,6 +197,11 @@ def _register():
             if not model.startswith("anthropic/"):
                 return data
 
+            # Bedrock-via-Portkey uses AWS credentials, not Anthropic API keys.
+            extra_headers = data.get("extra_headers") or {}
+            if extra_headers.get("x-portkey-provider") == "aws-bedrock":
+                return data
+
             proxy_req = data.get("proxy_server_request") or (
                 data.get("metadata", {}).get("proxy_server_request")
             ) or {}
@@ -217,10 +222,10 @@ def _register():
                 raise _auth_error(f"Credential service error: {exc}") from exc
 
             if not api_key:
-                # No per-user key configured — pass through with the model's
-                # configured api_key. Local/keyless backends keep working;
-                # Anthropic itself will 401 if a real key was required.
-                return data
+                raise _auth_error(
+                    f"No Anthropic API key configured for user. "
+                    f"Add '{VAULT_CREDENTIAL_NAME}' credential in your profile settings."
+                )
 
             data["api_key"] = api_key
             if "litellm_params" in data:
