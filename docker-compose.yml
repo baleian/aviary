@@ -11,6 +11,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    networks: [platform]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U aviary"]
       interval: 5s
@@ -21,6 +22,7 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    networks: [platform]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -35,6 +37,7 @@ services:
         UV_INDEX_URL: ${UV_INDEX_URL:-}
     environment:
       DATABASE_URL: postgresql+asyncpg://aviary:aviary@postgres:5432/aviary
+    networks: [platform]
     depends_on:
       postgres:
         condition: service_healthy
@@ -53,6 +56,7 @@ services:
       - ./shared:/workspace/shared
       - /var/run/docker.sock:/var/run/docker.sock
       - /workspace/.venv
+    networks: [platform, agent]
     environment:
       RUNTIME_BACKEND: docker
       RUNTIME_IMAGE: aviary-runtime:latest
@@ -60,7 +64,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       DOCKER_SOCKET: /var/run/docker.sock
       INFERENCE_ROUTER_URL: ${INFERENCE_ROUTER_URL:-}
-      # Tight intervals for local dev responsiveness (production uses defaults)
+      AGENT_PRIMARY_NETWORK: aviary-agent-default
       SCALING_CHECK_INTERVAL: "5"
       IDLE_CLEANUP_INTERVAL: "30"
     depends_on:
@@ -74,6 +78,15 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
+networks:
+  platform:
+    name: aviary_platform
+  agent:
+    name: aviary-agent-default
+    internal: true
+  egress-open:
+    name: aviary-egress-open
 
 volumes:
   pgdata:

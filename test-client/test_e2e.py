@@ -44,16 +44,19 @@ async def seed_agent(
     name: str = "test",
     min_tasks: int = 1,
     max_tasks: int = 1,
+    network_policy: dict | None = None,
 ) -> None:
     conn = await asyncpg.connect(DB_URL)
     try:
         policy_id = uuid.uuid4()
+        policy_rules = {"network": network_policy} if network_policy else None
         await conn.execute(
             """
-            INSERT INTO policies (id, min_tasks, max_tasks)
-            VALUES ($1, $2, $3)
+            INSERT INTO policies (id, min_tasks, max_tasks, policy_rules)
+            VALUES ($1, $2, $3, $4::jsonb)
             """,
             policy_id, min_tasks, max_tasks,
+            json.dumps(policy_rules) if policy_rules is not None else None,
         )
         await conn.execute(
             """
@@ -466,6 +469,34 @@ async def test_persist_after_container_removal(ctx: Ctx, agent_id: str) -> None:
     )
 
 
+async def test_network_policy_default_blocks_egress(ctx: Ctx, agent_id: str) -> None:
+    print("\n[test] network policy — default profile blocks external egress")
+    session_id = str(uuid.uuid4())
+    events = await send_scenario(ctx.client, agent_id, session_id, [
+        {"type": "exec", "cmd": [
+            "sh", "-c",
+            "curl -s --max-time 3 -o /dev/null -w '%{http_code}' https://example.com",
+        ]},
+    ])
+    body = "".join(chunks_of(events)).strip()
+    require(body in ("000", ""), f"external HTTP blocked (curl code={body!r})")
+
+
+async def test_network_policy_approved_profile_allows_egress(
+    ctx: Ctx, agent_id: str,
+) -> None:
+    print("\n[test] network policy — approved profile grants external egress")
+    session_id = str(uuid.uuid4())
+    events = await send_scenario(ctx.client, agent_id, session_id, [
+        {"type": "exec", "cmd": [
+            "sh", "-c",
+            "curl -s --max-time 5 -o /dev/null -w '%{http_code}' https://example.com",
+        ]},
+    ])
+    body = "".join(chunks_of(events)).strip()
+    require(body.startswith("2") or body.startswith("3"), f"external HTTP allowed (curl code={body!r})")
+
+
 async def test_abort(ctx: Ctx, agent_id: str) -> None:
     print("\n[test] abort mid-stream")
     session_id = str(uuid.uuid4())
@@ -492,11 +523,19 @@ async def main():
     agent_a = str(uuid.uuid4())
     agent_b = str(uuid.uuid4())
     agent_scale = str(uuid.uuid4())
+    agent_default_net = str(uuid.uuid4())
+    agent_open_net = str(uuid.uuid4())
 
     await seed_agent(agent_a, "a")
     await seed_agent(agent_b, "b")
     # Scaling tests need room to grow; concurrent session limit per task is 5.
     await seed_agent(agent_scale, "scale", min_tasks=1, max_tasks=3)
+    # Network policy tests: default blocks, approved profile allows egress.
+    await seed_agent(agent_default_net, "netdefault")
+    await seed_agent(
+        agent_open_net, "netopen",
+        network_policy={"extra_networks": ["aviary-egress-open"]},
+    )
 
     async with httpx.AsyncClient(timeout=60) as client:
         ctx = Ctx(client=client)
@@ -504,12 +543,16 @@ async def main():
             await register_and_run(client, agent_a)
             await register_and_run(client, agent_b)
             await register_and_run(client, agent_scale)
+            await register_and_run(client, agent_default_net)
+            await register_and_run(client, agent_open_net)
 
             await test_basic_streaming(ctx, agent_a)
             await test_session_isolation(ctx, agent_a)
             await test_session_resume(ctx, agent_a)
             await test_concurrent_same_session_serialized(ctx, agent_a)
             await test_a2a_sharing(ctx, agent_a, agent_b)
+            await test_network_policy_default_blocks_egress(ctx, agent_default_net)
+            await test_network_policy_approved_profile_allows_egress(ctx, agent_open_net)
             await test_abort(ctx, agent_a)
             await test_persist_after_container_removal(ctx, agent_a)
             await test_scale_up_under_load(ctx, agent_scale)
@@ -518,6 +561,8 @@ async def main():
             await cleanup_agent(client, agent_a)
             await cleanup_agent(client, agent_b)
             await cleanup_agent(client, agent_scale)
+            await cleanup_agent(client, agent_default_net)
+            await cleanup_agent(client, agent_open_net)
 
     print("\n=== All tests passed! ===")
 

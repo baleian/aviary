@@ -27,14 +27,21 @@ class FargateBackend:
         raise NotImplementedError
 
     async def create_replica(
-        self, agent_id: str, image: str, env: dict[str, str], resource_limits: dict | None = None,
+        self, agent_id: str, image: str, env: dict[str, str],
+        network_policy: dict | None = None,
+        resource_limits: dict | None = None,
     ) -> TaskInfo:
+        # network_policy: {"extra_networks": [sg_ids], "subnets": [subnet_ids]}
+        # maps to awsvpcConfiguration.securityGroups / .subnets respectively.
         raise NotImplementedError
 
     async def stop_replica(self, task: TaskInfo) -> bool:
         raise NotImplementedError
 
-    async def scale_to(self, agent_id: str, target: int, image: str, env: dict[str, str]) -> int:
+    async def scale_to(
+        self, agent_id: str, target: int, image: str, env: dict[str, str],
+        network_policy: dict | None = None,
+    ) -> int:
         raise NotImplementedError
 
     async def stop_all_replicas(self, agent_id: str) -> int:

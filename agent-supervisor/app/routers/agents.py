@@ -12,6 +12,7 @@ from aviary_shared.db.models import Agent
 from app.config import settings
 from app.db import async_session
 from app.services.activity import touch_activity
+from app.services.network_policy import extract_network_policy
 from app.services.runtime_env import build_task_env
 from app.services.streaming import proxy_and_publish
 
@@ -27,15 +28,15 @@ def _get_redis(request: Request):
     return request.app.state.redis_publisher
 
 
-async def _min_replicas_for(agent_id: str) -> int:
+async def _agent_scaling_spec(agent_id: str) -> tuple[int, dict | None]:
     async with async_session() as db:
         result = await db.execute(
             select(Agent).where(Agent.id == agent_id).options(selectinload(Agent.policy)),
         )
         agent = result.scalar_one_or_none()
     if agent and agent.policy:
-        return max(1, agent.policy.min_tasks)
-    return 1
+        return max(1, agent.policy.min_tasks), extract_network_policy(agent.policy)
+    return 1, None
 
 
 @router.post("/agents/{agent_id}/register")
@@ -57,12 +58,16 @@ async def delete_agent(agent_id: str, request: Request):
 async def run_agent(agent_id: str, request: Request):
     """Ensure at least min_replicas running for this agent."""
     backend = _get_backend(request)
-    target = await _min_replicas_for(agent_id)
+    target, network_policy = await _agent_scaling_spec(agent_id)
     actual = await backend.scale_to(
         agent_id, target, settings.runtime_image, build_task_env(agent_id),
+        network_policy=network_policy,
     )
     await touch_activity(agent_id)
-    return {"status": "running", "agent_id": agent_id, "replicas": actual}
+    return {
+        "status": "running", "agent_id": agent_id, "replicas": actual,
+        "network_policy": network_policy,
+    }
 
 
 @router.get("/agents/{agent_id}/replicas")

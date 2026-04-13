@@ -54,32 +54,22 @@ class DockerBackend:
     def __init__(
         self,
         socket: str = "/var/run/docker.sock",
-        network: str | None = None,
+        primary_network: str = "aviary-agent-default",
     ) -> None:
         self._client = docker.DockerClient(base_url=f"unix://{socket}")
-        self._network = network or self._detect_own_network()
+        self._primary_network = primary_network
         self._http = httpx.AsyncClient(timeout=30)
-        logger.info("DockerBackend using network: %s", self._network or "(default)")
+        self._require_network(self._primary_network)
+        logger.info("DockerBackend ready: primary=%s", self._primary_network)
 
-    def _detect_own_network(self) -> str | None:
-        """Return the first non-loopback network this process's container is on.
-
-        When running inside docker-compose, agent containers need to share that
-        network so the supervisor can reach them by container name.
-        """
-        import os
-        hostname = os.environ.get("HOSTNAME")
-        if not hostname:
-            return None
+    def _require_network(self, name: str) -> None:
         try:
-            self_container = self._client.containers.get(hostname)
-        except docker.errors.NotFound:
-            return None
-        networks = self_container.attrs.get("NetworkSettings", {}).get("Networks", {})
-        for name in networks:
-            if name != "bridge":
-                return name
-        return None
+            self._client.networks.get(name)
+        except docker.errors.NotFound as e:
+            raise RuntimeError(
+                f"Required Docker network {name!r} does not exist. "
+                "Infrastructure networks must be pre-provisioned."
+            ) from e
 
     # ── volumes & subpath init ────────────────────────────────────
     _chowned: set[str] = set()
@@ -209,6 +199,7 @@ class DockerBackend:
         agent_id: str,
         image: str,
         env: dict[str, str],
+        network_policy: dict | None = None,
         resource_limits: dict | None = None,
     ) -> TaskInfo:
         self._ensure_volume(AGENTS_WORKSPACE_VOLUME)
@@ -217,6 +208,10 @@ class DockerBackend:
 
         replica = self._next_replica_idx(agent_id)
         name = container_name(agent_id, replica)
+        # Docker only consumes extra_networks; subnets is Fargate-only.
+        extras = (network_policy or {}).get("extra_networks") or []
+        for net in extras:
+            self._require_network(net)
 
         container: Container = self._client.containers.run(  # type: ignore[assignment]
             image,
@@ -225,14 +220,20 @@ class DockerBackend:
             environment=env,
             labels=self._labels(agent_id, replica),
             mounts=self._build_mounts(agent_id),
-            network=self._network,
+            network=self._primary_network,
             restart_policy={"Name": "unless-stopped"},  # type: ignore[arg-type]
             # bubblewrap needs unprivileged user namespaces; the default
             # Docker seccomp profile blocks the required syscalls.
             security_opt=["seccomp=unconfined"],
         )
 
-        logger.info("Created replica %s for agent %s", name, agent_id)
+        for net in extras:
+            self._client.networks.get(net).connect(container)
+
+        logger.info(
+            "Created replica %s for agent %s (networks=%s)",
+            name, agent_id, [self._primary_network, *extras],
+        )
         return self._to_task_info(container, agent_id, replica)
 
     async def stop_replica(self, task: TaskInfo) -> bool:
@@ -255,13 +256,16 @@ class DockerBackend:
         target: int,
         image: str,
         env: dict[str, str],
+        network_policy: dict | None = None,
     ) -> int:
         replicas = await self.list_replicas(agent_id)
         current = len(replicas)
 
         if target > current:
             for _ in range(target - current):
-                await self.create_replica(agent_id, image, env)
+                await self.create_replica(
+                    agent_id, image, env, network_policy=network_policy,
+                )
         elif target < current:
             # Prefer removing replicas with fewest active sessions (least disruptive).
             scored: list[tuple[int, TaskInfo]] = []

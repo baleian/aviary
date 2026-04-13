@@ -11,7 +11,8 @@ The codebase is being rewritten from scratch. v1 used K3s-in-Docker + per-agent 
 - Multi-replica per agent, consistent-hash load balancing, auto-scaling, idle cleanup
 - Shared-volume storage model (subpath per agent) that maps 1:1 to Fargate + EFS Access Points
 - Runtime with scenario-driven mock mode for integration tests (same image as prod)
-- End-to-end test suite covering streaming, isolation, resume, A2A, abort, scaling, mutex, persistence
+- Network policy via `agent.policy.network_profile` — profile-to-networks mapping in supervisor config (Docker `internal` network = default-sg blocked egress; extra networks = approved-SG analogue)
+- End-to-end test suite covering streaming, isolation, resume, A2A, abort, scaling, mutex, persistence, network policy
 
 ### Phase 2 — next up (not yet started)
 - API server rewrite (OIDC, WebSocket streaming from Redis Pub/Sub, agent CRUD, sessions)
@@ -70,6 +71,21 @@ Two named volumes, both subpath-compatible:
 - `aviary-sessions-workspace` — mounted whole at `/workspace-shared`. Per-session subdirs (`{session_id}/`) enable A2A file sharing across agents in the same session. bwrap in the runtime tmpfs-overlays this path so other sessions are invisible from within the sandbox.
 
 Uses **Docker volume subpath mount** (`VolumeOptions.Subpath`), requires Docker 25.0+. On Fargate this maps to **EFS Access Points** with root_directory per agent — no code change needed beyond the `FargateBackend` implementation.
+
+## Network policy (egress control)
+
+Every agent container joins `AGENT_PRIMARY_NETWORK` (`aviary-agent-default`), which is `internal: true` on Docker (= default-sg with all egress denied on Fargate). Per-agent overrides live in `policies.policy_rules.network`:
+
+```json
+{"network": {"extra_networks": ["aviary-egress-open"], "subnets": ["subnet-xyz"]}}
+```
+
+- `extra_networks` — Docker network names / Fargate SG IDs to attach in addition to the primary.
+- `subnets` — Fargate subnet IDs; ignored by DockerBackend.
+
+Admin enters these raw infrastructure names directly. Supervisor never auto-creates — if a referenced network doesn't exist, `create_replica` fails. Networks must be pre-provisioned by docker-compose (local) or Terraform (production).
+
+Policy changes are picked up by the next `create_replica` (via `/run`, scale-up, or post-idle re-spawn). **Running replicas are not mutated** — a rolling restart is required to apply changes (Phase 2 admin endpoint).
 
 ## Multi-replica + load balancing
 
@@ -160,10 +176,12 @@ Test suite ([test-client/test_e2e.py](test-client/test_e2e.py)):
 3. `test_session_resume` — files persist across sequential messages
 4. `test_concurrent_same_session_serialized` — per-session mutex (no interleaving)
 5. `test_a2a_sharing` — cross-agent file sharing within a session; cross-session isolation
-6. `test_abort` — abort in the middle of a sleep step
-7. `test_persist_after_container_removal` — DELETE agent → re-run → state intact
-8. `test_scale_up_under_load` — 5 concurrent sessions trigger replica scale-up then scale-down
-9. `test_context_across_scaling` — session files survive scale-up/scale-down cycles
+6. `test_network_policy_default_blocks_egress` — default profile: external HTTP returns `000` (blocked)
+7. `test_network_policy_approved_profile_allows_egress` — `egress-open` profile: external HTTP succeeds
+8. `test_abort` — abort in the middle of a sleep step
+9. `test_persist_after_container_removal` — DELETE agent → re-run → state intact
+10. `test_scale_up_under_load` — 5 concurrent sessions trigger replica scale-up then scale-down
+11. `test_context_across_scaling` — session files survive scale-up/scale-down cycles
 
 Full suite ~90s (bounded by scaling interval + scenario sleep durations).
 
@@ -173,7 +191,7 @@ Full suite ~90s (bounded by scaling interval + scenario sleep durations).
 |---------|-----|---------|-------|
 | agent-supervisor | `RUNTIME_BACKEND` | `docker` | `docker` or `fargate` |
 | agent-supervisor | `RUNTIME_IMAGE` | `aviary-runtime:latest` | Image for spawned containers |
-| agent-supervisor | `DOCKER_NETWORK` | auto | Defaults to supervisor's own compose network |
+| agent-supervisor | `AGENT_PRIMARY_NETWORK` | `aviary-agent-default` | Internal network every agent joins (egress blocked) |
 | agent-supervisor | `DATABASE_URL` | postgres://... | asyncpg DSN |
 | agent-supervisor | `REDIS_URL` | redis://redis:6379/0 | Pub/Sub + Streams |
 | agent-supervisor | `SCALING_CHECK_INTERVAL` | 5 (dev) / 30 | Scaling loop period (seconds) |
@@ -188,7 +206,7 @@ Full suite ~90s (bounded by scaling interval + scenario sleep durations).
 ## DB schema (Phase 1, simplified from v1)
 
 - `agents` — id, name, slug, owner_id, instruction, model_config (JSONB), tools (JSONB), status, policy_id
-- `policies` — id, min_tasks, max_tasks, resource_limits (JSONB), policy_rules (JSONB), last_activity_at
+- `policies` — id, min_tasks, max_tasks, resource_limits (JSONB), policy_rules (JSONB — includes `network.extra_networks`, `network.subnets`), last_activity_at
 - `sessions` — id, agent_id, created_by, title, status, last_message_at
 - `messages` — id, session_id, sender_type, sender_id, content, metadata (JSONB)
 

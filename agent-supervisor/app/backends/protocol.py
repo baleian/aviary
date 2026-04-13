@@ -35,6 +35,7 @@ class RuntimeBackend(Protocol):
         agent_id: str,
         image: str,
         env: dict[str, str],
+        network_policy: dict | None = None,
         resource_limits: dict | None = None,
     ) -> TaskInfo: ...
 
@@ -46,6 +47,7 @@ class RuntimeBackend(Protocol):
         target: int,
         image: str,
         env: dict[str, str],
+        network_policy: dict | None = None,
     ) -> int:
         """Scale agent replicas to `target` count. Returns actual replica count after."""
         ...

@@ -24,7 +24,7 @@ def create_backend():
     if settings.runtime_backend == "docker":
         return DockerBackend(
             socket=settings.docker_socket,
-            network=settings.docker_network or None,
+            primary_network=settings.agent_primary_network,
         )
     elif settings.runtime_backend == "fargate":
         from app.backends.fargate import FargateBackend
