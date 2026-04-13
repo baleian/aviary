@@ -12,7 +12,7 @@ from aviary_shared.db.models import User
 router = APIRouter()
 
 
-@router.get("", response_model=AgentListResponse)
+@router.get("", response_model=AgentListResponse, response_model_by_alias=True)
 async def list_agents(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -21,7 +21,7 @@ async def list_agents(
     return AgentListResponse(items=[AgentResponse.model_validate(a) for a in items])
 
 
-@router.post("", response_model=AgentResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=AgentResponse, response_model_by_alias=True, status_code=status.HTTP_201_CREATED)
 async def create_agent(
     body: AgentCreate,
     user: User = Depends(get_current_user),

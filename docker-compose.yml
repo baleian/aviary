@@ -207,6 +207,30 @@ services:
       retries: 5
       start_period: 10s
 
+  # -- Web frontend (Next.js) --
+  web:
+    build:
+      context: ./web
+      args:
+        NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./web:/app
+      - /app/node_modules
+      - /app/.next
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_WS_URL: ws://localhost:8000
+      NEXT_PUBLIC_OIDC_ISSUER: http://localhost:8180/realms/aviary
+      NEXT_PUBLIC_OIDC_CLIENT_ID: aviary-web
+      INTERNAL_API_URL: http://api:8000
+      HOSTNAME: "0.0.0.0"
+    networks: [platform]
+    depends_on:
+      api:
+        condition: service_healthy
+
   # -- MCP backend servers (platform-provided) --
   mcp-jira:
     build:
