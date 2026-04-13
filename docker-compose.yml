@@ -62,6 +62,65 @@ services:
       retries: 5
       start_period: 15s
 
+  # -- Keycloak (OIDC) --
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm", "--http-port=8080"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: "true"
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: aviary
+      KC_DB_PASSWORD: aviary
+    ports:
+      - "8180:8080"
+    volumes:
+      - ./config/keycloak:/opt/keycloak/data/import:ro
+    networks: [platform]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # -- API Server --
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+      args:
+        UV_INDEX_URL: ${UV_INDEX_URL:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./api:/workspace/api
+      - ./shared:/workspace/shared
+      - /workspace/.venv
+    networks: [platform]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://aviary:aviary@postgres:5432/aviary
+      REDIS_URL: redis://redis:6379/0
+      SUPERVISOR_URL: http://agent-supervisor:9000
+      OIDC_ISSUER: http://localhost:8180/realms/aviary
+      OIDC_INTERNAL_ISSUER: http://keycloak:8080/realms/aviary
+      OIDC_CLIENT_ID: aviary-web
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
+      agent-supervisor:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health',timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   # -- Agent Supervisor --
   agent-supervisor:
     build:
@@ -94,7 +153,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9000/v1/health || exit 1"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9000/v1/health',timeout=3).status==200 else 1)"]
       interval: 10s
       timeout: 5s
       retries: 5

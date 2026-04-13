@@ -16,8 +16,9 @@ The codebase is being rewritten from scratch. v1 used K3s-in-Docker + per-agent 
 
 ### Phase 2 — in progress
 - **LLM gateway (DONE)** — LiteLLM on `aviary-agent-default` + `platform` networks; runtime → `http://litellm:4000` (Anthropic `/v1/messages` passthrough). LiteLLM config in [config/litellm/config.yaml](config/litellm/config.yaml). Local model backend is developer-specific (llama-swap + llama-server on host, scripts in [scripts/llama-swap/](scripts/llama-swap/)); in prod LiteLLM is an external service reached via SG allowlist.
-- API server rewrite (OIDC, WebSocket streaming from Redis Pub/Sub, agent CRUD, sessions)
+- **API server (MVP DONE)** — [api/](api/) FastAPI service (`:8000`): OIDC auth (Keycloak PKCE), user/agent/session CRUD, WebSocket chat streaming via supervisor SSE → Redis Pub/Sub + list-buffered replay. Owner-only authorization (no ACL yet — RBAC redesign deferred). Deferred from v1: A2A, ACL/teams, MCP catalog, credentials/Vault, workflows, search, uploads.
 - Web frontend reconnect
+- RBAC redesign (proper role/permission model replacing v1's agent-owner/user/viewer)
 - MCP gateway reintroduction
 - Temporal for durable workflow execution
 - Fargate backend implementation + Terraform for production deploy
@@ -45,13 +46,15 @@ Runtime container (agent-runtime):
 
 Docker Compose (`docker-compose.yml`) runs:
 
-- **PostgreSQL** (`:5432`) — agents, policies, sessions, messages
-- **Redis** (`:6379`) — Pub/Sub (realtime streaming) + Streams (durable events)
-- **Agent Supervisor** (`:9000`) — container lifecycle + API
-- **LiteLLM** (`:4000`) — LLM gateway, attached to `platform` (for host-gateway → upstream model backends) and `aviary-agent-default` (so runtime containers resolve `litellm:4000` within the otherwise internal-only network)
+- **PostgreSQL** (`:5432`) — agents, policies, sessions, messages, users
+- **Redis** (`:6379`) — Pub/Sub (realtime streaming) + list-buffer replay + auth session store
+- **Keycloak** (`:8180` host → `:8080` container) — OIDC provider; realm `aviary` auto-imported from [config/keycloak/aviary-realm.json](config/keycloak/aviary-realm.json); dev user `dev/dev`
+- **API** (`:8000`) — FastAPI user-facing REST + WebSocket
+- **Agent Supervisor** (`:9000`) — container lifecycle + internal API
+- **LiteLLM** (`:4000`) — LLM gateway, attached to `platform` and `aviary-agent-default`
 - **db-migrate** — Alembic migrations (one-shot)
 
-Not yet in stack: Keycloak, Vault, Portkey, MCP gateway, web, admin, Temporal.
+Not yet in stack: Vault, Portkey, MCP gateway, web, admin, Temporal.
 
 ## RuntimeBackend abstraction
 
@@ -206,6 +209,12 @@ Full suite ~90s (bounded by scaling interval + scenario sleep durations).
 | runtime | `MAX_CONCURRENT_SESSIONS` | 5 | From supervisor settings |
 | runtime | `INFERENCE_ROUTER_URL` | `http://litellm:4000` | Used as `ANTHROPIC_BASE_URL` by claude-agent-sdk |
 | runtime | `ANTHROPIC_API_KEY` | "" | Injected by supervisor from `LITELLM_API_KEY` |
+| api | `SUPERVISOR_URL` | `http://agent-supervisor:9000` | Internal supervisor endpoint |
+| api | `OIDC_ISSUER` | `http://localhost:8180/realms/aviary` | Browser-facing issuer URL |
+| api | `OIDC_INTERNAL_ISSUER` | `http://keycloak:8080/realms/aviary` | Container-to-container URL |
+| api | `OIDC_CLIENT_ID` | `aviary-web` | Public client in Keycloak realm |
+| api | `CORS_ORIGINS` | `["http://localhost:3000"]` | SPA origins (JSON array) |
+| api | `COOKIE_SECURE` | `false` | Set true behind HTTPS |
 
 ## DB schema (Phase 1, simplified from v1)
 
@@ -219,15 +228,29 @@ Phase 2 will add back users/teams, ACL, workflows, MCP tool catalog from v1.
 ## Project layout
 
 ```
-agent-supervisor/     # Supervisor service (Phase 1 rewrite)
+api/                  # User-facing API (FastAPI, OIDC, WebSocket chat)
+agent-supervisor/     # Internal supervisor (container lifecycle, SSE relay)
 runtime/              # Runtime container (claude-agent-sdk + mock + bwrap)
-shared/               # SQLAlchemy models, Redis utils, naming helpers
+shared/               # SQLAlchemy models, OIDC validator, redis/http helpers
 test-client/          # End-to-end test suite
-config/litellm/       # LiteLLM gateway config (model routing)
+config/litellm/       # LiteLLM gateway config
+config/keycloak/      # Keycloak realm auto-import (dev)
 scripts/              # setup-dev.sh, init-db.sql, llama-swap/ (dev-only host-run LLM)
-docker-compose.yml    # postgres, redis, db-migrate, agent-supervisor, litellm
+docker-compose.yml    # postgres, redis, db-migrate, keycloak, api, agent-supervisor, litellm
 v1/                   # Archived v1 codebase (reference only)
 ```
+
+## API module boundaries
+
+[api/app/](api/app/) is layered to keep future features additive:
+
+- **[routers/](api/app/routers/)** — thin HTTP/WS handlers. No business logic.
+- **[services/](api/app/services/)** — one module per concern: `agents`, `sessions`, `supervisor` (typed client), `stream/` (package).
+- **[services/stream/](api/app/services/stream/)** — `events.py` (wire constants), `buffer.py` (Redis Pub/Sub + list-based replay buffer), `manager.py` (background streaming task + user-message rollback), `relay.py` (WebSocket ↔ Pub/Sub forwarding + reconnect replay).
+- **[auth/](api/app/auth/)** — `oidc.py` (singleton validator), `session_store.py` (Redis-backed sessions with auto-refresh), `dependencies.py` (single entry point: `get_current_user` for REST, `authenticate_ws` for WebSocket).
+- **[schemas/](api/app/schemas/)** — Pydantic request/response contracts, isolated from SQLAlchemy models.
+
+Design choices vs v1: (1) typed supervisor client instead of scattered httpx calls, (2) single auth dependency covering REST and WS instead of duplicating cookie parsing, (3) stream package split into producer (`manager`) + consumer (`relay`) + transport (`buffer`) so each can be replaced in isolation, (4) MVP-first feature set so the surface area stays compact.
 
 ## Commit & workflow conventions
 

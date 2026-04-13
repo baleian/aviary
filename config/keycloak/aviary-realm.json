@@ -1,0 +1,35 @@
+{
+  "realm": "aviary",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "clients": [
+    {
+      "clientId": "aviary-web",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://localhost:3000/*"],
+      "webOrigins": ["http://localhost:3000"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:3000/*"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "dev",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "dev@aviary.local",
+      "firstName": "Dev",
+      "lastName": "User",
+      "credentials": [
+        {"type": "password", "value": "dev", "temporary": false}
+      ]
+    }
+  ]
+}
