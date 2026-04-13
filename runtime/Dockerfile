@@ -36,12 +36,18 @@ COPY --from=build /app/dist/ /app/dist/
 COPY scripts/ /app/scripts/
 COPY config/managed-settings.json /etc/claude-code/managed-settings.json
 
-# Install the sandbox wrapper as the `claude` command
+RUN chmod +x /app/scripts/sandbox.sh /app/scripts/claude-sandbox.sh
+
+# Install the claude wrapper as the `claude` command (forwards to sandbox.sh + claude-real)
 RUN CLAUDE_BIN=$(which claude-real) && \
     cp /app/scripts/claude-sandbox.sh "$(dirname "$CLAUDE_BIN")/claude" && \
     chmod +x "$(dirname "$CLAUDE_BIN")/claude"
 
-RUN mkdir -p /workspace
+# Pre-create the mount points owned by the runtime user. Docker copies the
+# image contents (including ownership) into an empty named volume on first
+# mount; setting this to node:node prevents root-owned subpaths later.
+RUN mkdir -p /workspace /workspace-shared \
+    && chown node:node /workspace /workspace-shared
 
 RUN git config --system user.name "aviary" \
     && git config --system user.email "aviary-agent@aviary.com"

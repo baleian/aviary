@@ -8,6 +8,10 @@ class Settings(BaseSettings):
     max_concurrent_sessions_per_task: int = 5
 
     docker_socket: str = "/var/run/docker.sock"
+    # Network the supervisor itself lives on, inherited by agent containers
+    # so they're reachable by container name. Auto-detected from the
+    # supervisor's own container if left empty.
+    docker_network: str = ""
 
     database_url: str = "postgresql+asyncpg://aviary:aviary@postgres:5432/aviary"
     redis_url: str = "redis://redis:6379/0"

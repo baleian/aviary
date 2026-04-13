@@ -60,6 +60,9 @@ services:
       REDIS_URL: redis://redis:6379/0
       DOCKER_SOCKET: /var/run/docker.sock
       INFERENCE_ROUTER_URL: ${INFERENCE_ROUTER_URL:-}
+      # Tight intervals for local dev responsiveness (production uses defaults)
+      SCALING_CHECK_INTERVAL: "5"
+      IDLE_CLEANUP_INTERVAL: "30"
     depends_on:
       db-migrate:
         condition: service_completed_successfully

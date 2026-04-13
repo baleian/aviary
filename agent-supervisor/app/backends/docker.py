@@ -57,16 +57,51 @@ class DockerBackend:
         network: str | None = None,
     ) -> None:
         self._client = docker.DockerClient(base_url=f"unix://{socket}")
-        self._network = network
+        self._network = network or self._detect_own_network()
         self._http = httpx.AsyncClient(timeout=30)
+        logger.info("DockerBackend using network: %s", self._network or "(default)")
+
+    def _detect_own_network(self) -> str | None:
+        """Return the first non-loopback network this process's container is on.
+
+        When running inside docker-compose, agent containers need to share that
+        network so the supervisor can reach them by container name.
+        """
+        import os
+        hostname = os.environ.get("HOSTNAME")
+        if not hostname:
+            return None
+        try:
+            self_container = self._client.containers.get(hostname)
+        except docker.errors.NotFound:
+            return None
+        networks = self_container.attrs.get("NetworkSettings", {}).get("Networks", {})
+        for name in networks:
+            if name != "bridge":
+                return name
+        return None
 
     # ── volumes & subpath init ────────────────────────────────────
-    def _ensure_volume(self, name: str) -> None:
+    _chowned: set[str] = set()
+
+    def _ensure_volume(self, name: str, chown_root: bool = False) -> None:
         try:
             self._client.volumes.get(name)
         except docker.errors.NotFound:
             self._client.volumes.create(name)
             logger.info("Created volume %s", name)
+
+        if chown_root and name not in self._chowned:
+            # Make the volume root writable by the runtime uid so it can
+            # mkdir session subdirs. Run once per supervisor process.
+            self._client.containers.run(
+                _INIT_IMAGE,
+                command=["sh", "-c", f"chown {_RUNTIME_UID}:{_RUNTIME_GID} /mnt"],
+                volumes={name: {"bind": "/mnt", "mode": "rw"}},
+                remove=True,
+                detach=False,
+            )
+            self._chowned.add(name)
 
     def _ensure_agent_subpath(self, agent_id: str) -> None:
         sub = agent_subpath(agent_id)
@@ -97,6 +132,7 @@ class DockerBackend:
             source=AGENTS_WORKSPACE_VOLUME,
             type="volume",
             read_only=False,
+            no_copy=True,  # don't clobber supervisor-prepared subpath ownership
         )
         # docker-py 7.x does not expose `subpath` directly; inject into the
         # raw Docker API payload. VolumeOptions.Subpath requires Docker 25.0+.
@@ -109,6 +145,7 @@ class DockerBackend:
                 source=SESSIONS_WORKSPACE_VOLUME,
                 type="volume",
                 read_only=False,
+                no_copy=True,
             ),
         ]
 
@@ -152,7 +189,7 @@ class DockerBackend:
     # ── storage ───────────────────────────────────────────────────
     async def ensure_storage(self, agent_id: str) -> dict[str, str]:
         self._ensure_volume(AGENTS_WORKSPACE_VOLUME)
-        self._ensure_volume(SESSIONS_WORKSPACE_VOLUME)
+        self._ensure_volume(SESSIONS_WORKSPACE_VOLUME, chown_root=True)
         self._ensure_agent_subpath(agent_id)
         return {
             "agents_workspace": AGENTS_WORKSPACE_VOLUME,
@@ -175,7 +212,7 @@ class DockerBackend:
         resource_limits: dict | None = None,
     ) -> TaskInfo:
         self._ensure_volume(AGENTS_WORKSPACE_VOLUME)
-        self._ensure_volume(SESSIONS_WORKSPACE_VOLUME)
+        self._ensure_volume(SESSIONS_WORKSPACE_VOLUME, chown_root=True)
         self._ensure_agent_subpath(agent_id)
 
         replica = self._next_replica_idx(agent_id)
@@ -190,6 +227,9 @@ class DockerBackend:
             mounts=self._build_mounts(agent_id),
             network=self._network,
             restart_policy={"Name": "unless-stopped"},  # type: ignore[arg-type]
+            # bubblewrap needs unprivileged user namespaces; the default
+            # Docker seccomp profile blocks the required syscalls.
+            security_opt=["seccomp=unconfined"],
         )
 
         logger.info("Created replica %s for agent %s", name, agent_id)

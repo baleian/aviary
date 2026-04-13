@@ -11,12 +11,6 @@ import * as path from "node:path";
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { WORKSPACE_ROOT, sessionClaudeDir, sessionTmp, sessionWorkspace } from "./constants.js";
 
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`Required environment variable ${name} is not set`);
-  return value;
-}
-
 const ANTHROPIC_BASE_URL = process.env.INFERENCE_ROUTER_URL || "https://api.anthropic.com";
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 const CLAUDE_CLI_PATH = "/usr/local/bin/claude";

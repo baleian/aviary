@@ -3,7 +3,17 @@ import express from "express";
 import { SessionManager } from "./session-manager.js";
 import { SHARED_WORKSPACE_ROOT, WORKSPACE_ROOT } from "./constants.js";
 import { healthRouter, setCapacityProbe, setReady } from "./health.js";
-import { processMessage } from "./agent.js";
+import { processMessage as processMessageReal } from "./agent.js";
+import { processMessageMock } from "./mock-agent.js";
+
+/**
+ * Per-request dispatch: when `agent_config.mock_scenario` is present we run
+ * the scripted mock (file ops still flow through the real bwrap sandbox),
+ * otherwise we invoke claude-agent-sdk. No separate runtime mode.
+ */
+function pickProcessMessage(agentConfig: Record<string, unknown>) {
+  return agentConfig?.mock_scenario ? processMessageMock : processMessageReal;
+}
 
 const app = express();
 app.use(express.json({ limit: "50mb" }));
@@ -67,8 +77,10 @@ app.post("/message", async (req, res) => {
     if (!abortController.signal.aborted) abortController.abort();
   });
 
+  const process = pickProcessMessage(body.agent_config);
+
   try {
-    for await (const chunk of processMessage(
+    for await (const chunk of process(
       body.session_id,
       AGENT_ID,
       body.content_parts,

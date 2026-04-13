@@ -22,7 +22,10 @@ logger = logging.getLogger(__name__)
 
 def create_backend():
     if settings.runtime_backend == "docker":
-        return DockerBackend(socket=settings.docker_socket)
+        return DockerBackend(
+            socket=settings.docker_socket,
+            network=settings.docker_network or None,
+        )
     elif settings.runtime_backend == "fargate":
         from app.backends.fargate import FargateBackend
         raise NotImplementedError("FargateBackend not yet available")
