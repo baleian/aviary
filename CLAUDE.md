@@ -172,8 +172,15 @@ pick_replica is deterministic per session_id, so sequential messages go to the s
 ```bash
 docker build -t aviary-runtime:latest ./runtime/
 docker compose up -d
-uv run python test-client/test_e2e.py
+./scripts/test.sh        # runs both API + e2e suites end-to-end
 ```
+
+`scripts/test.sh` recreates the supervisor with short loop intervals
+(`SCALING_CHECK_INTERVAL=5`, `IDLE_CLEANUP_INTERVAL=10`,
+`AGENT_IDLE_TIMEOUT=20`) and exports the same values so the test code
+can size its waits proportionally. The compose file's defaults are
+production-sensible (30 / 300 / 604800 seconds); restore them with
+`docker compose up -d --force-recreate agent-supervisor` after testing.
 
 Test suite ([test-client/test_e2e.py](test-client/test_e2e.py)):
 

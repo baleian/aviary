@@ -161,9 +161,11 @@ services:
       INFERENCE_ROUTER_URL: ${INFERENCE_ROUTER_URL:-http://litellm:4000}
       LITELLM_API_KEY: ${LITELLM_API_KEY:-sk-aviary-dev}
       AGENT_PRIMARY_NETWORK: aviary-agent-default
-      SCALING_CHECK_INTERVAL: "5"
-      IDLE_CLEANUP_INTERVAL: "10"
-      AGENT_IDLE_TIMEOUT: "20"
+      # Production-sensible defaults; override via env for test runs
+      # (see scripts/test.sh for the short values used by the e2e suites).
+      SCALING_CHECK_INTERVAL: ${SCALING_CHECK_INTERVAL:-30}
+      IDLE_CLEANUP_INTERVAL: ${IDLE_CLEANUP_INTERVAL:-300}
+      AGENT_IDLE_TIMEOUT: ${AGENT_IDLE_TIMEOUT:-604800}
     depends_on:
       db-migrate:
         condition: service_completed_successfully

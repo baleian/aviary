@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import secrets
 import sys
 import time
@@ -44,6 +45,18 @@ SESSION_KEY_PREFIX = "auth:session:"
 SESSION_TTL = 24 * 60 * 60
 
 DUMMY_MODEL_CFG = {"model": "mock-model", "backend": "mock"}
+
+# Supervisor loop timings — mirrored from compose env so test waits scale
+# with whatever the supervisor is actually running under (production
+# defaults, fast-test overrides from scripts/test.sh, etc.).
+SCALING_CHECK_INTERVAL = int(os.environ.get("SCALING_CHECK_INTERVAL", "30"))
+IDLE_CLEANUP_INTERVAL = int(os.environ.get("IDLE_CLEANUP_INTERVAL", "300"))
+AGENT_IDLE_TIMEOUT = int(os.environ.get("AGENT_IDLE_TIMEOUT", "604800"))
+
+# Upper bound on "how long after activity ceases until idle_cleanup kills
+# the last replica": idle threshold + up to one cleanup tick + a small
+# buffer for HTTP/DB latency.
+IDLE_ZERO_SCALE_DEADLINE = AGENT_IDLE_TIMEOUT + IDLE_CLEANUP_INTERVAL + 10
 
 
 # ─── auth helpers ───────────────────────────────────────────────────
@@ -498,9 +511,8 @@ async def test_last_session_delete_hard_deletes_soft_deleted_agent(sid: str) -> 
 async def test_idle_agent_zero_scales(sid: str) -> None:
     """An agent with no active sessions (min_tasks=1 policy) holds 1
     replica via scaling, but idle_cleanup zero-scales it once
-    `last_activity_at` exceeds `agent_idle_timeout`.
-
-    Dev env: AGENT_IDLE_TIMEOUT=20s, IDLE_CLEANUP_INTERVAL=10s.
+    `last_activity_at` exceeds `AGENT_IDLE_TIMEOUT`. Wait budget is derived
+    from the supervisor's actual loop timings.
     """
     async with _api_client(sid) as http:
         agent = await create_agent(http, "idle-zero")
@@ -521,7 +533,7 @@ async def test_idle_agent_zero_scales(sid: str) -> None:
 
             # Scaling alone won't drop below min_tasks=1. Only idle_cleanup
             # can zero-scale once last_activity_at exceeds the timeout.
-            final = await wait_for_replica_count(aid, 0, timeout=45)
+            final = await wait_for_replica_count(aid, 0, timeout=IDLE_ZERO_SCALE_DEADLINE)
             assert final == 0, f"idle_cleanup should have zero-scaled, got {final}"
         finally:
             await delete_agent(http, aid)

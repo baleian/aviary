@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import uuid
 from dataclasses import dataclass
@@ -30,6 +31,20 @@ DB_URL = "postgresql://aviary:aviary@localhost:5432/aviary"
 
 # Dummy model config — mock agent ignores the values but they must be present.
 DUMMY_MODEL_CFG = {"model": "mock-model", "backend": "mock"}
+
+# Supervisor loop timings — read from env so waits scale with whatever the
+# supervisor is configured for. `scripts/test.sh` overrides these to short
+# values; production defaults leave tests extremely slow (by design).
+SCALING_CHECK_INTERVAL = int(os.environ.get("SCALING_CHECK_INTERVAL", "30"))
+IDLE_CLEANUP_INTERVAL = int(os.environ.get("IDLE_CLEANUP_INTERVAL", "300"))
+
+# Filler sessions hold long enough to span several scaling ticks so the
+# scale-up decision has time to fire. 4 ticks is generous; less risks racing.
+HOLD_MS = SCALING_CHECK_INTERVAL * 1000 * 4
+
+# Wait budgets derived from loop intervals.
+SCALE_UP_DEADLINE = SCALING_CHECK_INTERVAL * 5
+SCALE_DOWN_DEADLINE = SCALING_CHECK_INTERVAL * 8
 
 
 # ─── helpers ─────────────────────────────────────────────────────────
@@ -302,25 +317,23 @@ async def test_scale_up_under_load(ctx: Ctx, agent_id: str) -> None:
     start = await replica_count(ctx.client, agent_id)
     require(start >= 1, f"agent starts with at least one replica (got {start})")
 
-    # Hold 5 sessions active for long enough to span a scaling tick.
+    # Hold 5 sessions active for long enough to span several scaling ticks.
     concurrency = 5
-    hold_ms = 20_000
 
     async def hold_session(sid: str):
         return await send_scenario(ctx.client, agent_id, sid, [
             {"type": "chunk", "content": f"holding {sid[:8]}"},
-            {"type": "sleep", "ms": hold_ms},
+            {"type": "sleep", "ms": HOLD_MS},
         ])
 
     session_ids = [str(uuid.uuid4()) for _ in range(concurrency)]
     tasks = [asyncio.create_task(hold_session(sid)) for sid in session_ids]
 
     try:
-        # Give the scaling loop (5s interval) at least 2 ticks to react.
         await wait_until(
             lambda: replica_count(ctx.client, agent_id),
             lambda n: n >= 2,
-            timeout=25,
+            timeout=SCALE_UP_DEADLINE,
             interval=1.0,
             desc="replicas >= 2",
         )
@@ -336,7 +349,7 @@ async def test_scale_up_under_load(ctx: Ctx, agent_id: str) -> None:
     end = await wait_until(
         lambda: replica_count(ctx.client, agent_id),
         lambda n: n <= 1,
-        timeout=40,
+        timeout=SCALE_DOWN_DEADLINE,
         interval=2.0,
         desc="scale back down to ≤1",
     )
@@ -358,12 +371,9 @@ async def test_context_across_scaling(ctx: Ctx, agent_id: str) -> None:
         {"type": "write", "path": "/workspace/history.txt", "content": "turn-1"},
     ])
 
-    # Saturate with other sessions long enough to provoke a scale-up cycle.
-    hold_ms = 20_000
-
     async def hold_session(sid: str):
         return await send_scenario(ctx.client, agent_id, sid, [
-            {"type": "sleep", "ms": hold_ms},
+            {"type": "sleep", "ms": HOLD_MS},
         ])
 
     filler = [asyncio.create_task(hold_session(str(uuid.uuid4()))) for _ in range(5)]
@@ -371,7 +381,7 @@ async def test_context_across_scaling(ctx: Ctx, agent_id: str) -> None:
         peak = await wait_until(
             lambda: replica_count(ctx.client, agent_id),
             lambda n: n >= 2,
-            timeout=25,
+            timeout=SCALE_UP_DEADLINE,
             desc="replicas >= 2",
         )
         require(peak >= 2, f"scale-up observed (peak={peak})")
@@ -383,7 +393,7 @@ async def test_context_across_scaling(ctx: Ctx, agent_id: str) -> None:
     await wait_until(
         lambda: replica_count(ctx.client, agent_id),
         lambda n: n <= 1,
-        timeout=40,
+        timeout=SCALE_DOWN_DEADLINE,
         desc="scale back down",
     )
 
@@ -569,6 +579,7 @@ async def test_abort(ctx: Ctx, agent_id: str) -> None:
     async def long_stream():
         return await send_scenario(ctx.client, agent_id, session_id, [
             {"type": "chunk", "content": "one", "delay_ms": 100},
+            # Long enough to reliably interleave with the abort call below.
             {"type": "sleep", "ms": 3000},
             {"type": "chunk", "content": "after-sleep"},
         ])
