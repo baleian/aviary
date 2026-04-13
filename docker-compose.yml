@@ -18,6 +18,41 @@ services:
       timeout: 5s
       retries: 5
 
+  vault:
+    image: hashicorp/vault:1.17
+    entrypoint: ["vault"]
+    command: ["server", "-config=/vault/config/vault.hcl"]
+    environment:
+      VAULT_ADDR: "http://127.0.0.1:8200"
+      SKIP_SETCAP: "true"
+    ports:
+      - "8200:8200"
+    cap_add:
+      - IPC_LOCK
+    networks: [platform]
+    volumes:
+      - vaultdata:/vault/data
+      - ./config/vault/vault.hcl:/vault/config/vault.hcl:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider --quiet 'http://127.0.0.1:8200/v1/sys/health?standbyok=true&sealedcode=200&uninitcode=200' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  vault-init:
+    image: hashicorp/vault:1.17
+    depends_on:
+      vault:
+        condition: service_healthy
+    environment:
+      VAULT_ADDR: "http://vault:8200"
+    networks: [platform]
+    volumes:
+      - vaultdata:/vault/data
+      - ./scripts/vault-init.sh:/usr/local/bin/vault-init.sh:ro
+    entrypoint: /bin/sh
+    command: ["/usr/local/bin/vault-init.sh"]
+
   redis:
     image: redis:7-alpine
     ports:
@@ -52,8 +87,21 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./config/litellm/config.yaml:/app/config.yaml:ro
+      - ./config/litellm/patches/aviary_user_api_key.py:/usr/lib/python3.13/site-packages/aviary_user_api_key.py:ro
+      - ./config/litellm/patches/aviary_patches.pth:/usr/lib/python3.13/site-packages/aviary_patches.pth:ro
     environment:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-aviary-dev}
+      VAULT_ADDR: "http://vault:8200"
+      VAULT_TOKEN: "dev-root-token"
+      OIDC_ISSUER: "http://localhost:8180/realms/aviary"
+      OIDC_INTERNAL_ISSUER: "http://keycloak:8080/realms/aviary"
+    depends_on:
+      vault:
+        condition: service_healthy
+      vault-init:
+        condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
     networks: [platform, agent]
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:4000/health/liveliness || exit 1"]
@@ -121,6 +169,8 @@ services:
       OIDC_ISSUER: http://localhost:8180/realms/aviary
       OIDC_INTERNAL_ISSUER: http://keycloak:8080/realms/aviary
       OIDC_CLIENT_ID: aviary-web
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: dev-root-token
     depends_on:
       db-migrate:
         condition: service_completed_successfully
@@ -130,6 +180,8 @@ services:
         condition: service_healthy
       agent-supervisor:
         condition: service_healthy
+      vault-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health',timeout=3).status==200 else 1)"]
       interval: 10s
@@ -158,8 +210,8 @@ services:
       DATABASE_URL: postgresql+asyncpg://aviary:aviary@postgres:5432/aviary
       REDIS_URL: redis://redis:6379/0
       DOCKER_SOCKET: /var/run/docker.sock
-      INFERENCE_ROUTER_URL: ${INFERENCE_ROUTER_URL:-http://litellm:4000}
-      LITELLM_API_KEY: ${LITELLM_API_KEY:-sk-aviary-dev}
+      LLM_GATEWAY_URL: ${LLM_GATEWAY_URL:-http://litellm:4000}
+      LLM_GATEWAY_API_KEY: ${LLM_GATEWAY_API_KEY:-sk-aviary-dev}
       AGENT_PRIMARY_NETWORK: aviary-agent-default
       # Production-sensible defaults; override via env for test runs
       # (see scripts/test.sh for the short values used by the e2e suites).
@@ -189,3 +241,4 @@ networks:
 
 volumes:
   pgdata:
+  vaultdata:

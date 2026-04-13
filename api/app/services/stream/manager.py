@@ -53,6 +53,8 @@ class StreamRequest:
     agent_id: str
     content: str
     user_message_id: uuid.UUID
+    user_token: str = ""
+    user_external_id: str = ""
     # Optional runtime override — sent verbatim as `agent_config.mock_scenario`.
     # Request-scoped (never persisted); lets tests script deterministic SSE
     # without invoking an LLM. Runtime checks presence to dispatch mock path.
@@ -203,8 +205,6 @@ async def _drive_stream(req: StreamRequest) -> None:
         "tools": agent.tools or [],
         "mcp_servers": {},
         "policy": agent.policy.policy_rules if agent.policy else {},
-        "user_external_id": "",
-        "user_token": "",
     }
     if req.mock_scenario:
         agent_config["mock_scenario"] = req.mock_scenario
@@ -214,6 +214,10 @@ async def _drive_stream(req: StreamRequest) -> None:
         "session_id": stream_id,
         "model_config_data": agent.model_config_data or {},
         "agent_config": agent_config,
+        "user": {
+            "external_id": req.user_external_id,
+            "token": req.user_token,
+        },
     }
 
     full_text = ""

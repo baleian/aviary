@@ -85,6 +85,7 @@ export async function* processMessageMock(
   _contentParts: ContentPart[],
   _modelConfig: unknown,
   agentConfig: AgentConfig,
+  _user: { external_id?: string; token?: string },
   abortController?: AbortController,
 ): AsyncGenerator<SSEChunk> {
   const t0 = Date.now();

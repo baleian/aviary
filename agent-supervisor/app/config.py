@@ -14,8 +14,8 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://aviary:aviary@postgres:5432/aviary"
     redis_url: str = "redis://redis:6379/0"
 
-    inference_router_url: str = ""
-    litellm_api_key: str = ""
+    llm_gateway_url: str = ""
+    llm_gateway_api_key: str = ""
 
     scaling_check_interval: int = 30
     sessions_per_task_scale_up: int = 3

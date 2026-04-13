@@ -32,9 +32,10 @@ router = APIRouter()
 @router.websocket("/sessions/{session_id}/ws")
 async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
     async with db_factory()() as db:
-        user = await authenticate_ws(websocket, db)
-        if user is None:
+        auth = await authenticate_ws(websocket, db)
+        if auth is None:
             return
+        user, access_token = auth
         try:
             session = await session_svc.require_owner(db, session_id, user)
         except Exception as e:
@@ -96,6 +97,8 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
                         agent_id=agent_id,
                         content=content,
                         user_message_id=user_message_id,
+                        user_token=access_token,
+                        user_external_id=user.external_id,
                         mock_scenario=data.get("mock_scenario"),
                     ))
                 except Exception as exc:

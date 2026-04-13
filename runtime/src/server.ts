@@ -40,11 +40,17 @@ interface ContentPart {
   attachments?: Array<{ type: string; media_type: string; data: string }>;
 }
 
+interface UserContext {
+  external_id?: string;
+  token?: string;
+}
+
 interface MessageRequestBody {
   content_parts: ContentPart[];
   session_id: string;
   model_config_data?: Record<string, unknown> | null;
   agent_config: Record<string, unknown>;
+  user?: UserContext;
 }
 
 app.post("/message", async (req, res) => {
@@ -86,6 +92,7 @@ app.post("/message", async (req, res) => {
       body.content_parts,
       body.model_config_data as any,
       body.agent_config as any,
+      body.user ?? {},
       abortController,
     )) {
       if (res.writableEnded || abortController.signal.aborted) break;

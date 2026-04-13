@@ -30,7 +30,7 @@ async def _upsert_user(db: AsyncSession, claims: TokenClaims) -> User:
     return user
 
 
-async def _user_from_sid(sid: str, db: AsyncSession) -> User:
+async def _user_and_token_from_sid(sid: str, db: AsyncSession) -> tuple[User, str]:
     data = await session_store.get_fresh(sid)
     if data is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session expired")
@@ -38,7 +38,8 @@ async def _user_from_sid(sid: str, db: AsyncSession) -> User:
         claims = await validator.validate_token(data.access_token)
     except ValueError as e:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(e)) from e
-    return await _upsert_user(db, claims)
+    user = await _upsert_user(db, claims)
+    return user, data.access_token
 
 
 async def get_current_user(
@@ -47,12 +48,15 @@ async def get_current_user(
 ) -> User:
     if not aviary_session:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated")
-    return await _user_from_sid(aviary_session, db)
+    user, _ = await _user_and_token_from_sid(aviary_session, db)
+    return user
 
 
-async def authenticate_ws(websocket: WebSocket, db: AsyncSession) -> User | None:
-    """Validate WS handshake (origin + session cookie). Returns user or None
-    after closing the socket with an appropriate code."""
+async def authenticate_ws(
+    websocket: WebSocket, db: AsyncSession,
+) -> tuple[User, str] | None:
+    """Validate WS handshake (origin + session cookie). Returns
+    ``(user, access_token)`` or ``None`` after closing the socket."""
     from app.config import settings
 
     origin = websocket.headers.get("origin")
@@ -66,7 +70,7 @@ async def authenticate_ws(websocket: WebSocket, db: AsyncSession) -> User | None
         return None
 
     try:
-        return await _user_from_sid(sid, db)
+        return await _user_and_token_from_sid(sid, db)
     except HTTPException:
         await websocket.close(code=4001, reason="Invalid or expired session")
         return None

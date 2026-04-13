@@ -17,5 +17,8 @@ class Settings(BaseSettings):
 
     agent_ready_timeout: int = 90
 
+    vault_addr: str = "http://vault:8200"
+    vault_token: str = "dev-root-token"
+
 
 settings = Settings()

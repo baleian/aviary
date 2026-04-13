@@ -2,7 +2,7 @@
  * Agent runner — claude-agent-sdk query with SSE streaming.
  *
  * Simplified for Phase 1: no A2A, no MCP gateway, no git credentials,
- * no per-user API key injection. Direct LLM routing via INFERENCE_ROUTER_URL.
+ * no per-user API key injection. Direct LLM routing via LLM_GATEWAY_URL.
  */
 
 import * as fs from "node:fs";
@@ -11,8 +11,8 @@ import * as path from "node:path";
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { WORKSPACE_ROOT, sessionClaudeDir, sessionTmp, sessionWorkspace } from "./constants.js";
 
-const ANTHROPIC_BASE_URL = process.env.INFERENCE_ROUTER_URL || "https://api.anthropic.com";
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
+const LLM_GATEWAY_URL = process.env.LLM_GATEWAY_URL ?? (() => { throw new Error("LLM_GATEWAY_URL is required"); })();
+const LLM_GATEWAY_API_KEY = process.env.LLM_GATEWAY_API_KEY ?? (() => { throw new Error("LLM_GATEWAY_API_KEY is required"); })();
 const CLAUDE_CLI_PATH = "/usr/local/bin/claude";
 
 const MODEL_TIER_KEYS = [
@@ -29,6 +29,11 @@ const PASSTHROUGH_KEYS = ["PATH", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"] as co
 interface AgentConfig {
   instruction?: string;
   tools?: string[];
+}
+
+interface UserContext {
+  external_id?: string;
+  token?: string;
 }
 
 interface ModelConfig {
@@ -93,6 +98,7 @@ export async function* processMessage(
   contentParts: ContentPart[],
   modelConfig: ModelConfig | null | undefined,
   agentConfig: AgentConfig,
+  user: UserContext,
   abortController?: AbortController,
 ): AsyncGenerator<SSEChunk> {
   const workspace = sessionWorkspace(sessionId);
@@ -111,8 +117,11 @@ export async function* processMessage(
   const canResume = hasSessionHistory(claudeDir, sessionId);
 
   const env: Record<string, string> = {
-    ANTHROPIC_BASE_URL,
-    ANTHROPIC_API_KEY,
+    ANTHROPIC_BASE_URL: LLM_GATEWAY_URL,
+    ANTHROPIC_API_KEY: LLM_GATEWAY_API_KEY,
+    ...(user.token
+      ? { ANTHROPIC_CUSTOM_HEADERS: `X-Aviary-User-Token: ${user.token}` }
+      : {}),
     SESSION_WORKSPACE: workspace,
     SESSION_CLAUDE_DIR: claudeDir,
     SESSION_TMP: tmpDir,

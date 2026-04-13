@@ -172,10 +172,10 @@ pick_replica is deterministic per session_id, so sequential messages go to the s
 ```bash
 docker build -t aviary-runtime:latest ./runtime/
 docker compose up -d
-./scripts/test.sh        # runs both API + e2e suites end-to-end
+./scripts/test-e2e.sh    # runs both API + e2e suites end-to-end
 ```
 
-`scripts/test.sh` recreates the supervisor with short loop intervals
+`scripts/test-e2e.sh` recreates the supervisor with short loop intervals
 (`SCALING_CHECK_INTERVAL=5`, `IDLE_CLEANUP_INTERVAL=10`,
 `AGENT_IDLE_TIMEOUT=20`) and exports the same values so the test code
 can size its waits proportionally. The compose file's defaults are
@@ -245,12 +245,12 @@ Scenarios covered:
 | agent-supervisor | `IDLE_CLEANUP_INTERVAL` | 30 (dev) / 300 | Idle scan period (seconds) |
 | agent-supervisor | `AGENT_IDLE_TIMEOUT` | 604800 | 7 days |
 | agent-supervisor | `MAX_CONCURRENT_SESSIONS_PER_TASK` | 5 | Per-container session cap |
-| agent-supervisor | `LITELLM_API_KEY` | `sk-aviary-dev` | Forwarded to runtime as `ANTHROPIC_API_KEY` |
-| litellm | `LITELLM_MASTER_KEY` | `sk-aviary-dev` | Must match `LITELLM_API_KEY` |
+| agent-supervisor | `LLM_GATEWAY_API_KEY` | `sk-aviary-dev` | Forwarded to runtime as `ANTHROPIC_API_KEY` |
+| litellm | `LITELLM_MASTER_KEY` | `sk-aviary-dev` | LiteLLM upstream env name; must match `LLM_GATEWAY_API_KEY` |
 | runtime | `AGENT_ID` | required | UUID from supervisor |
 | runtime | `MAX_CONCURRENT_SESSIONS` | 5 | From supervisor settings |
-| runtime | `INFERENCE_ROUTER_URL` | `http://litellm:4000` | Used as `ANTHROPIC_BASE_URL` by claude-agent-sdk |
-| runtime | `ANTHROPIC_API_KEY` | "" | Injected by supervisor from `LITELLM_API_KEY` |
+| runtime | `LLM_GATEWAY_URL` | required | LiteLLM endpoint (mapped internally to `ANTHROPIC_BASE_URL` for claude-agent-sdk) |
+| runtime | `LLM_GATEWAY_API_KEY` | required | Gateway auth key (mapped internally to `ANTHROPIC_API_KEY`) |
 | api | `SUPERVISOR_URL` | `http://agent-supervisor:9000` | Internal supervisor endpoint |
 | api | `OIDC_ISSUER` | `http://localhost:8180/realms/aviary` | Browser-facing issuer URL |
 | api | `OIDC_INTERNAL_ISSUER` | `http://keycloak:8080/realms/aviary` | Container-to-container URL |
