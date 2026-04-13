@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.agent import AgentCreate, AgentUpdate
 from app.services.supervisor import supervisor_client
-from aviary_shared.db.models import Agent, Policy, Session as SessionModel, User
+from aviary_shared.db.models import Agent, Policy, Session as SessionModel, User  # noqa: F401
 
 
 async def list_for_owner(db: AsyncSession, user: User) -> list[Agent]:
@@ -52,10 +52,6 @@ async def create(db: AsyncSession, user: User, body: AgentCreate) -> Agent:
     if existing.scalar_one_or_none():
         raise HTTPException(409, "Slug already exists")
 
-    policy = Policy(min_tasks=1, max_tasks=3)
-    db.add(policy)
-    await db.flush()
-
     agent = Agent(
         name=body.name,
         slug=body.slug,
@@ -63,9 +59,13 @@ async def create(db: AsyncSession, user: User, body: AgentCreate) -> Agent:
         instruction=body.instruction,
         model_config_data=body.model_config_data,
         tools=body.tools,
-        policy_id=policy.id,
     )
     db.add(agent)
+    await db.flush()
+
+    # Default policy: [1, 3]. Zero-scale below 1 is driven by idle_cleanup,
+    # not scaling — keeps behavior predictable during active conversations.
+    db.add(Policy(agent_id=agent.id, min_tasks=1, max_tasks=3))
     await db.flush()
 
     # Lazy spawn: register storage only. Replicas are created on session
@@ -96,17 +96,12 @@ async def session_count(db: AsyncSession, agent_id: uuid.UUID) -> int:
 
 
 async def hard_delete(db: AsyncSession, agent: Agent) -> None:
-    """Stop replicas, purge agent workspace, remove DB row + policy.
-    Idempotent: safe to call multiple times."""
-    agent_id_str = str(agent.id)
-    policy_id = agent.policy_id
+    """Stop replicas, purge agent workspace, remove the agent row.
 
-    await supervisor_client.delete(agent_id_str, purge=True)
-
-    if policy_id is not None:
-        policy = await db.get(Policy, policy_id)
-        if policy is not None:
-            await db.delete(policy)
+    FK CASCADE propagates the row delete to policy, sessions, and messages
+    in a single statement — nothing else to clean up at the DB level.
+    """
+    await supervisor_client.delete(str(agent.id), purge=True)
     await db.delete(agent)
     await db.flush()
 

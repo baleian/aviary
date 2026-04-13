@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import HTTPException
-from sqlalchemy import delete as sql_delete, desc, func, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aviary_shared.db.models import Agent, Message, Session, User
@@ -65,8 +65,7 @@ async def delete(db: AsyncSession, session: Session) -> None:
 
     await supervisor_client.cleanup_session(str(agent_id), session_id_str)
 
-    # No FK CASCADE in the current schema — delete messages first.
-    await db.execute(sql_delete(Message).where(Message.session_id == session_id))
+    # FK CASCADE on messages.session_id drops message rows automatically.
     await db.delete(session)
     await db.flush()
 

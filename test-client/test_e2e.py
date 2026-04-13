@@ -48,20 +48,11 @@ async def seed_agent(
 ) -> None:
     conn = await asyncpg.connect(DB_URL)
     try:
-        policy_id = uuid.uuid4()
         policy_rules = {"network": network_policy} if network_policy else None
         await conn.execute(
             """
-            INSERT INTO policies (id, min_tasks, max_tasks, policy_rules)
-            VALUES ($1, $2, $3, $4::jsonb)
-            """,
-            policy_id, min_tasks, max_tasks,
-            json.dumps(policy_rules) if policy_rules is not None else None,
-        )
-        await conn.execute(
-            """
-            INSERT INTO agents (id, name, slug, owner_id, instruction, model_config, status, policy_id)
-            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
+            INSERT INTO agents (id, name, slug, owner_id, instruction, model_config, status)
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
             ON CONFLICT (id) DO NOTHING
             """,
             uuid.UUID(agent_id),
@@ -71,22 +62,27 @@ async def seed_agent(
             "test instruction",
             json.dumps(DUMMY_MODEL_CFG),
             "active",
-            policy_id,
+        )
+        await conn.execute(
+            """
+            INSERT INTO policies (id, agent_id, min_tasks, max_tasks, policy_rules)
+            VALUES ($1, $2, $3, $4, $5::jsonb)
+            ON CONFLICT (agent_id) DO NOTHING
+            """,
+            uuid.uuid4(), uuid.UUID(agent_id), min_tasks, max_tasks,
+            json.dumps(policy_rules) if policy_rules is not None else None,
         )
     finally:
         await conn.close()
 
 
 async def cleanup_agent(client: httpx.AsyncClient, agent_id: str) -> None:
-    await client.delete(f"{SUPERVISOR_URL}/v1/agents/{agent_id}")
+    # Stop replicas first; then the agent row — DB CASCADE removes sessions,
+    # messages, and the policy in one shot.
+    await client.delete(f"{SUPERVISOR_URL}/v1/agents/{agent_id}", params={"purge": "true"})
     conn = await asyncpg.connect(DB_URL)
     try:
-        policy_row = await conn.fetchrow(
-            "SELECT policy_id FROM agents WHERE id = $1::uuid", agent_id,
-        )
         await conn.execute("DELETE FROM agents WHERE id = $1::uuid", agent_id)
-        if policy_row and policy_row["policy_id"]:
-            await conn.execute("DELETE FROM policies WHERE id = $1", policy_row["policy_id"])
     finally:
         await conn.close()
 
@@ -299,6 +295,10 @@ async def test_scale_up_under_load(ctx: Ctx, agent_id: str) -> None:
     """
     print("\n[test] scaling — concurrent load triggers replica scale-up")
 
+    # Previous tests may have left this agent idle long enough for
+    # idle_cleanup to zero-scale it; re-ensure baseline before measuring.
+    await register_and_run(ctx.client, agent_id)
+
     start = await replica_count(ctx.client, agent_id)
     require(start >= 1, f"agent starts with at least one replica (got {start})")
 
@@ -349,6 +349,9 @@ async def test_context_across_scaling(ctx: Ctx, agent_id: str) -> None:
     the agent subpath is shared across replicas (no per-replica local state).
     """
     print("\n[test] context preservation across scale events")
+    # idle_cleanup may have zero-scaled this agent during the prior test's
+    # settle phase; put a replica back before we start writing.
+    await register_and_run(ctx.client, agent_id)
     session_id = str(uuid.uuid4())
 
     await send_scenario(ctx.client, agent_id, session_id, [

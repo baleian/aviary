@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, String, func
+from sqlalchemy import String, func
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -21,8 +21,12 @@ class Agent(Base):
     model_config_data: Mapped[dict | None] = mapped_column("model_config", JSONB, nullable=True)
     tools: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="active")
-    policy_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("policies.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    policy = relationship("Policy", lazy="joined")
+    # One-to-one inverse of Policy.agent_id (ON DELETE CASCADE at the DB
+    # level). `delete-orphan` also propagates ORM-level deletes.
+    policy: Mapped["Policy | None"] = relationship(
+        "Policy", back_populates="agent", uselist=False,
+        cascade="all, delete-orphan", lazy="joined",
+    )
