@@ -69,10 +69,9 @@ docker compose exec -T k8s kubectl apply -f - < ./k8s/platform/namespace.yaml
 # Supervisor creates ScaledObjects per agent; its auto-scaling is no-op
 # without KEDA. Pinned version — bump deliberately.
 KEDA_VERSION="2.15.1"
-echo "  Installing KEDA v${KEDA_VERSION}..."
-docker compose exec -T k8s kubectl apply --server-side -f \
-  "https://github.com/kedacore/keda/releases/download/v${KEDA_VERSION}/keda-${KEDA_VERSION}.yaml" \
-  > /dev/null
+echo "  Installing KEDA v${KEDA_VERSION} (vendored)..."
+docker compose exec -T k8s kubectl apply --server-side -f - \
+  < "./k8s/platform/keda/keda-${KEDA_VERSION}.yaml" > /dev/null
 echo -n "  Waiting for KEDA operator..."
 docker compose exec -T k8s kubectl wait --for=condition=Available \
   deployment/keda-operator deployment/keda-metrics-apiserver deployment/keda-admission \
