@@ -20,5 +20,8 @@ class Settings(BaseSettings):
     vault_addr: str = "http://vault:8200"
     vault_token: str = "dev-root-token"
 
+    litellm_url: str = "http://litellm:4000"
+    litellm_api_key: str = "sk-aviary-dev"
+
 
 settings = Settings()

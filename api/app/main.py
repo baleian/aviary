@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.auth.oidc import validator
 from app.config import settings
 from app.deps import close_redis, dispose, get_redis, init_redis
-from app.routers import agents, auth, credentials, health, messages, sessions
+from app.routers import agents, auth, credentials, health, inference, mcp, messages, sessions
 from app.services.supervisor import supervisor_client
 
 logger = logging.getLogger(__name__)
@@ -41,3 +41,5 @@ app.include_router(agents.router, prefix="/api/agents", tags=["agents"])
 app.include_router(sessions.router, prefix="/api", tags=["sessions"])
 app.include_router(messages.router, prefix="/api", tags=["messages"])
 app.include_router(credentials.router, prefix="/api/users/me/credentials", tags=["credentials"])
+app.include_router(inference.router, prefix="/api/inference", tags=["inference"])
+app.include_router(mcp.router, prefix="/api/mcp", tags=["mcp"])

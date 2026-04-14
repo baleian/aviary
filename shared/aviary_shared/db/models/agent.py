@@ -21,6 +21,7 @@ class Agent(Base):
     instruction: Mapped[str | None] = mapped_column(String, nullable=True)
     model_config_data: Mapped[dict | None] = mapped_column("model_config", JSONB, nullable=True)
     tools: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    mcp_tool_ids: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]", default=list)
     status: Mapped[str] = mapped_column(String(50), default="active")
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
