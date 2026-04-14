@@ -85,10 +85,13 @@ async def user_detail(request: Request, keycloak_id: str):
             await db.execute(select(User).where(User.external_id == keycloak_id))
         ).scalar_one_or_none()
 
-    credentials: list[str] = []
+    credentials: list[dict] = []
     if user is not None:
         try:
-            credentials = await vault().list_user_credentials(user.external_id)
+            names = await vault().list_user_credentials(user.external_id)
+            for n in names:
+                value = await vault().read_user_credential(user.external_id, n)
+                credentials.append({"name": n, "value": value or ""})
         except httpx.HTTPError:
             credentials = []
 

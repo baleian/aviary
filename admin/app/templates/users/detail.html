@@ -28,16 +28,27 @@
 
   {% if credentials %}
     <table>
-      <thead><tr><th>Name</th><th></th></tr></thead>
+      <thead><tr><th>Name</th><th>Value</th><th></th></tr></thead>
       <tbody>
-        {% for name in credentials %}
+        {% for c in credentials %}
         <tr>
-          <td><code>{{ name }}</code></td>
+          <td><code>{{ c.name }}</code></td>
           <td>
+            <span class="cred-cell">
+              <span class="cred-value" data-raw="{{ c.value }}">••••••••••••••••</span>
+              <button type="button" class="btn btn-sm" onclick="toggleReveal(this)" title="Show/hide">
+                <svg class="eye" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+                </svg>
+              </button>
+            </span>
+          </td>
+          <td style="text-align:right; white-space:nowrap">
+            <button type="button" class="btn btn-sm" onclick="editCred('{{ c.name }}')">Edit</button>
             <form class="inline" method="post"
-                  action="/users/{{ keycloak_id }}/credentials/{{ name }}/delete"
-                  onsubmit="return confirm('Delete credential {{ name }}?');">
-              <button class="danger" type="submit">Delete</button>
+                  action="/users/{{ keycloak_id }}/credentials/{{ c.name }}/delete"
+                  onsubmit="return confirm('Delete credential {{ c.name }}?');">
+              <button class="btn btn-sm danger" type="submit">Delete</button>
             </form>
           </td>
         </tr>
@@ -48,22 +59,59 @@
     <p class="meta">No credentials set.</p>
   {% endif %}
 
-  <h4 style="margin-top:20px">Set credential</h4>
-  <form method="post" action="/users/{{ keycloak_id }}/credentials">
+  <h4 style="margin-top:20px" id="cred-form-title">Add credential</h4>
+  <form method="post" action="/users/{{ keycloak_id }}/credentials" id="cred-form">
     <div class="row">
       <div>
         <label>Name</label>
-        <input type="text" name="name" required placeholder="anthropic-api-key">
+        <input type="text" name="name" id="cred-name" required placeholder="anthropic-api-key">
       </div>
       <div>
         <label>Value</label>
-        <input type="password" name="value" required>
+        <input type="password" name="value" id="cred-value" required>
       </div>
     </div>
     <div class="actions">
-      <button class="primary" type="submit">Save credential</button>
+      <button class="primary" type="submit" id="cred-submit">Save credential</button>
+      <button type="button" class="btn" id="cred-cancel" style="display:none" onclick="cancelEdit()">Cancel</button>
     </div>
   </form>
 </div>
+
+<script>
+function toggleReveal(btn) {
+  const span = btn.parentElement.querySelector('.cred-value');
+  const raw = span.dataset.raw;
+  if (span.textContent === raw) {
+    span.textContent = '••••••••••••••••';
+  } else {
+    span.textContent = raw;
+  }
+}
+function editCred(name) {
+  const nameInput = document.getElementById('cred-name');
+  nameInput.value = name;
+  nameInput.readOnly = true;
+  const val = document.getElementById('cred-value');
+  val.value = '';
+  val.placeholder = 'Enter new value';
+  val.focus();
+  document.getElementById('cred-form-title').textContent = 'Edit credential: ' + name;
+  document.getElementById('cred-submit').textContent = 'Update';
+  document.getElementById('cred-cancel').style.display = '';
+  document.getElementById('cred-form').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+function cancelEdit() {
+  const nameInput = document.getElementById('cred-name');
+  nameInput.value = '';
+  nameInput.readOnly = false;
+  const val = document.getElementById('cred-value');
+  val.value = '';
+  val.placeholder = '';
+  document.getElementById('cred-form-title').textContent = 'Add credential';
+  document.getElementById('cred-submit').textContent = 'Save credential';
+  document.getElementById('cred-cancel').style.display = 'none';
+}
+</script>
 {% endif %}
 {% endblock %}
