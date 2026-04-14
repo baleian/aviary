@@ -586,6 +586,35 @@ async def test_rapid_agent_churn_keeps_supervisor_responsive(ctx: Ctx) -> None:
             await cleanup_agent(ctx.client, aid)
 
 
+async def test_orphan_reconciler(ctx: Ctx) -> None:
+    """An agent task whose DB row doesn't exist (created via /run with an
+    unseeded id, or left over after a manual DB wipe) must get reaped by
+    the idle_cleanup tick. Without reconciliation such tasks survive forever
+    — in Fargate that's continuous metered spend, in Docker it's a leak.
+    """
+    print("\n[test] orphan task reconciliation")
+    orphan_id = str(uuid.uuid4())
+
+    # Intentionally skip seed_agent — the DB has no row for `orphan_id`.
+    r = await ctx.client.post(f"{SUPERVISOR_URL}/v1/agents/{orphan_id}/run")
+    r.raise_for_status()
+    require(
+        await replica_count(ctx.client, orphan_id) == 1,
+        "orphan task spawned (supervisor accepts /run without a DB row)",
+    )
+
+    # Reconciler piggybacks on the idle cleanup loop. One full tick + a
+    # small buffer for the stop/purge to land.
+    deadline = IDLE_CLEANUP_INTERVAL + 10
+    await wait_until(
+        lambda: replica_count(ctx.client, orphan_id),
+        lambda n: n == 0,
+        timeout=deadline,
+        interval=1.0,
+        desc=f"orphan task reaped within {deadline}s",
+    )
+
+
 async def test_abort(ctx: Ctx, agent_id: str) -> None:
     print("\n[test] abort mid-stream")
     session_id = str(uuid.uuid4())
@@ -648,6 +677,7 @@ async def main():
             await test_scale_up_under_load(ctx, agent_scale)
             await test_context_across_scaling(ctx, agent_scale)
             await test_rapid_agent_churn_keeps_supervisor_responsive(ctx)
+            await test_orphan_reconciler(ctx)
         finally:
             await cleanup_agent(client, agent_a)
             await cleanup_agent(client, agent_b)

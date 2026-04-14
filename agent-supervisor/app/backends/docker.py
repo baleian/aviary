@@ -229,6 +229,26 @@ class DockerBackend:
             for c, idx in self._list_replica_containers(agent_id)
         ]
 
+    async def list_all_replicas(self) -> list[TaskInfo]:
+        containers = self._client.containers.list(
+            all=True,
+            sparse=True,
+            filters={"label": [f"{LABEL_MANAGED}=true"]},
+        )
+        out: list[TaskInfo] = []
+        for c in containers:
+            labels = c.attrs.get("Labels") or {}
+            agent_id = labels.get(LABEL_AGENT_ID)
+            replica_str = labels.get(LABEL_REPLICA, "0")
+            if not agent_id:
+                continue
+            try:
+                replica = int(replica_str)
+            except ValueError:
+                continue
+            out.append(self._to_task_info(c, agent_id, replica))
+        return out
+
     async def create_replica(
         self,
         agent_id: str,

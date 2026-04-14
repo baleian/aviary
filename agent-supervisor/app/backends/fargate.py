@@ -26,6 +26,9 @@ class FargateBackend:
     async def list_replicas(self, agent_id: str) -> list[TaskInfo]:
         raise NotImplementedError
 
+    async def list_all_replicas(self) -> list[TaskInfo]:
+        raise NotImplementedError
+
     async def create_replica(
         self, agent_id: str, image: str, env: dict[str, str],
         network_policy: dict | None = None,

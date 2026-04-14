@@ -30,6 +30,11 @@ class RuntimeBackend(Protocol):
     # ── replica lifecycle ──────────────────────────────────────
     async def list_replicas(self, agent_id: str) -> list[TaskInfo]: ...
 
+    async def list_all_replicas(self) -> list[TaskInfo]:
+        """Every managed task across every agent. Reconciler uses this to
+        find orphan tasks whose agent row is gone (or never existed)."""
+        ...
+
     async def create_replica(
         self,
         agent_id: str,

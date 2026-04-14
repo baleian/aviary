@@ -1,7 +1,8 @@
-"""Backend-agnostic idle cleanup loop (ported from v1)."""
+"""Backend-agnostic idle cleanup + orphan reconciliation loop."""
 
 import asyncio
 import logging
+import uuid
 from datetime import datetime, timezone, timedelta
 
 from sqlalchemy import select
@@ -25,13 +26,16 @@ async def idle_cleanup_loop(backend: RuntimeBackend) -> None:
             cleaned = await _idle_cleanup(backend)
             if cleaned > 0:
                 logger.info("Idle cleanup: scaled down %d agent(s)", cleaned)
+            orphans = await _reconcile_orphans(backend)
+            if orphans > 0:
+                logger.warning("Reconciled %d orphan task(s)", orphans)
             failures = 0
         except asyncio.CancelledError:
             return
         except Exception:
             failures += 1
             level = logging.ERROR if failures >= _FAILURE_ESCALATION else logging.WARNING
-            logger.log(level, "Idle cleanup failed (%d consecutive)", failures, exc_info=True)
+            logger.log(level, "Cleanup loop failed (%d consecutive)", failures, exc_info=True)
 
 
 async def _idle_cleanup(backend: RuntimeBackend) -> int:
@@ -65,3 +69,46 @@ async def _idle_cleanup(backend: RuntimeBackend) -> int:
             )
 
     return cleaned
+
+
+async def _reconcile_orphans(backend: RuntimeBackend) -> int:
+    """Stop tasks whose agent row has been deleted (or never existed).
+
+    Runs from the task side — lists every managed task across the backend,
+    then checks each unique agent_id against the DB. DB-read failure aborts
+    the pass (treating every task as orphan would be catastrophic)."""
+    tasks = await backend.list_all_replicas()
+    if not tasks:
+        return 0
+
+    agent_ids: set[str] = {t.agent_id for t in tasks}
+
+    async with async_session() as db:
+        valid_uuids: list[uuid.UUID] = []
+        for aid in agent_ids:
+            try:
+                valid_uuids.append(uuid.UUID(aid))
+            except ValueError:
+                continue
+        known = set()
+        if valid_uuids:
+            result = await db.execute(select(Agent.id).where(Agent.id.in_(valid_uuids)))
+            known = {str(row[0]) for row in result.all()}
+
+    orphans = [t for t in tasks if t.agent_id not in known]
+    stopped = 0
+    cleaned_ids: set[str] = set()
+    for task in orphans:
+        if await backend.stop_replica(task):
+            stopped += 1
+        cleaned_ids.add(task.agent_id)
+
+    # Volume subpath is DB-keyed too — reap it so EFS (prod) / local volume
+    # doesn't accumulate forever.
+    for aid in cleaned_ids:
+        try:
+            await backend.purge_agent_storage(aid)
+        except Exception:
+            logger.warning("purge_agent_storage failed for orphan %s", aid, exc_info=True)
+
+    return stopped
