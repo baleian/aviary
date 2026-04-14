@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}User — Aviary Admin{% endblock %}
+{% block content %}
+<p class="meta"><a href="/users">← Users</a></p>
+
+{% if user %}
+  <h2>{{ user.display_name }}</h2>
+  <p class="meta">
+    Email <code>{{ user.email }}</code> ·
+    Keycloak id <code>{{ keycloak_id }}</code> ·
+    DB id <code>{{ user.id }}</code>
+  </p>
+{% else %}
+  <h2 class="meta">User (not yet signed in)</h2>
+  <p class="meta">
+    Keycloak id <code>{{ keycloak_id }}</code>. The DB row is created on first
+    OIDC sign-in, so credentials cannot be attached until then.
+  </p>
+{% endif %}
+
+<div class="actions">
+  <form class="inline" method="post" action="/users/{{ keycloak_id }}/delete"
+        onsubmit="return confirm('Delete user from Keycloak and drop the DB row (cascades owned agents/sessions)?');">
+    <button class="danger" type="submit">Delete user</button>
+  </form>
+</div>
+
+{% if user %}
+<div class="card">
+  <h3>Vault credentials</h3>
+  <p class="meta">
+    Per-user secrets at <code>secret/aviary/credentials/{{ user.external_id }}/&lt;name&gt;</code>.
+    Used by LiteLLM (<code>anthropic-api-key</code>) and MCP tool-arg injection
+    (<code>jira-email</code>, <code>jira-token</code>, <code>confluence-email</code>, <code>confluence-token</code>, …).
+  </p>
+
+  {% if credentials %}
+    <table>
+      <thead><tr><th>Name</th><th></th></tr></thead>
+      <tbody>
+        {% for name in credentials %}
+        <tr>
+          <td><code>{{ name }}</code></td>
+          <td>
+            <form class="inline" method="post"
+                  action="/users/{{ keycloak_id }}/credentials/{{ name }}/delete"
+                  onsubmit="return confirm('Delete credential {{ name }}?');">
+              <button class="danger" type="submit">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="meta">No credentials set.</p>
+  {% endif %}
+
+  <h4 style="margin-top:20px">Set credential</h4>
+  <form method="post" action="/users/{{ keycloak_id }}/credentials">
+    <div class="row">
+      <div>
+        <label>Name</label>
+        <input type="text" name="name" required placeholder="anthropic-api-key">
+      </div>
+      <div>
+        <label>Value</label>
+        <input type="password" name="value" required>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="primary" type="submit">Save credential</button>
+    </div>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

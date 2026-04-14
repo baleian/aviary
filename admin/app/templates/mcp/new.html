@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Register MCP Server — Aviary Admin{% endblock %}
+{% block content %}
+<p class="meta"><a href="/mcp">← MCP Servers</a></p>
+<h2>Register MCP server</h2>
+<div class="card">
+  <form method="post" action="/mcp">
+    <div class="row">
+      <div>
+        <label>Name</label>
+        <input type="text" name="name" required>
+      </div>
+      <div>
+        <label>Transport</label>
+        <select name="transport_type">
+          <option value="streamable_http">streamable_http</option>
+          <option value="sse">sse</option>
+        </select>
+      </div>
+    </div>
+    <div style="margin-top:12px">
+      <label>Description</label>
+      <input type="text" name="description">
+    </div>
+    <div style="margin-top:12px">
+      <label>Connection URL</label>
+      <input type="url" name="url" required placeholder="http://mcp-xxx:8000/mcp/">
+    </div>
+    <div style="margin-top:12px">
+      <label>Tags (comma-separated)</label>
+      <input type="text" name="tags">
+    </div>
+    <div style="margin-top:12px">
+      <label><input type="checkbox" name="is_platform_provided" value="1"> Platform-provided (accessible to all users; user-registered servers are deny-by-default until RBAC)</label>
+    </div>
+    <div class="actions">
+      <button class="primary" type="submit">Register</button>
+      <a class="btn" href="/mcp">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

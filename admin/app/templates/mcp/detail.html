@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}{{ server.name }} — MCP — Aviary Admin{% endblock %}
+{% block content %}
+<p class="meta"><a href="/mcp">← MCP Servers</a></p>
+<h2>{{ server.name }}</h2>
+
+<div class="card">
+  <h3>Configuration</h3>
+  <form method="post" action="/mcp/{{ server.id }}">
+    <div class="row">
+      <div>
+        <label>Name</label>
+        <input type="text" name="name" value="{{ server.name }}" required>
+      </div>
+      <div>
+        <label>Transport</label>
+        <select name="transport_type">
+          <option value="streamable_http" {% if server.transport_type == "streamable_http" %}selected{% endif %}>streamable_http</option>
+          <option value="sse" {% if server.transport_type == "sse" %}selected{% endif %}>sse</option>
+        </select>
+      </div>
+    </div>
+    <div style="margin-top:12px">
+      <label>Description</label>
+      <input type="text" name="description" value="{{ server.description or '' }}">
+    </div>
+    <div style="margin-top:12px">
+      <label>Connection URL</label>
+      <input type="url" name="url" value="{{ url }}" required>
+    </div>
+    <div style="margin-top:12px">
+      <label>Tags</label>
+      <input type="text" name="tags" value="{{ tags_csv }}">
+    </div>
+    <div style="margin-top:12px">
+      <label><input type="checkbox" name="is_platform_provided" value="1" {% if server.is_platform_provided %}checked{% endif %}> Platform-provided</label>
+    </div>
+    <div class="actions">
+      <button class="primary" type="submit">Save</button>
+    </div>
+  </form>
+
+  <div class="actions">
+    <form class="inline" method="post" action="/mcp/{{ server.id }}/discover">
+      <button type="submit">Re-discover tools</button>
+    </form>
+    <form class="inline" method="post" action="/mcp/{{ server.id }}/delete"
+          onsubmit="return confirm('Delete server and all its discovered tools?');">
+      <button class="danger" type="submit">Delete</button>
+    </form>
+  </div>
+
+  <p class="meta">
+    Status:
+    {% if server.status == "active" %}<span class="badge ok">active</span>
+    {% elif server.status == "degraded" %}<span class="badge err">degraded</span>
+    {% else %}<span class="badge muted">{{ server.status }}</span>{% endif %}
+    · Last discovered: {{ server.last_discovered_at.strftime("%Y-%m-%d %H:%M") if server.last_discovered_at else "never" }}
+  </p>
+</div>
+
+<div class="card">
+  <h3>Discovered tools ({{ tools|length }})</h3>
+  {% if tools %}
+    <table>
+      <thead><tr><th>Name</th><th>Description</th></tr></thead>
+      <tbody>
+        {% for t in tools %}
+          <tr>
+            <td><code>{{ server.name }}__{{ t.name }}</code></td>
+            <td class="meta">{{ t.description or "—" }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="meta">No tools discovered. Click <b>Re-discover tools</b> to probe the server.</p>
+  {% endif %}
+</div>
+{% endblock %}

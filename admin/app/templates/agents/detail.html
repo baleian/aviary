@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}{{ agent.name }} — Agents — Aviary Admin{% endblock %}
+{% block content %}
+<p class="meta"><a href="/">← Agents</a></p>
+<h2>{{ agent.name }} <span class="meta">— <code>{{ agent.slug }}</code></span></h2>
+
+<div class="card">
+  <h3>Service</h3>
+  <p class="meta">
+    Owner <code>{{ agent.owner_id }}</code> ·
+    Status
+    {% if agent.status == "active" %}<span class="badge ok">active</span>
+    {% elif agent.status == "deleted" %}<span class="badge err">deleted</span>
+    {% else %}<span class="badge muted">{{ agent.status }}</span>{% endif %}
+  </p>
+
+  <h4>Tasks</h4>
+  {% if tasks %}
+    <table>
+      <thead><tr><th>Replica</th><th>Host</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for t in tasks %}
+        <tr>
+          <td>{{ t.replica }}</td>
+          <td><code>{{ t.host }}</code></td>
+          <td>
+            {% if t.status == "running" %}<span class="badge ok">running</span>
+            {% elif t.status == "exited" %}<span class="badge err">exited</span>
+            {% else %}<span class="badge warn">{{ t.status }}</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="meta">No tasks currently running.</p>
+  {% endif %}
+
+  {% if metrics %}
+    <p class="meta" style="margin-top:12px">
+      Sessions active: <b>{{ metrics.total.sessions_active }}</b> ·
+      streaming: <b>{{ metrics.total.sessions_streaming }}</b> ·
+      capacity: <b>{{ metrics.total.sessions_max }}</b>
+    </p>
+  {% endif %}
+
+  <div class="actions">
+    <form class="inline" method="post" action="/agents/{{ agent.id }}/restart">
+      <button class="primary" type="submit">Restart tasks</button>
+    </form>
+    <form class="inline" method="post" action="/agents/{{ agent.id }}/scale">
+      <input type="number" name="target" min="0" max="32" value="{{ policy.min_tasks if policy else 1 }}" style="width:80px">
+      <button type="submit">Scale</button>
+    </form>
+    <form class="inline" method="post" action="/agents/{{ agent.id }}/deactivate"
+          onsubmit="return confirm('Stop all tasks? Workspace will be preserved.');">
+      <button type="submit">Deactivate</button>
+    </form>
+    <form class="inline" method="post" action="/agents/{{ agent.id }}/purge"
+          onsubmit="return confirm('Purge permanently deletes the agent workspace. This cannot be undone. Continue?');">
+      <button class="danger" type="submit">Purge</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Security configuration</h3>
+  <p class="meta">
+    Changes apply on next task (re)spawn. Running tasks keep the old configuration —
+    click <b>Restart tasks</b> above to roll them.
+  </p>
+  <form method="post" action="/agents/{{ agent.id }}/security">
+    <div class="row">
+      <div>
+        <label>Minimum tasks</label>
+        <input type="number" name="min_tasks" min="0" value="{{ policy.min_tasks if policy else 0 }}">
+      </div>
+      <div>
+        <label>Maximum tasks</label>
+        <input type="number" name="max_tasks" min="1" value="{{ policy.max_tasks if policy else 1 }}">
+      </div>
+    </div>
+    <div style="margin-top:12px">
+      <label>Additional security groups <span class="meta">(comma-separated SG ids / extra docker networks)</span></label>
+      <input type="text" name="security_groups" value="{{ security_groups }}" placeholder="aviary-egress-open, sg-0123…">
+    </div>
+    <div style="margin-top:12px">
+      <label>Subnets <span class="meta">(Fargate only; ignored locally)</span></label>
+      <input type="text" name="subnets" value="{{ subnets }}" placeholder="subnet-abc, subnet-def">
+    </div>
+    <div class="row" style="margin-top:12px">
+      <div>
+        <label>Memory (MB)</label>
+        <input type="number" name="memory_mb" min="0" value="{{ resource_limits.get('memory_mb', '') }}">
+      </div>
+      <div>
+        <label>CPU units</label>
+        <input type="number" name="cpu_units" min="0" value="{{ resource_limits.get('cpu_units', '') }}">
+      </div>
+    </div>
+    <div class="actions">
+      <button class="primary" type="submit">Save configuration</button>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Agent definition</h3>
+  <p class="meta">
+    Model: <code>{{ (agent.model_config_data or {}).get('backend', '?') }}/{{ (agent.model_config_data or {}).get('model', '?') }}</code>
+    {% if (agent.model_config_data or {}).get('max_output_tokens') %}
+      · max_output_tokens {{ agent.model_config_data.max_output_tokens }}
+    {% endif %}
+  </p>
+  {% if agent.description %}<p>{{ agent.description }}</p>{% endif %}
+  {% if agent.instruction %}
+    <details>
+      <summary>Instruction</summary>
+      <pre style="white-space:pre-wrap">{{ agent.instruction }}</pre>
+    </details>
+  {% endif %}
+</div>
+{% endblock %}

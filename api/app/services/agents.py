@@ -3,7 +3,7 @@
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.agent import AgentCreate, AgentUpdate
@@ -12,9 +12,17 @@ from aviary_shared.db.models import Agent, Policy, Session as SessionModel, User
 
 
 async def list_for_owner(db: AsyncSession, user: User) -> list[Agent]:
+    # Soft-deleted agents that still have sessions stay visible so the owner
+    # can finish ongoing conversations (new sessions and edits are blocked
+    # by require_owner_active). They disappear once the last session is gone
+    # via the cascade in sessions.delete.
+    visible = or_(
+        Agent.status != "deleted",
+        exists(select(SessionModel.id).where(SessionModel.agent_id == Agent.id)),
+    )
     result = await db.execute(
         select(Agent)
-        .where(Agent.owner_id == str(user.id), Agent.status != "deleted")
+        .where(Agent.owner_id == str(user.id), visible)
         .order_by(Agent.created_at.desc())
     )
     return list(result.scalars().all())

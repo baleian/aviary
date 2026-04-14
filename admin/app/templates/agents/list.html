@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Agents — Aviary Admin{% endblock %}
+{% block content %}
+<h2>Agents</h2>
+{% if not agents %}
+  <p class="meta">No agents registered.</p>
+{% else %}
+<table>
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Slug</th>
+      <th>Owner</th>
+      <th>Status</th>
+      <th>Tasks (running / total)</th>
+      <th>Service bounds (min–max)</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for a in agents %}
+    <tr>
+      <td><a href="/agents/{{ a.id }}">{{ a.name }}</a></td>
+      <td><code>{{ a.slug }}</code></td>
+      <td class="meta">{{ a.owner_id }}</td>
+      <td>
+        {% if a.status == "active" %}<span class="badge ok">active</span>
+        {% elif a.status == "deleted" %}<span class="badge err">deleted</span>
+        {% else %}<span class="badge muted">{{ a.status }}</span>{% endif %}
+      </td>
+      <td>{{ a.tasks_running }} / {{ a.tasks_total }}</td>
+      <td class="meta">{{ a.min_tasks }} – {{ a.max_tasks }}</td>
+      <td><a href="/agents/{{ a.id }}">Manage →</a></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

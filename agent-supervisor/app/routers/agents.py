@@ -81,6 +81,44 @@ async def run_agent(agent_id: str, request: Request):
     }
 
 
+@router.post("/agents/{agent_id}/restart")
+async def restart_agent(agent_id: str, request: Request):
+    """Rolling restart — stop all replicas, then respawn min_replicas.
+
+    Stateless respawn is acceptable because `.claude/{session_id}/` state
+    lives on the shared workspace volume; any fresh replica can resume.
+    """
+    backend = _get_backend(request)
+    stopped = await backend.stop_all_replicas(agent_id)
+    target, network_policy = await _agent_scaling_spec(agent_id)
+    actual = await backend.scale_to(
+        agent_id, target, settings.runtime_image, build_task_env(agent_id),
+        network_policy=network_policy,
+    )
+    await touch_activity(agent_id)
+    return {
+        "status": "restarted", "agent_id": agent_id,
+        "replicas_stopped": stopped, "replicas": actual,
+    }
+
+
+@router.post("/agents/{agent_id}/scale")
+async def scale_agent(
+    agent_id: str,
+    request: Request,
+    target: int = Query(..., ge=0, le=32, description="Desired replica count"),
+):
+    """Admin-override scaling. Bypasses min/max_tasks from policy — the
+    auto-scaler will still be free to adjust later."""
+    backend = _get_backend(request)
+    _, network_policy = await _agent_scaling_spec(agent_id)
+    actual = await backend.scale_to(
+        agent_id, target, settings.runtime_image, build_task_env(agent_id),
+        network_policy=network_policy,
+    )
+    return {"status": "scaled", "agent_id": agent_id, "target": target, "replicas": actual}
+
+
 @router.get("/agents/{agent_id}/replicas")
 async def list_replicas(agent_id: str, request: Request):
     backend = _get_backend(request)

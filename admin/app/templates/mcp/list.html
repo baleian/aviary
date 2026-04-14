@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}MCP Servers — Aviary Admin{% endblock %}
+{% block content %}
+<h2>MCP Servers</h2>
+<div class="actions">
+  <a class="btn primary" href="/mcp/new">+ Register server</a>
+</div>
+{% if not rows %}
+  <p class="meta">No MCP servers registered.</p>
+{% else %}
+<table>
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Platform-provided</th>
+      <th>Transport</th>
+      <th>Status</th>
+      <th>Tools</th>
+      <th>Last discovered</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for r in rows %}
+    <tr>
+      <td><a href="/mcp/{{ r.server.id }}">{{ r.server.name }}</a></td>
+      <td>{% if r.server.is_platform_provided %}<span class="badge ok">platform</span>{% else %}<span class="badge muted">user</span>{% endif %}</td>
+      <td class="meta">{{ r.server.transport_type }}</td>
+      <td>
+        {% if r.server.status == "active" %}<span class="badge ok">active</span>
+        {% elif r.server.status == "degraded" %}<span class="badge err">degraded</span>
+        {% else %}<span class="badge muted">{{ r.server.status }}</span>{% endif %}
+      </td>
+      <td>{{ r.tool_count }}</td>
+      <td class="meta">{{ r.server.last_discovered_at.strftime("%Y-%m-%d %H:%M") if r.server.last_discovered_at else "—" }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

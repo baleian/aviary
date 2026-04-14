@@ -215,6 +215,38 @@ services:
       retries: 5
       start_period: 10s
 
+  # -- Admin console (FastAPI + Jinja2, local-only) --
+  admin:
+    build:
+      context: .
+      dockerfile: admin/Dockerfile
+      args:
+        UV_INDEX_URL: ${UV_INDEX_URL:-}
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./admin:/workspace/admin
+      - ./shared:/workspace/shared
+    environment:
+      DATABASE_URL: postgresql+asyncpg://aviary:aviary@postgres:5432/aviary
+      SUPERVISOR_URL: http://agent-supervisor:9000
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: dev-root-token
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_PASSWORD: admin
+      KEYCLOAK_REALM: aviary
+    networks: [platform]
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      vault:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      agent-supervisor:
+        condition: service_healthy
+
   # -- Web frontend (Next.js) --
   web:
     build:
@@ -342,7 +374,7 @@ services:
       # (see scripts/test.sh for the short values used by the e2e suites).
       SCALING_CHECK_INTERVAL: ${SCALING_CHECK_INTERVAL:-30}
       IDLE_CLEANUP_INTERVAL: ${IDLE_CLEANUP_INTERVAL:-300}
-      AGENT_IDLE_TIMEOUT: ${AGENT_IDLE_TIMEOUT:-604800}
+      AGENT_IDLE_TIMEOUT: ${AGENT_IDLE_TIMEOUT:-10800}
     depends_on:
       db-migrate:
         condition: service_completed_successfully

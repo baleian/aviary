@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Create User — Aviary Admin{% endblock %}
+{% block content %}
+<p class="meta"><a href="/users">← Users</a></p>
+<h2>Create user</h2>
+<div class="card">
+  <form method="post" action="/users">
+    <div class="row">
+      <div>
+        <label>Username</label>
+        <input type="text" name="username" required>
+      </div>
+      <div>
+        <label>Email</label>
+        <input type="email" name="email" required>
+      </div>
+    </div>
+    <div style="margin-top:12px">
+      <label>Display name</label>
+      <input type="text" name="display_name" required>
+    </div>
+    <div style="margin-top:12px">
+      <label>Password</label>
+      <input type="password" name="password" required>
+    </div>
+    <p class="meta" style="margin-top:12px">
+      Created in Keycloak. The DB row and preferences are created on first sign-in.
+      Roles are not editable here — RBAC will be reintroduced later.
+    </p>
+    <div class="actions">
+      <button class="primary" type="submit">Create</button>
+      <a class="btn" href="/users">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

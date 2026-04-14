@@ -162,6 +162,13 @@ async def create_session(http: httpx.AsyncClient, agent_id: str) -> dict:
 
 
 async def delete_agent(http: httpx.AsyncClient, agent_id: str) -> None:
+    """Hard-delete: drop every session first so the agent DELETE cascades
+    straight to hard_delete (row + workspace). Otherwise the agent would
+    stay soft-deleted with orphan sessions forever."""
+    r = await http.get(f"/api/agents/{agent_id}/sessions")
+    if r.status_code == 200:
+        for s in r.json().get("items", []):
+            await http.delete(f"/api/sessions/{s['id']}")
     await http.delete(f"/api/agents/{agent_id}")
 
 

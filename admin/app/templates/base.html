@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}Aviary Admin{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1><a href="/">Aviary Admin</a></h1>
+    <nav>
+      <a href="/">Agents</a>
+      <a href="/mcp">MCP Servers</a>
+      <a href="/users">Users</a>
+    </nav>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>
