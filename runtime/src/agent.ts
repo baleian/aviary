@@ -121,7 +121,7 @@ function hasSessionHistory(claudeDir: string, sessionId: string): boolean {
 }
 
 export interface SSEChunk {
-  type: "chunk" | "tool_use" | "tool_result" | "tool_progress" | "result" | "thinking" | "query_started";
+  type: "chunk" | "tool_use" | "tool_result" | "tool_progress" | "result" | "thinking" | "query_started" | "error";
   content?: string;
   name?: string;
   input?: unknown;
@@ -131,12 +131,15 @@ export interface SSEChunk {
   // tool_progress fields
   tool_name?: string;
   elapsed_time_seconds?: number;
+  // Error message (only on type: "error")
+  message?: string;
   // Result metadata (only on type: "result")
   session_id?: string;
   duration_ms?: number;
   num_turns?: number;
   total_cost_usd?: number;
   usage?: Record<string, unknown>;
+  structured_output?: unknown;
 }
 
 /**
@@ -203,6 +206,7 @@ export async function* processMessage(
   modelConfig: ModelConfig | null | undefined,
   agentConfig: AgentConfig,
   abortController?: AbortController,
+  outputFormat?: { type: "json_schema"; schema: Record<string, unknown> },
 ): AsyncGenerator<SSEChunk> {
   const home = sessionHome(sessionId);
   const claudeDir = sessionClaudeDir(sessionId);
@@ -315,6 +319,7 @@ export async function* processMessage(
     ...(canResume ? {} : { extraArgs: { "session-id": sessionId } }),
     ...(canResume ? { resume: sessionId } : {}),
     ...(abortController ? { abortController } : {}),
+    ...(outputFormat ? { outputFormat } : {}),
   };
 
   // PreToolUse hook: when SDK is about to call an A2A tool, capture the real
@@ -469,6 +474,7 @@ export async function* processMessage(
           num_turns: msg.num_turns,
           total_cost_usd: msg.total_cost_usd,
           usage: msg.usage,
+          ...(msg.structured_output !== undefined ? { structured_output: msg.structured_output } : {}),
         };
       }
     }
@@ -478,8 +484,8 @@ export async function* processMessage(
       return;
     }
     console.error(`[agent ${agentId}/${sessionId}] SDK query error:`, e);
-    const stack = e instanceof Error && e.stack ? e.stack : String(e);
-    yield { type: "chunk", content: `[${resolvedModel}] Error: ${stack}` };
+    const message = e instanceof Error ? e.message : String(e);
+    yield { type: "error", message };
   } finally {
     // Shut down the A2A HTTP server after the message is fully processed
     a2aServer?.close();

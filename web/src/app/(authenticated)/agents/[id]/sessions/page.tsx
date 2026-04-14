@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Plus, MessageSquare } from "@/components/icons";
+import { ArrowLeft, Plus, MessageSquare, Loader2 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { LoadingState } from "@/components/feedback/loading-state";
@@ -22,6 +22,7 @@ export default function AgentSessionsPage() {
   const [agent, setAgent] = useState<Agent | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -55,8 +56,14 @@ export default function AgentSessionsPage() {
   }
 
   const handleNewSession = async () => {
-    const session = await agentsApi.createSession(agent.id);
-    router.push(routes.session(session.id));
+    if (creating) return;
+    setCreating(true);
+    try {
+      const session = await agentsApi.createSession(agent.id);
+      router.push(routes.session(session.id));
+    } finally {
+      setCreating(false);
+    }
   };
 
   return (
@@ -76,9 +83,9 @@ export default function AgentSessionsPage() {
               {sessions.length} conversation{sessions.length !== 1 ? "s" : ""}
             </p>
           </div>
-          <Button variant="cta" onClick={handleNewSession} disabled={agent.status === "deleted"}>
-            <Plus size={14} strokeWidth={2.5} />
-            New Session
+          <Button variant="cta" onClick={handleNewSession} disabled={creating || agent.status === "deleted"}>
+            {creating ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} strokeWidth={2.5} />}
+            {creating ? "Creating…" : "New Session"}
           </Button>
         </div>
 
@@ -88,8 +95,8 @@ export default function AgentSessionsPage() {
             title="No conversations yet"
             description="Start your first session with this agent."
             action={
-              <Button variant="secondary" size="sm" onClick={handleNewSession}>
-                Start your first session
+              <Button variant="secondary" size="sm" onClick={handleNewSession} disabled={creating}>
+                {creating ? "Creating…" : "Start your first session"}
               </Button>
             }
           />

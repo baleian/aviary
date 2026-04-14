@@ -40,19 +40,15 @@ class Agent(Base):
     tools: Mapped[list] = mapped_column(JSONB, server_default="[]")
     mcp_servers: Mapped[list] = mapped_column(JSONB, server_default="[]")
 
-    # Policy
-    policy: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
-
     # Catalog
     visibility: Mapped[str] = mapped_column(String(20), default="private", server_default="private")
     category: Mapped[str | None] = mapped_column(String(100), nullable=True)
     icon: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
-    # Infrastructure (managed by admin console / agent supervisor)
-    pod_strategy: Mapped[str] = mapped_column(String(20), default="lazy", server_default="lazy")
-    min_pods: Mapped[int] = mapped_column(default=1, server_default="1")
-    max_pods: Mapped[int] = mapped_column(default=3, server_default="3")
-    last_activity_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    # Infrastructure policy (shared entity)
+    policy_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("policies.id", ondelete="SET NULL"), nullable=True
+    )
 
     # Status
     status: Mapped[str] = mapped_column(String(20), default="active", server_default="active")
@@ -64,6 +60,7 @@ class Agent(Base):
     )
 
     owner: Mapped["User"] = relationship(back_populates="owned_agents")  # noqa: F821
+    policy: Mapped["Policy | None"] = relationship()  # noqa: F821
     acl_entries: Mapped[list["AgentACL"]] = relationship(
         back_populates="agent", cascade="all, delete-orphan", passive_deletes=True,
     )

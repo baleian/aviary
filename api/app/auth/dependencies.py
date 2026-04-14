@@ -95,3 +95,24 @@ def require_agent_permission(permission: str, include_deleted: bool = False):
         return agent
 
     return dependency
+
+
+def require_workflow_permission(permission: str):
+    from app.db.models import Workflow
+    from app.services import acl_service, workflow_service
+
+    async def dependency(
+        workflow_id: uuid.UUID,
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ) -> Workflow:
+        workflow = await workflow_service.get_workflow(db, workflow_id)
+        if not workflow:
+            raise HTTPException(status_code=404, detail="Workflow not found")
+        try:
+            await acl_service.check_workflow_permission(db, user, workflow, permission)
+        except PermissionError as e:
+            raise HTTPException(status_code=403, detail=str(e)) from e
+        return workflow
+
+    return dependency

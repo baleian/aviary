@@ -35,6 +35,7 @@ export default function AgentDetailPage() {
   const [agent, setAgent] = useState<Agent | null>(null);
   const [mcpTools, setMcpTools] = useState<McpToolBinding[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -68,9 +69,15 @@ export default function AgentDetailPage() {
   }
 
   const handleDelete = async () => {
+    if (deleting) return;
     if (!confirm("Are you sure you want to delete this agent? This action cannot be undone.")) return;
-    await agentsApi.remove(agent.id);
-    router.push(routes.agents);
+    setDeleting(true);
+    try {
+      await agentsApi.remove(agent.id);
+      router.push(routes.agents);
+    } finally {
+      setDeleting(false);
+    }
   };
 
   return (
@@ -98,9 +105,9 @@ export default function AgentDetailPage() {
               </Button>
             </Link>
             {agent.status !== "deleted" && (
-              <Button variant="danger" size="sm" onClick={handleDelete}>
+              <Button variant="danger" size="sm" onClick={handleDelete} disabled={deleting}>
                 <Trash2 size={13} strokeWidth={1.75} />
-                Delete
+                {deleting ? "Deleting…" : "Delete"}
               </Button>
             )}
           </div>
