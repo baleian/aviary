@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from sqlalchemy import func, select
@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 from aviary_shared.db.models import McpServer, McpTool
 
 from app.db import async_session_factory
+from app.flash import err, ok
 from app.templates import templates
 
 router = APIRouter()
@@ -56,19 +57,22 @@ async def create_server(
     is_platform_provided: str | None = Form(None),
 ):
     tag_list = [t.strip() for t in tags.split(",") if t.strip()]
-    async with async_session_factory() as db:
-        srv = McpServer(
-            name=name,
-            description=description or None,
-            transport_type=transport_type,
-            connection_config={"url": url},
-            tags=tag_list,
-            is_platform_provided=bool(is_platform_provided),
-        )
-        db.add(srv)
-        await db.commit()
-        await db.refresh(srv)
-    return RedirectResponse(f"/mcp/{srv.id}", status_code=303)
+    try:
+        async with async_session_factory() as db:
+            srv = McpServer(
+                name=name,
+                description=description or None,
+                transport_type=transport_type,
+                connection_config={"url": url},
+                tags=tag_list,
+                is_platform_provided=bool(is_platform_provided),
+            )
+            db.add(srv)
+            await db.commit()
+            await db.refresh(srv)
+    except Exception as e:
+        return err("/mcp/new", f"Create failed: {e}")
+    return ok(f"/mcp/{srv.id}", "Server registered")
 
 
 @router.get("/mcp/{server_id}", response_class=HTMLResponse)
@@ -102,12 +106,13 @@ async def update_server(
     tags: str = Form(""),
     is_platform_provided: str | None = Form(None),
 ):
+    detail_url = f"/mcp/{server_id}"
     async with async_session_factory() as db:
         srv = (
             await db.execute(select(McpServer).where(McpServer.id == server_id))
         ).scalar_one_or_none()
         if srv is None:
-            raise HTTPException(404, "Server not found")
+            return err(detail_url, "Server not found")
         srv.name = name
         srv.description = description or None
         srv.transport_type = transport_type
@@ -115,7 +120,7 @@ async def update_server(
         srv.tags = [t.strip() for t in tags.split(",") if t.strip()]
         srv.is_platform_provided = bool(is_platform_provided)
         await db.commit()
-    return RedirectResponse(f"/mcp/{server_id}", status_code=303)
+    return ok(detail_url, "Configuration saved")
 
 
 @router.post("/mcp/{server_id}/delete")
@@ -127,20 +132,21 @@ async def delete_server(server_id: uuid.UUID):
         if srv is not None:
             await db.delete(srv)
             await db.commit()
-    return RedirectResponse("/mcp", status_code=303)
+    return ok("/mcp", "Server deleted")
 
 
 @router.post("/mcp/{server_id}/discover")
 async def discover_tools(server_id: uuid.UUID):
+    detail_url = f"/mcp/{server_id}"
     async with async_session_factory() as db:
         srv = (
             await db.execute(select(McpServer).where(McpServer.id == server_id))
         ).scalar_one_or_none()
         if srv is None:
-            raise HTTPException(404, "Server not found")
+            return err(detail_url, "Server not found")
         url = (srv.connection_config or {}).get("url")
         if not url:
-            raise HTTPException(400, "Server has no connection URL")
+            return err(detail_url, "Server has no connection URL")
 
         try:
             async with streamablehttp_client(url=url) as (read, write, _):
@@ -158,7 +164,7 @@ async def discover_tools(server_id: uuid.UUID):
         except Exception as e:
             srv.status = "degraded"
             await db.commit()
-            raise HTTPException(502, f"Discovery failed: {e}") from e
+            return err(detail_url, f"Discovery failed: {e}")
 
         existing = {
             t.name: t for t in (
@@ -186,4 +192,4 @@ async def discover_tools(server_id: uuid.UUID):
         srv.last_discovered_at = datetime.now(timezone.utc)
         srv.status = "active"
         await db.commit()
-    return RedirectResponse(f"/mcp/{server_id}", status_code=303)
+    return ok(detail_url, f"Discovered {len(raw)} tools")

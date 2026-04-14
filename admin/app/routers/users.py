@@ -11,7 +11,7 @@ import uuid
 
 import httpx
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 
 from aviary_shared.db.models import User
@@ -19,6 +19,7 @@ from aviary_shared.db.models import User
 from app.clients.keycloak import client as keycloak
 from app.clients.vault import vault
 from app.db import async_session_factory
+from app.flash import err, ok
 from app.templates import templates
 
 router = APIRouter()
@@ -71,10 +72,10 @@ async def create_user(
         )
     except httpx.HTTPStatusError as exc:
         detail = exc.response.text if exc.response is not None else str(exc)
-        raise HTTPException(400, f"Keycloak rejected: {detail}") from exc
+        return err("/users/new", f"Keycloak rejected: {detail}")
     except httpx.HTTPError as exc:
-        raise HTTPException(502, f"Keycloak unreachable: {exc}") from exc
-    return RedirectResponse("/users", status_code=303)
+        return err("/users/new", f"Keycloak unreachable: {exc}")
+    return ok("/users", "User created")
 
 
 @router.get("/users/{keycloak_id}", response_class=HTMLResponse)
@@ -111,7 +112,7 @@ async def delete_user(keycloak_id: str):
         if user is not None:
             await db.delete(user)
             await db.commit()
-    return RedirectResponse("/users", status_code=303)
+    return ok("/users", "User deleted")
 
 
 @router.post("/users/{keycloak_id}/credentials")
@@ -120,23 +121,31 @@ async def put_credential(
     name: str = Form(...),
     value: str = Form(...),
 ):
+    detail_url = f"/users/{keycloak_id}"
     async with async_session_factory() as db:
         user = (
             await db.execute(select(User).where(User.external_id == keycloak_id))
         ).scalar_one_or_none()
     if user is None:
-        raise HTTPException(404, "User has not signed in yet — cannot set credentials")
-    await vault().write_user_credential(user.external_id, name, value)
-    return RedirectResponse(f"/users/{keycloak_id}", status_code=303)
+        return err(detail_url, "User has not signed in yet — cannot set credentials")
+    try:
+        await vault().write_user_credential(user.external_id, name, value)
+    except Exception as e:
+        return err(detail_url, f"Save failed: {e}")
+    return ok(detail_url, f"Credential '{name}' saved")
 
 
 @router.post("/users/{keycloak_id}/credentials/{name}/delete")
 async def delete_credential(keycloak_id: str, name: str):
+    detail_url = f"/users/{keycloak_id}"
     async with async_session_factory() as db:
         user = (
             await db.execute(select(User).where(User.external_id == keycloak_id))
         ).scalar_one_or_none()
     if user is None:
-        raise HTTPException(404, "User not found")
-    await vault().delete_user_credential(user.external_id, name)
-    return RedirectResponse(f"/users/{keycloak_id}", status_code=303)
+        return err(detail_url, "User not found")
+    try:
+        await vault().delete_user_credential(user.external_id, name)
+    except Exception as e:
+        return err(detail_url, f"Delete failed: {e}")
+    return ok(detail_url, f"Credential '{name}' deleted")

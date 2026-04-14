@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -19,6 +19,7 @@ from aviary_shared.db.models import Agent, Policy
 
 from app.clients.supervisor import client as supervisor
 from app.db import async_session_factory
+from app.flash import err, ok
 from app.templates import templates
 
 router = APIRouter()
@@ -85,35 +86,48 @@ async def agent_detail(request: Request, agent_id: uuid.UUID):
 
 @router.post("/agents/{agent_id}/restart")
 async def restart_tasks(agent_id: uuid.UUID):
-    await supervisor.restart(str(agent_id))
-    return RedirectResponse(f"/agents/{agent_id}", status_code=303)
+    url = f"/agents/{agent_id}"
+    try:
+        await supervisor.restart(str(agent_id))
+    except Exception as e:
+        return err(url, f"Restart failed: {e}")
+    return ok(url, "Rolling restart triggered")
 
 
 @router.post("/agents/{agent_id}/deactivate")
 async def deactivate(agent_id: uuid.UUID):
-    """Stop all tasks. Workspace preserved — next /run reinstates."""
-    await supervisor.deactivate(str(agent_id))
-    return RedirectResponse(f"/agents/{agent_id}", status_code=303)
+    url = f"/agents/{agent_id}"
+    try:
+        await supervisor.deactivate(str(agent_id))
+    except Exception as e:
+        return err(url, f"Deactivate failed: {e}")
+    return ok(url, "Tasks stopped")
 
 
 @router.post("/agents/{agent_id}/scale")
 async def scale(agent_id: uuid.UUID, target: int = Form(...)):
-    await supervisor.scale(str(agent_id), target)
-    return RedirectResponse(f"/agents/{agent_id}", status_code=303)
+    url = f"/agents/{agent_id}"
+    try:
+        await supervisor.scale(str(agent_id), target)
+    except Exception as e:
+        return err(url, f"Scale failed: {e}")
+    return ok(url, f"Scaled to {target}")
 
 
 @router.post("/agents/{agent_id}/purge")
 async def purge(agent_id: uuid.UUID):
-    """Irreversible — stops tasks, deletes workspace subpath, drops DB row."""
-    await supervisor.purge(str(agent_id))
-    async with async_session_factory() as db:
-        agent = (
-            await db.execute(select(Agent).where(Agent.id == agent_id))
-        ).scalar_one_or_none()
-        if agent is not None:
-            await db.delete(agent)
-            await db.commit()
-    return RedirectResponse("/", status_code=303)
+    try:
+        await supervisor.purge(str(agent_id))
+        async with async_session_factory() as db:
+            agent = (
+                await db.execute(select(Agent).where(Agent.id == agent_id))
+            ).scalar_one_or_none()
+            if agent is not None:
+                await db.delete(agent)
+                await db.commit()
+    except Exception as e:
+        return err(f"/agents/{agent_id}", f"Purge failed: {e}")
+    return ok("/", "Agent purged")
 
 
 @router.post("/agents/{agent_id}/security")
@@ -126,8 +140,7 @@ async def update_security(
     memory_mb: int | None = Form(None),
     cpu_units: int | None = Form(None),
 ):
-    """Update agent's security configuration. Applied on next task (re)spawn;
-    running tasks are not mutated — operator must click Restart after save."""
+    url = f"/agents/{agent_id}"
     extras = [s.strip() for s in security_groups.split(",") if s.strip()]
     subnet_list = [s.strip() for s in subnets.split(",") if s.strip()]
 
@@ -138,7 +151,7 @@ async def update_security(
             )
         ).scalar_one_or_none()
         if agent is None:
-            raise HTTPException(404, "Agent not found")
+            return err(url, "Agent not found")
 
         if agent.policy is None:
             agent.policy = Policy(agent_id=agent.id)
@@ -162,4 +175,4 @@ async def update_security(
         policy.resource_limits = limits or None
 
         await db.commit()
-    return RedirectResponse(f"/agents/{agent_id}", status_code=303)
+    return ok(url, "Configuration saved")

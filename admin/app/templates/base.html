@@ -14,8 +14,31 @@
       <a href="/users">Users</a>
     </nav>
   </header>
+  {% set _flash = request.query_params.get('flash') %}
+  {% set _error = request.query_params.get('error') %}
+  {% if _flash or _error %}
+  <div class="flash flash-fixed flash-{{ 'error' if _error else 'success' }}" onclick="this.remove()">
+    <span>{{ _error or _flash }}</span>
+    <span style="opacity:.5;margin-left:12px">✕</span>
+  </div>
+  <script>setTimeout(() => document.querySelector('.flash')?.remove(), 5000);</script>
+  {% endif %}
   <main class="container">
     {% block content %}{% endblock %}
   </main>
+  <script>
+    document.addEventListener('submit', (e) => {
+      const form = e.target;
+      if (!(form instanceof HTMLFormElement)) return;
+      const btn = form.querySelector('button[type="submit"], button:not([type])')
+               || document.activeElement;
+      if (btn && btn.tagName === 'BUTTON' && !btn.disabled) {
+        btn.dataset._label = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner"></span>' + btn.dataset._label;
+        btn.disabled = true;
+      }
+      form.querySelectorAll('button').forEach(b => { if (b !== btn) b.disabled = true; });
+    });
+  </script>
 </body>
 </html>
