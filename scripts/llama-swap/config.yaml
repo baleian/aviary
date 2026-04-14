@@ -7,8 +7,14 @@ models:
       llama-server
       --hf-repo unsloth/gemma-4-26B-A4B-it-GGUF
       --hf-file gemma-4-26B-A4B-it-UD-Q4_K_M.gguf
-      -c 65536
       --port ${PORT}
+      -ngl 99
+      -fa on
+      -np 2
+      -c 131072
+      -b 1024
+      -ctk q8_0
+      -ctv q8_0
     ttl: 600
     aliases:
       - "gemma4"
