@@ -15,7 +15,8 @@ RUN npx tsc
 FROM node:22-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git curl ca-certificates bubblewrap python3 \
+    git curl ca-certificates bubblewrap \
+    python3 python3-venv python3-pip python-is-python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Claude Code CLI globally

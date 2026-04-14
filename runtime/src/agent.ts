@@ -9,7 +9,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { WORKSPACE_ROOT, sessionClaudeDir, sessionTmp, sessionWorkspace } from "./constants.js";
+import { WORKSPACE_ROOT, sessionClaudeDir, sessionTmp, sessionVenvDir, sessionWorkspace } from "./constants.js";
 
 const LLM_GATEWAY_URL = process.env.LLM_GATEWAY_URL ?? (() => { throw new Error("LLM_GATEWAY_URL is required"); })();
 const LLM_GATEWAY_API_KEY = process.env.LLM_GATEWAY_API_KEY ?? (() => { throw new Error("LLM_GATEWAY_API_KEY is required"); })();
@@ -105,9 +105,11 @@ export async function* processMessage(
   const workspace = sessionWorkspace(sessionId);
   const claudeDir = sessionClaudeDir(sessionId);
   const tmpDir = sessionTmp(sessionId);
+  const venvDir = sessionVenvDir(sessionId);
   fs.mkdirSync(workspace, { recursive: true });
   fs.mkdirSync(claudeDir, { recursive: true });
   fs.mkdirSync(tmpDir, { recursive: true });
+  fs.mkdirSync(path.dirname(venvDir), { recursive: true });
 
   const mc: ModelConfig = modelConfig ?? {};
   if (!mc.model || !mc.backend) {
@@ -126,6 +128,7 @@ export async function* processMessage(
     SESSION_WORKSPACE: workspace,
     SESSION_CLAUDE_DIR: claudeDir,
     SESSION_TMP: tmpDir,
+    SESSION_VENV_DIR: venvDir,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     CLAUDE_CODE_MAX_RETRIES: "2",
     ...(mc.max_output_tokens != null

@@ -15,3 +15,7 @@ export function sessionClaudeDir(sessionId: string): string {
 export function sessionTmp(sessionId: string): string {
   return `/tmp/${sessionId}`;
 }
+
+export function sessionVenvDir(sessionId: string): string {
+  return path.join(WORKSPACE_ROOT, ".venvs", sessionId);
+}
