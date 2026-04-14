@@ -11,11 +11,8 @@
     DB id <code>{{ user.id }}</code>
   </p>
 {% else %}
-  <h2 class="meta">User (not yet signed in)</h2>
-  <p class="meta">
-    Keycloak id <code>{{ keycloak_id }}</code>. The DB row is created on first
-    OIDC sign-in, so credentials cannot be attached until then.
-  </p>
+  <h2>User</h2>
+  <p class="meta">Keycloak id <code>{{ keycloak_id }}</code> · Not signed in yet</p>
 {% endif %}
 
 <div class="actions">
@@ -27,12 +24,7 @@
 
 {% if user %}
 <div class="card">
-  <h3>Vault credentials</h3>
-  <p class="meta">
-    Per-user secrets at <code>secret/aviary/credentials/{{ user.external_id }}/&lt;name&gt;</code>.
-    Used by LiteLLM (<code>anthropic-api-key</code>) and MCP tool-arg injection
-    (<code>jira-email</code>, <code>jira-token</code>, <code>confluence-email</code>, <code>confluence-token</code>, …).
-  </p>
+  <h3>Credentials</h3>
 
   {% if credentials %}
     <table>
