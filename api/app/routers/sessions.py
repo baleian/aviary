@@ -14,6 +14,7 @@ from app.schemas.session import (
     SessionTitleUpdate,
 )
 from app.services import agents as agent_svc
+from app.services import session_status
 from app.services import sessions as svc
 from aviary_shared.db.models import User
 
@@ -45,6 +46,33 @@ async def create_session(
     agent = await agent_svc.require_owner_active(db, agent_id, user)
     session = await svc.create(db, agent.id, user, body.title)
     return SessionResponse.model_validate(session)
+
+
+@router.get("/sessions/status")
+async def get_sessions_status(
+    ids: str = Query(..., description="Comma-separated session IDs"),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Batch sidebar status — statuses + per-user unread counts + latest titles."""
+    session_ids: list[str] = []
+    uuids: list[uuid.UUID] = []
+    for raw in ids.split(","):
+        sid = raw.strip()
+        if not sid:
+            continue
+        try:
+            uuids.append(uuid.UUID(sid))
+        except ValueError:
+            continue
+        session_ids.append(sid)
+    if not session_ids:
+        return {"statuses": {}, "unread": {}, "titles": {}}
+
+    statuses = await session_status.get_bulk_status(session_ids)
+    unread = await session_status.get_bulk_unread(session_ids, str(user.id))
+    titles = await svc.get_titles_bulk(db, uuids)
+    return {"statuses": statuses, "unread": unread, "titles": titles}
 
 
 @router.get("/sessions/{session_id}", response_model=SessionResponse)

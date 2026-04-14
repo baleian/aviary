@@ -15,14 +15,15 @@ import uuid
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from app.auth import session_store
 from app.auth.dependencies import authenticate_ws
 from app.deps import db_factory
+from app.services import session_status
 from app.services import agents as agent_svc
 from app.services import sessions as session_svc
 from app.services.stream import buffer, events
 from app.services.stream.manager import StreamRequest, cancel as cancel_stream, start as start_stream
 from app.services.stream.relay import replay, run_relay
-from app.services.supervisor import supervisor_client
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ router = APIRouter()
 
 @router.websocket("/sessions/{session_id}/ws")
 async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
+    sid = websocket.cookies.get(session_store.COOKIE_NAME)
     async with db_factory()() as db:
         auth = await authenticate_ws(websocket, db)
         if auth is None:
@@ -49,18 +51,15 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
 
     await websocket.accept()
     session_id_str = str(session_id)
+    await session_status.clear_unread(session_id_str, str(user.id))
 
     try:
-        await websocket.send_json({"type": "status", "status": "waiting"})
-        await supervisor_client.run(agent_id)  # idempotent — ensures min_replicas after idle
-        ready = await supervisor_client.wait_ready(agent_id)
-        if not ready:
-            await websocket.send_json({"type": "status", "status": "offline", "message": "Agent not ready"})
-            return
+        # No pre-warm on handshake: the first message's _drive_stream
+        # handles spawn + readiness, which covers both cold-start and
+        # mid-session replica loss through one path.
         await websocket.send_json({"type": "status", "status": "ready"})
-
         await replay(websocket, session_id_str)
-        relay_task = asyncio.create_task(run_relay(websocket, session_id_str))
+        relay_task = asyncio.create_task(run_relay(websocket, session_id_str, str(user.id)))
 
         try:
             while True:
@@ -77,6 +76,17 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
                 content = (data.get("content") or "").strip()
                 if not content:
                     continue
+
+                # Per-turn refresh: WS outlives Keycloak's 5-min access-token TTL.
+                fresh = await session_store.get_fresh(sid) if sid else None
+                if fresh is None:
+                    await websocket.send_json({
+                        "type": events.ERROR,
+                        "message": "Session expired, please sign in again",
+                    })
+                    await websocket.close(code=4001, reason="Session expired")
+                    return
+                access_token = fresh.access_token
 
                 async with db_factory()() as db:
                     msg = await session_svc.save_message(

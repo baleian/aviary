@@ -12,6 +12,7 @@ import logging
 from fastapi import WebSocket
 
 from app.deps import get_redis
+from app.services import session_status
 from app.services.stream import buffer, events
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ async def replay(websocket: WebSocket, session_id: str) -> None:
         await buffer.clear_buffer(session_id)
 
 
-async def run_relay(websocket: WebSocket, session_id: str) -> None:
+async def run_relay(websocket: WebSocket, session_id: str, user_id: str | None = None) -> None:
     """Subscribe to Pub/Sub and forward to the client until cancelled."""
     pubsub = get_redis().pubsub()
     try:
@@ -46,6 +47,8 @@ async def run_relay(websocket: WebSocket, session_id: str) -> None:
             try:
                 data = json.loads(msg["data"])
                 await websocket.send_json(data)
+                if user_id and data.get("type") == events.DONE:
+                    await session_status.clear_unread(session_id, user_id)
             except Exception:
                 logger.debug("Relay forward failed for %s", session_id, exc_info=True)
                 return

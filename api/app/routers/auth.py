@@ -7,7 +7,12 @@ from app.auth.dependencies import _upsert_user, get_current_user
 from app.auth.oidc import validator
 from app.config import settings
 from app.deps import get_db
-from app.schemas.user import AuthConfigResponse, TokenExchangeRequest, UserResponse
+from app.schemas.user import (
+    AuthConfigResponse,
+    PreferencesUpdateRequest,
+    TokenExchangeRequest,
+    UserResponse,
+)
 from aviary_shared.db.models import User
 
 router = APIRouter()
@@ -79,6 +84,18 @@ async def auth_callback(
 
 @router.get("/me", response_model=UserResponse)
 async def get_me(user: User = Depends(get_current_user)):
+    return user
+
+
+@router.patch("/me/preferences", response_model=UserResponse)
+async def update_preferences(
+    body: PreferencesUpdateRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # SQLAlchemy doesn't track in-place mutations on JSONB; reassign.
+    user.preferences = {**(user.preferences or {}), **body.preferences}
+    await db.flush()
     return user
 
 

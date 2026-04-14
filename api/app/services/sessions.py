@@ -81,6 +81,17 @@ async def update_title(db: AsyncSession, session: Session, title: str) -> Sessio
     return session
 
 
+async def get_titles_bulk(
+    db: AsyncSession, session_ids: list[uuid.UUID],
+) -> dict[str, str | None]:
+    if not session_ids:
+        return {}
+    result = await db.execute(
+        select(Session.id, Session.title).where(Session.id.in_(session_ids))
+    )
+    return {str(row[0]): row[1] for row in result.all()}
+
+
 async def list_messages(
     db: AsyncSession,
     session_id: uuid.UUID,
@@ -119,6 +130,9 @@ async def save_message(
 
     session = (await db.execute(select(Session).where(Session.id == session_id))).scalar_one()
     session.last_message_at = msg.created_at
+    if session.title is None and sender_type == "user" and content:
+        first_line = content.strip().split("\n", 1)[0]
+        session.title = first_line if len(first_line) <= 60 else first_line[:57] + "…"
     await db.flush()
     return msg
 

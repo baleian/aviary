@@ -54,6 +54,17 @@ class SupervisorClient:
         r = await self._require().delete(f"/v1/agents/{agent_id}", params=params)
         r.raise_for_status()
 
+    async def is_ready(self, agent_id: str) -> bool:
+        """Non-blocking readiness probe — returns whether at least one replica
+        is currently serving. Used by the sidebar status poll; does not spawn."""
+        try:
+            r = await self._require().get(f"/v1/agents/{agent_id}/ready")
+            if r.status_code != 200:
+                return False
+            return bool(r.json().get("ready"))
+        except httpx.HTTPError:
+            return False
+
     async def wait_ready(self, agent_id: str, timeout: int | None = None) -> bool:
         timeout = timeout or settings.agent_ready_timeout
         try:

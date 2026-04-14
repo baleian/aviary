@@ -1,7 +1,8 @@
 import uuid
 from datetime import datetime
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class UserResponse(BaseModel):
@@ -11,7 +12,16 @@ class UserResponse(BaseModel):
     external_id: str
     email: str
     display_name: str
+    avatar_url: str | None = None
+    preferences: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
+
+
+class PreferencesUpdateRequest(BaseModel):
+    """Partial update — top-level keys in `preferences` are merged with the
+    stored dict (shallow merge, caller supplies whichever keys it owns)."""
+
+    preferences: dict[str, Any]
 
 
 class AuthConfigResponse(BaseModel):

@@ -32,10 +32,11 @@ from sqlalchemy import select
 from app.deps import db_factory, get_redis
 from app.identity import instance_id
 from app.services import sessions as session_svc
+from app.services import session_status
 from app.services.stream import buffer, events
 from app.services.stream.lock import get_lock
 from app.services.supervisor import supervisor_client
-from aviary_shared.db.models import Agent
+from aviary_shared.db.models import Agent, Session
 
 logger = logging.getLogger(__name__)
 
@@ -189,16 +190,32 @@ async def _drive_stream(req: StreamRequest) -> None:
     agent_id = req.agent_id
 
     await buffer.set_status(stream_id, "streaming")
+    await session_status.set_status(stream_id, "streaming")
+    try:
+        await _drive_stream_inner(req)
+    finally:
+        # Session badge flips back to idle regardless of success/error path.
+        await session_status.set_status(stream_id, "idle")
+
+
+async def _drive_stream_inner(req: StreamRequest) -> None:
+    stream_id = req.stream_id
+    agent_id = req.agent_id
 
     agent = await _load_agent(agent_id)
     if agent is None:
         await _fail_pre_runtime(req, "Agent not found")
         return
 
+    # /run is idempotent; covers mid-session replica loss. Client debounces
+    # "waiting" (500ms) so the fast path doesn't flicker the badge.
+    await buffer.publish(stream_id, {"type": "status", "status": "waiting"})
+    await supervisor_client.run(agent_id)
     ready = await supervisor_client.wait_ready(agent_id)
     if not ready:
         await _fail_pre_runtime(req, "Agent did not become ready in time")
         return
+    await buffer.publish(stream_id, {"type": "status", "status": "ready"})
 
     agent_config: dict = {
         "instruction": agent.instruction or "",
@@ -309,6 +326,12 @@ async def _drive_stream(req: StreamRequest) -> None:
                 message_id = str(msg.id)
             await buffer.set_status(stream_id, "complete")
             await buffer.set_result(stream_id, full_text, message_id)
+            async with db_factory()() as db:
+                owner_id = await db.scalar(
+                    select(Session.created_by).where(Session.id == uuid.UUID(stream_id))
+                )
+            if owner_id:
+                await session_status.increment_unread(stream_id, owner_id)
             await buffer.publish(stream_id, {"type": events.DONE, "messageId": message_id})
 
     except asyncio.CancelledError:

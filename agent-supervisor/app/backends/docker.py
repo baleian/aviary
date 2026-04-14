@@ -298,8 +298,17 @@ class DockerBackend:
         env: dict[str, str],
         network_policy: dict | None = None,
     ) -> int:
+        # Dead replicas (exited/dead/removed by ops) must not count toward
+        # capacity or a /run after a crash stays a no-op. Drop them first
+        # so the name slot frees up and `current` reflects live capacity.
         replicas = await self.list_replicas(agent_id)
-        current = len(replicas)
+        live: list[TaskInfo] = []
+        for r in replicas:
+            if r.status == "running":
+                live.append(r)
+            else:
+                await self.stop_replica(r)
+        current = len(live)
 
         if target > current:
             for _ in range(target - current):
@@ -309,13 +318,12 @@ class DockerBackend:
         elif target < current:
             # Prefer removing replicas with fewest active sessions (least disruptive).
             scored: list[tuple[int, TaskInfo]] = []
-            for r in replicas:
+            for r in live:
                 m = await self.get_replica_metrics(r)
                 load = m.sessions_active if m else 0
                 scored.append((load, r))
             scored.sort(key=lambda x: x[0])
-            to_remove = current - target
-            for _, r in scored[:to_remove]:
+            for _, r in scored[: current - target]:
                 await self.stop_replica(r)
 
         return len(await self.list_replicas(agent_id))
