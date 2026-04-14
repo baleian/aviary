@@ -1,0 +1,43 @@
+healthCheckTimeout: 300
+logLevel: info
+
+models:
+  "llamacpp/gemma4-26b":
+    cmd: |
+      llama-server
+      --hf-repo unsloth/gemma-4-26B-A4B-it-GGUF
+      --hf-file gemma-4-26B-A4B-it-UD-Q4_K_M.gguf
+      --port ${PORT}
+      --ctx-size 131072
+      -ngl 99 -fa on --jinja
+      -np 1 -ctk q8_0 -ctv q8_0
+    concurrencyLimit: 8
+  
+  # "vllm/gemma4-26b":
+  #   cmd: |
+  #     docker run --rm \
+  #       --name vllm-gemma4-26b \
+  #       --gpus all \
+  #       --network host \
+  #       --shm-size 32G \
+  #       -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+  #       -e NVIDIA_VISIBLE_DEVICES=all \
+  #       -e NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+  #       -e HF_TOKEN=${env.HF_TOKEN} \
+  #       -e VLLM_SLEEP_WHEN_IDLE=1 \
+  #       -v ${env.HOME}/.cache/huggingface:/root/.cache/huggingface \
+  #       "vllm/vllm-openai:gemma4-cu130" \
+  #       --model lcu0312/gemma-4-26B-A4B-it-AWQ-4bit \
+  #       --tensor-parallel-size 1 \
+  #       --gpu-memory-utilization 0.90 \
+  #       --max-num-seqs 4 \
+  #       --max-model-len 16384 \
+  #       --reasoning-parser gemma4  \
+  #       --tool-call-parser gemma4  \
+  #       --enable-auto-tool-choice \
+  #       --async-scheduling \
+  #       --kv-cache-dtype fp8 \
+  #       --host 0.0.0.0 \
+  #       --port ${PORT}
+  #   cmdStop: |
+  #     docker stop vllm-gemma4-26b-${PORT} || true
