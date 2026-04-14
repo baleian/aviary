@@ -24,7 +24,6 @@ from app.config import settings
 def build_deployment_manifest(spec: AgentSpec, workspace: WorkspaceRef) -> dict:
     runtime_env = [
         {"name": "AGENT_ID", "value": spec.agent_id},
-        {"name": "MAX_CONCURRENT_SESSIONS", "value": str(settings.max_concurrent_sessions_per_pod)},
         {"name": "INFERENCE_ROUTER_URL", "value": settings.inference_router_url},
         {"name": "MCP_GATEWAY_URL", "value": settings.mcp_gateway_url},
         {"name": "LITELLM_API_KEY", "value": settings.litellm_api_key},

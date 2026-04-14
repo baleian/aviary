@@ -11,7 +11,7 @@ import * as fs from "node:fs";
 import express from "express";
 import { SessionManager } from "./session-manager.js";
 import { SHARED_WORKSPACE_ROOT, WORKSPACE_ROOT } from "./constants.js";
-import { healthRouter, setCapacityProbe, setReady } from "./health.js";
+import { healthRouter, setReady } from "./health.js";
 import { processMessage } from "./agent.js";
 
 const app = express();
@@ -30,10 +30,6 @@ const activeAbortControllers = new Map<string, AbortController>();
 // Startup
 fs.mkdirSync(WORKSPACE_ROOT, { recursive: true });
 fs.mkdirSync(SHARED_WORKSPACE_ROOT, { recursive: true });
-setCapacityProbe(() => ({
-  hasCapacity: manager.hasCapacity,
-  activeCount: manager.activeCount,
-}));
 setReady(true);
 
 interface ContentPart {
@@ -57,13 +53,7 @@ app.post("/message", async (req, res) => {
     return;
   }
 
-  let entry;
-  try {
-    entry = manager.getOrCreate(body.session_id, AGENT_ID);
-  } catch (e: any) {
-    res.status(503).json({ error: e.message });
-    return;
-  }
+  const entry = manager.getOrCreate(body.session_id, AGENT_ID);
 
   // SSE headers
   res.setHeader("Content-Type", "text/event-stream");
@@ -125,7 +115,6 @@ app.post("/abort/:sessionId", (req, res) => {
 app.get("/sessions", (_req, res) => {
   res.json({
     sessions: manager.listSessions(),
-    capacity: manager.maxSessions,
     active: manager.activeCount,
   });
 });
@@ -158,7 +147,6 @@ app.get("/metrics", (_req, res) => {
   res.json({
     sessions_active: manager.activeCount,
     sessions_streaming: manager.activeCount,
-    sessions_max: manager.maxSessions,
   });
 });
 
