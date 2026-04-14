@@ -1,20 +1,23 @@
-"""MCP Gateway core — tools/list and tools/call.
+"""MCP Gateway core — tools/list and tools/call with per-agent binding filter.
 
-Tools are qualified as `{server}__{tool}`. Only platform-provided servers
-are exposed for now; user-registered servers remain in the catalog but are
-denied at the edge until RBAC/per-agent binding is reintroduced.
+Tools are qualified as `{server}__{tool}`. Each agent's request is scoped to
+the tools in `agents.mcp_tool_ids`: tools/list returns only those, and
+tools/call rejects unbound tools. Non-platform servers remain denied at the
+edge until RBAC lands.
 
 Secret-injected args are stripped from `tools/list` schemas and filled from
 Vault on `tools/call` before proxying to the backend.
 """
 
 import logging
+import uuid
 
 from mcp.server import Server
 from mcp.types import CallToolResult, TextContent, Tool
 from sqlalchemy import select
+from sqlalchemy.orm import joinedload
 
-from aviary_shared.db.models import McpServer, McpTool
+from aviary_shared.db.models import Agent, McpServer, McpTool
 
 from app.connection_pool import pool
 from app.db import async_session_factory
@@ -26,49 +29,82 @@ logger = logging.getLogger(__name__)
 TOOL_NAME_SEPARATOR = "__"
 
 
+def _parse_ids(raw_ids: list[str] | None) -> list[uuid.UUID]:
+    out: list[uuid.UUID] = []
+    for raw in raw_ids or []:
+        try:
+            out.append(uuid.UUID(raw))
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
 def create_gateway_server() -> Server:
     server = Server("aviary-mcp-gateway")
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:
         ctx = getattr(server, "_request_context", {})
-        if not ctx.get("user_external_id"):
+        agent_id = ctx.get("agent_id")
+        user_external_id = ctx.get("user_external_id")
+        if not agent_id or not user_external_id:
+            return []
+
+        try:
+            agent_uuid = uuid.UUID(agent_id)
+        except (ValueError, TypeError):
             return []
 
         tools: list[Tool] = []
         async with async_session_factory() as db:
-            result = await db.execute(
-                select(McpServer).where(
-                    McpServer.is_platform_provided.is_(True),
-                    McpServer.status == "active",
-                ),
-            )
-            servers = result.scalars().all()
-            for srv in servers:
-                tool_rows = (
-                    await db.execute(select(McpTool).where(McpTool.server_id == srv.id))
-                ).scalars().all()
-                for t in tool_rows:
-                    injected = get_injected_args(srv.name, t.name)
-                    schema = strip_injected_from_schema(t.input_schema or {}, injected)
-                    tools.append(Tool(
-                        name=f"{srv.name}{TOOL_NAME_SEPARATOR}{t.name}",
-                        description=t.description or "",
-                        inputSchema=schema,
-                    ))
+            agent = (
+                await db.execute(select(Agent).where(Agent.id == agent_uuid))
+            ).scalar_one_or_none()
+            if agent is None:
+                return []
+
+            tool_uuids = _parse_ids(agent.mcp_tool_ids)
+            if not tool_uuids:
+                return []
+
+            rows = (
+                await db.execute(
+                    select(McpTool)
+                    .where(McpTool.id.in_(tool_uuids))
+                    .options(joinedload(McpTool.server))
+                )
+            ).scalars().unique().all()
+
+            for t in rows:
+                srv = t.server
+                if not srv.is_platform_provided or srv.status != "active":
+                    continue
+                injected = get_injected_args(srv.name, t.name)
+                schema = strip_injected_from_schema(t.input_schema or {}, injected)
+                tools.append(Tool(
+                    name=f"{srv.name}{TOOL_NAME_SEPARATOR}{t.name}",
+                    description=t.description or "",
+                    inputSchema=schema,
+                ))
         return tools
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict | None) -> list[TextContent]:
         ctx = getattr(server, "_request_context", {})
+        agent_id = ctx.get("agent_id")
         user_external_id = ctx.get("user_external_id")
-        if not user_external_id:
+        if not agent_id or not user_external_id:
             return [TextContent(type="text", text="Error: missing authentication context")]
 
         if TOOL_NAME_SEPARATOR not in name:
             return [TextContent(type="text", text=f"Error: invalid tool name format: {name}")]
 
         server_name, tool_name = name.split(TOOL_NAME_SEPARATOR, 1)
+
+        try:
+            agent_uuid = uuid.UUID(agent_id)
+        except (ValueError, TypeError):
+            return [TextContent(type="text", text="Error: invalid agent id")]
 
         async with async_session_factory() as db:
             mcp_server = (
@@ -92,6 +128,16 @@ def create_gateway_server() -> Server:
             ).scalar_one_or_none()
             if mcp_tool is None:
                 return [TextContent(type="text", text=f"Error: unknown tool: {tool_name}")]
+
+            agent = (
+                await db.execute(select(Agent).where(Agent.id == agent_uuid))
+            ).scalar_one_or_none()
+            if agent is None:
+                return [TextContent(type="text", text="Error: agent not found")]
+
+            bound_uuids = set(_parse_ids(agent.mcp_tool_ids))
+            if mcp_tool.id not in bound_uuids:
+                return [TextContent(type="text", text=f"Error: tool {name} not bound to agent")]
 
         final_args = dict(arguments or {})
         for arg_name, mapping in get_injected_args(server_name, tool_name).items():
