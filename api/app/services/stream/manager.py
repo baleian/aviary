@@ -36,6 +36,7 @@ from app.services import session_status
 from app.services.stream import buffer, events
 from app.services.stream.lock import get_lock
 from app.services.supervisor import supervisor_client
+from app.services.vault_service import get_client as vault_client
 from aviary_shared.db.models import Agent, Session
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,16 @@ async def _heartbeat(stream_id: str, holder_id: str) -> None:
                 return
     except asyncio.CancelledError:
         return
+
+
+async def _fetch_user_credentials(user_external_id: str) -> dict[str, str]:
+    """Fetch GitHub token for sandbox injection. Empty dict if not stored."""
+    try:
+        token = await vault_client().read_user_credential(user_external_id, "github-token")
+    except Exception:
+        logger.warning("Failed to read github-token for user %s", user_external_id, exc_info=True)
+        return {}
+    return {"github_token": token} if token else {}
 
 
 async def _load_agent(agent_id: str) -> Agent | None:
@@ -224,6 +235,11 @@ async def _drive_stream_inner(req: StreamRequest) -> None:
     }
     if req.mock_scenario:
         agent_config["mock_scenario"] = req.mock_scenario
+
+    if req.user_external_id:
+        credentials = await _fetch_user_credentials(req.user_external_id)
+        if credentials:
+            agent_config["credentials"] = credentials
 
     supervisor_body = {
         "content_parts": [{"text": req.content}],

@@ -30,6 +30,7 @@ const PASSTHROUGH_KEYS = ["PATH", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"] as co
 interface AgentConfig {
   instruction?: string;
   tools?: string[];
+  credentials?: Record<string, string>;
 }
 
 interface UserContext {
@@ -138,6 +139,17 @@ export async function* processMessage(
     ...Object.fromEntries(
       PASSTHROUGH_KEYS.filter((k) => process.env[k]).map((k) => [k, process.env[k]!]),
     ),
+    // GitHub token — enables git/gh CLI authentication inside the sandbox.
+    // GH_TOKEN is used by gh CLI, GITHUB_TOKEN by git credential helper.
+    ...(agentConfig.credentials?.github_token
+      ? {
+          GITHUB_TOKEN: agentConfig.credentials.github_token,
+          GH_TOKEN: agentConfig.credentials.github_token,
+          GIT_CONFIG_COUNT: "1",
+          GIT_CONFIG_KEY_0: "credential.https://github.com.helper",
+          GIT_CONFIG_VALUE_0: "/app/scripts/git-credential-github.sh",
+        }
+      : {}),
   };
 
   const systemPrompt = {
