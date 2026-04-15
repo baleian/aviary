@@ -1,4 +1,4 @@
-"""Deployment + Service manifest builders for the K3S backend."""
+"""Deployment + Service manifest builders for the EKS Native backend."""
 
 from __future__ import annotations
 
@@ -12,8 +12,7 @@ from aviary_shared.naming import (
     agent_service_name,
 )
 
-from app.backends.k3s.workspace import (
-    WORKSPACE_VOLUME,
+from app.backends.eks_native.workspace import (
     shared_workspace_mount,
     shared_workspace_volume,
 )
@@ -55,47 +54,21 @@ def build_deployment_manifest(spec: AgentSpec, workspace: WorkspaceRef) -> dict:
                 },
                 "spec": {
                     "serviceAccountName": spec.sa_name,
-                    # Give in-flight Claude turns room to finish on SIGTERM —
-                    # runtime drains for up to 570s (see runtime/src/server.ts).
+                    # Runtime drains up to 570s on SIGTERM — give it room.
                     "terminationGracePeriodSeconds": 600,
                     "securityContext": {
                         "runAsUser": 1000,
                         "runAsGroup": 1000,
                         "fsGroup": 1000,
+                        # EFS access points already enforce uid/gid; this keeps
+                        # ownership consistent without an init container chown.
+                        "fsGroupChangePolicy": "OnRootMismatch",
                     },
-                    **(
-                        {
-                            "hostAliases": [
-                                {
-                                    "ip": settings.host_gateway_ip,
-                                    "hostnames": ["host.k8s.internal"],
-                                }
-                            ]
-                        }
-                        if settings.host_gateway_ip
-                        else {}
-                    ),
-                    "initContainers": [
-                        {
-                            "name": "fix-workspace-perms",
-                            "image": spec.image,
-                            "imagePullPolicy": "Never",
-                            "securityContext": {"runAsUser": 0, "runAsGroup": 0},
-                            "command": ["chown", "-R", "1000:1000", "/workspace"],
-                            "volumeMounts": [
-                                {"name": WORKSPACE_VOLUME, "mountPath": "/workspace"},
-                            ],
-                            "resources": {
-                                "requests": {"cpu": "10m", "memory": "16Mi"},
-                                "limits": {"cpu": "100m", "memory": "64Mi"},
-                            },
-                        }
-                    ],
                     "containers": [
                         {
                             "name": ROLE_RUNTIME,
                             "image": spec.image,
-                            "imagePullPolicy": "Never",
+                            "imagePullPolicy": settings.agent_image_pull_policy,
                             "ports": [{"containerPort": RUNTIME_PORT}],
                             "env": runtime_env,
                             "volumeMounts": [
