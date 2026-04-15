@@ -104,6 +104,28 @@ async def test_stream_publishes_events_and_returns_complete(fake_stream, redis_m
 
 
 @pytest.mark.asyncio
+async def test_stream_aborted_event_returns_aborted_status(fake_stream, redis_mock):
+    """Runtime emits {type: 'aborted'} when an external /abort caused the SDK
+    to terminate. Supervisor must classify this as status=aborted (not
+    complete, not error) so callers can differentiate."""
+    events = [
+        {"type": "query_started"},
+        {"type": "chunk", "content": "hel"},
+        {"type": "chunk", "content": "[Cancelled by user]"},
+        {"type": "aborted"},
+    ]
+    with fake_stream(events):
+        out = await runtime_proxy.stream_from_pool(**_stream_kwargs())
+
+    assert out["status"] == "aborted"
+    assert out["reached_runtime"] is True
+    # The two chunk events are published; the terminator is not.
+    assert redis_mock["append"].await_count == 2
+    redis_mock["status"].assert_awaited_with("s1", "aborted")
+    redis_mock["del_runtime"].assert_awaited_with("stream-1")
+
+
+@pytest.mark.asyncio
 async def test_stream_error_event_short_circuits(fake_stream, redis_mock):
     events = [
         {"type": "query_started"},

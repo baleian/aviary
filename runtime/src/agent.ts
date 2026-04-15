@@ -120,7 +120,7 @@ function hasSessionHistory(claudeDir: string, sessionId: string): boolean {
 }
 
 export interface SSEChunk {
-  type: "chunk" | "tool_use" | "tool_result" | "tool_progress" | "result" | "thinking" | "query_started" | "error";
+  type: "chunk" | "tool_use" | "tool_result" | "tool_progress" | "result" | "thinking" | "query_started" | "aborted" | "error";
   content?: string;
   name?: string;
   input?: unknown;
@@ -479,7 +479,11 @@ export async function* processMessage(
     }
   } catch (e) {
     if (abortController?.signal.aborted) {
+      // Distinguishes an intentional external abort from a runtime failure
+      // so the supervisor can classify its /v1/stream response correctly
+      // (status=aborted vs status=error).
       yield { type: "chunk", content: "[Cancelled by user]" };
+      yield { type: "aborted" };
       return;
     }
     console.error(`[agent ${agentId}/${sessionId}] SDK query error:`, e);

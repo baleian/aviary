@@ -157,6 +157,14 @@ async def stream_from_pool(
                     if etype == "query_started":
                         reached_runtime = True
                         continue
+                    if etype == "aborted":
+                        # Runtime handled an external abort (the /abort HTTP
+                        # endpoint was hit). Exit cleanly with status=aborted
+                        # so the caller can distinguish this from "error" or
+                        # "complete". The preceding '[Cancelled by user]' chunk
+                        # has already been published to Redis.
+                        was_aborted = True
+                        break
                     if etype == "error":
                         error_message = event.get("message", "Agent runtime error")
                         errors_total.labels(pool_name, "runtime").inc()
