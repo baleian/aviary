@@ -222,6 +222,14 @@ async def _run_stream(
             },
         )
         reached_runtime = bool(result.get("reached_runtime"))
+        if result.get("status") == "aborted":
+            # Supervisor cancelled the upstream stream in response to
+            # cancel_stream(). That path also task.cancel()s this coroutine,
+            # which usually races ahead and leaves us in the CancelledError
+            # branch below. If the response lands first, exit cleanly: the
+            # cancel_stream caller already persisted the partial message and
+            # published the `cancelled` event.
+            return
         if result.get("status") != "complete":
             raise RuntimeError(result.get("message", "Agent runtime error"))
 

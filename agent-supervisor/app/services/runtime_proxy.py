@@ -8,6 +8,7 @@ service proxy. The HTTP client factory picks between them; everything else
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -27,6 +28,12 @@ from app.metrics import (
 )
 
 logger = logging.getLogger(__name__)
+
+# session_id -> Task that owns the in-flight /v1/stream request for that
+# session. /v1/sessions/{sid}/abort cancels the task; cancellation closes
+# the httpx connection to the pool, and the pool pod's req.on('close')
+# handler aborts the SDK query on the correct replica.
+_active_streams: dict[str, asyncio.Task] = {}
 
 
 def _pool_service_name(pool_name: str) -> str:
@@ -111,9 +118,14 @@ async def stream_from_pool(
     error_message: str | None = None
     result_meta: dict | None = None
     status_label = "complete"
+    was_aborted = False
 
     active_streams.labels(pool_name).inc()
     start = time.perf_counter()
+
+    current_task = asyncio.current_task()
+    if current_task is not None:
+        _active_streams[session_id] = current_task
 
     try:
         async with _open_stream(pool_name, "/message", forward_body) as resp:
@@ -149,6 +161,15 @@ async def stream_from_pool(
                         raise
                     finally:
                         redis_publish_duration_seconds.observe(time.perf_counter() - publish_start)
+    except asyncio.CancelledError:
+        # Triggered by /v1/sessions/{sid}/abort cancelling this task. Closing
+        # the async context manager above tears down the httpx stream, which
+        # closes the TCP socket to the pool pod; the pool pod's
+        # req.on('close') then fires abortController.abort() on the correct
+        # replica. We swallow the CancelledError so /v1/stream returns a clean
+        # JSON summary to the caller instead of a 500.
+        was_aborted = True
+        logger.info("Stream for pool=%s session=%s aborted by caller", pool_name, session_id)
     except httpx.HTTPError as e:
         logger.exception("Runtime stream HTTP error for pool=%s session=%s", pool_name, session_id)
         errors_total.labels(pool_name, "http").inc()
@@ -159,6 +180,18 @@ async def stream_from_pool(
         raise
     finally:
         active_streams.labels(pool_name).dec()
+        # Release the task slot whether we completed or were aborted.
+        if _active_streams.get(session_id) is current_task:
+            _active_streams.pop(session_id, None)
+
+    if was_aborted:
+        status_label = "aborted"
+        await redis_client.set_stream_status(session_id, "aborted")
+        stream_duration_seconds.labels(pool_name, status_label).observe(time.perf_counter() - start)
+        return {
+            "status": "aborted",
+            "reached_runtime": reached_runtime,
+        }
 
     if error_message:
         status_label = "error"
@@ -180,25 +213,20 @@ async def stream_from_pool(
 
 
 async def abort_session(*, pool_name: str, session_id: str) -> dict:
-    service = _pool_service_name(pool_name)
-    subpath = f"/abort/{session_id}"
-    try:
-        if settings.runtime_pool_endpoint_mode == "k8s-proxy":
-            from app.services.k8s_proxy import new_k8s_client, service_proxy_path
+    """Abort an in-flight /v1/stream by cancelling its owning asyncio Task.
 
-            path = service_proxy_path(
-                settings.agents_namespace, service, settings.runtime_pool_port, subpath,
-            )
-            async with new_k8s_client(timeout=settings.runtime_pool_request_timeout) as client:
-                resp = await client.post(path)
-        else:
-            base = f"http://{service}.{settings.agents_namespace}.svc:{settings.runtime_pool_port}"
-            async with httpx.AsyncClient(timeout=settings.runtime_pool_request_timeout) as client:
-                resp = await client.post(f"{base}{subpath}")
-        return {"ok": True, "status": resp.status_code}
-    except httpx.HTTPError:
-        logger.warning("Abort failed for pool=%s session=%s", pool_name, session_id, exc_info=True)
-        return {"ok": False, "reason": "pool_not_reachable"}
+    Cancellation propagates into the httpx streaming context, which closes the
+    TCP connection to the correct pool pod. That pod's req.on('close') handler
+    calls abortController.abort() on the SDK query. Works regardless of which
+    pool replica is serving the session — unlike the old fire-and-forget
+    `POST /abort/:sid`, which the pool Service would load-balance to a random
+    replica that almost never held the target session.
+    """
+    task = _active_streams.get(session_id)
+    if task is None or task.done():
+        return {"ok": False, "reason": "no_active_stream"}
+    task.cancel()
+    return {"ok": True}
 
 
 async def cleanup_session(*, pool_name: str, session_id: str, agent_id: str) -> dict:

@@ -66,7 +66,9 @@ class Agent(Base):
     credentials: Mapped[list["AgentCredential"]] = relationship(
         back_populates="agent", cascade="all, delete-orphan", passive_deletes=True,
     )
-    sessions: Mapped[list["Session"]] = relationship(back_populates="agent")  # noqa: F821
+    sessions: Mapped[list["Session"]] = relationship(
+        back_populates="agent", cascade="all, delete-orphan", passive_deletes=True,
+    )  # noqa: F821
 
 
 class AgentACL(Base):

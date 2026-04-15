@@ -120,6 +120,51 @@ async def test_stream_http_exception_surfaces(redis_mock):
 
 
 @pytest.mark.asyncio
+async def test_abort_cancels_active_stream_task(redis_mock):
+    """abort_session cancels the tracked Task, which propagates into the
+    httpx stream context and closes the connection to the pool pod."""
+    import asyncio
+
+    started = asyncio.Event()
+    cancelled_inside_stream = asyncio.Event()
+
+    class _NeverEndingCtx:
+        async def __aenter__(self):
+            started.set()
+            # Block forever — simulates a long-running SSE stream.
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled_inside_stream.set()
+                raise
+            return None
+
+        async def __aexit__(self, *a):
+            return False
+
+    with patch("app.services.runtime_proxy._open_stream", return_value=_NeverEndingCtx()):
+        stream_task = asyncio.create_task(
+            runtime_proxy.stream_from_pool(
+                pool_name="default", session_id="abort-s1", agent_id="a1", body={},
+            )
+        )
+        await started.wait()
+
+        result = await runtime_proxy.abort_session(pool_name="default", session_id="abort-s1")
+        assert result == {"ok": True}
+
+        final = await stream_task
+        assert final["status"] == "aborted"
+    assert cancelled_inside_stream.is_set()
+
+
+@pytest.mark.asyncio
+async def test_abort_noop_when_no_active_stream():
+    result = await runtime_proxy.abort_session(pool_name="default", session_id="nonexistent")
+    assert result == {"ok": False, "reason": "no_active_stream"}
+
+
+@pytest.mark.asyncio
 async def test_stream_forwards_session_and_agent_into_body(redis_mock):
     captured = {}
 
