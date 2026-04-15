@@ -51,8 +51,11 @@ RUN CLAUDE_BIN=$(which claude-real) && \
     cp /app/scripts/claude-sandbox.sh "$(dirname "$CLAUDE_BIN")/claude" && \
     chmod +x "$(dirname "$CLAUDE_BIN")/claude"
 
-# Create mount point for bwrap sandbox (shared workspace).
-RUN mkdir -p /workspace
+# bwrap sandbox mount points. /workspace and /workspace-shared must exist
+# inside the container so bwrap can bind host-side paths over them:
+#   /workspace        <- $SESSION_WORKSPACE (bind)
+#   /workspace-shared <- tmpfs (isolates sibling sessions)
+RUN mkdir -p /workspace /workspace-shared
 
 # Global git config — available inside bwrap via --ro-bind / /
 RUN git config --system user.name "aviary" \
