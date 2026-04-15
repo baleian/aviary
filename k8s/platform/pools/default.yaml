@@ -4,9 +4,10 @@
 # (LLM gateway, MCP gateway, API server) and DNS. Use this pool for agents that
 # don't need to reach the public internet or sensitive internal systems.
 #
-# ${HOST_GATEWAY_IP} is substituted by setup-dev.sh at apply time (local dev).
-# In production, the external-services Service + Endpoints trick isn't needed;
-# the pool talks to platform services via in-cluster DNS directly.
+# ${HOST_GATEWAY_IP} is substituted by setup-dev.sh at apply time. In local
+# dev every platform service lives on the docker host and is reached via
+# `host.k8s.internal` (hostAliases). In prod (EKS) these would be in-cluster
+# Service DNS — the only change is swapping env values in this file.
 
 ---
 apiVersion: v1
@@ -31,16 +32,12 @@ spec:
       aviary/pool: default
   policyTypes: [Egress, Ingress]
   ingress:
-    # Pool Services accept traffic only from the agent-supervisor Pod.
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aviary/namespace: platform
-          podSelector:
-            matchLabels:
-              aviary/service: agent-supervisor
-      ports:
-        - { port: 3000, protocol: TCP }
+    # Pool Services accept ingress only via the K8s API service-proxy (the
+    # supervisor authenticates as the `agent-supervisor` ServiceAccount and
+    # forwards requests through kube-apiserver). No other pods in the cluster
+    # call the runtime directly, so we simply don't expose any namespace/pod
+    # selector here — kube-apiserver itself is the implicit ingress path.
+    - {}
   egress:
     # DNS
     - to:
@@ -50,12 +47,8 @@ spec:
               k8s-app: kube-dns
       ports:
         - { port: 53, protocol: UDP }
-    # Platform-internal services (litellm, mcp-gateway, etc. via namespace match)
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              aviary/namespace: platform
-    # Host gateway for local dev (external-services.yaml points here).
+    # Docker host — all platform services live there in local dev and are
+    # reachable via `host.k8s.internal` (hostAliases below).
     - to:
         - ipBlock:
             cidr: ${HOST_GATEWAY_IP}/32
@@ -63,7 +56,7 @@ spec:
         - { port: 8000, protocol: TCP }   # API server
         - { port: 8090, protocol: TCP }   # LiteLLM
         - { port: 8100, protocol: TCP }   # MCP Gateway
-        - { port: 6379, protocol: TCP }   # Redis (for a2a publish-through)
+        - { port: 6379, protocol: TCP }   # Redis (A2A publish-through)
 
 ---
 apiVersion: apps/v1
@@ -113,9 +106,9 @@ spec:
             - { containerPort: 3000, name: http }
           env:
             - { name: POOL_NAME, value: "default" }
-            - { name: INFERENCE_ROUTER_URL, value: "http://litellm.platform.svc:4000" }
+            - { name: INFERENCE_ROUTER_URL, value: "http://host.k8s.internal:8090" }
             - { name: LITELLM_API_KEY,      value: "sk-aviary-dev" }
-            - { name: MCP_GATEWAY_URL,      value: "http://mcp-gateway.platform.svc:8100" }
+            - { name: MCP_GATEWAY_URL,      value: "http://host.k8s.internal:8100" }
             - { name: AVIARY_API_URL,       value: "http://host.k8s.internal:8000/api" }
             - { name: AVIARY_INTERNAL_API_KEY, value: "sk-aviary-internal" }
           volumeMounts:

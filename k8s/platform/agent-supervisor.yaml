@@ -1,13 +1,17 @@
+# Supervisor itself runs in docker-compose, not in K3s. This file exists
+# only to provision the ServiceAccount whose token docker-compose mounts
+# into the supervisor container, plus the RBAC that lets the SA proxy
+# HTTP calls into pool Services via the K8s API.
+#
+# In production (EKS) the supervisor runs as a Pod with auto-mounted SA
+# credentials; this file is local-dev-only.
+
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: agent-supervisor
-  namespace: platform
+  namespace: agents
 ---
-# RBAC: supervisor proxies requests into agent pool Services via the K8s API
-# (k8s-proxy endpoint mode, used when the supervisor is not on the cluster
-# network). No CRUD on workloads, identities, or storage — those are owned by
-# the infra team's GitOps pool catalog.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -28,78 +32,4 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: agent-supervisor
-    namespace: platform
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: agent-supervisor
-  namespace: platform
-  labels:
-    aviary/service: agent-supervisor
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      aviary/service: agent-supervisor
-  template:
-    metadata:
-      labels:
-        aviary/service: agent-supervisor
-    spec:
-      serviceAccountName: agent-supervisor
-      hostAliases:
-        - ip: "${HOST_GATEWAY_IP}"
-          hostnames: ["host.k8s.internal"]
-      containers:
-        - name: agent-supervisor
-          image: aviary-agent-supervisor:latest
-          imagePullPolicy: Never
-          ports:
-            - containerPort: 9000
-              name: http
-          env:
-            - name: REDIS_URL
-              value: "redis://host.k8s.internal:6379/0"
-            - name: RUNTIME_POOL_ENDPOINT_MODE
-              value: "k8s-proxy"
-            - name: AGENTS_NAMESPACE
-              value: "agents"
-            - name: RUNTIME_POOL_PORT
-              value: "3000"
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 9000
-            initialDelaySeconds: 5
-            periodSeconds: 30
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: 9000
-            initialDelaySeconds: 3
-          resources:
-            requests:
-              cpu: "100m"
-              memory: "128Mi"
-            limits:
-              cpu: "500m"
-              memory: "256Mi"
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: agent-supervisor
-  namespace: platform
-  labels:
-    aviary/service: agent-supervisor
-spec:
-  type: NodePort
-  selector:
-    aviary/service: agent-supervisor
-  ports:
-    - name: http
-      port: 9000
-      targetPort: 9000
-      nodePort: 30900
-      protocol: TCP
+    namespace: agents

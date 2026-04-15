@@ -3,7 +3,7 @@
  *
  * All inference is routed through LiteLLM:
  *   claude-agent-sdk -> Claude Code CLI -> Anthropic SDK
- *     -> POST http://litellm.platform.svc:4000/v1/messages
+ *     -> POST {INFERENCE_ROUTER_URL}/v1/messages    (set by pool Deployment env)
  *     -> LiteLLM routes by model name prefix (anthropic/, ollama/, vllm/, bedrock/)
  *
  * Multi-turn conversation is maintained via the SDK's session management:

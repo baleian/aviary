@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     # The /v1/stream SSE loop itself has no overall timeout.
     runtime_pool_request_timeout: float = 30.0
 
+    # K8s API connection (only used when endpoint mode is k8s-proxy).
+    # Defaults match the in-pod convention; local docker-compose overrides these
+    # to point at the k3s container and a bind-mounted token directory.
+    k8s_api_url: str = "https://kubernetes.default.svc"
+    k8s_token_path: str = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    k8s_ca_path: str = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

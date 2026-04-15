@@ -18,7 +18,7 @@ COPY agent-supervisor/pyproject.toml ./agent-supervisor/pyproject.toml
 # Shared source needed for workspace install
 COPY shared/ ./shared/
 
-# Install deps from lock file
+# Install deps from lock file (cache-friendly)
 ARG UV_INDEX_URL
 ENV UV_LINK_MODE=copy
 RUN uv sync --frozen --package aviary-agent-supervisor --no-dev --no-install-project
@@ -27,11 +27,13 @@ RUN uv sync --frozen --package aviary-agent-supervisor --no-dev --no-install-pro
 COPY agent-supervisor/ ./agent-supervisor/
 RUN uv sync --frozen --package aviary-agent-supervisor --no-dev
 
-# Activate virtual environment via PATH
 ENV PATH="/workspace/.venv/bin:$PATH"
 
 WORKDIR /workspace/agent-supervisor
 
+COPY agent-supervisor/entrypoint.sh /workspace/agent-supervisor/entrypoint.sh
+RUN chmod +x /workspace/agent-supervisor/entrypoint.sh
+
 EXPOSE 9000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9000"]
+CMD ["/workspace/agent-supervisor/entrypoint.sh"]

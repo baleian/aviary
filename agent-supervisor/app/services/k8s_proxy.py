@@ -3,14 +3,21 @@
 Local docker-compose puts the supervisor on the docker network while the pool
 Services live inside K3s. In-cluster DNS (`env-default.agents.svc`) isn't
 reachable from there, so we route through the K8s API server's built-in
-service proxy using the supervisor's ServiceAccount token.
+service proxy using a ServiceAccount token.
 
 URL form:
-  https://kubernetes.default.svc
-    /api/v1/namespaces/{ns}/services/{service}:{port}/proxy/{path}
+  {k8s_api_url}/api/v1/namespaces/{ns}/services/{service}:{port}/proxy/{path}
 
-This module exists only for `runtime_pool_endpoint_mode == "k8s-proxy"`.
-In-cluster deployments use `direct-dns` and never import it.
+Paths and API URL are configurable (see config.py):
+  - In-cluster (prod): defaults hit the auto-mounted SA token at
+    /var/run/secrets/kubernetes.io/serviceaccount and use the implicit
+    https://kubernetes.default.svc endpoint.
+  - Local docker-compose: setup-dev.sh creates a supervisor SA, prints a
+    long-lived token + the cluster CA into ./config/agent-supervisor/, and
+    docker-compose bind-mounts that directory into the supervisor container.
+    The K8S_API_URL env var points at the k3s container (`https://k8s:6443`).
+
+Only imported when `runtime_pool_endpoint_mode == "k8s-proxy"`.
 """
 
 from __future__ import annotations
@@ -19,18 +26,17 @@ from pathlib import Path
 
 import httpx
 
-_TOKEN_PATH = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
-_CA_PATH = Path("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
-_K8S_API = "https://kubernetes.default.svc"
+from app.config import settings
 
 
 def new_k8s_client(*, timeout: float | None = None) -> httpx.AsyncClient:
-    token = _TOKEN_PATH.read_text()
-    ca = str(_CA_PATH) if _CA_PATH.exists() else False
+    token = Path(settings.k8s_token_path).read_text().strip()
+    ca_path = Path(settings.k8s_ca_path)
+    verify: str | bool = str(ca_path) if ca_path.exists() else False
     return httpx.AsyncClient(
-        base_url=_K8S_API,
+        base_url=settings.k8s_api_url,
         headers={"Authorization": f"Bearer {token}"},
-        verify=ca,
+        verify=verify,
         timeout=timeout,
     )
 

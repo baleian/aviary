@@ -33,15 +33,9 @@ spec:
       aviary/pool: public-web
   policyTypes: [Egress, Ingress]
   ingress:
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              aviary/namespace: platform
-          podSelector:
-            matchLabels:
-              aviary/service: agent-supervisor
-      ports:
-        - { port: 3000, protocol: TCP }
+    # See default.yaml — supervisor reaches pool pods via K8s API service-proxy;
+    # no other in-cluster caller exists in local dev.
+    - {}
   egress:
     - to:
         - namespaceSelector: {}
@@ -50,10 +44,6 @@ spec:
               k8s-app: kube-dns
       ports:
         - { port: 53, protocol: UDP }
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              aviary/namespace: platform
     - to:
         - ipBlock:
             cidr: ${HOST_GATEWAY_IP}/32
@@ -121,9 +111,9 @@ spec:
             - { containerPort: 3000, name: http }
           env:
             - { name: POOL_NAME, value: "public-web" }
-            - { name: INFERENCE_ROUTER_URL, value: "http://litellm.platform.svc:4000" }
+            - { name: INFERENCE_ROUTER_URL, value: "http://host.k8s.internal:8090" }
             - { name: LITELLM_API_KEY,      value: "sk-aviary-dev" }
-            - { name: MCP_GATEWAY_URL,      value: "http://mcp-gateway.platform.svc:8100" }
+            - { name: MCP_GATEWAY_URL,      value: "http://host.k8s.internal:8100" }
             - { name: AVIARY_API_URL,       value: "http://host.k8s.internal:8000/api" }
             - { name: AVIARY_INTERNAL_API_KEY, value: "sk-aviary-internal" }
           volumeMounts:

@@ -1,11 +1,10 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: platform
-  labels:
-    aviary/namespace: platform
-    aviary/managed: "true"
----
+# K3s in local dev hosts only the agent runtime pools. Everything else
+# (API, admin, supervisor, Redis, Postgres, LiteLLM, MCP Gateway) runs in
+# docker-compose and reaches pool Services via the K8s API service-proxy.
+#
+# Prod (EKS) has more namespaces for org-level isolation; this file only
+# declares what K3s itself hosts.
+
 apiVersion: v1
 kind: Namespace
 metadata:

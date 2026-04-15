@@ -106,20 +106,21 @@ services:
 
   k8s:
     image: rancher/k3s:v1.31.4-k3s1
-    command: server --disable=traefik --write-kubeconfig-mode=644 --node-name=aviary-node
+    # --tls-san=k8s adds "k8s" (the docker-compose service name) to the API
+    # server cert SANs so the agent-supervisor container can dial
+    # https://k8s:6443 with TLS verification enabled.
+    command: server --tls-san=k8s --disable=traefik --write-kubeconfig-mode=644 --node-name=aviary-node
     hostname: aviary-node
     privileged: true
     environment:
       K3S_TOKEN: aviary-dev-token
     ports:
       - "6443:6443"
-      - "9000:30900"   # agent-supervisor NodePort
     volumes:
       - k8sdata:/var/lib/rancher/k3s
-      # Backing store for static agent PVs.
+      # Backing store for the shared agents-namespace workspace PVC
+      # (see k8s/platform/pools/_shared-workspace.yaml).
       - agent_workspace_pv:/var/lib/aviary
-      # Cross-agent session workspace (A2A file exchange).
-      - shared_workspace:/workspace-shared
       - ./config/k3s/registries.yaml:/etc/rancher/k3s/registries.yaml
 
   db-migrate:
@@ -240,7 +241,7 @@ services:
       OIDC_CLIENT_ID: aviary-web
       VAULT_ADDR: http://vault:8200
       VAULT_TOKEN: dev-root-token
-      AGENT_SUPERVISOR_URL: http://k8s:30900
+      AGENT_SUPERVISOR_URL: http://agent-supervisor:9000
       LITELLM_URL: http://litellm:4000
       LITELLM_API_KEY: "sk-aviary-dev"
       MCP_GATEWAY_URL: http://mcp-gateway:8100
@@ -342,7 +343,7 @@ services:
       - /workspace/.venv
     environment:
       DATABASE_URL: postgresql+asyncpg://aviary:aviary@postgres:5432/aviary
-      AGENT_SUPERVISOR_URL: http://k8s:30900
+      AGENT_SUPERVISOR_URL: http://agent-supervisor:9000
       VAULT_ADDR: http://vault:8200
       VAULT_TOKEN: dev-root-token
       KEYCLOAK_URL: http://keycloak:8080
@@ -363,9 +364,41 @@ services:
       retries: 5
       start_period: 5s
 
+  agent-supervisor:
+    build:
+      context: .
+      dockerfile: agent-supervisor/Dockerfile
+      args:
+        UV_INDEX_URL: ${UV_INDEX_URL:-}
+    ports:
+      - "9000:9000"
+    volumes:
+      # Bind-mount for hot reload via uvicorn --reload
+      - ./agent-supervisor:/workspace/agent-supervisor
+      - ./shared:/workspace/shared
+      - /workspace/.venv
+      # K8s SA token + CA cert, provisioned by setup-dev.sh after K3s boots.
+      # Path matches the in-pod convention so k8s_proxy.py uses its defaults.
+      - ./config/agent-supervisor:/var/run/secrets/kubernetes.io/serviceaccount:ro
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      RUNTIME_POOL_ENDPOINT_MODE: k8s-proxy
+      AGENTS_NAMESPACE: agents
+      K8S_API_URL: https://k8s:6443
+    depends_on:
+      redis:
+        condition: service_healthy
+      k8s:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
 volumes:
   pgdata:
   k8sdata:
   vaultdata:
   agent_workspace_pv:
-  shared_workspace:
