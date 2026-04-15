@@ -77,3 +77,41 @@ async def set_stream_status(session_id: str, status: str) -> None:
         )
     except redis.RedisError:
         logger.warning("set_stream_status failed for session %s", session_id, exc_info=True)
+
+
+def _runtime_key(stream_id: str) -> str:
+    return f"stream:{stream_id}:runtime_addr"
+
+
+async def set_stream_runtime_addr(stream_id: str, addr: str, ttl: int) -> None:
+    """Record which runtime pod (host:port) is serving this stream.
+
+    Any supervisor replica reading this can dial the pod directly for abort,
+    bypassing the pool Service load-balancer. The TTL is a crash backstop —
+    on clean completion we delete the key explicitly.
+    """
+    if not _client:
+        return
+    try:
+        await _client.set(_runtime_key(stream_id), addr, ex=ttl)
+    except redis.RedisError:
+        logger.warning("set_stream_runtime_addr failed for stream %s", stream_id, exc_info=True)
+
+
+async def get_stream_runtime_addr(stream_id: str) -> str | None:
+    if not _client:
+        return None
+    try:
+        return await _client.get(_runtime_key(stream_id))
+    except redis.RedisError:
+        logger.warning("get_stream_runtime_addr failed for stream %s", stream_id, exc_info=True)
+        return None
+
+
+async def delete_stream_runtime_addr(stream_id: str) -> None:
+    if not _client:
+        return
+    try:
+        await _client.delete(_runtime_key(stream_id))
+    except redis.RedisError:
+        logger.warning("delete_stream_runtime_addr failed for stream %s", stream_id, exc_info=True)

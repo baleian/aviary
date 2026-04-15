@@ -21,6 +21,12 @@ app.use(healthRouter);
 
 const manager = new SessionManager();
 
+// POD_IP is set by the pool Deployment via Downward API (status.podIP).
+// Advertised to callers in the X-Runtime-Pod-IP response header so the
+// supervisor can record this pod's address in Redis for pod-pinpointed
+// abort routing (avoids Service load-balancing to the wrong replica).
+const POD_IP = process.env.POD_IP ?? "";
+
 // Track active AbortControllers per session for cancellation support
 const activeAbortControllers = new Map<string, AbortController>();
 
@@ -64,6 +70,10 @@ app.post("/message", async (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("X-Accel-Buffering", "no");
   res.setHeader("Connection", "keep-alive");
+  // Advertise our pod IP so the supervisor can target abort requests at
+  // this exact replica instead of the pool Service (which would LB to a
+  // random pod that doesn't own the session).
+  if (POD_IP) res.setHeader("X-Runtime-Pod-IP", POD_IP);
   res.flushHeaders();
 
   const release = await entry._lock.acquire();

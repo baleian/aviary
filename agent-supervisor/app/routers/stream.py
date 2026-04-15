@@ -4,6 +4,10 @@ Callers (API server, future Temporal workers) invoke `/v1/stream` synchronously
 per message — the call blocks until the runtime stream closes. Events land in
 Redis (`session:{id}:messages` pub/sub + `session:{id}:stream:chunks` list)
 during the call.
+
+Abort: caller supplies `stream_id` (UUID) and `session_id`. Supervisor looks
+up the runtime pod address in Redis and POSTs to that pod directly, bypassing
+the pool Service load-balancer. Any supervisor replica can handle the abort.
 """
 
 from __future__ import annotations
@@ -21,19 +25,21 @@ class StreamRequest(BaseModel):
     pool_name: str
     session_id: str
     agent_id: str
+    stream_id: str
     # Everything else the runtime's /message expects (content_parts, agent_config,
-    # model_config_data, output_format) is forwarded as-is. Passing through an
-    # open dict keeps this router decoupled from runtime body schema evolution.
+    # model_config_data, output_format) is forwarded as-is.
+    body: dict
+
+
+class PassthroughRequest(BaseModel):
+    pool_name: str
+    session_id: str
+    agent_id: str
     body: dict
 
 
 class AbortRequest(BaseModel):
-    pool_name: str
-
-
-class CleanupRequest(BaseModel):
-    pool_name: str
-    agent_id: str
+    session_id: str
 
 
 @router.post("/stream")
@@ -42,18 +48,14 @@ async def stream(req: StreamRequest) -> dict:
         pool_name=req.pool_name,
         session_id=req.session_id,
         agent_id=req.agent_id,
+        stream_id=req.stream_id,
         body=req.body,
     )
 
 
 @router.post("/stream-passthrough")
-async def stream_passthrough(req: StreamRequest) -> StreamingResponse:
-    """Raw SSE pass-through to the pool — no Redis publish.
-
-    Used by A2A where the calling API router handles selective republishing
-    (tagging events with `parent_tool_use_id` and forwarding only tool_use /
-    tool_result events to the parent session's Redis channel).
-    """
+async def stream_passthrough(req: PassthroughRequest) -> StreamingResponse:
+    """Raw SSE pass-through — no Redis publish. Used by A2A."""
     return StreamingResponse(
         runtime_proxy.passthrough_from_pool(
             pool_name=req.pool_name,
@@ -66,14 +68,13 @@ async def stream_passthrough(req: StreamRequest) -> StreamingResponse:
     )
 
 
-@router.post("/sessions/{session_id}/abort")
-async def abort(session_id: str, req: AbortRequest) -> dict:
-    return await runtime_proxy.abort_session(pool_name=req.pool_name, session_id=session_id)
+@router.post("/streams/{stream_id}/abort")
+async def abort(stream_id: str, req: AbortRequest) -> dict:
+    return await runtime_proxy.abort_stream(stream_id=stream_id, session_id=req.session_id)
 
 
 @router.delete("/sessions/{session_id}")
 async def cleanup(session_id: str, pool_name: str, agent_id: str) -> dict:
-    # Query params rather than body because DELETE bodies are awkward across clients.
     return await runtime_proxy.cleanup_session(
         pool_name=pool_name, session_id=session_id, agent_id=agent_id,
     )

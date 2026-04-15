@@ -31,14 +31,14 @@ async def stream_message(
     pool_name: str,
     session_id: str,
     agent_id: str,
+    stream_id: str,
     body: dict,
 ) -> dict:
     """Run one agent turn end-to-end on the given pool.
 
-    Blocks until the runtime stream closes. Returns
-    `{status: 'complete'|'error', reached_runtime: bool, result_meta?: dict,
-      message?: str}`. Callers consume events via the shared Redis
-    `session:{id}:messages` channel.
+    `stream_id` is a caller-allocated UUID that identifies this specific turn
+    for later abort routing (supervisor maps stream_id → owning Pod in Redis).
+    Blocks until the runtime stream closes.
     """
     resp = await _supervisor.client.post(
         "/v1/stream",
@@ -46,6 +46,7 @@ async def stream_message(
             "pool_name": pool_name,
             "session_id": session_id,
             "agent_id": agent_id,
+            "stream_id": stream_id,
             "body": body,
         },
         timeout=None,
@@ -54,17 +55,20 @@ async def stream_message(
     return resp.json()
 
 
-async def abort_session(*, pool_name: str, session_id: str) -> None:
-    """Best-effort abort — races with normal completion, so failures are logged only."""
+async def abort_stream(*, stream_id: str, session_id: str) -> None:
+    """Best-effort abort. Any supervisor replica can service this — the
+    replica looks up the runtime pod in Redis and POSTs directly to that
+    pod's /abort/{session_id}, bypassing the pool Service LB.
+    """
     try:
         resp = await _supervisor.client.post(
-            f"/v1/sessions/{session_id}/abort",
-            json={"pool_name": pool_name},
+            f"/v1/streams/{stream_id}/abort",
+            json={"session_id": session_id},
             timeout=5,
         )
         resp.raise_for_status()
     except httpx.HTTPError:
-        logger.warning("Failed to abort session %s on pool %s", session_id, pool_name, exc_info=True)
+        logger.warning("Failed to abort stream %s", stream_id, exc_info=True)
 
 
 async def cleanup_session(*, pool_name: str, session_id: str, agent_id: str) -> None:

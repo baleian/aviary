@@ -106,6 +106,10 @@ spec:
             - { containerPort: 3000, name: http }
           env:
             - { name: POOL_NAME, value: "default" }
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
             - { name: INFERENCE_ROUTER_URL, value: "http://host.k8s.internal:8090" }
             - { name: LITELLM_API_KEY,      value: "sk-aviary-dev" }
             - { name: MCP_GATEWAY_URL,      value: "http://host.k8s.internal:8100" }

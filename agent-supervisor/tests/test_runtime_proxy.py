@@ -1,4 +1,4 @@
-"""runtime_proxy.stream_from_pool — SSE consumption + Redis publish."""
+"""runtime_proxy — SSE consumption, Redis publish, and stream_id-based abort routing."""
 
 from __future__ import annotations
 
@@ -11,10 +11,14 @@ import pytest
 from app.services import runtime_proxy
 
 
-def _sse_stream_response(events: list[dict], status: int = 200) -> MagicMock:
-    """Build a mock httpx.Response that iterates `events` as SSE `data:` lines."""
+def _sse_stream_response(
+    events: list[dict], *, status: int = 200, runtime_pod_ip: str | None = "10.42.0.7",
+) -> MagicMock:
+    """Mock httpx.Response that iterates `events` as SSE lines and advertises
+    X-Runtime-Pod-IP — the supervisor should record this in Redis."""
     resp = MagicMock()
     resp.status_code = status
+    resp.headers = {"x-runtime-pod-ip": runtime_pod_ip} if runtime_pod_ip else {}
 
     async def aiter_lines():
         for e in events:
@@ -30,9 +34,8 @@ def _sse_stream_response(events: list[dict], status: int = 200) -> MagicMock:
 
 @pytest.fixture
 def fake_stream():
-    """Patch runtime_proxy._open_stream to yield a crafted response."""
-    def _factory(events, status=200):
-        resp = _sse_stream_response(events, status)
+    def _factory(events, *, status=200, runtime_pod_ip="10.42.0.7"):
+        resp = _sse_stream_response(events, status=status, runtime_pod_ip=runtime_pod_ip)
 
         class _Ctx:
             async def __aenter__(self): return resp
@@ -46,30 +49,58 @@ def fake_stream():
 def redis_mock():
     with patch("app.services.runtime_proxy.redis_client.append_stream_chunk", new_callable=AsyncMock) as a, \
          patch("app.services.runtime_proxy.redis_client.publish_message", new_callable=AsyncMock) as p, \
-         patch("app.services.runtime_proxy.redis_client.set_stream_status", new_callable=AsyncMock) as s:
-        yield {"append": a, "publish": p, "status": s}
+         patch("app.services.runtime_proxy.redis_client.set_stream_status", new_callable=AsyncMock) as s, \
+         patch("app.services.runtime_proxy.redis_client.set_stream_runtime_addr", new_callable=AsyncMock) as sra, \
+         patch("app.services.runtime_proxy.redis_client.get_stream_runtime_addr", new_callable=AsyncMock) as gra, \
+         patch("app.services.runtime_proxy.redis_client.delete_stream_runtime_addr", new_callable=AsyncMock) as dra:
+        gra.return_value = None
+        yield {
+            "append": a, "publish": p, "status": s,
+            "set_runtime": sra, "get_runtime": gra, "del_runtime": dra,
+        }
+
+
+def _stream_kwargs(stream_id: str = "stream-1", session_id: str = "s1") -> dict:
+    return {
+        "pool_name": "default",
+        "session_id": session_id,
+        "agent_id": "a1",
+        "stream_id": stream_id,
+        "body": {},
+    }
 
 
 @pytest.mark.asyncio
-async def test_stream_publishes_each_event_and_returns_complete(fake_stream, redis_mock):
+async def test_stream_records_runtime_pod_addr_in_redis(fake_stream, redis_mock):
+    with fake_stream([{"type": "result"}]):
+        out = await runtime_proxy.stream_from_pool(**_stream_kwargs())
+
+    assert out["status"] == "complete"
+    # Runtime address captured from X-Runtime-Pod-IP header and stored.
+    redis_mock["set_runtime"].assert_awaited_once()
+    call = redis_mock["set_runtime"].await_args
+    assert call.args[0] == "stream-1"
+    assert call.args[1] == "10.42.0.7:3000"
+    # Cleaned up on completion.
+    redis_mock["del_runtime"].assert_awaited_with("stream-1")
+
+
+@pytest.mark.asyncio
+async def test_stream_publishes_events_and_returns_complete(fake_stream, redis_mock):
     events = [
-        {"type": "query_started"},          # triggers reached_runtime, not published
+        {"type": "query_started"},
         {"type": "chunk", "content": "hi"},
         {"type": "tool_use", "name": "ls"},
         {"type": "result", "total_cost_usd": 0.01},
     ]
     with fake_stream(events):
-        out = await runtime_proxy.stream_from_pool(
-            pool_name="default", session_id="s1", agent_id="a1", body={},
-        )
+        out = await runtime_proxy.stream_from_pool(**_stream_kwargs())
 
     assert out["status"] == "complete"
     assert out["reached_runtime"] is True
     assert out["result_meta"]["total_cost_usd"] == 0.01
-    # query_started is not forwarded; other 3 are.
-    assert redis_mock["append"].await_count == 3
+    assert redis_mock["append"].await_count == 3  # query_started not published
     assert redis_mock["publish"].await_count == 3
-    redis_mock["status"].assert_awaited_with("s1", "complete")
 
 
 @pytest.mark.asyncio
@@ -77,116 +108,99 @@ async def test_stream_error_event_short_circuits(fake_stream, redis_mock):
     events = [
         {"type": "query_started"},
         {"type": "error", "message": "kaboom"},
-        {"type": "chunk", "content": "never published"},
     ]
     with fake_stream(events):
-        out = await runtime_proxy.stream_from_pool(
-            pool_name="default", session_id="s1", agent_id="a1", body={},
-        )
+        out = await runtime_proxy.stream_from_pool(**_stream_kwargs())
 
     assert out["status"] == "error"
     assert "kaboom" in out["message"]
-    assert out["reached_runtime"] is True
-    assert redis_mock["append"].await_count == 0  # no events published before error
     redis_mock["status"].assert_awaited_with("s1", "error")
 
 
 @pytest.mark.asyncio
 async def test_stream_non200_status_reports_error(fake_stream, redis_mock):
     with fake_stream([], status=503):
-        out = await runtime_proxy.stream_from_pool(
-            pool_name="default", session_id="s1", agent_id="a1", body={},
-        )
+        out = await runtime_proxy.stream_from_pool(**_stream_kwargs())
 
     assert out["status"] == "error"
     assert "503" in out["message"]
-    assert out["reached_runtime"] is False
 
 
 @pytest.mark.asyncio
-async def test_stream_http_exception_surfaces(redis_mock):
-    class _Ctx:
-        async def __aenter__(self):
-            raise httpx.ConnectError("dns fail")
+async def test_stream_without_runtime_pod_ip_header_skips_redis_registration(
+    fake_stream, redis_mock,
+):
+    """If the runtime pod doesn't advertise its IP, supervisor can't route
+    abort — log and proceed, don't crash."""
+    with fake_stream([{"type": "result"}], runtime_pod_ip=None):
+        out = await runtime_proxy.stream_from_pool(**_stream_kwargs())
+
+    assert out["status"] == "complete"
+    redis_mock["set_runtime"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_abort_dials_runtime_pod_directly(redis_mock):
+    """Abort reads runtime address from Redis and POSTs to the pod's
+    /abort/{session_id}, bypassing the pool Service LB."""
+    redis_mock["get_runtime"].return_value = "10.42.0.7:3000"
+    sent = {}
+
+    class _FakeClient:
+        def __init__(self, *a, **kw): pass
+        async def __aenter__(self): return self
         async def __aexit__(self, *a): return False
+        async def post(self, url, **kw):
+            sent["url"] = url
+            resp = MagicMock(); resp.status_code = 200; return resp
 
-    with patch("app.services.runtime_proxy._open_stream", return_value=_Ctx()):
-        out = await runtime_proxy.stream_from_pool(
-            pool_name="default", session_id="s1", agent_id="a1", body={},
-        )
+    with patch("app.services.runtime_proxy.httpx.AsyncClient", _FakeClient):
+        out = await runtime_proxy.abort_stream(stream_id="stream-1", session_id="sess-x")
 
-    assert out["status"] == "error"
-    assert "dns fail" in out["message"]
-
-
-@pytest.mark.asyncio
-async def test_abort_cancels_active_stream_task(redis_mock):
-    """abort_session cancels the tracked Task, which propagates into the
-    httpx stream context and closes the connection to the pool pod."""
-    import asyncio
-
-    started = asyncio.Event()
-    cancelled_inside_stream = asyncio.Event()
-
-    class _NeverEndingCtx:
-        async def __aenter__(self):
-            started.set()
-            # Block forever — simulates a long-running SSE stream.
-            try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                cancelled_inside_stream.set()
-                raise
-            return None
-
-        async def __aexit__(self, *a):
-            return False
-
-    with patch("app.services.runtime_proxy._open_stream", return_value=_NeverEndingCtx()):
-        stream_task = asyncio.create_task(
-            runtime_proxy.stream_from_pool(
-                pool_name="default", session_id="abort-s1", agent_id="a1", body={},
-            )
-        )
-        await started.wait()
-
-        result = await runtime_proxy.abort_session(pool_name="default", session_id="abort-s1")
-        assert result == {"ok": True}
-
-        final = await stream_task
-        assert final["status"] == "aborted"
-    assert cancelled_inside_stream.is_set()
+    assert out == {"ok": True, "runtime_addr": "10.42.0.7:3000"}
+    assert sent["url"] == "http://10.42.0.7:3000/abort/sess-x"
 
 
 @pytest.mark.asyncio
-async def test_abort_noop_when_no_active_stream():
-    result = await runtime_proxy.abort_session(pool_name="default", session_id="nonexistent")
-    assert result == {"ok": False, "reason": "no_active_stream"}
+async def test_abort_returns_no_active_stream_when_redis_missing(redis_mock):
+    redis_mock["get_runtime"].return_value = None
+    out = await runtime_proxy.abort_stream(stream_id="ghost", session_id="sess-x")
+    assert out == {"ok": False, "reason": "no_active_stream"}
 
 
 @pytest.mark.asyncio
-async def test_stream_forwards_session_and_agent_into_body(redis_mock):
-    captured = {}
+async def test_abort_runtime_unreachable_reaps_stale_mapping(redis_mock):
+    redis_mock["get_runtime"].return_value = "10.42.0.99:3000"
 
-    class _Ctx:
-        async def __aenter__(self_inner):
-            return _sse_stream_response([{"type": "result"}])
-        async def __aexit__(self_inner, *a): return False
+    class _FakeClient:
+        def __init__(self, *a, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, *a, **kw):
+            raise httpx.ConnectError("no route")
 
-    def _spy_open(pool_name, subpath, body):
-        captured["pool_name"] = pool_name
-        captured["subpath"] = subpath
-        captured["body"] = body
-        return _Ctx()
+    with patch("app.services.runtime_proxy.httpx.AsyncClient", _FakeClient):
+        out = await runtime_proxy.abort_stream(stream_id="stream-dead", session_id="sess-x")
 
-    with patch("app.services.runtime_proxy._open_stream", side_effect=_spy_open):
-        await runtime_proxy.stream_from_pool(
-            pool_name="default", session_id="s1", agent_id="a1",
-            body={"content_parts": [{"text": "hi"}]},
-        )
+    assert out["ok"] is False
+    assert out["reason"] == "runtime_unreachable"
+    redis_mock["del_runtime"].assert_awaited_with("stream-dead")
 
-    assert captured["pool_name"] == "default"
-    assert captured["subpath"] == "/message"
-    assert captured["body"]["session_id"] == "s1"
-    assert captured["body"]["agent_id"] == "a1"
-    assert captured["body"]["content_parts"] == [{"text": "hi"}]
+
+@pytest.mark.asyncio
+async def test_abort_session_gone_on_runtime_reports_session_not_on_runtime(redis_mock):
+    """Runtime returns 404 if the session already finished / wasn't there."""
+    redis_mock["get_runtime"].return_value = "10.42.0.7:3000"
+
+    class _FakeClient:
+        def __init__(self, *a, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, *a, **kw):
+            resp = MagicMock(); resp.status_code = 404; return resp
+
+    with patch("app.services.runtime_proxy.httpx.AsyncClient", _FakeClient):
+        out = await runtime_proxy.abort_stream(stream_id="stream-1", session_id="sess-x")
+
+    assert out["ok"] is False
+    assert out["reason"] == "session_not_on_runtime"

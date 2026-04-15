@@ -24,7 +24,8 @@ from app.services.stream.blocks import rebuild_blocks_from_chunks
 
 logger = logging.getLogger(__name__)
 
-# session_id -> (task, pool_name) so cancel_stream can issue a targeted abort.
+# session_id -> (task, stream_id). cancel_stream uses stream_id to ask
+# supervisor to route the abort to the owning Pod via Redis lookup.
 _active_streams: dict[str, tuple[asyncio.Task, str]] = {}
 
 
@@ -68,9 +69,10 @@ async def start_stream(
 
     await redis_service.clear_stream_buffer(session_id)
 
+    stream_id = str(uuid.uuid4())
     task = asyncio.create_task(
         _run_stream(
-            session_id, agent_id, pool_name,
+            session_id, agent_id, pool_name, stream_id,
             agent_model_config, agent_instruction,
             agent_tools, agent_mcp_servers,
             content, user_message_id, user_token, user_external_id,
@@ -78,7 +80,7 @@ async def start_stream(
             attachments=attachments,
         )
     )
-    _active_streams[session_id] = (task, pool_name)
+    _active_streams[session_id] = (task, stream_id)
 
     def _cleanup(t: asyncio.Task) -> None:
         _active_streams.pop(session_id, None)
@@ -96,9 +98,12 @@ async def cancel_stream(session_id: str, _agent_id: str | None = None) -> bool:
     entry = _active_streams.get(session_id)
     if not entry or entry[0].done():
         return False
-    task, pool_name = entry
+    task, stream_id = entry
 
-    await agent_supervisor.abort_session(pool_name=pool_name, session_id=session_id)
+    # Supervisor looks up the runtime pod in Redis by stream_id and POSTs
+    # /abort/{session_id} directly to that pod — any supervisor replica
+    # can handle this without sticky routing.
+    await agent_supervisor.abort_stream(stream_id=stream_id, session_id=session_id)
 
     task.cancel()
 
@@ -138,6 +143,7 @@ async def _run_stream(
     session_id: str,
     agent_id: str,
     pool_name: str,
+    stream_id: str,
     agent_model_config: dict,
     agent_instruction: str,
     agent_tools: list,
@@ -207,6 +213,7 @@ async def _run_stream(
             pool_name=pool_name,
             session_id=session_id,
             agent_id=agent_id,
+            stream_id=stream_id,
             body={
                 "content_parts": content_parts,
                 "model_config_data": agent_model_config,

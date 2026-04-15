@@ -1,9 +1,19 @@
 """Runtime pool proxy — opens an SSE stream to the pool Service and fans events
 out to Redis. This module is the supervisor's single reason to exist.
 
-Two endpoint modes are supported (see config.py): in-cluster DNS vs. K8s API
-service proxy. The HTTP client factory picks between them; everything else
-(event loop, Redis publish, metric bookkeeping) is mode-agnostic.
+Each stream is identified by a caller-supplied `stream_id` (UUID). The flow:
+
+    /v1/stream request lands on supervisor-X
+        └─▶ opens POST /message to env-{pool}.agents.svc (K8s LB picks runtime-pod-N)
+            └─▶ runtime-pod-N returns X-Runtime-Pod-IP header with its own POD_IP
+                └─▶ supervisor-X writes stream:{stream_id}:runtime_addr = "POD_IP:port" to Redis
+
+    /v1/streams/{stream_id}/abort lands on any supervisor replica
+        └─▶ reads stream:{stream_id}:runtime_addr from Redis
+            └─▶ POSTs directly to http://POD_IP:port/abort/{session_id}  (bypassing the Service)
+                └─▶ runtime-pod-N cancels the SDK query for that session
+
+Supervisor carries no cross-request state; every replica can handle any abort.
 """
 
 from __future__ import annotations
@@ -28,12 +38,6 @@ from app.metrics import (
 )
 
 logger = logging.getLogger(__name__)
-
-# session_id -> Task that owns the in-flight /v1/stream request for that
-# session. /v1/sessions/{sid}/abort cancels the task; cancellation closes
-# the httpx connection to the pool, and the pool pod's req.on('close')
-# handler aborts the SDK query on the correct replica.
-_active_streams: dict[str, asyncio.Task] = {}
 
 
 def _pool_service_name(pool_name: str) -> str:
@@ -97,13 +101,14 @@ async def stream_from_pool(
     pool_name: str,
     session_id: str,
     agent_id: str,
+    stream_id: str,
     body: dict,
 ) -> dict:
     """Consume runtime SSE, publish each event to Redis, return final status.
 
-    Caller (API server / workflow worker) blocks on this call until the stream
-    completes. The event stream itself is not returned — subscribers get events
-    via the `session:{id}:messages` Redis channel.
+    Captures the serving runtime pod's IP (X-Runtime-Pod-IP header) and stores
+    `stream:{stream_id}:runtime_addr` in Redis so any supervisor replica can
+    route a later abort to the exact pod.
     """
     forward_body = {**body, "session_id": session_id, "agent_id": agent_id}
     reached_runtime = False
@@ -111,16 +116,31 @@ async def stream_from_pool(
     result_meta: dict | None = None
     status_label = "complete"
     was_aborted = False
+    runtime_addr_recorded = False
 
     active_streams.labels(pool_name).inc()
     start = time.perf_counter()
 
-    current_task = asyncio.current_task()
-    if current_task is not None:
-        _active_streams[session_id] = current_task
-
     try:
         async with _open_stream(pool_name, "/message", forward_body) as resp:
+            # Record the runtime pod address in Redis so abort requests can
+            # dial it directly. Done before consuming the stream so an abort
+            # arriving early still finds the mapping.
+            pod_ip = resp.headers.get("x-runtime-pod-ip")
+            if pod_ip:
+                await redis_client.set_stream_runtime_addr(
+                    stream_id,
+                    f"{pod_ip}:{settings.runtime_pool_port}",
+                    settings.stream_runtime_ttl_seconds,
+                )
+                runtime_addr_recorded = True
+            else:
+                logger.warning(
+                    "Runtime pod for stream %s did not advertise X-Runtime-Pod-IP — "
+                    "abort will fail to route. Check pool Deployment downward API.",
+                    stream_id,
+                )
+
             if resp.status_code != 200:
                 err = (await resp.aread()).decode(errors="replace")[:500]
                 logger.error("Runtime stream %d for pool %s: %s", resp.status_code, pool_name, err)
@@ -154,14 +174,11 @@ async def stream_from_pool(
                     finally:
                         redis_publish_duration_seconds.observe(time.perf_counter() - publish_start)
     except asyncio.CancelledError:
-        # Triggered by /v1/sessions/{sid}/abort cancelling this task. Closing
-        # the async context manager above tears down the httpx stream, which
-        # closes the TCP socket to the pool pod; the pool pod's
-        # req.on('close') then fires abortController.abort() on the correct
-        # replica. We swallow the CancelledError so /v1/stream returns a clean
-        # JSON summary to the caller instead of a 500.
+        # The caller (API) closed its HTTP connection — uvicorn cancels this
+        # handler task. Runtime will see req.on('close') independently and
+        # abort its own SDK query; we just report the outcome.
         was_aborted = True
-        logger.info("Stream for pool=%s session=%s aborted by caller", pool_name, session_id)
+        logger.info("Stream task cancelled: stream_id=%s session=%s", stream_id, session_id)
     except httpx.HTTPError as e:
         logger.exception("Runtime stream HTTP error for pool=%s session=%s", pool_name, session_id)
         errors_total.labels(pool_name, "http").inc()
@@ -172,18 +189,14 @@ async def stream_from_pool(
         raise
     finally:
         active_streams.labels(pool_name).dec()
-        # Release the task slot whether we completed or were aborted.
-        if _active_streams.get(session_id) is current_task:
-            _active_streams.pop(session_id, None)
+        if runtime_addr_recorded:
+            await redis_client.delete_stream_runtime_addr(stream_id)
 
     if was_aborted:
         status_label = "aborted"
         await redis_client.set_stream_status(session_id, "aborted")
         stream_duration_seconds.labels(pool_name, status_label).observe(time.perf_counter() - start)
-        return {
-            "status": "aborted",
-            "reached_runtime": reached_runtime,
-        }
+        return {"status": "aborted", "reached_runtime": reached_runtime}
 
     if error_message:
         status_label = "error"
@@ -204,21 +217,36 @@ async def stream_from_pool(
     }
 
 
-async def abort_session(*, pool_name: str, session_id: str) -> dict:
-    """Abort an in-flight /v1/stream by cancelling its owning asyncio Task.
+async def abort_stream(*, stream_id: str, session_id: str) -> dict:
+    """Abort by dialing the owning runtime pod directly.
 
-    Cancellation propagates into the httpx streaming context, which closes the
-    TCP connection to the correct pool pod. That pod's req.on('close') handler
-    calls abortController.abort() on the SDK query. Works regardless of which
-    pool replica is serving the session — unlike the old fire-and-forget
-    `POST /abort/:sid`, which the pool Service would load-balance to a random
-    replica that almost never held the target session.
+    Any supervisor replica can service this — the runtime pod address is in
+    Redis, the pod's /abort endpoint uses its local activeAbortControllers
+    map (keyed by session_id) to cancel the exact in-flight SDK query.
     """
-    task = _active_streams.get(session_id)
-    if task is None or task.done():
+    addr = await redis_client.get_stream_runtime_addr(stream_id)
+    if not addr:
         return {"ok": False, "reason": "no_active_stream"}
-    task.cancel()
-    return {"ok": True}
+
+    url = f"http://{addr}/abort/{session_id}"
+    try:
+        async with httpx.AsyncClient(timeout=settings.runtime_pool_request_timeout) as client:
+            resp = await client.post(url)
+    except httpx.HTTPError:
+        logger.warning(
+            "Runtime abort failed for stream=%s addr=%s (pod likely dead)",
+            stream_id, addr, exc_info=True,
+        )
+        # Reap the stale mapping so subsequent aborts don't retry the dead pod.
+        await redis_client.delete_stream_runtime_addr(stream_id)
+        return {"ok": False, "reason": "runtime_unreachable", "runtime_addr": addr}
+
+    if resp.status_code == 200:
+        return {"ok": True, "runtime_addr": addr}
+    if resp.status_code == 404:
+        # Runtime no longer has the session (already finished / drained).
+        return {"ok": False, "reason": "session_not_on_runtime", "runtime_addr": addr}
+    return {"ok": False, "reason": f"runtime_http_{resp.status_code}", "runtime_addr": addr}
 
 
 async def cleanup_session(*, pool_name: str, session_id: str, agent_id: str) -> dict:
