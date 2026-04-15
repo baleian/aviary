@@ -34,7 +34,7 @@ async def list_categories(
     """List agent categories."""
     result = await db.execute(
         select(distinct(Agent.category))
-        .where(Agent.status != "deleted", Agent.category.is_not(None))
+        .where(Agent.category.is_not(None))
         .order_by(Agent.category)
     )
     categories = [row[0] for row in result.all()]
@@ -82,7 +82,6 @@ async def search_catalog(
         )
 
     base_query = select(Agent).where(
-        Agent.status != "deleted",
         or_(Agent.name.ilike(search_pattern), Agent.description.ilike(search_pattern)),
         or_(*conditions),
     )

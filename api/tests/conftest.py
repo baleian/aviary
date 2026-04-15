@@ -98,7 +98,6 @@ _TABLES = [
     "messages", "session_participants", "sessions",
     "agent_credentials", "agent_acl", "agents",
     "team_members", "teams", "users",
-    "service_accounts",
 ]
 
 
@@ -111,13 +110,9 @@ async def clean_tables():
 
 @pytest.fixture(autouse=True)
 def _mock_agent_supervisor():
-    """Stub out supervisor HTTP calls — the ServiceClient is never initialized in tests."""
+    """Stub supervisor HTTP calls — the ServiceClient is never initialized in tests."""
     targets = [
-        "register_agent",
-        "unregister_agent",
-        "ensure_agent_running",
-        "check_agent_ready",
-        "wait_for_agent_ready",
+        "stream_message",
         "abort_session",
         "cleanup_session",
         "health_check",

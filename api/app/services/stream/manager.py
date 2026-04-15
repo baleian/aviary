@@ -12,7 +12,6 @@ import uuid
 
 import base64
 
-import httpx
 from sqlalchemy import select
 
 from aviary_shared.vault import credential_path
@@ -25,7 +24,8 @@ from app.services.stream.blocks import rebuild_blocks_from_chunks
 
 logger = logging.getLogger(__name__)
 
-_active_streams: dict[str, asyncio.Task] = {}
+# session_id -> (task, pool_name) so cancel_stream can issue a targeted abort.
+_active_streams: dict[str, tuple[asyncio.Task, str]] = {}
 
 
 def build_mcp_config(legacy_mcp_servers: list) -> dict:
@@ -48,11 +48,11 @@ async def fetch_user_credentials(user_external_id: str) -> dict[str, str]:
 async def start_stream(
     session_id: str,
     agent_id: str,
+    pool_name: str,
     agent_model_config: dict,
     agent_instruction: str,
     agent_tools: list,
     agent_mcp_servers: list,
-    agent_policy: dict,
     content: str,
     user_message_id: uuid.UUID,
     user_token: str = "",
@@ -62,23 +62,23 @@ async def start_stream(
 ) -> None:
     """Launch a background task that streams the agent response."""
     existing = _active_streams.get(session_id)
-    if existing and not existing.done():
+    if existing and not existing[0].done():
         logger.warning("Cancelling existing stream for session %s", session_id)
-        existing.cancel()
+        existing[0].cancel()
 
     await redis_service.clear_stream_buffer(session_id)
 
     task = asyncio.create_task(
         _run_stream(
-            session_id, agent_id,
+            session_id, agent_id, pool_name,
             agent_model_config, agent_instruction,
-            agent_tools, agent_mcp_servers, agent_policy,
+            agent_tools, agent_mcp_servers,
             content, user_message_id, user_token, user_external_id,
             accessible_agents=accessible_agents,
             attachments=attachments,
         )
     )
-    _active_streams[session_id] = task
+    _active_streams[session_id] = (task, pool_name)
 
     def _cleanup(t: asyncio.Task) -> None:
         _active_streams.pop(session_id, None)
@@ -87,18 +87,18 @@ async def start_stream(
 
 def is_streaming(session_id: str) -> bool:
     """Check if a stream task is actively running for this session."""
-    task = _active_streams.get(session_id)
-    return task is not None and not task.done()
+    entry = _active_streams.get(session_id)
+    return entry is not None and not entry[0].done()
 
 
-async def cancel_stream(session_id: str, agent_id: str | None = None) -> bool:
-    """Cancel an active stream and abort the agent's session."""
-    task = _active_streams.get(session_id)
-    if not task or task.done():
+async def cancel_stream(session_id: str, _agent_id: str | None = None) -> bool:
+    """Cancel an active stream and abort the pool-side turn."""
+    entry = _active_streams.get(session_id)
+    if not entry or entry[0].done():
         return False
+    task, pool_name = entry
 
-    if agent_id:
-        await agent_supervisor.abort_session(agent_id, session_id)
+    await agent_supervisor.abort_session(pool_name=pool_name, session_id=session_id)
 
     task.cancel()
 
@@ -137,11 +137,11 @@ async def cancel_stream(session_id: str, agent_id: str | None = None) -> bool:
 async def _run_stream(
     session_id: str,
     agent_id: str,
+    pool_name: str,
     agent_model_config: dict,
     agent_instruction: str,
     agent_tools: list,
     agent_mcp_servers: list,
-    agent_policy: dict,
     content: str,
     user_message_id: uuid.UUID,
     user_token: str = "",
@@ -168,18 +168,6 @@ async def _run_stream(
         )
         await redis_service.set_stream_status(session_id, "error")
         await redis_service.set_session_status(session_id, "idle")
-
-    try:
-        await agent_supervisor.ensure_agent_running(agent_id=agent_id, owner_id="")
-        ready = await agent_supervisor.wait_for_agent_ready(agent_id, timeout=90)
-    except httpx.HTTPError as e:
-        logger.warning("Failed to ensure agent running for session %s", session_id, exc_info=True)
-        await _drop_user_message_and_fail(f"Failed to start agent: {e}")
-        return
-
-    if not ready:
-        await _drop_user_message_and_fail("Agent did not become ready in time")
-        return
 
     credentials: dict[str, str] = {}
     if user_external_id:
@@ -215,18 +203,17 @@ async def _run_stream(
     reached_runtime = False
 
     try:
-        result = await agent_supervisor.publish_stream(
-            agent_id=agent_id,
+        result = await agent_supervisor.stream_message(
+            pool_name=pool_name,
             session_id=session_id,
+            agent_id=agent_id,
             body={
                 "content_parts": content_parts,
-                "session_id": session_id,
                 "model_config_data": agent_model_config,
                 "agent_config": {
                     "instruction": agent_instruction,
                     "tools": agent_tools,
                     "mcp_servers": build_mcp_config(agent_mcp_servers),
-                    "policy": agent_policy,
                     "user_token": user_token,
                     "user_external_id": user_external_id,
                     **({"credentials": credentials} if credentials else {}),
@@ -279,8 +266,8 @@ async def _run_stream(
 
         reason = str(exc) if str(exc) else "Agent streaming failed"
         error_event: dict = {"type": "error", "message": reason}
-        # query() was never invoked — the message is not in SDK conversation
-        # history, so rollback the user message to keep DB in sync.
+        # Runtime never ack'd — the message is not in SDK conversation history,
+        # so rollback the user message to keep DB in sync.
         if not reached_runtime:
             try:
                 async with async_session_factory() as db:

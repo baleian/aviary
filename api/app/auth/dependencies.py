@@ -72,7 +72,7 @@ async def get_current_user(
     return await _upsert_user(db, claims)
 
 
-def require_agent_permission(permission: str, include_deleted: bool = False):
+def require_agent_permission(permission: str):
     """FastAPI dependency factory: fetch agent by ID, check ACL permission.
 
     Usage: agent: Agent = Depends(require_agent_permission("view"))
@@ -85,7 +85,7 @@ def require_agent_permission(permission: str, include_deleted: bool = False):
         user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db),
     ) -> Agent:
-        agent = await agent_service.get_agent(db, agent_id, include_deleted=include_deleted)
+        agent = await agent_service.get_agent(db, agent_id)
         if not agent:
             raise HTTPException(status_code=404, detail="Agent not found")
         try:

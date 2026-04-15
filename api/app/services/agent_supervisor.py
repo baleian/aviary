@@ -1,4 +1,9 @@
-"""Agent Supervisor client — agent_id/session_id only, no K8s concepts."""
+"""Agent Supervisor client — pool-based streaming proxy.
+
+The API server never touches K8s. It forwards (pool_name, session_id,
+agent_id, body) to agent-supervisor, which streams from the pool Service and
+publishes events to Redis. WS clients get live events via Redis subscribe.
+"""
 
 import logging
 
@@ -21,96 +26,65 @@ async def close_client() -> None:
     await _supervisor.close()
 
 
-async def register_agent(agent_id: str, owner_id: str) -> None:
-    """Register a new agent. Supervisor provisions resources with secure defaults."""
-    resp = await _supervisor.client.post(
-        f"/v1/agents/{agent_id}/register", json={"owner_id": owner_id},
-    )
-    resp.raise_for_status()
+async def stream_message(
+    *,
+    pool_name: str,
+    session_id: str,
+    agent_id: str,
+    body: dict,
+) -> dict:
+    """Run one agent turn end-to-end on the given pool.
 
-
-async def unregister_agent(agent_id: str) -> None:
-    """Remove all agent resources."""
-    resp = await _supervisor.client.delete(f"/v1/agents/{agent_id}")
-    resp.raise_for_status()
-
-
-async def ensure_agent_running(agent_id: str, owner_id: str) -> None:
-    """Ensure agent is running. Lazily creates resources if needed."""
-    resp = await _supervisor.client.post(
-        f"/v1/agents/{agent_id}/run", json={"owner_id": owner_id},
-    )
-    resp.raise_for_status()
-
-
-async def check_agent_ready(agent_id: str) -> bool:
-    try:
-        resp = await _supervisor.client.get(f"/v1/agents/{agent_id}/ready")
-        resp.raise_for_status()
-        return resp.json().get("ready", False)
-    except httpx.HTTPError:
-        logger.debug("Readiness probe failed for agent %s", agent_id, exc_info=True)
-        return False
-
-
-async def wait_for_agent_ready(agent_id: str, timeout: int = 90) -> bool:
-    """Block until agent is ready or timeout."""
-    resp = await _supervisor.client.get(
-        f"/v1/agents/{agent_id}/wait",
-        params={"timeout": timeout},
-        timeout=timeout + 10,
-    )
-    resp.raise_for_status()
-    return resp.json()["ready"]
-
-
-def get_stream_url(agent_id: str, session_id: str) -> str:
-    """SSE stream URL for sub-agent / workflow callers that still need raw SSE."""
-    return f"{settings.agent_supervisor_url}/v1/agents/{agent_id}/sessions/{session_id}/message"
-
-
-async def publish_stream(agent_id: str, session_id: str, body: dict) -> dict:
-    """Ask the supervisor to consume runtime SSE and publish events to Redis.
-
-    Returns `{status: 'complete'|'error', reached_runtime: bool, message?: str}`.
-    Events are available to the caller via the shared Redis stream buffer and
-    pub/sub channel — the HTTP response here is only a completion summary.
+    Blocks until the runtime stream closes. Returns
+    `{status: 'complete'|'error', reached_runtime: bool, result_meta?: dict,
+      message?: str}`. Callers consume events via the shared Redis
+    `session:{id}:messages` channel.
     """
     resp = await _supervisor.client.post(
-        f"/v1/agents/{agent_id}/sessions/{session_id}/publish",
-        json=body, timeout=None,
+        "/v1/stream",
+        json={
+            "pool_name": pool_name,
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "body": body,
+        },
+        timeout=None,
     )
     resp.raise_for_status()
     return resp.json()
 
 
-async def abort_session(agent_id: str, session_id: str) -> None:
-    """Best-effort abort. Racy with normal completion, so failures are only logged."""
+async def abort_session(*, pool_name: str, session_id: str) -> None:
+    """Best-effort abort — races with normal completion, so failures are logged only."""
     try:
         resp = await _supervisor.client.post(
-            f"/v1/agents/{agent_id}/sessions/{session_id}/abort",
+            f"/v1/sessions/{session_id}/abort",
+            json={"pool_name": pool_name},
             timeout=5,
         )
         resp.raise_for_status()
     except httpx.HTTPError:
-        logger.warning("Failed to abort session %s (agent %s)", session_id, agent_id, exc_info=True)
+        logger.warning("Failed to abort session %s on pool %s", session_id, pool_name, exc_info=True)
 
 
-async def cleanup_session(agent_id: str, session_id: str) -> None:
-    """Best-effort workspace cleanup; leftover files are reaped by idle cleanup."""
+async def cleanup_session(*, pool_name: str, session_id: str, agent_id: str) -> None:
+    """Best-effort workspace subdirectory cleanup on the pool pod."""
     try:
         resp = await _supervisor.client.delete(
-            f"/v1/agents/{agent_id}/sessions/{session_id}",
+            f"/v1/sessions/{session_id}",
+            params={"pool_name": pool_name, "agent_id": agent_id},
             timeout=10,
         )
         resp.raise_for_status()
     except httpx.HTTPError:
-        logger.warning("Session cleanup failed for %s (agent %s)", session_id, agent_id, exc_info=True)
+        logger.warning(
+            "Session cleanup failed for %s on pool %s", session_id, pool_name, exc_info=True,
+        )
 
 
 async def health_check() -> bool:
     try:
-        resp = await _supervisor.client.get("/v1/health")
+        resp = await _supervisor.client.get("/health")
         return resp.status_code == 200
     except httpx.HTTPError:
         logger.debug("Supervisor health check failed", exc_info=True)

@@ -29,6 +29,7 @@ class AgentCreate(BaseModel):
     visibility: str = Field("private", pattern="^(public|team|private)$")
     category: str | None = None
     icon: str | None = None
+    pool_name: str = Field("default", min_length=1, max_length=64)
 
     model_config = {"populate_by_name": True}
 
@@ -43,6 +44,7 @@ class AgentUpdate(BaseModel):
     visibility: str | None = Field(None, pattern="^(public|team|private)$")
     category: str | None = None
     icon: str | None = None
+    pool_name: str | None = Field(None, min_length=1, max_length=64)
 
     model_config = {"populate_by_name": True}
 
@@ -62,7 +64,7 @@ class AgentResponse(BaseModel):
     visibility: str
     category: str | None = None
     icon: str | None = None
-    status: str
+    pool_name: str
     created_at: datetime
     updated_at: datetime
 
@@ -81,7 +83,7 @@ class AgentResponse(BaseModel):
             visibility=agent.visibility,
             category=agent.category,
             icon=agent.icon,
-            status=agent.status,
+            pool_name=agent.pool_name,
             created_at=agent.created_at,
             updated_at=agent.updated_at,
         )

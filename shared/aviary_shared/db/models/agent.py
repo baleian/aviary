@@ -45,21 +45,13 @@ class Agent(Base):
     category: Mapped[str | None] = mapped_column(String(100), nullable=True)
     icon: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
-    # Infrastructure policy (shared entity)
-    policy_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("policies.id", ondelete="SET NULL"), nullable=True
+    # Runtime pool this agent's sessions are routed to. Pools are
+    # infra-owned (k8s/platform/pools/*.yaml); the service layer only
+    # stores the chosen name and forwards it to agent-supervisor.
+    pool_name: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="default", server_default="default"
     )
 
-    # Optional extra egress identity. NULL means only the namespace baseline
-    # NetworkPolicy applies. Non-NULL unions the SA's sg_refs on top.
-    service_account_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("service_accounts.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-
-    # Status
-    status: Mapped[str] = mapped_column(String(20), default="active", server_default="active")
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now()
     )
@@ -68,8 +60,6 @@ class Agent(Base):
     )
 
     owner: Mapped["User"] = relationship(back_populates="owned_agents")  # noqa: F821
-    policy: Mapped["Policy | None"] = relationship()  # noqa: F821
-    service_account: Mapped["ServiceAccount | None"] = relationship()  # noqa: F821
     acl_entries: Mapped[list["AgentACL"]] = relationship(
         back_populates="agent", cascade="all, delete-orphan", passive_deletes=True,
     )

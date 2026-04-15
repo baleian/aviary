@@ -11,6 +11,7 @@ class WorkflowCreate(BaseModel):
     description: str | None = None
     model_config_data: ModelConfig = Field(..., alias="model_config")
     visibility: str = Field("private", pattern="^(public|team|private)$")
+    pool_name: str = Field("default", min_length=1, max_length=64)
 
     model_config = {"populate_by_name": True}
 
@@ -21,6 +22,7 @@ class WorkflowUpdate(BaseModel):
     definition: dict | None = None
     model_config_data: ModelConfig | None = Field(None, alias="model_config")
     visibility: str | None = Field(None, pattern="^(public|team|private)$")
+    pool_name: str | None = Field(None, min_length=1, max_length=64)
 
     model_config = {"populate_by_name": True}
 
@@ -36,6 +38,7 @@ class WorkflowResponse(BaseModel):
     visibility: str
     definition: dict
     model_config_data: dict = Field(alias="model_config")
+    pool_name: str
     status: str
     created_at: datetime
     updated_at: datetime
@@ -51,6 +54,7 @@ class WorkflowResponse(BaseModel):
             visibility=workflow.visibility,
             definition=workflow.definition,
             model_config=workflow.model_config_json or {},
+            pool_name=workflow.pool_name,
             status=workflow.status,
             created_at=workflow.created_at,
             updated_at=workflow.updated_at,

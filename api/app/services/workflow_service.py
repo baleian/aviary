@@ -23,6 +23,7 @@ async def create_workflow(db: AsyncSession, user: User, data: WorkflowCreate) ->
         owner_id=user.id,
         visibility=data.visibility,
         model_config_json=data.model_config_data.model_dump(),
+        pool_name=data.pool_name,
     )
     db.add(workflow)
     await db.flush()
@@ -95,6 +96,8 @@ async def update_workflow(db: AsyncSession, workflow: Workflow, data: WorkflowUp
         workflow.model_config_json = data.model_config_data.model_dump()
     if data.visibility is not None:
         workflow.visibility = data.visibility
+    if data.pool_name is not None:
+        workflow.pool_name = data.pool_name
 
     await db.flush()
     return workflow

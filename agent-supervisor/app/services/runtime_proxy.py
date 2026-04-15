@@ -58,6 +58,41 @@ async def _open_stream(
             yield resp
 
 
+async def passthrough_from_pool(
+    *,
+    pool_name: str,
+    session_id: str,
+    agent_id: str,
+    body: dict,
+) -> AsyncIterator[bytes]:
+    """Yield raw SSE bytes from the pool Service — no Redis publish, no metric
+    bookkeeping. Used by A2A, whose caller (the parent API's a2a router) does
+    its own selective re-publishing.
+    """
+    forward_body = {**body, "session_id": session_id, "agent_id": agent_id}
+    try:
+        async with _open_stream(pool_name, "/message", forward_body) as resp:
+            if resp.status_code != 200:
+                err = (await resp.aread()).decode(errors="replace")[:500]
+                logger.error(
+                    "passthrough %d for pool %s session %s: %s",
+                    resp.status_code, pool_name, session_id, err,
+                )
+                errors_total.labels(pool_name, "runtime").inc()
+                error_event = json.dumps(
+                    {"type": "error", "message": f"Agent runtime error ({resp.status_code}): {err}"}
+                )
+                yield f"data: {error_event}\n\n".encode()
+                return
+            async for raw in resp.aiter_raw():
+                yield raw
+    except httpx.HTTPError as e:
+        logger.exception("passthrough HTTP error for pool=%s session=%s", pool_name, session_id)
+        errors_total.labels(pool_name, "http").inc()
+        error_event = json.dumps({"type": "error", "message": f"Agent runtime connection failed: {e}"})
+        yield f"data: {error_event}\n\n".encode()
+
+
 async def stream_from_pool(
     *,
     pool_name: str,

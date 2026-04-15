@@ -155,12 +155,15 @@ async def trigger_run(
     await db.flush()
 
     run_id = str(run.id)
-    # Supervisor treats workflow.id as agent_id — same namespace/deployment pattern
+    # Use workflow.id as the synthetic agent_id for runtime session-manager
+    # keying (each run gets its own workspace subtree). The workflow's chosen
+    # pool dictates egress/image the same way individual agents do.
     worker_agent_id = str(workflow.id)
+    pool_name = workflow.pool_name
 
     await db.commit()
 
-    start_run(run_id, str(workflow.id), worker_agent_id, body.trigger_data)
+    start_run(run_id, str(workflow.id), worker_agent_id, pool_name, body.trigger_data)
 
     return WorkflowRunResponse.from_orm_run(run)
 

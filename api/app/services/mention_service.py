@@ -30,7 +30,7 @@ async def resolve_mentioned_agents(
     """Resolve slug list to AccessibleAgent configs, filtered by ACL.
 
     Only returns agents that:
-    - exist and are active
+    - exist
     - the user has "chat" permission on
     - are not the current agent (exclude_agent_id)
     """
@@ -38,7 +38,7 @@ async def resolve_mentioned_agents(
 
     for slug in slugs:
         agent = await agent_service.get_agent_by_slug(db, slug)
-        if agent is None or agent.status != "active":
+        if agent is None:
             continue
 
         if exclude_agent_id and str(agent.id) == exclude_agent_id:

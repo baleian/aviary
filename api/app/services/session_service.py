@@ -1,4 +1,4 @@
-"""Session business logic: CRUD and agent readiness."""
+"""Session business logic: CRUD."""
 
 import logging
 import uuid
@@ -192,47 +192,28 @@ async def count_active_sessions(db: AsyncSession, agent_id: uuid.UUID) -> int:
 
 
 async def delete_session(db: AsyncSession, session: Session) -> None:
-    """Full session deletion: cancel stream, clean Redis, hard-delete from DB,
-    and conditionally tear down agent resources if this was the last session
-    of a soft-deleted agent."""
-    from app.services import agent_service
+    """Cancel any stream, clear Redis, ask supervisor to reclaim the session
+    workspace subdirectory on the pool pod, hard-delete the session row."""
     from app.services.stream import manager as stream_manager
 
     session_id_str = str(session.id)
     agent_id = session.agent_id
 
-    # 1. Cancel any active stream for this session
     if stream_manager.is_streaming(session_id_str):
         await stream_manager.cancel_stream(session_id_str, str(agent_id))
 
-    # 2. Clean up all Redis keys for this session
     await redis_service.delete_all_session_keys(session_id_str)
 
-    # 3. Hard-delete session from DB (CASCADE removes messages + participants)
+    # Resolve pool_name before deleting the row so supervisor can route cleanup.
+    result = await db.execute(select(Agent.pool_name).where(Agent.id == agent_id))
+    pool_name = result.scalar_one_or_none()
+
     await db.delete(session)
     await db.flush()
 
-    # 4–5. Agent-level cleanup
-    result = await db.execute(select(Agent).where(Agent.id == agent_id))
-    agent = result.scalar_one_or_none()
-    if agent:
-        # 4. Session workspace cleanup (best-effort)
-        await agent_supervisor.cleanup_session(str(agent_id), session_id_str)
-
-        # 5. If owning agent is soft-deleted and this was the last session, clean up
-        if agent.status == "deleted":
-            remaining = await count_active_sessions(db, agent_id)
-            if remaining == 0:
-                await agent_service.cleanup_agent_resources(db, agent)
-
-
-async def ensure_agent_ready(db: AsyncSession, agent: Agent) -> None:
-    """Ensure agent is running via agent supervisor.
-
-    Fully delegated — the supervisor handles all resource provisioning
-    with secure defaults if the agent hasn't been set up yet.
-    """
-    await agent_supervisor.ensure_agent_running(
-        agent_id=str(agent.id),
-        owner_id=str(agent.owner_id),
-    )
+    if pool_name:
+        await agent_supervisor.cleanup_session(
+            pool_name=pool_name,
+            session_id=session_id_str,
+            agent_id=str(agent_id),
+        )

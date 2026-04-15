@@ -5,7 +5,6 @@ import logging
 import uuid
 from datetime import datetime
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,7 +29,7 @@ from app.schemas.session import (
     SessionSearchResponse,
     SessionTitleUpdate,
 )
-from app.services import acl_service, agent_supervisor, redis_service, session_service
+from app.services import acl_service, redis_service, session_service
 from app.services.stream import manager as stream_manager
 
 logger = logging.getLogger(__name__)
@@ -67,8 +66,6 @@ async def create_session(
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
-    if agent.status == "deleted":
-        raise HTTPException(status_code=410, detail="Agent has been deleted — no new sessions allowed")
 
     try:
         await acl_service.check_agent_permission(db, user, agent, "chat")
@@ -377,23 +374,9 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
 
             agent_id_str = str(agent.id)
 
-            # Ensure agent is running (supervisor handles all provisioning)
-            await websocket.send_json({"type": "status", "status": "spawning"})
-            try:
-                await session_service.ensure_agent_ready(db, agent)
-            except (httpx.HTTPError, RuntimeError) as e:
-                await websocket.send_json({"type": "status", "status": "offline", "message": f"Failed to start agent: {e}"})
-                return
-
             await db.commit()
 
-        # Wait for agent readiness via supervisor
-        await websocket.send_json({"type": "status", "status": "waiting"})
-        ready = await agent_supervisor.wait_for_agent_ready(agent_id_str, timeout=90)
-        if not ready:
-            await websocket.send_json({"type": "status", "status": "offline", "message": "Agent did not become ready in time"})
-            return
-
+        # Pool pods are always warm (pool replicas >= 1) — no readiness wait.
         await websocket.send_json({"type": "status", "status": "ready"})
 
         # Track presence and clear unread
@@ -477,12 +460,9 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
 
                 async with async_session_factory() as db:
                     result = await db.execute(
-                        select(Agent)
-                        .where(Agent.id == session.agent_id)
-                        .options(selectinload(Agent.policy))
+                        select(Agent).where(Agent.id == session.agent_id)
                     )
                     agent = result.scalar_one()
-                    agent_policy = agent.policy.policy_rules if agent.policy else {}
 
                     # Parse @mentions from instruction + current message
                     mentioned_slugs = list(dict.fromkeys(
@@ -509,11 +489,11 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
                 await stream_manager.start_stream(
                     session_id=session_id_str,
                     agent_id=str(agent.id),
+                    pool_name=agent.pool_name,
                     agent_model_config=agent.model_config_json,
                     agent_instruction=agent.instruction,
                     agent_tools=agent.tools,
                     agent_mcp_servers=agent.mcp_servers,
-                    agent_policy=agent_policy,
                     content=content,
                     user_message_id=user_message_id,
                     user_token=fresh.access_token,

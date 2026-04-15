@@ -9,6 +9,7 @@ during the call.
 from __future__ import annotations
 
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.services import runtime_proxy
@@ -42,6 +43,26 @@ async def stream(req: StreamRequest) -> dict:
         session_id=req.session_id,
         agent_id=req.agent_id,
         body=req.body,
+    )
+
+
+@router.post("/stream-passthrough")
+async def stream_passthrough(req: StreamRequest) -> StreamingResponse:
+    """Raw SSE pass-through to the pool — no Redis publish.
+
+    Used by A2A where the calling API router handles selective republishing
+    (tagging events with `parent_tool_use_id` and forwarding only tool_use /
+    tool_result events to the parent session's Redis channel).
+    """
+    return StreamingResponse(
+        runtime_proxy.passthrough_from_pool(
+            pool_name=req.pool_name,
+            session_id=req.session_id,
+            agent_id=req.agent_id,
+            body=req.body,
+        ),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

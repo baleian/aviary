@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db.models import User
 from app.db.session import get_db
-from app.services import acl_service, agent_service, agent_supervisor, redis_service
+from app.services import acl_service, agent_service, redis_service
 from app.services.stream.manager import build_mcp_config, fetch_user_credentials
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ async def a2a_message(
 
     # 2. Resolve agent by slug + ACL check
     agent = await agent_service.get_agent_by_slug(db, agent_slug)
-    if not agent or agent.status != "active":
+    if not agent:
         raise HTTPException(status_code=404, detail=f"Agent '{agent_slug}' not found")
 
     try:
@@ -77,30 +77,29 @@ async def a2a_message(
     agent_id = str(agent.id)
     session_id = body.session_id
     parent_tool_use_id = body.parent_tool_use_id
-    agent_policy_rules = agent.policy.policy_rules if agent.policy else {}
 
-    # 3. Ensure sub-agent is running
-    try:
-        await agent_supervisor.ensure_agent_running(
-            agent_id=agent_id, owner_id=str(agent.owner_id),
-        )
-        ready = await agent_supervisor.wait_for_agent_ready(agent_id, timeout=90)
-        if not ready:
-            raise HTTPException(status_code=503, detail="Sub-agent did not become ready in time")
-    except HTTPException:
-        raise
-    except httpx.HTTPError as e:
-        logger.warning("Failed to ensure sub-agent running: %s", e, exc_info=True)
-        raise HTTPException(status_code=503, detail="Failed to start sub-agent") from e
-
-    # 4. Fetch credentials and build config
+    # 3. Fetch credentials and build forwarded body
     credentials = await fetch_user_credentials(user.external_id)
-    stream_url = agent_supervisor.get_stream_url(agent_id, session_id)
+    forward_body = {
+        "content_parts": [{"text": body.content}],
+        "session_id": session_id,
+        "agent_id": agent_id,
+        "model_config_data": agent.model_config_json,
+        "agent_config": {
+            "instruction": agent.instruction,
+            "tools": agent.tools,
+            "mcp_servers": build_mcp_config(agent.mcp_servers or []),
+            **({"credentials": credentials} if credentials else {}),
+            "is_sub_agent": True,
+        },
+    }
+    # A2A wants raw SSE to forward to the calling tool; /v1/stream-passthrough
+    # skips the Redis publish that /v1/stream does so the a2a router can
+    # selectively republish only tool_use / tool_result events tagged with
+    # the parent's tool_use_id.
+    stream_url = f"{settings.agent_supervisor_url}/v1/stream-passthrough"
 
-    if not stream_url:
-        raise HTTPException(status_code=503, detail="Sub-agent stream URL not available")
-
-    # 5. Stream sub-agent response — dual output
+    # 4. Stream sub-agent response — dual output (SSE to caller + Redis tag)
     async def generate():
         try:
             async with httpx.AsyncClient() as client:
@@ -108,17 +107,10 @@ async def a2a_message(
                     "POST",
                     stream_url,
                     json={
-                        "content_parts": [{"text": body.content}],
+                        "pool_name": agent.pool_name,
                         "session_id": session_id,
-                        "model_config_data": agent.model_config_json,
-                        "agent_config": {
-                            "instruction": agent.instruction,
-                            "tools": agent.tools,
-                            "mcp_servers": build_mcp_config(agent.mcp_servers or []),
-                            "policy": agent_policy_rules,
-                            **({"credentials": credentials} if credentials else {}),
-                            "is_sub_agent": True,
-                        },
+                        "agent_id": agent_id,
+                        "body": forward_body,
                     },
                     timeout=None,
                 ) as resp:

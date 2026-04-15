@@ -16,6 +16,7 @@ import httpx
 from sqlalchemy import select, update
 
 from aviary_shared.db.models import WorkflowRun, WorkflowNodeRun
+from app.config import settings
 from app.db.session import async_session_factory
 from app.services import agent_supervisor, redis_service
 
@@ -84,9 +85,9 @@ async def _exec_trigger(node: dict, trigger_data: dict) -> dict:
 
 
 async def _exec_agent_step(
-    node: dict, input_data: dict, worker_agent_id: str, run_id: str,
+    node: dict, input_data: dict, worker_agent_id: str, pool_name: str, run_id: str,
 ) -> dict:
-    """Execute an Agent Step by sending a message to the worker agent pod."""
+    """Execute an Agent Step by routing a message through the workflow's pool."""
     data = node.get("data", {})
     prompt_template = data.get("prompt_template", "{{input}}")
     instruction = data.get("instruction", "")
@@ -97,24 +98,9 @@ async def _exec_agent_step(
     input_text = json.dumps(input_data, ensure_ascii=False) if input_data else ""
     prompt = prompt_template.replace("{{input}}", input_text)
 
-    # Create ephemeral session
+    # Ephemeral session per step — runtime keys workspace by session_id/agent_id.
     session_id = str(uuid.uuid4())
 
-    try:
-        await agent_supervisor.ensure_agent_running(agent_id=worker_agent_id, owner_id="")
-        ready = await agent_supervisor.wait_for_agent_ready(worker_agent_id, timeout=90)
-        if not ready:
-            raise RuntimeError(
-                "Worker agent Pod did not become ready within 90s. "
-                "Check that the K8s cluster is running and the runtime image is loaded."
-            )
-    except httpx.HTTPError as e:
-        raise RuntimeError(
-            f"Agent Supervisor connection failed: {e}. "
-            "Ensure the agent-supervisor is running (port 9000) and reachable."
-        ) from e
-
-    stream_url = agent_supervisor.get_stream_url(worker_agent_id, session_id)
     if not model_config.get("backend") or not model_config.get("model"):
         raise RuntimeError(
             "Agent Step has no model configured. "
@@ -124,25 +110,29 @@ async def _exec_agent_step(
     full_response = ""
     structured_output = None
 
-    request_body: dict = {
+    inner_body: dict = {
         "content_parts": [{"text": prompt}],
-        "session_id": session_id,
         "model_config_data": model_config,
         "agent_config": {
             "instruction": instruction,
             "tools": [],
             "mcp_servers": {},
-            "policy": {},
         },
     }
     if output_schema:
-        request_body["output_format"] = output_schema
+        inner_body["output_format"] = output_schema
 
+    stream_url = f"{settings.agent_supervisor_url}/v1/stream-passthrough"
     async with httpx.AsyncClient() as client:
         async with client.stream(
             "POST",
             stream_url,
-            json=request_body,
+            json={
+                "pool_name": pool_name,
+                "session_id": session_id,
+                "agent_id": worker_agent_id,
+                "body": inner_body,
+            },
             timeout=None,
         ) as resp:
             if resp.status_code >= 400:
@@ -192,23 +182,22 @@ async def _exec_agent_step(
                 elif chunk_type == "error":
                     raise RuntimeError(chunk.get("message", "Agent runtime error"))
 
-    if structured_output is not None:
-        # Best-effort session cleanup
+    async def _cleanup() -> None:
         try:
-            await agent_supervisor.cleanup_session(worker_agent_id, session_id)
+            await agent_supervisor.cleanup_session(
+                pool_name=pool_name, session_id=session_id, agent_id=worker_agent_id,
+            )
         except Exception:
             pass
+
+    if structured_output is not None:
+        await _cleanup()
         return {"output": structured_output}
 
     if not full_response.strip():
         raise RuntimeError("Agent Step produced no output — the LLM may be unreachable or the request failed silently")
 
-    # Best-effort session cleanup
-    try:
-        await agent_supervisor.cleanup_session(worker_agent_id, session_id)
-    except Exception:
-        pass
-
+    await _cleanup()
     return {"output": full_response}
 
 
@@ -310,6 +299,7 @@ async def _execute_node(
     node: dict,
     input_data: dict,
     worker_agent_id: str | None,
+    pool_name: str,
     trigger_data: dict,
 ) -> dict:
     """Execute a single node and return its output."""
@@ -320,7 +310,7 @@ async def _execute_node(
     elif node_type == "agent_step":
         if not worker_agent_id:
             raise RuntimeError("No worker agent configured for this workflow")
-        return await _exec_agent_step(node, input_data, worker_agent_id, run_id)
+        return await _exec_agent_step(node, input_data, worker_agent_id, pool_name, run_id)
     elif node_type in NODE_EXECUTORS:
         return await NODE_EXECUTORS[node_type](node, input_data)
     else:
@@ -331,6 +321,7 @@ async def execute_run(
     run_id: str,
     workflow_id: str,
     worker_agent_id: str | None,
+    pool_name: str,
     trigger_data: dict,
 ) -> None:
     """Background task: execute a workflow run."""
@@ -411,7 +402,7 @@ async def execute_run(
 
                 try:
                     output = await _execute_node(
-                        run_id, node, input_data, worker_agent_id, trigger_data,
+                        run_id, node, input_data, worker_agent_id, pool_name, trigger_data,
                     )
                     outputs[node_id] = output
 
@@ -525,6 +516,7 @@ def start_run(
     run_id: str,
     workflow_id: str,
     worker_agent_id: str | None,
+    pool_name: str,
     trigger_data: dict,
 ) -> None:
     """Launch a workflow run as a background task."""
@@ -533,7 +525,7 @@ def start_run(
         return
 
     task = asyncio.create_task(
-        execute_run(run_id, workflow_id, worker_agent_id, trigger_data)
+        execute_run(run_id, workflow_id, worker_agent_id, pool_name, trigger_data)
     )
     _active_runs[run_id] = task
 

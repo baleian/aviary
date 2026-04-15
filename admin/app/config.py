@@ -3,7 +3,6 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     database_url: str
-    agent_supervisor_url: str
 
     # Vault
     vault_addr: str
