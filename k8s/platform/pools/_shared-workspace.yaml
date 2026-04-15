@@ -1,0 +1,57 @@
+# Namespace-wide shared workspace volume.
+#
+# Every pool pod mounts this PVC at /agent-platform. The runtime writes
+# per-(agent, session) subdirectories under the mount (see
+# runtime/src/constants.ts):
+#
+#   /agent-platform/
+#     ├── agents/{agent_id}/.claude/{session_id}/     CLI resume state
+#     ├── agents/{agent_id}/.venvs/{session_id}/      per-session Python venv
+#     └── sessions/{session_id}/workspace/            cross-agent session workspace
+#
+# Isolation inside a pod is enforced by bwrap (see runtime/scripts/claude-sandbox.sh):
+# each session only sees its own subtree bound at /workspace.
+#
+# Storage backing:
+#   - K3s (local dev): hostPath at /var/lib/aviary/agent-platform, backed by
+#     the `agent_workspace_pv` docker volume so it survives k3s rebuilds.
+#   - EKS (prod): replace this file with an EFS CSI dynamic PVC
+#     (ReadWriteMany). Runtime code is unchanged.
+
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: agents-workspace
+  labels:
+    aviary/managed: "true"
+    aviary/service: agents-workspace
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes: [ReadWriteMany]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  hostPath:
+    path: /var/lib/aviary/agent-platform
+    type: DirectoryOrCreate
+  claimRef:
+    namespace: agents
+    name: agents-workspace
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agents-workspace
+  namespace: agents
+  labels:
+    aviary/managed: "true"
+    aviary/service: agents-workspace
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: ""
+  volumeName: agents-workspace
+  resources:
+    requests:
+      storage: 50Gi

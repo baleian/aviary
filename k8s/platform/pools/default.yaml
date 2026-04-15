@@ -1,0 +1,150 @@
+# Pool: default
+#
+# Baseline agent runtime pool. Egress is restricted to Aviary platform services
+# (LLM gateway, MCP gateway, API server) and DNS. Use this pool for agents that
+# don't need to reach the public internet or sensitive internal systems.
+#
+# ${HOST_GATEWAY_IP} is substituted by setup-dev.sh at apply time (local dev).
+# In production, the external-services Service + Endpoints trick isn't needed;
+# the pool talks to platform services via in-cluster DNS directly.
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: env-default
+  namespace: agents
+  labels:
+    aviary/pool: default
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: env-default
+  namespace: agents
+  labels:
+    aviary/pool: default
+spec:
+  podSelector:
+    matchLabels:
+      aviary/pool: default
+  policyTypes: [Egress, Ingress]
+  ingress:
+    # Pool Services accept traffic only from the agent-supervisor Pod.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              aviary/namespace: platform
+          podSelector:
+            matchLabels:
+              aviary/service: agent-supervisor
+      ports:
+        - { port: 3000, protocol: TCP }
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { port: 53, protocol: UDP }
+    # Platform-internal services (litellm, mcp-gateway, etc. via namespace match)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              aviary/namespace: platform
+    # Host gateway for local dev (external-services.yaml points here).
+    - to:
+        - ipBlock:
+            cidr: ${HOST_GATEWAY_IP}/32
+      ports:
+        - { port: 8000, protocol: TCP }   # API server
+        - { port: 8090, protocol: TCP }   # LiteLLM
+        - { port: 8100, protocol: TCP }   # MCP Gateway
+        - { port: 6379, protocol: TCP }   # Redis (for a2a publish-through)
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: env-default
+  namespace: agents
+  labels:
+    aviary/pool: default
+    aviary/role: agent-runtime
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      aviary/pool: default
+  template:
+    metadata:
+      labels:
+        aviary/pool: default
+        aviary/role: agent-runtime
+    spec:
+      serviceAccountName: env-default
+      terminationGracePeriodSeconds: 600
+      hostAliases:
+        - ip: "${HOST_GATEWAY_IP}"
+          hostnames: ["host.k8s.internal"]
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      initContainers:
+        - name: fix-workspace-perms
+          image: aviary-runtime:latest
+          imagePullPolicy: Never
+          securityContext: { runAsUser: 0, runAsGroup: 0 }
+          command: ["chown", "-R", "1000:1000", "/agent-platform"]
+          volumeMounts:
+            - { name: workspace, mountPath: /agent-platform }
+          resources:
+            requests: { cpu: "10m", memory: "16Mi" }
+            limits:   { cpu: "100m", memory: "64Mi" }
+      containers:
+        - name: runtime
+          image: aviary-runtime:latest
+          imagePullPolicy: Never
+          ports:
+            - { containerPort: 3000, name: http }
+          env:
+            - { name: POOL_NAME, value: "default" }
+            - { name: INFERENCE_ROUTER_URL, value: "http://litellm.platform.svc:4000" }
+            - { name: LITELLM_API_KEY,      value: "sk-aviary-dev" }
+            - { name: MCP_GATEWAY_URL,      value: "http://mcp-gateway.platform.svc:8100" }
+            - { name: AVIARY_API_URL,       value: "http://host.k8s.internal:8000/api" }
+            - { name: AVIARY_INTERNAL_API_KEY, value: "sk-aviary-internal" }
+          volumeMounts:
+            - { name: workspace, mountPath: /agent-platform }
+          resources:
+            requests: { cpu: "500m", memory: "1Gi" }
+            limits:   { cpu: "2",    memory: "4Gi" }
+          livenessProbe:
+            httpGet: { path: /health, port: 3000 }
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet: { path: /ready, port: 3000 }
+            initialDelaySeconds: 3
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: agents-workspace
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: env-default
+  namespace: agents
+  labels:
+    aviary/pool: default
+spec:
+  selector:
+    aviary/pool: default
+  ports:
+    - { name: http, port: 3000, targetPort: 3000, protocol: TCP }

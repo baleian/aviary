@@ -10,15 +10,16 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
+  PLATFORM_ROOT,
   SHARED_WORKSPACE_ROOT,
   WORKSPACE_ROOT,
-  sessionClaudeDir,
-  sessionHome,
+  agentClaudeDir,
+  agentVenvDir,
   sessionTmp,
-  sessionVenvDir,
+  sessionWorkspace,
 } from "./constants.js";
 
-export { WORKSPACE_ROOT, SHARED_WORKSPACE_ROOT };
+export { PLATFORM_ROOT, WORKSPACE_ROOT, SHARED_WORKSPACE_ROOT };
 
 export interface SessionEntry {
   sessionId: string;
@@ -68,16 +69,16 @@ export class SessionManager {
     const existing = this._sessions.get(key);
     if (existing) return existing;
 
-    const home = sessionHome(sessionId);
-    fs.mkdirSync(home, { recursive: true });
-    fs.mkdirSync(sessionClaudeDir(sessionId), { recursive: true });
+    const workspace = sessionWorkspace(sessionId);
+    fs.mkdirSync(workspace, { recursive: true });
+    fs.mkdirSync(agentClaudeDir(agentId, sessionId), { recursive: true });
     fs.mkdirSync(sessionTmp(sessionId), { recursive: true });
     // venv parent only — claude-sandbox.sh creates the venv itself.
-    fs.mkdirSync(path.dirname(sessionVenvDir(sessionId)), { recursive: true });
+    fs.mkdirSync(path.dirname(agentVenvDir(agentId, sessionId)), { recursive: true });
 
     const entry: SessionEntry = {
       sessionId,
-      workspace: home,
+      workspace,
       createdAt: Date.now() / 1000,
       _lock: createMutex(),
     };
@@ -94,8 +95,15 @@ export class SessionManager {
     const entry = this._sessions.get(key);
     if (!entry) return false;
     this._sessions.delete(key);
-    if (cleanupFiles && fs.existsSync(entry.workspace)) {
-      fs.rmSync(entry.workspace, { recursive: true, force: true });
+    if (cleanupFiles) {
+      // Remove both the shared session workspace and this agent's overlays.
+      for (const p of [
+        entry.workspace,
+        agentClaudeDir(agentId, sessionId),
+        agentVenvDir(agentId, sessionId),
+      ]) {
+        if (fs.existsSync(p)) fs.rmSync(p, { recursive: true, force: true });
+      }
     }
     return true;
   }

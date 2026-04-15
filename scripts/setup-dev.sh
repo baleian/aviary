@@ -83,9 +83,15 @@ for f in ./k8s/platform/*.yaml; do
   HOST_GATEWAY_IP="$K8S_GATEWAY_IP" envsubst '${HOST_GATEWAY_IP}' < "$f" \
     | docker compose exec -T k8s kubectl apply -f -
 done
-# Create shared workspace directory on K8s node (hostPath for A2A file sharing).
-# Owned by UID 1000 (node user) so agent Pods can write without root.
-docker compose exec -T k8s sh -c 'mkdir -p /workspace-shared && chown 1000:1000 /workspace-shared'
+# Pool catalog — infra-team-owned runtime pools (Deployment/Service/NP/SA per pool).
+# `_shared-workspace.yaml` is intentionally sorted first (prefix `_`).
+for f in ./k8s/platform/pools/*.yaml; do
+  HOST_GATEWAY_IP="$K8S_GATEWAY_IP" envsubst '${HOST_GATEWAY_IP}' < "$f" \
+    | docker compose exec -T k8s kubectl apply -f -
+done
+# Seed the shared workspace root on the K8s node so hostPath PV has a valid
+# directory with correct ownership for UID 1000 (runtime non-root user).
+docker compose exec -T k8s sh -c 'mkdir -p /var/lib/aviary/agent-platform && chown 1000:1000 /var/lib/aviary/agent-platform'
 
 # Restart platform pods to pick up freshly loaded images.
 # Agent runtime pods in `agents` NS pick up the new image on their next

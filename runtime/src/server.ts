@@ -11,7 +11,7 @@
 import * as fs from "node:fs";
 import express from "express";
 import { SessionManager } from "./session-manager.js";
-import { SHARED_WORKSPACE_ROOT, WORKSPACE_ROOT } from "./constants.js";
+import { agentClaudeDir } from "./constants.js";
 import { healthRouter, setReady } from "./health.js";
 import { processMessage } from "./agent.js";
 
@@ -24,9 +24,8 @@ const manager = new SessionManager();
 // Track active AbortControllers per session for cancellation support
 const activeAbortControllers = new Map<string, AbortController>();
 
-// Startup
-fs.mkdirSync(WORKSPACE_ROOT, { recursive: true });
-fs.mkdirSync(SHARED_WORKSPACE_ROOT, { recursive: true });
+// Startup — session-scoped directories are created lazily in SessionManager;
+// the shared workspace volume is mounted by the pool Deployment.
 setReady(true);
 
 interface ContentPart {
@@ -148,7 +147,7 @@ app.delete("/sessions/:sessionId/workspace", (req, res) => {
   const agentId = requireAgentId(req, res);
   if (!agentId) return;
   const { sessionId } = req.params;
-  const claudeDir = `${WORKSPACE_ROOT}/.claude/${sessionId}`;
+  const claudeDir = agentClaudeDir(agentId, sessionId);
 
   // Also remove from manager if tracked (idempotent)
   manager.remove(sessionId, agentId, false);

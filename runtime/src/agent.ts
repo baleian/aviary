@@ -23,10 +23,10 @@ import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { startA2AServer, type AccessibleAgent, type A2AServer } from "./a2a-tools.js";
 import {
   WORKSPACE_ROOT,
-  sessionClaudeDir,
-  sessionHome,
+  agentClaudeDir,
+  agentVenvDir,
   sessionTmp,
-  sessionVenvDir,
+  sessionWorkspace,
 } from "./constants.js";
 
 function requireEnv(name: string): string {
@@ -207,11 +207,11 @@ export async function* processMessage(
   abortController?: AbortController,
   outputFormat?: { type: "json_schema"; schema: Record<string, unknown> },
 ): AsyncGenerator<SSEChunk> {
-  const home = sessionHome(sessionId);
-  const claudeDir = sessionClaudeDir(sessionId);
+  const workspace = sessionWorkspace(sessionId);
+  const claudeDir = agentClaudeDir(agentId, sessionId);
   const tmpDir = sessionTmp(sessionId);
-  const venvDir = sessionVenvDir(sessionId);
-  fs.mkdirSync(home, { recursive: true });
+  const venvDir = agentVenvDir(agentId, sessionId);
+  fs.mkdirSync(workspace, { recursive: true });
   fs.mkdirSync(claudeDir, { recursive: true });
   fs.mkdirSync(tmpDir, { recursive: true });
   fs.mkdirSync(path.dirname(venvDir), { recursive: true });
@@ -233,7 +233,7 @@ export async function* processMessage(
     ...(agentConfig.user_token
       ? { ANTHROPIC_CUSTOM_HEADERS: `X-Aviary-User-Token: ${agentConfig.user_token}` }
       : {}),
-    SESSION_WORKSPACE: home,
+    SESSION_WORKSPACE: workspace,
     SESSION_CLAUDE_DIR: claudeDir,
     SESSION_VENV_DIR: venvDir,
     SESSION_TMP: tmpDir,

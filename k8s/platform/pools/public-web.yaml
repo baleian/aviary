@@ -1,0 +1,158 @@
+# Pool: public-web
+#
+# Same runtime image as `default`, but with unrestricted outbound internet
+# access. Use this pool for agents that browse arbitrary URLs, install
+# packages from public registries, or otherwise need open egress.
+#
+# Differs from `default.yaml` only in:
+#   - Label `aviary/pool: public-web`
+#   - NetworkPolicy egress appends `0.0.0.0/0` (still excludes link-local and
+#     the cluster service CIDR to avoid accidentally opening a path back into
+#     the cluster).
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: env-public-web
+  namespace: agents
+  labels:
+    aviary/pool: public-web
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: env-public-web
+  namespace: agents
+  labels:
+    aviary/pool: public-web
+spec:
+  podSelector:
+    matchLabels:
+      aviary/pool: public-web
+  policyTypes: [Egress, Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              aviary/namespace: platform
+          podSelector:
+            matchLabels:
+              aviary/service: agent-supervisor
+      ports:
+        - { port: 3000, protocol: TCP }
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { port: 53, protocol: UDP }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              aviary/namespace: platform
+    - to:
+        - ipBlock:
+            cidr: ${HOST_GATEWAY_IP}/32
+      ports:
+        - { port: 8000, protocol: TCP }
+        - { port: 8090, protocol: TCP }
+        - { port: 8100, protocol: TCP }
+        - { port: 6379, protocol: TCP }
+    # Public internet — everything except RFC1918 private ranges and
+    # link-local (prevents accidental cluster-internal shortcut).
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: env-public-web
+  namespace: agents
+  labels:
+    aviary/pool: public-web
+    aviary/role: agent-runtime
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      aviary/pool: public-web
+  template:
+    metadata:
+      labels:
+        aviary/pool: public-web
+        aviary/role: agent-runtime
+    spec:
+      serviceAccountName: env-public-web
+      terminationGracePeriodSeconds: 600
+      hostAliases:
+        - ip: "${HOST_GATEWAY_IP}"
+          hostnames: ["host.k8s.internal"]
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      initContainers:
+        - name: fix-workspace-perms
+          image: aviary-runtime:latest
+          imagePullPolicy: Never
+          securityContext: { runAsUser: 0, runAsGroup: 0 }
+          command: ["chown", "-R", "1000:1000", "/agent-platform"]
+          volumeMounts:
+            - { name: workspace, mountPath: /agent-platform }
+          resources:
+            requests: { cpu: "10m", memory: "16Mi" }
+            limits:   { cpu: "100m", memory: "64Mi" }
+      containers:
+        - name: runtime
+          image: aviary-runtime:latest
+          imagePullPolicy: Never
+          ports:
+            - { containerPort: 3000, name: http }
+          env:
+            - { name: POOL_NAME, value: "public-web" }
+            - { name: INFERENCE_ROUTER_URL, value: "http://litellm.platform.svc:4000" }
+            - { name: LITELLM_API_KEY,      value: "sk-aviary-dev" }
+            - { name: MCP_GATEWAY_URL,      value: "http://mcp-gateway.platform.svc:8100" }
+            - { name: AVIARY_API_URL,       value: "http://host.k8s.internal:8000/api" }
+            - { name: AVIARY_INTERNAL_API_KEY, value: "sk-aviary-internal" }
+          volumeMounts:
+            - { name: workspace, mountPath: /agent-platform }
+          resources:
+            requests: { cpu: "500m", memory: "1Gi" }
+            limits:   { cpu: "2",    memory: "4Gi" }
+          livenessProbe:
+            httpGet: { path: /health, port: 3000 }
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet: { path: /ready, port: 3000 }
+            initialDelaySeconds: 3
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: agents-workspace
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: env-public-web
+  namespace: agents
+  labels:
+    aviary/pool: public-web
+spec:
+  selector:
+    aviary/pool: public-web
+  ports:
+    - { name: http, port: 3000, targetPort: 3000, protocol: TCP }
