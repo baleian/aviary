@@ -1,8 +1,9 @@
-"""Agent Supervisor — activator + SSE proxy + Redis publisher.
+"""Agent Supervisor — streaming proxy + Redis publisher.
 
-Scaling (1→N, N→0) is owned by KEDA. The supervisor only activates idle
-agents (0→1) on demand, consumes runtime SSE, and publishes events to
-Redis (for WS broadcast + replay buffer) so the API stays off the SSE path.
+Role (v0.4 onward): forward a pool-keyed `/v1/stream` call to the target
+runtime pool Service via SSE, publish each event to Redis, and return a final
+status summary. No K8s CRUD, no per-agent lifecycle. Pool manifests are
+managed by the infra team via GitOps; lifecycle is declarative.
 """
 
 import logging
@@ -10,10 +11,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.backends import get_backend
-from app.config import settings
 from app import redis_client
-from app.routers import agents, deployments
+from app.routers import health, stream
 
 logging.basicConfig(level=logging.INFO)
 
@@ -27,17 +26,7 @@ async def lifespan(app: FastAPI):
         await redis_client.close_redis()
 
 
-app = FastAPI(title="Aviary Agent Supervisor", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="Aviary Agent Supervisor", version="0.4.0", lifespan=lifespan)
 
-app.include_router(agents.router, prefix="/v1", tags=["agents"])
-app.include_router(deployments.router, prefix="/v1", tags=["admin"])
-
-
-@app.get("/v1/health")
-async def health():
-    backend = get_backend()
-    ok = await backend.health()
-    return {
-        "status": "ok" if ok else "degraded",
-        "backend": settings.backend_kind,
-    }
+app.include_router(stream.router, prefix="/v1", tags=["stream"])
+app.include_router(health.router, tags=["health"])
