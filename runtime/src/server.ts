@@ -19,10 +19,10 @@ app.use(express.json({ limit: "50mb" }));
 app.use(healthRouter);
 
 const manager = new SessionManager();
-const AGENT_ID = process.env.AGENT_ID;
-if (!AGENT_ID) {
-  throw new Error("Required environment variable AGENT_ID is not set");
-}
+// AGENT_ID env is the legacy fallback for requests that don't carry agent_id in
+// the body. Pool-model callers send agent_id per request; per-agent pods still
+// set it as env. When neither is available the /message handler returns 400.
+const FALLBACK_AGENT_ID = process.env.AGENT_ID;
 
 // Track active AbortControllers per session for cancellation support
 const activeAbortControllers = new Map<string, AbortController>();
@@ -40,6 +40,7 @@ interface ContentPart {
 interface MessageRequestBody {
   content_parts: ContentPart[];
   session_id: string;
+  agent_id?: string;
   model_config_data?: Record<string, unknown> | null;
   agent_config: Record<string, unknown>;
   output_format?: { type: "json_schema"; schema: Record<string, unknown> };
@@ -53,7 +54,13 @@ app.post("/message", async (req, res) => {
     return;
   }
 
-  const entry = manager.getOrCreate(body.session_id, AGENT_ID);
+  const agentId = body.agent_id ?? FALLBACK_AGENT_ID;
+  if (!agentId) {
+    res.status(400).json({ error: "agent_id is required (body.agent_id or AGENT_ID env)" });
+    return;
+  }
+
+  const entry = manager.getOrCreate(body.session_id, agentId);
 
   // SSE headers
   res.setHeader("Content-Type", "text/event-stream");
@@ -77,7 +84,7 @@ app.post("/message", async (req, res) => {
   try {
     for await (const chunk of processMessage(
       body.session_id,
-      AGENT_ID,
+      agentId,
       body.content_parts,
       body.model_config_data as any,
       body.agent_config as any,
@@ -90,9 +97,9 @@ app.post("/message", async (req, res) => {
   } finally {
     activeAbortControllers.delete(body.session_id);
     release();
-    // Release slot immediately — PVC files are preserved for resume.
+    // Release slot immediately — workspace files are preserved for resume.
     // Next message will re-acquire a slot via getOrCreate().
-    manager.remove(body.session_id, AGENT_ID, false);
+    manager.remove(body.session_id, agentId, false);
   }
 
   if (!res.writableEnded) {
@@ -119,8 +126,19 @@ app.get("/sessions", (_req, res) => {
   });
 });
 
+function resolveAgentId(req: express.Request, res: express.Response): string | null {
+  const agentId = (req.query.agent_id as string | undefined) ?? FALLBACK_AGENT_ID;
+  if (!agentId) {
+    res.status(400).json({ error: "agent_id is required (?agent_id= or AGENT_ID env)" });
+    return null;
+  }
+  return agentId;
+}
+
 app.delete("/sessions/:sessionId", (req, res) => {
-  const removed = manager.remove(req.params.sessionId, AGENT_ID, true);
+  const agentId = resolveAgentId(req, res);
+  if (!agentId) return;
+  const removed = manager.remove(req.params.sessionId, agentId, true);
   if (!removed) {
     res.status(404).json({ error: "session not found" });
     return;
@@ -129,11 +147,13 @@ app.delete("/sessions/:sessionId", (req, res) => {
 });
 
 app.delete("/sessions/:sessionId/workspace", (req, res) => {
+  const agentId = resolveAgentId(req, res);
+  if (!agentId) return;
   const { sessionId } = req.params;
   const claudeDir = `${WORKSPACE_ROOT}/.claude/${sessionId}`;
 
   // Also remove from manager if tracked (idempotent)
-  manager.remove(sessionId, AGENT_ID, false);
+  manager.remove(sessionId, agentId, false);
 
   if (!fs.existsSync(claudeDir)) {
     res.json({ status: "not_found", session_id: sessionId });

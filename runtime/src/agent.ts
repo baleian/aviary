@@ -80,7 +80,7 @@ interface ModelConfig {
 
 const MCP_GATEWAY_URL = process.env.MCP_GATEWAY_URL;
 
-function buildMcpServers(agentConfig: AgentConfig): Record<string, any> | undefined {
+function buildMcpServers(agentId: string, agentConfig: AgentConfig): Record<string, any> | undefined {
   const servers: Record<string, any> = {};
 
   // Legacy stdio servers from ConfigMap / API
@@ -91,7 +91,6 @@ function buildMcpServers(agentConfig: AgentConfig): Record<string, any> | undefi
   // MCP Gateway — single HTTP endpoint for all platform-managed tools.
   // URL comes from K8s env var; auth token comes from API per-request.
   if (MCP_GATEWAY_URL && agentConfig.user_token) {
-    const agentId = process.env.AGENT_ID || "";
     servers["gateway"] = {
       type: "http",
       url: `${MCP_GATEWAY_URL}/mcp/v1/${agentId}`,
@@ -262,7 +261,7 @@ export async function* processMessage(
   };
 
   // Build MCP servers (gateway + legacy)
-  const mcpServers: Record<string, any> = buildMcpServers(agentConfig) ?? {};
+  const mcpServers: Record<string, any> = buildMcpServers(agentId, agentConfig) ?? {};
 
   // A2A tools: start a local HTTP MCP server if accessible_agents is present and NOT a sub-agent.
   // Uses HTTP type (not SDK in-process type) so the CLI can reconnect on session resume.
