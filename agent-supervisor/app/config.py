@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     efs_shared_workspace_pvc: str = "shared-workspace"
     eks_baseline_security_group_ids: str = ""  # comma-separated AWS sg-ids
     eks_irsa_role_arn: str = ""  # optional per-SA IRSA role
+
+    # Fargate-specific (ignored outside eks_fargate). 0 = keep default (20 GiB).
+    fargate_ephemeral_storage_gib: int = 0
     default_memory_limit: str = "4Gi"
     default_cpu_limit: str = "4"
     default_min_pods: int = 0

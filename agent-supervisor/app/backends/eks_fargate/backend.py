@@ -1,28 +1,204 @@
-"""EKS Fargate backend — stub. Follow-up PR.
+"""EKS Fargate RuntimeBackend — serverless pods, EFS storage, SGP egress.
 
-Planned differences from EKS Native:
-- WorkspaceStore: EFS Access Point per agent (ReadWriteMany).
-- IdentityBinder: SecurityGroupPolicy (VPC CNI) binding pre-created SGs.
-- Manifests: Fargate tier rounding for resource requests.
+Fargate reuses the EKS-native workspace (EFS CSI) and identity (VPC CNI
+`SecurityGroupPolicy`) modules verbatim — both CRDs/CSI drivers work
+identically on Fargate pods. The deviation is the pod spec: Fargate
+requires tier-aligned resources, no host-level features, and explicit
+compute-type selection. Those differences live in `manifests.py`.
+
+Operator pre-requisites (infrastructure, not code):
+  - Fargate profile for `agents` namespace matching `aviary/role=agent-runtime`
+  - EFS CSI driver installed cluster-wide
+  - KEDA installed; `aviary-postgres-auth` TriggerAuthentication provisioned
+  - Baseline security group(s) configured via EKS_BASELINE_SECURITY_GROUP_IDS
 """
 
-from app.backends.protocol import RuntimeBackend
+from __future__ import annotations
 
+import asyncio
+import logging
+import time
 
-def _not_impl(*_a, **_k):
-    raise NotImplementedError("EKS Fargate backend not yet implemented")
+import httpx
+
+from aviary_shared.naming import (
+    AGENTS_NAMESPACE,
+    RUNTIME_PORT,
+    agent_deployment_name,
+    agent_scaledobject_name,
+    agent_service_name,
+)
+
+from app.backends._common.k8s_client import apply_or_replace, k8s_apply
+from app.backends._common.keda import build_scaledobject_manifest
+from app.backends.eks_fargate.manifests import (
+    build_deployment_manifest,
+    build_service_manifest,
+)
+from app.backends.eks_native.identity import EKSIdentityBinder
+from app.backends.eks_native.workspace import EKSWorkspaceStore
+from app.backends.protocol import (
+    AgentSpec,
+    DeploymentStatus,
+    IdentityBinder,
+    RuntimeBackend,
+    WorkspaceStore,
+)
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+_KEDA_GROUP = "/apis/keda.sh/v1alpha1"
 
 
 class EKSFargateBackend(RuntimeBackend):
-    workspace = property(lambda self: _not_impl())
-    identity = property(lambda self: _not_impl())
-    register_agent = _not_impl
-    unregister_agent = _not_impl
-    ensure_active = _not_impl
-    is_ready = _not_impl
-    wait_ready = _not_impl
-    resolve_endpoint = _not_impl
-    get_status = _not_impl
-    restart = _not_impl
-    scale = _not_impl
-    health = _not_impl
+    def __init__(self) -> None:
+        self._workspace = EKSWorkspaceStore()
+        self._identity = EKSIdentityBinder()
+
+    @property
+    def workspace(self) -> WorkspaceStore:
+        return self._workspace
+
+    @property
+    def identity(self) -> IdentityBinder:
+        return self._identity
+
+    # ---- Lifecycle -------------------------------------------------------
+
+    async def register_agent(self, spec: AgentSpec) -> None:
+        await self._identity.ensure_service_account(spec.sa_name)
+        workspace_ref = await self._workspace.ensure_agent_workspace(spec.agent_id)
+
+        if settings.eks_baseline_sg_list:
+            await self._identity.bind_identity(spec.agent_id, spec.sa_name, [])
+
+        await apply_or_replace(
+            f"/apis/apps/v1/namespaces/{AGENTS_NAMESPACE}/deployments",
+            agent_deployment_name(spec.agent_id),
+            build_deployment_manifest(spec, workspace_ref),
+        )
+        await apply_or_replace(
+            f"/api/v1/namespaces/{AGENTS_NAMESPACE}/services",
+            agent_service_name(spec.agent_id),
+            build_service_manifest(spec.agent_id),
+        )
+        await self._ensure_scaledobject(spec)
+
+    async def unregister_agent(self, agent_id: str) -> None:
+        await self._identity.unbind_identity(agent_id)
+        for path in [
+            f"{_KEDA_GROUP}/namespaces/{AGENTS_NAMESPACE}/scaledobjects/{agent_scaledobject_name(agent_id)}",
+            f"/apis/apps/v1/namespaces/{AGENTS_NAMESPACE}/deployments/{agent_deployment_name(agent_id)}",
+            f"/api/v1/namespaces/{AGENTS_NAMESPACE}/services/{agent_service_name(agent_id)}",
+        ]:
+            await k8s_apply("DELETE", path)
+        await self._workspace.delete_agent_workspace(agent_id)
+        logger.info("Unregistered agent %s", agent_id)
+
+    async def _ensure_scaledobject(self, spec: AgentSpec) -> None:
+        manifest = build_scaledobject_manifest(
+            agent_id=spec.agent_id,
+            min_pods=spec.min_pods,
+            max_pods=spec.max_pods,
+            sessions_per_pod_target=settings.max_concurrent_sessions_per_pod,
+            idle_threshold_seconds=settings.session_idle_threshold_seconds,
+        )
+        try:
+            await apply_or_replace(
+                f"{_KEDA_GROUP}/namespaces/{AGENTS_NAMESPACE}/scaledobjects",
+                agent_scaledobject_name(spec.agent_id),
+                manifest,
+            )
+        except httpx.HTTPError:
+            logger.warning(
+                "KEDA ScaledObject apply failed for agent %s",
+                spec.agent_id, exc_info=True,
+            )
+
+    # ---- Activation ------------------------------------------------------
+
+    async def ensure_active(self, agent_id: str) -> None:
+        dep = await self._get_deployment(agent_id)
+        if dep is None:
+            return
+        replicas = dep.get("spec", {}).get("replicas", 0)
+        if replicas == 0:
+            await self.scale(agent_id, 1)
+
+    async def is_ready(self, agent_id: str) -> bool:
+        status = await self.get_status(agent_id)
+        return status.ready_replicas >= 1
+
+    async def wait_ready(self, agent_id: str, timeout_s: int) -> bool:
+        # Fargate cold start is 60-90s (micro-VM + image pull from ECR).
+        # Callers should pass a correspondingly generous timeout.
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            if await self.is_ready(agent_id):
+                return True
+            await asyncio.sleep(2)
+        return False
+
+    async def resolve_endpoint(self, agent_id: str) -> str:
+        svc = agent_service_name(agent_id)
+        return (
+            f"/api/v1/namespaces/{AGENTS_NAMESPACE}/services/"
+            f"{svc}:{RUNTIME_PORT}/proxy"
+        )
+
+    # ---- Admin ops -------------------------------------------------------
+
+    async def get_status(self, agent_id: str) -> DeploymentStatus:
+        dep = await self._get_deployment(agent_id)
+        if dep is None:
+            return DeploymentStatus(exists=False)
+        status = dep.get("status", {})
+        return DeploymentStatus(
+            exists=True,
+            replicas=status.get("replicas", 0) or 0,
+            ready_replicas=status.get("readyReplicas", 0) or 0,
+            updated_replicas=status.get("updatedReplicas", 0) or 0,
+        )
+
+    async def restart(self, agent_id: str) -> None:
+        await k8s_apply(
+            "PATCH",
+            f"/apis/apps/v1/namespaces/{AGENTS_NAMESPACE}/deployments/{agent_deployment_name(agent_id)}",
+            {
+                "spec": {
+                    "template": {
+                        "metadata": {
+                            "annotations": {"aviary/restartedAt": str(int(time.time()))}
+                        }
+                    }
+                }
+            },
+        )
+
+    async def scale(self, agent_id: str, replicas: int) -> None:
+        await k8s_apply(
+            "PATCH",
+            f"/apis/apps/v1/namespaces/{AGENTS_NAMESPACE}/deployments/{agent_deployment_name(agent_id)}",
+            {"spec": {"replicas": replicas}},
+        )
+
+    async def health(self) -> bool:
+        try:
+            await k8s_apply("GET", f"/api/v1/namespaces/{AGENTS_NAMESPACE}")
+            return True
+        except httpx.HTTPError:
+            return False
+
+    # ---- Internal --------------------------------------------------------
+
+    async def _get_deployment(self, agent_id: str) -> dict | None:
+        try:
+            return await k8s_apply(
+                "GET",
+                f"/apis/apps/v1/namespaces/{AGENTS_NAMESPACE}/deployments/{agent_deployment_name(agent_id)}",
+            )
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return None
+            raise
