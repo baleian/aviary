@@ -83,7 +83,7 @@ const MCP_GATEWAY_URL = process.env.MCP_GATEWAY_URL;
 function buildMcpServers(agentId: string, agentConfig: AgentConfig): Record<string, any> | undefined {
   const servers: Record<string, any> = {};
 
-  // Legacy stdio servers from ConfigMap / API
+  // Agent-declared MCP servers passed through from the API request body.
   if (agentConfig.mcp_servers) {
     Object.assign(servers, agentConfig.mcp_servers);
   }
@@ -146,7 +146,7 @@ export interface SSEChunk {
  *
  * Agent config is received from the API server (sourced from DB) on every
  * message, ensuring edits to instruction/tools take effect immediately
- * without Pod restart. Falls back to ConfigMap if not provided.
+ * without Pod restart.
  *
  * Yields SSE-formatted objects:
  *   {type: "chunk", content: "..."}

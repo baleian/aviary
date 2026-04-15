@@ -1,5 +1,5 @@
-// Mount points are coordinated with scripts/claude-sandbox.sh and
-// agent-supervisor/app/backends/k3s/manifests.py — keep them in sync.
+// Mount points are coordinated with scripts/claude-sandbox.sh and the pool
+// Deployment manifests at k8s/platform/pools/*.yaml — keep them in sync.
 
 import * as path from "node:path";
 

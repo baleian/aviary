@@ -1,10 +1,10 @@
 /**
  * Session registry + per-session mutex for the agent runtime.
  *
- * No hard concurrency cap — KEDA (on the supervisor side) triggers pod
- * scale-up when average active sessions per pod exceeds its target.
- * Transient overshoot during scale-up is accepted; new pods absorb
- * the next batch of sessions as they become Ready.
+ * Keyed by `${sessionId}/${agentId}` so a single pod can host sessions from
+ * many agents concurrently. No hard concurrency cap — pool-level scaling is
+ * owned by infra (KEDA on the pool Deployment); transient overshoot during
+ * scale-up is accepted.
  */
 
 import * as fs from "node:fs";

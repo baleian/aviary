@@ -1,10 +1,11 @@
 /**
- * Agent Runtime HTTP server — multi-session server that processes messages
+ * Agent Runtime HTTP server — multi-tenant server that processes messages
  * via Claude Agent SDK (TypeScript).
  *
- * Each session is isolated in its own workspace directory (/workspace/sessions/{session_id}/)
- * and serialized via per-session mutex locks to prevent concurrent SDK calls.
- * Filesystem isolation enforced by bubblewrap sandbox (see scripts/claude-sandbox.sh).
+ * A single pod hosts sessions from many agents. Requests carry `agent_id` +
+ * `session_id`; the session registry keys by the composite so concurrent
+ * sessions never collide. Filesystem isolation between sessions/agents is
+ * enforced by bubblewrap (see scripts/claude-sandbox.sh).
  */
 
 import * as fs from "node:fs";
@@ -19,10 +20,6 @@ app.use(express.json({ limit: "50mb" }));
 app.use(healthRouter);
 
 const manager = new SessionManager();
-// AGENT_ID env is the legacy fallback for requests that don't carry agent_id in
-// the body. Pool-model callers send agent_id per request; per-agent pods still
-// set it as env. When neither is available the /message handler returns 400.
-const FALLBACK_AGENT_ID = process.env.AGENT_ID;
 
 // Track active AbortControllers per session for cancellation support
 const activeAbortControllers = new Map<string, AbortController>();
@@ -40,7 +37,7 @@ interface ContentPart {
 interface MessageRequestBody {
   content_parts: ContentPart[];
   session_id: string;
-  agent_id?: string;
+  agent_id: string;
   model_config_data?: Record<string, unknown> | null;
   agent_config: Record<string, unknown>;
   output_format?: { type: "json_schema"; schema: Record<string, unknown> };
@@ -49,18 +46,19 @@ interface MessageRequestBody {
 app.post("/message", async (req, res) => {
   const body = req.body as MessageRequestBody;
 
-  if (!body.content_parts?.length || !body.session_id || !body.agent_config) {
-    res.status(400).json({ error: "content_parts, session_id, and agent_config are required" });
+  if (
+    !body.content_parts?.length ||
+    !body.session_id ||
+    !body.agent_id ||
+    !body.agent_config
+  ) {
+    res.status(400).json({
+      error: "content_parts, session_id, agent_id, and agent_config are required",
+    });
     return;
   }
 
-  const agentId = body.agent_id ?? FALLBACK_AGENT_ID;
-  if (!agentId) {
-    res.status(400).json({ error: "agent_id is required (body.agent_id or AGENT_ID env)" });
-    return;
-  }
-
-  const entry = manager.getOrCreate(body.session_id, agentId);
+  const entry = manager.getOrCreate(body.session_id, body.agent_id);
 
   // SSE headers
   res.setHeader("Content-Type", "text/event-stream");
@@ -84,7 +82,7 @@ app.post("/message", async (req, res) => {
   try {
     for await (const chunk of processMessage(
       body.session_id,
-      agentId,
+      body.agent_id,
       body.content_parts,
       body.model_config_data as any,
       body.agent_config as any,
@@ -99,7 +97,7 @@ app.post("/message", async (req, res) => {
     release();
     // Release slot immediately — workspace files are preserved for resume.
     // Next message will re-acquire a slot via getOrCreate().
-    manager.remove(body.session_id, agentId, false);
+    manager.remove(body.session_id, body.agent_id, false);
   }
 
   if (!res.writableEnded) {
@@ -126,17 +124,17 @@ app.get("/sessions", (_req, res) => {
   });
 });
 
-function resolveAgentId(req: express.Request, res: express.Response): string | null {
-  const agentId = (req.query.agent_id as string | undefined) ?? FALLBACK_AGENT_ID;
+function requireAgentId(req: express.Request, res: express.Response): string | null {
+  const agentId = req.query.agent_id as string | undefined;
   if (!agentId) {
-    res.status(400).json({ error: "agent_id is required (?agent_id= or AGENT_ID env)" });
+    res.status(400).json({ error: "agent_id query parameter is required" });
     return null;
   }
   return agentId;
 }
 
 app.delete("/sessions/:sessionId", (req, res) => {
-  const agentId = resolveAgentId(req, res);
+  const agentId = requireAgentId(req, res);
   if (!agentId) return;
   const removed = manager.remove(req.params.sessionId, agentId, true);
   if (!removed) {
@@ -147,7 +145,7 @@ app.delete("/sessions/:sessionId", (req, res) => {
 });
 
 app.delete("/sessions/:sessionId/workspace", (req, res) => {
-  const agentId = resolveAgentId(req, res);
+  const agentId = requireAgentId(req, res);
   if (!agentId) return;
   const { sessionId } = req.params;
   const claudeDir = `${WORKSPACE_ROOT}/.claude/${sessionId}`;
@@ -163,32 +161,17 @@ app.delete("/sessions/:sessionId/workspace", (req, res) => {
   res.json({ status: "cleaned", session_id: sessionId });
 });
 
-app.get("/metrics", (_req, res) => {
-  res.json({
-    sessions_active: manager.activeCount,
-    sessions_streaming: manager.activeCount,
-  });
-});
-
-app.post("/shutdown", (_req, res) => {
-  setReady(false);
-  res.json({
-    status: "shutting_down",
-    streaming_sessions: manager.activeCount,
-  });
-});
-
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 const server = app.listen(PORT, "0.0.0.0", () => {
   console.log(`Aviary Runtime listening on :${PORT}`);
 });
 
 // Graceful shutdown.
-// Pod spec sets terminationGracePeriodSeconds=600 (see agent-supervisor
-// manifest builder); we wait up to 570s for in-flight Claude turns to
-// finish, leaving a 30s buffer before K8s SIGKILLs. `setReady(false)` makes
-// /ready return 503 so kube-proxy removes this pod from the Service's
-// endpoints — new messages route elsewhere while we drain.
+// Pool Deployment (k8s/platform/pools/*.yaml) sets terminationGracePeriodSeconds=600;
+// we wait up to 570s for in-flight Claude turns to finish, leaving a 30s buffer
+// before K8s SIGKILLs. `setReady(false)` makes /ready return 503 so kube-proxy
+// removes this pod from the Service's endpoints — new messages route elsewhere
+// while we drain.
 const GRACEFUL_SHUTDOWN_MS = 570_000;
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.on(signal, async () => {
