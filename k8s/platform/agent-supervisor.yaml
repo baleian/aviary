@@ -1,10 +1,16 @@
-# Supervisor itself runs in docker-compose, not in K3s. This file exists
-# only to provision the ServiceAccount whose token docker-compose mounts
-# into the supervisor container, plus the RBAC that lets the SA proxy
-# HTTP calls into pool Services via the K8s API.
+# agent-supervisor — streaming proxy + Redis publisher.
 #
-# In production (EKS) the supervisor runs as a Pod with auto-mounted SA
-# credentials; this file is local-dev-only.
+# Runs as a Pod inside K3s (local) / EKS (prod) so its network topology
+# matches runtime pools exactly: direct Service DNS, no k8s-proxy hop,
+# NetworkPolicy and TCP FIN propagation behave the same in both environments.
+#
+# Local dev mounts source from the docker host via the K3s container's
+# /src/agent-supervisor bind-mount (see docker-compose.yml k8s service).
+# uvicorn --reload watches the hostPath; editing ./agent-supervisor on the
+# host hot-reloads the pod without rebuilding the image.
+#
+# ${HOST_GATEWAY_IP} is substituted by setup-dev.sh at apply time (used to
+# reach host services: Redis, Postgres, LiteLLM, MCP Gateway).
 
 apiVersion: v1
 kind: ServiceAccount
@@ -12,24 +18,97 @@ metadata:
   name: agent-supervisor
   namespace: agents
 ---
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+apiVersion: apps/v1
+kind: Deployment
 metadata:
-  name: aviary-agent-supervisor
-rules:
-  - apiGroups: [""]
-    resources: [services/proxy]
-    verbs: [get, create]
+  name: agent-supervisor
+  namespace: agents
+  labels:
+    aviary/service: agent-supervisor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      aviary/service: agent-supervisor
+  template:
+    metadata:
+      labels:
+        aviary/service: agent-supervisor
+    spec:
+      serviceAccountName: agent-supervisor
+      hostAliases:
+        - ip: "${HOST_GATEWAY_IP}"
+          hostnames: ["host.k8s.internal"]
+      containers:
+        - name: agent-supervisor
+          image: aviary-agent-supervisor:latest
+          imagePullPolicy: Never
+          # Invoke uvicorn directly rather than via entrypoint.sh — the script
+          # comes from the hostPath mount, and host exec bits don't always
+          # survive the docker/k3s volume chain (esp. WSL).
+          workingDir: /workspace/agent-supervisor
+          command: ["uvicorn"]
+          args: ["app.main:app", "--host", "0.0.0.0", "--port", "9000", "--reload", "--no-access-log"]
+          ports:
+            - containerPort: 9000
+              name: http
+          env:
+            - name: REDIS_URL
+              value: "redis://host.k8s.internal:6379/0"
+            - name: AGENTS_NAMESPACE
+              value: "agents"
+            - name: RUNTIME_POOL_PORT
+              value: "3000"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # Docker host → k3s container → pod hostPath chain doesn't
+            # always propagate inotify events (especially on WSL/macOS).
+            # Polling is slower but reliable.
+            - name: WATCHFILES_FORCE_POLLING
+              value: "true"
+          volumeMounts:
+            # Bind-mounted source from docker host (see docker-compose.yml).
+            # Keeps uvicorn --reload hot-reload working without image rebuilds.
+            - { name: source, mountPath: /workspace/agent-supervisor }
+            - { name: shared-source, mountPath: /workspace/shared }
+          livenessProbe:
+            httpGet: { path: /health, port: 9000 }
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet: { path: /health, port: 9000 }
+            initialDelaySeconds: 3
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
+      volumes:
+        - name: source
+          hostPath:
+            path: /src/agent-supervisor
+            type: Directory
+        - name: shared-source
+          hostPath:
+            path: /src/shared
+            type: Directory
 ---
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+apiVersion: v1
+kind: Service
 metadata:
-  name: aviary-agent-supervisor
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: aviary-agent-supervisor
-subjects:
-  - kind: ServiceAccount
-    name: agent-supervisor
-    namespace: agents
+  name: agent-supervisor
+  namespace: agents
+  labels:
+    aviary/service: agent-supervisor
+spec:
+  # NodePort so api/admin in docker-compose can reach it at k8s:30900.
+  # Prod (EKS with api/admin in-cluster) switches to plain ClusterIP.
+  type: NodePort
+  selector:
+    aviary/service: agent-supervisor
+  ports:
+    - name: http
+      port: 9000
+      targetPort: 9000
+      nodePort: 30900
+      protocol: TCP

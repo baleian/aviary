@@ -20,10 +20,6 @@ BUILD_ARGS=()
 [ -n "${UV_INDEX_URL:-}" ]        && BUILD_ARGS+=(--build-arg "UV_INDEX_URL=$UV_INDEX_URL")
 [ -n "${NPM_CONFIG_REGISTRY:-}" ] && BUILD_ARGS+=(--build-arg "NPM_CONFIG_REGISTRY=$NPM_CONFIG_REGISTRY")
 
-# Prepare the supervisor SA credential directory so docker-compose's read-only
-# bind-mount target exists before `docker compose up` (setup populates it later).
-mkdir -p "$PROJECT_DIR/config/agent-supervisor"
-
 # 1. Build and start all Docker Compose services
 echo "[1/7] Building and starting Docker Compose services..."
 docker compose up -d --build
@@ -53,19 +49,26 @@ echo "  K8s is ready."
 K8S_GATEWAY_IP=$(docker compose exec -T k8s ip route | awk '/default/ {print $3}' | head -1)
 echo "  K8s gateway IP: $K8S_GATEWAY_IP"
 
-# 5. Build the runtime image and load it into K3s. K3s in local dev only hosts
-# runtime pool pods — supervisor/api/admin all run in docker-compose.
-echo "[5/7] Building runtime image..."
-docker build "${BUILD_ARGS[@]}" -t aviary-runtime:latest ./runtime/
+# 5. Build K3s images (runtime + supervisor) and load them.
+# K3s hosts both: pool pods for agent runtimes + the supervisor Deployment.
+# Supervisor source is bind-mounted from host via k3s /src → uvicorn --reload
+# picks up code edits without image rebuilds (deps-only changes still need rebuild).
+echo "[5/7] Building K3s images (runtime, agent-supervisor)..."
+docker build "${BUILD_ARGS[@]}" -t aviary-runtime:latest          ./runtime/
+docker build "${BUILD_ARGS[@]}" -t aviary-agent-supervisor:latest -f agent-supervisor/Dockerfile .
 
-echo "  Loading runtime image into K8s..."
-docker save aviary-runtime:latest | docker compose exec -T k8s ctr images import -
-echo "  Runtime image loaded."
+echo "  Loading images into K8s..."
+docker save aviary-runtime:latest aviary-agent-supervisor:latest \
+  | docker compose exec -T k8s ctr images import -
+echo "  Images loaded."
 
-# 6. Apply K8s manifests and extract a supervisor SA token.
+# 6. Apply K8s manifests.
 echo "[6/7] Applying K8s resources..."
 docker compose exec -T k8s kubectl apply -f - < ./k8s/platform/namespace.yaml
-docker compose exec -T k8s kubectl apply -f - < ./k8s/platform/agent-supervisor.yaml
+
+HOST_GATEWAY_IP="$K8S_GATEWAY_IP" envsubst '${HOST_GATEWAY_IP}' \
+  < ./k8s/platform/agent-supervisor.yaml \
+  | docker compose exec -T k8s kubectl apply -f -
 
 # Pool catalog — infra-team-owned runtime pools.
 # `_shared-workspace.yaml` sorts first (leading `_`), so the PVC exists before
@@ -80,19 +83,9 @@ done
 docker compose exec -T k8s sh -c \
   'mkdir -p /var/lib/aviary/agent-platform && chown 1000:1000 /var/lib/aviary/agent-platform'
 
-# Provision supervisor SA credentials for docker-compose. `kubectl create token`
-# issues a short-ish TGT-style token; 8760h = one year is plenty for local dev.
-echo "  Extracting agent-supervisor ServiceAccount token..."
-docker compose exec -T k8s kubectl create token agent-supervisor -n agents --duration=8760h \
-  > "$PROJECT_DIR/config/agent-supervisor/token"
-docker compose exec -T k8s cat /var/lib/rancher/k3s/server/tls/server-ca.crt \
-  > "$PROJECT_DIR/config/agent-supervisor/ca.crt"
-# supervisor container reads these via read-only bind-mount; restart it so the
-# new token is picked up on the next `new_k8s_client()` call (file read is lazy
-# but restart guarantees a clean state).
-docker compose restart agent-supervisor > /dev/null
-echo "  Supervisor credentials written; service restarted."
-
+# Rollout restart so pods pick up freshly loaded images.
+docker compose exec -T k8s kubectl rollout restart deployment -n agents \
+  agent-supervisor 2>/dev/null || true
 docker compose exec -T k8s kubectl rollout restart deployment -n agents \
   -l aviary/role=agent-runtime 2>/dev/null || true
 echo "  agents namespace ready."
@@ -129,7 +122,7 @@ echo "  API Server:        http://localhost:8000"
 echo "  API Health:        http://localhost:8000/api/health"
 echo ""
 echo "Platform Services:"
-echo "  Agent Supervisor:  http://localhost:9000  (docker-compose)"
+echo "  Agent Supervisor:  http://localhost:9000  (K3s NodePort -> agents/agent-supervisor)"
 echo "  LiteLLM Gateway:   http://localhost:8090"
 echo "  MCP Gateway:       http://localhost:8100"
 echo ""
@@ -138,7 +131,7 @@ echo "  PostgreSQL:  localhost:5432  (aviary/aviary)"
 echo "  Redis:       localhost:6379"
 echo "  Keycloak:    http://localhost:8080  (admin/admin)"
 echo "  Vault:       http://localhost:8200  (token: dev-root-token)"
-echo "  K8s API:     https://localhost:6443  (hosts runtime pool pods only)"
+echo "  K8s API:     https://localhost:6443  (hosts supervisor + runtime pool pods)"
 echo ""
 echo "Test users (Keycloak):"
 echo "  admin@test.com / password  (platform_admin, team: engineering)"
@@ -146,11 +139,13 @@ echo "  user1@test.com / password  (regular_user,   team: engineering, product)"
 echo "  user2@test.com / password  (regular_user,   team: data-science)"
 echo ""
 echo "Hot reload:"
-echo "  Edit files in api/, web/, admin/, or agent-supervisor/"
-echo "  — changes apply automatically via bind-mount."
-echo "  If you change dependencies:"
-echo "    docker compose up -d --build <service>"
-echo "  To rebuild the runtime image (after runtime/ changes):"
+echo "  Edit files in api/, web/, admin/                — reload via docker bind-mount."
+echo "  Edit files in agent-supervisor/                 — reload via k3s hostPath mount."
+echo "  Edit files in runtime/                          — requires image rebuild:"
 echo "    docker build -t aviary-runtime:latest ./runtime/"
 echo "    docker save aviary-runtime:latest | docker compose exec -T k8s ctr images import -"
 echo "    docker compose exec -T k8s kubectl rollout restart deployment -n agents -l aviary/role=agent-runtime"
+echo "  Dependency changes in agent-supervisor/         — rebuild + reload the image:"
+echo "    docker build -t aviary-agent-supervisor:latest -f agent-supervisor/Dockerfile ."
+echo "    docker save aviary-agent-supervisor:latest | docker compose exec -T k8s ctr images import -"
+echo "    docker compose exec -T k8s kubectl rollout restart deployment -n agents agent-supervisor"

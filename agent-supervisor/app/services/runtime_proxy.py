@@ -41,25 +41,17 @@ def _pool_service_name(pool_name: str) -> str:
     return f"env-{pool_name}"
 
 
+def _pool_base_url(pool_name: str) -> str:
+    service = _pool_service_name(pool_name)
+    return f"http://{service}.{settings.agents_namespace}.svc:{settings.runtime_pool_port}"
+
+
 @asynccontextmanager
 async def _open_stream(
     pool_name: str, subpath: str, body: dict,
 ) -> AsyncIterator[httpx.Response]:
-    """Yield an httpx streaming response to the pool Service, regardless of mode."""
-    service = _pool_service_name(pool_name)
-    if settings.runtime_pool_endpoint_mode == "k8s-proxy":
-        from app.services.k8s_proxy import new_k8s_client, service_proxy_path
-
-        path = service_proxy_path(
-            settings.agents_namespace, service, settings.runtime_pool_port, subpath,
-        )
-        async with new_k8s_client(timeout=None) as client:
-            async with client.stream("POST", path, json=body, timeout=None) as resp:
-                yield resp
-        return
-
-    # direct-dns (default, in-cluster)
-    base = f"http://{service}.{settings.agents_namespace}.svc:{settings.runtime_pool_port}"
+    """Yield an httpx streaming response to the pool Service via in-cluster DNS."""
+    base = _pool_base_url(pool_name)
     async with httpx.AsyncClient(timeout=None) as client:
         async with client.stream("POST", f"{base}/{subpath.lstrip('/')}", json=body) as resp:
             yield resp
@@ -231,21 +223,11 @@ async def abort_session(*, pool_name: str, session_id: str) -> dict:
 
 async def cleanup_session(*, pool_name: str, session_id: str, agent_id: str) -> dict:
     """Tell the pool pod to delete this session's workspace subtree."""
-    service = _pool_service_name(pool_name)
-    subpath = f"/sessions/{session_id}/workspace?agent_id={agent_id}"
+    base = _pool_base_url(pool_name)
+    url = f"{base}/sessions/{session_id}/workspace?agent_id={agent_id}"
     try:
-        if settings.runtime_pool_endpoint_mode == "k8s-proxy":
-            from app.services.k8s_proxy import new_k8s_client, service_proxy_path
-
-            path = service_proxy_path(
-                settings.agents_namespace, service, settings.runtime_pool_port, subpath,
-            )
-            async with new_k8s_client(timeout=settings.runtime_pool_request_timeout) as client:
-                resp = await client.delete(path)
-        else:
-            base = f"http://{service}.{settings.agents_namespace}.svc:{settings.runtime_pool_port}"
-            async with httpx.AsyncClient(timeout=settings.runtime_pool_request_timeout) as client:
-                resp = await client.delete(f"{base}{subpath}")
+        async with httpx.AsyncClient(timeout=settings.runtime_pool_request_timeout) as client:
+            resp = await client.delete(url)
         return {"ok": True, "status": resp.status_code}
     except httpx.HTTPError:
         logger.info(
