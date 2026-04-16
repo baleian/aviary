@@ -25,6 +25,14 @@ runtime:
   aviaryAPIURL: "http://host.k8s.internal:8000/api"
   internalAPIKey: "sk-aviary-internal"
 
+# How the supervisor (running outside k3s in dev) reaches this env's runtime
+# pods. Dev: NodePort on the k3s container — supervisor hits `http://k8s:<port>`.
+# Prod: ClusterIP (supervisor runs in-cluster or the env is behind an LB).
+service:
+  type: NodePort
+  # Fix per-env. Override for additional environments so they don't clash.
+  nodePort: 30300
+
 # Host IP seen from inside the cluster — used for the runtime's hostAliases
 # entry so it can reach docker-compose services via host.k8s.internal.
 hostGatewayIP: ""

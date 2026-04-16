@@ -74,7 +74,11 @@ async def test_publish_streams_events_to_redis(client):
          ]):
         resp = client.post(
             "/v1/sessions/s1/publish",
-            json={"runtime_endpoint": None, "content_parts": [{"text": "hi"}]},
+            json={
+                "runtime_endpoint": None,
+                "content_parts": [{"text": "hi"}],
+                "agent_config": {"agent_id": "a1"},
+            },
         )
 
     assert resp.status_code == 200
@@ -99,7 +103,10 @@ async def test_publish_reports_runtime_error_event(client):
          patch("app.routers.agents.redis_client.append_stream_chunk", new_callable=AsyncMock), \
          patch("app.routers.agents.redis_client.publish_message", new_callable=AsyncMock), \
          patch("app.routers.agents.redis_client.set_stream_status", new_callable=AsyncMock) as set_status:
-        resp = client.post("/v1/sessions/s1/publish", json={})
+        resp = client.post(
+            "/v1/sessions/s1/publish",
+            json={"agent_config": {"agent_id": "a1"}},
+        )
 
     data = resp.json()
     assert data["status"] == "error"
@@ -113,9 +120,21 @@ async def test_publish_reports_http_error_before_runtime(client):
     resp_obj = _FakeSSEResponse(["error body"], status_code=500)
     with patch("httpx.AsyncClient", return_value=_FakeClient(resp_obj)), \
          patch("app.routers.agents.redis_client.set_stream_status", new_callable=AsyncMock) as set_status:
-        resp = client.post("/v1/sessions/s1/publish", json={})
+        resp = client.post(
+            "/v1/sessions/s1/publish",
+            json={"agent_config": {"agent_id": "a1"}},
+        )
 
     data = resp.json()
     assert data["status"] == "error"
     assert data["reached_runtime"] is False
     set_status.assert_awaited_with("s1", "error")
+
+
+@pytest.mark.asyncio
+async def test_abort_unknown_session_returns_not_found(client):
+    resp = client.post("/v1/sessions/unknown/abort", json={"agent_id": "a1"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is False
+    assert data["reason"] == "not_found"

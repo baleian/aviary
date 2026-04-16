@@ -4,7 +4,7 @@
 
 [한국어](./README.ko.md)
 
-Aviary is an enterprise platform where users create, configure, and chat with purpose-built AI agents through a web UI. Runtime environments are pre-provisioned as Helm releases (one Deployment pool per environment); every agent shares the pool, isolated at the kernel level via bubblewrap and at the network level via a baseline NetworkPolicy plus optional per-environment rules.
+Aviary is an enterprise platform where users create, configure, and chat with purpose-built AI agents through a web UI. Runtime environments are pre-provisioned as Helm releases (one Deployment pool per environment) in the Kubernetes cluster; every other service — API, admin console, agent supervisor — ships through the normal deploy unit (docker-compose in dev, whatever your platform uses in prod). Agents are isolated at the kernel level via bubblewrap and at the network level via a baseline NetworkPolicy plus optional per-environment rules.
 
 ## Architecture
 
@@ -52,28 +52,29 @@ Aviary is an enterprise platform where users create, configure, and chat with pu
     │   └──────────────────────────────────────────────┘
     │
     │   ┌────────────────────────────────────────────────────────┐
+    │   │    Agent Supervisor (docker-compose, not in K8s)       │
+    │   │      SSE reverse proxy · Redis publish · assemble       │
+    │   │      in-memory abort registry · /metrics               │
+    │   │      (caller passes runtime_endpoint per request)      │
+    │   └───────────────────────┬────────────────────────────────┘
+    │                           │ HTTP via env Service (NodePort dev / ClusterIP prod)
+    │   ┌───────────────────────▼────────────────────────────────┐
     │   │                   Kubernetes Cluster                    │
     │   │          (local: K3s · prod: EKS, via Helm)             │
     │   │                                                        │
-    │   │  ┌─── NS: platform ──────────────────────────────────┐ │
-    │   │  │ Agent Supervisor (stateless)                      │ │
-    │   │  │   SSE proxy · Redis publish · /metrics            │ │
-    │   │  │   (caller injects runtime_endpoint in each req)   │ │
-    │   │  └────────────────────────────────────────────────────┘ │
-    │   │                                                        │
-    │   │  ┌─── NS: agents ────────────────────────────────────┐  │
-    │   │  │ baseline NetworkPolicy (DNS + platform +          │  │
-    │   │  │   LiteLLM + MCP GW + API)                         │  │
-    │   │  │                                                   │  │
-    │   │  │ Env release: aviary-env-default                   │  │
-    │   │  │   Deployment (replicas ≥ 1) · Service · RWX PVC   │  │
-    │   │  │   runtime pool serves every agent                 │  │
-    │   │  │   bwrap sandbox · shared session dir ·            │  │
-    │   │  │   per-(agent,session) .claude and .venv           │  │
-    │   │  │                                                   │  │
-    │   │  │ Env release: aviary-env-custom-* (optional)       │  │
-    │   │  │   Same shape, independent pool + extraEgress      │  │
-    │   │  └───────────────────────────────────────────────────┘  │
+    │   │  ┌─── NS: agents ────────────────────────────────────┐ │
+    │   │  │ baseline NetworkPolicy (DNS + platform +          │ │
+    │   │  │   LiteLLM + MCP GW + API)                         │ │
+    │   │  │                                                   │ │
+    │   │  │ Env release: aviary-env-default                   │ │
+    │   │  │   Deployment (replicas ≥ 1) · Service · RWX PVC   │ │
+    │   │  │   runtime pool serves every agent                 │ │
+    │   │  │   bwrap sandbox · shared session dir ·            │ │
+    │   │  │   per-(agent,session) .claude and .venv           │ │
+    │   │  │                                                   │ │
+    │   │  │ Env release: aviary-env-custom-* (optional)       │ │
+    │   │  │   Same shape, independent pool + extraEgress      │ │
+    │   │  └───────────────────────────────────────────────────┘ │
     │   └─────────────────────────────────────────────────────────┘
     │
     └─▶ PostgreSQL · Redis · Keycloak · Vault
@@ -82,7 +83,8 @@ Aviary is an enterprise platform where users create, configure, and chat with pu
 ## Key Features
 
 - **Pre-Provisioned Runtime Environments** — Helm releases of `charts/aviary-environment` stand up the runtime pool declaratively; no per-agent Deployments, no cold starts. Environments are always on.
-- **Stateless Reverse SSE Proxy** — Agent Supervisor has zero infra responsibilities: every caller (API, future Temporal worker, batch jobs) passes `runtime_endpoint` in the request body, the supervisor forwards SSE, publishes to Redis, assembles the final message, and emits Prometheus metrics.
+- **Supervisor Outside K8s** — Agent Supervisor ships through the normal deploy unit alongside API/Admin (docker-compose in dev). It reaches runtime pools via a regular Service endpoint; the only thing running in K8s is the agent runtime pool (GitOps range ≈ K8s range).
+- **Connection-Close Abort** — Supervisor holds an in-memory registry of active publish tasks; aborting cancels the task, which closes the Service-pinned TCP stream to the runtime pod, which fires its close handler and aborts the SDK. No pod-IP tracking, no Redis signal, no runtime-side Redis dependency.
 - **Per-Agent Endpoint Override** — Agents share the default environment by default; the Admin Console sets `runtime_endpoint` on an agent to route it to a dedicated custom environment (e.g. a GPU pool, isolated SG) — no code change needed, no DB migration.
 - **Agent-Agnostic Runtime Pool** — Every pod in an environment serves every agent; `agent_id` arrives per-request in `agent_config`. Isolation comes from on-disk paths (`sessions/{sid}/agents/{aid}/…`) plus bubblewrap, not per-agent pods.
 - **Bubblewrap Session Isolation** — Each request runs inside a kernel-level mount namespace; agents in the same session share `/workspace` for file exchange (A2A), while `.claude/` and `.venv/` are per-(agent, session).
@@ -182,8 +184,11 @@ cd agent-supervisor && uv run pytest tests/ -v
 
 ## Key Design Decisions
 
-### Stateless Supervisor, Endpoint Injection
-The supervisor owns no DB connection and no K8s API access. Every caller (today the API server; tomorrow a Temporal worker or batch job) looks up `agent.runtime_endpoint` and passes it in the publish request body. Null falls back to a Helm-configured default environment. This keeps the supervisor reusable across orchestration paths without code changes.
+### Supervisor Outside K8s, Endpoint Injection
+The supervisor ships through the normal deploy unit alongside API/Admin (docker-compose in dev) — not a K8s workload. It owns no DB connection and no K8s API access. Every caller (today the API server; tomorrow a Temporal worker or batch job) looks up `agent.runtime_endpoint` and passes it in the publish request body. Null falls back to a configured default (dev: `http://k8s:30300`, the K3s NodePort for the default env; prod: env Service DNS or LB URL). The only thing in K8s/GitOps scope is the runtime pool.
+
+### Abort Without Pod Routing
+kube-proxy load-balances at connect time, so the supervisor → runtime TCP connection is pinned to one pod for its lifetime. The supervisor keeps an in-memory registry of active publish tasks and implements abort as `task.cancel()`: the httpx context exits, TCP closes, the runtime pod's close handler fires, and the SDK aborts. No direct pod addressing, no Redis on the runtime side, no special K8s positioning required.
 
 ### Helm-Declared Environments
 Runtime infrastructure lives entirely in `charts/aviary-environment`. Spinning up a new environment = `helm template | kubectl apply`. Local dev differs from production only in a values file (hostPath vs. EFS, NodePort vs. LoadBalancer). There are no dynamic K8s operations in application code.

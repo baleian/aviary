@@ -4,31 +4,12 @@ platformNamespace: platform
 agentsNamespace: agents
 
 # Host IP seen from inside the cluster. Must resolve to the docker-compose
-# bridge (dev) or the VPC NAT/ALB IP (prod). Set via --set hostGatewayIP=...
-# in the dev bootstrap; overridden in values-prod.yaml for EKS.
+# bridge (dev) or the VPC NAT/ALB IP (prod).
 hostGatewayIP: ""
 
-supervisor:
-  enabled: true
-  image: aviary-agent-supervisor:latest
-  imagePullPolicy: Never
-  replicas: 1
-  nodePort: 30900
-  redisURL: "redis://host.k8s.internal:6379/0"
-  # Default runtime endpoint used when an agent's runtime_endpoint is NULL.
-  defaultRuntimeEndpoint: "http://aviary-env-default.agents.svc:3000"
-  metricsEnabled: true
-  resources:
-    requests:
-      cpu: "100m"
-      memory: "128Mi"
-    limits:
-      cpu: "500m"
-      memory: "256Mi"
-
-# NetworkPolicy enforced on every pod labeled aviary/role=agent-runtime
-# in the agents namespace. Agents always see this in addition to any extra
-# rules an environment opts into via egressProfiles.
+# NetworkPolicy enforced on every pod labeled aviary/role=agent-runtime in the
+# agents namespace. Agents always see this in addition to any extra rules an
+# environment opts into via extraEgress.
 baselineEgress:
   enabled: true
   allowHostGatewayPorts:

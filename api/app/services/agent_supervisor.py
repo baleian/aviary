@@ -40,13 +40,12 @@ async def publish_stream(session_id: str, body: dict) -> dict:
 async def abort_session(
     session_id: str,
     agent_id: str | None = None,
-    runtime_endpoint: str | None = None,
 ) -> None:
     """Best-effort abort. Racy with normal completion."""
     try:
         resp = await _supervisor.client.post(
             f"/v1/sessions/{session_id}/abort",
-            json={"agent_id": agent_id, "runtime_endpoint": runtime_endpoint},
+            json={"agent_id": agent_id},
             timeout=5,
         )
         resp.raise_for_status()

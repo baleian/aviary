@@ -1,12 +1,19 @@
 """Session-centric API used by the API server and future orchestrators.
 
-The supervisor is stateless: the caller supplies `runtime_endpoint` in the
-request body (null → configured default). The supervisor proxies SSE,
-publishes each event to Redis, and returns an assembled final message.
+The supervisor is stateless from the DB's point of view but keeps an
+in-memory registry of active publish handlers so that aborts cancel the
+right stream. Abort propagation uses HTTP connection closure:
+
+    API cancels httpx → supervisor's outbound stream task cancel →
+    httpx client closes TCP → runtime pod's req.on("close") fires → SDK abort.
+
+No direct pod-to-pod routing needed; the Service load-balanced TCP
+connection is pod-pinned for its lifetime.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -22,6 +29,24 @@ from app.routing import resolve_runtime_base
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# (session_id, agent_id) → running publish task. Used by abort to cancel.
+# If the same session+agent publishes again before the previous is cancelled,
+# the previous task is cancelled first.
+_active: dict[tuple[str, str | None], asyncio.Task] = {}
+_DISCONNECT_POLL_SECONDS = 0.5
+
+
+def _registry_key(session_id: str, agent_id: str | None) -> tuple[str, str | None]:
+    return (session_id, agent_id)
+
+
+async def _watch_disconnect(request: Request) -> None:
+    """Return when the client closes its side of the HTTP connection."""
+    while True:
+        if await request.is_disconnected():
+            return
+        await asyncio.sleep(_DISCONNECT_POLL_SECONDS)
 
 
 @router.post("/sessions/{session_id}/message")
@@ -59,13 +84,11 @@ async def proxy_session_message(session_id: str, request: Request):
     )
 
 
-@router.post("/sessions/{session_id}/publish")
-async def publish_session_message(session_id: str, request: Request):
-    """Consume runtime SSE → Redis (for WS broadcast + replay buffer) →
-    return the assembled final message to the caller."""
-    body = await request.json()
+async def _do_publish(
+    session_id: str, body: dict,
+) -> dict:
+    """Stream SSE from runtime, publish each event to Redis, assemble final."""
     base = resolve_runtime_base(body.get("runtime_endpoint"))
-
     reached_runtime = False
     error_message: str | None = None
     started = time.monotonic()
@@ -98,8 +121,7 @@ async def publish_session_message(session_id: str, request: Request):
         logger.exception("SSE proxy error for session %s", session_id)
         error_message = f"Agent runtime connection failed: {e}"
 
-    publish_duration = time.monotonic() - started
-    metrics.publish_duration_seconds.observe(publish_duration)
+    metrics.publish_duration_seconds.observe(time.monotonic() - started)
 
     if error_message:
         metrics.publish_requests_total.labels(status="error").inc()
@@ -120,24 +142,79 @@ async def publish_session_message(session_id: str, request: Request):
     }
 
 
+@router.post("/sessions/{session_id}/publish")
+async def publish_session_message(session_id: str, request: Request):
+    """Consume runtime SSE → Redis (for WS broadcast + replay buffer) → return
+    the assembled final message to the caller.
+
+    Two ways this handler terminates:
+      1. Runtime stream completes → normal response.
+      2. Abort: either the caller disconnects (race below) or a sibling
+         /abort call cancels our publish task. In both cases the outbound
+         httpx stream context exits, which closes the TCP connection to the
+         specific runtime pod, which triggers its close-event handler and
+         aborts the SDK.
+    """
+    body = await request.json()
+    agent_id = (body.get("agent_config") or {}).get("agent_id")
+    key = _registry_key(session_id, agent_id)
+
+    # If another publish is in flight for this session/agent, cancel it first.
+    prior = _active.get(key)
+    if prior and not prior.done():
+        logger.warning("Cancelling in-flight publish for %s/%s", session_id, agent_id)
+        prior.cancel()
+
+    publish_task = asyncio.create_task(_do_publish(session_id, body))
+    disconnect_task = asyncio.create_task(_watch_disconnect(request))
+    _active[key] = publish_task
+
+    try:
+        done, pending = await asyncio.wait(
+            [publish_task, disconnect_task],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for t in pending:
+            t.cancel()
+
+        if publish_task in done:
+            try:
+                return publish_task.result()
+            except asyncio.CancelledError:
+                await redis_client.set_stream_status(session_id, "error")
+                metrics.publish_requests_total.labels(status="aborted").inc()
+                return {"status": "aborted", "reached_runtime": False}
+
+        # Caller disconnected: publish_task is now cancelled.
+        await redis_client.set_stream_status(session_id, "error")
+        metrics.publish_requests_total.labels(status="disconnected").inc()
+        return {"status": "disconnected", "reached_runtime": False}
+    finally:
+        # Best-effort cleanup. Whatever is cancelled should settle before we pop.
+        for t in (publish_task, disconnect_task):
+            if not t.done():
+                t.cancel()
+        _active.pop(key, None)
+
+
 class _AbortBody(BaseModel):
-    runtime_endpoint: str | None = None
     agent_id: str | None = None
 
 
 @router.post("/sessions/{session_id}/abort")
 async def abort_session(session_id: str, body: _AbortBody):
-    base = resolve_runtime_base(body.runtime_endpoint)
-    try:
-        async with httpx.AsyncClient() as client:
-            payload = {"agent_id": body.agent_id} if body.agent_id else {}
-            resp = await client.post(
-                f"{base}/abort/{session_id}", json=payload, timeout=5,
-            )
-            return {"ok": True, "status": resp.status_code}
-    except httpx.HTTPError:
-        logger.warning("Abort failed for session %s", session_id, exc_info=True)
-        return {"ok": False, "reason": "runtime_not_reachable"}
+    """Cancel the in-flight publish task for (session_id, agent_id).
+
+    Cancelling the task closes the supervisor → runtime TCP connection,
+    which fires the runtime pod's `req.on('close')` handler and aborts the
+    SDK query. No HTTP forward to the runtime required.
+    """
+    key = _registry_key(session_id, body.agent_id)
+    task = _active.get(key)
+    if not task or task.done():
+        return {"ok": False, "reason": "not_found"}
+    task.cancel()
+    return {"ok": True}
 
 
 class _CleanupBody(BaseModel):
@@ -147,7 +224,11 @@ class _CleanupBody(BaseModel):
 
 @router.delete("/sessions/{session_id}")
 async def cleanup_session(session_id: str, body: _CleanupBody):
-    """Tell the runtime to drop its workspace entry for this (agent, session)."""
+    """Tell the runtime to drop its workspace entry for this (agent, session).
+
+    Safe to hit any pod in the env — the RWX PVC means every pod sees the
+    same `/workspace-root/sessions/{sid}/agents/{aid}/` directory.
+    """
     base = resolve_runtime_base(body.runtime_endpoint)
     try:
         async with httpx.AsyncClient() as client:

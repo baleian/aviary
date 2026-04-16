@@ -32,22 +32,18 @@ Browser → Next.js (:3000) → API rewrite proxy → FastAPI (:8000)
 
 Admin Console (:8001) → DB (no infra calls)
 
-Platform (docker compose):
+Platform (docker compose — same deploy unit as api/admin):
   Postgres, Redis, Keycloak, Vault, LiteLLM (:8090), MCP Gateway (:8100),
-  Portkey (internal), API, Admin, Web
+  Portkey (internal), **Agent Supervisor (:9000)**, API, Admin, Web
 
-Platform (K8s, installed by Helm chart `charts/aviary-platform`):
-  Namespaces (platform, agents)
-  agent-supervisor Deployment + Service (NodePort 30900)
-  baseline egress NetworkPolicy (agents NS)
-  external-services proxy Services (dev only)
-  image-warmer DaemonSet (optional)
-
-Runtime environments (one Helm release of `charts/aviary-environment` per env):
-  Deployment (replicas fixed, min 1) — serves any agent
-  Service (ClusterIP, :3000)
-  PVC (RWX — hostPath in dev / EFS in prod)
-  optional per-env NetworkPolicy (union with baseline)
+K8s cluster (Helm-managed; the only thing in K3s/EKS):
+  charts/aviary-platform — namespaces, baseline egress NP,
+    external-services proxy Services (dev only), image-warmer DaemonSet (optional)
+  charts/aviary-environment — one release per runtime environment:
+    Deployment (replicas fixed, min 1) — pool serves every agent
+    Service (NodePort in dev → supervisor hits k8s:<port>; ClusterIP in prod)
+    PVC (RWX — hostPath in dev / EFS in prod)
+    optional per-env NetworkPolicy (union with baseline)
 
 Agent routing:
   agent.runtime_endpoint (nullable) in the DB.
@@ -63,7 +59,7 @@ Three backend services with distinct roles:
 
 **Admin Console (`:8001`)** — Operator-facing. No authentication (local-only). Manages agent config, including the optional `runtime_endpoint` override, plus MCP registration, ACL, users, and Vault credentials. Never talks to K8s or the supervisor — runtime infrastructure is Helm-managed.
 
-**Agent Supervisor (`:9000`)** — **Stateless** Reverse SSE Proxy. Runs inside K8s. No DB, no K8s API. Receives a publish request (body includes optional `runtime_endpoint` + agent_config), streams SSE from the runtime's Service endpoint, publishes every event to Redis (chunks + pub/sub), assembles the final text + blocks_meta, returns it to the caller. Emits Prometheus metrics at `/metrics`.
+**Agent Supervisor (`:9000`, docker compose service)** — Reverse SSE Proxy. Runs outside K8s, same deploy unit as API/Admin. No DB, no K8s API. Holds an **in-memory registry** of active publish tasks keyed by `(session_id, agent_id)`. Receives a publish request (body includes optional `runtime_endpoint` + agent_config), streams SSE from the runtime's Service endpoint, publishes every event to Redis (chunks + pub/sub), assembles the final text + blocks_meta, returns it to the caller. Emits Prometheus metrics at `/metrics`. **Abort** = lookup in the registry and `task.cancel()` — no HTTP forward to runtime needed; closing the outbound httpx stream propagates close through the Service-pinned TCP connection, which fires `req.on("close")` in the runtime pod and aborts the SDK.
 
 **Shared DB package** (`shared/aviary_shared/`) — SQLAlchemy models, migrations, and session factory used by API + Admin. Migrations live at `shared/aviary_shared/db/migrations/` with alembic config at `shared/alembic.ini`.
 
@@ -104,8 +100,20 @@ Keycloak tokens have `iss=http://localhost:8080/...` (browser URL), but API cont
 ### API + Admin Know Nothing About Infrastructure
 Neither service has K8s concepts (namespace, pod, deployment, NetworkPolicy). The only routing input they touch is the optional `agent.runtime_endpoint` string column. Everything else is Helm-managed.
 
-### Stateless Supervisor — Endpoint Injection
-The supervisor has no DB connection and no K8s API access. Callers (API, Temporal, batch workers) look up `agent.runtime_endpoint` and pass it in each publish body. `runtime_endpoint=null` → `SUPERVISOR_DEFAULT_RUNTIME_ENDPOINT` (the default env's Service DNS). This keeps the supervisor reusable for any orchestration path.
+### Supervisor Outside K8s — Endpoint Injection
+The supervisor is a docker-compose service (same deploy path as API/Admin), not a K8s workload. The only thing in K3s/EKS is the agent runtime environment pool. Callers look up `agent.runtime_endpoint` and pass it in each publish body. `runtime_endpoint=null` → `SUPERVISOR_DEFAULT_RUNTIME_ENDPOINT` (dev: `http://k8s:30300`, the K3s container's NodePort; prod: env's Service DNS or LB URL).
+
+### Abort Flow — No Pod Routing Required
+The TCP connection from supervisor to a runtime pod is pinned once established (kube-proxy load-balances at connect time, not per-request). So **cancelling the supervisor's outbound httpx stream is sufficient** to abort the specific pod handling it:
+
+```
+WS disconnect / explicit abort
+  → API POST /v1/sessions/{sid}/abort  (or just closes the publish conn)
+  → supervisor._active[(sid, aid)].cancel()
+  → httpx client context exits → TCP close → pod's req.on("close") → abortController.abort()
+```
+
+No pod-IP tracking, no Redis signal, no per-replica affinity. The supervisor's in-memory registry is sufficient because a single supervisor replica holds the in-flight connection; multi-replica scale-out would need Redis pub/sub among supervisors (not runtimes).
 
 ### claude-agent-sdk Multi-Turn (TypeScript)
 Uses the `query()` function from `@anthropic-ai/claude-agent-sdk`. TS SDK doesn't expose a `sessionId` option — Aviary session_id is injected via `extraArgs: { "session-id": sessionId }` which passes `--session-id <uuid>` to the CLI on the first message. Subsequent messages use `resume: sessionId` to load existing conversation history. Resume is determined by checking for existing JSONL in `<claudeDir>/projects/`. CLI session data persists on the environment PVC under `sessions/{sid}/agents/{aid}/.claude`. Runtime is a Node.js/Express server (`src/server.ts`). Agent config (instruction, tools, MCP servers) is sent in every message request body — no ConfigMap or on-disk config. `agent_id` arrives in `agent_config.agent_id`.
@@ -215,14 +223,16 @@ API/Admin: dedicated `aviary_test` database with `NullPool`, no lifespan.
 
 ## Rebuilding Images / Applying Chart Changes
 
-**K8s images** (runtime, agent-supervisor) — after modifying `runtime/` or `agent-supervisor/`:
+**Runtime image** (K3s) — after modifying `runtime/`:
 
 ```bash
-docker build -t aviary-runtime:latest ./runtime/
-docker build -t aviary-agent-supervisor:latest -f agent-supervisor/Dockerfile .
-docker save aviary-runtime:latest aviary-agent-supervisor:latest | docker compose exec -T k8s ctr images import -
-./scripts/quick-rebuild.sh runtime           # rolling restart agent-runtime pods
-./scripts/quick-rebuild.sh agent-supervisor  # restart supervisor deployment
+./scripts/quick-rebuild.sh runtime    # build + ctr import + rolling restart agent pods
+```
+
+**Supervisor** (docker compose) — after modifying `agent-supervisor/`:
+
+```bash
+./scripts/quick-rebuild.sh agent-supervisor    # docker compose up -d --build supervisor
 ```
 
 **Helm chart changes** — render locally and apply via k3s kubectl:

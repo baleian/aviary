@@ -4,7 +4,7 @@
 
 [English](./README.md)
 
-Aviary는 웹 UI로 AI 에이전트를 생성·설정·사용하는 엔터프라이즈 플랫폼입니다. 런타임 환경은 Helm 릴리스로 선언적으로 프로비저닝되며(환경 당 Deployment 풀 하나), 모든 에이전트가 그 풀을 공유합니다. 격리는 커널 수준 bubblewrap과 네트워크 수준 baseline NetworkPolicy + 선택적 환경별 규칙으로 수행됩니다.
+Aviary는 웹 UI로 AI 에이전트를 생성·설정·사용하는 엔터프라이즈 플랫폼입니다. 런타임 환경은 Helm 릴리스로 Kubernetes 클러스터에 선언적으로 프로비저닝되고(환경 당 Deployment 풀 하나), 그 외의 모든 서비스 — API, Admin 콘솔, Agent Supervisor — 는 일반 배포 단위(로컬은 docker-compose, 운영은 플랫폼 표준 배포)를 따릅니다. 에이전트는 커널 수준 bubblewrap과 네트워크 수준 baseline NetworkPolicy + 선택적 환경별 규칙으로 격리됩니다.
 
 ## 아키텍처
 
@@ -52,28 +52,29 @@ Aviary는 웹 UI로 AI 에이전트를 생성·설정·사용하는 엔터프라
     │   └──────────────────────────────────────────────┘
     │
     │   ┌────────────────────────────────────────────────────────┐
+    │   │   Agent Supervisor (docker-compose, K8s 밖)             │
+    │   │     SSE reverse proxy · Redis publish · 조립            │
+    │   │     in-memory abort registry · /metrics                 │
+    │   │     (호출자가 runtime_endpoint를 body로 전달)            │
+    │   └───────────────────────┬────────────────────────────────┘
+    │                           │ HTTP via env Service (dev: NodePort / prod: ClusterIP)
+    │   ┌───────────────────────▼────────────────────────────────┐
     │   │                  Kubernetes 클러스터                      │
     │   │             (로컬: K3s · 운영: EKS · Helm으로 통일)        │
     │   │                                                        │
-    │   │  ┌─── NS: platform ──────────────────────────────────┐ │
-    │   │  │ Agent Supervisor (stateless)                      │ │
-    │   │  │   SSE proxy · Redis publish · /metrics            │ │
-    │   │  │   (호출자가 runtime_endpoint를 body로 전달)         │ │
-    │   │  └────────────────────────────────────────────────────┘ │
-    │   │                                                        │
-    │   │  ┌─── NS: agents ────────────────────────────────────┐  │
-    │   │  │ baseline NetworkPolicy                            │  │
-    │   │  │   (DNS + platform + LiteLLM + MCP GW + API)       │  │
-    │   │  │                                                   │  │
-    │   │  │ 환경 릴리스: aviary-env-default                    │  │
-    │   │  │   Deployment (replicas ≥ 1) · Service · RWX PVC   │  │
-    │   │  │   풀이 모든 에이전트를 서빙                         │  │
-    │   │  │   bwrap 샌드박스 · 세션 공유 디렉토리 ·             │  │
-    │   │  │   (agent, session)별 .claude / .venv               │  │
-    │   │  │                                                   │  │
-    │   │  │ 환경 릴리스: aviary-env-custom-* (선택)            │  │
-    │   │  │   동일 형태 + extraEgress (별도 풀)                │  │
-    │   │  └───────────────────────────────────────────────────┘  │
+    │   │  ┌─── NS: agents ────────────────────────────────────┐ │
+    │   │  │ baseline NetworkPolicy                            │ │
+    │   │  │   (DNS + platform + LiteLLM + MCP GW + API)       │ │
+    │   │  │                                                   │ │
+    │   │  │ 환경 릴리스: aviary-env-default                    │ │
+    │   │  │   Deployment (replicas ≥ 1) · Service · RWX PVC   │ │
+    │   │  │   풀이 모든 에이전트를 서빙                         │ │
+    │   │  │   bwrap 샌드박스 · 세션 공유 디렉토리 ·             │ │
+    │   │  │   (agent, session)별 .claude / .venv               │ │
+    │   │  │                                                   │ │
+    │   │  │ 환경 릴리스: aviary-env-custom-* (선택)            │ │
+    │   │  │   동일 형태 + extraEgress (별도 풀)                │ │
+    │   │  └───────────────────────────────────────────────────┘ │
     │   └─────────────────────────────────────────────────────────┘
     │
     └─▶ PostgreSQL · Redis · Keycloak · Vault
@@ -82,7 +83,8 @@ Aviary는 웹 UI로 AI 에이전트를 생성·설정·사용하는 엔터프라
 ## 주요 기능
 
 - **사전 프로비저닝된 런타임 환경** — `charts/aviary-environment` Helm 릴리스가 런타임 풀을 선언적으로 구성. 에이전트별 Deployment 없음, cold start 없음. 환경은 항상 켜져 있음.
-- **Stateless Reverse SSE Proxy** — Agent Supervisor는 인프라 책임이 없음. 모든 호출자(API, 추후 Temporal worker, 배치 작업)가 요청 body에 `runtime_endpoint`를 넘기면, supervisor는 SSE를 중계하고 Redis에 publish하며 최종 메시지를 조립해 반환하고 Prometheus metrics를 emit.
+- **Supervisor는 K8s 밖** — Agent Supervisor는 API/Admin과 동일한 배포 단위(dev: docker-compose)로 구성. runtime endpoint는 Service로 접근. K8s 범위는 runtime pool에만 국한 (GitOps 범위 = K8s 범위).
+- **연결-닫힘 기반 Abort** — Supervisor는 활성 publish task를 in-memory registry로 관리. abort = task cancel → httpx 컨텍스트 종료 → Service로 pinned된 TCP close → runtime pod의 close handler 발동 → SDK abort. pod IP 추적, Redis 신호, runtime의 Redis 의존 모두 불필요.
 - **에이전트별 엔드포인트 오버라이드** — 기본적으로 모든 에이전트가 default 환경을 공유. Admin 콘솔에서 에이전트의 `runtime_endpoint`를 설정해 전용 환경(예: GPU 풀, 격리 SG)으로 라우팅 — 코드 변경·마이그레이션 없음.
 - **Agent-agnostic 런타임 풀** — 환경 내 모든 pod가 모든 에이전트를 서빙. `agent_id`는 매 요청 `agent_config`로 전달. 격리는 디스크 경로(`sessions/{sid}/agents/{aid}/…`) + bubblewrap이 담당.
 - **bubblewrap 세션 격리** — 각 요청이 커널 수준 마운트 네임스페이스에서 실행. 같은 세션의 에이전트들은 `/workspace`를 공유(A2A), `.claude/`와 `.venv/`는 (agent, session)별.
@@ -182,8 +184,11 @@ cd agent-supervisor && uv run pytest tests/ -v
 
 ## 주요 설계 결정
 
-### Stateless Supervisor + 엔드포인트 주입
-Supervisor는 DB 연결도, K8s API 호출도 없습니다. 호출자(현재는 API 서버, 추후 Temporal worker / 배치 작업)가 `agent.runtime_endpoint`를 조회해 publish 요청 body로 전달. null이면 Helm으로 설정한 default 환경으로 fallback. 이로써 supervisor가 오케스트레이션 경로 전반에 재사용됩니다.
+### Supervisor는 K8s 밖 + 엔드포인트 주입
+Supervisor는 API/Admin과 동일한 배포 단위(dev: docker-compose)로 돌아가는 일반 서비스 — K8s 워크로드가 아닙니다. DB 연결도, K8s API 호출도 없고, 호출자(현재는 API 서버, 추후 Temporal worker / 배치 작업)가 `agent.runtime_endpoint`를 조회해 publish 요청 body로 전달. null이면 설정된 default(dev: `http://k8s:30300` — K3s NodePort; 운영: env Service DNS 또는 LB URL)로 fallback. K8s/GitOps 범위는 runtime pool에만 국한됩니다.
+
+### Pod 라우팅 없는 Abort
+kube-proxy는 연결 시점에 로드밸런싱하므로 supervisor → runtime TCP 연결은 수명 동안 하나의 pod에 pinned됩니다. Supervisor가 활성 publish task를 in-memory registry로 관리하고 abort는 `task.cancel()`로 처리: httpx 컨텍스트 종료 → TCP close → runtime pod의 close handler 발동 → SDK abort. 직접 pod 주소 지정도, runtime의 Redis 의존도, 특별한 K8s 위치 선정도 필요 없습니다.
 
 ### Helm으로 선언하는 환경
 런타임 인프라는 전부 `charts/aviary-environment`에 있습니다. 새 환경을 띄우는 건 `helm template | kubectl apply`. 로컬과 운영의 차이는 values 파일 하나뿐(hostPath ↔ EFS, NodePort ↔ LoadBalancer). 애플리케이션 코드는 K8s를 직접 조작하지 않습니다.

@@ -113,14 +113,37 @@ services:
       K3S_TOKEN: aviary-dev-token
     ports:
       - "6443:6443"
-      - "9000:30900"   # agent-supervisor NodePort
+      - "30300:30300"   # aviary-env-default NodePort (supervisor → runtime)
     volumes:
       - k8sdata:/var/lib/rancher/k3s
-      # Backing store for static agent PVs.
-      - agent_workspace_pv:/var/lib/aviary
-      # Cross-agent session workspace (A2A file exchange).
-      - shared_workspace:/workspace-shared
       - ./config/k3s/registries.yaml:/etc/rancher/k3s/registries.yaml
+
+  supervisor:
+    build:
+      context: .
+      dockerfile: agent-supervisor/Dockerfile
+      args:
+        UV_INDEX_URL: ${UV_INDEX_URL:-}
+    ports:
+      - "9000:9000"
+    volumes:
+      - ./agent-supervisor:/workspace/agent-supervisor
+      - /workspace/.venv
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      # Runtime env endpoint used when agent.runtime_endpoint is NULL.
+      # Points at k3s NodePort for aviary-env-default.
+      SUPERVISOR_DEFAULT_RUNTIME_ENDPOINT: http://k8s:30300
+      METRICS_ENABLED: "true"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/v1/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   db-migrate:
     build:
@@ -240,7 +263,7 @@ services:
       OIDC_CLIENT_ID: aviary-web
       VAULT_ADDR: http://vault:8200
       VAULT_TOKEN: dev-root-token
-      AGENT_SUPERVISOR_URL: http://k8s:30900
+      AGENT_SUPERVISOR_URL: http://supervisor:9000
       LITELLM_URL: http://litellm:4000
       LITELLM_API_KEY: "sk-aviary-dev"
       MCP_GATEWAY_URL: http://mcp-gateway:8100
@@ -342,7 +365,7 @@ services:
       - /workspace/.venv
     environment:
       DATABASE_URL: postgresql+asyncpg://aviary:aviary@postgres:5432/aviary
-      AGENT_SUPERVISOR_URL: http://k8s:30900
+      AGENT_SUPERVISOR_URL: http://supervisor:9000
       VAULT_ADDR: http://vault:8200
       VAULT_TOKEN: dev-root-token
       KEYCLOAK_URL: http://keycloak:8080
@@ -367,5 +390,3 @@ volumes:
   pgdata:
   k8sdata:
   vaultdata:
-  agent_workspace_pv:
-  shared_workspace:

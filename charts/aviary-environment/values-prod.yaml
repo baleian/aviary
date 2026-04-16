@@ -8,6 +8,10 @@ image:
   repository: ""
   tag: ""
 
+# In prod, supervisor runs in-cluster (or behind a proper ingress/LB).
+service:
+  type: ClusterIP
+
 pvc:
   storageClassName: efs-sc
   accessMode: ReadWriteMany

@@ -6,8 +6,3 @@ externalServices:
 
 imageWarmer:
   enabled: true
-
-supervisor:
-  imagePullPolicy: Never
-  # Reachable from API/Admin running on the docker-compose host.
-  nodePort: 30900

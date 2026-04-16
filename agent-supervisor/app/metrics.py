@@ -8,7 +8,7 @@ from prometheus_client import Counter, Histogram
 publish_requests_total = Counter(
     "aviary_supervisor_publish_requests_total",
     "Publish requests handled by the supervisor.",
-    ["status"],  # complete | error
+    ["status"],  # complete | error | aborted | disconnected
 )
 
 sse_events_total = Counter(
