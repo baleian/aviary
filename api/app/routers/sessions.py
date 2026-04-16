@@ -26,7 +26,7 @@ from app.schemas.session import (
     SessionSearchResponse,
     SessionTitleUpdate,
 )
-from app.services import redis_service, session_service
+from app.services import agent_supervisor, redis_service, session_service
 from app.services.mention_service import agent_spec, extract_mentions, resolve_mentioned_agents
 from app.services.stream import manager as stream_manager
 
@@ -335,7 +335,12 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
                 data = await websocket.receive_json()
 
                 if data.get("type") == "cancel":
-                    await stream_manager.cancel_stream(session_id_str)
+                    # Client targets a specific stream_id — it learned the id
+                    # from the `stream_started` event the supervisor publishes
+                    # when it picks up the request.
+                    stream_id = data.get("stream_id")
+                    if stream_id:
+                        await agent_supervisor.abort_stream(stream_id)
                     continue
 
                 if data.get("type") != "message":

@@ -233,6 +233,9 @@ async def post_message(
     user_token = extract_bearer_token(request)
     await _authorise_and_enrich(body, claims, user_token)
 
+    # Supervisor owns stream_id allocation. Publishing `stream_started` here
+    # is the frontend's signal that the request was accepted — it's the
+    # confirmation point for enabling the abort button client-side.
     stream_id = str(uuid.uuid4())
     await redis_client.publish_event(
         session_id,

@@ -30,7 +30,6 @@ from aviary_shared.db.models import FileUpload
 logger = logging.getLogger(__name__)
 
 _active_streams: dict[str, asyncio.Task] = {}
-_latest_stream: dict[str, str] = {}
 
 
 async def start_stream(
@@ -53,7 +52,6 @@ async def start_stream(
 
     def _cleanup(_: asyncio.Task) -> None:
         _active_streams.pop(session_id, None)
-        _latest_stream.pop(session_id, None)
 
     task.add_done_callback(_cleanup)
 
@@ -63,17 +61,19 @@ def is_streaming(session_id: str) -> bool:
     return task is not None and not task.done()
 
 
-async def cancel_stream(session_id: str) -> bool:
-    """Trigger abort on the supervisor. The running background task stays
-    alive — the supervisor will return `status=aborted` with the partial
-    assembly, and the task will then save/publish the partial just like
-    normal completion."""
-    if not is_streaming(session_id):
-        return False
-    stream_id = _latest_stream.get(session_id)
-    if stream_id:
-        await agent_supervisor.abort_stream(stream_id)
-    return True
+async def cancel_session(session_id: str) -> bool:
+    """Cancel the in-flight stream task for this session, if any. Used by
+    session delete — the task.cancel() tears down the httpx→supervisor call,
+    which in turn closes the supervisor→runtime stream, aborting the SDK.
+
+    User-initiated cancel from the WebSocket doesn't go through here — the
+    client sends an explicit stream_id so the cancel targets a specific
+    stream (future multi-participant sessions)."""
+    task = _active_streams.get(session_id)
+    if task and not task.done():
+        task.cancel()
+        return True
+    return False
 
 
 async def _build_content_parts(
@@ -160,9 +160,6 @@ async def _run_stream(
                 "agent_config": agent_config,
             },
         )
-        stream_id = result.get("stream_id")
-        if stream_id:
-            _latest_stream[session_id] = stream_id
         reached_runtime = bool(result.get("reached_runtime"))
 
         status = result.get("status")

@@ -148,7 +148,7 @@ async def delete_session(db: AsyncSession, session: Session) -> None:
     agent_id = session.agent_id
 
     if stream_manager.is_streaming(session_id_str):
-        await stream_manager.cancel_stream(session_id_str)
+        await stream_manager.cancel_session(session_id_str)
 
     participants = await get_session_participants(db, session.id)
     await redis_service.delete_all_session_keys(session_id_str, participants)
