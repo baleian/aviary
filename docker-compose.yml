@@ -212,6 +212,12 @@ services:
       - ./config/litellm/patches/aviary_patches.pth:/usr/lib/python3.13/site-packages/aviary_patches.pth
     environment:
       LITELLM_MASTER_KEY: "sk-aviary-dev"
+      # DB-backed UI: keys, teams, spend, and model registry live in Postgres.
+      # LiteLLM expects a plain `postgresql://` URL (Prisma), not asyncpg.
+      DATABASE_URL: "postgresql://aviary:aviary@postgres:5432/litellm"
+      STORE_MODEL_IN_DB: "True"
+      UI_USERNAME: "${LITELLM_UI_USERNAME:-admin}"
+      UI_PASSWORD: "${LITELLM_UI_PASSWORD:-admin}"
       AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID:-}"
       AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:-}"
       AWS_REGION: "${AWS_REGION:-ap-northeast-2}"
@@ -220,6 +226,8 @@ services:
       OIDC_ISSUER: "http://localhost:8080/realms/aviary"
       OIDC_INTERNAL_ISSUER: "http://keycloak:8080/realms/aviary"
     depends_on:
+      postgres:
+        condition: service_healthy
       vault:
         condition: service_healthy
       keycloak:
