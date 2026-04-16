@@ -39,16 +39,6 @@ async def create_agent(
     return AgentResponse.from_orm_agent(agent)
 
 
-@router.get("/status")
-async def get_agents_status(
-    ids: str = Query(..., description="Comma-separated agent IDs"),
-    user: User = Depends(get_current_user),
-):
-    """Runtime environments are always-on; return ready for every known id."""
-    agent_ids = [s.strip() for s in ids.split(",") if s.strip()]
-    return {"statuses": {aid: "ready" for aid in agent_ids}}
-
-
 @router.get("/{agent_id}", response_model=AgentResponse)
 async def get_agent(agent: Agent = Depends(require_agent_owner(include_deleted=True))):
     return AgentResponse.from_orm_agent(agent)

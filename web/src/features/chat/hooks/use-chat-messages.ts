@@ -145,6 +145,7 @@ export function useChatMessages(sessionId: string): UseChatMessagesResult {
           break;
 
         case "user_message":
+          setIsStreaming(true);
           setMessages((prev) => [
             ...prev,
             {
@@ -160,6 +161,7 @@ export function useChatMessages(sessionId: string): UseChatMessagesResult {
           break;
 
         case "stream_started":
+          setIsStreaming(true);
           setStreamId(msg.stream_id);
           break;
 
