@@ -77,7 +77,7 @@ exec bwrap \
     --ro-bind / / \
     --dev /dev \
     --proc /proc \
-    --tmpfs /workspace-shared \
+    --tmpfs /workspace-root \
     --bind "$SESSION_WORKSPACE" /workspace \
     --bind "$SESSION_CLAUDE_DIR" /workspace/.claude \
     "${VENV_BIND[@]}" \

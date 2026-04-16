@@ -132,7 +132,7 @@ The environment's single RWX PVC is mounted at `/workspace-root` in every pod. I
 ```
 
 When the SDK invokes `claude`, the wrapper reads `SESSION_WORKSPACE` / `SESSION_CLAUDE_DIR` / `SESSION_VENV_DIR` / `SESSION_TMP` and runs `claude-real` inside a bwrap mount namespace:
-- `/workspace-shared/` — empty tmpfs (hides the host layout).
+- `/workspace-root/` — empty tmpfs overlay; hides the PVC layout so sibling sessions living under the same PVC can't be enumerated from inside the sandbox.
 - `SESSION_WORKSPACE` → `/workspace` — session-shared area; every agent in the session sees the same files.
 - `SESSION_CLAUDE_DIR` → `/workspace/.claude` — per-(agent, session) CLI context overlay.
 - `SESSION_VENV_DIR` → `/workspace/.venv` — per-(agent, session) Python venv.
