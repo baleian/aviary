@@ -80,12 +80,13 @@ async def get_sessions_status(
 ):
     session_ids = [s.strip() for s in ids.split(",") if s.strip()]
     if not session_ids:
-        return {"statuses": {}, "titles": {}}
+        return {"statuses": {}, "unread": {}, "titles": {}}
     statuses = await redis_service.get_sessions_status(session_ids)
+    unread = await redis_service.get_bulk_unread(session_ids, str(user.id))
     titles = await session_service.get_session_titles(
         db, [uuid.UUID(sid) for sid in session_ids]
     )
-    return {"statuses": statuses, "titles": titles}
+    return {"statuses": statuses, "unread": unread, "titles": titles}
 
 
 async def _require_session_owner(
@@ -297,6 +298,10 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
 
         await websocket.send_json({"type": "status", "status": "ready"})
 
+        # User is actively viewing — clear their unread for this session.
+        user_id_str = str(user.id)
+        await redis_service.clear_unread(session_id_str, user_id_str)
+
         await _replay_stream_if_needed(websocket, session_id_str)
 
         pubsub = await redis_service.subscribe(session_id_str)
@@ -309,7 +314,12 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
                     if raw_msg["type"] != "message":
                         continue
                     try:
-                        await websocket.send_json(json.loads(raw_msg["data"]))
+                        event = json.loads(raw_msg["data"])
+                        await websocket.send_json(event)
+                        # Any terminal event delivered to a live WS means the
+                        # watching user can drop the badge on this session.
+                        if event.get("type") in ("done", "cancelled"):
+                            await redis_service.clear_unread(session_id_str, user_id_str)
                     except WebSocketDisconnect:
                         return
                     except Exception:
@@ -345,9 +355,9 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
                     await websocket.close(code=4001, reason="Session expired")
                     return
 
-                # Persist user message before dispatching the stream so the
-                # supervisor can broadcast whatever stream_id it allocates
-                # alongside a message that already exists in the DB.
+                # Persist the user message first so every watcher (and future
+                # multi-participant WSes) receives it with the DB id already
+                # assigned.
                 metadata = {"attachments": attachments} if attachments else None
                 async with async_session_factory() as db:
                     user_msg = await session_service.save_message(
@@ -374,6 +384,16 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
                     agent_config = agent_spec(agent)
                     if accessible_agents:
                         agent_config["accessible_agents"] = accessible_agents
+
+                user_event: dict = {
+                    "type": "user_message",
+                    "messageId": str(user_message_id),
+                    "sender_id": user_id_str,
+                    "content": content,
+                }
+                if attachments:
+                    user_event["attachments"] = attachments
+                await redis_service.publish_message(session_id_str, user_event)
 
                 await stream_manager.start_stream(
                     session_id=session_id_str,

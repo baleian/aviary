@@ -4,13 +4,16 @@ Flow:
   1. Build the on-the-wire agent_config (full spec — runtime_endpoint,
      model_config, instruction, tools, mcp_servers, accessible_agents).
   2. POST to supervisor /v1/sessions/{sid}/message. Block until the
-     supervisor finishes streaming + assembly.
+     supervisor finishes streaming + assembly and returns the assembled
+     text/blocks (also on abort — supervisor returns the partial).
   3. Persist the assembled agent response to the DB.
+  4. Publish the DB-consistent event (done / cancelled / error) to
+     Redis so every WS watching this session sees it, and INCR the
+     unread counter for each session participant.
 
-The supervisor owns every Redis write that happens as part of the turn:
-the stream_id is allocated there, events stream live via
-`session:{sid}:events`, chunks buffer under `stream:{sid}:chunks`, and
-stream/session status keys are managed there. The API only reads.
+The supervisor owns Redis writes for the live stream events. This module
+owns the DB-consistent events because only the API knows the DB ids and
+the participant list.
 """
 
 import asyncio
@@ -21,16 +24,12 @@ import uuid
 from sqlalchemy import select
 
 from app.db.session import async_session_factory
-from app.services import agent_supervisor, session_service
+from app.services import agent_supervisor, redis_service, session_service
 from aviary_shared.db.models import FileUpload
 
 logger = logging.getLogger(__name__)
 
-# session_id → running turn task (serializes concurrent messages per session
-# at the API level; the supervisor enforces the same invariant on its side).
 _active_streams: dict[str, asyncio.Task] = {}
-# session_id → stream_id last dispatched; used to target the /abort call
-# without having to remember it on the WS side.
 _latest_stream: dict[str, str] = {}
 
 
@@ -65,15 +64,15 @@ def is_streaming(session_id: str) -> bool:
 
 
 async def cancel_stream(session_id: str) -> bool:
-    task = _active_streams.get(session_id)
-    if not task or task.done():
+    """Trigger abort on the supervisor. The running background task stays
+    alive — the supervisor will return `status=aborted` with the partial
+    assembly, and the task will then save/publish the partial just like
+    normal completion."""
+    if not is_streaming(session_id):
         return False
-
     stream_id = _latest_stream.get(session_id)
     if stream_id:
         await agent_supervisor.abort_stream(stream_id)
-
-    task.cancel()
     return True
 
 
@@ -105,6 +104,36 @@ async def _build_content_parts(
     return [part] if part else []
 
 
+async def _persist_and_broadcast(
+    session_id: str,
+    session_uuid: uuid.UUID,
+    full_response: str,
+    blocks_meta: list[dict],
+    *,
+    cancelled: bool,
+) -> None:
+    """Save the agent message, publish the terminal event, bump unread."""
+    meta: dict = {"blocks": blocks_meta} if blocks_meta else {}
+    if cancelled:
+        meta["cancelled"] = True
+
+    async with async_session_factory() as db:
+        msg = await session_service.save_message(
+            db, session_uuid, "agent",
+            full_response or ("[Cancelled]" if cancelled else ""),
+            metadata=meta or None,
+        )
+        message_id = str(msg.id)
+        participants = await session_service.get_session_participants(db, session_uuid)
+        await db.commit()
+
+    event = {"type": "cancelled" if cancelled else "done", "messageId": message_id}
+    await redis_service.publish_message(session_id, event)
+
+    for uid in participants:
+        await redis_service.increment_unread(session_id, uid)
+
+
 async def _run_stream(
     session_id: str,
     agent_config: dict,
@@ -131,25 +160,32 @@ async def _run_stream(
         stream_id = result.get("stream_id")
         if stream_id:
             _latest_stream[session_id] = stream_id
-
         reached_runtime = bool(result.get("reached_runtime"))
-        if result.get("status") != "complete":
+
+        status = result.get("status")
+        if status == "complete":
+            await _persist_and_broadcast(
+                session_id, session_uuid,
+                result.get("assembled_text", ""),
+                result.get("assembled_blocks", []),
+                cancelled=False,
+            )
+        elif status == "aborted":
+            await _persist_and_broadcast(
+                session_id, session_uuid,
+                result.get("assembled_text", ""),
+                result.get("assembled_blocks", []),
+                cancelled=True,
+            )
+        else:
             raise RuntimeError(result.get("message", "Agent runtime error"))
 
-        full_response = result.get("assembled_text", "")
-        blocks_meta = result.get("assembled_blocks", [])
-        meta = {"blocks": blocks_meta} if blocks_meta else None
-
-        async with async_session_factory() as db:
-            await session_service.save_message(
-                db, session_uuid, "agent", full_response, metadata=meta,
-            )
-            await db.commit()
-
     except asyncio.CancelledError:
-        logger.info("Stream cancelled for session %s", session_id)
+        logger.info("Stream task cancelled for session %s", session_id)
     except Exception as exc:
         logger.exception("Stream failed for session %s", session_id)
+        reason = str(exc) if str(exc) else "Agent streaming failed"
+        error_event: dict = {"type": "error", "message": reason}
         # query() was never invoked — the user message isn't in SDK conversation
         # history, so roll it back so the DB stays consistent.
         if not reached_runtime:
@@ -157,8 +193,7 @@ async def _run_stream(
                 async with async_session_factory() as db:
                     await session_service.delete_message(db, user_message_id)
                     await db.commit()
+                error_event["rollback_message_id"] = str(user_message_id)
             except Exception:
                 logger.warning("Failed to rollback user message %s", user_message_id)
-        # Error event itself is emitted by the supervisor into the Redis channel;
-        # no API-side publish needed.
-        _ = exc
+        await redis_service.publish_message(session_id, error_event)

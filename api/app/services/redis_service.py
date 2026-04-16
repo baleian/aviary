@@ -1,14 +1,18 @@
-"""Redis client — read-only helpers for the API server.
+"""Redis client — responsibility split with the supervisor:
 
-The API **reads** session/stream state but never writes to Redis. All writes
-are owned by the agent-supervisor (or, in the future, Temporal workers).
-Keeping writes in one place makes the invariants (TTLs, key naming,
-assembly ordering) easy to reason about.
+- **Supervisor writes** stream events (chunk / thinking / tool_use / …)
+  because they originate in the SSE stream it drives.
+- **API writes** DB-consistent events and per-user state because only the
+  API knows the DB ids and the session participant list:
+    * `user_message` — broadcast after the user's WS message is saved
+    * `done` / `cancelled` — broadcast after agent message persistence
+    * `error` — pre-stream / save-path failures
+    * `session:{id}:unread:{uid}` counters
 
-Exception: `delete_all_session_keys` is a best-effort cleanup used from the
-session-delete path. It's a DEL, not a stateful write — if the supervisor
-is simultaneously streaming into a deleted session, both the DB delete and
-this DEL race, and either order is fine.
+Both publish to the same `session:{id}:events` channel; the API WS relay
+subscribes and forwards every event to connected clients. Broadcast via
+Redis (rather than direct WS sends) keeps the design ready for
+multi-participant / multi-replica deployments.
 """
 
 from __future__ import annotations
@@ -80,6 +84,54 @@ async def subscribe(session_id: str):
     return pubsub
 
 
+# ── Writes owned by the API (DB-consistent events + unread) ────────────────
+
+async def publish_message(session_id: str, event: dict) -> None:
+    """Broadcast a DB-consistent event to every WS watching this session."""
+    if not _client:
+        return
+    try:
+        await _client.publish(_session_channel(session_id), json.dumps(event))
+    except redis.RedisError:
+        logger.warning("publish_message failed for session %s", session_id, exc_info=True)
+
+
+def _unread_key(session_id: str, user_id: str) -> str:
+    return f"session:{session_id}:unread:{user_id}"
+
+
+async def increment_unread(session_id: str, user_id: str) -> None:
+    if not _client:
+        return
+    try:
+        await _client.incr(_unread_key(session_id, user_id))
+        await _client.expire(_unread_key(session_id, user_id), 86400)
+    except redis.RedisError:
+        logger.warning("increment_unread failed for %s/%s", session_id, user_id, exc_info=True)
+
+
+async def clear_unread(session_id: str, user_id: str) -> None:
+    if not _client:
+        return
+    try:
+        await _client.delete(_unread_key(session_id, user_id))
+    except redis.RedisError:
+        pass
+
+
+async def get_bulk_unread(session_ids: list[str], user_id: str) -> dict[str, int]:
+    if not _client or not session_ids:
+        return {sid: 0 for sid in session_ids}
+    try:
+        raw = await _client.mget([_unread_key(sid, user_id) for sid in session_ids])
+        return {
+            sid: int(val) if val else 0
+            for sid, val in zip(session_ids, raw, strict=True)
+        }
+    except redis.RedisError:
+        return {sid: 0 for sid in session_ids}
+
+
 async def get_stream_chunks(stream_id: str) -> list[dict]:
     if not _client:
         return []
@@ -131,7 +183,7 @@ async def get_latest_stream_id(session_id: str) -> str | None:
         return None
 
 
-async def delete_all_session_keys(session_id: str) -> None:
+async def delete_all_session_keys(session_id: str, user_ids: list[str]) -> None:
     """Best-effort cleanup on session delete."""
     if not _client:
         return
@@ -141,6 +193,7 @@ async def delete_all_session_keys(session_id: str) -> None:
             _session_channel(session_id),
             _session_status(session_id),
             _session_latest_stream(session_id),
+            *[_unread_key(session_id, uid) for uid in user_ids],
         ]
         if latest:
             keys.extend([_stream_chunks(latest), _stream_status(latest)])

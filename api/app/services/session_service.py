@@ -36,6 +36,19 @@ async def get_session_titles(
     return {str(row[0]): row[1] for row in result.all()}
 
 
+async def get_session_participants(
+    db: AsyncSession, session_id: uuid.UUID,
+) -> list[str]:
+    """Return the list of user_ids that should receive events for a session.
+
+    Currently just the session creator — kept behind a helper so that when
+    multi-user sessions return the broadcast/unread paths don't change."""
+    session = await get_session(db, session_id)
+    if session is None:
+        return []
+    return [str(session.created_by)]
+
+
 async def list_sessions_for_agent(
     db: AsyncSession, user: User, agent_id: uuid.UUID
 ) -> list[Session]:
@@ -137,7 +150,8 @@ async def delete_session(db: AsyncSession, session: Session) -> None:
     if stream_manager.is_streaming(session_id_str):
         await stream_manager.cancel_stream(session_id_str)
 
-    await redis_service.delete_all_session_keys(session_id_str)
+    participants = await get_session_participants(db, session.id)
+    await redis_service.delete_all_session_keys(session_id_str, participants)
 
     await db.delete(session)
     await db.flush()

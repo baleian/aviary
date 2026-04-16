@@ -196,12 +196,12 @@ async def _drive_stream(
     assembled_text, assembled_blocks = assembly.rebuild_blocks_from_chunks(chunks)
     await assembly.merge_a2a_events(session_id, assembled_blocks)
 
+    # Terminal state (done / cancelled) is signalled by the API after it
+    # saves the message to the DB — supervisor doesn't know the DB id, so
+    # it only sets the stream's Redis status + metrics and returns.
     if aborted:
         await redis_client.set_stream_status(stream_id, "aborted")
         metrics.publish_requests_total.labels(status="aborted").inc()
-        await redis_client.publish_event(
-            session_id, {"type": "aborted", "stream_id": stream_id},
-        )
         return {
             "status": "aborted",
             "stream_id": stream_id,
@@ -212,10 +212,6 @@ async def _drive_stream(
 
     await redis_client.set_stream_status(stream_id, "complete")
     metrics.publish_requests_total.labels(status="complete").inc()
-    await redis_client.publish_event(
-        session_id,
-        {"type": "stream_complete", "stream_id": stream_id, "content": assembled_text},
-    )
     return {
         "status": "complete",
         "stream_id": stream_id,
