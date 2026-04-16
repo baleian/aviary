@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -132,9 +133,44 @@ async def test_publish_reports_http_error_before_runtime(client):
 
 
 @pytest.mark.asyncio
-async def test_abort_unknown_session_returns_not_found(client):
-    resp = client.post("/v1/sessions/unknown/abort", json={"agent_id": "a1"})
+async def test_abort_unknown_session_broadcasts_to_other_replicas(client):
+    """When the session isn't on this replica, publish to the supervisor
+    fan-out channel so whichever replica holds it can cancel."""
+    with patch(
+        "app.routers.agents.redis_client.publish_abort", new_callable=AsyncMock
+    ) as pub:
+        resp = client.post("/v1/sessions/unknown/abort", json={"agent_id": "a1"})
+
     assert resp.status_code == 200
     data = resp.json()
-    assert data["ok"] is False
-    assert data["reason"] == "not_found"
+    assert data["ok"] is True
+    assert data["via"] == "broadcast"
+    pub.assert_awaited_once_with("unknown", "a1")
+
+
+@pytest.mark.asyncio
+async def test_cancel_local_cancels_matching_task():
+    """Simulate a broadcast arriving at this replica — the listener should
+    cancel the matching in-memory publish task via _cancel_local."""
+    import contextlib
+    from app.routers import agents as router_mod
+
+    async def runner():
+        await asyncio.sleep(3600)
+
+    task = asyncio.create_task(runner())
+    key = router_mod._registry_key("s1", "a1")
+    router_mod._active[key] = task
+    try:
+        assert router_mod._cancel_local("s1", "a1") is True
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        assert task.cancelled()
+    finally:
+        router_mod._active.pop(key, None)
+
+
+@pytest.mark.asyncio
+async def test_cancel_local_returns_false_when_missing():
+    from app.routers import agents as router_mod
+    assert router_mod._cancel_local("missing", "a1") is False

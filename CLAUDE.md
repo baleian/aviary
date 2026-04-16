@@ -113,7 +113,7 @@ WS disconnect / explicit abort
   → httpx client context exits → TCP close → pod's req.on("close") → abortController.abort()
 ```
 
-No pod-IP tracking, no Redis signal, no per-replica affinity. The supervisor's in-memory registry is sufficient because a single supervisor replica holds the in-flight connection; multi-replica scale-out would need Redis pub/sub among supervisors (not runtimes).
+No pod-IP tracking, no runtime-side Redis signal, no per-replica affinity is required at the HTTP layer. **Multi-replica** is handled by a supervisor-only Redis fan-out: if `/abort` lands on a replica that doesn't hold the task, it publishes to the `supervisor:abort` channel and whichever replica holds the task cancels it. Runtime has no knowledge of this and no Redis connectivity.
 
 ### claude-agent-sdk Multi-Turn (TypeScript)
 Uses the `query()` function from `@anthropic-ai/claude-agent-sdk`. TS SDK doesn't expose a `sessionId` option — Aviary session_id is injected via `extraArgs: { "session-id": sessionId }` which passes `--session-id <uuid>` to the CLI on the first message. Subsequent messages use `resume: sessionId` to load existing conversation history. Resume is determined by checking for existing JSONL in `<claudeDir>/projects/`. CLI session data persists on the environment PVC under `sessions/{sid}/agents/{aid}/.claude`. Runtime is a Node.js/Express server (`src/server.ts`). Agent config (instruction, tools, MCP servers) is sent in every message request body — no ConfigMap or on-disk config. `agent_id` arrives in `agent_config.agent_id`.

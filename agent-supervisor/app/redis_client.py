@@ -3,12 +3,18 @@
 Shared namespace with the API server (`session:{id}:stream:*`, `session:{id}:messages`).
 Supervisor publishes raw runtime events and assembles the final response from
 the buffered chunks before returning to the caller.
+
+Also hosts the supervisor-to-supervisor abort fan-out channel
+(`supervisor:abort`) used to route abort requests to whichever replica
+actually holds the in-flight publish task.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from typing import AsyncIterator
 
 import redis.asyncio as redis
 
@@ -17,6 +23,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 _STREAM_BUFFER_TTL = 600
+_ABORT_CHANNEL = "supervisor:abort"
 
 _client: redis.Redis | None = None
 _pool: redis.ConnectionPool | None = None
@@ -115,3 +122,48 @@ async def clear_a2a_events(session_id: str, parent_tool_use_id: str) -> None:
         await _client.delete(_a2a_key(session_id, parent_tool_use_id))
     except redis.RedisError:
         logger.warning("clear_a2a_events failed for session %s", session_id, exc_info=True)
+
+
+# ── Supervisor-to-supervisor abort fan-out ──────────────────────────────────
+
+async def publish_abort(session_id: str, agent_id: str | None) -> None:
+    """Broadcast an abort request to every supervisor replica (incl. self)."""
+    if not _client:
+        return
+    try:
+        await _client.publish(_ABORT_CHANNEL, json.dumps({
+            "session_id": session_id,
+            "agent_id": agent_id,
+        }))
+    except redis.RedisError:
+        logger.warning("publish_abort failed", exc_info=True)
+
+
+async def iter_abort_requests() -> AsyncIterator[dict]:
+    """Yield abort requests received on the supervisor:abort channel.
+
+    Auto-reconnects on RedisError. Safe to cancel at any time.
+    """
+    while True:
+        if _client is None:
+            await asyncio.sleep(1)
+            continue
+        pubsub = _client.pubsub()
+        try:
+            await pubsub.subscribe(_ABORT_CHANNEL)
+            async for msg in pubsub.listen():
+                if msg.get("type") != "message":
+                    continue
+                try:
+                    yield json.loads(msg["data"])
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("malformed abort message: %r", msg.get("data"))
+        except redis.RedisError:
+            logger.warning("abort subscriber connection lost; retrying in 2s", exc_info=True)
+            await asyncio.sleep(2)
+        finally:
+            try:
+                await pubsub.unsubscribe(_ABORT_CHANNEL)
+                await pubsub.aclose()
+            except redis.RedisError:
+                pass

@@ -14,6 +14,7 @@ connection is pod-pinned for its lifetime.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -36,9 +37,53 @@ router = APIRouter()
 _active: dict[tuple[str, str | None], asyncio.Task] = {}
 _DISCONNECT_POLL_SECONDS = 0.5
 
+# Subscriber task that applies remote abort broadcasts to the local registry.
+_abort_listener_task: asyncio.Task | None = None
+
 
 def _registry_key(session_id: str, agent_id: str | None) -> tuple[str, str | None]:
     return (session_id, agent_id)
+
+
+def _cancel_local(session_id: str, agent_id: str | None) -> bool:
+    task = _active.get(_registry_key(session_id, agent_id))
+    if task and not task.done():
+        task.cancel()
+        return True
+    return False
+
+
+async def _run_abort_listener() -> None:
+    """Background task: apply remote abort broadcasts to our local registry."""
+    try:
+        async for req in redis_client.iter_abort_requests():
+            try:
+                if _cancel_local(req["session_id"], req.get("agent_id")):
+                    logger.info(
+                        "Remote abort applied: session=%s agent=%s",
+                        req["session_id"], req.get("agent_id"),
+                    )
+            except Exception:  # noqa: BLE001 — single bad msg must not kill the loop
+                logger.exception("abort listener failed to process message")
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("abort listener crashed")
+
+
+def start_abort_listener() -> None:
+    global _abort_listener_task
+    if _abort_listener_task is None or _abort_listener_task.done():
+        _abort_listener_task = asyncio.create_task(_run_abort_listener())
+
+
+async def stop_abort_listener() -> None:
+    global _abort_listener_task
+    task, _abort_listener_task = _abort_listener_task, None
+    if task and not task.done():
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 async def _watch_disconnect(request: Request) -> None:
@@ -205,16 +250,16 @@ class _AbortBody(BaseModel):
 async def abort_session(session_id: str, body: _AbortBody):
     """Cancel the in-flight publish task for (session_id, agent_id).
 
-    Cancelling the task closes the supervisor → runtime TCP connection,
-    which fires the runtime pod's `req.on('close')` handler and aborts the
-    SDK query. No HTTP forward to the runtime required.
+    Local fast-path: if this replica holds the task, cancel and return.
+    Otherwise fan out via Redis pub/sub so whichever replica holds the
+    task can cancel it. Cancelling the task closes the supervisor → runtime
+    TCP connection, which fires `req.on('close')` in the runtime pod and
+    aborts the SDK query.
     """
-    key = _registry_key(session_id, body.agent_id)
-    task = _active.get(key)
-    if not task or task.done():
-        return {"ok": False, "reason": "not_found"}
-    task.cancel()
-    return {"ok": True}
+    if _cancel_local(session_id, body.agent_id):
+        return {"ok": True, "via": "local"}
+    await redis_client.publish_abort(session_id, body.agent_id)
+    return {"ok": True, "via": "broadcast"}
 
 
 class _CleanupBody(BaseModel):

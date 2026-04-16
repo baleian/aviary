@@ -22,9 +22,11 @@ logging.basicConfig(level=logging.INFO)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await redis_client.init_redis()
+    agents.start_abort_listener()
     try:
         yield
     finally:
+        await agents.stop_abort_listener()
         await redis_client.close_redis()
 
 
