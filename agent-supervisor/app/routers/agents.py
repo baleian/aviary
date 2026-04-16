@@ -168,8 +168,10 @@ async def _drive_stream(
                             reached_runtime = True
                             continue
                         if etype == "error":
+                            # API is the sole publisher of terminal error events
+                            # (it owns DB-consistent events). Returning the
+                            # message in the response is enough.
                             error_message = event.get("message", "Agent runtime error")
-                            await redis_client.publish_event(session_id, event)
                             break
                         await redis_client.append_stream_chunk(stream_id, event)
                         await redis_client.publish_event(session_id, event)

@@ -127,11 +127,14 @@ async def _persist_and_broadcast(
         participants = await session_service.get_session_participants(db, session_uuid)
         await db.commit()
 
-    event = {"type": "cancelled" if cancelled else "done", "messageId": message_id}
-    await redis_service.publish_message(session_id, event)
-
+    # INCR before publish: the WS relay DELs unread for the watching user when
+    # it forwards `done`/`cancelled`. If we published first, a fast relay could
+    # DEL before INCR runs, leaving unread=1 on the session the user just read.
     for uid in participants:
         await redis_service.increment_unread(session_id, uid)
+
+    event = {"type": "cancelled" if cancelled else "done", "messageId": message_id}
+    await redis_service.publish_message(session_id, event)
 
 
 async def _run_stream(
