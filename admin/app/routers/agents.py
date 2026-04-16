@@ -1,7 +1,7 @@
-"""Agent management — list, detail, update, delete (no ACL, full access)."""
+"""Agent management — no ACL, full access."""
 
-import uuid
 import logging
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -28,7 +28,6 @@ class AgentResponse(BaseModel):
     model_config_data: dict
     tools: list
     mcp_servers: list
-    visibility: str
     category: str | None = None
     icon: str | None = None
     runtime_endpoint: str | None = None
@@ -48,7 +47,6 @@ class AgentResponse(BaseModel):
             model_config_data=agent.model_config_json,
             tools=agent.tools,
             mcp_servers=agent.mcp_servers,
-            visibility=agent.visibility,
             category=agent.category,
             icon=agent.icon,
             runtime_endpoint=agent.runtime_endpoint,
@@ -72,11 +70,8 @@ class AgentUpdateRequest(BaseModel):
     model_config_data: dict | None = Field(None, alias="model_config")
     tools: list[str] | None = None
     mcp_servers: list | None = None
-    visibility: str | None = None
     category: str | None = None
     icon: str | None = None
-    # Per-agent override. Empty string / null → fall back to the supervisor's
-    # default environment endpoint.
     runtime_endpoint: str | None = None
 
 
@@ -86,24 +81,20 @@ async def list_agents(
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ):
-    count_result = await db.execute(select(func.count()).select_from(Agent))
-    total = count_result.scalar() or 0
-
-    result = await db.execute(
+    total = (await db.execute(
+        select(func.count()).select_from(Agent)
+    )).scalar() or 0
+    agents = (await db.execute(
         select(Agent).order_by(Agent.created_at.desc()).offset(offset).limit(limit)
-    )
-    agents = result.scalars().all()
-
+    )).scalars().all()
     return AgentListResponse(
-        items=[AgentResponse.from_agent(a) for a in agents],
-        total=total,
+        items=[AgentResponse.from_agent(a) for a in agents], total=total,
     )
 
 
 @router.get("/{agent_id}", response_model=AgentResponse)
 async def get_agent(agent_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Agent).where(Agent.id == agent_id))
-    agent = result.scalar_one_or_none()
+    agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     return AgentResponse.from_agent(agent)
@@ -115,14 +106,12 @@ async def update_agent(
     body: AgentUpdateRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Agent).where(Agent.id == agent_id))
-    agent = result.scalar_one_or_none()
+    agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
     field_map = {"model_config_data": "model_config_json"}
     for field, value in body.model_dump(exclude_unset=True).items():
-        # Treat empty string runtime_endpoint as "clear override".
         if field == "runtime_endpoint" and value == "":
             value = None
         setattr(agent, field_map.get(field, field), value)
@@ -134,10 +123,7 @@ async def update_agent(
 
 @router.delete("/{agent_id}", status_code=204)
 async def delete_agent(agent_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Hard-delete an agent row. Environments are pre-provisioned; there's no
-    per-agent infrastructure to tear down."""
-    result = await db.execute(select(Agent).where(Agent.id == agent_id))
-    agent = result.scalar_one_or_none()
+    agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     await db.delete(agent)

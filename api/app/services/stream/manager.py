@@ -1,257 +1,164 @@
-"""Stream lifecycle management — start, cancel, and run background streaming tasks.
+"""Drive a single agent turn from the WS handler.
 
-Decouples agent response streaming from WebSocket lifecycle so that:
-- Streaming continues even if the client disconnects
-- Chunks are buffered in Redis for replay on reconnect
-- Agent response is always saved to DB on completion
+Flow:
+  1. Build the on-the-wire agent_config (full spec — runtime_endpoint,
+     model_config, instruction, tools, mcp_servers, accessible_agents).
+  2. POST to supervisor /v1/sessions/{sid}/message. Block until the
+     supervisor finishes streaming + assembly.
+  3. Persist the assembled agent response to the DB.
+
+The supervisor owns every Redis write that happens as part of the turn:
+the stream_id is allocated there, events stream live via
+`session:{sid}:events`, chunks buffer under `stream:{sid}:chunks`, and
+stream/session status keys are managed there. The API only reads.
 """
 
 import asyncio
+import base64
 import logging
 import uuid
 
-import base64
-
 from sqlalchemy import select
 
-from app.db.models import SessionParticipant
 from app.db.session import async_session_factory
-from app.services import agent_supervisor, redis_service, session_service
-from app.services.stream.blocks import rebuild_blocks_from_chunks
+from app.services import agent_supervisor, session_service
+from aviary_shared.db.models import FileUpload
 
 logger = logging.getLogger(__name__)
 
+# session_id → running turn task (serializes concurrent messages per session
+# at the API level; the supervisor enforces the same invariant on its side).
 _active_streams: dict[str, asyncio.Task] = {}
-
-
-def build_mcp_config(legacy_mcp_servers: list) -> dict:
-    """Build MCP servers config from legacy stdio servers."""
-    config: dict = {}
-    for srv in legacy_mcp_servers:
-        config[srv["name"]] = {"command": srv["command"], "args": srv.get("args", [])}
-    return config
+# session_id → stream_id last dispatched; used to target the /abort call
+# without having to remember it on the WS side.
+_latest_stream: dict[str, str] = {}
 
 
 async def start_stream(
     session_id: str,
-    agent_id: str,
-    agent_model_config: dict,
-    agent_instruction: str,
-    agent_tools: list,
-    agent_mcp_servers: list,
-    agent_runtime_endpoint: str | None,
+    agent_config: dict,
     content: str,
     user_message_id: uuid.UUID,
     user_token: str,
-    accessible_agents: list[dict] | None = None,
     attachments: list[dict] | None = None,
 ) -> None:
-    """Launch a background task that streams the agent response."""
     existing = _active_streams.get(session_id)
     if existing and not existing.done():
         logger.warning("Cancelling existing stream for session %s", session_id)
         existing.cancel()
 
-    await redis_service.clear_stream_buffer(session_id)
-
     task = asyncio.create_task(
-        _run_stream(
-            session_id, agent_id,
-            agent_model_config, agent_instruction,
-            agent_tools, agent_mcp_servers, agent_runtime_endpoint,
-            content, user_message_id, user_token,
-            accessible_agents=accessible_agents,
-            attachments=attachments,
-        )
+        _run_stream(session_id, agent_config, content, user_message_id, user_token, attachments)
     )
     _active_streams[session_id] = task
 
-    def _cleanup(t: asyncio.Task) -> None:
+    def _cleanup(_: asyncio.Task) -> None:
         _active_streams.pop(session_id, None)
+        _latest_stream.pop(session_id, None)
+
     task.add_done_callback(_cleanup)
 
 
 def is_streaming(session_id: str) -> bool:
-    """Check if a stream task is actively running for this session."""
     task = _active_streams.get(session_id)
     return task is not None and not task.done()
 
 
-async def cancel_stream(session_id: str, agent_id: str | None = None) -> bool:
-    """Cancel an active stream and abort the agent's session."""
+async def cancel_stream(session_id: str) -> bool:
     task = _active_streams.get(session_id)
     if not task or task.done():
         return False
 
-    if agent_id:
-        await agent_supervisor.abort_session(session_id, agent_id=agent_id)
+    stream_id = _latest_stream.get(session_id)
+    if stream_id:
+        await agent_supervisor.abort_stream(stream_id)
 
     task.cancel()
-
-    message_id: str | None = None
-    try:
-        partial = await redis_service.get_stream_chunks(session_id)
-        if partial:
-            partial_text, blocks_meta = rebuild_blocks_from_chunks(partial)
-
-            meta: dict = {"cancelled": True}
-            if blocks_meta:
-                meta["blocks"] = blocks_meta
-            async with async_session_factory() as db:
-                msg = await session_service.save_message(
-                    db, uuid.UUID(session_id), "agent",
-                    partial_text or "[Cancelled]", metadata=meta,
-                )
-                await db.commit()
-                message_id = str(msg.id)
-    except Exception:  # Best-effort: partial response save on cancel is non-critical
-        logger.warning("Failed to save partial response for cancelled session %s", session_id)
-
-    cancelled_event: dict = {"type": "cancelled"}
-    if message_id:
-        cancelled_event["messageId"] = message_id
-    await redis_service.publish_message(session_id, cancelled_event)
-
-    await redis_service.set_stream_status(session_id, "complete")
-    await redis_service.set_session_status(session_id, "idle")
-    await redis_service.clear_stream_buffer(session_id)
-
     return True
+
+
+async def _build_content_parts(
+    content: str, attachments: list[dict] | None,
+) -> list[dict]:
+    part: dict = {}
+    if content:
+        part["text"] = content
+    if attachments:
+        file_ids = [uuid.UUID(att["file_id"]) for att in attachments]
+        async with async_session_factory() as db:
+            uploads = {
+                str(u.id): u for u in (await db.execute(
+                    select(FileUpload).where(FileUpload.id.in_(file_ids))
+                )).scalars().all()
+            }
+        resolved = [
+            {
+                "type": "image",
+                "media_type": uploads[att["file_id"]].content_type,
+                "data": base64.b64encode(uploads[att["file_id"]].data).decode("ascii"),
+            }
+            for att in attachments
+            if att["file_id"] in uploads
+        ]
+        if resolved:
+            part["attachments"] = resolved
+    return [part] if part else []
 
 
 async def _run_stream(
     session_id: str,
-    agent_id: str,
-    agent_model_config: dict,
-    agent_instruction: str,
-    agent_tools: list,
-    agent_mcp_servers: list,
-    agent_runtime_endpoint: str | None,
+    agent_config: dict,
     content: str,
     user_message_id: uuid.UUID,
     user_token: str,
-    accessible_agents: list[dict] | None = None,
-    attachments: list[dict] | None = None,
+    attachments: list[dict] | None,
 ) -> None:
-    """Execute the agent response stream as a background task."""
     session_uuid = uuid.UUID(session_id)
+    content_parts = await _build_content_parts(content, attachments)
 
-    await redis_service.set_stream_status(session_id, "streaming")
-    await redis_service.set_session_status(session_id, "streaming")
-    await redis_service.publish_message(session_id, {"type": "replay_start"})
-
-    async def _drop_user_message_and_fail(reason: str) -> None:
-        # Pre-stream failure: roll back the user message we optimistically
-        # persisted in the WS handler so the user doesn't end up with a
-        # half-conversation when they revisit the session.
-        async with async_session_factory() as db:
-            await session_service.delete_message(db, user_message_id)
-            await db.commit()
-        await redis_service.publish_message(
-            session_id, {"type": "error", "message": reason, "rollback_message_id": str(user_message_id)},
-        )
-        await redis_service.set_stream_status(session_id, "error")
-        await redis_service.set_session_status(session_id, "idle")
-
-    # Build content_parts for runtime: resolve file attachments to base64
-    content_part: dict = {}
-    if content:
-        content_part["text"] = content
-    if attachments:
-        from aviary_shared.db.models import FileUpload
-        file_ids = [uuid.UUID(att["file_id"]) for att in attachments]
-        async with async_session_factory() as db:
-            result = await db.execute(
-                select(FileUpload).where(FileUpload.id.in_(file_ids))
-            )
-            uploads = {str(u.id): u for u in result.scalars().all()}
-        resolved = []
-        for att in attachments:
-            upload = uploads.get(att["file_id"])
-            if upload:
-                resolved.append({
-                    "type": "image",
-                    "media_type": upload.content_type,
-                    "data": base64.b64encode(upload.data).decode("ascii"),
-                })
-        if resolved:
-            content_part["attachments"] = resolved
-    content_parts = [content_part] if content_part else []
-
-    # Reached-runtime = the SDK ack'd our query and the user message is in
-    # conversation history, so we must NOT rollback on subsequent errors.
     reached_runtime = False
 
     try:
-        result = await agent_supervisor.publish_stream(
+        result = await agent_supervisor.post_message(
             session_id=session_id,
             user_token=user_token,
             body={
-                "runtime_endpoint": agent_runtime_endpoint,
-                "content_parts": content_parts,
                 "session_id": session_id,
-                "model_config_data": agent_model_config,
-                "agent_config": {
-                    "agent_id": agent_id,
-                    "instruction": agent_instruction,
-                    "tools": agent_tools,
-                    "mcp_servers": build_mcp_config(agent_mcp_servers),
-                    **({"accessible_agents": accessible_agents} if accessible_agents else {}),
-                },
+                "content_parts": content_parts,
+                "agent_config": agent_config,
             },
         )
+        stream_id = result.get("stream_id")
+        if stream_id:
+            _latest_stream[session_id] = stream_id
+
         reached_runtime = bool(result.get("reached_runtime"))
         if result.get("status") != "complete":
             raise RuntimeError(result.get("message", "Agent runtime error"))
 
         full_response = result.get("assembled_text", "")
         blocks_meta = result.get("assembled_blocks", [])
-
         meta = {"blocks": blocks_meta} if blocks_meta else None
+
         async with async_session_factory() as db:
-            msg = await session_service.save_message(
-                db, session_uuid, "agent", full_response, metadata=meta
+            await session_service.save_message(
+                db, session_uuid, "agent", full_response, metadata=meta,
             )
             await db.commit()
-            message_id = str(msg.id)
-
-        await redis_service.set_stream_status(session_id, "complete")
-        await redis_service.set_stream_result(session_id, full_response, message_id)
-        await redis_service.set_session_status(session_id, "idle")
-
-        async with async_session_factory() as db:
-            result = await db.execute(
-                select(SessionParticipant.user_id).where(
-                    SessionParticipant.session_id == session_uuid
-                )
-            )
-            all_participants = {str(row[0]) for row in result.all()}
-
-        for uid in all_participants:
-            await redis_service.increment_unread(session_id, uid)
-
-        done_event = {"type": "done", "messageId": message_id}
-        await redis_service.publish_message(session_id, done_event)
 
     except asyncio.CancelledError:
         logger.info("Stream cancelled for session %s", session_id)
-        await redis_service.set_stream_status(session_id, "error")
-        await redis_service.set_session_status(session_id, "idle")
-    except Exception as exc:  # Best-effort: background task must not crash unhandled
+    except Exception as exc:
         logger.exception("Stream failed for session %s", session_id)
-        await redis_service.set_stream_status(session_id, "error")
-        await redis_service.set_session_status(session_id, "idle")
-
-        reason = str(exc) if str(exc) else "Agent streaming failed"
-        error_event: dict = {"type": "error", "message": reason}
-        # query() was never invoked — the message is not in SDK conversation
-        # history, so rollback the user message to keep DB in sync.
+        # query() was never invoked — the user message isn't in SDK conversation
+        # history, so roll it back so the DB stays consistent.
         if not reached_runtime:
             try:
                 async with async_session_factory() as db:
                     await session_service.delete_message(db, user_message_id)
                     await db.commit()
-                error_event["rollback_message_id"] = str(user_message_id)
             except Exception:
                 logger.warning("Failed to rollback user message %s", user_message_id)
-        await redis_service.publish_message(session_id, error_event)
+        # Error event itself is emitted by the supervisor into the Redis channel;
+        # no API-side publish needed.
+        _ = exc

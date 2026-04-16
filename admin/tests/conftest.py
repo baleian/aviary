@@ -70,11 +70,7 @@ async def _ensure_test_db():
     _db_initialized = True
 
 
-_TABLES = [
-    "messages", "session_participants", "sessions",
-    "agent_credentials", "agent_acl", "agents",
-    "team_members", "teams", "users",
-]
+_TABLES = ["messages", "sessions", "agents", "users"]
 
 
 @pytest.fixture(autouse=True)
@@ -128,7 +124,6 @@ async def seed_agent() -> Agent:
             model_config_json={"backend": "dummy-backend", "model": "dummy-model"},
             tools=["read_file"],
             mcp_servers=[],
-            visibility="public",
         )
         db.add(agent)
         await db.flush()

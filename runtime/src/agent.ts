@@ -52,22 +52,27 @@ const PASSTHROUGH_KEYS = ["PATH"] as const;
 
 
 
+interface ModelConfig {
+  model?: string;
+  backend?: string;
+  max_output_tokens?: number;
+}
+
 interface AgentConfig {
+  agent_id: string;
+  slug?: string;
+  name?: string;
+  description?: string | null;
+  runtime_endpoint?: string | null;
+  model_config?: ModelConfig | null;
   instruction?: string;
   tools?: string[];
-  policy?: Record<string, unknown>;
   mcp_servers?: Record<string, unknown>;
   user_token?: string;
   user_external_id?: string;
   credentials?: Record<string, string>;
   accessible_agents?: AccessibleAgent[];
   is_sub_agent?: boolean;
-}
-
-interface ModelConfig {
-  model?: string;
-  backend?: string;
-  max_output_tokens?: number;
 }
 
 const MCP_GATEWAY_URL = process.env.MCP_GATEWAY_URL;
@@ -196,13 +201,12 @@ function buildMessageContent(
 
 export async function* processMessage(
   sessionId: string,
-  agentId: string,
   contentParts: ContentPart[],
-  modelConfig: ModelConfig | null | undefined,
   agentConfig: AgentConfig,
   abortController?: AbortController,
   outputFormat?: { type: "json_schema"; schema: Record<string, unknown> },
 ): AsyncGenerator<SSEChunk> {
+  const agentId = agentConfig.agent_id;
   const shared = sessionSharedDir(sessionId);
   const claudeDir = sessionClaudeDir(sessionId, agentId);
   const tmpDir = sessionTmp(sessionId, agentId);
@@ -212,9 +216,9 @@ export async function* processMessage(
   fs.mkdirSync(tmpDir, { recursive: true });
   fs.mkdirSync(path.dirname(venvDir), { recursive: true });
 
-  const mc: ModelConfig = modelConfig ?? {};
+  const mc: ModelConfig = agentConfig.model_config ?? {};
   if (!mc.model || !mc.backend) {
-    throw new Error("model_config.model and model_config.backend are required");
+    throw new Error("agent_config.model_config.model and .backend are required");
   }
   // Backend is the LiteLLM model-name prefix. If the stored model
   // already includes a prefix we use it verbatim, otherwise we join
@@ -269,7 +273,6 @@ export async function* processMessage(
   if (accessibleAgents.length > 0 && !isSubAgent) {
     a2aServer = await startA2AServer(accessibleAgents, {
       sessionId,
-      modelConfig: mc as Record<string, unknown>,
       userToken: agentConfig.user_token,
     });
     mcpServers["a2a"] = { type: "http", url: a2aServer.url };

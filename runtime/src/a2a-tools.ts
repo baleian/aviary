@@ -27,21 +27,29 @@ Guidelines:
 
 `;
 
+/**
+ * Full sub-agent spec as it arrives in the parent's agent_config.
+ * Mirrors the server-side `agent_config` contract: every field the
+ * sub-agent runtime needs to execute is here, so the parent's A2A server
+ * can forward it to the supervisor unchanged.
+ */
 export interface AccessibleAgent {
   agent_id: string;
   slug: string;
   name: string;
   description: string | null;
   runtime_endpoint: string | null;
+  model_config: Record<string, unknown>;
+  instruction: string;
+  tools: string[];
+  mcp_servers: Record<string, unknown>;
 }
 
 export interface A2AContext {
   sessionId: string;
-  /** Parent agent's model_config — sub-agents inherit unless we add a per-agent override later. */
-  modelConfig: Record<string, unknown>;
   /** User JWT — forwarded to the supervisor as `Authorization: Bearer`.
-   *  The supervisor validates it and re-injects identity + per-user
-   *  credentials (GitHub token, etc.) into the sub-agent runtime body. */
+   *  The supervisor validates it and injects identity + per-user Vault
+   *  credentials into the sub-agent runtime body. */
   userToken: string | undefined;
 }
 
@@ -56,10 +64,17 @@ async function callSubAgent(
   const body = {
     parent_session_id: ctx.sessionId,
     parent_tool_use_id: parentToolUseId,
-    target_agent_id: agent.agent_id,
-    target_runtime_endpoint: agent.runtime_endpoint,
-    model_config_data: ctx.modelConfig,
-    agent_config: {},
+    agent_config: {
+      agent_id: agent.agent_id,
+      slug: agent.slug,
+      name: agent.name,
+      description: agent.description,
+      runtime_endpoint: agent.runtime_endpoint,
+      model_config: agent.model_config,
+      instruction: agent.instruction,
+      tools: agent.tools,
+      mcp_servers: agent.mcp_servers,
+    },
     content_parts: [{ text: message }],
   };
 

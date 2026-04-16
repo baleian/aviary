@@ -90,7 +90,6 @@ async def update_agent_config(
     name: str = Form(...),
     description: str = Form(""),
     instruction: str = Form(...),
-    visibility: str = Form("private"),
     runtime_endpoint: str = Form(""),
 ):
     result = await db.execute(select(Agent).where(Agent.id == agent_id))
@@ -101,7 +100,6 @@ async def update_agent_config(
     agent.name = name
     agent.description = description or None
     agent.instruction = instruction
-    agent.visibility = visibility
     agent.runtime_endpoint = runtime_endpoint.strip() or None
     await db.flush()
 

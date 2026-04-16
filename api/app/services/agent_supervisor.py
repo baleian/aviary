@@ -1,6 +1,11 @@
-"""Agent Supervisor client — session-centric, stateless. All routing info
-(runtime_endpoint) comes from the agent row on the API side and rides in
-the request body."""
+"""Supervisor HTTP client.
+
+The supervisor is the session-stream gateway: API POSTs a message, the
+supervisor drives the runtime SSE → Redis → assembled response, and the
+API persists the assembled message. Auth to the supervisor is always an
+OIDC Bearer (user JWT) — the supervisor validates and uses the sub claim
+to inject per-user credentials from Vault before it reaches the runtime.
+"""
 
 import logging
 
@@ -23,18 +28,13 @@ async def close_client() -> None:
     await _supervisor.close()
 
 
-async def publish_stream(session_id: str, body: dict, user_token: str) -> dict:
-    """Ask the supervisor to consume runtime SSE, publish to Redis, assemble
-    the final response, and return it.
+async def post_message(session_id: str, body: dict, user_token: str) -> dict:
+    """Drive a single agent turn. Blocks until the stream is assembled.
 
-    The supervisor authenticates `user_token` (OIDC Bearer), extracts the
-    user's `sub`, and pulls per-user credentials (GitHub token, etc.) from
-    Vault — the API no longer touches Vault for runtime credentials.
-
-    Returns `{status, reached_runtime, assembled_text?, assembled_blocks?, message?}`.
+    Returns `{status, stream_id, reached_runtime, assembled_text?, assembled_blocks?, message?}`.
     """
     resp = await _supervisor.client.post(
-        f"/v1/sessions/{session_id}/publish",
+        f"/v1/sessions/{session_id}/message",
         json=body,
         headers={"Authorization": f"Bearer {user_token}"},
         timeout=None,
@@ -43,20 +43,14 @@ async def publish_stream(session_id: str, body: dict, user_token: str) -> dict:
     return resp.json()
 
 
-async def abort_session(
-    session_id: str,
-    agent_id: str | None = None,
-) -> None:
-    """Best-effort abort. Racy with normal completion."""
+async def abort_stream(stream_id: str) -> None:
     try:
         resp = await _supervisor.client.post(
-            f"/v1/sessions/{session_id}/abort",
-            json={"agent_id": agent_id},
-            timeout=5,
+            f"/v1/streams/{stream_id}/abort", timeout=5,
         )
         resp.raise_for_status()
     except httpx.HTTPError:
-        logger.warning("Failed to abort session %s", session_id, exc_info=True)
+        logger.warning("Failed to abort stream %s", stream_id, exc_info=True)
 
 
 async def cleanup_session(
@@ -64,7 +58,7 @@ async def cleanup_session(
     agent_id: str,
     runtime_endpoint: str | None = None,
 ) -> None:
-    """Best-effort workspace cleanup."""
+    """Best-effort workspace cleanup on the runtime."""
     try:
         resp = await _supervisor.client.request(
             "DELETE",
@@ -75,12 +69,6 @@ async def cleanup_session(
         resp.raise_for_status()
     except httpx.HTTPError:
         logger.warning("Session cleanup failed for %s", session_id, exc_info=True)
-
-
-def get_stream_url(session_id: str) -> str:
-    """Direct SSE passthrough endpoint — for workflow / A2A sub-agent callers
-    that do in-process event transformation rather than Redis assembly."""
-    return f"{settings.agent_supervisor_url}/v1/sessions/{session_id}/message"
 
 
 async def health_check() -> bool:

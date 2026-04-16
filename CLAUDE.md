@@ -55,32 +55,32 @@ Agent routing:
 
 Three backend services with distinct roles:
 
-**API Server (`:8000`)** — User-facing. Agent CRUD (config only), OIDC auth, ACL, sessions, chat. Looks up `agent.runtime_endpoint` and forwards it as part of each publish request body. Passes the user's JWT to the supervisor as an `Authorization: Bearer` header. The API has no Vault client — credential CRUD is admin-only, and runtime credential injection is supervisor-only. No K8s concepts anywhere in `api/`.
+**Access model (current)** — *Owner-only* for every entity (agent, session, workflow). There is no ACL, no team, no visibility, no platform-admin, no invited participants. RBAC will return later as a dedicated redesign; everything below assumes a single-owner world.
 
-**Admin Console (`:8001`)** — Operator-facing. No authentication (local-only). Manages agent config, including the optional `runtime_endpoint` override, plus MCP registration, ACL, users, and Vault credentials. Never talks to K8s or the supervisor — runtime infrastructure is Helm-managed.
+**API Server (`:8000`)** — User-facing. Agent/session/workflow CRUD (owner-only), OIDC auth, chat. Looks up the agent row, builds a self-contained `agent_config`, and POSTs to the supervisor with `Authorization: Bearer <user JWT>`. The API **never writes to Redis** — it only reads (for WS relay + sidebar status). No Vault client. No K8s concepts.
 
-**Agent Supervisor (`:9000`, docker compose service)** — Reverse SSE Proxy. Runs outside K8s, same deploy unit as API/Admin. No DB, no K8s API. Holds an **in-memory registry** of active publish tasks keyed by `(session_id, agent_id)`. `/publish` and `/a2a` require `Authorization: Bearer <user JWT>` — the supervisor validates the token via OIDC and is the **sole owner** of per-user runtime credential lookup: it fetches `github-token` from Vault using the JWT's `sub` and injects `agent_config.credentials` / `user_token` / `user_external_id` into the request body before forwarding to the runtime. Streams SSE from the runtime's Service endpoint, publishes every event to Redis (chunks + pub/sub), assembles the final text + blocks_meta, returns it to the caller. Emits Prometheus metrics at `/metrics`. **Abort** = lookup in the registry and `task.cancel()` — no HTTP forward to runtime needed; closing the outbound httpx stream propagates close through the Service-pinned TCP connection, which fires `req.on("close")` in the runtime pod and aborts the SDK.
+**Admin Console (`:8001`)** — Operator-facing. No authentication (local-only). Manages agent / workflow / MCP server definitions and per-user Vault credentials (github-token, anthropic-api-key, …). Runtime infrastructure is Helm-managed — admin never talks to K8s or the supervisor.
+
+**Agent Supervisor (`:9000`, docker compose service)** — Reverse SSE Proxy. Runs outside K8s, same deploy unit as API/Admin. No DB, no K8s API. Holds an **in-memory registry** of active stream tasks keyed by **stream_id** (one per `/message` call). `/sessions/{sid}/message` and `/sessions/{sid}/a2a` require `Authorization: Bearer <user JWT>` — the supervisor validates the token via OIDC and is the **sole owner** of Redis writes and of per-user runtime credential lookup: it fetches `github-token` from Vault using the JWT's `sub` and injects `agent_config.credentials` / `user_token` / `user_external_id` into the request body before forwarding to the runtime. Streams SSE from the runtime's Service endpoint, publishes every event (tagged with stream_id) to `session:{sid}:events`, buffers chunks under `stream:{stream_id}:chunks` for replay, assembles the final text + blocks, returns them to the caller. Emits Prometheus metrics at `/metrics`. **Abort** = `POST /v1/streams/{stream_id}/abort` → cancel the task; closing the outbound httpx stream propagates close through the Service-pinned TCP connection, which fires `req.on("close")` in the runtime pod and aborts the SDK.
 
 **Shared DB package** (`shared/aviary_shared/`) — SQLAlchemy models, migrations, and session factory used by API + Admin. Migrations live at `shared/aviary_shared/db/migrations/` with alembic config at `shared/alembic.ini`.
 
 **Key flows:**
 - Agent creation → API saves config to DB. No infrastructure side effects.
 - Agent routing edit → Admin updates `agent.runtime_endpoint` in DB. Effective on the next chat message.
-- Chat message → WebSocket → API looks up `agent.runtime_endpoint` → `POST supervisor /v1/sessions/{sid}/publish` with body including `runtime_endpoint` and `agent_config`, plus `Authorization: Bearer <user JWT>` → supervisor validates the JWT, fetches `github-token` from Vault, injects `credentials`/`user_token`/`user_external_id` into `agent_config`, streams SSE from `{endpoint}/message`, publishes each event to Redis, assembles final message and returns it → API saves the returned message to DB and publishes the `done` event. WS clients receive live events via independent Redis subscription.
+- Chat message → WebSocket → API saves the user message to DB, builds the full `agent_config` (runtime_endpoint, model_config, instruction, tools, mcp_servers, optional accessible_agents), POSTs `supervisor /v1/sessions/{sid}/message` with `Authorization: Bearer <user JWT>` → supervisor allocates a stream_id, validates the JWT, fetches Vault credentials, injects them into `agent_config`, streams SSE from `{endpoint}/message`, publishes every event to `session:{sid}:events` and buffers under `stream:{stream_id}:chunks`, assembles final text + blocks, returns them → API persists the agent message to DB. WS clients receive live events via independent Redis subscription; the supervisor owns every Redis write.
 - Agent config edit (instruction, tools, MCP servers) → API updates DB only. Passed to runtime on every message request body.
 
 **Pod Strategy (env-per-pool, (agent, session)-per-workdir):** One Helm release per environment. Replicas fixed (min 1), no scale-to-zero. Every pod serves every agent. Isolation comes from per-(agent, session) on-disk paths plus bubblewrap — the pod itself is agent-agnostic.
 
 **LiteLLM Gateway** (docker compose, `:8090`): All LLM calls go through LiteLLM OSS proxy. Backend is determined by the model name prefix (e.g., `anthropic/claude-sonnet-4-6` → Claude API, `ollama/gemma4:26b` → Ollama, `vllm/...` → vLLM, `bedrock/...` → Bedrock). Natively compatible with Anthropic SDK (`/v1/messages`), so claude-agent-sdk works transparently. Configuration in `config/litellm/config.yaml`. API server queries it for model listing (`/model/info`). Supports virtual keys, rate limiting, and per-user API key injection. Two startup patches loaded via `.pth` file: `fix_adapter_streaming.py` fixes Anthropic-to-OpenAI adapter streaming for non-Anthropic backends; `aviary_user_api_key.py` injects per-user Anthropic API keys from Vault.
 
-**Agent Supervisor routes** (all session-centric, caller injects `runtime_endpoint`):
-- `POST /v1/sessions/{sid}/message` — transparent SSE passthrough (used by the workflow engine).
-- `POST /v1/sessions/{sid}/a2a` — sub-agent stream invoked directly by a parent runtime's local A2A MCP server. Body carries `target_agent_id` + `target_runtime_endpoint` (already ACL-filtered by the API at chat-start). Forwards SSE to the caller and tags `tool_use`/`tool_result` events into the parent session's Redis A2A buffer for assembly.
-- `POST /v1/sessions/{sid}/publish` — SSE + Redis + assembly. Returns `{status, reached_runtime, assembled_text, assembled_blocks}`.
-- `POST /v1/sessions/{sid}/abort` — best-effort abort on the runtime.
-- `DELETE /v1/sessions/{sid}` — cleanup workspace directories for a given agent/session.
-- `GET /v1/health`
-- `GET /metrics` — Prometheus text format.
+**Agent Supervisor routes:**
+- `POST /v1/sessions/{sid}/message` — Bearer-gated. Body: `{session_id, content_parts, agent_config}` where `agent_config` carries `runtime_endpoint`, `model_config`, `instruction`, `tools`, `mcp_servers`, optional `accessible_agents` (each is a full agent spec). Returns `{status, stream_id, reached_runtime, assembled_text, assembled_blocks}`. All stream events are published to Redis under `session:{sid}:events` tagged with the allocated `stream_id`.
+- `POST /v1/sessions/{sid}/a2a` — Bearer-gated. Parent runtime's A2A MCP server invokes this with `{parent_session_id, parent_tool_use_id, agent_config: <full sub-agent config>, content_parts}`. Sub-agent SSE is forwarded to the caller; `tool_use`/`tool_result` events are tagged with `parent_tool_use_id` and stashed in the parent's A2A buffer for assembly merge.
+- `POST /v1/streams/{stream_id}/abort` — cancel the registered task. Unknown stream → fan-out on `supervisor:abort` so whichever replica holds it cancels.
+- `DELETE /v1/sessions/{sid}` — cleanup workspace directories for a given (agent, session).
+- `GET /v1/health` · `GET /metrics` (Prometheus).
 
 No background loops. No per-agent state. No 0↔1 activation — environments are always on.
 
@@ -107,12 +107,12 @@ The TCP connection from supervisor to a runtime pod is pinned once established (
 
 ```
 WS disconnect / explicit abort
-  → API POST /v1/sessions/{sid}/abort  (or just closes the publish conn)
-  → supervisor._active[(sid, aid)].cancel()
+  → API POST /v1/streams/{stream_id}/abort
+  → supervisor._active[stream_id].cancel()
   → httpx client context exits → TCP close → pod's req.on("close") → abortController.abort()
 ```
 
-No pod-IP tracking, no runtime-side Redis signal, no per-replica affinity is required at the HTTP layer. **Multi-replica** is handled by a supervisor-only Redis fan-out: if `/abort` lands on a replica that doesn't hold the task, it publishes to the `supervisor:abort` channel and whichever replica holds the task cancels it. Runtime has no knowledge of this and no Redis connectivity.
+**Multi-replica** is handled by a supervisor-only Redis fan-out: if `/abort` lands on a replica that doesn't hold the task, it publishes to the `supervisor:abort` channel with the `stream_id` and whichever replica holds it cancels. Runtime has no knowledge of this and no Redis connectivity.
 
 ### claude-agent-sdk Multi-Turn (TypeScript)
 Uses the `query()` function from `@anthropic-ai/claude-agent-sdk`. TS SDK doesn't expose a `sessionId` option — Aviary session_id is injected via `extraArgs: { "session-id": sessionId }` which passes `--session-id <uuid>` to the CLI on the first message. Subsequent messages use `resume: sessionId` to load existing conversation history. Resume is determined by checking for existing JSONL in `<claudeDir>/projects/`. CLI session data persists on the environment PVC under `sessions/{sid}/agents/{aid}/.claude`. Runtime is a Node.js/Express server (`src/server.ts`). Agent config (instruction, tools, MCP servers) is sent in every message request body — no ConfigMap or on-disk config. `agent_id` arrives in `agent_config.agent_id`.
@@ -165,17 +165,15 @@ The runtime (`runtime/src/agent.ts`) handles two streaming paths based on backen
 - **Non-Anthropic backends** (Ollama, vLLM): text and thinking come from cumulative assistant snapshots, diffed against `emittedTextLen` / `emittedThinkingLen`. Shorter content = new block from flushing → counter resets.
 
 ### Chat Streaming Pipeline (API ↔ Supervisor ↔ Redis)
-1. `api/app/services/stream/manager.py` reads `agent.runtime_endpoint` and POSTs to `/v1/sessions/{sid}/publish` with `Authorization: Bearer <user JWT>` (blocks until supervisor completes).
-2. Supervisor validates the JWT, fetches per-user credentials (`github-token`) from Vault, and injects them + the validated identity into `agent_config` before calling the runtime.
-3. Supervisor streams SSE from `{runtime_endpoint}/message`, RPUSHes each event into `session:{id}:stream:chunks` (for replay) and PUBLISHes to `session:{id}:messages` (for live WS), and updates Prometheus counters.
-4. On completion, supervisor rebuilds blocks (`app/assembly.py:rebuild_blocks_from_chunks`) and merges any A2A sub-agent events into `assembled_blocks`, returning `{status, reached_runtime, assembled_text, assembled_blocks}`.
-5. API saves the returned message to DB, then publishes the `done` event with `messageId`. WS clients receive live events via independent Redis subscription.
-
-Workflow engine and A2A sub-agent paths use the transparent `/v1/sessions/{sid}/message` passthrough because they do in-process event transformation rather than Redis assembly.
+1. API WS handler saves the user message to DB and builds the full `agent_config` (runtime_endpoint, model_config, instruction, tools, mcp_servers, optional accessible_agents).
+2. API POSTs `/v1/sessions/{sid}/message` with `Authorization: Bearer <user JWT>` (blocks until supervisor completes).
+3. Supervisor validates the JWT, allocates a `stream_id`, fetches per-user credentials (`github-token`) from Vault, injects `credentials`/`user_token`/`user_external_id` into `agent_config`.
+4. Supervisor streams SSE from `{agent_config.runtime_endpoint}/message`, tags each event with `stream_id`, RPUSHes into `stream:{stream_id}:chunks` (for replay), PUBLISHes to `session:{sid}:events` (for live WS), and updates Prometheus counters.
+5. On completion, supervisor rebuilds blocks (`app/assembly.py:rebuild_blocks_from_chunks`) and merges any A2A sub-agent events into `assembled_blocks`, returning `{status, stream_id, reached_runtime, assembled_text, assembled_blocks}`.
+6. API persists the agent message to DB. The API never writes to Redis — the supervisor has already broadcast `stream_started` / `chunk` / `tool_use` / `tool_result` / `stream_complete` under the same channel.
 
 ### Thinking Block Support
-- **Supervisor** (`agent-supervisor/app/assembly.py`): `rebuild_blocks_from_chunks` folds `thinking` events into `blocks_meta` before `chunk` / `tool_use` events.
-- **API cancel path** (`api/app/services/stream/blocks.py`): local rebuild used when the user disconnects mid-stream so the partial response still has structured blocks.
+- **Supervisor** (`agent-supervisor/app/assembly.py`): `rebuild_blocks_from_chunks` folds `thinking` events into `blocks_meta` before `chunk` / `tool_use` events. On abort, the same helper assembles whatever was buffered so the API gets a partial message to save.
 - **Frontend**: `ThinkingChip` renders real-time thinking; `SavedThinkingChip` renders persisted blocks.
 
 ### K8s Image Loading
@@ -190,21 +188,9 @@ One PVC per runtime environment (`aviary-env-<name>-workspace`). In dev the back
 ### React Strict Mode
 Use `useRef` guards for WebSocket connections and OIDC callbacks to prevent duplicate execution in dev mode.
 
-### Team Sync
-Teams auto-synced from Keycloak/Okta `groups` claim on every login via `team_sync_service.py`.
+## Access Model
 
-## ACL Resolution (6 steps)
-
-1. Agent owner → full access
-2. Direct user ACL entry
-3. Team ACL entries (highest role wins)
-4. `visibility=public` → implicit `user` role
-5. `visibility=team` → implicit `user` role if shared team with owner
-6. Deny
-
-Role hierarchy: `viewer` < `user` < `admin` < `owner`.
-
-Note: there is no platform admin role in the API server. Operational work happens in the Admin Console (no auth, local-only) or via Helm.
+**Owner-only, full stop.** Agents, sessions, and workflows are visible and mutable only to the user whose `id` matches `owner_id` / `created_by`. There are no teams, no visibility levels, no platform admins, no invited participants. This is a deliberate simplification ahead of an RBAC redesign — when RBAC returns we'll introduce it as a first-class layer rather than patches on top of the old ACL tables.
 
 ## Testing
 

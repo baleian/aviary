@@ -1,9 +1,8 @@
 """Reassemble a final agent message from buffered SSE chunks.
 
-Moved out of the API server so both `api` and future orchestrators (Temporal,
-batch workers) hit the same supervisor endpoint and get the same output
-contract. The cancel path in the API still reuses these helpers locally for
-partial responses.
+The supervisor is the sole assembler. On abort the buffered chunks produce a
+partial response; on normal completion they produce the full thing. Either
+way the contract is the same: return `(text, blocks)` and merge A2A events.
 """
 
 from __future__ import annotations

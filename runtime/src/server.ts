@@ -36,13 +36,13 @@ interface ContentPart {
 
 interface AgentConfigBody {
   agent_id?: string;
+  model_config?: Record<string, unknown> | null;
   [key: string]: unknown;
 }
 
 interface MessageRequestBody {
   content_parts: ContentPart[];
   session_id: string;
-  model_config_data?: Record<string, unknown> | null;
   agent_config: AgentConfigBody;
   output_format?: { type: "json_schema"; schema: Record<string, unknown> };
 }
@@ -60,7 +60,6 @@ app.post("/message", async (req, res) => {
 
   const entry = manager.getOrCreate(body.session_id, agentId);
 
-  // SSE headers
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("X-Accel-Buffering", "no");
@@ -82,9 +81,7 @@ app.post("/message", async (req, res) => {
   try {
     for await (const chunk of processMessage(
       body.session_id,
-      agentId,
       body.content_parts,
-      body.model_config_data as any,
       body.agent_config as any,
       abortController,
       body.output_format,
@@ -95,7 +92,6 @@ app.post("/message", async (req, res) => {
   } finally {
     activeAbortControllers.delete(aKey);
     release();
-    // Release the entry — on-disk files persist for resume.
     manager.remove(body.session_id, agentId, false);
   }
 
