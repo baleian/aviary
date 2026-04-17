@@ -25,7 +25,16 @@ from app.schemas.workflow import (
     WorkflowUpdate,
     WorkflowVersionResponse,
 )
-from app.services import redis_service, workflow_run_service, workflow_service
+from app.schemas.workflow_assistant import (
+    WorkflowAssistantRequest,
+    WorkflowAssistantResponse,
+)
+from app.services import (
+    redis_service,
+    workflow_assistant_service,
+    workflow_run_service,
+    workflow_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +128,19 @@ async def list_workflow_versions(
 ):
     versions = await workflow_service.list_workflow_versions(db, workflow.id)
     return [WorkflowVersionResponse.from_orm_version(v) for v in versions]
+
+
+# ── AI Assistant ────────────────────────────────────────────────────────────
+
+@router.post("/{workflow_id}/assistant", response_model=WorkflowAssistantResponse)
+async def workflow_assistant(
+    body: WorkflowAssistantRequest,
+    workflow: Workflow = Depends(require_workflow_owner()),
+    session_data: SessionData = Depends(get_session_data),
+):
+    return await workflow_assistant_service.ask(
+        workflow, body, user_token=session_data.access_token,
+    )
 
 
 # ── Runs ────────────────────────────────────────────────────────────────────

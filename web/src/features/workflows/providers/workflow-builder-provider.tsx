@@ -14,6 +14,7 @@ import { workflowsApi } from "../api/workflows-api";
 import type { Workflow } from "@/types";
 import type { WorkflowNode, WorkflowEdge, NodeType, NodeData } from "../lib/types";
 import { NODE_REGISTRY } from "../lib/node-registry";
+import { applyPlan as applyPlanPure, validatePlan, type PlanOp } from "../lib/assistant-plan";
 
 interface WorkflowBuilderContextValue {
   workflowId: string;
@@ -29,6 +30,9 @@ interface WorkflowBuilderContextValue {
   addNode: (type: NodeType, position: { x: number; y: number }) => void;
   updateNodeData: (nodeId: string, key: string, value: unknown) => void;
   deleteSelected: () => void;
+  applyPlan: (plan: PlanOp[]) => { ok: boolean; error?: string };
+  workflowModelBackend: string;
+  workflowModelName: string;
   selectedNodeId: string | null;
   undo: () => void;
   redo: () => void;
@@ -241,6 +245,19 @@ export function WorkflowBuilderProvider({ workflow, children }: Props) {
     commit(nextNodes, nextEdges);
   }, [nodes, edges, commit]);
 
+  // Apply an assistant-generated plan atomically: one history entry for
+  // the whole batch, so a single Ctrl+Z reverts every op at once.
+  const applyPlan = useCallback(
+    (plan: PlanOp[]): { ok: boolean; error?: string } => {
+      const err = validatePlan(plan, nodes, edges);
+      if (err) return { ok: false, error: err };
+      const next = applyPlanPure(plan, nodes, edges);
+      commit(next.nodes, next.edges);
+      return { ok: true };
+    },
+    [nodes, edges, commit],
+  );
+
   // Inspector: commit on blur. Pushes to history so text edits are undo-able,
   // but only once per field focus (not per keystroke).
   const updateNodeData = useCallback(
@@ -269,6 +286,9 @@ export function WorkflowBuilderProvider({ workflow, children }: Props) {
         addNode,
         updateNodeData,
         deleteSelected,
+        applyPlan,
+        workflowModelBackend: workflow.model_config?.backend ?? "",
+        workflowModelName: workflow.model_config?.model ?? "",
         selectedNodeId,
         undo,
         redo,

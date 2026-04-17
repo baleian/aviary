@@ -1,5 +1,6 @@
 import { http } from "@/lib/http";
 import type { Workflow, WorkflowRun } from "@/types";
+import type { PlanOp } from "../lib/assistant-plan";
 
 export interface WorkflowListResponse {
   items: Workflow[];
@@ -87,5 +88,19 @@ export const workflowsApi = {
 
   cancelRun(id: string, runId: string) {
     return http.post(`/workflows/${id}/runs/${runId}/cancel`, {});
+  },
+
+  assistant(
+    id: string,
+    data: {
+      user_message: string;
+      current_definition: { nodes: unknown[]; edges: unknown[] };
+      history: { role: "user" | "assistant"; content: string }[];
+    },
+  ) {
+    return http.post<{ reply: string; plan: PlanOp[] }>(
+      `/workflows/${id}/assistant`,
+      data,
+    );
   },
 };

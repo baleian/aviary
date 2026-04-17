@@ -23,6 +23,7 @@ import { InspectorPanel } from "./inspector-panel";
 import { TestPanel } from "./test-panel";
 import { RunHistoryPanel } from "./run-history-panel";
 import { Toolbar } from "./toolbar";
+import { AssistantPanel } from "./assistant-panel";
 import { ManualTriggerNode, WebhookTriggerNode } from "./nodes/trigger-node";
 import { AgentStepNode } from "./nodes/agent-step-node";
 import { ConditionNode, MergeNode } from "./nodes/control-nodes";
@@ -270,14 +271,17 @@ export function WorkflowBuilder({ onStatusChange }: WorkflowBuilderProps) {
           onDeploy={handleDeploy}
           onEdit={handleEdit}
         />
-        <div className="flex flex-1 overflow-hidden">
-          <LeftPanel onAddNode={handlePaletteAdd} />
-          <ReactFlowProvider>
-            <div className="flex flex-1 overflow-hidden">
-              <Canvas />
-              <RightPanel workflowId={workflowId} run={run} />
-            </div>
-          </ReactFlowProvider>
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <div className="flex flex-1 overflow-hidden">
+            <LeftPanel onAddNode={handlePaletteAdd} />
+            <ReactFlowProvider>
+              <div className="flex flex-1 overflow-hidden">
+                <Canvas />
+                <RightPanel workflowId={workflowId} run={run} />
+              </div>
+            </ReactFlowProvider>
+          </div>
+          <AssistantPanel />
         </div>
       </div>
     </RunStatusProvider>
