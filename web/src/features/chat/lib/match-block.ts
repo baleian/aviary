@@ -20,6 +20,8 @@ function anyBlockMatches(blocks: StreamBlock[], query: string): boolean {
       if (block.content.toLowerCase().includes(query)) return true;
     } else if (block.type === "tool_call") {
       if (toolCallMatches(block, query)) return true;
+    } else if (block.type === "error") {
+      if (block.message.toLowerCase().includes(query)) return true;
     }
   }
   return false;

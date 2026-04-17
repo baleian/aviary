@@ -168,9 +168,14 @@ async def test_message_reports_runtime_error_event(client):
         'data: {"type": "error", "message": "boom"}',
     ]
     auth_p, vault_p = _patch_auth_and_vault()
+    buffered_chunks = [
+        {"type": "chunk", "content": "Working on it. "},
+        {"type": "tool_use", "name": "Read", "input": {"file_path": "/x"}, "tool_use_id": "t1"},
+    ]
     with _patch_runtime_stream(lines), auth_p, vault_p, \
          patch("app.routers.agents.redis_client.append_stream_chunk", new_callable=AsyncMock), \
          patch("app.routers.agents.redis_client.publish_event", new_callable=AsyncMock), \
+         patch("app.routers.agents.redis_client.get_stream_chunks", new_callable=AsyncMock, return_value=buffered_chunks), \
          patch("app.routers.agents.redis_client.set_stream_status", new_callable=AsyncMock) as set_status, \
          patch("app.routers.agents.redis_client.set_session_status", new_callable=AsyncMock), \
          patch("app.routers.agents.redis_client.set_session_latest_stream", new_callable=AsyncMock):
@@ -181,6 +186,14 @@ async def test_message_reports_runtime_error_event(client):
     assert data["message"] == "boom"
     assert data["reached_runtime"] is True
     set_status.assert_any_await(data["stream_id"], "error")
+    # Partial work must be preserved so the DB matches the SDK's JSONL history.
+    assert data["assembled_text"] == "Working on it. "
+    assert data["assembled_blocks"][-1] == {"type": "error", "message": "boom"}
+    # The tool_call from the pre-error chunks survives alongside the error tail.
+    assert any(
+        b.get("type") == "tool_call" and b.get("tool_use_id") == "t1"
+        for b in data["assembled_blocks"]
+    )
 
 
 @pytest.mark.asyncio

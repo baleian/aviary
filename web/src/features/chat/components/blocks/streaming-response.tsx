@@ -5,6 +5,7 @@ import { TextBlockView } from "./text-block";
 import { ThinkingChip } from "./thinking-chip";
 import { ToolCallCard } from "./tool-call-card";
 import { ToolGroupChip } from "./tool-group-chip";
+import { ErrorBlockView } from "./error-block";
 import { ActivityIndicator } from "./activity-indicator";
 import { groupConsecutiveToolCalls } from "@/features/chat/lib/group-blocks";
 import type { StreamBlock } from "@/types";
@@ -56,6 +57,9 @@ export const StreamingResponse = memo(function StreamingResponse({
           }
           if (block.type === "tool_call") {
             return <ToolCallCard key={block.id} block={block} />;
+          }
+          if (block.type === "error") {
+            return <ErrorBlockView key={block.id} message={block.message} />;
           }
           return null;
         })}

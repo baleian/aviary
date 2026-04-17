@@ -50,6 +50,13 @@ export function restoreBlocks(
         content: String(block.content ?? ""),
       };
     }
+    if (block.type === "error") {
+      return {
+        type: "error" as const,
+        id: `${prefix}error-${i}`,
+        message: String(block.message ?? block.content ?? ""),
+      };
+    }
     return {
       type: "text" as const,
       id: `${prefix}text-${i}`,

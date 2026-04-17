@@ -80,4 +80,8 @@ export {
   Square,
   RectangleVertical,
   RectangleHorizontal,
+  Maximize2,
+  Minimize2,
+  Columns2,
+  Rows2,
 } from "lucide-react";

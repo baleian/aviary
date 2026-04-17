@@ -318,7 +318,7 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
                         await websocket.send_json(event)
                         # Any terminal event delivered to a live WS means the
                         # watching user can drop the badge on this session.
-                        if event.get("type") in ("done", "cancelled"):
+                        if event.get("type") in ("done", "cancelled", "error"):
                             await redis_service.clear_unread(session_id_str, user_id_str)
                     except WebSocketDisconnect:
                         return

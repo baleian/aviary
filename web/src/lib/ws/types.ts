@@ -46,7 +46,7 @@ export type WSMessage =
     }
   | { type: "thinking"; content: string }
   | { type: "done"; messageId: string }
-  | { type: "error"; message: string; rollback_message_id?: string }
+  | { type: "error"; message: string; messageId?: string; rollback_message_id?: string }
   | { type: "replay_start" }
   | { type: "replay_end" }
   | { type: "stream_complete"; content: string; messageId: string }

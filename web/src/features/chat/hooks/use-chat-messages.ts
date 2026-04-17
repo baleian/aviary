@@ -202,18 +202,54 @@ export function useChatMessages(sessionId: string): UseChatMessagesResult {
           break;
         }
 
-        case "error":
-          bs.reset();
-          setIsStreaming(false);
-          setStreamId(null);
+        case "error": {
           // "Session expired" is the backend's signal that the auth
           // session is dead — bounce through refreshUser so AuthGuard
           // sends the user to /login instead of leaving them on a
           // half-broken chat with a dangling error bubble.
           if (msg.message?.toLowerCase().includes("session expired")) {
+            bs.reset();
+            setIsStreaming(false);
+            setStreamId(null);
             void refreshUser();
             break;
           }
+
+          // messageId present → backend persisted; mirror locally so the
+          // bubble shows without waiting for a history reload.
+          if (msg.messageId) {
+            bs.finalize();
+            const partialContent = bs.flattenText();
+            const partialBlocks = bs.getBlocksMeta();
+            const allBlocks: Record<string, unknown>[] = [
+              ...partialBlocks,
+              { type: "error", message: msg.message },
+            ];
+            bs.reset();
+            const errorMessageId = msg.messageId;
+            setMessages((prev) => {
+              if (prev.some((m) => m.id === errorMessageId)) return prev;
+              return [
+                ...prev,
+                {
+                  id: errorMessageId,
+                  session_id: sessionId,
+                  sender_type: "agent",
+                  content: partialContent,
+                  metadata: { blocks: allBlocks, error: true },
+                  created_at: new Date().toISOString(),
+                },
+              ];
+            });
+            setIsStreaming(false);
+            setStreamId(null);
+            break;
+          }
+
+          bs.reset();
+          setIsStreaming(false);
+          setStreamId(null);
+
           // Pre-query failure: backend rolled back the user message from DB.
           // Restore the content to the input field so the user can retry,
           // and show a transient error that disappears on next successful send.
@@ -255,6 +291,7 @@ export function useChatMessages(sessionId: string): UseChatMessagesResult {
             },
           ]);
           break;
+        }
 
         case "replay_start":
           setIsStreaming(true);

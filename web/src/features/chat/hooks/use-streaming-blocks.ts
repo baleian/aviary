@@ -147,6 +147,7 @@ export function useStreamingBlocks() {
       .map((b) => {
         if (b.type === "text") return { type: "text", content: b.content };
         if (b.type === "thinking") return { type: "thinking", content: b.content };
+        if (b.type === "error") return { type: "error", message: b.message };
         return {
           type: "tool_call",
           name: b.name,

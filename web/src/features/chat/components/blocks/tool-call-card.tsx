@@ -6,6 +6,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { formatElapsed } from "@/lib/utils/format";
 import { summarizeToolInput } from "./tool-input-summary";
+import { EditDiffView } from "./edit-diff-view";
 import {
   useChatSearchQuery,
   useChatSearchTargetId,
@@ -142,11 +143,28 @@ export const ToolCallCard = memo(function ToolCallCard({ block }: ToolCallCardPr
           )}
         >
           <div className="mb-1.5 type-caption-bold text-fg-muted">Input</div>
-          {/* Pre blocks revert to bg-canvas so they sit slightly *darker*
-              than the info-tinted card, creating an inset look. */}
-          <pre className="mb-2 max-h-40 overflow-auto rounded-xs bg-canvas p-2 type-code-sm text-fg-secondary">
-            {JSON.stringify(block.input, null, 2)}
-          </pre>
+          {block.name === "Edit" &&
+          block.input.replace_all === false &&
+          typeof block.input.old_string === "string" &&
+          typeof block.input.new_string === "string" ? (
+            <div className="mb-2">
+              <EditDiffView
+                filePath={
+                  typeof block.input.file_path === "string"
+                    ? block.input.file_path
+                    : undefined
+                }
+                oldString={block.input.old_string}
+                newString={block.input.new_string}
+              />
+            </div>
+          ) : (
+            /* Pre blocks revert to bg-canvas so they sit slightly *darker*
+               than the info-tinted card, creating an inset look. */
+            <pre className="mb-2 max-h-40 overflow-auto rounded-xs bg-canvas p-2 type-code-sm text-fg-secondary">
+              {JSON.stringify(block.input, null, 2)}
+            </pre>
+          )}
 
           {block.result != null && (
             <>

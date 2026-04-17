@@ -107,7 +107,13 @@ export interface ThinkingBlock {
   content: string;
 }
 
-export type StreamBlock = TextBlock | ToolCallBlock | ThinkingBlock;
+export interface ErrorBlock {
+  type: "error";
+  id: string;
+  message: string;
+}
+
+export type StreamBlock = TextBlock | ToolCallBlock | ThinkingBlock | ErrorBlock;
 
 export interface TodoItem {
   content: string;

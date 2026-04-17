@@ -62,6 +62,9 @@ function renderBlockHtml(block: StreamBlock, mdToHtml: (md: string) => string): 
   if (block.type === "tool_call") {
     return renderToolHtml(block, 0);
   }
+  if (block.type === "error") {
+    return `<div class="error-block"><strong>Error:</strong> <pre>${escapeHtml(block.message)}</pre></div>`;
+  }
   return `<div class="text-block">${mdToHtml(block.content)}</div>`;
 }
 

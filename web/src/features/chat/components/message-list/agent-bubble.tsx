@@ -7,6 +7,7 @@ import { MarkdownContent } from "@/features/chat/components/markdown/markdown-co
 import { ToolCallCard } from "@/features/chat/components/blocks/tool-call-card";
 import { ToolGroupChip } from "@/features/chat/components/blocks/tool-group-chip";
 import { ThinkingChip } from "@/features/chat/components/blocks/thinking-chip";
+import { ErrorBlockView } from "@/features/chat/components/blocks/error-block";
 import { MessageCopyButton } from "./message-copy-button";
 import { useChatSearchTargetId } from "@/features/chat/hooks/chat-search-context";
 import { cn } from "@/lib/utils";
@@ -66,11 +67,9 @@ export function AgentBubble({ message, showAvatar = true }: AgentBubbleProps) {
       )}
 
       <div className="min-w-0 max-w-[80%] space-y-1.5">
-        {isError ? (
-          <div className="rounded-xl rounded-tl-sm border border-danger/20 bg-danger/[0.06] px-4 py-3">
-            <p className="type-body text-danger">{message.content}</p>
-          </div>
-        ) : hasBlocks ? (
+        {hasBlocks ? (
+          // hasBlocks first: persisted error messages also carry blocks,
+          // with the error block at the tail.
           items.map((item) => {
             if (item.kind === "tool-group") {
               return (
@@ -84,6 +83,9 @@ export function AgentBubble({ message, showAvatar = true }: AgentBubbleProps) {
             if (block.type === "thinking") {
               return <ThinkingChip key={block.id} targetId={block.id} content={block.content} />;
             }
+            if (block.type === "error") {
+              return <ErrorBlockView key={block.id} targetId={block.id} message={block.message} />;
+            }
             return (
               <div
                 key={block.id}
@@ -96,6 +98,10 @@ export function AgentBubble({ message, showAvatar = true }: AgentBubbleProps) {
               </div>
             );
           })
+        ) : isError ? (
+          <div className="rounded-xl rounded-tl-sm border border-danger/20 bg-danger/[0.06] px-4 py-3">
+            <p className="type-body text-danger">{message.content}</p>
+          </div>
         ) : (
           <div
             data-search-target={`${message.id}/body`}

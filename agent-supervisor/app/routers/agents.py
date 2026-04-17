@@ -194,7 +194,14 @@ async def _drive_stream(
     metrics.publish_duration_seconds.observe(time.monotonic() - started)
     await redis_client.set_session_status(session_id, "idle")
 
+    # Always assemble — abort and error paths both need the partial so the
+    # DB stays in sync with Claude Code's JSONL history on the PVC.
+    chunks = await redis_client.get_stream_chunks(stream_id)
+    assembled_text, assembled_blocks = assembly.rebuild_blocks_from_chunks(chunks)
+    await assembly.merge_a2a_events(session_id, assembled_blocks)
+
     if error_message:
+        assembled_blocks.append({"type": "error", "message": error_message})
         await redis_client.set_stream_status(stream_id, "error")
         metrics.publish_requests_total.labels(status="error").inc()
         return {
@@ -202,11 +209,9 @@ async def _drive_stream(
             "stream_id": stream_id,
             "reached_runtime": reached_runtime,
             "message": error_message,
+            "assembled_text": assembled_text,
+            "assembled_blocks": assembled_blocks,
         }
-
-    chunks = await redis_client.get_stream_chunks(stream_id)
-    assembled_text, assembled_blocks = assembly.rebuild_blocks_from_chunks(chunks)
-    await assembly.merge_a2a_events(session_id, assembled_blocks)
 
     # Terminal state (done / cancelled) is signalled by the API after it
     # saves the message to the DB — supervisor doesn't know the DB id, so

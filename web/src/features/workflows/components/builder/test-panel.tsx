@@ -5,6 +5,7 @@ import { Bot, Play, Check, X, CircleDot, Loader2, Globe, GitBranch, Layers, Filt
 import { TextBlockView } from "@/features/chat/components/blocks/text-block";
 import { ThinkingChip } from "@/features/chat/components/blocks/thinking-chip";
 import { ToolCallCard } from "@/features/chat/components/blocks/tool-call-card";
+import { ErrorBlockView } from "@/features/chat/components/blocks/error-block";
 import { useWorkflowBuilder } from "@/features/workflows/providers/workflow-builder-provider";
 import { useWorkflowRun, type NodeLogEntry, type NodeRunStatus, type NodeRunData } from "@/features/workflows/hooks/use-workflow-run";
 import { cn } from "@/lib/utils";
@@ -125,6 +126,7 @@ function NodeCard({
                 if (block.type === "thinking") return <ThinkingChip key={block.id} content={block.content} isActive={status === "running"} />;
                 if (block.type === "text") return <TextBlockView key={block.id} content={block.content} />;
                 if (block.type === "tool_call") return <ToolCallCard key={block.id} block={block as ToolCallBlock} />;
+                if (block.type === "error") return <ErrorBlockView key={block.id} message={block.message} />;
                 return null;
               })}
             </div>

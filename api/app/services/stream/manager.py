@@ -110,30 +110,41 @@ async def _persist_and_broadcast(
     full_response: str,
     blocks_meta: list[dict],
     *,
-    cancelled: bool,
+    terminal: str,
+    error_message: str | None = None,
 ) -> None:
-    """Save the agent message, publish the terminal event, bump unread."""
+    """Save the agent message, publish ``terminal`` (done/cancelled/error), bump unread."""
     meta: dict = {"blocks": blocks_meta} if blocks_meta else {}
-    if cancelled:
+    if terminal == "cancelled":
         meta["cancelled"] = True
+    elif terminal == "error":
+        meta["error"] = True
+
+    fallback_content = (
+        "[Cancelled]" if terminal == "cancelled"
+        else (error_message or "[Error]") if terminal == "error"
+        else ""
+    )
 
     async with async_session_factory() as db:
         msg = await session_service.save_message(
             db, session_uuid, "agent",
-            full_response or ("[Cancelled]" if cancelled else ""),
+            full_response or fallback_content,
             metadata=meta or None,
         )
         message_id = str(msg.id)
         participants = await session_service.get_session_participants(db, session_uuid)
         await db.commit()
 
-    # INCR before publish: the WS relay DELs unread for the watching user when
-    # it forwards `done`/`cancelled`. If we published first, a fast relay could
-    # DEL before INCR runs, leaving unread=1 on the session the user just read.
+    # INCR before publish: the WS relay DELs unread on terminal events —
+    # publishing first would race and leave unread=1 on the session the user
+    # just read.
     for uid in participants:
         await redis_service.increment_unread(session_id, uid)
 
-    event = {"type": "cancelled" if cancelled else "done", "messageId": message_id}
+    event: dict = {"type": terminal, "messageId": message_id}
+    if terminal == "error" and error_message:
+        event["message"] = error_message
     await redis_service.publish_message(session_id, event)
 
 
@@ -168,15 +179,31 @@ async def _run_stream(
                 session_id, session_uuid,
                 result.get("assembled_text", ""),
                 result.get("assembled_blocks", []),
-                cancelled=False,
+                terminal="done",
             )
         elif status == "aborted":
             await _persist_and_broadcast(
                 session_id, session_uuid,
                 result.get("assembled_text", ""),
                 result.get("assembled_blocks", []),
-                cancelled=True,
+                terminal="cancelled",
             )
+        elif status == "error":
+            error_message = result.get("message") or "Agent runtime error"
+            # reached_runtime=True ↔ the turn entered SDK conversation history,
+            # so we must persist to stay in sync. Only roll back when it didn't.
+            if reached_runtime:
+                await _persist_and_broadcast(
+                    session_id, session_uuid,
+                    result.get("assembled_text", ""),
+                    result.get("assembled_blocks", []),
+                    terminal="error",
+                    error_message=error_message,
+                )
+            else:
+                await _rollback_and_publish_error(
+                    session_id, user_message_id, error_message,
+                )
         else:
             raise RuntimeError(result.get("message", "Agent runtime error"))
 
@@ -185,15 +212,29 @@ async def _run_stream(
     except Exception as exc:
         logger.exception("Stream failed for session %s", session_id)
         reason = str(exc) if str(exc) else "Agent streaming failed"
-        error_event: dict = {"type": "error", "message": reason}
-        # query() was never invoked — the user message isn't in SDK conversation
-        # history, so roll it back so the DB stays consistent.
-        if not reached_runtime:
-            try:
-                async with async_session_factory() as db:
-                    await session_service.delete_message(db, user_message_id)
-                    await db.commit()
-                error_event["rollback_message_id"] = str(user_message_id)
-            except Exception:
-                logger.warning("Failed to rollback user message %s", user_message_id)
-        await redis_service.publish_message(session_id, error_event)
+        if reached_runtime:
+            await _persist_and_broadcast(
+                session_id, session_uuid,
+                "", [{"type": "error", "message": reason}],
+                terminal="error",
+                error_message=reason,
+            )
+        else:
+            await _rollback_and_publish_error(
+                session_id, user_message_id, reason,
+            )
+
+
+async def _rollback_and_publish_error(
+    session_id: str, user_message_id: uuid.UUID, reason: str,
+) -> None:
+    """Pre-query failure: delete the user message so DB matches SDK state."""
+    event: dict = {"type": "error", "message": reason}
+    try:
+        async with async_session_factory() as db:
+            await session_service.delete_message(db, user_message_id)
+            await db.commit()
+        event["rollback_message_id"] = str(user_message_id)
+    except Exception:
+        logger.warning("Failed to rollback user message %s", user_message_id)
+    await redis_service.publish_message(session_id, event)
