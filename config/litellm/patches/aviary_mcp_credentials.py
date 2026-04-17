@@ -133,9 +133,10 @@ _SUB_CACHE_TTL = 1800
 
 
 def _token_cache_key(token: str) -> str:
-    parts = token.rsplit(".", 1)
-    sig = parts[-1] if len(parts) > 1 else token
-    return hashlib.sha256(sig.encode()).hexdigest()[:32]
+    # Hash the entire token — signature alone is not a unique key because
+    # a tampered payload + original signature collides with the valid
+    # token's cache entry and silently bypasses re-validation.
+    return hashlib.sha256(token.encode()).hexdigest()[:32]
 
 
 def _find_key(jwks: dict, kid: str | None) -> dict | None:
@@ -264,6 +265,55 @@ def _injected_args_for(server_name: str, tool_name: str) -> dict[str, dict]:
 # We need it to look up the right (server, arg) → vault_key mapping, so we
 # monkey-patch the conversion to carry it through.
 
+def _install_mcp_request_auth_gate() -> None:
+    """Close LiteLLM's OAuth2-passthrough fail-open on ``/mcp``.
+
+    Upstream ``MCPRequestHandler.process_mcp_request`` silently accepts any
+    Bearer token that isn't a valid LiteLLM virtual key by downgrading to
+    an empty ``UserAPIKeyAuth()`` (see ``user_api_key_auth_mcp.py`` OAuth2
+    passthrough branch). We wrap that method so a tampered / expired /
+    non-Keycloak JWT raises 401 at request ingress, before any list or
+    call handler runs. Master keys (``sk-*``) fall through untouched —
+    LiteLLM's own key auth already vetted them.
+    """
+    try:
+        from litellm.proxy._experimental.mcp_server.auth import (  # type: ignore[import-untyped]
+            user_api_key_auth_mcp as mcp_auth_mod,
+        )
+    except ImportError:
+        logger.warning("MCP auth module not importable — JWT ingress gate disabled")
+        return
+
+    cls = getattr(mcp_auth_mod, "MCPRequestHandler", None)
+    if cls is None:
+        return
+
+    original = getattr(cls, "process_mcp_request", None)
+    if original is None or getattr(original, "_aviary_patched", False):
+        return
+
+    from fastapi import HTTPException  # type: ignore[import-untyped]
+
+    async def patched(scope):  # type: ignore[no-untyped-def]
+        result = await original(scope)
+        # Extract the bearer from the request headers we just saw.
+        headers = dict(result[-1]) if result else {}
+        token = _bearer_from_headers(headers)
+        # Only enforce for actual JWTs — master keys are handled upstream.
+        if token and not token.startswith("sk-") and _is_jwt(token):
+            try:
+                await _extract_sub(token)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=401,
+                    detail={"error": f"MCP JWT validation failed: {exc}"},
+                ) from exc
+        return result
+
+    patched._aviary_patched = True  # type: ignore[attr-defined]
+    cls.process_mcp_request = staticmethod(patched)  # type: ignore[method-assign]
+
+
 def _install_server_name_forwarder() -> None:
     try:
         from litellm.proxy.utils import ProxyLogging  # type: ignore[import-untyped]
@@ -329,7 +379,138 @@ def _unprefix_tool_name(prefixed: str, server_name: str) -> str:
     return prefixed[len(prefix):] if prefixed.startswith(prefix) else prefixed
 
 
+ALLOWED_TOOLS_HEADER = "x-aviary-allowed-tools"
+
+
+# ---------------------------------------------------------------------------
+# Universal JWT gate for MCP traffic
+# ---------------------------------------------------------------------------
+#
+# LiteLLM OSS doesn't run its built-in JWT auth on the MCP endpoint
+# (see user_api_key_auth_mcp.py's OAuth2 passthrough which silently
+# fail-opens on invalid credentials), so we validate here before any
+# catalog data or tool invocation is allowed out.
+
+
+def _normalized_headers(raw_headers: Any) -> dict[str, str]:
+    if not isinstance(raw_headers, dict):
+        return {}
+    return {k.lower(): v for k, v in raw_headers.items()}
+
+
+def _bearer_from_headers(raw_headers: Any) -> str | None:
+    headers = _normalized_headers(raw_headers)
+    auth = headers.get("authorization") or ""
+    if not auth.lower().startswith("bearer "):
+        return None
+    return auth[len("bearer ") :].strip()
+
+
+def _is_jwt(token: str) -> bool:
+    """LiteLLM-style JWT shape check — three dot-separated segments."""
+    return bool(token) and token.count(".") == 2
+
+
+async def _require_valid_mcp_bearer(raw_headers: Any) -> str | None:
+    """Require a valid Bearer credential on every MCP request.
+
+    * Missing / malformed Authorization header → 401.
+    * LiteLLM virtual keys (``sk-*``) pass through — LiteLLM's own key
+      auth handles them at the upstream entry point.
+    * Keycloak JWTs are validated against JWKS (same path as Vault
+      credential injection). Any validation failure → 401.
+
+    Returns the raw bearer string on success, or ``None`` when headers
+    aren't a plain dict (e.g., internal in-process calls where no request
+    context exists — those bypass MCP auth entirely).
+    """
+    from fastapi import HTTPException  # local import — guardrail runs late
+
+    if not isinstance(raw_headers, dict):
+        return None
+    token = _bearer_from_headers(raw_headers)
+    if not token:
+        raise HTTPException(
+            status_code=401, detail={"error": "MCP request missing Bearer credential"}
+        )
+    if token.startswith("sk-") or not _is_jwt(token):
+        return token
+    try:
+        await _extract_sub(token)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=401, detail={"error": f"MCP JWT validation failed: {exc}"}
+        ) from exc
+    return token
+
+
+async def _maybe_extract_sub(token: str | None) -> str | None:
+    """Best-effort ``sub`` extraction for downstream hooks (RBAC stub, etc.).
+    Skips master keys and returns ``None`` on any failure — caller should
+    have already enforced validation via ``_require_valid_mcp_bearer``."""
+    if not token or token.startswith("sk-") or not _is_jwt(token):
+        return None
+    try:
+        return await _extract_sub(token)
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# RBAC filter stub — future extension point
+# ---------------------------------------------------------------------------
+
+
+async def _rbac_filter_tools(
+    server: Any, tools: list, raw_headers: Any, user_sub: str | None,
+) -> list:
+    """Per-user/server/tool RBAC decision.
+
+    **Today:** no-op. The only visibility gate is LiteLLM's
+    ``allow_all_keys`` flag on each registered server (applied upstream
+    in ``MCPServerManager.get_all_allowed_mcp_servers``). That already
+    covers the binary public/private model.
+
+    **Future:** when fine-grained RBAC lands ("user U in team T may see
+    server S"), this is where it plugs in — either by consulting an
+    Aviary-owned policy source (team membership, realm roles in the JWT,
+    an RBAC DB) or by calling back into LiteLLM with a per-user virtual
+    key. The signature intentionally carries enough context
+    (``server``, ``tools``, ``raw_headers``, ``user_sub``) so either
+    server-level or tool-level policies can be expressed without changing
+    the call-site in ``_install_tools_list_stripper``.
+    """
+    return tools
+
+
+def _allowed_tools_from_headers(raw_headers: Any) -> set[str] | None:
+    """Extract the caller's agent-scoped tool allow-list from request headers.
+
+    ``None`` means "no allow-list was provided — full catalog visible"
+    (backward-compat for non-Aviary callers). Empty set means "no tools
+    visible".
+    """
+    if not isinstance(raw_headers, dict):
+        return None
+    lower = {k.lower(): v for k, v in raw_headers.items()}
+    raw = lower.get(ALLOWED_TOOLS_HEADER)
+    if raw is None:
+        return None
+    if isinstance(raw, (list, tuple)):
+        raw = ",".join(raw)
+    return {t.strip() for t in str(raw).split(",") if t.strip()}
+
+
 def _install_tools_list_stripper() -> None:
+    """Schema strip (Vault-injected args) + caller-scoped visibility filter
+    on ``MCPServerManager._get_tools_from_server``.
+
+    The visibility filter reads ``X-Aviary-Allowed-Tools`` from the caller's
+    request headers (the runtime attaches this on every MCP connection,
+    computed from the agent's ``mcp_agent_tool_bindings``). Only tools whose
+    prefixed name (``{server}__{tool}``) appears in the header survive; the
+    rest are dropped before the MCP SDK ever advertises them to the model.
+    """
     try:
         from litellm.proxy._experimental.mcp_server import mcp_server_manager  # type: ignore[import-untyped]
     except ImportError:
@@ -346,20 +527,94 @@ def _install_tools_list_stripper() -> None:
         return
 
     async def patched(self, server, *args, **kwargs):  # type: ignore[no-untyped-def]
+        raw_headers = kwargs.get("raw_headers")
+        # Enforce auth before any catalog bytes leave LiteLLM. Internal
+        # in-process calls (no raw_headers) skip — they originate from
+        # trusted admin code paths.
+        token = await _require_valid_mcp_bearer(raw_headers)
+
         tools = await original(self, server, *args, **kwargs)
         server_name = getattr(server, "name", None) or getattr(server, "alias", None)
         if not server_name or not tools:
             return tools
+
+        sub = await _maybe_extract_sub(token)
+        tools = await _rbac_filter_tools(server, tools, raw_headers, sub)
+
         for tool in tools:
             raw_name = _unprefix_tool_name(tool.name, server_name)
             injection = _injected_args_for(server_name, raw_name)
-            if not injection:
-                continue
-            tool.inputSchema = _strip_injected_from_schema(tool.inputSchema or {}, injection)
+            if injection:
+                tool.inputSchema = _strip_injected_from_schema(
+                    tool.inputSchema or {}, injection
+                )
+
+        allowed = _allowed_tools_from_headers(raw_headers)
+        if allowed is not None:
+            tools = [t for t in tools if t.name in allowed]
+            logger.debug(
+                "tools/list filter server=%s kept=%d (allowed=%d)",
+                server_name, len(tools), len(allowed),
+            )
         return tools
 
     patched._aviary_patched = True  # type: ignore[attr-defined]
     cls._get_tools_from_server = patched  # type: ignore[method-assign]
+
+
+def _install_tools_call_gate() -> None:
+    """Reject ``tools/call`` requests for tools outside the caller's
+    ``X-Aviary-Allowed-Tools`` header — defense in depth against agents that
+    try to invoke tools they don't have bound."""
+    try:
+        from litellm.proxy._experimental.mcp_server import mcp_server_manager  # type: ignore[import-untyped]
+    except ImportError:
+        logger.warning("MCPServerManager not importable — tools/call gate disabled")
+        return
+
+    cls = getattr(mcp_server_manager, "MCPServerManager", None)
+    if cls is None:
+        return
+
+    original = getattr(cls, "call_tool", None)
+    if original is None or getattr(original, "_aviary_patched", False):
+        return
+
+    async def patched(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        # ``call_tool`` is keyword-heavy; handle both positional + kw callers.
+        name = kwargs.get("name")
+        server_name = kwargs.get("server_name")
+        if name is None and len(args) >= 2:
+            server_name = args[0] if server_name is None else server_name
+            name = args[1]
+        raw_headers = kwargs.get("raw_headers")
+
+        # Enforce JWT before anything else — matches the tools/list path.
+        await _require_valid_mcp_bearer(raw_headers)
+
+        allowed = _allowed_tools_from_headers(raw_headers)
+        if allowed is not None and name and server_name:
+            prefixed = f"{server_name}{TOOL_NAME_SEPARATOR}{name}"
+            if prefixed not in allowed and name not in allowed:
+                from mcp.types import CallToolResult, TextContent  # type: ignore[import-untyped]
+                logger.info(
+                    "tools/call denied server=%s tool=%s (not in allowed set)",
+                    server_name, name,
+                )
+                return CallToolResult(
+                    content=[TextContent(
+                        type="text",
+                        text=(
+                            f"Tool '{prefixed}' is not bound to this agent. "
+                            "Update the agent's tool selection in the UI."
+                        ),
+                    )],
+                    isError=True,
+                )
+        return await original(self, *args, **kwargs)
+
+    patched._aviary_patched = True  # type: ignore[attr-defined]
+    cls.call_tool = patched  # type: ignore[method-assign]
 
 
 # ---------------------------------------------------------------------------
@@ -406,11 +661,22 @@ def _register() -> None:
                     detail={"error": "MCP call missing Bearer token"},
                 )
 
+            # Validate JWT on every tool call, regardless of whether the
+            # target server needs Vault injection. Master keys (`sk-*`) are
+            # passed through unchanged — LiteLLM's own key ACL vets them.
+            if not user_token.startswith("sk-") and _is_jwt(user_token):
+                try:
+                    sub = await _extract_sub(user_token)
+                except Exception as exc:
+                    raise HTTPException(
+                        status_code=401,
+                        detail={"error": f"MCP JWT validation failed: {exc}"},
+                    ) from exc
+            else:
+                sub = None
+
             server_name = data.get("mcp_server_name")
             tool_name = data.get("mcp_tool_name") or ""
-            # Fallback when the server_name forwarder isn't active yet
-            # (stale image / monkey-patch lost across restarts) — derive
-            # it from the prefixed tool name instead.
             if not server_name:
                 server_name, tool_name = _split_qualified_name(tool_name)
             if not server_name:
@@ -420,13 +686,11 @@ def _register() -> None:
             if not injection:
                 return data
 
-            try:
-                sub = await _extract_sub(user_token)
-            except Exception as exc:
+            if sub is None:
                 raise HTTPException(
                     status_code=401,
-                    detail={"error": f"MCP auth failed: {exc}"},
-                ) from exc
+                    detail={"error": "MCP credential injection requires a user JWT"},
+                )
 
             arguments = dict(data.get("mcp_arguments") or {})
             missing: list[str] = []
@@ -469,8 +733,10 @@ def _register() -> None:
 if OIDC_ISSUER:
     try:
         _load_injection_config()
+        _install_mcp_request_auth_gate()
         _install_server_name_forwarder()
         _install_tools_list_stripper()
+        _install_tools_call_gate()
         _register()
     except Exception:
         logger.warning("Failed to register MCP credential injection hook", exc_info=True)

@@ -440,6 +440,8 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://aviary:aviary@postgres:5432/aviary
       AGENT_SUPERVISOR_URL: http://supervisor:9000
+      LITELLM_URL: http://litellm:4000
+      LITELLM_API_KEY: "sk-aviary-dev"
       VAULT_ADDR: http://vault:8200
       VAULT_TOKEN: dev-root-token
       KEYCLOAK_URL: http://keycloak:8080

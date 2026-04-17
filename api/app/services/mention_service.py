@@ -1,19 +1,18 @@
 """Parse @slug mentions and resolve each to the caller's owned agents.
 
-Returns a list of *full* agent specs — the supervisor / runtime now need
-every field required to execute the sub-agent (runtime_endpoint,
-model_config, instruction, tools, mcp_servers).
+Returns a list of *full* agent specs — the supervisor / runtime need every
+field required to execute the sub-agent (runtime_endpoint, model_config,
+instruction, tools, mcp_servers).
 """
 
 import re
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
 
 from app.db.models import User
 from app.services import agent_service
-from aviary_shared.db.models.mcp import McpAgentToolBinding, McpServer, McpTool
+from aviary_shared.db.models.mcp import McpAgentToolBinding
 
 _MENTION_RE = re.compile(r"@([a-z0-9][a-z0-9-]*[a-z0-9])")
 
@@ -41,26 +40,21 @@ def build_mcp_config(legacy_mcp_servers: list) -> dict:
 
 
 async def _bound_mcp_tool_names(db: AsyncSession, agent_id) -> list[str]:
-    """Return `mcp__gateway__{server}__{tool}` names for this agent's MCP
-    tool bindings — these plug into Claude Code's `allowedTools` so only the
-    tools the owner explicitly bound are visible to the model."""
+    """Return `mcp__gateway__{server}__{tool}` qualified names for this
+    agent's MCP tool bindings."""
     rows = (
         await db.execute(
-            select(McpAgentToolBinding)
-            .where(McpAgentToolBinding.agent_id == agent_id)
-            .options(
-                joinedload(McpAgentToolBinding.tool).joinedload(McpTool.server)
+            select(
+                McpAgentToolBinding.server_name, McpAgentToolBinding.tool_name
             )
+            .where(McpAgentToolBinding.agent_id == agent_id)
+            .order_by(McpAgentToolBinding.server_name, McpAgentToolBinding.tool_name)
         )
-    ).unique().scalars().all()
-    names: list[str] = []
-    for b in rows:
-        tool: McpTool = b.tool
-        server: McpServer = tool.server
-        names.append(
-            f"{_MCP_PREFIX}{server.name}{_MCP_TOOL_SEPARATOR}{tool.name}"
-        )
-    return names
+    ).all()
+    return [
+        f"{_MCP_PREFIX}{server_name}{_MCP_TOOL_SEPARATOR}{tool_name}"
+        for server_name, tool_name in rows
+    ]
 
 
 async def agent_spec(agent, db: AsyncSession) -> dict:
@@ -68,11 +62,10 @@ async def agent_spec(agent, db: AsyncSession) -> dict:
     the fields the supervisor injects: user_token, user_external_id,
     credentials, accessible_agents).
 
-    MCP tool bindings are merged into `tools` so Claude Code's allowedTools
+    MCP tool bindings are merged into ``tools`` so Claude Code's allowedTools
     filter keeps each agent restricted to the tools its owner selected —
-    LiteLLM's aggregated `/mcp` endpoint returns everything registered, and
-    agent-level scoping now lives in the `mcp_agent_tool_bindings` table
-    instead of the retired per-agent gateway URL.
+    LiteLLM's aggregated ``/mcp`` endpoint hides the rest via the
+    ``X-Aviary-Allowed-Tools`` header the runtime forwards.
     """
     base_tools = list(agent.tools or [])
     mcp_tools = await _bound_mcp_tool_names(db, agent.id)

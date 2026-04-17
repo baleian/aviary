@@ -11,7 +11,6 @@
       {% endif %}
     </div>
     <div style="display: flex; gap: 8px;">
-      <button class="btn btn-sm" onclick="discoverTools()">Discover Tools</button>
       <button class="btn btn-sm" style="color: red;" onclick="deleteServer()">Delete</button>
     </div>
   </div>
@@ -19,23 +18,34 @@
   <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 24px;">
     <div class="card" style="padding: 12px;">
       <div class="text-sm text-dim">Transport</div>
-      <div class="mono">{{ server.transport_type }}</div>
+      <div class="mono">{{ server.transport }}</div>
     </div>
     <div class="card" style="padding: 12px;">
-      <div class="text-sm text-dim">Status</div>
-      <span class="badge badge-{{ server.status }}">{{ server.status }}</span>
+      <div class="text-sm text-dim">URL</div>
+      <div class="mono text-sm">{{ server.url or '—' }}</div>
+    </div>
+    <div class="card" style="padding: 12px;">
+      <div class="text-sm text-dim">Visibility</div>
+      {% if server.allow_all_keys %}
+        <span class="badge badge-active">public</span>
+      {% else %}
+        <span class="badge">private</span>
+      {% endif %}
     </div>
     <div class="card" style="padding: 12px;">
       <div class="text-sm text-dim">Tools</div>
       <div>{{ server.tool_count }}</div>
     </div>
-    <div class="card" style="padding: 12px;">
-      <div class="text-sm text-dim">Last Discovery</div>
-      <div class="text-sm">{{ server.last_discovered_at or '—' }}</div>
-    </div>
   </div>
 
-  <h3 style="font-size: 16px; font-weight: 600; margin-bottom: 12px;">Discovered Tools</h3>
+  {% if not server.allow_all_keys %}
+  <p class="text-sm text-muted" style="margin-bottom: 16px;">
+    Private server — currently invisible to every user. Per-user RBAC will land in
+    <span class="mono">aviary_shared/mcp_access.py</span>; toggle to public to expose it today.
+  </p>
+  {% endif %}
+
+  <h3 style="font-size: 16px; font-weight: 600; margin-bottom: 12px;">Tools</h3>
   {% if tools %}
   <table class="table">
     <thead>
@@ -50,15 +60,14 @@
       <tr>
         <td class="mono">{{ tool.name }}</td>
         <td class="text-sm">{{ tool.description or '—' }}</td>
-        <td class="mono text-sm text-dim">{{ server.name }}__{{ tool.name }}</td>
+        <td class="mono text-sm text-dim">{{ tool.qualified_name }}</td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
   {% else %}
-  <div class="empty">No tools discovered yet. Click "Discover Tools" to connect to the server.</div>
+  <div class="empty">No tools. LiteLLM fetches tools live — verify the server URL is reachable.</div>
   {% endif %}
-
 </div>
 
 {% endblock %}
@@ -67,24 +76,11 @@
 <script>
 const serverId = '{{ server.id }}';
 
-async function discoverTools() {
-  const resp = await fetch(`/api/mcp/servers/${serverId}/discover`, { method: 'POST' });
-  if (resp.ok) {
-    const data = await resp.json();
-    alert(`Discovered ${data.discovered} tools, removed ${data.removed}`);
-    window.location.reload();
-  } else {
-    const err = await resp.json();
-    alert('Error: ' + (err.detail || JSON.stringify(err)));
-  }
-}
-
 async function deleteServer() {
-  if (!confirm('Delete this MCP server? All tools, bindings, and ACL rules will be removed.')) return;
+  if (!confirm('Delete this MCP server? Existing agent bindings to its tools will become orphans.')) return;
   const resp = await fetch(`/api/mcp/servers/${serverId}`, { method: 'DELETE' });
   if (resp.ok) window.location.href = '/mcp';
   else alert('Failed to delete server');
 }
-
 </script>
 {% endblock %}

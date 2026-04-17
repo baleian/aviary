@@ -1,72 +1,76 @@
-"""MCP server list and detail pages."""
+"""MCP server list + detail pages (read from LiteLLM)."""
 
-import uuid
-
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from aviary_shared.db.models import McpServer, McpTool
-from app.db import get_db
+from aviary_shared.litellm_client import (
+    LitellmMCPError,
+    get_server,
+    list_servers,
+    list_tools,
+)
 from app.routers.pages._templates import templates
 
 router = APIRouter()
 
 
+def _strip_prefix(prefixed: str, server_name: str) -> str:
+    prefix = f"{server_name}__"
+    return prefixed[len(prefix):] if prefixed.startswith(prefix) else prefixed
+
+
 @router.get("/mcp", response_class=HTMLResponse)
-async def mcp_server_list(request: Request, db: AsyncSession = Depends(get_db)):
-    servers = list((await db.execute(
-        select(McpServer).order_by(McpServer.created_at.desc())
-    )).scalars().all())
+async def mcp_server_list(request: Request):
+    try:
+        servers = await list_servers()
+    except LitellmMCPError as exc:
+        return HTMLResponse(f"<h1>LiteLLM unreachable: {exc}</h1>", status_code=502)
 
     server_data = []
     for srv in servers:
-        tool_count = (await db.execute(
-            select(func.count()).select_from(McpTool).where(McpTool.server_id == srv.id)
-        )).scalar() or 0
+        server_id = srv["server_id"]
+        tools = await list_tools(server_id=server_id)
         server_data.append({
-            "id": str(srv.id),
-            "name": srv.name,
-            "description": srv.description,
-            "transport_type": srv.transport_type,
-            "status": srv.status,
-            "tool_count": tool_count,
-            "last_discovered_at": srv.last_discovered_at.isoformat() if srv.last_discovered_at else None,
+            "id": server_id,
+            "name": srv.get("server_name") or srv.get("alias") or "",
+            "description": srv.get("description"),
+            "url": srv.get("url"),
+            "transport": srv.get("transport") or "http",
+            "allow_all_keys": bool(srv.get("allow_all_keys")),
+            "tool_count": len(tools),
         })
-
-    return templates.TemplateResponse(request, "mcp_servers.html", {"servers": server_data})
+    return templates.TemplateResponse(
+        request, "mcp_servers.html", {"servers": server_data}
+    )
 
 
 @router.get("/mcp/{server_id}", response_class=HTMLResponse)
-async def mcp_server_detail(
-    request: Request, server_id: str, db: AsyncSession = Depends(get_db),
-):
-    srv_uuid = uuid.UUID(server_id)
-    srv = (await db.execute(select(McpServer).where(McpServer.id == srv_uuid))).scalar_one_or_none()
-    if not srv:
-        return HTMLResponse("<h1>Server not found</h1>", status_code=404)
+async def mcp_server_detail(request: Request, server_id: str):
+    try:
+        srv = await get_server(server_id)
+        tools = await list_tools(server_id=server_id)
+    except LitellmMCPError as exc:
+        return HTMLResponse(f"<h1>Server not found: {exc}</h1>", status_code=404)
 
-    tool_count = (await db.execute(
-        select(func.count()).select_from(McpTool).where(McpTool.server_id == srv.id)
-    )).scalar() or 0
-
-    tools = [
-        {"id": str(t.id), "name": t.name, "description": t.description}
-        for t in (await db.execute(
-            select(McpTool).where(McpTool.server_id == srv.id).order_by(McpTool.name)
-        )).scalars().all()
+    server_name = srv.get("server_name") or srv.get("alias") or ""
+    tool_rows = [
+        {
+            "name": _strip_prefix(t["name"], server_name),
+            "qualified_name": t["name"],
+            "description": t.get("description"),
+        }
+        for t in tools
     ]
 
     return templates.TemplateResponse(request, "mcp_server_detail.html", {
         "server": {
-            "id": str(srv.id),
-            "name": srv.name,
-            "description": srv.description,
-            "transport_type": srv.transport_type,
-            "status": srv.status,
-            "tool_count": tool_count,
-            "last_discovered_at": srv.last_discovered_at.isoformat() if srv.last_discovered_at else None,
+            "id": server_id,
+            "name": server_name,
+            "description": srv.get("description"),
+            "url": srv.get("url"),
+            "transport": srv.get("transport") or "http",
+            "allow_all_keys": bool(srv.get("allow_all_keys")),
+            "tool_count": len(tools),
         },
-        "tools": tools,
+        "tools": tool_rows,
     })

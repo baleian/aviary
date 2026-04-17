@@ -114,10 +114,10 @@ _SUB_CACHE_TTL = 1800
 
 
 def _token_cache_key(token: str) -> str:
-    """Hash the JWT signature (last segment) for cache lookup."""
-    parts = token.rsplit(".", 1)
-    sig = parts[-1] if len(parts) > 1 else token
-    return hashlib.sha256(sig.encode()).hexdigest()[:32]
+    # Hash the whole token — signature alone collides when the payload has
+    # been swapped (e.g., expired-payload + original-signature attack),
+    # silently returning the cached sub without re-verifying.
+    return hashlib.sha256(token.encode()).hexdigest()[:32]
 
 
 async def _extract_sub(token: str) -> str:

@@ -75,6 +75,23 @@ interface AgentConfig {
   is_sub_agent?: boolean;
 }
 
+// Claude Code prefixes MCP tools as `mcp__{mcpServerKey}__{toolName}`;
+// strip both that and our runtime-side key so we can hand LiteLLM the
+// native `{server}__{tool}` tool names it aggregates under.
+const MCP_RUNTIME_KEY = "gateway";
+const CLAUDE_MCP_PREFIX = `mcp__${MCP_RUNTIME_KEY}__`;
+
+function extractLitellmAllowedTools(tools: string[] | undefined): string[] {
+  if (!tools) return [];
+  const out: string[] = [];
+  for (const t of tools) {
+    if (t.startsWith(CLAUDE_MCP_PREFIX)) {
+      out.push(t.slice(CLAUDE_MCP_PREFIX.length));
+    }
+  }
+  return out;
+}
+
 function buildMcpServers(
   agentConfig: AgentConfig,
 ): Record<string, any> | undefined {
@@ -86,16 +103,19 @@ function buildMcpServers(
   }
 
   // LiteLLM's aggregated MCP endpoint. Per-agent tool scoping is enforced
-  // via `allowedTools` (the API merges `mcp_agent_tool_bindings` into
-  // agent_config.tools); the `aviary_mcp_credentials` guardrail on LiteLLM
-  // validates the user JWT and injects per-user Vault secrets into the
-  // outbound `tools/call`.
+  // server-side: the runtime forwards the bound `{server}__{tool}` names in
+  // `X-Aviary-Allowed-Tools`, and the `aviary_mcp_credentials` guardrail on
+  // LiteLLM filters `tools/list` and rejects `tools/call` for anything not
+  // in that list. The guardrail also validates the user JWT and injects
+  // per-user Vault secrets into the outbound tool call arguments.
   if (agentConfig.user_token) {
-    servers["gateway"] = {
+    const allowed = extractLitellmAllowedTools(agentConfig.tools);
+    servers[MCP_RUNTIME_KEY] = {
       type: "http",
       url: `${LITELLM_URL}/mcp`,
       headers: {
         Authorization: `Bearer ${agentConfig.user_token}`,
+        "X-Aviary-Allowed-Tools": allowed.join(","),
       },
     };
   }
