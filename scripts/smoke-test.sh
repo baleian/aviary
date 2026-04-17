@@ -149,17 +149,7 @@ AGENT_PAYLOAD=$(cat <<EOF
     "model": "${MODEL}"
   },
   "tools": [],
-  "mcp_servers": [],
-  "policy": {
-    "podStrategy": "lazy",
-    "maxConcurrentSessions": 5,
-    "minPods": 1,
-    "maxPods": 1,
-    "allowShellExec": false,
-    "allowFileWrite": true,
-    "allowedEgress": []
-  },
-  "visibility": "private"
+  "mcp_servers": []
 }
 EOF
 )
@@ -197,7 +187,7 @@ header "4/6" "Create chat session"
 SESSION_RESPONSE=$(curl -sf -X POST "${API_URL}/api/agents/${AGENT_ID}/sessions" \
   -H "Authorization: Bearer ${ACCESS_TOKEN}" \
   -H "Content-Type: application/json" \
-  -d '{"type": "private"}')
+  -d '{}')
 
 SESSION_ID=$(echo "$SESSION_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 
@@ -319,16 +309,7 @@ else
   ((ERRORS++))
 fi
 
-# Check agent deployment status (may be provisioning/running after chat)
-DEPLOY_STATUS=$(curl -sf "${API_URL}/api/agents/${AGENT_ID}/deployment" \
-  -H "Authorization: Bearer ${ACCESS_TOKEN}" 2>/dev/null || echo '{}')
-
-if [ "$DEPLOY_STATUS" != '{}' ]; then
-  REPLICAS=$(echo "$DEPLOY_STATUS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('ready_replicas', d.get('readyReplicas', '?')))" 2>/dev/null || echo "?")
-  info "Deployment status: ${REPLICAS} ready replica(s)"
-else
-  info "No deployment yet (agent may not have been activated)"
-fi
+# Runtime pools are always on (Helm-managed), no per-agent deployment status.
 
 # List agents to verify visibility
 LIST_RESPONSE=$(curl -sf "${API_URL}/api/agents" \

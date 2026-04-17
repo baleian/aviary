@@ -97,6 +97,11 @@ until curl -sf http://localhost:8000/api/health > /dev/null 2>&1; do
   sleep 2
 done
 echo " ready."
+echo -n "  Admin console..."
+until curl -sf http://localhost:8001/ > /dev/null 2>&1; do
+  sleep 2
+done
+echo " ready."
 echo -n "  Web UI..."
 until curl -sf http://localhost:3000 > /dev/null 2>&1; do
   sleep 2
@@ -110,6 +115,7 @@ echo "Application:"
 echo "  Web UI:             http://localhost:3000"
 echo "  API Server:         http://localhost:8000"
 echo "  API Health:         http://localhost:8000/api/health"
+echo "  Admin Console:      http://localhost:8001"
 echo ""
 echo "Platform Services (docker compose):"
 echo "  Agent Supervisor:   http://localhost:9000"
@@ -130,8 +136,7 @@ echo "  Keycloak:    http://localhost:8080  (admin/admin)"
 echo "  Vault:       http://localhost:8200  (token: dev-root-token)"
 echo "  K8s API:     https://localhost:6443"
 echo ""
-echo "Test users (Keycloak):"
-echo "  admin@test.com / password"
+echo "Test users (Keycloak — see config/keycloak/realm-export.json):"
 echo "  user1@test.com / password"
 echo "  user2@test.com / password"
 echo ""
