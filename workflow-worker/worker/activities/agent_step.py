@@ -96,6 +96,9 @@ async def run_agent_step_activity(
         input=input_value, inputs=inputs, trigger=trigger_data,
     )
 
+    mcp_tool_ids = data.get("mcp_tool_ids") or []
+    tools = [f"mcp__gateway__{t}" for t in mcp_tool_ids]
+
     body: dict = {
         "session_id": wf_session_id,
         "content_parts": [{"text": rendered_prompt}],
@@ -104,7 +107,7 @@ async def run_agent_step_activity(
             "runtime_endpoint": runtime_endpoint,
             "model_config": data.get("model_config") or {},
             "instruction": data.get("instruction") or "",
-            "tools": [],
+            "tools": tools,
             "mcp_servers": {},
         },
     }
@@ -147,8 +150,7 @@ async def run_agent_step_activity(
     if result.get("status") == "error":
         raise RuntimeError(result.get("message") or "agent step failed")
 
-    return {
-        "assembled_text": result.get("assembled_text"),
-        "assembled_blocks": result.get("assembled_blocks") or [],
-        "stream_id": result.get("stream_id"),
-    }
+    for block in reversed(result.get("assembled_blocks") or []):
+        if block.get("type") == "text":
+            return block.get("content") or ""
+    return ""
