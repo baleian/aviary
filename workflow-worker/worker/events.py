@@ -21,7 +21,11 @@ logger = logging.getLogger(__name__)
 
 _client: redis.Redis | None = None
 
-REPLAY_TTL_SECONDS = 3600  # 1h — enough for a user to refresh the page
+# TTL is reset on every publish, so a running workflow never loses its
+# buffer. The window only matters after the run finishes: it just needs to
+# cover "user refreshes right after the run ends" — static post-mortem
+# viewing goes through GET /runs/{id} instead. 10 minutes is plenty.
+REPLAY_TTL_SECONDS = 600
 
 
 async def _get_client() -> redis.Redis:

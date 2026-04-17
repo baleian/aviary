@@ -187,30 +187,14 @@ async def cancel_run(
 _TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
 
 
-def _node_status_event(nr) -> dict:
-    evt: dict = {
-        "type": "node_status",
-        "node_id": nr.node_id,
-        "node_type": nr.node_type,
-        "status": nr.status,
-    }
-    if nr.input_data is not None:
-        evt["input_data"] = nr.input_data
-    if nr.output_data is not None:
-        evt["output_data"] = nr.output_data
-    if nr.error:
-        evt["error"] = nr.error
-    return evt
-
-
 @router.websocket("/{workflow_id}/runs/{run_id}/ws")
 async def workflow_run_ws(websocket: WebSocket, workflow_id: uuid.UUID, run_id: uuid.UUID):
-    """Stream a run's events to a connected client. Flow:
-      1. Auth + owner check via cookie session.
-      2. Send the DB snapshot (run + node rows as they currently stand).
-      3. Flush the Redis replay buffer so we catch up to "now".
-      4. If the run is still live, subscribe to the channel and relay until
-         we see a terminal run_status event.
+    """Stream a live run's events to a connected client.
+
+    Completed runs have nothing to stream — the client should read the
+    final state via `GET /workflows/{id}/runs/{run_id}` instead. If a
+    completed run is still opened here we send one terminal `run_status`
+    and close, so the client isn't left hanging waiting for more.
     """
     origin = websocket.headers.get("origin")
     if not origin or origin not in settings.cors_origins:
@@ -236,8 +220,6 @@ async def workflow_run_ws(websocket: WebSocket, workflow_id: uuid.UUID, run_id: 
     pubsub = None
 
     try:
-        # Load + authorize, send initial snapshot. Owner check compares the
-        # run's parent workflow's owner to the authenticated user.
         async with async_session_factory() as db:
             user = (await db.execute(
                 select(User).where(User.external_id == claims.sub)
@@ -246,7 +228,7 @@ async def workflow_run_ws(websocket: WebSocket, workflow_id: uuid.UUID, run_id: 
                 await websocket.send_json({"type": "error", "message": "User not found"})
                 return
 
-            run = await workflow_run_service.get_run(db, run_id, with_nodes=True)
+            run = await workflow_run_service.get_run(db, run_id)
             if not run or run.workflow_id != workflow_id:
                 await websocket.send_json({"type": "error", "message": "Run not found"})
                 return
@@ -256,23 +238,22 @@ async def workflow_run_ws(websocket: WebSocket, workflow_id: uuid.UUID, run_id: 
                 await websocket.send_json({"type": "error", "message": "Not authorized"})
                 return
 
-            snapshot_status = {"type": "run_status", "status": run.status}
-            if run.error:
-                snapshot_status["error"] = run.error
-            await websocket.send_json(snapshot_status)
-            for nr in run.node_runs or []:
-                await websocket.send_json(_node_status_event(nr))
-            terminal = run.status in _TERMINAL_RUN_STATUSES
+            if run.status in _TERMINAL_RUN_STATUSES:
+                terminal = {"type": "run_status", "status": run.status}
+                if run.error:
+                    terminal["error"] = run.error
+                await websocket.send_json(terminal)
+                return
 
-        for event in await redis_service.get_workflow_run_replay(run_id_str):
-            await websocket.send_json(event)
-
-        if terminal:
-            return
-
+        # Replay anything the worker has already published for this run so a
+        # client that connects mid-stream catches up. Subscribe first so no
+        # event slips between the LRANGE and the listen loop.
         pubsub = await redis_service.subscribe_workflow_run(run_id_str)
         if pubsub is None:
             return
+
+        for event in await redis_service.get_workflow_run_replay(run_id_str):
+            await websocket.send_json(event)
 
         async for raw_msg in pubsub.listen():
             if raw_msg["type"] != "message":
