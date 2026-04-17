@@ -19,11 +19,19 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "workflows",
-        sa.Column("runtime_endpoint", sa.String(length=512), nullable=True),
-    )
+    # Earlier baselines call Base.metadata.create_all with the live ORM,
+    # so a fresh DB already has this column by the time 004 runs.
+    bind = op.get_bind()
+    cols = {c["name"] for c in sa.inspect(bind).get_columns("workflows")}
+    if "runtime_endpoint" not in cols:
+        op.add_column(
+            "workflows",
+            sa.Column("runtime_endpoint", sa.String(length=512), nullable=True),
+        )
 
 
 def downgrade() -> None:
-    op.drop_column("workflows", "runtime_endpoint")
+    bind = op.get_bind()
+    cols = {c["name"] for c in sa.inspect(bind).get_columns("workflows")}
+    if "runtime_endpoint" in cols:
+        op.drop_column("workflows", "runtime_endpoint")
