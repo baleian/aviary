@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Bot, Play, Check, X, CircleDot, Loader2, Globe, GitBranch, Layers, Filter, FileText, Send, Square } from "@/components/icons";
+import { Bot, Play, Check, X, CircleDot, Loader2, Globe, GitBranch, Layers, Filter, FileText, Send, Square, RefreshCw } from "@/components/icons";
 import { TextBlockView } from "@/features/chat/components/blocks/text-block";
 import { ThinkingChip } from "@/features/chat/components/blocks/thinking-chip";
 import { ToolCallCard } from "@/features/chat/components/blocks/tool-call-card";
@@ -225,8 +225,23 @@ export function TestPanel({ run }: TestPanelProps) {
         {run.runStatus === "completed" && (
           <p className="text-center text-[11px] text-success py-1">Completed</p>
         )}
-        {run.runStatus === "failed" && (
-          <p className="text-center text-[11px] text-danger py-1">Failed</p>
+        {(run.runStatus === "failed" || run.runStatus === "cancelled") && (
+          <div className="flex flex-col items-center gap-1.5 py-2">
+            <p className="text-[11px] text-danger">
+              {run.runStatus === "failed" ? "Failed" : "Cancelled"}
+            </p>
+            {run.canResume && (
+              <button
+                type="button"
+                onClick={run.resume}
+                className="flex items-center gap-1.5 rounded-md border border-info/30 bg-info/10 px-2.5 py-1 text-[11px] font-medium text-info hover:bg-info/20 transition-colors"
+                title="Start a new run using the current draft, carrying forward completed node outputs"
+              >
+                <RefreshCw size={11} strokeWidth={2} />
+                Resume from failed step
+              </button>
+            )}
+          </div>
         )}
       </div>
 

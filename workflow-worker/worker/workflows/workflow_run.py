@@ -173,11 +173,24 @@ class WorkflowRunWorkflow:
         edges = inp.definition_snapshot.get("edges", [])
         context: dict = {}
         skipped: set[str] = set()
+        resume_context = inp.resume_context or {}
 
         for node in plan:
             should_skip = self._cancelled or node.id in skipped
             if should_skip:
                 await _set_node(inp.run_id, node.id, node.type, "skipped")
+                continue
+
+            if node.id in resume_context:
+                carried = resume_context[node.id]
+                context[node.id] = carried
+                await _set_node(
+                    inp.run_id, node.id, node.type, "completed",
+                    output_data=carried,
+                )
+                if node.type == "condition" and isinstance(carried, dict) and not carried.get("result"):
+                    for ds in downstream_of(node.id, edges):
+                        skipped.add(ds)
                 continue
 
             inputs = {src: context.get(src) for src in upstream_of(node.id, edges)}

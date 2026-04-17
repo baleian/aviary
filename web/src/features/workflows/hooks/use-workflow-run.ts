@@ -155,13 +155,32 @@ export function useWorkflowRun(workflowId: string) {
     try { await workflowsApi.cancelRun(workflowId, runId); } catch { /* best-effort */ }
   }, [workflowId, runId, runStatus]);
 
+  const resume = useCallback(async () => {
+    if (!runId || (runStatus !== "failed" && runStatus !== "cancelled")) return;
+    if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
+    reset();
+    setRunStatus("pending");
+    try {
+      const newRun = await workflowsApi.resumeRun(workflowId, runId);
+      setRunId(newRun.id);
+      setRunStatus(newRun.status as RunStatus);
+      if (!TERMINAL_RUN_STATUSES.has(newRun.status as RunStatus)) {
+        connectWs(workflowId, newRun.id);
+      }
+    } catch (err) {
+      setRunStatus("failed");
+      setError(err instanceof Error ? err.message : "Failed to resume");
+    }
+  }, [workflowId, runId, runStatus, reset, connectWs]);
+
   useEffect(() => {
     return () => { wsRef.current?.close(); };
   }, []);
 
   return {
     runId, runStatus, nodeStatuses, nodeData, logs, error,
-    trigger, viewRun, cancel,
+    trigger, viewRun, cancel, resume,
     isRunning: runStatus === "running" || runStatus === "pending",
+    canResume: !!runId && (runStatus === "failed" || runStatus === "cancelled"),
   };
 }

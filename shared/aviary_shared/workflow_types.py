@@ -24,6 +24,7 @@ class WorkflowRunInput:
     # Optional per-workflow runtime endpoint override. None → supervisor
     # resolves to its configured default environment.
     runtime_endpoint: str | None = None
+    resume_context: dict[str, Any] | None = None
 
 
 @dataclass

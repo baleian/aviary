@@ -204,6 +204,30 @@ async def cancel_run(
     return {"ok": True}
 
 
+@router.post(
+    "/{workflow_id}/runs/{run_id}/resume",
+    response_model=WorkflowRunResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def resume_run(
+    run_id: uuid.UUID,
+    workflow: Workflow = Depends(require_workflow_owner()),
+    user: User = Depends(get_current_user),
+    session_data: SessionData = Depends(get_session_data),
+    db: AsyncSession = Depends(get_db),
+):
+    source = await workflow_run_service.get_run(db, run_id)
+    if source is None or source.workflow_id != workflow.id:
+        raise HTTPException(status_code=404, detail="Run not found")
+    try:
+        new_run = await workflow_run_service.resume_run(
+            db, workflow, source, user, user_token=session_data.access_token,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+    return WorkflowRunResponse.from_orm_run(new_run)
+
+
 # ── Run WebSocket ───────────────────────────────────────────────────────────
 
 _TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}

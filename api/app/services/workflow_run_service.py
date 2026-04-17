@@ -85,6 +85,59 @@ async def cancel_run(run: WorkflowRun) -> None:
     await temporal_client.cancel_workflow_run(str(run.id))
 
 
+async def resume_run(
+    db: AsyncSession, workflow: Workflow, source_run: WorkflowRun, user: User,
+    user_token: str | None = None,
+) -> WorkflowRun:
+    if source_run.status not in ("failed", "cancelled"):
+        raise ValueError("Only failed or cancelled runs can be resumed")
+    if source_run.run_type != "draft":
+        raise ValueError("Resume is only supported for draft runs")
+
+    definition_snapshot = workflow.definition
+    live_node_ids = {
+        n["id"] for n in definition_snapshot.get("nodes", [])
+        if isinstance(n, dict) and isinstance(n.get("id"), str)
+    }
+
+    source = await get_run(db, source_run.id, with_nodes=True)
+    resume_context = {
+        nr.node_id: nr.output_data
+        for nr in (source.node_runs or [])
+        if nr.status == "completed" and nr.node_id in live_node_ids
+    }
+
+    run = WorkflowRun(
+        workflow_id=workflow.id,
+        version_id=None,
+        run_type="draft",
+        trigger_type=source_run.trigger_type,
+        trigger_data=source_run.trigger_data or {},
+        triggered_by=user.id,
+        status="pending",
+        definition_snapshot=definition_snapshot,
+    )
+    db.add(run)
+    await db.flush()
+    await db.commit()
+
+    temporal_run_id = await temporal_client.start_workflow_run(
+        WorkflowRunInput(
+            run_id=str(run.id),
+            owner_external_id=user.external_id,
+            definition_snapshot=definition_snapshot,
+            trigger_data=source_run.trigger_data or {},
+            user_token=user_token,
+            runtime_endpoint=workflow.runtime_endpoint,
+            resume_context=resume_context,
+        )
+    )
+    run.temporal_run_id = temporal_run_id
+    await db.commit()
+    await db.refresh(run)
+    return run
+
+
 async def get_run(
     db: AsyncSession, run_id: uuid.UUID, with_nodes: bool = False,
 ) -> WorkflowRun | None:

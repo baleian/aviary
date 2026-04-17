@@ -90,6 +90,10 @@ export const workflowsApi = {
     return http.post(`/workflows/${id}/runs/${runId}/cancel`, {});
   },
 
+  resumeRun(id: string, runId: string) {
+    return http.post<WorkflowRun>(`/workflows/${id}/runs/${runId}/resume`, {});
+  },
+
   assistant(
     id: string,
     data: {
