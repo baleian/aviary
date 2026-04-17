@@ -28,24 +28,20 @@ Aviary는 웹 UI로 AI 에이전트를 생성·설정·사용하는 엔터프라
     │   ┌───────▼────────────────────────────────────┐ │
     │   │              플랫폼 서비스                   │ │
     │   │                                            │ │
-    │   │  ┌─────────────────┐                       │ │
-    │   │  │ LiteLLM Gateway │◀── Vault              │ │
-    │   │  │ (모델 라우팅,    │    (유저별 API 키)    │ │
-    │   │  │  API 키 주입)    │                       │ │
-    │   │  └────────┬────────┘                       │ │
-    │   │     ┌─────┴───────────────────┐            │ │
-    │   │     ▼            ▼            ▼            │ │
-    │   │  Claude API   Ollama/vLLM   Bedrock        │ │
-    │   │                                            │ │
-    │   │  ┌─────────────────────────────────────┐   │ │
-    │   │  │ MCP Gateway                         │◀──┴ Vault
-    │   │  │ (도구 카탈로그, ACL, 프록시,          │     (도구 자격증명)
-    │   │  │  OIDC 인증, 자동 디스커버리)          │     │
-    │   │  └────────┬────────────────────────────┘     │
-    │   │           ▼                                   │
-    │   │     백엔드 MCP 서버                            │
-    │   └──────────────────────────────────────────────┘
-    │
+    │   │  ┌──────────────────────────────────────┐ │ │
+    │   │  │ LiteLLM Gateway (:8090)              │ │ │
+    │   │  │  • /v1/messages → 모델 라우팅         │◀┼─┤ Vault
+    │   │  │    (유저별 Anthropic 키 주입)         │ │ │ (API 키 +
+    │   │  │  • /mcp → MCP 집약                   │ │ │  도구 자격증명)
+    │   │  │    (JWT 인증 · tools/list 필터 ·     │ │ │
+    │   │  │     tools/call Vault 주입)           │ │ │
+    │   │  └─────┬────────────────────┬───────────┘ │ │
+    │   │        │                    │             │ │
+    │   │  ┌─────▼─────┐ ┌────────┐ ┌─▼──────────┐ │ │
+    │   │  │Claude API │ │Ollama  │ │백엔드 MCP  │ │ │
+    │   │  │Bedrock    │ │vLLM    │ │서버       │ │ │
+    │   │  └───────────┘ └────────┘ └────────────┘ │ │
+    │   └───────────────────────────────────────────┘ │
     │   ┌────────────────────────────────────────────────────────┐
     │   │   Agent Supervisor (docker-compose, K8s 밖)             │
     │   │     SSE reverse proxy · Redis publish · 조립            │
@@ -59,7 +55,7 @@ Aviary는 웹 UI로 AI 에이전트를 생성·설정·사용하는 엔터프라
     │   │                                                        │
     │   │  ┌─── NS: agents ────────────────────────────────────┐ │
     │   │  │ baseline NetworkPolicy                            │ │
-    │   │  │   (DNS + platform + LiteLLM + MCP GW + API)       │ │
+    │   │  │   (DNS + platform + LiteLLM + API + Supervisor)   │ │
     │   │  │ 공유 RWX PVC: aviary-shared-workspace             │ │
     │   │  │   (모든 env Deployment가 마운트)                   │ │
     │   │  │                                                   │ │
@@ -86,8 +82,8 @@ Aviary는 웹 UI로 AI 에이전트를 생성·설정·사용하는 엔터프라
 - **Agent-agnostic 런타임 풀** — 환경 내 모든 pod가 모든 에이전트를 서빙. `agent_id`는 매 요청 `agent_config`로 전달. 격리는 디스크 경로(`sessions/{sid}/agents/{aid}/…`) + bubblewrap이 담당.
 - **bubblewrap 세션 격리** — 각 요청이 커널 수준 마운트 네임스페이스에서 실행. 같은 세션의 에이전트들은 `/workspace`를 공유(A2A), `.claude/`와 `.venv/`는 (agent, session)별.
 - **에이전트 간 호출 (A2A)** — instruction이나 채팅에서 `@멘션`으로 서브 에이전트 호출; 서브 에이전트의 도구 호출이 부모 도구 카드 안에 실시간 인라인 렌더링. 런타임의 A2A MCP 서버가 supervisor를 직접 호출 (API 홉 없음).
-- **MCP Gateway** — [MCP](https://modelcontextprotocol.io/) 기반 중앙 집중식 도구 관리. MCP 서버 등록 → 자동 디스커버리 → 유저별 ACL이 적용된 카탈로그에서 에이전트에 바인딩.
-- **LiteLLM Gateway + UI** — [LiteLLM](https://github.com/BerriAI/litellm)이 모델 이름 접두사로 라우팅하고 Vault에서 유저별 Anthropic API 키를 주입. DB 백엔드 프록시 UI (`:8090/ui`)에서 키/팀/스펜드/모델 레지스트리 관리.
+- **통합 게이트웨이 (LiteLLM)** — [LiteLLM](https://github.com/BerriAI/litellm) 하나가 LLM 추론과 [MCP](https://modelcontextprotocol.io/) 도구 집약을 모두 담당. 모델 이름 접두사 라우팅(Anthropic / Ollama / vLLM / Bedrock)과 Vault 기반 유저별 Anthropic API 키 주입; `/mcp`는 등록된 모든 MCP 서버를 집약해 하나의 엔드포인트 제공(Keycloak JWT 검증 · 유저별 Vault 도구 자격증명 주입 · 향후 RBAC를 위한 가드레일 확장점). Admin은 LiteLLM에 직접 MCP 서버를 등록(LiteLLM이 카탈로그 SoT), 유저는 접근 가능한 도구 중 일부만 에이전트에 바인딩.
+- **프록시 UI (LiteLLM)** — DB 백엔드 (`:8090/ui`)에서 키/팀/스펜드/모델 레지스트리 관리.
 - **멀티 백엔드 추론** — Claude API, Ollama, vLLM, AWS Bedrock; 설정으로 새 백엔드 추가.
 - **계층화된 이그레스** — `charts/aviary-platform`의 baseline NetworkPolicy는 항상 적용; 환경별 Helm values의 `extraEgress`로 추가 규칙 union (K8s NP는 disjunction).
 - **Redis 분리형 스트리밍** — supervisor가 런타임 SSE를 Redis로 publish; API 서버는 조립된 메시지 저장, WebSocket 클라이언트는 같은 Redis 스트림에서 독립적으로 replay.
@@ -105,8 +101,8 @@ Aviary는 웹 UI로 AI 에이전트를 생성·설정·사용하는 엔터프라
 | API 서버 | Python, FastAPI, SQLAlchemy 2.0 (async), Pydantic v2 |
 | 에이전트 런타임 | Node.js, Python, claude-agent-sdk, Claude Code CLI |
 | Agent Supervisor | Python, FastAPI, Redis, prometheus-client |
-| LLM 게이트웨이 | [LiteLLM](https://github.com/BerriAI/litellm) |
-| MCP Gateway | Python, FastAPI, [MCP SDK](https://github.com/modelcontextprotocol/python-sdk) |
+| LLM + MCP 게이트웨이 | [LiteLLM](https://github.com/BerriAI/litellm) + Aviary 패치 (`aviary_user_api_key.py`, `aviary_mcp_credentials.py`) |
+| MCP 프로토콜 | [MCP SDK](https://github.com/modelcontextprotocol/python-sdk) (런타임 + 플랫폼 MCP 서버 스텁에서 사용) |
 | 배포 | Helm 차트 (`charts/aviary-platform`, `charts/aviary-environment`) |
 | 인프라 | PostgreSQL, Redis, Keycloak, Vault, Kubernetes (로컬: K3s, 운영: EKS) |
 
@@ -199,11 +195,13 @@ kube-proxy는 연결 시점에 로드밸런싱하므로 supervisor → runtime T
 ### 공유 워크스페이스 PVC
 모든 환경이 단일 클러스터 전체 RWX PVC(`aviary-shared-workspace`)를 마운트합니다. 환경은 능력 경계(이미지 + egress), 데이터 경계는 `(agent_id, session_id)` 경로. 에이전트의 `runtime_endpoint`를 다른 환경으로 바꿔도 Claude CLI JSONL, 공유 파일, (agent, session)별 venv가 같은 PVC에 있으므로 대화가 그대로 이어집니다.
 
-### LiteLLM Gateway
-에이전트 Pod가 LLM 백엔드를 직접 호출하지 않습니다. [LiteLLM](https://github.com/BerriAI/litellm)이 모델 이름 접두사로 백엔드(Claude API, Ollama, vLLM, Bedrock)를 선택하고 Vault에서 유저별 Anthropic API 키를 주입합니다. LiteLLM이 Anthropic Messages API를 네이티브로 지원하므로 claude-agent-sdk가 투명하게 동작합니다. 프록시 UI(`:8090/ui`)는 전용 Postgres DB로 키·팀·스펜드·모델 레지스트리를 관리합니다.
+### 통합 LiteLLM Gateway (추론 + MCP)
+에이전트 Pod가 LLM 백엔드나 MCP 서버를 직접 호출하지 않습니다. [LiteLLM](https://github.com/BerriAI/litellm) 하나가 단일 게이트웨이 역할:
 
-### MCP Gateway
-에이전트 도구 호출은 중앙 집중식 [MCP](https://modelcontextprotocol.io/) Gateway를 통해 라우팅됩니다. 운영자가 Admin 콘솔로 백엔드 MCP 서버를 등록하면 도구가 자동 디스커버리되고, 사용자는 ACL이 적용된 카탈로그에서 에이전트에 바인딩합니다. 사용자의 OIDC 토큰이 엔드투엔드로 전파되고 외부 서비스로 전달되지 않습니다.
+- **`/v1/messages`** — 모델 이름 접두사 기반 백엔드 라우팅(Claude API, Ollama, vLLM, Bedrock) + Vault 유저별 Anthropic API 키 주입. `aviary_user_api_key.py` 커스텀 훅이 Keycloak JWT를 검증하고 Anthropic 호출 시 유저의 개인 키로 교체합니다.
+- **`/mcp`** — 집약 [MCP](https://modelcontextprotocol.io/) Streamable-HTTP 엔드포인트. 등록된 모든 백엔드 MCP 서버(YAML 선언 public 서버 + Admin 등록 동적 서버 — LiteLLM Prisma DB)를 팬아웃합니다. Admin은 master key로 `POST /v1/mcp/server`를 직접 호출 — **LiteLLM이 MCP 카탈로그의 Single Source of Truth**이고, Aviary DB는 에이전트별 도구 바인딩만 저장합니다.
+- **보안 (`aviary_mcp_credentials.py` 한 파일에 집약):** 요청 ingress JWT 게이트(LiteLLM OSS의 OAuth2 passthrough fail-open 차단), `X-Aviary-Allowed-Tools` 헤더 기반 에이전트별 도구 가시성 필터, `tools/call` 시 Vault 자격증명 주입, 주입 인자의 스키마 스트리핑(모델이 볼 수 없도록), 향후 RBAC 확장점을 위한 no-op 스텁(`_rbac_filter_tools`).
+- **UI** — LiteLLM 프록시 UI(`:8090/ui`)는 전용 Postgres DB로 키·팀·스펜드·모델 레지스트리를 관리합니다.
 
 ### 에이전트 간 호출 (A2A)
 에이전트가 `@멘션`으로 다른 에이전트를 서브 에이전트로 호출. 런타임은 메시지마다 접근 가능한 에이전트별 도구가 등록된 HTTP MCP 서버를 구동. A2A 호출은 **런타임 → supervisor**로 직접 흐르며(supervisor가 Bearer JWT 검증 + 서브 에이전트의 runtime_endpoint 결정), API 홉을 건너뜁니다. 서브 에이전트의 도구 호출은 부모 세션의 Redis 채널에 발행되어 프론트엔드에서 인라인 렌더링. 같은 세션의 모든 에이전트가 공유 워크스페이스 PVC를 통해 `/workspace`를 공유합니다.

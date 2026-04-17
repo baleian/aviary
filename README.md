@@ -28,24 +28,20 @@ Aviary is an enterprise platform where users create, configure, and chat with pu
     │   ┌───────▼────────────────────────────────────┐ │
     │   │            Platform Services              │ │
     │   │                                            │ │
-    │   │  ┌─────────────────┐                       │ │
-    │   │  │ LiteLLM Gateway │◀── Vault              │ │
-    │   │  │ (model routing, │    (per-user keys)    │ │
-    │   │  │  API key inject)│                       │ │
-    │   │  └────────┬────────┘                       │ │
-    │   │     ┌─────┴───────────────────┐            │ │
-    │   │     ▼            ▼            ▼            │ │
-    │   │  Claude API   Ollama/vLLM   Bedrock        │ │
-    │   │                                            │ │
-    │   │  ┌─────────────────────────────────────┐   │ │
-    │   │  │ MCP Gateway                         │◀──┴ Vault
-    │   │  │ (tool catalog, ACL, proxy,          │     (tool creds)
-    │   │  │  OIDC auth, auto-discovery)         │     │
-    │   │  └────────┬────────────────────────────┘     │
-    │   │           ▼                                   │
-    │   │     Backend MCP Servers                       │
-    │   └──────────────────────────────────────────────┘
-    │
+    │   │  ┌──────────────────────────────────────┐ │ │
+    │   │  │ LiteLLM Gateway (:8090)              │ │ │
+    │   │  │  • /v1/messages → model routing      │◀┼─┤ Vault
+    │   │  │    (per-user Anthropic key inject)   │ │ │ (API keys +
+    │   │  │  • /mcp → aggregated MCP             │ │ │  tool creds)
+    │   │  │    (JWT auth · tool-list filter ·    │ │ │
+    │   │  │     tools/call Vault injection)      │ │ │
+    │   │  └─────┬────────────────────┬───────────┘ │ │
+    │   │        │                    │             │ │
+    │   │  ┌─────▼─────┐ ┌────────┐ ┌─▼──────────┐ │ │
+    │   │  │Claude API │ │Ollama  │ │Backend MCP │ │ │
+    │   │  │Bedrock    │ │vLLM    │ │servers     │ │ │
+    │   │  └───────────┘ └────────┘ └────────────┘ │ │
+    │   └───────────────────────────────────────────┘ │
     │   ┌────────────────────────────────────────────────────────┐
     │   │    Agent Supervisor (docker-compose, not in K8s)       │
     │   │      SSE reverse proxy · Redis publish · assemble       │
@@ -59,7 +55,7 @@ Aviary is an enterprise platform where users create, configure, and chat with pu
     │   │                                                        │
     │   │  ┌─── NS: agents ────────────────────────────────────┐ │
     │   │  │ baseline NetworkPolicy (DNS + platform +          │ │
-    │   │  │   LiteLLM + MCP GW + API)                         │ │
+    │   │  │   LiteLLM + API + Supervisor)                     │ │
     │   │  │ shared RWX PVC: aviary-shared-workspace           │ │
     │   │  │   (every env's Deployment mounts this)            │ │
     │   │  │                                                   │ │
@@ -86,8 +82,8 @@ Aviary is an enterprise platform where users create, configure, and chat with pu
 - **Agent-Agnostic Runtime Pool** — Every pod in an environment serves every agent; `agent_id` arrives per-request in `agent_config`. Isolation comes from on-disk paths (`sessions/{sid}/agents/{aid}/…`) plus bubblewrap, not per-agent pods.
 - **Bubblewrap Session Isolation** — Each request runs inside a kernel-level mount namespace; agents in the same session share `/workspace` for file exchange (A2A), while `.claude/` and `.venv/` are per-(agent, session).
 - **Agent-to-Agent (A2A)** — Agents invoke other agents via `@mention` in instructions or chat messages; sub-agent tool calls render inline under the parent tool card in real-time. The runtime's A2A MCP server calls the supervisor directly (no API hop).
-- **MCP Gateway** — Centralized tool management via [Model Context Protocol](https://modelcontextprotocol.io/); admins register MCP servers, tools are auto-discovered, users bind tools to agents with per-user ACL (default-deny).
-- **LiteLLM Gateway + UI** — [LiteLLM](https://github.com/BerriAI/litellm) handles model routing (by model-name prefix) and per-user Anthropic API-key injection from Vault. The proxy UI is DB-backed (`:8090/ui`) for keys, teams, spend, and model registry.
+- **Unified Gateway (LiteLLM)** — [LiteLLM](https://github.com/BerriAI/litellm) is the single gateway for both LLM inference and [MCP](https://modelcontextprotocol.io/) tool aggregation. Model routing by name prefix (Anthropic / Ollama / vLLM / Bedrock) with per-user Anthropic key injection from Vault; `/mcp` aggregates every registered MCP server behind one endpoint with Keycloak JWT validation, per-user Vault-backed tool credential injection, and a guardrail extension point for future RBAC. Admins register MCP servers directly against LiteLLM (it's the catalog SoT); users bind a per-agent subset from their accessible tools.
+- **Proxy UI (LiteLLM)** — DB-backed (`:8090/ui`) for keys, teams, spend, and model registry.
 - **Multi-Backend Inference** — Claude API, Ollama, vLLM, AWS Bedrock; add new backends via config.
 - **Layered Egress** — Baseline NetworkPolicy from `charts/aviary-platform` is always in effect; per-environment `extraEgress` in Helm values adds additional rules (K8s NP evaluates as a disjunction).
 - **Redis-Decoupled Streaming** — Supervisor consumes runtime SSE and publishes to Redis; API server saves the assembled message and WebSocket clients replay from the same Redis stream independently.
@@ -105,8 +101,8 @@ Aviary is an enterprise platform where users create, configure, and chat with pu
 | API Server | Python, FastAPI, SQLAlchemy 2.0 (async), Pydantic v2 |
 | Agent Runtime | Node.js, Python, claude-agent-sdk, Claude Code CLI |
 | Agent Supervisor | Python, FastAPI, Redis, prometheus-client |
-| LLM Gateway | [LiteLLM](https://github.com/BerriAI/litellm) |
-| MCP Gateway | Python, FastAPI, [MCP SDK](https://github.com/modelcontextprotocol/python-sdk) |
+| LLM + MCP Gateway | [LiteLLM](https://github.com/BerriAI/litellm) with Aviary patches (`aviary_user_api_key.py`, `aviary_mcp_credentials.py`) |
+| MCP Protocol | [MCP SDK](https://github.com/modelcontextprotocol/python-sdk) (used by runtime + platform MCP server stubs) |
 | Deployment | Helm charts (`charts/aviary-platform`, `charts/aviary-environment`) |
 | Infrastructure | PostgreSQL, Redis, Keycloak, Vault, Kubernetes (K3s for dev, EKS for prod) |
 
@@ -199,11 +195,13 @@ Runtime infrastructure lives entirely in `charts/aviary-environment` (per-env De
 ### Shared Workspace PVC
 All envs mount a single cluster-wide RWX PVC (`aviary-shared-workspace`). Envs are capability boundaries (image + egress); data boundaries are `(agent_id, session_id)` on-disk paths. Swapping an agent's `runtime_endpoint` to another env keeps the conversation history intact — Claude CLI JSONL, shared files, and per-(agent, session) venv all live on the one PVC.
 
-### LiteLLM Gateway
-Agent Pods never call LLM backends directly. [LiteLLM](https://github.com/BerriAI/litellm) routes by model name prefix (Claude API, Ollama, vLLM, Bedrock) and injects each user's Anthropic API key from Vault. LiteLLM natively supports the Anthropic Messages API, so claude-agent-sdk works transparently. The proxy UI (`:8090/ui`) is backed by a dedicated Postgres database for keys/teams/spend/model registry.
+### Unified LiteLLM Gateway (inference + MCP)
+Agent Pods never call LLM backends or MCP servers directly. [LiteLLM](https://github.com/BerriAI/litellm) is the single gateway:
 
-### MCP Gateway
-Agent tool calls are routed through a centralized [MCP](https://modelcontextprotocol.io/) Gateway. Admins register backend MCP servers via the Admin Console, tools auto-discover, and users bind ACL-filtered tools to agents. The user's OIDC token is propagated end-to-end and never forwarded to external services.
+- **`/v1/messages`** — model routing by name prefix (Claude API, Ollama, vLLM, Bedrock) with per-user Anthropic API-key injection from Vault. The `aviary_user_api_key.py` custom hook validates the user's Keycloak JWT and swaps in their personal key for Anthropic calls.
+- **`/mcp`** — aggregated [MCP](https://modelcontextprotocol.io/) Streamable-HTTP endpoint fanning out to every backend MCP server (YAML-declared public servers + Admin-registered dynamic ones in LiteLLM's Prisma DB). Admin writes directly to LiteLLM via `POST /v1/mcp/server` with the master key — LiteLLM is the MCP catalog source of truth, Aviary DB only stores per-agent tool bindings.
+- **Security (all in `aviary_mcp_credentials.py`):** request-ingress JWT gate (plugs LiteLLM OSS's OAuth2-passthrough fail-open), per-agent tool visibility filter via `X-Aviary-Allowed-Tools` header, Vault-backed tool credential injection on `tools/call`, schema stripping so injected args never reach the model, and a no-op RBAC stub (`_rbac_filter_tools`) as the documented extension point for future per-user access control.
+- **UI** — LiteLLM's proxy UI (`:8090/ui`) is DB-backed for keys/teams/spend/model registry.
 
 ### Agent-to-Agent (A2A)
 Agents call other agents as sub-agents via `@mention`. The runtime exposes a per-message HTTP MCP server with one tool per accessible agent. A2A calls route **runtime → supervisor** directly (the supervisor validates the Bearer JWT and resolves the sub-agent's runtime_endpoint), skipping the API hop. Sub-agent tool calls publish to the parent session's Redis channel and render inline. Agents in the same session share `/workspace` via the shared workspace PVC.

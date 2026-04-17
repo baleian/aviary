@@ -69,7 +69,7 @@ Three backend services with distinct roles:
 
 **API Server (`:8000`)** — User-facing. Agent/session/workflow CRUD (owner-only), OIDC auth, chat. Looks up the agent row, builds a self-contained `agent_config`, and POSTs to the supervisor with `Authorization: Bearer <user JWT>`. Subscribes to the session's Redis channel and relays every event to WS clients. Also publishes the DB-consistent events (`user_message` on WS receive, `done`/`cancelled`/`error` after persisting the agent message) and maintains per-user unread counters — those require DB ids and the session participant list, which the supervisor doesn't know. No Vault client. No K8s concepts.
 
-**Admin Console (`:8001`)** — Operator-facing. No authentication (local-only). Manages agent / workflow / MCP server definitions and per-user Vault credentials (github-token, anthropic-api-key, …). Runtime infrastructure is Helm-managed — admin never talks to K8s or the supervisor.
+**Admin Console (`:8001`)** — Operator-facing. No authentication (local-only). Manages agent / workflow definitions and per-user Vault credentials (github-token, anthropic-api-key, …). MCP server CRUD is proxied to LiteLLM's `/v1/mcp/server/*` via the master key — Aviary DB holds no MCP catalog. Runtime infrastructure is Helm-managed — admin never talks to K8s or the supervisor.
 
 **Agent Supervisor (`:9000`, docker compose service)** — Reverse SSE Proxy. Runs outside K8s, same deploy unit as API/Admin. No DB, no K8s API. Holds an **in-memory registry** of active stream tasks keyed by **stream_id** (one per `/message` call). `/sessions/{sid}/message` and `/sessions/{sid}/a2a` require `Authorization: Bearer <user JWT>` — the supervisor validates the token via OIDC and owns per-user runtime credential lookup: it fetches `github-token` from Vault using the JWT's `sub` and injects `agent_config.credentials` / `user_token` / `user_external_id` into the request body before forwarding to the runtime. On each `/message` it allocates a `stream_id` and immediately publishes `stream_started {stream_id}` to `session:{sid}:events` — that's the frontend's confirmation signal for enabling the abort button. Streams SSE from the runtime's Service endpoint, publishes every stream event (tagged with stream_id) to `session:{sid}:events`, buffers chunks under `stream:{stream_id}:chunks` for replay, assembles the final text + blocks, returns them to the caller — the API then persists the message and publishes the terminal `done`/`cancelled` event with the DB messageId. Emits Prometheus metrics at `/metrics`. **Abort** = `POST /v1/streams/{stream_id}/abort` → cancel the task; closing the outbound httpx stream propagates close through the Service-pinned TCP connection, which fires `res.on("close")` in the runtime pod and aborts the SDK.
 
@@ -83,7 +83,9 @@ Three backend services with distinct roles:
 
 **Pod Strategy (env-per-pool, (agent, session)-per-workdir):** One Helm release per environment. Replicas fixed (min 1), no scale-to-zero. Every pod serves every agent. Isolation comes from per-(agent, session) on-disk paths plus bubblewrap — the pod itself is agent-agnostic.
 
-**LiteLLM Gateway** (docker compose, `:8090`): All LLM calls go through LiteLLM OSS proxy. Backend is determined by the model name prefix (e.g., `anthropic/claude-sonnet-4-6` → Claude API, `ollama/gemma4:26b` → Ollama, `vllm/...` → vLLM, `bedrock/...` → Bedrock). Natively compatible with Anthropic SDK (`/v1/messages`), so claude-agent-sdk works transparently. Configuration in `config/litellm/config.yaml`. API server queries it for model listing (`/model/info`). Supports virtual keys, rate limiting, and per-user API key injection. Two startup patches loaded via `.pth` file: `fix_adapter_streaming.py` fixes Anthropic-to-OpenAI adapter streaming for non-Anthropic backends; `aviary_user_api_key.py` injects per-user Anthropic API keys from Vault.
+**LiteLLM Gateway** (docker compose, `:8090`): All LLM calls go through LiteLLM OSS proxy. Backend is determined by the model name prefix (e.g., `anthropic/claude-sonnet-4-6` → Claude API, `ollama/gemma4:26b` → Ollama, `vllm/...` → vLLM, `bedrock/...` → Bedrock). Natively compatible with Anthropic SDK (`/v1/messages`), so claude-agent-sdk works transparently. The same proxy also serves `/mcp` — the aggregated MCP endpoint (see "MCP Aggregation" below). Configuration in `config/litellm/config.yaml`. Two startup patches loaded via `.pth` file:
+- `aviary_user_api_key.py` — `CustomLogger.async_pre_call_hook` that validates the user's Keycloak JWT (forwarded as `X-Aviary-User-Token`), fetches per-user Anthropic API key from Vault, overrides the outgoing key. Fails closed.
+- `aviary_mcp_credentials.py` — owns everything MCP: request-ingress JWT gate (plugs the OAuth2-passthrough fail-open), tools/list filter (X-Aviary-Allowed-Tools + RBAC stub), tools/call gate, and `pre_mcp_call` Vault-argument injection. Same JWKS/Keycloak validation as above.
 
 LiteLLM UI (`http://localhost:8090/ui`, default `admin/admin`) is backed by a dedicated `litellm` Postgres database on the shared Postgres instance. LiteLLM applies its own Prisma migrations on startup. `STORE_MODEL_IN_DB=True` lets UI manage models on top of the file-based `config.yaml`. Credentials come from `LITELLM_UI_USERNAME` / `LITELLM_UI_PASSWORD` env vars.
 
@@ -99,7 +101,7 @@ LiteLLM UI (`http://localhost:8090/ui`, default `admin/admin`) is backed by a de
 No background loops. No per-agent state. No 0↔1 activation — environments are always on.
 
 **Egress policy** is set per environment via Helm:
-- **Baseline** (`charts/aviary-platform/templates/default-egress.yaml`): namespace-wide `NetworkPolicy` on `aviary/role=agent-runtime`; allows DNS + platform NS + gateway ports (LiteLLM 8090, MCP 8100, API 8000, Supervisor 9000 — for A2A). Always in effect.
+- **Baseline** (`charts/aviary-platform/templates/default-egress.yaml`): namespace-wide `NetworkPolicy` on `aviary/role=agent-runtime`; allows DNS + platform NS + gateway ports (LiteLLM 8090 — inference + aggregated MCP, API 8000, Supervisor 9000 — for A2A). Always in effect.
 - **Per-environment extras**: optional `extraEgress` list in `charts/aviary-environment/values.yaml` gets merged into a second NetworkPolicy scoped by `aviary/environment=<name>`. K8s NP evaluates as a disjunction — this unions with baseline.
 
 ## Critical Patterns & Gotchas
@@ -169,11 +171,8 @@ Baseline NetworkPolicy (`charts/aviary-platform/templates/default-egress.yaml`) 
 ### Claude Code Managed Settings
 `runtime/config/managed-settings.json` is installed to `/etc/claude-code/managed-settings.json` (the hardcoded path Claude Code CLI reads on Linux). Currently sets `skipWebFetchPreflight: true` to prevent the CLI from calling `api.anthropic.com/api/web/domain_info` before each WebFetch — this endpoint is unreachable in air-gapped/fintech environments. All model tiers (`ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, etc.) are remapped to the agent's configured model in `src/agent.ts`.
 
-### LiteLLM Adapter Streaming Patch
-Non-Anthropic backends (Ollama, vLLM) use LiteLLM's Anthropic-to-OpenAI adapter. The patch file `config/litellm/patches/fix_adapter_streaming.py` fixes four issues: block type detection (thinking content), dropped trigger delta, thinking block flushing (periodic close/reopen for intermediate snapshots), and tool-call JSON cleanup (Gemma4 leaked tokens).
-
 ### Per-User Anthropic API Key
-For Anthropic backends, each user's personal API key is injected from Vault via a LiteLLM `CustomLogger.async_pre_call_hook` (`config/litellm/patches/aviary_user_api_key.py`). The user's OIDC JWT is propagated from runtime to LiteLLM via `ANTHROPIC_CUSTOM_HEADERS` env var → `X-Aviary-User-Token` header. The hook validates the JWT, fetches the user's key from `secret/aviary/credentials/{sub}/anthropic-api-key`, and fails closed if the key is missing. Caching: JWKS 1h, JWT→sub 30min, Vault key 5min.
+For Anthropic backends, each user's personal API key is injected from Vault via a LiteLLM `CustomLogger.async_pre_call_hook` (`config/litellm/patches/aviary_user_api_key.py`). The user's OIDC JWT is propagated from runtime to LiteLLM via `ANTHROPIC_CUSTOM_HEADERS` env var → `X-Aviary-User-Token` header. The hook validates the JWT against Keycloak JWKS, fetches the user's key from `secret/aviary/credentials/{sub}/anthropic-api-key`, and fails closed if the key is missing. Caching: JWKS 1h, JWT→sub 30min (keyed on the whole token — not just the signature — to prevent a tampered-payload + original-signature collision), Vault key 30s.
 
 ### Vault Credential Path Convention
 Per-user credentials live at `secret/aviary/credentials/{user_external_id}/{key_name}` with JSON body `{"value": "<secret_string>"}`. Key names use `{service}-token` convention. The `user_external_id` is the OIDC `sub` claim from Keycloak.
@@ -276,6 +275,11 @@ docker run --rm -v "$PWD/charts:/charts:ro" alpine/helm:3.14.4 template \
 | Variable | Purpose |
 |----------|---------|
 | `DATABASE_URL` | PostgreSQL async connection |
+| `LITELLM_URL` | LiteLLM proxy URL (default: `http://litellm:4000`) — MCP server CRUD is proxied here |
+| `LITELLM_API_KEY` | LiteLLM master key (`sk-aviary-dev`) — authenticates admin CRUD calls |
+| `AGENT_SUPERVISOR_URL` | Supervisor URL (agent reconfiguration broadcasts) |
+| `VAULT_ADDR` / `VAULT_TOKEN` | Per-user Vault credential management UI |
+| `KEYCLOAK_URL` / `KEYCLOAK_ADMIN` / `KEYCLOAK_ADMIN_PASSWORD` / `KEYCLOAK_REALM` | Keycloak admin API for user provisioning |
 
 ## Key Environment Variables (Runtime Pod)
 
@@ -309,22 +313,36 @@ docker run --rm -v "$PWD/charts:/charts:ro" alpine/helm:3.14.4 template \
 
 ### MCP Aggregation (via LiteLLM)
 
-LiteLLM (`:8090`) exposes `/mcp` as an aggregated Streamable-HTTP MCP endpoint that fans out to every backend MCP server registered under `mcp_servers:` in [config/litellm/config.yaml](config/litellm/config.yaml). Per-user auth + secret injection is handled by the [aviary_mcp_credentials](config/litellm/patches/aviary_mcp_credentials.py) guardrail, loaded at Python startup through the `.pth` file alongside the per-user API-key hook.
+LiteLLM is the **single source of truth** for the MCP catalog. It exposes `/mcp` as an aggregated Streamable-HTTP endpoint that fans out to every registered backend MCP server. Every ACL decision on servers and tools belongs to LiteLLM; Aviary only stores per-agent tool bindings.
 
-**Key features:**
-- **Tool catalog**: Admin registers backend MCP servers via Admin Console → DB (`mcp_servers`, `mcp_tools`). Tool auto-discovery still uses the MCP SDK client in the admin server. LiteLLM's own `mcp_servers:` config mirrors the DB-registered servers.
-- **Agent tool bindings**: Users select tools from the catalog and bind them to their agents (`mcp_agent_tool_bindings`). At message time the API merges bound tool names into `agent_config.tools` as `mcp__gateway__{server}__{tool}`; Claude Code's `allowedTools` enforces the per-agent scope.
-- **OIDC auth + Vault injection**: The user's Keycloak JWT is forwarded as `Authorization: Bearer` on the runtime's MCP connection. LiteLLM routes each `tools/call` through the `aviary_mcp_credentials` guardrail, which validates the JWT against Keycloak JWKS, looks up per-user secrets in Vault at `secret/aviary/credentials/{sub}/{vault_key}`, and injects them as `modified_arguments` on the outbound call. The user token is **not** forwarded to backend MCP servers.
-- **Tool namespacing**: `{server}__{tool}` (LiteLLM's prefixing with `MCP_TOOL_PREFIX_SEPARATOR=__`). Claude Code wraps that as `mcp__gateway__{server}__{tool}`.
-- **Schema stripping**: The guardrail monkey-patches `MCPServerManager._get_tools_from_server` so Vault-injected parameters (e.g. `jira_token`) are removed from the `inputSchema` the model sees.
+**Catalog storage — two sources, both owned by LiteLLM:**
+- **YAML** (`config/litellm/config.yaml` → `mcp_servers:`): platform servers declared at deploy time (e.g. jira, confluence with `allow_all_keys: true`).
+- **Prisma DB** (`LiteLLM_MCPServerTable`): dynamic servers added at runtime through the Admin Console. Admin calls `POST /v1/mcp/server` with the master key via [`shared/aviary_shared/litellm_client.py`](shared/aviary_shared/litellm_client.py); LiteLLM hot-reloads the registry.
 
-**Data flow:**
-1. Admin registers MCP server (Admin Console → DB) and triggers tool discovery.
-2. User binds tools from the catalog to an agent (`mcp_agent_tool_bindings`).
-3. On chat message: API builds `agent_config` with `tools` = built-in tools + `mcp__gateway__{server}__{tool}` for each binding.
-4. Runtime connects `mcpServers.gateway` to `${LITELLM_URL}/mcp` with `Authorization: Bearer <user JWT>`; Claude Code discovers tools via `tools/list` (filtered by `allowedTools`).
-5. On `tools/call`: LiteLLM invokes the guardrail → JWT validated → Vault secrets fetched → `modified_arguments` injected → outbound MCP `tools/call` to backend (e.g. `mcp-jira`).
+**Aviary DB — only bindings:**
+- `mcp_agent_tool_bindings (agent_id, server_name, tool_name)` — the tools the owner selected for this agent, referenced by the stable LiteLLM-side names (no FK to a mirrored server table).
 
-**DB tables:** `mcp_servers`, `mcp_tools`, `mcp_agent_tool_bindings`. (Owned by Aviary; LiteLLM never writes to them. Tool-level RBAC is pending the repo-wide RBAC redesign — today the agent binding plus Vault-backed credentials act as the effective scope.)
+**Visibility model (today — binary):**
+- Public servers (`allow_all_keys: true`) — LiteLLM exposes them to every caller with a valid Bearer.
+- Private servers (`allow_all_keys: false`) — LiteLLM hides them from raw-JWT callers; admin sees everything via the master key.
+- Future RBAC (e.g. per-user grants, team scopes) plugs into `_rbac_filter_tools()` inside [aviary_mcp_credentials.py](config/litellm/patches/aviary_mcp_credentials.py) — no Aviary-side ACL table.
 
-**Architecture principle:** Agent ID is NOT used for ACL — the owner binding tools to their own agent plus the user's Vault-backed credentials are the access control. User token is NOT forwarded to backend MCP servers.
+**Authentication (per-hook JWT enforcement — LiteLLM OSS native JWT auth is Enterprise-gated and `/mcp` fails open under OAuth2 passthrough, so the guardrail validates at every entry point):**
+- **Request ingress gate** — monkey-patches `MCPRequestHandler.process_mcp_request` so invalid/tampered/expired JWTs raise 401 before any handler runs. Master keys (`sk-*`) fall through.
+- **`tools/list`** — validates the bearer, runs the RBAC stub, strips Vault-injected parameters from `inputSchema`, then applies the per-agent `X-Aviary-Allowed-Tools` filter (header forwarded by the runtime).
+- **`tools/call`** — validates the bearer, gates on `X-Aviary-Allowed-Tools`, then the `pre_mcp_call` hook fetches per-user secrets from Vault (`secret/aviary/credentials/{sub}/{vault_key}`, per-server map in `config/litellm/mcp-secret-injection.yaml`) and injects them as `modified_arguments`. The user token is **never** forwarded to backend MCP servers.
+
+**Tool namespacing:** LiteLLM prefixes with `MCP_TOOL_PREFIX_SEPARATOR=__` → `{server}__{tool}`. Claude Code wraps that as `mcp__gateway__{server}__{tool}` (`gateway` is the fixed `mcpServers` key in `runtime/src/agent.ts`).
+
+**Data flow — chat message:**
+1. API reads `mcp_agent_tool_bindings` for the agent and merges them into `agent_config.tools` as `mcp__gateway__{server}__{tool}`.
+2. Supervisor forwards to the runtime; runtime opens `mcpServers.gateway` → `${LITELLM_URL}/mcp` with `Authorization: Bearer <user JWT>` + `X-Aviary-Allowed-Tools: {server}__{tool},…`.
+3. Claude Code's MCP client requests `tools/list`; LiteLLM guardrail validates JWT → strips injected args → filters to the allow-list → returns.
+4. On `tools/call`: guardrail validates JWT → allow-list gate → Vault injection → forwards to the backend MCP server (e.g. `mcp-jira`).
+
+**Data flow — user browsing the catalog:**
+1. Frontend hits `GET /api/mcp/servers` (or `/tools`, `/tools/search`).
+2. API opens a short-lived MCP session to `${LITELLM_URL}/mcp` with the user's JWT and returns whatever LiteLLM aggregates. No Aviary-side filtering.
+3. On `PUT /api/mcp/agents/{id}/tools` the API validates each requested tool against the same LiteLLM view before persisting to `mcp_agent_tool_bindings` (can't bind what the user can't see).
+
+**Architecture principle:** Aviary never judges who can see what MCP resource — it forwards the user token to LiteLLM and trusts the answer. RBAC is LiteLLM's concern.
