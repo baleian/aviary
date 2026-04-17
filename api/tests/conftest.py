@@ -40,7 +40,7 @@ async def _noop_lifespan(app: FastAPI):
 def _create_test_app() -> FastAPI:
     """Create a FastAPI instance with the same routes but no lifespan."""
     from app.config import settings
-    from app.routers import agents, auth, catalog, inference, sessions
+    from app.routers import agents, auth, catalog, inference, sessions, workflows
     from fastapi.middleware.cors import CORSMiddleware
 
     test_app = FastAPI(title="Aviary API Test", lifespan=_noop_lifespan)
@@ -56,6 +56,7 @@ def _create_test_app() -> FastAPI:
     test_app.include_router(catalog.router, prefix="/api/catalog", tags=["catalog"])
     test_app.include_router(inference.router, prefix="/api/inference", tags=["inference"])
     test_app.include_router(sessions.router, prefix="/api", tags=["sessions"])
+    test_app.include_router(workflows.router, prefix="/api/workflows", tags=["workflows"])
 
     @test_app.get("/api/health")
     async def health():
@@ -92,7 +93,11 @@ async def _ensure_test_db():
     _db_initialized = True
 
 
-_TABLES = ["messages", "sessions", "agents", "users"]
+_TABLES = [
+    "messages", "sessions", "agents",
+    "workflow_node_runs", "workflow_runs", "workflow_versions", "workflows",
+    "users",
+]
 
 
 @pytest.fixture(autouse=True)

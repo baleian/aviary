@@ -34,11 +34,12 @@ class WorkflowResponse(BaseModel):
     definition: dict
     model_config_data: dict = Field(alias="model_config")
     status: str
+    current_version: int | None = None
     created_at: datetime
     updated_at: datetime
 
     @classmethod
-    def from_orm_workflow(cls, workflow) -> "WorkflowResponse":
+    def from_orm_workflow(cls, workflow, current_version: int | None = None) -> "WorkflowResponse":
         return cls(
             id=str(workflow.id),
             name=workflow.name,
@@ -48,6 +49,7 @@ class WorkflowResponse(BaseModel):
             definition=workflow.definition,
             model_config=workflow.model_config_json or {},
             status=workflow.status,
+            current_version=current_version,
             created_at=workflow.created_at,
             updated_at=workflow.updated_at,
         )
@@ -56,3 +58,23 @@ class WorkflowResponse(BaseModel):
 class WorkflowListResponse(BaseModel):
     items: list[WorkflowResponse]
     total: int
+
+
+class WorkflowVersionResponse(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: str
+    workflow_id: str
+    version: int
+    deployed_by: str
+    deployed_at: datetime
+
+    @classmethod
+    def from_orm_version(cls, v) -> "WorkflowVersionResponse":
+        return cls(
+            id=str(v.id),
+            workflow_id=str(v.workflow_id),
+            version=v.version,
+            deployed_by=str(v.deployed_by),
+            deployed_at=v.deployed_at,
+        )
