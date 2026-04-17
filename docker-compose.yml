@@ -142,6 +142,9 @@ services:
       # Vault — per-user GitHub token lookup keyed by the JWT's `sub`.
       VAULT_ADDR: http://vault:8200
       VAULT_TOKEN: dev-root-token
+      # Shared secret authenticating the workflow worker. Keep in sync with
+      # the `workflow-worker` service.
+      WORKER_SHARED_SECRET: ${WORKER_SHARED_SECRET:-dev-worker-secret-change-me}
     depends_on:
       redis:
         condition: service_healthy
