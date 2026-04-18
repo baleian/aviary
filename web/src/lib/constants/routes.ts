@@ -1,7 +1,3 @@
-/**
- * All client-side route paths centralized here.
- * No more hard-coded strings sprinkled across the codebase.
- */
 export const routes = {
   home: "/",
   login: "/login",
@@ -17,4 +13,10 @@ export const routes = {
   workflowNew: "/workflows/new",
   workflow: (id: string) => `/workflows/${id}`,
   workflowRuns: (id: string) => `/workflows/${id}/runs`,
+  /** Builder deep-link: open workflow at a specific version (and run,
+   *  if any). `versionId` may be the "draft" sentinel for draft runs. */
+  workflowAtVersion: (id: string, versionId: string, runId?: string) =>
+    runId
+      ? `/workflows/${id}?runId=${runId}&versionId=${versionId}`
+      : `/workflows/${id}?versionId=${versionId}`,
 } as const;
