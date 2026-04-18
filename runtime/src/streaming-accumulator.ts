@@ -15,12 +15,7 @@
  * are de-duplicated by id.
  */
 
-import type { SseEventType } from "./types/sse-events.js";
-
-export interface SSEChunk {
-  type: SseEventType;
-  [key: string]: unknown;
-}
+import type { SSEChunk } from "./types/sse-chunk.js";
 
 export class StreamingAccumulator {
   private emittedTextLen = 0;
@@ -89,7 +84,9 @@ export class StreamingAccumulator {
 
   /** New assistant turn starts after a tool_result user message —
    *  reset cumulative counters so the next snapshot's text diffs against
-   *  an empty baseline. */
+   *  an empty baseline. `hasStreamDeltas` is intentionally sticky: once
+   *  the backend has emitted real deltas we never fall back to snapshot
+   *  diffing for this session. */
   resetForNewTurn(): void {
     this.emittedTextLen = 0;
     this.emittedThinkingLen = 0;

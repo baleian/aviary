@@ -106,6 +106,18 @@ async def cleanup_agent_resources(db: AsyncSession, agent: Agent) -> None:
     await db.flush()
 
 
+async def reap_if_orphaned(db: AsyncSession, agent_id: uuid.UUID) -> None:
+    """Hard-delete the agent iff it's soft-deleted and has no active sessions.
+    Called from ``session_service.delete_session`` once the session is gone."""
+    from app.services import session_service
+
+    agent = await db.get(Agent, agent_id)
+    if agent is None or agent.status != "deleted":
+        return
+    if await session_service.count_active_sessions(db, agent.id) == 0:
+        await cleanup_agent_resources(db, agent)
+
+
 async def delete_agent(db: AsyncSession, agent: Agent) -> None:
     """Soft-delete; hard-delete once every session is gone."""
     from app.services import session_service

@@ -9,10 +9,15 @@ the supervisor by setting them in the body.
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import HTTPException
 
 from app.auth.dependencies import IdentityContext
 from app.services.vault_client import fetch_user_credentials
+
+
+logger = logging.getLogger(__name__)
 
 
 async def enrich_agent_config(body: dict, identity: IdentityContext) -> None:
@@ -37,3 +42,13 @@ async def enrich_agent_config(body: dict, identity: IdentityContext) -> None:
 
     body["agent_config"] = agent_config
     body.pop("on_behalf_of_sub", None)
+
+    # Single source-of-truth audit line for "who invoked what". Log AFTER the
+    # body has been stamped so anything off here is a bug, not a caller lie.
+    logger.info(
+        "agent_config enriched sub=%s agent_id=%s on_behalf_token=%s credentials=%s",
+        identity.sub,
+        agent_config.get("agent_id"),
+        bool(identity.user_token),
+        sorted(credentials.keys()) if credentials else [],
+    )

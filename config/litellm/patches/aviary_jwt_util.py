@@ -27,6 +27,10 @@ class JwtValidator:
     from the environment — both patches share one module-level instance.
     """
 
+    # Minimum seconds between forced refetches on an unknown kid. Prevents a
+    # flood of tokens carrying random kids from hammering the IdP.
+    _FORCE_REFETCH_COOLDOWN = 5
+
     def __init__(self, *, jwks_ttl: int = 3600, sub_cache_ttl: int = 1800) -> None:
         self.issuer = os.environ.get("OIDC_ISSUER", "")
         self.internal_issuer = os.environ.get("OIDC_INTERNAL_ISSUER", "") or self.issuer
@@ -34,6 +38,7 @@ class JwtValidator:
         self._sub_cache_ttl = sub_cache_ttl
         self._jwks: dict | None = None
         self._jwks_fetched_at: float = 0
+        self._last_forced_refetch_at: float = 0
         self._sub_cache: dict[str, tuple[str, float]] = {}
 
     # ---- URL rewrite -----------------------------------------------------
@@ -102,9 +107,12 @@ class JwtValidator:
         jwks = await self._get_jwks()
         rsa_key = self._find_key(jwks, kid)
         if rsa_key is None:
-            # Key rotation — refetch JWKS once.
-            jwks = await self._get_jwks(force=True)
-            rsa_key = self._find_key(jwks, kid)
+            # Key rotation — refetch once, but rate-limit so a stream of
+            # random-kid tokens can't turn into an IdP DoS.
+            if (now - self._last_forced_refetch_at) >= self._FORCE_REFETCH_COOLDOWN:
+                self._last_forced_refetch_at = now
+                jwks = await self._get_jwks(force=True)
+                rsa_key = self._find_key(jwks, kid)
         if rsa_key is None:
             raise Exception("Token signing key not found in JWKS")
 

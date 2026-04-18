@@ -176,29 +176,9 @@ export interface StructuredOutputConfig {
   fields: StructuredOutputField[];
 }
 
-import type { SseEventType } from "./types/sse-events.js";
 import { StreamingAccumulator } from "./streaming-accumulator.js";
-
-export interface SSEChunk {
-  type: SseEventType;
-  content?: string;
-  name?: string;
-  input?: unknown;
-  tool_use_id?: string;
-  is_error?: boolean;
-  parent_tool_use_id?: string | null;
-  // tool_progress fields
-  tool_name?: string;
-  elapsed_time_seconds?: number;
-  // Error message (only on type: "error")
-  message?: string;
-  // Result metadata (only on type: "result")
-  session_id?: string;
-  duration_ms?: number;
-  num_turns?: number;
-  total_cost_usd?: number;
-  usage?: Record<string, unknown>;
-}
+import type { SSEChunk } from "./types/sse-chunk.js";
+export type { SSEChunk };
 
 // Dynamically-registered tools ride under this single SDK MCP server so the
 // CLI-visible name is deterministic: `mcp__aviary_output__{entry.name}`.
