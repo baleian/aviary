@@ -13,12 +13,31 @@ export interface WebhookTriggerData {
   [key: string]: unknown;
 }
 
+export interface StructuredOutputField {
+  name: string;
+  type: "str" | "list";
+  description?: string;
+}
+
+export interface ArtifactField {
+  name: string;
+  description?: string;
+}
+
 export interface AgentStepData {
   label: string;
   instruction: string;
   model_config: { backend: string; model: string; max_output_tokens?: number };
   mcp_tool_ids: string[];
   prompt_template: string;
+  // Extra fields appended to the default `text` output. Runtime gets
+  // `[{name:"text",...}, ...structured_output_fields]` as the schema, so
+  // `text` is always present and users only manage the extras.
+  structured_output_fields?: StructuredOutputField[];
+  // Named file/directory outputs. When set, the runtime exposes
+  // `save_as_artifact` to the agent; downstream steps receive each produced
+  // artifact as `/workspace/{name}` inside their sandbox.
+  artifacts?: ArtifactField[];
   [key: string]: unknown;
 }
 

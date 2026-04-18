@@ -18,7 +18,7 @@ interface ToolChipProps {
  * before the tool map has hydrated from the MCP API).
  */
 export function ToolChip({ id, info, onRemove, onShowDetails }: ToolChipProps) {
-  const label = info?.qualified_name || id.slice(0, 8);
+  const label = info?.qualified_name || id;
 
   return (
     <span className="inline-flex items-center gap-1 rounded-sm bg-info/10 type-caption text-info ring-1 ring-inset ring-info/20">

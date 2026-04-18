@@ -69,3 +69,30 @@ async def cancel_workflow_run(run_id: str) -> None:
             logger.info("cancel skipped — workflow %s already finished", run_id)
             return
         raise
+
+
+async def terminate_workflow_run(run_id: str, reason: str) -> bool:
+    """Forcefully terminate a workflow. Bypasses workflow code, so the
+    worker's normal cleanup (DB status write, Redis event) does NOT run —
+    the caller owns those updates. Returns True if the terminate RPC landed,
+    False if the workflow was already closed.
+    """
+    handle = get_client().get_workflow_handle(run_id)
+    try:
+        await handle.terminate(reason=reason)
+        return True
+    except RPCError as e:
+        if e.status == RPCStatusCode.NOT_FOUND:
+            return False
+        raise
+
+
+async def workflow_still_running(run_id: str) -> bool:
+    handle = get_client().get_workflow_handle(run_id)
+    try:
+        desc = await handle.describe()
+    except RPCError as e:
+        if e.status == RPCStatusCode.NOT_FOUND:
+            return False
+        raise
+    return desc.status.name == "RUNNING"

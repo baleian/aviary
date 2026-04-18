@@ -12,20 +12,40 @@ import { usePathname } from "next/navigation";
 import { http } from "@/lib/http";
 import { useAuth } from "@/features/auth/providers/auth-provider";
 import { useSetSessionIds } from "./session-status-provider";
-import type { Agent, Session } from "@/types";
+import { routes } from "@/lib/constants/routes";
+import type { Agent, Session, Workflow, WorkflowRun } from "@/types";
+import type { WorkflowRunListResponse } from "@/features/workflows/api/workflows-api";
 
 export interface SidebarAgentGroup {
   agent: Agent;
   sessions: Session[];
 }
 
+export interface SidebarWorkflowGroup {
+  workflow: Workflow;
+  /** Most recent deployed runs, capped at SIDEBAR_WORKFLOW_RUNS_LIMIT.
+   *  Older runs are visible on the workflow's runs detail page. */
+  runs: WorkflowRun[];
+  /** Total count of deployed runs — used to show "N more" hint in the
+   *  sidebar and guide the user to the full history page. */
+  totalRuns: number;
+}
+
 export type SidebarViewMode = "agent" | "date";
+
+/** The sidebar focuses on whichever surface the user is on — agents vs
+ *  workflows. Derived from the URL; the pages themselves don't choose. */
+export type SidebarMode = "agents" | "workflows";
+
+export const SIDEBAR_WORKFLOW_RUNS_LIMIT = 5;
 
 const VIEW_MODE_STORAGE_KEY = "aviary_sidebar_view_mode";
 const COLLAPSED_AGENTS_STORAGE_KEY = "aviary_collapsed_agents";
 
 interface SidebarContextValue {
+  mode: SidebarMode;
   groups: SidebarAgentGroup[];
+  workflowGroups: SidebarWorkflowGroup[];
   loading: boolean;
   collapsed: boolean;
   toggleCollapsed: () => void;
@@ -73,7 +93,9 @@ const SidebarContext = createContext<SidebarContextValue | null>(null);
 export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   const pathname = usePathname();
+  const mode: SidebarMode = pathname.startsWith(routes.workflows) ? "workflows" : "agents";
   const [groups, setGroups] = useState<SidebarAgentGroup[]>([]);
+  const [workflowGroups, setWorkflowGroups] = useState<SidebarWorkflowGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [collapsed, setCollapsed] = useState(false);
   const [viewMode, setViewModeState] = useState<SidebarViewMode>("agent");
@@ -126,33 +148,54 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 
   const refresh = useCallback(async () => {
     if (!user) return;
+    setLoading(true);
     try {
-      const { items: agents } = await http.get<{ items: Agent[] }>("/agents");
-      const withSessions = await Promise.all(
-        agents.map(async (agent) => {
-          const { items } = await http.get<{ items: Session[] }>(
-            `/agents/${agent.id}/sessions`,
-          );
-          return { agent, sessions: items.filter((s) => s.status === "active") };
-        }),
-      );
-      setGroups(withSessions);
+      if (mode === "workflows") {
+        const { items: workflows } = await http.get<{ items: Workflow[] }>("/workflows");
+        const withRuns = await Promise.all(
+          workflows.map(async (workflow) => {
+            // Deployed-only + limit=5: the sidebar is a recent-activity
+            // rail, not a full log. Drafts are test runs during building
+            // and would clutter the steady-state view.
+            const runs = await http.get<WorkflowRunListResponse>(
+              `/workflows/${workflow.id}/runs?limit=${SIDEBAR_WORKFLOW_RUNS_LIMIT}`,
+            );
+            return { workflow, runs: runs.items, totalRuns: runs.total };
+          }),
+        );
+        setWorkflowGroups(withRuns);
+      } else {
+        const { items: agents } = await http.get<{ items: Agent[] }>("/agents");
+        const withSessions = await Promise.all(
+          agents.map(async (agent) => {
+            const { items } = await http.get<{ items: Session[] }>(
+              `/agents/${agent.id}/sessions`,
+            );
+            return { agent, sessions: items.filter((s) => s.status === "active") };
+          }),
+        );
+        setGroups(withSessions);
+      }
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, [user, mode]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
 
-  // Refresh sidebar when entering a session URL (a session may have been
-  // just created on a different page; this catches it without prop drilling).
+  // Refresh sidebar on route transitions that typically produce new
+  // content: entering a session (agent-mode) or kicking off a workflow
+  // run (workflow-mode).
   useEffect(() => {
-    if (pathname.startsWith("/sessions/")) {
+    if (mode === "agents" && pathname.startsWith("/sessions/")) {
       refresh();
     }
-  }, [pathname, refresh]);
+    if (mode === "workflows" && pathname.startsWith(routes.workflows)) {
+      refresh();
+    }
+  }, [pathname, mode, refresh]);
 
   useEffect(() => {
     setSessionIds(groups.flatMap((g) => g.sessions).map((s) => s.id));
@@ -261,7 +304,9 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   return (
     <SidebarContext.Provider
       value={{
+        mode,
         groups,
+        workflowGroups,
         loading,
         collapsed,
         toggleCollapsed,

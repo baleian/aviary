@@ -16,4 +16,5 @@ export const routes = {
   workflows: "/workflows",
   workflowNew: "/workflows/new",
   workflow: (id: string) => `/workflows/${id}`,
+  workflowRuns: (id: string) => `/workflows/${id}/runs`,
 } as const;

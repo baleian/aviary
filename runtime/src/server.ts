@@ -11,7 +11,7 @@
 import * as fs from "node:fs";
 import express from "express";
 import { SessionManager } from "./session-manager.js";
-import { WORKSPACE_ROOT } from "./constants.js";
+import { WORKSPACE_ROOT, workflowArtifactsDir } from "./constants.js";
 import { healthRouter, setReady } from "./health.js";
 import { processMessage } from "./agent.js";
 
@@ -40,11 +40,28 @@ interface AgentConfigBody {
   [key: string]: unknown;
 }
 
+interface StructuredOutputField {
+  name: string;
+  type: "str" | "list";
+  description?: string;
+}
+
+interface StructuredOutputConfig {
+  name: string;
+  description?: string;
+  fields: StructuredOutputField[];
+}
+
 interface MessageRequestBody {
   content_parts: ContentPart[];
   session_id: string;
   agent_config: AgentConfigBody;
   output_format?: { type: "json_schema"; schema: Record<string, unknown> };
+  // Dynamically-registered in-process MCP tools. Each entry becomes one
+  // tool on the `aviary_output` server. The runtime binds them and lets
+  // the CLI emit calls as regular `tool_use` events — the caller owns
+  // deciding when/why a tool should fire via its own system prompt.
+  structured_outputs?: StructuredOutputConfig[];
 }
 
 app.post("/message", async (req, res) => {
@@ -89,6 +106,7 @@ app.post("/message", async (req, res) => {
       body.agent_config as any,
       abortController,
       body.output_format,
+      body.structured_outputs,
     )) {
       if (res.writableEnded || abortController.signal.aborted) break;
       res.write(`data: ${JSON.stringify(chunk)}\n\n`);
@@ -155,6 +173,24 @@ app.delete("/sessions/:sessionId", (req, res) => {
     res.status(404).json({ error: "session not found" });
     return;
   }
+  res.json({ status: "removed" });
+});
+
+app.delete("/workflows/:rootRunId/artifacts", (req, res) => {
+  const { rootRunId } = req.params;
+  // rootRunId arrives from the supervisor which already validated it's a
+  // UUID-shaped string; keep a belt-and-suspenders check so a stray slash
+  // or traversal can't reach outside the workflows tree.
+  if (!/^[A-Za-z0-9_-]+$/.test(rootRunId)) {
+    res.status(400).json({ error: "invalid root_run_id" });
+    return;
+  }
+  const target = workflowArtifactsDir(rootRunId);
+  if (!fs.existsSync(target)) {
+    res.status(404).json({ error: "artifacts not found" });
+    return;
+  }
+  fs.rmSync(target, { recursive: true, force: true });
   res.json({ status: "removed" });
 });
 

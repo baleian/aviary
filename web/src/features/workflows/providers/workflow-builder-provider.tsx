@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useCallback, useRef, useState } from "react";
+import { createContext, useContext, useCallback, useEffect, useRef, useState } from "react";
 import {
   useNodesState,
   useEdgesState,
@@ -14,11 +14,16 @@ import { workflowsApi } from "../api/workflows-api";
 import type { Workflow } from "@/types";
 import type { WorkflowNode, WorkflowEdge, NodeType, NodeData } from "../lib/types";
 import { NODE_REGISTRY } from "../lib/node-registry";
+import { applyPlan as applyPlanPure, validatePlan, type PlanOp } from "../lib/assistant-plan";
 
 interface WorkflowBuilderContextValue {
   workflowId: string;
   workflowName: string;
-  workflowStatus: string;
+  /** True when the current view is a deployed version snapshot — the
+   *  inspector + keyboard shortcuts switch to read-only. The page owns
+   *  the selection that drives this and passes it in at provider
+   *  construction time. */
+  isReadOnly: boolean;
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   onNodesChange: OnNodesChange<WorkflowNode>;
@@ -29,11 +34,18 @@ interface WorkflowBuilderContextValue {
   addNode: (type: NodeType, position: { x: number; y: number }) => void;
   updateNodeData: (nodeId: string, key: string, value: unknown) => void;
   deleteSelected: () => void;
+  applyPlan: (plan: PlanOp[]) => { ok: boolean; error?: string };
+  workflowModelBackend: string;
+  workflowModelName: string;
   selectedNodeId: string | null;
   undo: () => void;
   redo: () => void;
   canUndo: boolean;
   canRedo: boolean;
+  /** Cancel the pending debounced auto-save without firing it. Used
+   *  before cancel-edit so a save that was queued right before the
+   *  click can't overwrite the server's reverted definition. */
+  cancelPendingSave: () => void;
 }
 
 const WorkflowBuilderContext = createContext<WorkflowBuilderContextValue | null>(null);
@@ -46,10 +58,15 @@ export function useWorkflowBuilder() {
 
 interface Props {
   workflow: Workflow;
+  /** Whether the current view is a read-only snapshot. Controls whether
+   *  the inspector + keyboard shortcuts accept edits. The canvas
+   *  separately reads ``isReadOnly`` via its own prop so ReactFlow's
+   *  interaction flags can be bound at the right level. */
+  isReadOnly?: boolean;
   children: React.ReactNode;
 }
 
-export function WorkflowBuilderProvider({ workflow, children }: Props) {
+export function WorkflowBuilderProvider({ workflow, isReadOnly = false, children }: Props) {
   const initialNodes = (workflow.definition?.nodes ?? []) as WorkflowNode[];
   const initialEdges = (workflow.definition?.edges ?? []) as WorkflowEdge[];
 
@@ -112,6 +129,18 @@ export function WorkflowBuilderProvider({ workflow, children }: Props) {
     },
     [workflow.id],
   );
+
+  const cancelPendingSave = useCallback(() => {
+    clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = undefined;
+  }, []);
+
+  // Drop any pending save on unmount — the builder page remounts the
+  // provider on version switch / status flip, and a leftover timer
+  // from the prior instance would fire against the old state.
+  useEffect(() => {
+    return () => clearTimeout(saveTimerRef.current);
+  }, []);
 
   // Push current state to history, then apply new state
   const commit = useCallback(
@@ -207,23 +236,36 @@ export function WorkflowBuilderProvider({ workflow, children }: Props) {
     [nodes, edges, commit],
   );
 
+  const workflowBackend = workflow.model_config?.backend ?? "";
+  const workflowModel = workflow.model_config?.model ?? "";
+
   const addNode = useCallback(
     (type: NodeType, position: { x: number; y: number }) => {
       const def = NODE_REGISTRY.find((d) => d.type === type);
       if (!def) return;
 
+      // agent_step inherits the workflow's default backend/model so users
+      // don't have to set it every time. They can still override per-node.
+      const data: NodeData =
+        type === "agent_step" && workflowBackend && workflowModel
+          ? {
+              ...(def.defaultData as object),
+              model_config: { backend: workflowBackend, model: workflowModel },
+            } as NodeData
+          : ({ ...def.defaultData } as NodeData);
+
       const newNode: WorkflowNode = {
         id: `${type}_${Date.now()}`,
         type,
         position,
-        data: { ...def.defaultData } as NodeData,
+        data,
         selected: true,
       };
       // Deselect all existing nodes, select only the new one
       const deselected = nodes.map((n) => (n.selected ? { ...n, selected: false } : n));
       commit([...deselected, newNode], edges);
     },
-    [nodes, edges, commit],
+    [nodes, edges, commit, workflowBackend, workflowModel],
   );
 
   const deleteSelected = useCallback(() => {
@@ -240,6 +282,19 @@ export function WorkflowBuilderProvider({ workflow, children }: Props) {
     );
     commit(nextNodes, nextEdges);
   }, [nodes, edges, commit]);
+
+  // Apply an assistant-generated plan atomically: one history entry for
+  // the whole batch, so a single Ctrl+Z reverts every op at once.
+  const applyPlan = useCallback(
+    (plan: PlanOp[]): { ok: boolean; error?: string } => {
+      const err = validatePlan(plan, nodes, edges);
+      if (err) return { ok: false, error: err };
+      const next = applyPlanPure(plan, nodes, edges);
+      commit(next.nodes, next.edges);
+      return { ok: true };
+    },
+    [nodes, edges, commit],
+  );
 
   // Inspector: commit on blur. Pushes to history so text edits are undo-able,
   // but only once per field focus (not per keystroke).
@@ -258,7 +313,7 @@ export function WorkflowBuilderProvider({ workflow, children }: Props) {
       value={{
         workflowId: workflow.id,
         workflowName: workflow.name,
-        workflowStatus: workflow.status,
+        isReadOnly,
         nodes,
         edges,
         onNodesChange,
@@ -269,11 +324,15 @@ export function WorkflowBuilderProvider({ workflow, children }: Props) {
         addNode,
         updateNodeData,
         deleteSelected,
+        applyPlan,
+        workflowModelBackend: workflowBackend,
+        workflowModelName: workflowModel,
         selectedNodeId,
         undo,
         redo,
         canUndo: history.canUndo(),
         canRedo: history.canRedo(),
+        cancelPendingSave,
       }}
     >
       {children}

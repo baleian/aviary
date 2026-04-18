@@ -9,9 +9,11 @@
  */
 
 import * as fs from "node:fs";
+import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 
-import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import { query, createSdkMcpServer, tool, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import { z } from "zod";
 import { startA2AServer, type AccessibleAgent, type A2AServer } from "./a2a-tools.js";
 import {
   SANDBOX_WORKSPACE,
@@ -19,6 +21,8 @@ import {
   sessionSharedDir,
   sessionTmp,
   sessionVenvDir,
+  workflowArtifactsDir,
+  workflowArtifactPath,
 } from "./constants.js";
 
 function requireEnv(name: string): string {
@@ -58,6 +62,21 @@ interface ModelConfig {
   max_output_tokens?: number;
 }
 
+interface WorkflowRunRef {
+  root_run_id: string;
+  node_id: string;
+}
+
+interface ArtifactSpec {
+  name: string;
+  description?: string;
+}
+
+interface InputArtifactRef {
+  upstream_node_id: string;
+  artifact_name: string;
+}
+
 interface AgentConfig {
   agent_id: string;
   slug?: string;
@@ -73,6 +92,12 @@ interface AgentConfig {
   credentials?: Record<string, string>;
   accessible_agents?: AccessibleAgent[];
   is_sub_agent?: boolean;
+  workflow_run?: WorkflowRunRef;
+  artifacts?: ArtifactSpec[];
+  input_artifacts?: InputArtifactRef[];
+  /** Hard cap on assistant turns — safety net against verify-loop behaviour
+   *  from weak local models. Undefined = SDK default (no cap). */
+  max_turns?: number;
 }
 
 // Claude Code prefixes MCP tools as `mcp__{mcpServerKey}__{toolName}`;
@@ -139,6 +164,18 @@ function hasSessionHistory(claudeDir: string, sessionId: string): boolean {
   return false;
 }
 
+export interface StructuredOutputField {
+  name: string;
+  type: "str" | "list";
+  description?: string;
+}
+
+export interface StructuredOutputConfig {
+  name: string;
+  description?: string;
+  fields: StructuredOutputField[];
+}
+
 export interface SSEChunk {
   type: "chunk" | "tool_use" | "tool_result" | "tool_progress" | "result" | "thinking" | "query_started" | "error";
   content?: string;
@@ -158,7 +195,164 @@ export interface SSEChunk {
   num_turns?: number;
   total_cost_usd?: number;
   usage?: Record<string, unknown>;
-  structured_output?: unknown;
+}
+
+// Dynamically-registered tools ride under this single SDK MCP server so the
+// CLI-visible name is deterministic: `mcp__aviary_output__{entry.name}`.
+// Callers choose when to fire each tool via their own system prompt.
+const STRUCTURED_OUTPUT_MCP_SERVER = "aviary_output";
+export const structuredOutputCliName = (toolName: string): string =>
+  `mcp__${STRUCTURED_OUTPUT_MCP_SERVER}__${toolName}`;
+
+function buildStructuredFieldSchema(field: StructuredOutputField): z.ZodType {
+  const base: z.ZodType =
+    field.type === "list" ? z.array(z.string()) : z.string();
+  return field.description ? base.describe(field.description) : base;
+}
+
+function buildStructuredOutputsServer(configs: StructuredOutputConfig[]) {
+  const tools = configs.map((cfg) => {
+    const shape: Record<string, z.ZodType> = {};
+    for (const field of cfg.fields) {
+      shape[field.name] = buildStructuredFieldSchema(field);
+    }
+    const description =
+      cfg.description ??
+      `Call this tool to emit a structured \`${cfg.name}\` payload.`;
+    return tool(cfg.name, description, shape, async () => ({
+      content: [{ type: "text", text: `${cfg.name} recorded.` }],
+    }));
+  });
+  return createSdkMcpServer({
+    name: STRUCTURED_OUTPUT_MCP_SERVER,
+    tools,
+  });
+}
+
+const ARTIFACTS_MCP_SERVER = "aviary_artifacts";
+
+function resolveSandboxWorkspacePath(sharedDir: string, sourcePath: string): string {
+  let rel: string;
+  if (sourcePath === "/workspace") {
+    rel = "";
+  } else if (sourcePath.startsWith("/workspace/")) {
+    rel = sourcePath.slice("/workspace/".length);
+  } else if (path.isAbsolute(sourcePath)) {
+    throw new Error("source_path must be inside /workspace");
+  } else {
+    rel = sourcePath;
+  }
+  const resolvedShared = path.resolve(sharedDir);
+  const resolved = path.resolve(resolvedShared, rel);
+  if (resolved !== resolvedShared && !resolved.startsWith(resolvedShared + path.sep)) {
+    throw new Error("source_path escapes /workspace");
+  }
+  return resolved;
+}
+
+function buildArtifactsServer(
+  artifacts: ArtifactSpec[],
+  sharedDir: string,
+  rootRunId: string,
+  nodeId: string,
+) {
+  const nameSchema =
+    artifacts.length > 0
+      ? z.enum(artifacts.map((a) => a.name) as [string, ...string[]])
+      : z.string();
+  const lines = artifacts
+    .map((a) => `  - \`${a.name}\`${a.description ? ` — ${a.description}` : ""}`)
+    .join("\n");
+  const description =
+    "Save a file or directory from /workspace as a named workflow artifact. " +
+    "Downstream steps that depend on this node will see the saved content at " +
+    "`/workspace/{artifact_name}` in their own sandbox. Call once per artifact.\n\n" +
+    `Declared artifacts:\n${lines}`;
+
+  const saveTool = tool(
+    "save_as_artifact",
+    description,
+    {
+      artifact_name: nameSchema.describe(
+        "Which declared artifact this file belongs to. Must be one of the names above.",
+      ),
+      source_path: z
+        .string()
+        .describe(
+          "Path inside the sandbox (relative to /workspace, or absolute starting with /workspace/). " +
+            "May be a file or directory.",
+        ),
+    },
+    async (args: { artifact_name: string; source_path: string }) => {
+      let src: string;
+      try {
+        src = resolveSandboxWorkspacePath(sharedDir, args.source_path);
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: `save_as_artifact: ${(e as Error).message}` }],
+          isError: true,
+        };
+      }
+      if (!fs.existsSync(src)) {
+        return {
+          content: [{ type: "text", text: `save_as_artifact: ${args.source_path} does not exist` }],
+          isError: true,
+        };
+      }
+      const dst = workflowArtifactPath(rootRunId, nodeId, args.artifact_name);
+      try {
+        await fsp.rm(dst, { recursive: true, force: true });
+        await fsp.mkdir(path.dirname(dst), { recursive: true });
+        const stat = await fsp.stat(src);
+        if (stat.isDirectory()) {
+          await fsp.cp(src, dst, { recursive: true });
+        } else {
+          await fsp.copyFile(src, dst);
+        }
+      } catch (e) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `save_as_artifact: copy failed — ${(e as Error).message}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      return {
+        content: [
+          { type: "text", text: `Saved artifact \`${args.artifact_name}\`.` },
+        ],
+      };
+    },
+  );
+
+  return createSdkMcpServer({ name: ARTIFACTS_MCP_SERVER, tools: [saveTool] });
+}
+
+async function copyInputArtifacts(
+  inputs: InputArtifactRef[],
+  rootRunId: string,
+  sharedDir: string,
+): Promise<void> {
+  const runRoot = workflowArtifactsDir(rootRunId);
+  for (const ref of inputs) {
+    const src = path.join(runRoot, ref.upstream_node_id, ref.artifact_name);
+    if (!fs.existsSync(src)) {
+      // Skip silently — upstream might not have produced this artifact.
+      // The agent will find nothing at /workspace/{name} and can react.
+      continue;
+    }
+    const dst = path.join(sharedDir, ref.artifact_name);
+    await fsp.rm(dst, { recursive: true, force: true });
+    const stat = await fsp.stat(src);
+    if (stat.isDirectory()) {
+      await fsp.cp(src, dst, { recursive: true });
+    } else {
+      await fsp.copyFile(src, dst);
+    }
+  }
 }
 
 /**
@@ -224,6 +418,7 @@ export async function* processMessage(
   agentConfig: AgentConfig,
   abortController?: AbortController,
   outputFormat?: { type: "json_schema"; schema: Record<string, unknown> },
+  structuredOutputs?: StructuredOutputConfig[],
 ): AsyncGenerator<SSEChunk> {
   const agentId = agentConfig.agent_id;
   const shared = sessionSharedDir(sessionId);
@@ -245,6 +440,28 @@ export async function* processMessage(
   const resolvedModel = mc.model.includes("/") ? mc.model : `${mc.backend}/${mc.model}`;
   const canResume = hasSessionHistory(claudeDir, sessionId);
 
+  // Workflow-only setup: pre-copy upstream artifacts into the session's
+  // shared dir and point the sandbox at the run's artifact tree. The
+  // copy runs BEFORE the SDK spawns so agent code sees every requested
+  // upstream as `/workspace/{name}` from turn zero.
+  const workflowRun = agentConfig.workflow_run;
+  const declaredArtifacts = Array.isArray(agentConfig.artifacts)
+    ? agentConfig.artifacts.filter((a): a is ArtifactSpec => !!a?.name)
+    : [];
+  const inputArtifacts = Array.isArray(agentConfig.input_artifacts)
+    ? agentConfig.input_artifacts.filter(
+        (a): a is InputArtifactRef => !!a?.upstream_node_id && !!a?.artifact_name,
+      )
+    : [];
+  let artifactsDir: string | null = null;
+  if (workflowRun?.root_run_id) {
+    artifactsDir = workflowArtifactsDir(workflowRun.root_run_id);
+    fs.mkdirSync(artifactsDir, { recursive: true });
+    if (inputArtifacts.length > 0) {
+      await copyInputArtifacts(inputArtifacts, workflowRun.root_run_id, shared);
+    }
+  }
+
   const env: Record<string, string> = {
     ANTHROPIC_BASE_URL: LITELLM_URL,
     ANTHROPIC_API_KEY: LITELLM_API_KEY,
@@ -256,6 +473,7 @@ export async function* processMessage(
     SESSION_CLAUDE_DIR: claudeDir,
     SESSION_VENV_DIR: venvDir,
     SESSION_TMP: tmpDir,
+    ...(artifactsDir ? { SESSION_ARTIFACTS_DIR: artifactsDir } : {}),
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     CLAUDE_CODE_MAX_RETRIES: "2",
     ...(mc.max_output_tokens != null
@@ -307,10 +525,44 @@ export async function* processMessage(
     systemPrompt += `\n\n## Available Sub-Agents\nYou can delegate tasks to these agents using the corresponding mcp__a2a__ask_{slug} tool:\n${agentList}`;
   }
 
-  // Merge allowed tools with A2A tool names
+  // Dynamic structured-output tools — one MCP tool per entry, bound under
+  // the `aviary_output` SDK MCP server. Callers (workflow assistant,
+  // agent auto-complete, etc.) describe each tool's trigger / contents in
+  // their own system prompt; the runtime just exposes the tools and lets
+  // tool_use events flow through the normal stream.
+  const structuredToolNames: string[] = [];
+  const validStructuredOutputs = (structuredOutputs ?? []).filter(
+    (c) => c?.name && Array.isArray(c.fields),
+  );
+  if (validStructuredOutputs.length > 0) {
+    mcpServers[STRUCTURED_OUTPUT_MCP_SERVER] = buildStructuredOutputsServer(
+      validStructuredOutputs,
+    );
+    for (const cfg of validStructuredOutputs) {
+      structuredToolNames.push(structuredOutputCliName(cfg.name));
+    }
+  }
+
+  // Workflow artifacts tool — only when the step declared artifacts AND we
+  // have a workflow_run to attribute them to. Runs entirely in-process so
+  // it can touch the PVC directly (the sandbox's /artifacts mount is ro).
+  const artifactToolNames: string[] = [];
+  if (declaredArtifacts.length > 0 && workflowRun?.root_run_id) {
+    mcpServers[ARTIFACTS_MCP_SERVER] = buildArtifactsServer(
+      declaredArtifacts,
+      shared,
+      workflowRun.root_run_id,
+      workflowRun.node_id,
+    );
+    artifactToolNames.push(`mcp__${ARTIFACTS_MCP_SERVER}__save_as_artifact`);
+  }
+
+  // Merge allowed tools with A2A tool names and any dynamic tools.
   const allowedTools = [
     ...(agentConfig.tools ?? []),
     ...a2aToolNames,
+    ...structuredToolNames,
+    ...artifactToolNames,
   ];
 
   const options: Record<string, unknown> = {
@@ -335,6 +587,9 @@ export async function* processMessage(
     ...(canResume ? { resume: sessionId } : {}),
     ...(abortController ? { abortController } : {}),
     ...(outputFormat ? { outputFormat } : {}),
+    ...(typeof agentConfig.max_turns === "number" && agentConfig.max_turns > 0
+      ? { maxTurns: agentConfig.max_turns }
+      : {}),
   };
 
   // PreToolUse hook: when SDK is about to call an A2A tool, capture the real
@@ -481,7 +736,10 @@ export async function* processMessage(
           fullResponse = msg.result;
           yield { type: "chunk", content: msg.result };
         }
-        // Emit result metadata (cost, usage, duration)
+        // Emit result metadata (cost, usage, duration). SDK-native
+        // `msg.structured_output` only surfaces when the built-in
+        // outputFormat option was used — unused in our caller paths now,
+        // but kept so the shape is forward-compatible.
         yield {
           type: "result",
           session_id: msg.session_id,
@@ -489,7 +747,6 @@ export async function* processMessage(
           num_turns: msg.num_turns,
           total_cost_usd: msg.total_cost_usd,
           usage: msg.usage,
-          ...(msg.structured_output !== undefined ? { structured_output: msg.structured_output } : {}),
         };
       }
     }

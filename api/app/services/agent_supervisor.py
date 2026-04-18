@@ -28,16 +28,24 @@ async def close_client() -> None:
     await _supervisor.close()
 
 
-async def post_message(session_id: str, body: dict, user_token: str) -> dict:
+async def post_message(
+    session_id: str, body: dict, user_token: str,
+    timeout: float | None = None,
+) -> dict:
     """Drive a single agent turn. Blocks until the stream is assembled.
 
-    Returns `{status, stream_id, reached_runtime, assembled_text?, assembled_blocks?, message?}`.
+    Returns `{status, stream_id, reached_runtime, assembled_text?, assembled_blocks?, structured_output?, message?}`.
+
+    `timeout` caps the whole round-trip from the API's perspective — leave
+    as None for chat (the supervisor owns end-to-end lifecycle), set an
+    explicit seconds value for one-shot helper calls so we don't hang when
+    the runtime silently stalls.
     """
     resp = await _supervisor.client.post(
         f"/v1/sessions/{session_id}/message",
         json=body,
         headers={"Authorization": f"Bearer {user_token}"},
-        timeout=None,
+        timeout=timeout,
     )
     resp.raise_for_status()
     return resp.json()
@@ -69,6 +77,25 @@ async def cleanup_session(
         resp.raise_for_status()
     except httpx.HTTPError:
         logger.warning("Session cleanup failed for %s", session_id, exc_info=True)
+
+
+async def cleanup_workflow_artifacts(
+    root_run_id: str,
+    runtime_endpoint: str | None = None,
+) -> None:
+    """Best-effort wipe of a workflow run's artifact tree on the PVC."""
+    try:
+        resp = await _supervisor.client.request(
+            "DELETE",
+            f"/v1/workflows/{root_run_id}/artifacts",
+            json={"runtime_endpoint": runtime_endpoint},
+            timeout=15,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPError:
+        logger.warning(
+            "Artifact cleanup failed for root_run=%s", root_run_id, exc_info=True,
+        )
 
 
 async def health_check() -> bool:

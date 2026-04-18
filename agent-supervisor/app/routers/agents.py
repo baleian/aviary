@@ -200,18 +200,18 @@ async def _drive_stream(
     assembled_text, assembled_blocks = assembly.rebuild_blocks_from_chunks(chunks)
     await assembly.merge_a2a_events(session_id, assembled_blocks)
 
+    base_return = {
+        "stream_id": stream_id,
+        "reached_runtime": reached_runtime,
+        "assembled_text": assembled_text,
+        "assembled_blocks": assembled_blocks,
+    }
+
     if error_message:
         assembled_blocks.append({"type": "error", "message": error_message})
         await redis_client.set_stream_status(stream_id, "error")
         metrics.publish_requests_total.labels(status="error").inc()
-        return {
-            "status": "error",
-            "stream_id": stream_id,
-            "reached_runtime": reached_runtime,
-            "message": error_message,
-            "assembled_text": assembled_text,
-            "assembled_blocks": assembled_blocks,
-        }
+        return {"status": "error", "message": error_message, **base_return}
 
     # Terminal state (done / cancelled) is signalled by the API after it
     # saves the message to the DB — supervisor doesn't know the DB id, so
@@ -219,23 +219,11 @@ async def _drive_stream(
     if aborted:
         await redis_client.set_stream_status(stream_id, "aborted")
         metrics.publish_requests_total.labels(status="aborted").inc()
-        return {
-            "status": "aborted",
-            "stream_id": stream_id,
-            "reached_runtime": reached_runtime,
-            "assembled_text": assembled_text,
-            "assembled_blocks": assembled_blocks,
-        }
+        return {"status": "aborted", **base_return}
 
     await redis_client.set_stream_status(stream_id, "complete")
     metrics.publish_requests_total.labels(status="complete").inc()
-    return {
-        "status": "complete",
-        "stream_id": stream_id,
-        "reached_runtime": reached_runtime,
-        "assembled_text": assembled_text,
-        "assembled_blocks": assembled_blocks,
-    }
+    return {"status": "complete", **base_return}
 
 
 @router.post("/sessions/{session_id}/message")
@@ -408,4 +396,31 @@ async def cleanup_session(session_id: str, body: _CleanupBody):
             return {"ok": resp.status_code in (200, 404)}
     except httpx.HTTPError:
         logger.warning("Cleanup failed for session %s", session_id, exc_info=True)
+        return {"ok": False}
+
+
+# ── /workflows/{root_run_id}/artifacts cleanup ──────────────────────────────
+
+class _WorkflowArtifactsCleanupBody(BaseModel):
+    runtime_endpoint: str | None = None
+
+
+@router.delete("/workflows/{root_run_id}/artifacts")
+async def cleanup_workflow_artifacts(
+    root_run_id: str, body: _WorkflowArtifactsCleanupBody,
+):
+    """Drop the entire artifact tree for a workflow run chain. Proxies to
+    the runtime because the PVC is only mounted there."""
+    base = resolve_runtime_base(body.runtime_endpoint)
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.delete(
+                f"{base}/workflows/{root_run_id}/artifacts",
+                timeout=10,
+            )
+            return {"ok": resp.status_code in (200, 404)}
+    except httpx.HTTPError:
+        logger.warning(
+            "Artifact cleanup failed for root_run=%s", root_run_id, exc_info=True,
+        )
         return {"ok": False}

@@ -38,6 +38,11 @@ class Workflow(Base):
         JSONB, nullable=False,
         server_default='{"nodes":[],"edges":[],"viewport":{"x":0,"y":0,"zoom":1}}',
     )
+
+    # Optional per-workflow runtime endpoint override. NULL → agent_step
+    # activities fall back to the supervisor's configured default env.
+    runtime_endpoint: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
     status: Mapped[str] = mapped_column(String(20), default="draft", server_default="draft")
 
     created_at: Mapped[datetime] = mapped_column(
@@ -99,6 +104,12 @@ class WorkflowRun(Base):
     )
     status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="pending", index=True)
     definition_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # NULL on a fresh run; resumed runs inherit the source's root_run_id
+    # (or fall back to source.id if the source was itself a root). Artifact
+    # storage keys on coalesce(root_run_id, id) so resume chains share a tree.
+    root_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("workflow_runs.id", ondelete="SET NULL"), nullable=True
+    )
     temporal_run_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
