@@ -25,6 +25,10 @@ load_env_and_build_args() {
   BUILD_ARGS=()
   [ -n "${UV_INDEX_URL:-}" ]        && BUILD_ARGS+=(--build-arg "UV_INDEX_URL=$UV_INDEX_URL")
   [ -n "${NPM_CONFIG_REGISTRY:-}" ] && BUILD_ARGS+=(--build-arg "NPM_CONFIG_REGISTRY=$NPM_CONFIG_REGISTRY")
+  # The `[ -n "" ] && ...` pattern above returns 1 when env vars are unset.
+  # Without this explicit success the function would propagate that 1 to
+  # its caller and `set -e` would kill the script silently.
+  return 0
 }
 
 # Load an image into the in-cluster K3s containerd.
