@@ -206,7 +206,7 @@ function PanelResizeHandle({ onResize }: { onResize: (delta: number) => void }) 
 }
 
 const RIGHT_MIN = 320;
-const RIGHT_MAX = 640;
+const RIGHT_MAX = 960;
 const RIGHT_DEFAULT = 380;
 
 function RightPanel({
@@ -326,7 +326,7 @@ export function WorkflowBuilder() {
               </div>
             </ReactFlowProvider>
           </div>
-          <AssistantPanel />
+          {!readOnly && <AssistantPanel />}
         </div>
       </div>
     </RunStatusProvider>
