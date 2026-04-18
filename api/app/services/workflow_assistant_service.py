@@ -210,8 +210,11 @@ edit operations.
 - agent_step: {
     "label": string,
     "instruction": string,
-    "mcp_tool_ids": string[],     // bind tools from the list below if needed
-    "prompt_template": string     // use "{{input}}" for upstream data
+    "mcp_tool_ids": string[],          // bind tools from the list below if needed
+    "prompt_template": string,         // use "{{input}}" for upstream data
+    "structured_output_fields"?: [     // OPTIONAL — see "Structured output" below
+      { "name": string, "type": "str" | "list", "description"?: string }
+    ]
   }
   NOTE: DO NOT emit `model_config` for agent_step. The workflow's
   default backend/model is injected automatically on the server.
@@ -219,6 +222,37 @@ edit operations.
 - merge: { "label": string }
 - payload_parser: { "label": string, "mapping": object }
 - template: { "label": string, "template": string }
+
+## Structured output (agent_step only)
+Every agent_step ALREADY emits `{ "text": "..." }` as its output — `text` is
+the step's final user-facing response and is always present. Downstream nodes
+reference it as `{{ input.text }}`.
+
+Use `structured_output_fields` to (a) customize how the agent writes the
+`text` field, and/or (b) ADD more named fields when downstream nodes need to
+branch on or format individual pieces of the agent's answer. Rules:
+- To customize the default `text` output, prepend a `{ "name": "text",
+  "type": "str", "description": "..." }` entry. The description guides the
+  agent on what to put in `text` (e.g. "A two-sentence summary of the
+  result."). Omit the entry entirely if you don't want to override it.
+- For extra fields: name each in lowercase snake_case (e.g. "severity",
+  "action_items"). `type: "str"` for a single string, `type: "list"` for a
+  list of strings. `description` is optional but strongly recommended.
+- Keep the list short (≤4 extras). Only add a field if the plan genuinely
+  uses it downstream; don't invent speculative fields.
+- Reference fields in downstream templates/conditions as `{{ input.<name> }}`
+  (single-upstream case) or `{{ inputs.<node_id>.<name> }}` (multi-upstream).
+
+Example — a triage step feeding a condition:
+  agent_step data: {
+    "structured_output_fields": [
+      { "name": "text", "type": "str",
+        "description": "One-line summary of the triage decision." },
+      { "name": "severity", "type": "str",
+        "description": "One of: low, medium, high." }
+    ]
+  }
+  downstream condition expression: `input.severity == "high"`
 
 ## Operation vocabulary (items of the `plan` array)
 { "op": "add_node", "id": "<new_unique_id>", "type": "<node_type>",

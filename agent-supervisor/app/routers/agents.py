@@ -142,6 +142,10 @@ async def _drive_stream(
     reached_runtime = False
     error_message: str | None = None
     aborted = False
+    # Captured when the runtime's final-response SDK tool fires. Latest
+    # wins; the last emission also appears in the terminal `result` event
+    # but we prefer the inline one because it survives aborts.
+    structured_output: dict | None = None
     started = time.monotonic()
 
     await redis_client.set_stream_status(stream_id, "streaming")
@@ -181,6 +185,13 @@ async def _drive_stream(
                             # message in the response is enough.
                             error_message = event.get("message", "Agent runtime error")
                             break
+                        if etype == "structured_output":
+                            payload = event.get("input")
+                            if isinstance(payload, dict):
+                                structured_output = payload
+                            # Captured for the return path, not something
+                            # WS/history consumers care about — don't buffer.
+                            continue
                         await redis_client.append_stream_chunk(stream_id, event)
                         await redis_client.publish_event(session_id, event)
     except asyncio.CancelledError:
@@ -200,18 +211,19 @@ async def _drive_stream(
     assembled_text, assembled_blocks = assembly.rebuild_blocks_from_chunks(chunks)
     await assembly.merge_a2a_events(session_id, assembled_blocks)
 
+    base_return = {
+        "stream_id": stream_id,
+        "reached_runtime": reached_runtime,
+        "assembled_text": assembled_text,
+        "assembled_blocks": assembled_blocks,
+        **({"structured_output": structured_output} if structured_output is not None else {}),
+    }
+
     if error_message:
         assembled_blocks.append({"type": "error", "message": error_message})
         await redis_client.set_stream_status(stream_id, "error")
         metrics.publish_requests_total.labels(status="error").inc()
-        return {
-            "status": "error",
-            "stream_id": stream_id,
-            "reached_runtime": reached_runtime,
-            "message": error_message,
-            "assembled_text": assembled_text,
-            "assembled_blocks": assembled_blocks,
-        }
+        return {"status": "error", "message": error_message, **base_return}
 
     # Terminal state (done / cancelled) is signalled by the API after it
     # saves the message to the DB — supervisor doesn't know the DB id, so
@@ -219,23 +231,11 @@ async def _drive_stream(
     if aborted:
         await redis_client.set_stream_status(stream_id, "aborted")
         metrics.publish_requests_total.labels(status="aborted").inc()
-        return {
-            "status": "aborted",
-            "stream_id": stream_id,
-            "reached_runtime": reached_runtime,
-            "assembled_text": assembled_text,
-            "assembled_blocks": assembled_blocks,
-        }
+        return {"status": "aborted", **base_return}
 
     await redis_client.set_stream_status(stream_id, "complete")
     metrics.publish_requests_total.labels(status="complete").inc()
-    return {
-        "status": "complete",
-        "stream_id": stream_id,
-        "reached_runtime": reached_runtime,
-        "assembled_text": assembled_text,
-        "assembled_blocks": assembled_blocks,
-    }
+    return {"status": "complete", **base_return}
 
 
 @router.post("/sessions/{session_id}/message")

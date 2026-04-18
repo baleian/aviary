@@ -1,16 +1,16 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus } from "@/components/icons";
+import { Plus, Trash2, Lock } from "@/components/icons";
 import { useWorkflowBuilder } from "@/features/workflows/providers/workflow-builder-provider";
 import { ModelSelect } from "./model-select";
 import { ToolSelector } from "@/features/agents/components/tool-selector/tool-selector";
 import { ToolDetailsSheet } from "@/features/agents/components/tool-selector/tool-details-sheet";
 import { ToolChip } from "@/features/agents/components/form/tool-chip";
-import type { WorkflowNode } from "@/features/workflows/lib/types";
+import type { WorkflowNode, StructuredOutputField } from "@/features/workflows/lib/types";
 import type { McpToolInfo } from "@/types";
 
 function NodeField({
@@ -175,6 +175,184 @@ function ToolsField({
   );
 }
 
+function OutputFieldRow({
+  field, onChange, onRemove,
+}: {
+  field: StructuredOutputField;
+  onChange: (patch: Partial<StructuredOutputField>) => void;
+  onRemove: () => void;
+}) {
+  const [localName, setLocalName] = useState(field.name);
+  const [localDesc, setLocalDesc] = useState(field.description ?? "");
+  const nameFocused = useRef(false);
+  const descFocused = useRef(false);
+
+  useEffect(() => {
+    if (!nameFocused.current) setLocalName(field.name);
+  }, [field.name]);
+  useEffect(() => {
+    if (!descFocused.current) setLocalDesc(field.description ?? "");
+  }, [field.description]);
+
+  const commitName = () => {
+    nameFocused.current = false;
+    const trimmed = localName.trim();
+    if (trimmed !== field.name) onChange({ name: trimmed });
+    setLocalName(trimmed);
+  };
+  const commitDesc = () => {
+    descFocused.current = false;
+    const next = localDesc.trim();
+    const prev = field.description ?? "";
+    if (next !== prev) onChange({ description: next || undefined });
+    setLocalDesc(next);
+  };
+
+  return (
+    <div className="space-y-1.5 rounded-md border border-white/[0.08] bg-white/[0.02] px-2 py-2">
+      <div className="flex items-center gap-1.5">
+        <Input
+          value={localName}
+          placeholder="field_name"
+          onChange={(e) => setLocalName(e.target.value)}
+          onFocus={() => { nameFocused.current = true; }}
+          onBlur={commitName}
+          className="flex-1 h-7 text-[12px] font-mono"
+        />
+        <select
+          value={field.type}
+          onChange={(e) => onChange({ type: e.target.value as "str" | "list" })}
+          className="h-7 rounded-md border border-white/[0.08] bg-canvas px-1.5 text-[12px] text-fg-primary focus:outline-none focus:border-info"
+        >
+          <option value="str">string</option>
+          <option value="list">list</option>
+        </select>
+        <button
+          type="button"
+          onClick={onRemove}
+          className="flex h-7 w-7 items-center justify-center rounded-md text-fg-disabled hover:bg-danger/10 hover:text-danger transition-colors"
+          title="Remove field"
+        >
+          <Trash2 size={11} strokeWidth={1.75} />
+        </button>
+      </div>
+      <Textarea
+        value={localDesc}
+        placeholder="Description (optional)"
+        onChange={(e) => setLocalDesc(e.target.value)}
+        onFocus={() => { descFocused.current = true; }}
+        onBlur={commitDesc}
+        rows={1}
+        className="text-[12px]"
+      />
+    </div>
+  );
+}
+
+function TextFieldRow({
+  description, onChange,
+}: {
+  description: string;
+  onChange: (next: string) => void;
+}) {
+  const [local, setLocal] = useState(description);
+  const focused = useRef(false);
+
+  useEffect(() => {
+    if (!focused.current) setLocal(description);
+  }, [description]);
+
+  const commit = () => {
+    focused.current = false;
+    const next = local.trim();
+    if (next !== description) onChange(next);
+    setLocal(next);
+  };
+
+  return (
+    <div className="space-y-1.5 rounded-md border border-white/[0.06] bg-white/[0.015] px-2 py-2">
+      <div className="flex items-center gap-2">
+        <Lock size={11} className="text-fg-disabled" strokeWidth={1.75} />
+        <span className="text-[12px] font-mono text-fg-muted">text</span>
+        <span className="text-[10px] text-fg-disabled">string</span>
+        <span className="ml-auto text-[10px] text-fg-disabled">always included</span>
+      </div>
+      <Textarea
+        value={local}
+        placeholder="Description — guides how the agent summarizes its final answer (optional)"
+        onChange={(e) => setLocal(e.target.value)}
+        onFocus={() => { focused.current = true; }}
+        onBlur={commit}
+        rows={1}
+        className="text-[12px]"
+      />
+    </div>
+  );
+}
+
+function OutputFieldsEditor({
+  fields, onChange,
+}: {
+  fields: StructuredOutputField[];
+  onChange: (next: StructuredOutputField[]) => void;
+}) {
+  const textEntry = fields.find((f) => f.name === "text");
+  const extras = fields.filter((f) => f.name !== "text");
+  const textDescription = textEntry?.description ?? "";
+
+  // Serialise back as `[text?, ...extras]`. The text entry leads whenever it
+  // has a description; otherwise drop it to keep the stored data minimal.
+  const emit = (nextTextDesc: string, nextExtras: StructuredOutputField[]) => {
+    const out: StructuredOutputField[] = [];
+    if (nextTextDesc) {
+      out.push({ name: "text", type: "str", description: nextTextDesc });
+    }
+    out.push(...nextExtras);
+    onChange(out);
+  };
+
+  const setTextDescription = (next: string) => emit(next, extras);
+  const updateExtraAt = (idx: number, patch: Partial<StructuredOutputField>) =>
+    emit(textDescription, extras.map((f, i) => (i === idx ? { ...f, ...patch } : f)));
+  const removeExtraAt = (idx: number) =>
+    emit(textDescription, extras.filter((_, i) => i !== idx));
+  const addExtra = () =>
+    emit(textDescription, [...extras, { name: "", type: "str" }]);
+
+  return (
+    <div className="space-y-2">
+      <Label className="text-[11px] font-medium text-fg-disabled uppercase tracking-wider">
+        Output Fields
+      </Label>
+
+      <TextFieldRow description={textDescription} onChange={setTextDescription} />
+
+      {extras.map((field, idx) => (
+        <OutputFieldRow
+          key={idx}
+          field={field}
+          onChange={(patch) => updateExtraAt(idx, patch)}
+          onRemove={() => removeExtraAt(idx)}
+        />
+      ))}
+
+      <button
+        type="button"
+        onClick={addExtra}
+        className="inline-flex items-center gap-1 rounded-sm border border-white/[0.08] bg-transparent px-2 py-1 text-[11px] text-fg-muted hover:bg-white/[0.04] hover:text-fg-primary transition-colors"
+      >
+        <Plus size={11} strokeWidth={2.25} />
+        Add field
+      </button>
+
+      <p className="text-[10px] text-fg-disabled">
+        Extra fields are collected by the agent's final tool call. Downstream
+        nodes can reference them as <span className="font-mono">{"{{ input.field_name }}"}</span>.
+      </p>
+    </div>
+  );
+}
+
 export function InspectorPanel() {
   const { nodes, selectedNodeId, updateNodeData } = useWorkflowBuilder();
 
@@ -234,6 +412,10 @@ export function InspectorPanel() {
             <ToolsField
               toolIds={(d.mcp_tool_ids as string[]) ?? []}
               onChange={(next) => updateNodeData(node.id, "mcp_tool_ids", next)}
+            />
+            <OutputFieldsEditor
+              fields={(d.structured_output_fields as StructuredOutputField[]) ?? []}
+              onChange={(next) => updateNodeData(node.id, "structured_output_fields", next)}
             />
           </>
         )}

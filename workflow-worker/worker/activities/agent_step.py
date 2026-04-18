@@ -99,6 +99,13 @@ async def run_agent_step_activity(
     mcp_tool_ids = data.get("mcp_tool_ids") or []
     tools = [f"mcp__gateway__{t}" for t in mcp_tool_ids]
 
+    # Every agent_step outputs a structured dict so downstream templates can
+    # reference named fields uniformly. `text` is always present and holds
+    # the user-facing answer; users can add extra fields in the inspector.
+    # The user may also supply a description for the `text` entry itself via
+    # a leading {name: "text", ...} row in `structured_output_fields`.
+    output_format = _build_output_format(data.get("structured_output_fields") or [])
+
     body: dict = {
         "session_id": wf_session_id,
         "content_parts": [{"text": rendered_prompt}],
@@ -110,6 +117,7 @@ async def run_agent_step_activity(
             "tools": tools,
             "mcp_servers": {},
         },
+        "structured_output_format": output_format,
     }
     if user_token is None:
         body["on_behalf_of_sub"] = owner_external_id
@@ -150,9 +158,66 @@ async def run_agent_step_activity(
     if result.get("status") == "error":
         raise RuntimeError(result.get("message") or "agent step failed")
 
-    text = ""
+    structured = result.get("structured_output")
+    if isinstance(structured, dict) and structured:
+        # Guarantee `text` even when a model-quirk omits it — downstream
+        # templates assume it's always there. Fall back to assembled text.
+        if not structured.get("text"):
+            structured = {**structured, "text": _fallback_text(result)}
+        return structured
+    # Model didn't call the final-response tool (e.g. hit a hard error mid-
+    # stream). Fall back to the last text block so the node still produces
+    # a usable `text` output.
+    return {"text": _fallback_text(result)}
+
+
+def _fallback_text(result: dict) -> str:
     for block in reversed(result.get("assembled_blocks") or []):
         if block.get("type") == "text":
-            text = block.get("content") or ""
-            break
-    return {"text": text}
+            return block.get("content") or ""
+    return ""
+
+
+_ALLOWED_FIELD_TYPES = {"str", "list"}
+_DEFAULT_TEXT_DESCRIPTION = "The final user-facing response text for this step — a concise summary of the agent's answer."
+
+
+def _build_output_format(raw: list) -> dict:
+    """Normalise `structured_output_fields` into a runtime-ready schema.
+
+    A single `text` entry anywhere in `raw` is treated as a description
+    override (name and type are locked). All other entries — after name /
+    type / duplicate validation — become extras appended in order.
+    """
+    text_desc = _DEFAULT_TEXT_DESCRIPTION
+    extras: list[dict] = []
+    seen: set[str] = {"text"}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if name == "text":
+            desc = item.get("description")
+            if isinstance(desc, str) and desc.strip():
+                text_desc = desc.strip()
+            continue
+        if name in seen:
+            continue
+        ftype = item.get("type")
+        if ftype not in _ALLOWED_FIELD_TYPES:
+            continue
+        entry: dict = {"name": name, "type": ftype}
+        desc = item.get("description")
+        if isinstance(desc, str) and desc.strip():
+            entry["description"] = desc.strip()
+        extras.append(entry)
+        seen.add(name)
+
+    return {
+        "fields": [
+            {"name": "text", "type": "str", "description": text_desc},
+            *extras,
+        ],
+    }
