@@ -1,23 +1,34 @@
 """Workflow run orchestration.
 
 Couples the DB row (authoritative source for owners / history) with the
-Temporal workflow handle. Trigger path: insert pending row → start
-Temporal workflow reusing the row id as the workflow_id. Cancel path:
-signal Temporal; the worker persists the final `cancelled` status.
+Temporal workflow handle. Trigger path: insert pending row → start Temporal
+workflow reusing the row id as the workflow_id. Cancel path: signal + short
+grace period + force-terminate on timeout, all synchronous inside the
+request — no background tasks (uvicorn hot-reload hates them).
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
 import uuid
+from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.db.models import User, Workflow, WorkflowRun, WorkflowVersion
+from app.db.models import User, Workflow, WorkflowNodeRun, WorkflowRun, WorkflowVersion
+from app.db.session import async_session_factory
 from app.schemas.workflow import WorkflowRunCreate
-from app.services import temporal_client
+from app.services import redis_service, temporal_client
 from aviary_shared.workflow_types import WorkflowRunInput
+
+logger = logging.getLogger(__name__)
+
+_CANCEL_POLL_INTERVAL = 0.5
+_CANCEL_POLL_ATTEMPTS = 10  # ~5s total — long enough for graceful shutdown
 
 
 async def _latest_version(db: AsyncSession, workflow_id: uuid.UUID) -> WorkflowVersion | None:
@@ -82,7 +93,84 @@ async def create_run(
 
 
 async def cancel_run(run: WorkflowRun) -> None:
-    await temporal_client.cancel_workflow_run(str(run.id))
+    """Cooperative cancel → poll briefly → force-terminate on timeout.
+
+    Three cases, all resolved before the request returns:
+      1. Temporal workflow is already gone (externally terminated, expired)
+         → reconcile DB row so the UI doesn't stay "Running".
+      2. Signal lands within the grace window → worker's persistence activity
+         writes `cancelled` to DB. Nothing else to do.
+      3. Workflow is wedged (e.g. activation-failure loop) → signal queues
+         forever; we terminate and write DB ourselves.
+    """
+    run_id = str(run.id)
+
+    if not await temporal_client.workflow_still_running(run_id):
+        await _mark_run_cancelled(run_id, error="workflow no longer running in Temporal")
+        return
+
+    await temporal_client.cancel_workflow_run(run_id)
+
+    for _ in range(_CANCEL_POLL_ATTEMPTS):
+        await asyncio.sleep(_CANCEL_POLL_INTERVAL)
+        if not await temporal_client.workflow_still_running(run_id):
+            # Worker processed the signal and wrote the final DB status via
+            # its persistence activity. Confirm the row is reconciled in
+            # case the worker crashed mid-write.
+            await _mark_run_cancelled(run_id, error="reconciled after graceful cancel")
+            return
+
+    if await temporal_client.terminate_workflow_run(
+        run_id, reason="cancel signal not processed within grace period",
+    ):
+        await _mark_run_cancelled(
+            run_id, error="force-terminated after cancel signal stalled",
+        )
+
+
+async def _mark_run_cancelled(run_id: str, error: str) -> None:
+    """Reconcile run + any still-running node rows.
+
+    Graceful cancel path has the worker mark each in-flight node as
+    `skipped` before it exits, matching the Temporal cancel semantics.
+    Force-terminate bypasses worker code, so we do the same sweep here
+    to avoid leaving node_runs stuck at `running`.
+    """
+    now = datetime.now(timezone.utc)
+    run_uuid = uuid.UUID(run_id)
+    async with async_session_factory() as session:
+        run_result = await session.execute(
+            update(WorkflowRun)
+            .where(
+                WorkflowRun.id == run_uuid,
+                WorkflowRun.status.in_(("pending", "running")),
+            )
+            .values(status="cancelled", completed_at=now, error=error)
+        )
+        node_result = await session.execute(
+            update(WorkflowNodeRun)
+            .where(
+                WorkflowNodeRun.run_id == run_uuid,
+                WorkflowNodeRun.status.in_(("pending", "running")),
+            )
+            .values(status="skipped", completed_at=now)
+        )
+        await session.commit()
+
+    if not run_result.rowcount and not node_result.rowcount:
+        return
+    client = redis_service.get_client()
+    if not client:
+        return
+    channel = f"workflow:run:{run_id}:events"
+    try:
+        if run_result.rowcount:
+            await client.publish(
+                channel,
+                json.dumps({"type": "run_status", "status": "cancelled", "error": error}),
+            )
+    except Exception:
+        logger.warning("publish cancelled event failed", exc_info=True)
 
 
 async def resume_run(
