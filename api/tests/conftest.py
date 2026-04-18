@@ -131,19 +131,32 @@ def _mock_agent_supervisor():
 @pytest.fixture(autouse=True)
 def _mock_temporal_client():
     """Stub out Temporal — tests never talk to a real Temporal server."""
-    p_start = patch(
-        "app.services.temporal_client.start_workflow_run",
-        new_callable=AsyncMock, return_value="temporal-run-id-stub",
-    )
-    p_cancel = patch(
-        "app.services.temporal_client.cancel_workflow_run",
-        new_callable=AsyncMock,
-    )
-    p_start.start()
-    p_cancel.start()
+    patchers = [
+        patch(
+            "app.services.temporal_client.start_workflow_run",
+            new_callable=AsyncMock, return_value="temporal-run-id-stub",
+        ),
+        patch(
+            "app.services.temporal_client.cancel_workflow_run",
+            new_callable=AsyncMock,
+        ),
+        # cancel_run() pre-checks "still running" then polls it in a loop —
+        # returning False short-circuits to the reconcile path without
+        # needing to simulate a worker processing the signal.
+        patch(
+            "app.services.temporal_client.workflow_still_running",
+            new_callable=AsyncMock, return_value=False,
+        ),
+        patch(
+            "app.services.temporal_client.terminate_workflow_run",
+            new_callable=AsyncMock, return_value=False,
+        ),
+    ]
+    for p in patchers:
+        p.start()
     yield
-    p_start.stop()
-    p_cancel.stop()
+    for p in patchers:
+        p.stop()
 
 
 async def _override_get_db() -> AsyncGenerator[AsyncSession, None]:
