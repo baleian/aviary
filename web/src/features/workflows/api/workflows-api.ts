@@ -2,6 +2,25 @@ import { http } from "@/lib/http";
 import type { Workflow, WorkflowRun } from "@/types";
 import type { PlanOp } from "../lib/assistant-plan";
 
+// --- Assistant streaming ---
+
+export type AssistantStreamEvent =
+  | { type: "chunk"; content: string; stream_id?: string }
+  | { type: "thinking"; content: string; stream_id?: string }
+  | { type: "tool_use"; name: string; input: Record<string, unknown>; tool_use_id: string; stream_id?: string; parent_tool_use_id?: string }
+  | { type: "tool_result"; tool_use_id: string; content: string; is_error?: boolean; stream_id?: string }
+  | { type: "stream_started"; stream_id: string }
+  | { type: "query_started"; stream_id?: string }
+  | { type: "result"; stream_id?: string }
+  | { type: "assistant_done"; reply: string; plan: PlanOp[] }
+  | { type: "error"; message: string }
+  | { type: "other" };
+
+export interface AssistantStreamCallbacks {
+  onEvent: (event: AssistantStreamEvent) => void;
+  signal?: AbortSignal;
+}
+
 export interface WorkflowListResponse {
   items: Workflow[];
   total: number;
@@ -94,17 +113,49 @@ export const workflowsApi = {
     return http.post<WorkflowRun>(`/workflows/${id}/runs/${runId}/resume`, {});
   },
 
-  assistant(
+  async assistantStream(
     id: string,
     data: {
       user_message: string;
       current_definition: { nodes: unknown[]; edges: unknown[] };
       history: { role: "user" | "assistant"; content: string }[];
     },
-  ) {
-    return http.post<{ reply: string; plan: PlanOp[] }>(
-      `/workflows/${id}/assistant`,
-      data,
-    );
+    callbacks: AssistantStreamCallbacks,
+  ): Promise<void> {
+    const res = await fetch(`/api/workflows/${id}/assistant/stream`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+      signal: callbacks.signal,
+    });
+    if (!res.ok || !res.body) {
+      const body = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(body.detail || `Assistant request failed (${res.status})`);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      // SSE frames separated by blank line
+      let idx: number;
+      while ((idx = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        for (const line of frame.split("\n")) {
+          if (!line.startsWith("data: ")) continue;
+          const payload = line.slice(6);
+          try {
+            callbacks.onEvent(JSON.parse(payload) as AssistantStreamEvent);
+          } catch {
+            // Skip malformed frames
+          }
+        }
+      }
+    }
   },
 };

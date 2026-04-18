@@ -1,9 +1,9 @@
 """Agent auto-complete: 3-stage LLM flow via the supervisor.
 
-Rides the same supervisor→runtime path chat uses, leveraging the dynamic
-structured-output tool the runtime registers per request. The previous
-direct-LiteLLM path is gone — Claude CLI's harness now owns tool
-invocation plumbing.
+Each stage registers a dedicated structured-output tool whose description
+tells the CLI WHEN it should fire (e.g. "call this with the candidate
+tool ids you picked"). The runtime binds the tool; we fish the
+invocation out of `assembled_blocks` on the way back.
 """
 
 from __future__ import annotations
@@ -25,6 +25,52 @@ TOOL_NAME_SEPARATOR = "__"
 
 class AutocompleteError(RuntimeError):
     pass
+
+
+_CANDIDATE_TOOL = {
+    "name": "report_candidate_tools",
+    "description": (
+        "Call this once with the MCP tool ids you think MIGHT be useful for "
+        "the agent being designed. Be generous — a later stage re-verifies. "
+        "Pass an empty list if none apply."
+    ),
+    "fields": [
+        {
+            "name": "tool_ids",
+            "type": "list",
+            "description": "Chosen MCP tool identifiers (exact, from AVAILABLE_TOOLS).",
+        },
+    ],
+}
+
+_VERIFY_TOOL = {
+    "name": "report_verified_tools",
+    "description": (
+        "Call this once with the final subset of candidate MCP tools that "
+        "are actually worth binding to this agent. Empty list is allowed."
+    ),
+    "fields": [
+        {
+            "name": "tool_ids",
+            "type": "list",
+            "description": "Final subset (exact ids, from CANDIDATES).",
+        },
+    ],
+}
+
+_AGENT_DEF_TOOL = {
+    "name": "fill_agent_fields",
+    "description": (
+        "Call this once with the generated agent definition — name, short "
+        "description, and detailed system instruction. The caller will "
+        "auto-fill these into the agent form."
+    ),
+    "fields": [
+        {"name": "name", "type": "str", "description": "Concise agent name (<= 80 chars)."},
+        {"name": "description", "type": "str", "description": "One-line summary (<= 200 chars)."},
+        {"name": "instruction", "type": "str", "description": "Detailed system instruction the agent will follow."},
+    ],
+}
 
 
 async def run(
@@ -59,15 +105,14 @@ async def _stage1_narrow(
     system = (
         "You pick candidate MCP tools that MIGHT be useful for the agent being designed. "
         "A later stage re-verifies with full descriptions, so be generous. "
-        "Only return tool ids that appear in AVAILABLE_TOOLS. "
-        "Emit your answer via the final-response tool as `tool_ids` (list of "
-        "strings) — empty list if nothing is obviously relevant."
+        "Only return tool ids that appear in AVAILABLE_TOOLS.\n\n"
+        + _format_tool_call_instruction(_CANDIDATE_TOOL)
     )
     user_message = (
         f"CURRENT = {json.dumps(_current_state(req))}\n"
         f"AVAILABLE_TOOLS = {json.dumps(signatures)}"
     )
-    raw = await _call(req, system, user_message, user_token)
+    raw = await _call(req, system, user_message, _CANDIDATE_TOOL, user_token)
     return _coerce_string_list(raw.get("tool_ids"))
 
 
@@ -86,15 +131,14 @@ async def _stage2_verify(
     system = (
         "For each candidate, decide whether it's actually worth binding to this agent. "
         "Drop tools that are off-topic or duplicate existing capabilities. "
-        "Return only ids from CANDIDATES. "
-        "Emit your answer via the final-response tool as `tool_ids` (list of "
-        "strings) — empty list is allowed."
+        "Return only ids from CANDIDATES.\n\n"
+        + _format_tool_call_instruction(_VERIFY_TOOL)
     )
     user_message = (
         f"CURRENT = {json.dumps(_current_state(req))}\n"
         f"CANDIDATES = {json.dumps(details)}"
     )
-    raw = await _call(req, system, user_message, user_token)
+    raw = await _call(req, system, user_message, _VERIFY_TOOL, user_token)
     return _coerce_string_list(raw.get("tool_ids"))
 
 
@@ -116,15 +160,14 @@ async def _stage3_generate(
         "Write a detailed system instruction that the agent will follow; "
         "reference the SELECTED_TOOLS where relevant. "
         "If CURRENT already has name/description/system_instruction text, "
-        "treat it as a draft to build on, not as a hard constraint on wording. "
-        "Emit your answer via the final-response tool with three string fields: "
-        "`name`, `description`, `instruction`."
+        "treat it as a draft to build on, not as a hard constraint on wording.\n\n"
+        + _format_tool_call_instruction(_AGENT_DEF_TOOL)
     )
     user_message = (
         f"CURRENT = {json.dumps(_current_state(req))}\n"
         f"SELECTED_TOOLS = {json.dumps(selected)}"
     )
-    raw = await _call(req, system, user_message, user_token, stage="stage3")
+    raw = await _call(req, system, user_message, _AGENT_DEF_TOOL, user_token)
     return {
         "name": str(raw.get("name") or "").strip(),
         "description": str(raw.get("description") or "").strip(),
@@ -171,24 +214,12 @@ def _merge(
 # ---------------------------------------------------------------------------
 
 
-_STAGE3_FIELDS = [
-    {"name": "name", "type": "str", "description": "Concise agent name (<= 80 chars)."},
-    {"name": "description", "type": "str", "description": "Short one-liner (<= 200 chars)."},
-    {"name": "instruction", "type": "str", "description": "System instruction the agent will follow."},
-]
-
-_TOOL_IDS_FIELDS = [
-    {"name": "tool_ids", "type": "list", "description": "Chosen MCP tool ids (empty list if none apply)."},
-]
-
-
 async def _call(
     req: AgentAutocompleteRequest,
     system: str,
     user_message: str,
+    tool: dict,
     user_token: str,
-    *,
-    stage: str = "tools",
 ) -> dict:
     mc = req.model_config_data
     runtime_model_config: dict = {
@@ -197,20 +228,44 @@ async def _call(
         "max_output_tokens": mc.max_output_tokens,
     }
     try:
-        return await llm_runtime.call_structured(
+        result = await llm_runtime.run_once(
             model_config=runtime_model_config,
             system=system,
             user_message=user_message,
-            fields=_STAGE3_FIELDS if stage == "stage3" else _TOOL_IDS_FIELDS,
+            structured_outputs=[tool],
             user_token=user_token,
         )
     except llm_runtime.LLMRuntimeError as e:
         raise AutocompleteError(str(e)) from e
 
+    block = llm_runtime.find_structured_tool_call(result, tool["name"])
+    if block is None:
+        raise AutocompleteError(
+            f"Model did not call {tool['name']!r}; assembled_text="
+            f"{(result.get('assembled_text') or '')[:200]!r}"
+        )
+    payload = block.get("input")
+    if not isinstance(payload, dict):
+        raise AutocompleteError(
+            f"{tool['name']} input is not a dict: {type(payload).__name__}"
+        )
+    return payload
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _format_tool_call_instruction(tool: dict) -> str:
+    lines = [
+        f"Call the `mcp__aviary_output__{tool['name']}` tool exactly once with the following fields:",
+    ]
+    for f in tool["fields"]:
+        t = "array of strings" if f["type"] == "list" else "string"
+        desc = f" — {f['description']}" if f.get("description") else ""
+        lines.append(f"- `{f['name']}` ({t}){desc}")
+    return "\n".join(lines)
 
 
 def _current_state(req: AgentAutocompleteRequest) -> dict:

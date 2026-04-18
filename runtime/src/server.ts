@@ -46,7 +46,9 @@ interface StructuredOutputField {
   description?: string;
 }
 
-interface StructuredOutputFormat {
+interface StructuredOutputConfig {
+  name: string;
+  description?: string;
   fields: StructuredOutputField[];
 }
 
@@ -55,7 +57,11 @@ interface MessageRequestBody {
   session_id: string;
   agent_config: AgentConfigBody;
   output_format?: { type: "json_schema"; schema: Record<string, unknown> };
-  structured_output_format?: StructuredOutputFormat;
+  // Dynamically-registered in-process MCP tools. Each entry becomes one
+  // tool on the `aviary_output` server. The runtime binds them and lets
+  // the CLI emit calls as regular `tool_use` events — the caller owns
+  // deciding when/why a tool should fire via its own system prompt.
+  structured_outputs?: StructuredOutputConfig[];
 }
 
 app.post("/message", async (req, res) => {
@@ -100,7 +106,7 @@ app.post("/message", async (req, res) => {
       body.agent_config as any,
       abortController,
       body.output_format,
-      body.structured_output_format,
+      body.structured_outputs,
     )) {
       if (res.writableEnded || abortController.signal.aborted) break;
       res.write(`data: ${JSON.stringify(chunk)}\n\n`);

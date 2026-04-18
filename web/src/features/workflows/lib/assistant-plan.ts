@@ -39,13 +39,20 @@ export type PlanOp = AddNodeOp | UpdateNodeOp | DeleteNodeOp | AddEdgeOp | Delet
 
 // --- Chat message shape used by the assistant panel ---
 
+import type { StreamBlock } from "@/types";
+
 export interface AssistantChatMessage {
   id: string;
   role: "user" | "assistant";
+  /** User messages only. Assistant content is rendered from `blocks`. */
   content: string;
+  /** Live-streamed blocks for the assistant's turn. */
+  blocks?: StreamBlock[];
   plan?: PlanOp[];
   planStatus?: "pending" | "accepted" | "rejected";
   error?: string;
+  /** True while the assistant turn is still streaming. */
+  streaming?: boolean;
 }
 
 // --- Validation (mirrors server-side _validate_plan_references) ---

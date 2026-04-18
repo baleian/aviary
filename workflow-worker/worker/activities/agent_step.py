@@ -104,7 +104,9 @@ async def run_agent_step_activity(
     # the user-facing answer; users can add extra fields in the inspector.
     # The user may also supply a description for the `text` entry itself via
     # a leading {name: "text", ...} row in `structured_output_fields`.
-    output_format = _build_output_format(data.get("structured_output_fields") or [])
+    output_tool = _build_output_tool(data.get("structured_output_fields") or [])
+    output_tool_cli_name = f"mcp__aviary_output__{output_tool['name']}"
+    tools.append(output_tool_cli_name)
 
     body: dict = {
         "session_id": wf_session_id,
@@ -113,11 +115,13 @@ async def run_agent_step_activity(
             "agent_id": f"wf:{run_id}:{node_id}",
             "runtime_endpoint": runtime_endpoint,
             "model_config": data.get("model_config") or {},
-            "instruction": data.get("instruction") or "",
+            "instruction": _augment_instruction_with_output_tool(
+                data.get("instruction") or "", output_tool,
+            ),
             "tools": tools,
             "mcp_servers": {},
         },
-        "structured_output_format": output_format,
+        "structured_outputs": [output_tool],
     }
     if user_token is None:
         body["on_behalf_of_sub"] = owner_external_id
@@ -158,17 +162,26 @@ async def run_agent_step_activity(
     if result.get("status") == "error":
         raise RuntimeError(result.get("message") or "agent step failed")
 
-    structured = result.get("structured_output")
-    if isinstance(structured, dict) and structured:
+    captured = _extract_tool_input(result.get("assembled_blocks") or [], output_tool_cli_name)
+    if isinstance(captured, dict) and captured:
         # Guarantee `text` even when a model-quirk omits it — downstream
         # templates assume it's always there. Fall back to assembled text.
-        if not structured.get("text"):
-            structured = {**structured, "text": _fallback_text(result)}
-        return structured
+        if not captured.get("text"):
+            captured = {**captured, "text": _fallback_text(result)}
+        return captured
     # Model didn't call the final-response tool (e.g. hit a hard error mid-
     # stream). Fall back to the last text block so the node still produces
     # a usable `text` output.
     return {"text": _fallback_text(result)}
+
+
+def _extract_tool_input(blocks: list, cli_name: str) -> dict | None:
+    for block in blocks:
+        if block.get("type") == "tool_call" and block.get("name") == cli_name:
+            payload = block.get("input")
+            if isinstance(payload, dict):
+                return payload
+    return None
 
 
 def _fallback_text(result: dict) -> str:
@@ -180,10 +193,12 @@ def _fallback_text(result: dict) -> str:
 
 _ALLOWED_FIELD_TYPES = {"str", "list"}
 _DEFAULT_TEXT_DESCRIPTION = "The final user-facing response text for this step — a concise summary of the agent's answer."
+_OUTPUT_TOOL_NAME = "emit_final_response"
+_OUTPUT_TOOL_DESCRIPTION = "Emit the final structured response for this workflow step. Call this exactly once, as your last action, with every field populated."
 
 
-def _build_output_format(raw: list) -> dict:
-    """Normalise `structured_output_fields` into a runtime-ready schema.
+def _build_output_tool(raw: list) -> dict:
+    """Normalise `structured_output_fields` into a structured_outputs[] entry.
 
     A single `text` entry anywhere in `raw` is treated as a description
     override (name and type are locked). All other entries — after name /
@@ -216,8 +231,30 @@ def _build_output_format(raw: list) -> dict:
         seen.add(name)
 
     return {
+        "name": _OUTPUT_TOOL_NAME,
+        "description": _OUTPUT_TOOL_DESCRIPTION,
         "fields": [
             {"name": "text", "type": "str", "description": text_desc},
             *extras,
         ],
     }
+
+
+def _augment_instruction_with_output_tool(instruction: str, tool: dict) -> str:
+    """Append a short guidance block so the model consistently calls the
+    dynamically-registered output tool. The runtime no longer injects any
+    system-prompt suffix of its own — callers own the prompt fully."""
+    lines = ["", "## Final response"]
+    lines.append(
+        f"You MUST emit your final answer by calling the "
+        f"`mcp__aviary_output__{tool['name']}` tool exactly once, at the end "
+        f"of the task. Do not write your final answer as plain text — the "
+        f"tool call IS the response."
+    )
+    lines.append("")
+    lines.append("Fields:")
+    for f in tool["fields"]:
+        t = "array of strings" if f["type"] == "list" else "string"
+        desc = f" — {f['description']}" if f.get("description") else ""
+        lines.append(f"- `{f['name']}` ({t}){desc}")
+    return (instruction or "").rstrip() + "\n" + "\n".join(lines)

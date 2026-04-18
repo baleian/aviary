@@ -14,8 +14,11 @@ import {
   Plus,
   Pencil,
 } from "@/components/icons";
+import { TextBlockView } from "@/features/chat/components/blocks/text-block";
+import { ThinkingChip } from "@/features/chat/components/blocks/thinking-chip";
+import { ToolCallCard } from "@/features/chat/components/blocks/tool-call-card";
 import { useWorkflowBuilder } from "@/features/workflows/providers/workflow-builder-provider";
-import { workflowsApi } from "@/features/workflows/api/workflows-api";
+import { workflowsApi, type AssistantStreamEvent } from "@/features/workflows/api/workflows-api";
 import {
   describePlanOp,
   type AssistantChatMessage,
@@ -24,8 +27,14 @@ import {
 import type { WorkflowEdge, WorkflowNode } from "@/features/workflows/lib/types";
 import { extractErrorMessage } from "@/lib/http";
 import { cn } from "@/lib/utils";
+import type { StreamBlock, ToolCallBlock } from "@/types";
 
 // --- Helpers ---
+
+// The runtime exposes the workflow-update tool under this CLI name.
+// We keep its invocation out of the visible tool-card stream and render
+// the plan accept/deny card instead.
+const APPLY_PLAN_CLI_NAME = "mcp__aviary_output__apply_workflow_plan";
 
 // Deep-strip React Flow internals before sending to the LLM so we don't
 // waste tokens on state the server doesn't care about.
@@ -50,7 +59,75 @@ function stripNodesEdgesForSend(nodes: WorkflowNode[], edges: WorkflowEdge[]) {
 function historyForApi(
   messages: AssistantChatMessage[],
 ): { role: "user" | "assistant"; content: string }[] {
-  return messages.map((m) => ({ role: m.role, content: m.content }));
+  return messages.map((m) => ({
+    role: m.role,
+    content: m.role === "assistant" ? assistantMessageToText(m) : m.content,
+  }));
+}
+
+function assistantMessageToText(m: AssistantChatMessage): string {
+  // Fold text blocks into a single string for history context.
+  const parts: string[] = [];
+  for (const b of m.blocks ?? []) {
+    if (b.type === "text") parts.push(b.content);
+  }
+  return parts.join("\n").trim();
+}
+
+// --- Live block-building reducer ---
+
+let nextBlockId = 0;
+const newBlockId = () => `b-${++nextBlockId}`;
+
+function applyEventToBlocks(
+  blocks: StreamBlock[],
+  event: AssistantStreamEvent,
+): StreamBlock[] {
+  if (event.type === "chunk") {
+    const last = blocks.at(-1);
+    if (last?.type === "text") {
+      return [
+        ...blocks.slice(0, -1),
+        { ...last, content: last.content + (event.content ?? "") },
+      ];
+    }
+    return [...blocks, { type: "text", id: newBlockId(), content: event.content ?? "" }];
+  }
+  if (event.type === "thinking") {
+    const last = blocks.at(-1);
+    if (last?.type === "thinking") {
+      return [
+        ...blocks.slice(0, -1),
+        { ...last, content: last.content + (event.content ?? "") },
+      ];
+    }
+    return [...blocks, { type: "thinking", id: newBlockId(), content: event.content ?? "" }];
+  }
+  if (event.type === "tool_use") {
+    // Don't surface the workflow-update tool as a card — the PlanPreview
+    // takes over for that one.
+    if (event.name === APPLY_PLAN_CLI_NAME) return blocks;
+    const block: ToolCallBlock = {
+      type: "tool_call",
+      id: event.tool_use_id,
+      name: event.name,
+      input: (event.input ?? {}) as Record<string, unknown>,
+      status: "running",
+    };
+    return [...blocks, block];
+  }
+  if (event.type === "tool_result") {
+    return blocks.map((b) => {
+      if (b.type !== "tool_call" || b.id !== event.tool_use_id) return b;
+      return {
+        ...b,
+        status: "complete",
+        result: event.content,
+        ...(event.is_error ? { is_error: true } : {}),
+      };
+    });
+  }
+  return blocks;
 }
 
 // --- Plan preview card ---
@@ -151,6 +228,25 @@ function PlanPreview({
 
 // --- Message bubble ---
 
+function AssistantBlocks({ blocks, streaming }: { blocks: StreamBlock[]; streaming: boolean }) {
+  return (
+    <div className="space-y-2">
+      {blocks.map((block) => {
+        if (block.type === "text") {
+          return <TextBlockView key={block.id} content={block.content} />;
+        }
+        if (block.type === "thinking") {
+          return <ThinkingChip key={block.id} content={block.content} isActive={streaming} />;
+        }
+        if (block.type === "tool_call") {
+          return <ToolCallCard key={block.id} block={block as ToolCallBlock} />;
+        }
+        return null;
+      })}
+    </div>
+  );
+}
+
 function MessageRow({
   message,
   onAccept,
@@ -161,6 +257,8 @@ function MessageRow({
   onReject: (id: string) => void;
 }) {
   const isUser = message.role === "user";
+  const hasBlocks = !!message.blocks?.length;
+
   return (
     <div className={cn("flex gap-2", isUser ? "justify-end" : "justify-start")}>
       {!isUser && (
@@ -170,20 +268,33 @@ function MessageRow({
       )}
       <div
         className={cn(
-          "max-w-[85%] rounded-lg px-3 py-2 text-[12.5px] leading-relaxed",
+          "min-w-0 max-w-[85%] rounded-lg px-3 py-2 text-[12.5px] leading-relaxed",
           isUser
             ? "bg-info/15 text-fg-primary"
             : "bg-[rgba(255,255,255,0.03)] text-fg-primary",
         )}
       >
-        {message.content && (
+        {isUser && message.content && (
           <p className="whitespace-pre-wrap break-words">{message.content}</p>
         )}
+
+        {!isUser && hasBlocks && (
+          <AssistantBlocks blocks={message.blocks ?? []} streaming={!!message.streaming} />
+        )}
+
+        {!isUser && !hasBlocks && message.streaming && (
+          <div className="flex items-center gap-1.5 text-[11.5px] text-fg-disabled">
+            <Loader2 size={11} strokeWidth={2} className="animate-spin" />
+            <span>Thinking…</span>
+          </div>
+        )}
+
         {message.error && !message.plan && (
           <p className="mt-1 flex items-center gap-1.5 text-[11.5px] text-[rgb(255,99,99)]">
             <AlertCircle size={11} strokeWidth={2} /> {message.error}
           </p>
         )}
+
         {message.plan && message.plan.length > 0 && (
           <PlanPreview
             plan={message.plan}
@@ -253,10 +364,13 @@ export function AssistantPanel() {
   const listRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Scroll to bottom on new messages
+  // Scroll to bottom as messages grow/change
   useEffect(() => {
-    listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, busy]);
+    listRef.current?.scrollTo({
+      top: listRef.current.scrollHeight,
+      behavior: "smooth",
+    });
+  }, [messages]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -282,36 +396,76 @@ export function AssistantPanel() {
       role: "user",
       content,
     };
+    const assistantId = crypto.randomUUID();
     const priorHistory = historyForApi(messages);
-    setMessages((prev) => [...prev, userMsg]);
+
+    setMessages((prev) => [
+      ...prev,
+      userMsg,
+      {
+        id: assistantId,
+        role: "assistant",
+        content: "",
+        blocks: [],
+        streaming: true,
+      },
+    ]);
     setInput("");
     setBusy(true);
 
-    try {
-      const res = await workflowsApi.assistant(workflowId, {
-        user_message: content,
-        current_definition: stripNodesEdgesForSend(nodes, edges),
-        history: priorHistory,
-      });
+    const updateAssistant = (
+      patch: (m: AssistantChatMessage) => AssistantChatMessage,
+    ) => {
+      setMessages((prev) =>
+        prev.map((m) => (m.id === assistantId ? patch(m) : m)),
+      );
+    };
 
-      const assistantMsg: AssistantChatMessage = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: res.reply,
-        plan: res.plan,
-        planStatus: res.plan.length > 0 ? "pending" : undefined,
-      };
-      setMessages((prev) => [...prev, assistantMsg]);
+    try {
+      await workflowsApi.assistantStream(
+        workflowId,
+        {
+          user_message: content,
+          current_definition: stripNodesEdgesForSend(nodes, edges),
+          history: priorHistory,
+        },
+        {
+          onEvent: (event) => {
+            if (event.type === "assistant_done") {
+              updateAssistant((m) => ({
+                ...m,
+                streaming: false,
+                plan: event.plan,
+                planStatus: event.plan.length > 0 ? "pending" : undefined,
+              }));
+              return;
+            }
+            if (event.type === "error") {
+              updateAssistant((m) => ({
+                ...m,
+                streaming: false,
+                error: event.message,
+              }));
+              return;
+            }
+            // Stream events: fold into blocks.
+            updateAssistant((m) => ({
+              ...m,
+              blocks: applyEventToBlocks(m.blocks ?? [], event),
+            }));
+          },
+        },
+      );
     } catch (err) {
-      const assistantMsg: AssistantChatMessage = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: "",
+      updateAssistant((m) => ({
+        ...m,
+        streaming: false,
         error: extractErrorMessage(err) || "Assistant request failed",
-      };
-      setMessages((prev) => [...prev, assistantMsg]);
+      }));
     } finally {
       setBusy(false);
+      // Ensure streaming flag cleared even if assistant_done never arrived.
+      updateAssistant((m) => ({ ...m, streaming: false }));
     }
   }, [input, busy, modelReady, messages, nodes, edges, workflowId]);
 
@@ -401,12 +555,8 @@ export function AssistantPanel() {
               <div className="flex h-full flex-col items-center justify-center px-6 text-center">
                 <Sparkles size={18} strokeWidth={1.75} className="mb-2 text-info/60" />
                 <p className="text-[12px] text-fg-muted leading-relaxed max-w-[340px]">
-                  Describe the workflow you want to build, or a change you'd like to
-                  make. I'll propose the edits for you to review.
-                </p>
-                <p className="mt-1.5 text-[10.5px] text-fg-disabled">
-                  e.g. "Add an agent step after the webhook trigger that summarizes
-                  the payload."
+                  Ask anything about your workflow, or describe a change you'd like
+                  to make. I'll propose the edits for you to review.
                 </p>
               </div>
             )}
@@ -419,13 +569,6 @@ export function AssistantPanel() {
                 onReject={handleReject}
               />
             ))}
-
-            {busy && (
-              <div className="flex items-center gap-2 pl-8 text-[11.5px] text-fg-disabled">
-                <Loader2 size={12} strokeWidth={2} className="animate-spin" />
-                <span>Thinking…</span>
-              </div>
-            )}
           </div>
 
           {/* Input */}
@@ -445,7 +588,7 @@ export function AssistantPanel() {
                 disabled={busy || !modelReady}
                 placeholder={
                   modelReady
-                    ? "Ask the assistant to build or change your workflow…"
+                    ? "Ask the assistant, or request a workflow change…"
                     : "Set a default model in Settings to enable the assistant"
                 }
                 rows={1}

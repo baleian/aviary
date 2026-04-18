@@ -146,12 +146,14 @@ export interface StructuredOutputField {
   description?: string;
 }
 
-export interface StructuredOutputFormat {
+export interface StructuredOutputConfig {
+  name: string;
+  description?: string;
   fields: StructuredOutputField[];
 }
 
 export interface SSEChunk {
-  type: "chunk" | "tool_use" | "tool_result" | "tool_progress" | "result" | "thinking" | "query_started" | "error" | "structured_output";
+  type: "chunk" | "tool_use" | "tool_result" | "tool_progress" | "result" | "thinking" | "query_started" | "error";
   content?: string;
   name?: string;
   input?: unknown;
@@ -169,20 +171,14 @@ export interface SSEChunk {
   num_turns?: number;
   total_cost_usd?: number;
   usage?: Record<string, unknown>;
-  // structured_output payload — appears on type "structured_output" (emitted
-  // when the final-response SDK tool is called) and again on "result" so
-  // callers that only consume the terminal event still see it.
-  structured_output?: unknown;
 }
 
-// Dynamic final-response tool — registered as an in-process SDK MCP server
-// when the request carries `structured_output_format`. The CLI sees it as
-// `mcp__<SERVER>__<TOOL>`; pinning both keeps the name deterministic so the
-// system prompt can reference it and the runtime can detect the tool call.
+// Dynamically-registered tools ride under this single SDK MCP server so the
+// CLI-visible name is deterministic: `mcp__aviary_output__{entry.name}`.
+// Callers choose when to fire each tool via their own system prompt.
 const STRUCTURED_OUTPUT_MCP_SERVER = "aviary_output";
-const STRUCTURED_OUTPUT_TOOL = "emit_final_response";
-const STRUCTURED_OUTPUT_CLI_TOOL =
-  `mcp__${STRUCTURED_OUTPUT_MCP_SERVER}__${STRUCTURED_OUTPUT_TOOL}`;
+export const structuredOutputCliName = (toolName: string): string =>
+  `mcp__${STRUCTURED_OUTPUT_MCP_SERVER}__${toolName}`;
 
 function buildStructuredFieldSchema(field: StructuredOutputField): z.ZodType {
   const base: z.ZodType =
@@ -190,40 +186,23 @@ function buildStructuredFieldSchema(field: StructuredOutputField): z.ZodType {
   return field.description ? base.describe(field.description) : base;
 }
 
-function buildStructuredOutputServer(fmt: StructuredOutputFormat) {
-  const shape: Record<string, z.ZodType> = {};
-  for (const field of fmt.fields) {
-    shape[field.name] = buildStructuredFieldSchema(field);
-  }
+function buildStructuredOutputsServer(configs: StructuredOutputConfig[]) {
+  const tools = configs.map((cfg) => {
+    const shape: Record<string, z.ZodType> = {};
+    for (const field of cfg.fields) {
+      shape[field.name] = buildStructuredFieldSchema(field);
+    }
+    const description =
+      cfg.description ??
+      `Call this tool to emit a structured \`${cfg.name}\` payload.`;
+    return tool(cfg.name, description, shape, async () => ({
+      content: [{ type: "text", text: `${cfg.name} recorded.` }],
+    }));
+  });
   return createSdkMcpServer({
     name: STRUCTURED_OUTPUT_MCP_SERVER,
-    tools: [
-      tool(
-        STRUCTURED_OUTPUT_TOOL,
-        "Emit the final structured response. Call this exactly once as your last action to complete the task.",
-        shape,
-        async () => ({
-          content: [{ type: "text", text: "Final response recorded." }],
-        }),
-      ),
-    ],
+    tools,
   });
-}
-
-function structuredOutputPromptSuffix(fmt: StructuredOutputFormat): string {
-  const lines = fmt.fields.map((f) => {
-    const t = f.type === "list" ? "array of strings" : "string";
-    const desc = f.description ? ` — ${f.description}` : "";
-    return `- \`${f.name}\` (${t})${desc}`;
-  });
-  return [
-    "",
-    "## Final Response",
-    `You MUST produce your final answer by calling the \`${STRUCTURED_OUTPUT_CLI_TOOL}\` tool exactly once, at the very end of the task. Do not summarize the result in a plain text reply — the tool call IS the response.`,
-    "",
-    "Fields:",
-    ...lines,
-  ].join("\n");
 }
 
 /**
@@ -289,7 +268,7 @@ export async function* processMessage(
   agentConfig: AgentConfig,
   abortController?: AbortController,
   outputFormat?: { type: "json_schema"; schema: Record<string, unknown> },
-  structuredOutputFormat?: StructuredOutputFormat,
+  structuredOutputs?: StructuredOutputConfig[],
 ): AsyncGenerator<SSEChunk> {
   const agentId = agentConfig.agent_id;
   const shared = sessionSharedDir(sessionId);
@@ -373,20 +352,25 @@ export async function* processMessage(
     systemPrompt += `\n\n## Available Sub-Agents\nYou can delegate tasks to these agents using the corresponding mcp__a2a__ask_{slug} tool:\n${agentList}`;
   }
 
-  // Structured output — register an in-process SDK MCP server whose single
-  // tool matches the requested schema. Claude emits the final answer by
-  // calling this tool; we capture the args and surface them to the caller
-  // on a dedicated SSE event (plus the terminal `result` event).
+  // Dynamic structured-output tools — one MCP tool per entry, bound under
+  // the `aviary_output` SDK MCP server. Callers (workflow assistant,
+  // agent auto-complete, etc.) describe each tool's trigger / contents in
+  // their own system prompt; the runtime just exposes the tools and lets
+  // tool_use events flow through the normal stream.
   const structuredToolNames: string[] = [];
-  if (structuredOutputFormat?.fields?.length) {
-    mcpServers[STRUCTURED_OUTPUT_MCP_SERVER] = buildStructuredOutputServer(
-      structuredOutputFormat,
+  const validStructuredOutputs = (structuredOutputs ?? []).filter(
+    (c) => c?.name && Array.isArray(c.fields),
+  );
+  if (validStructuredOutputs.length > 0) {
+    mcpServers[STRUCTURED_OUTPUT_MCP_SERVER] = buildStructuredOutputsServer(
+      validStructuredOutputs,
     );
-    structuredToolNames.push(STRUCTURED_OUTPUT_CLI_TOOL);
-    systemPrompt += structuredOutputPromptSuffix(structuredOutputFormat);
+    for (const cfg of validStructuredOutputs) {
+      structuredToolNames.push(structuredOutputCliName(cfg.name));
+    }
   }
 
-  // Merge allowed tools with A2A tool names and the structured-output tool.
+  // Merge allowed tools with A2A tool names and any dynamic tools.
   const allowedTools = [
     ...(agentConfig.tools ?? []),
     ...a2aToolNames,
@@ -452,10 +436,6 @@ export async function* processMessage(
   let emittedThinkingLen = 0;
   // Track tool_use IDs already emitted to avoid duplicates from partial messages
   const emittedToolIds = new Set<string>();
-  // Captured structured-output payload — set when Claude calls our
-  // final-response tool. Emitted both inline (as `structured_output` SSE)
-  // and on the terminal `result` event.
-  let structuredOutput: Record<string, unknown> | null = null;
   // Whether we've received any stream_event deltas. When true (Anthropic),
   // text/thinking are handled via stream_event and assistant snapshots are
   // only used for tool_use. When false (ollama/vllm), assistant snapshots
@@ -525,10 +505,6 @@ export async function* processMessage(
                 tool_use_id: block.id,
                 ...(parentId ? { parent_tool_use_id: parentId } : {}),
               };
-              if (block.name === STRUCTURED_OUTPUT_CLI_TOOL) {
-                structuredOutput = (block.input ?? {}) as Record<string, unknown>;
-                yield { type: "structured_output", input: structuredOutput };
-              }
             }
           }
         }
@@ -569,11 +545,10 @@ export async function* processMessage(
           fullResponse = msg.result;
           yield { type: "chunk", content: msg.result };
         }
-        // Emit result metadata (cost, usage, duration). `structured_output`
-        // is our captured final-response-tool payload; fall back to the
-        // SDK's native `msg.structured_output` when our tool wasn't used.
-        const resultStructured =
-          structuredOutput ?? (msg.structured_output !== undefined ? msg.structured_output : undefined);
+        // Emit result metadata (cost, usage, duration). SDK-native
+        // `msg.structured_output` only surfaces when the built-in
+        // outputFormat option was used — unused in our caller paths now,
+        // but kept so the shape is forward-compatible.
         yield {
           type: "result",
           session_id: msg.session_id,
@@ -581,7 +556,6 @@ export async function* processMessage(
           num_turns: msg.num_turns,
           total_cost_usd: msg.total_cost_usd,
           usage: msg.usage,
-          ...(resultStructured !== undefined ? { structured_output: resultStructured } : {}),
         };
       }
     }

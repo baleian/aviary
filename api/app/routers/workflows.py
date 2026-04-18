@@ -1,11 +1,13 @@
 """Workflow CRUD + deploy/edit/versions + run trigger/cancel/list/WS."""
 
+import asyncio
 import contextlib
 import json
 import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -132,14 +134,94 @@ async def list_workflow_versions(
 
 # ── AI Assistant ────────────────────────────────────────────────────────────
 
-@router.post("/{workflow_id}/assistant", response_model=WorkflowAssistantResponse)
-async def workflow_assistant(
+
+_ASSISTANT_POLL_SECONDS = 0.25
+
+
+@router.post("/{workflow_id}/assistant/stream")
+async def workflow_assistant_stream(
     body: WorkflowAssistantRequest,
     workflow: Workflow = Depends(require_workflow_owner()),
     session_data: SessionData = Depends(get_session_data),
 ):
-    return await workflow_assistant_service.ask(
-        workflow, body, user_token=session_data.access_token,
+    """SSE stream of the assistant's turn.
+
+    Pre-subscribes to the supervisor's `session:{sid}:events` channel so
+    we catch every `chunk`/`thinking`/`tool_use`/`tool_result` from the
+    moment the runtime starts emitting. Terminates with a synthetic
+    `assistant_done` event carrying the parsed plan (if any), or `error`.
+    """
+    session_id = str(uuid.uuid4())
+    pubsub = await redis_service.subscribe(session_id)
+    if pubsub is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Redis unavailable",
+        )
+
+    async def generate():
+        task = asyncio.create_task(
+            workflow_assistant_service.ask(
+                workflow, body,
+                user_token=session_data.access_token,
+                session_id=session_id,
+            ),
+        )
+        try:
+            # Forward supervisor events until the service call finishes,
+            # then drain any events still in flight before emitting the
+            # terminal frame.
+            while not task.done():
+                msg = await pubsub.get_message(
+                    ignore_subscribe_messages=True,
+                    timeout=_ASSISTANT_POLL_SECONDS,
+                )
+                if msg and msg.get("type") == "message":
+                    yield f"data: {msg['data']}\n\n"
+
+            for _ in range(20):
+                msg = await pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=0.05,
+                )
+                if not msg:
+                    break
+                if msg.get("type") == "message":
+                    yield f"data: {msg['data']}\n\n"
+
+            try:
+                response = task.result()
+                done_event = {
+                    "type": "assistant_done",
+                    "reply": response.reply,
+                    "plan": [op.model_dump(mode="json") for op in response.plan],
+                }
+                yield f"data: {json.dumps(done_event)}\n\n"
+            except HTTPException as e:
+                yield (
+                    "data: "
+                    + json.dumps({"type": "error", "message": str(e.detail)})
+                    + "\n\n"
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.exception("Workflow assistant stream failed")
+                yield (
+                    "data: "
+                    + json.dumps({"type": "error", "message": str(e) or "Assistant failed"})
+                    + "\n\n"
+                )
+        finally:
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(Exception):
+                    await task
+            with contextlib.suppress(Exception):
+                await pubsub.unsubscribe()
+                await pubsub.aclose()
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

@@ -142,10 +142,6 @@ async def _drive_stream(
     reached_runtime = False
     error_message: str | None = None
     aborted = False
-    # Captured when the runtime's final-response SDK tool fires. Latest
-    # wins; the last emission also appears in the terminal `result` event
-    # but we prefer the inline one because it survives aborts.
-    structured_output: dict | None = None
     started = time.monotonic()
 
     await redis_client.set_stream_status(stream_id, "streaming")
@@ -185,13 +181,6 @@ async def _drive_stream(
                             # message in the response is enough.
                             error_message = event.get("message", "Agent runtime error")
                             break
-                        if etype == "structured_output":
-                            payload = event.get("input")
-                            if isinstance(payload, dict):
-                                structured_output = payload
-                            # Captured for the return path, not something
-                            # WS/history consumers care about — don't buffer.
-                            continue
                         await redis_client.append_stream_chunk(stream_id, event)
                         await redis_client.publish_event(session_id, event)
     except asyncio.CancelledError:
@@ -216,7 +205,6 @@ async def _drive_stream(
         "reached_runtime": reached_runtime,
         "assembled_text": assembled_text,
         "assembled_blocks": assembled_blocks,
-        **({"structured_output": structured_output} if structured_output is not None else {}),
     }
 
     if error_message:
