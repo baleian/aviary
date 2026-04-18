@@ -7,7 +7,6 @@ export const routes = {
   agent: (id: string) => `/agents/${id}`,
   agentEdit: (id: string) => `/agents/${id}/edit`,
   agentSessions: (id: string) => `/agents/${id}/sessions`,
-  agentSettings: (id: string) => `/agents/${id}/settings`,
   session: (id: string) => `/sessions/${id}`,
   workflows: "/workflows",
   workflowNew: "/workflows/new",
