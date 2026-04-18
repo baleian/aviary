@@ -324,11 +324,11 @@ export function AssistantPanel() {
 
   const handleAccept = useCallback(
     (messageId: string) => {
-      setMessages((prev) => {
-        const msg = prev.find((m) => m.id === messageId);
-        if (!msg?.plan) return prev;
-        const result = applyPlan(msg.plan);
-        return prev.map((m) =>
+      const msg = messages.find((m) => m.id === messageId);
+      if (!msg?.plan) return;
+      const result = applyPlan(msg.plan);
+      setMessages((prev) =>
+        prev.map((m) =>
           m.id === messageId
             ? {
                 ...m,
@@ -336,10 +336,10 @@ export function AssistantPanel() {
                 error: result.ok ? undefined : result.error,
               }
             : m,
-        );
-      });
+        ),
+      );
     },
-    [applyPlan],
+    [messages, applyPlan],
   );
 
   const handleReject = useCallback((messageId: string) => {
