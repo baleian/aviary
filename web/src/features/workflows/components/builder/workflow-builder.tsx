@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -190,8 +191,14 @@ const RIGHT_MAX = 640;
 const RIGHT_DEFAULT = 380;
 
 // --- Right Panel (Inspector + Test + History tabs) ---
-function RightPanel({ workflowId, run }: { workflowId: string; run: ReturnType<typeof useWorkflowRun> }) {
-  const [tab, setTab] = useState<"inspector" | "test" | "history">("inspector");
+function RightPanel({
+  workflowId, run, initialTab,
+}: {
+  workflowId: string;
+  run: ReturnType<typeof useWorkflowRun>;
+  initialTab?: "inspector" | "test" | "history";
+}) {
+  const [tab, setTab] = useState<"inspector" | "test" | "history">(initialTab ?? "inspector");
   const [width, setWidth] = useState(RIGHT_DEFAULT);
 
   const handleResize = useCallback((delta: number) => {
@@ -233,6 +240,19 @@ export function WorkflowBuilder({ onStatusChange }: WorkflowBuilderProps) {
   const { workflowId, workflowStatus, addNode } = useWorkflowBuilder();
   const run = useWorkflowRun(workflowId);
   const [deploying, setDeploying] = useState(false);
+  // Deep-link: a `?runId=` in the URL (set by the sidebar's run items and
+  // the runs history page) preloads the given run into the test panel.
+  // Only fires on first mount so user-initiated tab switches aren't
+  // clobbered.
+  const searchParams = useSearchParams();
+  const deepLinkRunId = searchParams?.get("runId") ?? null;
+  const deepLinkHandledRef = useRef(false);
+  useEffect(() => {
+    if (!deepLinkRunId || deepLinkHandledRef.current) return;
+    deepLinkHandledRef.current = true;
+    void run.viewRun(deepLinkRunId);
+  }, [deepLinkRunId, run]);
+  const initialRightTab = deepLinkRunId ? "test" : undefined;
 
   const handlePaletteAdd = useCallback(
     (type: NodeType) => {
@@ -277,7 +297,7 @@ export function WorkflowBuilder({ onStatusChange }: WorkflowBuilderProps) {
             <ReactFlowProvider>
               <div className="flex flex-1 overflow-hidden">
                 <Canvas />
-                <RightPanel workflowId={workflowId} run={run} />
+                <RightPanel workflowId={workflowId} run={run} initialTab={initialRightTab} />
               </div>
             </ReactFlowProvider>
           </div>

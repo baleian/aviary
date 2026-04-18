@@ -85,9 +85,18 @@ export const workflowsApi = {
     return http.get<WorkflowVersionData[]>(`/workflows/${id}/versions`);
   },
 
-  listRuns(id: string, opts: { includeDrafts?: boolean } = {}) {
-    const qs = opts.includeDrafts ? "?include_drafts=true" : "";
-    return http.get<WorkflowRunListResponse>(`/workflows/${id}/runs${qs}`);
+  listRuns(
+    id: string,
+    opts: { includeDrafts?: boolean; offset?: number; limit?: number } = {},
+  ) {
+    const params = new URLSearchParams();
+    if (opts.includeDrafts) params.set("include_drafts", "true");
+    if (opts.offset !== undefined) params.set("offset", String(opts.offset));
+    if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+    const qs = params.toString();
+    return http.get<WorkflowRunListResponse>(
+      `/workflows/${id}/runs${qs ? `?${qs}` : ""}`,
+    );
   },
 
   getRun(id: string, runId: string) {

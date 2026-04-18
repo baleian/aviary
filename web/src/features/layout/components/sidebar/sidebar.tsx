@@ -9,6 +9,7 @@ import { SidebarViewToggle } from "./sidebar-view-toggle";
 import { SidebarNav } from "./sidebar-nav";
 import { SidebarSessions } from "./sidebar-sessions";
 import { SidebarSessionsByDate } from "./sidebar-sessions-by-date";
+import { SidebarWorkflows } from "./sidebar-workflows";
 import { SidebarBulkBar } from "./sidebar-bulk-bar";
 import { SidebarUser } from "./sidebar-user";
 import { cn } from "@/lib/utils";
@@ -25,8 +26,12 @@ import { cn } from "@/lib/utils";
  * dedicated rendering components.
  */
 export function Sidebar() {
-  const { groups, collapsed, viewMode } = useSidebar();
+  const { mode, groups, collapsed, viewMode } = useSidebar();
+  // Search only targets chat agents/sessions — not exposed in workflow
+  // mode. The search hook is cheap when there's no query, so we still
+  // call it unconditionally to keep hook order stable.
   const search = useSidebarSearch(groups);
+  const isWorkflowMode = mode === "workflows";
 
   return (
     <aside
@@ -37,7 +42,7 @@ export function Sidebar() {
     >
       <SidebarBrand />
 
-      {!collapsed && (
+      {!collapsed && !isWorkflowMode && (
         <div className="pt-3">
           <SidebarSearch search={search} />
         </div>
@@ -45,27 +50,33 @@ export function Sidebar() {
 
       <div className="flex-1 overflow-y-auto pb-3">
         <SidebarNav />
-        <SidebarViewToggle />
-        <SidebarBulkBar />
-        {viewMode === "agent" ? (
-          <SidebarSessions
-            groups={search.filteredGroups}
-            searchActive={search.isActive}
-          />
+        {isWorkflowMode ? (
+          <SidebarWorkflows />
         ) : (
-          <SidebarSessionsByDate
-            groups={search.filteredGroups}
-            searchActive={search.isActive}
-          />
-        )}
-        {search.isActive && (
-          <SearchResults
-            hits={search.messageHits}
-            loading={search.messageHitsLoading}
-            error={search.messageHitsError}
-            query={search.query}
-            onResultClick={search.clear}
-          />
+          <>
+            <SidebarViewToggle />
+            <SidebarBulkBar />
+            {viewMode === "agent" ? (
+              <SidebarSessions
+                groups={search.filteredGroups}
+                searchActive={search.isActive}
+              />
+            ) : (
+              <SidebarSessionsByDate
+                groups={search.filteredGroups}
+                searchActive={search.isActive}
+              />
+            )}
+            {search.isActive && (
+              <SearchResults
+                hits={search.messageHits}
+                loading={search.messageHitsLoading}
+                error={search.messageHitsError}
+                query={search.query}
+                onResultClick={search.clear}
+              />
+            )}
+          </>
         )}
       </div>
 
