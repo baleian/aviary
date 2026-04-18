@@ -28,16 +28,24 @@ async def close_client() -> None:
     await _supervisor.close()
 
 
-async def post_message(session_id: str, body: dict, user_token: str) -> dict:
+async def post_message(
+    session_id: str, body: dict, user_token: str,
+    timeout: float | None = None,
+) -> dict:
     """Drive a single agent turn. Blocks until the stream is assembled.
 
-    Returns `{status, stream_id, reached_runtime, assembled_text?, assembled_blocks?, message?}`.
+    Returns `{status, stream_id, reached_runtime, assembled_text?, assembled_blocks?, structured_output?, message?}`.
+
+    `timeout` caps the whole round-trip from the API's perspective — leave
+    as None for chat (the supervisor owns end-to-end lifecycle), set an
+    explicit seconds value for one-shot helper calls so we don't hang when
+    the runtime silently stalls.
     """
     resp = await _supervisor.client.post(
         f"/v1/sessions/{session_id}/message",
         json=body,
         headers={"Authorization": f"Bearer {user_token}"},
-        timeout=None,
+        timeout=timeout,
     )
     resp.raise_for_status()
     return resp.json()

@@ -1,12 +1,17 @@
-"""Workflow Builder AI Assistant — 3-stage LLM flow over LiteLLM `/v1/messages`.
+"""Workflow Builder AI Assistant — 3-stage LLM flow via the supervisor.
+
+Each stage rides the same supervisor→runtime pipeline chat uses, with a
+dynamically-registered structured-output tool. We no longer touch
+LiteLLM directly — the Claude CLI's tool-use harness now owns the
+stringly-typed plumbing.
 
 Stage 1: shortlist candidate MCP tools from bare ids.
 Stage 2: narrow the shortlist using full descriptions.
 Stage 3: emit a `{reply, plan}` payload. Plan ops are Pydantic-validated.
 
-`tool_choice` is left at `auto` because forced single-field tool calls are
-unreliable on non-Anthropic backends (they emit the inner value without the
-object wrapper). The system prompt names the tool the model should call.
+Stage 3's `plan` is a JSON-encoded string (the runtime's structured-output
+schema is `str | list[str]`, no list-of-objects). We json.loads it on the
+way out, then Pydantic-validates each op.
 """
 
 from __future__ import annotations
@@ -14,18 +19,16 @@ from __future__ import annotations
 import json
 import logging
 
-import httpx
 from fastapi import HTTPException, status
 from pydantic import TypeAdapter, ValidationError
 
-from app.config import settings
 from app.db.models import Workflow
 from app.schemas.workflow_assistant import (
     PlanOp,
     WorkflowAssistantRequest,
     WorkflowAssistantResponse,
 )
-from app.services import mcp_catalog
+from app.services import llm_runtime, mcp_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +36,6 @@ _plan_adapter: TypeAdapter[list[PlanOp]] = TypeAdapter(list[PlanOp])
 
 _HISTORY_CAP = 10
 _DESCRIPTION_CAP = 400
-_MAX_TOKENS = 16384
-_LITELLM_TIMEOUT = 300.0
 
 
 # ---------------------------------------------------------------------------
@@ -55,13 +56,15 @@ async def ask(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Workflow has no default model configured",
         )
-    model_name = model if "/" in model else f"{backend}/{model}"
+    runtime_model_config = {"backend": backend, "model": model}
+    if isinstance(model_cfg.get("max_output_tokens"), int):
+        runtime_model_config["max_output_tokens"] = model_cfg["max_output_tokens"]
 
     selected_tools = await _select_relevant_tools(
         user_message=body.user_message,
         history=body.history,
         current_definition=body.current_definition,
-        model_name=model_name,
+        model_config=runtime_model_config,
         user_token=user_token,
     )
 
@@ -70,7 +73,7 @@ async def ask(
         history=body.history,
         current_definition=body.current_definition,
         selected_tools=selected_tools,
-        model_name=model_name,
+        model_config=runtime_model_config,
         user_token=user_token,
     )
 
@@ -100,9 +103,10 @@ You will see:
 
 Err on the side of inclusion (up to ~20 candidates). A later stage re-verifies
 with full descriptions. Only pick ids that appear in the list — do NOT invent
-identifiers. If nothing applies, return an empty array.
+identifiers. If nothing applies, return an empty list.
 
-Call the `shortlist_tools` tool exactly once with your result.
+Emit your answer via the final-response tool, with one field:
+- `candidate_tool_ids` (list of strings) — the chosen ids.
 """
 
 _STAGE2_SYSTEM = """\
@@ -115,28 +119,11 @@ You will see:
 - A shortlist of tools with their full descriptions
 
 Pick only what's clearly useful. Only return ids from the shortlist — do NOT
-invent identifiers. If nothing applies, return an empty array.
+invent identifiers. If nothing applies, return an empty list.
 
-Call the `narrow_tools` tool exactly once with your final subset.
+Emit your answer via the final-response tool, with one field:
+- `selected_tool_ids` (list of strings) — the final subset.
 """
-
-_SHORTLIST_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["candidate_tool_ids"],
-    "properties": {
-        "candidate_tool_ids": {"type": "array", "items": {"type": "string"}},
-    },
-}
-
-_NARROW_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["selected_tool_ids"],
-    "properties": {
-        "selected_tool_ids": {"type": "array", "items": {"type": "string"}},
-    },
-}
 
 
 async def _select_relevant_tools(
@@ -144,15 +131,15 @@ async def _select_relevant_tools(
     user_message: str,
     history,
     current_definition: dict,
-    model_name: str,
+    model_config: dict,
     user_token: str,
 ) -> list[dict]:
     catalog = await mcp_catalog.fetch_tools(user_token)
     if not catalog:
         return []
 
-    stage1 = await _litellm_tool_call(
-        model_name=model_name,
+    stage1 = await _structured_call(
+        model_config=model_config,
         user_token=user_token,
         system=(
             _STAGE1_SYSTEM
@@ -162,8 +149,11 @@ async def _select_relevant_tools(
         ),
         history=history,
         user_message=user_message,
-        tool_name="shortlist_tools",
-        schema=_SHORTLIST_SCHEMA,
+        fields=[{
+            "name": "candidate_tool_ids",
+            "type": "list",
+            "description": "Chosen MCP tool identifiers (empty list if none apply).",
+        }],
     )
     valid = {t["name"] for t in catalog}
     candidates = [c for c in stage1.get("candidate_tool_ids", []) if c in valid]
@@ -175,8 +165,8 @@ async def _select_relevant_tools(
         f"- {name}: {(by_name[name].get('description') or '(no description)')[:_DESCRIPTION_CAP]}"
         for name in candidates
     )
-    stage2 = await _litellm_tool_call(
-        model_name=model_name,
+    stage2 = await _structured_call(
+        model_config=model_config,
         user_token=user_token,
         system=(
             _STAGE2_SYSTEM
@@ -186,8 +176,11 @@ async def _select_relevant_tools(
         ),
         history=history,
         user_message=user_message,
-        tool_name="narrow_tools",
-        schema=_NARROW_SCHEMA,
+        fields=[{
+            "name": "selected_tool_ids",
+            "type": "list",
+            "description": "Final subset of tools actually needed (empty list allowed).",
+        }],
     )
     candidate_set = set(candidates)
     selected = [s for s in stage2.get("selected_tool_ids", []) if s in candidate_set]
@@ -272,26 +265,20 @@ Example — a triage step feeding a condition:
 4. DO NOT re-emit nodes the user did not ask to change — emit only deltas.
 5. Place new nodes at readable positions (~200px spacing from related
    existing nodes, growing left-to-right or top-to-bottom).
-6. For a pure question, return plan=[] and put the answer in `reply`.
-7. For an ambiguous request, ask a clarifying question and return plan=[].
+6. For a pure question, return plan_json="[]" and put the answer in `reply`.
+7. For an ambiguous request, ask a clarifying question and return plan_json="[]".
 8. Every workflow needs exactly one trigger node unless the user is
    building pieces incrementally.
 9. On agent_step, only bind tools from the "Available MCP tools" list
    below. If no tools are listed, leave `mcp_tool_ids: []`.
 
-Call the `propose_plan` tool exactly once with `reply` (the short
-natural-language message) and `plan` (the ordered edit operations).
+## Output contract
+Emit your answer via the final-response tool, with exactly two fields:
+- `reply` (string): a short natural-language message to the user.
+- `plan_json` (string): a JSON-encoded array of the edit operations
+  above. MUST be valid JSON and parse to an array (possibly empty). Do
+  NOT wrap it in markdown code fences.
 """
-
-_PLAN_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["reply", "plan"],
-    "properties": {
-        "reply": {"type": "string"},
-        "plan": {"type": "array", "items": {"type": "object"}},
-    },
-}
 
 
 async def _generate_plan(
@@ -300,11 +287,11 @@ async def _generate_plan(
     history,
     current_definition: dict,
     selected_tools: list[dict],
-    model_name: str,
+    model_config: dict,
     user_token: str,
 ) -> tuple[list[PlanOp], str]:
-    parsed = await _litellm_tool_call(
-        model_name=model_name,
+    parsed = await _structured_call(
+        model_config=model_config,
         user_token=user_token,
         system=(
             _PLAN_SYSTEM
@@ -313,19 +300,41 @@ async def _generate_plan(
         ),
         history=history,
         user_message=user_message,
-        tool_name="propose_plan",
-        schema=_PLAN_SCHEMA,
+        fields=[
+            {
+                "name": "reply",
+                "type": "str",
+                "description": "Short user-facing message describing the change.",
+            },
+            {
+                "name": "plan_json",
+                "type": "str",
+                "description": 'JSON-encoded array of edit operations. Use "[]" for no-op.',
+            },
+        ],
     )
 
     reply = parsed.get("reply", "")
     if not isinstance(reply, str):
         reply = str(reply)
 
-    plan_raw = parsed.get("plan", [])
+    plan_json = parsed.get("plan_json", "[]")
+    if not isinstance(plan_json, str):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"LLM plan_json must be a string, got {type(plan_json).__name__}",
+        )
+    try:
+        plan_raw = json.loads(plan_json)
+    except json.JSONDecodeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"LLM plan_json is not valid JSON: {e}",
+        ) from e
     if not isinstance(plan_raw, list):
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="LLM plan must be a list",
+            detail="LLM plan_json must decode to a list",
         )
     try:
         plan = _plan_adapter.validate_python(plan_raw)
@@ -339,73 +348,34 @@ async def _generate_plan(
 
 
 # ---------------------------------------------------------------------------
-# LiteLLM call
+# Supervisor-backed call
 # ---------------------------------------------------------------------------
 
 
-async def _litellm_tool_call(
+async def _structured_call(
     *,
-    model_name: str,
+    model_config: dict,
     user_token: str,
     system: str,
     history,
     user_message: str,
-    tool_name: str,
-    schema: dict,
+    fields: list[dict],
 ) -> dict:
-    messages: list[dict] = []
-    for turn in history[-_HISTORY_CAP:]:
-        messages.append({"role": turn.role, "content": turn.content})
-    messages.append({"role": "user", "content": user_message})
-
-    payload = {
-        "model": model_name,
-        "max_tokens": _MAX_TOKENS,
-        "system": system,
-        "messages": messages,
-        "tools": [
-            {
-                "name": tool_name,
-                "description": f"Return the {tool_name} result.",
-                "input_schema": schema,
-            }
-        ],
-    }
-    headers = {
-        "Authorization": f"Bearer {settings.litellm_api_key}",
-        "X-Aviary-User-Token": user_token,
-        "anthropic-version": "2023-06-01",
-    }
-
-    async with httpx.AsyncClient(timeout=_LITELLM_TIMEOUT) as client:
-        resp = await client.post(
-            f"{settings.litellm_url.rstrip('/')}/v1/messages",
-            headers=headers, json=payload,
+    system_with_history = system + _format_history_block(history)
+    try:
+        return await llm_runtime.call_structured(
+            model_config=model_config,
+            system=system_with_history,
+            user_message=user_message,
+            fields=fields,
+            user_token=user_token,
         )
-
-    if resp.status_code >= 400:
-        logger.warning("LiteLLM %s: %s", resp.status_code, resp.text[:500])
+    except llm_runtime.LLMRuntimeError as e:
+        logger.warning("Workflow assistant LLM call failed: %s", e)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"LLM gateway error ({resp.status_code})",
-        )
-
-    body = resp.json()
-    for block in body.get("content") or []:
-        if block.get("type") == "tool_use" and block.get("name") == tool_name:
-            arguments = block.get("input")
-            if isinstance(arguments, dict):
-                return arguments
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"{tool_name} input is not a dict: {type(arguments).__name__}",
-            )
-
-    logger.warning("No tool_use for %s (model=%s): %r", tool_name, model_name, body)
-    raise HTTPException(
-        status_code=status.HTTP_502_BAD_GATEWAY,
-        detail=f"LLM did not call {tool_name}",
-    )
+            detail=f"LLM gateway error: {e}",
+        ) from e
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +401,24 @@ def _format_tools_block(selected_tools: list[dict]) -> str:
     for t in selected_tools:
         desc = (t.get("description") or "(no description)")[:_DESCRIPTION_CAP]
         lines.append(f"- {t['name']}: {desc}")
+    return "\n".join(lines)
+
+
+def _format_history_block(history) -> str:
+    """Fold prior assistant turns into a single system-prompt context block.
+
+    The runtime path is one-shot per call (a fresh Claude session each
+    time), so we can't rely on CLI-side conversation state. Prior turns
+    live in the system prompt as context; the current user message is
+    sent as the single user turn.
+    """
+    turns = list(history or [])[-_HISTORY_CAP:]
+    if not turns:
+        return ""
+    lines = ["\n## Prior conversation (for context only)"]
+    for turn in turns:
+        role = turn.role.capitalize()
+        lines.append(f"### {role}\n{turn.content}")
     return "\n".join(lines)
 
 

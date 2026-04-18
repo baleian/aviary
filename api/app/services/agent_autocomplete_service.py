@@ -1,8 +1,9 @@
-"""Agent auto-complete: 3-stage LLM flow over LiteLLM `/v1/messages`.
+"""Agent auto-complete: 3-stage LLM flow via the supervisor.
 
-`tool_choice` is left at `auto` because forced single-field tool calls are
-unreliable on non-Anthropic backends (they emit the inner value without the
-object wrapper). The system prompt names the tool the model should call.
+Rides the same supervisor→runtime path chat uses, leveraging the dynamic
+structured-output tool the runtime registers per request. The previous
+direct-LiteLLM path is gone — Claude CLI's harness now owns tool
+invocation plumbing.
 """
 
 from __future__ import annotations
@@ -10,20 +11,16 @@ from __future__ import annotations
 import json
 import logging
 
-import httpx
-
-from app.config import settings
 from app.schemas.agent_autocomplete import (
     AgentAutocompleteRequest,
     AgentAutocompleteResponse,
 )
 from app.schemas.mcp import McpToolResponse
-from app.services import mcp_catalog
+from app.services import llm_runtime, mcp_catalog
 
 logger = logging.getLogger(__name__)
 
 TOOL_NAME_SEPARATOR = "__"
-_LITELLM_TIMEOUT = 300.0
 
 
 class AutocompleteError(RuntimeError):
@@ -59,33 +56,18 @@ async def _stage1_narrow(
     req: AgentAutocompleteRequest, by_name: dict[str, dict], user_token: str
 ) -> list[str]:
     signatures = [_signature_of(t) for t in by_name.values()]
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You pick candidate MCP tools that MIGHT be useful for the agent being designed. "
-                "A later stage re-verifies with full descriptions, so be generous. "
-                "Only return tool ids that appear in AVAILABLE_TOOLS. "
-                "Call the `candidate_tools` tool exactly once with your result "
-                "(empty `tool_ids` array if nothing is obviously relevant)."
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                f"CURRENT = {json.dumps(_current_state(req))}\n"
-                f"AVAILABLE_TOOLS = {json.dumps(signatures)}"
-            ),
-        },
-    ]
-    raw = await _litellm_json(
-        model=_qualified_model(req),
-        messages=messages,
-        schema=_TOOL_IDS_SCHEMA,
-        schema_name="candidate_tools",
-        max_tokens=req.model_config_data.max_output_tokens,
-        user_token=user_token,
+    system = (
+        "You pick candidate MCP tools that MIGHT be useful for the agent being designed. "
+        "A later stage re-verifies with full descriptions, so be generous. "
+        "Only return tool ids that appear in AVAILABLE_TOOLS. "
+        "Emit your answer via the final-response tool as `tool_ids` (list of "
+        "strings) — empty list if nothing is obviously relevant."
     )
+    user_message = (
+        f"CURRENT = {json.dumps(_current_state(req))}\n"
+        f"AVAILABLE_TOOLS = {json.dumps(signatures)}"
+    )
+    raw = await _call(req, system, user_message, user_token)
     return _coerce_string_list(raw.get("tool_ids"))
 
 
@@ -101,33 +83,18 @@ async def _stage2_verify(
     user_token: str,
 ) -> list[str]:
     details = [_detail_of(by_name[qid]) for qid in stage1_ids]
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "For each candidate, decide whether it's actually worth binding to this agent. "
-                "Drop tools that are off-topic or duplicate existing capabilities. "
-                "Return only ids from CANDIDATES. "
-                "Call the `verified_tools` tool exactly once with your final subset "
-                "(empty `tool_ids` array is allowed)."
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                f"CURRENT = {json.dumps(_current_state(req))}\n"
-                f"CANDIDATES = {json.dumps(details)}"
-            ),
-        },
-    ]
-    raw = await _litellm_json(
-        model=_qualified_model(req),
-        messages=messages,
-        schema=_TOOL_IDS_SCHEMA,
-        schema_name="verified_tools",
-        max_tokens=req.model_config_data.max_output_tokens,
-        user_token=user_token,
+    system = (
+        "For each candidate, decide whether it's actually worth binding to this agent. "
+        "Drop tools that are off-topic or duplicate existing capabilities. "
+        "Return only ids from CANDIDATES. "
+        "Emit your answer via the final-response tool as `tool_ids` (list of "
+        "strings) — empty list is allowed."
     )
+    user_message = (
+        f"CURRENT = {json.dumps(_current_state(req))}\n"
+        f"CANDIDATES = {json.dumps(details)}"
+    )
+    raw = await _call(req, system, user_message, user_token)
     return _coerce_string_list(raw.get("tool_ids"))
 
 
@@ -143,35 +110,21 @@ async def _stage3_generate(
     user_token: str,
 ) -> dict:
     selected = [_detail_of(by_name[qid]) for qid in selected_ids]
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "Produce a coherent agent definition. "
-                "Write a concise name (<= 80 chars) and description (<= 200 chars). "
-                "Write a detailed system instruction that the agent will follow; "
-                "reference the SELECTED_TOOLS where relevant. "
-                "If CURRENT already has name/description/system_instruction text, "
-                "treat it as a draft to build on, not as a hard constraint on wording. "
-                "Call the `agent_definition` tool exactly once with your result."
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                f"CURRENT = {json.dumps(_current_state(req))}\n"
-                f"SELECTED_TOOLS = {json.dumps(selected)}"
-            ),
-        },
-    ]
-    raw = await _litellm_json(
-        model=_qualified_model(req),
-        messages=messages,
-        schema=_AGENT_DEF_SCHEMA,
-        schema_name="agent_definition",
-        max_tokens=req.model_config_data.max_output_tokens,
-        user_token=user_token,
+    system = (
+        "Produce a coherent agent definition. "
+        "Write a concise name (<= 80 chars) and description (<= 200 chars). "
+        "Write a detailed system instruction that the agent will follow; "
+        "reference the SELECTED_TOOLS where relevant. "
+        "If CURRENT already has name/description/system_instruction text, "
+        "treat it as a draft to build on, not as a hard constraint on wording. "
+        "Emit your answer via the final-response tool with three string fields: "
+        "`name`, `description`, `instruction`."
     )
+    user_message = (
+        f"CURRENT = {json.dumps(_current_state(req))}\n"
+        f"SELECTED_TOOLS = {json.dumps(selected)}"
+    )
+    raw = await _call(req, system, user_message, user_token, stage="stage3")
     return {
         "name": str(raw.get("name") or "").strip(),
         "description": str(raw.get("description") or "").strip(),
@@ -214,107 +167,50 @@ def _merge(
 
 
 # ---------------------------------------------------------------------------
-# LiteLLM call
+# Supervisor-backed call
 # ---------------------------------------------------------------------------
 
 
-async def _litellm_json(
-    *,
-    model: str,
-    messages: list[dict],
-    schema: dict,
-    schema_name: str,
-    max_tokens: int,
+_STAGE3_FIELDS = [
+    {"name": "name", "type": "str", "description": "Concise agent name (<= 80 chars)."},
+    {"name": "description", "type": "str", "description": "Short one-liner (<= 200 chars)."},
+    {"name": "instruction", "type": "str", "description": "System instruction the agent will follow."},
+]
+
+_TOOL_IDS_FIELDS = [
+    {"name": "tool_ids", "type": "list", "description": "Chosen MCP tool ids (empty list if none apply)."},
+]
+
+
+async def _call(
+    req: AgentAutocompleteRequest,
+    system: str,
+    user_message: str,
     user_token: str,
+    *,
+    stage: str = "tools",
 ) -> dict:
-    url = f"{settings.litellm_url.rstrip('/')}/v1/messages"
-
-    system_parts = [m["content"] for m in messages if m.get("role") == "system"]
-    user_messages = [m for m in messages if m.get("role") != "system"]
-
-    payload: dict = {
-        "model": model,
-        "max_tokens": max_tokens,
-        "messages": user_messages,
-        "tools": [
-            {
-                "name": schema_name,
-                "description": f"Return the {schema_name} result.",
-                "input_schema": schema,
-            }
-        ],
-    }
-    if system_parts:
-        payload["system"] = "\n\n".join(system_parts)
-
-    headers = {
-        "Authorization": f"Bearer {settings.litellm_api_key}",
-        "X-Aviary-User-Token": user_token,
-        "anthropic-version": "2023-06-01",
+    mc = req.model_config_data
+    runtime_model_config: dict = {
+        "backend": mc.backend,
+        "model": mc.model,
+        "max_output_tokens": mc.max_output_tokens,
     }
     try:
-        async with httpx.AsyncClient(timeout=_LITELLM_TIMEOUT) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-    except httpx.HTTPError as e:
-        raise AutocompleteError(f"LiteLLM request failed: {e}") from e
-
-    if resp.status_code >= 400:
-        raise AutocompleteError(
-            f"LiteLLM returned {resp.status_code}: {resp.text[:500]}"
+        return await llm_runtime.call_structured(
+            model_config=runtime_model_config,
+            system=system,
+            user_message=user_message,
+            fields=_STAGE3_FIELDS if stage == "stage3" else _TOOL_IDS_FIELDS,
+            user_token=user_token,
         )
-
-    try:
-        body = resp.json()
-        content_blocks = body.get("content") or []
-    except ValueError as e:
-        raise AutocompleteError(f"Unexpected LiteLLM response shape: {e}") from e
-
-    for block in content_blocks:
-        if block.get("type") == "tool_use" and block.get("name") == schema_name:
-            arguments = block.get("input")
-            if isinstance(arguments, dict):
-                return arguments
-            raise AutocompleteError(
-                f"tool_use input is not a dict: {type(arguments).__name__}"
-            )
-
-    raise AutocompleteError(
-        f"No tool_use block named {schema_name!r} in response; stop_reason="
-        f"{body.get('stop_reason')!r}"
-    )
+    except llm_runtime.LLMRuntimeError as e:
+        raise AutocompleteError(str(e)) from e
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-_TOOL_IDS_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["tool_ids"],
-    "properties": {
-        "tool_ids": {"type": "array", "items": {"type": "string"}},
-    },
-}
-
-_AGENT_DEF_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["name", "description", "instruction"],
-    "properties": {
-        "name": {"type": "string"},
-        "description": {"type": "string"},
-        "instruction": {"type": "string"},
-    },
-}
-
-
-def _qualified_model(req: AgentAutocompleteRequest) -> str:
-    mc = req.model_config_data
-    if TOOL_NAME_SEPARATOR in mc.model or "/" in mc.model:
-        return mc.model
-    return f"{mc.backend}/{mc.model}"
 
 
 def _current_state(req: AgentAutocompleteRequest) -> dict:
