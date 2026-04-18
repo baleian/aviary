@@ -288,10 +288,10 @@ services:
       - ./config/litellm/mcp-secret-injection.yaml:/app/aviary-mcp-secret-injection.yaml:ro
     environment:
       LITELLM_MASTER_KEY: "sk-aviary-dev"
-      # DB-backed UI: keys, teams, spend, and model registry live in Postgres.
-      # LiteLLM expects a plain `postgresql://` URL (Prisma), not asyncpg.
+      # DB-backed UI: keys, teams, spend in Postgres. Models stay file-based
+      # (config.yaml) so we get a single source of truth and no UI-added
+      # shadow entries in /v1/model/info.
       DATABASE_URL: "postgresql://aviary:aviary@postgres:5432/litellm"
-      STORE_MODEL_IN_DB: "True"
       UI_USERNAME: "${LITELLM_UI_USERNAME:-admin}"
       UI_PASSWORD: "${LITELLM_UI_PASSWORD:-admin}"
       AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID:-}"
