@@ -6,12 +6,14 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import get_current_user
+from app.auth.dependencies import get_current_user, get_session_data
 from app.auth.oidc import validate_token
-from app.auth.session_store import SESSION_COOKIE_NAME, get_fresh_session
+from app.auth.session_store import SESSION_COOKIE_NAME, SessionData, get_fresh_session
 from app.config import settings
 from app.db.models import Agent, Session, User
 from app.db.session import async_session_factory, get_db
@@ -239,6 +241,186 @@ async def update_session_title(
     await _require_session_owner(db, session_id, user)
     session = await session_service.update_session_title(db, session_id, body.title)
     return SessionResponse.model_validate(session)
+
+
+# -- Workspace browse ----------------------------------------------
+# Proxy through the supervisor to the runtime which holds the PVC.
+
+async def _resolve_session_agent_target(
+    db: AsyncSession, session_id: uuid.UUID, user: User,
+) -> tuple[str, str | None]:
+    """Owner-check and return (agent_id, runtime_endpoint). Workflow-transcript
+    sessions (agent_id IS NULL) have no runtime workspace → 409."""
+    session = await _require_session_owner(db, session_id, user)
+    if session.agent_id is None:
+        raise HTTPException(status_code=409, detail="Session has no agent workspace")
+    agent = (await db.execute(
+        select(Agent).where(Agent.id == session.agent_id)
+    )).scalar_one_or_none()
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return str(agent.id), agent.runtime_endpoint
+
+
+@router.get("/sessions/{session_id}/workspace/tree")
+async def get_workspace_tree(
+    session_id: uuid.UUID,
+    path: str = Query("/", description="Relative path inside the session workspace"),
+    include_hidden: bool = Query(False, alias="include_hidden"),
+    user: User = Depends(get_current_user),
+    session_data: SessionData = Depends(get_session_data),
+    db: AsyncSession = Depends(get_db),
+):
+    agent_id, runtime_endpoint = await _resolve_session_agent_target(db, session_id, user)
+    status_code, payload = await agent_supervisor.fetch_workspace_tree(
+        str(session_id), session_data.access_token, runtime_endpoint, agent_id, path, include_hidden,
+    )
+    return JSONResponse(status_code=status_code, content=payload)
+
+
+@router.get("/sessions/{session_id}/workspace/file")
+async def get_workspace_file(
+    session_id: uuid.UUID,
+    path: str = Query(..., description="Relative file path inside the session workspace"),
+    user: User = Depends(get_current_user),
+    session_data: SessionData = Depends(get_session_data),
+    db: AsyncSession = Depends(get_db),
+):
+    agent_id, runtime_endpoint = await _resolve_session_agent_target(db, session_id, user)
+    status_code, payload = await agent_supervisor.fetch_workspace_file(
+        str(session_id), session_data.access_token, runtime_endpoint, agent_id, path,
+    )
+    return JSONResponse(status_code=status_code, content=payload)
+
+
+class _WorkspaceFileWrite(BaseModel):
+    path: str
+    content: str
+    encoding: str = "utf8"
+    expected_mtime: int | None = None
+    overwrite: bool = False
+
+
+class _WorkspaceDirCreate(BaseModel):
+    path: str
+
+
+class _WorkspaceEntryDelete(BaseModel):
+    path: str
+    recursive: bool = False
+
+
+class _WorkspaceEntryMove(BaseModel):
+    from_path: str = Field(alias="from")
+    to_path: str = Field(alias="to")
+
+    model_config = {"populate_by_name": True}
+
+
+@router.put("/sessions/{session_id}/workspace/file")
+async def put_workspace_file(
+    session_id: uuid.UUID,
+    body: _WorkspaceFileWrite,
+    user: User = Depends(get_current_user),
+    session_data: SessionData = Depends(get_session_data),
+    db: AsyncSession = Depends(get_db),
+):
+    agent_id, runtime_endpoint = await _resolve_session_agent_target(db, session_id, user)
+    status_code, payload = await agent_supervisor.write_workspace_file(
+        str(session_id), session_data.access_token, runtime_endpoint, agent_id,
+        body.path, body.content, body.encoding, body.expected_mtime, body.overwrite,
+    )
+    return JSONResponse(status_code=status_code, content=payload)
+
+
+@router.post("/sessions/{session_id}/workspace/dir", status_code=status.HTTP_201_CREATED)
+async def post_workspace_dir(
+    session_id: uuid.UUID,
+    body: _WorkspaceDirCreate,
+    user: User = Depends(get_current_user),
+    session_data: SessionData = Depends(get_session_data),
+    db: AsyncSession = Depends(get_db),
+):
+    agent_id, runtime_endpoint = await _resolve_session_agent_target(db, session_id, user)
+    status_code, payload = await agent_supervisor.create_workspace_dir(
+        str(session_id), session_data.access_token, runtime_endpoint, agent_id, body.path,
+    )
+    return JSONResponse(status_code=status_code, content=payload)
+
+
+@router.delete("/sessions/{session_id}/workspace/entry")
+async def delete_workspace_entry(
+    session_id: uuid.UUID,
+    body: _WorkspaceEntryDelete,
+    user: User = Depends(get_current_user),
+    session_data: SessionData = Depends(get_session_data),
+    db: AsyncSession = Depends(get_db),
+):
+    agent_id, runtime_endpoint = await _resolve_session_agent_target(db, session_id, user)
+    status_code, payload = await agent_supervisor.delete_workspace_entry(
+        str(session_id), session_data.access_token, runtime_endpoint, agent_id,
+        body.path, body.recursive,
+    )
+    return JSONResponse(status_code=status_code, content=payload)
+
+
+@router.post("/sessions/{session_id}/workspace/move")
+async def post_workspace_move(
+    session_id: uuid.UUID,
+    body: _WorkspaceEntryMove,
+    user: User = Depends(get_current_user),
+    session_data: SessionData = Depends(get_session_data),
+    db: AsyncSession = Depends(get_db),
+):
+    agent_id, runtime_endpoint = await _resolve_session_agent_target(db, session_id, user)
+    status_code, payload = await agent_supervisor.move_workspace_entry(
+        str(session_id), session_data.access_token, runtime_endpoint, agent_id,
+        body.from_path, body.to_path,
+    )
+    return JSONResponse(status_code=status_code, content=payload)
+
+
+@router.get("/sessions/{session_id}/workspace/download")
+async def get_workspace_download(
+    session_id: uuid.UUID,
+    path: str = Query(..., description="Relative file path inside the session workspace"),
+    user: User = Depends(get_current_user),
+    session_data: SessionData = Depends(get_session_data),
+    db: AsyncSession = Depends(get_db),
+):
+    agent_id, runtime_endpoint = await _resolve_session_agent_target(db, session_id, user)
+    resp = await agent_supervisor.stream_workspace_download(
+        str(session_id), session_data.access_token, runtime_endpoint, agent_id, path,
+    )
+    if resp.status_code != 200:
+        try:
+            raw = await resp.aread()
+            try:
+                payload = json.loads(raw.decode("utf-8") or "{}")
+            except (UnicodeDecodeError, ValueError):
+                payload = {"error": "invalid supervisor response"}
+        finally:
+            await resp.aclose()
+        return JSONResponse(status_code=resp.status_code, content=payload)
+
+    async def _iterate():
+        try:
+            async for chunk in resp.aiter_raw():
+                yield chunk
+        finally:
+            await resp.aclose()
+
+    forward_headers = {}
+    for key in ("content-length", "content-disposition", "content-type"):
+        v = resp.headers.get(key)
+        if v is not None:
+            forward_headers[key] = v
+    return StreamingResponse(
+        _iterate(),
+        status_code=resp.status_code,
+        media_type=forward_headers.get("content-type", "application/octet-stream"),
+        headers=forward_headers,
+    )
 
 
 # -- WebSocket Chat ------------------------------------------------

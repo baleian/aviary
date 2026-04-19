@@ -14,6 +14,16 @@ import { SessionManager } from "./session-manager.js";
 import { WORKSPACE_ROOT, workflowArtifactsDir } from "./constants.js";
 import { healthRouter, setReady } from "./health.js";
 import { processMessage } from "./agent.js";
+import {
+  WorkspaceError,
+  listTree,
+  readFile as readWorkspaceFile,
+  writeFile as writeWorkspaceFile,
+  createDirectory as createWorkspaceDirectory,
+  deleteEntry as deleteWorkspaceEntry,
+  moveEntry as moveWorkspaceEntry,
+  openDownloadStream as openWorkspaceDownload,
+} from "./workspace.js";
 
 const app = express();
 app.use(express.json({ limit: "50mb" }));
@@ -174,6 +184,162 @@ app.delete("/sessions/:sessionId", (req, res) => {
     return;
   }
   res.json({ status: "removed" });
+});
+
+function handleWorkspaceError(err: unknown, res: express.Response): void {
+  if (err instanceof WorkspaceError) {
+    const status = err.code === "invalid_path"
+      ? 400
+      : err.code === "not_found"
+      ? 404
+      : err.code === "too_large"
+      ? 413
+      : err.code === "stale" || err.code === "exists" || err.code === "not_empty"
+      ? 409
+      : 400;
+    const payload: Record<string, unknown> = { error: err.message, code: err.code };
+    if (err.meta) Object.assign(payload, err.meta);
+    res.status(status).json(payload);
+    return;
+  }
+  console.error("workspace route failed", err);
+  res.status(500).json({ error: "internal error" });
+}
+
+app.get("/workspace/tree", (req, res) => {
+  const sessionId = (req.query.session_id as string | undefined) ?? "";
+  const agentId = (req.query.agent_id as string | undefined) || null;
+  const relPath = (req.query.path as string | undefined) ?? "/";
+  const includeHidden = req.query.include_hidden === "1" || req.query.include_hidden === "true";
+  if (!sessionId) {
+    res.status(400).json({ error: "session_id is required" });
+    return;
+  }
+  try {
+    res.json(listTree(sessionId, agentId, relPath, includeHidden));
+  } catch (err) {
+    handleWorkspaceError(err, res);
+  }
+});
+
+app.get("/workspace/file", (req, res) => {
+  const sessionId = (req.query.session_id as string | undefined) ?? "";
+  const agentId = (req.query.agent_id as string | undefined) || null;
+  const relPath = (req.query.path as string | undefined) ?? "";
+  if (!sessionId || !relPath) {
+    res.status(400).json({ error: "session_id and path are required" });
+    return;
+  }
+  try {
+    res.json(readWorkspaceFile(sessionId, agentId, relPath));
+  } catch (err) {
+    handleWorkspaceError(err, res);
+  }
+});
+
+app.put("/workspace/file", (req, res) => {
+  const body = req.body as {
+    session_id?: string;
+    agent_id?: string;
+    path?: string;
+    content?: string;
+    encoding?: "utf8" | "base64";
+    expected_mtime?: number;
+    overwrite?: boolean;
+  };
+  if (!body.session_id || !body.path || typeof body.content !== "string") {
+    res.status(400).json({ error: "session_id, path, and content are required" });
+    return;
+  }
+  try {
+    const result = writeWorkspaceFile(body.session_id, body.agent_id ?? null, body.path, {
+      content: body.content,
+      encoding: body.encoding,
+      expectedMtime: body.expected_mtime,
+      overwrite: body.overwrite,
+    });
+    res.json(result);
+  } catch (err) {
+    handleWorkspaceError(err, res);
+  }
+});
+
+app.post("/workspace/dir", (req, res) => {
+  const body = req.body as { session_id?: string; agent_id?: string; path?: string };
+  if (!body.session_id || !body.path) {
+    res.status(400).json({ error: "session_id and path are required" });
+    return;
+  }
+  try {
+    const entry = createWorkspaceDirectory(body.session_id, body.agent_id ?? null, body.path);
+    res.json({ entry });
+  } catch (err) {
+    handleWorkspaceError(err, res);
+  }
+});
+
+app.delete("/workspace/entry", (req, res) => {
+  const body = req.body as {
+    session_id?: string;
+    agent_id?: string;
+    path?: string;
+    recursive?: boolean;
+  };
+  if (!body.session_id || !body.path) {
+    res.status(400).json({ error: "session_id and path are required" });
+    return;
+  }
+  try {
+    deleteWorkspaceEntry(body.session_id, body.agent_id ?? null, body.path, !!body.recursive);
+    res.json({ status: "deleted" });
+  } catch (err) {
+    handleWorkspaceError(err, res);
+  }
+});
+
+app.post("/workspace/move", (req, res) => {
+  const body = req.body as {
+    session_id?: string;
+    agent_id?: string;
+    from?: string;
+    to?: string;
+  };
+  if (!body.session_id || !body.from || !body.to) {
+    res.status(400).json({ error: "session_id, from, and to are required" });
+    return;
+  }
+  try {
+    moveWorkspaceEntry(body.session_id, body.agent_id ?? null, body.from, body.to);
+    res.json({ status: "moved" });
+  } catch (err) {
+    handleWorkspaceError(err, res);
+  }
+});
+
+app.get("/workspace/download", (req, res) => {
+  const sessionId = (req.query.session_id as string | undefined) ?? "";
+  const agentId = (req.query.agent_id as string | undefined) || null;
+  const relPath = (req.query.path as string | undefined) ?? "";
+  if (!sessionId || !relPath) {
+    res.status(400).json({ error: "session_id and path are required" });
+    return;
+  }
+  try {
+    const handle = openWorkspaceDownload(sessionId, agentId, relPath);
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("Content-Length", handle.size.toString());
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename*=UTF-8''${encodeURIComponent(handle.filename)}`,
+    );
+    handle.stream.on("error", (err) => {
+      console.error("workspace download stream error", err);
+      res.destroy(err);
+    });
+    handle.stream.pipe(res);
+  } catch (err) {
+    handleWorkspaceError(err, res);
+  }
 });
 
 app.delete("/workflows/:rootRunId/artifacts", (req, res) => {

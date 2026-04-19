@@ -7,8 +7,10 @@
 
 import * as path from "node:path";
 
-// Pod mount point of the shared environment PVC.
-export const WORKSPACE_ROOT = "/workspace-root";
+// Pod mount point of the shared environment PVC. Overridable via env var
+// primarily so tests can point at a temp directory; production leaves the
+// default which matches the Helm volume mount.
+export const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT ?? "/workspace-root";
 
 // SDK runs inside bwrap where the session's shared dir is mounted at /workspace.
 export const SANDBOX_WORKSPACE = "/workspace";

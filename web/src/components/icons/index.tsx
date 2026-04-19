@@ -30,12 +30,21 @@ export {
 
   // Files / IO
   FileText,
+  File,
+  FileCode,
+  FileJson,
+  FileImage,
   ImagePlus,
   Printer,
   Download,
   Upload,
+  Save,
+  FilePlus,
+  FolderPlus,
   Folder,
   FolderOpen,
+  FolderTree,
+  EyeOff,
 
   // Communication
   MessageSquare,
@@ -77,6 +86,8 @@ export {
   LayoutGrid,
   PanelLeft,
   PanelLeftClose,
+  PanelRight,
+  PanelRightClose,
   Square,
   RectangleVertical,
   RectangleHorizontal,
