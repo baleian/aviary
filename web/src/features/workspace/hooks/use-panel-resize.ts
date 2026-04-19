@@ -7,13 +7,12 @@ interface UsePanelResizeOptions {
   storageKey: string;
   defaultWidth: number;
   minWidth: number;
-  maxWidth: number;
   /** Reserved viewport width for the main column — panel is clamped to fit. */
   reserveForMain: number;
 }
 
 export function usePanelResize({
-  storageKey, defaultWidth, minWidth, maxWidth, reserveForMain,
+  storageKey, defaultWidth, minWidth, reserveForMain,
 }: UsePanelResizeOptions) {
   const [width, setWidth] = useState(defaultWidth);
   const [isResizing, setIsResizing] = useState(false);
@@ -24,10 +23,9 @@ export function usePanelResize({
 
   const clamp = useCallback((px: number): number => {
     if (typeof window === "undefined") return px;
-    const viewportMax = Math.max(minWidth, window.innerWidth - reserveForMain);
-    const ceiling = Math.min(maxWidth, viewportMax);
+    const ceiling = Math.max(minWidth, window.innerWidth - reserveForMain);
     return Math.max(minWidth, Math.min(ceiling, px));
-  }, [minWidth, maxWidth, reserveForMain]);
+  }, [minWidth, reserveForMain]);
 
   useEffect(() => {
     activeKeyRef.current = storageKey;

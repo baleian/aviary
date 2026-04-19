@@ -37,7 +37,7 @@ export function EditorTabs({
 }: EditorTabsProps) {
   const items = tabs.map((t) => tabSortId(paneId, t.path));
   return (
-    <div className="flex shrink-0 items-stretch border-b border-white/[0.06] bg-elevated">
+    <div className="flex w-full min-w-0 shrink-0 items-stretch border-b border-white/[0.06] bg-elevated">
       <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto">
         <SortableContext items={items} strategy={horizontalListSortingStrategy}>
           {tabs.map((tab) => (
@@ -77,6 +77,33 @@ interface SortableTabProps {
   onClose: (path: string) => void;
   onPin: (path: string) => void;
   onContextMenu: (e: React.MouseEvent, path: string) => void;
+}
+
+/** Visual-only floating clone used inside dnd-kit's DragOverlay so the drag
+ *  preview can leave its pane's overflow-clipped tab bar. */
+export function TabGhost({ tab }: { tab: EditorTab }) {
+  const dirty = tab.draft !== null;
+  const preview = !tab.pinned;
+  return (
+    <div
+      className={cn(
+        "flex min-w-0 cursor-grabbing items-center gap-1.5 rounded-xs border border-white/10",
+        "bg-canvas px-3 py-1.5 type-caption text-fg-primary shadow-xl",
+      )}
+    >
+      <span
+        className={cn(
+          "truncate max-w-[200px] font-mono",
+          preview && "italic",
+        )}
+      >
+        {basename(tab.path)}
+      </span>
+      {dirty && (
+        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-fg-primary" />
+      )}
+    </div>
+  );
 }
 
 function SortableTab({ paneId, tab, active, onActivate, onClose, onPin, onContextMenu }: SortableTabProps) {

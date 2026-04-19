@@ -3,18 +3,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
+  DragOverlay,
   KeyboardSensor,
   PointerSensor,
   closestCenter,
   useSensor,
   useSensors,
   type DragEndEvent,
+  type DragStartEvent,
 } from "@dnd-kit/core";
 import {
   arrayMove,
   sortableKeyboardCoordinates,
 } from "@dnd-kit/sortable";
 import { cn } from "@/lib/utils";
+import { useSidebar } from "@/features/layout/providers/sidebar-provider";
 import { useWorkspaceTree } from "../hooks/use-workspace-tree";
 import { useWorkspaceEditor, type EditorPane } from "../hooks/use-workspace-editor";
 import { usePanelResize } from "../hooks/use-panel-resize";
@@ -31,7 +34,7 @@ import {
 import { FileTree } from "./file-tree";
 import { WorkspaceToolbar } from "./workspace-toolbar";
 import { FileEditor } from "./file-editor";
-import { EditorTabs, parseTabSortId } from "./editor-tabs";
+import { EditorTabs, TabGhost, parseTabSortId } from "./editor-tabs";
 import { ConflictDialog } from "./conflict-dialog";
 import { ConfirmDialog } from "./confirm-dialog";
 import {
@@ -53,8 +56,9 @@ const TREE_ONLY_MIN_WIDTH = 240;
 const TREE_ONLY_DEFAULT_WIDTH = 360;
 const TREE_PLUS_EDITOR_MIN_WIDTH = TREE_WIDTH_WITH_EDITOR + 360;
 const TREE_PLUS_EDITOR_DEFAULT_WIDTH = TREE_WIDTH_WITH_EDITOR + 1024;
-const PANEL_MAX_WIDTH = 1800;
-const CHAT_MIN_WIDTH = 320;
+const CHAT_MIN_WIDTH = 480;
+const SIDEBAR_COLLAPSED_WIDTH = 64; // tailwind w-16
+const SIDEBAR_EXPANDED_WIDTH = 280; // tailwind w-[17.5rem]
 const STORAGE_KEY_COLLAPSED = "aviary:workspace-panel-width:collapsed";
 const STORAGE_KEY_EXPANDED = "aviary:workspace-panel-width:expanded";
 
@@ -84,6 +88,7 @@ type ConfirmState = {
 export function WorkspacePanel({ sessionId, onClose, refreshSignal = 0 }: WorkspacePanelProps) {
   const tree = useWorkspaceTree(sessionId);
   const editor = useWorkspaceEditor(sessionId);
+  const { collapsed: sidebarCollapsed } = useSidebar();
   const [refreshing, setRefreshing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -94,6 +99,7 @@ export function WorkspacePanel({ sessionId, onClose, refreshSignal = 0 }: Worksp
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [pendingNew, setPendingNew] = useState<PendingNew>(null);
   const [editorCollapsed, setEditorCollapsed] = useState(false);
+  const [activeDragId, setActiveDragId] = useState<string | null>(null);
 
   const hasAnyTab = useMemo(
     () => editor.rows.some((r) => r.panes.some((p) => p.tabs.length > 0)),
@@ -109,12 +115,12 @@ export function WorkspacePanel({ sessionId, onClose, refreshSignal = 0 }: Worksp
     [editor],
   );
 
+  const sidebarWidth = sidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_EXPANDED_WIDTH;
   const { width: panelWidth, isResizing, onMouseDown } = usePanelResize({
     storageKey: editorOpen ? STORAGE_KEY_EXPANDED : STORAGE_KEY_COLLAPSED,
     defaultWidth: editorOpen ? TREE_PLUS_EDITOR_DEFAULT_WIDTH : TREE_ONLY_DEFAULT_WIDTH,
     minWidth: editorOpen ? TREE_PLUS_EDITOR_MIN_WIDTH : TREE_ONLY_MIN_WIDTH,
-    maxWidth: PANEL_MAX_WIDTH,
-    reserveForMain: CHAT_MIN_WIDTH,
+    reserveForMain: sidebarWidth + CHAT_MIN_WIDTH,
   });
 
   // Session is switched upstream; we can't block the change, so just warn.
@@ -530,8 +536,27 @@ export function WorkspacePanel({ sessionId, onClose, refreshSignal = 0 }: Worksp
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
+  const handleDragStart = useCallback((e: DragStartEvent) => {
+    setActiveDragId(String(e.active.id));
+  }, []);
+
+  const draggedTab = useMemo(() => {
+    if (!activeDragId) return null;
+    const parsed = parseTabSortId(activeDragId);
+    if (!parsed) return null;
+    for (const row of editor.rows) {
+      for (const pane of row.panes) {
+        if (pane.id !== parsed.paneId) continue;
+        const t = pane.tabs.find((tab) => tab.path === parsed.path);
+        if (t) return t;
+      }
+    }
+    return null;
+  }, [activeDragId, editor.rows]);
+
   const handleDragEnd = useCallback(
     (e: DragEndEvent) => {
+      setActiveDragId(null);
       const { active, over } = e;
       if (!over) return;
       const src = parseTabSortId(String(active.id));
@@ -583,7 +608,13 @@ export function WorkspacePanel({ sessionId, onClose, refreshSignal = 0 }: Worksp
       </div>
 
       {editorOpen && (
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragStart={handleDragStart}
+          onDragEnd={handleDragEnd}
+          onDragCancel={() => setActiveDragId(null)}
+        >
           <div className="flex h-full flex-1 min-w-0 flex-col">
             {editor.rows.map((row, rowIdx) => (
               <div
@@ -616,6 +647,9 @@ export function WorkspacePanel({ sessionId, onClose, refreshSignal = 0 }: Worksp
               </div>
             ))}
           </div>
+          <DragOverlay dropAnimation={null}>
+            {draggedTab ? <TabGhost tab={draggedTab} /> : null}
+          </DragOverlay>
         </DndContext>
       )}
 
