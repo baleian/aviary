@@ -13,3 +13,9 @@ export function basename(path: string): string {
   const slash = path.lastIndexOf("/");
   return slash === -1 ? path : path.slice(slash + 1);
 }
+
+/** Display form — matches what agents see inside the bwrap sandbox. */
+export function sandboxPath(path: string): string {
+  if (path === "/") return "/workspace";
+  return `/workspace${path.startsWith("/") ? "" : "/"}${path}`;
+}

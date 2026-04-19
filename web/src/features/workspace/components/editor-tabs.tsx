@@ -3,7 +3,7 @@
 import { PanelRightClose, X } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import type { EditorTab } from "../hooks/use-workspace-editor";
-import { basename } from "../lib/paths";
+import { basename, sandboxPath } from "../lib/paths";
 
 interface EditorTabsProps {
   tabs: EditorTab[];
@@ -39,7 +39,7 @@ export function EditorTabs({ tabs, activeTabPath, onActivate, onClose, onCollaps
                 ? "bg-canvas text-fg-primary"
                 : "text-fg-muted hover:bg-raised hover:text-fg-primary",
             )}
-            title={tab.path}
+            title={sandboxPath(tab.path)}
           >
             <span className="truncate max-w-[160px] font-mono">{basename(tab.path)}</span>
             {dirty && (

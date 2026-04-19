@@ -6,6 +6,7 @@ import { AlertTriangle, Code2, Eye, Loader2, Save } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import type { EditorTab } from "../hooks/use-workspace-editor";
 import { monacoLanguageFor } from "../lib/file-icons";
+import { sandboxPath } from "../lib/paths";
 import { MarkdownContent } from "@/features/chat/components/markdown/markdown-content";
 
 // Monaco is a large client-only bundle; Next.js SSR explicitly disabled.
@@ -54,8 +55,8 @@ export function FileEditor({ tab, onDraftChange, onSave, saving }: FileEditorPro
   return (
     <div className="flex h-full flex-1 flex-col min-w-0 border-l border-white/[0.06] bg-canvas">
       <header className="flex shrink-0 items-center justify-between gap-2 border-b border-white/[0.06] px-3 py-1.5">
-        <span className="truncate type-caption text-fg-muted font-mono" title={path}>
-          {path}
+        <span className="truncate type-caption text-fg-muted font-mono" title={sandboxPath(path)}>
+          {sandboxPath(path)}
           {dirty && <span className="ml-2 text-warning">● modified</span>}
         </span>
         <div className="flex shrink-0 items-center gap-1">
