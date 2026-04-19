@@ -34,6 +34,7 @@ interface UseWorkspaceEditorResult {
   pinTab: (path: string) => void;
   closeTab: (path: string) => void;
   closePaths: (paths: string[]) => void;
+  reorderTabs: (orderedPaths: string[]) => void;
   activate: (path: string) => void;
   setDraft: (path: string, value: string) => void;
   save: (path: string, overrideOverwrite?: { expectedMtime: number | null }) => Promise<SaveResult>;
@@ -180,6 +181,23 @@ export function useWorkspaceEditor(sessionId: string): UseWorkspaceEditorResult 
     for (const p of paths) generationsRef.current.delete(p);
   }, [activeTabPath]);
 
+  const reorderTabs = useCallback((orderedPaths: string[]) => {
+    setTabs((prev) => {
+      const byPath = new Map(prev.map((t) => [t.path, t]));
+      const reordered: EditorTab[] = [];
+      for (const p of orderedPaths) {
+        const t = byPath.get(p);
+        if (t) {
+          reordered.push(t);
+          byPath.delete(p);
+        }
+      }
+      // Preserve any tabs that weren't in orderedPaths at the end (defensive).
+      for (const t of byPath.values()) reordered.push(t);
+      return reordered;
+    });
+  }, []);
+
   const activate = useCallback((path: string) => {
     setActiveTabPath(path);
   }, []);
@@ -270,6 +288,7 @@ export function useWorkspaceEditor(sessionId: string): UseWorkspaceEditorResult 
     pinTab,
     closeTab,
     closePaths,
+    reorderTabs,
     activate,
     setDraft,
     save,

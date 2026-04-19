@@ -511,6 +511,7 @@ export function WorkspacePanel({ sessionId, onClose, refreshSignal = 0 }: Worksp
             onClose={handleCloseTab}
             onPin={editor.pinTab}
             onContextMenu={handleTabContextMenu}
+            onReorder={editor.reorderTabs}
             onCollapseEditor={() => setEditorCollapsed(true)}
           />
           {error && (
