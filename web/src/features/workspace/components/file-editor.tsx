@@ -1,10 +1,10 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Code2, Eye, Loader2, X } from "@/components/icons";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, Code2, Eye, Loader2, Save } from "@/components/icons";
 import { cn } from "@/lib/utils";
-import type { FileContents } from "../lib/workspace-api";
+import type { EditorTab } from "../hooks/use-workspace-editor";
 import { monacoLanguageFor } from "../lib/file-icons";
 import { MarkdownContent } from "@/features/chat/components/markdown/markdown-content";
 
@@ -15,11 +15,10 @@ const MonacoEditor = dynamic(
 );
 
 interface FileEditorProps {
-  path: string;
-  file: FileContents | null;
-  loading: boolean;
-  error: string | null;
-  onClose: () => void;
+  tab: EditorTab;
+  onDraftChange: (path: string, value: string) => void;
+  onSave: (path: string) => void | Promise<void>;
+  saving: boolean;
 }
 
 function isMarkdownPath(p: string): boolean {
@@ -27,27 +26,61 @@ function isMarkdownPath(p: string): boolean {
   return ext === "md" || ext === "markdown";
 }
 
-export function FileEditor({ path, file, loading, error, onClose }: FileEditorProps) {
+export function FileEditor({ tab, onDraftChange, onSave, saving }: FileEditorProps) {
+  const { path, loading, error, savedContent, draft, isBinary, size } = tab;
+  const dirty = draft !== null;
+  const value = draft ?? savedContent ?? "";
+
   const language = useMemo(() => {
     const base = path.slice(path.lastIndexOf("/") + 1);
     return monacoLanguageFor(base);
   }, [path]);
   const isMarkdown = useMemo(() => isMarkdownPath(path), [path]);
 
-  // Default markdown files to preview; remember per-path so switching files
-  // doesn't leak the previous one's mode.
   const [preview, setPreview] = useState(false);
   useEffect(() => {
-    setPreview(isMarkdown);
-  }, [path, isMarkdown]);
+    setPreview(isMarkdown && !dirty);
+  }, [path, isMarkdown, dirty]);
+
+  // Latest save callback captured for the monaco keybinding, which registers
+  // once per editor instance.
+  const onSaveRef = useRef(onSave);
+  useEffect(() => {
+    onSaveRef.current = onSave;
+  }, [onSave]);
+
+  const canEdit = !loading && !error && !isBinary;
 
   return (
     <div className="flex h-full flex-1 flex-col min-w-0 border-l border-white/[0.06] bg-canvas">
       <header className="flex shrink-0 items-center justify-between gap-2 border-b border-white/[0.06] px-3 py-1.5">
         <span className="truncate type-caption text-fg-muted font-mono" title={path}>
           {path}
+          {dirty && <span className="ml-2 text-warning">● modified</span>}
         </span>
         <div className="flex shrink-0 items-center gap-1">
+          {canEdit && (
+            <button
+              type="button"
+              onClick={() => void onSave(path)}
+              disabled={!dirty || saving}
+              title={dirty ? "Save (Ctrl+S)" : "No changes to save"}
+              aria-label="Save file"
+              className={cn(
+                "flex h-6 items-center gap-1 rounded-xs px-2 type-caption transition-colors",
+                dirty && !saving
+                  ? "bg-info/20 text-info hover:bg-info/30"
+                  : "text-fg-muted opacity-40 cursor-not-allowed",
+              )}
+            >
+              {saving ? (
+                <Loader2 size={12} className="animate-spin" strokeWidth={2} />
+              ) : (
+                <Save size={12} strokeWidth={2} />
+              )}
+              <span>Save</span>
+            </button>
+          )}
           {isMarkdown && (
             <button
               type="button"
@@ -65,15 +98,6 @@ export function FileEditor({ path, file, loading, error, onClose }: FileEditorPr
               {preview ? <Code2 size={12} strokeWidth={2} /> : <Eye size={12} strokeWidth={2} />}
             </button>
           )}
-          <button
-            type="button"
-            onClick={onClose}
-            title="Close file"
-            aria-label="Close file"
-            className="flex h-6 w-6 items-center justify-center rounded-xs text-fg-muted hover:bg-raised hover:text-fg-primary transition-colors"
-          >
-            <X size={12} strokeWidth={2} />
-          </button>
         </div>
       </header>
 
@@ -87,22 +111,35 @@ export function FileEditor({ path, file, loading, error, onClose }: FileEditorPr
               {error}
             </div>
           </div>
-        ) : file?.isBinary ? (
+        ) : isBinary ? (
           <div className="flex h-full items-center justify-center px-4 type-caption text-fg-muted text-center">
-            Binary file — {formatSize(file.size)}. Preview not available.
+            Binary file — {formatSize(size)}. Preview not available.
           </div>
-        ) : file && isMarkdown && preview ? (
+        ) : isMarkdown && preview ? (
           <div className="prose prose-invert h-full overflow-auto px-6 py-4 max-w-none">
-            <MarkdownContent content={file.content} />
+            <MarkdownContent content={value} />
           </div>
-        ) : file ? (
+        ) : (
           <MonacoEditor
+            key={path}
             height="100%"
             theme="vs-dark"
             language={language}
-            value={file.content}
+            value={value}
+            onChange={(next: string | undefined) => onDraftChange(path, next ?? "")}
+            onMount={(
+              editorInstance: { addCommand: (keybinding: number, handler: () => void) => void },
+              monaco: { KeyMod: { CtrlCmd: number }; KeyCode: { KeyS: number } },
+            ) => {
+              editorInstance.addCommand(
+                monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
+                () => {
+                  void onSaveRef.current(path);
+                },
+              );
+            }}
             options={{
-              readOnly: true,
+              readOnly: !canEdit,
               minimap: { enabled: false },
               fontSize: 13,
               wordWrap: "on",
@@ -113,7 +150,7 @@ export function FileEditor({ path, file, loading, error, onClose }: FileEditorPr
               automaticLayout: true,
             }}
           />
-        ) : null}
+        )}
       </div>
     </div>
   );

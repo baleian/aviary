@@ -130,6 +130,143 @@ async def fetch_workspace_file(
     return resp.status_code, payload
 
 
+async def write_workspace_file(
+    session_id: str,
+    user_token: str,
+    runtime_endpoint: str | None,
+    agent_id: str | None,
+    rel_path: str,
+    content: str,
+    encoding: str,
+    expected_mtime: int | None,
+    overwrite: bool,
+) -> tuple[int, dict]:
+    body: dict = {
+        "runtime_endpoint": runtime_endpoint,
+        "agent_id": agent_id,
+        "path": rel_path,
+        "content": content,
+        "encoding": encoding,
+        "overwrite": overwrite,
+    }
+    if expected_mtime is not None:
+        body["expected_mtime"] = expected_mtime
+    resp = await _supervisor.client.post(
+        f"/v1/sessions/{session_id}/workspace/write",
+        json=body,
+        headers={"Authorization": f"Bearer {user_token}"},
+        timeout=60,
+    )
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = {"error": "invalid supervisor response"}
+    return resp.status_code, payload
+
+
+async def create_workspace_dir(
+    session_id: str,
+    user_token: str,
+    runtime_endpoint: str | None,
+    agent_id: str | None,
+    rel_path: str,
+) -> tuple[int, dict]:
+    resp = await _supervisor.client.post(
+        f"/v1/sessions/{session_id}/workspace/mkdir",
+        json={
+            "runtime_endpoint": runtime_endpoint,
+            "agent_id": agent_id,
+            "path": rel_path,
+        },
+        headers={"Authorization": f"Bearer {user_token}"},
+        timeout=15,
+    )
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = {"error": "invalid supervisor response"}
+    return resp.status_code, payload
+
+
+async def delete_workspace_entry(
+    session_id: str,
+    user_token: str,
+    runtime_endpoint: str | None,
+    agent_id: str | None,
+    rel_path: str,
+    recursive: bool,
+) -> tuple[int, dict]:
+    resp = await _supervisor.client.post(
+        f"/v1/sessions/{session_id}/workspace/delete",
+        json={
+            "runtime_endpoint": runtime_endpoint,
+            "agent_id": agent_id,
+            "path": rel_path,
+            "recursive": recursive,
+        },
+        headers={"Authorization": f"Bearer {user_token}"},
+        timeout=30,
+    )
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = {"error": "invalid supervisor response"}
+    return resp.status_code, payload
+
+
+async def move_workspace_entry(
+    session_id: str,
+    user_token: str,
+    runtime_endpoint: str | None,
+    agent_id: str | None,
+    from_path: str,
+    to_path: str,
+) -> tuple[int, dict]:
+    resp = await _supervisor.client.post(
+        f"/v1/sessions/{session_id}/workspace/move",
+        json={
+            "runtime_endpoint": runtime_endpoint,
+            "agent_id": agent_id,
+            "from": from_path,
+            "to": to_path,
+        },
+        headers={"Authorization": f"Bearer {user_token}"},
+        timeout=15,
+    )
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = {"error": "invalid supervisor response"}
+    return resp.status_code, payload
+
+
+async def stream_workspace_download(
+    session_id: str,
+    user_token: str,
+    runtime_endpoint: str | None,
+    agent_id: str | None,
+    rel_path: str,
+):
+    """Open a streaming response on the supervisor's download endpoint.
+
+    Returns (response, close_callable). Caller must await close() after
+    consuming the stream (or on error).
+    """
+    body = {
+        "runtime_endpoint": runtime_endpoint,
+        "agent_id": agent_id,
+        "path": rel_path,
+    }
+    req = _supervisor.client.build_request(
+        "POST",
+        f"/v1/sessions/{session_id}/workspace/download",
+        json=body,
+        headers={"Authorization": f"Bearer {user_token}"},
+    )
+    resp = await _supervisor.client.send(req, stream=True)
+    return resp
+
+
 async def cleanup_workflow_artifacts(
     root_run_id: str,
     runtime_endpoint: str | None = None,

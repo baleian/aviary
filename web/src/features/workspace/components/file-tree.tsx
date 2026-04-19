@@ -2,15 +2,14 @@
 
 import { Loader2 } from "@/components/icons";
 import type { WorkspaceTreeState } from "../hooks/use-workspace-tree";
-import { TreeChildren } from "./tree-node";
+import { TreeChildren, type TreeInteractions } from "./tree-node";
 
 interface FileTreeProps {
   tree: WorkspaceTreeState;
-  activeFilePath: string | null;
-  onFileClick: (path: string) => void;
+  ui: TreeInteractions;
 }
 
-export function FileTree({ tree, activeFilePath, onFileClick }: FileTreeProps) {
+export function FileTree({ tree, ui }: FileTreeProps) {
   const root = tree.nodes.get(tree.rootPath);
 
   if (!root?.loaded && root?.loading) {
@@ -31,13 +30,20 @@ export function FileTree({ tree, activeFilePath, onFileClick }: FileTreeProps) {
   }
 
   return (
-    <div className="flex-1 overflow-auto py-1">
+    <div
+      className="flex-1 overflow-auto py-1"
+      onContextMenu={(e) => {
+        if (e.target === e.currentTarget) {
+          e.preventDefault();
+          ui.onContextMenu(e, { path: tree.rootPath, entry: null });
+        }
+      }}
+    >
       <TreeChildren
         parentPath={tree.rootPath}
         depth={0}
         tree={tree}
-        activeFilePath={activeFilePath}
-        onFileClick={onFileClick}
+        ui={ui}
       />
     </div>
   );

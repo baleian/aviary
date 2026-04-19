@@ -30,7 +30,7 @@ import uuid
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app import metrics, redis_client
 from app.auth.dependencies import resolve_identity
@@ -328,6 +328,190 @@ async def workspace_file(
         base, "/workspace/file", params,
     )
     return JSONResponse(status_code=status_code, content=payload)
+
+
+class _WorkspaceWriteBody(BaseModel):
+    runtime_endpoint: str | None = None
+    agent_id: str | None = None
+    path: str
+    content: str
+    encoding: str = "utf8"
+    expected_mtime: int | None = None
+    overwrite: bool = False
+
+
+class _WorkspaceMkdirBody(BaseModel):
+    runtime_endpoint: str | None = None
+    agent_id: str | None = None
+    path: str
+
+
+class _WorkspaceDeleteBody(BaseModel):
+    runtime_endpoint: str | None = None
+    agent_id: str | None = None
+    path: str
+    recursive: bool = False
+
+
+class _WorkspaceMoveBody(BaseModel):
+    runtime_endpoint: str | None = None
+    agent_id: str | None = None
+    from_path: str = Field(alias="from")
+    to_path: str = Field(alias="to")
+
+    model_config = {"populate_by_name": True}
+
+
+class _WorkspaceDownloadBody(BaseModel):
+    runtime_endpoint: str | None = None
+    agent_id: str | None = None
+    path: str
+
+
+async def _proxy_workspace_json(
+    method: str, base: str, route: str, json_body: dict,
+) -> tuple[int, dict]:
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.request(
+                method, f"{base}{route}", json=json_body, timeout=30,
+            )
+            try:
+                payload = resp.json()
+            except ValueError:
+                payload = {"error": "invalid runtime response"}
+            return resp.status_code, payload
+    except httpx.HTTPError:
+        logger.warning("Workspace proxy failed: %s %s", method, route, exc_info=True)
+        return 502, {"error": "runtime unreachable"}
+
+
+@router.post("/sessions/{session_id}/workspace/write")
+async def workspace_write(
+    session_id: str, body: _WorkspaceWriteBody, request: Request,
+):
+    await resolve_identity(request, body.model_dump())
+    base = resolve_runtime_base(body.runtime_endpoint)
+    payload = {
+        "session_id": session_id,
+        "path": body.path,
+        "content": body.content,
+        "encoding": body.encoding,
+        "overwrite": body.overwrite,
+    }
+    if body.agent_id:
+        payload["agent_id"] = body.agent_id
+    if body.expected_mtime is not None:
+        payload["expected_mtime"] = body.expected_mtime
+    status_code, resp = await _proxy_workspace_json(
+        "PUT", base, "/workspace/file", payload,
+    )
+    return JSONResponse(status_code=status_code, content=resp)
+
+
+@router.post("/sessions/{session_id}/workspace/mkdir")
+async def workspace_mkdir(
+    session_id: str, body: _WorkspaceMkdirBody, request: Request,
+):
+    await resolve_identity(request, body.model_dump())
+    base = resolve_runtime_base(body.runtime_endpoint)
+    payload = {"session_id": session_id, "path": body.path}
+    if body.agent_id:
+        payload["agent_id"] = body.agent_id
+    status_code, resp = await _proxy_workspace_json(
+        "POST", base, "/workspace/dir", payload,
+    )
+    return JSONResponse(status_code=status_code, content=resp)
+
+
+@router.post("/sessions/{session_id}/workspace/delete")
+async def workspace_delete(
+    session_id: str, body: _WorkspaceDeleteBody, request: Request,
+):
+    await resolve_identity(request, body.model_dump())
+    base = resolve_runtime_base(body.runtime_endpoint)
+    payload = {
+        "session_id": session_id,
+        "path": body.path,
+        "recursive": body.recursive,
+    }
+    if body.agent_id:
+        payload["agent_id"] = body.agent_id
+    status_code, resp = await _proxy_workspace_json(
+        "DELETE", base, "/workspace/entry", payload,
+    )
+    return JSONResponse(status_code=status_code, content=resp)
+
+
+@router.post("/sessions/{session_id}/workspace/move")
+async def workspace_move(
+    session_id: str, body: _WorkspaceMoveBody, request: Request,
+):
+    await resolve_identity(request, body.model_dump())
+    base = resolve_runtime_base(body.runtime_endpoint)
+    payload = {
+        "session_id": session_id,
+        "from": body.from_path,
+        "to": body.to_path,
+    }
+    if body.agent_id:
+        payload["agent_id"] = body.agent_id
+    status_code, resp = await _proxy_workspace_json(
+        "POST", base, "/workspace/move", payload,
+    )
+    return JSONResponse(status_code=status_code, content=resp)
+
+
+@router.post("/sessions/{session_id}/workspace/download")
+async def workspace_download(
+    session_id: str, body: _WorkspaceDownloadBody, request: Request,
+):
+    await resolve_identity(request, body.model_dump())
+    base = resolve_runtime_base(body.runtime_endpoint)
+    params: dict[str, str] = {"session_id": session_id, "path": body.path}
+    if body.agent_id:
+        params["agent_id"] = body.agent_id
+
+    client = httpx.AsyncClient(timeout=None)
+    try:
+        req = client.build_request("GET", f"{base}/workspace/download", params=params)
+        resp = await client.send(req, stream=True)
+    except httpx.HTTPError:
+        await client.aclose()
+        logger.warning("Download proxy failed", exc_info=True)
+        return JSONResponse(status_code=502, content={"error": "runtime unreachable"})
+
+    if resp.status_code != 200:
+        try:
+            payload = await resp.aread()
+            try:
+                body_json = json.loads(payload.decode("utf-8") or "{}")
+            except (UnicodeDecodeError, ValueError):
+                body_json = {"error": "invalid runtime response"}
+        finally:
+            await resp.aclose()
+            await client.aclose()
+        return JSONResponse(status_code=resp.status_code, content=body_json)
+
+    async def _iterate():
+        try:
+            async for chunk in resp.aiter_raw():
+                yield chunk
+        finally:
+            await resp.aclose()
+            await client.aclose()
+
+    forward_headers = {}
+    for key in ("content-length", "content-disposition", "content-type"):
+        v = resp.headers.get(key)
+        if v is not None:
+            forward_headers[key] = v
+    return StreamingResponse(
+        _iterate(),
+        status_code=resp.status_code,
+        media_type=forward_headers.get("content-type", "application/octet-stream"),
+        headers=forward_headers,
+    )
 
 
 class _WorkflowArtifactsCleanupBody(BaseModel):

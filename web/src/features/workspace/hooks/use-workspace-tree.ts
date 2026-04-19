@@ -91,6 +91,22 @@ export function useWorkspaceTree(sessionId: string) {
     await Promise.all(Array.from(expanded).map((p) => fetchPath(p)));
   }, [expanded, fetchPath]);
 
+  const refreshPath = useCallback(
+    async (p: string) => {
+      await fetchPath(p);
+    },
+    [fetchPath],
+  );
+
+  const ensureExpanded = useCallback((p: string) => {
+    setExpanded((prev) => {
+      if (prev.has(p)) return prev;
+      const next = new Set(prev);
+      next.add(p);
+      return next;
+    });
+  }, []);
+
   const collapseAll = useCallback(() => {
     setExpanded(new Set([ROOT_PATH]));
   }, []);
@@ -108,10 +124,12 @@ export function useWorkspaceTree(sessionId: string) {
       toggle,
       toggleHidden,
       refreshAll,
+      refreshPath,
+      ensureExpanded,
       collapseAll,
       joinPath,
     }),
-    [nodes, expanded, showHidden, toggle, toggleHidden, refreshAll, collapseAll],
+    [nodes, expanded, showHidden, toggle, toggleHidden, refreshAll, refreshPath, ensureExpanded, collapseAll],
   );
 }
 
