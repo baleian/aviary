@@ -18,6 +18,7 @@ import {
   WorkspaceError,
   listTree,
   readFile as readWorkspaceFile,
+  statFile as statWorkspaceFile,
   writeFile as writeWorkspaceFile,
   createDirectory as createWorkspaceDirectory,
   deleteEntry as deleteWorkspaceEntry,
@@ -237,6 +238,21 @@ app.get("/workspace/file", (req, res) => {
   }
 });
 
+app.get("/workspace/stat", (req, res) => {
+  const sessionId = (req.query.session_id as string | undefined) ?? "";
+  const agentId = (req.query.agent_id as string | undefined) || null;
+  const relPath = (req.query.path as string | undefined) ?? "";
+  if (!sessionId || !relPath) {
+    res.status(400).json({ error: "session_id and path are required" });
+    return;
+  }
+  try {
+    res.json(statWorkspaceFile(sessionId, agentId, relPath));
+  } catch (err) {
+    handleWorkspaceError(err, res);
+  }
+});
+
 app.put("/workspace/file", (req, res) => {
   const body = req.body as {
     session_id?: string;
@@ -316,21 +332,43 @@ app.post("/workspace/move", (req, res) => {
   }
 });
 
+const INLINE_MIME_BY_EXT: Record<string, string> = {
+  pdf: "application/pdf",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+  bmp: "image/bmp",
+  ico: "image/x-icon",
+};
+
+function inlineMimeFor(filename: string): string | null {
+  const dot = filename.lastIndexOf(".");
+  if (dot < 0) return null;
+  const ext = filename.slice(dot + 1).toLowerCase();
+  return INLINE_MIME_BY_EXT[ext] ?? null;
+}
+
 app.get("/workspace/download", (req, res) => {
   const sessionId = (req.query.session_id as string | undefined) ?? "";
   const agentId = (req.query.agent_id as string | undefined) || null;
   const relPath = (req.query.path as string | undefined) ?? "";
+  const inline = (req.query.inline as string | undefined) === "true";
   if (!sessionId || !relPath) {
     res.status(400).json({ error: "session_id and path are required" });
     return;
   }
   try {
     const handle = openWorkspaceDownload(sessionId, agentId, relPath);
-    res.setHeader("Content-Type", "application/octet-stream");
+    const inlineMime = inline ? inlineMimeFor(handle.filename) : null;
+    res.setHeader("Content-Type", inlineMime ?? "application/octet-stream");
     res.setHeader("Content-Length", handle.size.toString());
+    const disposition = inlineMime ? "inline" : "attachment";
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename*=UTF-8''${encodeURIComponent(handle.filename)}`,
+      `${disposition}; filename*=UTF-8''${encodeURIComponent(handle.filename)}`,
     );
     handle.stream.on("error", (err) => {
       console.error("workspace download stream error", err);

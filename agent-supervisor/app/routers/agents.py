@@ -330,6 +330,21 @@ async def workspace_file(
     return JSONResponse(status_code=status_code, content=payload)
 
 
+@router.post("/sessions/{session_id}/workspace/stat")
+async def workspace_stat(
+    session_id: str, body: _WorkspaceFileBody, request: Request,
+):
+    await resolve_identity(request, body.model_dump())
+    base = resolve_runtime_base(body.runtime_endpoint)
+    params = {"session_id": session_id, "path": body.path}
+    if body.agent_id:
+        params["agent_id"] = body.agent_id
+    status_code, payload = await _proxy_workspace_get(
+        base, "/workspace/stat", params,
+    )
+    return JSONResponse(status_code=status_code, content=payload)
+
+
 class _WorkspaceWriteBody(BaseModel):
     runtime_endpoint: str | None = None
     agent_id: str | None = None
@@ -366,6 +381,7 @@ class _WorkspaceDownloadBody(BaseModel):
     runtime_endpoint: str | None = None
     agent_id: str | None = None
     path: str
+    inline: bool = False
 
 
 async def _proxy_workspace_json(
@@ -471,6 +487,8 @@ async def workspace_download(
     params: dict[str, str] = {"session_id": session_id, "path": body.path}
     if body.agent_id:
         params["agent_id"] = body.agent_id
+    if body.inline:
+        params["inline"] = "true"
 
     client = httpx.AsyncClient(timeout=None)
     try:

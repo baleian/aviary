@@ -43,6 +43,13 @@ export interface FileContents {
   truncated: boolean;
 }
 
+export interface FileStat {
+  path: string;
+  size: number;
+  mtime: number;
+  isBinary: boolean;
+}
+
 export type WorkspaceErrorCode =
   | "invalid_path"
   | "not_found"
@@ -220,6 +227,48 @@ export function readFile(
     mtime: Math.floor(stat.mtimeMs),
     isBinary,
     truncated: false,
+  };
+}
+
+// Metadata-only read. No size limit, no full file load — safe for large binaries.
+// `isBinary` uses the same 8 KB NUL-byte heuristic as readFile.
+export function statFile(
+  sessionId: string,
+  agentId: string | null,
+  relPath: string,
+): FileStat {
+  const resolved = resolvePath(sessionId, agentId, relPath);
+
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(resolved.abs);
+  } catch {
+    throw new WorkspaceError("not_found", "file not found");
+  }
+  if (stat.isSymbolicLink()) {
+    throw new WorkspaceError("invalid_path", "symlinks are not followed");
+  }
+  if (!stat.isFile()) {
+    throw new WorkspaceError("not_a_file", "path is not a file");
+  }
+
+  let isBinary = false;
+  if (stat.size > 0) {
+    const fd = fs.openSync(resolved.abs, "r");
+    try {
+      const probe = Buffer.alloc(Math.min(stat.size, 8192));
+      const n = fs.readSync(fd, probe, 0, probe.length, 0);
+      isBinary = looksBinary(probe.subarray(0, n));
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+
+  return {
+    path: toVirtualPath(resolved),
+    size: stat.size,
+    mtime: Math.floor(stat.mtimeMs),
+    isBinary,
   };
 }
 

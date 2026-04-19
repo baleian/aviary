@@ -4,9 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   getFile,
   saveFile,
+  statFile,
   type FileContents,
+  type FileStat,
   WorkspaceApiError,
 } from "../lib/workspace-api";
+import { binaryViewerFor } from "../lib/file-icons";
 
 export interface EditorTab {
   path: string;
@@ -183,20 +186,42 @@ export function useWorkspaceEditor(sessionId: string): UseWorkspaceEditorResult 
     });
   }, [patchTab]);
 
+  // Viewer-only tabs (PDF/image) skip the full-content read — the viewer fetches
+  // bytes directly via the streaming /workspace/download endpoint, which has no
+  // size ceiling. This sidesteps the 2 MiB WORKSPACE_MAX_FILE_BYTES cap.
+  const applyFileStat = useCallback((paneId: string, path: string, stat: FileStat) => {
+    patchTab(paneId, path, {
+      loading: false,
+      error: null,
+      savedContent: "",
+      savedMtime: stat.mtime,
+      draft: null,
+      isBinary: true,
+      size: stat.size,
+    });
+  }, [patchTab]);
+
   const loadFile = useCallback(async (paneId: string, path: string) => {
     const key = genKey(paneId, path);
     const gen = nextGeneration(key);
     patchTab(paneId, path, { loading: true, error: null });
+    const viewerOnly = binaryViewerFor(path) !== null;
     try {
-      const file = await getFile(sessionId, path);
-      if (generationsRef.current.get(key) !== gen) return;
-      applyFileContents(paneId, path, file);
+      if (viewerOnly) {
+        const stat = await statFile(sessionId, path);
+        if (generationsRef.current.get(key) !== gen) return;
+        applyFileStat(paneId, path, stat);
+      } else {
+        const file = await getFile(sessionId, path);
+        if (generationsRef.current.get(key) !== gen) return;
+        applyFileContents(paneId, path, file);
+      }
     } catch (err) {
       if (generationsRef.current.get(key) !== gen) return;
       const message = err instanceof Error ? err.message : "Failed to load file";
       patchTab(paneId, path, { loading: false, error: message });
     }
-  }, [sessionId, patchTab, applyFileContents]);
+  }, [sessionId, patchTab, applyFileContents, applyFileStat]);
 
   const focusPane = useCallback((paneId: string) => {
     setActivePaneId(paneId);

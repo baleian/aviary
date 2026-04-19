@@ -130,6 +130,30 @@ async def fetch_workspace_file(
     return resp.status_code, payload
 
 
+async def stat_workspace_file(
+    session_id: str,
+    user_token: str,
+    runtime_endpoint: str | None,
+    agent_id: str | None,
+    rel_path: str,
+) -> tuple[int, dict]:
+    resp = await _supervisor.client.post(
+        f"/v1/sessions/{session_id}/workspace/stat",
+        json={
+            "runtime_endpoint": runtime_endpoint,
+            "agent_id": agent_id,
+            "path": rel_path,
+        },
+        headers={"Authorization": f"Bearer {user_token}"},
+        timeout=15,
+    )
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = {"error": "invalid supervisor response"}
+    return resp.status_code, payload
+
+
 async def write_workspace_file(
     session_id: str,
     user_token: str,
@@ -246,6 +270,7 @@ async def stream_workspace_download(
     runtime_endpoint: str | None,
     agent_id: str | None,
     rel_path: str,
+    inline: bool = False,
 ):
     """Open a streaming response on the supervisor's download endpoint.
 
@@ -256,6 +281,7 @@ async def stream_workspace_download(
         "runtime_endpoint": runtime_endpoint,
         "agent_id": agent_id,
         "path": rel_path,
+        "inline": inline,
     }
     req = _supervisor.client.build_request(
         "POST",
