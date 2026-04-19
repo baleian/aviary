@@ -35,11 +35,11 @@ export function LoginCard() {
             <AviaryLogo size={104} />
             <div
               aria-hidden="true"
-              className="absolute inset-0 -z-10 rounded-full bg-aurora-a blur-3xl opacity-40"
+              className="absolute inset-0 -z-10 rounded-full bg-aurora-sky blur-3xl opacity-45"
             />
           </div>
           <div className="flex flex-col items-center gap-2">
-            <h1 className="type-display text-aurora-a">Aviary</h1>
+            <h1 className="type-display text-aurora-sky">Aviary</h1>
             <p className="type-caption text-fg-muted tracking-[0.18em] uppercase">
               AI Agent Platform
             </p>

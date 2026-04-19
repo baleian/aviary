@@ -88,24 +88,23 @@ export function AgentCard({ agent, deleted }: AgentCardProps) {
               disabled={creating}
               aria-label={`Start chat with ${agent.name}`}
               className={cn(
-                "inline-flex items-center gap-1.5 rounded-pill px-3 py-1 type-caption-bold",
-                "bg-aurora-a text-white",
-                "shadow-[0_0_16px_rgba(123,92,255,0.35),inset_0_1px_0_rgba(255,255,255,0.2)]",
-                "transition-all duration-[320ms] ease-[cubic-bezier(0.16,1,0.3,1)]",
-                "hover:-translate-y-[1px] hover:shadow-[0_0_28px_rgba(123,92,255,0.55),inset_0_1px_0_rgba(255,255,255,0.25)]",
-                "disabled:opacity-60 disabled:cursor-not-allowed disabled:translate-y-0",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-violet/50 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
+                "inline-flex items-center gap-1.5 rounded-sm px-2.5 py-1 type-caption-bold",
+                "bg-white/[0.05] border border-white/[0.08] text-fg-secondary",
+                "transition-colors duration-200 ease-out",
+                "hover:bg-white/[0.09] hover:border-white/[0.14] hover:text-fg-primary",
+                "disabled:opacity-50 disabled:cursor-not-allowed",
+                "focus-visible:outline-none focus-visible:border-aurora-cyan/40 focus-visible:shadow-[0_0_0_3px_rgba(79,201,255,0.15)]",
               )}
             >
               {creating ? (
                 <>
-                  <Spinner size={11} className="text-white" />
+                  <Spinner size={11} className="text-fg-secondary" />
                   Starting…
                 </>
               ) : (
                 <>
                   Start chat
-                  <span className="text-white/70">↵</span>
+                  <span className="text-fg-muted">↵</span>
                 </>
               )}
             </button>

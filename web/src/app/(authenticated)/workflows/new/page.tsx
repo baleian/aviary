@@ -86,7 +86,7 @@ export default function NewWorkflowPage() {
 
   return (
     <div className="h-full overflow-y-auto bg-canvas">
-      <div className="mx-auto max-w-lg px-8 py-12">
+      <div className="mx-auto max-w-2xl px-10 py-16">
         <Link
           href={routes.workflows}
           className="inline-flex items-center gap-1.5 type-caption text-fg-muted hover:text-fg-primary transition-colors"

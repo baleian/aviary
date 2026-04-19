@@ -33,7 +33,7 @@ export const TodoPanel = memo(function TodoPanel({ todos }: TodoPanelProps) {
   return (
     <div className="relative">
       {expanded && (
-        <div className="absolute bottom-full left-0 right-0 mb-1 rounded-md bg-elevated shadow-5 px-3 py-2 backdrop-blur-sm">
+        <div className="absolute bottom-full left-0 right-0 mb-1 rounded-md bg-popover border border-white/10 shadow-5 px-3 py-2">
           <div className="max-h-48 space-y-0.5 overflow-y-auto">
             {todos.map((todo, i) => (
               <div key={i} className="flex items-start gap-2 py-0.5 type-caption">

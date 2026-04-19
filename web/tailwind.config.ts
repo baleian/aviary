@@ -27,6 +27,10 @@ const config: Config = {
         elevated: "rgba(255, 255, 255, 0.04)",
         raised: "rgba(255, 255, 255, 0.07)",
         hover: "rgba(255, 255, 255, 0.10)",
+        // Opaque surface for floating popovers/menus/dialogs — these render
+        // outside the glass-pane stack, so they need a solid dark fill or
+        // they read as transparent against the aurora backdrop.
+        popover: "rgb(var(--bg-popover) / <alpha-value>)",
 
         fg: {
           DEFAULT: "rgb(var(--fg-primary) / <alpha-value>)",

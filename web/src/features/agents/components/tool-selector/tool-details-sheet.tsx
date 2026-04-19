@@ -45,7 +45,7 @@ export function ToolDetailsSheet({ tool, onClose }: ToolDetailsSheetProps) {
       onClick={onClose}
     >
       <div
-        className="flex h-full max-h-[80vh] w-full max-w-2xl flex-col rounded-xl bg-elevated shadow-5"
+        className="flex h-full max-h-[80vh] w-full max-w-2xl flex-col rounded-xl bg-popover border border-white/10 shadow-5"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}

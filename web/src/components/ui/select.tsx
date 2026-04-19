@@ -13,6 +13,9 @@ const Select = React.forwardRef<HTMLSelectElement, React.SelectHTMLAttributes<HT
         "focus-visible:outline-none focus-visible:border-aurora-violet/50",
         "focus-visible:shadow-[0_0_0_3px_rgba(123,92,255,0.2)]",
         "disabled:cursor-not-allowed disabled:opacity-40",
+        // Native <option>s render in a browser popup with no backdrop, so a
+        // translucent pane shows through as white. Force an opaque dark fill.
+        "[&>option]:bg-canvas [&>option]:text-fg-primary",
         className,
       )}
       {...props}

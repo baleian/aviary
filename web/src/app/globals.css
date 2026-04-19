@@ -29,6 +29,7 @@
     --color-surface-glass-1: 255 255 255; /* used at 4% alpha for frosted pane */
     --color-surface-glass-2: 255 255 255; /* used at 7% alpha for elevated frosted pane */
     --color-surface-glass-3: 255 255 255; /* used at 10% alpha for hover / active */
+    --color-surface-popover: 22 24 44;    /* #16182C — opaque fill for floating popovers */
     --color-button-fg: 14 10 36;
 
     /* --- Primitive text --- */
@@ -52,6 +53,7 @@
     --bg-elevated: var(--color-surface-glass-1);
     --bg-raised: var(--color-surface-glass-2);
     --bg-hover: var(--color-surface-glass-3);
+    --bg-popover: var(--color-surface-popover);
 
     /* --- Semantic text --- */
     --fg-primary: var(--color-fg-hi);
@@ -89,6 +91,13 @@
     --aurora-b-soft: linear-gradient(135deg, rgba(79,201,255,0.22) 0%, rgba(92,255,204,0.18) 100%);
     --aurora-c: linear-gradient(135deg, #FF7A59 0%, #FFD866 100%);
     --aurora-c-soft: linear-gradient(135deg, rgba(255,122,89,0.22) 0%, rgba(255,216,102,0.18) 100%);
+    /* Cool blue variant used for user chat bubbles — no pink, no amber. */
+    --aurora-blue: linear-gradient(135deg, #4FC9FF 0%, #3B82F6 55%, #5B4FE5 100%);
+    --aurora-blue-soft: linear-gradient(135deg, rgba(79,201,255,0.24) 0%, rgba(59,130,246,0.22) 55%, rgba(91,79,229,0.20) 100%);
+    /* Sky blue wordmark — gentle tonal shift around the logo's sky blue.
+     * Intentionally low-contrast so the gradient reads as quality, not drama. */
+    --aurora-sky: linear-gradient(135deg, #9FC3DC 0%, #94BBD5 50%, #89B6D4 100%);
+    --aurora-sky-soft: linear-gradient(135deg, rgba(159,195,220,0.26) 0%, rgba(148,187,213,0.22) 50%, rgba(137,182,212,0.20) 100%);
 
     /* --- Radius scale (softer) --- */
     --radius-micro: 6px;
@@ -409,6 +418,10 @@
   .bg-aurora-b-soft { background-image: var(--aurora-b-soft); }
   .bg-aurora-c { background-image: var(--aurora-c); }
   .bg-aurora-c-soft { background-image: var(--aurora-c-soft); }
+  .bg-aurora-blue { background-image: var(--aurora-blue); }
+  .bg-aurora-blue-soft { background-image: var(--aurora-blue-soft); }
+  .bg-aurora-sky { background-image: var(--aurora-sky); }
+  .bg-aurora-sky-soft { background-image: var(--aurora-sky-soft); }
 
   .text-aurora-a {
     background-image: var(--aurora-a);
@@ -418,6 +431,12 @@
   }
   .text-aurora-b {
     background-image: var(--aurora-b);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .text-aurora-sky {
+    background-image: var(--aurora-sky);
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
@@ -451,6 +470,9 @@
   }
   .gradient-border-c::before {
     background: var(--aurora-c);
+  }
+  .gradient-border-blue::before {
+    background: var(--aurora-blue);
   }
 
   /* --- Subtle grain overlay — breaks banding on smooth gradients.
