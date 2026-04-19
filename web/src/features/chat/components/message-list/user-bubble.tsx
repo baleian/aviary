@@ -26,7 +26,7 @@ export function UserBubble({ content, showAvatar = true, targetId, attachments }
   return (
     <div className="flex flex-row-reverse gap-3 group animate-fade-in">
       {showAvatar ? (
-        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-info/15 type-small text-info">
+        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-aurora-blue type-small text-white shadow-[0_0_12px_rgba(59,130,246,0.45),inset_0_1px_0_rgba(255,255,255,0.2)]">
           You
         </div>
       ) : (
@@ -35,12 +35,11 @@ export function UserBubble({ content, showAvatar = true, targetId, attachments }
       <div
         data-search-target={targetId}
         className={cn(
-          "max-w-[60%] rounded-xl rounded-tr-sm transition-shadow",
-          isActiveMatch &&
-            "ring-2 ring-info/60 ring-offset-2 ring-offset-canvas",
+          "relative max-w-[60%] gradient-border-blue rounded-xl rounded-tr-sm transition-shadow",
+          isActiveMatch && "ring-2 ring-aurora-cyan/60 ring-offset-2 ring-offset-canvas",
         )}
       >
-        <div className="rounded-xl rounded-tr-sm bg-info/10 px-4 py-3 type-body text-fg-primary">
+        <div className="rounded-xl rounded-tr-sm bg-aurora-blue-soft px-4 py-3 type-body text-fg-primary">
           {attachments && attachments.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-2">
               {attachments.map((att) => (
@@ -48,7 +47,7 @@ export function UserBubble({ content, showAvatar = true, targetId, attachments }
                   key={att.file_id}
                   type="button"
                   onClick={() => openLightbox(att)}
-                  className="block rounded-lg overflow-hidden border border-white/10 hover:border-info/40 transition-colors cursor-zoom-in"
+                  className="block rounded-lg overflow-hidden border border-white/10 hover:border-aurora-cyan/40 transition-colors cursor-zoom-in"
                 >
                   <img
                     src={getUploadUrl(att.file_id)}

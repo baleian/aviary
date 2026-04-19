@@ -8,7 +8,7 @@ import { routes } from "@/lib/constants/routes";
 
 /**
  * SidebarBrand — top header of the sidebar with logo + collapse toggle.
- * Pure presentation; data comes from useSidebar.
+ * Translucent border-bottom so the aurora bleeds through.
  */
 export function SidebarBrand() {
   const { collapsed, toggleCollapsed } = useSidebar();
@@ -23,7 +23,7 @@ export function SidebarBrand() {
       <button
         type="button"
         onClick={toggleCollapsed}
-        className="flex h-7 w-7 items-center justify-center rounded-sm text-fg-muted hover:bg-raised hover:text-fg-primary transition-colors"
+        className="flex h-7 w-7 items-center justify-center rounded-sm text-fg-muted hover:bg-white/[0.07] hover:text-fg-primary transition-colors"
         title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
         aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
       >

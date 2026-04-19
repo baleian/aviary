@@ -1,27 +1,29 @@
-/* ── React Flow overrides for Aviary dark theme ── */
+/* ── React Flow overrides — Aurora Glass ── */
 
-/* Canvas background */
+/* Canvas background keeps the deep navy so the aurora backdrop shows through.
+ * Slightly darker than body to emphasise the canvas as a work surface. */
 .react-flow {
-  --xy-background-color: rgb(7 8 10);
+  --xy-background-color: rgb(8 9 26);
+  background-color: transparent;
 }
 
 /* ── Edges ── */
 .react-flow__edge .react-flow__edge-path {
   cursor: pointer;
-  stroke: rgba(255, 255, 255, 0.08);
+  stroke: rgba(255, 255, 255, 0.14);
   stroke-width: 2;
 }
 
 .react-flow__edge:hover .react-flow__edge-path {
-  stroke: rgba(255, 255, 255, 0.2);
+  stroke: rgba(255, 255, 255, 0.28);
 }
 
 .react-flow__edge.selected .react-flow__edge-path {
-  stroke: rgba(85, 179, 255, 0.7) !important;
+  stroke: rgba(123, 92, 255, 0.85) !important;
   stroke-width: 2.5 !important;
+  filter: drop-shadow(0 0 6px rgba(123, 92, 255, 0.5));
 }
 
-/* Animated dash for flow direction */
 .react-flow__edge.animated .react-flow__edge-path {
   stroke-dasharray: 6 4;
   animation: edge-flow 0.6s linear infinite;
@@ -31,24 +33,24 @@
   to { stroke-dashoffset: -10; }
 }
 
-/* ── Connection line (while dragging a new edge) ── */
+/* ── Connection line (while dragging) ── */
 .react-flow__connection-path {
-  stroke: rgba(85, 179, 255, 0.5);
+  stroke: rgba(123, 92, 255, 0.6);
   stroke-width: 2;
   stroke-dasharray: 6 4;
+  filter: drop-shadow(0 0 4px rgba(123, 92, 255, 0.4));
 }
 
-/* ── Handles ── */
+/* ── Handles — glass disc + aurora glow on hover ── */
 .react-flow__handle {
   width: 10px !important;
   height: 10px !important;
   border-radius: 50% !important;
-  border: 2px solid rgb(27 28 30) !important;
-  background: rgba(255, 255, 255, 0.2) !important;
-  transition: background 0.15s, box-shadow 0.15s;
+  border: 2px solid rgba(8, 9, 26, 0.9) !important;
+  background: rgba(255, 255, 255, 0.24) !important;
+  transition: background 0.2s, box-shadow 0.2s;
 }
 
-/* Invisible expanded hit area for easier clicking */
 .react-flow__handle::after {
   content: "";
   position: absolute;
@@ -57,31 +59,34 @@
 }
 
 .react-flow__handle:hover {
-  background: rgba(85, 179, 255, 0.8) !important;
-  box-shadow: 0 0 8px rgba(85, 179, 255, 0.4);
+  background: rgb(123, 92, 255) !important;
+  box-shadow: 0 0 14px rgba(123, 92, 255, 0.6);
 }
 
-/* ── Controls panel ── */
+/* ── Controls panel — floating glass ── */
 .react-flow__controls {
-  background: rgb(16 17 17) !important;
-  border: 1px solid rgba(255, 255, 255, 0.06) !important;
-  border-radius: 8px !important;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4) !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+  backdrop-filter: blur(24px) saturate(140%) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(140%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 14px !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45) !important;
   overflow: hidden;
 }
 
 .react-flow__controls button {
-  background: rgb(16 17 17) !important;
+  background: transparent !important;
   border: none !important;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
-  fill: rgba(255, 255, 255, 0.4) !important;
+  fill: rgba(255, 255, 255, 0.5) !important;
   width: 32px !important;
   height: 32px !important;
+  transition: background 0.15s, fill 0.15s;
 }
 
 .react-flow__controls button:hover {
-  background: rgb(27 28 30) !important;
-  fill: rgba(255, 255, 255, 0.7) !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  fill: rgba(255, 255, 255, 0.9) !important;
 }
 
 .react-flow__controls button:last-child {
@@ -90,15 +95,17 @@
 
 /* ── MiniMap ── */
 .react-flow__minimap {
-  background: rgb(16 17 17) !important;
-  border: 1px solid rgba(255, 255, 255, 0.06) !important;
-  border-radius: 8px !important;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4) !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+  backdrop-filter: blur(24px) saturate(140%) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(140%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 14px !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45) !important;
 }
 
 /* ── Selection box ── */
 .react-flow__selection {
-  background: rgba(85, 179, 255, 0.06);
-  border: 1px solid rgba(85, 179, 255, 0.3);
-  border-radius: 4px;
+  background: rgba(123, 92, 255, 0.08);
+  border: 1px solid rgba(123, 92, 255, 0.45);
+  border-radius: 6px;
 }

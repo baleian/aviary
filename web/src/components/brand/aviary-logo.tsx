@@ -51,11 +51,8 @@ export function AviaryLogoMark({ size = 28, className, iconOnly }: AviaryLogoMar
       <AviaryLogo size={size} />
       {!iconOnly && (
         <span
-          className="font-semibold tracking-tight"
-          // Softened variant of the brand sky blue — same hue as the
-          // bird mark but with a touch less saturation so the wordmark
-          // doesn't glow against the dark sidebar.
-          style={{ fontSize, lineHeight: 1, color: "rgb(125, 172, 196)" }}
+          className="font-semibold tracking-tight text-aurora-sky"
+          style={{ fontSize, lineHeight: 1 }}
         >
           Aviary
         </span>

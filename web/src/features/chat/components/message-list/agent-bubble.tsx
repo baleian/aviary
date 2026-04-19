@@ -51,15 +51,15 @@ export function AgentBubble({ message, showAvatar = true }: AgentBubbleProps) {
 
   const textBubbleClass = (targetId: string) =>
     cn(
-      "rounded-xl rounded-tl-sm bg-elevated shadow-2 px-4 py-3 transition-shadow",
+      "rounded-xl rounded-tl-sm glass-raised shadow-2 px-4 py-3 transition-shadow",
       activeTargetId === targetId &&
-        "ring-2 ring-info/60 ring-offset-2 ring-offset-canvas",
+        "ring-2 ring-aurora-cyan/60 ring-offset-2 ring-offset-canvas",
     );
 
   return (
     <div className="flex gap-3 group animate-fade-in">
       {showAvatar ? (
-        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-raised type-small text-fg-muted">
+        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-aurora-b-soft border border-aurora-cyan/20 type-small text-aurora-cyan">
           AI
         </div>
       ) : (

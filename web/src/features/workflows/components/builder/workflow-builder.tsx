@@ -56,7 +56,7 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
       onClick={onClick}
       className={cn(
         "flex-1 py-1.5 text-[11px] font-medium transition-colors",
-        active ? "text-fg-primary border-b-2 border-info" : "text-fg-disabled hover:text-fg-muted",
+        active ? "text-fg-primary border-b-2 border-aurora-violet" : "text-fg-disabled hover:text-fg-muted",
       )}
     >
       {children}
@@ -79,11 +79,11 @@ function Canvas({ readOnly }: { readOnly: boolean }) {
     (node: { id: string }) => {
       const status = nodeRunStatuses[node.id];
       switch (status) {
-        case "running": return "rgba(85,179,255,0.5)";
-        case "completed": return "rgba(95,201,146,0.5)";
-        case "failed": return "rgba(255,99,99,0.5)";
+        case "running": return "rgba(123,92,255,0.6)";
+        case "completed": return "rgba(92,255,204,0.55)";
+        case "failed": return "rgba(255,79,184,0.6)";
         case "skipped": return "rgba(255,255,255,0.05)";
-        default: return "rgba(255,255,255,0.08)";
+        default: return "rgba(255,255,255,0.10)";
       }
     },
     [nodeRunStatuses],
@@ -144,7 +144,7 @@ function Canvas({ readOnly }: { readOnly: boolean }) {
         edgesReconnectable={!readOnly}
         proOptions={{ hideAttribution: true }}
       >
-        <Background gap={24} size={1} color="rgba(255,255,255,0.025)" />
+        <Background gap={24} size={1} color="rgba(255,255,255,0.04)" />
         <Controls />
         <MiniMap nodeColor={miniMapNodeColor} maskColor="rgba(0,0,0,0.7)" pannable zoomable />
       </ReactFlow>
@@ -161,7 +161,7 @@ function LeftPanel({
   const [tab, setTab] = useState<"nodes" | "settings">(readOnly ? "settings" : "nodes");
 
   return (
-    <div className="w-56 shrink-0 flex flex-col border-r border-white/[0.06] bg-[rgb(10_11_13)]">
+    <div className="w-56 shrink-0 flex flex-col border-r border-white/[0.06] glass-deep">
       <div className="flex border-b border-white/[0.06]">
         {!readOnly && (
           <TabButton active={tab === "nodes"} onClick={() => setTab("nodes")}>Nodes</TabButton>
@@ -200,7 +200,7 @@ function PanelResizeHandle({ onResize }: { onResize: (delta: number) => void }) 
   return (
     <div
       onMouseDown={onMouseDown}
-      className="absolute left-0 top-0 h-full w-1 cursor-col-resize z-10 hover:bg-info/30 active:bg-info/50 transition-colors"
+      className="absolute left-0 top-0 h-full w-1 cursor-col-resize z-10 hover:bg-aurora-violet/40 active:bg-aurora-violet/60 transition-colors"
     />
   );
 }
@@ -223,7 +223,7 @@ function RightPanel({
 
   return (
     <div
-      className="relative flex flex-col border-l border-white/[0.06] bg-[rgb(10_11_13)]"
+      className="relative flex flex-col border-l border-white/[0.06] glass-deep"
       style={{ width, minWidth: RIGHT_MIN, flexShrink: 0 }}
     >
       <PanelResizeHandle onResize={handleResize} />

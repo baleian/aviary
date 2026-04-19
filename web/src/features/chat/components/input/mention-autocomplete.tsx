@@ -198,7 +198,7 @@ export function MentionAutocomplete({
   return (
     <div
       ref={dropdownRef}
-      className="fixed z-50 w-72 rounded-md bg-elevated shadow-5 overflow-hidden"
+      className="fixed z-50 w-72 rounded-md bg-popover border border-white/10 shadow-5 overflow-hidden"
       style={{ bottom: `calc(100vh - ${position.top}px)`, left: position.left }}
     >
       <div className="px-3 py-2 type-small text-fg-disabled border-b border-white/[0.06]">
