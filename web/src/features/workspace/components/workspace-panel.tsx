@@ -27,6 +27,7 @@ import {
 } from "./workspace-context-menu";
 import type { PendingNew, TreeInteractions } from "./tree-node";
 import type { TreeEntry } from "../lib/workspace-api";
+import { basename, joinPath, parentOf } from "../lib/paths";
 
 interface WorkspacePanelProps {
   sessionId: string;
@@ -43,22 +44,6 @@ const PANEL_MAX_WIDTH = 1800;
 const CHAT_MIN_WIDTH = 320;
 const STORAGE_KEY_COLLAPSED = "aviary:workspace-panel-width:collapsed";
 const STORAGE_KEY_EXPANDED = "aviary:workspace-panel-width:expanded";
-
-function parentOf(path: string): string {
-  if (path === "/" || !path.includes("/")) return "/";
-  const trimmed = path.replace(/\/+$/g, "");
-  const idx = trimmed.lastIndexOf("/");
-  return idx <= 0 ? "/" : trimmed.slice(0, idx);
-}
-
-function joinChild(parent: string, name: string): string {
-  return parent === "/" ? `/${name}` : `${parent}/${name}`;
-}
-
-function basename(path: string): string {
-  const slash = path.lastIndexOf("/");
-  return slash === -1 ? path : path.slice(slash + 1);
-}
 
 type ContextMenuState = {
   x: number;
@@ -105,17 +90,14 @@ export function WorkspacePanel({ sessionId, onClose, refreshSignal = 0 }: Worksp
     reserveForMain: CHAT_MIN_WIDTH,
   });
 
-  // Warn on session change if any tab is dirty.
+  // Session is switched upstream; we can't block the change, so just warn.
   const prevSessionRef = useRef(sessionId);
   useEffect(() => {
     if (prevSessionRef.current === sessionId) return;
     if (editor.hasDirty) {
-      const ok = window.confirm(
-        "You have unsaved changes in the workspace. Switching sessions will discard them. Continue?",
+      window.confirm(
+        "You had unsaved changes in the previous session's workspace — they were discarded.",
       );
-      if (!ok) {
-        // Can't really rewind — sessionId changed upstream. Still reset.
-      }
     }
     prevSessionRef.current = sessionId;
   }, [sessionId, editor.hasDirty]);
@@ -137,7 +119,6 @@ export function WorkspacePanel({ sessionId, onClose, refreshSignal = 0 }: Worksp
     void refresh();
   }, [refreshSignal, refresh]);
 
-  // --- Save flow with conflict handling -----------------------------------
   const doSave = useCallback(
     async (path: string, overrideExpected?: number | null) => {
       setSaving(true);
@@ -170,7 +151,6 @@ export function WorkspacePanel({ sessionId, onClose, refreshSignal = 0 }: Worksp
     [editor],
   );
 
-  // --- Tab close with dirty guard ----------------------------------------
   const handleCloseTab = useCallback(
     (path: string) => {
       if (!editor.isTabDirty(path)) {
@@ -198,7 +178,6 @@ export function WorkspacePanel({ sessionId, onClose, refreshSignal = 0 }: Worksp
     [editor, doSave],
   );
 
-  // --- Tree CRUD actions --------------------------------------------------
   const refreshParent = useCallback(
     async (p: string) => {
       await tree.refreshPath(p);
@@ -215,7 +194,7 @@ export function WorkspacePanel({ sessionId, onClose, refreshSignal = 0 }: Worksp
     async (parent: string, mode: "file" | "dir", name: string) => {
       setPendingNew(null);
       setError(null);
-      const target = joinChild(parent, name);
+      const target = joinPath(parent, name);
       try {
         if (mode === "dir") {
           await createDir(sessionId, target);
@@ -236,7 +215,7 @@ export function WorkspacePanel({ sessionId, onClose, refreshSignal = 0 }: Worksp
       setRenamingPath(null);
       setError(null);
       const parent = parentOf(path);
-      const target = joinChild(parent, newName);
+      const target = joinPath(parent, newName);
       if (target === path) return;
       try {
         await moveEntry(sessionId, path, target);
@@ -265,10 +244,9 @@ export function WorkspacePanel({ sessionId, onClose, refreshSignal = 0 }: Worksp
           setError(null);
           try {
             await deleteEntry(sessionId, path, isDir);
-            // Close any tab at or under this path
             for (const tab of editor.tabs) {
               if (tab.path === path || tab.path.startsWith(path + "/")) {
-                editor.removeTab(tab.path);
+                editor.closeTab(tab.path);
               }
             }
             await refreshParent(parentOf(path));
@@ -290,7 +268,7 @@ export function WorkspacePanel({ sessionId, onClose, refreshSignal = 0 }: Worksp
           setError(`${file.name} exceeds ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB limit`);
           continue;
         }
-        const target = joinChild(parent, file.name);
+        const target = joinPath(parent, file.name);
         try {
           await uploadFile(sessionId, target, file, false);
         } catch (err) {
@@ -313,9 +291,9 @@ export function WorkspacePanel({ sessionId, onClose, refreshSignal = 0 }: Worksp
     [sessionId, refreshParent],
   );
 
-  // Create a fresh <input> per invocation rather than relying on a single
-  // hidden input + ref. Avoids a class of issues where the ref click is
-  // swallowed by React re-renders or the hidden input's layout state.
+  // Fresh <input> per invocation — a static hidden ref-clicked input was
+  // silently failing in some paths; creating one on-demand mirrors how
+  // triggerDownload works and sidesteps the issue.
   const triggerUpload = useCallback(
     (parent: string) => {
       const input = document.createElement("input");
@@ -326,16 +304,25 @@ export function WorkspacePanel({ sessionId, onClose, refreshSignal = 0 }: Worksp
       input.style.top = "-9999px";
       input.style.opacity = "0";
       document.body.appendChild(input);
+      let cleaned = false;
+      const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+        if (input.parentNode) input.parentNode.removeChild(input);
+      };
       input.addEventListener("change", () => {
         const files = input.files;
-        document.body.removeChild(input);
+        cleanup();
         if (files && files.length > 0) {
           void uploadFiles(parent, files);
         }
       });
-      input.addEventListener("cancel", () => {
-        document.body.removeChild(input);
-      });
+      // Firefox doesn't reliably emit `cancel`; schedule a backstop sweep
+      // on the next focus so an unused input doesn't linger in the DOM.
+      input.addEventListener("cancel", cleanup);
+      window.addEventListener("focus", () => {
+        setTimeout(cleanup, 1000);
+      }, { once: true });
       input.click();
     },
     [uploadFiles],
@@ -354,7 +341,6 @@ export function WorkspacePanel({ sessionId, onClose, refreshSignal = 0 }: Worksp
     [sessionId],
   );
 
-  // --- Context menu builder -----------------------------------------------
   const handleContextMenu = useCallback(
     (e: React.MouseEvent, payload: { path: string; entry: TreeEntry | null }) => {
       const { path, entry } = payload;

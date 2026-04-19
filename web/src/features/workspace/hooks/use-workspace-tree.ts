@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getTree, type TreeEntry } from "../lib/workspace-api";
+import { joinPath } from "../lib/paths";
 
 export interface NodeState {
   entries: TreeEntry[];
@@ -11,10 +12,6 @@ export interface NodeState {
 }
 
 const ROOT_PATH = "/";
-
-function joinPath(parent: string, name: string): string {
-  return parent === "/" ? `/${name}` : `${parent}/${name}`;
-}
 
 export function useWorkspaceTree(sessionId: string) {
   const [showHidden, setShowHidden] = useState(false);

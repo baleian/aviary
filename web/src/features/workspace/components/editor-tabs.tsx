@@ -3,17 +3,13 @@
 import { X } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import type { EditorTab } from "../hooks/use-workspace-editor";
+import { basename } from "../lib/paths";
 
 interface EditorTabsProps {
   tabs: EditorTab[];
   activeTabPath: string | null;
   onActivate: (path: string) => void;
   onClose: (path: string) => void;
-}
-
-function basename(path: string): string {
-  const slash = path.lastIndexOf("/");
-  return slash === -1 ? path : path.slice(slash + 1);
 }
 
 export function EditorTabs({ tabs, activeTabPath, onActivate, onClose }: EditorTabsProps) {

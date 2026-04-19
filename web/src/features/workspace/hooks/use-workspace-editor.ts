@@ -35,7 +35,6 @@ interface UseWorkspaceEditorResult {
   setDraft: (path: string, value: string) => void;
   save: (path: string, overrideOverwrite?: { expectedMtime: number | null }) => Promise<SaveResult>;
   reloadTab: (path: string) => Promise<void>;
-  removeTab: (path: string) => void;
   renameTab: (oldPath: string, newPath: string) => void;
   hasDirty: boolean;
   isTabDirty: (path: string) => boolean;
@@ -118,7 +117,7 @@ export function useWorkspaceEditor(sessionId: string): UseWorkspaceEditorResult 
     [loadFile],
   );
 
-  const removeTab = useCallback((path: string) => {
+  const closeTab = useCallback((path: string) => {
     setTabs((prev) => {
       const next = prev.filter((t) => t.path !== path);
       if (activeTabPath === path) {
@@ -131,15 +130,6 @@ export function useWorkspaceEditor(sessionId: string): UseWorkspaceEditorResult 
     });
     generationsRef.current.delete(path);
   }, [activeTabPath]);
-
-  // closeTab defers the dirty-check to callers so they can show a confirm
-  // dialog; this helper unconditionally removes.
-  const closeTab = useCallback(
-    (path: string) => {
-      removeTab(path);
-    },
-    [removeTab],
-  );
 
   const activate = useCallback((path: string) => {
     setActiveTabPath(path);
@@ -160,7 +150,7 @@ export function useWorkspaceEditor(sessionId: string): UseWorkspaceEditorResult 
       path: string,
       override?: { expectedMtime: number | null },
     ): Promise<SaveResult> => {
-      const tab = tabsRef.current.find((t) => t.path === path);
+      const tab = tabs.find((t) => t.path === path);
       if (!tab) return { status: "error", message: "Tab not found" };
       if (tab.draft === null && !override) return { status: "noop" };
       const content = tab.draft ?? tab.savedContent ?? "";
@@ -188,15 +178,8 @@ export function useWorkspaceEditor(sessionId: string): UseWorkspaceEditorResult 
         return { status: "error", message };
       }
     },
-    [sessionId, applyFileContents],
+    [tabs, sessionId, applyFileContents],
   );
-
-  // Keep a ref so `save` can read the latest draft without being re-created
-  // on every keystroke (which would re-register monaco commands too).
-  const tabsRef = useRef<EditorTab[]>(tabs);
-  useEffect(() => {
-    tabsRef.current = tabs;
-  }, [tabs]);
 
   const reloadTab = useCallback(async (path: string) => {
     await loadFile(path);
@@ -237,7 +220,6 @@ export function useWorkspaceEditor(sessionId: string): UseWorkspaceEditorResult 
     setDraft,
     save,
     reloadTab,
-    removeTab,
     renameTab,
     hasDirty,
     isTabDirty,
