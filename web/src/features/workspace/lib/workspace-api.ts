@@ -95,6 +95,20 @@ export async function getFile(sessionId: string, rel: string): Promise<FileConte
   );
 }
 
+export interface FileStat {
+  path: string;
+  size: number;
+  mtime: number;
+  isBinary: boolean;
+}
+
+export async function statFile(sessionId: string, rel: string): Promise<FileStat> {
+  const params = new URLSearchParams({ path: rel });
+  return run(() =>
+    http.get<FileStat>(`/sessions/${sessionId}/workspace/stat?${params.toString()}`),
+  );
+}
+
 export interface SaveFileArgs {
   content: string;
   encoding?: "utf8" | "base64";
@@ -180,7 +194,12 @@ export async function uploadFile(
   return saveFile(sessionId, rel, { content, encoding: "base64", overwrite });
 }
 
-export function downloadFileUrl(sessionId: string, rel: string): string {
+export function downloadFileUrl(
+  sessionId: string,
+  rel: string,
+  opts?: { inline?: boolean },
+): string {
   const params = new URLSearchParams({ path: rel });
+  if (opts?.inline) params.set("inline", "true");
   return `/api/sessions/${sessionId}/workspace/download?${params.toString()}`;
 }

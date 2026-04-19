@@ -18,6 +18,17 @@ const CODE_EXT = new Set([
 
 const IMAGE_EXT = new Set(["png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "bmp"]);
 
+export type BinaryViewer = "pdf" | "image";
+
+export function binaryViewerFor(path: string): BinaryViewer | null {
+  const dot = path.lastIndexOf(".");
+  if (dot < 0) return null;
+  const ext = path.slice(dot + 1).toLowerCase();
+  if (ext === "pdf") return "pdf";
+  if (IMAGE_EXT.has(ext)) return "image";
+  return null;
+}
+
 export function fileIconFor(name: string): ComponentType<{ size?: number; strokeWidth?: number; className?: string }> {
   const lower = name.toLowerCase();
   const dot = lower.lastIndexOf(".");

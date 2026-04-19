@@ -2,12 +2,13 @@
 
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Code2, Eye, Loader2, Save } from "@/components/icons";
+import { AlertTriangle, Check, Code2, Copy, Eye, Loader2, Save } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import type { EditorTab } from "../hooks/use-workspace-editor";
-import { monacoLanguageFor } from "../lib/file-icons";
+import { binaryViewerFor, monacoLanguageFor } from "../lib/file-icons";
 import { sandboxPath } from "../lib/paths";
 import { MarkdownContent } from "@/features/chat/components/markdown/markdown-content";
+import { downloadFileUrl } from "../lib/workspace-api";
 
 // Monaco is a large client-only bundle; Next.js SSR explicitly disabled.
 const MonacoEditor = dynamic(
@@ -16,6 +17,7 @@ const MonacoEditor = dynamic(
 );
 
 interface FileEditorProps {
+  sessionId: string;
   tab: EditorTab;
   onDraftChange: (path: string, value: string) => void;
   onSave: (path: string) => void | Promise<void>;
@@ -27,7 +29,7 @@ function isMarkdownPath(p: string): boolean {
   return ext === "md" || ext === "markdown";
 }
 
-export function FileEditor({ tab, onDraftChange, onSave, saving }: FileEditorProps) {
+export function FileEditor({ sessionId, tab, onDraftChange, onSave, saving }: FileEditorProps) {
   const { path, loading, error, savedContent, draft, isBinary, size } = tab;
   const dirty = draft !== null;
   const value = draft ?? savedContent ?? "";
@@ -37,11 +39,31 @@ export function FileEditor({ tab, onDraftChange, onSave, saving }: FileEditorPro
     return monacoLanguageFor(base);
   }, [path]);
   const isMarkdown = useMemo(() => isMarkdownPath(path), [path]);
+  const binaryViewer = useMemo(() => binaryViewerFor(path), [path]);
+  const inlineUrl = useMemo(
+    () => (isBinary && binaryViewer ? downloadFileUrl(sessionId, path, { inline: true }) : null),
+    [isBinary, binaryViewer, sessionId, path],
+  );
 
   const [preview, setPreview] = useState(false);
   useEffect(() => {
     setPreview(isMarkdown && !dirty);
   }, [path, isMarkdown, dirty]);
+
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    setCopied(false);
+  }, [path]);
+  const displayPath = sandboxPath(path);
+  const copyPath = async () => {
+    try {
+      await navigator.clipboard.writeText(displayPath);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      // Clipboard access denied (e.g. non-HTTPS, iframe without permission).
+    }
+  };
 
   // Latest save callback captured for the monaco keybinding, which registers
   // once per editor instance.
@@ -55,10 +77,26 @@ export function FileEditor({ tab, onDraftChange, onSave, saving }: FileEditorPro
   return (
     <div className="flex h-full flex-1 flex-col min-w-0 border-l border-white/[0.06] bg-canvas">
       <header className="flex shrink-0 items-center justify-between gap-2 border-b border-white/[0.06] px-3 py-1.5">
-        <span className="truncate type-caption text-fg-muted font-mono" title={sandboxPath(path)}>
-          {sandboxPath(path)}
-          {dirty && <span className="ml-2 text-warning">● modified</span>}
-        </span>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className="truncate type-caption text-fg-muted font-mono" title={displayPath}>
+            {displayPath}
+            {dirty && <span className="ml-2 text-warning">● modified</span>}
+          </span>
+          <button
+            type="button"
+            onClick={copyPath}
+            title={copied ? "Copied" : "Copy path"}
+            aria-label="Copy file path"
+            className={cn(
+              "flex h-5 w-5 shrink-0 items-center justify-center rounded-xs transition-colors",
+              copied
+                ? "text-success"
+                : "text-fg-muted hover:bg-raised hover:text-fg-primary",
+            )}
+          >
+            {copied ? <Check size={12} strokeWidth={2} /> : <Copy size={12} strokeWidth={2} />}
+          </button>
+        </div>
         <div className="flex shrink-0 items-center gap-1">
           {canEdit && (
             <button
@@ -111,6 +149,22 @@ export function FileEditor({ tab, onDraftChange, onSave, saving }: FileEditorPro
               <AlertTriangle size={14} strokeWidth={2} />
               {error}
             </div>
+          </div>
+        ) : isBinary && binaryViewer === "pdf" && inlineUrl ? (
+          <iframe
+            key={path}
+            src={inlineUrl}
+            title={path}
+            className="h-full w-full border-0 bg-canvas"
+          />
+        ) : isBinary && binaryViewer === "image" && inlineUrl ? (
+          <div className="flex h-full items-center justify-center overflow-auto bg-canvas p-4">
+            <img
+              key={path}
+              src={inlineUrl}
+              alt={path}
+              className="max-h-full max-w-full object-contain"
+            />
           </div>
         ) : isBinary ? (
           <div className="flex h-full items-center justify-center px-4 type-caption text-fg-muted text-center">

@@ -627,6 +627,7 @@ export function WorkspacePanel({ sessionId, onClose, refreshSignal = 0 }: Worksp
                 {row.panes.map((pane, paneIdx) => (
                   <PaneView
                     key={pane.id}
+                    sessionId={sessionId}
                     pane={pane}
                     isFirstInRow={paneIdx === 0}
                     isActive={pane.id === editor.activePaneId}
@@ -688,6 +689,7 @@ export function WorkspacePanel({ sessionId, onClose, refreshSignal = 0 }: Worksp
 }
 
 interface PaneViewProps {
+  sessionId: string;
   pane: EditorPane;
   isFirstInRow: boolean;
   isActive: boolean;
@@ -706,7 +708,7 @@ interface PaneViewProps {
 }
 
 function PaneView({
-  pane, isFirstInRow, isActive, showCollapse, onCollapseEditor, onFocus,
+  sessionId, pane, isFirstInRow, isActive, showCollapse, onCollapseEditor, onFocus,
   onActivateTab, onCloseTab, onPinTab, onTabContextMenu,
   onDraftChange, onSave, saving, errorBanner, onDismissError,
 }: PaneViewProps) {
@@ -744,6 +746,7 @@ function PaneView({
       )}
       {activeTab && (
         <FileEditor
+          sessionId={sessionId}
           tab={activeTab}
           onDraftChange={onDraftChange}
           onSave={onSave}

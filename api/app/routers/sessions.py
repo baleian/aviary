@@ -293,6 +293,21 @@ async def get_workspace_file(
     return JSONResponse(status_code=status_code, content=payload)
 
 
+@router.get("/sessions/{session_id}/workspace/stat")
+async def get_workspace_stat(
+    session_id: uuid.UUID,
+    path: str = Query(..., description="Relative file path inside the session workspace"),
+    user: User = Depends(get_current_user),
+    session_data: SessionData = Depends(get_session_data),
+    db: AsyncSession = Depends(get_db),
+):
+    agent_id, runtime_endpoint = await _resolve_session_agent_target(db, session_id, user)
+    status_code, payload = await agent_supervisor.stat_workspace_file(
+        str(session_id), session_data.access_token, runtime_endpoint, agent_id, path,
+    )
+    return JSONResponse(status_code=status_code, content=payload)
+
+
 class _WorkspaceFileWrite(BaseModel):
     path: str
     content: str
@@ -384,13 +399,14 @@ async def post_workspace_move(
 async def get_workspace_download(
     session_id: uuid.UUID,
     path: str = Query(..., description="Relative file path inside the session workspace"),
+    inline: bool = Query(False, description="Serve with inline disposition and MIME type (for PDF/image viewers)"),
     user: User = Depends(get_current_user),
     session_data: SessionData = Depends(get_session_data),
     db: AsyncSession = Depends(get_db),
 ):
     agent_id, runtime_endpoint = await _resolve_session_agent_target(db, session_id, user)
     resp = await agent_supervisor.stream_workspace_download(
-        str(session_id), session_data.access_token, runtime_endpoint, agent_id, path,
+        str(session_id), session_data.access_token, runtime_endpoint, agent_id, path, inline,
     )
     if resp.status_code != 200:
         try:
