@@ -6,14 +6,16 @@ Endpoints:
                                        return the final text + blocks.
   POST   /v1/sessions/{sid}/a2a      — parent runtime's A2A MCP server
                                        streams a sub-agent turn.
+  POST   /v1/sessions/{sid}/workspace/tree  — browse session workspace dir.
+  POST   /v1/sessions/{sid}/workspace/file  — read a single file's contents.
   POST   /v1/streams/{sid}/abort     — cancel by stream_id (local or fanned
                                        out across replicas).
   DELETE /v1/sessions/{sid}          — ask runtime to drop workspace.
   DELETE /v1/workflows/{root_run_id}/artifacts — drop a run chain's tree.
 
-Auth: Bearer JWT on /message and /a2a (the supervisor injects
-``user_token``/``user_external_id``/``credentials`` server-side — callers
-MUST NOT send those fields).
+Auth: Bearer JWT on every route (the supervisor injects
+``user_token``/``user_external_id``/``credentials`` server-side on
+``/message`` and ``/a2a`` — callers MUST NOT send those fields).
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ import uuid
 
 import httpx
 from fastapi import APIRouter, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app import metrics, redis_client
@@ -258,6 +260,67 @@ async def cleanup_session(session_id: str, body: _CleanupBody):
     except httpx.HTTPError:
         logger.warning("Cleanup failed for session %s", session_id, exc_info=True)
         return {"ok": False}
+
+
+# ── Workspace browse ────────────────────────────────────────────────────────
+
+class _WorkspaceTreeBody(BaseModel):
+    runtime_endpoint: str | None = None
+    path: str = "/"
+    include_hidden: bool = False
+
+
+class _WorkspaceFileBody(BaseModel):
+    runtime_endpoint: str | None = None
+    path: str
+
+
+async def _proxy_workspace_get(
+    base: str, route: str, params: dict,
+) -> tuple[int, dict]:
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{base}{route}", params=params, timeout=15,
+            )
+            try:
+                payload = resp.json()
+            except ValueError:
+                payload = {"error": "invalid runtime response"}
+            return resp.status_code, payload
+    except httpx.HTTPError:
+        logger.warning("Workspace proxy failed: %s", route, exc_info=True)
+        return 502, {"error": "runtime unreachable"}
+
+
+@router.post("/sessions/{session_id}/workspace/tree")
+async def workspace_tree(
+    session_id: str, body: _WorkspaceTreeBody, request: Request,
+):
+    await resolve_identity(request, body.model_dump())
+    base = resolve_runtime_base(body.runtime_endpoint)
+    status_code, payload = await _proxy_workspace_get(
+        base, "/workspace/tree",
+        {
+            "session_id": session_id,
+            "path": body.path,
+            "include_hidden": "1" if body.include_hidden else "0",
+        },
+    )
+    return JSONResponse(status_code=status_code, content=payload)
+
+
+@router.post("/sessions/{session_id}/workspace/file")
+async def workspace_file(
+    session_id: str, body: _WorkspaceFileBody, request: Request,
+):
+    await resolve_identity(request, body.model_dump())
+    base = resolve_runtime_base(body.runtime_endpoint)
+    status_code, payload = await _proxy_workspace_get(
+        base, "/workspace/file",
+        {"session_id": session_id, "path": body.path},
+    )
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 class _WorkflowArtifactsCleanupBody(BaseModel):

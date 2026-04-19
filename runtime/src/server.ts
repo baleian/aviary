@@ -14,6 +14,7 @@ import { SessionManager } from "./session-manager.js";
 import { WORKSPACE_ROOT, workflowArtifactsDir } from "./constants.js";
 import { healthRouter, setReady } from "./health.js";
 import { processMessage } from "./agent.js";
+import { WorkspaceError, listTree, readFile as readWorkspaceFile } from "./workspace.js";
 
 const app = express();
 app.use(express.json({ limit: "50mb" }));
@@ -174,6 +175,56 @@ app.delete("/sessions/:sessionId", (req, res) => {
     return;
   }
   res.json({ status: "removed" });
+});
+
+// ── Workspace browse (Web UI file-tree panel) ──────────────────────────────
+// Read-only: list a single directory level, or read one file's contents.
+// Paths are interpreted relative to the session's shared workspace dir.
+// No auth — the supervisor is the trust boundary for these routes.
+
+function handleWorkspaceError(err: unknown, res: express.Response): void {
+  if (err instanceof WorkspaceError) {
+    const status = err.code === "invalid_path"
+      ? 400
+      : err.code === "not_found"
+      ? 404
+      : err.code === "too_large"
+      ? 413
+      : 400;
+    res.status(status).json({ error: err.message, code: err.code });
+    return;
+  }
+  console.error("workspace route failed", err);
+  res.status(500).json({ error: "internal error" });
+}
+
+app.get("/workspace/tree", (req, res) => {
+  const sessionId = (req.query.session_id as string | undefined) ?? "";
+  const relPath = (req.query.path as string | undefined) ?? "/";
+  const includeHidden = req.query.include_hidden === "1" || req.query.include_hidden === "true";
+  if (!sessionId) {
+    res.status(400).json({ error: "session_id is required" });
+    return;
+  }
+  try {
+    res.json(listTree(sessionId, relPath, includeHidden));
+  } catch (err) {
+    handleWorkspaceError(err, res);
+  }
+});
+
+app.get("/workspace/file", (req, res) => {
+  const sessionId = (req.query.session_id as string | undefined) ?? "";
+  const relPath = (req.query.path as string | undefined) ?? "";
+  if (!sessionId || !relPath) {
+    res.status(400).json({ error: "session_id and path are required" });
+    return;
+  }
+  try {
+    res.json(readWorkspaceFile(sessionId, relPath));
+  } catch (err) {
+    handleWorkspaceError(err, res);
+  }
 });
 
 app.delete("/workflows/:rootRunId/artifacts", (req, res) => {

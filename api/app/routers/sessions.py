@@ -6,12 +6,13 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import get_current_user
+from app.auth.dependencies import get_current_user, get_session_data
 from app.auth.oidc import validate_token
-from app.auth.session_store import SESSION_COOKIE_NAME, get_fresh_session
+from app.auth.session_store import SESSION_COOKIE_NAME, SessionData, get_fresh_session
 from app.config import settings
 from app.db.models import Agent, Session, User
 from app.db.session import async_session_factory, get_db
@@ -239,6 +240,60 @@ async def update_session_title(
     await _require_session_owner(db, session_id, user)
     session = await session_service.update_session_title(db, session_id, body.title)
     return SessionResponse.model_validate(session)
+
+
+# -- Workspace browse ----------------------------------------------
+#
+# These proxy through the supervisor to the runtime, which holds the PVC.
+# Read-only for now; a PUT/POST pair will land in a follow-up to support
+# in-browser editing and uploads.
+
+async def _resolve_session_runtime_endpoint(
+    db: AsyncSession, session_id: uuid.UUID, user: User,
+) -> str | None:
+    """Owner-check then pull the session's agent's runtime_endpoint. Sessions
+    whose agent row is missing (workflow transcripts, etc.) are workspace-
+    inaccessible — those transcripts aren't bound to any runtime environment."""
+    session = await _require_session_owner(db, session_id, user)
+    if session.agent_id is None:
+        raise HTTPException(status_code=409, detail="Session has no agent workspace")
+    agent = (await db.execute(
+        select(Agent).where(Agent.id == session.agent_id)
+    )).scalar_one_or_none()
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return agent.runtime_endpoint
+
+
+@router.get("/sessions/{session_id}/workspace/tree")
+async def get_workspace_tree(
+    session_id: uuid.UUID,
+    path: str = Query("/", description="Relative path inside the session workspace"),
+    include_hidden: bool = Query(False, alias="include_hidden"),
+    user: User = Depends(get_current_user),
+    session_data: SessionData = Depends(get_session_data),
+    db: AsyncSession = Depends(get_db),
+):
+    runtime_endpoint = await _resolve_session_runtime_endpoint(db, session_id, user)
+    status_code, payload = await agent_supervisor.fetch_workspace_tree(
+        str(session_id), session_data.access_token, runtime_endpoint, path, include_hidden,
+    )
+    return JSONResponse(status_code=status_code, content=payload)
+
+
+@router.get("/sessions/{session_id}/workspace/file")
+async def get_workspace_file(
+    session_id: uuid.UUID,
+    path: str = Query(..., description="Relative file path inside the session workspace"),
+    user: User = Depends(get_current_user),
+    session_data: SessionData = Depends(get_session_data),
+    db: AsyncSession = Depends(get_db),
+):
+    runtime_endpoint = await _resolve_session_runtime_endpoint(db, session_id, user)
+    status_code, payload = await agent_supervisor.fetch_workspace_file(
+        str(session_id), session_data.access_token, runtime_endpoint, path,
+    )
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 # -- WebSocket Chat ------------------------------------------------

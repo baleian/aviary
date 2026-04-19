@@ -79,6 +79,52 @@ async def cleanup_session(
         logger.warning("Session cleanup failed for %s", session_id, exc_info=True)
 
 
+async def fetch_workspace_tree(
+    session_id: str,
+    user_token: str,
+    runtime_endpoint: str | None,
+    rel_path: str,
+    include_hidden: bool,
+) -> tuple[int, dict]:
+    """List one directory level inside the session's workspace. Returns the
+    supervisor's raw status code + payload so the API can propagate 4xx as-is."""
+    resp = await _supervisor.client.post(
+        f"/v1/sessions/{session_id}/workspace/tree",
+        json={
+            "runtime_endpoint": runtime_endpoint,
+            "path": rel_path,
+            "include_hidden": include_hidden,
+        },
+        headers={"Authorization": f"Bearer {user_token}"},
+        timeout=15,
+    )
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = {"error": "invalid supervisor response"}
+    return resp.status_code, payload
+
+
+async def fetch_workspace_file(
+    session_id: str,
+    user_token: str,
+    runtime_endpoint: str | None,
+    rel_path: str,
+) -> tuple[int, dict]:
+    """Read one file's contents from the session workspace."""
+    resp = await _supervisor.client.post(
+        f"/v1/sessions/{session_id}/workspace/file",
+        json={"runtime_endpoint": runtime_endpoint, "path": rel_path},
+        headers={"Authorization": f"Bearer {user_token}"},
+        timeout=30,
+    )
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = {"error": "invalid supervisor response"}
+    return resp.status_code, payload
+
+
 async def cleanup_workflow_artifacts(
     root_run_id: str,
     runtime_endpoint: str | None = None,
