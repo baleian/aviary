@@ -24,9 +24,9 @@ function RunStatusBadge() {
   if (!status || status === "pending") return null;
 
   const config = {
-    running: { icon: <Loader2 size={10} className="animate-spin" />, bg: "bg-info/20", ring: "ring-info/30" },
-    completed: { icon: <Check size={10} strokeWidth={3} />, bg: "bg-success/20", ring: "ring-success/30" },
-    failed: { icon: <X size={10} strokeWidth={3} />, bg: "bg-danger/20", ring: "ring-danger/30" },
+    running: { icon: <Loader2 size={10} className="animate-spin" />, bg: "bg-aurora-violet/25", ring: "ring-aurora-violet/40" },
+    completed: { icon: <Check size={10} strokeWidth={3} />, bg: "bg-aurora-mint/25", ring: "ring-aurora-mint/40" },
+    failed: { icon: <X size={10} strokeWidth={3} />, bg: "bg-aurora-pink/25", ring: "ring-aurora-pink/40" },
     skipped: { icon: <CircleDot size={10} />, bg: "bg-white/5", ring: "ring-white/10" },
   }[status];
 
@@ -34,7 +34,7 @@ function RunStatusBadge() {
 
   return (
     <div className={cn("absolute -top-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full ring-1", config.bg, config.ring)}>
-      <span className={status === "completed" ? "text-success" : status === "failed" ? "text-danger" : status === "running" ? "text-info" : "text-fg-disabled"}>
+      <span className={status === "completed" ? "text-aurora-mint" : status === "failed" ? "text-aurora-pink" : status === "running" ? "text-aurora-violet" : "text-fg-disabled"}>
         {config.icon}
       </span>
     </div>
@@ -59,18 +59,18 @@ export function BaseNode({
   return (
     <div
       className={cn(
-        "relative rounded-lg transition-all duration-150",
+        "relative rounded-lg transition-all duration-200 ease-out",
         compact ? "min-w-[140px] max-w-[180px]" : "min-w-[200px] max-w-[260px]",
-        "bg-[rgb(16_17_17)] border border-white/[0.06]",
-        selected && "ring-1 ring-info/50 border-info/30",
-        isRunning && "border-info/20",
+        "glass-raised",
+        selected && "ring-1 ring-aurora-violet/60 border-aurora-violet/40",
+        isRunning && "border-aurora-violet/40",
       )}
       style={{
         boxShadow: isRunning
-          ? "0 0 20px rgba(85,179,255,0.1), 0 4px 12px rgba(0,0,0,0.3)"
+          ? "0 0 28px rgba(123,92,255,0.35), 0 4px 16px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)"
           : selected
-            ? "0 0 16px rgba(85,179,255,0.08), 0 4px 12px rgba(0,0,0,0.3)"
-            : "0 2px 8px rgba(0,0,0,0.3)",
+            ? "0 0 24px rgba(123,92,255,0.25), 0 4px 16px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)"
+            : "0 4px 16px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06)",
       }}
     >
       <RunStatusBadge />

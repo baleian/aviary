@@ -246,8 +246,9 @@ export function ChatInput({
     >
       <div
         className={cn(
-          "flex flex-col rounded-xl bg-elevated shadow-2 p-2 transition-shadow",
-          !isDraggingFile && "focus-within:glow-info",
+          "flex flex-col rounded-xl glass-raised shadow-3 p-2",
+          "transition-all duration-300 ease-out",
+          !isDraggingFile && "focus-within:shadow-[0_0_44px_rgba(123,92,255,0.35),0_0_0_1px_rgba(123,92,255,0.4)]",
         )}
       >
         <AttachmentPreview attachments={attachments} onRemove={removeAttachment} />
@@ -276,7 +277,7 @@ export function ChatInput({
               type="button"
               onClick={onCancel}
               disabled={!canCancel}
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-danger/15 text-danger hover:bg-danger/25 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-aurora-pink/20 border border-aurora-pink/30 text-aurora-pink hover:bg-aurora-pink/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               aria-label={canCancel ? "Stop generation" : "Waiting for server to acknowledge request…"}
             >
               <Square size={16} strokeWidth={2} fill="currentColor" />
@@ -285,7 +286,7 @@ export function ChatInput({
             <button
               type="submit"
               disabled={disabled || !canSend}
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-info text-canvas hover:opacity-80 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-aurora-a text-white shadow-[0_0_20px_rgba(123,92,255,0.4),inset_0_1px_0_rgba(255,255,255,0.2)] hover:-translate-y-[1px] hover:shadow-[0_0_32px_rgba(123,92,255,0.6),inset_0_1px_0_rgba(255,255,255,0.25)] transition-all duration-300 disabled:opacity-30 disabled:cursor-not-allowed disabled:translate-y-0"
               aria-label="Send message"
             >
               <Send size={16} strokeWidth={2} />
@@ -295,9 +296,9 @@ export function ChatInput({
       </div>
 
       {visionEnabled && isDraggingFile && (
-        <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-info/60 bg-info/10 animate-fade-in-fast">
-          <Upload size={18} strokeWidth={1.75} className="text-info" />
-          <span className="type-caption-bold text-info">Drop images to attach</span>
+        <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-aurora-violet/60 bg-aurora-violet/10 animate-fade-in-fast">
+          <Upload size={18} strokeWidth={1.75} className="text-aurora-violet" />
+          <span className="type-caption-bold text-aurora-violet">Drop images to attach</span>
         </div>
       )}
 

@@ -14,23 +14,11 @@ interface AgentCardProps {
 }
 
 /**
- * AgentCard — single tile in the agents grid.
+ * AgentCard — Aurora Glass tile.
  *
- * Click semantics:
- *   - Card body  → agent detail page (browse / resume existing sessions)
- *   - Start chat → creates a new session and routes to /sessions/{id}
- *
- * The "Start chat" button suppresses the wrapping Link's navigation via
- * preventDefault + stopPropagation. This is the conventional pattern for
- * "secondary action inside a clickable card" even though button-inside-link
- * is technically invalid HTML; browsers tolerate it and the alternative
- * (giving up middle-click → new tab on the card) is worse UX.
- *
- * Session creation lifecycle is shared with the detail-page hero CTA and
- * the sidebar "+" button via the `useCreateSession` hook.
- *
- * Deleted agents only show the detail affordance — new sessions cannot
- * be created against them.
+ * Glass pane that lifts + picks up a violet glow on hover. "Start chat"
+ * is the aurora-gradient CTA; it preventDefaults the wrapping Link so
+ * the card click still takes the user to the agent detail page.
  */
 export function AgentCard({ agent, deleted }: AgentCardProps) {
   const { createAndNavigate, creating, error } = useCreateSession(agent.id);
@@ -45,9 +33,12 @@ export function AgentCard({ agent, deleted }: AgentCardProps) {
     <Link href={routes.agent(agent.id)} className="group block">
       <article
         className={cn(
-          "relative flex h-full flex-col rounded-lg p-5 transition-all duration-200",
-          "bg-elevated shadow-2",
-          deleted ? "opacity-50 hover:opacity-70" : "hover:glow-warm",
+          "relative flex h-full flex-col rounded-lg p-5",
+          "glass-pane shadow-2",
+          "transition-all duration-[320ms] ease-[cubic-bezier(0.16,1,0.3,1)]",
+          deleted
+            ? "opacity-50 hover:opacity-70"
+            : "hover:-translate-y-[1px] hover:bg-white/[0.07] hover:shadow-[0_8px_32px_rgba(0,0,0,0.45),0_0_0_1px_rgba(123,92,255,0.3),inset_0_1px_0_rgba(255,255,255,0.08),0_0_40px_rgba(123,92,255,0.18)]",
         )}
       >
         {/* Header */}
@@ -55,8 +46,8 @@ export function AgentCard({ agent, deleted }: AgentCardProps) {
           <div className="flex items-center gap-3 min-w-0">
             <div
               className={cn(
-                "flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-lg",
-                deleted ? "bg-raised grayscale" : "bg-raised",
+                "flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-lg",
+                deleted ? "bg-white/[0.05] grayscale" : "bg-aurora-a-soft border border-white/[0.08]",
               )}
             >
               {agent.icon || "🤖"}
@@ -67,7 +58,7 @@ export function AgentCard({ agent, deleted }: AgentCardProps) {
                   "type-body truncate transition-colors",
                   deleted
                     ? "text-fg-muted line-through decoration-fg-disabled"
-                    : "text-fg-primary group-hover:text-brand",
+                    : "text-fg-primary group-hover:text-aurora-violet",
                 )}
               >
                 {agent.name}
@@ -97,23 +88,24 @@ export function AgentCard({ agent, deleted }: AgentCardProps) {
               disabled={creating}
               aria-label={`Start chat with ${agent.name}`}
               className={cn(
-                "inline-flex items-center gap-1.5 rounded-sm px-2.5 py-1 type-caption-bold",
-                "border border-brand/30 bg-brand/[0.06] text-brand",
-                "transition-colors",
-                "hover:bg-brand/15 hover:border-brand/50",
-                "disabled:opacity-60 disabled:cursor-not-allowed",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40 focus-visible:ring-offset-1 focus-visible:ring-offset-elevated",
+                "inline-flex items-center gap-1.5 rounded-pill px-3 py-1 type-caption-bold",
+                "bg-aurora-a text-white",
+                "shadow-[0_0_16px_rgba(123,92,255,0.35),inset_0_1px_0_rgba(255,255,255,0.2)]",
+                "transition-all duration-[320ms] ease-[cubic-bezier(0.16,1,0.3,1)]",
+                "hover:-translate-y-[1px] hover:shadow-[0_0_28px_rgba(123,92,255,0.55),inset_0_1px_0_rgba(255,255,255,0.25)]",
+                "disabled:opacity-60 disabled:cursor-not-allowed disabled:translate-y-0",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-violet/50 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
               )}
             >
               {creating ? (
                 <>
-                  <Spinner size={11} />
+                  <Spinner size={11} className="text-white" />
                   Starting…
                 </>
               ) : (
                 <>
                   Start chat
-                  <span className="text-brand/60">↵</span>
+                  <span className="text-white/70">↵</span>
                 </>
               )}
             </button>
