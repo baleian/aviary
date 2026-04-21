@@ -7,6 +7,7 @@
 #   ./scripts/quick-rebuild.sh agent-supervisor  # Rebuild supervisor (compose) + restart
 #   ./scripts/quick-rebuild.sh compose          # Rebuild all docker compose services
 #   ./scripts/quick-rebuild.sh full             # docker compose down + setup-dev.sh
+#   ./scripts/quick-rebuild.sh real             # docker compose down + setup-real.sh (built mode)
 #   ./scripts/quick-rebuild.sh smoke            # Just run smoke test
 #
 # Add --smoke --backend <name> to run smoke test after rebuild:
@@ -84,6 +85,12 @@ case "$TARGET" in
     docker compose down -v
     ./scripts/setup-dev.sh
     ;;
+  real)
+    echo -e "${BOLD}Real (built) rebuild — prod-like local run, named volumes preserved, K8s reset...${NC}"
+    docker compose down
+    docker volume rm "$(basename "$PROJECT_DIR")_k8sdata" 2>/dev/null || true
+    ./scripts/setup-real.sh
+    ;;
   smoke)
     RUN_SMOKE=true
     ;;
@@ -94,8 +101,9 @@ case "$TARGET" in
     echo "  runtime            Rebuild runtime image (K3s) + rolling restart"
     echo "  agent-supervisor   Rebuild supervisor (docker compose) + restart"
     echo "  compose            Rebuild all docker compose services (hot-reload)"
-    echo "  full               Full rebuild — preserves DB, Vault, chat history, and session workspaces"
-    echo "  full-clean         Full rebuild — wipes all volumes including chat history and workspaces"
+    echo "  full               Full rebuild (dev) — preserves DB, Vault, chat history, and session workspaces"
+    echo "  full-clean         Full rebuild (dev) — wipes all volumes including chat history and workspaces"
+    echo "  real               Full rebuild in built (prod-like) mode — named volumes preserved, K8s reset"
     echo "  smoke              Just run smoke test"
     echo ""
     echo "Options:"
