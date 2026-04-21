@@ -1,13 +1,11 @@
 """Confluence MCP Server.
 
-Confluence REST API v1 (legacy) integration — `/wiki/rest/api/` throughout.
-This is the long-stable, broadly-available Confluence REST surface and works
-on both Confluence Cloud and Confluence Server / Data Center deployments
-that don't expose the newer `/wiki/api/v2/` endpoints.
+Real Confluence Cloud REST API v2 integration (with a couple of v1 fallbacks
+for endpoints that don't exist in v2 yet).
 
-Auth: HTTP Basic with email/username + API token, both injected by the MCP
-Gateway as the `confluence_email` / `confluence_token` arguments. The site
-URL comes from the CONFLUENCE_BASE_URL env var.
+Auth: HTTP Basic with email + API token, both injected by the MCP Gateway as
+the `confluence_email` / `confluence_token` arguments. The site URL comes from
+the CONFLUENCE_BASE_URL env var (shared corporate Atlassian instance).
 
 Page bodies accept markdown — `_md_to_storage` converts them to Confluence
 storage XHTML so tables, code blocks, lists, and inline formatting render
@@ -135,6 +133,30 @@ def _md_to_storage(md: str) -> str:
     return _FENCE_RE.sub(_replace_fence, html_out)
 
 
+# ── Internal helpers ───────────────────────────────────────────
+
+
+async def _resolve_space_id(space_key: str, *, email: str, token: str) -> str:
+    """Return the numeric space id for a space key, or an ERROR string.
+
+    v2's GET /spaces/{id} requires a numeric id, but humans use space keys —
+    so we look up via the list endpoint with `keys=` filter.
+    """
+    result = await _request(
+        "GET",
+        "/wiki/api/v2/spaces",
+        email=email,
+        token=token,
+        params={"keys": space_key},
+    )
+    if isinstance(result, str):
+        return result
+    spaces = result.get("results", []) if isinstance(result, dict) else []
+    if not spaces:
+        return f"ERROR: space key '{space_key}' not found"
+    return str(spaces[0].get("id"))
+
+
 # ── Tools ──────────────────────────────────────────────────────
 
 
@@ -148,33 +170,34 @@ async def get_page(
 ) -> str:
     """Get a Confluence page by id, or by (space_key, title).
 
-    When `page_id` is given, fetches that page directly. Otherwise looks up
-    the page by exact title within the given space. The body is returned in
-    storage format.
+    When `page_id` is given, fetches that page directly. Otherwise resolves
+    `space_key` → space-id and looks up the page by exact title within that
+    space. The body is returned in storage format.
     """
     if page_id is not None:
         page_id = str(page_id)
     if page_id:
         result = await _request(
             "GET",
-            f"/wiki/rest/api/content/{page_id}",
+            f"/wiki/api/v2/pages/{page_id}",
             email=confluence_email,
             token=confluence_token,
-            params={"expand": "body.storage,version,space"},
+            params={"body-format": "storage"},
         )
         return _result(result)
     if not (space_key and title):
         return "ERROR: provide either page_id, or both space_key and title"
+    space_id = await _resolve_space_id(
+        space_key, email=confluence_email, token=confluence_token
+    )
+    if space_id.startswith("ERROR"):
+        return space_id
     result = await _request(
         "GET",
-        "/wiki/rest/api/content",
+        "/wiki/api/v2/pages",
         email=confluence_email,
         token=confluence_token,
-        params={
-            "spaceKey": space_key,
-            "title": title,
-            "expand": "body.storage,version,space",
-        },
+        params={"space-id": space_id, "title": title, "body-format": "storage"},
     )
     if isinstance(result, str):
         return result
@@ -195,20 +218,28 @@ async def create_page(
 ) -> str:
     """Create a new Confluence page. `body` is markdown.
 
-    `space_key` is the human-readable key (e.g. 'ENG'). `parent_id` is
-    optional — when omitted the page is created at the root of the space.
+    `space_key` is the human-readable key (e.g. 'ENG'); we resolve it to the
+    numeric spaceId v2 requires. `parent_id` is optional — when omitted the
+    page is created at the root of the space.
     """
-    payload: dict = {
-        "type": "page",
-        "title": title,
-        "space": {"key": space_key},
-        "body": {"storage": {"value": _md_to_storage(body), "representation": "storage"}},
-    }
     if parent_id is not None:
-        payload["ancestors"] = [{"id": str(parent_id)}]
+        parent_id = str(parent_id)
+    space_id = await _resolve_space_id(
+        space_key, email=confluence_email, token=confluence_token
+    )
+    if space_id.startswith("ERROR"):
+        return space_id
+    payload: dict = {
+        "spaceId": space_id,
+        "status": "current",
+        "title": title,
+        "body": {"representation": "storage", "value": _md_to_storage(body)},
+    }
+    if parent_id:
+        payload["parentId"] = parent_id
     result = await _request(
         "POST",
-        "/wiki/rest/api/content",
+        "/wiki/api/v2/pages",
         email=confluence_email,
         token=confluence_token,
         json_body=payload,
@@ -229,31 +260,30 @@ async def update_page(
 
     Confluence requires the next version number for optimistic locking, so we
     fetch the current page first to read its version. If `title` isn't given,
-    we reuse the current title (the PUT requires a title).
+    we reuse the current title (v2 PUT requires a title).
     """
     page_id = str(page_id)
     current = await _request(
         "GET",
-        f"/wiki/rest/api/content/{page_id}",
+        f"/wiki/api/v2/pages/{page_id}",
         email=confluence_email,
         token=confluence_token,
-        params={"expand": "version"},
     )
     if isinstance(current, str):
         return current
     current_version = (current.get("version") or {}).get("number") or 1
     payload: dict = {
         "id": page_id,
-        "type": "page",
+        "status": "current",
         "title": title or current.get("title", ""),
-        "body": {"storage": {"value": _md_to_storage(body), "representation": "storage"}},
+        "body": {"representation": "storage", "value": _md_to_storage(body)},
         "version": {"number": current_version + 1},
     }
     if version_comment:
         payload["version"]["message"] = version_comment
     result = await _request(
         "PUT",
-        f"/wiki/rest/api/content/{page_id}",
+        f"/wiki/api/v2/pages/{page_id}",
         email=confluence_email,
         token=confluence_token,
         json_body=payload,
@@ -268,32 +298,19 @@ async def delete_page(
     page_id: str | int,
     purge: bool = False,
 ) -> str:
-    """Delete (trash) a Confluence page. Pass `purge=true` to permanently delete.
-
-    Permanent delete requires two steps on the legacy API: first move to
-    trash, then delete from trash with `?status=trashed`.
-    """
+    """Delete (trash) a Confluence page. Pass `purge=true` to permanently delete."""
     page_id = str(page_id)
+    params = {"purge": "true"} if purge else None
     result = await _request(
         "DELETE",
-        f"/wiki/rest/api/content/{page_id}",
+        f"/wiki/api/v2/pages/{page_id}",
         email=confluence_email,
         token=confluence_token,
+        params=params,
     )
     if isinstance(result, str):
         return result
-    if purge:
-        purged = await _request(
-            "DELETE",
-            f"/wiki/rest/api/content/{page_id}",
-            email=confluence_email,
-            token=confluence_token,
-            params={"status": "trashed"},
-        )
-        if isinstance(purged, str):
-            return purged
-        return f"Page {page_id} permanently deleted."
-    return f"Page {page_id} moved to trash."
+    return f"Page {page_id} deleted."
 
 
 @mcp.tool()
@@ -303,7 +320,11 @@ async def search(
     cql: str,
     limit: int = 20,
 ) -> str:
-    """Search Confluence content using CQL (Confluence Query Language)."""
+    """Search Confluence content using CQL (Confluence Query Language).
+
+    Uses the v1 /wiki/rest/api/search endpoint — Confluence v2 does not yet
+    expose a CQL search.
+    """
     result = await _request(
         "GET",
         "/wiki/rest/api/search",
@@ -325,7 +346,7 @@ async def get_child_pages(
     page_id = str(page_id)
     result = await _request(
         "GET",
-        f"/wiki/rest/api/content/{page_id}/child/page",
+        f"/wiki/api/v2/pages/{page_id}/children",
         email=confluence_email,
         token=confluence_token,
         params={"limit": limit},
@@ -346,7 +367,7 @@ async def list_spaces(
         params["type"] = type
     result = await _request(
         "GET",
-        "/wiki/rest/api/space",
+        "/wiki/api/v2/spaces",
         email=confluence_email,
         token=confluence_token,
         params=params,
@@ -363,11 +384,17 @@ async def get_space(
     """Get details of a Confluence space by its key (e.g. 'ENG')."""
     result = await _request(
         "GET",
-        f"/wiki/rest/api/space/{space_key}",
+        "/wiki/api/v2/spaces",
         email=confluence_email,
         token=confluence_token,
+        params={"keys": space_key},
     )
-    return _result(result)
+    if isinstance(result, str):
+        return result
+    spaces = result.get("results", []) if isinstance(result, dict) else []
+    if not spaces:
+        return f"ERROR: space key '{space_key}' not found"
+    return json.dumps(spaces[0])
 
 
 @mcp.tool()
@@ -377,7 +404,11 @@ async def add_label(
     page_id: str | int,
     label: str,
 ) -> str:
-    """Add a label to a Confluence page."""
+    """Add a label to a Confluence page.
+
+    Uses the v1 endpoint /wiki/rest/api/content/{id}/label — Confluence v2
+    labels are read-only.
+    """
     page_id = str(page_id)
     result = await _request(
         "POST",
@@ -402,7 +433,7 @@ async def get_page_history(
     page_id = str(page_id)
     result = await _request(
         "GET",
-        f"/wiki/rest/api/content/{page_id}/version",
+        f"/wiki/api/v2/pages/{page_id}/versions",
         email=confluence_email,
         token=confluence_token,
         params={"limit": limit},
@@ -417,16 +448,15 @@ async def add_comment(
     page_id: str | int,
     body: str,
 ) -> str:
-    """Add a comment to a Confluence page. `body` is markdown."""
+    """Add a footer comment to a Confluence page. `body` is markdown."""
     page_id = str(page_id)
     payload = {
-        "type": "comment",
-        "container": {"id": page_id, "type": "page"},
-        "body": {"storage": {"value": _md_to_storage(body), "representation": "storage"}},
+        "pageId": page_id,
+        "body": {"representation": "storage", "value": _md_to_storage(body)},
     }
     result = await _request(
         "POST",
-        "/wiki/rest/api/content",
+        "/wiki/api/v2/footer-comments",
         email=confluence_email,
         token=confluence_token,
         json_body=payload,
