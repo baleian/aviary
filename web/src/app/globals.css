@@ -579,29 +579,12 @@
   }
 
   /* --- Site-wide aurora backdrop ---
-   * Three blobs drifting at different rates. Fixed, pointer-events-none,
-   * sits behind every app surface via the <AuroraBackdrop> component.
-   * Palette: violet → pink → amber (aurora-A) + cyan accent.
-   */
-  @keyframes aurora-drift-a {
-    0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
-    33%      { transform: translate3d(80px, 60px, 0) scale(1.08); }
-    66%      { transform: translate3d(-40px, 90px, 0) scale(1.05); }
-  }
-  @keyframes aurora-drift-b {
-    0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
-    50%      { transform: translate3d(-90px, 50px, 0) scale(1.1); }
-  }
-  @keyframes aurora-drift-c {
-    0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
-    40%      { transform: translate3d(70px, -70px, 0) scale(1.14); }
-    70%      { transform: translate3d(-30px, -40px, 0) scale(1.06); }
-  }
+   * Do NOT animate the blobs: their movement invalidates every downstream
+   * backdrop-filter cache per frame and pins the GPU process. */
   .aurora-blob {
     position: absolute;
     border-radius: 9999px;
     filter: blur(120px);
-    will-change: transform;
     pointer-events: none;
   }
   .aurora-blob-violet {
@@ -610,7 +593,6 @@
     width: 720px;
     height: 720px;
     background: radial-gradient(circle, rgba(123, 92, 255, 0.42), transparent 68%);
-    animation: aurora-drift-a 48s ease-in-out infinite;
   }
   .aurora-blob-pink {
     top: 18%;
@@ -618,7 +600,6 @@
     width: 640px;
     height: 640px;
     background: radial-gradient(circle, rgba(255, 79, 184, 0.32), transparent 70%);
-    animation: aurora-drift-b 56s ease-in-out infinite;
   }
   .aurora-blob-cyan {
     bottom: -14%;
@@ -626,26 +607,18 @@
     width: 680px;
     height: 680px;
     background: radial-gradient(circle, rgba(79, 201, 255, 0.26), transparent 70%);
-    animation: aurora-drift-c 62s ease-in-out infinite;
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .aurora-blob { animation: none !important; }
   }
 
-  /* Legacy alias: the old login-specific blob classes still appear in a
-   * few places. Mapping them to the new palette keeps previous imports
-   * working without touching their call sites. */
+  /* Legacy login blob classes — kept to avoid touching call sites. */
   .aurora-blob-red {
     top: -10%;
     left: -12%;
     width: 640px;
     height: 640px;
     background: radial-gradient(circle, rgba(255, 79, 184, 0.3), transparent 68%);
-    animation: aurora-drift-a 48s ease-in-out infinite;
     filter: blur(120px);
     border-radius: 9999px;
     position: absolute;
-    will-change: transform;
   }
   .aurora-blob-blue {
     top: 4%;
@@ -653,11 +626,9 @@
     width: 600px;
     height: 600px;
     background: radial-gradient(circle, rgba(79, 201, 255, 0.28), transparent 68%);
-    animation: aurora-drift-b 56s ease-in-out infinite;
     filter: blur(120px);
     border-radius: 9999px;
     position: absolute;
-    will-change: transform;
   }
   .aurora-blob-warm {
     top: 32%;
@@ -665,11 +636,9 @@
     width: 520px;
     height: 520px;
     background: radial-gradient(circle, rgba(255, 179, 71, 0.2), transparent 70%);
-    animation: aurora-drift-c 62s ease-in-out infinite;
     filter: blur(120px);
     border-radius: 9999px;
     position: absolute;
-    will-change: transform;
   }
 
   /* Diagonal stripe pattern — retained for back-compat, retuned with aurora-A hue. */

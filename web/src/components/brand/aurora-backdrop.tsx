@@ -1,11 +1,7 @@
 /**
- * AuroraBackdrop — fixed-position coloured bleed that sits behind every
- * app surface. Three blobs drifting at different rates in the aurora-A
- * palette (violet → pink → amber) plus a cyan accent.
- *
- * Rendered once at the root layout; glass surfaces pick up the colour
- * through backdrop-blur. Pointer-events:none so it never intercepts
- * clicks.
+ * Three static blobs behind every app surface. Do NOT animate them:
+ * movement invalidates every downstream backdrop-filter cache per frame
+ * and pins the GPU process.
  */
 export function AuroraBackdrop() {
   return (
@@ -16,7 +12,7 @@ export function AuroraBackdrop() {
       <div className="aurora-blob aurora-blob-violet" />
       <div className="aurora-blob aurora-blob-pink" />
       <div className="aurora-blob aurora-blob-cyan" />
-      {/* Very faint grain to break banding across the huge gradients. */}
+      {/* Faint grain to break gradient banding. */}
       <div
         className="absolute inset-0 opacity-[0.03] mix-blend-overlay"
         style={{
