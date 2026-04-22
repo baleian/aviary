@@ -73,10 +73,14 @@ async def resolve_mentioned_agents(
     exclude_agent_id: str | None = None,
 ) -> list[dict]:
     """Return full agent specs for mentioned slugs the user owns (and isn't
-    the current agent). Batched: one SELECT for the agents, one for every
-    matched agent's MCP bindings."""
+    the current agent). Since Imported agents share the agents table (with
+    ``catalog_import_id`` set), a single SELECT covers both Private and
+    Imported — Imported rows get resolved via the catalog snapshot resolver.
+    """
     if not slugs:
         return []
+
+    from app.services.agent_config_resolver import resolve_agent_config
 
     agents = (await db.execute(
         select(Agent).where(
@@ -92,24 +96,9 @@ async def resolve_mentioned_agents(
     if not filtered:
         return []
 
-    bindings: dict = defaultdict(list)
-    rows = (await db.execute(
-        select(
-            McpAgentToolBinding.agent_id,
-            McpAgentToolBinding.server_name,
-            McpAgentToolBinding.tool_name,
-        )
-        .where(McpAgentToolBinding.agent_id.in_([a.id for a in filtered]))
-        .order_by(McpAgentToolBinding.server_name, McpAgentToolBinding.tool_name)
-    )).all()
-    for agent_id, server_name, tool_name in rows:
-        bindings[agent_id].append(
-            f"{_MCP_PREFIX}{server_name}{_MCP_TOOL_SEPARATOR}{tool_name}"
-        )
-
     by_slug = {a.slug: a for a in filtered}
     ordered = [by_slug[s] for s in slugs if s in by_slug]
-    return [_build_spec(a, bindings[a.id]) for a in ordered]
+    return [await resolve_agent_config(db, a) for a in ordered]
 
 
 def _build_spec(agent, mcp_tool_names: list[str]) -> dict:

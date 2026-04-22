@@ -29,7 +29,8 @@ from app.schemas.session import (
     SessionTitleUpdate,
 )
 from app.services import agent_supervisor, redis_service, session_service
-from app.services.mention_service import agent_spec, extract_mentions, resolve_mentioned_agents
+from app.services.agent_config_resolver import resolve_agent_config
+from app.services.mention_service import extract_mentions, resolve_mentioned_agents
 from app.services.stream import manager as stream_manager
 
 logger = logging.getLogger(__name__)
@@ -575,7 +576,7 @@ async def _handle_chat_message(
             )
         await db.commit()
 
-        agent_config = await agent_spec(agent, db)
+        agent_config = await resolve_agent_config(db, agent)
         if accessible_agents:
             agent_config["accessible_agents"] = accessible_agents
 
