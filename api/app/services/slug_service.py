@@ -18,17 +18,14 @@ from app.db.models import Agent
 async def resolve_available_slug(
     db: AsyncSession, owner_id: uuid.UUID, desired: str
 ) -> str:
-    """Return ``desired`` if free, else append -2, -3, … up to 100.
-
-    Fallback to ``<desired>-<short-uuid>`` if 100 attempts all collide.
-    """
+    """Return ``desired`` if free, else append -2, -3, … up to 100; finally
+    fall back to ``<desired>-<short-uuid>``."""
 
     def _query(slug: str):
         return select(Agent.id).where(
             Agent.owner_id == owner_id, Agent.slug == slug
         )
 
-    # First shot — try the exact slug.
     if not (await db.execute(_query(desired))).scalar_one_or_none():
         return desired
 
@@ -37,6 +34,5 @@ async def resolve_available_slug(
         if not (await db.execute(_query(candidate))).scalar_one_or_none():
             return candidate
 
-    # Extremely unlikely fallback.
     short = uuid.uuid4().hex[:8]
     return f"{desired}-{short}"

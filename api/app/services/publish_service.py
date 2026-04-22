@@ -21,8 +21,6 @@ from app.errors import ConflictError, NotFoundError, UnauthorizedError
 logger = logging.getLogger(__name__)
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────
-
 async def _load_bindings(db: AsyncSession, agent_id: uuid.UUID) -> list[dict]:
     rows = (await db.execute(
         select(McpAgentToolBinding.server_name, McpAgentToolBinding.tool_name)
@@ -53,8 +51,6 @@ def _snapshot_fields(agent: Agent, category: str, bindings: list[dict]) -> dict:
         "category": category,
     }
 
-
-# ── Publish ──────────────────────────────────────────────────────────────
 
 _PUBLISH_RATE_LIMIT = 5
 _PUBLISH_RATE_WINDOW_SECONDS = 3600
@@ -149,8 +145,6 @@ async def publish_version(
     return version
 
 
-# ── Unpublish (whole catalog agent) ─────────────────────────────────────
-
 async def unpublish_catalog_agent(
     db: AsyncSession, catalog_agent: CatalogAgent
 ) -> CatalogAgent:
@@ -162,7 +156,6 @@ async def unpublish_catalog_agent(
     catalog_agent.is_published = False
     catalog_agent.unpublished_at = datetime.now(timezone.utc)
 
-    # Clear the link on whichever working copy currently points at us.
     linked = (await db.execute(
         select(Agent).where(Agent.linked_catalog_agent_id == catalog_agent.id)
     )).scalars().all()
@@ -185,8 +178,6 @@ async def republish_catalog_agent(
     return catalog_agent
 
 
-# ── Rollback ─────────────────────────────────────────────────────────────
-
 async def rollback_catalog_agent(
     db: AsyncSession, catalog_agent: CatalogAgent, version_id: uuid.UUID
 ) -> CatalogAgent:
@@ -206,8 +197,6 @@ async def rollback_catalog_agent(
     await db.refresh(catalog_agent)
     return catalog_agent
 
-
-# ── Version-level unpublish ─────────────────────────────────────────────
 
 async def unpublish_version(db: AsyncSession, version: AgentVersion) -> AgentVersion:
     """Mark a single version unpublished. If it was current, auto-fallback
@@ -248,8 +237,6 @@ async def unpublish_version(db: AsyncSession, version: AgentVersion) -> AgentVer
     await db.refresh(version)
     return version
 
-
-# ── Drift ────────────────────────────────────────────────────────────────
 
 DRIFT_FIELDS = [
     "name",

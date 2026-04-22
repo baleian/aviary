@@ -5,6 +5,9 @@ import { ChevronDown, Check } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import type { AgentVersionSummary } from "@/types/catalog";
 
+// A "Latest" row renders first and maps to onSelect(null); below it comes
+// each AgentVersion. Keyboard arrows walk this combined list, so the state
+// type carries the kind tag instead of exposing two indices.
 interface VersionDropdownProps {
   versions: AgentVersionSummary[];
   currentVersionId?: string | null;

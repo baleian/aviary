@@ -2,14 +2,9 @@
 
 import { Sparkles } from "@/components/icons";
 
-/**
- * CatalogHero — aurora-C (coral→gold) gradient signature for the Discover
- * surface. No animated blobs (per commit 02c2e3c lesson); static glow only.
- */
 export function CatalogHero({ total }: { total: number | null }) {
   return (
     <section className="relative flex flex-col items-center pt-14 pb-10 text-center animate-fade-in">
-      {/* Static warm glow behind the heading. */}
       <div
         aria-hidden
         className="pointer-events-none absolute inset-x-0 top-0 mx-auto h-40 max-w-2xl rounded-full bg-aurora-c opacity-[0.18] blur-3xl"

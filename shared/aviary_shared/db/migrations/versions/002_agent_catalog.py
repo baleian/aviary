@@ -20,10 +20,7 @@ def upgrade() -> None:
     # pg_trgm is used for trigram-accelerated ILIKE on version name/description.
     op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
 
-    # -------------------------------------------------------------------------
-    # catalog_agents — independent catalog entity. Circular FK to agent_versions
-    # resolved with use_alter=True; the FK is added after agent_versions exists.
-    # -------------------------------------------------------------------------
+    # Circular FK to agent_versions is added after the table exists.
     op.create_table(
         "catalog_agents",
         sa.Column(
@@ -63,9 +60,6 @@ def upgrade() -> None:
     )
     op.create_index("idx_catalog_agents_owner", "catalog_agents", ["owner_id"])
 
-    # -------------------------------------------------------------------------
-    # agent_versions — immutable snapshot of a catalog agent at publish time.
-    # -------------------------------------------------------------------------
     op.create_table(
         "agent_versions",
         sa.Column(
@@ -157,9 +151,6 @@ def upgrade() -> None:
         use_alter=True,
     )
 
-    # -------------------------------------------------------------------------
-    # catalog_imports — thin subscription metadata, 1:1 with an agents row.
-    # -------------------------------------------------------------------------
     op.create_table(
         "catalog_imports",
         sa.Column(
@@ -194,10 +185,6 @@ def upgrade() -> None:
         ),
     )
 
-    # -------------------------------------------------------------------------
-    # agents — add catalog linkage columns, drop global slug UNIQUE, add
-    # (owner_id, slug) UNIQUE.
-    # -------------------------------------------------------------------------
     op.add_column(
         "agents",
         sa.Column(

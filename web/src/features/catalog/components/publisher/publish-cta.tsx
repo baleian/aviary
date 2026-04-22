@@ -13,18 +13,10 @@ interface PublishCtaProps {
   agent: Agent;
   currentUserId: string;
   onPublished?: () => void;
-  /** Compact layout — no state chip on the left. Used inside the detail
-   *  hero where space is tight. */
+  /** Hides the state chip — useful when the hero already shows context. */
   compact?: boolean;
 }
 
-/**
- * Publish CTA + drift chip — the owner's working-copy-level catalog UI.
- *
- * Hides itself entirely when the agent isn't a publisher working copy
- * (imports have their own CTA; pure private agents also show "Draft" CTA
- * so users know publishing is possible).
- */
 export function PublishCta({ agent, currentUserId, onPublished, compact }: PublishCtaProps) {
   const [drift, setDrift] = useState<DriftResponse | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -40,17 +32,14 @@ export function PublishCta({ agent, currentUserId, onPublished, compact }: Publi
   }, [agent.id]);
 
   useEffect(() => {
-    // Skip drift when we know this is a consumer import (no drift meaning).
     if (agent.catalog_import_id) return;
     void fetchDrift();
   }, [agent.catalog_import_id, fetchDrift]);
 
-  // Consumer imports don't publish. Only editors (server-derived) do.
   if (agent.catalog_import_id) return null;
   if (agent.owner_id !== currentUserId) return null;
 
-  // `linked_catalog_agent_id` set + NOT editor would mean the FK went stale;
-  // skip in that case too (should only happen during migrations).
+  // Linked-but-not-editor means the catalog is owned by someone else; hide.
   const editorOrUnlinked =
     !agent.linked_catalog_agent_id || agent.is_catalog_editor === true;
   if (!editorOrUnlinked) return null;
@@ -69,8 +58,6 @@ export function PublishCta({ agent, currentUserId, onPublished, compact }: Publi
     : "draft";
   const nextVersionLabel = `Publish v${(drift?.latest_version_number ?? 0) + 1}`;
 
-  // Don't bother rendering if the working copy is clean and never published
-  // — that's the "noise" case the plan calls out.
   const showChip = !neverPublished || hasDrift;
 
   return (

@@ -15,10 +15,6 @@ interface ImportedBylineProps {
   onMutated: () => void;
 }
 
-/**
- * Byline for the detail hero of an imported agent — catalog badge, author
- * email, version toggle, link back to catalog entry.
- */
 export function ImportedByline({ agent, onMutated }: ImportedBylineProps) {
   const catalogId = agent.linked_catalog_agent_id;
   const [detail, setDetail] = useState<CatalogAgentDetail | null>(null);

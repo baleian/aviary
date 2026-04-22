@@ -11,15 +11,8 @@ interface PublishedStateChipProps {
 }
 
 /**
- * Single chip that communicates the catalog state of an owner's working copy.
- *
- * - published: "Published v3" — green dot, latest is live and matches
- * - draft:     "Draft" — muted, never been published
- * - unpublished: "Unpublished" — amber-ish, catalog was unpublished
- * - drift:     "Unpublished changes" — amber dot, working copy diverged
- *
- * Never doubles as a version-number badge; use Badge variant="muted" "v3"
- * for plain version labels.
+ * Catalog state chip for an owner's working copy. Never doubles as a
+ * version-number badge — use ``Badge variant="muted"`` for plain "v3".
  */
 export function PublishedStateChip({
   variant,

@@ -68,6 +68,7 @@ class CatalogAgent(Base):
 
 
 class AgentVersion(Base):
+    """Immutable snapshot of a working copy at publish time."""
     __tablename__ = "agent_versions"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -83,7 +84,6 @@ class AgentVersion(Base):
     )
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    # Immutable snapshot of the working copy at publish time.
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     icon: Mapped[str | None] = mapped_column(String(50), nullable=True)
@@ -93,7 +93,6 @@ class AgentVersion(Base):
     )
     tools: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
     mcp_servers: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
-    # Snapshot of (server_name, tool_name) bindings at publish time.
     mcp_tool_bindings: Mapped[list] = mapped_column(
         JSONB, nullable=False, server_default="[]"
     )

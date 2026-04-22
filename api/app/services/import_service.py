@@ -1,10 +1,9 @@
 """Catalog import / fork / restore.
 
-Consumer import creates a new ``agents`` row with the consumer's ``owner_id``
-and links it to the source ``CatalogAgent`` via both ``linked_catalog_agent_id``
-and ``catalog_import_id``. NOT NULL agents columns are seeded with values
-from the resolved snapshot so DB constraints are satisfied — the display
-layer always re-reads from catalog, so local values are placeholders.
+Consumer import creates a new ``agents`` row (owner = consumer) wired to the
+source catalog via both ``linked_catalog_agent_id`` and ``catalog_import_id``.
+The agents row's NOT NULL fields are seeded from the snapshot only to satisfy
+DB constraints; display / runtime always re-read from catalog.
 """
 
 from __future__ import annotations
@@ -92,7 +91,6 @@ async def create_import(
 
     existing = await _existing_import_for_user(db, user, ca.id)
     if existing is not None:
-        # Already imported — optionally adjust pin, then return as-is.
         if existing.catalog_import_id is not None:
             ci = (await db.execute(
                 select(CatalogImport).where(
@@ -104,8 +102,6 @@ async def create_import(
                 await db.flush()
         return existing, False
 
-    # Fresh import — snapshot seeds NOT NULL columns, but runtime + API read
-    # from catalog on every access.
     version = await _resolve_snapshot(db, ca, pinned_version_id)
 
     ci = CatalogImport(
@@ -200,7 +196,6 @@ async def fork_import(db: AsyncSession, agent: Agent) -> Agent:
     agent.tools = seed["tools"]
     agent.mcp_servers = seed["mcp_servers"]
 
-    # Materialize MCP bindings from the snapshot.
     for b in list(version.mcp_tool_bindings or []):
         db.add(McpAgentToolBinding(
             agent_id=agent.id,
@@ -208,7 +203,6 @@ async def fork_import(db: AsyncSession, agent: Agent) -> Agent:
             tool_name=b["tool_name"],
         ))
 
-    # Detach.
     ci_id = agent.catalog_import_id
     agent.catalog_import_id = None
     agent.linked_catalog_agent_id = None
@@ -224,8 +218,6 @@ async def fork_import(db: AsyncSession, agent: Agent) -> Agent:
     await db.refresh(agent)
     return agent
 
-
-# ── Owner "Open as working copy" ──────────────────────────────────────
 
 async def restore_working_copy(
     db: AsyncSession, user: User, ca: CatalogAgent
@@ -251,7 +243,6 @@ async def restore_working_copy(
     db.add(agent)
     await db.flush()
 
-    # Materialize MCP bindings so the working copy has real binding rows.
     for b in list(version.mcp_tool_bindings or []):
         db.add(McpAgentToolBinding(
             agent_id=agent.id,

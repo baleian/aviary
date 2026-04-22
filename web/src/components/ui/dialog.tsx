@@ -32,14 +32,13 @@ export function Dialog({
   const surfaceRef = useRef<HTMLDivElement>(null);
   const prevFocusRef = useRef<HTMLElement | null>(null);
 
-  // Focus trap + ESC + scroll lock.
   useEffect(() => {
     if (!open) return;
     prevFocusRef.current = document.activeElement as HTMLElement | null;
     const origOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
 
-    // Focus the surface after mount so initial Tab navigates inside.
+    // Focus the surface so the first Tab lands inside the dialog.
     requestAnimationFrame(() => {
       surfaceRef.current?.focus();
     });
@@ -49,7 +48,6 @@ export function Dialog({
         e.stopPropagation();
         onClose();
       } else if (e.key === "Tab") {
-        // Simple trap: if focus would leave the surface, cycle.
         const root = surfaceRef.current;
         if (!root) return;
         const focusables = root.querySelectorAll<HTMLElement>(

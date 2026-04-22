@@ -15,11 +15,6 @@ interface CatalogCardProps {
   onImport: () => Promise<void>;
 }
 
-/**
- * CatalogCard — aurora-A glass tile (same hover glow as /agents cards so
- * hover is learned once across the app). Phase 1: immediate Import button
- * instead of cart; cart drawer comes in Phase 3.
- */
 export function CatalogCard({ item, importedAgentId, onImport }: CatalogCardProps) {
   const [busy, setBusy] = useState(false);
   const imported = Boolean(importedAgentId);

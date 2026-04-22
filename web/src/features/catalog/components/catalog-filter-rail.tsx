@@ -13,10 +13,6 @@ interface CatalogFilterRailProps {
   onReset: () => void;
 }
 
-/**
- * Left rail — single-select categories + multi-select MCP servers.
- * Modeled after ToolSelector's rail for familiarity.
- */
 export function CatalogFilterRail({
   facets,
   selectedCategory,

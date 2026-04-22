@@ -89,7 +89,6 @@ export default function CatalogDetailPage() {
   return (
     <div className="h-full overflow-y-auto bg-canvas">
       <div className="mx-auto max-w-container px-6 pb-16 md:px-10">
-        {/* Breadcrumb */}
         <div className="pt-6 pb-4">
           <Link
             href={routes.catalog}
@@ -111,7 +110,6 @@ export default function CatalogDetailPage() {
           </div>
         )}
 
-        {/* Hero */}
         <section className="grid gap-6 lg:grid-cols-[1fr_280px]">
           <div>
             <div className="flex items-start gap-4">

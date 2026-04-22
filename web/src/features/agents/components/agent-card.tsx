@@ -44,7 +44,6 @@ export function AgentCard({ agent, deleted, fromCatalog }: AgentCardProps) {
             : "hover:-translate-y-[1px] hover:bg-white/[0.07] hover:shadow-[0_8px_32px_rgba(0,0,0,0.45),0_0_0_1px_rgba(123,92,255,0.3),inset_0_1px_0_rgba(255,255,255,0.08),0_0_40px_rgba(123,92,255,0.18)]",
         )}
       >
-        {/* Header */}
         <div className="mb-3 flex items-start justify-between gap-2">
           <div className="flex items-center gap-3 min-w-0">
             <div
@@ -85,12 +84,10 @@ export function AgentCard({ agent, deleted, fromCatalog }: AgentCardProps) {
           ) : null}
         </div>
 
-        {/* Description */}
         <p className="mb-4 line-clamp-2 flex-1 type-body-tight text-fg-muted">
           {agent.description || "No description provided"}
         </p>
 
-        {/* Footer */}
         <div className="flex items-center justify-between gap-3 border-t border-white/[0.06] pt-3">
           {isFromCatalog ? (
             <span className="type-caption text-fg-disabled truncate">Read-only</span>

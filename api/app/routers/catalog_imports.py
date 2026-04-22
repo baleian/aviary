@@ -72,8 +72,7 @@ async def get_import(
     agent: Agent = Depends(require_agent_owner()),
     db: AsyncSession = Depends(get_db),
 ):
-    # Kept for backwards compatibility — AgentResponse now includes
-    # pinned_version_id directly; new clients should read that.
+    # Deprecated — AgentResponse now carries pinned_version_id.
     if agent.catalog_import_id is None:
         raise ConflictError("Not an imported agent")
     ci = (await db.execute(

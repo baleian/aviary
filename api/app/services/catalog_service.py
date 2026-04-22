@@ -22,7 +22,6 @@ from app.db.models import (
 from app.errors import NotFoundError
 
 
-# Valid sort keys — `recent` = most-recently-published, `popular` = most imports.
 _VALID_SORTS = {"recent", "popular", "name"}
 
 
@@ -210,21 +209,18 @@ async def get_catalog_detail(
             select(AgentVersion).where(AgentVersion.id == ca.current_version_id)
         )).scalar_one()
 
-    # Does the caller already import this catalog?
     imported_agent_id = (await db.execute(
         select(Agent.id)
         .join(CatalogImport, CatalogImport.id == Agent.catalog_import_id)
         .where(Agent.owner_id == user.id, CatalogImport.catalog_agent_id == ca.id)
     )).scalar_one_or_none()
 
-    # Popularity.
     import_count = (await db.execute(
         select(func.count(Agent.id))
         .join(CatalogImport, CatalogImport.id == Agent.catalog_import_id)
         .where(CatalogImport.catalog_agent_id == ca.id)
     )).scalar_one() or 0
 
-    # Reuse the version row we already loaded when it IS the current one.
     if ca.current_version_id is not None and version.id == ca.current_version_id:
         current_version_number = version.version_number
     elif ca.current_version_id is not None:

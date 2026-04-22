@@ -63,14 +63,8 @@ def _version_mcp_tool_names(mcp_tool_bindings: list[dict[str, Any]]) -> list[str
     ]
 
 
-def _version_as_spec(
-    agent: Agent, version: AgentVersion
-) -> dict:
-    """Build the wire spec from a catalog version snapshot.
-
-    ``agent`` is the consumer's local agents row — its id/slug/runtime_endpoint
-    are preserved (slug is user-scoped, runtime_endpoint is local choice). The
-    rest comes from the immutable snapshot."""
+def _version_as_spec(agent: Agent, version: AgentVersion) -> dict:
+    # id/slug/runtime_endpoint stay local; content comes from the snapshot.
     mcp_names = _version_mcp_tool_names(list(version.mcp_tool_bindings or []))
     merged_tools = list(dict.fromkeys(list(version.tools or []) + mcp_names))
     return {
@@ -87,8 +81,6 @@ def _version_as_spec(
 
 
 async def resolve_agent_config(db: AsyncSession, agent: Agent) -> dict:
-    """Entry point — replaces direct ``mention_service.agent_spec`` calls so
-    Imported agents resolve via catalog snapshot automatically."""
     if agent.catalog_import_id is None:
         return await agent_spec(agent, db)
 
