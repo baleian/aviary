@@ -96,11 +96,20 @@ async def test_drift_never_published(user1_client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_imported_agent_cannot_publish(user1_client: AsyncClient):
-    """An imported agent row must be forked before it can be published."""
-    # We'll simulate: create an agent and mark it as if imported by setting
-    # catalog_import_id via a direct insertion path — here we exercise the
-    # server-side guard on /publish alone.
-    # For now, the guard is covered by unit tests on publish_service; the
-    # full import path is exercised in test_catalog_import.py later.
-    assert True
+async def test_imported_agent_cannot_publish(
+    user1_client: AsyncClient, user2_client: AsyncClient
+):
+    agent_id = await _create_agent(user1_client, slug="publishable")
+    await user1_client.post(
+        f"/api/agents/{agent_id}/publish", json={"category": "coding"}
+    )
+    cid = (await user2_client.get("/api/catalog")).json()["items"][0]["id"]
+    imp = await user2_client.post("/api/catalog/imports", json={
+        "items": [{"catalog_agent_id": cid}],
+    })
+    imported_id = imp.json()["created"][0]["id"]
+
+    resp = await user2_client.post(
+        f"/api/agents/{imported_id}/publish", json={"category": "coding"}
+    )
+    assert resp.status_code == 409
