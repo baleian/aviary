@@ -56,11 +56,14 @@ async def browse_catalog(
 async def catalog_facets(
     q: str | None = Query(None),
     category: list[CatalogCategory] | None = Query(None),
+    mcp_server: list[str] | None = Query(None),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     cats = [c.value for c in category] if category else None
-    data = await catalog_service.compute_facets(db, q=q, categories=cats)
+    data = await catalog_service.compute_facets(
+        db, q=q, categories=cats, mcp_servers=mcp_server,
+    )
     return CatalogFacetsResponse(**data)
 
 

@@ -54,6 +54,15 @@ async def list_my_catalog(
     )
 
 
+async def _respond_mine(
+    db: AsyncSession, user: User, ca: CatalogAgent
+) -> MyCatalogAgent:
+    item = await catalog_service.get_my_catalog_item(db, user, ca.id)
+    if item is None:
+        raise NotFoundError("Catalog agent not found")
+    return MyCatalogAgent(**item)
+
+
 @router.post(
     "/agents/{catalog_agent_id}/rollback", response_model=MyCatalogAgent
 )
@@ -64,11 +73,7 @@ async def rollback(
     user: User = Depends(get_current_user),
 ):
     await publish_service.rollback_catalog_agent(db, ca, uuid.UUID(body.version_id))
-    items, _ = await catalog_service.list_my_catalog(db, user, 0, 200)
-    for item in items:
-        if item["id"] == str(ca.id):
-            return MyCatalogAgent(**item)
-    raise NotFoundError("Catalog agent not found post-rollback")
+    return await _respond_mine(db, user, ca)
 
 
 @router.post(
@@ -80,11 +85,7 @@ async def unpublish(
     user: User = Depends(get_current_user),
 ):
     await publish_service.unpublish_catalog_agent(db, ca)
-    items, _ = await catalog_service.list_my_catalog(db, user, 0, 200)
-    for item in items:
-        if item["id"] == str(ca.id):
-            return MyCatalogAgent(**item)
-    raise NotFoundError("Catalog agent not found post-unpublish")
+    return await _respond_mine(db, user, ca)
 
 
 @router.post(
@@ -96,11 +97,7 @@ async def republish(
     user: User = Depends(get_current_user),
 ):
     await publish_service.republish_catalog_agent(db, ca)
-    items, _ = await catalog_service.list_my_catalog(db, user, 0, 200)
-    for item in items:
-        if item["id"] == str(ca.id):
-            return MyCatalogAgent(**item)
-    raise NotFoundError("Catalog agent not found post-republish")
+    return await _respond_mine(db, user, ca)
 
 
 @router.post(
@@ -161,14 +158,10 @@ async def delete_catalog_agent(
             "Catalog agent has active imports. Unpublish first to stop new imports."
         )
 
-    # Clear link on any working copy.
-    linked_ids = (await db.execute(
-        select(Agent.id).where(Agent.linked_catalog_agent_id == ca.id)
+    linked = (await db.execute(
+        select(Agent).where(Agent.linked_catalog_agent_id == ca.id)
     )).scalars().all()
-    for aid in linked_ids:
-        a = (await db.execute(
-            select(Agent).where(Agent.id == aid)
-        )).scalar_one()
+    for a in linked:
         a.linked_catalog_agent_id = None
 
     await db.delete(ca)

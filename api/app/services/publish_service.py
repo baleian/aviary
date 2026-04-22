@@ -56,6 +56,29 @@ def _snapshot_fields(agent: Agent, category: str, bindings: list[dict]) -> dict:
 
 # ── Publish ──────────────────────────────────────────────────────────────
 
+_PUBLISH_RATE_LIMIT = 5
+_PUBLISH_RATE_WINDOW_SECONDS = 3600
+
+
+async def _enforce_publish_rate_limit(user: User) -> None:
+    from app.services.redis_service import get_client
+
+    client = get_client()
+    if client is None:
+        return
+    key = f"ratelimit:publish:{user.id}"
+    try:
+        count = await client.incr(key)
+        if count == 1:
+            await client.expire(key, _PUBLISH_RATE_WINDOW_SECONDS)
+    except Exception:
+        return
+    if count > _PUBLISH_RATE_LIMIT:
+        raise ConflictError(
+            f"Publish rate limit exceeded ({_PUBLISH_RATE_LIMIT}/hour)."
+        )
+
+
 async def publish_version(
     db: AsyncSession, agent: Agent, user: User, *, category: str, release_notes: str | None
 ) -> AgentVersion:
@@ -70,12 +93,13 @@ async def publish_version(
             "Imported agents cannot be published. Fork it first to make it editable."
         )
 
-    # Row-level lock on the Agent while we compute the next version_number
-    # to serialize concurrent publishes on the same working copy.
-    locked = await db.execute(
-        select(Agent).where(Agent.id == agent.id).with_for_update()
+    await _enforce_publish_rate_limit(user)
+
+    # Lock the working copy to serialize concurrent publishes that would
+    # otherwise race on next version_number.
+    await db.execute(
+        select(Agent.id).where(Agent.id == agent.id).with_for_update()
     )
-    locked.scalar_one()
 
     bindings = await _load_bindings(db, agent.id)
 

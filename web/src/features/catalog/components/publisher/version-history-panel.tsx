@@ -6,7 +6,10 @@ import { Badge } from "@/components/ui/badge";
 import { History, MoreHorizontal } from "@/components/icons";
 import { catalogApi } from "@/features/catalog/api/catalog-api";
 import { cn } from "@/lib/utils";
-import type { AgentVersionSummary, MyCatalogAgent } from "@/types/catalog";
+import type {
+  AgentVersionSummary,
+  CatalogAgentDetail,
+} from "@/types/catalog";
 
 interface VersionHistoryPanelProps {
   /** The linked catalog agent id from the agents row. Null → nothing to show. */
@@ -14,7 +17,7 @@ interface VersionHistoryPanelProps {
 }
 
 export function VersionHistoryPanel({ catalogAgentId }: VersionHistoryPanelProps) {
-  const [entry, setEntry] = useState<MyCatalogAgent | null>(null);
+  const [detail, setDetail] = useState<CatalogAgentDetail | null>(null);
   const [versions, setVersions] = useState<AgentVersionSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -26,12 +29,11 @@ export function VersionHistoryPanel({ catalogAgentId }: VersionHistoryPanelProps
     if (!catalogAgentId) return;
     setLoading(true);
     try {
-      const [mine, v] = await Promise.all([
-        catalogApi.mine(),
+      const [d, v] = await Promise.all([
+        catalogApi.detail(catalogAgentId),
         catalogApi.myVersions(catalogAgentId),
       ]);
-      const hit = mine.items.find((i) => i.id === catalogAgentId) ?? null;
-      setEntry(hit);
+      setDetail(d);
       setVersions(v.items);
     } finally {
       setLoading(false);
@@ -59,9 +61,7 @@ export function VersionHistoryPanel({ catalogAgentId }: VersionHistoryPanelProps
     }
   };
 
-  const currentVersionId = entry?.current_version_number
-    ? versions.find((v) => v.version_number === entry.current_version_number)?.id
-    : null;
+  const currentVersionId = detail?.current_version_id ?? null;
 
   const shown = showAll ? versions : versions.slice(0, 5);
 
