@@ -30,7 +30,7 @@ async def list_agents(
         db, user, offset=offset, limit=limit, q=q,
     )
     return AgentListResponse(
-        items=[AgentResponse.model_validate(a) for a in agents],
+        items=await agent_service.build_agent_responses(db, agents),
         total=total,
     )
 
@@ -42,12 +42,15 @@ async def create_agent(
     db: AsyncSession = Depends(get_db),
 ):
     agent = await agent_service.create_agent(db, user, body)
-    return AgentResponse.model_validate(agent)
+    return await agent_service.build_agent_response(db, agent)
 
 
 @router.get("/{agent_id}", response_model=AgentResponse)
-async def get_agent(agent: Agent = Depends(require_agent_owner())):
-    return AgentResponse.model_validate(agent)
+async def get_agent(
+    agent: Agent = Depends(require_agent_owner()),
+    db: AsyncSession = Depends(get_db),
+):
+    return await agent_service.build_agent_response(db, agent)
 
 
 @router.put("/{agent_id}", response_model=AgentResponse)
@@ -61,7 +64,7 @@ async def update_agent(
             "Imported catalog agents are read-only. Fork the agent first to edit it."
         )
     agent = await agent_service.update_agent(db, agent, body)
-    return AgentResponse.model_validate(agent)
+    return await agent_service.build_agent_response(db, agent)
 
 
 @router.delete("/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -30,7 +30,9 @@ export function ImportedSourceStrip({
   const catalogId = agent.linked_catalog_agent_id;
   const [detail, setDetail] = useState<CatalogAgentDetail | null>(null);
   const [versions, setVersions] = useState<AgentVersionSummary[]>([]);
-  const [pinnedVersionId, setPinnedVersionId] = useState<string | null>(null);
+  const [pinnedVersionId, setPinnedVersionId] = useState<string | null>(
+    agent.pinned_version_id ?? null,
+  );
   const [loading, setLoading] = useState(true);
   const [mutating, setMutating] = useState(false);
 
@@ -38,18 +40,17 @@ export function ImportedSourceStrip({
     if (!catalogId) return;
     setLoading(true);
     try {
-      const [d, v, ci] = await Promise.all([
+      const [d, v] = await Promise.all([
         catalogApi.detail(catalogId),
         catalogApi.versions(catalogId),
-        catalogApi.getImport(agent.id),
       ]);
       setDetail(d);
       setVersions(v.items);
-      setPinnedVersionId(ci.pinned_version_id);
+      setPinnedVersionId(agent.pinned_version_id ?? null);
     } finally {
       setLoading(false);
     }
-  }, [catalogId, agent.id]);
+  }, [catalogId, agent.pinned_version_id]);
 
   useEffect(() => {
     void load();

@@ -54,14 +54,6 @@ def _snapshot_fields(agent: Agent, category: str, bindings: list[dict]) -> dict:
     }
 
 
-def is_catalog_editor(agent: Agent, catalog_agent: CatalogAgent) -> bool:
-    """Viewer/editor decision is owner equality (future: owners list).
-
-    Keeping this as a module-level helper so both the publish routes and the
-    chat resolver / UI response builders share one truth."""
-    return catalog_agent.owner_id == agent.owner_id
-
-
 # ── Publish ──────────────────────────────────────────────────────────────
 
 async def publish_version(
@@ -269,8 +261,9 @@ async def compute_drift(db: AsyncSession, agent: Agent) -> dict:
         select(CatalogAgent).where(CatalogAgent.id == agent.linked_catalog_agent_id)
     )).scalar_one_or_none()
 
-    if catalog_agent is None or catalog_agent.owner_id != agent.owner_id:
-        # Linked but we're not the editor. Drift has no meaning.
+    from app.services.catalog_permissions import is_catalog_editor
+
+    if catalog_agent is None or not is_catalog_editor(agent, catalog_agent):
         raise UnauthorizedError("Only the catalog owner can compute drift")
 
     latest_version_id = catalog_agent.current_version_id

@@ -44,8 +44,15 @@ export function PublishCta({ agent, currentUserId, onPublished, compact }: Publi
     void fetchDrift();
   }, [agent.catalog_import_id, fetchDrift]);
 
+  // Consumer imports don't publish. Only editors (server-derived) do.
   if (agent.catalog_import_id) return null;
   if (agent.owner_id !== currentUserId) return null;
+
+  // `linked_catalog_agent_id` set + NOT editor would mean the FK went stale;
+  // skip in that case too (should only happen during migrations).
+  const editorOrUnlinked =
+    !agent.linked_catalog_agent_id || agent.is_catalog_editor === true;
+  if (!editorOrUnlinked) return null;
 
   const linked = Boolean(agent.linked_catalog_agent_id);
   const neverPublished = !linked;

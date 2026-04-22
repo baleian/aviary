@@ -64,11 +64,17 @@ class AgentResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    # Catalog linkage — both NULL for pure Private; `linked_catalog_agent_id`
-    # set means "this agent connects to a catalog entry" (publisher or
-    # consumer). `catalog_import_id` set narrows that to "consumer import".
+    # Catalog linkage — both NULL for pure Private. `linked_catalog_agent_id`
+    # set means the agent connects to a catalog entry (publisher or consumer).
+    # `catalog_import_id` set narrows that to "consumer import".
     linked_catalog_agent_id: OptionalUuidStr = None
     catalog_import_id: OptionalUuidStr = None
+
+    # Derived state — set by agent_service.build_agent_response, never from
+    # ORM attributes. Consumers use these instead of re-deriving on the client.
+    is_catalog_editor: bool = False
+    is_deprecated: bool = False
+    pinned_version_id: OptionalUuidStr = None
 
 
 class AgentListResponse(BaseModel):

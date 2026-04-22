@@ -30,6 +30,13 @@ export interface Agent {
   linked_catalog_agent_id?: string | null;
   /** Non-null for consumer imports only. */
   catalog_import_id?: string | null;
+  /** Derived by the server: true when the caller owns the linked catalog. */
+  is_catalog_editor?: boolean;
+  /** Derived by the server: true when the catalog or the effective version
+   *  is unpublished (imports only — meaningless otherwise). */
+  is_deprecated?: boolean;
+  /** Only set on imported agents; NULL means "follow latest". */
+  pinned_version_id?: string | null;
   created_at: string;
   updated_at: string;
 }
