@@ -28,7 +28,9 @@ export interface AgentMutationData {
 
 export const agentsApi = {
   list(search?: string) {
-    const path = search ? `/catalog/search?q=${encodeURIComponent(search)}` : "/agents";
+    const path = search
+      ? `/agents?q=${encodeURIComponent(search)}`
+      : "/agents";
     return http.get<AgentListResponse>(path);
   },
 

@@ -20,12 +20,15 @@ router = APIRouter()
 
 @router.get("", response_model=AgentListResponse)
 async def list_agents(
+    q: str | None = Query(None),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    agents, total = await agent_service.list_agents_for_user(db, user, offset, limit)
+    agents, total = await agent_service.list_agents_for_user(
+        db, user, offset=offset, limit=limit, q=q,
+    )
     return AgentListResponse(
         items=[AgentResponse.model_validate(a) for a in agents],
         total=total,

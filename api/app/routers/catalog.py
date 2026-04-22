@@ -1,52 +1,95 @@
-"""Agent catalog — owner-only for now. Public/team sharing returns with RBAC."""
+"""Public Agent Catalog — browse, detail, versions, facets."""
+
+from __future__ import annotations
+
+import uuid
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_user
-from app.db.models import Agent, User
+from app.db.models import User
 from app.db.session import get_db
-from app.schemas.agent import AgentListResponse, AgentResponse
-from app.services import agent_service
+from app.schemas.catalog import (
+    AgentVersionListResponse,
+    AgentVersionResponse,
+    AgentVersionSummary,
+    CatalogAgentDetail,
+    CatalogAgentSummary,
+    CatalogCategory,
+    CatalogFacetsResponse,
+    CatalogListResponse,
+)
+from app.services import catalog_service
 
 router = APIRouter()
 
 
-@router.get("", response_model=AgentListResponse)
+@router.get("", response_model=CatalogListResponse)
 async def browse_catalog(
+    q: str | None = Query(None),
+    category: list[CatalogCategory] | None = Query(None),
+    mcp_server: list[str] | None = Query(None),
+    sort: str = Query("recent"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    agents, total = await agent_service.list_agents_for_user(db, user, offset, limit)
-    return AgentListResponse(
-        items=[AgentResponse.model_validate(a) for a in agents],
+    cats = [c.value for c in category] if category else None
+    items, total = await catalog_service.list_catalog(
+        db,
+        q=q,
+        categories=cats,
+        mcp_servers=mcp_server,
+        sort=sort,
+        offset=offset,
+        limit=limit,
+    )
+    return CatalogListResponse(
+        items=[CatalogAgentSummary(**item) for item in items],
         total=total,
     )
 
 
-@router.get("/search", response_model=AgentListResponse)
-async def search_catalog(
-    q: str = Query(..., min_length=1),
-    offset: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
+@router.get("/facets", response_model=CatalogFacetsResponse)
+async def catalog_facets(
+    q: str | None = Query(None),
+    category: list[CatalogCategory] | None = Query(None),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    pattern = f"%{q}%"
-    base_query = select(Agent).where(
-        Agent.owner_id == user.id,
-        or_(Agent.name.ilike(pattern), Agent.description.ilike(pattern)),
+    cats = [c.value for c in category] if category else None
+    data = await catalog_service.compute_facets(db, q=q, categories=cats)
+    return CatalogFacetsResponse(**data)
+
+
+@router.get("/{catalog_agent_id}", response_model=CatalogAgentDetail)
+async def get_catalog_detail(
+    catalog_agent_id: uuid.UUID,
+    v: uuid.UUID | None = Query(None, description="Specific version id"),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    detail = await catalog_service.get_catalog_detail(
+        db, catalog_agent_id, user, version_id=v
     )
+    detail["version"] = AgentVersionResponse.model_validate(detail["version"])
+    return CatalogAgentDetail(**detail)
 
-    total = (await db.execute(select(func.count()).select_from(base_query.subquery()))).scalar() or 0
-    agents = (await db.execute(
-        base_query.order_by(Agent.created_at.desc()).offset(offset).limit(limit)
-    )).scalars().all()
 
-    return AgentListResponse(
-        items=[AgentResponse.model_validate(a) for a in agents],
+@router.get(
+    "/{catalog_agent_id}/versions", response_model=AgentVersionListResponse
+)
+async def list_versions(
+    catalog_agent_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    versions, total = await catalog_service.list_versions(
+        db, catalog_agent_id, include_unpublished=False
+    )
+    return AgentVersionListResponse(
+        items=[AgentVersionSummary.model_validate(v) for v in versions],
         total=total,
     )

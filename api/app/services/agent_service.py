@@ -51,9 +51,21 @@ async def get_agent_by_slug(
 
 
 async def list_agents_for_user(
-    db: AsyncSession, user: User, offset: int = 0, limit: int = 50
+    db: AsyncSession,
+    user: User,
+    *,
+    offset: int = 0,
+    limit: int = 50,
+    q: str | None = None,
 ) -> tuple[list[Agent], int]:
+    from sqlalchemy import or_
+
     base_query = select(Agent).where(Agent.owner_id == user.id)
+    if q:
+        pattern = f"%{q}%"
+        base_query = base_query.where(
+            or_(Agent.name.ilike(pattern), Agent.description.ilike(pattern))
+        )
 
     total = (await db.execute(select(func.count()).select_from(base_query.subquery()))).scalar() or 0
 
