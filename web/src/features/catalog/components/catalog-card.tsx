@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
-import { Check, Download, Plus } from "@/components/icons";
+import { ArrowRight, Download } from "@/components/icons";
 import { Spinner } from "@/components/ui/spinner";
 import { routes } from "@/lib/constants/routes";
 import { cn } from "@/lib/utils";
@@ -46,7 +46,6 @@ export function CatalogCard({ item, importedAgentId, onImport }: CatalogCardProp
           "hover:shadow-[0_8px_32px_rgba(0,0,0,0.45),0_0_0_1px_rgba(123,92,255,0.3),inset_0_1px_0_rgba(255,255,255,0.08),0_0_40px_rgba(123,92,255,0.18)]",
         )}
       >
-        {/* Header */}
         <div className="mb-3 flex items-start justify-between gap-2">
           <div className="flex min-w-0 items-center gap-3">
             <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md bg-aurora-a-soft border border-white/[0.08] text-lg">
@@ -54,41 +53,50 @@ export function CatalogCard({ item, importedAgentId, onImport }: CatalogCardProp
             </div>
             <div className="min-w-0">
               <h3 className="type-body truncate text-fg-primary group-hover:text-aurora-violet transition-colors">
-                {item.name}
+                {item.name}{" "}
+                <span className="type-caption font-mono text-fg-disabled">
+                  v{item.current_version_number}
+                </span>
               </h3>
               <p className="type-caption text-fg-muted truncate">
                 {item.owner_email}
               </p>
             </div>
           </div>
-          <Badge variant="muted" className="shrink-0">v{item.current_version_number}</Badge>
         </div>
 
-        {/* Description */}
         <p className="mb-3 line-clamp-2 flex-1 type-body-tight text-fg-muted">
           {item.description || "No description provided"}
         </p>
 
-        {/* Category + MCP servers */}
-        <div className="mb-4 flex flex-wrap items-center gap-1.5">
+        <div className="mb-4 flex flex-wrap items-center gap-1.5 type-caption text-fg-muted">
           <Badge variant="neutral" className="capitalize">{item.category}</Badge>
-          {item.mcp_servers.slice(0, 3).map((srv) => (
-            <Badge key={srv} variant="neutral" className="font-mono">{srv}</Badge>
-          ))}
-          {item.mcp_servers.length > 3 && (
-            <Badge variant="neutral">+{item.mcp_servers.length - 3}</Badge>
+          {item.mcp_servers.length > 0 && (
+            <span className="truncate">
+              {item.mcp_servers.slice(0, 3).join(" · ")}
+              {item.mcp_servers.length > 3
+                ? ` · +${item.mcp_servers.length - 3}`
+                : ""}
+            </span>
           )}
         </div>
 
-        {/* Footer */}
         <div className="flex items-center justify-end gap-2 border-t border-white/[0.06] pt-3">
-          {imported ? (
-            <span
+          {imported && importedAgentId ? (
+            <Link
+              href={routes.agent(importedAgentId)}
               onClick={(e) => e.stopPropagation()}
-              className="inline-flex items-center gap-1.5 rounded-sm px-2.5 py-1 type-caption-bold bg-aurora-cyan/15 border border-aurora-cyan/40 text-aurora-cyan"
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-sm px-2.5 py-1 type-caption-bold transition-colors",
+                "bg-aurora-cyan/15 border border-aurora-cyan/40 text-aurora-cyan",
+                "hover:bg-aurora-cyan/20",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-cyan/40",
+              )}
+              aria-label={`Open imported ${item.name}`}
             >
-              <Check size={12} strokeWidth={2.5} /> Imported
-            </span>
+              Open
+              <ArrowRight size={12} strokeWidth={2.5} />
+            </Link>
           ) : (
             <button
               type="button"
@@ -96,16 +104,17 @@ export function CatalogCard({ item, importedAgentId, onImport }: CatalogCardProp
               disabled={busy}
               aria-label={`Import ${item.name}`}
               className={cn(
-                "inline-flex items-center gap-1.5 rounded-sm px-2.5 py-1 type-caption-bold transition-all duration-200",
-                "focus-visible:outline-none",
-                "bg-white/[0.05] border border-white/[0.08] text-fg-secondary",
-                "hover:bg-white/[0.09] hover:border-white/[0.14] hover:text-fg-primary",
-                "disabled:opacity-60 disabled:cursor-not-allowed",
+                "inline-flex items-center gap-1.5 rounded-pill px-4 py-1 type-caption-bold transition-all duration-[320ms] ease-[cubic-bezier(0.16,1,0.3,1)]",
+                "bg-aurora-a text-white animate-aurora-sheen",
+                "shadow-[0_0_20px_rgba(123,92,255,0.35),inset_0_1px_0_rgba(255,255,255,0.18)]",
+                "hover:-translate-y-[1px] hover:shadow-[0_0_28px_rgba(123,92,255,0.5),inset_0_1px_0_rgba(255,255,255,0.22)]",
+                "disabled:opacity-60 disabled:cursor-not-allowed disabled:translate-y-0",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-violet/60 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
               )}
             >
               {busy ? (
                 <>
-                  <Spinner size={11} className="text-fg-secondary" />
+                  <Spinner size={11} className="text-white" />
                   Importing…
                 </>
               ) : (

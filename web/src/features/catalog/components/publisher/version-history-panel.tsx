@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Dialog } from "@/components/ui/dialog";
 import { History, MoreHorizontal } from "@/components/icons";
 import { catalogApi } from "@/features/catalog/api/catalog-api";
 import { cn } from "@/lib/utils";
@@ -44,10 +45,30 @@ export function VersionHistoryPanel({ catalogAgentId }: VersionHistoryPanelProps
     void load();
   }, [load]);
 
+  const menuContainerRef = useRef<HTMLOListElement>(null);
+  useEffect(() => {
+    if (!openId) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!menuContainerRef.current?.contains(e.target as Node)) setOpenId(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpenId(null);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [openId]);
+
+  const [confirmUnpublishVersion, setConfirmUnpublishVersion] = useState<
+    AgentVersionSummary | null
+  >(null);
+
   if (!catalogAgentId) return null;
 
-  const handle = async (fn: () => Promise<unknown>, confirmText?: string) => {
-    if (confirmText && !confirm(confirmText)) return;
+  const handle = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     setError(null);
     try {
@@ -81,7 +102,10 @@ export function VersionHistoryPanel({ catalogAgentId }: VersionHistoryPanelProps
           No versions yet — publish this agent to create v1.
         </p>
       ) : (
-        <ol className="relative flex flex-col gap-0.5 pl-4">
+        <ol
+          ref={menuContainerRef}
+          className="relative flex flex-col gap-0.5 pl-4"
+        >
           <div
             aria-hidden
             className="pointer-events-none absolute left-1.5 top-1 bottom-1 w-px bg-white/[0.08]"
@@ -142,12 +166,12 @@ export function VersionHistoryPanel({ catalogAgentId }: VersionHistoryPanelProps
                   {menuOpen && (
                     <div
                       role="menu"
-                      onMouseLeave={() => setOpenId(null)}
                       className="absolute right-0 top-full z-10 mt-1 w-52 overflow-hidden rounded-md bg-popover border border-white/[0.08] shadow-5 py-1 animate-fade-in-fast"
                     >
                       {!isLatest && !v.unpublished_at && (
                         <button
                           type="button"
+                          role="menuitem"
                           onClick={() =>
                             handle(() =>
                               catalogApi.rollback(catalogAgentId, v.id),
@@ -161,12 +185,11 @@ export function VersionHistoryPanel({ catalogAgentId }: VersionHistoryPanelProps
                       {!v.unpublished_at && (
                         <button
                           type="button"
-                          onClick={() =>
-                            handle(
-                              () => catalogApi.unpublishVersion(v.id),
-                              `Retract v${v.version_number}? Users pinned to it keep access.`,
-                            )
-                          }
+                          role="menuitem"
+                          onClick={() => {
+                            setOpenId(null);
+                            setConfirmUnpublishVersion(v);
+                          }}
                           className="block w-full text-left px-3 py-2 type-caption text-fg-secondary hover:bg-white/[0.05]"
                         >
                           Unpublish this version
@@ -206,6 +229,47 @@ export function VersionHistoryPanel({ catalogAgentId }: VersionHistoryPanelProps
           {error}
         </p>
       )}
+
+      <Dialog
+        open={confirmUnpublishVersion !== null}
+        onClose={() => setConfirmUnpublishVersion(null)}
+        title={
+          confirmUnpublishVersion
+            ? `Retract v${confirmUnpublishVersion.version_number}?`
+            : ""
+        }
+        description="Users already pinned to this version keep access; new imports can't pick it."
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              onClick={() => setConfirmUnpublishVersion(null)}
+              disabled={busy}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              disabled={busy}
+              onClick={async () => {
+                if (!confirmUnpublishVersion) return;
+                await handle(() =>
+                  catalogApi.unpublishVersion(confirmUnpublishVersion.id),
+                );
+                setConfirmUnpublishVersion(null);
+              }}
+            >
+              {busy ? "Retracting…" : "Retract"}
+            </Button>
+          </>
+        }
+      >
+        <p className="type-body text-fg-secondary">
+          If this is the current latest, the catalog will fall back to the
+          most recent still-live version. If nothing is left, the catalog
+          entry becomes unpublished.
+        </p>
+      </Dialog>
     </section>
   );
 }

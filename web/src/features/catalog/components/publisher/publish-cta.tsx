@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Sparkles, RefreshCw } from "@/components/icons";
+import { Sparkles, RefreshCw, Check } from "@/components/icons";
 import { catalogApi } from "@/features/catalog/api/catalog-api";
 import { PublishDialog } from "./publish-dialog";
 import { PublishedStateChip } from "./published-state-chip";
@@ -28,6 +28,7 @@ interface PublishCtaProps {
 export function PublishCta({ agent, currentUserId, onPublished, compact }: PublishCtaProps) {
   const [drift, setDrift] = useState<DriftResponse | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [flashPublished, setFlashPublished] = useState(false);
 
   const fetchDrift = useCallback(async () => {
     try {
@@ -75,33 +76,45 @@ export function PublishCta({ agent, currentUserId, onPublished, compact }: Publi
   return (
     <>
       <div className="flex items-center gap-3 flex-wrap">
-        {!compact && showChip && (
-          <PublishedStateChip
-            variant={chipVariant}
-            versionNumber={drift?.latest_version_number}
-          />
-        )}
+        {flashPublished ? (
+          <span
+            role="status"
+            className="inline-flex items-center gap-1.5 rounded-pill bg-success/12 text-success ring-1 ring-inset ring-success/25 px-3 py-1 type-caption-bold animate-fade-in-fast"
+          >
+            <Check size={12} strokeWidth={2.5} />
+            Published v{drift?.latest_version_number ?? 1}
+          </span>
+        ) : (
+          <>
+            {!compact && showChip && (
+              <PublishedStateChip
+                variant={chipVariant}
+                versionNumber={drift?.latest_version_number}
+              />
+            )}
 
-        {hasDrift || neverPublished ? (
-          <Button
-            variant={hasDrift ? "cta" : "secondary"}
-            size="sm"
-            onClick={() => setDialogOpen(true)}
-          >
-            <Sparkles size={12} strokeWidth={2} />
-            {nextVersionLabel}
-          </Button>
-        ) : inSync ? (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => void fetchDrift()}
-            aria-label="Refresh publish status"
-          >
-            <RefreshCw size={12} strokeWidth={2} />
-            Recheck
-          </Button>
-        ) : null}
+            {hasDrift || neverPublished ? (
+              <Button
+                variant={hasDrift ? "cta" : "secondary"}
+                size="sm"
+                onClick={() => setDialogOpen(true)}
+              >
+                <Sparkles size={12} strokeWidth={2} />
+                {nextVersionLabel}
+              </Button>
+            ) : inSync ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => void fetchDrift()}
+                aria-label="Refresh publish status"
+              >
+                <RefreshCw size={12} strokeWidth={2} />
+                Recheck
+              </Button>
+            ) : null}
+          </>
+        )}
       </div>
 
       <PublishDialog
@@ -113,6 +126,8 @@ export function PublishCta({ agent, currentUserId, onPublished, compact }: Publi
         onPublished={() => {
           void fetchDrift();
           onPublished?.();
+          setFlashPublished(true);
+          setTimeout(() => setFlashPublished(false), 4000);
         }}
       />
     </>

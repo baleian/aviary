@@ -78,8 +78,11 @@ export default function CatalogDetailPage() {
   }
 
   const v = detail.version;
-  const isDeprecated =
+  const catalogDeprecated =
     detail.unpublished_at !== null && detail.unpublished_at !== undefined;
+  const versionDeprecated =
+    v.unpublished_at !== null && v.unpublished_at !== undefined;
+  const isDeprecated = catalogDeprecated || versionDeprecated;
   const viewingNonLatest =
     selectedVersion && selectedVersion !== detail.current_version_id;
 
@@ -101,8 +104,9 @@ export default function CatalogDetailPage() {
           <div className="mb-6 flex items-start gap-3 rounded-md border border-warning/30 bg-warning/[0.08] px-4 py-3 animate-fade-in-fast">
             <div className="mt-1 h-2 w-2 shrink-0 rounded-full bg-warning ring-2 ring-warning/20" />
             <div className="type-caption text-fg-secondary">
-              This agent is no longer published. Existing imports continue to
-              work, and you can still import a pinned historical version.
+              {versionDeprecated && !catalogDeprecated
+                ? `v${v.version_number} has been retracted. Only users pinned to it can still import it; new imports should use the latest version.`
+                : "This agent is no longer published. Existing imports keep working, and pinned-version imports remain reachable."}
             </div>
           </div>
         )}

@@ -32,15 +32,18 @@ export default function CatalogPage() {
     "recent";
 
   const [searchInput, setSearchInput] = useState(urlQ);
+  const [composing, setComposing] = useState(false);
   const [items, setItems] = useState<CatalogAgentSummary[]>([]);
   const [total, setTotal] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [facets, setFacets] = useState<CatalogFacets | null>(null);
   const [importedMap, setImportedMap] = useState<Record<string, string>>({});
 
-  // Sync search input to URL with 300ms debounce.
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
+    // Suspend debounce mid-IME composition so Korean/Japanese users don't
+    // see interim glyphs leak into URL + server.
+    if (composing) return;
     if (searchInput === urlQ) return;
     if (searchTimer.current) clearTimeout(searchTimer.current);
     searchTimer.current = setTimeout(() => {
@@ -53,7 +56,7 @@ export default function CatalogPage() {
       if (searchTimer.current) clearTimeout(searchTimer.current);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchInput]);
+  }, [searchInput, composing]);
 
   // Fetch the catalog list whenever filters change.
   useEffect(() => {
@@ -85,17 +88,10 @@ export default function CatalogPage() {
       .then(setFacets);
   }, [user, urlQ, urlCat]);
 
-  // Fetch which catalog ids the user has already imported so the button
-  // renders as "Imported".
   const refreshImportedMap = useCallback(async () => {
     if (!user) return;
     try {
-      const resp = await fetch("/api/agents?limit=200", {
-        credentials: "include",
-      });
-      if (!resp.ok) return;
-      const data: { items: Array<{ id: string; linked_catalog_agent_id?: string | null; catalog_import_id?: string | null }> } =
-        await resp.json();
+      const data = await catalogApi.listImports();
       const next: Record<string, string> = {};
       for (const a of data.items) {
         if (a.catalog_import_id && a.linked_catalog_agent_id) {
@@ -104,8 +100,7 @@ export default function CatalogPage() {
       }
       setImportedMap(next);
     } catch {
-      // silent — the Import button will just show "Import" instead of
-      // "Imported", still clickable (idempotent).
+      // Import button stays as "Import" (server-side upsert is idempotent).
     }
   }, [user]);
   useEffect(() => {
@@ -184,6 +179,11 @@ export default function CatalogPage() {
               placeholder="Search agents…"
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
+              onCompositionStart={() => setComposing(true)}
+              onCompositionEnd={(e) => {
+                setComposing(false);
+                setSearchInput((e.target as HTMLInputElement).value);
+              }}
               className="pl-9"
             />
           </div>

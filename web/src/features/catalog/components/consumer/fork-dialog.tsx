@@ -25,9 +25,9 @@ export function ForkDialog({ open, onClose, agent }: ForkDialogProps) {
     setError(null);
     try {
       await catalogApi.forkImport(agent.id);
-      // agent id is preserved — just refresh the detail.
-      router.refresh();
       onClose();
+      // Land directly in the editor — the plan's "Fork and open" CTA intent.
+      router.push(routes.agentEdit(agent.id));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Fork failed");
     } finally {

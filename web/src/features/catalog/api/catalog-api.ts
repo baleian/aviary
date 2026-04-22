@@ -57,6 +57,10 @@ export const catalogApi = {
   },
 
   // ── Imports / fork ─────────────────────────────────────────────────
+  listImports() {
+    return http.get<{ items: Agent[]; total: number }>(`/catalog/imports`);
+  },
+
   importAgents(body: ImportRequest) {
     return http.post<ImportResponse>(`/catalog/imports`, body);
   },
