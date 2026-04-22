@@ -82,6 +82,14 @@ export {
   GitBranch,
   Play,
 
+  // Catalog / commerce
+  Store,
+  ShoppingBag,
+  Package,
+  Tag,
+  History,
+  MoreHorizontal,
+
   // Layout
   LayoutGrid,
   PanelLeft,

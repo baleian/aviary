@@ -435,6 +435,12 @@
     background-clip: text;
     color: transparent;
   }
+  .text-aurora-c {
+    background-image: var(--aurora-c);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
   .text-aurora-sky {
     background-image: var(--aurora-sky);
     -webkit-background-clip: text;

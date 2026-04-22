@@ -23,7 +23,13 @@ export interface Agent {
   tools: string[];
   mcp_servers: McpServer[];
   icon?: string;
+  runtime_endpoint?: string | null;
   status: "active" | "disabled" | "deleted";
+  /** Set to a CatalogAgent id when this agent is either a publisher's
+   *  working copy (editable) or a consumer's imported read-only view. */
+  linked_catalog_agent_id?: string | null;
+  /** Non-null for consumer imports only. */
+  catalog_import_id?: string | null;
   created_at: string;
   updated_at: string;
 }

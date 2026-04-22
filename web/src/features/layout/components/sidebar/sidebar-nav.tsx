@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutGrid, GitBranch } from "@/components/icons";
+import { LayoutGrid, GitBranch, Store } from "@/components/icons";
 import { useSidebar } from "@/features/layout/providers/sidebar-provider";
 import { routes } from "@/lib/constants/routes";
 import { cn } from "@/lib/utils";
@@ -48,21 +48,38 @@ export function SidebarNav() {
   const { collapsed } = useSidebar();
 
   return (
-    <div className="flex flex-col gap-0.5 px-3 pb-2 pt-2">
-      <NavLink
-        href={routes.agents}
-        active={pathname === routes.agents}
-        collapsed={collapsed}
-        icon={<LayoutGrid size={16} strokeWidth={1.75} />}
-        label="All Agents"
-      />
-      <NavLink
-        href={routes.workflows}
-        active={pathname.startsWith(routes.workflows)}
-        collapsed={collapsed}
-        icon={<GitBranch size={16} strokeWidth={1.75} />}
-        label="Workflows"
-      />
+    <div className="flex flex-col gap-3 pb-2 pt-2">
+      <div className="flex flex-col gap-0.5 px-3">
+        <NavLink
+          href={routes.agents}
+          active={pathname === routes.agents}
+          collapsed={collapsed}
+          icon={<LayoutGrid size={16} strokeWidth={1.75} />}
+          label="All Agents"
+        />
+        <NavLink
+          href={routes.workflows}
+          active={pathname.startsWith(routes.workflows)}
+          collapsed={collapsed}
+          icon={<GitBranch size={16} strokeWidth={1.75} />}
+          label="Workflows"
+        />
+      </div>
+
+      <div className="flex flex-col gap-0.5 px-3">
+        {!collapsed && (
+          <div className="px-3 pb-1 type-caption text-fg-disabled tracking-wide uppercase">
+            Discover
+          </div>
+        )}
+        <NavLink
+          href={routes.catalog}
+          active={pathname === routes.catalog || pathname.startsWith("/catalog/")}
+          collapsed={collapsed}
+          icon={<Store size={16} strokeWidth={1.75} />}
+          label="Catalog"
+        />
+      </div>
     </div>
   );
 }

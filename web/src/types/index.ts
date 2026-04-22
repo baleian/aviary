@@ -4,6 +4,7 @@
 
 export * from "./user";
 export * from "./agent";
+export * from "./catalog";
 export * from "./chat";
 export * from "./workflow";
 export * from "./mcp";
