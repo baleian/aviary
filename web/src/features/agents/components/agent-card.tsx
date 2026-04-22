@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
+import { Store } from "@/components/icons";
 import { useCreateSession } from "@/features/agents/hooks/use-create-session";
 import { routes } from "@/lib/constants/routes";
 import { cn } from "@/lib/utils";
@@ -11,6 +12,7 @@ import type { Agent } from "@/types";
 interface AgentCardProps {
   agent: Agent;
   deleted?: boolean;
+  fromCatalog?: boolean;
 }
 
 /**
@@ -20,8 +22,9 @@ interface AgentCardProps {
  * is the aurora-gradient CTA; it preventDefaults the wrapping Link so
  * the card click still takes the user to the agent detail page.
  */
-export function AgentCard({ agent, deleted }: AgentCardProps) {
+export function AgentCard({ agent, deleted, fromCatalog }: AgentCardProps) {
   const { createAndNavigate, creating, error } = useCreateSession(agent.id);
+  const isFromCatalog = fromCatalog ?? Boolean(agent.catalog_import_id);
 
   const handleStartChat = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -69,7 +72,17 @@ export function AgentCard({ agent, deleted }: AgentCardProps) {
             </div>
           </div>
 
-          {deleted && <Badge variant="danger">Deleted</Badge>}
+          {deleted ? (
+            <Badge variant="danger">Deleted</Badge>
+          ) : isFromCatalog ? (
+            <Badge
+              variant="neutral"
+              className="flex items-center gap-1 border-aurora-coral/40 text-aurora-coral bg-aurora-c-soft"
+            >
+              <Store size={10} strokeWidth={2} />
+              Catalog
+            </Badge>
+          ) : null}
         </div>
 
         {/* Description */}

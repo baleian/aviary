@@ -3,7 +3,7 @@
 import { AgentCard } from "./agent-card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/feedback/empty-state";
-import { Bot } from "@/components/icons";
+import { Bot, Store } from "@/components/icons";
 import type { Agent } from "@/types";
 
 interface AgentGridProps {
@@ -14,8 +14,10 @@ interface AgentGridProps {
 }
 
 /**
- * AgentGrid — handles the three list states (loading, empty, populated)
- * and groups deleted agents into a separate "Archived" section below.
+ * AgentGrid — loading/empty/populated + three sections:
+ *   1. Private (mine) — default edit-enabled agents
+ *   2. From Catalog — imported read-only agents (catalog_import_id set)
+ *   3. Archived — soft-deleted
  */
 export function AgentGrid({ agents, loading, emptyAction, searchActive }: AgentGridProps) {
   if (loading) {
@@ -39,21 +41,37 @@ export function AgentGrid({ agents, loading, emptyAction, searchActive }: AgentG
     );
   }
 
-  const active = agents.filter((a) => a.status !== "deleted");
+  const alive = agents.filter((a) => a.status !== "deleted");
+  const privateAgents = alive.filter((a) => !a.catalog_import_id);
+  const imported = alive.filter((a) => a.catalog_import_id);
   const deleted = agents.filter((a) => a.status === "deleted");
 
   return (
     <>
-      {active.length > 0 && (
+      {privateAgents.length > 0 && (
         <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
-          {active.map((agent) => (
+          {privateAgents.map((agent) => (
             <AgentCard key={agent.id} agent={agent} />
           ))}
         </div>
       )}
 
+      {imported.length > 0 && (
+        <div className={privateAgents.length > 0 ? "mt-10" : ""}>
+          <h2 className="mb-4 flex items-center gap-2 type-caption-bold uppercase tracking-wide text-fg-muted">
+            <Store size={12} strokeWidth={2} className="text-aurora-coral" />
+            From Catalog
+          </h2>
+          <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
+            {imported.map((agent) => (
+              <AgentCard key={agent.id} agent={agent} fromCatalog />
+            ))}
+          </div>
+        </div>
+      )}
+
       {deleted.length > 0 && (
-        <div className={active.length > 0 ? "mt-10" : ""}>
+        <div className={privateAgents.length + imported.length > 0 ? "mt-10" : ""}>
           <h2 className="mb-4 type-small text-fg-disabled">Archived</h2>
           <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
             {deleted.map((agent) => (
