@@ -13,6 +13,7 @@ from app.routers import (
     agents,
     auth,
     catalog,
+    catalog_imports,
     catalog_publisher,
     inference,
     mcp,
@@ -64,9 +65,11 @@ app.include_router(agents.router, prefix="/api/agents", tags=["agents"])
 app.include_router(
     agent_autocomplete.router, prefix="/api/agents/autocomplete", tags=["agents"]
 )
-# Publisher router first — its literal paths (/mine, /agents/*, /versions/*)
-# must beat the public catalog's /{catalog_agent_id} UUID param.
+# Publisher/imports first — their literal path prefixes (/mine, /imports/*,
+# /agents/*, /versions/*) must beat the public catalog's /{catalog_agent_id}
+# UUID param.
 app.include_router(catalog_publisher.router, prefix="/api/catalog", tags=["catalog"])
+app.include_router(catalog_imports.router, prefix="/api/catalog", tags=["catalog"])
 app.include_router(catalog.router, prefix="/api/catalog", tags=["catalog"])
 app.include_router(inference.router, prefix="/api/inference", tags=["inference"])
 app.include_router(mcp.router, prefix="/api/mcp", tags=["mcp"])

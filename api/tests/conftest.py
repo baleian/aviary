@@ -42,7 +42,8 @@ def _create_test_app() -> FastAPI:
     from app.config import settings
     from app.errors import register_handlers as register_domain_handlers
     from app.routers import (
-        agents, auth, catalog, catalog_publisher, inference, sessions, workflows,
+        agents, auth, catalog, catalog_imports, catalog_publisher,
+        inference, sessions, workflows,
     )
     from fastapi.middleware.cors import CORSMiddleware
 
@@ -58,6 +59,7 @@ def _create_test_app() -> FastAPI:
     test_app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
     test_app.include_router(agents.router, prefix="/api/agents", tags=["agents"])
     test_app.include_router(catalog_publisher.router, prefix="/api/catalog", tags=["catalog"])
+    test_app.include_router(catalog_imports.router, prefix="/api/catalog", tags=["catalog"])
     test_app.include_router(catalog.router, prefix="/api/catalog", tags=["catalog"])
     test_app.include_router(inference.router, prefix="/api/inference", tags=["inference"])
     test_app.include_router(sessions.router, prefix="/api", tags=["sessions"])
