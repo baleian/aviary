@@ -10,6 +10,7 @@ import { ErrorState } from "@/components/feedback/error-state";
 import { AgentDetailHero } from "@/features/agents/components/agent-detail-hero";
 import { AgentRecentSessions } from "@/features/agents/components/agent-recent-sessions";
 import { AgentConfigGrid } from "@/features/agents/components/agent-config-grid";
+import { PublishCta } from "@/features/catalog/components/publisher/publish-cta";
 import { agentsApi } from "@/features/agents/api/agents-api";
 import { useAuth } from "@/features/auth/providers/auth-provider";
 import { routes } from "@/lib/constants/routes";
@@ -92,12 +93,17 @@ export default function AgentDetailPage() {
             <ArrowLeft size={12} strokeWidth={2} />
             Agents
           </Link>
-          <div className="flex items-center gap-2">
-            <Link href={routes.agentEdit(agent.id)}>
-              <Button variant="ghost" size="sm">
-                Edit
-              </Button>
-            </Link>
+          <div className="flex items-center gap-3 flex-wrap">
+            {user && !agent.catalog_import_id && (
+              <PublishCta agent={agent} currentUserId={user.id} />
+            )}
+            {!agent.catalog_import_id && (
+              <Link href={routes.agentEdit(agent.id)}>
+                <Button variant="ghost" size="sm">
+                  Edit
+                </Button>
+              </Link>
+            )}
             {agent.status !== "deleted" && (
               <Button variant="danger" size="sm" onClick={handleDelete} disabled={deleting}>
                 <Trash2 size={13} strokeWidth={1.75} />
