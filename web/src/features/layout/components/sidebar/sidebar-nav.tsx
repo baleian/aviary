@@ -76,7 +76,7 @@ export function SidebarNav() {
           href={routes.catalog}
           active={pathname === routes.catalog || pathname.startsWith("/catalog/")}
           collapsed={collapsed}
-          icon={<Store size={16} strokeWidth={1.75} />}
+          icon={<Store size={16} strokeWidth={1.75} className="text-aurora-coral" />}
           label="Catalog"
         />
       </div>

@@ -52,8 +52,10 @@ export const catalogApi = {
     return http.get<AgentVersionListResponse>(`/catalog/${id}/versions`);
   },
 
-  facets(params: { q?: string; category?: string[] } = {}) {
-    return http.get<CatalogFacets>(`/catalog/facets${buildQuery(params)}`);
+  facets(params: { q?: string; category?: string[]; mcp_server?: string[] } = {}) {
+    return http.get<CatalogFacets>(
+      `/catalog/facets${buildQuery(params as Record<string, unknown>)}`,
+    );
   },
 
   // ── Imports / fork ─────────────────────────────────────────────────
