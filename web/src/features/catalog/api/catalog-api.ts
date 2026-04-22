@@ -61,6 +61,15 @@ export const catalogApi = {
     return http.post<ImportResponse>(`/catalog/imports`, body);
   },
 
+  getImport(agentId: string) {
+    return http.get<{
+      agent_id: string;
+      catalog_agent_id: string;
+      pinned_version_id: string | null;
+      effective_version_id: string | null;
+    }>(`/catalog/imports/${agentId}`);
+  },
+
   patchImport(agentId: string, pinnedVersionId: string | null) {
     return http.patch<Agent>(`/catalog/imports/${agentId}`, {
       pinned_version_id: pinnedVersionId,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft, Trash2, AlertCircle } from "@/components/icons";
@@ -12,6 +12,8 @@ import { AgentRecentSessions } from "@/features/agents/components/agent-recent-s
 import { AgentConfigGrid } from "@/features/agents/components/agent-config-grid";
 import { PublishCta } from "@/features/catalog/components/publisher/publish-cta";
 import { VersionHistoryPanel } from "@/features/catalog/components/publisher/version-history-panel";
+import { ImportedSourceStrip } from "@/features/catalog/components/consumer/imported-source-strip";
+import { ForkDialog } from "@/features/catalog/components/consumer/fork-dialog";
 import { agentsApi } from "@/features/agents/api/agents-api";
 import { useAuth } from "@/features/auth/providers/auth-provider";
 import { routes } from "@/lib/constants/routes";
@@ -39,6 +41,20 @@ export default function AgentDetailPage() {
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [forkOpen, setForkOpen] = useState(false);
+
+  const refresh = useCallback(async () => {
+    try {
+      const [a, t] = await Promise.all([
+        agentsApi.get(params.id),
+        agentsApi.getMcpTools(params.id),
+      ]);
+      setAgent(a);
+      setMcpTools(t);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to refresh");
+    }
+  }, [params.id]);
 
   useEffect(() => {
     if (!user) return;
@@ -96,19 +112,31 @@ export default function AgentDetailPage() {
           </Link>
           <div className="flex items-center gap-3 flex-wrap">
             {user && !agent.catalog_import_id && (
-              <PublishCta agent={agent} currentUserId={user.id} />
+              <PublishCta
+                agent={agent}
+                currentUserId={user.id}
+                onPublished={() => void refresh()}
+              />
             )}
-            {!agent.catalog_import_id && (
+            {!agent.catalog_import_id ? (
               <Link href={routes.agentEdit(agent.id)}>
                 <Button variant="ghost" size="sm">
                   Edit
                 </Button>
               </Link>
+            ) : (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setForkOpen(true)}
+              >
+                Fork
+              </Button>
             )}
             {agent.status !== "deleted" && (
               <Button variant="danger" size="sm" onClick={handleDelete} disabled={deleting}>
                 <Trash2 size={13} strokeWidth={1.75} />
-                {deleting ? "Deleting…" : "Delete"}
+                {deleting ? "Deleting…" : agent.catalog_import_id ? "Remove" : "Delete"}
               </Button>
             )}
           </div>
@@ -124,6 +152,14 @@ export default function AgentDetailPage() {
           </div>
         )}
 
+        {agent.catalog_import_id && (
+          <ImportedSourceStrip
+            agent={agent}
+            onForkClicked={() => setForkOpen(true)}
+            onMutated={() => void refresh()}
+          />
+        )}
+
         <AgentDetailHero agent={agent} />
         <AgentRecentSessions agentId={agent.id} />
         <AgentConfigGrid agent={agent} mcpTools={mcpTools} />
@@ -132,6 +168,12 @@ export default function AgentDetailPage() {
             catalogAgentId={agent.linked_catalog_agent_id ?? null}
           />
         )}
+
+        <ForkDialog
+          open={forkOpen}
+          onClose={() => setForkOpen(false)}
+          agent={agent}
+        />
       </div>
     </div>
   );

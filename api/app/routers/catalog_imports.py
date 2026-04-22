@@ -9,9 +9,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_user, require_agent_owner
-from app.db.models import Agent, CatalogAgent, User
+from app.db.models import Agent, CatalogAgent, CatalogImport, User
 from app.db.session import get_db
-from app.errors import NotFoundError, UnauthorizedError
+from app.errors import ConflictError, NotFoundError, UnauthorizedError
 from app.schemas.agent import AgentResponse
 from app.schemas.catalog import ImportPatchRequest, ImportRequest
 from app.services import import_service
@@ -48,6 +48,30 @@ async def create_imports(
         "already_imported": [
             r.model_dump(by_alias=True, mode="json") for r in already
         ],
+    }
+
+
+@router.get("/imports/{agent_id}")
+async def get_import(
+    agent: Agent = Depends(require_agent_owner()),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return catalog subscription info for an imported agent — version pin,
+    catalog id, and effective version id."""
+    if agent.catalog_import_id is None:
+        raise ConflictError("Not an imported agent")
+    ci = (await db.execute(
+        select(CatalogImport).where(CatalogImport.id == agent.catalog_import_id)
+    )).scalar_one()
+    ca = (await db.execute(
+        select(CatalogAgent).where(CatalogAgent.id == ci.catalog_agent_id)
+    )).scalar_one()
+    return {
+        "agent_id": str(agent.id),
+        "catalog_agent_id": str(ca.id),
+        "pinned_version_id": str(ci.pinned_version_id) if ci.pinned_version_id else None,
+        "effective_version_id": str(ci.pinned_version_id or ca.current_version_id)
+            if (ci.pinned_version_id or ca.current_version_id) else None,
     }
 
 
