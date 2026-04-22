@@ -31,11 +31,14 @@ class CatalogAgent(Base):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
     slug: Mapped[str] = mapped_column(String(255), nullable=False)
-    # current_version_id points to the "latest" AgentVersion. Circular FK resolved
-    # with use_alter=True in the migration; SET NULL on version cascade.
     current_version_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("agent_versions.id", use_alter=True, name="fk_catalog_agents_current_version"),
+        ForeignKey(
+            "agent_versions.id",
+            use_alter=True,
+            name="fk_catalog_agents_current_version",
+            ondelete="SET NULL",
+        ),
         nullable=True,
     )
     is_published: Mapped[bool] = mapped_column(
@@ -134,9 +137,11 @@ class CatalogImport(Base):
         ForeignKey("catalog_agents.id", ondelete="RESTRICT"),
         nullable=False,
     )
-    # NULL → follow latest (catalog.current_version_id), UUID → pinned to version.
+    # NULL → follow latest (catalog.current_version_id); non-NULL → pinned.
     pinned_version_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("agent_versions.id"), nullable=True
+        UUID(as_uuid=True),
+        ForeignKey("agent_versions.id", ondelete="SET NULL"),
+        nullable=True,
     )
     imported_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now()
