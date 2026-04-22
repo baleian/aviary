@@ -11,6 +11,7 @@ import { AgentDetailHero } from "@/features/agents/components/agent-detail-hero"
 import { AgentRecentSessions } from "@/features/agents/components/agent-recent-sessions";
 import { AgentConfigGrid } from "@/features/agents/components/agent-config-grid";
 import { PublishCta } from "@/features/catalog/components/publisher/publish-cta";
+import { VersionHistoryPanel } from "@/features/catalog/components/publisher/version-history-panel";
 import { agentsApi } from "@/features/agents/api/agents-api";
 import { useAuth } from "@/features/auth/providers/auth-provider";
 import { routes } from "@/lib/constants/routes";
@@ -126,6 +127,11 @@ export default function AgentDetailPage() {
         <AgentDetailHero agent={agent} />
         <AgentRecentSessions agentId={agent.id} />
         <AgentConfigGrid agent={agent} mcpTools={mcpTools} />
+        {!agent.catalog_import_id && (
+          <VersionHistoryPanel
+            catalogAgentId={agent.linked_catalog_agent_id ?? null}
+          />
+        )}
       </div>
     </div>
   );

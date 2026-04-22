@@ -1,14 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Search } from "@/components/icons";
+import { Search, Store } from "@/components/icons";
 import { Input } from "@/components/ui/input";
 import { catalogApi } from "@/features/catalog/api/catalog-api";
 import { CatalogFilterRail } from "@/features/catalog/components/catalog-filter-rail";
 import { CatalogGrid } from "@/features/catalog/components/catalog-grid";
 import { CatalogHero } from "@/features/catalog/components/catalog-hero";
 import { useAuth } from "@/features/auth/providers/auth-provider";
+import { routes } from "@/lib/constants/routes";
 import type {
   CatalogAgentSummary,
   CatalogFacets,
@@ -157,6 +159,17 @@ export default function CatalogPage() {
   return (
     <div className="h-full overflow-y-auto bg-canvas">
       <div className="mx-auto max-w-container px-6 pb-16 md:px-10">
+        {/* Top-right: link to my catalog (manage mine) */}
+        <div className="flex justify-end pt-6">
+          <Link
+            href={routes.catalogMine}
+            className="inline-flex items-center gap-1.5 rounded-pill glass-raised px-3 py-1 type-caption text-fg-muted hover:text-fg-primary transition-colors"
+          >
+            <Store size={12} strokeWidth={1.75} className="text-aurora-coral" />
+            My entries
+          </Link>
+        </div>
+
         <CatalogHero total={total} />
 
         {/* Search */}
