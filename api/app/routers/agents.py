@@ -6,8 +6,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.dependencies import get_current_user, require_agent_owner
 from app.db.models import Agent, User
 from app.db.session import get_db
+from app.errors import ConflictError
 from app.schemas.agent import AgentCreate, AgentListResponse, AgentResponse, AgentUpdate
-from app.services import agent_service
+from app.schemas.catalog import (
+    AgentVersionResponse,
+    DriftResponse,
+    PublishRequest,
+)
+from app.services import agent_service, publish_service
 
 router = APIRouter()
 
@@ -47,6 +53,10 @@ async def update_agent(
     agent: Agent = Depends(require_agent_owner()),
     db: AsyncSession = Depends(get_db),
 ):
+    if agent.catalog_import_id is not None:
+        raise ConflictError(
+            "Imported catalog agents are read-only. Fork the agent first to edit it."
+        )
     agent = await agent_service.update_agent(db, agent, body)
     return AgentResponse.model_validate(agent)
 
@@ -58,3 +68,27 @@ async def delete_agent(
 ):
     await agent_service.delete_agent(db, agent)
     return None
+
+
+@router.post("/{agent_id}/publish", response_model=AgentVersionResponse)
+async def publish_agent(
+    body: PublishRequest,
+    agent: Agent = Depends(require_agent_owner()),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    version = await publish_service.publish_version(
+        db, agent, user,
+        category=body.category.value,
+        release_notes=body.release_notes,
+    )
+    return AgentVersionResponse.model_validate(version)
+
+
+@router.get("/{agent_id}/drift", response_model=DriftResponse)
+async def get_drift(
+    agent: Agent = Depends(require_agent_owner()),
+    db: AsyncSession = Depends(get_db),
+):
+    data = await publish_service.compute_drift(db, agent)
+    return DriftResponse(**data)

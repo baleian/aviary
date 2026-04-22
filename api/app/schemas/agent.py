@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.schemas._common import MODEL_CONFIG_ALIAS, UuidStr
+from app.schemas._common import MODEL_CONFIG_ALIAS, OptionalUuidStr, UuidStr
 
 
 class ModelConfig(BaseModel):
@@ -63,6 +63,12 @@ class AgentResponse(BaseModel):
     status: str
     created_at: datetime
     updated_at: datetime
+
+    # Catalog linkage — both NULL for pure Private; `linked_catalog_agent_id`
+    # set means "this agent connects to a catalog entry" (publisher or
+    # consumer). `catalog_import_id` set narrows that to "consumer import".
+    linked_catalog_agent_id: OptionalUuidStr = None
+    catalog_import_id: OptionalUuidStr = None
 
 
 class AgentListResponse(BaseModel):

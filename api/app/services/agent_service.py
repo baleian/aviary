@@ -14,7 +14,9 @@ logger = logging.getLogger(__name__)
 
 
 async def create_agent(db: AsyncSession, user: User, data: AgentCreate) -> Agent:
-    existing = await db.execute(select(Agent).where(Agent.slug == data.slug))
+    existing = await db.execute(
+        select(Agent).where(Agent.owner_id == user.id, Agent.slug == data.slug)
+    )
     if existing.scalar_one_or_none():
         raise ConflictError(f"Agent slug '{data.slug}' already exists")
 
@@ -39,8 +41,12 @@ async def get_agent(db: AsyncSession, agent_id: uuid.UUID) -> Agent | None:
     return result.scalar_one_or_none()
 
 
-async def get_agent_by_slug(db: AsyncSession, slug: str) -> Agent | None:
-    result = await db.execute(select(Agent).where(Agent.slug == slug))
+async def get_agent_by_slug(
+    db: AsyncSession, owner_id: uuid.UUID, slug: str
+) -> Agent | None:
+    result = await db.execute(
+        select(Agent).where(Agent.owner_id == owner_id, Agent.slug == slug)
+    )
     return result.scalar_one_or_none()
 
 

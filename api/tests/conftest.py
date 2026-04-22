@@ -97,6 +97,7 @@ async def _ensure_test_db():
 
 _TABLES = [
     "messages", "sessions", "agents",
+    "catalog_imports", "agent_versions", "catalog_agents",
     "workflow_node_runs", "workflow_runs", "workflow_versions", "workflows",
     "users",
 ]
