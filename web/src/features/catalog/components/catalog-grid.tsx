@@ -10,7 +10,8 @@ interface CatalogGridProps {
   items: CatalogAgentSummary[];
   loading: boolean;
   searchActive: boolean;
-  importedMap: Record<string, string>; // catalog_agent_id → local agent id
+  /** catalog_agent_id → local agent id (for "Imported" button state). */
+  importedMap: Record<string, string>;
   onImport: (item: CatalogAgentSummary) => Promise<void>;
   emptyAction?: React.ReactNode;
 }

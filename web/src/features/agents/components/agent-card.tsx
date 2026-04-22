@@ -92,9 +92,15 @@ export function AgentCard({ agent, deleted, fromCatalog }: AgentCardProps) {
 
         {/* Footer */}
         <div className="flex items-center justify-between gap-3 border-t border-white/[0.06] pt-3">
-          <div className="type-caption text-fg-disabled truncate">
-            {isFromCatalog ? "Read-only" : agent.linked_catalog_agent_id ? "Linked to catalog" : ""}
-          </div>
+          {isFromCatalog ? (
+            <span className="type-caption text-fg-disabled truncate">Read-only</span>
+          ) : agent.linked_catalog_agent_id ? (
+            <span className="type-caption text-aurora-cyan/80 truncate">
+              Published
+            </span>
+          ) : (
+            <span />
+          )}
           {deleted ? (
             <span className="type-caption text-fg-disabled">View sessions →</span>
           ) : (

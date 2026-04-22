@@ -213,6 +213,14 @@ export default function CatalogPage() {
               searchActive={Boolean(urlQ || urlCat || urlServers.length)}
               importedMap={importedMap}
               onImport={onImport}
+              emptyAction={
+                <Link
+                  href={routes.agents}
+                  className="inline-flex items-center gap-1.5 type-caption-bold text-aurora-violet hover:opacity-90"
+                >
+                  Go to your agents →
+                </Link>
+              }
             />
           </div>
         </div>

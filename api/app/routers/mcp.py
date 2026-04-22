@@ -193,7 +193,41 @@ async def list_agent_tools(
     token: str = Depends(user_token),
     db: AsyncSession = Depends(get_db),
 ):
-    await _owned_agent(db, agent_id, user)
+    agent = await _owned_agent(db, agent_id, user)
+
+    # Imported agents don't materialize binding rows — read the snapshot
+    # from the effective catalog version.
+    if agent.catalog_import_id is not None:
+        from app.services.agent_config_resolver import resolve_effective_version
+
+        _, version = await resolve_effective_version(db, agent)
+        tools = await _litellm_tools_for(token)
+        by_name = {t["name"]: t for t in tools}
+        out: list[McpToolBindingResponse] = []
+        for b in list(version.mcp_tool_bindings or []):
+            qualified = f"{b['server_name']}{TOOL_NAME_SEPARATOR}{b['tool_name']}"
+            entry = by_name.get(qualified)
+            if entry is None:
+                tool = McpToolResponse(
+                    id=qualified,
+                    server_id=b["server_name"],
+                    server_name=b["server_name"],
+                    name=b["tool_name"],
+                    description=None,
+                    input_schema={},
+                    qualified_name=qualified,
+                )
+            else:
+                tool = _tool_to_response(entry, b["server_name"])
+            out.append(
+                McpToolBindingResponse(
+                    id=f"snapshot:{b['server_name']}/{b['tool_name']}",
+                    agent_id=str(agent.id),
+                    tool=tool,
+                )
+            )
+        return out
+
     bindings = (
         await db.execute(
             select(McpAgentToolBinding)
@@ -214,7 +248,12 @@ async def set_agent_tools(
     token: str = Depends(user_token),
     db: AsyncSession = Depends(get_db),
 ):
-    await _owned_agent(db, agent_id, user)
+    agent = await _owned_agent(db, agent_id, user)
+    if agent.catalog_import_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Imported catalog agents are read-only. Fork the agent first.",
+        )
 
     # Fetch the user's view once, validate every requested tool against it.
     tools = await _litellm_tools_for(token)
@@ -249,7 +288,12 @@ async def unbind_tool(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await _owned_agent(db, agent_id, user)
+    agent = await _owned_agent(db, agent_id, user)
+    if agent.catalog_import_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Imported catalog agents are read-only. Fork the agent first.",
+        )
     server_name, tool_name = _split_qualified(qualified_name)
 
     result = await db.execute(

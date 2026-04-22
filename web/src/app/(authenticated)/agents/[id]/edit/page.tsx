@@ -56,6 +56,26 @@ export default function EditAgentPage() {
     );
   }
 
+  if (agent.catalog_import_id) {
+    return (
+      <div className="mx-auto max-w-container-sm p-8">
+        <ErrorState
+          title="Imported catalog agent is read-only"
+          description="Fork this agent first to make it editable — your conversations will carry over."
+        />
+        <div className="mt-4 flex items-center gap-3">
+          <Link
+            href={routes.agent(agent.id)}
+            className="inline-flex items-center gap-1.5 type-caption text-info hover:opacity-80"
+          >
+            <ArrowLeft size={12} strokeWidth={2} />
+            Back to agent
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   const handleSubmit = async (data: AgentFormData) => {
     const { mcp_tool_ids, ...agentData } = data;
     await agentsApi.update(agent.id, agentData);
