@@ -203,22 +203,27 @@ export function PublishDialog({
       }
     >
       <div className="flex flex-col gap-5">
-        {/* Category */}
         <div>
-          <Label htmlFor="publish-category" className="mb-1.5 block">
+          <Label id="publish-category-label" className="mb-1.5 block">
             Category
           </Label>
-          <div className="flex flex-wrap gap-1.5">
+          <div
+            role="radiogroup"
+            aria-labelledby="publish-category-label"
+            className="flex flex-wrap gap-1.5"
+          >
             {CATEGORY_OPTIONS.map((c) => {
               const active = c === category;
               return (
                 <button
                   type="button"
                   key={c}
+                  role="radio"
+                  aria-checked={active}
                   onClick={() => setCategory(c)}
-                  aria-pressed={active}
                   className={
                     "rounded-sm px-2.5 py-1 type-caption-bold capitalize transition-colors " +
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-violet/50 " +
                     (active
                       ? "bg-aurora-a-soft text-fg-primary border border-aurora-violet/40"
                       : "bg-white/[0.03] text-fg-muted border border-white/[0.06] hover:bg-white/[0.06] hover:text-fg-secondary")

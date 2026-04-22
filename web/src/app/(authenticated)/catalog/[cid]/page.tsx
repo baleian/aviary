@@ -152,7 +152,7 @@ export default function CatalogDetailPage() {
             </div>
 
             {viewingNonLatest && (
-              <div className="mt-4 inline-flex items-center gap-2 rounded-sm border border-info/30 bg-info/[0.08] px-3 py-1 type-caption text-fg-secondary">
+              <div className="mt-4 inline-flex items-center gap-2 rounded-md border border-info/30 bg-info/[0.08] px-3 py-1 type-caption text-fg-secondary">
                 Viewing v{v.version_number}.{" "}
                 <button
                   type="button"

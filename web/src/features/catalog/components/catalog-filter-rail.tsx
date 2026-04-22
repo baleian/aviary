@@ -113,12 +113,19 @@ function RailButton({
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "group flex items-center justify-between gap-2 rounded-sm px-3 py-1.5 type-caption transition-colors duration-150",
+        "group relative flex items-center justify-between gap-2 rounded-sm px-3 py-1.5 type-caption transition-colors duration-150",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-violet/40",
         active
           ? "bg-aurora-a-soft text-fg-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]"
           : "text-fg-muted hover:bg-white/[0.05] hover:text-fg-primary",
       )}
     >
+      {active && (
+        <span
+          aria-hidden
+          className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full bg-aurora-a"
+        />
+      )}
       <span className="flex items-center gap-1.5">
         {icon}
         {label}
@@ -149,12 +156,15 @@ function RailCheckbox({
       onClick={onClick}
       role="checkbox"
       aria-checked={active}
+      aria-label={`${label}: ${count} ${count === 1 ? "agent" : "agents"}`}
       className={cn(
         "group flex items-center gap-2 rounded-sm px-3 py-1.5 type-caption transition-colors duration-150",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-violet/40",
         "text-fg-muted hover:bg-white/[0.05] hover:text-fg-primary",
       )}
     >
       <span
+        aria-hidden
         className={cn(
           "flex h-3.5 w-3.5 items-center justify-center rounded-[4px] border",
           active
@@ -165,7 +175,9 @@ function RailCheckbox({
         {active && <Check size={10} strokeWidth={3} />}
       </span>
       <span className="flex-1 truncate font-mono">{label}</span>
-      <span className="type-caption tabular-nums text-fg-disabled">{count}</span>
+      <span aria-hidden className="type-caption tabular-nums text-fg-disabled">
+        {count}
+      </span>
     </button>
   );
 }
