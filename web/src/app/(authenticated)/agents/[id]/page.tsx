@@ -12,7 +12,7 @@ import { AgentRecentSessions } from "@/features/agents/components/agent-recent-s
 import { AgentConfigGrid } from "@/features/agents/components/agent-config-grid";
 import { PublishCta } from "@/features/catalog/components/publisher/publish-cta";
 import { VersionHistoryPanel } from "@/features/catalog/components/publisher/version-history-panel";
-import { ImportedSourceStrip } from "@/features/catalog/components/consumer/imported-source-strip";
+import { ImportedByline } from "@/features/catalog/components/consumer/imported-byline";
 import { ForkDialog } from "@/features/catalog/components/consumer/fork-dialog";
 import { agentsApi } from "@/features/agents/api/agents-api";
 import { useAuth } from "@/features/auth/providers/auth-provider";
@@ -152,15 +152,35 @@ export default function AgentDetailPage() {
           </div>
         )}
 
-        {agent.catalog_import_id && (
-          <ImportedSourceStrip
-            agent={agent}
-            onForkClicked={() => setForkOpen(true)}
-            onMutated={() => void refresh()}
-          />
+        {agent.catalog_import_id && agent.is_deprecated && (
+          <div className="mb-6 flex items-start gap-3 rounded-md border border-warning/30 bg-warning/[0.08] px-4 py-3 animate-fade-in-fast">
+            <div className="mt-1 h-2 w-2 shrink-0 rounded-full bg-warning ring-2 ring-warning/20" />
+            <div className="type-caption text-fg-secondary">
+              The source catalog entry or this version has been retracted.
+              You can still chat with this agent, or{" "}
+              <button
+                type="button"
+                onClick={() => setForkOpen(true)}
+                className="underline underline-offset-2 text-aurora-cyan hover:opacity-90"
+              >
+                fork it
+              </button>{" "}
+              to detach a private editable copy.
+            </div>
+          </div>
         )}
 
-        <AgentDetailHero agent={agent} />
+        <AgentDetailHero
+          agent={agent}
+          byline={
+            agent.catalog_import_id ? (
+              <ImportedByline
+                agent={agent}
+                onMutated={() => void refresh()}
+              />
+            ) : undefined
+          }
+        />
         <AgentRecentSessions agentId={agent.id} />
         <AgentConfigGrid agent={agent} mcpTools={mcpTools} />
         {!agent.catalog_import_id && (

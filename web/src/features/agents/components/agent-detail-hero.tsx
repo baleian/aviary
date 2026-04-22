@@ -8,6 +8,9 @@ import type { Agent } from "@/types";
 
 interface AgentDetailHeroProps {
   agent: Agent;
+  /** Optional subtitle slot rendered under the name — used for the
+   *  "By {email} · version dropdown" line on imported agents. */
+  byline?: React.ReactNode;
 }
 
 /**
@@ -20,7 +23,7 @@ interface AgentDetailHeroProps {
  *                                   so it never stacks under the red Delete
  *                                   button in the breadcrumb row.
  */
-export function AgentDetailHero({ agent }: AgentDetailHeroProps) {
+export function AgentDetailHero({ agent, byline }: AgentDetailHeroProps) {
   const { createAndNavigate, creating, error } = useCreateSession(agent.id);
   const isDeleted = agent.status === "deleted";
 
@@ -53,6 +56,11 @@ export function AgentDetailHero({ agent }: AgentDetailHeroProps) {
           >
             {agent.name}
           </h1>
+          {byline && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-2 type-caption text-fg-muted">
+              {byline}
+            </div>
+          )}
           <p className="mt-1.5 type-body-tight text-fg-muted">
             {agent.description || "No description"}
           </p>

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Store } from "@/components/icons";
+import { ArrowLeft, ArrowRight, Store } from "@/components/icons";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/feedback/empty-state";
 import { catalogApi } from "@/features/catalog/api/catalog-api";
@@ -70,9 +70,10 @@ export default function MyCatalogPage() {
             action={
               <Link
                 href={routes.agents}
-                className="inline-flex items-center gap-1.5 type-caption-bold text-aurora-violet hover:opacity-90"
+                className="inline-flex h-10 items-center gap-2 rounded-pill bg-aurora-a px-5 type-button text-white animate-aurora-sheen shadow-[0_0_24px_rgba(123,92,255,0.35)] hover:-translate-y-[1px] transition-transform duration-[320ms] ease-[cubic-bezier(0.16,1,0.3,1)]"
               >
-                Back to my agents →
+                Pick an agent to publish
+                <ArrowRight size={14} strokeWidth={2} />
               </Link>
             }
           />

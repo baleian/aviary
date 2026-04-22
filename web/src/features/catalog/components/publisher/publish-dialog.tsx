@@ -1,12 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { agentsApi } from "@/features/agents/api/agents-api";
 import { catalogApi } from "@/features/catalog/api/catalog-api";
-import type { CatalogCategory, DriftResponse } from "@/types/catalog";
+import type { Agent } from "@/types/agent";
+import type {
+  AgentVersion,
+  CatalogCategory,
+  DriftResponse,
+} from "@/types/catalog";
 
 const CATEGORY_OPTIONS: CatalogCategory[] = [
   "coding",
@@ -29,6 +35,39 @@ interface PublishDialogProps {
   onPublished: () => void;
 }
 
+type DiffFieldRow = {
+  field: string;
+  label: string;
+  before: string;
+  after: string;
+};
+
+const DIFF_LABELS: Record<string, string> = {
+  name: "Name",
+  description: "Description",
+  icon: "Icon",
+  category: "Category",
+  instruction: "Instruction",
+  model_config_json: "Model",
+  tools: "Built-in tools",
+  mcp_servers: "MCP servers",
+  mcp_tool_bindings: "MCP tool bindings",
+};
+
+function renderValue(v: unknown): string {
+  if (v === null || v === undefined || v === "") return "—";
+  if (typeof v === "string") return v;
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return String(v);
+  }
+}
+
+function truncate(s: string, n = 140): string {
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
 export function PublishDialog({
   open,
   onClose,
@@ -47,12 +86,78 @@ export function PublishDialog({
   const nothingToPublish =
     drift !== null && drift.is_dirty === false && nextVersion > 1;
 
+  const [latestSnapshot, setLatestSnapshot] = useState<AgentVersion | null>(null);
+  const [currentAgent, setCurrentAgent] = useState<Agent | null>(null);
+
   useEffect(() => {
     if (!open) {
       setError(null);
       setNotes("");
+      return;
     }
-  }, [open]);
+    // Pull both snapshots for the diff preview.
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [agent, latest] = await Promise.all([
+          agentsApi.get(agentId),
+          drift?.latest_version_id
+            ? catalogApi
+                .detail(
+                  // The drift response doesn't carry catalog_id; fetch agent
+                  // detail first to get `linked_catalog_agent_id`.
+                  (await agentsApi.get(agentId)).linked_catalog_agent_id ?? "",
+                  drift.latest_version_id,
+                )
+                .then((d) => d.version)
+            : Promise.resolve(null),
+        ]);
+        if (cancelled) return;
+        setCurrentAgent(agent);
+        setLatestSnapshot(latest);
+      } catch {
+        /* diff is best-effort; dialog still works without it */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, agentId, drift?.latest_version_id]);
+
+  const diffRows: DiffFieldRow[] = useMemo(() => {
+    if (!drift || !latestSnapshot || !currentAgent) return [];
+    const pick = (field: string): [unknown, unknown] => {
+      switch (field) {
+        case "name": return [latestSnapshot.name, currentAgent.name];
+        case "description":
+          return [latestSnapshot.description, currentAgent.description];
+        case "icon": return [latestSnapshot.icon, currentAgent.icon];
+        case "instruction":
+          return [latestSnapshot.instruction, currentAgent.instruction];
+        case "category":
+          return [latestSnapshot.category, category];
+        case "model_config_json":
+          return [latestSnapshot.model_config, currentAgent.model_config];
+        case "tools":
+          return [latestSnapshot.tools, currentAgent.tools];
+        case "mcp_servers":
+          return [latestSnapshot.mcp_servers, currentAgent.mcp_servers];
+        default:
+          return ["—", "—"];
+      }
+    };
+    return drift.changed_fields
+      .filter((f) => f !== "*" && f !== "mcp_tool_bindings")
+      .map((field) => {
+        const [before, after] = pick(field);
+        return {
+          field,
+          label: DIFF_LABELS[field] ?? field,
+          before: truncate(renderValue(before)),
+          after: truncate(renderValue(after)),
+        };
+      });
+  }, [drift, latestSnapshot, currentAgent, category]);
 
   const onSubmit = async () => {
     if (busy || nothingToPublish) return;
@@ -152,22 +257,51 @@ export function PublishDialog({
           </p>
         </div>
 
-        {/* Drift summary */}
         {drift && drift.changed_fields.length > 0 && drift.changed_fields[0] !== "*" && (
           <div className="rounded-sm border border-white/[0.06] bg-white/[0.02] p-3">
-            <div className="mb-1 type-caption-bold uppercase tracking-wide text-fg-muted">
+            <div className="mb-2 type-caption-bold uppercase tracking-wide text-fg-muted">
               Changed since v{drift.latest_version_number}
             </div>
-            <div className="flex flex-wrap gap-1.5">
-              {drift.changed_fields.map((f) => (
-                <code
-                  key={f}
-                  className="rounded-sm bg-white/[0.04] px-1.5 py-0.5 type-code-sm text-fg-secondary"
-                >
-                  {f}
-                </code>
-              ))}
-            </div>
+            {diffRows.length === 0 ? (
+              <div className="flex flex-wrap gap-1.5">
+                {drift.changed_fields.map((f) => (
+                  <code
+                    key={f}
+                    className="rounded-sm bg-white/[0.04] px-1.5 py-0.5 type-code-sm text-fg-secondary"
+                  >
+                    {DIFF_LABELS[f] ?? f}
+                  </code>
+                ))}
+              </div>
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {diffRows.map((row) => (
+                  <li
+                    key={row.field}
+                    className="rounded-sm bg-white/[0.02] p-2 type-caption"
+                  >
+                    <div className="type-caption-bold text-fg-secondary">
+                      {row.label}
+                    </div>
+                    <div className="mt-1 grid gap-0.5">
+                      <div className="text-danger/80">
+                        <span className="text-fg-disabled">−&nbsp;</span>
+                        <span className="font-mono">{row.before}</span>
+                      </div>
+                      <div className="text-success">
+                        <span className="text-fg-disabled">+&nbsp;</span>
+                        <span className="font-mono">{row.after}</span>
+                      </div>
+                    </div>
+                  </li>
+                ))}
+                {drift.changed_fields.includes("mcp_tool_bindings") && (
+                  <li className="rounded-sm bg-white/[0.02] p-2 type-caption text-fg-muted">
+                    MCP tool bindings changed.
+                  </li>
+                )}
+              </ul>
+            )}
           </div>
         )}
 
