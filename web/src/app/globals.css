@@ -672,4 +672,12 @@
     padding: 0;
     box-shadow: 0 0 0 1px rgba(255, 216, 102, 0.35);
   }
+
+  .scrollbar-hidden {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .scrollbar-hidden::-webkit-scrollbar {
+    display: none;
+  }
 }

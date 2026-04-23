@@ -1,18 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Filter, Search, Store, X } from "@/components/icons";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Sparkles, TrendingUp, X } from "@/components/icons";
 import { Skeleton } from "@/components/ui/skeleton";
 import { catalogApi } from "@/features/catalog/api/catalog-api";
-import { CatalogFilterRail } from "@/features/catalog/components/catalog-filter-rail";
+import { CatalogFeatured } from "@/features/catalog/components/catalog-featured";
 import { CatalogGrid } from "@/features/catalog/components/catalog-grid";
-import { CatalogHero } from "@/features/catalog/components/catalog-hero";
+import { CatalogHeroBanner } from "@/features/catalog/components/catalog-hero-banner";
+import { CatalogScrollRow } from "@/features/catalog/components/catalog-scroll-row";
+import { CategoryTiles } from "@/features/catalog/components/category-tiles";
 import { useAuth } from "@/features/auth/providers/auth-provider";
-import { routes } from "@/lib/constants/routes";
+import { cn } from "@/lib/utils";
 import type {
   CatalogAgentSummary,
   CatalogFacets,
@@ -46,7 +45,6 @@ export default function CatalogPage() {
   const [loading, setLoading] = useState(true);
   const [facets, setFacets] = useState<CatalogFacets | null>(null);
   const [importedMap, setImportedMap] = useState<Record<string, string>>({});
-  const [mobileRailOpen, setMobileRailOpen] = useState(false);
 
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
@@ -62,7 +60,7 @@ export default function CatalogPage() {
     return () => {
       if (searchTimer.current) clearTimeout(searchTimer.current);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchInput, composing]);
 
   useEffect(() => {
@@ -142,6 +140,8 @@ export default function CatalogPage() {
     updateParam((sp) => {
       sp.delete("cat");
       sp.delete("srv");
+      sp.delete("q");
+      sp.delete("sort");
     });
 
   const onSort = (v: SortKey) =>
@@ -161,184 +161,296 @@ export default function CatalogPage() {
     }
   };
 
-  const hasActiveFilters = Boolean(urlCat || urlServers.length);
-  const activeFilterCount = (urlCat ? 1 : 0) + urlServers.length;
+  const hasAdvancedFilters = Boolean(
+    urlQ || urlServers.length || urlSort !== "recent",
+  );
+  const showCurated = !hasAdvancedFilters;
+  const hasActiveFilters = Boolean(urlCat) || hasAdvancedFilters;
+
+  const featured = useMemo(
+    () => [...items].sort((a, b) => b.import_count - a.import_count).slice(0, 2),
+    [items],
+  );
+  const mostImported = useMemo(
+    () =>
+      [...items]
+        .sort((a, b) => b.import_count - a.import_count)
+        .slice(0, 12)
+        .filter((x) => x.import_count > 0),
+    [items],
+  );
+  const recent = useMemo(
+    () =>
+      [...items]
+        .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+        .slice(0, 12),
+    [items],
+  );
+
+  const publishersCount = useMemo(
+    () => new Set(items.map((i) => i.owner_email)).size,
+    [items],
+  );
 
   return (
     <div className="h-full overflow-y-auto bg-canvas">
-      <div className="mx-auto max-w-container px-6 pb-16 md:px-10">
-        <div className="flex justify-end pt-6">
-          <Link
-            href={routes.catalogMine}
-            className="inline-flex items-center gap-1.5 rounded-pill glass-raised px-3 py-1 type-caption text-fg-muted hover:text-fg-primary transition-colors"
-          >
-            <Store size={12} strokeWidth={1.75} className="text-aurora-coral" />
-            My entries
-          </Link>
-        </div>
+      <CatalogHeroBanner
+        total={total}
+        categoriesCount={facets?.categories.length ?? null}
+        publishersCount={items.length ? publishersCount : null}
+        searchInput={searchInput}
+        onSearchChange={setSearchInput}
+        onCompositionStart={() => setComposing(true)}
+        onCompositionEnd={(v) => {
+          setComposing(false);
+          setSearchInput(v);
+        }}
+      />
 
-        <CatalogHero total={total} />
+      <div className="mx-auto max-w-[1600px] px-6 pb-20 md:px-10">
+        <section className="mt-8">
+          <CategoryTiles
+            facets={facets?.categories ?? []}
+            selected={urlCat || null}
+            onSelect={onCategory}
+          />
+        </section>
 
-        <div className="mx-auto mt-2 mb-8 max-w-xl">
-          <div className="relative">
-            <Search
-              size={14}
-              strokeWidth={1.75}
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-fg-disabled pointer-events-none"
-            />
-            <Input
-              placeholder="Search agents…"
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
-              onCompositionStart={() => setComposing(true)}
-              onCompositionEnd={(e) => {
-                setComposing(false);
-                setSearchInput((e.target as HTMLInputElement).value);
-              }}
-              className="pl-9"
-              aria-label="Search catalog"
-            />
-          </div>
-        </div>
-
-        <div className="grid gap-6 lg:grid-cols-[260px_1fr]">
-          <div className="hidden lg:block">
-            <CatalogFilterRail
-              facets={facets}
-              selectedCategory={urlCat || null}
-              selectedServers={urlServers}
-              onCategory={onCategory}
-              onToggleServer={onToggleServer}
-              onReset={onReset}
-            />
-          </div>
-
-          <div>
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2 type-caption text-fg-muted">
-                {loading ? (
-                  <Skeleton className="h-3 w-24" />
-                ) : (
-                  <>{items.length} of {total ?? 0}</>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setMobileRailOpen(true)}
-                  className="inline-flex items-center gap-1.5 rounded-sm px-2 py-0.5 type-caption-bold text-fg-secondary hover:text-fg-primary hover:bg-white/[0.04] transition-colors lg:hidden"
-                  aria-label="Open filters"
-                >
-                  <Filter size={12} strokeWidth={1.75} />
-                  Filters{activeFilterCount ? ` (${activeFilterCount})` : ""}
-                </button>
-              </div>
-
-              <label className="inline-flex items-center gap-1.5 type-caption text-fg-muted">
-                Sort
-                <select
-                  value={urlSort}
-                  onChange={(e) => onSort(e.target.value as SortKey)}
-                  className="rounded-sm bg-white/[0.04] border border-white/[0.08] text-fg-secondary px-2 py-1 type-caption focus-visible:outline-none focus-visible:border-aurora-violet/50"
-                >
-                  {SORT_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
-
-            {hasActiveFilters && (
-              <div className="mb-4 flex flex-wrap items-center gap-1.5">
-                {urlCat && (
-                  <FilterChip
-                    label={`Category: ${urlCat}`}
-                    onRemove={() => onCategory(null)}
-                  />
-                )}
-                {urlServers.map((srv) => (
-                  <FilterChip
-                    key={srv}
-                    label={`Server: ${srv}`}
-                    onRemove={() => onToggleServer(srv)}
-                  />
-                ))}
-                <button
-                  type="button"
-                  onClick={onReset}
-                  className="type-caption text-fg-muted hover:text-fg-primary transition-colors"
-                >
-                  Reset all
-                </button>
-              </div>
-            )}
-
-            <CatalogGrid
-              items={items}
-              loading={loading}
-              searchActive={Boolean(urlQ || urlCat || urlServers.length)}
+        {showCurated && !loading && items.length > 0 && (
+          <div className="mt-12 flex flex-col gap-14">
+            <CatalogFeatured
+              items={featured}
               importedMap={importedMap}
               onImport={onImport}
-              emptyAction={
-                <Link
-                  href={routes.agents}
-                  className="inline-flex items-center gap-1.5 type-caption-bold text-aurora-violet hover:opacity-90"
+            />
+            {mostImported.length > 0 && (
+              <CatalogScrollRow
+                icon={
+                  <TrendingUp
+                    size={14}
+                    strokeWidth={1.75}
+                    className="text-aurora-coral"
+                  />
+                }
+                label="Most imported"
+                items={mostImported}
+                importedMap={importedMap}
+                onImport={onImport}
+                action={
+                  <button
+                    type="button"
+                    onClick={() => onSort("popular")}
+                    className="type-caption text-fg-muted hover:text-fg-primary transition-colors"
+                  >
+                    See all →
+                  </button>
+                }
+              />
+            )}
+            <CatalogScrollRow
+              icon={
+                <Sparkles
+                  size={14}
+                  strokeWidth={1.75}
+                  className="text-aurora-coral"
+                />
+              }
+              label="Recently published"
+              items={recent}
+              importedMap={importedMap}
+              onImport={onImport}
+              action={
+                <button
+                  type="button"
+                  onClick={() => onSort("recent")}
+                  className="type-caption text-fg-muted hover:text-fg-primary transition-colors"
                 >
-                  Go to your agents →
-                </Link>
+                  See all →
+                </button>
               }
             />
           </div>
-        </div>
-      </div>
+        )}
 
-      {mobileRailOpen && (
-        <div
-          className="fixed inset-0 z-40 flex lg:hidden"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Filters"
-        >
-          <button
-            type="button"
-            aria-label="Close filters"
-            className="absolute inset-0 bg-black/60 backdrop-blur-[2px]"
-            onClick={() => setMobileRailOpen(false)}
-          />
-          <aside className="relative ml-0 flex h-full w-[min(320px,85vw)] flex-col bg-canvas glass-pane p-4 animate-slide-in-left">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="type-caption-bold uppercase tracking-wide text-fg-muted">
-                Filters
-              </h2>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setMobileRailOpen(false)}
-                aria-label="Close filters"
-              >
-                <X size={14} strokeWidth={1.75} />
-              </Button>
-            </div>
-            <CatalogFilterRail
+        {!showCurated && (
+          <div className="mt-10">
+            <FilterBar
+              urlQ={urlQ}
+              urlCat={urlCat}
+              urlServers={urlServers}
+              urlSort={urlSort}
               facets={facets}
-              selectedCategory={urlCat || null}
-              selectedServers={urlServers}
+              total={total}
+              loading={loading}
               onCategory={onCategory}
               onToggleServer={onToggleServer}
               onReset={onReset}
+              onSort={onSort}
+              onClearQ={() => {
+                setSearchInput("");
+                updateParam((sp) => sp.delete("q"));
+              }}
+              resultCount={items.length}
             />
-          </aside>
+            <div className="mt-6">
+              <CatalogGrid
+                items={items}
+                loading={loading}
+                searchActive={hasActiveFilters}
+                importedMap={importedMap}
+                onImport={onImport}
+                emptyAction={
+                  <button
+                    type="button"
+                    onClick={onReset}
+                    className="inline-flex items-center gap-1.5 type-caption-bold text-aurora-violet hover:opacity-90"
+                  >
+                    Reset all filters →
+                  </button>
+                }
+              />
+            </div>
+          </div>
+        )}
+
+        {loading && showCurated && (
+          <div className="mt-12 space-y-12">
+            <div className="grid gap-4 lg:grid-cols-2">
+              <Skeleton className="h-[220px] rounded-xl" />
+              <Skeleton className="h-[220px] rounded-xl" />
+            </div>
+            <div className="flex gap-3 overflow-hidden">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <Skeleton key={i} className="h-[196px] w-[280px] shrink-0 rounded-lg" />
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FilterBar({
+  urlQ,
+  urlCat,
+  urlServers,
+  urlSort,
+  facets,
+  total,
+  loading,
+  onCategory,
+  onToggleServer,
+  onReset,
+  onSort,
+  onClearQ,
+  resultCount,
+}: {
+  urlQ: string;
+  urlCat: string;
+  urlServers: string[];
+  urlSort: SortKey;
+  facets: CatalogFacets | null;
+  total: number | null;
+  loading: boolean;
+  onCategory: (c: string | null) => void;
+  onToggleServer: (s: string) => void;
+  onReset: () => void;
+  onSort: (v: SortKey) => void;
+  onClearQ: () => void;
+  resultCount: number;
+}) {
+  const servers = facets?.servers ?? [];
+  return (
+    <div className="rounded-xl glass-pane p-4 md:p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="type-caption text-fg-muted tabular-nums">
+          {loading ? (
+            <Skeleton className="h-3 w-24" />
+          ) : (
+            <>
+              <span className="type-body font-semibold text-fg-primary">
+                {resultCount}
+              </span>
+              <span className="ml-1 text-fg-muted">
+                of {total ?? 0} results
+              </span>
+            </>
+          )}
+        </div>
+        <label className="inline-flex items-center gap-2 type-caption text-fg-muted">
+          Sort
+          <select
+            value={urlSort}
+            onChange={(e) => onSort(e.target.value as SortKey)}
+            className="rounded-sm border border-white/[0.08] bg-white/[0.04] px-2 py-1 type-caption text-fg-secondary focus-visible:outline-none focus-visible:border-aurora-coral/50"
+          >
+            {SORT_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {servers.length > 0 && (
+        <div className="mt-4 flex flex-wrap items-center gap-1.5">
+          <span className="type-caption text-fg-disabled mr-1">MCP servers:</span>
+          {servers.map((s) => {
+            const active = urlServers.includes(s.name);
+            return (
+              <button
+                key={s.name}
+                type="button"
+                onClick={() => onToggleServer(s.name)}
+                aria-pressed={active}
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-pill border px-2.5 py-0.5 type-caption transition-all duration-150 font-mono",
+                  active
+                    ? "border-aurora-coral/40 bg-aurora-c-soft text-fg-primary"
+                    : "border-white/[0.08] bg-white/[0.03] text-fg-muted hover:border-white/[0.14] hover:text-fg-primary",
+                )}
+              >
+                {s.name}
+                <span className="tabular-nums text-fg-disabled">· {s.count}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {(urlQ || urlCat || urlServers.length) && (
+        <div className="mt-4 flex flex-wrap items-center gap-1.5 border-t border-white/[0.06] pt-3">
+          <span className="type-caption text-fg-disabled mr-1">Active:</span>
+          {urlQ && <ActiveChip label={`"${urlQ}"`} onRemove={onClearQ} />}
+          {urlCat && (
+            <ActiveChip
+              label={`Category: ${urlCat}`}
+              onRemove={() => onCategory(null)}
+            />
+          )}
+          {urlServers.map((s) => (
+            <ActiveChip
+              key={s}
+              label={`Server: ${s}`}
+              onRemove={() => onToggleServer(s)}
+            />
+          ))}
+          <button
+            type="button"
+            onClick={onReset}
+            className="ml-2 type-caption text-fg-muted hover:text-fg-primary transition-colors"
+          >
+            Reset all
+          </button>
         </div>
       )}
     </div>
   );
 }
 
-function FilterChip({
-  label,
-  onRemove,
-}: {
-  label: string;
-  onRemove: () => void;
-}) {
+function ActiveChip({ label, onRemove }: { label: string; onRemove: () => void }) {
   return (
     <span className="inline-flex items-center gap-1 rounded-pill bg-aurora-a-soft px-2.5 py-0.5 type-caption-bold text-fg-secondary border border-aurora-violet/30">
       {label}

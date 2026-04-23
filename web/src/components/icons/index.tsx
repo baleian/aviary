@@ -89,6 +89,12 @@ export {
   Tag,
   History,
   MoreHorizontal,
+  Zap,
+  Megaphone,
+  Database,
+  BookOpen,
+  TrendingUp,
+  Flame,
 
   // Layout
   LayoutGrid,

@@ -26,9 +26,9 @@ export function CatalogGrid({
 }: CatalogGridProps) {
   if (loading) {
     return (
-      <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
-        {Array.from({ length: 6 }).map((_, i) => (
-          <Skeleton key={i} className="h-48 rounded-lg" />
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        {Array.from({ length: 8 }).map((_, i) => (
+          <Skeleton key={i} className="h-[284px] rounded-lg" />
         ))}
       </div>
     );
@@ -54,7 +54,7 @@ export function CatalogGrid({
   }
 
   return (
-    <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
+    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
       {items.map((item) => (
         <CatalogCard
           key={item.id}
