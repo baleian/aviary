@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { ArrowRight, Download } from "@/components/icons";
@@ -16,6 +17,7 @@ interface CatalogCardProps {
 }
 
 export function CatalogCard({ item, importedAgentId, onImport }: CatalogCardProps) {
+  const router = useRouter();
   const [busy, setBusy] = useState(false);
   const imported = Boolean(importedAgentId);
 
@@ -29,6 +31,12 @@ export function CatalogCard({ item, importedAgentId, onImport }: CatalogCardProp
     } finally {
       setBusy(false);
     }
+  };
+
+  const handleOpenImported = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (importedAgentId) router.push(routes.agent(importedAgentId));
   };
 
   return (
@@ -78,20 +86,20 @@ export function CatalogCard({ item, importedAgentId, onImport }: CatalogCardProp
 
         <div className="flex items-center justify-end gap-2 border-t border-white/[0.06] pt-3">
           {imported && importedAgentId ? (
-            <Link
-              href={routes.agent(importedAgentId)}
-              onClick={(e) => e.stopPropagation()}
+            <button
+              type="button"
+              onClick={handleOpenImported}
+              aria-label={`Open imported ${item.name}`}
               className={cn(
                 "inline-flex items-center gap-1.5 rounded-sm px-2.5 py-1 type-caption-bold transition-colors",
                 "bg-aurora-cyan/15 border border-aurora-cyan/40 text-aurora-cyan",
                 "hover:bg-aurora-cyan/20",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-cyan/40",
               )}
-              aria-label={`Open imported ${item.name}`}
             >
               Open
               <ArrowRight size={12} strokeWidth={2.5} />
-            </Link>
+            </button>
           ) : (
             <button
               type="button"
