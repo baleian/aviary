@@ -13,6 +13,7 @@
       <tr>
         <th>Name</th>
         <th>Slug</th>
+        <th>Owner</th>
         <th>Status</th>
         <th>Nodes</th>
         <th>Last Updated</th>
@@ -24,6 +25,7 @@
       <tr>
         <td><a href="/workflows/{{ wf.id }}">{{ wf.name }}</a></td>
         <td class="mono">{{ wf.slug }}</td>
+        <td class="text-sm">{{ owner_emails.get(wf.id|string, '—') }}</td>
         <td><span class="badge badge-{{ wf.status }}">{{ wf.status }}</span></td>
         <td>{{ wf.definition.nodes | length if wf.definition and wf.definition.nodes else 0 }}</td>
         <td class="text-sm text-muted">{{ wf.updated_at.strftime('%m/%d %H:%M') if wf.updated_at else '—' }}</td>

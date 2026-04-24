@@ -31,6 +31,8 @@
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px;">
       <span class="text-muted">Workflow Status</span>
       <span class="badge badge-{{ workflow.status }}">{{ workflow.status }}</span>
+      <span class="text-muted">Owner</span>
+      <span>{{ owner_email }}</span>
       <span class="text-muted">Runtime</span>
       <span class="mono">{{ workflow.runtime_endpoint or 'default environment' }}</span>
       <span class="text-muted">Nodes</span>

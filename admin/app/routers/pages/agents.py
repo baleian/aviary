@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aviary_shared.db.models import Agent, Session as SessionModel
+from aviary_shared.db.models import Agent, Session as SessionModel, User
 from app.db import get_db
 from app.routers.pages._templates import templates
 
@@ -31,9 +31,15 @@ async def agent_list(
     total_pages = max(1, (total + per_page - 1) // per_page)
 
     result = await db.execute(
-        select(Agent).order_by(Agent.created_at.desc()).offset(offset).limit(per_page)
+        select(Agent, User.email)
+        .join(User, User.id == Agent.owner_id)
+        .order_by(Agent.created_at.desc())
+        .offset(offset)
+        .limit(per_page)
     )
-    agents = list(result.scalars().all())
+    rows = list(result.all())
+    agents = [row[0] for row in rows]
+    owner_email_map = {str(row[0].id): row[1] for row in rows}
 
     agent_ids = [a.id for a in agents]
     activity_map: dict[str, object] = {}
@@ -47,6 +53,7 @@ async def agent_list(
 
     return templates.TemplateResponse(request, "agents.html", {
         "agents": agents,
+        "owner_emails": owner_email_map,
         "last_activity": activity_map,
         "page": page,
         "total_pages": total_pages,
@@ -58,10 +65,15 @@ async def agent_list(
 async def agent_detail(
     request: Request, agent_id: uuid.UUID, db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Agent).where(Agent.id == agent_id))
-    agent = result.scalar_one_or_none()
-    if not agent:
+    result = await db.execute(
+        select(Agent, User.email)
+        .join(User, User.id == Agent.owner_id)
+        .where(Agent.id == agent_id)
+    )
+    row = result.one_or_none()
+    if not row:
         return HTMLResponse("<h1>Agent not found</h1>", status_code=404)
+    agent, owner_email = row
 
     last_activity = (await db.execute(
         select(func.max(SessionModel.last_message_at))
@@ -78,6 +90,7 @@ async def agent_detail(
 
     return templates.TemplateResponse(request, "agent_detail.html", {
         "agent": agent,
+        "owner_email": owner_email,
         "last_activity": last_activity,
         "flash": flash_data,
     })

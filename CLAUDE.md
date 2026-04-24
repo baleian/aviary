@@ -69,7 +69,7 @@ Three backend services with distinct roles:
 
 **API Server (`:8000`)** — User-facing. Agent/session/workflow CRUD (owner-only), OIDC auth, chat. Looks up the agent row, builds a self-contained `agent_config`, and POSTs to the supervisor with `Authorization: Bearer <user JWT>`. Subscribes to the session's Redis channel and relays every event to WS clients. Also publishes the DB-consistent events (`user_message` on WS receive, `done`/`cancelled`/`error` after persisting the agent message) and maintains per-user unread counters — those require DB ids and the session participant list, which the supervisor doesn't know. No Vault client. No K8s concepts.
 
-**Admin Console (`:8001`)** — Operator-facing. No authentication (local-only). Manages agent / workflow definitions and per-user Vault credentials (github-token, anthropic-api-key, …). MCP server CRUD is proxied to LiteLLM's `/v1/mcp/server/*` via the master key — Aviary DB holds no MCP catalog. Runtime infrastructure is Helm-managed — admin never talks to K8s or the supervisor.
+**Admin Console (`:8001`)** — Operator-facing. No authentication (local-only). Manages agent / workflow definitions only. User management, per-user Vault credentials, and MCP server CRUD have been removed — users self-serve credentials through the Web UI, and MCP servers are provisioned via LiteLLM directly (YAML config or its own UI). Runtime infrastructure is Helm-managed — admin never talks to K8s or the supervisor.
 
 **Agent Supervisor (`:9000`, docker compose service)** — Reverse SSE Proxy. Runs outside K8s, same deploy unit as API/Admin. No DB, no K8s API. Holds an **in-memory registry** of active stream tasks keyed by **stream_id** (one per `/message` call). `/sessions/{sid}/message` and `/sessions/{sid}/a2a` require `Authorization: Bearer <user JWT>` — the supervisor validates the token via OIDC and owns per-user runtime credential lookup: it fetches `github-token` from Vault using the JWT's `sub` and injects `agent_config.credentials` / `user_token` / `user_external_id` into the request body before forwarding to the runtime. On each `/message` it allocates a `stream_id` and immediately publishes `stream_started {stream_id}` to `session:{sid}:events` — that's the frontend's confirmation signal for enabling the abort button. Streams SSE from the runtime's Service endpoint, publishes every stream event (tagged with stream_id) to `session:{sid}:events`, buffers chunks under `stream:{stream_id}:chunks` for replay, assembles the final text + blocks, returns them to the caller — the API then persists the message and publishes the terminal `done`/`cancelled` event with the DB messageId. Emits Prometheus metrics at `/metrics`. **Abort** = `POST /v1/streams/{stream_id}/abort` → cancel the task; closing the outbound httpx stream propagates close through the Service-pinned TCP connection, which fires `res.on("close")` in the runtime pod and aborts the SDK.
 
@@ -276,11 +276,6 @@ API/Admin: dedicated `aviary_test` database with `NullPool`, no lifespan.
 | Variable | Purpose |
 |----------|---------|
 | `DATABASE_URL` | PostgreSQL async connection |
-| `LITELLM_URL` | LiteLLM proxy URL (default: `http://litellm:4000`) — MCP server CRUD is proxied here |
-| `LITELLM_API_KEY` | LiteLLM master key (`sk-aviary-dev`) — authenticates admin CRUD calls |
-| `AGENT_SUPERVISOR_URL` | Supervisor URL (agent reconfiguration broadcasts) |
-| `VAULT_ADDR` / `VAULT_TOKEN` | Per-user Vault credential management UI |
-| `KEYCLOAK_URL` / `KEYCLOAK_ADMIN` / `KEYCLOAK_ADMIN_PASSWORD` / `KEYCLOAK_REALM` | Keycloak admin API for user provisioning |
 
 ## Key Environment Variables (Runtime Pod)
 
@@ -318,7 +313,7 @@ LiteLLM is the **single source of truth** for the MCP catalog. It exposes `/mcp`
 
 **Catalog storage — two sources, both owned by LiteLLM:**
 - **YAML** (`config/litellm/config.yaml` → `mcp_servers:`): platform servers declared at deploy time (e.g. jira, confluence with `allow_all_keys: true`).
-- **Prisma DB** (`LiteLLM_MCPServerTable`): dynamic servers added at runtime through the Admin Console. Admin calls `POST /v1/mcp/server` with the master key via [`shared/aviary_shared/litellm_client.py`](shared/aviary_shared/litellm_client.py); LiteLLM hot-reloads the registry.
+- **Prisma DB** (`LiteLLM_MCPServerTable`): dynamic servers added at runtime via LiteLLM's own UI or API. Aviary has no admin-side CRUD for MCP servers — LiteLLM is the sole management surface.
 
 **Aviary DB — only bindings:**
 - `mcp_agent_tool_bindings (agent_id, server_name, tool_name)` — the tools the owner selected for this agent, referenced by the stable LiteLLM-side names (no FK to a mirrored server table).

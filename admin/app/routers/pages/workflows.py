@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aviary_shared.db.models import Workflow
+from aviary_shared.db.models import User, Workflow
 from app.db import get_db
 from app.routers.pages._templates import templates
 
@@ -28,12 +28,19 @@ async def workflow_list(request: Request, page: int = 1, db: AsyncSession = Depe
     total_pages = max(1, math.ceil(total / per_page))
 
     result = await db.execute(
-        select(Workflow).order_by(Workflow.created_at.desc()).offset(offset).limit(per_page)
+        select(Workflow, User.email)
+        .join(User, User.id == Workflow.owner_id)
+        .order_by(Workflow.created_at.desc())
+        .offset(offset)
+        .limit(per_page)
     )
-    workflows = list(result.scalars().all())
+    rows = list(result.all())
+    workflows = [row[0] for row in rows]
+    owner_email_map = {str(row[0].id): row[1] for row in rows}
 
     return templates.TemplateResponse(request, "workflows.html", {
         "workflows": workflows,
+        "owner_emails": owner_email_map,
         "total": total,
         "page": page,
         "total_pages": total_pages,
@@ -44,10 +51,15 @@ async def workflow_list(request: Request, page: int = 1, db: AsyncSession = Depe
 async def workflow_detail(
     request: Request, workflow_id: uuid.UUID, db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Workflow).where(Workflow.id == workflow_id))
-    workflow = result.scalar_one_or_none()
-    if not workflow:
+    result = await db.execute(
+        select(Workflow, User.email)
+        .join(User, User.id == Workflow.owner_id)
+        .where(Workflow.id == workflow_id)
+    )
+    row = result.one_or_none()
+    if not row:
         return RedirectResponse("/workflows?error=Workflow+not+found", status_code=303)
+    workflow, owner_email = row
 
     flash = request.query_params.get("flash")
     flash_data = None
@@ -59,6 +71,7 @@ async def workflow_detail(
 
     return templates.TemplateResponse(request, "workflow_detail.html", {
         "workflow": workflow,
+        "owner_email": owner_email,
         "flash": flash_data,
     })
 

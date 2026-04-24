@@ -32,6 +32,8 @@
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px;">
       <span class="text-muted">Agent Status</span>
       <span class="badge badge-{{ agent.status }}">{{ agent.status }}</span>
+      <span class="text-muted">Owner</span>
+      <span>{{ owner_email }}</span>
       <span class="text-muted">Runtime</span>
       <span class="mono">{{ agent.runtime_endpoint or 'default environment' }}</span>
       <span class="text-muted">Created</span>
