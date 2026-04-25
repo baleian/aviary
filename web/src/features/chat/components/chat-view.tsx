@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useChatMessages } from "@/features/chat/hooks/use-chat-messages";
 import { useConnectionStatus } from "@/features/chat/hooks/use-connection-status";
@@ -21,6 +21,7 @@ import { LoadingState } from "@/components/feedback/loading-state";
 import { routes } from "@/lib/constants/routes";
 import { WorkspacePanel } from "@/features/workspace/components/workspace-panel";
 import { useNotificationsPush } from "@/features/notifications/notifications-provider";
+import { usePublishChatActions } from "@/features/chat/hooks/chat-actions-context";
 
 // Tools that modify the session's workspace — trigger an auto-refresh of the
 // file-tree panel after they complete. Debounced so a bash burst coalesces.
@@ -200,6 +201,31 @@ function ChatViewInner({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [search]);
+
+  // Publish actions to outer layouts (e.g. AgentSubHeader) so the inline
+  // title edit / print / export buttons keep working when ChatView runs
+  // with hideHeader. Provider-less hosts (workflow test panel) get a no-op.
+  const publishedActions = useMemo(
+    () =>
+      hideHeader
+        ? {
+            sessionTitle: chat.session?.title ?? null,
+            saveTitle: titleEditor.saveTitle,
+            hasMessages: chat.messages.length > 0,
+            onPrintVisual: exportFns.printVisual,
+            onExportText: exportFns.exportText,
+          }
+        : null,
+    [
+      hideHeader,
+      chat.session?.title,
+      chat.messages.length,
+      titleEditor.saveTitle,
+      exportFns.printVisual,
+      exportFns.exportText,
+    ],
+  );
+  usePublishChatActions(publishedActions);
 
   const handleSend = useCallback(
     (content: string, attachments?: FileRef[]) => {

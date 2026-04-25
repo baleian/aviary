@@ -5,6 +5,7 @@ import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { LoadingState } from "@/components/feedback/loading-state";
 import { ErrorState } from "@/components/feedback/error-state";
 import { ChatView } from "@/features/chat/components/chat-view";
+import { ChatActionsProvider } from "@/features/chat/hooks/chat-actions-context";
 import { useAgentDetail } from "@/features/agents/hooks/use-agent-detail";
 import { usePageCrumb } from "@/features/layout/providers/page-header-provider";
 import { WorkspacePanel } from "@/features/workspace/components/workspace-panel";
@@ -103,43 +104,45 @@ export function AgentChatPage({ agentId }: { agentId: string }) {
   const showWorkspace = workspaceOpen && Boolean(sessionParam);
 
   return (
-    <div className="flex h-full flex-col min-h-0">
-      <AgentSubHeader
-        agent={detail.agent}
-        workspaceOpen={showWorkspace}
-        onToggleWorkspace={sessionParam ? toggleWorkspace : undefined}
-      />
-      <div className="flex flex-1 min-h-0">
-        <SessionsRail
-          sessions={detail.sessions}
-          selectedId={sessionParam}
-          loading={detail.loading}
-          creating={detail.creating}
-          onSelect={(id) => setSession(id)}
-          onCreate={handleCreate}
+    <ChatActionsProvider>
+      <div className="flex h-full flex-col min-h-0">
+        <AgentSubHeader
+          agent={detail.agent}
+          workspaceOpen={showWorkspace}
+          onToggleWorkspace={sessionParam ? toggleWorkspace : undefined}
         />
-        <div className="relative flex min-w-0 flex-1 flex-col">
-          {detail.createError && (
-            <div className="border-b border-status-error bg-status-error-soft px-4 py-2 text-[12px] text-status-error">
-              Failed to create session: {detail.createError}
-            </div>
-          )}
-          {sessionParam ? (
-            <div className="flex-1 overflow-hidden">
-              <ChatView sessionId={sessionParam} hideHeader hideWorkspace />
-            </div>
-          ) : (
-            <EmptyChat
-              onCreate={handleCreate}
-              creating={detail.creating}
-              hasSessions={detail.sessions.length > 0}
-            />
+        <div className="flex flex-1 min-h-0">
+          <SessionsRail
+            sessions={detail.sessions}
+            selectedId={sessionParam}
+            loading={detail.loading}
+            creating={detail.creating}
+            onSelect={(id) => setSession(id)}
+            onCreate={handleCreate}
+          />
+          <div className="relative flex min-w-0 flex-1 flex-col">
+            {detail.createError && (
+              <div className="border-b border-status-error bg-status-error-soft px-4 py-2 text-[12px] text-status-error">
+                Failed to create session: {detail.createError}
+              </div>
+            )}
+            {sessionParam ? (
+              <div className="flex-1 overflow-hidden">
+                <ChatView sessionId={sessionParam} hideHeader hideWorkspace />
+              </div>
+            ) : (
+              <EmptyChat
+                onCreate={handleCreate}
+                creating={detail.creating}
+                hasSessions={detail.sessions.length > 0}
+              />
+            )}
+          </div>
+          {showWorkspace && sessionParam && (
+            <WorkspacePanel sessionId={sessionParam} onClose={toggleWorkspace} />
           )}
         </div>
-        {showWorkspace && sessionParam && (
-          <WorkspacePanel sessionId={sessionParam} onClose={toggleWorkspace} />
-        )}
       </div>
-    </div>
+    </ChatActionsProvider>
   );
 }
