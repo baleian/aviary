@@ -9,8 +9,10 @@ class Settings(BaseSettings):
     # Helm sets this to the default environment's Service DNS.
     supervisor_default_runtime_endpoint: str
 
-    # Expose /metrics (Prometheus text format).
-    metrics_enabled: bool = True
+    # OTel metrics — pushed via OTLP/HTTP. Standard OTEL_* envvars are read
+    # by the SDK directly. Export is enabled iff OTEL_EXPORTER_OTLP_ENDPOINT
+    # is set (checked at startup in main.py).
+    otel_metric_export_interval_ms: int = 60000
 
     # OIDC — see .env.example.
     oidc_issuer: str | None = None

@@ -80,7 +80,7 @@ def _a2a_key(session_id: str, parent_tool_use_id: str) -> str:
 
 
 def _record_error(operation: str, *, warn: bool = False, extra: str = "") -> None:
-    metrics.redis_errors_total.labels(operation=operation).inc()
+    metrics.redis_errors_total.add(1, {"operation": operation})
     if warn:
         logger.warning("%s failed%s", operation, extra, exc_info=True)
 

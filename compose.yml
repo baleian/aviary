@@ -84,7 +84,8 @@ services:
     environment:
       REDIS_URL: ${REDIS_URL:-redis://host.docker.internal:6379/0}
       SUPERVISOR_DEFAULT_RUNTIME_ENDPOINT: ${SUPERVISOR_DEFAULT_RUNTIME_ENDPOINT:-http://host.docker.internal:30300}
-      METRICS_ENABLED: ${METRICS_ENABLED:-true}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4318}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-aviary-supervisor}
       OIDC_ISSUER: ${OIDC_ISSUER:-}
       OIDC_INTERNAL_ISSUER: ${OIDC_INTERNAL_ISSUER:-}
       OIDC_AUDIENCE: ${OIDC_AUDIENCE:-}

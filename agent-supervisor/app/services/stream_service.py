@@ -37,22 +37,22 @@ class _StreamLifecycle:
         await redis_client.set_stream_status(self.stream_id, "streaming")
         await redis_client.set_session_status(self.session_id, "streaming")
         await redis_client.set_session_latest_stream(self.session_id, self.stream_id)
-        metrics.active_streams.inc()
+        metrics.active_streams.add(1)
 
     async def mark_error(self) -> None:
         await redis_client.set_stream_status(self.stream_id, "error")
-        metrics.publish_requests_total.labels(status="error").inc()
+        metrics.publish_requests_total.add(1, {"status": "error"})
 
     async def mark_aborted(self) -> None:
         await redis_client.set_stream_status(self.stream_id, "aborted")
-        metrics.publish_requests_total.labels(status="aborted").inc()
+        metrics.publish_requests_total.add(1, {"status": "aborted"})
 
     async def mark_complete(self) -> None:
         await redis_client.set_stream_status(self.stream_id, "complete")
-        metrics.publish_requests_total.labels(status="complete").inc()
+        metrics.publish_requests_total.add(1, {"status": "complete"})
 
     async def end(self) -> None:
-        metrics.active_streams.dec()
+        metrics.active_streams.add(-1)
         await redis_client.set_session_status(self.session_id, "idle")
 
 
@@ -75,9 +75,9 @@ async def drive_stream(session_id: str, stream_id: str, body: dict) -> dict:
                 "POST", f"{base}/message", json=body, timeout=None,
             ) as resp:
                 if resp.status_code != 200:
-                    metrics.runtime_http_errors_total.labels(
-                        status_code=str(resp.status_code)
-                    ).inc()
+                    metrics.runtime_http_errors_total.add(
+                        1, {"status_code": str(resp.status_code)},
+                    )
                     err = (await resp.aread()).decode(errors="replace")[:500]
                     logger.error("Runtime stream %d: %s", resp.status_code, err)
                     error_message = f"Agent runtime error ({resp.status_code}): {err}"
@@ -88,10 +88,10 @@ async def drive_stream(session_id: str, stream_id: str, body: dict) -> dict:
                         event = json.loads(line[6:])
                         event["stream_id"] = stream_id
                         etype = event.get("type")
-                        metrics.sse_events_total.labels(event_type=etype or "unknown").inc()
+                        metrics.sse_events_total.add(1, {"event_type": etype or "unknown"})
                         if etype == "query_started":
                             reached_runtime = True
-                            metrics.time_to_query_started_seconds.observe(
+                            metrics.time_to_query_started_seconds.record(
                                 time.monotonic() - started
                             )
                             continue
@@ -111,7 +111,7 @@ async def drive_stream(session_id: str, stream_id: str, body: dict) -> dict:
     finally:
         await lifecycle.end()
 
-    metrics.publish_duration_seconds.observe(time.monotonic() - started)
+    metrics.publish_duration_seconds.record(time.monotonic() - started)
 
     # Always assemble — abort and error paths both need the partial so the
     # DB stays in sync with Claude Code's JSONL history on the PVC.

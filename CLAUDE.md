@@ -107,14 +107,14 @@ Three backend services with distinct roles:
 
 LiteLLM UI (`http://localhost:8090/ui`, default `admin/admin`) is backed by a dedicated `litellm` Postgres database on the shared Postgres instance. LiteLLM applies its own Prisma migrations on startup. Keys, teams, and spend live in the DB; models stay file-only — `config.yaml` is the single source of truth. `STORE_MODEL_IN_DB` is left at its default (off) so `/v1/model/info` never surfaces UI-added shadow copies. Credentials come from `LITELLM_UI_USERNAME` / `LITELLM_UI_PASSWORD` env vars.
 
-**Observability**: Prometheus (`:9090`, local-infra/) scrapes `host.docker.internal:9000/metrics` (the supervisor lives in the project-root compose — see [local-infra/config/prometheus/prometheus.yml](local-infra/config/prometheus/prometheus.yml)) every 15s with 7d retention. Grafana (`:3001`, anonymous admin in dev) auto-provisions the Prometheus datasource plus the "Aviary Supervisor" dashboard from [local-infra/config/grafana/dashboards/supervisor.json](local-infra/config/grafana/dashboards/supervisor.json) — panels cover active streams, publish request rate/error ratio, p50/p95/p99 publish duration, TTFB, SSE event mix, runtime HTTP errors, abort paths, and Vault/Redis dependency health.
+**Observability**: Supervisor exports metrics via OTLP/HTTP push (no `/metrics` endpoint). Setting `OTEL_EXPORTER_OTLP_ENDPOINT` enables export — leave unset to disable. Standard OTel envvars (`OTEL_RESOURCE_ATTRIBUTES`, `OTEL_EXPORTER_OTLP_HEADERS`, …) are read by the SDK directly. Histogram bucket boundaries (publish duration, TTFB, Vault) are pinned via OTel Views in [agent-supervisor/app/main.py](agent-supervisor/app/main.py). Local-infra ships an OTel Collector ([local-infra/config/otel-collector/config.yaml](local-infra/config/otel-collector/config.yaml)) that receives OTLP on `:4318` and exposes a Prometheus exporter on `:8889`; the bundled Prometheus scrapes that exporter and Grafana (`:3001`, anonymous admin) auto-provisions the "Aviary Supervisor" dashboard from [local-infra/config/grafana/dashboards/supervisor.json](local-infra/config/grafana/dashboards/supervisor.json).
 
 **Agent Supervisor routes:**
 - `POST /v1/sessions/{sid}/message` — Bearer-gated. Body: `{session_id, content_parts, agent_config}` where `agent_config` carries `runtime_endpoint`, `model_config`, `instruction`, `tools`, `mcp_servers`, optional `accessible_agents` (each is a full agent spec). Returns `{status, stream_id, reached_runtime, assembled_text, assembled_blocks}`. All stream events are published to Redis under `session:{sid}:events` tagged with the allocated `stream_id`.
 - `POST /v1/sessions/{sid}/a2a` — Bearer-gated. Parent runtime's A2A MCP server invokes this with `{parent_session_id, parent_tool_use_id, agent_config: <full sub-agent config>, content_parts}`. Sub-agent SSE is forwarded to the caller; `tool_use`/`tool_result` events are tagged with `parent_tool_use_id` and stashed in the parent's A2A buffer for assembly merge.
 - `POST /v1/streams/{stream_id}/abort` — cancel the registered task. Unknown stream → fan-out on `supervisor:abort` so whichever replica holds it cancels.
 - `DELETE /v1/sessions/{sid}` — cleanup workspace directories for a given (agent, session).
-- `GET /v1/health` · `GET /metrics` (Prometheus).
+- `GET /v1/health` · OTLP push for metrics (see Observability).
 
 No background loops. No per-agent state. No 0↔1 activation — environments are always on.
 
@@ -326,7 +326,8 @@ API/Admin: dedicated `aviary_test` database with `NullPool`, no lifespan.
 |----------|---------|
 | `REDIS_URL` | Redis DSN for publishing agent stream events (default: `redis://redis:6379/0`) |
 | `SUPERVISOR_DEFAULT_RUNTIME_ENDPOINT` | Fallback endpoint used when a caller passes `runtime_endpoint=null` |
-| `METRICS_ENABLED` | Toggle Prometheus `/metrics` (default: true) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTel Collector URL. Unset → metric export disabled. |
+| `OTEL_SERVICE_NAME` | Resource attribute `service.name` (default: `aviary-supervisor`) |
 | `OIDC_ISSUER` | Public IdP URL (Bearer token `iss` validation on `/publish` and `/a2a`). Unset → no-IdP mode. |
 | `OIDC_INTERNAL_ISSUER` | Internal IdP URL (JWKS fetch) — leave empty for hosted IdPs |
 | `OIDC_AUDIENCE` | Optional `aud` claim check |
