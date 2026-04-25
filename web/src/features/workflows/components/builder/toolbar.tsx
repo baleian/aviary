@@ -1,13 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowLeft, Trash2, Loader2, Upload, Pencil } from "@/components/icons";
+import { ArrowLeft, Trash2, Loader2, Upload, Pencil, Workflow as WorkflowIcon } from "@/components/icons";
+import { Avatar } from "@/components/ui/avatar";
 import { useWorkflowBuilder } from "@/features/workflows/providers/workflow-builder-provider";
 import {
   useVersionSelection,
   DRAFT_SELECTION,
 } from "@/features/workflows/providers/version-selection-provider";
 import { routes } from "@/lib/constants/routes";
+import { toneFromId } from "@/lib/tone";
 import { cn } from "@/lib/utils";
 
 function ToolbarButton({
@@ -55,9 +57,10 @@ interface ToolbarProps {
 export function Toolbar({
   deploying, deletingWorkflow, onDeploy, onEdit, onCancelEdit, onDeleteWorkflow,
 }: ToolbarProps) {
-  const { workflowName, undo, redo, canUndo, canRedo, deleteSelected } = useWorkflowBuilder();
+  const { workflowId, workflowName, undo, redo, canUndo, canRedo, deleteSelected } = useWorkflowBuilder();
   const { versions, selected, isDraft, hasPriorDeploy, setSelected } = useVersionSelection();
   const latestId = versions[0]?.id;
+  const tone = toneFromId(workflowId);
 
   return (
     <div className="flex items-center justify-between border-b border-white/[0.06] bg-[rgb(10_11_13)] px-2 py-1.5">
@@ -69,7 +72,18 @@ export function Toolbar({
           <ArrowLeft size={16} strokeWidth={1.75} />
         </Link>
         <div className="mx-1 h-4 w-px bg-white/[0.06]" />
-        <span className="text-[13px] font-medium text-fg-primary">{workflowName}</span>
+        <Link
+          href={routes.workflowDetail(workflowId)}
+          className="group inline-flex items-center gap-2 rounded-md px-1.5 py-1 -my-1 transition-colors hover:bg-white/[0.04]"
+          title="Open workflow detail"
+        >
+          <Avatar tone={tone} size="sm">
+            <WorkflowIcon size={11} />
+          </Avatar>
+          <span className="text-[13px] font-medium text-fg-primary group-hover:underline decoration-fg-muted underline-offset-2">
+            {workflowName}
+          </span>
+        </Link>
         <span className={cn(
           "ml-2 rounded-sm px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider",
           isDraft ? "bg-warning/10 text-warning" : "bg-success/10 text-success",

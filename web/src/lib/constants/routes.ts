@@ -16,6 +16,7 @@ export const routes = {
   workflows: "/workflows",
   workflowNew: "/workflows/new",
   workflow: (id: string) => `/workflows/${id}`,
+  workflowDetail: (id: string) => `/workflows/${id}/detail`,
   workflowRuns: (id: string) => `/workflows/${id}/runs`,
   /** Builder deep-link: open workflow at a specific version (and run,
    *  if any). `versionId` may be the "draft" sentinel for draft runs. */
