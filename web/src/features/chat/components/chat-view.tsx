@@ -52,21 +52,44 @@ export interface ChatViewProps {
   hideHeader?: boolean;
   /** Skip the embedded workspace panel — outer layout owns the rail. */
   hideWorkspace?: boolean;
+  /** Hide the input composer — read-only embed (e.g. workflow run view). */
+  hideInput?: boolean;
+  /** Open the WS subscription for live events. Default true. Set false for
+   *  terminal-state transcripts to skip retries on closed sessions. */
+  live?: boolean;
 }
 
-export function ChatView({ sessionId, hideHeader, hideWorkspace }: ChatViewProps) {
+export function ChatView({
+  sessionId,
+  hideHeader,
+  hideWorkspace,
+  hideInput,
+  live,
+}: ChatViewProps) {
   return (
     <ChatWidthProvider>
       <ChatViewInner
+        // Keying on sessionId forces a clean remount when the caller switches
+        // which session we're showing — critical for embedded use (workflow
+        // inspector swaps node session ids on the same component position).
+        key={sessionId}
         sessionId={sessionId}
         hideHeader={hideHeader}
         hideWorkspace={hideWorkspace}
+        hideInput={hideInput}
+        live={live}
       />
     </ChatWidthProvider>
   );
 }
 
-function ChatViewInner({ sessionId, hideHeader, hideWorkspace }: ChatViewProps) {
+function ChatViewInner({
+  sessionId,
+  hideHeader,
+  hideWorkspace,
+  hideInput,
+  live,
+}: ChatViewProps) {
   const { widthClass } = useChatWidth();
 
   // Workspace panel state — persisted across sessions, default closed.
@@ -109,7 +132,10 @@ function ChatViewInner({ sessionId, hideHeader, hideWorkspace }: ChatViewProps) 
     };
   }, []);
 
-  const chat = useChatMessages(sessionId, { onToolCompleted: handleToolCompleted });
+  const chat = useChatMessages(sessionId, {
+    onToolCompleted: handleToolCompleted,
+    live,
+  });
   const visibleStatus = useConnectionStatus(chat.status);
   const { visionEnabled } = useAgentCapabilities(chat.session?.agent_id ?? undefined);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -162,9 +188,11 @@ function ChatViewInner({ sessionId, hideHeader, hideWorkspace }: ChatViewProps) 
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4">
         <p className="type-body text-fg-muted">Session not found</p>
-        <Link href={routes.agents} className="type-caption text-info hover:opacity-80">
-          Back to agents
-        </Link>
+        {!hideInput && (
+          <Link href={routes.agents} className="type-caption text-accent hover:opacity-80">
+            Back to agents
+          </Link>
+        )}
       </div>
     );
   }
@@ -229,25 +257,27 @@ function ChatViewInner({ sessionId, hideHeader, hideWorkspace }: ChatViewProps) 
             searchQuery={activeSearchQuery}
           />
 
-          <div className="shrink-0 border-t border-white/[0.06] px-6 py-4">
-            <div className={`mx-auto ${widthClass} space-y-2`}>
-              {chat.todos.length > 0 && <TodoPanel todos={chat.todos} />}
-              <ChatInput
-                onSend={handleSend}
-                onCancel={chat.cancel}
-                disabled={isInputDisabled}
-                isStreaming={chat.isStreaming}
-                canCancel={chat.canCancel}
-                placeholder={
-                  !isReady ? "Waiting for agent…" : chat.isStreaming ? "Agent is responding…" : undefined
-                }
-                agentId={chat.session.agent_id ?? undefined}
-                visionEnabled={visionEnabled}
-                restoreDraft={chat.restoreDraft}
-                onDraftRestored={chat.clearRestoreDraft}
-              />
+          {!hideInput && (
+            <div className="shrink-0 border-t border-border-subtle px-6 py-4">
+              <div className={`mx-auto ${widthClass} space-y-2`}>
+                {chat.todos.length > 0 && <TodoPanel todos={chat.todos} />}
+                <ChatInput
+                  onSend={handleSend}
+                  onCancel={chat.cancel}
+                  disabled={isInputDisabled}
+                  isStreaming={chat.isStreaming}
+                  canCancel={chat.canCancel}
+                  placeholder={
+                    !isReady ? "Waiting for agent…" : chat.isStreaming ? "Agent is responding…" : undefined
+                  }
+                  agentId={chat.session.agent_id ?? undefined}
+                  visionEnabled={visionEnabled}
+                  restoreDraft={chat.restoreDraft}
+                  onDraftRestored={chat.clearRestoreDraft}
+                />
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
         {!hideWorkspace && canShowWorkspace && (
