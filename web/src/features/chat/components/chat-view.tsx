@@ -50,17 +50,23 @@ export interface ChatViewProps {
   sessionId: string;
   /** Hide the in-pane chat header — outer layout owns identity/actions. */
   hideHeader?: boolean;
+  /** Skip the embedded workspace panel — outer layout owns the rail. */
+  hideWorkspace?: boolean;
 }
 
-export function ChatView({ sessionId, hideHeader }: ChatViewProps) {
+export function ChatView({ sessionId, hideHeader, hideWorkspace }: ChatViewProps) {
   return (
     <ChatWidthProvider>
-      <ChatViewInner sessionId={sessionId} hideHeader={hideHeader} />
+      <ChatViewInner
+        sessionId={sessionId}
+        hideHeader={hideHeader}
+        hideWorkspace={hideWorkspace}
+      />
     </ChatWidthProvider>
   );
 }
 
-function ChatViewInner({ sessionId, hideHeader }: ChatViewProps) {
+function ChatViewInner({ sessionId, hideHeader, hideWorkspace }: ChatViewProps) {
   const { widthClass } = useChatWidth();
 
   // Workspace panel state — persisted across sessions, default closed.
@@ -244,7 +250,7 @@ function ChatViewInner({ sessionId, hideHeader }: ChatViewProps) {
           </div>
         </div>
 
-        {canShowWorkspace && (
+        {!hideWorkspace && canShowWorkspace && (
           <WorkspacePanel
             sessionId={sessionId}
             onClose={toggleWorkspace}

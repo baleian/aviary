@@ -7,10 +7,13 @@ import { ErrorState } from "@/components/feedback/error-state";
 import { ChatView } from "@/features/chat/components/chat-view";
 import { useAgentDetail } from "@/features/agents/hooks/use-agent-detail";
 import { usePageCrumb } from "@/features/layout/providers/page-header-provider";
+import { WorkspacePanel } from "@/features/workspace/components/workspace-panel";
 import { SessionsRail } from "./sessions-rail";
 import { EmptyChat } from "./empty-chat";
 import { AgentCrumb } from "./agent-crumb";
 import { AgentSubHeader } from "./agent-sub-header";
+
+const WORKSPACE_OPEN_KEY = "aviary:workspace-panel-open";
 
 /**
  * Agent home — the chat surface. Outer AppShell header carries the
@@ -61,6 +64,28 @@ export function AgentChatPage({ agentId }: { agentId: string }) {
     if (session) setSession(session.id);
   }, [detail, setSession]);
 
+  // Workspace rail: persist open/close so the user's last choice sticks
+  // across navigation. Default closed to match the "chat-first" entry.
+  const [workspaceOpen, setWorkspaceOpen] = React.useState(false);
+  React.useEffect(() => {
+    try {
+      setWorkspaceOpen(window.localStorage.getItem(WORKSPACE_OPEN_KEY) === "1");
+    } catch {
+      // Private mode / quota — keep default.
+    }
+  }, []);
+  const toggleWorkspace = React.useCallback(() => {
+    setWorkspaceOpen((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(WORKSPACE_OPEN_KEY, next ? "1" : "0");
+      } catch {
+        // Ignore storage failures — state still correct in memory.
+      }
+      return next;
+    });
+  }, []);
+
   if (detail.loading && !detail.agent) {
     return <LoadingState fullHeight label="Loading agent…" />;
   }
@@ -73,9 +98,17 @@ export function AgentChatPage({ agentId }: { agentId: string }) {
     );
   }
 
+  // Only the chat surface owns the workspace toggle — the sub-header
+  // hides the button entirely until a session is selected.
+  const showWorkspace = workspaceOpen && Boolean(sessionParam);
+
   return (
     <div className="flex h-full flex-col min-h-0">
-      <AgentSubHeader agent={detail.agent} />
+      <AgentSubHeader
+        agent={detail.agent}
+        workspaceOpen={showWorkspace}
+        onToggleWorkspace={sessionParam ? toggleWorkspace : undefined}
+      />
       <div className="flex flex-1 min-h-0">
         <SessionsRail
           sessions={detail.sessions}
@@ -93,7 +126,7 @@ export function AgentChatPage({ agentId }: { agentId: string }) {
           )}
           {sessionParam ? (
             <div className="flex-1 overflow-hidden">
-              <ChatView sessionId={sessionParam} hideHeader />
+              <ChatView sessionId={sessionParam} hideHeader hideWorkspace />
             </div>
           ) : (
             <EmptyChat
@@ -103,6 +136,9 @@ export function AgentChatPage({ agentId }: { agentId: string }) {
             />
           )}
         </div>
+        {showWorkspace && sessionParam && (
+          <WorkspacePanel sessionId={sessionParam} onClose={toggleWorkspace} />
+        )}
       </div>
     </div>
   );

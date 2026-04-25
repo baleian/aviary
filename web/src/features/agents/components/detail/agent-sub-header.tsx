@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Pencil, Wrench } from "@/components/icons";
+import { Pencil, Wrench, PanelRight, PanelRightClose } from "@/components/icons";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { toneFromId, initialFromName } from "@/lib/tone";
@@ -11,6 +11,9 @@ import type { Agent } from "@/types";
 
 export interface AgentSubHeaderProps {
   agent: Agent;
+  /** Optional workspace rail toggle — only shown when handler provided. */
+  workspaceOpen?: boolean;
+  onToggleWorkspace?: () => void;
 }
 
 /**
@@ -19,7 +22,11 @@ export interface AgentSubHeaderProps {
  * model/tools chips) plus the Edit shortcut so the chat pane below
  * stays full height.
  */
-export function AgentSubHeader({ agent }: AgentSubHeaderProps) {
+export function AgentSubHeader({
+  agent,
+  workspaceOpen,
+  onToggleWorkspace,
+}: AgentSubHeaderProps) {
   const tone = toneFromId(agent.id);
   const toolCount = (agent.tools?.length ?? 0) + (agent.mcp_servers?.length ?? 0);
   const model = agent.model_config?.model ?? agent.model_config?.backend ?? "—";
@@ -56,6 +63,22 @@ export function AgentSubHeader({ agent }: AgentSubHeaderProps) {
           <Pencil size={12} /> Edit
         </Link>
       </Button>
+      {onToggleWorkspace && (
+        <button
+          type="button"
+          onClick={onToggleWorkspace}
+          className={cn(
+            "inline-flex h-7 w-7 items-center justify-center rounded-[6px]",
+            "text-fg-secondary transition-colors duration-fast",
+            workspaceOpen ? "bg-hover text-fg-primary" : "hover:bg-hover hover:text-fg-primary"
+          )}
+          aria-label={workspaceOpen ? "Hide workspace" : "Show workspace"}
+          aria-pressed={workspaceOpen}
+          title={workspaceOpen ? "Hide workspace" : "Show workspace"}
+        >
+          {workspaceOpen ? <PanelRightClose size={14} /> : <PanelRight size={14} />}
+        </button>
+      )}
     </div>
   );
 }
