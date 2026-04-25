@@ -76,7 +76,7 @@ function Toolbar({
   onToggleExpanded,
 }: ToolbarProps) {
   return (
-    <div className="flex items-center gap-2 border-b border-white/[0.06] bg-elevated px-2.5 py-1.5">
+    <div className="flex items-center gap-2 border-b border-border-subtle bg-elevated px-2.5 py-1.5">
       {filePath && (
         <span
           className="flex-1 truncate font-mono type-caption text-fg-secondary"
@@ -92,7 +92,7 @@ function Toolbar({
         onClick={onToggleSplit}
         className={cn(
           "flex items-center gap-1 rounded-xs px-1.5 py-0.5 type-caption",
-          "text-fg-muted hover:bg-white/[0.06] hover:text-fg-primary",
+          "text-fg-muted hover:bg-hover hover:text-fg-primary",
         )}
         title={split ? "Switch to unified view" : "Switch to split view"}
       >
@@ -107,7 +107,7 @@ function Toolbar({
       <button
         type="button"
         onClick={onToggleExpanded}
-        className="rounded-xs p-1 text-fg-muted hover:bg-white/[0.06] hover:text-fg-primary"
+        className="rounded-xs p-1 text-fg-muted hover:bg-hover hover:text-fg-primary"
         title={expanded ? "Close overlay" : "Expand to overlay"}
       >
         {expanded ? (
@@ -152,7 +152,7 @@ export function EditDiffView({ filePath, oldString, newString }: EditDiffViewPro
 
   return (
     <>
-      <div className="overflow-hidden rounded-xs border border-white/[0.06]">
+      <div className="overflow-hidden rounded-xs border border-border-subtle">
         <Toolbar
           filePath={filePath}
           split={split}
@@ -167,11 +167,11 @@ export function EditDiffView({ filePath, oldString, newString }: EditDiffViewPro
         typeof document !== "undefined" &&
         createPortal(
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-overlay p-6"
             onClick={() => setExpanded(false)}
           >
             <div
-              className="flex h-full max-h-[92vh] w-full max-w-[min(1400px,95vw)] flex-col overflow-hidden rounded-md border border-white/[0.08] bg-canvas shadow-2xl"
+              className="flex h-full max-h-[92vh] w-full max-w-[min(1400px,95vw)] flex-col overflow-hidden rounded-md border border-border bg-canvas shadow-2xl"
               onClick={(e) => e.stopPropagation()}
             >
               <Toolbar

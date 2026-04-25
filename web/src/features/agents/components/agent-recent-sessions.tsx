@@ -83,7 +83,7 @@ export function AgentRecentSessions({ agentId }: AgentRecentSessionsProps) {
           ))}
         </div>
       ) : sessions.length === 0 ? (
-        <div className="rounded-md border border-dashed border-white/[0.06] px-4 py-6 text-center">
+        <div className="rounded-md border border-dashed border-border-subtle px-4 py-6 text-center">
           <MessageSquare size={18} strokeWidth={1.5} className="mx-auto text-fg-disabled" />
           <p className="mt-2 type-caption text-fg-muted">
             No conversations yet — use Start chat above to begin.

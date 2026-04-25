@@ -75,8 +75,8 @@ export function FileEditor({ sessionId, tab, onDraftChange, onSave, saving }: Fi
   const canEdit = !loading && !error && !isBinary;
 
   return (
-    <div className="flex h-full flex-1 flex-col min-w-0 border-l border-white/[0.06] bg-canvas">
-      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-white/[0.06] px-3 py-1.5">
+    <div className="flex h-full flex-1 flex-col min-w-0 border-l border-border-subtle bg-canvas">
+      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-border-subtle px-3 py-1.5">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="truncate type-caption text-fg-muted font-mono" title={displayPath}>
             {displayPath}

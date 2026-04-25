@@ -238,7 +238,7 @@ export function JumpRail({ scrollRef, messageCount }: JumpRailProps) {
       {/* Hover preview — single line of the item, anchored to its tick. */}
       {hovered && (
         <div
-          className="pointer-events-none absolute right-5 z-20 max-w-[20rem] truncate rounded-md bg-popover px-2 py-1 type-caption text-fg-secondary shadow-3 ring-1 ring-white/[0.10]"
+          className="pointer-events-none absolute right-5 z-20 max-w-[20rem] truncate rounded-md bg-popover px-2 py-1 type-caption text-fg-secondary shadow-3 ring-1 ring-border"
           style={{
             top: `${hoveredPct}%`,
             transform: "translateY(-50%)",
