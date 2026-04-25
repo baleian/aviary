@@ -1,11 +1,9 @@
 import type { Config } from "tailwindcss";
 
 /**
- * Aviary Slate design system + transitional legacy aliases.
- *
- * The handoff design system (Slate) is the active token set. Legacy aliases
- * for the previous Aurora Glass design (brand/info/aurora.* etc.) remain so
- * unmigrated components keep compiling; each migration stage strips a chunk.
+ * Aviary Slate design system. A small number of legacy Tailwind aliases
+ * (brand, info, success, warning, danger, fg.disabled) remain so older
+ * call sites continue to compile against status / accent tokens.
  */
 const config: Config = {
   darkMode: ["class", '[data-theme="dark"]'],
@@ -110,22 +108,13 @@ const config: Config = {
           "info-soft": "var(--status-info-soft)",
         },
 
-        // ── legacy: Aurora Glass aliases. Replaced as screens migrate. ──
+        // ── legacy aliases — kept so unmigrated call sites still compile. ──
         elevated: "rgb(var(--legacy-elevated) / <alpha-value>)",
         brand: "rgb(var(--legacy-brand) / <alpha-value>)",
         info: "rgb(var(--legacy-info) / <alpha-value>)",
         success: "rgb(var(--legacy-success) / <alpha-value>)",
         warning: "rgb(var(--legacy-warning) / <alpha-value>)",
         danger: "rgb(var(--legacy-danger) / <alpha-value>)",
-        aurora: {
-          violet: "rgb(var(--legacy-aurora-violet) / <alpha-value>)",
-          pink: "rgb(var(--legacy-aurora-pink) / <alpha-value>)",
-          amber: "rgb(var(--legacy-aurora-amber) / <alpha-value>)",
-          cyan: "rgb(var(--legacy-aurora-cyan) / <alpha-value>)",
-          mint: "rgb(var(--legacy-aurora-mint) / <alpha-value>)",
-          coral: "rgb(var(--legacy-aurora-coral) / <alpha-value>)",
-          gold: "rgb(var(--legacy-aurora-gold) / <alpha-value>)",
-        },
         "border-base": "rgb(var(--legacy-border-base) / <alpha-value>)",
         "border-strong": "rgb(var(--legacy-border-strong) / <alpha-value>)",
       },
@@ -153,9 +142,6 @@ const config: Config = {
         "3": "var(--shadow-lg)",
         "4": "var(--shadow-xl)",
         "5": "var(--shadow-xl)",
-      },
-      backdropBlur: {
-        glass: "var(--legacy-glass-blur)",
       },
       maxWidth: {
         container: "1200px",

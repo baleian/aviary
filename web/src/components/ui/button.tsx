@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 
 const newVariants = {
   default:
-    "bg-accent text-white border border-accent hover:bg-accent-strong hover:border-accent-strong",
+    "bg-accent text-white border border-accent hover:bg-accent/90 hover:border-accent/90",
   outline:
     "bg-raised border border-border text-fg-primary hover:bg-hover hover:border-border-strong",
   ghost:

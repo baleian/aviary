@@ -595,7 +595,7 @@ export function AssistantPanel() {
                 Workflow has no default model — configure it in Settings first.
               </p>
             )}
-            <div className="flex items-end gap-1.5 rounded-md bg-hover p-1.5 focus-within:bg-bg-active transition-colors">
+            <div className="flex items-end gap-1.5 rounded-md bg-hover p-1.5 focus-within:bg-active transition-colors">
               <textarea
                 ref={textareaRef}
                 value={input}

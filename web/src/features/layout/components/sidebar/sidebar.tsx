@@ -137,7 +137,7 @@ function NavLink({
         "relative flex items-center gap-[10px] h-[32px] rounded-[7px] px-[10px]",
         "text-[13px] transition-colors duration-fast",
         active
-          ? "bg-bg-active text-fg-primary font-medium"
+          ? "bg-active text-fg-primary font-medium"
           : "text-fg-secondary hover:bg-hover hover:text-fg-primary",
         collapsed ? "justify-center" : "justify-start"
       )}

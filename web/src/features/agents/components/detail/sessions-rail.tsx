@@ -88,7 +88,7 @@ function SessionRow({
         "relative flex w-full flex-col gap-[2px] rounded-[7px] px-2 py-[7px] text-left",
         "transition-colors duration-fast",
         active
-          ? "bg-bg-active text-fg-primary"
+          ? "bg-active text-fg-primary"
           : "text-fg-secondary hover:bg-hover hover:text-fg-primary"
       )}
       aria-current={active ? "true" : undefined}

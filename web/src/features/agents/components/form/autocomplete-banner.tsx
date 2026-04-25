@@ -107,7 +107,7 @@ export function AutocompleteBanner({ data, applyResult }: Props) {
             "text-[12.5px] font-medium",
             "bg-accent text-white border border-accent",
             "transition-[background,border-color,opacity] duration-fast",
-            "hover:bg-accent-strong hover:border-accent-strong",
+            "hover:bg-accent/90 hover:border-accent/90",
             "disabled:opacity-50 disabled:pointer-events-none",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-soft"
           )}

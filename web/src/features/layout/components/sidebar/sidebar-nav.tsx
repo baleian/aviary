@@ -16,8 +16,8 @@ interface NavLinkProps {
 }
 
 /**
- * NavLink — active state gets an aurora-A gradient wash + left rail,
- * inactive states stay neutral with a subtle glass hover.
+ * NavLink — active state gets a 2px accent left rail; inactive stays
+ * neutral with a subtle hover.
  */
 function NavLink({ href, active, collapsed, icon, label }: NavLinkProps) {
   return (
@@ -25,16 +25,16 @@ function NavLink({ href, active, collapsed, icon, label }: NavLinkProps) {
       href={href}
       className={cn(
         "relative flex items-center gap-2.5 rounded-sm px-3 py-2 type-nav",
-        "transition-all duration-200 ease-out",
+        "transition-colors duration-200",
         active
-          ? "text-fg-primary bg-aurora-a-soft shadow-[inset_0_1px_0_rgba(255,255,255,0.1)]"
-          : "text-fg-muted hover:bg-white/[0.05] hover:text-fg-primary",
+          ? "text-fg-primary"
+          : "text-fg-muted hover:bg-hover hover:text-fg-primary",
       )}
     >
       {active && (
         <span
           aria-hidden="true"
-          className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full bg-aurora-a"
+          className="absolute left-0 top-1.5 bottom-1.5 w-0.5 bg-accent"
         />
       )}
       {icon}

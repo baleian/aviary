@@ -97,7 +97,7 @@ export function AgentRecentSessions({ agentId }: AgentRecentSessionsProps) {
                 href={routes.session(session.id)}
                 className={cn(
                   "group flex items-center gap-3 rounded-md bg-elevated shadow-2 px-4 py-3",
-                  "transition-all duration-200 hover:glow-warm",
+                  "transition-colors duration-200 hover:bg-hover",
                 )}
               >
                 <MessageSquare

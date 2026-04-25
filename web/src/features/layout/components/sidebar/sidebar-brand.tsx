@@ -8,7 +8,7 @@ import { routes } from "@/lib/constants/routes";
 
 /**
  * SidebarBrand — top header of the sidebar with logo + collapse toggle.
- * Translucent border-bottom so the aurora bleeds through.
+ * Hairline bottom border on the Slate canvas.
  */
 export function SidebarBrand() {
   const { collapsed, toggleCollapsed } = useSidebar();

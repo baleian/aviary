@@ -62,7 +62,7 @@ export function ChatHeader({
   const { widthClass } = useChatWidth();
 
   return (
-    <header className="shrink-0 border-b border-white/[0.06] px-6 py-3 glass-pane">
+    <header className="shrink-0 bg-canvas border-b border-border-subtle px-6 py-3">
       <div className={cn("mx-auto flex items-center justify-between", widthClass)}>
         <div className="flex items-center gap-3 min-w-0">
           <Link
@@ -129,7 +129,7 @@ export function ChatHeader({
             className={cn(
               "flex h-7 w-7 items-center justify-center rounded-xs transition-colors",
               workspaceOpen
-                ? "bg-aurora-a-soft text-fg-primary"
+                ? "bg-hover text-fg-primary"
                 : "text-fg-muted hover:bg-white/[0.08] hover:text-fg-primary",
             )}
             title={workspaceOpen ? "Hide workspace panel" : "Show workspace panel"}
