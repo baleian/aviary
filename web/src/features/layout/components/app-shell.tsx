@@ -3,7 +3,7 @@
 import * as React from "react";
 import { Sidebar } from "./sidebar/sidebar";
 import { Header } from "./header/header";
-import { CommandPaletteStub } from "./command-palette-stub";
+import { CommandPalette } from "@/features/command-palette/command-palette";
 import { NotificationsPanelStub } from "./notifications-panel-stub";
 import { UserMenuStub } from "./user-menu-stub";
 import { SessionStatusProvider } from "@/features/layout/providers/session-status-provider";
@@ -50,7 +50,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <main className="flex-1 overflow-hidden">{children}</main>
             </div>
           </div>
-          <CommandPaletteStub open={searchOpen} onClose={() => setSearchOpen(false)} />
+          <CommandPalette open={searchOpen} onClose={() => setSearchOpen(false)} />
           <NotificationsPanelStub open={notifOpen} onClose={() => setNotifOpen(false)} />
           <UserMenuStub open={userMenuOpen} onClose={() => setUserMenuOpen(false)} />
         </PageHeaderProvider>
