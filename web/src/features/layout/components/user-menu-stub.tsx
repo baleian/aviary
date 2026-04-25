@@ -1,9 +1,12 @@
 "use client";
 
 import * as React from "react";
-import { LogOut } from "@/components/icons";
+import Link from "next/link";
+import { LogOut, Moon, Settings as SettingsIcon, Sun } from "@/components/icons";
 import { Avatar } from "@/components/ui/avatar";
 import { useAuth } from "@/features/auth/providers/auth-provider";
+import { useTheme } from "@/features/theme/theme-provider";
+import { routes } from "@/lib/constants/routes";
 import { cn } from "@/lib/utils";
 
 export interface UserMenuStubProps {
@@ -13,10 +16,12 @@ export interface UserMenuStubProps {
 
 export function UserMenuStub({ open, onClose }: UserMenuStubProps) {
   const { user, logout } = useAuth();
+  const { theme, toggleTheme } = useTheme();
   if (!open) return null;
 
   const display = user?.display_name ?? user?.email ?? "Account";
   const initials = computeInitials(display);
+  const ThemeIcon = theme === "dark" ? Sun : Moon;
 
   return (
     <div className="fixed inset-0 z-[80]" onClick={onClose} role="presentation">
@@ -41,26 +46,87 @@ export function UserMenuStub({ open, onClose }: UserMenuStubProps) {
             )}
           </div>
         </div>
-        <div className="p-1 border-t border-border-subtle">
-          <button
-            type="button"
+        <div className="p-1">
+          <MenuLink
+            href={routes.settings}
+            onClick={onClose}
+            icon={<SettingsIcon size={15} />}
+            label="Settings"
+          />
+          <MenuButton
+            onClick={() => {
+              toggleTheme();
+            }}
+            icon={<ThemeIcon size={15} />}
+            label={theme === "dark" ? "Switch to light" : "Switch to dark"}
+          />
+        </div>
+        <div className="border-t border-border-subtle p-1">
+          <MenuButton
             onClick={() => {
               onClose();
               logout();
             }}
-            className={cn(
-              "flex w-full items-center gap-[10px] rounded-[6px] px-[10px] py-2",
-              "text-left text-[12.5px] text-fg-secondary",
-              "hover:bg-hover hover:text-fg-primary transition-colors duration-fast"
-            )}
-            role="menuitem"
-          >
-            <LogOut size={15} />
-            Sign out
-          </button>
+            icon={<LogOut size={15} />}
+            label="Sign out"
+          />
         </div>
       </div>
     </div>
+  );
+}
+
+function MenuLink({
+  href,
+  onClick,
+  icon,
+  label,
+}: {
+  href: string;
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+}) {
+  return (
+    <Link
+      href={href}
+      onClick={onClick}
+      role="menuitem"
+      className={cn(
+        "flex w-full items-center gap-[10px] rounded-[6px] px-[10px] py-2",
+        "text-left text-[12.5px] text-fg-secondary",
+        "hover:bg-hover hover:text-fg-primary transition-colors duration-fast"
+      )}
+    >
+      {icon}
+      {label}
+    </Link>
+  );
+}
+
+function MenuButton({
+  onClick,
+  icon,
+  label,
+}: {
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      role="menuitem"
+      className={cn(
+        "flex w-full items-center gap-[10px] rounded-[6px] px-[10px] py-2",
+        "text-left text-[12.5px] text-fg-secondary",
+        "hover:bg-hover hover:text-fg-primary transition-colors duration-fast"
+      )}
+    >
+      {icon}
+      {label}
+    </button>
   );
 }
 

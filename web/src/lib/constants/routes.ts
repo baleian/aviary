@@ -26,4 +26,7 @@ export const routes = {
       : `/workflows/${id}?versionId=${versionId}`,
   marketplace: "/marketplace",
   marketplaceItem: (id: string) => `/marketplace/${id}`,
+  settings: "/settings",
+  settingsTab: (tab: "profile" | "credentials" | "preferences") =>
+    `/settings?tab=${tab}`,
 } as const;
