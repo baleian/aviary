@@ -37,19 +37,28 @@ export function AgentSubHeader({
         "h-[44px] px-4"
       )}
     >
-      <Avatar tone={tone} size="md">
-        {agent.icon || initialFromName(agent.name)}
-      </Avatar>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="t-h3 fg-primary truncate">{agent.name}</span>
-          {agent.description?.trim() && (
-            <span className="hidden truncate text-[12px] text-fg-tertiary sm:block">
-              {agent.description}
-            </span>
-          )}
-        </div>
-      </div>
+      <Link
+        href={routes.agentDetail(agent.id)}
+        className={cn(
+          "group flex min-w-0 items-center gap-2",
+          "rounded-[7px] px-1 -mx-1 py-0.5 -my-0.5",
+          "transition-colors duration-fast hover:bg-hover"
+        )}
+        title="Open agent detail"
+      >
+        <Avatar tone={tone} size="md">
+          {agent.icon || initialFromName(agent.name)}
+        </Avatar>
+        <span className="t-h3 fg-primary truncate group-hover:underline decoration-fg-muted underline-offset-2">
+          {agent.name}
+        </span>
+      </Link>
+      {agent.description?.trim() && (
+        <span className="hidden min-w-0 flex-1 truncate text-[12px] text-fg-tertiary sm:inline">
+          {agent.description}
+        </span>
+      )}
+      {!agent.description?.trim() && <div className="flex-1" />}
       <Chip>
         <span className="t-mono">{model}</span>
       </Chip>
