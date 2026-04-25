@@ -378,4 +378,187 @@
     padding: 0;
     box-shadow: 0 0 0 1px var(--status-warn);
   }
+
+  /* Tailwind Typography ships a hard-coded dark `pre` background that bleeds
+     through both themes when Markdown is rendered inside a `.prose` block
+     (e.g. file-editor preview). Our CodeBlock owns its own container chrome
+     via Slate tokens, so neutralize prose's pre/code styling and let the
+     wrapping div drive the surface. */
+  .prose pre {
+    background-color: transparent;
+    color: inherit;
+    padding: 0;
+    margin: 0;
+    border-radius: 0;
+  }
+  .prose :where(code):not(pre code) {
+    background-color: transparent;
+    color: inherit;
+    padding: 0;
+    font-weight: inherit;
+  }
+  .prose :where(code):not(pre code)::before,
+  .prose :where(code):not(pre code)::after {
+    content: none;
+  }
+
+  /* highlight.js — both palettes inlined so no third-party CSS file forces
+     a single background that bleeds across themes. github-dark-dimmed for
+     dark, github-light for light. Selectors are scoped to [data-theme] so
+     each set wins inside its own theme without !important hacks. */
+  :root[data-theme="dark"] .hljs {
+    color: #adbac7;
+    background: transparent;
+  }
+  :root[data-theme="dark"] .hljs-doctag,
+  :root[data-theme="dark"] .hljs-keyword,
+  :root[data-theme="dark"] .hljs-meta .hljs-keyword,
+  :root[data-theme="dark"] .hljs-template-tag,
+  :root[data-theme="dark"] .hljs-template-variable,
+  :root[data-theme="dark"] .hljs-type,
+  :root[data-theme="dark"] .hljs-variable.language_ {
+    color: #f47067;
+  }
+  :root[data-theme="dark"] .hljs-title,
+  :root[data-theme="dark"] .hljs-title.class_,
+  :root[data-theme="dark"] .hljs-title.class_.inherited__,
+  :root[data-theme="dark"] .hljs-title.function_ {
+    color: #dcbdfb;
+  }
+  :root[data-theme="dark"] .hljs-attr,
+  :root[data-theme="dark"] .hljs-attribute,
+  :root[data-theme="dark"] .hljs-literal,
+  :root[data-theme="dark"] .hljs-meta,
+  :root[data-theme="dark"] .hljs-number,
+  :root[data-theme="dark"] .hljs-operator,
+  :root[data-theme="dark"] .hljs-variable,
+  :root[data-theme="dark"] .hljs-selector-attr,
+  :root[data-theme="dark"] .hljs-selector-class,
+  :root[data-theme="dark"] .hljs-selector-id {
+    color: #6cb6ff;
+  }
+  :root[data-theme="dark"] .hljs-regexp,
+  :root[data-theme="dark"] .hljs-string,
+  :root[data-theme="dark"] .hljs-meta .hljs-string {
+    color: #96d0ff;
+  }
+  :root[data-theme="dark"] .hljs-built_in,
+  :root[data-theme="dark"] .hljs-symbol {
+    color: #f69d50;
+  }
+  :root[data-theme="dark"] .hljs-comment,
+  :root[data-theme="dark"] .hljs-code,
+  :root[data-theme="dark"] .hljs-formula {
+    color: #768390;
+  }
+  :root[data-theme="dark"] .hljs-name,
+  :root[data-theme="dark"] .hljs-quote,
+  :root[data-theme="dark"] .hljs-selector-tag,
+  :root[data-theme="dark"] .hljs-selector-pseudo {
+    color: #8ddb8c;
+  }
+  :root[data-theme="dark"] .hljs-subst {
+    color: #adbac7;
+  }
+  :root[data-theme="dark"] .hljs-section {
+    color: #6cb6ff;
+    font-weight: bold;
+  }
+  :root[data-theme="dark"] .hljs-bullet {
+    color: #f0b072;
+  }
+  :root[data-theme="dark"] .hljs-emphasis {
+    color: #adbac7;
+    font-style: italic;
+  }
+  :root[data-theme="dark"] .hljs-strong {
+    color: #adbac7;
+    font-weight: bold;
+  }
+  :root[data-theme="dark"] .hljs-addition {
+    color: #b4f1b4;
+    background-color: #1b4721;
+  }
+  :root[data-theme="dark"] .hljs-deletion {
+    color: #ffd8d3;
+    background-color: #78191b;
+  }
+
+  :root[data-theme="light"] .hljs {
+    color: #24292e;
+    background: transparent;
+  }
+  :root[data-theme="light"] .hljs-doctag,
+  :root[data-theme="light"] .hljs-keyword,
+  :root[data-theme="light"] .hljs-meta .hljs-keyword,
+  :root[data-theme="light"] .hljs-template-tag,
+  :root[data-theme="light"] .hljs-template-variable,
+  :root[data-theme="light"] .hljs-type,
+  :root[data-theme="light"] .hljs-variable.language_ {
+    color: #d73a49;
+  }
+  :root[data-theme="light"] .hljs-title,
+  :root[data-theme="light"] .hljs-title.class_,
+  :root[data-theme="light"] .hljs-title.class_.inherited__,
+  :root[data-theme="light"] .hljs-title.function_ {
+    color: #6f42c1;
+  }
+  :root[data-theme="light"] .hljs-attr,
+  :root[data-theme="light"] .hljs-attribute,
+  :root[data-theme="light"] .hljs-literal,
+  :root[data-theme="light"] .hljs-meta,
+  :root[data-theme="light"] .hljs-number,
+  :root[data-theme="light"] .hljs-operator,
+  :root[data-theme="light"] .hljs-variable,
+  :root[data-theme="light"] .hljs-selector-attr,
+  :root[data-theme="light"] .hljs-selector-class,
+  :root[data-theme="light"] .hljs-selector-id {
+    color: #005cc5;
+  }
+  :root[data-theme="light"] .hljs-regexp,
+  :root[data-theme="light"] .hljs-string,
+  :root[data-theme="light"] .hljs-meta .hljs-string {
+    color: #032f62;
+  }
+  :root[data-theme="light"] .hljs-built_in,
+  :root[data-theme="light"] .hljs-symbol {
+    color: #e36209;
+  }
+  :root[data-theme="light"] .hljs-comment,
+  :root[data-theme="light"] .hljs-code,
+  :root[data-theme="light"] .hljs-formula {
+    color: #6a737d;
+  }
+  :root[data-theme="light"] .hljs-name,
+  :root[data-theme="light"] .hljs-quote,
+  :root[data-theme="light"] .hljs-selector-tag,
+  :root[data-theme="light"] .hljs-selector-pseudo {
+    color: #22863a;
+  }
+  :root[data-theme="light"] .hljs-subst {
+    color: #24292e;
+  }
+  :root[data-theme="light"] .hljs-section {
+    color: #005cc5;
+    font-weight: bold;
+  }
+  :root[data-theme="light"] .hljs-bullet {
+    color: #735c0f;
+  }
+  :root[data-theme="light"] .hljs-emphasis {
+    color: #24292e;
+    font-style: italic;
+  }
+  :root[data-theme="light"] .hljs-strong {
+    color: #24292e;
+    font-weight: bold;
+  }
+  :root[data-theme="light"] .hljs-addition {
+    color: #22863a;
+    background-color: #f0fff4;
+  }
+  :root[data-theme="light"] .hljs-deletion {
+    color: #b31d28;
+    background-color: #ffeef0;
+  }
 }

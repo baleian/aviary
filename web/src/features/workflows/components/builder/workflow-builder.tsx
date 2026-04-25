@@ -15,6 +15,7 @@ import "@xyflow/react/dist/style.css";
 import "./builder.css";
 
 import { useWorkflowBuilder } from "@/features/workflows/providers/workflow-builder-provider";
+import { useTheme } from "@/features/theme/theme-provider";
 import {
   useVersionSelection,
   DRAFT_SELECTION,
@@ -76,6 +77,8 @@ function Canvas({ readOnly }: { readOnly: boolean }) {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition } = useReactFlow();
   const nodeRunStatuses = useAllNodeRunStatuses();
+  const { theme } = useTheme();
+  const isDark = theme === "dark";
 
   const miniMapNodeColor = useCallback(
     (node: { id: string }) => {
@@ -84,12 +87,17 @@ function Canvas({ readOnly }: { readOnly: boolean }) {
         case "running": return "rgba(91,141,239,0.65)";
         case "completed": return "rgba(74,222,128,0.6)";
         case "failed": return "rgba(240,122,122,0.6)";
-        case "skipped": return "rgba(255,255,255,0.05)";
-        default: return "rgba(255,255,255,0.10)";
+        case "skipped":
+          return isDark ? "rgba(255,255,255,0.05)" : "rgba(20,22,28,0.06)";
+        default:
+          return isDark ? "rgba(255,255,255,0.10)" : "rgba(20,22,28,0.18)";
       }
     },
-    [nodeRunStatuses],
+    [nodeRunStatuses, isDark],
   );
+
+  const maskColor = isDark ? "rgba(0,0,0,0.7)" : "rgba(60,55,45,0.18)";
+  const backgroundColor = isDark ? "rgba(255,255,255,0.16)" : "rgba(20,22,28,0.20)";
 
   useEffect(() => {
     if (readOnly) return;
@@ -146,9 +154,9 @@ function Canvas({ readOnly }: { readOnly: boolean }) {
         edgesReconnectable={!readOnly}
         proOptions={{ hideAttribution: true }}
       >
-        <Background gap={24} size={1} color="rgba(255,255,255,0.05)" />
+        <Background gap={20} size={1.4} color={backgroundColor} />
         <Controls />
-        <MiniMap nodeColor={miniMapNodeColor} maskColor="rgba(0,0,0,0.7)" pannable zoomable />
+        <MiniMap nodeColor={miniMapNodeColor} maskColor={maskColor} pannable zoomable />
       </ReactFlow>
     </div>
   );
@@ -167,7 +175,7 @@ function LeftPanel({
   const [tab, setTab] = useState<LeftTab>(readOnly ? "runs" : "nodes");
 
   return (
-    <div className="w-[240px] shrink-0 flex flex-col border-r border-border-subtle bg-sunk">
+    <div className="w-[240px] shrink-0 flex flex-col border-r border-border-subtle bg-surface">
       <div className="flex border-b border-border-subtle">
         {!readOnly && (
           <TabButton active={tab === "nodes"} onClick={() => setTab("nodes")}>Nodes</TabButton>
@@ -234,7 +242,7 @@ function RightPanel({
 
   return (
     <div
-      className="relative flex flex-col border-l border-border-subtle bg-sunk"
+      className="relative flex flex-col border-l border-border-subtle bg-surface"
       style={{ width, minWidth: RIGHT_MIN, flexShrink: 0 }}
     >
       <PanelResizeHandle onResize={handleResize} />

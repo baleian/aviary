@@ -37,7 +37,7 @@ export function EditorTabs({
 }: EditorTabsProps) {
   const items = tabs.map((t) => tabSortId(paneId, t.path));
   return (
-    <div className="flex w-full min-w-0 shrink-0 items-stretch border-b border-border-subtle bg-elevated">
+    <div className="flex w-full min-w-0 shrink-0 items-stretch border-b border-border-subtle bg-sunk">
       <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto">
         <SortableContext items={items} strategy={horizontalListSortingStrategy}>
           {tabs.map((tab) => (

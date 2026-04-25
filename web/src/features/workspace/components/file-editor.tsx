@@ -9,6 +9,7 @@ import { binaryViewerFor, monacoLanguageFor } from "../lib/file-icons";
 import { sandboxPath } from "../lib/paths";
 import { MarkdownContent } from "@/features/chat/components/markdown/markdown-content";
 import { downloadFileUrl } from "../lib/workspace-api";
+import { useTheme } from "@/features/theme/theme-provider";
 
 // Monaco is a large client-only bundle; Next.js SSR explicitly disabled.
 const MonacoEditor = dynamic(
@@ -33,6 +34,7 @@ export function FileEditor({ sessionId, tab, onDraftChange, onSave, saving }: Fi
   const { path, loading, error, savedContent, draft, isBinary, size } = tab;
   const dirty = draft !== null;
   const value = draft ?? savedContent ?? "";
+  const { theme } = useTheme();
 
   const language = useMemo(() => {
     const base = path.slice(path.lastIndexOf("/") + 1);
@@ -171,14 +173,19 @@ export function FileEditor({ sessionId, tab, onDraftChange, onSave, saving }: Fi
             Binary file — {formatSize(size)}. Preview not available.
           </div>
         ) : isMarkdown && preview ? (
-          <div className="prose prose-invert h-full overflow-auto px-6 py-4 max-w-none">
+          <div
+            className={cn(
+              "prose h-full overflow-auto px-6 py-4 max-w-none",
+              theme === "dark" && "prose-invert",
+            )}
+          >
             <MarkdownContent content={value} />
           </div>
         ) : (
           <MonacoEditor
             key={path}
             height="100%"
-            theme="vs-dark"
+            theme={theme === "dark" ? "vs-dark" : "vs"}
             language={language}
             value={value}
             onChange={(next: string | undefined) => onDraftChange(path, next ?? "")}

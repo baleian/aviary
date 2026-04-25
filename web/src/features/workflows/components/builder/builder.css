@@ -1,10 +1,10 @@
 /* ── React Flow overrides — Aviary Slate ── */
 
-/* Canvas inherits Slate canvas surface; React Flow's own grid color is set
- * via the --xy-background-color custom prop. */
+/* Slightly sunk surface — separates the canvas from the surrounding
+ * panels and makes the dot grid read as "this is the work area". */
 .react-flow {
-  --xy-background-color: var(--bg-canvas);
-  background-color: transparent;
+  --xy-background-color: var(--bg-sunk);
+  background-color: var(--bg-sunk);
 }
 
 /* ── Edges ── */

@@ -38,7 +38,7 @@ const MARKDOWN_COMPONENTS: Components = {
     if (isInline) {
       return (
         <code
-          className="rounded-xs bg-canvas px-1.5 py-0.5 type-code-sm text-info"
+          className="rounded-xs bg-hover px-1.5 py-0.5 type-code-sm text-accent border border-border-subtle"
           {...props}
         >
           {children}
