@@ -8,6 +8,14 @@ from app.config import settings
 _validator = build_oidc_validator(settings)
 
 
+def idp_enabled() -> bool:
+    return _validator.enabled
+
+
+def dev_user_sub() -> str:
+    return _validator.dev_user_sub
+
+
 async def init_oidc() -> None:
     await _validator.init()
 

@@ -1,17 +1,11 @@
-"""LiteLLM CustomLogger hook — per-user Anthropic API key injection via Vault.
+"""LiteLLM hook — inject the caller's Anthropic API key from Vault.
 
-On every Anthropic-backend request, extract the user's OIDC JWT from the
-``X-Aviary-User-Token`` header, validate it against Keycloak, look up the
-user's Anthropic API key in Vault, and override the upstream key.
-Non-Anthropic backends (Bedrock, Ollama, vLLM) fall through untouched.
-
-Loaded at Python startup via the ``.pth`` file alongside the MCP patch.
-"""
+The Vault namespace is the validated JWT sub (or DEV_USER_SUB in null
+mode). Non-Anthropic backends pass through untouched. See CLAUDE.md."""
 
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 from aviary_jwt_util import JwtValidator
@@ -19,7 +13,6 @@ from aviary_vault_util import fetch_credential
 
 logger = logging.getLogger("aviary.user_api_key")
 
-OIDC_ISSUER = os.environ.get("OIDC_ISSUER", "")
 VAULT_CREDENTIAL_NAME = "anthropic-api-key"
 
 _jwt = JwtValidator()
@@ -59,14 +52,17 @@ def _register() -> None:
                 data.get("metadata", {}).get("proxy_server_request")
             ) or {}
             user_token = (proxy_req.get("headers") or {}).get("x-aviary-user-token")
-            if not user_token:
-                # No user token = internal LiteLLM call (e.g. model listing) — leave key.
-                return data
 
-            try:
-                sub = await _jwt.extract_sub(user_token)
-            except Exception as exc:
-                raise _auth_error(str(exc)) from exc
+            if _jwt.enabled:
+                if not user_token:
+                    # internal LiteLLM call (model listing etc.) — leave key
+                    return data
+                try:
+                    sub = await _jwt.extract_sub(user_token)
+                except Exception as exc:
+                    raise _auth_error(str(exc)) from exc
+            else:
+                sub = _jwt.dev_user_sub
 
             try:
                 api_key = await fetch_credential(sub, VAULT_CREDENTIAL_NAME)
@@ -75,7 +71,7 @@ def _register() -> None:
 
             if not api_key:
                 raise _auth_error(
-                    "No Anthropic API key configured for user. "
+                    f"No Anthropic API key configured for sub={sub}. "
                     "Add 'anthropic-api-key' in profile settings."
                 )
 
@@ -86,13 +82,13 @@ def _register() -> None:
             return data
 
     litellm.callbacks.append(AviaryUserApiKeyHook())
-    logger.info("Aviary per-user API key hook registered")
+    logger.info(
+        "Aviary per-user API key hook registered (idp_enabled=%s, dev_user_sub=%s)",
+        _jwt.enabled, _jwt.dev_user_sub,
+    )
 
 
-if OIDC_ISSUER:
-    try:
-        _register()
-    except Exception:
-        logger.warning("Failed to register user API key hook", exc_info=True)
-else:
-    logger.info("OIDC_ISSUER not set — per-user API key hook disabled")
+try:
+    _register()
+except Exception:
+    logger.warning("Failed to register user API key hook", exc_info=True)

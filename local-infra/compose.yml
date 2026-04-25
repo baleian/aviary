@@ -201,8 +201,9 @@ services:
       AWS_REGION: "${AWS_REGION:-ap-northeast-2}"
       VAULT_ADDR: "http://vault:8200"
       VAULT_TOKEN: "dev-root-token"
-      OIDC_ISSUER: "http://localhost:8080/realms/aviary"
-      OIDC_INTERNAL_ISSUER: "http://keycloak:8080/realms/aviary"
+      OIDC_ISSUER: "${OIDC_ISSUER:-}"
+      OIDC_INTERNAL_ISSUER: "${OIDC_INTERNAL_ISSUER:-}"
+      DEV_USER_SUB: "${DEV_USER_SUB:-dev-user}"
       MCP_TOOL_PREFIX_SEPARATOR: "__"
       AVIARY_MCP_INJECTION_CONFIG: "/app/aviary-mcp-secret-injection.yaml"
     depends_on:

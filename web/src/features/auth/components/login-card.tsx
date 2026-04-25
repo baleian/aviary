@@ -1,19 +1,18 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/features/auth/providers/auth-provider";
+import { fetchAuthConfig } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { AviaryLogo } from "@/components/brand/aviary-logo";
 import { routes } from "@/lib/constants/routes";
 
-/**
- * LoginCard — sign-in hero on the Slate canvas.
- */
 export function LoginCard() {
   const { user, status, login } = useAuth();
   const router = useRouter();
+  const [idpEnabled, setIdpEnabled] = useState<boolean | null>(null);
 
   useEffect(() => {
     if (status === "authenticated" && user) {
@@ -21,12 +20,32 @@ export function LoginCard() {
     }
   }, [status, user, router]);
 
-  const isLoading = status === "loading";
+  useEffect(() => {
+    let cancelled = false;
+    fetchAuthConfig()
+      .then((cfg) => {
+        if (cancelled) return;
+        setIdpEnabled(cfg.idp_enabled);
+        if (!cfg.idp_enabled && status === "unauthenticated") {
+          void login();
+        }
+      })
+      .catch(() => setIdpEnabled(true));
+    return () => {
+      cancelled = true;
+    };
+  }, [status, login]);
+
+  const isLoading = status === "loading" || idpEnabled === null;
+  const buttonLabel = idpEnabled === false ? "Continuing as Dev User" : "Sign in with SSO";
+  const helperCopy =
+    idpEnabled === false
+      ? "No identity provider configured — running as the local dev user"
+      : "Authenticate via your organization's identity provider";
 
   return (
     <div className="relative flex min-h-screen flex-col items-center justify-center px-6 overflow-hidden">
       <div className="relative flex flex-col items-center gap-10 animate-fade-in">
-        {/* Logo + brand */}
         <div className="flex flex-col items-center gap-5">
           <div className="relative">
             <AviaryLogo size={104} />
@@ -39,28 +58,25 @@ export function LoginCard() {
           </div>
         </div>
 
-        {/* Sign-in card */}
         <div className="w-full max-w-sm rounded-xl">
           <div className="bg-raised border border-border-subtle rounded-xl shadow-xl p-8">
             <Button
               variant="cta"
               size="lg"
               onClick={login}
-              disabled={isLoading}
+              disabled={isLoading || idpEnabled === false}
               className="w-full"
             >
-              {isLoading ? (
+              {isLoading || idpEnabled === false ? (
                 <>
                   <Spinner size={16} className="text-white" />
-                  Connecting…
+                  {idpEnabled === false ? buttonLabel : "Connecting…"}
                 </>
               ) : (
-                "Sign in with SSO"
+                buttonLabel
               )}
             </Button>
-            <p className="mt-5 text-center type-caption text-fg-muted">
-              Authenticate via your organization&apos;s identity provider
-            </p>
+            <p className="mt-5 text-center type-caption text-fg-muted">{helperCopy}</p>
           </div>
         </div>
       </div>

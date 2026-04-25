@@ -1,13 +1,5 @@
-"""JWT + JWKS + URL rewrite — shared by the two LiteLLM patches.
-
-LiteLLM's container carries PyJWT (not python-jose), so we can't reuse
-``aviary_shared.auth.oidc`` from here — it depends on jose. Keeping this
-module self-contained and LiteLLM-local.
-
-JWT sub-validation cache stays: it's perf for hot re-validation, not a
-state mirror. Vault credential caching is deliberately NOT done — user
-profile changes must reflect immediately on the next call.
-"""
+"""LiteLLM-local JWT validator. Mirrors aviary_shared.auth.OIDCValidator
+but uses PyJWT (LiteLLM's container has no python-jose)."""
 
 from __future__ import annotations
 
@@ -21,19 +13,14 @@ from jwt.algorithms import RSAAlgorithm
 
 
 class JwtValidator:
-    """Validates OIDC JWTs against Keycloak JWKS.
-
-    Parameterless constructor picks up ``OIDC_ISSUER`` / ``OIDC_INTERNAL_ISSUER``
-    from the environment — both patches share one module-level instance.
-    """
-
-    # Minimum seconds between forced refetches on an unknown kid. Prevents a
-    # flood of tokens carrying random kids from hammering the IdP.
+    # rate-limit forced JWKS refetches so random-kid tokens can't DoS the IdP
     _FORCE_REFETCH_COOLDOWN = 5
 
     def __init__(self, *, jwks_ttl: int = 3600, sub_cache_ttl: int = 1800) -> None:
         self.issuer = os.environ.get("OIDC_ISSUER", "")
         self.internal_issuer = os.environ.get("OIDC_INTERNAL_ISSUER", "") or self.issuer
+        self.enabled = bool(self.issuer)
+        self.dev_user_sub = os.environ.get("DEV_USER_SUB", "dev-user")
         self._jwks_ttl = jwks_ttl
         self._sub_cache_ttl = sub_cache_ttl
         self._jwks: dict | None = None
@@ -81,17 +68,12 @@ class JwtValidator:
 
     @staticmethod
     def _token_cache_key(token: str) -> str:
-        # Hash the WHOLE token — signature alone collides on tampered-payload
-        # + original-signature attacks and would silently bypass re-validation.
+        # hash whole token — signature-only would collide on tampered-payload + original-sig
         return hashlib.sha256(token.encode()).hexdigest()[:32]
 
     async def extract_sub(self, token: str) -> str:
-        """Validate the JWT and return the ``sub`` claim.
-
-        Results are cached by token hash for ``sub_cache_ttl`` seconds so a
-        single request's re-entry points (ingress gate → list-filter →
-        tool-call) each pay validation cost once.
-        """
+        if not self.enabled:
+            return self.dev_user_sub
         cache_key = self._token_cache_key(token)
         now = time.time()
         cached = self._sub_cache.get(cache_key)

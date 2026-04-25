@@ -12,14 +12,11 @@ class Settings(BaseSettings):
     # Expose /metrics (Prometheus text format).
     metrics_enabled: bool = True
 
-    # OIDC — see aviary_shared.auth.IdpSettings for the canonical schema.
-    # The supervisor validates the caller's user JWT (Bearer) and uses the
-    # resulting `sub` to look up per-user credentials in Vault.
-    # `oidc_provider` selects the ClaimMapper (keycloak | okta | generic).
-    oidc_provider: str = "keycloak"
-    oidc_issuer: str
+    # OIDC — see .env.example.
+    oidc_issuer: str | None = None
     oidc_internal_issuer: str | None = None
     oidc_audience: str | None = None
+    dev_user_sub: str = "dev-user"
 
     # Vault — per-user credentials (GitHub token, etc.) live at
     # secret/aviary/credentials/{sub}/{key_name}.
@@ -33,6 +30,10 @@ class Settings(BaseSettings):
     worker_shared_secret: str | None = None
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+
+    @property
+    def idp_enabled(self) -> bool:
+        return bool(self.oidc_issuer)
 
 
 settings = Settings()

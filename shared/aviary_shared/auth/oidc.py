@@ -1,24 +1,10 @@
-"""Shared OIDC JWT validation.
-
-IdP-agnostic: discovery + JWKS caching + RS256 signature verification. The
-IdP-specific bit (how roles/groups/etc. are laid out in the payload) is
-delegated to an injected `ClaimMapper` — see `aviary_shared.auth.claims`.
-
-Each service constructs one `OIDCValidator` on startup, wired from its
-`IdpSettings`.
-"""
-
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
 
 import httpx
 from jose import JWTError, jwt
-
-if TYPE_CHECKING:
-    from aviary_shared.auth.claims import ClaimMapper
 
 
 @dataclass
@@ -26,51 +12,66 @@ class TokenClaims:
     sub: str
     email: str
     display_name: str
-    roles: list[str] = field(default_factory=list)
-    groups: list[str] = field(default_factory=list)
+
+
+def _extract_claims(payload: dict) -> TokenClaims:
+    sub = payload.get("sub")
+    if not sub:
+        raise ValueError("Token missing 'sub' claim")
+    email = payload.get("email", "")
+    display_name = (
+        payload.get("name")
+        or payload.get("preferred_username")
+        or email
+        or sub
+    )
+    return TokenClaims(sub=sub, email=email, display_name=display_name)
 
 
 class OIDCValidator:
-    """Stateful OIDC validator with JWKS caching."""
+    """OIDC validator with JWKS caching. ``issuer=None`` switches to null
+    mode: every ``validate_token`` call returns the dev-user claims."""
 
     def __init__(
         self,
-        issuer: str,
+        issuer: str | None,
         internal_issuer: str | None = None,
         audience: str | None = None,
         jwks_cache_ttl: int = 3600,
-        claim_mapper: "ClaimMapper | None" = None,
+        dev_user_sub: str = "dev-user",
     ):
-        self.issuer = issuer
-        self.internal_issuer = internal_issuer or issuer
+        self.enabled = bool(issuer)
+        self.issuer = issuer or ""
+        self.internal_issuer = internal_issuer or self.issuer
         self.audience = audience
         self._jwks_cache_ttl = jwks_cache_ttl
 
-        if claim_mapper is None:
-            # Defer import to avoid circular-dep churn while keeping the
-            # default ergonomic for tests that don't care about provider.
-            from aviary_shared.auth.claims import KeycloakClaimMapper
-            claim_mapper = KeycloakClaimMapper()
-        self._claim_mapper = claim_mapper
+        self._dev_claims = TokenClaims(
+            sub=dev_user_sub,
+            email=f"{dev_user_sub}@aviary.local",
+            display_name="Dev User",
+        )
 
         self._oidc_config: dict | None = None
         self._jwks: dict | None = None
         self._jwks_fetched_at: float = 0
 
+    @property
+    def dev_user_sub(self) -> str:
+        return self._dev_claims.sub
+
     def _rewrite_url(self, url: str) -> str:
-        """Rewrite a public-facing URL to the internal URL for container-to-container access."""
         if self.internal_issuer != self.issuer and url.startswith(self.issuer):
             return self.internal_issuer + url[len(self.issuer) :]
         return url
 
     def to_public_url(self, url: str) -> str:
-        """Rewrite an internal URL back to the public-facing URL (for browser use)."""
         if self.internal_issuer != self.issuer and url.startswith(self.internal_issuer):
             return self.issuer + url[len(self.internal_issuer) :]
         return url
 
     async def _fetch_oidc_config(self) -> dict:
-        # rstrip: Auth0 issuers end with `/`, which the `iss` claim requires verbatim
+        # Auth0 issuers end with `/`, which the `iss` claim requires verbatim
         url = f"{self.internal_issuer.rstrip('/')}/.well-known/openid-configuration"
         async with httpx.AsyncClient() as client:
             resp = await client.get(url, timeout=10)
@@ -78,6 +79,8 @@ class OIDCValidator:
             return resp.json()
 
     async def get_oidc_config(self) -> dict:
+        if not self.enabled:
+            raise RuntimeError("OIDC is disabled — no discovery document available")
         if self._oidc_config is None:
             self._oidc_config = await self._fetch_oidc_config()
         return self._oidc_config
@@ -89,6 +92,8 @@ class OIDCValidator:
             return resp.json()
 
     async def get_jwks(self) -> dict:
+        if not self.enabled:
+            raise RuntimeError("OIDC is disabled — no JWKS available")
         now = time.time()
         if self._jwks is None or (now - self._jwks_fetched_at) > self._jwks_cache_ttl:
             config = await self.get_oidc_config()
@@ -98,18 +103,21 @@ class OIDCValidator:
         return self._jwks
 
     async def init(self) -> None:
-        """Pre-fetch OIDC config and JWKS. Best-effort — failures are retried on demand."""
+        if not self.enabled:
+            return
         try:
             self._oidc_config = await self._fetch_oidc_config()
             jwks_uri = self._rewrite_url(self._oidc_config["jwks_uri"])
             self._jwks = await self._fetch_jwks(jwks_uri)
             self._jwks_fetched_at = time.time()
-        except Exception:  # Best-effort: failures are retried on demand
+        except Exception:  # best-effort — retried on demand
             self._oidc_config = None
             self._jwks = None
 
     async def validate_token(self, token: str) -> TokenClaims:
-        """Validate a JWT access/ID token and extract claims."""
+        if not self.enabled:
+            return self._dev_claims
+
         jwks = await self.get_jwks()
 
         try:
@@ -125,7 +133,7 @@ class OIDCValidator:
                 break
 
         if rsa_key is None:
-            # Key rotation — force JWKS refresh
+            # key rotation — force JWKS refresh once
             self._jwks_fetched_at = 0
             jwks = await self.get_jwks()
             for key in jwks.get("keys", []):
@@ -147,4 +155,4 @@ class OIDCValidator:
         except JWTError as e:
             raise ValueError(f"Token validation failed: {e}") from e
 
-        return self._claim_mapper.map(payload)
+        return _extract_claims(payload)

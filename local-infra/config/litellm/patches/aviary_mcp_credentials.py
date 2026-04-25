@@ -22,7 +22,6 @@ from aviary_vault_util import fetch_credential
 
 logger = logging.getLogger("aviary.mcp_credentials")
 
-OIDC_ISSUER = os.environ.get("OIDC_ISSUER", "")
 TOOL_NAME_SEPARATOR = os.environ.get("MCP_TOOL_PREFIX_SEPARATOR", "__")
 INJECTION_CONFIG_PATH = os.environ.get(
     "AVIARY_MCP_INJECTION_CONFIG", "/app/aviary-mcp-secret-injection.yaml",
@@ -94,20 +93,22 @@ def _allowed_tools_from_headers(raw_headers: Any) -> set[str] | None:
 
 
 async def _require_valid_mcp_bearer(raw_headers: Any) -> str | None:
-    """Validate the Bearer on every MCP request. Master keys (sk-*) pass
-    through unchanged — LiteLLM's own key auth already vetted them.
-    Returns the raw token on success, ``None`` when ``raw_headers`` isn't
-    a dict (internal in-process calls with no request context)."""
+    """Validate Bearer on MCP requests. Master keys (sk-*) pass through;
+    null mode allows missing Bearer."""
     from fastapi import HTTPException  # type: ignore[import-untyped]
 
     if not isinstance(raw_headers, dict):
         return None
     token = _bearer_from_headers(raw_headers)
     if not token:
+        if not _jwt.enabled:
+            return None
         raise HTTPException(
             status_code=401, detail={"error": "MCP request missing Bearer credential"}
         )
     if token.startswith("sk-") or not is_jwt(token):
+        return token
+    if not _jwt.enabled:
         return token
     try:
         await _jwt.extract_sub(token)
@@ -119,8 +120,8 @@ async def _require_valid_mcp_bearer(raw_headers: Any) -> str | None:
 
 
 async def _maybe_extract_sub(token: str | None) -> str | None:
-    """Best-effort sub for downstream hooks. Skips master keys and swallows
-    failures — caller should have already enforced validation."""
+    if not _jwt.enabled:
+        return _jwt.dev_user_sub
     if not token or token.startswith("sk-") or not is_jwt(token):
         return None
     try:
@@ -132,14 +133,10 @@ async def _maybe_extract_sub(token: str | None) -> str | None:
 # ── LiteLLM monkey-patches ─────────────────────────────────────────────────
 
 def _install_mcp_request_auth_gate() -> None:
-    """Close LiteLLM OSS's OAuth2-passthrough fail-open on ``/mcp``.
-
-    Upstream silently accepts any Bearer that isn't a virtual key by
-    downgrading to an empty ``UserAPIKeyAuth()``. We wrap
-    ``MCPRequestHandler.process_mcp_request`` so invalid/tampered/expired
-    JWTs 401 at ingress before any list or call handler runs. Master keys
-    (sk-*) fall through — already vetted by LiteLLM.
-    """
+    """Close LiteLLM OSS's OAuth2-passthrough fail-open on /mcp by
+    asserting JWT validity at request ingress. No-op in null mode."""
+    if not _jwt.enabled:
+        return
     try:
         from litellm.proxy._experimental.mcp_server.auth import (  # type: ignore[import-untyped]
             user_api_key_auth_mcp as mcp_auth_mod,
@@ -383,13 +380,15 @@ def _register() -> None:
                 return data
 
             user_token = data.get("incoming_bearer_token")
-            if not user_token:
+
+            if not _jwt.enabled:
+                sub = _jwt.dev_user_sub
+            elif not user_token:
                 raise HTTPException(
                     status_code=401,
                     detail={"error": "MCP call missing Bearer token"},
                 )
-
-            if not user_token.startswith("sk-") and is_jwt(user_token):
+            elif not user_token.startswith("sk-") and is_jwt(user_token):
                 try:
                     sub = await _jwt.extract_sub(user_token)
                 except Exception as exc:
@@ -451,16 +450,17 @@ def _register() -> None:
     logger.info("Aviary MCP credential injection hook registered")
 
 
-if OIDC_ISSUER:
-    try:
-        _load_injection_config()
-        _install_mcp_request_auth_gate()
-        _install_server_name_forwarder()
-        _install_tools_list_stripper()
-        _install_tools_call_gate()
-        _install_auth_noise_filter()
-        _register()
-    except Exception:
-        logger.warning("Failed to register MCP credential injection hook", exc_info=True)
-else:
-    logger.info("OIDC_ISSUER not set — MCP credential injection hook disabled")
+try:
+    _load_injection_config()
+    _install_mcp_request_auth_gate()
+    _install_server_name_forwarder()
+    _install_tools_list_stripper()
+    _install_tools_call_gate()
+    _install_auth_noise_filter()
+    _register()
+    logger.info(
+        "Aviary MCP hooks installed (idp_enabled=%s, dev_user_sub=%s)",
+        _jwt.enabled, _jwt.dev_user_sub,
+    )
+except Exception:
+    logger.warning("Failed to register MCP credential injection hook", exc_info=True)

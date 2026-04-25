@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from app.auth.oidc import refresh_tokens, validate_token
+from app.auth.oidc import idp_enabled, refresh_tokens, validate_token
 from app.services.redis_service import get_client
 
 logger = logging.getLogger(__name__)
@@ -121,6 +121,9 @@ async def get_fresh_session(session_id: str) -> SessionData | None:
     data = await _load(session_id)
     if data is None:
         return None
+    # null mode has no refresh path
+    if not idp_enabled():
+        return data
     if data.access_token_expires_at - int(time.time()) > REFRESH_BUFFER_SECONDS:
         return data
 
