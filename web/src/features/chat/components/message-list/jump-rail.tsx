@@ -48,14 +48,16 @@ export function JumpRail({ scrollRef, messageCount }: JumpRailProps) {
       const elements = Array.from(
         scrollEl.querySelectorAll<HTMLElement>("[data-rail-id]"),
       );
-      setItems(
-        elements.map((el) => ({
-          id: el.dataset.railId ?? "",
-          kind: (el.dataset.railKind as RailKind) ?? "agent",
-          preview: el.dataset.railPreview ?? "",
-          top: el.getBoundingClientRect().top - containerTop + scrollTop,
-        })),
-      );
+      const next: RailItem[] = elements.map((el) => ({
+        id: el.dataset.railId ?? "",
+        kind: (el.dataset.railKind as RailKind) ?? "agent",
+        preview: el.dataset.railPreview ?? "",
+        top: el.getBoundingClientRect().top - containerTop + scrollTop,
+      }));
+      // Skip the setState (and the downstream tick remount) when nothing
+      // we render off has changed — streaming reflows fire the observer
+      // every layout pass otherwise.
+      setItems((prev) => (sameItems(prev, next) ? prev : next));
     };
 
     measure();
@@ -132,9 +134,17 @@ export function JumpRail({ scrollRef, messageCount }: JumpRailProps) {
   );
 }
 
-// Legacy `info/success/danger/elevated` palette entries are
-// `rgb(var(--legacy-…) / <alpha-value>)`, so they support `/<alpha>`.
-// The Slate `var()` tokens (fg-*, accent, status-*) don't.
+function sameItems(a: RailItem[], b: RailItem[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].id !== b[i].id || a[i].top !== b[i].top || a[i].kind !== b[i].kind) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Slate var() tokens don't support /<alpha>; legacy palette does.
 const kindClasses: Record<RailKind, string> = {
   user: "bg-info/50 group-hover/rail:bg-info/70",
   agent: "bg-elevated/45 group-hover/rail:bg-elevated/75",

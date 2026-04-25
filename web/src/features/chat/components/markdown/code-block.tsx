@@ -86,8 +86,7 @@ export function CodeBlock({ children, node, className, ...props }: CodeBlockProp
   }, [raw, isShell]);
 
   return (
-    <div className="my-3 overflow-hidden rounded-md bg-canvas border border-border-subtle">
-      {/* Header bar */}
+    <div className="my-3 overflow-hidden rounded-md bg-sunk border border-border-subtle">
       <div className="flex items-center justify-between border-b border-border-subtle bg-hover/50 px-3 py-1.5">
         <span className="type-caption text-fg-disabled">
           {language || "text"}
@@ -134,7 +133,7 @@ export function CodeBlock({ children, node, className, ...props }: CodeBlockProp
       {/* Code body — pre inherits canvas bg from parent, hljs theme overlay applies */}
       <pre
         className={cn(
-          "overflow-x-auto p-4 type-code",
+          "overflow-x-auto px-4 py-2 type-code",
           wrapped ? "whitespace-pre-wrap break-all" : "whitespace-pre",
           className,
         )}

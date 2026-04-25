@@ -59,33 +59,11 @@ export function AgentSubHeader({
       </Link>
 
       {chatActions ? (
-        <SessionTitle
-          sessionTitle={chatActions.sessionTitle}
-          onSave={chatActions.saveTitle}
-        />
-      ) : agent.description?.trim() ? (
-        <span className="hidden min-w-0 flex-1 truncate text-[12px] text-fg-tertiary sm:inline">
-          {agent.description}
-        </span>
-      ) : (
-        <div className="flex-1" />
-      )}
-
-      {!chatActions && (
-        <Chip>
-          <span className="t-mono">{model}</span>
-        </Chip>
-      )}
-      {!chatActions && (
-        <Chip>
-          <Wrench size={11} />
-          <span className="num t-mono">{toolCount}</span>
-          <span className="text-fg-muted">tools</span>
-        </Chip>
-      )}
-
-      {chatActions && (
         <>
+          <SessionTitle
+            sessionTitle={chatActions.sessionTitle}
+            onSave={chatActions.saveTitle}
+          />
           <ChatWidthToggle />
           <IconBtn
             disabled={!chatActions.hasMessages}
@@ -103,6 +81,24 @@ export function AgentSubHeader({
           >
             <FileText size={13} />
           </IconBtn>
+        </>
+      ) : (
+        <>
+          {agent.description?.trim() ? (
+            <span className="hidden min-w-0 flex-1 truncate text-[12px] text-fg-tertiary sm:inline">
+              {agent.description}
+            </span>
+          ) : (
+            <div className="flex-1" />
+          )}
+          <Chip>
+            <span className="t-mono">{model}</span>
+          </Chip>
+          <Chip>
+            <Wrench size={11} />
+            <span className="num t-mono">{toolCount}</span>
+            <span className="text-fg-muted">tools</span>
+          </Chip>
         </>
       )}
 
@@ -132,12 +128,9 @@ export function AgentSubHeader({
 
 }
 
-/**
- * Owns its own draft / isEditing / inputRef so a parent re-render (e.g.
- * ChatActions republish on each keystroke) can't reset the IME composition
- * mid-character. The outer `onSave` callback only fires on commit (Enter
- * or blur), never on every keystroke.
- */
+/** Owns its own draft / isEditing / inputRef so a parent re-render (e.g.
+ *  ChatActions republish) can't reset the IME composition mid-character.
+ *  `onSave` fires only on commit (Enter / blur). */
 function SessionTitle({
   sessionTitle,
   onSave,
@@ -148,7 +141,6 @@ function SessionTitle({
   const [isEditing, setIsEditing] = React.useState(false);
   const [draft, setDraft] = React.useState("");
   const inputRef = React.useRef<HTMLInputElement>(null);
-  const composingRef = React.useRef(false);
 
   const startEditing = React.useCallback(() => {
     setDraft(sessionTitle ?? "");
@@ -156,18 +148,14 @@ function SessionTitle({
     setTimeout(() => inputRef.current?.focus(), 0);
   }, [sessionTitle]);
 
-  const commit = React.useCallback(async () => {
+  const commit = React.useCallback(() => {
     setIsEditing(false);
-    try {
-      await onSave(draft);
-    } catch {
-      // Optimistic revert is handled inside onSave; nothing to do here.
-    }
+    void onSave(draft);
   }, [draft, onSave]);
 
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
-      if (composingRef.current || e.nativeEvent.isComposing) return;
+      if (e.nativeEvent.isComposing) return;
       if (e.key === "Enter") {
         e.preventDefault();
         e.currentTarget.blur();
@@ -190,12 +178,6 @@ function SessionTitle({
           )}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          onCompositionStart={() => {
-            composingRef.current = true;
-          }}
-          onCompositionEnd={() => {
-            composingRef.current = false;
-          }}
           onBlur={commit}
           onKeyDown={handleKeyDown}
           maxLength={200}

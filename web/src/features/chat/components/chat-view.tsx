@@ -36,18 +36,6 @@ const AUTO_REFRESH_DEBOUNCE_MS = 1500;
 
 const WORKSPACE_PANEL_KEY = "aviary:workspace-panel-open";
 
-/**
- * ChatView — assembles the chat experience for a session.
- *
- * This component is intentionally a thin orchestrator: it composes hooks
- * and child components but contains no business logic of its own. The
- * old 570-line page is fully decomposed into hooks/components under
- * features/chat.
- *
- * The width preference (narrow / comfort / wide) is owned by
- * ChatWidthProvider so the header, banner, message list, and input all
- * stay aligned without prop-drilling.
- */
 export interface ChatViewProps {
   sessionId: string;
   /** Hide the in-pane chat header — outer layout owns identity/actions. */
@@ -61,28 +49,10 @@ export interface ChatViewProps {
   live?: boolean;
 }
 
-export function ChatView({
-  sessionId,
-  hideHeader,
-  hideWorkspace,
-  hideInput,
-  live,
-}: ChatViewProps) {
-  // ChatWidthProvider lives at AppShell level so outer layouts (e.g.
-  // AgentSubHeader) and ChatView share one width state.
-  return (
-    <ChatViewInner
-      // Keying on sessionId forces a clean remount when the caller switches
-      // which session we're showing — critical for embedded use (workflow
-      // inspector swaps node session ids on the same component position).
-      key={sessionId}
-      sessionId={sessionId}
-      hideHeader={hideHeader}
-      hideWorkspace={hideWorkspace}
-      hideInput={hideInput}
-      live={live}
-    />
-  );
+export function ChatView(props: ChatViewProps) {
+  // Key on sessionId so swapping which session is shown remounts cleanly
+  // (workflow inspector reuses this same component position across nodes).
+  return <ChatViewInner key={props.sessionId} {...props} />;
 }
 
 function ChatViewInner({

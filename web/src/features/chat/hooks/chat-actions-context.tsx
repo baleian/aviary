@@ -50,9 +50,13 @@ export function useChatActions(): ChatActions | null {
  *  to a no-op when no provider is mounted (chat usable standalone). */
 export function usePublishChatActions(actions: ChatActions | null): void {
   const setActions = React.useContext(SetterContext);
+  // Push value on every change without a cleanup, so consumers don't see
+  // a transient null between dep updates. The unmount cleanup below
+  // clears the slot exactly once when this hook caller goes away.
   React.useEffect(() => {
-    if (!setActions) return;
-    setActions(actions);
-    return () => setActions(null);
+    setActions?.(actions);
   }, [setActions, actions]);
+  React.useEffect(() => {
+    return () => setActions?.(null);
+  }, [setActions]);
 }

@@ -173,12 +173,7 @@ export function FileEditor({ sessionId, tab, onDraftChange, onSave, saving }: Fi
             Binary file — {formatSize(size)}. Preview not available.
           </div>
         ) : isMarkdown && preview ? (
-          <div
-            className={cn(
-              "prose h-full overflow-auto px-6 py-4 max-w-none",
-              theme === "dark" && "prose-invert",
-            )}
-          >
+          <div className="markdown-body break-words type-body text-fg-secondary h-full overflow-auto px-6 py-4">
             <MarkdownContent content={value} />
           </div>
         ) : (

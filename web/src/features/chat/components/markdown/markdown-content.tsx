@@ -3,6 +3,7 @@
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
+import type { Pluggable } from "unified";
 import { CodeBlock } from "./code-block";
 
 interface MarkdownContentProps {
@@ -25,7 +26,9 @@ interface MarkdownContentProps {
  * props/state — they only get whatever ReactMarkdown passes them.
  */
 const MARKDOWN_PLUGINS_REMARK = [remarkGfm];
-const MARKDOWN_PLUGINS_REHYPE = [rehypeHighlight];
+// Auto-detect off: a fence without an explicit language renders plain
+// instead of being guessed (which mis-colors ASCII art / prose).
+const MARKDOWN_PLUGINS_REHYPE: Pluggable[] = [[rehypeHighlight, { detect: false }]];
 
 const MARKDOWN_COMPONENTS: Components = {
   pre: ({ children, node, ...props }) => (
@@ -34,7 +37,12 @@ const MARKDOWN_COMPONENTS: Components = {
     </CodeBlock>
   ),
   code: ({ children, className, ...props }) => {
-    const isInline = !className;
+    // react-markdown v9 doesn't pass an `inline` flag. Inline backticks
+    // arrive as plain strings; fenced blocks arrive as a hast tree (string
+    // when no syntax highlighting, span tree once rehype-highlight has run).
+    // Anything that's not a single-line string is a block.
+    const isInline =
+      typeof children === "string" && !children.includes("\n") && !className;
     if (isInline) {
       return (
         <code
