@@ -9,6 +9,7 @@ import {
   NotificationsProvider,
   useNotificationsReadOnly,
 } from "@/features/notifications/notifications-provider";
+import { ChatWidthProvider } from "@/features/chat/hooks/use-chat-width";
 import { UserMenuStub } from "./user-menu-stub";
 import { SessionStatusProvider } from "@/features/layout/providers/session-status-provider";
 import { SidebarProvider } from "@/features/layout/providers/sidebar-provider";
@@ -39,7 +40,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <NotificationsProvider>
-      <SessionStatusProvider>
+      <ChatWidthProvider>
+       <SessionStatusProvider>
         <SidebarProvider>
           <PageHeaderProvider>
             <div className="flex h-screen overflow-hidden bg-canvas text-fg-primary">
@@ -60,7 +62,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <UserMenuStub open={userMenuOpen} onClose={() => setUserMenuOpen(false)} />
           </PageHeaderProvider>
         </SidebarProvider>
-      </SessionStatusProvider>
+       </SessionStatusProvider>
+      </ChatWidthProvider>
     </NotificationsProvider>
   );
 }

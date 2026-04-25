@@ -6,7 +6,7 @@ import { useChatMessages } from "@/features/chat/hooks/use-chat-messages";
 import { useConnectionStatus } from "@/features/chat/hooks/use-connection-status";
 import { useTitleEditor } from "@/features/chat/hooks/use-title-editor";
 import { useChatExport } from "@/features/chat/hooks/use-chat-export";
-import { ChatWidthProvider, useChatWidth } from "@/features/chat/hooks/use-chat-width";
+import { useChatWidth } from "@/features/chat/hooks/use-chat-width";
 import { useChatSearch } from "@/features/chat/hooks/use-chat-search";
 import { ChatSearchContextProvider } from "@/features/chat/hooks/chat-search-context";
 import { useAgentCapabilities } from "@/features/chat/hooks/use-agent-capabilities";
@@ -68,20 +68,20 @@ export function ChatView({
   hideInput,
   live,
 }: ChatViewProps) {
+  // ChatWidthProvider lives at AppShell level so outer layouts (e.g.
+  // AgentSubHeader) and ChatView share one width state.
   return (
-    <ChatWidthProvider>
-      <ChatViewInner
-        // Keying on sessionId forces a clean remount when the caller switches
-        // which session we're showing — critical for embedded use (workflow
-        // inspector swaps node session ids on the same component position).
-        key={sessionId}
-        sessionId={sessionId}
-        hideHeader={hideHeader}
-        hideWorkspace={hideWorkspace}
-        hideInput={hideInput}
-        live={live}
-      />
-    </ChatWidthProvider>
+    <ChatViewInner
+      // Keying on sessionId forces a clean remount when the caller switches
+      // which session we're showing — critical for embedded use (workflow
+      // inspector swaps node session ids on the same component position).
+      key={sessionId}
+      sessionId={sessionId}
+      hideHeader={hideHeader}
+      hideWorkspace={hideWorkspace}
+      hideInput={hideInput}
+      live={live}
+    />
   );
 }
 

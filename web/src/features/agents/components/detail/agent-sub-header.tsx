@@ -6,6 +6,7 @@ import { FileText, Pencil, Printer, Wrench, PanelRight, PanelRightClose } from "
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { useChatActions } from "@/features/chat/hooks/chat-actions-context";
+import { ChatWidthToggle } from "@/features/chat/components/chat-width-toggle";
 import { toneFromId, initialFromName } from "@/lib/tone";
 import { routes } from "@/lib/constants/routes";
 import { cn } from "@/lib/utils";
@@ -85,6 +86,7 @@ export function AgentSubHeader({
 
       {chatActions && (
         <>
+          <ChatWidthToggle />
           <IconBtn
             disabled={!chatActions.hasMessages}
             onClick={chatActions.onPrintVisual}
