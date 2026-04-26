@@ -17,6 +17,8 @@ async def autocomplete(
     session: SessionData = Depends(get_session_data),
 ):
     try:
-        return await agent_autocomplete_service.run(body, session.access_token)
+        return await agent_autocomplete_service.run(
+            body, session.access_token, session.user_external_id,
+        )
     except agent_autocomplete_service.AutocompleteError as e:
         raise HTTPException(status_code=502, detail=str(e))

@@ -99,10 +99,9 @@ Three backend services with distinct roles:
 
 **Pod Strategy (env-per-pool, (agent, session)-per-workdir):** One Helm release per environment. Replicas fixed (min 1), no scale-to-zero. Every pod serves every agent. Isolation comes from per-(agent, session) on-disk paths plus bubblewrap — the pod itself is agent-agnostic.
 
-**LiteLLM Gateway** (local-infra/ compose, `:8090`): All LLM calls go through LiteLLM OSS proxy. Backend is determined by the model name prefix (e.g., `anthropic/claude-sonnet-4-6` → Claude API, `ollama/gemma4:26b` → Ollama, `vllm/...` → vLLM, `bedrock/...` → Bedrock). Natively compatible with Anthropic SDK (`/v1/messages`), so claude-agent-sdk works transparently. The same proxy also serves `/mcp` — the aggregated MCP endpoint (see "MCP Aggregation" below). Configuration in [local-infra/config/litellm/config.yaml](local-infra/config/litellm/config.yaml). Four patch modules loaded via `.pth` file:
-- `aviary_user_api_key.py` — `CustomLogger.async_pre_call_hook` that validates the user's Keycloak JWT (forwarded as `X-Aviary-User-Token`), fetches per-user Anthropic API key from Vault, overrides the outgoing key. Fails closed.
-- `aviary_mcp_credentials.py` — owns everything MCP: request-ingress JWT gate (plugs the OAuth2-passthrough fail-open), tools/list filter (X-Aviary-Allowed-Tools + RBAC stub), tools/call gate, and `pre_mcp_call` Vault-argument injection. Same JWKS/Keycloak validation as above.
-- `aviary_jwt_util.py` — shared JWKS fetch + JWT validation + sub-cache helpers used by both patches above. JWKS has a forced-refetch cooldown so random-kid tokens can't DoS the IdP.
+**LiteLLM Gateway** (local-infra/ compose, `:8090`): All LLM calls go through LiteLLM OSS proxy. Backend is determined by the model name prefix (e.g., `anthropic/claude-sonnet-4-6` → Claude API, `ollama/gemma4:26b` → Ollama, `vllm/...` → vLLM, `bedrock/...` → Bedrock). Natively compatible with Anthropic SDK (`/v1/messages`), so claude-agent-sdk works transparently. The same proxy also serves `/mcp` — the aggregated MCP endpoint (see "MCP Aggregation" below). Configuration in [local-infra/config/litellm/config.yaml](local-infra/config/litellm/config.yaml). LiteLLM is **IdP-unaware** — the caller's identity is read directly from the `X-Aviary-User-Sub` header. In production the upstream LLM-gateway team validates whatever identity proof they require and forwards the resolved sub; locally the runtime/API forwards the sub directly. Three patch modules loaded via `.pth` file:
+- `aviary_user_api_key.py` — `CustomLogger.async_pre_call_hook` that reads `X-Aviary-User-Sub`, fetches the user's Anthropic API key from Vault, overrides the outgoing key. Fails closed when sub is present but Vault has no key.
+- `aviary_mcp_credentials.py` — owns everything MCP: tools/list filter (`X-Aviary-Allowed-Tools` + RBAC stub), tools/call allow-list gate, and `pre_mcp_call` Vault-argument injection. The tools/call gate stashes `X-Aviary-User-Sub` in a contextvar so the inner injection hook can resolve Vault keys.
 - `aviary_vault_util.py` — shared Vault credential fetch (`secret/aviary/credentials/{sub}/{key}`). No caching by design — profile changes must reflect immediately. Slow fetches log a warning.
 
 LiteLLM UI (`http://localhost:8090/ui`, default `admin/admin`) is backed by a dedicated `litellm` Postgres database on the shared Postgres instance. LiteLLM applies its own Prisma migrations on startup. Keys, teams, and spend live in the DB; models stay file-only — `config.yaml` is the single source of truth. `STORE_MODEL_IN_DB` is left at its default (off) so `/v1/model/info` never surfaces UI-added shadow copies. Credentials come from `LITELLM_UI_USERNAME` / `LITELLM_UI_PASSWORD` env vars.
@@ -127,10 +126,10 @@ No background loops. No per-agent state. No 0↔1 activation — environments ar
 ### IdP Switching — Pure Env, No Code Changes
 All IdP wiring lives in `shared/aviary_shared/auth/` and is driven by env vars. The flag that picks the mode is `OIDC_ISSUER`:
 
-- **`OIDC_ISSUER` unset** — no real IdP. `OIDCValidator` runs in null mode and resolves every token to a fixed `TokenClaims(sub=DEV_USER_SUB)` (default `dev-user`). The frontend calls `/api/auth/dev-login` instead of running PKCE; the supervisor accepts requests with no Bearer; LiteLLM patches use `dev-user` for Vault lookups. Pre-seed `secret/aviary/credentials/dev-user/{anthropic-api-key,github-token,…}` for whatever credentials the local stack needs.
-- **`OIDC_ISSUER` set** — real OIDC validation kicks in. Aviary only consumes the standard `sub` / `email` / `name` claims, so any OIDC-compliant IdP (Keycloak, Okta, Auth0, …) works without a per-IdP claim mapper.
+- **`OIDC_ISSUER` unset** — no real IdP. `OIDCValidator` runs in null mode and resolves every token to a fixed `TokenClaims(sub=DEV_USER_SUB)` (default `dev-user`). The frontend calls `/api/auth/dev-login` instead of running PKCE; the supervisor accepts requests with no Bearer. The API/runtime forwards `X-Aviary-User-Sub: dev-user` to LiteLLM, which trusts it and looks up Vault accordingly. Pre-seed `secret/aviary/credentials/dev-user/{anthropic-api-key,github-token,…}` for whatever credentials the local stack needs.
+- **`OIDC_ISSUER` set** — real OIDC validation kicks in on api + supervisor. Aviary only consumes the standard `sub` / `email` / `name` claims, so any OIDC-compliant IdP (Keycloak, Okta, Auth0, …) works without a per-IdP claim mapper. **LiteLLM is unaffected** — it has no IdP wiring; the api/runtime forwards the validated sub via `X-Aviary-User-Sub`.
 
-**Required env when enabling an IdP** (set on api + supervisor + LiteLLM):
+**Required env when enabling an IdP** (set on api + supervisor only — LiteLLM no longer reads any `OIDC_*` env):
 - `OIDC_ISSUER` — public issuer URL. JWT `iss` claim must match.
 - `OIDC_CLIENT_ID` — for the auth-code flow on the API server.
 - `OIDC_CLIENT_SECRET` — only for confidential clients (e.g. Okta). Public PKCE clients (local Keycloak `aviary-web`) leave this unset.
@@ -138,8 +137,6 @@ All IdP wiring lives in `shared/aviary_shared/auth/` and is driven by env vars. 
 - `OIDC_AUDIENCE` — optional `aud` claim check.
 
 **OIDC dual-URL pattern**: tokens carry `iss=<public URL>`, but the API container needs the internal DNS for discovery/JWKS. `_rewrite_url()` / `to_public_url()` in `aviary_shared.auth.oidc` handle the swap whenever `OIDC_INTERNAL_ISSUER` differs.
-
-The LiteLLM patches (`config/litellm/patches/aviary_jwt_util.py`) extract only the `sub` claim, which is standard across all OIDC providers — they share the same `OIDC_ISSUER` switch and fall through to `DEV_USER_SUB` when it's unset.
 
 ### Pydantic v2 `model_config` Conflict
 `model_config` is a reserved Pydantic class variable. Use `Field(alias="model_config")` with `model_config_json` as the Python field name — the shared `MODEL_CONFIG_ALIAS` in `api/app/schemas/_common.py` centralizes this. The `ConfigDict(populate_by_name=True, protected_namespaces=())` class var must be declared BEFORE field definitions. See `api/app/schemas/agent.py`.
@@ -204,7 +201,7 @@ Baseline NetworkPolicy (`charts/aviary-platform/templates/default-egress.yaml`) 
 [runtime/config/managed-settings.json](runtime/config/managed-settings.json) is installed to `/etc/claude-code/managed-settings.json` (the hardcoded path Claude Code CLI reads on Linux). Currently sets `skipWebFetchPreflight: true` to prevent the CLI from calling `api.anthropic.com/api/web/domain_info` before each WebFetch — this endpoint is unreachable in air-gapped/fintech environments. All model tiers (`ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, etc.) are remapped to the agent's configured model in [runtime/src/agent.ts](runtime/src/agent.ts).
 
 ### Per-User Anthropic API Key
-For Anthropic backends, each user's personal API key is injected from Vault via a LiteLLM `CustomLogger.async_pre_call_hook` ([local-infra/config/litellm/patches/aviary_user_api_key.py](local-infra/config/litellm/patches/aviary_user_api_key.py)). The user's OIDC JWT is propagated from runtime to LiteLLM via `ANTHROPIC_CUSTOM_HEADERS` env var → `X-Aviary-User-Token` header. The hook validates the JWT against Keycloak JWKS, fetches the user's key from `secret/aviary/credentials/{sub}/anthropic-api-key`, and fails closed if the key is missing. Caching: JWKS 1h, JWT→sub 30min (keyed on the whole token — not just the signature — to prevent a tampered-payload + original-signature collision), Vault key 30s.
+For Anthropic backends, each user's personal API key is injected from Vault via a LiteLLM `CustomLogger.async_pre_call_hook` ([local-infra/config/litellm/patches/aviary_user_api_key.py](local-infra/config/litellm/patches/aviary_user_api_key.py)). The runtime forwards two headers via `ANTHROPIC_CUSTOM_HEADERS`: `X-Aviary-User-Sub` (the caller identity LiteLLM uses for Vault lookup) and `X-Aviary-User-Token` (forwarded for the production gateway team's own validation; ignored locally). The hook reads `X-Aviary-User-Sub`, fetches the user's key from `secret/aviary/credentials/{sub}/anthropic-api-key`, and fails closed if the key is missing. Vault has no caching — profile changes apply on the next call.
 
 ### Vault Credential Path Convention
 Per-user credentials live at `secret/aviary/credentials/{user_external_id}/{key_name}` with JSON body `{"value": "<secret_string>"}`. Key names use `{service}-token` convention. The `user_external_id` is the OIDC `sub` claim from Keycloak.
@@ -340,9 +337,6 @@ API/Admin: dedicated `aviary_test` database with `NullPool`, no lifespan.
 |----------|---------|
 | `LITELLM_MASTER_KEY` | LiteLLM proxy auth key (default: `sk-aviary-dev`) |
 | `VAULT_ADDR` / `VAULT_TOKEN` | Vault connection for per-user API key + MCP credential lookup |
-| `OIDC_ISSUER` | Public IdP URL (JWT `iss` validation for inference hook + MCP guardrail). Unset → no-IdP mode (every caller is `DEV_USER_SUB`). |
-| `OIDC_INTERNAL_ISSUER` | Internal IdP URL (JWKS fetch) |
-| `DEV_USER_SUB` | `sub` used when `OIDC_ISSUER` is unset (default: `dev-user`) |
 | `MCP_TOOL_PREFIX_SEPARATOR` | Set to `__` so MCP tools are exposed as `{server}__{tool}` (matches `mcp_agent_tool_bindings` naming) |
 | `AVIARY_MCP_INJECTION_CONFIG` | Path to the per-server Vault-arg injection YAML (default `/app/aviary-mcp-secret-injection.yaml`) |
 
@@ -362,22 +356,22 @@ LiteLLM is the **single source of truth** for the MCP catalog. It exposes `/mcp`
 - Private servers (`allow_all_keys: false`) — LiteLLM hides them from raw-JWT callers; admin sees everything via the master key.
 - Future RBAC (e.g. per-user grants, team scopes) plugs into `_rbac_filter_tools()` inside [aviary_mcp_credentials.py](config/litellm/patches/aviary_mcp_credentials.py) — no Aviary-side ACL table.
 
-**Authentication (per-hook JWT enforcement — LiteLLM OSS native JWT auth is Enterprise-gated and `/mcp` fails open under OAuth2 passthrough, so the guardrail validates at every entry point):**
-- **Request ingress gate** — monkey-patches `MCPRequestHandler.process_mcp_request` so invalid/tampered/expired JWTs raise 401 before any handler runs. Master keys (`sk-*`) fall through.
-- **`tools/list`** — validates the bearer, runs the RBAC stub, strips Vault-injected parameters from `inputSchema`, then applies the per-agent `X-Aviary-Allowed-Tools` filter (header forwarded by the runtime).
-- **`tools/call`** — validates the bearer, gates on `X-Aviary-Allowed-Tools`, then the `pre_mcp_call` hook fetches per-user secrets from Vault (`secret/aviary/credentials/{sub}/{vault_key}`, per-server map in `config/litellm/mcp-secret-injection.yaml`) and injects them as `modified_arguments`. The user token is **never** forwarded to backend MCP servers.
+**Identity (`X-Aviary-User-Sub` only — LiteLLM patches do not validate any token):**
+LiteLLM's outer auth still requires *some* admissible Bearer (sk-* master key in dev, JWT under OAuth2 passthrough in prod), but our hooks read identity from `X-Aviary-User-Sub` exclusively. In production the upstream LLM-gateway validates whatever proof it requires and forwards the resolved sub; locally the runtime/API just forwards the sub directly.
+- **`tools/list`** — RBAC stub + strip Vault-injected parameters from `inputSchema` + per-agent `X-Aviary-Allowed-Tools` filter (header forwarded by the runtime).
+- **`tools/call`** — `X-Aviary-Allowed-Tools` allow-list gate; the `pre_mcp_call` hook then fetches per-user secrets from Vault (`secret/aviary/credentials/{sub}/{vault_key}`, per-server map in `config/litellm/mcp-secret-injection.yaml`) and injects them as `modified_arguments`. Sub is propagated to `pre_mcp_call` via a contextvar set in the gate. The user token is **never** forwarded to backend MCP servers.
 
 **Tool namespacing:** LiteLLM prefixes with `MCP_TOOL_PREFIX_SEPARATOR=__` → `{server}__{tool}`. Claude Code wraps that as `mcp__gateway__{server}__{tool}` (`gateway` is the fixed `mcpServers` key in `runtime/src/agent.ts`).
 
 **Data flow — chat message:**
 1. API reads `mcp_agent_tool_bindings` for the agent and merges them into `agent_config.tools` as `mcp__gateway__{server}__{tool}`.
-2. Supervisor forwards to the runtime; runtime opens `mcpServers.gateway` → `${LITELLM_URL}/mcp` with `Authorization: Bearer <user JWT>` + `X-Aviary-Allowed-Tools: {server}__{tool},…`.
-3. Claude Code's MCP client requests `tools/list`; LiteLLM guardrail validates JWT → strips injected args → filters to the allow-list → returns.
-4. On `tools/call`: guardrail validates JWT → allow-list gate → Vault injection → forwards to the backend MCP server (e.g. `mcp-jira`).
+2. Supervisor forwards to the runtime; runtime opens `mcpServers.gateway` → `${LITELLM_URL}/mcp` with `Authorization: Bearer <user JWT>` + `X-Aviary-User-Sub: <sub>` + `X-Aviary-Allowed-Tools: {server}__{tool},…`.
+3. Claude Code's MCP client requests `tools/list`; the Aviary patch strips Vault-injected args → applies the allow-list → returns.
+4. On `tools/call`: allow-list gate → Vault injection (sub-keyed) → forwards to the backend MCP server (e.g. `mcp-jira`).
 
 **Data flow — user browsing the catalog:**
 1. Frontend hits `GET /api/mcp/servers` (or `/tools`, `/tools/search`).
-2. API opens a short-lived MCP session to `${LITELLM_URL}/mcp` with the user's JWT and returns whatever LiteLLM aggregates. No Aviary-side filtering.
+2. API opens a short-lived MCP session to `${LITELLM_URL}/mcp` carrying the user's `X-Aviary-User-Sub` (Bearer is the user JWT under IdP / master key in dev) and returns whatever LiteLLM aggregates. No Aviary-side filtering.
 3. On `PUT /api/mcp/agents/{id}/tools` the API validates each requested tool against the same LiteLLM view before persisting to `mcp_agent_tool_bindings` (can't bind what the user can't see).
 
-**Architecture principle:** Aviary never judges who can see what MCP resource — it forwards the user token to LiteLLM and trusts the answer. RBAC is LiteLLM's concern.
+**Architecture principle:** Aviary never judges who can see what MCP resource — it forwards `X-Aviary-User-Sub` to LiteLLM and trusts the answer. RBAC is LiteLLM's concern.

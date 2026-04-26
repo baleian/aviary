@@ -74,9 +74,9 @@ _AGENT_DEF_TOOL = {
 
 
 async def run(
-    req: AgentAutocompleteRequest, user_token: str
+    req: AgentAutocompleteRequest, user_token: str, user_sub: str
 ) -> AgentAutocompleteResponse:
-    all_tools = await mcp_catalog.fetch_tools(user_token)
+    all_tools = await mcp_catalog.fetch_tools(user_token, user_sub)
     by_name: dict[str, dict] = {
         t["name"]: t for t in all_tools if TOOL_NAME_SEPARATOR in (t.get("name") or "")
     }

@@ -200,6 +200,7 @@ async def workflow_assistant_stream(
             workflow_assistant_service.ask(
                 workflow, body,
                 user_token=session_data.access_token,
+                user_sub=session_data.user_external_id,
                 session_id=session_id,
             ),
         )

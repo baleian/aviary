@@ -67,6 +67,7 @@ async def ask(
     workflow: Workflow,
     body: WorkflowAssistantRequest,
     user_token: str,
+    user_sub: str,
     session_id: str | None = None,
 ) -> WorkflowAssistantResponse:
     model_cfg = workflow.model_config_json or {}
@@ -78,7 +79,7 @@ async def ask(
     if isinstance(model_cfg.get("max_output_tokens"), int):
         runtime_model_config["max_output_tokens"] = model_cfg["max_output_tokens"]
 
-    catalog = await mcp_catalog.fetch_tools(user_token)
+    catalog = await mcp_catalog.fetch_tools(user_token, user_sub)
     system = _build_system_prompt(
         current_definition=body.current_definition, catalog=catalog,
     )

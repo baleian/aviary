@@ -1,21 +1,22 @@
 """LiteLLM hook — inject the caller's Anthropic API key from Vault.
 
-The Vault namespace is the validated JWT sub (or DEV_USER_SUB in null
-mode). Non-Anthropic backends pass through untouched. See CLAUDE.md."""
+The Vault namespace is the ``X-Aviary-User-Sub`` header forwarded by the
+caller. In production the upstream LLM-gateway team validates whatever
+identity proof they require (typically a JWT they already trust) and
+forwards the resolved sub. Locally there is no validation — we trust
+the header. Non-Anthropic backends pass through untouched."""
 
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-from aviary_jwt_util import JwtValidator
 from aviary_vault_util import fetch_credential
 
 logger = logging.getLogger("aviary.user_api_key")
 
 VAULT_CREDENTIAL_NAME = "anthropic-api-key"
-
-_jwt = JwtValidator()
+SUB_HEADER = "x-aviary-user-sub"
 
 
 try:
@@ -51,18 +52,11 @@ def _register() -> None:
             proxy_req = data.get("proxy_server_request") or (
                 data.get("metadata", {}).get("proxy_server_request")
             ) or {}
-            user_token = (proxy_req.get("headers") or {}).get("x-aviary-user-token")
+            sub = (proxy_req.get("headers") or {}).get(SUB_HEADER)
 
-            if _jwt.enabled:
-                if not user_token:
-                    # internal LiteLLM call (model listing etc.) — leave key
-                    return data
-                try:
-                    sub = await _jwt.extract_sub(user_token)
-                except Exception as exc:
-                    raise _auth_error(str(exc)) from exc
-            else:
-                sub = _jwt.dev_user_sub
+            if not sub:
+                # internal LiteLLM call (model listing etc.) — leave key alone
+                return data
 
             try:
                 api_key = await fetch_credential(sub, VAULT_CREDENTIAL_NAME)
@@ -82,10 +76,7 @@ def _register() -> None:
             return data
 
     litellm.callbacks.append(AviaryUserApiKeyHook())
-    logger.info(
-        "Aviary per-user API key hook registered (idp_enabled=%s, dev_user_sub=%s)",
-        _jwt.enabled, _jwt.dev_user_sub,
-    )
+    logger.info("Aviary per-user API key hook registered")
 
 
 try:

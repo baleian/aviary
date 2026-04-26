@@ -128,8 +128,9 @@ function buildMcpServers(
   }
 
   // LiteLLM aggregated MCP endpoint — register only when the agent has
-  // bound at least one MCP tool. Authorization is conditional (IdP mode
-  // only); LiteLLM's guardrail handles the no-IdP case.
+  // bound at least one MCP tool. The gateway resolves the user from
+  // X-Aviary-User-Sub; user_token is forwarded for the production
+  // gateway team's validation but ignored in local dev.
   const allowed = extractLitellmAllowedTools(agentConfig.tools);
   if (allowed.length > 0) {
     const mcpHeaders: Record<string, string> = {
@@ -137,6 +138,9 @@ function buildMcpServers(
     };
     if (agentConfig.user_token) {
       mcpHeaders.Authorization = `Bearer ${agentConfig.user_token}`;
+    }
+    if (agentConfig.user_external_id) {
+      mcpHeaders["X-Aviary-User-Sub"] = agentConfig.user_external_id;
     }
     servers[MCP_RUNTIME_KEY] = {
       type: "http",
@@ -445,13 +449,18 @@ export async function* processMessage(
     }
   }
 
+  // X-Aviary-User-Sub identifies the caller for per-user Anthropic key
+  // injection in the LiteLLM hook. X-Aviary-User-Token is forwarded for
+  // the production gateway's validation; the local LiteLLM ignores it.
+  const customHeaderLines = [
+    agentConfig.user_external_id && `X-Aviary-User-Sub: ${agentConfig.user_external_id}`,
+    agentConfig.user_token && `X-Aviary-User-Token: ${agentConfig.user_token}`,
+  ].filter(Boolean).join("\n");
+
   const env: Record<string, string> = {
     ANTHROPIC_BASE_URL: LITELLM_URL,
     ANTHROPIC_API_KEY: LITELLM_API_KEY,
-    // Propagate user JWT so LiteLLM hook can inject per-user Anthropic API key
-    ...(agentConfig.user_token
-      ? { ANTHROPIC_CUSTOM_HEADERS: `X-Aviary-User-Token: ${agentConfig.user_token}` }
-      : {}),
+    ...(customHeaderLines ? { ANTHROPIC_CUSTOM_HEADERS: customHeaderLines } : {}),
     SESSION_WORKSPACE: shared,
     SESSION_CLAUDE_DIR: claudeDir,
     SESSION_VENV_DIR: venvDir,
