@@ -259,7 +259,7 @@ async def _call(
 
 def _format_tool_call_instruction(tool: dict) -> str:
     lines = [
-        f"Call the `mcp__aviary_output__{tool['name']}` tool exactly once with the following fields:",
+        f"Call the `mcp__system__{tool['name']}` tool exactly once with the following fields:",
     ]
     for f in tool["fields"]:
         t = "array of strings" if f["type"] == "list" else "string"

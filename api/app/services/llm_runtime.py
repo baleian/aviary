@@ -28,17 +28,12 @@ class LLMRuntimeError(RuntimeError):
     """Raised when the supervisor/runtime path fails."""
 
 
-# Same budget the previous direct-gateway path used — Claude CLI cold
-# starts can eat a few seconds before tokens flow.
 _CALL_TIMEOUT_S = 300.0
-
-# Matches the runtime's prefix convention (see runtime/src/agent.ts).
-_STRUCTURED_OUTPUT_MCP_SERVER = "aviary_output"
+_SYSTEM_MCP_SERVER = "system"
 
 
 def structured_tool_cli_name(tool_name: str) -> str:
-    """CLI-visible MCP tool name used by the runtime for a dynamic entry."""
-    return f"mcp__{_STRUCTURED_OUTPUT_MCP_SERVER}__{tool_name}"
+    return f"mcp__{_SYSTEM_MCP_SERVER}__{tool_name}"
 
 
 async def run_once(
@@ -116,9 +111,6 @@ def find_tool_call(result: dict, tool_name: str) -> dict | None:
 
 
 def find_structured_tool_call(result: dict, tool_name: str) -> dict | None:
-    """Convenience: look up a dynamic structured-output tool call by the
-    bare name the caller registered (without the `mcp__aviary_output__`
-    prefix)."""
     return find_tool_call(result, structured_tool_cli_name(tool_name))
 
 

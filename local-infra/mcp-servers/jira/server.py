@@ -14,12 +14,18 @@ lists, and inline formatting render correctly in Jira.
 
 import base64
 import json
+import logging
 import os
 from typing import Any
 
 import httpx
 from markdown_it import MarkdownIt
 from mcp.server.fastmcp import FastMCP
+
+# Quiet per-request access logs + FastMCP internal chatter; both fire many
+# times per second under normal use and drown the dev console.
+logging.getLogger("uvicorn.access").disabled = True
+logging.getLogger("mcp").setLevel(logging.WARNING)
 
 JIRA_BASE_URL = os.environ["JIRA_BASE_URL"].rstrip("/")
 

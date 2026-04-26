@@ -1,9 +1,4 @@
-"""Parse @slug mentions and resolve each to the caller's owned agents.
-
-Returns a list of *full* agent specs — the supervisor / runtime need every
-field required to execute the sub-agent (runtime_endpoint, model_config,
-instruction, tools, mcp_servers).
-"""
+"""Parse @slug mentions and build the on-the-wire agent_config for each."""
 
 import re
 from collections import defaultdict
@@ -12,15 +7,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Agent, User
+from app.services import local_mcp_catalog
 from aviary_shared.db.models.mcp import McpAgentToolBinding
 
 _MENTION_RE = re.compile(r"@([a-z0-9][a-z0-9-]*[a-z0-9])")
 
-# Tool names the model sees: `mcp__{_RUNTIME_MCP_SERVER_KEY}__{server_alias}__{tool_name}`.
-# Must match the `mcpServers` key in runtime/src/agent.ts.
-_RUNTIME_MCP_SERVER_KEY = "gateway"
-_MCP_PREFIX = f"mcp__{_RUNTIME_MCP_SERVER_KEY}__"
-_MCP_TOOL_SEPARATOR = "__"
+_GATEWAY_MCP_PREFIX = "mcp__gateway__"
+_TOOL_SEP = "__"
 
 
 def extract_mentions(text: str) -> list[str]:
@@ -28,39 +21,31 @@ def extract_mentions(text: str) -> list[str]:
 
 
 def build_mcp_config(legacy_mcp_servers: list) -> dict:
-    """Flatten the agent's legacy stdio mcp_servers column into the dict shape
-    the runtime expects."""
     config: dict = {}
     for srv in legacy_mcp_servers:
         config[srv["name"]] = {"command": srv["command"], "args": srv.get("args", [])}
     return config
 
 
-async def _bound_mcp_tool_names(db: AsyncSession, agent_id) -> list[str]:
-    """Return `mcp__gateway__{server}__{tool}` qualified names for this
-    agent's MCP tool bindings."""
+def _classify_tool_name(server_name: str, tool_name: str) -> str:
+    if local_mcp_catalog.is_local(server_name):
+        return f"mcp__{server_name}{_TOOL_SEP}{tool_name}"
+    return f"{_GATEWAY_MCP_PREFIX}{server_name}{_TOOL_SEP}{tool_name}"
+
+
+async def _bound_rows(db: AsyncSession, agent_id) -> list[tuple[str, str]]:
     rows = (
         await db.execute(
-            select(
-                McpAgentToolBinding.server_name, McpAgentToolBinding.tool_name
-            )
+            select(McpAgentToolBinding.server_name, McpAgentToolBinding.tool_name)
             .where(McpAgentToolBinding.agent_id == agent_id)
             .order_by(McpAgentToolBinding.server_name, McpAgentToolBinding.tool_name)
         )
     ).all()
-    return [
-        f"{_MCP_PREFIX}{server_name}{_MCP_TOOL_SEPARATOR}{tool_name}"
-        for server_name, tool_name in rows
-    ]
+    return [(s, t) for s, t in rows]
 
 
 async def agent_spec(agent, db: AsyncSession) -> dict:
-    """Shape a DB Agent row as the on-the-wire `agent_config` payload (minus
-    fields the supervisor injects: user_token, user_external_id, credentials,
-    accessible_agents). MCP bindings are merged into ``tools`` so Claude
-    Code's allowedTools filter keeps each agent restricted to its owner's
-    selection."""
-    return _build_spec(agent, await _bound_mcp_tool_names(db, agent.id))
+    return _build_spec(agent, await _bound_rows(db, agent.id))
 
 
 async def resolve_mentioned_agents(
@@ -69,9 +54,6 @@ async def resolve_mentioned_agents(
     slugs: list[str],
     exclude_agent_id: str | None = None,
 ) -> list[dict]:
-    """Return full agent specs for mentioned slugs the user owns (and isn't
-    the current agent). Batched: one SELECT for the agents, one for every
-    matched agent's MCP bindings."""
     if not slugs:
         return []
 
@@ -89,7 +71,7 @@ async def resolve_mentioned_agents(
     if not filtered:
         return []
 
-    bindings: dict = defaultdict(list)
+    bindings: dict[str, list[tuple[str, str]]] = defaultdict(list)
     rows = (await db.execute(
         select(
             McpAgentToolBinding.agent_id,
@@ -100,17 +82,24 @@ async def resolve_mentioned_agents(
         .order_by(McpAgentToolBinding.server_name, McpAgentToolBinding.tool_name)
     )).all()
     for agent_id, server_name, tool_name in rows:
-        bindings[agent_id].append(
-            f"{_MCP_PREFIX}{server_name}{_MCP_TOOL_SEPARATOR}{tool_name}"
-        )
+        bindings[agent_id].append((server_name, tool_name))
 
     by_slug = {a.slug: a for a in filtered}
     ordered = [by_slug[s] for s in slugs if s in by_slug]
     return [_build_spec(a, bindings[a.id]) for a in ordered]
 
 
-def _build_spec(agent, mcp_tool_names: list[str]) -> dict:
+def _build_spec(agent, bound_rows: list[tuple[str, str]]) -> dict:
+    mcp_tool_names = [_classify_tool_name(s, t) for s, t in bound_rows]
     merged = list(dict.fromkeys(list(agent.tools or []) + mcp_tool_names))
+
+    mcp_servers = build_mcp_config(agent.mcp_servers)
+    used_local = {s for s, _ in bound_rows if local_mcp_catalog.is_local(s)}
+    for name in used_local:
+        cfg = local_mcp_catalog.get_server_config(name)
+        if cfg is not None:
+            mcp_servers[name] = cfg
+
     return {
         "agent_id": str(agent.id),
         "slug": agent.slug,
@@ -120,5 +109,5 @@ def _build_spec(agent, mcp_tool_names: list[str]) -> dict:
         "model_config": agent.model_config_json,
         "instruction": agent.instruction,
         "tools": merged,
-        "mcp_servers": build_mcp_config(agent.mcp_servers),
+        "mcp_servers": mcp_servers,
     }

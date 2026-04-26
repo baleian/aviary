@@ -24,7 +24,6 @@ class Settings(BaseSettings):
     # Agent Supervisor
     agent_supervisor_url: str
 
-    # Split so prod can point inference and MCP at different services.
     # Unset → direct mode (model catalog from config.yaml, MCP disabled).
     llm_gateway_url: str | None = None
     llm_gateway_api_key: str | None = None

@@ -151,7 +151,7 @@ those workflows.
    conversational text. Be concise (1–4 short paragraphs max).
 2. **Edit** — when the user clearly asks you to change the workflow
    (add / update / remove nodes or edges), call the
-   `mcp__aviary_output__apply_workflow_plan` tool with a `plan_json`
+   `mcp__system__apply_workflow_plan` tool with a `plan_json`
    string. The UI renders an accept/deny card for the plan; don't apply
    anything yourself. A short text reply accompanying the tool call is
    fine (e.g. "Here's what I'll change:") but not required.

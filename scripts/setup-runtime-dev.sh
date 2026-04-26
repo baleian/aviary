@@ -34,13 +34,13 @@ load_image() {
   docker save "$1" | infra --profile k3s exec -T k8s ctr images import -
 }
 
-echo "[1/3] Building runtime images..."
+echo "[1/4] Building runtime images..."
 docker build ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"} -t aviary-runtime:latest "$PROJECT_DIR/runtime/"
 load_image aviary-runtime:latest
 docker build ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"} -f "$PROJECT_DIR/runtime/Dockerfile.custom" -t aviary-runtime-custom:latest "$PROJECT_DIR/runtime/"
 load_image aviary-runtime-custom:latest
 
-echo "[2/3] Applying Helm charts..."
+echo "[2/4] Applying Helm charts..."
 render_chart aviary-platform    aviary-platform    values-dev.yaml \
   | infra --profile k3s exec -T k8s kubectl apply -f -
 render_chart aviary-env-default aviary-environment values-dev.yaml \
@@ -48,7 +48,14 @@ render_chart aviary-env-default aviary-environment values-dev.yaml \
 render_chart aviary-env-custom  aviary-environment values-custom.yaml \
   | infra --profile k3s exec -T k8s kubectl apply -f -
 
-echo "[3/3] Waiting for runtime rollouts..."
+# K3s leaves running pods alone when the image tag is unchanged (`Never`
+# pull policy). Force a rolling restart so pods pick up the freshly
+# imported `aviary-runtime:latest` content.
+echo "[3/4] Restarting runtime pods..."
+infra --profile k3s exec -T k8s kubectl -n agents rollout restart deploy/aviary-env-default
+infra --profile k3s exec -T k8s kubectl -n agents rollout restart deploy/aviary-env-custom
+
+echo "[4/4] Waiting for runtime rollouts..."
 echo -n "  default..."
 infra --profile k3s exec -T k8s kubectl -n agents rollout status deploy/aviary-env-default --timeout=180s
 echo " ready."

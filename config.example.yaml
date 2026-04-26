@@ -1,18 +1,18 @@
-# Direct-mode LLM backends — used when LLM_GATEWAY_URL is unset.
+# Copy to config.yaml and fill in the values you need.
+
+# ── llm_backends ───────────────────────────────────────────────────────
+# Used when LLM_GATEWAY_URL is unset. Each top-level key is a `backend`
+# shown in the agent form; each list entry is one selectable model.
 #
-# Copy to config.yaml and fill in the keys / endpoints you want to use.
-# Each top-level key is a `backend` shown in the agent form's backend
-# dropdown; each list entry is one selectable model.
-#
-# - `model`        bare model name the upstream provider expects
-# - `api_base`     optional — omit for providers that use the SDK default
-#                  (e.g. Anthropic). For services running on the host,
-#                  use `http://host.k8s.internal:<port>` so the runtime
-#                  Pod can reach them through hostAliases.
-# - `api_key`      string sent as ANTHROPIC_API_KEY. Use any non-empty
-#                  placeholder for local backends with no auth.
-# - `max_tokens`   drives the agent form's max-output-tokens slider cap.
-# - `capabilities` shown as badges in the form (vision / tools / thinking).
+# - model        bare model name the upstream provider expects
+# - api_base     optional — omit for providers with SDK defaults
+#                (e.g. Anthropic). For host services, use
+#                http://host.k8s.internal:<port> so the runtime Pod
+#                reaches them via hostAliases.
+# - api_key      sent as ANTHROPIC_API_KEY. Any non-empty placeholder
+#                works for local backends with no auth.
+# - max_tokens   caps the form's max-output-tokens slider.
+# - capabilities badges in the form (vision / tools / thinking).
 
 llm_backends:
   anthropic:
@@ -33,3 +33,19 @@ llm_backends:
         - vision
         - tools
         - thinking
+
+# ── mcp_servers ────────────────────────────────────────────────────────
+# Direct (non-gateway) MCP servers. Listed alongside MCP_GATEWAY tools in
+# the agent form's tool catalog. Selected tools surface in the runtime as
+# `mcp__{server}__{tool}` and the server is registered as a standard
+# Claude Code mcpServers entry — no user token forwarded.
+#
+# Each entry is the raw mcpServers config the runtime forwards to the SDK:
+#   stdio:  command + args (+ optional env)
+#   http:   type: http + url (+ optional headers)
+
+mcp_servers:
+  mcp_servers:
+  dice:
+    type: "http"
+    url: https://mcp.dice.com/mcp

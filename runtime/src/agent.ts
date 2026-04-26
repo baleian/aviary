@@ -12,9 +12,15 @@ import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 
-import { query, createSdkMcpServer, tool, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import {
+  query,
+  createSdkMcpServer,
+  tool,
+  type SDKMessage,
+  type SdkMcpToolDefinition,
+} from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { startA2AServer, type AccessibleAgent, type A2AServer } from "./a2a-tools.js";
+import { buildA2ATools, type AccessibleAgent } from "./a2a-tools.js";
 import {
   SANDBOX_WORKSPACE,
   sessionClaudeDir,
@@ -29,6 +35,7 @@ import {
 const LLM_GATEWAY_URL = process.env.LLM_GATEWAY_URL || undefined;
 const LLM_GATEWAY_API_KEY = process.env.LLM_GATEWAY_API_KEY || undefined;
 const MCP_GATEWAY_URL = process.env.MCP_GATEWAY_URL || undefined;
+const MCP_GATEWAY_API_KEY = process.env.MCP_GATEWAY_API_KEY || undefined;
 
 // Force SDK to use our bwrap wrapper instead of its bundled binary.
 const CLAUDE_CLI_PATH = "/usr/local/bin/claude";
@@ -133,8 +140,11 @@ function buildMcpServers(
     const mcpHeaders: Record<string, string> = {
       "X-Aviary-Allowed-Tools": allowed.join(","),
     };
-    if (agentConfig.user_token) {
-      mcpHeaders.Authorization = `Bearer ${agentConfig.user_token}`;
+    // Prefer the user JWT (IdP mode); fall back to the master key in dev
+    // so LiteLLM's outer auth admits the request.
+    const bearer = agentConfig.user_token || MCP_GATEWAY_API_KEY;
+    if (bearer) {
+      mcpHeaders.Authorization = `Bearer ${bearer}`;
     }
     if (agentConfig.user_external_id) {
       mcpHeaders["X-Aviary-User-Sub"] = agentConfig.user_external_id;
@@ -181,12 +191,9 @@ import { StreamingAccumulator } from "./streaming-accumulator.js";
 import type { SSEChunk } from "./types/sse-chunk.js";
 export type { SSEChunk };
 
-// Dynamically-registered tools ride under this single SDK MCP server so the
-// CLI-visible name is deterministic: `mcp__aviary_output__{entry.name}`.
-// Callers choose when to fire each tool via their own system prompt.
-const STRUCTURED_OUTPUT_MCP_SERVER = "aviary_output";
-export const structuredOutputCliName = (toolName: string): string =>
-  `mcp__${STRUCTURED_OUTPUT_MCP_SERVER}__${toolName}`;
+const SYSTEM_MCP_SERVER = "system";
+export const systemToolCliName = (toolName: string): string =>
+  `mcp__${SYSTEM_MCP_SERVER}__${toolName}`;
 
 function buildStructuredFieldSchema(field: StructuredOutputField): z.ZodType {
   const base: z.ZodType =
@@ -194,8 +201,10 @@ function buildStructuredFieldSchema(field: StructuredOutputField): z.ZodType {
   return field.description ? base.describe(field.description) : base;
 }
 
-function buildStructuredOutputsServer(configs: StructuredOutputConfig[]) {
-  const tools = configs.map((cfg) => {
+function buildStructuredOutputTools(
+  configs: StructuredOutputConfig[],
+): SdkMcpToolDefinition<any>[] {
+  return configs.map((cfg) => {
     const shape: Record<string, z.ZodType> = {};
     for (const field of cfg.fields) {
       shape[field.name] = buildStructuredFieldSchema(field);
@@ -207,13 +216,7 @@ function buildStructuredOutputsServer(configs: StructuredOutputConfig[]) {
       content: [{ type: "text", text: `${cfg.name} recorded.` }],
     }));
   });
-  return createSdkMcpServer({
-    name: STRUCTURED_OUTPUT_MCP_SERVER,
-    tools,
-  });
 }
-
-const ARTIFACTS_MCP_SERVER = "aviary_artifacts";
 
 function resolveSandboxWorkspacePath(sharedDir: string, sourcePath: string): string {
   let rel: string;
@@ -234,12 +237,12 @@ function resolveSandboxWorkspacePath(sharedDir: string, sourcePath: string): str
   return resolved;
 }
 
-function buildArtifactsServer(
+function buildArtifactTool(
   artifacts: ArtifactSpec[],
   sharedDir: string,
   rootRunId: string,
   nodeId: string,
-) {
+): SdkMcpToolDefinition<any> {
   const nameSchema =
     artifacts.length > 0
       ? z.enum(artifacts.map((a) => a.name) as [string, ...string[]])
@@ -253,7 +256,7 @@ function buildArtifactsServer(
     "`/workspace/{artifact_name}` in their own sandbox. Call once per artifact.\n\n" +
     `Declared artifacts:\n${lines}`;
 
-  const saveTool = tool(
+  return tool(
     "save_as_artifact",
     description,
     {
@@ -311,8 +314,6 @@ function buildArtifactsServer(
       };
     },
   );
-
-  return createSdkMcpServer({ name: ARTIFACTS_MCP_SERVER, tools: [saveTool] });
 }
 
 async function copyInputArtifacts(
@@ -421,8 +422,7 @@ export async function* processMessage(
   const directBase = mc.api_base;
   const directKey = mc.api_key;
   const useDirectMode = directBase !== undefined || directKey !== undefined;
-  // Gateway mode joins backend+model so LiteLLM can route; direct mode passes
-  // the bare name the upstream provider expects.
+  // Gateway mode joins backend+model so LiteLLM can route; direct mode uses the bare name.
   const resolvedModel = useDirectMode
     ? mc.model
     : mc.model.includes("/")
@@ -465,7 +465,7 @@ export async function* processMessage(
   ].filter(Boolean).join("\n");
 
   const env: Record<string, string> = {
-    // Unset → SDK falls back to its default (api.anthropic.com).
+    // Unset → SDK uses api.anthropic.com.
     ...(anthropicBaseUrl ? { ANTHROPIC_BASE_URL: anthropicBaseUrl } : {}),
     ANTHROPIC_API_KEY: anthropicApiKey,
     ...(customHeaderLines ? { ANTHROPIC_CUSTOM_HEADERS: customHeaderLines } : {}),
@@ -497,72 +497,65 @@ export async function* processMessage(
       : {}),
   };
 
-  // Build MCP servers (gateway + legacy)
   const mcpServers: Record<string, any> = buildMcpServers(agentConfig) ?? {};
 
-  // A2A tools: start a local HTTP MCP server if accessible_agents is present and NOT a sub-agent.
-  // Uses HTTP type (not SDK in-process type) so the CLI can reconnect on session resume.
   const accessibleAgents = agentConfig.accessible_agents ?? [];
   const isSubAgent = agentConfig.is_sub_agent === true;
-  let a2aServer: A2AServer | null = null;
-  const a2aToolNames: string[] = [];
+  const systemTools: SdkMcpToolDefinition<any>[] = [];
+  const systemToolNames: string[] = [];
+  let enqueueA2AToolUseId: ((mcpToolName: string, id: string) => void) | null = null;
 
   if (accessibleAgents.length > 0 && !isSubAgent) {
-    a2aServer = await startA2AServer(accessibleAgents, {
+    const bundle = buildA2ATools(accessibleAgents, {
       sessionId,
       userToken: agentConfig.user_token,
     });
-    mcpServers["a2a"] = { type: "http", url: a2aServer.url };
-    a2aToolNames.push(...a2aServer.toolNames);
+    systemTools.push(...bundle.tools);
+    systemToolNames.push(...bundle.toolNames);
+    enqueueA2AToolUseId = bundle.enqueueToolUseId;
   }
 
   let systemPrompt = agentConfig.instruction || "";
 
-  if (a2aToolNames.length > 0) {
+  if (accessibleAgents.length > 0 && !isSubAgent) {
     const agentList = accessibleAgents
       .map((a) => `- @${a.slug}: ${a.description || a.name}`)
       .join("\n");
-    systemPrompt += `\n\n## Available Sub-Agents\nYou can delegate tasks to these agents using the corresponding mcp__a2a__ask_{slug} tool:\n${agentList}`;
+    systemPrompt += `\n\n## Available Sub-Agents\nYou can delegate tasks to these agents using the corresponding mcp__system__a2a_{slug} tool:\n${agentList}`;
   }
 
-  // Dynamic structured-output tools — one MCP tool per entry, bound under
-  // the `aviary_output` SDK MCP server. Callers (workflow assistant,
-  // agent auto-complete, etc.) describe each tool's trigger / contents in
-  // their own system prompt; the runtime just exposes the tools and lets
-  // tool_use events flow through the normal stream.
-  const structuredToolNames: string[] = [];
   const validStructuredOutputs = (structuredOutputs ?? []).filter(
     (c) => c?.name && Array.isArray(c.fields),
   );
   if (validStructuredOutputs.length > 0) {
-    mcpServers[STRUCTURED_OUTPUT_MCP_SERVER] = buildStructuredOutputsServer(
-      validStructuredOutputs,
-    );
+    systemTools.push(...buildStructuredOutputTools(validStructuredOutputs));
     for (const cfg of validStructuredOutputs) {
-      structuredToolNames.push(structuredOutputCliName(cfg.name));
+      systemToolNames.push(systemToolCliName(cfg.name));
     }
   }
 
-  // Workflow artifacts tool — only when the step declared artifacts AND we
-  // have a workflow_run to attribute them to. Runs entirely in-process so
-  // it can touch the PVC directly (the sandbox's /artifacts mount is ro).
-  const artifactToolNames: string[] = [];
   if (declaredArtifacts.length > 0 && workflowRun?.root_run_id) {
-    mcpServers[ARTIFACTS_MCP_SERVER] = buildArtifactsServer(
-      declaredArtifacts,
-      shared,
-      workflowRun.root_run_id,
-      workflowRun.node_id,
+    systemTools.push(
+      buildArtifactTool(
+        declaredArtifacts,
+        shared,
+        workflowRun.root_run_id,
+        workflowRun.node_id,
+      ),
     );
-    artifactToolNames.push(`mcp__${ARTIFACTS_MCP_SERVER}__save_as_artifact`);
+    systemToolNames.push(systemToolCliName("save_as_artifact"));
   }
 
-  // Merge allowed tools with A2A tool names and any dynamic tools.
+  if (systemTools.length > 0) {
+    mcpServers[SYSTEM_MCP_SERVER] = createSdkMcpServer({
+      name: SYSTEM_MCP_SERVER,
+      tools: systemTools,
+    });
+  }
+
   const allowedTools = [
     ...(agentConfig.tools ?? []),
-    ...a2aToolNames,
-    ...structuredToolNames,
-    ...artifactToolNames,
+    ...systemToolNames,
   ];
 
   const options: Record<string, unknown> = {
@@ -592,16 +585,15 @@ export async function* processMessage(
       : {}),
   };
 
-  // PreToolUse hook: when SDK is about to call an A2A tool, capture the real
-  // tool_use_id and pass it to the A2A server. This is the SDK's official hook
-  // mechanism — guaranteed to fire before tools/call, no timing assumptions.
-  if (a2aServer) {
+  // SDK assigns tool_use_id only at tools/call; capture it here so the a2a
+  // handler can forward it as parent_tool_use_id.
+  if (enqueueA2AToolUseId) {
     options.hooks = {
       PreToolUse: [{
-        matcher: "mcp__a2a__ask_*",
+        matcher: "mcp__system__a2a_*",
         hooks: [async (input: any, toolUseID: string | undefined) => {
-          if (toolUseID && input.tool_name?.startsWith("mcp__a2a__ask_")) {
-            a2aServer!.enqueueToolUseId(input.tool_name, toolUseID);
+          if (toolUseID && input.tool_name?.startsWith("mcp__system__a2a_")) {
+            enqueueA2AToolUseId!(input.tool_name, toolUseID);
           }
           return { continue: true };
         }],
@@ -697,8 +689,5 @@ export async function* processMessage(
     console.error(`[agent ${agentId}/${sessionId}] SDK query error:`, e);
     const message = e instanceof Error ? e.message : String(e);
     yield { type: "error", message };
-  } finally {
-    // Shut down the A2A HTTP server after the message is fully processed
-    a2aServer?.close();
   }
 }

@@ -16,6 +16,7 @@ which is Confluence's native code block.
 import base64
 import html
 import json
+import logging
 import os
 import re
 from typing import Any
@@ -23,6 +24,11 @@ from typing import Any
 import httpx
 from markdown_it import MarkdownIt
 from mcp.server.fastmcp import FastMCP
+
+# Quiet per-request access logs + FastMCP internal chatter; both fire many
+# times per second under normal use and drown the dev console.
+logging.getLogger("uvicorn.access").disabled = True
+logging.getLogger("mcp").setLevel(logging.WARNING)
 
 CONFLUENCE_BASE_URL = os.environ["CONFLUENCE_BASE_URL"].rstrip("/")
 

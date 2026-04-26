@@ -20,14 +20,17 @@ from app.schemas.mcp import (
     McpToolBindRequest,
     McpToolResponse,
 )
-from app.services import mcp_catalog
+from app.services import local_mcp_catalog, mcp_catalog
 
 router = APIRouter()
 
 TOOL_NAME_SEPARATOR = "__"
 
 
-_gateway_tools_for = mcp_catalog.fetch_tools
+async def _all_tools(user_token: str, user_sub: str) -> list[dict]:
+    gateway = await mcp_catalog.fetch_tools(user_token, user_sub)
+    local = await local_mcp_catalog.fetch_all_tools()
+    return gateway + local
 
 
 def _split_qualified(qualified: str) -> tuple[str, str]:
@@ -67,7 +70,7 @@ def _tool_to_response(tool: dict, server_name: str) -> McpToolResponse:
 
 @router.get("/servers", response_model=list[McpServerResponse])
 async def list_servers(session: SessionData = Depends(get_session_data)):
-    tools = await _gateway_tools_for(session.id_token or "", session.user_external_id)
+    tools = await _all_tools(session.id_token or "", session.user_external_id)
     grouped = _group_by_server(tools)
     out = [
         McpServerResponse(
@@ -88,7 +91,7 @@ async def list_server_tools(
     server_name: str,
     session: SessionData = Depends(get_session_data),
 ):
-    tools = await _gateway_tools_for(session.id_token or "", session.user_external_id)
+    tools = await _all_tools(session.id_token or "", session.user_external_id)
     grouped = _group_by_server(tools)
     if server_name not in grouped:
         raise HTTPException(status_code=404, detail="Server not found or not accessible")
@@ -100,7 +103,7 @@ async def search_tools(
     q: str = Query(..., min_length=1),
     session: SessionData = Depends(get_session_data),
 ):
-    tools = await _gateway_tools_for(session.id_token or "", session.user_external_id)
+    tools = await _all_tools(session.id_token or "", session.user_external_id)
     q_lower = q.lower()
     out: list[McpToolResponse] = []
     for t in tools:
@@ -175,7 +178,7 @@ async def list_agent_tools(
             .order_by(McpAgentToolBinding.server_name, McpAgentToolBinding.tool_name)
         )
     ).scalars().all()
-    tools = await _gateway_tools_for(session.id_token or "", session.user_external_id)
+    tools = await _all_tools(session.id_token or "", session.user_external_id)
     by_name = {t["name"]: t for t in tools}
     return _bindings_to_responses(bindings, by_name)
 
@@ -191,7 +194,7 @@ async def set_agent_tools(
     await _owned_agent(db, agent_id, user)
 
     # Fetch the user's view once, validate every requested tool against it.
-    tools = await _gateway_tools_for(session.id_token or "", session.user_external_id)
+    tools = await _all_tools(session.id_token or "", session.user_external_id)
     visible = {t["name"] for t in tools}
     parsed: list[tuple[str, str]] = []
     for qualified in body.tool_ids:

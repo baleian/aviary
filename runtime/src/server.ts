@@ -68,10 +68,6 @@ interface MessageRequestBody {
   session_id: string;
   agent_config: AgentConfigBody;
   output_format?: { type: "json_schema"; schema: Record<string, unknown> };
-  // Dynamically-registered in-process MCP tools. Each entry becomes one
-  // tool on the `aviary_output` server. The runtime binds them and lets
-  // the CLI emit calls as regular `tool_use` events — the caller owns
-  // deciding when/why a tool should fire via its own system prompt.
   structured_outputs?: StructuredOutputConfig[];
 }
 
