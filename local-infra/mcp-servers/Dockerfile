@@ -8,6 +8,6 @@ RUN pip install --no-cache-dir \
 WORKDIR /app
 
 ARG MCP_SERVER_NAME
-COPY ${MCP_SERVER_NAME}/server.py /app/server.py
+COPY ${MCP_SERVER_NAME}/ /app/
 
 CMD ["python", "server.py"]
