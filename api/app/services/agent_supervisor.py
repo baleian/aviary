@@ -17,7 +17,7 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_supervisor = ServiceClient(base_url=settings.agent_supervisor_url)
+_supervisor = ServiceClient(base_url=settings.supervisor_url)
 
 
 def _auth_headers(user_token: str) -> dict[str, str]:

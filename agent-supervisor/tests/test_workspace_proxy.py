@@ -119,7 +119,7 @@ def test_tree_falls_back_to_default_runtime(client):
         )
     assert resp.status_code == 200
     from app.config import settings
-    assert captured["url"].startswith(settings.supervisor_default_runtime_endpoint)
+    assert captured["url"].startswith(settings.default_runtime_endpoint)
 
 
 def test_file_proxies_payload(client):

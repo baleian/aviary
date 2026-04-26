@@ -53,11 +53,11 @@ RUN CLAUDE_BIN=$(which claude-real) && \
     cp /app/scripts/claude-sandbox.sh "$(dirname "$CLAUDE_BIN")/claude" && \
     chmod +x "$(dirname "$CLAUDE_BIN")/claude"
 
-# bwrap sandbox needs /workspace to exist as the bind target for
-# $SESSION_WORKSPACE. /workspace-root is the K8s PVC mount point (created
-# at pod startup); bwrap then tmpfs-masks it so sibling sessions living
-# under the same PVC are invisible inside the sandbox.
-RUN mkdir -p /workspace /artifacts
+# /workspace and /artifacts are bwrap bind targets. /workspace-root is the
+# PVC / docker-volume mount point — node-owned so a fresh docker named volume
+# inherits the right perms (K8s does this via an initContainer instead).
+RUN mkdir -p /workspace /artifacts /workspace-root \
+    && chown node:node /workspace-root
 
 # Global git config — available inside bwrap via --ro-bind / /
 RUN git config --system user.name "aviary" \

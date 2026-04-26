@@ -9,4 +9,4 @@ from app.config import settings
 
 
 def resolve_runtime_base(runtime_endpoint: str | None) -> str:
-    return runtime_endpoint or settings.supervisor_default_runtime_endpoint
+    return runtime_endpoint or settings.default_runtime_endpoint

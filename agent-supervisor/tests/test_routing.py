@@ -7,10 +7,10 @@ def test_resolve_uses_override():
 
 def test_resolve_uses_default_when_null():
     from app.config import settings
-    assert resolve_runtime_base(None) == settings.supervisor_default_runtime_endpoint
+    assert resolve_runtime_base(None) == settings.default_runtime_endpoint
 
 
 def test_resolve_uses_default_when_empty():
     from app.config import settings
     # Empty string is falsy → falls back to default.
-    assert resolve_runtime_base("") == settings.supervisor_default_runtime_endpoint
+    assert resolve_runtime_base("") == settings.default_runtime_endpoint

@@ -25,7 +25,7 @@ cd local-infra && docker compose restart litellm   # tweak litellm config
 The repo is two compose stacks that mirror the production split:
 
 - **[local-infra/](local-infra/)** — *local* simulation of what the platform team runs in prod (postgres, redis, keycloak, vault, temporal, litellm, prometheus, grafana, mcp-jira/confluence, optional K3s under the `k3s` profile). Exists only because we don't have prod infra reachable from a dev box.
-- **Project root** — the services we own end-to-end and ship through CI/CD as container images (api, admin, web, agent-supervisor, workflow-worker). The root `compose.yml` wires them together for local dev; each connects to local-infra via `host.docker.internal:<port>` so the two stacks stay loosely coupled.
+- **Project root** — the services we own end-to-end and ship through CI/CD as container images (api, admin, web, agent-supervisor, workflow-worker, runtime). The root `compose.yml` wires them together for local dev; each connects to local-infra via `host.docker.internal:<port>` so the two stacks stay loosely coupled. The `runtime` service is the supervisor's default target (`DEFAULT_RUNTIME_ENDPOINT=http://runtime:3000`); the K3s-managed runtime pool is an opt-in per-agent override.
 
 Both stacks read the **same `.env`** — `local-infra/.env` is a symlink to the root `.env` (created by `setup-dev.sh`). Per-stack variables are organized into `Aviary services` / `Local-infra` sections in [.env.example](.env.example) but live in one file.
 
@@ -53,7 +53,9 @@ Browser → Next.js (:3000) → API rewrite proxy → FastAPI (:8000)
 Admin Console (:8001) → DB (no infra calls)
 
 Project root (docker compose — what we ship via CI/CD):
-  api, admin, agent-supervisor, workflow-worker, web, db-migrate
+  api, admin, agent-supervisor, workflow-worker, web, db-migrate,
+  runtime  ← default agent runtime; supervisor's DEFAULT_RUNTIME_ENDPOINT
+            points at it.
 
 local-infra/ (docker compose — pre-provisioned in prod, simulated locally):
   Postgres, Redis, Keycloak, Vault, Temporal, LiteLLM (:8090 — inference + MCP),
@@ -71,18 +73,18 @@ K8s cluster (Helm-managed; the only thing in K3s/EKS):
 
 Agent routing:
   agent.runtime_endpoint (nullable) in the DB.
-  null → supervisor's SUPERVISOR_DEFAULT_RUNTIME_ENDPOINT (default env).
+  null → supervisor's DEFAULT_RUNTIME_ENDPOINT.
   non-null → any env Service DNS (admin sets per agent).
 
 Environments shipped out of the box (both `charts/aviary-environment` releases):
   default — locked-down egress (DNS + platform only), base `aviary-runtime`
-            image (git + gh). NodePort 30300 — the supervisor's default.
+            image (git + gh). NodePort 30300. Opt in by pointing
+            agent.runtime_endpoint at http://host.docker.internal:30300 (dev)
+            or the env's in-cluster Service DNS (prod).
   custom  — worked example of a per-env customization: open internet via
             `extraEgress: 0.0.0.0/0` and `aviary-runtime-custom` image
             (base + `cowsay` as a demo marker, see runtime/Dockerfile.custom).
-            NodePort 30301. Point an agent at this env by setting
-            agent.runtime_endpoint = http://host.docker.internal:30301 in
-            the admin console (dev) or the env's in-cluster Service DNS (prod).
+            NodePort 30301.
 ```
 
 ### Service Responsibilities
@@ -152,7 +154,7 @@ All IdP wiring lives in `shared/aviary_shared/auth/` and is driven by env vars. 
 Neither service has K8s concepts (namespace, pod, deployment, NetworkPolicy). The only routing input they touch is the optional `agent.runtime_endpoint` string column. Everything else is Helm-managed.
 
 ### Supervisor Outside K8s — Endpoint Injection
-The supervisor is a service in the project-root compose (same deploy path as API/Admin), not a K8s workload. The only thing in K3s/EKS is the agent runtime environment pool. Callers look up `agent.runtime_endpoint` and pass it in each publish body. `runtime_endpoint=null` → `SUPERVISOR_DEFAULT_RUNTIME_ENDPOINT` (dev: `http://host.docker.internal:30300`, the K3s container's NodePort published by local-infra; prod: env's Service DNS or LB URL).
+The supervisor is a service in the project-root compose (same deploy path as API/Admin), not a K8s workload. Callers look up `agent.runtime_endpoint` and pass it in each publish body. `runtime_endpoint=null` → `DEFAULT_RUNTIME_ENDPOINT` (dev: `http://runtime:3000`, the in-compose runtime container; prod: env's Service DNS or LB URL). The K3s-managed environment pool is an opt-in target — set `agent.runtime_endpoint` to its NodePort (dev: `http://host.docker.internal:30300` for `default`, `:30301` for `custom`) when an agent needs the per-env egress / custom image.
 
 ### Abort Flow — No Pod Routing Required
 The TCP connection from supervisor to a runtime pod is pinned once established (kube-proxy load-balances at connect time, not per-request). So **cancelling the supervisor's outbound httpx stream is sufficient** to abort the specific pod handling it:
@@ -304,7 +306,7 @@ docker compose up -d --build supervisor    # or api, admin, web, workflow-worker
 | `DEV_USER_SUB` | `sub` used everywhere when `OIDC_ISSUER` is unset (default: `dev-user`) |
 | `DATABASE_URL` | PostgreSQL async connection |
 | `REDIS_URL` | Redis for pub/sub, caching, presence |
-| `AGENT_SUPERVISOR_URL` | Agent Supervisor URL (default: `http://localhost:9000`) |
+| `SUPERVISOR_URL` | Agent Supervisor URL (default: `http://supervisor:9000`) |
 | `LLM_GATEWAY_URL` | Inference gateway URL (LiteLLM in dev, Portkey or similar in prod) |
 | `LLM_GATEWAY_API_KEY` | Inference gateway master/API key |
 | `MCP_GATEWAY_URL` | MCP aggregation endpoint URL — same backend as LLM gateway in dev, can split in prod |
@@ -330,7 +332,7 @@ docker compose up -d --build supervisor    # or api, admin, web, workflow-worker
 | Variable | Purpose |
 |----------|---------|
 | `REDIS_URL` | Redis DSN for publishing agent stream events (default: `redis://redis:6379/0`) |
-| `SUPERVISOR_DEFAULT_RUNTIME_ENDPOINT` | Fallback endpoint used when a caller passes `runtime_endpoint=null` |
+| `DEFAULT_RUNTIME_ENDPOINT` | Fallback endpoint used when a caller passes `runtime_endpoint=null` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTel Collector URL. Unset → metric export disabled. |
 | `OTEL_SERVICE_NAME` | Resource attribute `service.name`. Unset by default — set when enabling OTel export. |
 | `OIDC_ISSUER` | Public IdP URL (Bearer token `iss` validation on `/publish` and `/a2a`). Unset → no-IdP mode. |

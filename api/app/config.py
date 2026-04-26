@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:3000"]
 
     # Agent Supervisor
-    agent_supervisor_url: str
+    supervisor_url: str
 
     # Unset → direct mode (model catalog from config.yaml, MCP disabled).
     llm_gateway_url: str | None = None
