@@ -29,7 +29,7 @@ models:
       --repeat-penalty 1.0 \
       --reasoning on \
       --chat-template-kwargs '{"preserve_thinking": true}' \
-      -ngl 99 -np 4 \
+      -ngl 99 -np 1 \
       -fa on -ctk q8_0 -ctv q8_0 \
       --port ${PORT}
     concurrencyLimit: 8
