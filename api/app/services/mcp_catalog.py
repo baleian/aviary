@@ -12,6 +12,8 @@ import os
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
+from app.auth.oidc import idp_enabled
+
 
 async def fetch_tools(user_token: str) -> list[dict]:
     """Return every MCP tool the caller is allowed to see.
@@ -20,8 +22,9 @@ async def fetch_tools(user_token: str) -> list[dict]:
     "inputSchema": dict}``.
     """
     base = os.environ["LITELLM_URL"].rstrip("/")
+    bearer = user_token if idp_enabled() else os.environ["LITELLM_API_KEY"]
     async with streamablehttp_client(
-        f"{base}/mcp", headers={"Authorization": f"Bearer {user_token}"},
+        f"{base}/mcp", headers={"Authorization": f"Bearer {bearer}"},
     ) as (read_stream, write_stream, _):
         async with ClientSession(read_stream, write_stream) as session:
             await session.initialize()
