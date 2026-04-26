@@ -49,3 +49,21 @@ mcp_servers:
   dice:
     type: "http"
     url: https://mcp.dice.com/mcp
+
+# ── secrets ────────────────────────────────────────────────────────────
+# Per-user credential fallback used ONLY when VAULT_ADDR is unset (no
+# real Vault available). When VAULT_ADDR is set this section is ignored
+# and credentials always come from Vault. Mirrors the Vault path
+# convention `secret/aviary/credentials/{sub}/{key_name}`.
+#
+# Top-level keys are user `sub` values (OIDC claim, or DEV_USER_SUB in
+# no-IdP mode). Inner keys match the credential names the runtime/
+# LiteLLM hooks look up (e.g. `anthropic-api-key`, `github-token`,
+# `jira-token`, `confluence-token`).
+
+secrets:
+  dev-user:
+    anthropic-api-key: sk-ant-...
+    github-token: ghp_...
+    jira-token: you@example.com:atlassian-api-token
+    confluence-token: you@example.com:atlassian-api-token

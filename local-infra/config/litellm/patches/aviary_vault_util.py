@@ -1,9 +1,13 @@
-"""Vault credential lookup for LiteLLM patches.
+"""Per-user credential lookup for LiteLLM patches.
 
-NO cache by design — when a user updates a credential in the admin UI
-we want the next call to pick it up immediately. The Vault hit per
-tool-call is acceptable; if it ever isn't, add caching at a layer that
-also exposes invalidation (not here).
+Primary source is Vault (``VAULT_ADDR`` + ``VAULT_TOKEN``). When neither
+is set we fall back to the ``secrets:`` table in the project's
+config.yaml so the stack is usable without Vault.
+
+NO cache by design — when a user updates a credential we want the next
+call to pick it up immediately. The Vault hit per tool-call is
+acceptable; if it ever isn't, add caching at a layer that also exposes
+invalidation (not here).
 """
 
 from __future__ import annotations
@@ -11,8 +15,10 @@ from __future__ import annotations
 import logging
 import os
 import time
+from pathlib import Path
 
 import httpx
+import yaml
 
 
 logger = logging.getLogger(__name__)
@@ -20,19 +26,43 @@ logger = logging.getLogger(__name__)
 VAULT_ADDR = os.environ.get("VAULT_ADDR", "")
 VAULT_TOKEN = os.environ.get("VAULT_TOKEN", "")
 
+# Fallback file when Vault is unconfigured. Reads the ``secrets:`` block.
+CONFIG_PATH = os.environ.get("AVIARY_CONFIG_PATH", "")
+
 # Slow-Vault threshold. Anything above this indicates the per-call hit is
 # becoming a real latency contributor — time to add invalidation-aware caching.
 _SLOW_FETCH_SECONDS = 0.5
 
 
-async def fetch_credential(sub: str, key: str) -> str | None:
-    """Return ``secret/aviary/credentials/{sub}/{key}`` or ``None`` if 404.
+def _vault_enabled() -> bool:
+    return bool(VAULT_ADDR and VAULT_TOKEN)
 
-    Raises ``Exception`` on transport error (so callers can surface a
-    "credential service unavailable" 5xx) and on misconfiguration.
+
+def _lookup_config_secret(sub: str, key: str) -> str | None:
+    if not CONFIG_PATH:
+        return None
+    p = Path(CONFIG_PATH)
+    if not p.exists():
+        return None
+    raw = yaml.safe_load(p.read_text()) or {}
+    table = raw.get("secrets") or {}
+    if not isinstance(table, dict):
+        return None
+    entries = table.get(sub) or {}
+    if not isinstance(entries, dict):
+        return None
+    value = entries.get(key)
+    return str(value) if value is not None else None
+
+
+async def fetch_credential(sub: str, key: str) -> str | None:
+    """Return the credential or ``None`` if missing.
+
+    Raises ``Exception`` on Vault transport error so callers can surface
+    a "credential service unavailable" 5xx.
     """
-    if not VAULT_ADDR or not VAULT_TOKEN:
-        raise Exception("Vault not configured (VAULT_ADDR / VAULT_TOKEN)")
+    if not _vault_enabled():
+        return _lookup_config_secret(sub, key)
 
     url = f"{VAULT_ADDR}/v1/secret/data/aviary/credentials/{sub}/{key}"
     started = time.monotonic()

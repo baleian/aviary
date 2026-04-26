@@ -4,22 +4,30 @@ Multi-tenant AI agent platform. Users create/configure agents via Web UI; every 
 
 ## Quick Start
 
+All dev scripts target three groups: `infra` (local-infra compose), `runtime` (K3s helm-managed runtime pods), `service` (root compose). No arg = all three. Comma-separate to combine.
+
 ```bash
-./scripts/dev-up.sh                          # Boots local-infra + services (idempotent)
-./scripts/dev-down.sh                        # Tear down (volumes preserved)
+./scripts/setup-dev.sh                       # build + (re)deploy everything (volumes preserved)
+./scripts/setup-dev.sh runtime               # only the runtime group
+./scripts/setup-dev.sh infra,service         # everything except runtime
 
-# Iterating on a single service:
-docker compose up -d --build api             # rebuild + restart api (project root)
+./scripts/start-dev.sh [groups]              # start stopped containers / scale runtime up (no build)
+./scripts/stop-dev.sh  [groups]              # stop running containers / scale runtime to 0
+./scripts/clean-dev.sh [groups]              # remove containers + volumes (full wipe)
+
+./scripts/logs.sh {infra|runtime|service}    # tail logs for one group
+
+# Iterating on a single container — pass through to compose directly:
+docker compose up -d --build api                   # rebuild + restart api (project root)
 cd local-infra && docker compose restart litellm   # tweak litellm config
-
-# Helm chart validation (separate flow — K3s is opt-in):
-./scripts/chart-test.sh
 ```
 
 The repo is two compose stacks that mirror the production split:
 
 - **[local-infra/](local-infra/)** — *local* simulation of what the platform team runs in prod (postgres, redis, keycloak, vault, temporal, litellm, prometheus, grafana, mcp-jira/confluence, optional K3s under the `k3s` profile). Exists only because we don't have prod infra reachable from a dev box.
 - **Project root** — the services we own end-to-end and ship through CI/CD as container images (api, admin, web, agent-supervisor, workflow-worker). The root `compose.yml` wires them together for local dev; each connects to local-infra via `host.docker.internal:<port>` so the two stacks stay loosely coupled.
+
+Both stacks read the **same `.env`** — `local-infra/.env` is a symlink to the root `.env` (created by `setup-dev.sh`). Per-stack variables are organized into `Aviary services` / `Local-infra` sections in [.env.example](.env.example) but live in one file.
 
 Services: Web (`:3000`), API (`:8000`), Admin (`:8001`), Keycloak (`:8080`, admin/admin), Vault (`:8200`), LiteLLM Gateway (`:8090`, inference + aggregated MCP at `/mcp`), Agent Supervisor (`:9000`), Temporal UI (`:8233`), Prometheus (`:9090`), Grafana (`:3001`).
 Test accounts: `user1@test.com`, `user2@test.com` (all `password`).
@@ -205,6 +213,8 @@ For Anthropic backends, each user's personal API key is injected from Vault via 
 ### Vault Credential Path Convention
 Per-user credentials live at `secret/aviary/credentials/{user_external_id}/{key_name}` with JSON body `{"value": "<secret_string>"}`. Key names use `{service}-token` convention. The `user_external_id` is the OIDC `sub` claim from Keycloak.
 
+**Vaultless dev fallback (default)**: with `VAULT_ADDR` / `VAULT_TOKEN` unset (the shipped default), both supervisor and litellm read per-user credentials from a `secrets:` table in [config.yaml](config.example.yaml) keyed by `{sub}/{key_name}`. To switch to Vault-backed credentials, set `VAULT_ADDR` + `VAULT_TOKEN` in the project root `.env`; the `secrets:` table is then ignored. The local-infra Vault container keeps running either way — it's just unused unless opted in.
+
 ### Streaming Architecture (Runtime)
 The runtime ([runtime/src/agent.ts](runtime/src/agent.ts)) handles two streaming paths based on backend:
 - **Anthropic backends**: emit raw `content_block_delta` events (token-level `text_delta` / `thinking_delta`). A `hasStreamDeltas` flag suppresses duplicate text/thinking from assistant snapshots.
@@ -223,7 +233,7 @@ The runtime ([runtime/src/agent.ts](runtime/src/agent.ts)) handles two streaming
 - **Frontend**: `ThinkingChip` renders real-time thinking; `SavedThinkingChip` renders persisted blocks.
 
 ### K8s Image Loading
-All K8s custom images use `imagePullPolicy: Never`. Loaded via `docker save | docker compose --profile k3s exec -T k8s ctr images import -` (the K3s container lives in [local-infra/compose.yml](local-infra/compose.yml) under the `k3s` profile). [scripts/chart-test.sh](scripts/chart-test.sh) handles this for the runtime images. LiteLLM runs outside K8s and doesn't need image loading.
+All K8s custom images use `imagePullPolicy: Never`. Loaded via `docker save | docker compose --profile k3s exec -T k8s ctr images import -` (the K3s container lives in [local-infra/compose.yml](local-infra/compose.yml) under the `k3s` profile). [scripts/setup-dev.sh](scripts/setup-dev.sh) handles this for the runtime images when targeting the `runtime` group. LiteLLM runs outside K8s and doesn't need image loading.
 
 ### K8s Fixed Node Name
 `--node-name=aviary-node` in [local-infra/compose.yml](local-infra/compose.yml) prevents stale node accumulation on container restart.
@@ -261,28 +271,19 @@ API/Admin: dedicated `aviary_test` database with `NullPool`, no lifespan.
 
 ## Rebuilding Images / Applying Chart Changes
 
-**Runtime image** (K3s) — after modifying [runtime/](runtime/):
+**Runtime image + Helm charts** — after modifying [runtime/](runtime/) or [charts/](charts/):
 
 ```bash
-./scripts/quick-rebuild.sh runtime    # build + ctr import + rolling restart agent pods
+./scripts/setup-dev.sh runtime    # build runtime images, ctr import, helm apply, rollout restart
 ```
 
-**Supervisor** — after modifying [agent-supervisor/](agent-supervisor/):
+`setup-dev.sh runtime` renders `alpine/helm:3.14.4 template` with `hostGatewayIP` from the K3s container and pipes into `kubectl apply -f -`. Iterating on a single chart is fine via the same command — the helm apply is idempotent.
+
+**Supervisor / API / Admin** — after modifying their respective directories:
 
 ```bash
-./scripts/quick-rebuild.sh agent-supervisor    # docker compose up -d --build supervisor
+docker compose up -d --build supervisor    # or api, admin, web, workflow-worker
 ```
-
-**Helm chart changes** — render locally and apply via K3s kubectl. Brings up the K3s container if it isn't already running:
-
-```bash
-./scripts/chart-test.sh             # build runtime images + helm apply all 3 charts (full flow)
-./scripts/helm-apply.sh platform    # apply a single chart (K3s already running)
-./scripts/helm-apply.sh default
-./scripts/helm-apply.sh custom
-```
-
-[scripts/chart-test.sh](scripts/chart-test.sh) renders `alpine/helm:3.14.4 template` with `hostGatewayIP` from the K3s container and pipes into `kubectl apply -f -`.
 
 **Hot reload** for project-root services — bind-mount + `--reload` / `npm run dev` from [compose.override.yml](compose.override.yml). Tweaking local-infra config (LiteLLM patches, prometheus.yml, etc.) needs `cd local-infra && docker compose restart <svc>`.
 
@@ -329,14 +330,15 @@ API/Admin: dedicated `aviary_test` database with `NullPool`, no lifespan.
 | `OIDC_ISSUER` | Public IdP URL (Bearer token `iss` validation on `/publish` and `/a2a`). Unset → no-IdP mode. |
 | `OIDC_INTERNAL_ISSUER` | Internal IdP URL (JWKS fetch) — leave empty for hosted IdPs |
 | `DEV_USER_SUB` | `sub` used when `OIDC_ISSUER` is unset (default: `dev-user`) |
-| `VAULT_ADDR` / `VAULT_TOKEN` | Vault connection for per-user credential lookup (keyed by JWT `sub`) |
+| `VAULT_ADDR` / `VAULT_TOKEN` | Vault connection for per-user credential lookup (keyed by JWT `sub`). Both empty → fall back to `secrets:` in config.yaml. |
 
 ## Key Environment Variables (LiteLLM Gateway)
 
 | Variable | Purpose |
 |----------|---------|
 | `LITELLM_MASTER_KEY` | LiteLLM proxy auth key (default: `sk-aviary-dev`) |
-| `VAULT_ADDR` / `VAULT_TOKEN` | Vault connection for per-user API key + MCP credential lookup |
+| `VAULT_ADDR` / `VAULT_TOKEN` | Vault connection for per-user API key + MCP credential lookup. Both empty → fall back to `AVIARY_CONFIG_PATH` (`secrets:` block). |
+| `AVIARY_CONFIG_PATH` | Path to project config.yaml; only consulted when Vault is unconfigured. |
 | `MCP_TOOL_PREFIX_SEPARATOR` | Set to `__` so MCP tools are exposed as `{server}__{tool}` (matches `mcp_agent_tool_bindings` naming) |
 | `AVIARY_MCP_INJECTION_CONFIG` | Path to the per-server Vault-arg injection YAML (default `/app/aviary-mcp-secret-injection.yaml`) |
 

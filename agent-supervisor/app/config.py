@@ -20,9 +20,11 @@ class Settings(BaseSettings):
     dev_user_sub: str = "dev-user"
 
     # Vault — per-user credentials (GitHub token, etc.) live at
-    # secret/aviary/credentials/{sub}/{key_name}.
-    vault_addr: str
-    vault_token: str
+    # secret/aviary/credentials/{sub}/{key_name}. Leave both empty to
+    # fall back to the ``secrets:`` table in config.yaml (single-machine
+    # dev without a real Vault).
+    vault_addr: str = ""
+    vault_token: str = ""
 
     # Shared secret authenticating the Temporal workflow worker. When the
     # request carries `X-Aviary-Worker-Key: <this>`, the supervisor trusts
@@ -39,6 +41,10 @@ class Settings(BaseSettings):
     @property
     def direct_llm_mode(self) -> bool:
         return not self.llm_gateway_url
+
+    @property
+    def vault_enabled(self) -> bool:
+        return bool(self.vault_addr and self.vault_token)
 
     @property
     def idp_enabled(self) -> bool:
