@@ -298,8 +298,10 @@ API/Admin: dedicated `aviary_test` database with `NullPool`, no lifespan.
 | `DATABASE_URL` | PostgreSQL async connection |
 | `REDIS_URL` | Redis for pub/sub, caching, presence |
 | `AGENT_SUPERVISOR_URL` | Agent Supervisor URL (default: `http://localhost:9000`) |
-| `LITELLM_URL` | LiteLLM gateway URL (default: `http://litellm:4000`) |
-| `LITELLM_API_KEY` | LiteLLM master key (default: `sk-aviary-dev`) |
+| `LLM_GATEWAY_URL` | Inference gateway URL (LiteLLM in dev, Portkey or similar in prod) |
+| `LLM_GATEWAY_API_KEY` | Inference gateway master/API key |
+| `MCP_GATEWAY_URL` | MCP aggregation endpoint URL — same backend as LLM gateway in dev, can split in prod |
+| `MCP_GATEWAY_API_KEY` | MCP gateway master/API key |
 
 ## Key Environment Variables (Admin)
 
@@ -311,8 +313,9 @@ API/Admin: dedicated `aviary_test` database with `NullPool`, no lifespan.
 
 | Variable | Purpose |
 |----------|---------|
-| `LITELLM_URL` | LiteLLM gateway URL (`http://litellm.platform.svc:4000`) — serves inference + aggregated MCP at `/mcp` |
-| `LITELLM_API_KEY` | LiteLLM master key (`sk-aviary-dev`) |
+| `LLM_GATEWAY_URL` | Inference gateway URL (dev: `http://litellm.platform.svc:4000`) |
+| `LLM_GATEWAY_API_KEY` | Inference gateway key |
+| `MCP_GATEWAY_URL` | MCP aggregation endpoint URL (`/mcp` is appended) |
 | `AVIARY_API_URL` | Service URL for runtime-side tools |
 
 ## Key Environment Variables (Agent Supervisor)
@@ -358,17 +361,17 @@ LiteLLM's outer auth still requires *some* admissible Bearer (sk-* master key in
 - **`tools/list`** — RBAC stub + strip Vault-injected parameters from `inputSchema` + per-agent `X-Aviary-Allowed-Tools` filter (header forwarded by the runtime).
 - **`tools/call`** — `X-Aviary-Allowed-Tools` allow-list gate; the `pre_mcp_call` hook then fetches per-user secrets from Vault (`secret/aviary/credentials/{sub}/{vault_key}`, per-server map in `config/litellm/mcp-secret-injection.yaml`) and injects them as `modified_arguments`. Sub is propagated to `pre_mcp_call` via a contextvar set in the gate. The user token is **never** forwarded to backend MCP servers.
 
-**Tool namespacing:** LiteLLM prefixes with `MCP_TOOL_PREFIX_SEPARATOR=__` → `{server}__{tool}`. Claude Code wraps that as `mcp__gateway__{server}__{tool}` (`gateway` is the fixed `mcpServers` key in `runtime/src/agent.ts`).
+**Tool namespacing:** the gateway prefixes with `MCP_TOOL_PREFIX_SEPARATOR=__` → `{server}__{tool}`. Claude Code wraps that as `mcp__gateway__{server}__{tool}` (`gateway` is the fixed `mcpServers` key in `runtime/src/agent.ts`).
 
 **Data flow — chat message:**
 1. API reads `mcp_agent_tool_bindings` for the agent and merges them into `agent_config.tools` as `mcp__gateway__{server}__{tool}`.
-2. Supervisor forwards to the runtime; runtime opens `mcpServers.gateway` → `${LITELLM_URL}/mcp` with `Authorization: Bearer <user JWT>` + `X-Aviary-User-Sub: <sub>` + `X-Aviary-Allowed-Tools: {server}__{tool},…`.
+2. Supervisor forwards to the runtime; runtime opens `mcpServers.gateway` → `${MCP_GATEWAY_URL}/mcp` with `Authorization: Bearer <user JWT>` + `X-Aviary-User-Sub: <sub>` + `X-Aviary-Allowed-Tools: {server}__{tool},…`.
 3. Claude Code's MCP client requests `tools/list`; the Aviary patch strips Vault-injected args → applies the allow-list → returns.
 4. On `tools/call`: allow-list gate → Vault injection (sub-keyed) → forwards to the backend MCP server (e.g. `mcp-jira`).
 
 **Data flow — user browsing the catalog:**
 1. Frontend hits `GET /api/mcp/servers` (or `/tools`, `/tools/search`).
-2. API opens a short-lived MCP session to `${LITELLM_URL}/mcp` carrying the user's `X-Aviary-User-Sub` (Bearer is the user JWT under IdP / master key in dev) and returns whatever LiteLLM aggregates. No Aviary-side filtering.
-3. On `PUT /api/mcp/agents/{id}/tools` the API validates each requested tool against the same LiteLLM view before persisting to `mcp_agent_tool_bindings` (can't bind what the user can't see).
+2. API opens a short-lived MCP session to `${MCP_GATEWAY_URL}/mcp` carrying the user's `X-Aviary-User-Sub` (Bearer is the user JWT under IdP / master key in dev) and returns whatever the gateway aggregates. No Aviary-side filtering.
+3. On `PUT /api/mcp/agents/{id}/tools` the API validates each requested tool against the same gateway view before persisting to `mcp_agent_tool_bindings` (can't bind what the user can't see).
 
-**Architecture principle:** Aviary never judges who can see what MCP resource — it forwards `X-Aviary-User-Sub` to LiteLLM and trusts the answer. RBAC is LiteLLM's concern.
+**Architecture principle:** Aviary never judges who can see what MCP resource — it forwards `X-Aviary-User-Sub` to the MCP gateway and trusts the answer. RBAC is the gateway's concern.

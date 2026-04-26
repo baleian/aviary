@@ -1,11 +1,5 @@
-"""MCP catalog + agent-tool binding endpoints — thin relay over LiteLLM.
-
-All visibility decisions are LiteLLM's. This router opens an MCP session
-to ``/mcp`` with the caller's OIDC JWT and relays whatever LiteLLM
-returns. Aviary only stores per-agent bindings — strings pointing at
-``(server_name, tool_name)`` — which are validated against the same
-LiteLLM view at bind time.
-"""
+"""MCP catalog + agent-tool binding endpoints. Bindings are validated
+against the gateway view so we can't bind what the user can't see."""
 
 from __future__ import annotations
 
@@ -33,12 +27,7 @@ router = APIRouter()
 TOOL_NAME_SEPARATOR = "__"
 
 
-_litellm_tools_for = mcp_catalog.fetch_tools
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+_gateway_tools_for = mcp_catalog.fetch_tools
 
 
 def _split_qualified(qualified: str) -> tuple[str, str]:
@@ -51,7 +40,6 @@ def _split_qualified(qualified: str) -> tuple[str, str]:
 
 
 def _group_by_server(tools: list[dict]) -> dict[str, list[dict]]:
-    """Group LiteLLM-prefixed tools by their ``{server}__`` prefix."""
     grouped: dict[str, list[dict]] = {}
     for t in tools:
         name = t.get("name") or ""
@@ -68,7 +56,7 @@ def _tool_to_response(tool: dict, server_name: str) -> McpToolResponse:
     raw = prefixed[len(prefix):] if prefixed.startswith(prefix) else prefixed
     return McpToolResponse(
         id=prefixed,
-        server_id=server_name,  # server_name is the binding-stable identifier
+        server_id=server_name,
         server_name=server_name,
         name=raw,
         description=tool.get("description"),
@@ -77,14 +65,9 @@ def _tool_to_response(tool: dict, server_name: str) -> McpToolResponse:
     )
 
 
-# ---------------------------------------------------------------------------
-# Catalog — sourced entirely from LiteLLM via the caller's JWT
-# ---------------------------------------------------------------------------
-
-
 @router.get("/servers", response_model=list[McpServerResponse])
 async def list_servers(session: SessionData = Depends(get_session_data)):
-    tools = await _litellm_tools_for(session.id_token or "", session.user_external_id)
+    tools = await _gateway_tools_for(session.id_token or "", session.user_external_id)
     grouped = _group_by_server(tools)
     out = [
         McpServerResponse(
@@ -105,7 +88,7 @@ async def list_server_tools(
     server_name: str,
     session: SessionData = Depends(get_session_data),
 ):
-    tools = await _litellm_tools_for(session.id_token or "", session.user_external_id)
+    tools = await _gateway_tools_for(session.id_token or "", session.user_external_id)
     grouped = _group_by_server(tools)
     if server_name not in grouped:
         raise HTTPException(status_code=404, detail="Server not found or not accessible")
@@ -117,7 +100,7 @@ async def search_tools(
     q: str = Query(..., min_length=1),
     session: SessionData = Depends(get_session_data),
 ):
-    tools = await _litellm_tools_for(session.id_token or "", session.user_external_id)
+    tools = await _gateway_tools_for(session.id_token or "", session.user_external_id)
     q_lower = q.lower()
     out: list[McpToolResponse] = []
     for t in tools:
@@ -192,7 +175,7 @@ async def list_agent_tools(
             .order_by(McpAgentToolBinding.server_name, McpAgentToolBinding.tool_name)
         )
     ).scalars().all()
-    tools = await _litellm_tools_for(session.id_token or "", session.user_external_id)
+    tools = await _gateway_tools_for(session.id_token or "", session.user_external_id)
     by_name = {t["name"]: t for t in tools}
     return _bindings_to_responses(bindings, by_name)
 
@@ -208,7 +191,7 @@ async def set_agent_tools(
     await _owned_agent(db, agent_id, user)
 
     # Fetch the user's view once, validate every requested tool against it.
-    tools = await _litellm_tools_for(session.id_token or "", session.user_external_id)
+    tools = await _gateway_tools_for(session.id_token or "", session.user_external_id)
     visible = {t["name"] for t in tools}
     parsed: list[tuple[str, str]] = []
     for qualified in body.tool_ids:

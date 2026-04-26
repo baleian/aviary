@@ -6,8 +6,7 @@ from app.schemas._common import MODEL_CONFIG_ALIAS, UuidStr
 
 
 class ModelConfig(BaseModel):
-    # ``backend`` is the LiteLLM model-name prefix; validated at request time
-    # by LiteLLM itself.
+    # `backend` is the gateway's model-name prefix; the gateway validates it.
     backend: str = Field(..., min_length=1)
     model: str = Field(..., min_length=1)
     max_output_tokens: int | None = None

@@ -1,30 +1,18 @@
-"""Shared MCP catalog fetcher.
-
-LiteLLM owns all visibility/ACL decisions. We open an MCP session to
-``/mcp`` carrying the caller's identity (``X-Aviary-User-Sub``) and
-relay whatever LiteLLM's guardrail returns. The Bearer token is needed
-only for LiteLLM's native auth admission — JWT in real mode, master
-key in dev.
-"""
+"""MCP catalog fetcher — relays the gateway view, scoped by X-Aviary-User-Sub."""
 
 from __future__ import annotations
-
-import os
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
 from app.auth.oidc import idp_enabled
+from app.config import settings
 
 
 async def fetch_tools(user_token: str, user_sub: str) -> list[dict]:
-    """Return every MCP tool the caller is allowed to see.
-
-    Each entry: ``{"name": "<server>__<tool>", "description": str | None,
-    "inputSchema": dict}``.
-    """
-    base = os.environ["LITELLM_URL"].rstrip("/")
-    bearer = user_token if idp_enabled() else os.environ["LITELLM_API_KEY"]
+    base = settings.mcp_gateway_url.rstrip("/")
+    # Bearer is only for the gateway's native auth admission. Identity comes from X-Aviary-User-Sub.
+    bearer = user_token if idp_enabled() else settings.mcp_gateway_api_key
     headers = {
         "Authorization": f"Bearer {bearer}",
         "X-Aviary-User-Sub": user_sub,

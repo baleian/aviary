@@ -1,15 +1,11 @@
-"""MCP catalog and binding schemas for the user-facing API.
-
-The catalog lives in LiteLLM; tool identifiers on the wire are the prefixed
-qualified names (``{server}__{tool}``) — frontend treats them as opaque
-strings and uses them as ``id`` when sending a binding update.
-"""
+"""MCP catalog and binding schemas. Tool ids on the wire are the
+gateway's qualified ``{server}__{tool}`` form."""
 
 from pydantic import BaseModel
 
 
 class McpServerResponse(BaseModel):
-    id: str  # LiteLLM stable server_id (hex)
+    id: str
     name: str
     description: str | None
     tags: list[str]

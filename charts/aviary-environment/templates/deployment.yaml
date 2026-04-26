@@ -51,10 +51,14 @@ spec:
           ports:
             - containerPort: {{ .Values.runtime.port }}
           env:
-            - name: LITELLM_URL
-              value: {{ .Values.runtime.litellmURL | quote }}
-            - name: LITELLM_API_KEY
-              value: {{ .Values.runtime.litellmAPIKey | quote }}
+            - name: LLM_GATEWAY_URL
+              value: {{ .Values.runtime.llmGatewayURL | quote }}
+            - name: LLM_GATEWAY_API_KEY
+              value: {{ .Values.runtime.llmGatewayAPIKey | quote }}
+            - name: MCP_GATEWAY_URL
+              value: {{ .Values.runtime.mcpGatewayURL | quote }}
+            - name: MCP_GATEWAY_API_KEY
+              value: {{ .Values.runtime.mcpGatewayAPIKey | quote }}
             - name: AVIARY_API_URL
               value: {{ .Values.runtime.aviaryAPIURL | quote }}
             - name: AVIARY_SUPERVISOR_URL

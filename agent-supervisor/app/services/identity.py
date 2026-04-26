@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 async def enrich_agent_config(body: dict, identity: IdentityContext) -> None:
     """Stamp the body's ``agent_config`` with the server-resolved identity +
     Vault credentials. Worker-path callers get ``user_token`` dropped so
-    the runtime/LiteLLM falls back to its master key."""
+    the runtime/gateway falls back to its master key."""
     agent_config = body.get("agent_config") or {}
     if not agent_config.get("agent_id"):
         raise HTTPException(status_code=400, detail="agent_config.agent_id is required")

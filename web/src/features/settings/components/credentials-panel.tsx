@@ -30,7 +30,7 @@ export function CredentialsPanel() {
               <code className="t-mono text-[11.5px] text-fg-primary">
                 secret/aviary/credentials/&lcub;sub&rcub;/&lcub;key&rcub;
               </code>
-              . The supervisor and LiteLLM read them at request time;
+              . The supervisor and gateway read them at request time;
               they are never sent to your browser.
             </p>
           </div>

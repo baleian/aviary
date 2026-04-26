@@ -32,8 +32,10 @@ services:
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
       DEV_USER_SUB: ${DEV_USER_SUB:-dev-user}
       AGENT_SUPERVISOR_URL: ${AGENT_SUPERVISOR_URL:-http://supervisor:9000}
-      LITELLM_URL: ${LITELLM_URL:-http://host.docker.internal:8090}
-      LITELLM_API_KEY: ${LITELLM_API_KEY:-sk-aviary-dev}
+      LLM_GATEWAY_URL: ${LLM_GATEWAY_URL:-http://host.docker.internal:8090}
+      LLM_GATEWAY_API_KEY: ${LLM_GATEWAY_API_KEY:-sk-aviary-dev}
+      MCP_GATEWAY_URL: ${MCP_GATEWAY_URL:-http://host.docker.internal:8090}
+      MCP_GATEWAY_API_KEY: ${MCP_GATEWAY_API_KEY:-sk-aviary-dev}
       CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:3000"]}
       TEMPORAL_HOST: ${TEMPORAL_HOST:-host.docker.internal:7233}
       TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}

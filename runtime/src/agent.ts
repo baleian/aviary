@@ -3,8 +3,8 @@
  *
  * The runtime is agent-agnostic: agent_id and session_id arrive in the request
  * body and are used to scope on-disk paths via the single-PVC layout in
- * constants.ts. All inference is routed through LiteLLM, and bubblewrap maps
- * the per-(agent, session) directories onto /workspace inside the sandbox —
+ * constants.ts. All inference is routed through the LLM gateway, and bubblewrap
+ * maps the per-(agent, session) directories onto /workspace inside the sandbox —
  * see scripts/claude-sandbox.sh.
  */
 
@@ -33,14 +33,15 @@ function requireEnv(name: string): string {
   return value;
 }
 
-const LITELLM_URL = requireEnv("LITELLM_URL");
-const LITELLM_API_KEY = requireEnv("LITELLM_API_KEY");
+const LLM_GATEWAY_URL = requireEnv("LLM_GATEWAY_URL");
+const LLM_GATEWAY_API_KEY = requireEnv("LLM_GATEWAY_API_KEY");
+const MCP_GATEWAY_URL = requireEnv("MCP_GATEWAY_URL");
 
 // Force SDK to use our bwrap wrapper instead of its bundled binary.
 const CLAUDE_CLI_PATH = "/usr/local/bin/claude";
 
 // Model tier env vars — all remapped to agent's configured model so CLI
-// internal tasks (WebFetch summarization, subagents) route through LiteLLM.
+// internal tasks (WebFetch summarization, subagents) route through the gateway.
 const MODEL_TIER_KEYS = [
   "ANTHROPIC_MODEL",
   "ANTHROPIC_SMALL_FAST_MODEL",
@@ -101,12 +102,12 @@ interface AgentConfig {
 }
 
 // Claude Code prefixes MCP tools as `mcp__{mcpServerKey}__{toolName}`;
-// strip both that and our runtime-side key so we can hand LiteLLM the
-// native `{server}__{tool}` tool names it aggregates under.
+// strip both that and our runtime-side key so we can hand the gateway
+// the native `{server}__{tool}` tool names it aggregates under.
 const MCP_RUNTIME_KEY = "gateway";
 const CLAUDE_MCP_PREFIX = `mcp__${MCP_RUNTIME_KEY}__`;
 
-function extractLitellmAllowedTools(tools: string[] | undefined): string[] {
+function extractGatewayAllowedTools(tools: string[] | undefined): string[] {
   if (!tools) return [];
   const out: string[] = [];
   for (const t of tools) {
@@ -127,11 +128,7 @@ function buildMcpServers(
     Object.assign(servers, agentConfig.mcp_servers);
   }
 
-  // LiteLLM aggregated MCP endpoint — register only when the agent has
-  // bound at least one MCP tool. The gateway resolves the user from
-  // X-Aviary-User-Sub; user_token is forwarded for the production
-  // gateway team's validation but ignored in local dev.
-  const allowed = extractLitellmAllowedTools(agentConfig.tools);
+  const allowed = extractGatewayAllowedTools(agentConfig.tools);
   if (allowed.length > 0) {
     const mcpHeaders: Record<string, string> = {
       "X-Aviary-Allowed-Tools": allowed.join(","),
@@ -144,7 +141,7 @@ function buildMcpServers(
     }
     servers[MCP_RUNTIME_KEY] = {
       type: "http",
-      url: `${LITELLM_URL}/mcp`,
+      url: `${MCP_GATEWAY_URL}/mcp`,
       headers: mcpHeaders,
     };
   }
@@ -421,9 +418,9 @@ export async function* processMessage(
   if (!mc.model || !mc.backend) {
     throw new Error("agent_config.model_config.model and .backend are required");
   }
-  // Backend is the LiteLLM model-name prefix. If the stored model
+  // Backend is the gateway's model-name prefix. If the stored model
   // already includes a prefix we use it verbatim, otherwise we join
-  // backend + model. No allow-list — LiteLLM owns that validation.
+  // backend + model. No allow-list — the gateway owns that validation.
   const resolvedModel = mc.model.includes("/") ? mc.model : `${mc.backend}/${mc.model}`;
   const canResume = hasSessionHistory(claudeDir, sessionId);
 
@@ -449,17 +446,14 @@ export async function* processMessage(
     }
   }
 
-  // X-Aviary-User-Sub identifies the caller for per-user Anthropic key
-  // injection in the LiteLLM hook. X-Aviary-User-Token is forwarded for
-  // the production gateway's validation; the local LiteLLM ignores it.
   const customHeaderLines = [
     agentConfig.user_external_id && `X-Aviary-User-Sub: ${agentConfig.user_external_id}`,
     agentConfig.user_token && `X-Aviary-User-Token: ${agentConfig.user_token}`,
   ].filter(Boolean).join("\n");
 
   const env: Record<string, string> = {
-    ANTHROPIC_BASE_URL: LITELLM_URL,
-    ANTHROPIC_API_KEY: LITELLM_API_KEY,
+    ANTHROPIC_BASE_URL: LLM_GATEWAY_URL,
+    ANTHROPIC_API_KEY: LLM_GATEWAY_API_KEY,
     ...(customHeaderLines ? { ANTHROPIC_CUSTOM_HEADERS: customHeaderLines } : {}),
     SESSION_WORKSPACE: shared,
     SESSION_CLAUDE_DIR: claudeDir,

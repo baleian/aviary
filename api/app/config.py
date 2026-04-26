@@ -24,9 +24,11 @@ class Settings(BaseSettings):
     # Agent Supervisor
     agent_supervisor_url: str
 
-    # LiteLLM Gateway
-    litellm_url: str
-    litellm_api_key: str
+    # Split so prod can point inference and MCP at different services.
+    llm_gateway_url: str
+    llm_gateway_api_key: str
+    mcp_gateway_url: str
+    mcp_gateway_api_key: str
 
     # Temporal — workflow orchestration
     temporal_host: str = "temporal:7233"

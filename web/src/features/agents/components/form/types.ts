@@ -22,7 +22,7 @@ export const DEFAULT_AGENT_FORM_DATA: AgentFormData = {
   description: "",
   instruction: "",
   model_config: {
-    // Populated from the LiteLLM catalogue on first load; the form
+    // Populated from the LLM gateway's catalogue on first load; the form
     // picks the first available backend if this is still empty.
     backend: "",
     model: "",

@@ -1,5 +1,5 @@
 export interface ModelConfig {
-  /** LiteLLM model-name prefix (``anthropic``, ``ollama``, ``vllm``, …).
+  /** LLM gateway model-name prefix (``anthropic``, ``ollama``, ``vllm``, …).
    *  Opaque to the frontend — sourced from `/api/inference/models`. */
   backend: string;
   model: string;

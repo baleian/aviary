@@ -17,9 +17,7 @@ class WorkflowRunInput:
     owner_external_id: str             # OIDC sub — supervisor worker-auth fallback
     definition_snapshot: dict[str, Any]
     trigger_data: dict[str, Any] = field(default_factory=dict)
-    # JWT of the triggering user. Forwarded through supervisor → runtime →
-    # LiteLLM so per-user credential lookup works exactly as in chat.
-    # Unset for cron / webhook triggers (worker-auth fallback kicks in).
+    # Unset for cron / webhook triggers (supervisor uses worker-auth fallback).
     user_token: str | None = None
     # Optional per-workflow runtime endpoint override. None → supervisor
     # resolves to its configured default environment.

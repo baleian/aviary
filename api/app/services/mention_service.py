@@ -16,11 +16,8 @@ from aviary_shared.db.models.mcp import McpAgentToolBinding
 
 _MENTION_RE = re.compile(r"@([a-z0-9][a-z0-9-]*[a-z0-9])")
 
-# The key we mount the LiteLLM MCP endpoint under in `mcpServers` on the
-# runtime side (see runtime/src/agent.ts). Claude Code prefixes MCP tools as
-# `mcp__{mcp_server_key}__{tool_name}` and LiteLLM then prefixes each
-# aggregated tool as `{server_alias}__{tool_name}`, so the final name the
-# model sees is `mcp__gateway__{server_alias}__{tool_name}`.
+# Tool names the model sees: `mcp__{_RUNTIME_MCP_SERVER_KEY}__{server_alias}__{tool_name}`.
+# Must match the `mcpServers` key in runtime/src/agent.ts.
 _RUNTIME_MCP_SERVER_KEY = "gateway"
 _MCP_PREFIX = f"mcp__{_RUNTIME_MCP_SERVER_KEY}__"
 _MCP_TOOL_SEPARATOR = "__"

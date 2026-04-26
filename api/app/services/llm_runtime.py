@@ -28,7 +28,7 @@ class LLMRuntimeError(RuntimeError):
     """Raised when the supervisor/runtime path fails."""
 
 
-# Same budget the previous direct-LiteLLM path used — Claude CLI cold
+# Same budget the previous direct-gateway path used — Claude CLI cold
 # starts can eat a few seconds before tokens flow.
 _CALL_TIMEOUT_S = 300.0
 
