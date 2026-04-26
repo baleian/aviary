@@ -45,6 +45,22 @@ async def start_stream(
         logger.warning("Cancelling existing stream for session %s", session_id)
         existing.cancel()
 
+    session_uuid = uuid.UUID(session_id)
+    async with async_session_factory() as db:
+        participants = await session_service.get_session_participants(db, session_uuid)
+        session_row = await session_service.get_session(db, session_uuid)
+        agent_id_str = (
+            str(session_row.agent_id)
+            if session_row and session_row.agent_id else None
+        )
+    for uid in participants:
+        await redis_service.publish_user_event(uid, {
+            "type": "session_changed",
+            "session_id": session_id,
+            "agent_id": agent_id_str,
+            "status": "streaming",
+        })
+
     task = asyncio.create_task(
         _run_stream(session_id, agent_config, content, user_message_id, user_token, attachments)
     )
@@ -127,13 +143,20 @@ async def _persist_and_broadcast(
     )
 
     async with async_session_factory() as db:
-        msg = await session_service.save_message(
+        msg, _new_title = await session_service.save_message(
             db, session_uuid, "agent",
             full_response or fallback_content,
             metadata=meta or None,
         )
         message_id = str(msg.id)
         participants = await session_service.get_session_participants(db, session_uuid)
+        agent_id_str: str | None = None
+        session_title: str | None = None
+        session_row = await session_service.get_session(db, session_uuid)
+        if session_row:
+            session_title = session_row.title
+            if session_row.agent_id:
+                agent_id_str = str(session_row.agent_id)
         await db.commit()
 
     # INCR before publish: the WS relay DELs unread on terminal events —
@@ -146,6 +169,18 @@ async def _persist_and_broadcast(
     if terminal == "error" and error_message:
         event["message"] = error_message
     await redis_service.publish_message(session_id, event)
+
+    for uid in participants:
+        unread_map = await redis_service.get_bulk_unread([session_id], uid)
+        await redis_service.publish_user_event(uid, {
+            "type": "session_changed",
+            "session_id": session_id,
+            "agent_id": agent_id_str,
+            "title": session_title,
+            "status": "idle",
+            "unread": unread_map.get(session_id, 0),
+            "terminal": terminal,
+        })
 
 
 async def _run_stream(

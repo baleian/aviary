@@ -20,7 +20,6 @@ import { TodoPanel } from "./todos/todo-panel";
 import { LoadingState } from "@/components/feedback/loading-state";
 import { routes } from "@/lib/constants/routes";
 import { WorkspacePanel } from "@/features/workspace/components/workspace-panel";
-import { useNotificationsPush } from "@/features/notifications/notifications-provider";
 import { usePublishChatActions } from "@/features/chat/hooks/chat-actions-context";
 
 // Tools that modify the session's workspace — trigger an auto-refresh of the
@@ -47,6 +46,7 @@ export interface ChatViewProps {
   /** Open the WS subscription for live events. Default true. Set false for
    *  terminal-state transcripts to skip retries on closed sessions. */
   live?: boolean;
+  onToolCompleted?: (tool: string) => void;
 }
 
 export function ChatView(props: ChatViewProps) {
@@ -61,6 +61,7 @@ function ChatViewInner({
   hideWorkspace,
   hideInput,
   live,
+  onToolCompleted,
 }: ChatViewProps) {
   const { widthClass } = useChatWidth();
 
@@ -94,9 +95,10 @@ function ChatViewInner({
     if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
     refreshTimerRef.current = setTimeout(() => {
       refreshTimerRef.current = null;
-      setRefreshSignal((n) => n + 1);
+      if (onToolCompleted) onToolCompleted(name);
+      else setRefreshSignal((n) => n + 1);
     }, AUTO_REFRESH_DEBOUNCE_MS);
-  }, []);
+  }, [onToolCompleted]);
 
   useEffect(() => {
     return () => {
@@ -129,35 +131,6 @@ function ChatViewInner({
     hasMore: chat.hasMore,
     loadEarlier: chat.loadEarlier,
   });
-
-  const pushNotification = useNotificationsPush();
-  const wasStreamingRef = useRef(false);
-  const docVisibleRef = useRef(
-    typeof document === "undefined" ? true : !document.hidden,
-  );
-  useEffect(() => {
-    const onVis = () => {
-      docVisibleRef.current = !document.hidden;
-    };
-    document.addEventListener("visibilitychange", onVis);
-    return () => document.removeEventListener("visibilitychange", onVis);
-  }, []);
-  useEffect(() => {
-    const wasStreaming = wasStreamingRef.current;
-    wasStreamingRef.current = chat.isStreaming;
-    if (!wasStreaming || chat.isStreaming) return;
-    if (docVisibleRef.current) return;
-    if (!chat.session) return;
-    pushNotification({
-      kind: "chat_reply",
-      title: chat.session.title || "Agent reply",
-      description: "Your agent finished responding.",
-      href: chat.session.agent_id
-        ? routes.agentChat(chat.session.agent_id, sessionId)
-        : routes.session(sessionId),
-      tone_id: chat.session.agent_id ?? sessionId,
-    });
-  }, [chat.isStreaming, chat.session, sessionId, pushNotification]);
 
   // Cmd+F / Ctrl+F intercepts the browser's native find (which can't
   // see paginated history anyway) and opens our search bar instead.

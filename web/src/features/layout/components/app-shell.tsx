@@ -14,6 +14,8 @@ import { UserMenuStub } from "./user-menu-stub";
 import { SessionStatusProvider } from "@/features/layout/providers/session-status-provider";
 import { SidebarProvider } from "@/features/layout/providers/sidebar-provider";
 import { PageHeaderProvider, usePageHeader } from "@/features/layout/providers/page-header-provider";
+import { UserEventsProvider } from "@/features/events/user-events-provider";
+import { useGlobalReplyNotifier } from "@/features/notifications/use-global-notifier";
 
 /**
  * AppShell — top-level frame for authenticated routes.
@@ -41,9 +43,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <NotificationsProvider>
       <ChatWidthProvider>
-       <SessionStatusProvider>
-        <SidebarProvider>
+       <UserEventsProvider>
+        <SessionStatusProvider>
+         <SidebarProvider>
           <PageHeaderProvider>
+            <GlobalNotifier />
             <div className="flex h-screen overflow-hidden bg-canvas text-fg-primary">
               <Sidebar />
               <div className="flex min-w-0 flex-1 flex-col">
@@ -61,11 +65,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <NotificationsPanel open={notifOpen} onClose={() => setNotifOpen(false)} />
             <UserMenuStub open={userMenuOpen} onClose={() => setUserMenuOpen(false)} />
           </PageHeaderProvider>
-        </SidebarProvider>
-       </SessionStatusProvider>
+         </SidebarProvider>
+        </SessionStatusProvider>
+       </UserEventsProvider>
       </ChatWidthProvider>
     </NotificationsProvider>
   );
+}
+
+function GlobalNotifier() {
+  useGlobalReplyNotifier();
+  return null;
 }
 
 /**

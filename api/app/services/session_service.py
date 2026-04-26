@@ -17,7 +17,24 @@ async def create_session(db: AsyncSession, user: User, agent: Agent) -> Session:
     session = Session(agent_id=agent.id, created_by=user.id)
     db.add(session)
     await db.flush()
+    await redis_service.publish_user_event(str(user.id), {
+        "type": "session_created",
+        "session": _session_summary(session),
+    })
     return session
+
+
+def _session_summary(session: Session) -> dict:
+    return {
+        "id": str(session.id),
+        "agent_id": str(session.agent_id) if session.agent_id else None,
+        "title": session.title,
+        "status": session.status,
+        "created_at": session.created_at.isoformat() if session.created_at else None,
+        "last_message_at": (
+            session.last_message_at.isoformat() if session.last_message_at else None
+        ),
+    }
 
 
 async def get_session(db: AsyncSession, session_id: uuid.UUID) -> Session | None:
@@ -90,7 +107,9 @@ async def save_message(
     content: str,
     sender_id: uuid.UUID | None = None,
     metadata: dict | None = None,
-) -> Message:
+) -> tuple[Message, str | None]:
+    """Returns (message, new_title) — new_title is set on the first user
+    message so callers can publish it after commit."""
     msg = Message(
         session_id=session_id,
         sender_type=sender_type,
@@ -103,14 +122,16 @@ async def save_message(
     session = (await db.execute(select(Session).where(Session.id == session_id))).scalar_one()
     session.last_message_at = datetime.now(timezone.utc)
 
+    new_title: str | None = None
     if session.title is None and sender_type == "user":
         title = content.strip().split("\n")[0]
         if len(title) > 60:
             title = title[:57] + "..."
         session.title = title
+        new_title = title
 
     await db.flush()
-    return msg
+    return msg, new_title
 
 
 async def delete_message(db: AsyncSession, message_id: uuid.UUID) -> None:
@@ -126,6 +147,14 @@ async def update_session_title(
     session = (await db.execute(select(Session).where(Session.id == session_id))).scalar_one()
     session.title = title
     await db.flush()
+    participants = await get_session_participants(db, session_id)
+    for uid in participants:
+        await redis_service.publish_user_event(uid, {
+            "type": "session_changed",
+            "session_id": str(session.id),
+            "title": title,
+            "agent_id": str(session.agent_id) if session.agent_id else None,
+        })
     return session
 
 
@@ -151,6 +180,11 @@ async def delete_session(db: AsyncSession, session: Session) -> None:
 
     participants = await get_session_participants(db, session.id)
     await redis_service.delete_all_session_keys(session_id_str, participants)
+    for uid in participants:
+        await redis_service.publish_user_event(uid, {
+            "type": "session_deleted",
+            "session_id": session_id_str,
+        })
 
     runtime_endpoint: str | None = None
     if agent_id is not None:

@@ -3,17 +3,13 @@
 import { useCallback, useRef, useState, type KeyboardEvent } from "react";
 import { http } from "@/lib/http";
 import type { Session } from "@/types";
-import { useSidebar } from "@/features/layout/providers/sidebar-provider";
 
 interface UseTitleEditorOptions {
   session: Session | null;
   patchSession: (patch: Partial<Session>) => void;
 }
 
-/** Inline session-title editing: edit-mode flag, draft, optimistic save,
- *  keyboard handling. Exposes a stable API for header components. */
 export function useTitleEditor({ session, patchSession }: UseTitleEditorOptions) {
-  const { updateSessionTitle } = useSidebar();
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -25,8 +21,6 @@ export function useTitleEditor({ session, patchSession }: UseTitleEditorOptions)
     setTimeout(() => inputRef.current?.focus(), 0);
   }, [session]);
 
-  /** Persist a title — outer-layout entry point. Optimistic update with
-   *  rollback on REST failure. */
   const saveTitle = useCallback(
     async (next: string) => {
       if (!session) return;
@@ -35,17 +29,14 @@ export function useTitleEditor({ session, patchSession }: UseTitleEditorOptions)
 
       const previousTitle = session.title;
       patchSession({ title: trimmed });
-      updateSessionTitle(session.id, trimmed);
-
       try {
         await http.patch(`/sessions/${session.id}/title`, { title: trimmed });
       } catch (err) {
         patchSession({ title: previousTitle });
-        updateSessionTitle(session.id, previousTitle || "");
         throw err;
       }
     },
-    [session, patchSession, updateSessionTitle],
+    [session, patchSession],
   );
 
   const save = useCallback(async () => {
@@ -65,9 +56,8 @@ export function useTitleEditor({ session, patchSession }: UseTitleEditorOptions)
       const firstLine = content.trim().split("\n")[0];
       const autoTitle = firstLine.length > 60 ? firstLine.slice(0, 57) + "…" : firstLine;
       patchSession({ title: autoTitle });
-      updateSessionTitle(session.id, autoTitle);
     },
-    [session, patchSession, updateSessionTitle],
+    [session, patchSession],
   );
 
   return {

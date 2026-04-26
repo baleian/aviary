@@ -60,6 +60,10 @@ def _session_channel(session_id: str) -> str:
     return f"session:{session_id}:events"
 
 
+def _user_channel(user_id: str) -> str:
+    return f"user:{user_id}:events"
+
+
 def _stream_chunks(stream_id: str) -> str:
     return f"stream:{stream_id}:chunks"
 
@@ -82,6 +86,23 @@ async def subscribe(session_id: str):
     pubsub = _client.pubsub()
     await pubsub.subscribe(_session_channel(session_id))
     return pubsub
+
+
+async def subscribe_user(user_id: str):
+    if not _client:
+        return None
+    pubsub = _client.pubsub()
+    await pubsub.subscribe(_user_channel(user_id))
+    return pubsub
+
+
+async def publish_user_event(user_id: str, event: dict) -> None:
+    if not _client:
+        return
+    try:
+        await _client.publish(_user_channel(user_id), json.dumps(event))
+    except redis.RedisError:
+        logger.error("publish_user_event failed for user %s", user_id, exc_info=True)
 
 
 # ── Writes owned by the API (DB-consistent events + unread) ────────────────

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { agentsApi } from "@/features/agents/api/agents-api";
+import { useUserEvents } from "@/features/events/user-events-provider";
 import { extractErrorMessage } from "@/lib/http";
 import type { Agent, Session } from "@/types";
 
@@ -59,7 +60,9 @@ export function useAgentDetail(agentId: string): AgentDetailData {
     setCreateError(null);
     try {
       const session = await agentsApi.createSession(agentId);
-      setSessions((prev) => [session, ...prev]);
+      setSessions((prev) =>
+        prev.some((s) => s.id === session.id) ? prev : [session, ...prev],
+      );
       return session;
     } catch (e) {
       setCreateError(extractErrorMessage(e));
@@ -68,6 +71,46 @@ export function useAgentDetail(agentId: string): AgentDetailData {
       setCreating(false);
     }
   }, [agentId, creating]);
+
+  useUserEvents(
+    useCallback(
+      (event) => {
+        if (event.type === "session_created") {
+          if (event.session.agent_id !== agentId) return;
+          if (event.session.status !== "active") return;
+          const incoming = event.session;
+          setSessions((prev) =>
+            prev.some((s) => s.id === incoming.id)
+              ? prev
+              : [
+                  {
+                    id: incoming.id,
+                    agent_id: incoming.agent_id,
+                    title: incoming.title,
+                    status: incoming.status,
+                    created_at: incoming.created_at,
+                    last_message_at: incoming.last_message_at,
+                  } as Session,
+                  ...prev,
+                ],
+          );
+          return;
+        }
+        if (event.type === "session_deleted") {
+          setSessions((prev) => prev.filter((s) => s.id !== event.session_id));
+          return;
+        }
+        if (event.type === "session_changed" && event.title != null) {
+          setSessions((prev) =>
+            prev.map((s) =>
+              s.id === event.session_id ? { ...s, title: event.title ?? s.title } : s,
+            ),
+          );
+        }
+      },
+      [agentId],
+    ),
+  );
 
   return {
     agent,

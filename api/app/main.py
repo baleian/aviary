@@ -16,6 +16,7 @@ from app.routers import (
     credentials,
     inference,
     mcp,
+    me,
     search,
     sessions,
     uploads,
@@ -68,6 +69,7 @@ app.include_router(catalog.router, prefix="/api/catalog", tags=["catalog"])
 app.include_router(credentials.router, prefix="/api/credentials", tags=["credentials"])
 app.include_router(inference.router, prefix="/api/inference", tags=["inference"])
 app.include_router(mcp.router, prefix="/api/mcp", tags=["mcp"])
+app.include_router(me.router, prefix="/api/me", tags=["me"])
 app.include_router(sessions.router, prefix="/api", tags=["sessions"])
 app.include_router(search.router, prefix="/api/search", tags=["search"])
 app.include_router(uploads.router, prefix="/api/uploads", tags=["uploads"])

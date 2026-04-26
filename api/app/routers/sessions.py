@@ -12,9 +12,8 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_user, get_session_data
-from app.auth.oidc import validate_token
-from app.auth.session_store import SESSION_COOKIE_NAME, SessionData, get_fresh_session
-from app.config import settings
+from app.auth.session_store import SessionData, get_fresh_session
+from app.auth.ws import handshake_ws
 from app.db.models import Agent, Session, User
 from app.db.session import async_session_factory, get_db
 from app.schemas.session import (
@@ -439,32 +438,6 @@ async def get_workspace_download(
 
 # -- WebSocket Chat ------------------------------------------------
 
-async def _handshake_ws(websocket: WebSocket) -> tuple[str, object] | None:
-    """Origin + cookie + token checks. Closes the socket on failure."""
-    origin = websocket.headers.get("origin")
-    if not origin or origin not in settings.cors_origins:
-        await websocket.close(code=4001, reason="Invalid origin")
-        return None
-
-    aviary_session_id = websocket.cookies.get(SESSION_COOKIE_NAME)
-    if not aviary_session_id:
-        await websocket.close(code=4001, reason="Missing session")
-        return None
-
-    initial_session = await get_fresh_session(aviary_session_id)
-    if initial_session is None:
-        await websocket.close(code=4001, reason="Invalid or expired session")
-        return None
-
-    try:
-        claims = await validate_token(initial_session.id_token or "")
-    except ValueError:
-        await websocket.close(code=4001, reason="Invalid token")
-        return None
-
-    return aviary_session_id, claims
-
-
 async def _authorize_ws_session(
     websocket: WebSocket, session_id: uuid.UUID, claims,
 ) -> tuple[Session, Agent | None, User] | None:
@@ -514,6 +487,11 @@ async def _relay_redis_events(
                 await websocket.send_json(event)
                 if event.get("type") in ("done", "cancelled", "error"):
                     await redis_service.clear_unread(session_id_str, user_id_str)
+                    await redis_service.publish_user_event(user_id_str, {
+                        "type": "session_changed",
+                        "session_id": session_id_str,
+                        "unread": 0,
+                    })
             except WebSocketDisconnect:
                 return
             except Exception as exc:
@@ -556,7 +534,7 @@ async def _handle_chat_message(
 
     metadata = {"attachments": attachments} if attachments else None
     async with async_session_factory() as db:
-        user_msg = await session_service.save_message(
+        user_msg, new_title = await session_service.save_message(
             db, session_id, "user", content, sender_id=user.id, metadata=metadata,
         )
         user_message_id = user_msg.id
@@ -590,6 +568,14 @@ async def _handle_chat_message(
         user_event["attachments"] = attachments
     await redis_service.publish_message(session_id_str, user_event)
 
+    if new_title is not None:
+        await redis_service.publish_user_event(user_id_str, {
+            "type": "session_changed",
+            "session_id": session_id_str,
+            "title": new_title,
+            "agent_id": str(session.agent_id) if session.agent_id else None,
+        })
+
     await stream_manager.start_stream(
         session_id=session_id_str,
         agent_config=agent_config,
@@ -603,7 +589,7 @@ async def _handle_chat_message(
 
 @router.websocket("/sessions/{session_id}/ws")
 async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
-    handshake = await _handshake_ws(websocket)
+    handshake = await handshake_ws(websocket)
     if handshake is None:
         return
     aviary_session_id, claims = handshake
@@ -623,6 +609,11 @@ async def websocket_chat(websocket: WebSocket, session_id: uuid.UUID):
 
         user_id_str = str(user.id)
         await redis_service.clear_unread(session_id_str, user_id_str)
+        await redis_service.publish_user_event(user_id_str, {
+            "type": "session_changed",
+            "session_id": session_id_str,
+            "unread": 0,
+        })
         await _replay_stream_if_needed(websocket, session_id_str)
 
         pubsub = await redis_service.subscribe(session_id_str)

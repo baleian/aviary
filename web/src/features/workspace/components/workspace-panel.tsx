@@ -151,12 +151,13 @@ export function WorkspacePanel({ sessionId, onClose, refreshSignal = 0 }: Worksp
     }
   }, [tree, editor]);
 
+  // Tree only — full refresh would clobber unsaved editor edits.
   const lastSignalRef = useRef<number>(refreshSignal);
   useEffect(() => {
     if (refreshSignal === lastSignalRef.current) return;
     lastSignalRef.current = refreshSignal;
-    void refresh();
-  }, [refreshSignal, refresh]);
+    void tree.refreshAll();
+  }, [refreshSignal, tree]);
 
   const doSave = useCallback(
     async (paneId: string, path: string, overrideExpected?: number | null) => {

@@ -6,8 +6,10 @@ import { LoadingState } from "@/components/feedback/loading-state";
 import { ErrorState } from "@/components/feedback/error-state";
 import { ChatView } from "@/features/chat/components/chat-view";
 import { ChatActionsProvider } from "@/features/chat/hooks/chat-actions-context";
+import { http } from "@/lib/http";
 import { useAgentDetail } from "@/features/agents/hooks/use-agent-detail";
 import { usePageCrumb } from "@/features/layout/providers/page-header-provider";
+import { useSetSessionIds } from "@/features/layout/providers/session-status-provider";
 import { WorkspacePanel } from "@/features/workspace/components/workspace-panel";
 import { SessionsRail } from "./sessions-rail";
 import { EmptyChat } from "./empty-chat";
@@ -28,6 +30,12 @@ export function AgentChatPage({ agentId }: { agentId: string }) {
   const sessionParam = searchParams.get("session");
 
   const detail = useAgentDetail(agentId);
+
+  const setSessionIds = useSetSessionIds();
+  React.useEffect(() => {
+    setSessionIds(detail.sessions.map((s) => s.id));
+    return () => setSessionIds([]);
+  }, [detail.sessions, setSessionIds]);
 
   const crumb = React.useMemo(
     () => (detail.agent ? <AgentCrumb agent={detail.agent} /> : null),
@@ -65,9 +73,18 @@ export function AgentChatPage({ agentId }: { agentId: string }) {
     if (session) setSession(session.id);
   }, [detail, setSession]);
 
+  const handleDelete = React.useCallback(
+    async (id: string) => {
+      await http.delete(`/sessions/${id}`);
+      if (id === sessionParam) setSession(null);
+    },
+    [sessionParam, setSession],
+  );
+
   // Workspace rail: persist open/close so the user's last choice sticks
   // across navigation. Default closed to match the "chat-first" entry.
   const [workspaceOpen, setWorkspaceOpen] = React.useState(false);
+  const [refreshSignal, setRefreshSignal] = React.useState(0);
   React.useEffect(() => {
     try {
       setWorkspaceOpen(window.localStorage.getItem(WORKSPACE_OPEN_KEY) === "1");
@@ -86,6 +103,10 @@ export function AgentChatPage({ agentId }: { agentId: string }) {
       return next;
     });
   }, []);
+  const handleToolCompleted = React.useCallback(
+    () => setRefreshSignal((n) => n + 1),
+    [],
+  );
 
   if (detail.loading && !detail.agent) {
     return <LoadingState fullHeight label="Loading agent…" />;
@@ -119,6 +140,7 @@ export function AgentChatPage({ agentId }: { agentId: string }) {
             creating={detail.creating}
             onSelect={(id) => setSession(id)}
             onCreate={handleCreate}
+            onDelete={handleDelete}
           />
           <div className="relative flex min-w-0 flex-1 flex-col">
             {detail.createError && (
@@ -128,7 +150,12 @@ export function AgentChatPage({ agentId }: { agentId: string }) {
             )}
             {sessionParam ? (
               <div className="flex-1 overflow-hidden">
-                <ChatView sessionId={sessionParam} hideHeader hideWorkspace />
+                <ChatView
+                  sessionId={sessionParam}
+                  hideHeader
+                  hideWorkspace
+                  onToolCompleted={handleToolCompleted}
+                />
               </div>
             ) : (
               <EmptyChat
@@ -139,7 +166,11 @@ export function AgentChatPage({ agentId }: { agentId: string }) {
             )}
           </div>
           {showWorkspace && sessionParam && (
-            <WorkspacePanel sessionId={sessionParam} onClose={toggleWorkspace} />
+            <WorkspacePanel
+              sessionId={sessionParam}
+              onClose={toggleWorkspace}
+              refreshSignal={refreshSignal}
+            />
           )}
         </div>
       </div>
