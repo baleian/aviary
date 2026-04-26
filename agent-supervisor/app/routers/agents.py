@@ -130,13 +130,13 @@ async def post_message(session_id: str, request: Request):
             except asyncio.CancelledError:
                 await redis_client.set_stream_status(stream_id, "aborted")
                 await redis_client.set_session_status(session_id, "idle")
-                metrics.publish_requests_total.labels(status="aborted").inc()
+                metrics.publish_requests_total.add(1, {"status": "aborted"})
                 return {"status": "aborted", "stream_id": stream_id, "reached_runtime": False}
 
         # Caller disconnected before the runtime finished.
         await redis_client.set_stream_status(stream_id, "error")
         await redis_client.set_session_status(session_id, "idle")
-        metrics.publish_requests_total.labels(status="disconnected").inc()
+        metrics.publish_requests_total.add(1, {"status": "disconnected"})
         return {"status": "disconnected", "stream_id": stream_id, "reached_runtime": False}
     finally:
         for t in (publish_task, disconnect_task):
@@ -152,10 +152,10 @@ async def abort_stream(stream_id: str):
     replica holds it cancels. Cancelling closes the supervisor→runtime
     TCP, which fires ``res.on('close')`` on the runtime pod."""
     if _cancel_local(stream_id):
-        metrics.abort_requests_total.labels(via="local").inc()
+        metrics.abort_requests_total.add(1, {"via": "local"})
         return {"ok": True, "via": "local"}
     await redis_client.publish_abort(stream_id)
-    metrics.abort_requests_total.labels(via="broadcast").inc()
+    metrics.abort_requests_total.add(1, {"via": "broadcast"})
     return {"ok": True, "via": "broadcast"}
 
 
@@ -191,16 +191,16 @@ async def a2a_stream(session_id: str, body: _A2ABody, request: Request):
     async def generate():
         started = time.monotonic()
         a2a_status = "complete"
-        metrics.active_a2a_streams.inc()
+        metrics.active_a2a_streams.add(1)
         try:
             async with httpx.AsyncClient() as client:
                 async with client.stream(
                     "POST", f"{base}/message", json=runtime_body, timeout=None,
                 ) as resp:
                     if resp.status_code != 200:
-                        metrics.runtime_http_errors_total.labels(
-                            status_code=str(resp.status_code)
-                        ).inc()
+                        metrics.runtime_http_errors_total.add(
+                            1, {"status_code": str(resp.status_code)},
+                        )
                         a2a_status = "error"
                         err = (await resp.aread()).decode(errors="replace")[:500]
                         logger.error("A2A sub-agent stream %d: %s", resp.status_code, err)
@@ -227,9 +227,9 @@ async def a2a_stream(session_id: str, body: _A2ABody, request: Request):
                 f"data: {json.dumps({'type': 'error', 'message': 'Sub-agent runtime unreachable'})}\n\n"
             ).encode()
         finally:
-            metrics.a2a_duration_seconds.observe(time.monotonic() - started)
-            metrics.a2a_requests_total.labels(status=a2a_status).inc()
-            metrics.active_a2a_streams.dec()
+            metrics.a2a_duration_seconds.record(time.monotonic() - started)
+            metrics.a2a_requests_total.add(1, {"status": a2a_status})
+            metrics.active_a2a_streams.add(-1)
 
     return StreamingResponse(
         generate(),

@@ -19,13 +19,12 @@ image:
 
 runtime:
   port: 3000
-  # LiteLLM serves both inference (/v1/messages) and the aggregated MCP
-  # endpoint (/mcp). Per-user auth for MCP tool calls is handled by the
-  # `aviary_mcp_credentials` LiteLLM guardrail.
-  litellmURL: "http://litellm.platform.svc:4000"
-  litellmAPIKey: "sk-aviary-dev"
+  # Same backend in dev; prod can split inference and MCP onto separate services.
+  llmGatewayURL: "http://litellm.platform.svc:4000"
+  llmGatewayAPIKey: "sk-aviary-dev"
+  mcpGatewayURL: "http://litellm.platform.svc:4000"
+  mcpGatewayAPIKey: "sk-aviary-dev"
   aviaryAPIURL: "http://host.k8s.internal:8000/api"
-  internalAPIKey: "sk-aviary-internal"
   # Supervisor URL — used by the runtime's A2A tool server to invoke sub-agents.
   supervisorURL: "http://supervisor.platform.svc:9000"
   # Run the runtime container privileged. Needed in dev (K3s-in-Docker on

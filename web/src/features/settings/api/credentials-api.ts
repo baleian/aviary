@@ -29,7 +29,7 @@ const MOCK: CredentialKey[] = [
     id: "anthropic-api-key",
     label: "Anthropic API key",
     description:
-      "Used by LiteLLM when this user calls Claude through the gateway.",
+      "Used by the LLM gateway when this user calls Claude.",
     status: "connected",
     last_rotated: day(12),
     scope: "Inference",

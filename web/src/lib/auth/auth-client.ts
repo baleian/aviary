@@ -2,15 +2,6 @@ import type { AuthConfig } from "@/types";
 import { tokenStorage } from "./storage";
 import { generatePkce, generateState } from "./pkce";
 
-/**
- * OIDC PKCE flow against Keycloak.
- *
- * The browser never holds a token — `/api/auth/callback` exchanges the
- * code on the server, stores the tokens in Redis, and sets an httpOnly
- * session cookie. Every subsequent fetch / WebSocket carries that
- * cookie automatically; the API server handles refresh.
- */
-
 let _configPromise: Promise<AuthConfig> | null = null;
 
 export async function fetchAuthConfig(): Promise<AuthConfig> {
@@ -23,8 +14,27 @@ export async function fetchAuthConfig(): Promise<AuthConfig> {
   return _configPromise;
 }
 
+async function devLogin(): Promise<void> {
+  const res = await fetch("/api/auth/dev-login", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || res.statusText || "Dev login failed");
+  }
+}
+
 export async function initiateLogin(): Promise<void> {
   const config = await fetchAuthConfig();
+
+  if (!config.idp_enabled) {
+    await devLogin();
+    window.location.href = "/";
+    return;
+  }
+
   const { codeVerifier, codeChallenge } = await generatePkce();
   const state = generateState();
 
@@ -34,7 +44,7 @@ export async function initiateLogin(): Promise<void> {
     response_type: "code",
     client_id: config.client_id,
     redirect_uri: `${window.location.origin}/auth/callback`,
-    scope: "openid profile email",
+    scope: "openid profile email offline_access",
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
     state,
@@ -74,9 +84,7 @@ export async function handleCallback(code: string, state: string): Promise<void>
 }
 
 export async function logout(): Promise<void> {
-  // Server builds the full end_session URL (including id_token_hint for
-  // Okta compatibility) and returns it. We just pass our desired
-  // post-logout destination.
+  // server builds end_session URL (with id_token_hint for Okta); empty in null mode
   let endSessionUrl = "";
   try {
     const res = await fetch("/api/auth/logout", {

@@ -34,7 +34,7 @@ import type { StreamBlock, ToolCallBlock } from "@/types";
 // The runtime exposes the workflow-update tool under this CLI name.
 // We keep its invocation out of the visible tool-card stream and render
 // the plan accept/deny card instead.
-const APPLY_PLAN_CLI_NAME = "mcp__aviary_output__apply_workflow_plan";
+const APPLY_PLAN_CLI_NAME = "mcp__system__apply_workflow_plan";
 
 // Deep-strip React Flow internals before sending to the LLM so we don't
 // waste tokens on state the server doesn't care about.

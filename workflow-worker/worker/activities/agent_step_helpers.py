@@ -22,7 +22,7 @@ _OUTPUT_TOOL_DESCRIPTION = (
     "Emit the final structured response for this workflow step. Call this "
     "exactly once, as your last action, with every field populated."
 )
-_ARTIFACT_TOOL_CLI_NAME = "mcp__aviary_artifacts__save_as_artifact"
+_ARTIFACT_TOOL_CLI_NAME = "mcp__system__save_as_artifact"
 
 # Hard ceiling on assistant turns per step — protects against local-model
 # verify loops where the model keeps inspecting its own output after
@@ -142,7 +142,7 @@ def augment_instruction(
     lines = ["", "## Final response"]
     lines.append(
         f"Emit your final answer by calling the "
-        f"`mcp__aviary_output__{output_tool['name']}` tool exactly once, at "
+        f"`mcp__system__{output_tool['name']}` tool exactly once, at "
         f"the very end of your work. The tool call IS the response — do not "
         f"also write it as plain text."
     )
@@ -155,7 +155,7 @@ def augment_instruction(
     lines.append("")
     lines.append(
         "**Stop rule (important):** Immediately after the "
-        f"`mcp__aviary_output__{output_tool['name']}` tool call completes, "
+        f"`mcp__system__{output_tool['name']}` tool call completes, "
         "END YOUR TURN. Do not run any more tools, do not re-read or "
         "re-verify files, do not list directories, do not add a closing "
         "message. The tool result text (\"recorded.\") is just an "
@@ -175,7 +175,7 @@ def augment_instruction(
             lines.append(
                 "When you produce a file or directory that downstream steps "
                 "should receive, call "
-                "`mcp__aviary_artifacts__save_as_artifact` with the artifact "
+                "`mcp__system__save_as_artifact` with the artifact "
                 "name and the `/workspace`-relative source path. Choose the "
                 "right artifact per its description below. Call the tool "
                 "once per artifact; do not save unrelated files."
@@ -215,7 +215,7 @@ def build_request_body(
     tools = [f"mcp__gateway__{t}" for t in mcp_tool_ids]
 
     output_tool = build_output_tool(data.get("structured_output_fields") or [])
-    output_tool_cli_name = f"mcp__aviary_output__{output_tool['name']}"
+    output_tool_cli_name = f"mcp__system__{output_tool['name']}"
     tools.append(output_tool_cli_name)
 
     artifacts = normalize_artifacts(data.get("artifacts") or [])

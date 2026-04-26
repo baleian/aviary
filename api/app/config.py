@@ -2,10 +2,8 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # Set ENV=production in docker-compose / k8s manifests for any
-    # deployed environment served over TLS — this auto-flips
-    # cookie_secure on.
-    env: str = "development"
+    # Secure-by-default. Set COOKIE_SECURE=false for non-localhost dev (LAN IP, host.docker.internal).
+    cookie_secure: bool = True
 
     # Database
     database_url: str
@@ -13,26 +11,25 @@ class Settings(BaseSettings):
     # Redis
     redis_url: str
 
-    # OIDC — see aviary_shared.auth.IdpSettings for the canonical schema.
-    # `oidc_provider` selects the ClaimMapper (keycloak | okta | generic).
-    oidc_provider: str = "keycloak"
-    oidc_issuer: str
+    # OIDC — see .env.example.
+    oidc_issuer: str | None = None
     oidc_internal_issuer: str | None = None
-    oidc_client_id: str
-    oidc_audience: str | None = None
+    oidc_client_id: str | None = None
+    oidc_client_secret: str | None = None
+    dev_user_sub: str = "dev-user"
 
     # CORS
     cors_origins: list[str] = ["http://localhost:3000"]
 
-    # Internal API key for service-to-service calls (runtime → API)
-    internal_api_key: str
-
     # Agent Supervisor
     agent_supervisor_url: str
 
-    # LiteLLM Gateway
-    litellm_url: str
-    litellm_api_key: str
+    # Unset → direct mode (model catalog from config.yaml, MCP disabled).
+    llm_gateway_url: str | None = None
+    llm_gateway_api_key: str | None = None
+    mcp_gateway_url: str | None = None
+    mcp_gateway_api_key: str | None = None
+    llm_backends_config_path: str = "/workspace/config.yaml"
 
     # Temporal — workflow orchestration
     temporal_host: str = "temporal:7233"
@@ -42,8 +39,12 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     @property
-    def cookie_secure(self) -> bool:
-        return self.env == "production"
+    def idp_enabled(self) -> bool:
+        return bool(self.oidc_issuer)
+
+    @property
+    def direct_llm_mode(self) -> bool:
+        return not self.llm_gateway_url
 
 
 settings = Settings()

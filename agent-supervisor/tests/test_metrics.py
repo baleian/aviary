@@ -1,13 +1,13 @@
-from fastapi.testclient import TestClient
+def test_metrics_module_imports_and_creates_instruments():
+    from app import metrics
 
+    assert metrics.publish_requests_total is not None
+    assert metrics.sse_events_total is not None
+    assert metrics.active_streams is not None
+    assert metrics.publish_duration_seconds is not None
 
-def test_metrics_endpoint_returns_prometheus_format():
-    from app.main import app
-    client = TestClient(app)
-    resp = client.get("/metrics")
-    assert resp.status_code == 200
-    assert "text/plain" in resp.headers["content-type"]
-    body = resp.text
-    # Metric definitions appear even before any samples.
-    assert "aviary_supervisor_publish_requests_total" in body
-    assert "aviary_supervisor_sse_events_total" in body
+    # Smoke: recording shouldn't raise even without an exporter wired up.
+    metrics.publish_requests_total.add(1, {"status": "complete"})
+    metrics.active_streams.add(1)
+    metrics.active_streams.add(-1)
+    metrics.publish_duration_seconds.record(0.5)

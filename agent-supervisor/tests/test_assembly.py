@@ -65,7 +65,7 @@ async def test_merge_a2a_splices_sub_agent_events_under_parent():
     blocks: list[dict] = [
         {
             "type": "tool_call",
-            "name": "mcp__a2a__ask_planner",
+            "name": "mcp__system__a2a_planner",
             "input": {"q": "plan"},
             "tool_use_id": "parent-1",
         },
@@ -109,7 +109,7 @@ async def test_merge_a2a_ignores_parent_block_without_tool_use_id():
     blocks: list[dict] = [
         {
             "type": "tool_call",
-            "name": "mcp__a2a__ask_planner",
+            "name": "mcp__system__a2a_planner",
             "input": {},
             # tool_use_id intentionally missing
         },

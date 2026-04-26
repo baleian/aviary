@@ -26,7 +26,7 @@ interface ToolCallCardProps {
  *   - success: subtle border, check icon
  *   - error:   danger ring, X icon
  *
- * Sub-agent tools (Agent, mcp__a2a__ask_*) render their child tools
+ * Sub-agent tools (Agent, mcp__system__a2a_*) render their child tools
  * inline as nested cards.
  */
 export const ToolCallCard = memo(function ToolCallCard({ block }: ToolCallCardProps) {
@@ -43,9 +43,9 @@ export const ToolCallCard = memo(function ToolCallCard({ block }: ToolCallCardPr
   const isRunning = block.status === "running";
   const isError = block.is_error === true;
   const summary = summarizeToolInput(block.name, block.input);
-  const isSubagent = block.name === "Agent" || block.name.startsWith("mcp__a2a__ask_");
-  const a2aSlug = block.name.startsWith("mcp__a2a__ask_")
-    ? block.name.replace("mcp__a2a__ask_", "")
+  const isSubagent = block.name === "Agent" || block.name.startsWith("mcp__system__a2a_");
+  const a2aSlug = block.name.startsWith("mcp__system__a2a_")
+    ? block.name.replace("mcp__system__a2a_", "")
     : null;
   const hasChildren = block.children && block.children.length > 0;
 

@@ -1,0 +1,69 @@
+# Copy to config.yaml and fill in the values you need.
+
+# ── llm_backends ───────────────────────────────────────────────────────
+# Used when LLM_GATEWAY_URL is unset. Each top-level key is a `backend`
+# shown in the agent form; each list entry is one selectable model.
+#
+# - model        bare model name the upstream provider expects
+# - api_base     optional — omit for providers with SDK defaults
+#                (e.g. Anthropic). For host services, use
+#                http://host.k8s.internal:<port> so the runtime Pod
+#                reaches them via hostAliases.
+# - api_key      sent as ANTHROPIC_API_KEY. Any non-empty placeholder
+#                works for local backends with no auth.
+# - max_tokens   caps the form's max-output-tokens slider.
+# - capabilities badges in the form (vision / tools / thinking).
+
+llm_backends:
+  anthropic:
+    - model: claude-sonnet-4-6
+      api_key: sk-ant-...
+      max_tokens: 32000
+      capabilities:
+        - vision
+        - tools
+        - thinking
+
+  local:
+    - model: llamacpp/gemma4-26b
+      api_base: http://host.k8s.internal:9292
+      api_key: none
+      max_tokens: 32000
+      capabilities:
+        - vision
+        - tools
+        - thinking
+
+# ── mcp_servers ────────────────────────────────────────────────────────
+# Direct (non-gateway) MCP servers. Listed alongside MCP_GATEWAY tools in
+# the agent form's tool catalog. Selected tools surface in the runtime as
+# `mcp__{server}__{tool}` and the server is registered as a standard
+# Claude Code mcpServers entry — no user token forwarded.
+#
+# Each entry is the raw mcpServers config the runtime forwards to the SDK:
+#   stdio:  command + args (+ optional env)
+#   http:   type: http + url (+ optional headers)
+
+mcp_servers:
+  mcp_servers:
+  dice:
+    type: "http"
+    url: https://mcp.dice.com/mcp
+
+# ── secrets ────────────────────────────────────────────────────────────
+# Per-user credential fallback used ONLY when VAULT_ADDR is unset (no
+# real Vault available). When VAULT_ADDR is set this section is ignored
+# and credentials always come from Vault. Mirrors the Vault path
+# convention `secret/aviary/credentials/{sub}/{key_name}`.
+#
+# Top-level keys are user `sub` values (OIDC claim, or DEV_USER_SUB in
+# no-IdP mode). Inner keys match the credential names the runtime/
+# LiteLLM hooks look up (e.g. `anthropic-api-key`, `github-token`,
+# `jira-token`, `confluence-token`).
+
+secrets:
+  dev-user:
+    anthropic-api-key: sk-ant-...
+    github-token: ghp_...
+    jira-token: you@example.com:atlassian-api-token
+    confluence-token: you@example.com:atlassian-api-token

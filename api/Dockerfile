@@ -8,6 +8,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Node + npm/npx for probing stdio MCP servers declared in config.yaml.
+# Pulled from the official image so air-gapped builds don't need NodeSource.
+COPY --from=node:22-slim /usr/local/bin/node /usr/local/bin/node
+COPY --from=node:22-slim /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+ && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+
 # Copy workspace layout for dependency resolution (cached layer)
 COPY pyproject.toml uv.lock ./
 COPY shared/pyproject.toml ./shared/pyproject.toml

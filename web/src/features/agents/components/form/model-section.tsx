@@ -46,13 +46,13 @@ export function ModelSection({ data, setModelConfig }: ModelSectionProps) {
     };
   }, []);
 
-  // Backend list is derived dynamically from whatever LiteLLM reports
-  // so the form works with any provider the gateway is configured for.
+  // Backend list is derived dynamically from whatever the LLM gateway
+  // reports so the form works with any provider it's configured for.
   const availableBackends = Array.from(new Set(allModels.map((m) => m.backend)));
   const models = allModels.filter((m) => m.backend === data.model_config.backend);
 
   // Auto-pick a backend once the catalogue loads (either the current
-  // value is empty or it no longer matches anything in LiteLLM).
+  // value is empty or it no longer matches anything in the gateway).
   useEffect(() => {
     if (availableBackends.length === 0) return;
     if (availableBackends.includes(data.model_config.backend)) return;

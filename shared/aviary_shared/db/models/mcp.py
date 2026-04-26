@@ -1,10 +1,5 @@
-"""MCP models — per-agent tool bindings.
-
-LiteLLM owns the MCP server + tool catalog and all access control on them.
-Aviary only remembers which ``(server, tool)`` pairs each agent is bound to
-— stored as strings so the binding survives LiteLLM server re-registration
-as long as the name stays stable.
-"""
+"""Per-agent MCP tool bindings. The gateway owns the catalog; we just
+remember which ``(server, tool)`` strings each agent is bound to."""
 
 from __future__ import annotations
 
@@ -40,9 +35,7 @@ class McpAgentToolBinding(Base):
         ForeignKey("agents.id", ondelete="CASCADE"),
         nullable=False,
     )
-    # LiteLLM-exposed names. `server_name` is the alias under `mcp_servers:` in
-    # litellm config.yaml (or the `server_name` of a REST-registered server);
-    # `tool_name` is the backend tool name (no prefix).
+    # Gateway-exposed names; `tool_name` carries no prefix.
     server_name: Mapped[str] = mapped_column(String(255), nullable=False)
     tool_name: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(

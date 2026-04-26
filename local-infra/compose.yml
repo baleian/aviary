@@ -1,0 +1,273 @@
+name: aviary-local-infra
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: aviary
+      POSTGRES_USER: aviary
+      POSTGRES_PASSWORD: aviary
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aviary"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0
+    command:
+      - start-dev
+      - --import-realm
+      - --hostname=http://localhost:8080
+      - --hostname-backchannel-dynamic=true
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: aviary
+      KC_DB_PASSWORD: aviary
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - |
+          exec 3<>/dev/tcp/127.0.0.1/8080 || exit 1
+          printf 'GET /realms/aviary/.well-known/openid-configuration HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3
+          IFS= read -r line <&3
+          exec 3<&-
+          [[ "$$line" == *"200"* ]]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  vault:
+    image: hashicorp/vault:1.17
+    entrypoint: ["vault"]
+    command: ["server", "-config=/vault/config/vault.hcl"]
+    environment:
+      VAULT_ADDR: "http://127.0.0.1:8200"
+      SKIP_SETCAP: "true"
+    ports:
+      - "8200:8200"
+    cap_add:
+      - IPC_LOCK
+    volumes:
+      - vaultdata:/vault/data
+      - ./config/vault/vault.hcl:/vault/config/vault.hcl:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider --quiet 'http://127.0.0.1:8200/v1/sys/health?standbyok=true&sealedcode=200&uninitcode=200' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  vault-init:
+    image: hashicorp/vault:1.17
+    depends_on:
+      vault:
+        condition: service_healthy
+    environment:
+      VAULT_ADDR: "http://vault:8200"
+    volumes:
+      - vaultdata:/vault/data
+      - ./scripts/vault-init.sh:/usr/local/bin/vault-init.sh:ro
+    entrypoint: /bin/sh
+    command: ["/usr/local/bin/vault-init.sh"]
+
+  k8s:
+    profiles: ["k3s"]
+    image: rancher/k3s:v1.31.4-k3s1
+    command: server --disable=traefik --write-kubeconfig-mode=644 --node-name=aviary-node
+    hostname: aviary-node
+    privileged: true
+    environment:
+      K3S_TOKEN: aviary-dev-token
+    ports:
+      - "6443:6443"
+      - "30300:30300"   # aviary-env-default NodePort
+      - "30301:30301"   # aviary-env-custom NodePort
+    volumes:
+      - k8sdata:/var/lib/rancher/k3s
+      - workspacedata:/var/lib/aviary-workspace
+      - ./config/k3s/registries.yaml:/etc/rancher/k3s/registries.yaml
+
+  temporal:
+    image: temporalio/auto-setup:1.25
+    ports:
+      - "7233:7233"
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: aviary
+      POSTGRES_PWD: aviary
+      POSTGRES_SEEDS: postgres
+      DBNAME: temporal
+      VISIBILITY_DBNAME: temporal_visibility
+      DEFAULT_NAMESPACE: default
+      DEFAULT_NAMESPACE_RETENTION: 7d
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "temporal --address $(hostname):7233 operator cluster health | grep -q SERVING"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  temporal-ui:
+    image: temporalio/ui:2.30.1
+    ports:
+      - "8233:8080"
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+    depends_on:
+      temporal:
+        condition: service_healthy
+
+  mcp-jira:
+    build:
+      context: ./mcp-servers
+      args:
+        MCP_SERVER_NAME: jira
+    environment:
+      JIRA_BASE_URL: ${JIRA_BASE_URL:-https://your-corp.atlassian.net}
+      JIRA_API_VARIANT: ${JIRA_API_VARIANT:-cloud}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('localhost',8000),2); s.close()\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  mcp-confluence:
+    build:
+      context: ./mcp-servers
+      args:
+        MCP_SERVER_NAME: confluence
+    environment:
+      CONFLUENCE_BASE_URL: ${CONFLUENCE_BASE_URL:-https://your-corp.atlassian.net}
+      CONFLUENCE_API_VARIANT: ${CONFLUENCE_API_VARIANT:-cloud}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('localhost',8000),2); s.close()\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    ports:
+      - "8090:4000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config/litellm/config.yaml:/app/config.yaml
+      - ./config/litellm/patches/aviary_jwt_util.py:${LITELLM_SITE_PACKAGES:-/usr/lib/python3.13/site-packages}/aviary_jwt_util.py
+      - ./config/litellm/patches/aviary_vault_util.py:${LITELLM_SITE_PACKAGES:-/usr/lib/python3.13/site-packages}/aviary_vault_util.py
+      - ./config/litellm/patches/aviary_user_api_key.py:${LITELLM_SITE_PACKAGES:-/usr/lib/python3.13/site-packages}/aviary_user_api_key.py
+      - ./config/litellm/patches/aviary_mcp_credentials.py:${LITELLM_SITE_PACKAGES:-/usr/lib/python3.13/site-packages}/aviary_mcp_credentials.py
+      - ./config/litellm/patches/aviary_patches.pth:${LITELLM_SITE_PACKAGES:-/usr/lib/python3.13/site-packages}/aviary_patches.pth
+      - ./config/litellm/mcp-secret-injection.yaml:/app/aviary-mcp-secret-injection.yaml:ro
+      - ../config.yaml:/app/aviary-config.yaml:ro
+    environment:
+      LITELLM_MASTER_KEY: "sk-aviary-dev"
+      DATABASE_URL: "postgresql://aviary:aviary@postgres:5432/litellm"
+      UI_USERNAME: "${LITELLM_UI_USERNAME:-admin}"
+      UI_PASSWORD: "${LITELLM_UI_PASSWORD:-admin}"
+      AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID:-}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:-}"
+      AWS_REGION: "${AWS_REGION:-ap-northeast-2}"
+      VAULT_ADDR: "${VAULT_ADDR-}"
+      VAULT_TOKEN: "${VAULT_TOKEN-}"
+      AVIARY_CONFIG_PATH: "/app/aviary-config.yaml"
+      MCP_TOOL_PREFIX_SEPARATOR: "__"
+      AVIARY_MCP_INJECTION_CONFIG: "/app/aviary-mcp-secret-injection.yaml"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+      mcp-jira:
+        condition: service_healthy
+      mcp-confluence:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:4000/health/liveliness',timeout=3).status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.110.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    ports:
+      - "4317:4317"  # OTLP gRPC
+      - "4318:4318"  # OTLP HTTP
+      - "8889:8889"  # Prometheus exporter (scraped by prometheus)
+    volumes:
+      - ./config/otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
+
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheusdata:/prometheus
+    depends_on:
+      - otel-collector
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    ports:
+      - "3001:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-admin}"
+    volumes:
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+volumes:
+  pgdata:
+  k8sdata:
+  workspacedata:
+  vaultdata:
+  prometheusdata:
+  grafanadata:

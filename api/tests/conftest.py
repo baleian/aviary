@@ -178,26 +178,17 @@ app.dependency_overrides[get_db] = _override_get_db
 
 @pytest.fixture
 def user1_claims() -> TokenClaims:
-    return TokenClaims(
-        sub="user1-sub-001", email="user1@test.com",
-        display_name="User One", roles=[], groups=["engineering"],
-    )
+    return TokenClaims(sub="user1-sub-001", email="user1@test.com", display_name="User One")
 
 
 @pytest.fixture
 def user2_claims() -> TokenClaims:
-    return TokenClaims(
-        sub="user2-sub-002", email="user2@test.com",
-        display_name="User Two", roles=[], groups=["engineering", "product"],
-    )
+    return TokenClaims(sub="user2-sub-002", email="user2@test.com", display_name="User Two")
 
 
 @pytest.fixture
 def user3_claims() -> TokenClaims:
-    return TokenClaims(
-        sub="user3-sub-003", email="user3@test.com",
-        display_name="User Three", roles=[], groups=["data-science"],
-    )
+    return TokenClaims(sub="user3-sub-003", email="user3@test.com", display_name="User Three")
 
 
 # Map fake tokens to claims for multi-user tests
@@ -234,10 +225,9 @@ def _setup_auth_override():
         claims = _TOKEN_CLAIMS.get(token)
         return SessionData(
             user_external_id=claims.sub if claims else "unknown",
-            access_token=token,
             refresh_token="test-refresh",
-            id_token=None,
-            access_token_expires_at=0,
+            id_token=token,
+            expires_at=0,
         )
 
     app.dependency_overrides[get_current_user] = _mock_get_current_user

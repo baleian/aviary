@@ -1,11 +1,5 @@
-"""MCP catalog + agent-tool binding endpoints — thin relay over LiteLLM.
-
-All visibility decisions are LiteLLM's. This router opens an MCP session
-to ``/mcp`` with the caller's OIDC JWT and relays whatever LiteLLM
-returns. Aviary only stores per-agent bindings — strings pointing at
-``(server_name, tool_name)`` — which are validated against the same
-LiteLLM view at bind time.
-"""
+"""MCP catalog + agent-tool binding endpoints. Bindings are validated
+against the gateway view so we can't bind what the user can't see."""
 
 from __future__ import annotations
 
@@ -26,31 +20,17 @@ from app.schemas.mcp import (
     McpToolBindRequest,
     McpToolResponse,
 )
-from app.services import mcp_catalog
+from app.services import local_mcp_catalog, mcp_catalog
 
 router = APIRouter()
 
 TOOL_NAME_SEPARATOR = "__"
 
 
-# ---------------------------------------------------------------------------
-# Dependencies
-# ---------------------------------------------------------------------------
-
-
-async def user_token(
-    session: SessionData = Depends(get_session_data),
-) -> str:
-    """Raw OIDC access token for downstream calls to LiteLLM."""
-    return session.access_token
-
-
-_litellm_tools_for = mcp_catalog.fetch_tools
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+async def _all_tools(user_token: str, user_sub: str) -> list[dict]:
+    gateway = await mcp_catalog.fetch_tools(user_token, user_sub)
+    local = await local_mcp_catalog.fetch_all_tools()
+    return gateway + local
 
 
 def _split_qualified(qualified: str) -> tuple[str, str]:
@@ -63,7 +43,6 @@ def _split_qualified(qualified: str) -> tuple[str, str]:
 
 
 def _group_by_server(tools: list[dict]) -> dict[str, list[dict]]:
-    """Group LiteLLM-prefixed tools by their ``{server}__`` prefix."""
     grouped: dict[str, list[dict]] = {}
     for t in tools:
         name = t.get("name") or ""
@@ -80,7 +59,7 @@ def _tool_to_response(tool: dict, server_name: str) -> McpToolResponse:
     raw = prefixed[len(prefix):] if prefixed.startswith(prefix) else prefixed
     return McpToolResponse(
         id=prefixed,
-        server_id=server_name,  # server_name is the binding-stable identifier
+        server_id=server_name,
         server_name=server_name,
         name=raw,
         description=tool.get("description"),
@@ -89,14 +68,9 @@ def _tool_to_response(tool: dict, server_name: str) -> McpToolResponse:
     )
 
 
-# ---------------------------------------------------------------------------
-# Catalog — sourced entirely from LiteLLM via the caller's JWT
-# ---------------------------------------------------------------------------
-
-
 @router.get("/servers", response_model=list[McpServerResponse])
-async def list_servers(token: str = Depends(user_token)):
-    tools = await _litellm_tools_for(token)
+async def list_servers(session: SessionData = Depends(get_session_data)):
+    tools = await _all_tools(session.id_token or "", session.user_external_id)
     grouped = _group_by_server(tools)
     out = [
         McpServerResponse(
@@ -113,8 +87,11 @@ async def list_servers(token: str = Depends(user_token)):
 
 
 @router.get("/servers/{server_name}/tools", response_model=list[McpToolResponse])
-async def list_server_tools(server_name: str, token: str = Depends(user_token)):
-    tools = await _litellm_tools_for(token)
+async def list_server_tools(
+    server_name: str,
+    session: SessionData = Depends(get_session_data),
+):
+    tools = await _all_tools(session.id_token or "", session.user_external_id)
     grouped = _group_by_server(tools)
     if server_name not in grouped:
         raise HTTPException(status_code=404, detail="Server not found or not accessible")
@@ -124,9 +101,9 @@ async def list_server_tools(server_name: str, token: str = Depends(user_token)):
 @router.get("/tools/search", response_model=list[McpToolResponse])
 async def search_tools(
     q: str = Query(..., min_length=1),
-    token: str = Depends(user_token),
+    session: SessionData = Depends(get_session_data),
 ):
-    tools = await _litellm_tools_for(token)
+    tools = await _all_tools(session.id_token or "", session.user_external_id)
     q_lower = q.lower()
     out: list[McpToolResponse] = []
     for t in tools:
@@ -190,7 +167,7 @@ def _bindings_to_responses(
 async def list_agent_tools(
     agent_id: uuid.UUID,
     user: User = Depends(get_current_user),
-    token: str = Depends(user_token),
+    session: SessionData = Depends(get_session_data),
     db: AsyncSession = Depends(get_db),
 ):
     await _owned_agent(db, agent_id, user)
@@ -201,7 +178,7 @@ async def list_agent_tools(
             .order_by(McpAgentToolBinding.server_name, McpAgentToolBinding.tool_name)
         )
     ).scalars().all()
-    tools = await _litellm_tools_for(token)
+    tools = await _all_tools(session.id_token or "", session.user_external_id)
     by_name = {t["name"]: t for t in tools}
     return _bindings_to_responses(bindings, by_name)
 
@@ -211,13 +188,13 @@ async def set_agent_tools(
     agent_id: uuid.UUID,
     body: McpToolBindRequest,
     user: User = Depends(get_current_user),
-    token: str = Depends(user_token),
+    session: SessionData = Depends(get_session_data),
     db: AsyncSession = Depends(get_db),
 ):
     await _owned_agent(db, agent_id, user)
 
     # Fetch the user's view once, validate every requested tool against it.
-    tools = await _litellm_tools_for(token)
+    tools = await _all_tools(session.id_token or "", session.user_external_id)
     visible = {t["name"] for t in tools}
     parsed: list[tuple[str, str]] = []
     for qualified in body.tool_ids:
@@ -239,7 +216,7 @@ async def set_agent_tools(
         )
     await db.flush()
 
-    return await list_agent_tools(agent_id, user, token, db)
+    return await list_agent_tools(agent_id, user, session, db)
 
 
 @router.delete("/agents/{agent_id}/tools/{qualified_name}", status_code=204)

@@ -67,6 +67,7 @@ async def ask(
     workflow: Workflow,
     body: WorkflowAssistantRequest,
     user_token: str,
+    user_sub: str,
     session_id: str | None = None,
 ) -> WorkflowAssistantResponse:
     model_cfg = workflow.model_config_json or {}
@@ -78,7 +79,7 @@ async def ask(
     if isinstance(model_cfg.get("max_output_tokens"), int):
         runtime_model_config["max_output_tokens"] = model_cfg["max_output_tokens"]
 
-    catalog = await mcp_catalog.fetch_tools(user_token)
+    catalog = await mcp_catalog.fetch_tools(user_token, user_sub)
     system = _build_system_prompt(
         current_definition=body.current_definition, catalog=catalog,
     )
@@ -150,7 +151,7 @@ those workflows.
    conversational text. Be concise (1–4 short paragraphs max).
 2. **Edit** — when the user clearly asks you to change the workflow
    (add / update / remove nodes or edges), call the
-   `mcp__aviary_output__apply_workflow_plan` tool with a `plan_json`
+   `mcp__system__apply_workflow_plan` tool with a `plan_json`
    string. The UI renders an accept/deny card for the plan; don't apply
    anything yourself. A short text reply accompanying the tool call is
    fine (e.g. "Here's what I'll change:") but not required.

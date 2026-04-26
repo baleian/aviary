@@ -84,7 +84,7 @@ async def merge_a2a_events(session_id: str, blocks: list[dict]) -> None:
     for block in list(blocks):
         if (
             block.get("type") == "tool_call"
-            and block.get("name", "").startswith("mcp__a2a__ask_")
+            and block.get("name", "").startswith("mcp__system__a2a_")
         ):
             tool_use_id = block.get("tool_use_id")
             if not tool_use_id:

@@ -1,13 +1,15 @@
 """Identity resolution for supervisor endpoints.
 
-Two authentication paths:
-  1. User path — `Authorization: Bearer <JWT>`. Validated against Keycloak;
-     the JWT is forwarded to the runtime so LiteLLM can inject the user's
-     per-backend API key.
-  2. Worker path — `X-Aviary-Worker-Key: <shared secret>` + body field
-     `on_behalf_of_sub`. Used by the Temporal workflow worker for runs that
-     outlive any interactive browser session (deployed cron / webhook
-     triggers, long-running workflows).
+Three auth paths, in priority order:
+  1. Worker — `X-Aviary-Worker-Key` + body `on_behalf_of_sub`. Works
+     regardless of IdP configuration.
+  2. Dev    — fires unconditionally when `OIDC_ISSUER` is unset (after
+     the worker check). Caller is treated as `dev_user_sub`. The dev
+     path is **gated solely by the env**, not by request shape — any
+     production deployment must set `OIDC_ISSUER`.
+  3. User   — when IdP is enabled, every non-worker request must carry a
+     valid `Authorization: Bearer <JWT>`. Missing / malformed / invalid
+     tokens are 401.
 """
 
 from __future__ import annotations
@@ -17,15 +19,30 @@ from dataclasses import dataclass
 
 from fastapi import HTTPException, Request
 
-from app.auth.oidc import TokenClaims, validate_token
+from app.auth.oidc import TokenClaims, dev_user_sub, idp_enabled, validate_token
 from app.config import settings
+
+_BEARER_PREFIX = "bearer "
 
 
 @dataclass
 class IdentityContext:
     sub: str
-    user_token: str | None  # None on worker path — no JWT to forward
-    via: str                # "user" | "worker"
+    user_token: str | None
+    via: str  # "user" | "worker" | "dev"
+
+
+def _dev_identity() -> IdentityContext:
+    return IdentityContext(sub=dev_user_sub(), user_token=None, via="dev")
+
+
+def _extract_bearer(auth_header: str) -> str:
+    if not auth_header.lower().startswith(_BEARER_PREFIX):
+        raise HTTPException(status_code=401, detail="Invalid Authorization header")
+    token = auth_header[len(_BEARER_PREFIX):].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Empty Bearer token")
+    return token
 
 
 async def resolve_identity(request: Request, body: dict) -> IdentityContext:
@@ -41,12 +58,13 @@ async def resolve_identity(request: Request, body: dict) -> IdentityContext:
             )
         return IdentityContext(sub=sub, user_token=None, via="worker")
 
+    if not idp_enabled():
+        return _dev_identity()
+
     auth_header = request.headers.get("authorization", "")
-    if not auth_header.lower().startswith("bearer "):
-        raise HTTPException(
-            status_code=401, detail="Missing or invalid Authorization header"
-        )
-    token = auth_header.split(None, 1)[1].strip()
+    if not auth_header:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    token = _extract_bearer(auth_header)
     try:
         claims = await validate_token(token)
     except ValueError as exc:
@@ -54,15 +72,13 @@ async def resolve_identity(request: Request, body: dict) -> IdentityContext:
     return IdentityContext(sub=claims.sub, user_token=token, via="user")
 
 
-# ── Legacy helpers retained for non-message endpoints that still use a plain
-# JWT dependency (e.g. anything without a request body) ─────────────────────
-
 async def get_current_user(request: Request) -> TokenClaims:
+    if not idp_enabled():
+        return await validate_token("")
     auth_header = request.headers.get("authorization", "")
-    if not auth_header.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
-
-    token = auth_header.split(None, 1)[1].strip()
+    if not auth_header:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    token = _extract_bearer(auth_header)
     try:
         return await validate_token(token)
     except ValueError as exc:
@@ -70,7 +86,4 @@ async def get_current_user(request: Request) -> TokenClaims:
 
 
 def extract_bearer_token(request: Request) -> str:
-    auth_header = request.headers.get("authorization", "")
-    if not auth_header.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
-    return auth_header.split(None, 1)[1].strip()
+    return _extract_bearer(request.headers.get("authorization", ""))
