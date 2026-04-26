@@ -25,17 +25,10 @@ import {
   workflowArtifactPath,
 } from "./constants.js";
 
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(`Required environment variable ${name} is not set`);
-  }
-  return value;
-}
-
-const LLM_GATEWAY_URL = requireEnv("LLM_GATEWAY_URL");
-const LLM_GATEWAY_API_KEY = requireEnv("LLM_GATEWAY_API_KEY");
-const MCP_GATEWAY_URL = requireEnv("MCP_GATEWAY_URL");
+// Unset → direct mode: supervisor injects per-model api_base/api_key.
+const LLM_GATEWAY_URL = process.env.LLM_GATEWAY_URL || undefined;
+const LLM_GATEWAY_API_KEY = process.env.LLM_GATEWAY_API_KEY || undefined;
+const MCP_GATEWAY_URL = process.env.MCP_GATEWAY_URL || undefined;
 
 // Force SDK to use our bwrap wrapper instead of its bundled binary.
 const CLAUDE_CLI_PATH = "/usr/local/bin/claude";
@@ -61,6 +54,8 @@ interface ModelConfig {
   model?: string;
   backend?: string;
   max_output_tokens?: number;
+  api_base?: string;
+  api_key?: string;
 }
 
 interface WorkflowRunRef {
@@ -130,6 +125,11 @@ function buildMcpServers(
 
   const allowed = extractGatewayAllowedTools(agentConfig.tools);
   if (allowed.length > 0) {
+    if (!MCP_GATEWAY_URL) {
+      throw new Error(
+        "Agent has gateway-bound MCP tools but MCP_GATEWAY_URL is not set",
+      );
+    }
     const mcpHeaders: Record<string, string> = {
       "X-Aviary-Allowed-Tools": allowed.join(","),
     };
@@ -418,10 +418,23 @@ export async function* processMessage(
   if (!mc.model || !mc.backend) {
     throw new Error("agent_config.model_config.model and .backend are required");
   }
-  // Backend is the gateway's model-name prefix. If the stored model
-  // already includes a prefix we use it verbatim, otherwise we join
-  // backend + model. No allow-list — the gateway owns that validation.
-  const resolvedModel = mc.model.includes("/") ? mc.model : `${mc.backend}/${mc.model}`;
+  const directBase = mc.api_base;
+  const directKey = mc.api_key;
+  const useDirectMode = directBase !== undefined || directKey !== undefined;
+  // Gateway mode joins backend+model so LiteLLM can route; direct mode passes
+  // the bare name the upstream provider expects.
+  const resolvedModel = useDirectMode
+    ? mc.model
+    : mc.model.includes("/")
+      ? mc.model
+      : `${mc.backend}/${mc.model}`;
+  const anthropicBaseUrl = directBase ?? LLM_GATEWAY_URL;
+  const anthropicApiKey = directKey ?? LLM_GATEWAY_API_KEY;
+  if (!anthropicApiKey) {
+    throw new Error(
+      "No API key available — set LLM_GATEWAY_API_KEY or provide model_config.api_key",
+    );
+  }
   const canResume = hasSessionHistory(claudeDir, sessionId);
 
   // Workflow-only setup: pre-copy upstream artifacts into the session's
@@ -452,8 +465,9 @@ export async function* processMessage(
   ].filter(Boolean).join("\n");
 
   const env: Record<string, string> = {
-    ANTHROPIC_BASE_URL: LLM_GATEWAY_URL,
-    ANTHROPIC_API_KEY: LLM_GATEWAY_API_KEY,
+    // Unset → SDK falls back to its default (api.anthropic.com).
+    ...(anthropicBaseUrl ? { ANTHROPIC_BASE_URL: anthropicBaseUrl } : {}),
+    ANTHROPIC_API_KEY: anthropicApiKey,
     ...(customHeaderLines ? { ANTHROPIC_CUSTOM_HEADERS: customHeaderLines } : {}),
     SESSION_WORKSPACE: shared,
     SESSION_CLAUDE_DIR: claudeDir,

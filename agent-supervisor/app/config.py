@@ -30,7 +30,15 @@ class Settings(BaseSettings):
     # validating a Bearer JWT. Unset in prod disables the worker path.
     worker_shared_secret: str | None = None
 
+    # Unset → direct mode: resolve api_base/api_key from config.yaml.
+    llm_gateway_url: str | None = None
+    llm_backends_config_path: str = "/workspace/config.yaml"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+
+    @property
+    def direct_llm_mode(self) -> bool:
+        return not self.llm_gateway_url
 
     @property
     def idp_enabled(self) -> bool:

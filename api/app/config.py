@@ -25,10 +25,12 @@ class Settings(BaseSettings):
     agent_supervisor_url: str
 
     # Split so prod can point inference and MCP at different services.
-    llm_gateway_url: str
-    llm_gateway_api_key: str
-    mcp_gateway_url: str
-    mcp_gateway_api_key: str
+    # Unset → direct mode (model catalog from config.yaml, MCP disabled).
+    llm_gateway_url: str | None = None
+    llm_gateway_api_key: str | None = None
+    mcp_gateway_url: str | None = None
+    mcp_gateway_api_key: str | None = None
+    llm_backends_config_path: str = "/workspace/config.yaml"
 
     # Temporal — workflow orchestration
     temporal_host: str = "temporal:7233"
@@ -40,6 +42,10 @@ class Settings(BaseSettings):
     @property
     def idp_enabled(self) -> bool:
         return bool(self.oidc_issuer)
+
+    @property
+    def direct_llm_mode(self) -> bool:
+        return not self.llm_gateway_url
 
 
 settings = Settings()

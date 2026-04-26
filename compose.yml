@@ -32,14 +32,16 @@ services:
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
       DEV_USER_SUB: ${DEV_USER_SUB:-dev-user}
       AGENT_SUPERVISOR_URL: ${AGENT_SUPERVISOR_URL:-http://supervisor:9000}
-      LLM_GATEWAY_URL: ${LLM_GATEWAY_URL:-http://host.docker.internal:8090}
-      LLM_GATEWAY_API_KEY: ${LLM_GATEWAY_API_KEY:-sk-aviary-dev}
-      MCP_GATEWAY_URL: ${MCP_GATEWAY_URL:-http://host.docker.internal:8090}
-      MCP_GATEWAY_API_KEY: ${MCP_GATEWAY_API_KEY:-sk-aviary-dev}
+      LLM_GATEWAY_URL: ${LLM_GATEWAY_URL:-}
+      LLM_GATEWAY_API_KEY: ${LLM_GATEWAY_API_KEY:-}
+      MCP_GATEWAY_URL: ${MCP_GATEWAY_URL:-}
+      MCP_GATEWAY_API_KEY: ${MCP_GATEWAY_API_KEY:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:3000"]}
       TEMPORAL_HOST: ${TEMPORAL_HOST:-host.docker.internal:7233}
       TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
       TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-aviary-workflows}
+    volumes:
+      - ./config.yaml:/workspace/config.yaml:ro
     depends_on:
       db-migrate:
         condition: service_completed_successfully
@@ -93,6 +95,9 @@ services:
       VAULT_ADDR: ${VAULT_ADDR:-http://host.docker.internal:8200}
       VAULT_TOKEN: ${VAULT_TOKEN:-dev-root-token}
       WORKER_SHARED_SECRET: ${WORKER_SHARED_SECRET:-dev-worker-secret-change-me}
+      LLM_GATEWAY_URL: ${LLM_GATEWAY_URL:-}
+    volumes:
+      - ./config.yaml:/workspace/config.yaml:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:9000/v1/health || exit 1"]
       interval: 10s
