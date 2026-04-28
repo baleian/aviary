@@ -1,2 +1,25 @@
+namespace: platform
+
+replicas: 1
+
 image:
+  repository: aviary-workflow-worker
+  tag: latest
   pullPolicy: Never
+
+hostGatewayIP: ""
+
+config:
+  databaseURL: "postgresql+asyncpg://aviary:aviary@postgres.platform.svc.cluster.local:5432/aviary"
+  redisURL: "redis://redis.platform.svc.cluster.local:6379/0"
+  temporalHost: "temporal.platform.svc.cluster.local:7233"
+  temporalNamespace: "default"
+  temporalTaskQueue: "aviary-workflows"
+  supervisorURL: "http://aviary-supervisor.platform.svc.cluster.local:9000"
+
+secrets:
+  workerSharedSecret: "dev-worker-secret-change-me"
+
+resources:
+  requests: { cpu: 100m, memory: 256Mi }
+  limits:   { cpu: 1,    memory: 1Gi }

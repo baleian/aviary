@@ -1,2 +1,31 @@
+namespace: platform
+
+replicas: 1
+
 image:
+  repository: aviary-admin
+  tag: latest
   pullPolicy: Never
+
+hostGatewayIP: ""
+
+service:
+  type: ClusterIP
+  port: 8001
+  nodePort: 31001
+
+config:
+  databaseURL: "postgresql+asyncpg://aviary:aviary@postgres.platform.svc.cluster.local:5432/aviary"
+
+resources:
+  requests: { cpu: 50m, memory: 128Mi }
+  limits:   { cpu: 1,   memory: 512Mi }
+
+livenessProbe:
+  httpGet: { path: /health, port: 8001 }
+  initialDelaySeconds: 5
+  periodSeconds: 30
+readinessProbe:
+  httpGet: { path: /health, port: 8001 }
+  initialDelaySeconds: 3
+  periodSeconds: 10

@@ -1,9 +1,11 @@
-# Customizable runtime environment — example companion to values-local.yaml.
-# Ships with a thin layered image (see runtime/Dockerfile.custom) and
-# unrestricted egress so agents can reach any external service. Copy this
-# file + the Dockerfile.custom and adjust to provision additional envs.
+# Self-contained local values for a *second* runtime environment — worked
+# example of a per-env customization. Ships with a thin layered image
+# (see runtime/Dockerfile.custom). Copy + adjust to provision more envs.
 
 name: custom
+
+namespace: agents
+platformNamespace: platform
 
 replicas: 1
 
@@ -13,16 +15,52 @@ image:
   pullPolicy: Never
 
 runtime:
+  port: 3000
+  llmGatewayURL: "http://litellm.platform.svc:4000"
+  llmGatewayAPIKey: "sk-aviary-dev"
+  mcpGatewayURL: "http://litellm.platform.svc:4000"
+  mcpGatewayAPIKey: "sk-aviary-dev"
+  aviaryAPIURL: "http://host.k8s.internal:8000/api"
+  supervisorURL: "http://supervisor.platform.svc:9000"
   privileged: true
 
 # Different nodePort so it doesn't clash with the default environment (30300).
 service:
+  type: NodePort
   nodePort: 30301
 
+hostGatewayIP: ""
+
+resources:
+  requests:
+    cpu: "1"
+    memory: "1Gi"
+  limits:
+    cpu: "4"
+    memory: "4Gi"
+
+pvc:
+  mountPath: /workspace-root
+  claimName: aviary-shared-workspace
+
 # Allow all outbound traffic. K8s evaluates egress as a disjunction across
-# NetworkPolicies, so this unions with the platform baseline — effectively
-# "everything, including the baseline-allowed platform services."
+# NetworkPolicies, so this unions with the platform baseline.
 extraEgress:
   - to:
       - ipBlock:
           cidr: 0.0.0.0/0
+
+terminationGracePeriodSeconds: 600
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 3000
+  initialDelaySeconds: 5
+  periodSeconds: 30
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 3000
+  initialDelaySeconds: 3

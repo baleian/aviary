@@ -1,14 +1,47 @@
+namespace: platform
+
+replicas: 1
+
 image:
+  repository: aviary-supervisor
+  tag: latest
   pullPolicy: Never
 
+hostGatewayIP: ""
+
+service:
+  type: ClusterIP
+  port: 9000
+
 config:
+  redisURL: "redis://redis.platform.svc.cluster.local:6379/0"
+  defaultRuntimeEndpoint: "http://aviary-env-default.agents.svc.cluster.local:3000"
   oidcIssuer: "http://localhost:8080/realms/aviary"
   oidcInternalIssuer: "http://host.k8s.internal:8080/realms/aviary"
+  devUserSub: "dev-user"
   llmGatewayURL: "http://litellm.platform.svc.cluster.local:4000"
   vaultAddr: "http://vault.platform.svc.cluster.local:8200"
   otelExporterOtlpEndpoint: "http://otel-collector.platform.svc.cluster.local:4318"
   otelServiceName: "aviary-supervisor"
 
 secrets:
-  llmGatewayAPIKey: "sk-aviary-dev"
+  workerSharedSecret: "dev-worker-secret-change-me"
   vaultToken: "dev-root-token"
+  llmGatewayAPIKey: "sk-aviary-dev"
+
+configFile:
+  enabled: true
+  configMapName: aviary-config
+
+resources:
+  requests: { cpu: 100m, memory: 256Mi }
+  limits:   { cpu: 2,    memory: 1Gi }
+
+livenessProbe:
+  httpGet: { path: /v1/health, port: 9000 }
+  initialDelaySeconds: 10
+  periodSeconds: 30
+readinessProbe:
+  httpGet: { path: /v1/health, port: 9000 }
+  initialDelaySeconds: 3
+  periodSeconds: 10

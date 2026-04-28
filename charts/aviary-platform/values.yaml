@@ -1,7 +1,7 @@
 platformNamespace: platform
 agentsNamespace: agents
 
-# Docker-compose bridge IP (local) or VPC NAT IP (prod) — resolved at render time.
+# VPC NAT IP — resolved at render time.
 hostGatewayIP: ""
 
 baselineEgress:
@@ -12,22 +12,14 @@ baselineEgress:
     - 8000   # API
     - 9000   # Supervisor (A2A)
 
-# Local-only: Service + Endpoints proxying compose/local-infra services into the
-# cluster (postgres, redis, temporal, keycloak, vault, litellm). In prod these
-# resolve to managed endpoints — disable and inject via Values/Secrets.
+# In prod, postgres/redis/temporal/keycloak/vault/litellm resolve to
+# managed endpoints injected via Values/Secrets — no compose proxy.
 externalServices:
   enabled: false
-  services:
-    - { name: postgres, clusterPort: 5432, hostPort: 5432 }
-    - { name: redis,    clusterPort: 6379, hostPort: 6379 }
-    - { name: keycloak, clusterPort: 8080, hostPort: 8080 }
-    - { name: vault,    clusterPort: 8200, hostPort: 8200 }
-    - { name: temporal, clusterPort: 7233, hostPort: 7233 }
-    - { name: litellm,  clusterPort: 4000, hostPort: 8090 }
-    - { name: otel-collector, clusterPort: 4318, hostPort: 4318 }
+  services: []
 
 imageWarmer:
-  enabled: false
+  enabled: true
   image: aviary-runtime:latest
   pauseImage: registry.k8s.io/pause:3.9
 
@@ -36,7 +28,6 @@ sharedWorkspace:
   enabled: true
   name: aviary-shared-workspace
   size: 50Gi
-  # K3s' default local-path is RWO, so local pre-provisions a hostPath PV bound
-  # via storageClassName: manual. Prod swaps to an RWX CSI (EFS).
-  storageClassName: manual
+  # EFS dynamic provisioning — no static PV needed.
+  storageClassName: efs-sc
   hostPath: ""

@@ -25,18 +25,17 @@ config:
   otelExporterOtlpEndpoint: ""
   otelServiceName: ""
 
-secrets:
-  workerSharedSecret: "dev-worker-secret-change-me"
-  vaultToken: ""
-  llmGatewayAPIKey: ""
+# In prod the rendered Secret is replaced via Sealed/ExternalSecrets.
+secrets: {}
 
+# Disable in prod — values + ExternalSecrets are the source of truth there.
 configFile:
-  enabled: true
+  enabled: false
   configMapName: aviary-config
 
 resources:
-  requests: { cpu: 100m, memory: 256Mi }
-  limits:   { cpu: 2,    memory: 1Gi }
+  requests: { cpu: 500m, memory: 512Mi }
+  limits:   { cpu: 2,    memory: 2Gi }
 
 livenessProbe:
   httpGet: { path: /v1/health, port: 9000 }

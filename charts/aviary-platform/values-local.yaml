@@ -1,8 +1,41 @@
+platformNamespace: platform
+agentsNamespace: agents
+
+# Docker-compose bridge IP — resolved at render time.
+hostGatewayIP: ""
+
+baselineEgress:
+  enabled: true
+  allowHostGatewayPorts:
+    - 8090   # LiteLLM (inference + aggregated MCP)
+  allowPlatformPorts:
+    - 8000   # API
+    - 9000   # Supervisor (A2A)
+
+# Local: Service + Endpoints proxying compose/local-infra services into the
+# cluster (postgres, redis, temporal, keycloak, vault, litellm).
 externalServices:
   enabled: true
+  services:
+    - { name: postgres, clusterPort: 5432, hostPort: 5432 }
+    - { name: redis,    clusterPort: 6379, hostPort: 6379 }
+    - { name: keycloak, clusterPort: 8080, hostPort: 8080 }
+    - { name: vault,    clusterPort: 8200, hostPort: 8200 }
+    - { name: temporal, clusterPort: 7233, hostPort: 7233 }
+    - { name: litellm,  clusterPort: 4000, hostPort: 8090 }
+    - { name: otel-collector, clusterPort: 4318, hostPort: 4318 }
 
 imageWarmer:
   enabled: true
+  image: aviary-runtime:latest
+  pauseImage: registry.k8s.io/pause:3.9
 
+# Single RWX PVC mounted by every runtime env so sessions migrate intact.
 sharedWorkspace:
+  enabled: true
+  name: aviary-shared-workspace
+  size: 50Gi
+  # K3s' default local-path is RWO, so local pre-provisions a hostPath PV bound
+  # via storageClassName: manual.
+  storageClassName: manual
   hostPath: /var/lib/aviary-workspace

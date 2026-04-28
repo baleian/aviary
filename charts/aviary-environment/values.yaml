@@ -1,8 +1,6 @@
-# Default values — overridden per env by values-local.yaml / values-prod.yaml
-# or per release via --set/--values. One release = one environment.
+# One release = one runtime environment. Self-contained prod values for
+# the default environment; copy + tweak for additional envs.
 
-# Env identity. release name defaults to "aviary-env-<name>"; all resources
-# derive from this.
 name: default
 
 namespace: agents
@@ -10,69 +8,51 @@ platformNamespace: platform
 
 # Static replica count. Scale-to-zero intentionally unsupported — environments
 # are always on. If scaling becomes needed, add an HPA/KEDA resource here.
-replicas: 1
+replicas: 2
 
 image:
-  repository: aviary-runtime
-  tag: latest
-  pullPolicy: Never
+  # CI build / release pipeline supplies the tag.
+  repository: ""
+  tag: ""
+  pullPolicy: IfNotPresent
 
 runtime:
   port: 3000
-  # Same backend locally; prod can split inference and MCP onto separate services.
-  llmGatewayURL: "http://litellm.platform.svc:4000"
-  llmGatewayAPIKey: "sk-aviary-dev"
-  mcpGatewayURL: "http://litellm.platform.svc:4000"
-  mcpGatewayAPIKey: "sk-aviary-dev"
-  aviaryAPIURL: "http://host.k8s.internal:8000/api"
-  # Supervisor URL — used by the runtime's A2A tool server to invoke sub-agents.
-  supervisorURL: "http://supervisor.platform.svc:9000"
-  # Privileged locally (K3s-in-Docker on LinuxKit needs SYS_ADMIN for bwrap).
-  # Prod should switch to CAP_SYS_ADMIN via a PSA-compliant securityContext.
+  # Prod typically splits inference and MCP onto separate services.
+  llmGatewayURL: ""
+  llmGatewayAPIKey: ""
+  mcpGatewayURL: ""
+  mcpGatewayAPIKey: ""
+  aviaryAPIURL: "http://aviary-api.platform.svc.cluster.local:8000/api"
+  supervisorURL: "http://aviary-supervisor.platform.svc.cluster.local:9000"
+  # Switch to a PSA-compliant securityContext + CAP_SYS_ADMIN for bwrap.
   privileged: false
 
-# How the supervisor (running outside k3s locally) reaches this env's runtime
-# pods. Local: NodePort on the k3s container — supervisor hits `http://k8s:<port>`.
-# Prod: ClusterIP (supervisor runs in-cluster or the env is behind an LB).
+# Supervisor runs in-cluster (or the env is behind an LB) — ClusterIP suffices.
 service:
-  type: NodePort
-  # Fix per-env. Override for additional environments so they don't clash.
+  type: ClusterIP
   nodePort: 30300
 
-# Host IP seen from inside the cluster — used for the runtime's hostAliases
-# entry so it can reach docker-compose services via host.k8s.internal.
+# Host IP seen from inside the cluster — unused in prod.
 hostGatewayIP: ""
 
 resources:
   requests:
     cpu: "1"
-    memory: "1Gi"
+    memory: "2Gi"
   limits:
     cpu: "4"
-    memory: "4Gi"
+    memory: "8Gi"
 
 pvc:
-  # Mount point of the shared workspace PVC inside each runtime pod.
   mountPath: /workspace-root
-  # PVC is provisioned by aviary-platform (see sharedWorkspace.*).
-  # Every env mounts the same claim so workspace state — Claude CLI history,
-  # shared files, per-(agent,session) venv — is preserved across env switches.
   claimName: aviary-shared-workspace
 
 # Extra NetworkPolicy egress rules for this environment's pods. Empty list
 # = baseline only. Rules are raw networking.k8s.io/v1 egress fragments.
-#
-# Example:
-#   extraEgress:
-#     - to:
-#         - ipBlock:
-#             cidr: 140.82.112.0/20
-#       ports:
-#         - { port: 443, protocol: TCP }
 extraEgress: []
 
-# Termination grace period — long so in-flight sessions can drain. Matches
-# the runtime's gracefulShutdown default (570s + 30s buffer).
+# Termination grace period — long so in-flight sessions can drain.
 terminationGracePeriodSeconds: 600
 
 livenessProbe:

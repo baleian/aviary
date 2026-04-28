@@ -1,6 +1,6 @@
 namespace: platform
 
-replicas: 1
+replicas: 2
 
 image:
   repository: aviary-api
@@ -28,21 +28,15 @@ config:
   mcpGatewayURL: ""
   vaultAddr: ""
   devUserSub: "dev-user"
-  cookieSecure: "false"
+  cookieSecure: "true"
   corsOrigins: '["http://localhost"]'
 
-# Empty string = unset. In prod, override the rendered Secret via ExternalSecret/SOPS.
-secrets:
-  oidcClientSecret: ""
-  llmGatewayAPIKey: ""
-  mcpGatewayAPIKey: ""
-  vaultToken: ""
-  workerSharedSecret: "dev-worker-secret-change-me"
+# In prod the rendered Secret is replaced via Sealed/ExternalSecrets.
+secrets: {}
 
-# Mounts the project root config.yaml so direct-LLM mode and secret fallback
-# stay parity with compose. Disable in prod (use Values + ExternalSecrets).
+# Disable in prod — values + ExternalSecrets are the source of truth there.
 configFile:
-  enabled: true
+  enabled: false
   configMapName: aviary-config
 
 # Helm pre-install/pre-upgrade hook running alembic upgrade head.
@@ -54,8 +48,8 @@ migrate:
     pullPolicy: IfNotPresent
 
 resources:
-  requests: { cpu: 100m, memory: 256Mi }
-  limits:   { cpu: 2,    memory: 1Gi }
+  requests: { cpu: 500m, memory: 512Mi }
+  limits:   { cpu: 2,    memory: 2Gi }
 
 livenessProbe:
   httpGet: { path: /api/health, port: 8000 }

@@ -1,14 +1,65 @@
+# Self-contained local values for the default runtime environment.
+
 name: default
+
+namespace: agents
+platformNamespace: platform
 
 replicas: 1
 
 image:
+  repository: aviary-runtime
+  tag: latest
   pullPolicy: Never
 
 runtime:
+  port: 3000
+  llmGatewayURL: "http://litellm.platform.svc:4000"
+  llmGatewayAPIKey: "sk-aviary-dev"
+  mcpGatewayURL: "http://litellm.platform.svc:4000"
+  mcpGatewayAPIKey: "sk-aviary-dev"
+  aviaryAPIURL: "http://host.k8s.internal:8000/api"
+  supervisorURL: "http://supervisor.platform.svc:9000"
+  # K3s-in-Docker on LinuxKit needs SYS_ADMIN for bwrap.
   privileged: true
 
+# Supervisor runs outside k3s locally — NodePort lets it reach pods via
+# `http://k8s:<port>`.
+service:
+  type: NodePort
+  nodePort: 30300
+
+hostGatewayIP: ""
+
+resources:
+  requests:
+    cpu: "1"
+    memory: "1Gi"
+  limits:
+    cpu: "4"
+    memory: "4Gi"
+
+pvc:
+  mountPath: /workspace-root
+  claimName: aviary-shared-workspace
+
+# Allow all outbound traffic during dev.
 extraEgress:
   - to:
       - ipBlock:
           cidr: 0.0.0.0/0
+
+terminationGracePeriodSeconds: 600
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 3000
+  initialDelaySeconds: 5
+  periodSeconds: 30
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 3000
+  initialDelaySeconds: 3

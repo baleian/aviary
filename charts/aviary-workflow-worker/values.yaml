@@ -1,6 +1,6 @@
 namespace: platform
 
-replicas: 1
+replicas: 2
 
 image:
   repository: aviary-workflow-worker
@@ -17,9 +17,9 @@ config:
   temporalTaskQueue: "aviary-workflows"
   supervisorURL: "http://aviary-supervisor.platform.svc.cluster.local:9000"
 
-secrets:
-  workerSharedSecret: "dev-worker-secret-change-me"
+# In prod the rendered Secret is replaced via Sealed/ExternalSecrets.
+secrets: {}
 
 resources:
-  requests: { cpu: 100m, memory: 256Mi }
-  limits:   { cpu: 1,    memory: 1Gi }
+  requests: { cpu: 200m, memory: 512Mi }
+  limits:   { cpu: 2,    memory: 2Gi }
