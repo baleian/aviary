@@ -1,80 +1,6 @@
 name: aviary
 
 services:
-  postgres:
-    image: postgres:16
-    environment:
-      POSTGRES_DB: aviary
-      POSTGRES_USER: aviary
-      POSTGRES_PASSWORD: aviary
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U aviary"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  temporal:
-    image: temporalio/auto-setup:1.25
-    ports:
-      - "7233:7233"
-    environment:
-      DB: postgres12
-      DB_PORT: "5432"
-      POSTGRES_USER: aviary
-      POSTGRES_PWD: aviary
-      POSTGRES_SEEDS: postgres
-      DBNAME: temporal
-      VISIBILITY_DBNAME: temporal_visibility
-      DEFAULT_NAMESPACE: default
-      DEFAULT_NAMESPACE_RETENTION: 7d
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "temporal --address $(hostname):7233 operator cluster health | grep -q SERVING"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 20s
-
-  temporal-ui:
-    image: temporalio/ui:2.30.1
-    ports:
-      - "8233:8080"
-    environment:
-      TEMPORAL_ADDRESS: temporal:7233
-      TEMPORAL_CORS_ORIGINS: http://localhost:3000
-    depends_on:
-      temporal:
-        condition: service_healthy
-
-  db-migrate:
-    build:
-      context: ./shared
-      args:
-        UV_INDEX_URL: ${UV_INDEX_URL:-}
-    environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://aviary:aviary@postgres:5432/aviary}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: "no"
-
   api:
     build:
       context: .
@@ -87,8 +13,8 @@ services:
       - "8000:8000"
     environment:
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://aviary:aviary@postgres:5432/aviary}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://aviary:aviary@host.docker.internal:5432/aviary}
+      REDIS_URL: ${REDIS_URL:-redis://host.docker.internal:6379/0}
       OIDC_ISSUER: ${OIDC_ISSUER:-}
       OIDC_INTERNAL_ISSUER: ${OIDC_INTERNAL_ISSUER:-}
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
@@ -100,7 +26,7 @@ services:
       MCP_GATEWAY_URL: ${MCP_GATEWAY_URL:-}
       MCP_GATEWAY_API_KEY: ${MCP_GATEWAY_API_KEY:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:3000"]}
-      TEMPORAL_HOST: ${TEMPORAL_HOST:-temporal:7233}
+      TEMPORAL_HOST: ${TEMPORAL_HOST:-host.docker.internal:7233}
       TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
       TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-aviary-workflows}
       VAULT_ADDR: ${VAULT_ADDR-}
@@ -108,11 +34,6 @@ services:
     volumes:
       - ./config.yaml:/workspace/config.yaml:ro
       - ./local-infra/config/litellm/mcp-secret-injection.yaml:/workspace/mcp-secret-injection.yaml:ro
-    depends_on:
-      db-migrate:
-        condition: service_completed_successfully
-      redis:
-        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/api/health || exit 1"]
       interval: 10s
@@ -131,10 +52,7 @@ services:
     ports:
       - "8001:8001"
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://aviary:aviary@postgres:5432/aviary}
-    depends_on:
-      db-migrate:
-        condition: service_completed_successfully
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://aviary:aviary@host.docker.internal:5432/aviary}
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8001/health || exit 1"]
       interval: 10s
@@ -153,7 +71,7 @@ services:
     ports:
       - "9000:9000"
     environment:
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      REDIS_URL: ${REDIS_URL:-redis://host.docker.internal:6379/0}
       DEFAULT_RUNTIME_ENDPOINT: ${DEFAULT_RUNTIME_ENDPOINT:-http://runtime:3000}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-}
@@ -166,9 +84,6 @@ services:
       LLM_GATEWAY_URL: ${LLM_GATEWAY_URL:-}
     volumes:
       - ./config.yaml:/workspace/config.yaml:ro
-    depends_on:
-      redis:
-        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:9000/v1/health || exit 1"]
       interval: 10s
@@ -185,18 +100,13 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      TEMPORAL_HOST: ${TEMPORAL_HOST:-temporal:7233}
+      TEMPORAL_HOST: ${TEMPORAL_HOST:-host.docker.internal:7233}
       TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
       TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-aviary-workflows}
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://aviary:aviary@postgres:5432/aviary}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://aviary:aviary@host.docker.internal:5432/aviary}
+      REDIS_URL: ${REDIS_URL:-redis://host.docker.internal:6379/0}
       SUPERVISOR_URL: ${SUPERVISOR_URL:-http://supervisor:9000}
       WORKER_SHARED_SECRET: ${WORKER_SHARED_SECRET:-dev-worker-secret-change-me}
-    depends_on:
-      db-migrate:
-        condition: service_completed_successfully
-      redis:
-        condition: service_healthy
 
   runtime:
     build:
@@ -205,7 +115,6 @@ services:
         NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # bubblewrap needs caps the default container securityContext can't grant.
     privileged: true
     environment:
       PORT: "3000"
@@ -243,5 +152,4 @@ services:
         condition: service_healthy
 
 volumes:
-  pgdata:
   runtime-workspace:

@@ -8,15 +8,15 @@ parse_groups "${1:-}"
 ensure_env_symlink
 ensure_config_yaml
 
-# Service first — postgres/redis must be up before local-infra dials them.
-if has_group service; then
-  echo "[service] building & starting services..."
-  service_compose build
-  service_compose up -d
-fi
-
+# Infra first — service dials postgres/redis/temporal via host.docker.internal.
 if has_group infra; then
   echo "[infra] building & starting local-infra..."
   infra_compose build
   infra_compose up -d
+fi
+
+if has_group service; then
+  echo "[service] building & starting services..."
+  service_compose build
+  service_compose up -d
 fi

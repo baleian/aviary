@@ -1,10 +1,83 @@
 name: aviary-local-infra
 
-# postgres and redis live in the project-root compose (essential service deps).
-# Local-infra services that need them reach the root stack via
-# host.docker.internal:5432 / :6379 — start the service compose first.
+# Platform deps used by service compose. Service compose dials these via
+# host.docker.internal (postgres:5432 / redis:6379 / temporal:7233).
 
 services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: aviary
+      POSTGRES_USER: aviary
+      POSTGRES_PASSWORD: aviary
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aviary"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  temporal:
+    image: temporalio/auto-setup:1.25
+    ports:
+      - "7233:7233"
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: aviary
+      POSTGRES_PWD: aviary
+      POSTGRES_SEEDS: postgres
+      DBNAME: temporal
+      VISIBILITY_DBNAME: temporal_visibility
+      DEFAULT_NAMESPACE: default
+      DEFAULT_NAMESPACE_RETENTION: 7d
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "temporal --address $(hostname):7233 operator cluster health | grep -q SERVING"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  temporal-ui:
+    image: temporalio/ui:2.30.1
+    ports:
+      - "8233:8080"
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+    depends_on:
+      temporal:
+        condition: service_healthy
+
+  db-migrate:
+    build:
+      context: ../shared
+      args:
+        UV_INDEX_URL: ${UV_INDEX_URL:-}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://aviary:aviary@postgres:5432/aviary}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   keycloak:
     image: quay.io/keycloak/keycloak:25.0
     command:
@@ -12,11 +85,9 @@ services:
       - --import-realm
       - --hostname=http://localhost:8080
       - --hostname-backchannel-dynamic=true
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     environment:
       KC_DB: postgres
-      KC_DB_URL: jdbc:postgresql://host.docker.internal:5432/keycloak
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
       KC_DB_USERNAME: aviary
       KC_DB_PASSWORD: aviary
       KEYCLOAK_ADMIN: admin
@@ -25,6 +96,9 @@ services:
       - "8080:8080"
     volumes:
       - ./config/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test:
         - "CMD-SHELL"
@@ -126,8 +200,6 @@ services:
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     ports:
       - "8090:4000"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - ./config/litellm/config.yaml:/app/config.yaml
       - ./config/litellm/patches/aviary_jwt_util.py:${LITELLM_SITE_PACKAGES:-/usr/lib/python3.13/site-packages}/aviary_jwt_util.py
@@ -139,7 +211,7 @@ services:
       - ../config.yaml:/app/aviary-config.yaml:ro
     environment:
       LITELLM_MASTER_KEY: "sk-aviary-dev"
-      DATABASE_URL: "postgresql://aviary:aviary@host.docker.internal:5432/litellm"
+      DATABASE_URL: "postgresql://aviary:aviary@postgres:5432/litellm"
       UI_USERNAME: "${LITELLM_UI_USERNAME:-admin}"
       UI_PASSWORD: "${LITELLM_UI_PASSWORD:-admin}"
       AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID:-}"
@@ -151,6 +223,8 @@ services:
       MCP_TOOL_PREFIX_SEPARATOR: "__"
       AVIARY_MCP_INJECTION_CONFIG: "/app/aviary-mcp-secret-injection.yaml"
     depends_on:
+      postgres:
+        condition: service_healthy
       vault:
         condition: service_healthy
       mcp-jira:
@@ -206,6 +280,7 @@ services:
       - prometheus
 
 volumes:
+  pgdata:
   k8sdata:
   workspacedata:
   vaultdata:

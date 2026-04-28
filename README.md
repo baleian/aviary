@@ -103,25 +103,25 @@ Two compose stacks plus the Helm charts that ship to production:
 
 | Stack / command | What it covers | Source |
 |-----------------|----------------|--------|
-| `service` group | api, admin, web, supervisor, workflow-worker, **in-compose runtime**, postgres, redis, temporal, temporal-ui — hot-reload dev path | Project root [compose.yml](compose.yml) |
-| `infra` group | keycloak, vault, litellm, prometheus, grafana, otel-collector, sample MCP servers, K3s container | [local-infra/compose.yml](local-infra/compose.yml) |
+| `service` group | web, api, admin, supervisor, workflow-worker, **in-compose runtime** — hot-reload dev path | Project root [compose.yml](compose.yml) |
+| `infra` group | postgres, redis, temporal, temporal-ui, db-migrate, keycloak, vault, litellm, prometheus, grafana, otel-collector, sample MCP servers, K3s container | [local-infra/compose.yml](local-infra/compose.yml) |
 | `local-deploy.sh` | The same charts that go to production EKS, applied to the local K3s container — chart validation path | [scripts/local-deploy.sh](scripts/local-deploy.sh) + [charts/](charts/) |
 
-The `service` stack alone is enough to chat with an agent end-to-end. `infra` and `local-deploy.sh` are opt-in.
+`infra` is required (postgres / redis / temporal live there); `service` adds the user-facing components on top. `local-deploy.sh` is opt-in.
 
 ### One-shot bring-up
 
 ```bash
 git clone <repository-url>
 cd aviary
-./scripts/setup-dev.sh        # build + start service + infra
+./scripts/setup-dev.sh        # build + start infra + service
 ```
 
-`setup-dev.sh` accepts a comma-separated subset of `service` / `infra`:
+`setup-dev.sh` accepts a comma-separated subset of `infra` / `service`:
 
 ```bash
-./scripts/setup-dev.sh service              # services only — fastest path
-./scripts/setup-dev.sh service,infra        # services + IdP/Vault/LiteLLM/observability
+./scripts/setup-dev.sh infra                # platform deps only (postgres, redis, temporal, keycloak, …)
+./scripts/setup-dev.sh infra,service        # platform deps + user-facing services
 ./scripts/setup-dev.sh                      # both
 ```
 
@@ -131,13 +131,13 @@ To validate the production Helm charts on the local K3s container:
 
 ```bash
 ./scripts/local-deploy.sh setup                      # build all images, ctr import, helm apply
-./scripts/local-deploy.sh setup --only=api,web       # rebuild + redeploy a subset
+./scripts/local-deploy.sh setup --only=aviary-api    # rebuild + redeploy a subset
 ./scripts/local-deploy.sh logs aviary-api            # tail one chart's logs
 ./scripts/local-deploy.sh stop                       # scale all platform deploys to 0
 ./scripts/local-deploy.sh clean                      # helm-delete every release
 ```
 
-`local-deploy.sh setup` brings up the K3s container, builds the api / admin / web / supervisor / workflow-worker / runtime / db-migrate images, imports them into containerd, then applies the charts in dependency order: `aviary-platform` → `aviary-temporal` → `aviary-api` (with a pre-install `db-migrate` Job) → `aviary-supervisor` → `aviary-admin` → `aviary-workflow-worker` → `aviary-env-{default,custom}` → `aviary-web`. Image digests are cached so re-runs only rebuild what changed.
+`local-deploy.sh setup` brings up the K3s container, builds the api / supervisor / workflow-worker / runtime / web / db-migrate images, imports them into containerd, then applies the charts in dependency order: `aviary-platform` → `aviary-api` (with a pre-install `db-migrate` Job) → `aviary-supervisor` → `aviary-workflow-worker` → `aviary-env-{default,custom}` → `aviary-web`. Image digests are cached so re-runs only rebuild what changed.
 
 ### Day-to-day script reference
 
@@ -162,28 +162,22 @@ Source for `api/`, `admin/`, `web/`, `agent-supervisor/`, and `workflow-worker/`
 
 ## Usage by scenario
 
-Pick the smallest group set that satisfies your scenario — there is no penalty for adding `infra` or `runtime` later.
+`infra` is required for any scenario (it owns postgres / redis / temporal). Add `service` for the daily hot-reload dev path; reach for `local-deploy.sh` for chart validation.
 
-### Scenario A — Just try it (fastest path, ~2 min)
+### Scenario A — Minimal local dev stack
 
-Use the `service` group only. No IdP, no Vault, no LiteLLM, no K8s. The supervisor talks straight to the in-compose `runtime` container; LLM and MCP calls go to `llm_backends` / `mcp_servers` declared in [config.yaml](config.example.yaml).
+Bring up infra + service compose. Supervisor talks straight to the in-compose `runtime`; LLM/MCP calls route through whatever is configured in [config.yaml](config.example.yaml).
 
 ```bash
 cp config.example.yaml config.yaml          # edit: add your Anthropic API key under llm_backends
-./scripts/setup-dev.sh service
+./scripts/setup-dev.sh                      # infra + service
 ```
 
 Open the Web UI, log in as `dev-user`, create an agent, chat. See [Service endpoints](#service-endpoints) below.
 
-### Scenario B — Full local stack (real OIDC, Vault, LiteLLM, MCP, observability)
+### Scenario B — Wire up real IdP / Vault / LiteLLM
 
-Add the `infra` group. Now Keycloak validates JWTs, Vault stores per-user credentials, LiteLLM aggregates LLM + MCP, Grafana shows the supervisor dashboard, and the bundled `mcp-jira` / `mcp-confluence` examples are reachable.
-
-```bash
-./scripts/setup-dev.sh service,infra
-```
-
-Set the OIDC and gateway vars in `.env` (Keycloak issuer + LiteLLM URL — see [.env.example](.env.example)) and restart `api` + `supervisor`. Test users `user1@test.com` / `user2@test.com` (password `password`) are seeded in the Keycloak realm.
+`infra` already ships Keycloak, Vault, LiteLLM, MCP, and observability. Set the OIDC and gateway vars in `.env` (see [.env.example](.env.example)) and restart `api` + `supervisor` (`docker compose restart api supervisor`). Test users `user1@test.com` / `user2@test.com` (password `password`) are seeded in the Keycloak realm.
 
 ### Scenario C — Validate the production Helm charts on local K3s
 
@@ -191,21 +185,21 @@ Use `local-deploy.sh` when you need:
 
 - per-environment egress policies (locked-down vs. open internet) on the runtime pool,
 - per-environment custom images (extra CLIs, language toolchains),
-- a realistic preview of the EKS deploy — every component (web, api, admin, supervisor, workflow-worker, temporal, runtime) running on the same K3s as a prod GitOps target would.
+- a realistic preview of the EKS deploy — web / api / supervisor / workflow-worker / runtime running on the same K3s as a prod GitOps target would.
 
 ```bash
-./scripts/setup-dev.sh service,infra      # postgres / redis / keycloak / vault stay in compose
-./scripts/local-deploy.sh setup           # everything else goes to K3s via Helm
+./scripts/setup-dev.sh infra              # postgres / redis / temporal / keycloak / litellm / vault
+./scripts/local-deploy.sh setup           # web / api / supervisor / workflow-worker / runtime → K3s
 ```
 
-Two runtime environments come pre-configured (same as before):
+Two runtime environments come pre-configured:
 
 - **default** — base `aviary-runtime` image, locked-down egress (DNS + platform only). NodePort `30300`.
 - **custom** — `aviary-runtime-custom` image (base + `cowsay` as a demo extra), `extraEgress: 0.0.0.0/0`. NodePort `30301`.
 
 Per-agent routing: in the Admin Console, set `agent.runtime_endpoint` to `http://host.docker.internal:30300` (or `:30301`) to send that agent to the K8s pool instead of the in-compose runtime.
 
-The web / api / admin / supervisor are reachable through their own NodePorts; see [Service endpoints](#service-endpoints) below. NodePorts (31xxx) are picked so they don't collide with the compose-side host ports (3000/8000/8001/9000) — service compose can keep running alongside, sharing the same postgres/redis. (Two writers to the same DB at once still race; for chart-validation runs, prefer to `docker compose stop api supervisor web` first.)
+NodePorts (31xxx) are picked so they don't collide with the compose-side host ports (3000/8000/9000) — service compose can run alongside, sharing the same postgres/redis. Stop the duplicates first (`docker compose stop api supervisor web`) to avoid two writers racing.
 
 ### Scenario D — Iterating on a single component
 
@@ -253,15 +247,15 @@ After `setup-dev.sh` finishes, these URLs are reachable on the host. Endpoints p
 | API Server | http://localhost:8000 | REST + WebSocket |
 | Admin Console | http://localhost:8001 | Operator UI (no auth, local-only) |
 | Agent Supervisor | http://localhost:9000 | Bearer-gated; streaming proxy |
-| Temporal UI | http://localhost:8233 | Workflow inspector |
-| Postgres | localhost:5432 | App + LiteLLM databases |
-| Redis | localhost:6379 | Pub/sub, unread counters |
-| Temporal | localhost:7233 | gRPC (workers connect here) |
 
 ### `infra` group
 
-| Service | URL | Login |
-|---------|-----|-------|
+| Service | URL | Login / purpose |
+|---------|-----|-----------------|
+| Postgres | localhost:5432 | App + LiteLLM + Keycloak + Temporal databases |
+| Redis | localhost:6379 | Pub/sub, unread counters |
+| Temporal | localhost:7233 | gRPC (workers connect here) |
+| Temporal UI | http://localhost:8233 | Workflow inspector |
 | Keycloak | http://localhost:8080 | `admin` / `admin` |
 | Vault | http://localhost:8200 | Token: `aviary-dev-token` |
 | LiteLLM Proxy | http://localhost:8090 | Master key `sk-aviary-dev` |
@@ -285,7 +279,7 @@ After `./scripts/local-deploy.sh setup` finishes, NodePorts are exposed on the K
 | http://localhost:30301 | `aviary-env-custom` runtime pool |
 | `kubectl` via container | `cd local-infra && docker compose --profile k3s exec k8s kubectl …` |
 
-`aviary-admin` and `aviary-supervisor` are ClusterIP only — reach them with `kubectl port-forward -n platform svc/aviary-admin 8001:8001`. Postgres / Redis / Temporal / Keycloak / Vault / LiteLLM stay in compose and are exposed to the cluster via the `aviary-platform` external-services proxy (Service + Endpoints in the `platform` namespace).
+`aviary-admin` and `aviary-supervisor` are ClusterIP only — reach them with `kubectl port-forward -n platform svc/aviary-admin 8001:8001` (or `svc/aviary-supervisor 9000:9000`). Postgres / Redis / Temporal / Keycloak / Vault / LiteLLM stay in compose and are exposed to the cluster via the `aviary-platform` external-services proxy.
 
 ## Configuration
 

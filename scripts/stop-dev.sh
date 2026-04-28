@@ -6,12 +6,12 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 parse_groups "${1:-}"
 
-if has_group infra; then
-  echo "[infra] stopping local-infra..."
-  infra_compose stop
-fi
-
 if has_group service; then
   echo "[service] stopping services..."
   service_compose stop
+fi
+
+if has_group infra; then
+  echo "[infra] stopping local-infra..."
+  infra_compose stop
 fi

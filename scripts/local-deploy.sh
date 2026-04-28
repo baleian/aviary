@@ -41,8 +41,8 @@ ns_for() {
 
 declare -A IMAGE_FOR=(
   [aviary-api]="aviary-api:latest|api/Dockerfile|."
-  [aviary-admin]="aviary-admin:latest|admin/Dockerfile|."
   [aviary-supervisor]="aviary-supervisor:latest|agent-supervisor/Dockerfile|."
+  [aviary-admin]="aviary-admin:latest|admin/Dockerfile|."
   [aviary-workflow-worker]="aviary-workflow-worker:latest|workflow-worker/Dockerfile|."
   [aviary-env-default]="aviary-runtime:latest|runtime/Dockerfile|runtime"
   [aviary-env-custom]="aviary-runtime-custom:latest|runtime/Dockerfile.custom|runtime"
@@ -197,8 +197,6 @@ print_summary() {
   Custom rt:     http://localhost:30301
 
   Logs:        ./scripts/local-deploy.sh logs aviary-api
-  Port-fwd:    docker compose -f local-infra/compose.yml --profile k3s exec -T k8s \\
-                 kubectl port-forward -n platform svc/aviary-admin 8001:8001
 EOF
 }
 
