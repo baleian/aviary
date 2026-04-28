@@ -37,10 +37,6 @@ class Settings(BaseSettings):
     vault_addr: str = ""
     vault_token: str = ""
 
-    # Per-server MCP credential injection schema. Drives the credentials
-    # screen: each server's required vault keys are surfaced to the user.
-    mcp_injection_config_path: str = "/workspace/mcp-secret-injection.yaml"
-
     # Temporal — workflow orchestration
     temporal_host: str = "temporal:7233"
     temporal_namespace: str = "default"

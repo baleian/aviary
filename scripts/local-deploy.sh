@@ -41,8 +41,8 @@ ns_for() {
 
 declare -A IMAGE_FOR=(
   [aviary-api]="aviary-api:latest|api/Dockerfile|."
-  [aviary-supervisor]="aviary-supervisor:latest|agent-supervisor/Dockerfile|."
   [aviary-admin]="aviary-admin:latest|admin/Dockerfile|."
+  [aviary-supervisor]="aviary-supervisor:latest|agent-supervisor/Dockerfile|."
   [aviary-workflow-worker]="aviary-workflow-worker:latest|workflow-worker/Dockerfile|."
   [aviary-env-default]="aviary-runtime:latest|runtime/Dockerfile|runtime"
   [aviary-env-custom]="aviary-runtime-custom:latest|runtime/Dockerfile.custom|runtime"

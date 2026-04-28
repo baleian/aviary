@@ -113,29 +113,39 @@ def _install_server_name_forwarder() -> None:
     ProxyLogging._convert_mcp_to_llm_format = patched  # type: ignore[method-assign]
 
 
-def _strip_injected_from_schema(schema: dict, injected: dict[str, dict]) -> dict:
-    """Remove Vault-injected args from ``properties`` + ``required`` so the
-    model never sees (or tries to fill) fields like ``jira_token``."""
+CREDENTIAL_KEYS_FIELD = "x-aviary-required-credentials"
+
+
+def _vault_keys(injected: dict[str, dict]) -> list[str]:
+    """Ordered, deduplicated vault keys referenced by ``injected``."""
+    out: list[str] = []
+    for mapping in injected.values():
+        key = mapping.get("vault_key") if isinstance(mapping, dict) else None
+        if key and key not in out:
+            out.append(key)
+    return out
+
+
+def _annotate_schema(schema: dict, injected: dict[str, dict]) -> dict:
+    """Strip Vault-injected args from ``properties`` + ``required`` (so the
+    model never sees them) and attach the resolved vault keys under
+    ``x-aviary-required-credentials`` so the API can derive the credentials UI
+    from the catalog response without a separate config file."""
     if not injected or not isinstance(schema, dict):
         return schema
     props = dict(schema.get("properties") or {})
-    required = list(schema.get("required") or [])
-    touched = False
+    required = [r for r in (schema.get("required") or []) if r not in injected]
     for name in injected:
-        if name in props:
-            props.pop(name, None)
-            touched = True
-        if name in required:
-            required = [r for r in required if r != name]
-            touched = True
-    if not touched:
-        return schema
+        props.pop(name, None)
     new_schema = dict(schema)
     new_schema["properties"] = props
     if required:
         new_schema["required"] = required
     else:
         new_schema.pop("required", None)
+    keys = _vault_keys(injected)
+    if keys:
+        new_schema[CREDENTIAL_KEYS_FIELD] = keys
     return new_schema
 
 
@@ -178,7 +188,7 @@ def _install_tools_list_stripper() -> None:
             raw_name = _unprefix_tool_name(tool.name, server_name)
             injection = _injected_args_for(server_name, raw_name)
             if injection:
-                tool.inputSchema = _strip_injected_from_schema(
+                tool.inputSchema = _annotate_schema(
                     tool.inputSchema or {}, injection,
                 )
 

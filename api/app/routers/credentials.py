@@ -3,13 +3,13 @@
 Schema is derived from two sources:
   * the platform namespace (``aviary``) — anthropic-api-key + github-token,
     always offered regardless of MCP catalog state;
-  * each MCP server the caller can see *and* that has at least one
-    injection mapping in ``mcp-secret-injection.yaml``.
+  * each MCP server the caller can see whose tools advertise required vault
+    keys via ``inputSchema["x-aviary-required-credentials"]`` in the gateway's
+    ``tools/list`` response.
 
 When Vault is unconfigured (``VAULT_ADDR`` / ``VAULT_TOKEN`` unset) the
 endpoint reports ``vault_enabled: false`` and refuses writes — only
-config.yaml's ``secrets:`` table is read. The frontend renders this as a
-read-only view explaining why editing is disabled.
+config.yaml's ``secrets:`` table is read.
 """
 
 from __future__ import annotations
@@ -27,12 +27,13 @@ from app.schemas.credentials import (
     CredentialsResponse,
     CredentialWriteRequest,
 )
-from app.services import local_mcp_catalog, mcp_catalog, mcp_injection
+from app.services import local_mcp_catalog, mcp_catalog
 
 router = APIRouter()
 
 PLATFORM_KEYS = ["anthropic-api-key", "github-token"]
 TOOL_NAME_SEPARATOR = "__"
+CREDENTIAL_KEYS_FIELD = "x-aviary-required-credentials"
 
 _ACRONYMS = {"api", "url", "id"}
 
@@ -46,17 +47,23 @@ def _vault() -> VaultClient:
     return VaultClient(settings.vault_addr, settings.vault_token)
 
 
-async def _visible_server_names(session: SessionData) -> set[str]:
-    gateway = await mcp_catalog.fetch_tools(
-        session.id_token or "", session.user_external_id,
-    )
-    local = await local_mcp_catalog.fetch_all_tools()
-    names: set[str] = set()
-    for t in gateway + local:
-        name = t.get("name") or ""
-        if TOOL_NAME_SEPARATOR in name:
-            names.add(name.split(TOOL_NAME_SEPARATOR, 1)[0])
-    return names
+def _server_credential_keys(tools: list[dict]) -> dict[str, list[str]]:
+    """Aggregate per-server vault keys from tool inputSchema metadata.
+    Order preserves first-seen across the catalog for stable UI rendering."""
+    out: dict[str, list[str]] = {}
+    for tool in tools:
+        name = tool.get("name") or ""
+        if TOOL_NAME_SEPARATOR not in name:
+            continue
+        server = name.split(TOOL_NAME_SEPARATOR, 1)[0]
+        keys = (tool.get("inputSchema") or {}).get(CREDENTIAL_KEYS_FIELD) or []
+        if not keys:
+            continue
+        existing = out.setdefault(server, [])
+        for k in keys:
+            if k and k not in existing:
+                existing.append(k)
+    return out
 
 
 def _platform_namespace_spec() -> tuple[str, str, str | None, list[str]]:
@@ -72,17 +79,15 @@ async def _gather_namespaces(
     session: SessionData,
 ) -> list[tuple[str, str, str | None, list[str]]]:
     """``[(namespace, label, description, [keys])]`` — platform first,
-    then any MCP server with declared injection that the caller can see."""
+    then any MCP server the caller can see that advertises required keys."""
     out: list[tuple[str, str, str | None, list[str]]] = [_platform_namespace_spec()]
 
-    server_keys = mcp_injection.server_credential_keys()
-    if not server_keys:
-        return out
-
-    visible = await _visible_server_names(session)
+    gateway = await mcp_catalog.fetch_tools(
+        session.id_token or "", session.user_external_id,
+    )
+    local = await local_mcp_catalog.fetch_all_tools()
+    server_keys = _server_credential_keys(gateway + local)
     for server in sorted(server_keys):
-        if server not in visible:
-            continue
         out.append((server, _humanize(server), None, server_keys[server]))
     return out
 

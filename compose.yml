@@ -33,7 +33,6 @@ services:
       VAULT_TOKEN: ${VAULT_TOKEN-}
     volumes:
       - ./config.yaml:/workspace/config.yaml:ro
-      - ./local-infra/config/litellm/mcp-secret-injection.yaml:/workspace/mcp-secret-injection.yaml:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/api/health || exit 1"]
       interval: 10s
