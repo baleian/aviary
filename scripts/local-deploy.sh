@@ -50,7 +50,7 @@ declare -A IMAGE_FOR=(
   [aviary-workflow-worker]="aviary-workflow-worker:latest|workflow-worker/Dockerfile|."
   [aviary-env-default]="aviary-runtime:latest|runtime/Dockerfile|runtime"
   [aviary-env-custom]="aviary-runtime-custom:latest|runtime/Dockerfile.custom|runtime"
-  [aviary-web]="aviary-web:k8s-local|web/Dockerfile|web"
+  [aviary-web]="aviary-web:latest|web/Dockerfile|web"
 )
 MIGRATE_IMAGE="aviary-shared-migrate:latest|shared/Dockerfile|shared"
 
@@ -95,11 +95,7 @@ cmd_setup() {
     IFS='|' read -r image dockerfile context extra <<<"${IMAGE_FOR[$chart]}"
     case "$chart" in
       aviary-web)
-        # INTERNAL_API_URL is baked into routes-manifest.json by next.config.ts's
-        # rewrites(). Browser-side URLs come from window.location at runtime.
-        build_and_load_image "$image" "$dockerfile" "$context" \
-          --target runner \
-          --build-arg "INTERNAL_API_URL=http://aviary-api.platform.svc.cluster.local:8000"
+        build_and_load_image "$image" "$dockerfile" "$context" --target runner
         ;;
       *)
         build_and_load_image "$image" "$dockerfile" "$context"

@@ -10,12 +10,9 @@ EXPOSE 3000
 FROM base AS dev
 CMD ["npm", "run", "dev"]
 
-# Prod target: bake a full production build. INTERNAL_API_URL is baked into
-# routes-manifest.json by next.config.ts's rewrites(), so it must be supplied
-# at build time. Browser-side URLs are derived from window.location at runtime.
+# Prod target: a full production build. URLs come from window.location at
+# runtime, so the same image works behind any edge proxy.
 FROM base AS runner
-ARG INTERNAL_API_URL=http://api:8000
-ENV INTERNAL_API_URL=$INTERNAL_API_URL \
-    NODE_ENV=production
+ENV NODE_ENV=production
 RUN npm run build
 CMD ["npm", "run", "start"]

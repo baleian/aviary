@@ -24,8 +24,6 @@ spec:
           env:
             - name: HOSTNAME
               value: "0.0.0.0"
-            - name: INTERNAL_API_URL
-              value: {{ .Values.config.internalAPIURL | quote }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           livenessProbe:

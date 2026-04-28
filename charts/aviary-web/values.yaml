@@ -1,12 +1,11 @@
 namespace: platform
 
-replicas: 1
+replicas: 2
 
-# INTERNAL_API_URL is baked at build time. Browser-side URLs come from
-# window.location at runtime, so the same image works behind any edge proxy.
+# All URLs come from window.location at runtime — the image is environment-agnostic.
 image:
   repository: aviary-web
-  tag: k8s-local
+  tag: latest
   pullPolicy: IfNotPresent
 
 service:
@@ -14,11 +13,8 @@ service:
   port: 3000
   nodePort: 31301
 
-config:
-  internalAPIURL: "http://aviary-api.platform.svc.cluster.local:8000"
-
 resources:
-  requests: { cpu: 100m, memory: 256Mi }
+  requests: { cpu: 200m, memory: 512Mi }
   limits:   { cpu: 1,    memory: 1Gi }
 
 livenessProbe:
