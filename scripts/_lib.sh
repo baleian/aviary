@@ -19,6 +19,15 @@ ensure_env_symlink() {
   fi
 }
 
+ensure_config_yaml() {
+  local target="$PROJECT_DIR/config.yaml"
+  if [ -d "$target" ]; then
+    echo "config.yaml exists as a directory — refusing to touch it. Inspect and remove manually." >&2
+    exit 1
+  fi
+  [ -e "$target" ] || cp "$PROJECT_DIR/config.example.yaml" "$target"
+}
+
 parse_groups() {
   local raw="${1:-}"
   if [ -z "$raw" ]; then

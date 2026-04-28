@@ -6,6 +6,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 parse_groups "${1:-}"
 ensure_env_symlink
+ensure_config_yaml
 
 # Services first (postgres/redis); infra services depend on them via host.docker.internal.
 if has_group service; then
