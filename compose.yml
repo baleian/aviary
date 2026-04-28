@@ -119,6 +119,7 @@ services:
       MCP_GATEWAY_API_KEY: ${MCP_GATEWAY_API_KEY:-}
       AVIARY_API_URL: http://api:8000/api
       AVIARY_SUPERVISOR_URL: http://supervisor:9000
+      GITHUB_HOST: ${GITHUB_HOST:-}
     volumes:
       - runtime-workspace:/workspace-root
     healthcheck:

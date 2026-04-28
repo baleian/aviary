@@ -63,6 +63,10 @@ spec:
               value: {{ .Values.runtime.aviaryAPIURL | quote }}
             - name: AVIARY_SUPERVISOR_URL
               value: {{ .Values.runtime.supervisorURL | quote }}
+            {{- if .Values.runtime.githubHost }}
+            - name: GITHUB_HOST
+              value: {{ .Values.runtime.githubHost | quote }}
+            {{- end }}
             - name: HOME
               value: "/tmp"
           volumeMounts:

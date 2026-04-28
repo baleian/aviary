@@ -25,6 +25,8 @@ runtime:
   mcpGatewayAPIKey: ""
   aviaryAPIURL: "http://aviary-api.platform.svc.cluster.local:8000/api"
   supervisorURL: "http://aviary-supervisor.platform.svc.cluster.local:9000"
+  # Empty → github.com. Set to redirect gh / git to an Enterprise host.
+  githubHost: ""
   # Switch to a PSA-compliant securityContext + CAP_SYS_ADMIN for bwrap.
   privileged: false
 

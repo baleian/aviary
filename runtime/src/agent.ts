@@ -37,6 +37,8 @@ const LLM_GATEWAY_API_KEY = process.env.LLM_GATEWAY_API_KEY || undefined;
 const MCP_GATEWAY_URL = process.env.MCP_GATEWAY_URL || undefined;
 const MCP_GATEWAY_API_KEY = process.env.MCP_GATEWAY_API_KEY || undefined;
 
+const GITHUB_HOST = process.env.GITHUB_HOST || "github.com";
+
 const CLAUDE_CLI_PATH = "/usr/local/bin/claude";
 
 // All tiers remapped to the agent's model so CLI internal tasks route through the gateway.
@@ -477,8 +479,16 @@ export async function* processMessage(
       ? {
           GITHUB_TOKEN: agentConfig.credentials.github_token,
           GH_TOKEN: agentConfig.credentials.github_token,
+          // gh CLI reads GH_ENTERPRISE_TOKEN (not GH_TOKEN) for non-default hosts.
+          ...(GITHUB_HOST !== "github.com"
+            ? {
+                GH_HOST: GITHUB_HOST,
+                GH_ENTERPRISE_TOKEN: agentConfig.credentials.github_token,
+                GITHUB_ENTERPRISE_TOKEN: agentConfig.credentials.github_token,
+              }
+            : {}),
           GIT_CONFIG_COUNT: "1",
-          GIT_CONFIG_KEY_0: "credential.https://github.com.helper",
+          GIT_CONFIG_KEY_0: `credential.https://${GITHUB_HOST}.helper`,
           GIT_CONFIG_VALUE_0: "/app/scripts/git-credential-github.sh",
         }
       : {}),
