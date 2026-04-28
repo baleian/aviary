@@ -72,7 +72,7 @@ K8s cluster (Helm-managed; the only thing in K3s/EKS):
   charts/aviary-platform — namespaces, baseline egress NP,
     external-services proxy Services (dev only), image-warmer DaemonSet
     (optional), shared RWX workspace PVC (mounted by every env)
-  charts/aviary-environment — one release per runtime environment:
+  charts/aviary-runtime — one release per runtime environment:
     Deployment (replicas fixed, min 1) — pool serves every agent
     Service (NodePort in dev → supervisor hits host.docker.internal:<port>;
             ClusterIP in prod)
@@ -83,7 +83,7 @@ Agent routing:
   null → supervisor's DEFAULT_RUNTIME_ENDPOINT.
   non-null → any env Service DNS (admin sets per agent).
 
-Environments shipped out of the box (both `charts/aviary-environment` releases):
+Environments shipped out of the box (both `charts/aviary-runtime` releases):
   default — locked-down egress (DNS + platform only), base `aviary-runtime`
             image (git + gh). NodePort 30300. Opt in by pointing
             agent.runtime_endpoint at http://host.docker.internal:30300 (dev)
@@ -136,7 +136,7 @@ No background loops. No per-agent state. No 0↔1 activation — environments ar
 
 **Egress policy** is set per environment via Helm:
 - **Baseline** (`charts/aviary-platform/templates/default-egress.yaml`): namespace-wide `NetworkPolicy` on `aviary/role=agent-runtime`; allows DNS + platform NS + gateway ports (LiteLLM 8090 — inference + aggregated MCP, API 8000, Supervisor 9000 — for A2A). Always in effect.
-- **Per-environment extras**: optional `extraEgress` list in `charts/aviary-environment/values.yaml` gets merged into a second NetworkPolicy scoped by `aviary/environment=<name>`. K8s NP evaluates as a disjunction — this unions with baseline.
+- **Per-environment extras**: optional `extraEgress` list in `charts/aviary-runtime/values.yaml` gets merged into a second NetworkPolicy scoped by `aviary/environment=<name>`. K8s NP evaluates as a disjunction — this unions with baseline.
 
 ## Critical Patterns & Gotchas
 
@@ -211,7 +211,7 @@ Other agents' / sessions' files are invisible inside the bwrap view.
 The supervisor fetches the user's GitHub token from Vault (`secret/aviary/credentials/{sub}/github-token`) on every `/message` and `/a2a` call, keyed by the `sub` of the validated Bearer JWT, and injects it as `agent_config.credentials.github_token` into the outbound runtime request. The runtime exposes it as `GITHUB_TOKEN` / `GH_TOKEN` env vars and configures a git credential helper (`scripts/git-credential-github.sh`) via `GIT_CONFIG_*` env vars. Inside the sandbox both `git` and `gh` are available on every env and authenticated via `GITHUB_TOKEN` / `GH_TOKEN` env vars + git credential helper. Callers (API, parent runtime) MUST NOT put `credentials` / `user_token` / `user_external_id` in the body — the supervisor overwrites them with the authoritative validated identity.
 
 ### Egress Enforcement
-Baseline NetworkPolicy (`charts/aviary-platform/templates/default-egress.yaml`) is always applied to every agent-runtime pod in the agents namespace. Environments can opt into additional egress rules via `charts/aviary-environment` values (`extraEgress`). K3s enforces NetworkPolicies via bundled kube-router.
+Baseline NetworkPolicy (`charts/aviary-platform/templates/default-egress.yaml`) is always applied to every agent-runtime pod in the agents namespace. Environments can opt into additional egress rules via `charts/aviary-runtime` values (`extraEgress`). K3s enforces NetworkPolicies via bundled kube-router.
 
 ### Claude Code Managed Settings
 [runtime/config/managed-settings.json](runtime/config/managed-settings.json) is installed to `/etc/claude-code/managed-settings.json` (the hardcoded path Claude Code CLI reads on Linux). Currently sets `skipWebFetchPreflight: true` to prevent the CLI from calling `api.anthropic.com/api/web/domain_info` before each WebFetch — this endpoint is unreachable in air-gapped/fintech environments. All model tiers (`ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, etc.) are remapped to the agent's configured model in [runtime/src/agent.ts](runtime/src/agent.ts).
@@ -260,7 +260,7 @@ Backing differs per env:
 - **Local**: static hostPath PV (path set by `sharedWorkspace.hostPath` in platform values-local.yaml) + `storageClassName: manual`. K3s's bundled `local-path` provisioner hard-codes RWO, so we bypass it with a pre-declared PV that advertises RWX. Single-node K3s handles multi-pod RWX access fine.
 - **Prod**: dynamic provisioning via EFS (`storageClassName: efs-sc`). No static PV needed — the CSI driver creates one on PVC bind.
 
-`charts/aviary-environment` has no PVC template; the Deployment references `.Values.pvc.claimName` (default `aviary-shared-workspace`).
+`charts/aviary-runtime` has no PVC template; the Deployment references `.Values.pvc.claimName` (default `aviary-shared-workspace`).
 
 ### React Strict Mode
 Use `useRef` guards for WebSocket connections and OIDC callbacks to prevent duplicate execution in dev mode.

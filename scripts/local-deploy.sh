@@ -21,10 +21,10 @@ DEPLOY_ORDER=(
 # compose `proxy-k3s`. It hits web/api via NodePorts on host.docker.internal,
 # mirroring the prod ALB → K8s Service target group topology.
 
-# aviary-env-{default,custom} both render aviary-environment with different values.
+# aviary-env-{default,custom} both render aviary-runtime with different values.
 chart_for() {
   case "$1" in
-    aviary-env-default|aviary-env-custom) echo aviary-environment ;;
+    aviary-env-default|aviary-env-custom) echo aviary-runtime ;;
     *) echo "$1" ;;
   esac
 }

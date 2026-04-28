@@ -76,7 +76,7 @@ The platform is designed to drop into an existing organization: it plugs into yo
 | **Workflow Worker** ([workflow-worker/](workflow-worker/)) | Temporal worker that drives workflow execution. |
 | **Agent Runtime** ([runtime/](runtime/)) | Node.js + [claude-agent-sdk](https://github.com/anthropics/claude-agent-sdk-typescript) container that actually runs the agent. Used both as the in-compose default and as the K8s pool image. |
 | **LiteLLM Gateway** ([local-infra/config/litellm/](local-infra/config/litellm/)) | Single entry point for both LLM inference and MCP tool calls; routes by model name and injects per-user secrets. |
-| **Helm charts** ([charts/](charts/)) | `aviary-platform` (namespaces, baseline egress, shared workspace PVC, dev-only external-services proxy), `aviary-environment` (one release per runtime pool), and per-service charts for `api` / `admin` / `web` / `supervisor` / `workflow-worker`. |
+| **Helm charts** ([charts/](charts/)) | `aviary-platform` (namespaces, baseline egress, shared workspace PVC, dev-only external-services proxy), `aviary-runtime` (one release per runtime pool), and per-service charts for `api` / `admin` / `web` / `supervisor` / `workflow-worker`. |
 | **Shared Python package** ([shared/](shared/)) | SQLAlchemy models, migrations, and OIDC helpers used by API + Admin + Supervisor. |
 
 ## Tech stack
@@ -291,7 +291,7 @@ After `./scripts/local-deploy.sh setup` finishes, the off-cluster Caddy proxy (`
 - **Single .env** — both compose stacks share [.env](.env.example) at the project root; `local-infra/.env` is auto-symlinked.
 - **`config.yaml`** — declares LLM backends, MCP servers, and (in vaultless dev) per-user secrets when `VAULT_ADDR` / `VAULT_TOKEN` and `LLM_GATEWAY_URL` / `MCP_GATEWAY_URL` are unset. Start from [config.example.yaml](config.example.yaml).
 - **LiteLLM** — model routing and platform-wide MCP servers in [local-infra/config/litellm/config.yaml](local-infra/config/litellm/config.yaml); per-server Vault key map in [mcp-secret-injection.yaml](local-infra/config/litellm/mcp-secret-injection.yaml).
-- **Runtime environments** — each is a Helm release of `charts/aviary-environment`. Clone a `values-*.yaml`, set `image`, `extraEgress`, resource limits, then `./scripts/local-deploy.sh setup --only=aviary-env-<name>` to apply.
+- **Runtime environments** — each is a Helm release of `charts/aviary-runtime`. Clone a `values-*.yaml`, set `image`, `extraEgress`, resource limits, then `./scripts/local-deploy.sh setup --only=aviary-env-<name>` to apply.
 - **Egress policy** — baseline `NetworkPolicy` from `charts/aviary-platform` is always applied; per-env `extraEgress` is unioned in.
 - **Secrets** — per-user credentials live at `secret/aviary/credentials/{user_sub}/{namespace}/{key}` in Vault (or under the `secrets:` block in `config.yaml` for the vaultless fallback).
 
