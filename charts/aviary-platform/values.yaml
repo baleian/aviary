@@ -24,6 +24,7 @@ externalServices:
     - { name: vault,    clusterPort: 8200, hostPort: 8200 }
     - { name: temporal, clusterPort: 7233, hostPort: 7233 }
     - { name: litellm,  clusterPort: 4000, hostPort: 8090 }
+    - { name: otel-collector, clusterPort: 4318, hostPort: 4318 }
 
 imageWarmer:
   enabled: false

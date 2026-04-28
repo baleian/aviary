@@ -257,7 +257,7 @@ After `setup-dev.sh` finishes, these URLs are reachable on the host. Endpoints p
 | Temporal | localhost:7233 | gRPC (workers connect here) |
 | Temporal UI | http://localhost:8233 | Workflow inspector |
 | Keycloak | http://localhost:8080 | `admin` / `admin` |
-| Vault | http://localhost:8200 | Token: `aviary-dev-token` |
+| Vault | http://localhost:8200 | Token: `dev-root-token` |
 | LiteLLM Proxy | http://localhost:8090 | Master key `sk-aviary-dev` |
 | LiteLLM UI | http://localhost:8090/ui | `admin` / `admin` |
 | LiteLLM MCP endpoint | http://localhost:8090/mcp | Aggregated MCP |

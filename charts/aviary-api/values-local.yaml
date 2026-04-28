@@ -11,8 +11,10 @@ config:
   oidcClientID: "aviary-web"
   llmGatewayURL: "http://litellm.platform.svc.cluster.local:4000"
   mcpGatewayURL: "http://litellm.platform.svc.cluster.local:4000"
+  vaultAddr: "http://vault.platform.svc.cluster.local:8200"
   cookieSecure: "false"
 
 secrets:
   llmGatewayAPIKey: "sk-aviary-dev"
   mcpGatewayAPIKey: "sk-aviary-dev"
+  vaultToken: "dev-root-token"

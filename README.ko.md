@@ -255,7 +255,7 @@ cd local-infra && docker compose restart litellm
 | 서비스 | URL | 로그인 |
 |--------|-----|--------|
 | Keycloak | http://localhost:8080 | `admin` / `admin` |
-| Vault | http://localhost:8200 | 토큰: `aviary-dev-token` |
+| Vault | http://localhost:8200 | 토큰: `dev-root-token` |
 | LiteLLM Proxy | http://localhost:8090 | 마스터 키 `sk-aviary-dev` |
 | LiteLLM UI | http://localhost:8090/ui | `admin` / `admin` |
 | LiteLLM MCP 엔드포인트 | http://localhost:8090/mcp | 통합 MCP |

@@ -200,6 +200,8 @@ services:
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     ports:
       - "8090:4000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./config/litellm/config.yaml:/app/config.yaml
       - ./config/litellm/patches/aviary_jwt_util.py:${LITELLM_SITE_PACKAGES:-/usr/lib/python3.13/site-packages}/aviary_jwt_util.py

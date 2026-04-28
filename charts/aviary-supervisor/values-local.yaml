@@ -5,6 +5,10 @@ config:
   oidcIssuer: "http://localhost:8080/realms/aviary"
   oidcInternalIssuer: "http://host.k8s.internal:8080/realms/aviary"
   llmGatewayURL: "http://litellm.platform.svc.cluster.local:4000"
+  vaultAddr: "http://vault.platform.svc.cluster.local:8200"
+  otelExporterOtlpEndpoint: "http://otel-collector.platform.svc.cluster.local:4318"
+  otelServiceName: "aviary-supervisor"
 
 secrets:
   llmGatewayAPIKey: "sk-aviary-dev"
+  vaultToken: "dev-root-token"
