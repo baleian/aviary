@@ -1,0 +1,38 @@
+{{- if .Values.migrate.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "aviary-api.fullname" . }}-migrate
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "aviary-api.labels" . | nindent 4 }}
+    aviary/job: db-migrate
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "aviary-api.labels" . | nindent 8 }}
+        aviary/job: db-migrate
+    spec:
+      restartPolicy: Never
+      {{- if .Values.hostGatewayIP }}
+      hostAliases:
+        - ip: {{ .Values.hostGatewayIP | quote }}
+          hostnames: ["host.k8s.internal"]
+      {{- end }}
+      containers:
+        - name: migrate
+          image: "{{ .Values.migrate.image.repository }}:{{ .Values.migrate.image.tag }}"
+          imagePullPolicy: {{ .Values.migrate.image.pullPolicy }}
+          env:
+            - name: DATABASE_URL
+              value: {{ .Values.config.databaseURL | quote }}
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits:   { cpu: 1,   memory: 512Mi }
+{{- end }}

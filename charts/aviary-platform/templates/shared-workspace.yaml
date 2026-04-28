@@ -1,15 +1,4 @@
 {{- if .Values.sharedWorkspace.enabled }}
-{{/*
-  Shared workspace — a single PVC mounted by every aviary-environment
-  Deployment. Envs are "capabilities" (image, egress); they share workspace
-  state so a session can migrate between envs without losing its Claude
-  CLI history, shared files, or per-(agent, session) venv.
-
-  Access mode is RWX in both dev and prod. K3s's bundled local-path
-  StorageClass only advertises RWO, so dev pre-provisions a static hostPath
-  PV with RWX and binds the PVC to it via `storageClassName: manual`. Prod
-  relies on a CSI driver (EFS) that natively supports RWX.
-*/}}
 {{- if .Values.sharedWorkspace.hostPath }}
 apiVersion: v1
 kind: PersistentVolume

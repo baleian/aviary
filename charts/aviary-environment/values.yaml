@@ -1,4 +1,4 @@
-# Default values — overridden per env by values-dev.yaml / values-prod.yaml
+# Default values — overridden per env by values-local.yaml / values-prod.yaml
 # or per release via --set/--values. One release = one environment.
 
 # Env identity. release name defaults to "aviary-env-<name>"; all resources
@@ -19,7 +19,7 @@ image:
 
 runtime:
   port: 3000
-  # Same backend in dev; prod can split inference and MCP onto separate services.
+  # Same backend locally; prod can split inference and MCP onto separate services.
   llmGatewayURL: "http://litellm.platform.svc:4000"
   llmGatewayAPIKey: "sk-aviary-dev"
   mcpGatewayURL: "http://litellm.platform.svc:4000"
@@ -27,12 +27,12 @@ runtime:
   aviaryAPIURL: "http://host.k8s.internal:8000/api"
   # Supervisor URL — used by the runtime's A2A tool server to invoke sub-agents.
   supervisorURL: "http://supervisor.platform.svc:9000"
-  # Privileged in dev (K3s-in-Docker on LinuxKit needs SYS_ADMIN for bwrap).
+  # Privileged locally (K3s-in-Docker on LinuxKit needs SYS_ADMIN for bwrap).
   # Prod should switch to CAP_SYS_ADMIN via a PSA-compliant securityContext.
   privileged: false
 
-# How the supervisor (running outside k3s in dev) reaches this env's runtime
-# pods. Dev: NodePort on the k3s container — supervisor hits `http://k8s:<port>`.
+# How the supervisor (running outside k3s locally) reaches this env's runtime
+# pods. Local: NodePort on the k3s container — supervisor hits `http://k8s:<port>`.
 # Prod: ClusterIP (supervisor runs in-cluster or the env is behind an LB).
 service:
   type: NodePort

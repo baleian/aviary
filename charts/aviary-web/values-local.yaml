@@ -1,0 +1,6 @@
+image:
+  pullPolicy: Never
+
+service:
+  type: NodePort
+  nodePort: 31300

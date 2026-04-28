@@ -1,0 +1,6 @@
+apiVersion: v2
+name: aviary-api
+description: Aviary API server (FastAPI) — user-facing CRUD + chat WebSocket
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

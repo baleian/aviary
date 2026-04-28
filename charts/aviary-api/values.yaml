@@ -1,0 +1,67 @@
+namespace: platform
+
+replicas: 1
+
+image:
+  repository: aviary-api
+  tag: latest
+  pullPolicy: IfNotPresent
+
+hostGatewayIP: ""
+
+service:
+  type: ClusterIP
+  port: 8000
+  nodePort: 31000
+
+config:
+  databaseURL: "postgresql+asyncpg://aviary:aviary@postgres.platform.svc.cluster.local:5432/aviary"
+  redisURL: "redis://redis.platform.svc.cluster.local:6379/0"
+  supervisorURL: "http://aviary-supervisor.platform.svc.cluster.local:9000"
+  temporalHost: "temporal.platform.svc.cluster.local:7233"
+  temporalNamespace: "default"
+  temporalTaskQueue: "aviary-workflows"
+  oidcIssuer: ""
+  oidcInternalIssuer: ""
+  oidcClientID: ""
+  llmGatewayURL: ""
+  mcpGatewayURL: ""
+  vaultAddr: ""
+  devUserSub: "dev-user"
+  cookieSecure: "false"
+  corsOrigins: '["http://localhost:31300","http://localhost:3000"]'
+
+# Empty string = unset. In prod, override the rendered Secret via ExternalSecret/SOPS.
+secrets:
+  oidcClientSecret: ""
+  llmGatewayAPIKey: ""
+  mcpGatewayAPIKey: ""
+  vaultToken: ""
+  workerSharedSecret: "dev-worker-secret-change-me"
+
+# Mounts the project root config.yaml so direct-LLM mode and secret fallback
+# stay parity with compose. Disable in prod (use Values + ExternalSecrets).
+configFile:
+  enabled: true
+  configMapName: aviary-config
+
+# Helm pre-install/pre-upgrade hook running alembic upgrade head.
+migrate:
+  enabled: true
+  image:
+    repository: aviary-shared-migrate
+    tag: latest
+    pullPolicy: IfNotPresent
+
+resources:
+  requests: { cpu: 100m, memory: 256Mi }
+  limits:   { cpu: 2,    memory: 1Gi }
+
+livenessProbe:
+  httpGet: { path: /api/health, port: 8000 }
+  initialDelaySeconds: 10
+  periodSeconds: 30
+readinessProbe:
+  httpGet: { path: /api/health, port: 8000 }
+  initialDelaySeconds: 3
+  periodSeconds: 10

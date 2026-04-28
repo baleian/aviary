@@ -1,0 +1,10 @@
+replicas: 2
+
+image:
+  pullPolicy: IfNotPresent
+
+secrets: {}
+
+resources:
+  requests: { cpu: 200m, memory: 512Mi }
+  limits:   { cpu: 2,    memory: 2Gi }

@@ -1,4 +1,4 @@
-# Customizable runtime environment — example companion to values-dev.yaml.
+# Customizable runtime environment — example companion to values-local.yaml.
 # Ships with a thin layered image (see runtime/Dockerfile.custom) and
 # unrestricted egress so agents can reach any external service. Copy this
 # file + the Dockerfile.custom and adjust to provision additional envs.

@@ -1,0 +1,13 @@
+replicas: 2
+
+image:
+  # CI build supplies a tag baked against the prod NEXT_PUBLIC_* URLs.
+  tag: prod
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+
+resources:
+  requests: { cpu: 200m, memory: 512Mi }
+  limits:   { cpu: 1,    memory: 1Gi }

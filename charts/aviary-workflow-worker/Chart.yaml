@@ -1,0 +1,6 @@
+apiVersion: v2
+name: aviary-workflow-worker
+description: Aviary workflow worker — Temporal task queue consumer
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: aviary-admin
+description: Aviary admin console — operator-facing CRUD (no auth, internal-only)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

@@ -1,0 +1,10 @@
+image:
+  pullPolicy: Never
+
+config:
+  oidcIssuer: "http://localhost:8080/realms/aviary"
+  oidcInternalIssuer: "http://host.k8s.internal:8080/realms/aviary"
+  llmGatewayURL: "http://litellm.platform.svc.cluster.local:4000"
+
+secrets:
+  llmGatewayAPIKey: "sk-aviary-dev"

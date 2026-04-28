@@ -84,6 +84,8 @@ services:
       - "6443:6443"
       - "30300:30300"   # aviary-env-default NodePort
       - "30301:30301"   # aviary-env-custom NodePort
+      - "31000:31000"   # aviary-api NodePort
+      - "31300:31300"   # aviary-web NodePort
     volumes:
       - k8sdata:/var/lib/rancher/k3s
       - workspacedata:/var/lib/aviary-workspace

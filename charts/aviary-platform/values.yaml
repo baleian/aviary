@@ -1,53 +1,41 @@
-# Default values — inherited by values-dev.yaml and values-prod.yaml.
-
 platformNamespace: platform
 agentsNamespace: agents
 
-# Host IP seen from inside the cluster. Must resolve to the docker-compose
-# bridge (dev) or the VPC NAT/ALB IP (prod).
+# Docker-compose bridge IP (local) or VPC NAT IP (prod) — resolved at render time.
 hostGatewayIP: ""
 
-# NetworkPolicy enforced on every pod labeled aviary/role=agent-runtime in the
-# agents namespace. Agents always see this in addition to any extra rules an
-# environment opts into via extraEgress.
 baselineEgress:
   enabled: true
   allowHostGatewayPorts:
+    - 8090   # LiteLLM (inference + aggregated MCP)
+  allowPlatformPorts:
     - 8000   # API
-    - 8090   # LiteLLM (inference + aggregated MCP at /mcp)
-    - 9000   # Agent Supervisor (A2A sub-agent invocations from runtime)
+    - 9000   # Supervisor (A2A)
 
-# Dev-only: proxy docker-compose services (litellm, supervisor) into the
-# cluster via Service + Endpoints with the host gateway IP.
+# Local-only: Service + Endpoints proxying compose/local-infra services into the
+# cluster (postgres, redis, temporal, keycloak, vault, litellm). In prod these
+# resolve to managed endpoints — disable and inject via Values/Secrets.
 externalServices:
   enabled: false
   services:
-    - name: litellm
-      clusterPort: 4000
-      hostPort: 8090
-    - name: supervisor
-      clusterPort: 9000
-      hostPort: 9000
+    - { name: postgres, clusterPort: 5432, hostPort: 5432 }
+    - { name: redis,    clusterPort: 6379, hostPort: 6379 }
+    - { name: keycloak, clusterPort: 8080, hostPort: 8080 }
+    - { name: vault,    clusterPort: 8200, hostPort: 8200 }
+    - { name: temporal, clusterPort: 7233, hostPort: 7233 }
+    - { name: litellm,  clusterPort: 4000, hostPort: 8090 }
 
-# Warm the runtime image on every node so pod starts don't pay the pull cost.
 imageWarmer:
   enabled: false
   image: aviary-runtime:latest
-  # Override to a mirrored path in air-gapped environments.
   pauseImage: registry.k8s.io/pause:3.9
 
-# Single RWX PVC shared across every runtime environment. Envs are capability
-# boundaries (image, egress); workspace state lives in one place so a session
-# can migrate between envs with its Claude CLI history / shared files / venv
-# intact.
+# Single RWX PVC mounted by every runtime env so sessions migrate intact.
 sharedWorkspace:
   enabled: true
   name: aviary-shared-workspace
   size: 50Gi
-  # RWX StorageClass. Dev: "manual" — bound to the static hostPath PV below.
-  # Prod: EFS (or similar RWX CSI driver).
+  # K3s' default local-path is RWO, so local pre-provisions a hostPath PV bound
+  # via storageClassName: manual. Prod swaps to an RWX CSI (EFS).
   storageClassName: manual
-  # Dev only: if set, a hostPath PersistentVolume is created on the node with
-  # this path, and the PVC binds to it (RWX is fine on single-node K3s).
-  # Leave empty in prod — the CSI driver provisions the PV dynamically.
   hostPath: ""

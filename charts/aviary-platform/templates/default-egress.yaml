@@ -26,7 +26,9 @@ spec:
             matchLabels:
               aviary/namespace: {{ include "aviary-platform.platformNamespace" . }}
       ports:
-        - { port: 8080, protocol: TCP }
+        {{- range .Values.baselineEgress.allowPlatformPorts }}
+        - { port: {{ . }}, protocol: TCP }
+        {{- end }}
     {{- if .Values.hostGatewayIP }}
     - to:
         - ipBlock:

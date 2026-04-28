@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "aviary-workflow-worker.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "aviary-workflow-worker.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      {{- include "aviary-workflow-worker.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "aviary-workflow-worker.labels" . | nindent 8 }}
+    spec:
+      {{- if .Values.hostGatewayIP }}
+      hostAliases:
+        - ip: {{ .Values.hostGatewayIP | quote }}
+          hostnames: ["host.k8s.internal"]
+      {{- end }}
+      containers:
+        - name: worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: DATABASE_URL
+              value: {{ .Values.config.databaseURL | quote }}
+            - name: REDIS_URL
+              value: {{ .Values.config.redisURL | quote }}
+            - name: TEMPORAL_HOST
+              value: {{ .Values.config.temporalHost | quote }}
+            - name: TEMPORAL_NAMESPACE
+              value: {{ .Values.config.temporalNamespace | quote }}
+            - name: TEMPORAL_TASK_QUEUE
+              value: {{ .Values.config.temporalTaskQueue | quote }}
+            - name: SUPERVISOR_URL
+              value: {{ .Values.config.supervisorURL | quote }}
+          envFrom:
+            - secretRef:
+                name: {{ include "aviary-workflow-worker.fullname" . }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

@@ -1,0 +1,18 @@
+image:
+  pullPolicy: Never
+
+service:
+  type: NodePort
+  nodePort: 31000
+
+config:
+  oidcIssuer: "http://localhost:8080/realms/aviary"
+  oidcInternalIssuer: "http://host.k8s.internal:8080/realms/aviary"
+  oidcClientID: "aviary-web"
+  llmGatewayURL: "http://litellm.platform.svc.cluster.local:4000"
+  mcpGatewayURL: "http://litellm.platform.svc.cluster.local:4000"
+  cookieSecure: "false"
+
+secrets:
+  llmGatewayAPIKey: "sk-aviary-dev"
+  mcpGatewayAPIKey: "sk-aviary-dev"
