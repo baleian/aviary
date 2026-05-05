@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build and (re)start the compose stacks. K8s lives in local-deploy.sh.
+# Build and (re)start the compose stacks.
 # Usage: setup-dev.sh [infra|service|<csv>]   (no arg → both groups)
 set -euo pipefail
 

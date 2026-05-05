@@ -1,9 +1,4 @@
-"""Workflow management REST API for admin console.
-
-Runtime environments are pre-provisioned via Helm — there are no per-workflow
-infrastructure actions (activate/deactivate/restart/scale) in this service
-anymore.
-"""
+"""Workflow management REST API for admin console."""
 
 import uuid
 

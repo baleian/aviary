@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Restart stopped compose containers. K8s lives in local-deploy.sh.
+# Restart stopped compose containers.
 # Usage: start-dev.sh [infra|service|<csv>]   (no arg → both groups)
 set -euo pipefail
 

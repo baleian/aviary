@@ -1,21 +1,21 @@
 # Aviary
 
-Multi-tenant AI agent platform. Users create/configure agents via Web UI; every agent runs in a **shared runtime environment** (a pre-provisioned K8s Deployment pool) powered by claude-agent-sdk.
+Multi-tenant AI agent platform. Users create/configure agents via Web UI; every agent runs in the in-compose **runtime** container powered by claude-agent-sdk.
 
 ## Quick Start
 
-All dev scripts target three groups: `infra` (local-infra compose), `runtime` (K3s helm-managed runtime pods), `service` (root compose). No arg = all three. Comma-separate to combine.
+All dev scripts target two groups: `infra` (local-infra compose) and `service` (root compose). No arg = both. Comma-separate to combine.
 
 ```bash
 ./scripts/setup-dev.sh                       # build + (re)deploy everything (volumes preserved)
-./scripts/setup-dev.sh runtime               # only the runtime group
-./scripts/setup-dev.sh infra,service         # everything except runtime
+./scripts/setup-dev.sh service               # only the services group
+./scripts/setup-dev.sh infra,service         # explicit (same as no arg)
 
-./scripts/start-dev.sh [groups]              # start stopped containers / scale runtime up (no build)
-./scripts/stop-dev.sh  [groups]              # stop running containers / scale runtime to 0
+./scripts/start-dev.sh [groups]              # start stopped containers (no build)
+./scripts/stop-dev.sh  [groups]              # stop running containers
 ./scripts/clean-dev.sh [groups]              # remove containers + volumes (full wipe)
 
-./scripts/logs.sh {infra|runtime|service}    # tail logs for one group
+./scripts/logs.sh {infra|service}            # tail logs for one group
 
 # Iterating on a single container — pass through to compose directly:
 docker compose up -d --build api                   # rebuild + restart api (project root)
@@ -24,20 +24,20 @@ cd local-infra && docker compose restart litellm   # tweak litellm config
 
 The repo is two compose stacks that mirror the production split:
 
-- **Project root** — the services we own end-to-end (api, admin, web, agent-supervisor, workflow-worker, runtime) **plus** the infra deps that are non-negotiable for the app to boot: **postgres**, **redis**, **temporal**. Service compose alone is enough for full E2E (including workflow execution) — no IdP, Vault, LLM gateway, MCP gateway, or OTel collector required. The `runtime` service is the supervisor's default target (`DEFAULT_RUNTIME_ENDPOINT=http://runtime:3000`); the K3s-managed runtime pool is an opt-in per-agent override.
-- **[local-infra/](local-infra/)** — opt-in *local* simulation of platform-team infra that's normally external in prod (keycloak, vault, litellm, prometheus, grafana, mcp-jira/confluence, optional K3s under the `k3s` profile). These pieces reach the service-compose stack via `host.docker.internal:5432` (postgres) — so start the service stack first.
+- **Project root** — the services we own end-to-end (api, admin, web, agent-supervisor, workflow-worker, runtime, proxy). The `runtime` service is the supervisor's default target (`DEFAULT_RUNTIME_ENDPOINT=http://runtime:3000`).
+- **[local-infra/](local-infra/)** — required platform-team infra (postgres, redis, temporal, keycloak, vault, litellm, prometheus, grafana, mcp-jira/confluence). Service compose dials these via `host.docker.internal:5432` (postgres) etc., so start `infra` first.
 
 Both stacks read the **same `.env`** — `local-infra/.env` is a symlink to the root `.env` (created by `setup-dev.sh`). Per-stack variables are organized into `Aviary services` / `Local-infra` sections in [.env.example](.env.example) but live in one file.
 
-Services: **Browser entry — Caddy proxy** routes `/api/*` → API and everything else → Web. Service compose uses `:3000` (the host port web used to occupy); local-deploy mode uses `:80` to match prod ALB on the dot. Either way it's a single same-origin entry — the frontend has no hardcoded ports. Other entry points: Admin (`:8001`, operator console), Keycloak (`:8080`, admin/admin), Vault (`:8200`), LiteLLM Gateway (`:8090`, inference + aggregated MCP at `/mcp`), Temporal UI (`:8233`), Prometheus (`:9090`), Grafana (`:3001`).
+Services: **Browser entry — Caddy proxy** at `:3000` routes `/api/*` → API and everything else → Web. Single same-origin entry — the frontend has no hardcoded ports. Other entry points: Admin (`:8001`, operator console), Keycloak (`:8080`, admin/admin), Vault (`:8200`), LiteLLM Gateway (`:8090`, inference + aggregated MCP at `/mcp`), Temporal UI (`:8233`), Prometheus (`:9090`), Grafana (`:3001`).
 Test accounts: `user1@test.com`, `user2@test.com` (all `password`).
 
 ## Architecture
 
 ```
-Browser ─┐  (single origin — :3000 service compose / :80 local-deploy / :443 ALB in prod)
+Browser ─┐  (single origin — :3000 service compose)
          ▼
-       Caddy / ALB
+       Caddy proxy
          ├── /api/*  → FastAPI (:8000)  ← REST + WebSocket
          └── /*      → Next.js (:3000)  ← UI
 
@@ -50,48 +50,24 @@ FastAPI (:8000)
                                                   │
                                                   ▼
                 Agent Supervisor (:9000, stateless)
-                      ├── SSE proxy → runtime pool
+                      ├── SSE proxy → runtime
                       ├── publish every event to Redis
                       ├── assemble final message
-                      └── /metrics (Prometheus)
+                      └── /metrics (OTLP push)
 
 Admin Console (:8001) → DB (no infra calls)
 
-Project root (docker compose — minimal stack that boots E2E on its own):
-  postgres, redis, temporal, temporal-ui (:8233), api, admin,
-  agent-supervisor, workflow-worker, web, proxy (:80, Caddyfile under
-  ./proxy), db-migrate, runtime  ← default agent runtime; supervisor's
-  DEFAULT_RUNTIME_ENDPOINT points at it.
+Project root (docker compose):
+  api, admin, agent-supervisor, workflow-worker, web, proxy, runtime.
 
-local-infra/ (docker compose — opt-in simulation of external infra):
-  Keycloak, Vault, LiteLLM (:8090 — inference + MCP), Prometheus, Grafana,
-  mcp-jira / mcp-confluence, optional K3s (profile: k3s). Reaches the
-  service-compose postgres via host.docker.internal:5432.
-
-K8s cluster (Helm-managed; the only thing in K3s/EKS):
-  charts/aviary-platform — namespaces, baseline egress NP,
-    external-services proxy Services (dev only), image-warmer DaemonSet
-    (optional), shared RWX workspace PVC (mounted by every env)
-  charts/aviary-runtime — one release per runtime environment:
-    Deployment (replicas fixed, min 1) — pool serves every agent
-    Service (NodePort in dev → supervisor hits host.docker.internal:<port>;
-            ClusterIP in prod)
-    optional per-env NetworkPolicy (union with baseline)
+local-infra/ (docker compose — required):
+  postgres, redis, temporal, temporal-ui (:8233), db-migrate (one-shot),
+  keycloak, vault, litellm (:8090 — inference + MCP), mcp-jira / mcp-confluence,
+  otel-collector, prometheus, grafana.
 
 Agent routing:
   agent.runtime_endpoint (nullable) in the DB.
-  null → supervisor's DEFAULT_RUNTIME_ENDPOINT.
-  non-null → any env Service DNS (admin sets per agent).
-
-Environments shipped out of the box (both `charts/aviary-runtime` releases):
-  default — locked-down egress (DNS + platform only), base `aviary-runtime`
-            image (git + gh). NodePort 30300. Opt in by pointing
-            agent.runtime_endpoint at http://host.docker.internal:30300 (dev)
-            or the env's in-cluster Service DNS (prod).
-  custom  — worked example of a per-env customization: open internet via
-            `extraEgress: 0.0.0.0/0` and `aviary-runtime-custom` image
-            (base + `cowsay` as a demo marker, see runtime/Dockerfile.custom).
-            NodePort 30301.
+  null → supervisor's DEFAULT_RUNTIME_ENDPOINT (= the in-compose runtime).
 ```
 
 ### Service Responsibilities
@@ -100,21 +76,20 @@ Three backend services with distinct roles:
 
 **Access model (current)** — *Owner-only* for every entity (agent, session, workflow). There is no ACL, no team, no visibility, no platform-admin, no invited participants. RBAC will return later as a dedicated redesign; everything below assumes a single-owner world.
 
-**API Server (`:8000`)** — User-facing. Agent/session/workflow CRUD (owner-only), OIDC auth, chat. Looks up the agent row, builds a self-contained `agent_config`, and POSTs to the supervisor with `Authorization: Bearer <user JWT>`. Subscribes to the session's Redis channel and relays every event to WS clients. Also publishes the DB-consistent events (`user_message` on WS receive, `done`/`cancelled`/`error` after persisting the agent message) and maintains per-user unread counters — those require DB ids and the session participant list, which the supervisor doesn't know. No Vault client. No K8s concepts.
+**API Server (`:8000`)** — User-facing. Agent/session/workflow CRUD (owner-only), OIDC auth, chat. Looks up the agent row, builds a self-contained `agent_config`, and POSTs to the supervisor with `Authorization: Bearer <user JWT>`. Subscribes to the session's Redis channel and relays every event to WS clients. Also publishes the DB-consistent events (`user_message` on WS receive, `done`/`cancelled`/`error` after persisting the agent message) and maintains per-user unread counters — those require DB ids and the session participant list, which the supervisor doesn't know. No Vault client.
 
-**Admin Console (`:8001`)** — Operator-facing. No authentication (local-only). Manages agent / workflow definitions only. User management, per-user Vault credentials, and MCP server CRUD have been removed — users self-serve credentials through the Web UI, and MCP servers are provisioned via LiteLLM directly (YAML config or its own UI). Runtime infrastructure is Helm-managed — admin never talks to K8s or the supervisor.
+**Admin Console (`:8001`)** — Operator-facing. No authentication (local-only). Manages agent / workflow definitions only. User management, per-user Vault credentials, and MCP server CRUD have been removed — users self-serve credentials through the Web UI, and MCP servers are provisioned via LiteLLM directly (YAML config or its own UI).
 
-**Agent Supervisor (`:9000`, project-root compose)** — Reverse SSE Proxy. Runs outside K8s, same deploy unit as API/Admin. No DB, no K8s API. Holds an **in-memory registry** of active stream tasks keyed by **stream_id** (one per `/message` call). `/sessions/{sid}/message` and `/sessions/{sid}/a2a` require `Authorization: Bearer <user JWT>` — the supervisor validates the token via OIDC and owns per-user runtime credential lookup: it fetches `github-token` from Vault using the JWT's `sub` and injects `agent_config.credentials` / `user_token` / `user_external_id` into the request body before forwarding to the runtime. On each `/message` it allocates a `stream_id` and immediately publishes `stream_started {stream_id}` to `session:{sid}:events` — that's the frontend's confirmation signal for enabling the abort button. Streams SSE from the runtime's Service endpoint, publishes every stream event (tagged with stream_id) to `session:{sid}:events`, buffers chunks under `stream:{stream_id}:chunks` for replay, assembles the final text + blocks, returns them to the caller — the API then persists the message and publishes the terminal `done`/`cancelled` event with the DB messageId. Emits Prometheus metrics at `/metrics`. **Abort** = `POST /v1/streams/{stream_id}/abort` → cancel the task; closing the outbound httpx stream propagates close through the Service-pinned TCP connection, which fires `res.on("close")` in the runtime pod and aborts the SDK.
+**Agent Supervisor (`:9000`, project-root compose)** — Reverse SSE Proxy. Same deploy unit as API/Admin. No DB. Holds an **in-memory registry** of active stream tasks keyed by **stream_id** (one per `/message` call). `/sessions/{sid}/message` and `/sessions/{sid}/a2a` require `Authorization: Bearer <user JWT>` — the supervisor validates the token via OIDC and owns per-user runtime credential lookup: it fetches `github-token` from Vault using the JWT's `sub` and injects `agent_config.credentials` / `user_token` / `user_external_id` into the request body before forwarding to the runtime. On each `/message` it allocates a `stream_id` and immediately publishes `stream_started {stream_id}` to `session:{sid}:events` — that's the frontend's confirmation signal for enabling the abort button. Streams SSE from the runtime, publishes every stream event (tagged with stream_id) to `session:{sid}:events`, buffers chunks under `stream:{stream_id}:chunks` for replay, assembles the final text + blocks, returns them to the caller — the API then persists the message and publishes the terminal `done`/`cancelled` event with the DB messageId. Pushes Prometheus metrics via OTLP. **Abort** = `POST /v1/streams/{stream_id}/abort` → cancel the task; closing the outbound httpx stream propagates close through the TCP connection, which fires `res.on("close")` in the runtime and aborts the SDK.
 
-**Shared DB package** ([shared/aviary_shared/](shared/aviary_shared/)) — SQLAlchemy models, migrations, and session factory used by API + Admin. Migrations live at [shared/aviary_shared/db/migrations/](shared/aviary_shared/db/migrations/) with alembic config at [shared/alembic.ini](shared/alembic.ini).
+**Shared DB package** ([shared/aviary_shared/](shared/aviary_shared/)) — SQLAlchemy models, migrations, and session factory used by API + Admin. Migrations live at [shared/aviary_shared/db/migrations/](shared/aviary_shared/db/migrations/) with alembic config at [shared/alembic.ini](shared/alembic.ini). The `db-migrate` service in local-infra runs `alembic upgrade head` on startup.
 
 **Key flows:**
 - Agent creation → API saves config to DB. No infrastructure side effects.
-- Agent routing edit → Admin updates `agent.runtime_endpoint` in DB. Effective on the next chat message.
-- Chat message → WebSocket → API saves the user message to DB and publishes `user_message {messageId}` to `session:{sid}:events`, builds the full `agent_config` (runtime_endpoint, model_config, instruction, tools, mcp_servers, optional accessible_agents), POSTs `supervisor /v1/sessions/{sid}/message` with `Authorization: Bearer <user JWT>` → supervisor allocates a stream_id, publishes `stream_started {stream_id}` so the client can enable the abort button, validates the JWT, fetches Vault credentials, injects them into `agent_config`, streams SSE from `{endpoint}/message`, publishes every stream event to `session:{sid}:events` and buffers under `stream:{stream_id}:chunks`, assembles final text + blocks, returns them → API persists the agent message to DB, publishes `done {messageId}` (or `cancelled {messageId}` when the supervisor returned `status=aborted`), and INCRs `session:{sid}:unread:{uid}` for every session participant. Any WS actively relaying the terminal event clears its own user's unread counter on the same transition.
+- Chat message → WebSocket → API saves the user message to DB and publishes `user_message {messageId}` to `session:{sid}:events`, builds the full `agent_config` (runtime_endpoint, model_config, instruction, tools, optional accessible_agents), POSTs `supervisor /v1/sessions/{sid}/message` with `Authorization: Bearer <user JWT>` → supervisor allocates a stream_id, publishes `stream_started {stream_id}` so the client can enable the abort button, validates the JWT, fetches Vault credentials, injects them into `agent_config`, streams SSE from `{endpoint}/message`, publishes every stream event to `session:{sid}:events` and buffers under `stream:{stream_id}:chunks`, assembles final text + blocks, returns them → API persists the agent message to DB, publishes `done {messageId}` (or `cancelled {messageId}` when the supervisor returned `status=aborted`), and INCRs `session:{sid}:unread:{uid}` for every session participant. Any WS actively relaying the terminal event clears its own user's unread counter on the same transition.
 - Agent config edit (instruction, tools, MCP servers) → API updates DB only. Passed to runtime on every message request body.
 
-**Pod Strategy (env-per-pool, (agent, session)-per-workdir):** One Helm release per environment. Replicas fixed (min 1), no scale-to-zero. Every pod serves every agent. Isolation comes from per-(agent, session) on-disk paths plus bubblewrap — the pod itself is agent-agnostic.
+**Runtime Strategy ((agent, session)-per-workdir):** A single runtime container serves every agent. Isolation comes from per-(agent, session) on-disk paths plus bubblewrap — the container itself is agent-agnostic. Concurrent requests are serialized per `(session_id, agent_id)` by the in-process SessionManager.
 
 **LiteLLM Gateway** (local-infra/ compose, `:8090`): All LLM calls go through LiteLLM OSS proxy. Backend is determined by the model name prefix (e.g., `anthropic/claude-sonnet-4-6` → Claude API, `ollama/gemma4:26b` → Ollama, `vllm/...` → vLLM, `bedrock/...` → Bedrock). Natively compatible with Anthropic SDK (`/v1/messages`), so claude-agent-sdk works transparently. The same proxy also serves `/mcp` — the aggregated MCP endpoint (see "MCP Aggregation" below). Configuration in [local-infra/config/litellm/config.yaml](local-infra/config/litellm/config.yaml). LiteLLM is **IdP-unaware** — the caller's identity is read directly from the `X-Aviary-User-Sub` header. In production the upstream LLM-gateway team validates whatever identity proof they require and forwards the resolved sub; locally the runtime/API forwards the sub directly. Three patch modules loaded via `.pth` file:
 - `aviary_user_api_key.py` — `CustomLogger.async_pre_call_hook` that reads `X-Aviary-User-Sub`, fetches the user's Anthropic API key from Vault, overrides the outgoing key. Fails closed when sub is present but Vault has no key.
@@ -126,17 +101,13 @@ LiteLLM UI (`http://localhost:8090/ui`, default `admin/admin`) is backed by a de
 **Observability**: Supervisor exports metrics via OTLP/HTTP push (no `/metrics` endpoint). Setting `OTEL_EXPORTER_OTLP_ENDPOINT` enables export — leave unset to disable. Standard OTel envvars (`OTEL_RESOURCE_ATTRIBUTES`, `OTEL_EXPORTER_OTLP_HEADERS`, …) are read by the SDK directly. Histogram bucket boundaries (publish duration, TTFB, Vault) are pinned via OTel Views in [agent-supervisor/app/main.py](agent-supervisor/app/main.py). Local-infra ships an OTel Collector ([local-infra/config/otel-collector/config.yaml](local-infra/config/otel-collector/config.yaml)) that receives OTLP on `:4318` and exposes a Prometheus exporter on `:8889`; the bundled Prometheus scrapes that exporter and Grafana (`:3001`, anonymous admin) auto-provisions the "Aviary Supervisor" dashboard from [local-infra/config/grafana/dashboards/supervisor.json](local-infra/config/grafana/dashboards/supervisor.json).
 
 **Agent Supervisor routes:**
-- `POST /v1/sessions/{sid}/message` — Bearer-gated. Body: `{session_id, content_parts, agent_config}` where `agent_config` carries `runtime_endpoint`, `model_config`, `instruction`, `tools`, `mcp_servers`, optional `accessible_agents` (each is a full agent spec). Returns `{status, stream_id, reached_runtime, assembled_text, assembled_blocks}`. All stream events are published to Redis under `session:{sid}:events` tagged with the allocated `stream_id`.
+- `POST /v1/sessions/{sid}/message` — Bearer-gated. Body: `{session_id, content_parts, agent_config}` where `agent_config` carries `runtime_endpoint`, `model_config`, `instruction`, `tools`, optional `accessible_agents` (each is a full agent spec). Returns `{status, stream_id, reached_runtime, assembled_text, assembled_blocks}`. All stream events are published to Redis under `session:{sid}:events` tagged with the allocated `stream_id`.
 - `POST /v1/sessions/{sid}/a2a` — Bearer-gated. Parent runtime's A2A MCP server invokes this with `{parent_session_id, parent_tool_use_id, agent_config: <full sub-agent config>, content_parts}`. Sub-agent SSE is forwarded to the caller; `tool_use`/`tool_result` events are tagged with `parent_tool_use_id` and stashed in the parent's A2A buffer for assembly merge.
 - `POST /v1/streams/{stream_id}/abort` — cancel the registered task. Unknown stream → fan-out on `supervisor:abort` so whichever replica holds it cancels.
 - `DELETE /v1/sessions/{sid}` — cleanup workspace directories for a given (agent, session).
 - `GET /v1/health` · OTLP push for metrics (see Observability).
 
-No background loops. No per-agent state. No 0↔1 activation — environments are always on.
-
-**Egress policy** is set per environment via Helm:
-- **Baseline** (`charts/aviary-platform/templates/default-egress.yaml`): namespace-wide `NetworkPolicy` on `aviary/role=agent-runtime`; allows DNS + platform NS + gateway ports (LiteLLM 8090 — inference + aggregated MCP, API 8000, Supervisor 9000 — for A2A). Always in effect.
-- **Per-environment extras**: optional `extraEgress` list in `charts/aviary-runtime/values.yaml` gets merged into a second NetworkPolicy scoped by `aviary/environment=<name>`. K8s NP evaluates as a disjunction — this unions with baseline.
+No background loops. No per-agent state.
 
 ## Critical Patterns & Gotchas
 
@@ -154,21 +125,18 @@ All IdP wiring lives in `shared/aviary_shared/auth/` and is driven by env vars. 
 ### Pydantic v2 `model_config` Conflict
 `model_config` is a reserved Pydantic class variable. Use `Field(alias="model_config")` with `model_config_json` as the Python field name — the shared `MODEL_CONFIG_ALIAS` in `api/app/schemas/_common.py` centralizes this. The `ConfigDict(populate_by_name=True, protected_namespaces=())` class var must be declared BEFORE field definitions. See `api/app/schemas/agent.py`.
 
-### API + Admin Know Nothing About Infrastructure
-Neither service has K8s concepts (namespace, pod, deployment, NetworkPolicy). The only routing input they touch is the optional `agent.runtime_endpoint` string column. Everything else is Helm-managed.
+### Supervisor — Endpoint Injection
+Callers look up `agent.runtime_endpoint` and pass it in each publish body. `runtime_endpoint=null` → `DEFAULT_RUNTIME_ENDPOINT` (the in-compose runtime container at `http://runtime:3000`).
 
-### Supervisor Outside K8s — Endpoint Injection
-The supervisor is a service in the project-root compose (same deploy path as API/Admin), not a K8s workload. Callers look up `agent.runtime_endpoint` and pass it in each publish body. `runtime_endpoint=null` → `DEFAULT_RUNTIME_ENDPOINT` (dev: `http://runtime:3000`, the in-compose runtime container; prod: env's Service DNS or LB URL). The K3s-managed environment pool is an opt-in target — set `agent.runtime_endpoint` to its NodePort (dev: `http://host.docker.internal:30300` for `default`, `:30301` for `custom`) when an agent needs the per-env egress / custom image.
-
-### Abort Flow — No Pod Routing Required
-The TCP connection from supervisor to a runtime pod is pinned once established (kube-proxy load-balances at connect time, not per-request). So **cancelling the supervisor's outbound httpx stream is sufficient** to abort the specific pod handling it:
+### Abort Flow — Cancel the supervisor's outbound stream
+**Cancelling the supervisor's outbound httpx stream is sufficient** to abort the runtime handling it:
 
 ```
 Frontend Stop button (knows stream_id from `stream_started` event)
   → WS {type: "cancel", stream_id}
   → API POST /v1/streams/{stream_id}/abort
   → supervisor._active[stream_id].cancel()
-  → httpx client context exits → TCP close → pod's res.on("close") → abortController.abort()
+  → httpx client context exits → TCP close → runtime's res.on("close") → abortController.abort()
 ```
 
 Two subtle points the original design got wrong and had to be fixed:
@@ -178,15 +146,15 @@ Two subtle points the original design got wrong and had to be fixed:
 **Multi-replica** is handled by a supervisor-only Redis fan-out: if `/abort` lands on a replica that doesn't hold the task, it publishes to the `supervisor:abort` channel with the `stream_id` and whichever replica holds it cancels. Runtime has no knowledge of this and no Redis connectivity.
 
 ### claude-agent-sdk Multi-Turn (TypeScript)
-Uses the `query()` function from `@anthropic-ai/claude-agent-sdk`. TS SDK doesn't expose a `sessionId` option — Aviary session_id is injected via `extraArgs: { "session-id": sessionId }` which passes `--session-id <uuid>` to the CLI on the first message. Subsequent messages use `resume: sessionId` to load existing conversation history. Resume is determined by checking for existing JSONL in `<claudeDir>/projects/`. CLI session data persists on the **shared workspace PVC** under `sessions/{sid}/agents/{aid}/.claude` — so a session can migrate between environments (e.g., admin swaps `agent.runtime_endpoint`) without losing its history. Runtime is a Node.js/Express server (`src/server.ts`). Agent config (instruction, tools, MCP servers) is sent in every message request body — no ConfigMap or on-disk config. `agent_id` arrives in `agent_config.agent_id`.
+Uses the `query()` function from `@anthropic-ai/claude-agent-sdk`. TS SDK doesn't expose a `sessionId` option — Aviary session_id is injected via `extraArgs: { "session-id": sessionId }` which passes `--session-id <uuid>` to the CLI on the first message. Subsequent messages use `resume: sessionId` to load existing conversation history. Resume is determined by checking for existing JSONL in `<claudeDir>/projects/`. CLI session data persists on the runtime's mounted workspace volume under `sessions/{sid}/agents/{aid}/.claude`. Runtime is a Node.js/Express server (`src/server.ts`). Agent config (instruction, tools) is sent in every message request body — no on-disk config. `agent_id` arrives in `agent_config.agent_id`.
 
 ### Multi-Agent, Multi-Session Runtime
-Each runtime Pod serves every agent. The SessionManager keys entries by `(session_id, agent_id)` and serializes messages per-key. There is **no hard concurrency cap** — the runtime accepts every request; scaling is handled at the infra level (add more pods / environments via Helm).
+The runtime serves every agent. The SessionManager keys entries by `(session_id, agent_id)` and serializes messages per-key. There is **no hard concurrency cap** — the runtime accepts every request.
 
-### Session Isolation (bubblewrap + shared PVC)
+### Session Isolation (bubblewrap + workspace volume)
 The `claude` binary in PATH is a wrapper script (`scripts/claude-sandbox.sh`). The real binary is renamed to `claude-real` at build time (see Dockerfile). SDK must use `pathToClaudeCodeExecutable: "/usr/local/bin/claude"` to bypass the bundled binary and use the wrapper.
 
-The cluster-wide shared RWX PVC (`aviary-shared-workspace`, owned by `aviary-platform`) is mounted at `/workspace-root` in every runtime pod, across every environment. Inside it:
+The runtime container mounts a docker volume (`runtime-workspace`) at `/workspace-root`. Inside it:
 
 ```
 /workspace-root/sessions/{sid}/shared/                 # shared across agents in the session
@@ -195,7 +163,7 @@ The cluster-wide shared RWX PVC (`aviary-shared-workspace`, owned by `aviary-pla
 ```
 
 When the SDK invokes `claude`, the wrapper reads `SESSION_WORKSPACE` / `SESSION_CLAUDE_DIR` / `SESSION_VENV_DIR` / `SESSION_TMP` and runs `claude-real` inside a bwrap mount namespace:
-- `/workspace-root/` — empty tmpfs overlay; hides the PVC layout so sibling sessions living under the same PVC can't be enumerated from inside the sandbox.
+- `/workspace-root/` — empty tmpfs overlay; hides the volume layout so sibling sessions can't be enumerated from inside the sandbox.
 - `SESSION_WORKSPACE` → `/workspace` — session-shared area; every agent in the session sees the same files.
 - `SESSION_CLAUDE_DIR` → `/workspace/.claude` — per-(agent, session) CLI context overlay.
 - `SESSION_VENV_DIR` → `/workspace/.venv` — per-(agent, session) Python venv.
@@ -205,10 +173,7 @@ When the SDK invokes `claude`, the wrapper reads `SESSION_WORKSPACE` / `SESSION_
 Other agents' / sessions' files are invisible inside the bwrap view.
 
 ### GitHub Token Injection
-The supervisor fetches the user's GitHub token from Vault (`secret/aviary/credentials/{sub}/github-token`) on every `/message` and `/a2a` call, keyed by the `sub` of the validated Bearer JWT, and injects it as `agent_config.credentials.github_token` into the outbound runtime request. The runtime exposes it as `GITHUB_TOKEN` / `GH_TOKEN` env vars and configures a git credential helper (`scripts/git-credential-github.sh`) via `GIT_CONFIG_*` env vars. Inside the sandbox both `git` and `gh` are available on every env and authenticated via `GITHUB_TOKEN` / `GH_TOKEN` env vars + git credential helper. Callers (API, parent runtime) MUST NOT put `credentials` / `user_token` / `user_external_id` in the body — the supervisor overwrites them with the authoritative validated identity.
-
-### Egress Enforcement
-Baseline NetworkPolicy (`charts/aviary-platform/templates/default-egress.yaml`) is always applied to every agent-runtime pod in the agents namespace. Environments can opt into additional egress rules via `charts/aviary-runtime` values (`extraEgress`). K3s enforces NetworkPolicies via bundled kube-router.
+The supervisor fetches the user's GitHub token from Vault (`secret/aviary/credentials/{sub}/github-token`) on every `/message` and `/a2a` call, keyed by the `sub` of the validated Bearer JWT, and injects it as `agent_config.credentials.github_token` into the outbound runtime request. The runtime exposes it as `GITHUB_TOKEN` / `GH_TOKEN` env vars and configures a git credential helper (`scripts/git-credential-github.sh`) via `GIT_CONFIG_*` env vars. Inside the sandbox both `git` and `gh` are available and authenticated via `GITHUB_TOKEN` / `GH_TOKEN` env vars + git credential helper. Callers (API, parent runtime) MUST NOT put `credentials` / `user_token` / `user_external_id` in the body — the supervisor overwrites them with the authoritative validated identity.
 
 ### Claude Code Managed Settings
 [runtime/config/managed-settings.json](runtime/config/managed-settings.json) is installed to `/etc/claude-code/managed-settings.json` (the hardcoded path Claude Code CLI reads on Linux). Currently sets `skipWebFetchPreflight: true` to prevent the CLI from calling `api.anthropic.com/api/web/domain_info` before each WebFetch — this endpoint is unreachable in air-gapped/fintech environments. All model tiers (`ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, etc.) are remapped to the agent's configured model in [runtime/src/agent.ts](runtime/src/agent.ts).
@@ -231,7 +196,7 @@ The runtime ([runtime/src/agent.ts](runtime/src/agent.ts)) handles two streaming
 - **Non-Anthropic backends** (Ollama, vLLM): text and thinking come from cumulative assistant snapshots, diffed against `emittedTextLen` / `emittedThinkingLen`. Shorter content = new block from flushing → counter resets.
 
 ### Chat Streaming Pipeline (API ↔ Supervisor ↔ Redis)
-1. API WS handler saves the user message to DB and builds the full `agent_config` (runtime_endpoint, model_config, instruction, tools, mcp_servers, optional accessible_agents).
+1. API WS handler saves the user message to DB and builds the full `agent_config` (runtime_endpoint, model_config, instruction, tools, optional accessible_agents).
 2. API POSTs `/v1/sessions/{sid}/message` with `Authorization: Bearer <user JWT>` (blocks until supervisor completes).
 3. Supervisor validates the JWT, allocates a `stream_id`, fetches per-user credentials (`github-token`) from Vault, injects `credentials`/`user_token`/`user_external_id` into `agent_config`.
 4. Supervisor streams SSE from `{agent_config.runtime_endpoint}/message`, tags each event with `stream_id`, RPUSHes into `stream:{stream_id}:chunks` (for replay), PUBLISHes to `session:{sid}:events` (for live WS), and updates Prometheus counters.
@@ -241,21 +206,6 @@ The runtime ([runtime/src/agent.ts](runtime/src/agent.ts)) handles two streaming
 ### Thinking Block Support
 - **Supervisor** ([agent-supervisor/app/assembly.py](agent-supervisor/app/assembly.py)): `rebuild_blocks_from_chunks` folds `thinking` events into `blocks_meta` before `chunk` / `tool_use` events. On abort, the same helper assembles whatever was buffered so the API gets a partial message to save.
 - **Frontend**: `ThinkingChip` renders real-time thinking; `SavedThinkingChip` renders persisted blocks.
-
-### K8s Image Loading
-All K8s custom images use `imagePullPolicy: Never`. Loaded via `docker save | docker compose --profile k3s exec -T k8s ctr images import -` (the K3s container lives in [local-infra/compose.yml](local-infra/compose.yml) under the `k3s` profile). [scripts/setup-dev.sh](scripts/setup-dev.sh) handles this for the runtime images when targeting the `runtime` group. LiteLLM runs outside K8s and doesn't need image loading.
-
-### K8s Fixed Node Name
-`--node-name=aviary-node` in [local-infra/compose.yml](local-infra/compose.yml) prevents stale node accumulation on container restart.
-
-### PVC Strategy
-One **shared RWX** PVC (`aviary-shared-workspace`) provisioned by `aviary-platform`, mounted by every runtime environment. Environments are capability boundaries (image + egress); data boundaries are `(agent_id, session_id)` on-disk paths. A session's Claude CLI history, shared files, and per-(agent, session) venv live under `sessions/{sid}/…` on this one PVC — so swapping `agent.runtime_endpoint` mid-session keeps the conversation intact.
-
-Backing differs per env:
-- **Local**: static hostPath PV (path set by `sharedWorkspace.hostPath` in platform values-local.yaml) + `storageClassName: manual`. K3s's bundled `local-path` provisioner hard-codes RWO, so we bypass it with a pre-declared PV that advertises RWX. Single-node K3s handles multi-pod RWX access fine.
-- **Prod**: dynamic provisioning via EFS (`storageClassName: efs-sc`). No static PV needed — the CSI driver creates one on PVC bind.
-
-`charts/aviary-runtime` has no PVC template; the Deployment references `.Values.pvc.claimName` (default `aviary-shared-workspace`).
 
 ### React Strict Mode
 Use `useRef` guards for WebSocket connections and OIDC callbacks to prevent duplicate execution in dev mode.
@@ -279,20 +229,12 @@ cd agent-supervisor && uv run pytest tests/ -v
 
 API/Admin: dedicated `aviary_test` database with `NullPool`, no lifespan.
 
-## Rebuilding Images / Applying Chart Changes
+## Rebuilding Images / Iterating
 
-**Runtime image + Helm charts** — after modifying [runtime/](runtime/) or [charts/](charts/):
-
-```bash
-./scripts/setup-dev.sh runtime    # build runtime images, ctr import, helm apply, rollout restart
-```
-
-`setup-dev.sh runtime` renders `alpine/helm:3.14.4 template` with `hostGatewayIP` from the K3s container and pipes into `kubectl apply -f -`. Iterating on a single chart is fine via the same command — the helm apply is idempotent.
-
-**Supervisor / API / Admin** — after modifying their respective directories:
+After modifying any service source — rebuild + restart that service:
 
 ```bash
-docker compose up -d --build supervisor    # or api, admin, web, workflow-worker
+docker compose up -d --build api          # or admin / supervisor / web / workflow-worker / runtime
 ```
 
 **Hot reload** for project-root services — bind-mount + `--reload` / `npm run dev` from [compose.override.yml](compose.override.yml). Tweaking local-infra config (LiteLLM patches, prometheus.yml, etc.) needs `cd local-infra && docker compose restart <svc>`.
@@ -319,11 +261,11 @@ docker compose up -d --build supervisor    # or api, admin, web, workflow-worker
 |----------|---------|
 | `DATABASE_URL` | PostgreSQL async connection |
 
-## Key Environment Variables (Runtime Pod)
+## Key Environment Variables (Runtime)
 
 | Variable | Purpose |
 |----------|---------|
-| `LLM_GATEWAY_URL` | Inference gateway URL (dev: `http://litellm.platform.svc:4000`) |
+| `LLM_GATEWAY_URL` | Inference gateway URL (dev: `http://host.docker.internal:8090`) |
 | `LLM_GATEWAY_API_KEY` | Inference gateway key |
 | `MCP_GATEWAY_URL` | MCP aggregation endpoint URL (`/mcp` is appended) |
 | `AVIARY_API_URL` | Service URL for runtime-side tools |

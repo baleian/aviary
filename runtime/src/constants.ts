@@ -1,15 +1,15 @@
-// Pod-side paths (host view). The bwrap sandbox remaps these onto /workspace
-// and /workspace/.claude/.venv inside the sandbox — see scripts/claude-sandbox.sh.
+// Container-side paths (host view). The bwrap sandbox remaps these onto
+// /workspace and /workspace/.claude/.venv inside the sandbox — see
+// scripts/claude-sandbox.sh.
 //
-// The single RWX PVC is mounted at WORKSPACE_ROOT. Every agent/session in the
-// environment shares this volume, so isolation is done via path keying plus
-// bwrap bind mounts.
+// The shared workspace volume is mounted at WORKSPACE_ROOT. Every
+// agent/session shares it; isolation is done via path keying plus bwrap
+// bind mounts.
 
 import * as path from "node:path";
 
-// Pod mount point of the shared environment PVC. Overridable via env var
-// primarily so tests can point at a temp directory; production leaves the
-// default which matches the Helm volume mount.
+// Mount point of the shared workspace volume. Overridable via env var
+// primarily so tests can point at a temp directory.
 export const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT ?? "/workspace-root";
 
 // SDK runs inside bwrap where the session's shared dir is mounted at /workspace.

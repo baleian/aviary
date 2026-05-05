@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tail compose logs. K8s: local-deploy.sh logs <chart>.
+# Tail compose logs.
 # Usage: logs.sh {infra|service}
 set -euo pipefail
 
@@ -14,7 +14,6 @@ case "${1:-}" in
     ;;
   *)
     echo "usage: $0 {infra|service}" >&2
-    echo "(K8s pods: ./scripts/local-deploy.sh logs <chart>)" >&2
     exit 1
     ;;
 esac

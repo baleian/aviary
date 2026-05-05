@@ -1,8 +1,0 @@
-# Template for per-environment customization on top of the base runtime image.
-FROM aviary-runtime:latest
-
-USER root
-RUN apt-get update && apt-get install -y --no-install-recommends cowsay \
-    && rm -rf /var/lib/apt/lists/* \
-    && ln -s /usr/games/cowsay /usr/local/bin/cowsay
-USER node

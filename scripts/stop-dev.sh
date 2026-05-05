@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stop compose containers (volumes preserved). K8s lives in local-deploy.sh.
+# Stop compose containers (volumes preserved).
 # Usage: stop-dev.sh [infra|service|<csv>]   (no arg → both groups)
 set -euo pipefail
 

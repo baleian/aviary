@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Wipe compose stacks + volumes. K8s state: local-deploy.sh clean.
+# Wipe compose stacks + volumes.
 # Usage: clean-dev.sh [infra|service|<csv>]   (no arg → both groups)
 set -euo pipefail
 
