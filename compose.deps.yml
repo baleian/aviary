@@ -1,0 +1,40 @@
+name: aviary
+
+# Cross-file depends_on. Loaded only with scope=all so the app and infra
+# files stay independently parseable. Without these, app services race
+# infra at first boot and fail their lifespan startup (e.g. api → temporal
+# DNS lookup before temporal's healthcheck flips to healthy).
+
+services:
+  api:
+    depends_on:
+      postgres:   { condition: service_healthy }
+      redis:      { condition: service_healthy }
+      keycloak:   { condition: service_healthy }
+      litellm:    { condition: service_healthy }
+      vault:      { condition: service_healthy }
+      temporal:   { condition: service_healthy }
+      db-migrate: { condition: service_completed_successfully }
+
+  admin:
+    depends_on:
+      postgres:   { condition: service_healthy }
+      db-migrate: { condition: service_completed_successfully }
+
+  supervisor:
+    depends_on:
+      redis:    { condition: service_healthy }
+      keycloak: { condition: service_healthy }
+      vault:    { condition: service_healthy }
+      litellm:  { condition: service_healthy }
+
+  workflow-worker:
+    depends_on:
+      postgres:   { condition: service_healthy }
+      redis:      { condition: service_healthy }
+      temporal:   { condition: service_healthy }
+      db-migrate: { condition: service_completed_successfully }
+
+  runtime:
+    depends_on:
+      litellm: { condition: service_healthy }

@@ -22,18 +22,18 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-dev_files() {  # dev mode: app override included; infra-only path skips the override.
+dev_files() {  # dev mode: app override included; scope=all also pulls compose.deps.yml.
   case "${1:-all}" in
-    all)   echo "-f compose.yml -f compose.infra.yml -f compose.override.yml" ;;
+    all)   echo "-f compose.yml -f compose.infra.yml -f compose.deps.yml -f compose.override.yml" ;;
     app)   echo "-f compose.yml -f compose.override.yml" ;;
     infra) echo "-f compose.infra.yml" ;;
     *)     echo "unknown scope: $1 (use all|app|infra)" >&2; exit 1 ;;
   esac
 }
 
-prod_files() {  # build/deploy/run/down/clean/logs/ps: no override.
+prod_files() {  # build/deploy/run/down/clean/logs/ps: no override; scope=all pulls deps.
   case "${1:-all}" in
-    all)   echo "-f compose.yml -f compose.infra.yml" ;;
+    all)   echo "-f compose.yml -f compose.infra.yml -f compose.deps.yml" ;;
     app)   echo "-f compose.yml" ;;
     infra) echo "-f compose.infra.yml" ;;
     *)     echo "unknown scope: $1 (use all|app|infra)" >&2; exit 1 ;;

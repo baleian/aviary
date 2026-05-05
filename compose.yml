@@ -92,6 +92,8 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       SUPERVISOR_URL: ${SUPERVISOR_URL:-http://supervisor:9000}
       WORKER_SHARED_SECRET: ${WORKER_SHARED_SECRET:-dev-worker-secret-change-me}
+    depends_on:
+      supervisor: { condition: service_started }
 
   runtime:
     build:
