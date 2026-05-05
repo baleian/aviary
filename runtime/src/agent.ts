@@ -31,11 +31,16 @@ import {
   workflowArtifactPath,
 } from "./constants.js";
 
-// Unset → direct mode: supervisor injects per-model api_base/api_key.
-const LLM_GATEWAY_URL = process.env.LLM_GATEWAY_URL || undefined;
-const LLM_GATEWAY_API_KEY = process.env.LLM_GATEWAY_API_KEY || undefined;
-const MCP_GATEWAY_URL = process.env.MCP_GATEWAY_URL || undefined;
-const MCP_GATEWAY_API_KEY = process.env.MCP_GATEWAY_API_KEY || undefined;
+function requiredEnv(key: string): string {
+  const v = process.env[key];
+  if (!v) throw new Error(`${key} is required`);
+  return v;
+}
+
+const LLM_GATEWAY_URL = requiredEnv("LLM_GATEWAY_URL");
+const LLM_GATEWAY_API_KEY = requiredEnv("LLM_GATEWAY_API_KEY");
+const MCP_GATEWAY_URL = requiredEnv("MCP_GATEWAY_URL");
+const MCP_GATEWAY_API_KEY = requiredEnv("MCP_GATEWAY_API_KEY");
 
 const GITHUB_HOST = process.env.GITHUB_HOST || "github.com";
 
@@ -60,8 +65,6 @@ interface ModelConfig {
   model?: string;
   backend?: string;
   max_output_tokens?: number;
-  api_base?: string;
-  api_key?: string;
 }
 
 interface WorkflowRunRef {
@@ -88,7 +91,6 @@ interface AgentConfig {
   model_config?: ModelConfig | null;
   instruction?: string;
   tools?: string[];
-  mcp_servers?: Record<string, unknown>;
   user_token?: string;
   user_external_id?: string;
   credentials?: Record<string, string>;
@@ -122,39 +124,23 @@ function extractGatewayAllowedTools(tools: string[] | undefined): string[] {
 function buildMcpServers(
   agentConfig: AgentConfig,
 ): Record<string, any> | undefined {
-  const servers: Record<string, any> = {};
-
-  if (agentConfig.mcp_servers) {
-    Object.assign(servers, agentConfig.mcp_servers);
-  }
-
   const allowed = extractGatewayAllowedTools(agentConfig.tools);
-  if (allowed.length > 0) {
-    if (!MCP_GATEWAY_URL) {
-      throw new Error(
-        "Agent has gateway-bound MCP tools but MCP_GATEWAY_URL is not set",
-      );
-    }
-    const mcpHeaders: Record<string, string> = {
-      "X-Aviary-Allowed-Tools": allowed.join(","),
-    };
-    // Prefer the user JWT (IdP mode); fall back to the master key in dev
-    // so LiteLLM's outer auth admits the request.
-    const bearer = agentConfig.user_token || MCP_GATEWAY_API_KEY;
-    if (bearer) {
-      mcpHeaders.Authorization = `Bearer ${bearer}`;
-    }
-    if (agentConfig.user_external_id) {
-      mcpHeaders["X-Aviary-User-Sub"] = agentConfig.user_external_id;
-    }
-    servers[MCP_RUNTIME_KEY] = {
+  if (allowed.length === 0) return undefined;
+
+  const mcpHeaders: Record<string, string> = {
+    "X-Aviary-Allowed-Tools": allowed.join(","),
+    Authorization: `Bearer ${agentConfig.user_token || MCP_GATEWAY_API_KEY}`,
+  };
+  if (agentConfig.user_external_id) {
+    mcpHeaders["X-Aviary-User-Sub"] = agentConfig.user_external_id;
+  }
+  return {
+    [MCP_RUNTIME_KEY]: {
       type: "http",
       url: `${MCP_GATEWAY_URL}/mcp`,
       headers: mcpHeaders,
-    };
-  }
-
-  return Object.keys(servers).length > 0 ? servers : undefined;
+    },
+  };
 }
 
 function hasSessionHistory(claudeDir: string, sessionId: string): boolean {
@@ -415,22 +401,12 @@ export async function* processMessage(
   if (!mc.model || !mc.backend) {
     throw new Error("agent_config.model_config.model and .backend are required");
   }
-  const directBase = mc.api_base;
-  const directKey = mc.api_key;
-  const useDirectMode = directBase !== undefined || directKey !== undefined;
-  // Gateway mode joins backend+model so LiteLLM can route; direct mode uses the bare name.
-  const resolvedModel = useDirectMode
+  // LiteLLM routes by `${backend}/${model}` — join unless caller already prefixed.
+  const resolvedModel = mc.model.includes("/")
     ? mc.model
-    : mc.model.includes("/")
-      ? mc.model
-      : `${mc.backend}/${mc.model}`;
-  const anthropicBaseUrl = directBase ?? LLM_GATEWAY_URL;
-  const anthropicApiKey = directKey ?? LLM_GATEWAY_API_KEY;
-  if (!anthropicApiKey) {
-    throw new Error(
-      "No API key available — set LLM_GATEWAY_API_KEY or provide model_config.api_key",
-    );
-  }
+    : `${mc.backend}/${mc.model}`;
+  const anthropicBaseUrl = LLM_GATEWAY_URL;
+  const anthropicApiKey = LLM_GATEWAY_API_KEY;
   const canResume = hasSessionHistory(claudeDir, sessionId);
 
   // Pre-copy upstream artifacts BEFORE SDK spawn so they're at /workspace/{name} from turn zero.

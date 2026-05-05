@@ -6,7 +6,6 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 parse_groups "${1:-}"
 ensure_env_symlink
-ensure_config_yaml
 
 # Infra first — service dials postgres/redis/temporal via host.docker.internal.
 if has_group infra; then

@@ -6,17 +6,12 @@ Schema is derived from two sources:
   * each MCP server the caller can see whose tools advertise required vault
     keys via ``inputSchema["x-aviary-required-credentials"]`` in the gateway's
     ``tools/list`` response.
-
-When Vault is unconfigured (``VAULT_ADDR`` / ``VAULT_TOKEN`` unset) the
-endpoint reports ``vault_enabled: false`` and refuses writes — only
-config.yaml's ``secrets:`` table is read.
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from aviary_shared.config_secrets import load_secrets
 from aviary_shared.vault import PLATFORM_NAMESPACE, VaultClient
 from app.auth.dependencies import get_session_data
 from app.auth.session_store import SessionData
@@ -27,7 +22,7 @@ from app.schemas.credentials import (
     CredentialsResponse,
     CredentialWriteRequest,
 )
-from app.services import local_mcp_catalog, mcp_catalog
+from app.services import mcp_catalog
 
 router = APIRouter()
 
@@ -85,20 +80,14 @@ async def _gather_namespaces(
     gateway = await mcp_catalog.fetch_tools(
         session.id_token or "", session.user_external_id,
     )
-    local = await local_mcp_catalog.fetch_all_tools()
-    server_keys = _server_credential_keys(gateway + local)
+    server_keys = _server_credential_keys(gateway)
     for server in sorted(server_keys):
         out.append((server, _humanize(server), None, server_keys[server]))
     return out
 
 
 async def _is_configured(sub: str, namespace: str, key: str) -> bool:
-    if settings.vault_enabled:
-        value = await _vault().read_user_credential(sub, namespace, key)
-    else:
-        value = load_secrets(settings.llm_backends_config_path).lookup(
-            sub, namespace, key,
-        )
+    value = await _vault().read_user_credential(sub, namespace, key)
     return bool(value)
 
 
@@ -132,14 +121,6 @@ def _validate_known(namespaces: list[CredentialNamespace], ns: str, key: str) ->
     )
 
 
-def _require_vault() -> None:
-    if not settings.vault_enabled:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Vault is not configured — credentials are read-only.",
-        )
-
-
 @router.get("", response_model=CredentialsResponse)
 async def list_credentials(session: SessionData = Depends(get_session_data)):
     namespaces = await _gather_namespaces(session)
@@ -147,7 +128,7 @@ async def list_credentials(session: SessionData = Depends(get_session_data)):
         await _build_namespace_response(session.user_external_id, *spec)
         for spec in namespaces
     ]
-    return CredentialsResponse(vault_enabled=settings.vault_enabled, namespaces=out)
+    return CredentialsResponse(namespaces=out)
 
 
 @router.put("/{namespace}/{key}", status_code=204)
@@ -157,7 +138,6 @@ async def write_credential(
     body: CredentialWriteRequest,
     session: SessionData = Depends(get_session_data),
 ):
-    _require_vault()
     namespaces = await _gather_namespaces(session)
     rendered = [
         await _build_namespace_response(session.user_external_id, *spec)
@@ -176,7 +156,6 @@ async def delete_credential(
     key: str,
     session: SessionData = Depends(get_session_data),
 ):
-    _require_vault()
     namespaces = await _gather_namespaces(session)
     rendered = [
         await _build_namespace_response(session.user_external_id, *spec)

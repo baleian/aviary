@@ -21,9 +21,7 @@ _supervisor = ServiceClient(base_url=settings.supervisor_url)
 
 
 def _auth_headers(user_token: str) -> dict[str, str]:
-    # No-IdP dev mode has no JWT — omit the header so the supervisor falls
-    # through to its dev path.
-    return {"Authorization": f"Bearer {user_token}"} if user_token else {}
+    return {"Authorization": f"Bearer {user_token}"}
 
 
 async def init_client() -> None:

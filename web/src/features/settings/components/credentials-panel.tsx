@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Check, Key, Lock, Save, Trash2, X } from "@/components/icons";
+import { Check, Key, Save, Trash2, X } from "@/components/icons";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,8 +35,6 @@ export function CredentialsPanel() {
     <div className="flex flex-col gap-4">
       <Header />
 
-      {!data?.vault_enabled && data && <VaultDisabledNotice />}
-
       {error && (
         <div className="rounded-[10px] border border-status-error/40 bg-status-error-soft p-4 text-[12.5px] text-status-error">
           {error}
@@ -51,7 +49,6 @@ export function CredentialsPanel() {
             <NamespaceCard
               key={ns.namespace}
               ns={ns}
-              vaultEnabled={data.vault_enabled}
               onChanged={refresh}
             />
           ))}
@@ -83,32 +80,12 @@ function Header() {
   );
 }
 
-function VaultDisabledNotice() {
-  return (
-    <div className="flex items-start gap-3 rounded-[10px] border border-border-subtle bg-status-warn-soft p-4 text-[12.5px] text-status-warn">
-      <Lock size={14} className="mt-0.5 shrink-0" />
-      <div className="min-w-0">
-        <p className="font-medium">Vault is not configured.</p>
-        <p className="mt-0.5 text-fg-secondary leading-relaxed">
-          Credentials are loaded from <code className="t-mono text-[11px]">config.yaml</code>{" "}
-          (the <code className="t-mono text-[11px]">secrets:</code> table) and
-          can&apos;t be edited from the UI. Set <code className="t-mono text-[11px]">VAULT_ADDR</code>{" "}
-          and <code className="t-mono text-[11px]">VAULT_TOKEN</code> in the
-          project root <code className="t-mono text-[11px]">.env</code> to
-          switch to Vault-backed editing.
-        </p>
-      </div>
-    </div>
-  );
-}
-
 interface NamespaceCardProps {
   ns: CredentialNamespace;
-  vaultEnabled: boolean;
   onChanged: () => Promise<void> | void;
 }
 
-function NamespaceCard({ ns, vaultEnabled, onChanged }: NamespaceCardProps) {
+function NamespaceCard({ ns, onChanged }: NamespaceCardProps) {
   return (
     <section className="overflow-hidden rounded-[10px] border border-border-subtle bg-raised">
       <header className="flex items-baseline justify-between border-b border-border-subtle px-5 py-3">
@@ -135,7 +112,6 @@ function NamespaceCard({ ns, vaultEnabled, onChanged }: NamespaceCardProps) {
             <CredentialRow
               namespace={ns.namespace}
               item={k}
-              vaultEnabled={vaultEnabled}
               onChanged={onChanged}
             />
           </li>
@@ -148,16 +124,15 @@ function NamespaceCard({ ns, vaultEnabled, onChanged }: NamespaceCardProps) {
 interface CredentialRowProps {
   namespace: string;
   item: CredentialKeyStatus;
-  vaultEnabled: boolean;
   onChanged: () => Promise<void> | void;
 }
 
-function CredentialRow({ namespace, item, vaultEnabled, onChanged }: CredentialRowProps) {
+function CredentialRow({ namespace, item, onChanged }: CredentialRowProps) {
   const [draft, setDraft] = React.useState("");
   const [busy, setBusy] = React.useState<"save" | "delete" | null>(null);
   const [rowError, setRowError] = React.useState<string | null>(null);
 
-  const editable = vaultEnabled && busy === null;
+  const editable = busy === null;
   const placeholder = item.configured
     ? "Replace value (current value hidden)"
     : `Enter ${item.label.toLowerCase()}`;
@@ -214,7 +189,7 @@ function CredentialRow({ namespace, item, vaultEnabled, onChanged }: CredentialR
           type="password"
           autoComplete="new-password"
           spellCheck={false}
-          placeholder={vaultEnabled ? placeholder : "Read-only (Vault disabled)"}
+          placeholder={placeholder}
           value={draft}
           disabled={!editable}
           onChange={(e) => setDraft(e.target.value)}
@@ -235,7 +210,7 @@ function CredentialRow({ namespace, item, vaultEnabled, onChanged }: CredentialR
         >
           <Save size={12} /> {busy === "save" ? "Saving…" : "Save"}
         </Button>
-        {item.configured && vaultEnabled && (
+        {item.configured && (
           <Button
             variant="ghost"
             size="sm"

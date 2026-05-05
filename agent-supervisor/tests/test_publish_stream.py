@@ -84,7 +84,6 @@ _MIN_AGENT_CONFIG = {
     "model_config": {"backend": "anthropic", "model": "claude-sonnet"},
     "instruction": "",
     "tools": [],
-    "mcp_servers": {},
 }
 
 

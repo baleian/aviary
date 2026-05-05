@@ -12,11 +12,10 @@ class Settings(BaseSettings):
     redis_url: str
 
     # OIDC — see .env.example.
-    oidc_issuer: str | None = None
+    oidc_issuer: str
     oidc_internal_issuer: str | None = None
-    oidc_client_id: str | None = None
+    oidc_client_id: str
     oidc_client_secret: str | None = None
-    dev_user_sub: str = "dev-user"
 
     # CORS — single proxy origin (the browser never hits web directly).
     cors_origins: list[str] = ["http://localhost:3000"]
@@ -24,18 +23,15 @@ class Settings(BaseSettings):
     # Agent Supervisor
     supervisor_url: str
 
-    # Unset → direct mode (model catalog from config.yaml, MCP disabled).
-    llm_gateway_url: str | None = None
-    llm_gateway_api_key: str | None = None
-    mcp_gateway_url: str | None = None
-    mcp_gateway_api_key: str | None = None
-    llm_backends_config_path: str = "/workspace/config.yaml"
+    llm_gateway_url: str
+    llm_gateway_api_key: str
+    mcp_gateway_url: str
+    mcp_gateway_api_key: str
 
     # Per-user credentials live at
-    # secret/aviary/credentials/{sub}/{namespace}/{key_name}. Leave both
-    # empty to fall back to the ``secrets:`` table in config.yaml.
-    vault_addr: str = ""
-    vault_token: str = ""
+    # secret/aviary/credentials/{sub}/{namespace}/{key_name}.
+    vault_addr: str
+    vault_token: str
 
     # Temporal — workflow orchestration
     temporal_host: str = "temporal:7233"
@@ -43,18 +39,6 @@ class Settings(BaseSettings):
     temporal_task_queue: str = "aviary-workflows"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
-
-    @property
-    def idp_enabled(self) -> bool:
-        return bool(self.oidc_issuer)
-
-    @property
-    def direct_llm_mode(self) -> bool:
-        return not self.llm_gateway_url
-
-    @property
-    def vault_enabled(self) -> bool:
-        return bool(self.vault_addr and self.vault_token)
 
 
 settings = Settings()

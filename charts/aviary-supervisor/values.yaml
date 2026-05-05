@@ -19,7 +19,6 @@ config:
   defaultRuntimeEndpoint: "http://aviary-env-default.agents.svc.cluster.local:3000"
   oidcIssuer: ""
   oidcInternalIssuer: ""
-  devUserSub: "dev-user"
   llmGatewayURL: ""
   vaultAddr: ""
   otelExporterOtlpEndpoint: ""
@@ -27,11 +26,6 @@ config:
 
 # In prod the rendered Secret is replaced via Sealed/ExternalSecrets.
 secrets: {}
-
-# Disable in prod — values + ExternalSecrets are the source of truth there.
-configFile:
-  enabled: false
-  configMapName: aviary-config
 
 resources:
   requests: { cpu: 500m, memory: 512Mi }

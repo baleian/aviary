@@ -1,15 +1,8 @@
-"""Per-user credential fetcher.
-
-Primary source is Vault. When ``VAULT_ADDR`` / ``VAULT_TOKEN`` are unset
-the supervisor falls back to the ``secrets:`` table in config.yaml so a
-developer can run the stack without standing up Vault.
-"""
+"""Per-user credential fetcher backed by Vault."""
 
 import logging
 import time
-from functools import lru_cache
 
-from aviary_shared.config_secrets import ConfigSecrets, load_secrets
 from aviary_shared.vault import PLATFORM_NAMESPACE, VaultClient
 
 from app import metrics
@@ -27,21 +20,14 @@ def _vault() -> VaultClient:
     return _client
 
 
-@lru_cache(maxsize=1)
-def _config_secrets() -> ConfigSecrets:
-    return load_secrets(settings.llm_backends_config_path)
-
-
 async def fetch_user_credential(
     user_external_id: str, namespace: str, key_name: str,
 ) -> str | None:
     started = time.monotonic()
     try:
-        if settings.vault_enabled:
-            return await _vault().read_user_credential(
-                user_external_id, namespace, key_name,
-            )
-        return _config_secrets().lookup(user_external_id, namespace, key_name)
+        return await _vault().read_user_credential(
+            user_external_id, namespace, key_name,
+        )
     finally:
         metrics.vault_fetch_duration_seconds.record(time.monotonic() - started)
 

@@ -5,18 +5,13 @@ from __future__ import annotations
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
-from app.auth.oidc import idp_enabled
 from app.config import settings
 
 
 async def fetch_tools(user_token: str, user_sub: str) -> list[dict]:
-    if not settings.mcp_gateway_url:
-        return []
     base = settings.mcp_gateway_url.rstrip("/")
-    # Bearer is only for the gateway's native auth admission. Identity comes from X-Aviary-User-Sub.
-    bearer = user_token if idp_enabled() else (settings.mcp_gateway_api_key or "")
     headers = {
-        "Authorization": f"Bearer {bearer}",
+        "Authorization": f"Bearer {user_token}",
         "X-Aviary-User-Sub": user_sub,
     }
     async with streamablehttp_client(

@@ -20,7 +20,7 @@ from app.schemas.mcp import (
     McpToolBindRequest,
     McpToolResponse,
 )
-from app.services import local_mcp_catalog, mcp_catalog
+from app.services import mcp_catalog
 
 router = APIRouter()
 
@@ -28,9 +28,7 @@ TOOL_NAME_SEPARATOR = "__"
 
 
 async def _all_tools(user_token: str, user_sub: str) -> list[dict]:
-    gateway = await mcp_catalog.fetch_tools(user_token, user_sub)
-    local = await local_mcp_catalog.fetch_all_tools()
-    return gateway + local
+    return await mcp_catalog.fetch_tools(user_token, user_sub)
 
 
 def _split_qualified(qualified: str) -> tuple[str, str]:

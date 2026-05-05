@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/features/auth/providers/auth-provider";
-import { fetchAuthConfig } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { AviaryLogo } from "@/components/brand/aviary-logo";
@@ -12,7 +11,6 @@ import { routes } from "@/lib/constants/routes";
 export function LoginCard() {
   const { user, status, login } = useAuth();
   const router = useRouter();
-  const [idpEnabled, setIdpEnabled] = useState<boolean | null>(null);
 
   useEffect(() => {
     if (status === "authenticated" && user) {
@@ -20,28 +18,7 @@ export function LoginCard() {
     }
   }, [status, user, router]);
 
-  useEffect(() => {
-    let cancelled = false;
-    fetchAuthConfig()
-      .then((cfg) => {
-        if (cancelled) return;
-        setIdpEnabled(cfg.idp_enabled);
-        if (!cfg.idp_enabled && status === "unauthenticated") {
-          void login();
-        }
-      })
-      .catch(() => setIdpEnabled(true));
-    return () => {
-      cancelled = true;
-    };
-  }, [status, login]);
-
-  const isLoading = status === "loading" || idpEnabled === null;
-  const buttonLabel = idpEnabled === false ? "Continuing as Dev User" : "Sign in with SSO";
-  const helperCopy =
-    idpEnabled === false
-      ? "No identity provider configured — running as the local dev user"
-      : "Authenticate via your organization's identity provider";
+  const isLoading = status === "loading";
 
   return (
     <div className="relative flex min-h-screen flex-col items-center justify-center px-6 overflow-hidden">
@@ -64,19 +41,21 @@ export function LoginCard() {
               variant="cta"
               size="lg"
               onClick={login}
-              disabled={isLoading || idpEnabled === false}
+              disabled={isLoading}
               className="w-full"
             >
-              {isLoading || idpEnabled === false ? (
+              {isLoading ? (
                 <>
                   <Spinner size={16} className="text-white" />
-                  {idpEnabled === false ? buttonLabel : "Connecting…"}
+                  Connecting…
                 </>
               ) : (
-                buttonLabel
+                "Sign in with SSO"
               )}
             </Button>
-            <p className="mt-5 text-center type-caption text-fg-muted">{helperCopy}</p>
+            <p className="mt-5 text-center type-caption text-fg-muted">
+              Authenticate via your organization&apos;s identity provider
+            </p>
           </div>
         </div>
       </div>

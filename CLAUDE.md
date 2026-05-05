@@ -140,13 +140,10 @@ No background loops. No per-agent state. No 0↔1 activation — environments ar
 
 ## Critical Patterns & Gotchas
 
-### IdP Switching — Pure Env, No Code Changes
-All IdP wiring lives in `shared/aviary_shared/auth/` and is driven by env vars. The flag that picks the mode is `OIDC_ISSUER`:
+### IdP — Required, OIDC-Compliant
+All IdP wiring lives in `shared/aviary_shared/auth/` and is driven by env vars. `OIDC_ISSUER` is mandatory; api + supervisor refuse to boot without it. Aviary only consumes the standard `sub` / `email` / `name` claims, so any OIDC-compliant IdP (Keycloak, Okta, Auth0, …) works without a per-IdP claim mapper. LiteLLM has no IdP wiring; the api/runtime forwards the validated sub via `X-Aviary-User-Sub`.
 
-- **`OIDC_ISSUER` unset** — no real IdP. `OIDCValidator` runs in null mode and resolves every token to a fixed `TokenClaims(sub=DEV_USER_SUB)` (default `dev-user`). The frontend calls `/api/auth/dev-login` instead of running PKCE; the supervisor accepts requests with no Bearer. The API/runtime forwards `X-Aviary-User-Sub: dev-user` to LiteLLM, which trusts it and looks up Vault accordingly. Pre-seed `secret/aviary/credentials/dev-user/{anthropic-api-key,github-token,…}` for whatever credentials the local stack needs.
-- **`OIDC_ISSUER` set** — real OIDC validation kicks in on api + supervisor. Aviary only consumes the standard `sub` / `email` / `name` claims, so any OIDC-compliant IdP (Keycloak, Okta, Auth0, …) works without a per-IdP claim mapper. **LiteLLM is unaffected** — it has no IdP wiring; the api/runtime forwards the validated sub via `X-Aviary-User-Sub`.
-
-**Required env when enabling an IdP** (set on api + supervisor only — LiteLLM no longer reads any `OIDC_*` env):
+**Required env** (set on api + supervisor only — LiteLLM no longer reads any `OIDC_*` env):
 - `OIDC_ISSUER` — public issuer URL. JWT `iss` claim must match.
 - `OIDC_CLIENT_ID` — for the auth-code flow on the API server.
 - `OIDC_CLIENT_SECRET` — only for confidential clients (e.g. Okta). Public PKCE clients (local Keycloak `aviary-web`) leave this unset.
@@ -221,14 +218,12 @@ For Anthropic backends, each user's personal API key is injected from Vault via 
 
 ### Vault Credential Path Convention
 Per-user credentials live at `secret/aviary/credentials/{user_external_id}/{namespace}/{key_name}` with JSON body `{"value": "<secret_string>"}`. The `namespace` segment partitions keys by owner so two MCP servers can use the same key name without colliding:
-- `aviary` — platform-level credentials. Convention: `{backend}-api-key` (e.g. `anthropic-api-key`, `openai-api-key`) — supervisor resolves these in direct-LLM mode when `llm_backends.{backend}.<model>.api_key` is omitted (literal in llm_backends always wins, used for local models with `api_key: none`). Plus `github-token` for runtime git/gh auth.
+- `aviary` — platform-level credentials. Convention: `{backend}-api-key` (e.g. `anthropic-api-key`, `openai-api-key`) consumed by the LiteLLM `aviary_user_api_key` patch. Plus `github-token` for runtime git/gh auth.
 - `<mcp-server>` — credentials scoped to one MCP server (e.g. `jira/jira-token`, `confluence/confluence-token`). The mapping from server arg → vault key lives in [mcp-secret-injection.yaml](local-infra/config/litellm/mcp-secret-injection.yaml); the server's top-level key in that file is the namespace.
 
 The `user_external_id` is the OIDC `sub` claim from Keycloak.
 
-**Vaultless dev fallback (default)**: with `VAULT_ADDR` / `VAULT_TOKEN` unset (the shipped default), both supervisor and litellm read per-user credentials from a `secrets:` table in [config.yaml](config.example.yaml) keyed by `{sub}/{namespace}/{key_name}`. To switch to Vault-backed credentials, set `VAULT_ADDR` + `VAULT_TOKEN` in the project root `.env`; the `secrets:` table is then ignored. The local-infra Vault container keeps running either way — it's just unused unless opted in.
-
-**Editing from the UI** (`/settings?tab=credentials`): the API exposes `GET/PUT/DELETE /api/credentials[/<ns>/<key>]`. The settings screen shows the `aviary` namespace plus any MCP server with declared injection that the caller can see, indicates set/not-set per key without ever revealing the value, and refuses writes when Vault is unconfigured (read-only banner instead).
+**Editing from the UI** (`/settings?tab=credentials`): the API exposes `GET/PUT/DELETE /api/credentials[/<ns>/<key>]`. The settings screen shows the `aviary` namespace plus any MCP server with declared injection that the caller can see, and indicates set/not-set per key without ever revealing the value.
 
 ### Streaming Architecture (Runtime)
 The runtime ([runtime/src/agent.ts](runtime/src/agent.ts)) handles two streaming paths based on backend:
@@ -306,11 +301,10 @@ docker compose up -d --build supervisor    # or api, admin, web, workflow-worker
 
 | Variable | Purpose |
 |----------|---------|
-| `OIDC_ISSUER` | Public IdP URL (token `iss` validation). Unset → no-IdP mode (single dev user). |
+| `OIDC_ISSUER` | **Required.** Public IdP URL (token `iss` validation). |
 | `OIDC_INTERNAL_ISSUER` | Internal IdP URL (discovery/JWKS fetch) — leave empty for hosted IdPs |
-| `OIDC_CLIENT_ID` | OIDC client id used for the auth-code/PKCE flow |
+| `OIDC_CLIENT_ID` | **Required.** OIDC client id used for the auth-code/PKCE flow |
 | `OIDC_CLIENT_SECRET` | Required for confidential clients (e.g. Okta); leave unset for PKCE-only public clients |
-| `DEV_USER_SUB` | `sub` used everywhere when `OIDC_ISSUER` is unset (default: `dev-user`) |
 | `DATABASE_URL` | PostgreSQL async connection |
 | `REDIS_URL` | Redis for pub/sub, caching, presence |
 | `SUPERVISOR_URL` | Agent Supervisor URL (default: `http://supervisor:9000`) |
@@ -342,18 +336,16 @@ docker compose up -d --build supervisor    # or api, admin, web, workflow-worker
 | `DEFAULT_RUNTIME_ENDPOINT` | Fallback endpoint used when a caller passes `runtime_endpoint=null` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTel Collector URL. Unset → metric export disabled. |
 | `OTEL_SERVICE_NAME` | Resource attribute `service.name`. Unset by default — set when enabling OTel export. |
-| `OIDC_ISSUER` | Public IdP URL (Bearer token `iss` validation on `/publish` and `/a2a`). Unset → no-IdP mode. |
+| `OIDC_ISSUER` | **Required.** Public IdP URL (Bearer token `iss` validation on `/publish` and `/a2a`). |
 | `OIDC_INTERNAL_ISSUER` | Internal IdP URL (JWKS fetch) — leave empty for hosted IdPs |
-| `DEV_USER_SUB` | `sub` used when `OIDC_ISSUER` is unset (default: `dev-user`) |
-| `VAULT_ADDR` / `VAULT_TOKEN` | Vault connection for per-user credential lookup (keyed by JWT `sub`). Both empty → fall back to `secrets:` in config.yaml. |
+| `VAULT_ADDR` / `VAULT_TOKEN` | **Required.** Vault connection for per-user credential lookup (keyed by JWT `sub`). |
 
 ## Key Environment Variables (LiteLLM Gateway)
 
 | Variable | Purpose |
 |----------|---------|
 | `LITELLM_MASTER_KEY` | LiteLLM proxy auth key (default: `sk-aviary-dev`) |
-| `VAULT_ADDR` / `VAULT_TOKEN` | Vault connection for per-user API key + MCP credential lookup. Both empty → fall back to `AVIARY_CONFIG_PATH` (`secrets:` block). |
-| `AVIARY_CONFIG_PATH` | Path to project config.yaml; only consulted when Vault is unconfigured. |
+| `VAULT_ADDR` / `VAULT_TOKEN` | **Required.** Vault connection for per-user API key + MCP credential lookup. Patches crash at import when unset. |
 | `MCP_TOOL_PREFIX_SEPARATOR` | Set to `__` so MCP tools are exposed as `{server}__{tool}` (matches `mcp_agent_tool_bindings` naming) |
 | `AVIARY_MCP_INJECTION_CONFIG` | Path to the per-server Vault-arg injection YAML (default `/app/aviary-mcp-secret-injection.yaml`) |
 

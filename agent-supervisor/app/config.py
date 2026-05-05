@@ -14,16 +14,13 @@ class Settings(BaseSettings):
     otel_metric_export_interval_ms: int = 60000
 
     # OIDC — see .env.example.
-    oidc_issuer: str | None = None
+    oidc_issuer: str
     oidc_internal_issuer: str | None = None
-    dev_user_sub: str = "dev-user"
 
     # Vault — per-user credentials live at
-    # secret/aviary/credentials/{sub}/{namespace}/{key_name}. Leave both
-    # empty to fall back to the ``secrets:`` table in config.yaml
-    # (single-machine dev without a real Vault).
-    vault_addr: str = ""
-    vault_token: str = ""
+    # secret/aviary/credentials/{sub}/{namespace}/{key_name}.
+    vault_addr: str
+    vault_token: str
 
     # Shared secret authenticating the Temporal workflow worker. When the
     # request carries `X-Aviary-Worker-Key: <this>`, the supervisor trusts
@@ -31,23 +28,9 @@ class Settings(BaseSettings):
     # validating a Bearer JWT. Unset in prod disables the worker path.
     worker_shared_secret: str | None = None
 
-    # Unset → direct mode: resolve api_base/api_key from config.yaml.
-    llm_gateway_url: str | None = None
-    llm_backends_config_path: str = "/workspace/config.yaml"
+    llm_gateway_url: str
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
-
-    @property
-    def direct_llm_mode(self) -> bool:
-        return not self.llm_gateway_url
-
-    @property
-    def vault_enabled(self) -> bool:
-        return bool(self.vault_addr and self.vault_token)
-
-    @property
-    def idp_enabled(self) -> bool:
-        return bool(self.oidc_issuer)
 
 
 settings = Settings()

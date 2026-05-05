@@ -72,7 +72,6 @@ async def run_once(
             "model_config": model_config,
             "instruction": system_with_history,
             "tools": [],
-            "mcp_servers": {},
         },
     }
     if structured_outputs:

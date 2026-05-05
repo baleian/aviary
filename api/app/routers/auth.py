@@ -8,7 +8,6 @@ from app.auth.dependencies import _upsert_user, get_current_user
 from app.auth.oidc import (
     exchange_code,
     get_oidc_config,
-    idp_enabled,
     to_public_url,
     validate_token,
 )
@@ -33,8 +32,6 @@ from app.schemas.common import (
 
 router = APIRouter()
 
-DEV_SESSION_EXPIRES_IN = SESSION_TTL_SECONDS - 60
-
 _COOKIE_KW = dict(
     key=SESSION_COOKIE_NAME,
     httponly=True,
@@ -54,40 +51,15 @@ def _clear_session_cookie(response: Response) -> None:
 
 @router.get("/config", response_model=AuthConfigResponse)
 async def auth_config():
-    if not idp_enabled():
-        return AuthConfigResponse(idp_enabled=False)
-
     config = await get_oidc_config()
     # discovery URLs use internal hostnames; the browser needs the public ones
     return AuthConfigResponse(
-        idp_enabled=True,
         issuer=to_public_url(config["issuer"]),
-        client_id=settings.oidc_client_id or "",
+        client_id=settings.oidc_client_id,
         authorization_endpoint=to_public_url(config["authorization_endpoint"]),
         token_endpoint=to_public_url(config["token_endpoint"]),
         end_session_endpoint=to_public_url(config.get("end_session_endpoint", "")),
     )
-
-
-@router.post("/dev-login", response_model=UserResponse)
-async def dev_login(response: Response, db: AsyncSession = Depends(get_db)):
-    if idp_enabled():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="dev-login is disabled when an IdP is configured",
-        )
-
-    claims = await validate_token("")
-    user = await _upsert_user(db, claims)
-
-    session_id = await create_session(
-        user_external_id=claims.sub,
-        refresh_token="",
-        id_token=None,
-        expires_in=DEV_SESSION_EXPIRES_IN,
-    )
-    _set_session_cookie(response, session_id)
-    return UserResponse.model_validate(user)
 
 
 @router.post("/callback", response_model=UserResponse)
@@ -96,12 +68,6 @@ async def auth_callback(
     response: Response,
     db: AsyncSession = Depends(get_db),
 ):
-    if not idp_enabled():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="OIDC callback is disabled — no IdP configured",
-        )
-
     try:
         token_data = await exchange_code(body.code, body.redirect_uri, body.code_verifier)
     except httpx.HTTPError as e:
@@ -168,28 +134,27 @@ async def logout(
     end_session_url = ""
 
     if aviary_session:
-        if idp_enabled():
-            session_data = await peek_session(aviary_session)
-            id_token_hint = session_data.id_token if session_data else None
+        session_data = await peek_session(aviary_session)
+        id_token_hint = session_data.id_token if session_data else None
 
-            try:
-                config = await get_oidc_config()
-                end_session_endpoint = config.get("end_session_endpoint")
-            except Exception:
-                end_session_endpoint = None
+        try:
+            config = await get_oidc_config()
+            end_session_endpoint = config.get("end_session_endpoint")
+        except Exception:
+            end_session_endpoint = None
 
-            if end_session_endpoint and body and body.post_logout_redirect_uri:
-                params: dict[str, str] = {
-                    "post_logout_redirect_uri": body.post_logout_redirect_uri,
-                }
-                if id_token_hint:
-                    params["id_token_hint"] = id_token_hint
-                elif settings.oidc_client_id:
-                    # Keycloak 18+ accepts client_id when id_token is absent
-                    params["client_id"] = settings.oidc_client_id
-                end_session_url = (
-                    to_public_url(end_session_endpoint) + "?" + urlencode(params)
-                )
+        if end_session_endpoint and body and body.post_logout_redirect_uri:
+            params: dict[str, str] = {
+                "post_logout_redirect_uri": body.post_logout_redirect_uri,
+            }
+            if id_token_hint:
+                params["id_token_hint"] = id_token_hint
+            else:
+                # Keycloak 18+ accepts client_id when id_token is absent
+                params["client_id"] = settings.oidc_client_id
+            end_session_url = (
+                to_public_url(end_session_endpoint) + "?" + urlencode(params)
+            )
 
         await delete_session(aviary_session)
 

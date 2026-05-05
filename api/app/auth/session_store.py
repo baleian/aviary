@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from app.auth.oidc import idp_enabled, refresh_tokens, validate_token
+from app.auth.oidc import refresh_tokens, validate_token
 from app.services.redis_service import get_client
 
 logger = logging.getLogger(__name__)
@@ -115,8 +115,6 @@ async def get_fresh_session(session_id: str) -> SessionData | None:
     data = await _load(session_id)
     if data is None:
         return None
-    if not idp_enabled():
-        return data
     # IdP didn't issue a refresh token (e.g. offline_access not granted) —
     # session lifetime is bounded by the id_token TTL; downstream
     # validate_token will 401 once it expires and the user re-logs in.
@@ -142,8 +140,12 @@ async def get_fresh_session(session_id: str) -> SessionData | None:
         return None
 
     new_id = new_tokens.get("id_token") or data.id_token
+    if not new_id:
+        logger.warning("Refresh response missing id_token for session %s", session_id)
+        await delete_session(session_id)
+        return None
     try:
-        claims = await validate_token(new_id or "")
+        claims = await validate_token(new_id)
     except ValueError:
         logger.warning("Refreshed id_token failed validation for session %s", session_id)
         await delete_session(session_id)

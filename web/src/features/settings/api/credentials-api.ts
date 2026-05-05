@@ -14,7 +14,6 @@ export interface CredentialNamespace {
 }
 
 export interface CredentialsResponse {
-  vault_enabled: boolean;
   namespaces: CredentialNamespace[];
 }
 

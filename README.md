@@ -170,22 +170,18 @@ Source for `api/`, `admin/`, `web/`, `agent-supervisor/`, and `workflow-worker/`
 
 `infra` is required for any scenario (it owns postgres / redis / temporal). Add `service` for the daily hot-reload dev path; reach for `local-deploy.sh` for chart validation.
 
-### Scenario A — Minimal local dev stack
+### Scenario A — Local dev stack
 
-Bring up infra + service compose. Supervisor talks straight to the in-compose `runtime`; LLM/MCP calls route through whatever is configured in [config.yaml](config.example.yaml).
+Bring up infra + service compose. The required IdP (Keycloak), Vault, and LiteLLM gateway live in `infra`; copy [.env.example](.env.example) → `.env` and `setup-dev.sh` wires the rest. Test users `user1@test.com` / `user2@test.com` (password `password`) are seeded in the Keycloak realm.
 
 ```bash
-cp config.example.yaml config.yaml          # edit: add your Anthropic API key under llm_backends
+cp .env.example .env                        # edit if you need to override anything
 ./scripts/setup-dev.sh                      # infra + service
 ```
 
-Open the Web UI, log in as `dev-user`, create an agent, chat. See [Service endpoints](#service-endpoints) below.
+Open the Web UI, log in via Keycloak, save your Anthropic API key under `/settings?tab=credentials`, create an agent, chat. See [Service endpoints](#service-endpoints) below.
 
-### Scenario B — Wire up real IdP / Vault / LiteLLM
-
-`infra` already ships Keycloak, Vault, LiteLLM, MCP, and observability. Set the OIDC and gateway vars in `.env` (see [.env.example](.env.example)) and restart `api` + `supervisor` (`docker compose restart api supervisor`). Test users `user1@test.com` / `user2@test.com` (password `password`) are seeded in the Keycloak realm.
-
-### Scenario C — Validate the production Helm charts on local K3s
+### Scenario B — Validate the production Helm charts on local K3s
 
 Use `local-deploy.sh` when you need:
 
@@ -207,7 +203,7 @@ Per-agent routing: in the Admin Console, set `agent.runtime_endpoint` to `http:/
 
 The off-cluster Caddy proxy (`local-infra/compose.yml` `proxy-k3s`, host port `:80`) and the service-compose Caddy proxy (host port `:3000`) use different ports so they can coexist while sharing infra. If you keep service compose running alongside, stop its app components first (`docker compose stop web api supervisor workflow-worker`) so the two stacks don't race on the same database.
 
-### Scenario D — Iterating on a single component
+### Scenario C — Iterating on a single component
 
 ```bash
 # Edit Python in api/ — already hot-reloads. Edit the Dockerfile? Rebuild:
@@ -227,7 +223,7 @@ cd local-infra && docker compose restart litellm
 ./scripts/local-deploy.sh logs aviary-api            # any other K8s deploy
 ```
 
-### Scenario E — Pause / resume / wipe
+### Scenario D — Pause / resume / wipe
 
 ```bash
 ./scripts/stop-dev.sh                # stop both compose groups; volumes preserved
@@ -288,12 +284,11 @@ After `./scripts/local-deploy.sh setup` finishes, the off-cluster Caddy proxy (`
 
 ## Configuration
 
-- **Single .env** — both compose stacks share [.env](.env.example) at the project root; `local-infra/.env` is auto-symlinked.
-- **`config.yaml`** — declares LLM backends, MCP servers, and (in vaultless dev) per-user secrets when `VAULT_ADDR` / `VAULT_TOKEN` and `LLM_GATEWAY_URL` / `MCP_GATEWAY_URL` are unset. Start from [config.example.yaml](config.example.yaml).
+- **Single .env** — both compose stacks share [.env](.env.example) at the project root; `local-infra/.env` is auto-symlinked. `OIDC_ISSUER`, `LLM_GATEWAY_URL` / `MCP_GATEWAY_URL`, and `VAULT_ADDR` / `VAULT_TOKEN` are required — boot fails fast when unset.
 - **LiteLLM** — model routing and platform-wide MCP servers in [local-infra/config/litellm/config.yaml](local-infra/config/litellm/config.yaml); per-server Vault key map in [mcp-secret-injection.yaml](local-infra/config/litellm/mcp-secret-injection.yaml).
 - **Runtime environments** — each is a Helm release of `charts/aviary-runtime`. Clone a `values-*.yaml`, set `image`, `extraEgress`, resource limits, then `./scripts/local-deploy.sh setup --only=aviary-env-<name>` to apply.
 - **Egress policy** — baseline `NetworkPolicy` from `charts/aviary-platform` is always applied; per-env `extraEgress` is unioned in.
-- **Secrets** — per-user credentials live at `secret/aviary/credentials/{user_sub}/{namespace}/{key}` in Vault (or under the `secrets:` block in `config.yaml` for the vaultless fallback).
+- **Secrets** — per-user credentials live at `secret/aviary/credentials/{user_sub}/{namespace}/{key}` in Vault.
 
 ## Testing
 

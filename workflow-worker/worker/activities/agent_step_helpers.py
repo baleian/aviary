@@ -211,7 +211,6 @@ def build_request_body(
             "model_config": data.get("model_config") or {},
             "instruction": full_instruction,
             "tools": tools,
-            "mcp_servers": {},
             "workflow_run": {
                 "root_run_id": root_run_id,
                 "node_id": node_id,

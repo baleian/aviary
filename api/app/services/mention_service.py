@@ -7,7 +7,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Agent, User
-from app.services import local_mcp_catalog
 from aviary_shared.db.models.mcp import McpAgentToolBinding
 
 _MENTION_RE = re.compile(r"@([a-z0-9][a-z0-9-]*[a-z0-9])")
@@ -18,19 +17,6 @@ _TOOL_SEP = "__"
 
 def extract_mentions(text: str) -> list[str]:
     return list(dict.fromkeys(_MENTION_RE.findall(text)))
-
-
-def build_mcp_config(legacy_mcp_servers: list) -> dict:
-    config: dict = {}
-    for srv in legacy_mcp_servers:
-        config[srv["name"]] = {"command": srv["command"], "args": srv.get("args", [])}
-    return config
-
-
-def _classify_tool_name(server_name: str, tool_name: str) -> str:
-    if local_mcp_catalog.is_local(server_name):
-        return f"mcp__{server_name}{_TOOL_SEP}{tool_name}"
-    return f"{_GATEWAY_MCP_PREFIX}{server_name}{_TOOL_SEP}{tool_name}"
 
 
 async def _bound_rows(db: AsyncSession, agent_id) -> list[tuple[str, str]]:
@@ -90,15 +76,10 @@ async def resolve_mentioned_agents(
 
 
 def _build_spec(agent, bound_rows: list[tuple[str, str]]) -> dict:
-    mcp_tool_names = [_classify_tool_name(s, t) for s, t in bound_rows]
+    mcp_tool_names = [
+        f"{_GATEWAY_MCP_PREFIX}{s}{_TOOL_SEP}{t}" for s, t in bound_rows
+    ]
     merged = list(dict.fromkeys(list(agent.tools or []) + mcp_tool_names))
-
-    mcp_servers = build_mcp_config(agent.mcp_servers)
-    used_local = {s for s, _ in bound_rows if local_mcp_catalog.is_local(s)}
-    for name in used_local:
-        cfg = local_mcp_catalog.get_server_config(name)
-        if cfg is not None:
-            mcp_servers[name] = cfg
 
     return {
         "agent_id": str(agent.id),
@@ -109,5 +90,4 @@ def _build_spec(agent, bound_rows: list[tuple[str, str]]) -> dict:
         "model_config": agent.model_config_json,
         "instruction": agent.instruction,
         "tools": merged,
-        "mcp_servers": mcp_servers,
     }

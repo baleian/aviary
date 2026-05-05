@@ -30,7 +30,6 @@ class Agent(Base):
         "model_config", JSONB, nullable=False, server_default="{}"
     )
     tools: Mapped[list] = mapped_column(JSONB, server_default="[]")
-    mcp_servers: Mapped[list] = mapped_column(JSONB, server_default="[]")
 
     icon: Mapped[str | None] = mapped_column(String(50), nullable=True)
 

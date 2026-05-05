@@ -1,15 +1,11 @@
 """Identity resolution for supervisor endpoints.
 
-Three auth paths, in priority order:
-  1. Worker — `X-Aviary-Worker-Key` + body `on_behalf_of_sub`. Works
-     regardless of IdP configuration.
-  2. Dev    — fires unconditionally when `OIDC_ISSUER` is unset (after
-     the worker check). Caller is treated as `dev_user_sub`. The dev
-     path is **gated solely by the env**, not by request shape — any
-     production deployment must set `OIDC_ISSUER`.
-  3. User   — when IdP is enabled, every non-worker request must carry a
-     valid `Authorization: Bearer <JWT>`. Missing / malformed / invalid
-     tokens are 401.
+Two auth paths, in priority order:
+  1. Worker — `X-Aviary-Worker-Key` + body `on_behalf_of_sub`. Used by the
+     Temporal workflow worker to act on behalf of a user without a JWT.
+  2. User   — every non-worker request must carry a valid
+     `Authorization: Bearer <JWT>`. Missing / malformed / invalid tokens
+     are 401.
 """
 
 from __future__ import annotations
@@ -19,7 +15,7 @@ from dataclasses import dataclass
 
 from fastapi import HTTPException, Request
 
-from app.auth.oidc import TokenClaims, dev_user_sub, idp_enabled, validate_token
+from app.auth.oidc import TokenClaims, validate_token
 from app.config import settings
 
 _BEARER_PREFIX = "bearer "
@@ -29,11 +25,7 @@ _BEARER_PREFIX = "bearer "
 class IdentityContext:
     sub: str
     user_token: str | None
-    via: str  # "user" | "worker" | "dev"
-
-
-def _dev_identity() -> IdentityContext:
-    return IdentityContext(sub=dev_user_sub(), user_token=None, via="dev")
+    via: str  # "user" | "worker"
 
 
 def _extract_bearer(auth_header: str) -> str:
@@ -58,9 +50,6 @@ async def resolve_identity(request: Request, body: dict) -> IdentityContext:
             )
         return IdentityContext(sub=sub, user_token=None, via="worker")
 
-    if not idp_enabled():
-        return _dev_identity()
-
     auth_header = request.headers.get("authorization", "")
     if not auth_header:
         raise HTTPException(status_code=401, detail="Missing Authorization header")
@@ -73,8 +62,6 @@ async def resolve_identity(request: Request, body: dict) -> IdentityContext:
 
 
 async def get_current_user(request: Request) -> TokenClaims:
-    if not idp_enabled():
-        return await validate_token("")
     auth_header = request.headers.get("authorization", "")
     if not auth_header:
         raise HTTPException(status_code=401, detail="Missing Authorization header")

@@ -123,7 +123,6 @@ async def seed_agent() -> Agent:
             instruction="Be helpful.",
             model_config_json={"backend": "dummy-backend", "model": "dummy-model"},
             tools=["read_file"],
-            mcp_servers=[],
         )
         db.add(agent)
         await db.flush()

@@ -42,7 +42,6 @@ class AgentResponse(BaseModel):
     instruction: str
     model_config_json: dict = Field(**_MODEL_CONFIG_ALIAS)
     tools: list
-    mcp_servers: list
     icon: str | None = None
     runtime_endpoint: str | None = None
     status: str
@@ -63,7 +62,6 @@ class AgentUpdateRequest(BaseModel):
     instruction: str | None = None
     model_config_json: dict | None = Field(None, **_MODEL_CONFIG_ALIAS)
     tools: list[str] | None = None
-    mcp_servers: list | None = None
     icon: str | None = None
     runtime_endpoint: str | None = None
 

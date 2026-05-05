@@ -28,8 +28,7 @@ export function AgentListRow({
   divider = true,
 }: AgentListRowProps) {
   const tone = toneFromId(agent.id);
-  const tools =
-    toolCount ?? (agent.tools?.length ?? 0) + (agent.mcp_servers?.length ?? 0);
+  const tools = toolCount ?? (agent.tools?.length ?? 0);
   return (
     <Link
       href={routes.agent(agent.id)}

@@ -27,7 +27,6 @@ config:
   llmGatewayURL: "http://litellm.platform.svc.cluster.local:4000"
   mcpGatewayURL: "http://litellm.platform.svc.cluster.local:4000"
   vaultAddr: "http://vault.platform.svc.cluster.local:8200"
-  devUserSub: "dev-user"
   cookieSecure: "false"
   # The Caddy proxy entry on :80 is the only origin the browser ever uses.
   corsOrigins: '["http://localhost"]'
@@ -38,12 +37,6 @@ secrets:
   mcpGatewayAPIKey: "sk-aviary-dev"
   vaultToken: "dev-root-token"
   workerSharedSecret: "dev-worker-secret-change-me"
-
-# Mounts the project root config.yaml so direct-LLM mode and secret fallback
-# stay parity with compose.
-configFile:
-  enabled: true
-  configMapName: aviary-config
 
 migrate:
   enabled: true

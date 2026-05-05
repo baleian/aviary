@@ -6,12 +6,6 @@ export interface ModelConfig {
   max_output_tokens?: number;
 }
 
-export interface McpServer {
-  name: string;
-  command: string;
-  args: string[];
-}
-
 export interface Agent {
   id: string;
   name: string;
@@ -21,7 +15,6 @@ export interface Agent {
   instruction: string;
   model_config: ModelConfig;
   tools: string[];
-  mcp_servers: McpServer[];
   icon?: string;
   status: "active" | "disabled" | "deleted";
   created_at: string;

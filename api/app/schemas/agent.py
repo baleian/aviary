@@ -12,12 +12,6 @@ class ModelConfig(BaseModel):
     max_output_tokens: int | None = None
 
 
-class McpServerConfig(BaseModel):
-    name: str
-    command: str
-    args: list[str] = []
-
-
 class AgentCreate(BaseModel):
     model_config = ConfigDict(populate_by_name=True, protected_namespaces=())
 
@@ -27,7 +21,6 @@ class AgentCreate(BaseModel):
     instruction: str = ""
     model_config_json: ModelConfig = Field(..., **MODEL_CONFIG_ALIAS)
     tools: list[str] = []
-    mcp_servers: list[McpServerConfig] = []
     icon: str | None = None
 
 
@@ -39,7 +32,6 @@ class AgentUpdate(BaseModel):
     instruction: str | None = None
     model_config_json: ModelConfig | None = Field(None, **MODEL_CONFIG_ALIAS)
     tools: list[str] | None = None
-    mcp_servers: list[McpServerConfig] | None = None
     icon: str | None = None
 
 
@@ -56,7 +48,6 @@ class AgentResponse(BaseModel):
     instruction: str
     model_config_json: dict = Field(**MODEL_CONFIG_ALIAS)
     tools: list
-    mcp_servers: list
     icon: str | None = None
     runtime_endpoint: str | None = None
     status: str

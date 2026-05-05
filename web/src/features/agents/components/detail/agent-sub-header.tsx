@@ -31,7 +31,7 @@ export function AgentSubHeader({
   onToggleWorkspace,
 }: AgentSubHeaderProps) {
   const tone = toneFromId(agent.id);
-  const toolCount = (agent.tools?.length ?? 0) + (agent.mcp_servers?.length ?? 0);
+  const toolCount = agent.tools?.length ?? 0;
   const model = agent.model_config?.model ?? agent.model_config?.backend ?? "—";
   const chatActions = useChatActions();
   return (

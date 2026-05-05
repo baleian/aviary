@@ -35,8 +35,6 @@ spec:
               value: {{ .Values.config.oidcIssuer | quote }}
             - name: OIDC_INTERNAL_ISSUER
               value: {{ .Values.config.oidcInternalIssuer | quote }}
-            - name: DEV_USER_SUB
-              value: {{ .Values.config.devUserSub | quote }}
             - name: LLM_GATEWAY_URL
               value: {{ .Values.config.llmGatewayURL | quote }}
             - name: VAULT_ADDR
@@ -48,22 +46,9 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ include "aviary-supervisor.fullname" . }}
-          {{- if .Values.configFile.enabled }}
-          volumeMounts:
-            - name: aviary-config
-              mountPath: /workspace/config.yaml
-              subPath: config.yaml
-              readOnly: true
-          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
-      {{- if .Values.configFile.enabled }}
-      volumes:
-        - name: aviary-config
-          configMap:
-            name: {{ .Values.configFile.configMapName }}
-      {{- end }}

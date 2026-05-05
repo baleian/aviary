@@ -17,7 +17,6 @@ class CredentialNamespace(BaseModel):
 
 
 class CredentialsResponse(BaseModel):
-    vault_enabled: bool
     namespaces: list[CredentialNamespace]
 
 

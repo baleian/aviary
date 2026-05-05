@@ -45,7 +45,7 @@ export function useAgentsData(): AgentsData {
             active.map((a) => [
               a.id,
               {
-                toolCount: (a.tools?.length ?? 0) + (a.mcp_servers?.length ?? 0),
+                toolCount: a.tools?.length ?? 0,
                 sessionCount: 0,
               },
             ]),

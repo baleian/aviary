@@ -25,11 +25,10 @@ class PreferencesUpdateRequest(BaseModel):
 
 
 class AuthConfigResponse(BaseModel):
-    idp_enabled: bool
-    issuer: str = ""
-    client_id: str = ""
-    authorization_endpoint: str = ""
-    token_endpoint: str = ""
+    issuer: str
+    client_id: str
+    authorization_endpoint: str
+    token_endpoint: str
     end_session_endpoint: str = ""
 
 

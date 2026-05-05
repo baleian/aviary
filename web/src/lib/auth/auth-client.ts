@@ -14,26 +14,8 @@ export async function fetchAuthConfig(): Promise<AuthConfig> {
   return _configPromise;
 }
 
-async function devLogin(): Promise<void> {
-  const res = await fetch("/api/auth/dev-login", {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail || res.statusText || "Dev login failed");
-  }
-}
-
 export async function initiateLogin(): Promise<void> {
   const config = await fetchAuthConfig();
-
-  if (!config.idp_enabled) {
-    await devLogin();
-    window.location.href = "/";
-    return;
-  }
 
   const { codeVerifier, codeChallenge } = await generatePkce();
   const state = generateState();
@@ -84,7 +66,6 @@ export async function handleCallback(code: string, state: string): Promise<void>
 }
 
 export async function logout(): Promise<void> {
-  // server builds end_session URL (with id_token_hint for Okta); empty in null mode
   let endSessionUrl = "";
   try {
     const res = await fetch("/api/auth/logout", {

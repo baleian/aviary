@@ -24,7 +24,6 @@ async def create_agent(db: AsyncSession, user: User, data: AgentCreate) -> Agent
         instruction=data.instruction,
         model_config_json=data.model_config_json.model_dump(),
         tools=data.tools,
-        mcp_servers=[s.model_dump() for s in data.mcp_servers],
         icon=data.icon,
     )
     db.add(agent)
@@ -66,8 +65,6 @@ async def update_agent(db: AsyncSession, agent: Agent, data: AgentUpdate) -> Age
         agent.model_config_json = data.model_config_json.model_dump()
     if data.tools is not None:
         agent.tools = data.tools
-    if data.mcp_servers is not None:
-        agent.mcp_servers = [s.model_dump() for s in data.mcp_servers]
     if data.icon is not None:
         agent.icon = data.icon
 

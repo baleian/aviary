@@ -31,7 +31,6 @@ export interface AccessibleAgent {
   model_config: Record<string, unknown>;
   instruction: string;
   tools: string[];
-  mcp_servers: Record<string, unknown>;
 }
 
 export interface A2AContext {
@@ -59,7 +58,6 @@ async function callSubAgent(
       model_config: agent.model_config,
       instruction: agent.instruction,
       tools: agent.tools,
-      mcp_servers: agent.mcp_servers,
     },
     content_parts: [{ text: message }],
   };

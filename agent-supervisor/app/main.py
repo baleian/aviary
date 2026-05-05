@@ -10,7 +10,7 @@ from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.metrics.view import ExplicitBucketHistogramAggregation, View
 
 from app import redis_client
-from app.auth.oidc import dev_user_sub, idp_enabled, init_oidc
+from app.auth.oidc import init_oidc
 from app.config import settings
 from app.routers import agents
 
@@ -57,13 +57,6 @@ async def lifespan(app: FastAPI):
     meter_provider = _init_otel_metrics()
     await redis_client.init_redis()
     await init_oidc()
-    if not idp_enabled():
-        logger.warning(
-            "OIDC disabled — INSECURE dev mode. Every caller is treated as "
-            "sub=%r. DO NOT deploy this configuration to production; set "
-            "OIDC_ISSUER to enable JWT validation.",
-            dev_user_sub(),
-        )
     agents.start_abort_listener()
     try:
         yield

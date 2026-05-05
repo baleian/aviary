@@ -29,34 +29,23 @@ def _extract_claims(payload: dict) -> TokenClaims:
 
 
 class OIDCValidator:
-    """OIDC validator with JWKS caching. ``issuer=None`` switches to null
-    mode: every ``validate_token`` call returns the dev-user claims."""
+    """OIDC validator with JWKS caching."""
 
     def __init__(
         self,
-        issuer: str | None,
+        issuer: str,
         internal_issuer: str | None = None,
         jwks_cache_ttl: int = 3600,
-        dev_user_sub: str = "dev-user",
     ):
-        self.enabled = bool(issuer)
-        self.issuer = issuer or ""
+        if not issuer:
+            raise ValueError("OIDCValidator requires a non-empty issuer")
+        self.issuer = issuer
         self.internal_issuer = internal_issuer or self.issuer
         self._jwks_cache_ttl = jwks_cache_ttl
-
-        self._dev_claims = TokenClaims(
-            sub=dev_user_sub,
-            email=f"{dev_user_sub}@aviary.local",
-            display_name="Dev User",
-        )
 
         self._oidc_config: dict | None = None
         self._jwks: dict | None = None
         self._jwks_fetched_at: float = 0
-
-    @property
-    def dev_user_sub(self) -> str:
-        return self._dev_claims.sub
 
     def _rewrite_url(self, url: str) -> str:
         if self.internal_issuer != self.issuer and url.startswith(self.issuer):
@@ -77,8 +66,6 @@ class OIDCValidator:
             return resp.json()
 
     async def get_oidc_config(self) -> dict:
-        if not self.enabled:
-            raise RuntimeError("OIDC is disabled — no discovery document available")
         if self._oidc_config is None:
             self._oidc_config = await self._fetch_oidc_config()
         return self._oidc_config
@@ -90,8 +77,6 @@ class OIDCValidator:
             return resp.json()
 
     async def get_jwks(self) -> dict:
-        if not self.enabled:
-            raise RuntimeError("OIDC is disabled — no JWKS available")
         now = time.time()
         if self._jwks is None or (now - self._jwks_fetched_at) > self._jwks_cache_ttl:
             config = await self.get_oidc_config()
@@ -101,8 +86,6 @@ class OIDCValidator:
         return self._jwks
 
     async def init(self) -> None:
-        if not self.enabled:
-            return
         try:
             self._oidc_config = await self._fetch_oidc_config()
             jwks_uri = self._rewrite_url(self._oidc_config["jwks_uri"])
@@ -113,8 +96,8 @@ class OIDCValidator:
             self._jwks = None
 
     async def validate_token(self, token: str) -> TokenClaims:
-        if not self.enabled:
-            return self._dev_claims
+        if not token:
+            raise ValueError("Empty token")
 
         jwks = await self.get_jwks()
 

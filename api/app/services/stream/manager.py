@@ -2,7 +2,7 @@
 
 Flow:
   1. Build the on-the-wire agent_config (full spec — runtime_endpoint,
-     model_config, instruction, tools, mcp_servers, accessible_agents).
+     model_config, instruction, tools, accessible_agents).
   2. POST to supervisor /v1/sessions/{sid}/message. Block until the
      supervisor finishes streaming + assembly and returns the assembled
      text/blocks (also on abort — supervisor returns the partial).

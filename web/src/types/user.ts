@@ -18,8 +18,6 @@ export interface User {
 }
 
 export interface AuthConfig {
-  // false → call /api/auth/dev-login instead of PKCE; OIDC fields empty
-  idp_enabled: boolean;
   issuer: string;
   client_id: string;
   authorization_endpoint: string;

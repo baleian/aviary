@@ -51,8 +51,6 @@ spec:
               value: {{ .Values.config.mcpGatewayURL | quote }}
             - name: VAULT_ADDR
               value: {{ .Values.config.vaultAddr | quote }}
-            - name: DEV_USER_SUB
-              value: {{ .Values.config.devUserSub | quote }}
             - name: COOKIE_SECURE
               value: {{ .Values.config.cookieSecure | quote }}
             - name: CORS_ORIGINS
@@ -60,22 +58,9 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ include "aviary-api.fullname" . }}
-          {{- if .Values.configFile.enabled }}
-          volumeMounts:
-            - name: aviary-config
-              mountPath: /workspace/config.yaml
-              subPath: config.yaml
-              readOnly: true
-          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
-      {{- if .Values.configFile.enabled }}
-      volumes:
-        - name: aviary-config
-          configMap:
-            name: {{ .Values.configFile.configMapName }}
-      {{- end }}

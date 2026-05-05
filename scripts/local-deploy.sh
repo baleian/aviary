@@ -68,7 +68,6 @@ parse_setup_args() {
 
 ensure_k3s_up() {
   ensure_env_symlink
-  ensure_config_yaml
   echo "[k3s] ensuring container is up..."
   infra_compose up -d k8s proxy-k3s
   echo -n "[k3s] waiting for api..."
@@ -106,16 +105,6 @@ cmd_setup() {
   if is_selected aviary-api; then
     IFS='|' read -r image dockerfile context <<<"$MIGRATE_IMAGE"
     build_and_load_image "$image" "$dockerfile" "$context"
-  fi
-
-  # Seed aviary-config ConfigMap from project root config.yaml; api/supervisor mount it.
-  if is_selected aviary-api || is_selected aviary-supervisor; then
-    echo "[config] seeding aviary-config ConfigMap from config.yaml..."
-    k8s kubectl create configmap aviary-config \
-      --from-file=config.yaml=/dev/stdin \
-      --namespace=platform \
-      --dry-run=client -o yaml < "$PROJECT_DIR/config.yaml" \
-      | k8s kubectl apply -f -
   fi
 
   for chart in "${DEPLOY_ORDER[@]}"; do

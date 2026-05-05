@@ -27,17 +27,11 @@ config:
   llmGatewayURL: ""
   mcpGatewayURL: ""
   vaultAddr: ""
-  devUserSub: "dev-user"
   cookieSecure: "true"
   corsOrigins: '["http://localhost"]'
 
 # In prod the rendered Secret is replaced via Sealed/ExternalSecrets.
 secrets: {}
-
-# Disable in prod — values + ExternalSecrets are the source of truth there.
-configFile:
-  enabled: false
-  configMapName: aviary-config
 
 # Helm pre-install/pre-upgrade hook running alembic upgrade head.
 migrate:
