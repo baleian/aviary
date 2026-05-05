@@ -1,7 +1,9 @@
-name: aviary-local-infra
+name: aviary
 
-# Platform deps used by service compose. Service compose dials these via
-# host.docker.internal (postgres:5432 / redis:6379 / temporal:7233).
+# Local infra deps that the app services dial via Docker service DNS
+# (postgres / redis / temporal / keycloak / vault / litellm). All services
+# share project name `aviary` with compose.yml — single network, single
+# container prefix.
 
 services:
   postgres:
@@ -14,7 +16,7 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ../scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U aviary"]
       interval: 5s
@@ -68,7 +70,7 @@ services:
 
   db-migrate:
     build:
-      context: ../shared
+      context: ./shared
       args:
         UV_INDEX_URL: ${UV_INDEX_URL:-}
     environment:
@@ -95,7 +97,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./config/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json
+      - ./infra/config/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json
     depends_on:
       postgres:
         condition: service_healthy
@@ -126,7 +128,7 @@ services:
       - IPC_LOCK
     volumes:
       - vaultdata:/vault/data
-      - ./config/vault/vault.hcl:/vault/config/vault.hcl:ro
+      - ./infra/config/vault/vault.hcl:/vault/config/vault.hcl:ro
     healthcheck:
       test: ["CMD-SHELL", "wget --spider --quiet 'http://127.0.0.1:8200/v1/sys/health?standbyok=true&sealedcode=200&uninitcode=200' || exit 1"]
       interval: 5s
@@ -142,13 +144,13 @@ services:
       VAULT_ADDR: "http://vault:8200"
     volumes:
       - vaultdata:/vault/data
-      - ./scripts/vault-init.sh:/usr/local/bin/vault-init.sh:ro
+      - ./infra/scripts/vault-init.sh:/usr/local/bin/vault-init.sh:ro
     entrypoint: /bin/sh
     command: ["/usr/local/bin/vault-init.sh"]
 
   mcp-jira:
     build:
-      context: ./mcp-servers
+      context: ./infra/mcp-servers
       args:
         MCP_SERVER_NAME: jira
     environment:
@@ -163,7 +165,7 @@ services:
 
   mcp-confluence:
     build:
-      context: ./mcp-servers
+      context: ./infra/mcp-servers
       args:
         MCP_SERVER_NAME: confluence
     environment:
@@ -184,13 +186,13 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ./config/litellm/config.yaml:/app/config.yaml
-      - ./config/litellm/patches/aviary_jwt_util.py:${LITELLM_SITE_PACKAGES:-/usr/lib/python3.13/site-packages}/aviary_jwt_util.py
-      - ./config/litellm/patches/aviary_vault_util.py:${LITELLM_SITE_PACKAGES:-/usr/lib/python3.13/site-packages}/aviary_vault_util.py
-      - ./config/litellm/patches/aviary_user_api_key.py:${LITELLM_SITE_PACKAGES:-/usr/lib/python3.13/site-packages}/aviary_user_api_key.py
-      - ./config/litellm/patches/aviary_mcp_credentials.py:${LITELLM_SITE_PACKAGES:-/usr/lib/python3.13/site-packages}/aviary_mcp_credentials.py
-      - ./config/litellm/patches/aviary_patches.pth:${LITELLM_SITE_PACKAGES:-/usr/lib/python3.13/site-packages}/aviary_patches.pth
-      - ./config/litellm/mcp-secret-injection.yaml:/app/aviary-mcp-secret-injection.yaml:ro
+      - ./infra/config/litellm/config.yaml:/app/config.yaml
+      - ./infra/config/litellm/patches/aviary_jwt_util.py:${LITELLM_SITE_PACKAGES:-/usr/lib/python3.13/site-packages}/aviary_jwt_util.py
+      - ./infra/config/litellm/patches/aviary_vault_util.py:${LITELLM_SITE_PACKAGES:-/usr/lib/python3.13/site-packages}/aviary_vault_util.py
+      - ./infra/config/litellm/patches/aviary_user_api_key.py:${LITELLM_SITE_PACKAGES:-/usr/lib/python3.13/site-packages}/aviary_user_api_key.py
+      - ./infra/config/litellm/patches/aviary_mcp_credentials.py:${LITELLM_SITE_PACKAGES:-/usr/lib/python3.13/site-packages}/aviary_mcp_credentials.py
+      - ./infra/config/litellm/patches/aviary_patches.pth:${LITELLM_SITE_PACKAGES:-/usr/lib/python3.13/site-packages}/aviary_patches.pth
+      - ./infra/config/litellm/mcp-secret-injection.yaml:/app/aviary-mcp-secret-injection.yaml:ro
     environment:
       LITELLM_MASTER_KEY: "sk-aviary-dev"
       DATABASE_URL: "postgresql://aviary:aviary@postgres:5432/litellm"
@@ -224,7 +226,7 @@ services:
       - "4318:4318"  # OTLP HTTP
       - "8889:8889"  # Prometheus exporter (scraped by prometheus)
     volumes:
-      - ./config/otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
+      - ./infra/config/otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
 
   prometheus:
     image: prom/prometheus:v3.0.1
@@ -234,10 +236,8 @@ services:
       - "--storage.tsdb.retention.time=7d"
     ports:
       - "9090:9090"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
-      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheusdata:/prometheus
     depends_on:
       - otel-collector
@@ -251,8 +251,8 @@ services:
       GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
       GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-admin}"
     volumes:
-      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./infra/config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/config/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafanadata:/var/lib/grafana
     depends_on:
       - prometheus

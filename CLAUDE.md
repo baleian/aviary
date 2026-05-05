@@ -4,30 +4,33 @@ Multi-tenant AI agent platform. Users create/configure agents via Web UI; every 
 
 ## Quick Start
 
-All dev scripts target two groups: `infra` (local-infra compose) and `service` (root compose). No arg = both. Comma-separate to combine.
+One compose project (`aviary`) split across two files: `compose.yml` (app services) and `compose.infra.yml` (infra deps). Both files declare `name: aviary` so they share the network, volumes, and the root `.env` (Compose auto-loads it). `compose.override.yml` adds dev-only bind mounts + `--reload` for the app side.
+
+A single script drives everything: `./scripts/setup-dev.sh [SUBCMD] [SCOPE]`.
+- **SUBCMD**: `dev` (default — hot reload) · `build` · `deploy` (prod-mode up) · `run` (build+deploy) · `down` · `clean` (down + volumes) · `logs` · `ps`
+- **SCOPE**: `all` (default) · `app` · `infra`
 
 ```bash
-./scripts/setup-dev.sh                       # build + (re)deploy everything (volumes preserved)
-./scripts/setup-dev.sh service               # only the services group
-./scripts/setup-dev.sh infra,service         # explicit (same as no arg)
-
-./scripts/start-dev.sh [groups]              # start stopped containers (no build)
-./scripts/stop-dev.sh  [groups]              # stop running containers
-./scripts/clean-dev.sh [groups]              # remove containers + volumes (full wipe)
-
-./scripts/logs.sh {infra|service}            # tail logs for one group
+./scripts/setup-dev.sh                       # dev all — build + up + hot reload
+./scripts/setup-dev.sh dev app               # dev app only (assumes infra is up)
+./scripts/setup-dev.sh build app             # build only app images
+./scripts/setup-dev.sh run app               # rebuild + redeploy app, infra stays
+./scripts/setup-dev.sh deploy                # prod-mode up — no override applied
+./scripts/setup-dev.sh down                  # stop+remove all containers
+./scripts/setup-dev.sh down app              # remove only app, infra preserved
+./scripts/setup-dev.sh clean                 # down + drop volumes
+./scripts/setup-dev.sh logs api              # follow one service
 
 # Iterating on a single container — pass through to compose directly:
-docker compose up -d --build api                   # rebuild + restart api (project root)
-cd local-infra && docker compose restart litellm   # tweak litellm config
+docker compose up -d --build api                              # uses override → dev mode
+docker compose -f compose.infra.yml restart litellm           # tweak litellm patch
 ```
 
-The repo is two compose stacks that mirror the production split:
+Layout:
 
-- **Project root** — the services we own end-to-end (api, admin, web, agent-supervisor, workflow-worker, runtime, proxy). The `runtime` service is the supervisor's default target (`DEFAULT_RUNTIME_ENDPOINT=http://runtime:3000`).
-- **[local-infra/](local-infra/)** — required platform-team infra (postgres, redis, temporal, keycloak, vault, litellm, prometheus, grafana, mcp-jira/confluence). Service compose dials these via `host.docker.internal:5432` (postgres) etc., so start `infra` first.
-
-Both stacks read the **same `.env`** — `local-infra/.env` is a symlink to the root `.env` (created by `setup-dev.sh`). Per-stack variables are organized into `Aviary services` / `Local-infra` sections in [.env.example](.env.example) but live in one file.
+- **`compose.yml`** — the services we own end-to-end (api, admin, web, agent-supervisor, workflow-worker, runtime, proxy). The `runtime` service is the supervisor's default target (`DEFAULT_RUNTIME_ENDPOINT=http://runtime:3000`).
+- **`compose.infra.yml`** — required platform-team infra (postgres, redis, temporal, keycloak, vault, litellm, prometheus, grafana, mcp-jira/confluence). App services dial these via Docker service DNS (`postgres:5432`, `redis:6379`, `temporal:7233`, `keycloak:8080`, `vault:8200`, `litellm:4000`).
+- **`infra/`** — static assets only (config + scripts + sample MCP servers). Mounted by `compose.infra.yml` services.
 
 Services: **Browser entry — Caddy proxy** at `:3000` routes `/api/*` → API and everything else → Web. Single same-origin entry — the frontend has no hardcoded ports. Other entry points: Admin (`:8001`, operator console), Keycloak (`:8080`, admin/admin), Vault (`:8200`), LiteLLM Gateway (`:8090`, inference + aggregated MCP at `/mcp`), Temporal UI (`:8233`), Prometheus (`:9090`), Grafana (`:3001`).
 Test accounts: `user1@test.com`, `user2@test.com` (all `password`).
@@ -57,10 +60,10 @@ FastAPI (:8000)
 
 Admin Console (:8001) → DB (no infra calls)
 
-Project root (docker compose):
+compose.yml (app):
   api, admin, agent-supervisor, workflow-worker, web, proxy, runtime.
 
-local-infra/ (docker compose — required):
+compose.infra.yml (infra — required):
   postgres, redis, temporal, temporal-ui (:8233), db-migrate (one-shot),
   keycloak, vault, litellm (:8090 — inference + MCP), mcp-jira / mcp-confluence,
   otel-collector, prometheus, grafana.
@@ -82,7 +85,7 @@ Three backend services with distinct roles:
 
 **Agent Supervisor (`:9000`, project-root compose)** — Reverse SSE Proxy. Same deploy unit as API/Admin. No DB. Holds an **in-memory registry** of active stream tasks keyed by **stream_id** (one per `/message` call). `/sessions/{sid}/message` and `/sessions/{sid}/a2a` require `Authorization: Bearer <user JWT>` — the supervisor validates the token via OIDC and owns per-user runtime credential lookup: it fetches `github-token` from Vault using the JWT's `sub` and injects `agent_config.credentials` / `user_token` / `user_external_id` into the request body before forwarding to the runtime. On each `/message` it allocates a `stream_id` and immediately publishes `stream_started {stream_id}` to `session:{sid}:events` — that's the frontend's confirmation signal for enabling the abort button. Streams SSE from the runtime, publishes every stream event (tagged with stream_id) to `session:{sid}:events`, buffers chunks under `stream:{stream_id}:chunks` for replay, assembles the final text + blocks, returns them to the caller — the API then persists the message and publishes the terminal `done`/`cancelled` event with the DB messageId. Pushes Prometheus metrics via OTLP. **Abort** = `POST /v1/streams/{stream_id}/abort` → cancel the task; closing the outbound httpx stream propagates close through the TCP connection, which fires `res.on("close")` in the runtime and aborts the SDK.
 
-**Shared DB package** ([shared/aviary_shared/](shared/aviary_shared/)) — SQLAlchemy models, migrations, and session factory used by API + Admin. Migrations live at [shared/aviary_shared/db/migrations/](shared/aviary_shared/db/migrations/) with alembic config at [shared/alembic.ini](shared/alembic.ini). The `db-migrate` service in local-infra runs `alembic upgrade head` on startup.
+**Shared DB package** ([shared/aviary_shared/](shared/aviary_shared/)) — SQLAlchemy models, migrations, and session factory used by API + Admin. Migrations live at [shared/aviary_shared/db/migrations/](shared/aviary_shared/db/migrations/) with alembic config at [shared/alembic.ini](shared/alembic.ini). The `db-migrate` service in `compose.infra.yml` runs `alembic upgrade head` on startup.
 
 **Key flows:**
 - Agent creation → API saves config to DB. No infrastructure side effects.
@@ -91,14 +94,14 @@ Three backend services with distinct roles:
 
 **Runtime Strategy ((agent, session)-per-workdir):** A single runtime container serves every agent. Isolation comes from per-(agent, session) on-disk paths plus bubblewrap — the container itself is agent-agnostic. Concurrent requests are serialized per `(session_id, agent_id)` by the in-process SessionManager.
 
-**LiteLLM Gateway** (local-infra/ compose, `:8090`): All LLM calls go through LiteLLM OSS proxy. Backend is determined by the model name prefix (e.g., `anthropic/claude-sonnet-4-6` → Claude API, `ollama/gemma4:26b` → Ollama, `vllm/...` → vLLM, `bedrock/...` → Bedrock). Natively compatible with Anthropic SDK (`/v1/messages`), so claude-agent-sdk works transparently. The same proxy also serves `/mcp` — the aggregated MCP endpoint (see "MCP Aggregation" below). Configuration in [local-infra/config/litellm/config.yaml](local-infra/config/litellm/config.yaml). LiteLLM is **IdP-unaware** — the caller's identity is read directly from the `X-Aviary-User-Sub` header. In production the upstream LLM-gateway team validates whatever identity proof they require and forwards the resolved sub; locally the runtime/API forwards the sub directly. Three patch modules loaded via `.pth` file:
+**LiteLLM Gateway** (`compose.infra.yml`, `:8090`): All LLM calls go through LiteLLM OSS proxy. Backend is determined by the model name prefix (e.g., `anthropic/claude-sonnet-4-6` → Claude API, `ollama/gemma4:26b` → Ollama, `vllm/...` → vLLM, `bedrock/...` → Bedrock). Natively compatible with Anthropic SDK (`/v1/messages`), so claude-agent-sdk works transparently. The same proxy also serves `/mcp` — the aggregated MCP endpoint (see "MCP Aggregation" below). Configuration in [infra/config/litellm/config.yaml](infra/config/litellm/config.yaml). LiteLLM is **IdP-unaware** — the caller's identity is read directly from the `X-Aviary-User-Sub` header. In production the upstream LLM-gateway team validates whatever identity proof they require and forwards the resolved sub; locally the runtime/API forwards the sub directly. Three patch modules loaded via `.pth` file:
 - `aviary_user_api_key.py` — `CustomLogger.async_pre_call_hook` that reads `X-Aviary-User-Sub`, fetches the user's Anthropic API key from Vault, overrides the outgoing key. Fails closed when sub is present but Vault has no key.
 - `aviary_mcp_credentials.py` — owns everything MCP: tools/list filter (`X-Aviary-Allowed-Tools` + RBAC stub), tools/call allow-list gate, and `pre_mcp_call` Vault-argument injection. The tools/call gate stashes `X-Aviary-User-Sub` in a contextvar so the inner injection hook can resolve Vault keys.
 - `aviary_vault_util.py` — shared Vault credential fetch (`secret/aviary/credentials/{sub}/{namespace}/{key}` — `aviary` namespace for platform credentials, MCP server name otherwise). No caching by design — profile changes must reflect immediately. Slow fetches log a warning.
 
 LiteLLM UI (`http://localhost:8090/ui`, default `admin/admin`) is backed by a dedicated `litellm` Postgres database on the shared Postgres instance. LiteLLM applies its own Prisma migrations on startup. Keys, teams, and spend live in the DB; models stay file-only — `config.yaml` is the single source of truth. `STORE_MODEL_IN_DB` is left at its default (off) so `/v1/model/info` never surfaces UI-added shadow copies. Credentials come from `LITELLM_UI_USERNAME` / `LITELLM_UI_PASSWORD` env vars.
 
-**Observability**: Supervisor exports metrics via OTLP/HTTP push (no `/metrics` endpoint). Setting `OTEL_EXPORTER_OTLP_ENDPOINT` enables export — leave unset to disable. Standard OTel envvars (`OTEL_RESOURCE_ATTRIBUTES`, `OTEL_EXPORTER_OTLP_HEADERS`, …) are read by the SDK directly. Histogram bucket boundaries (publish duration, TTFB, Vault) are pinned via OTel Views in [agent-supervisor/app/main.py](agent-supervisor/app/main.py). Local-infra ships an OTel Collector ([local-infra/config/otel-collector/config.yaml](local-infra/config/otel-collector/config.yaml)) that receives OTLP on `:4318` and exposes a Prometheus exporter on `:8889`; the bundled Prometheus scrapes that exporter and Grafana (`:3001`, anonymous admin) auto-provisions the "Aviary Supervisor" dashboard from [local-infra/config/grafana/dashboards/supervisor.json](local-infra/config/grafana/dashboards/supervisor.json).
+**Observability**: Supervisor exports metrics via OTLP/HTTP push (no `/metrics` endpoint). Setting `OTEL_EXPORTER_OTLP_ENDPOINT` enables export — leave unset to disable. Standard OTel envvars (`OTEL_RESOURCE_ATTRIBUTES`, `OTEL_EXPORTER_OTLP_HEADERS`, …) are read by the SDK directly. Histogram bucket boundaries (publish duration, TTFB, Vault) are pinned via OTel Views in [agent-supervisor/app/main.py](agent-supervisor/app/main.py). Local-infra ships an OTel Collector ([infra/config/otel-collector/config.yaml](infra/config/otel-collector/config.yaml)) that receives OTLP on `:4318` and exposes a Prometheus exporter on `:8889`; the bundled Prometheus scrapes that exporter and Grafana (`:3001`, anonymous admin) auto-provisions the "Aviary Supervisor" dashboard from [infra/config/grafana/dashboards/supervisor.json](infra/config/grafana/dashboards/supervisor.json).
 
 **Agent Supervisor routes:**
 - `POST /v1/sessions/{sid}/message` — Bearer-gated. Body: `{session_id, content_parts, agent_config}` where `agent_config` carries `runtime_endpoint`, `model_config`, `instruction`, `tools`, optional `accessible_agents` (each is a full agent spec). Returns `{status, stream_id, reached_runtime, assembled_text, assembled_blocks}`. All stream events are published to Redis under `session:{sid}:events` tagged with the allocated `stream_id`.
@@ -179,12 +182,12 @@ The supervisor fetches the user's GitHub token from Vault (`secret/aviary/creden
 [runtime/config/managed-settings.json](runtime/config/managed-settings.json) is installed to `/etc/claude-code/managed-settings.json` (the hardcoded path Claude Code CLI reads on Linux). Currently sets `skipWebFetchPreflight: true` to prevent the CLI from calling `api.anthropic.com/api/web/domain_info` before each WebFetch — this endpoint is unreachable in air-gapped/fintech environments. All model tiers (`ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, etc.) are remapped to the agent's configured model in [runtime/src/agent.ts](runtime/src/agent.ts).
 
 ### Per-User Anthropic API Key
-For Anthropic backends, each user's personal API key is injected from Vault via a LiteLLM `CustomLogger.async_pre_call_hook` ([local-infra/config/litellm/patches/aviary_user_api_key.py](local-infra/config/litellm/patches/aviary_user_api_key.py)). The runtime forwards two headers via `ANTHROPIC_CUSTOM_HEADERS`: `X-Aviary-User-Sub` (the caller identity LiteLLM uses for Vault lookup) and `X-Aviary-User-Token` (forwarded for the production gateway team's own validation; ignored locally). The hook reads `X-Aviary-User-Sub`, fetches the user's key from `secret/aviary/credentials/{sub}/aviary/anthropic-api-key`, and fails closed if the key is missing. Vault has no caching — profile changes apply on the next call.
+For Anthropic backends, each user's personal API key is injected from Vault via a LiteLLM `CustomLogger.async_pre_call_hook` ([infra/config/litellm/patches/aviary_user_api_key.py](infra/config/litellm/patches/aviary_user_api_key.py)). The runtime forwards two headers via `ANTHROPIC_CUSTOM_HEADERS`: `X-Aviary-User-Sub` (the caller identity LiteLLM uses for Vault lookup) and `X-Aviary-User-Token` (forwarded for the production gateway team's own validation; ignored locally). The hook reads `X-Aviary-User-Sub`, fetches the user's key from `secret/aviary/credentials/{sub}/aviary/anthropic-api-key`, and fails closed if the key is missing. Vault has no caching — profile changes apply on the next call.
 
 ### Vault Credential Path Convention
 Per-user credentials live at `secret/aviary/credentials/{user_external_id}/{namespace}/{key_name}` with JSON body `{"value": "<secret_string>"}`. The `namespace` segment partitions keys by owner so two MCP servers can use the same key name without colliding:
 - `aviary` — platform-level credentials. Convention: `{backend}-api-key` (e.g. `anthropic-api-key`, `openai-api-key`) consumed by the LiteLLM `aviary_user_api_key` patch. Plus `github-token` for runtime git/gh auth.
-- `<mcp-server>` — credentials scoped to one MCP server (e.g. `jira/jira-token`, `confluence/confluence-token`). The mapping from server arg → vault key lives in [mcp-secret-injection.yaml](local-infra/config/litellm/mcp-secret-injection.yaml); the server's top-level key in that file is the namespace.
+- `<mcp-server>` — credentials scoped to one MCP server (e.g. `jira/jira-token`, `confluence/confluence-token`). The mapping from server arg → vault key lives in [mcp-secret-injection.yaml](infra/config/litellm/mcp-secret-injection.yaml); the server's top-level key in that file is the namespace.
 
 The `user_external_id` is the OIDC `sub` claim from Keycloak.
 
@@ -237,7 +240,7 @@ After modifying any service source — rebuild + restart that service:
 docker compose up -d --build api          # or admin / supervisor / web / workflow-worker / runtime
 ```
 
-**Hot reload** for project-root services — bind-mount + `--reload` / `npm run dev` from [compose.override.yml](compose.override.yml). Tweaking local-infra config (LiteLLM patches, prometheus.yml, etc.) needs `cd local-infra && docker compose restart <svc>`.
+**Hot reload** for app services — bind-mount + `--reload` / `npm run dev` from [compose.override.yml](compose.override.yml). Tweaking infra config (LiteLLM patches, prometheus.yml, etc.) needs `docker compose -f compose.infra.yml restart <svc>`.
 
 ## Key Environment Variables (API)
 
