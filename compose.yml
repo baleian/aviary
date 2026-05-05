@@ -133,11 +133,11 @@ services:
         condition: service_healthy
 
   proxy:
-    image: caddy:2-alpine
+    image: nginx:alpine
     ports:
       - "${PROXY_PORT:-3000}:80"
     volumes:
-      - ./proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./proxy/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       api:
         condition: service_healthy

@@ -32,7 +32,7 @@ Layout:
 - **`compose.infra.yml`** — required platform-team infra (postgres, redis, temporal, keycloak, vault, litellm, prometheus, grafana, mcp-jira/confluence). App services dial these via Docker service DNS (`postgres:5432`, `redis:6379`, `temporal:7233`, `keycloak:8080`, `vault:8200`, `litellm:4000`).
 - **`infra/`** — static assets only (config + scripts + sample MCP servers). Mounted by `compose.infra.yml` services.
 
-Services: **Browser entry — Caddy proxy** at `:3000` routes `/api/*` → API and everything else → Web. Single same-origin entry — the frontend has no hardcoded ports. Other entry points: Admin (`:8001`, operator console), Keycloak (`:8080`, admin/admin), Vault (`:8200`), LiteLLM Gateway (`:8090`, inference + aggregated MCP at `/mcp`), Temporal UI (`:8233`), Prometheus (`:9090`), Grafana (`:3001`).
+Services: **Browser entry — nginx proxy** at `:3000` routes `/api/*` → API and everything else → Web. Single same-origin entry — the frontend has no hardcoded ports. Other entry points: Admin (`:8001`, operator console), Keycloak (`:8080`, admin/admin), Vault (`:8200`), LiteLLM Gateway (`:8090`, inference + aggregated MCP at `/mcp`), Temporal UI (`:8233`), Prometheus (`:9090`), Grafana (`:3001`).
 Test accounts: `user1@test.com`, `user2@test.com` (all `password`).
 
 ## Architecture
@@ -40,7 +40,7 @@ Test accounts: `user1@test.com`, `user2@test.com` (all `password`).
 ```
 Browser ─┐  (single origin — :3000 service compose)
          ▼
-       Caddy proxy
+       nginx proxy
          ├── /api/*  → FastAPI (:8000)  ← REST + WebSocket
          └── /*      → Next.js (:3000)  ← UI
 

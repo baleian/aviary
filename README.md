@@ -28,7 +28,7 @@ The platform is designed to drop into an existing organization: it plugs into yo
                                    │ single origin
                                    │ (REST + WebSocket)
                   ┌────────────────▼────────────────┐
-                  │       Edge proxy (Caddy)        │
+                  │       Edge proxy (nginx)        │
                   │   /api/* → API ·  /* → Web      │
                   └──────┬──────────────────┬───────┘
                          │                  │
@@ -177,10 +177,10 @@ After `setup-dev.sh` finishes, these URLs are reachable on the host. Endpoints p
 
 | Service | URL | Purpose |
 |---------|-----|---------|
-| Browser entry (Caddy proxy) | http://localhost:3000 | `/api/*` → API · `/` → Web — single same-origin entry |
+| Browser entry (nginx proxy) | http://localhost:3000 | `/api/*` → API · `/` → Web — single same-origin entry |
 | Admin Console | http://localhost:8001 | Operator UI (no auth, local-only) |
 
-The API and Supervisor live on internal compose DNS only — `api:8000` / `supervisor:9000`. They are not published to the host; reach them via `docker compose exec` or hit them through the Caddy proxy.
+The API and Supervisor live on internal compose DNS only — `api:8000` / `supervisor:9000`. They are not published to the host; reach them via `docker compose exec` or hit them through the nginx proxy.
 
 ### `infra` group
 
