@@ -1,0 +1,5 @@
+model:
+  provider: custom
+  base_url: ${AVIARY_LLM_BASE_URL}
+  api_key: ${AVIARY_LLM_API_KEY}
+  default: ${AVIARY_LLM_MODEL}

@@ -3,6 +3,7 @@ NODE_IMAGE := kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a2659
 NFS_PROVISIONER_CHART := 1.8.0
 
 RUNNER_IMAGE := aviary-runner:dev
+HERMES_IMAGE := aviary-harness-hermes:dev
 
 KUBECTL := kubectl --context kind-$(CLUSTER)
 HELM := helm --kube-context kind-$(CLUSTER)
@@ -25,4 +26,5 @@ cluster-down:
 
 images:
 	docker build --file images/runner/Dockerfile --tag $(RUNNER_IMAGE) .
-	kind load docker-image --name $(CLUSTER) $(RUNNER_IMAGE)
+	docker build --tag $(HERMES_IMAGE) images/harness-hermes
+	kind load docker-image --name $(CLUSTER) $(RUNNER_IMAGE) $(HERMES_IMAGE)
