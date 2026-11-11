@@ -2,10 +2,12 @@ CLUSTER := aviary
 NODE_IMAGE := kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
 NFS_PROVISIONER_CHART := 1.8.0
 
+RUNNER_IMAGE := aviary-runner:dev
+
 KUBECTL := kubectl --context kind-$(CLUSTER)
 HELM := helm --kube-context kind-$(CLUSTER)
 
-.PHONY: cluster-up cluster-down
+.PHONY: cluster-up cluster-down images
 
 cluster-up:
 	kind get clusters 2>/dev/null | grep -qx $(CLUSTER) || \
@@ -20,3 +22,7 @@ cluster-up:
 
 cluster-down:
 	kind delete cluster --name $(CLUSTER)
+
+images:
+	docker build --file images/runner/Dockerfile --tag $(RUNNER_IMAGE) .
+	kind load docker-image --name $(CLUSTER) $(RUNNER_IMAGE)
