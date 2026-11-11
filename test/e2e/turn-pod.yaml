@@ -4,6 +4,8 @@ metadata:
   name: turn-${TURN}
 spec:
   restartPolicy: Never
+  nodeSelector:
+    kubernetes.io/hostname: ${NODE}
   automountServiceAccountToken: false
   enableServiceLinks: false
   securityContext:
@@ -16,7 +18,7 @@ spec:
     - name: agent
       image: ${HARNESS_IMAGE}
       command: ["/aviary/bin/aviary-runner"]
-      args: ["${PROMPT}"]
+      args: ${ARGS}
       workingDir: /home/workspace
       env:
         - name: HOME
