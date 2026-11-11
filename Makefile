@@ -8,7 +8,7 @@ HERMES_IMAGE := aviary-harness-hermes:dev
 KUBECTL := kubectl --context kind-$(CLUSTER)
 HELM := helm --kube-context kind-$(CLUSTER)
 
-.PHONY: cluster-up cluster-down images
+.PHONY: cluster-up cluster-down images e2e
 
 cluster-up:
 	kind get clusters 2>/dev/null | grep -qx $(CLUSTER) || \
@@ -28,3 +28,6 @@ images:
 	docker build --file images/runner/Dockerfile --tag $(RUNNER_IMAGE) .
 	docker build --tag $(HERMES_IMAGE) images/harness-hermes
 	kind load docker-image --name $(CLUSTER) $(RUNNER_IMAGE) $(HERMES_IMAGE)
+
+e2e:
+	test/e2e/run.sh $(HARNESS)
