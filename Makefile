@@ -5,6 +5,7 @@ NFS_PROVISIONER_CHART := 1.8.0
 RUNNER_IMAGE := aviary-runner:dev
 HARNESS_BASE_IMAGE := aviary-harness-base:dev
 HERMES_IMAGE := aviary-harness-hermes:dev
+OPENCODE_IMAGE := aviary-harness-opencode:dev
 
 KUBECTL := kubectl --context kind-$(CLUSTER)
 HELM := helm --kube-context kind-$(CLUSTER)
@@ -29,7 +30,8 @@ images:
 	docker build --file images/runner/Dockerfile --tag $(RUNNER_IMAGE) .
 	docker build --tag $(HARNESS_BASE_IMAGE) images/harness-base
 	docker build --tag $(HERMES_IMAGE) images/harness-hermes
-	kind load docker-image --name $(CLUSTER) $(RUNNER_IMAGE) $(HERMES_IMAGE)
+	docker build --tag $(OPENCODE_IMAGE) images/harness-opencode
+	kind load docker-image --name $(CLUSTER) $(RUNNER_IMAGE) $(HERMES_IMAGE) $(OPENCODE_IMAGE)
 
 e2e:
 	test/e2e/run.sh $(HARNESS)

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "aviary": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "{env:AVIARY_LLM_BASE_URL}",
+        "apiKey": "{env:AVIARY_LLM_API_KEY}"
+      },
+      "models": {
+        "{env:AVIARY_LLM_MODEL}": {}
+      }
+    }
+  },
+  "model": "aviary/{env:AVIARY_LLM_MODEL}"
+}
