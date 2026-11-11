@@ -3,3 +3,13 @@ model:
   base_url: ${AVIARY_LLM_BASE_URL}
   api_key: ${AVIARY_LLM_API_KEY}
   default: ${AVIARY_LLM_MODEL}
+
+# The session home is a network volume, where SQLite's WAL mode is unsafe.
+database:
+  journal_mode: delete
+
+# Every turn starts a new Hermes process in the same home, so frequent starts
+# are normal here and must not be throttled as a respawn storm.
+gateway:
+  respawn_storm:
+    max_starts: 0
