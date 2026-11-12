@@ -1,7 +1,6 @@
 use std::env;
 use std::error::Error;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::ConnectionTo;
@@ -21,19 +20,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let command = env::var(HARNESS_COMMAND).map_err(|_| format!("{HARNESS_COMMAND} is not set"))?;
     let harness = AcpAgent::from_str(&command)?;
     let cwd = env::current_dir()?;
-    // Updates that arrive before the prompt replay the conversation being resumed.
-    let prompted = AtomicBool::new(false);
 
     futures::executor::block_on(
         Client
             .v1()
             .on_receive_notification(
-                async |update: SessionNotification, _| {
-                    if prompted.load(Ordering::Relaxed) {
-                        emit(&update)?;
-                    }
-                    Ok(())
-                },
+                async |update: SessionNotification, _| emit(&update),
                 agent_client_protocol::on_receive_notification!(),
             )
             .on_receive_request(
@@ -64,7 +56,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                             .session_id
                     }
                 };
-                prompted.store(true, Ordering::Relaxed);
                 let outcome = harness
                     .send_request(PromptRequest::new(
                         session_id,

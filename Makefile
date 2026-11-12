@@ -4,7 +4,6 @@ NFS_PROVISIONER_CHART := 1.8.0
 
 RUNNER_IMAGE := aviary-runner:dev
 HARNESS_BASE_IMAGE := aviary-harness-base:dev
-HERMES_IMAGE := aviary-harness-hermes:dev
 OPENCODE_IMAGE := aviary-harness-opencode:dev
 CODEX_IMAGE := aviary-harness-codex:dev
 
@@ -30,10 +29,9 @@ cluster-down:
 images:
 	docker build --file images/runner/Dockerfile --tag $(RUNNER_IMAGE) .
 	docker build --tag $(HARNESS_BASE_IMAGE) images/harness-base
-	docker build --tag $(HERMES_IMAGE) images/harness-hermes
 	docker build --tag $(OPENCODE_IMAGE) images/harness-opencode
 	docker build --tag $(CODEX_IMAGE) images/harness-codex
-	kind load docker-image --name $(CLUSTER) $(RUNNER_IMAGE) $(HERMES_IMAGE) $(OPENCODE_IMAGE) $(CODEX_IMAGE)
+	kind load docker-image --name $(CLUSTER) $(RUNNER_IMAGE) $(OPENCODE_IMAGE) $(CODEX_IMAGE)
 
 e2e:
 	test/e2e/run.sh $(HARNESS)
