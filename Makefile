@@ -6,6 +6,7 @@ RUNNER_IMAGE := aviary-runner:dev
 HARNESS_BASE_IMAGE := aviary-harness-base:dev
 HERMES_IMAGE := aviary-harness-hermes:dev
 OPENCODE_IMAGE := aviary-harness-opencode:dev
+CODEX_IMAGE := aviary-harness-codex:dev
 
 KUBECTL := kubectl --context kind-$(CLUSTER)
 HELM := helm --kube-context kind-$(CLUSTER)
@@ -31,7 +32,8 @@ images:
 	docker build --tag $(HARNESS_BASE_IMAGE) images/harness-base
 	docker build --tag $(HERMES_IMAGE) images/harness-hermes
 	docker build --tag $(OPENCODE_IMAGE) images/harness-opencode
-	kind load docker-image --name $(CLUSTER) $(RUNNER_IMAGE) $(HERMES_IMAGE) $(OPENCODE_IMAGE)
+	docker build --tag $(CODEX_IMAGE) images/harness-codex
+	kind load docker-image --name $(CLUSTER) $(RUNNER_IMAGE) $(HERMES_IMAGE) $(OPENCODE_IMAGE) $(CODEX_IMAGE)
 
 e2e:
 	test/e2e/run.sh $(HARNESS)

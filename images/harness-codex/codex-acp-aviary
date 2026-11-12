@@ -1,0 +1,9 @@
+#!/bin/sh
+# Codex takes the model and the provider address from its configuration, not
+# from the environment. The ACP adapter accepts configuration as JSON.
+set -eu
+CODEX_CONFIG=$(jq --null-input --compact-output \
+  --arg model "$AVIARY_LLM_MODEL" --arg base_url "$AVIARY_LLM_BASE_URL" \
+  '{model: $model, model_providers: {aviary: {base_url: $base_url}}}')
+export CODEX_CONFIG
+exec codex-acp

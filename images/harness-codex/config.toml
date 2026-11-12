@@ -1,0 +1,11 @@
+model_provider = "aviary"
+
+[model_providers.aviary]
+name = "Aviary"
+wire_api = "responses"
+env_key = "AVIARY_LLM_API_KEY"
+
+# With plugins on, Codex downloads its plugin catalog into every new session
+# home when it starts, about 90 MB.
+[features]
+plugins = false
