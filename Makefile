@@ -3,6 +3,7 @@ NODE_IMAGE := kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a2659
 NFS_PROVISIONER_CHART := 1.8.0
 CNPG_CHART := 0.29.1
 
+SUPERVISOR_IMAGE := aviary-supervisor:dev
 RUNNER_IMAGE := aviary-runner:dev
 HARNESS_BASE_IMAGE := aviary-harness-base:dev
 OPENCODE_IMAGE := aviary-harness-opencode:dev
@@ -35,11 +36,12 @@ cluster-down:
 	kind delete cluster --name $(CLUSTER)
 
 images:
+	docker build --file images/supervisor/Dockerfile --tag $(SUPERVISOR_IMAGE) .
 	docker build --file images/runner/Dockerfile --tag $(RUNNER_IMAGE) .
 	docker build --tag $(HARNESS_BASE_IMAGE) images/harness-base
 	docker build --tag $(OPENCODE_IMAGE) images/harness-opencode
 	docker build --tag $(CODEX_IMAGE) images/harness-codex
-	kind load docker-image --name $(CLUSTER) $(RUNNER_IMAGE) $(OPENCODE_IMAGE) $(CODEX_IMAGE)
+	kind load docker-image --name $(CLUSTER) $(SUPERVISOR_IMAGE) $(RUNNER_IMAGE) $(OPENCODE_IMAGE) $(CODEX_IMAGE)
 
 e2e:
 	test/e2e/run.sh $(HARNESS)
