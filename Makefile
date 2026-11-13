@@ -12,7 +12,7 @@ CODEX_IMAGE := aviary-harness-codex:dev
 KUBECTL := kubectl --context kind-$(CLUSTER)
 HELM := helm --kube-context kind-$(CLUSTER)
 
-.PHONY: cluster-up cluster-down images e2e
+.PHONY: cluster-up cluster-down images deploy e2e
 
 cluster-up:
 	kind get clusters 2>/dev/null | grep -qx $(CLUSTER) || \
@@ -42,6 +42,19 @@ images:
 	docker build --tag $(OPENCODE_IMAGE) images/harness-opencode
 	docker build --tag $(CODEX_IMAGE) images/harness-codex
 	kind load docker-image --name $(CLUSTER) $(SUPERVISOR_IMAGE) $(RUNNER_IMAGE) $(OPENCODE_IMAGE) $(CODEX_IMAGE)
+
+# CloudNativePG writes the database's connection secret next to the database.
+# A pod can only read secrets in its own namespace, so the secret is copied to
+# the Supervisor's. The image ID makes the pod restart when the image changes.
+deploy:
+	$(KUBECTL) create namespace aviary-system --dry-run=client --output yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) get secret postgres-app --namespace aviary-data --output json | \
+		jq '{apiVersion, kind, type, data, metadata: {name: "aviary-database"}}' | \
+		$(KUBECTL) apply --namespace aviary-system -f -
+	$(HELM) upgrade --install aviary deploy/charts/aviary \
+		--namespace aviary-system \
+		--set-string 'supervisor.podAnnotations.aviary\.io/image-id='$$(docker image inspect --format '{{.Id}}' $(SUPERVISOR_IMAGE)) \
+		--wait
 
 e2e:
 	test/e2e/run.sh $(HARNESS)

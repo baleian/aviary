@@ -1,0 +1,8 @@
+supervisor:
+  image: aviary-supervisor:dev
+  podAnnotations: {}
+  database:
+    # A secret in the release namespace with the PostgreSQL connection URL,
+    # for example postgresql://user:password@host:5432/dbname?sslmode=verify-full
+    secretName: aviary-database
+    secretKey: uri

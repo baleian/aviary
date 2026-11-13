@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: aviary-supervisor
+  labels:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: supervisor
+spec:
+  selector:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: supervisor
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

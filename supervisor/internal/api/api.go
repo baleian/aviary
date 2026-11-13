@@ -34,6 +34,7 @@ var (
 func New(st *store.Store) http.Handler {
 	a := &api{store: st}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
 	mux.Handle("POST /v1/projects", handler(a.createProject))
 	mux.Handle("GET /v1/projects/{pid}", handler(a.getProject))
 	mux.Handle("POST /v1/projects/{pid}/agents", handler(a.createAgent))

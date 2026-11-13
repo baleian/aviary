@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aviary-supervisor
+  labels:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: supervisor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aviary
+      app.kubernetes.io/component: supervisor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aviary
+        app.kubernetes.io/component: supervisor
+      {{- with .Values.supervisor.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: supervisor
+          image: {{ .Values.supervisor.image }}
+          env:
+            - name: AVIARY_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.supervisor.database.secretName }}
+                  key: {{ .Values.supervisor.database.secretKey }}
+          ports:
+            - name: http
+              containerPort: 8080
+          # The Supervisor updates the database schema before it listens.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 150
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
