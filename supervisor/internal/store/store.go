@@ -32,6 +32,19 @@ type Project struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type Agent struct {
+	ID        uuid.UUID `json:"id"`
+	ProjectID uuid.UUID `json:"project_id"`
+	Harness   string    `json:"harness"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type Session struct {
+	ID        uuid.UUID `json:"id"`
+	AgentID   uuid.UUID `json:"agent_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // Open connects to the database at url and brings its schema up to date.
 func Open(ctx context.Context, url string) (*Store, error) {
 	pool, err := pgxpool.New(ctx, url)
@@ -71,6 +84,66 @@ func (s *Store) Project(ctx context.Context, id uuid.UUID) (Project, error) {
 		return Project{}, ErrNotFound
 	}
 	return project, err
+}
+
+// CreateAgent returns ErrNotFound if the project does not exist.
+func (s *Store) CreateAgent(ctx context.Context, projectID uuid.UUID, harness string) (Agent, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return Agent{}, err
+	}
+	agent := Agent{ID: id, ProjectID: projectID, Harness: harness}
+	err = s.pool.QueryRow(ctx,
+		`insert into agents (id, project_id, harness)
+		 select $1, id, $3 from projects where id = $2
+		 returning created_at`,
+		agent.ID, agent.ProjectID, agent.Harness,
+	).Scan(&agent.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Agent{}, ErrNotFound
+	}
+	return agent, err
+}
+
+func (s *Store) Agent(ctx context.Context, id uuid.UUID) (Agent, error) {
+	agent := Agent{ID: id}
+	err := s.pool.QueryRow(ctx,
+		`select project_id, harness, created_at from agents where id = $1`, id,
+	).Scan(&agent.ProjectID, &agent.Harness, &agent.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Agent{}, ErrNotFound
+	}
+	return agent, err
+}
+
+// CreateSession returns ErrNotFound if the agent does not exist.
+func (s *Store) CreateSession(ctx context.Context, agentID uuid.UUID) (Session, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return Session{}, err
+	}
+	session := Session{ID: id, AgentID: agentID}
+	err = s.pool.QueryRow(ctx,
+		`insert into sessions (id, agent_id)
+		 select $1, id from agents where id = $2
+		 returning created_at`,
+		session.ID, session.AgentID,
+	).Scan(&session.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Session{}, ErrNotFound
+	}
+	return session, err
+}
+
+func (s *Store) Session(ctx context.Context, id uuid.UUID) (Session, error) {
+	session := Session{ID: id}
+	err := s.pool.QueryRow(ctx,
+		`select agent_id, created_at from sessions where id = $1`, id,
+	).Scan(&session.AgentID, &session.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Session{}, ErrNotFound
+	}
+	return session, err
 }
 
 // migrate holds a lock in a table rather than on the connection, so that

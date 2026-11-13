@@ -36,6 +36,10 @@ func New(st *store.Store) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("POST /v1/projects", handler(a.createProject))
 	mux.Handle("GET /v1/projects/{pid}", handler(a.getProject))
+	mux.Handle("POST /v1/projects/{pid}/agents", handler(a.createAgent))
+	mux.Handle("GET /v1/agents/{aid}", handler(a.getAgent))
+	mux.Handle("POST /v1/agents/{aid}/sessions", handler(a.createSession))
+	mux.Handle("GET /v1/sessions/{sid}", handler(a.getSession))
 	return mux
 }
 
@@ -58,15 +62,76 @@ func (a *api) createProject(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (a *api) getProject(w http.ResponseWriter, r *http.Request) error {
-	id, err := uuid.Parse(r.PathValue("pid"))
+	id, err := pathID(r, "pid")
 	if err != nil {
-		return errNotFound
+		return err
 	}
 	project, err := a.store.Project(r.Context(), id)
 	if err != nil {
 		return err
 	}
 	respond(w, http.StatusOK, project)
+	return nil
+}
+
+func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
+	projectID, err := pathID(r, "pid")
+	if err != nil {
+		return err
+	}
+	var request struct {
+		Harness string `json:"harness"`
+	}
+	if err := decode(w, r, &request); err != nil {
+		return err
+	}
+	if request.Harness == "" {
+		return invalid("harness is required")
+	}
+	agent, err := a.store.CreateAgent(r.Context(), projectID, request.Harness)
+	if err != nil {
+		return err
+	}
+	respond(w, http.StatusCreated, agent)
+	return nil
+}
+
+func (a *api) getAgent(w http.ResponseWriter, r *http.Request) error {
+	id, err := pathID(r, "aid")
+	if err != nil {
+		return err
+	}
+	agent, err := a.store.Agent(r.Context(), id)
+	if err != nil {
+		return err
+	}
+	respond(w, http.StatusOK, agent)
+	return nil
+}
+
+func (a *api) createSession(w http.ResponseWriter, r *http.Request) error {
+	agentID, err := pathID(r, "aid")
+	if err != nil {
+		return err
+	}
+	session, err := a.store.CreateSession(r.Context(), agentID)
+	if err != nil {
+		return err
+	}
+	respond(w, http.StatusCreated, session)
+	return nil
+}
+
+func (a *api) getSession(w http.ResponseWriter, r *http.Request) error {
+	id, err := pathID(r, "sid")
+	if err != nil {
+		return err
+	}
+	session, err := a.store.Session(r.Context(), id)
+	if err != nil {
+		return err
+	}
+	respond(w, http.StatusOK, session)
 	return nil
 }
 
@@ -88,6 +153,16 @@ func (h handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		failure = errInternal
 	}
 	respond(w, failure.status, failure)
+}
+
+// pathID reads an ID from the request path. An ID that is not a UUID cannot
+// name anything, so it is reported as not found.
+func pathID(r *http.Request, name string) (uuid.UUID, error) {
+	id, err := uuid.Parse(r.PathValue(name))
+	if err != nil {
+		return uuid.Nil, errNotFound
+	}
+	return id, nil
 }
 
 func invalid(message string) error {
