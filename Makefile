@@ -23,7 +23,6 @@ cluster-up:
 		--namespace nfs --create-namespace \
 		--values hack/kind/nfs-server-provisioner-values.yaml \
 		--wait
-	$(KUBECTL) apply -f hack/kind/runtime.yaml
 	$(HELM) upgrade --install cloudnative-pg cloudnative-pg \
 		--repo https://cloudnative-pg.github.io/charts \
 		--version $(CNPG_CHART) \

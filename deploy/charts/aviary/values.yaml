@@ -6,3 +6,10 @@ supervisor:
     # for example postgresql://user:password@host:5432/dbname?sslmode=verify-full
     secretName: aviary-database
     secretKey: uri
+
+runtime:
+  # The volume that holds the sessions of the default tenant. Turn pods on
+  # any node mount it, so the storage class must offer ReadWriteMany.
+  store:
+    storageClassName: nfs
+    size: 10Gi
