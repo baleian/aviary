@@ -1,0 +1,8 @@
+# The password is read from the valkey-users secret, which `make cluster-up`
+# creates with a random value.
+auth:
+  enabled: true
+  usersExistingSecret: valkey-users
+  aclUsers:
+    default:
+      permissions: "~* &* +@all"

@@ -2,6 +2,7 @@ CLUSTER := aviary
 NODE_IMAGE := kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
 NFS_PROVISIONER_CHART := 1.8.0
 CNPG_CHART := 0.29.1
+VALKEY_CHART := 1.0.0
 
 SUPERVISOR_IMAGE := aviary-supervisor:dev
 RUNNER_IMAGE := aviary-runner:dev
@@ -29,6 +30,15 @@ cluster-up:
 		--namespace cnpg-system --create-namespace \
 		--wait
 	$(KUBECTL) apply -f hack/kind/postgres.yaml
+	$(KUBECTL) get secret valkey-users --namespace aviary-data >/dev/null 2>&1 || \
+		$(KUBECTL) create secret generic valkey-users --namespace aviary-data \
+			--from-literal=default=$$(openssl rand -hex 24)
+	$(HELM) upgrade --install valkey valkey \
+		--repo https://valkey.io/valkey-helm/ \
+		--version $(VALKEY_CHART) \
+		--namespace aviary-data \
+		--values hack/kind/valkey-values.yaml \
+		--wait
 	$(KUBECTL) wait --namespace aviary-data --for=condition=Ready cluster/postgres --timeout=5m
 
 cluster-down:
