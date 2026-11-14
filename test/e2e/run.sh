@@ -117,14 +117,25 @@ wait_for() {
 cleaned_up() { [ -z "$(in_cluster "$1")" ]; }
 running() { [ "$(field "/v1/turns/$1" state)" = running ]; }
 
-# proxied <turn> tells whether the Egress Proxy recorded a model request of
-# the turn that the model endpoint answered.
-proxied() {
+# recorded <turn> <route> <host> <status> tells whether the Egress Proxy
+# recorded a request of the turn to the host that ended with the status. The
+# route is llm for a request to the model endpoint and forward for any other.
+recorded() {
   local log
   log=$($kubectl --namespace aviary-system logs deployment/aviary-egress-proxy --since 10m)
-  awk -v turn="\"turn\":\"$1\"" 'index($0, turn) && index($0, "\"status\":200") { found = 1 }
-       END { exit !found }' <<< "$log"
+  awk -v turn="\"turn\":\"$1\"" -v route="\"route\":\"$2\"" -v host="\"host\":\"$3\"" -v status="\"status\":$4," \
+    'index($0, turn) && index($0, route) && index($0, host) && index($0, status) { found = 1 }
+     END { exit !found }' <<< "$log"
 }
+
+# Commands for the agent to run in its pod. fetch gets a URL the way the
+# pod is set up to, which is through the Egress Proxy, and prints the status
+# of the answer. connect opens a connection to port 80 of an address, without
+# the proxy, and prints whether the address answered.
+fetch="node -e \"fetch(process.argv[1]).then(r => console.log('status', r.status), () => console.log('failed'))\""
+connect="node -e \"const s = require('net').connect({host: process.argv[1], port: 80, timeout: 3000}); \
+s.on('connect', () => { console.log('connected'); s.destroy() }); \
+s.on('timeout', () => { console.log('no answer'); s.destroy() }); s.on('error', () => console.log('no answer'))\""
 
 # reported tells whether its input is the token usage that mock-llm reports.
 # Every answer of mock-llm reports 11 tokens in and 7 out, and a harness
@@ -137,7 +148,8 @@ reported() {
 
 # For the e2e the model endpoint is mock-llm, and one turn runs at a time,
 # which the check of the queue needs. mock-llm is a service in the cluster,
-# which the Egress Proxy reaches only if its network policy names it.
+# which the Egress Proxy reaches only if its network policy names it. It is
+# also the only host that the proxy lets requests through to.
 mock_llm_egress='[{"to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "aviary-e2e"}}}]}]'
 mkdir -p "$out"
 $kubectl apply --filename test/e2e/mock-llm.yaml > /dev/null
@@ -147,7 +159,8 @@ $helm get values aviary --output yaml > "$out/values.yaml" || fail "Aviary is no
 changed=yes
 install --set llm.url=http://mock-llm.aviary-e2e/v1 --set llm.model=mock \
   --set llm.apiKey.secretName=aviary-llm-mock --set runtime.maxConcurrentTurns=1 \
-  --set-json "egressProxy.extraEgress=$mock_llm_egress"
+  --set-json "egressProxy.extraEgress=$mock_llm_egress" \
+  --set 'egressProxy.allowedHosts={mock-llm.aviary-e2e}'
 connect
 
 file=note-$(new_id | cut --characters 1-8).txt
@@ -197,7 +210,27 @@ grep --quiet --fixed-strings AVIARY_LLM_BASE_URL=http://aviary-egress-proxy "$ou
 if grep --quiet --fixed-strings "$llm_key" "$out/other-turn-3.jsonl"; then
   fail "the pod of turn $turn holds the key of the model endpoint, see $out/other-turn-3.jsonl"
 fi
-wait_for 30 proxied "$turn" || fail "the Egress Proxy recorded no model request of turn $turn"
+wait_for 30 recorded "$turn" llm mock-llm.aviary-e2e 200 ||
+  fail "the Egress Proxy recorded no model request of turn $turn"
+
+# The pod reaches the outside only through the Egress Proxy, which lets a
+# request through to an allowed host and refuses any other, and records both
+# with the turn. Without the proxy the pod reaches nothing: not even the
+# address of the host that the proxy lets it reach.
+run_turn "$other" egress-turn-1 "run $fetch http://mock-llm.aviary-e2e/healthz"
+[[ $(answer egress-turn-1) == *"status 200"* ]] ||
+  fail "the agent did not reach an allowed host through the Egress Proxy, see $out/egress-turn-1.jsonl"
+wait_for 30 recorded "$turn" forward mock-llm.aviary-e2e 200 ||
+  fail "the Egress Proxy did not record the request of turn $turn that it let through"
+run_turn "$other" egress-turn-2 "run $fetch http://example.com/"
+[[ $(answer egress-turn-2) == *"status 403"* ]] ||
+  fail "the Egress Proxy did not refuse a host that is not allowed, see $out/egress-turn-2.jsonl"
+wait_for 30 recorded "$turn" forward example.com 403 ||
+  fail "the Egress Proxy did not record the request of turn $turn that it refused"
+mock_llm_ip=$($kubectl --namespace aviary-e2e get service mock-llm --output jsonpath='{.spec.clusterIP}')
+run_turn "$other" egress-turn-3 "run $connect $mock_llm_ip"
+[[ $(answer egress-turn-3) == *"no answer"* ]] ||
+  fail "the pod of turn $turn connected to an address without the Egress Proxy, see $out/egress-turn-3.jsonl"
 
 # The records outlast the Supervisor.
 $kubectl --namespace aviary-system rollout restart deployment/aviary-supervisor > /dev/null
@@ -247,4 +280,5 @@ jq --slurp 'last.data.usage' "$out/queue-turn-4.jsonl" | reported ||
   fail "the last event of turn $turn lacks the token usage, see $out/queue-turn-4.jsonl"
 
 echo "PASS: $harness ran turns through the API, continued a session, kept sessions apart," \
-  "reached the model without holding its key, queued turns and recorded token usage"
+  "reached the model without holding its key and the outside only through the Egress Proxy," \
+  "queued turns and recorded token usage"

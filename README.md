@@ -77,7 +77,8 @@ make e2e HARNESS=opencode  # or HARNESS=codex
 
 `make e2e` creates sessions through the API and checks that turns run, that
 a session continues, that sessions do not see each other, that the agent
-does not hold the model's key, and that turns queue. It needs no model: it
+does not hold the model's key and reaches the outside only through the
+Egress Proxy, and that turns queue. It needs no model: it
 uses a mock model server that answers by a script. `make cluster-down`
 deletes the cluster.
 
