@@ -35,6 +35,11 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.supervisor.database.secretName }}
                   key: {{ .Values.supervisor.database.secretKey }}
+            - name: AVIARY_VALKEY_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.supervisor.valkey.secretName }}
+                  key: {{ .Values.supervisor.valkey.secretKey }}
           ports:
             - name: http
               containerPort: 8080

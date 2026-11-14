@@ -54,11 +54,15 @@ images:
 
 # CloudNativePG writes the database's connection secret next to the database.
 # A pod can only read secrets in its own namespace, so the secret is copied to
-# the Supervisor's. The image ID makes the pod restart when the image changes.
+# the Supervisor's. Valkey has no such secret, so its URL is put together
+# from its password. The image ID makes the pod restart when the image changes.
 deploy:
 	$(KUBECTL) create namespace aviary-system --dry-run=client --output yaml | $(KUBECTL) apply -f -
 	$(KUBECTL) get secret postgres-app --namespace aviary-data --output json | \
 		jq '{apiVersion, kind, type, data, metadata: {name: "aviary-database"}}' | \
+		$(KUBECTL) apply --namespace aviary-system -f -
+	$(KUBECTL) get secret valkey-users --namespace aviary-data --output json | \
+		jq '{apiVersion, kind, type, metadata: {name: "aviary-valkey"}, stringData: {uri: ("valkey://default:" + (.data.default | @base64d) + "@valkey.aviary-data:6379")}}' | \
 		$(KUBECTL) apply --namespace aviary-system -f -
 	$(HELM) upgrade --install aviary deploy/charts/aviary \
 		--namespace aviary-system \

@@ -9,13 +9,16 @@ import (
 
 	"github.com/google/uuid"
 
+	"aviary/supervisor/internal/events"
 	"aviary/supervisor/internal/store"
 )
 
 const maxBodyBytes = 1 << 20
 
 type api struct {
-	store *store.Store
+	store   *store.Store
+	events  *events.Streams
+	closing <-chan struct{}
 }
 
 type apiError struct {
@@ -32,8 +35,10 @@ var (
 	errInternal    = &apiError{http.StatusInternalServerError, "internal", "internal error"}
 )
 
-func New(st *store.Store) http.Handler {
-	a := &api{store: st}
+// New returns the handler of the API. An event stream stays open for as long
+// as its client does, so the streams end when closing is closed.
+func New(st *store.Store, ev *events.Streams, closing <-chan struct{}) http.Handler {
+	a := &api{store: st, events: ev, closing: closing}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
 	mux.Handle("POST /v1/projects", handler(a.createProject))
@@ -44,6 +49,7 @@ func New(st *store.Store) http.Handler {
 	mux.Handle("GET /v1/sessions/{sid}", handler(a.getSession))
 	mux.Handle("POST /v1/sessions/{sid}/messages", handler(a.createMessage))
 	mux.Handle("GET /v1/turns/{tid}", handler(a.getTurn))
+	mux.Handle("GET /v1/turns/{tid}/events", handler(a.streamEvents))
 	return mux
 }
 
@@ -158,6 +164,11 @@ func (a *api) createMessage(w http.ResponseWriter, r *http.Request) error {
 	turn, err := a.store.CreateTurn(r.Context(), sessionID, request.Text)
 	if err != nil {
 		return err
+	}
+	// The turn is accepted once it is stored. The event only reports that, so
+	// failing to publish it does not fail the request.
+	if err := a.events.Append(r.Context(), turn.ID, events.TurnQueued, struct{}{}); err != nil {
+		slog.ErrorContext(r.Context(), "publish turn event", "turn", turn.ID, "event", events.TurnQueued, "error", err)
 	}
 	respond(w, http.StatusAccepted, turn)
 	return nil

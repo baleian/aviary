@@ -6,6 +6,11 @@ supervisor:
     # for example postgresql://user:password@host:5432/dbname?sslmode=verify-full
     secretName: aviary-database
     secretKey: uri
+  valkey:
+    # A secret in the release namespace with the Valkey connection URL, for
+    # example valkeys://user:password@host:6379 (valkeys is Valkey over TLS)
+    secretName: aviary-valkey
+    secretKey: uri
 
 runtime:
   # The volume that holds the sessions of the default tenant. Turn pods on
