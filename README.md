@@ -155,7 +155,8 @@ does not install PostgreSQL or Valkey.
 | `supervisor.valkey.secretName`, `.secretKey` | A secret with the Valkey connection URL. |
 | `llm.url`, `llm.model` | The base URL of the model endpoint and the model that the harnesses ask it for. |
 | `llm.apiKey.secretName`, `.secretKey` | A secret with the API key of the model endpoint. Only the Egress Proxy reads it. |
-| `egressProxy.allowedHosts` | The hosts that the Egress Proxy lets requests through to, the model endpoint among them. The default, `*`, is every host outside the cluster. |
+| `egressProxy.allowedHosts` | The hosts that the Egress Proxy lets requests through to, the model endpoint among them. The default, `*`, is every host. |
+| `egressProxy.insideCIDRs`, `.extraEgress` | A network policy keeps the Egress Proxy itself out of these address ranges, so that it is no way into the cluster. `extraEgress` names what it may still reach there, such as a model endpoint that is a service in the cluster. |
 | `runtime.maxConcurrentTurns` | The most turns that run at once. Default 50. |
 | `runtime.harnesses` | The harnesses that agents can use, each with its image. |
 | `runtime.store.storageClassName`, `.size` | The volume for the session homes. Its storage class must offer ReadWriteMany. |

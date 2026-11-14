@@ -3,6 +3,19 @@ The parts of Envoy's configuration that its two listeners share.
 */}}
 
 {{/*
+The port of the model endpoint: the one in llm.url, or else the usual one of
+its scheme.
+*/}}
+{{- define "aviary.llm.port" -}}
+{{- $url := urlParse .Values.llm.url -}}
+{{- with regexFind ":[0-9]+$" $url.host -}}
+{{- trimPrefix ":" . -}}
+{{- else -}}
+{{- ternary 443 80 (eq $url.scheme "https") -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 The record of a request, a line of JSON on standard output. The argument is
 the name of the listener.
 */}}

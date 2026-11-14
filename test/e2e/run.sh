@@ -136,7 +136,9 @@ reported() {
 }
 
 # For the e2e the model endpoint is mock-llm, and one turn runs at a time,
-# which the check of the queue needs.
+# which the check of the queue needs. mock-llm is a service in the cluster,
+# which the Egress Proxy reaches only if its network policy names it.
+mock_llm_egress='[{"to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "aviary-e2e"}}}]}]'
 mkdir -p "$out"
 $kubectl apply --filename test/e2e/mock-llm.yaml > /dev/null
 $kubectl --namespace aviary-e2e rollout status deployment/mock-llm --timeout 120s > /dev/null ||
@@ -144,7 +146,8 @@ $kubectl --namespace aviary-e2e rollout status deployment/mock-llm --timeout 120
 $helm get values aviary --output yaml > "$out/values.yaml" || fail "Aviary is not installed; run make deploy"
 changed=yes
 install --set llm.url=http://mock-llm.aviary-e2e/v1 --set llm.model=mock \
-  --set llm.apiKey.secretName=aviary-llm-mock --set runtime.maxConcurrentTurns=1
+  --set llm.apiKey.secretName=aviary-llm-mock --set runtime.maxConcurrentTurns=1 \
+  --set-json "egressProxy.extraEgress=$mock_llm_egress"
 connect
 
 file=note-$(new_id | cut --characters 1-8).txt

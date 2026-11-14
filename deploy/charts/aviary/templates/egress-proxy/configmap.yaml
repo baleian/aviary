@@ -6,10 +6,7 @@
 {{- fail "llm.model must name the model of the endpoint at llm.url" }}
 {{- end }}
 {{- $tls := eq $url.scheme "https" }}
-{{- $port := ternary 443 80 $tls }}
-{{- with regexFind ":[0-9]+$" $url.host }}
-{{- $port = trimPrefix ":" . | int }}
-{{- end }}
+{{- $port := include "aviary.llm.port" . | int }}
 {{- $path := trimSuffix "/" $url.path }}
 {{- $allowAny := has "*" .Values.egressProxy.allowedHosts }}
 {{- $hosts := without .Values.egressProxy.allowedHosts "*" }}
@@ -131,7 +128,8 @@ data:
         # variables, with its turn token as the password. Envoy lets a
         # request through only to the hosts that egressProxy.allowedHosts
         # allows. A request for an HTTPS URL arrives as CONNECT: Envoy sees
-        # the host and the port and passes the rest on as it is.
+        # the host and the port and passes the rest on as it is. Where Envoy
+        # itself can connect to is set by its network policy.
         - name: forward
           address:
             socket_address: {address: 0.0.0.0, port_value: 3128}
@@ -192,43 +190,6 @@ data:
                         typed_config:
                           "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig
                           dns_cache_config: {name: forward, dns_lookup_family: V4_PREFERRED}
-                          {{- if $allowAny }}
-                          save_upstream_address: true
-                          {{- end }}
-                      {{- if $allowAny }}
-                      # "*" allows the hosts outside. Without this filter a
-                      # pod could reach into the cluster through Envoy, to
-                      # the Supervisor, the database or the node. It refuses
-                      # a request to a host whose address is private,
-                      # loopback or link-local, unless the host is listed.
-                      - name: envoy.filters.http.rbac
-                        typed_config:
-                          "@type": type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC
-                          rules:
-                            action: DENY
-                            policies:
-                              inside-addresses:
-                                principals: [{any: true}]
-                                permissions:
-                                  - and_rules:
-                                      rules:
-                                        - or_rules:
-                                            rules:
-                                              {{- range list "0.0.0.0/8" "10.0.0.0/8" "100.64.0.0/10" "127.0.0.0/8" "169.254.0.0/16" "172.16.0.0/12" "192.168.0.0/16" "::1/128" "fc00::/7" "fe80::/10" }}
-                                              {{- $range := splitList "/" . }}
-                                              - matcher:
-                                                  name: envoy.rbac.matchers.upstream_ip_port
-                                                  typed_config:
-                                                    "@type": type.googleapis.com/envoy.extensions.rbac.matchers.upstream_ip_port.v3.UpstreamIpPortMatcher
-                                                    upstream_ip: {address_prefix: {{ index $range 0 | quote }}, prefix_len: {{ index $range 1 }}}
-                                              {{- end }}
-                                        {{- if $hosts }}
-                                        - not_rule:
-                                            or_rules:
-                                              rules:
-                                                {{- include "aviary.egress-proxy.hosts" $hosts | nindent 48 }}
-                                        {{- end }}
-                      {{- end }}
                       {{- include "aviary.egress-proxy.router" . | nindent 22 }}
       clusters:
         - name: supervisor

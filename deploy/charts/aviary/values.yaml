@@ -28,17 +28,36 @@ llm:
 
 egressProxy:
   image: envoyproxy/envoy:distroless-v1.40.2@sha256:09ca6f2140a61ad8df11779a4a30d52b48433d444466328494f9188c9c35eded
-  # The hosts that the turn pods may reach, the model endpoint among them.
-  #   "*"        every host outside: one whose address is not private,
-  #              loopback or link-local. So the pods cannot reach into the
-  #              cluster through the proxy.
-  #   host       the host, wherever it is, for HTTPS and HTTP on their usual
-  #              ports. A subdomain is a host of its own.
+  # The hosts that the proxy lets requests through to, the model endpoint
+  # among them.
+  #   "*"        every host.
+  #   host       the host, for HTTPS and HTTP on their usual ports. A
+  #              subdomain is a host of its own.
   #   host:port  the host on another port.
-  # The default allows everything outside. To restrict the pods, list the
-  # hosts instead. The model endpoint needs "*" or its host in the list:
-  # without it the proxy refuses the model requests, and the turns fail.
+  # The default allows everything. To restrict the pods, list the hosts
+  # instead. The model endpoint needs "*" or its host in the list: without
+  # it the proxy refuses the model requests, and the turns fail.
   allowedHosts: ["*"]
+  # The turn pods reach the outside through the proxy, so the proxy must not
+  # be a way into the cluster. A network policy keeps the proxy itself from
+  # connecting to the addresses in these ranges. It still reaches the
+  # Supervisor, the cluster's DNS and, if llm.url holds an IP address, the
+  # model endpoint.
+  insideCIDRs:
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 100.64.0.0/10
+    - 169.254.0.0/16
+    - fc00::/7
+    - fe80::/10
+  # More that the proxy may connect to inside, as egress rules of a
+  # NetworkPolicy. A model endpoint or an allowed host that is a service in
+  # the cluster needs one, for example
+  #   - to:
+  #       - namespaceSelector:
+  #           matchLabels: {kubernetes.io/metadata.name: llm-gateway}
+  extraEgress: []
 
 runtime:
   # The most turns that run at once. The turns beyond it wait in the order in
