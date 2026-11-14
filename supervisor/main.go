@@ -34,6 +34,7 @@ const (
 	runnerImage        = "AVIARY_RUNNER_IMAGE"
 	llmBaseURL         = "AVIARY_LLM_BASE_URL"
 	llmModel           = "AVIARY_LLM_MODEL"
+	proxyURL           = "AVIARY_PROXY_URL"
 	harnesses          = "AVIARY_HARNESSES"
 	maxConcurrentTurns = "AVIARY_MAX_CONCURRENT_TURNS"
 	apiAddr            = ":8080"
@@ -171,6 +172,9 @@ func driverConfig() (driver.Config, error) {
 	}
 	// An installation without a model endpoint names no model.
 	config.LLMModel = os.Getenv(llmModel)
+	if config.ProxyURL, err = env(proxyURL); err != nil {
+		return config, err
+	}
 	encoded, err := env(harnesses)
 	if err != nil {
 		return config, err

@@ -21,6 +21,7 @@ The container is set up like this:
 | Home | `/home`, with `HOME` set to it. It is the home of the session, on a volume. It is the only part of the file system that the next turn of the session sees again. |
 | Working directory | `/home/workspace` |
 | Model endpoint | `AVIARY_LLM_BASE_URL`, `AVIARY_LLM_API_KEY` and `AVIARY_LLM_MODEL`. The address is the Egress Proxy and the key is the token of the turn. The proxy puts the real key in its place, so the pod never holds it. |
+| Network | `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`, also in lower case. The proxy is the Egress Proxy, which lets requests through to the hosts that the installation allows. |
 | Kubernetes API | No service account token is mounted. |
 | Time | The pod is stopped 30 minutes after it started. |
 
@@ -78,6 +79,10 @@ The images here ran into these cases:
 - **Settings that the harness does not read from the environment.** Codex
   takes the model and the server address from its configuration. The image
   starts it through a small script that puts the variables there.
+- **Programs that do not use the proxy variables.** What a harness or its
+  tools fetch from outside has to go through the proxy. git, npm and curl
+  use the variables. Node's `fetch` does not, unless `NODE_USE_ENV_PROXY=1`
+  is set, which `images/harness-base` does.
 - **Time to start.** The harness starts on every turn, so its startup time
   is part of every answer.
 

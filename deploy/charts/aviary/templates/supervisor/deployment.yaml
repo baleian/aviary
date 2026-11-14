@@ -51,6 +51,9 @@ spec:
               value: http://aviary-egress-proxy.{{ .Release.Namespace }}:8080{{ (urlParse .Values.llm.url).path | trimSuffix "/" }}
             - name: AVIARY_LLM_MODEL
               value: {{ .Values.llm.model | quote }}
+            # The proxy that the turn pods use for everything else.
+            - name: AVIARY_PROXY_URL
+              value: http://aviary-egress-proxy.{{ .Release.Namespace }}:3128
             - name: AVIARY_HARNESSES
               value: {{ .Values.runtime.harnesses | toJson | quote }}
             - name: AVIARY_MAX_CONCURRENT_TURNS

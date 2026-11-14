@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -57,6 +59,9 @@ type Config struct {
 	// the Egress Proxy, and LLMModel is the model that they ask it for.
 	LLMBaseURL string
 	LLMModel   string
+	// ProxyURL is the Egress Proxy's forward proxy, for everything else
+	// that a turn pod sends out.
+	ProxyURL string
 	// Harnesses are the harnesses that agents can use, by name.
 	Harnesses map[string]Harness
 	// MaxConcurrentTurns is the most turns that run at once. The turns
@@ -70,10 +75,14 @@ type Harness struct {
 
 type Driver struct {
 	config Config
-	client kubernetes.Interface
-	store  *store.Store
-	events *events.Streams
-	wake   chan struct{}
+	// proxy is the forward proxy, and noProxy the hosts that a turn pod
+	// reaches without it.
+	proxy   *url.URL
+	noProxy string
+	client  kubernetes.Interface
+	store   *store.Store
+	events  *events.Streams
+	wake    chan struct{}
 }
 
 // New returns a driver for the cluster that the Supervisor runs in.
@@ -86,7 +95,21 @@ func New(config Config, st *store.Store, ev *events.Streams) (*Driver, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Driver{config: config, client: client, store: st, events: ev, wake: make(chan struct{}, 1)}, nil
+	proxy, err := url.Parse(config.ProxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("the proxy URL: %w", err)
+	}
+	llm, err := url.Parse(config.LLMBaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("the URL of the model endpoint: %w", err)
+	}
+	// A harness may talk to itself over the loopback interface, and the
+	// model endpoint is the proxy itself, on another port.
+	noProxy := []string{"localhost", "127.0.0.1", "::1", llm.Hostname()}
+	return &Driver{
+		config: config, proxy: proxy, noProxy: strings.Join(noProxy, ","),
+		client: client, store: st, events: ev, wake: make(chan struct{}, 1),
+	}, nil
 }
 
 // HasHarness reports whether turns can run on the harness of that name.
@@ -303,6 +326,10 @@ func outcome(job *batchv1.Job) (succeeded, ended bool) {
 // images do not have to contain it.
 func (d *Driver) job(dispatch store.Dispatch, harness Harness) *batchv1.Job {
 	home := fmt.Sprintf("projects/%s/agents/%s/sessions/%s/home", dispatch.ProjectID, dispatch.AgentID, dispatch.SessionID)
+	// The password of the proxy is the turn token, by which the proxy knows
+	// the turn of a request.
+	proxy := *d.proxy
+	proxy.User = url.UserPassword("turn", dispatch.Token)
 	labels := map[string]string{turnLabel: dispatch.TurnID.String()}
 	restricted := &corev1.SecurityContext{
 		AllowPrivilegeEscalation: new(false),
@@ -350,6 +377,15 @@ func (d *Driver) job(dispatch store.Dispatch, harness Harness) *batchv1.Job {
 							{Name: "AVIARY_LLM_BASE_URL", Value: d.config.LLMBaseURL},
 							{Name: "AVIARY_LLM_API_KEY", Value: dispatch.Token},
 							{Name: "AVIARY_LLM_MODEL", Value: d.config.LLMModel},
+							// Everything else that the programs in the pod fetch
+							// goes through the proxy. Some programs read the
+							// names in capitals and some the others.
+							{Name: "HTTP_PROXY", Value: proxy.String()},
+							{Name: "HTTPS_PROXY", Value: proxy.String()},
+							{Name: "NO_PROXY", Value: d.noProxy},
+							{Name: "http_proxy", Value: proxy.String()},
+							{Name: "https_proxy", Value: proxy.String()},
+							{Name: "no_proxy", Value: d.noProxy},
 						},
 						SecurityContext: restricted,
 						VolumeMounts: []corev1.VolumeMount{
