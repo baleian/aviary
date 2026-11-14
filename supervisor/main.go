@@ -53,7 +53,9 @@ func main() {
 }
 
 // run serves, or with the argument "migrate" brings the database schema up
-// to date. A release migrates once, before it starts its Supervisors.
+// to date. A release migrates once, before it starts its Supervisors. With
+// a version after it, "migrate" moves the schema to that version instead,
+// forward or back.
 func run(ctx context.Context, args []string) error {
 	database, err := env(databaseURL)
 	if err != nil {
@@ -64,8 +66,14 @@ func run(ctx context.Context, args []string) error {
 		return serve(ctx, database)
 	case len(args) == 1 && args[0] == "migrate":
 		return store.Migrate(ctx, database)
+	case len(args) == 2 && args[0] == "migrate":
+		version, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil {
+			return fmt.Errorf("%q is not a schema version", args[1])
+		}
+		return store.MigrateTo(ctx, database, version)
 	}
-	return errors.New("usage: aviary-supervisor [migrate]")
+	return errors.New("usage: aviary-supervisor [migrate [<version>]]")
 }
 
 func serve(ctx context.Context, database string) error {

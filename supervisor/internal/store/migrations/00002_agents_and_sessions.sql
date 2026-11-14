@@ -11,3 +11,7 @@ create table sessions (
     agent_id uuid not null references agents (id),
     created_at timestamptz not null default now()
 );
+
+-- +goose Down
+drop table sessions;
+drop table agents;

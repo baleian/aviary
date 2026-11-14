@@ -4,3 +4,6 @@ create table projects (
     name text not null,
     created_at timestamptz not null default now()
 );
+
+-- +goose Down
+drop table projects;

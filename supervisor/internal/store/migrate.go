@@ -29,6 +29,25 @@ const undefinedTable = "42P01"
 
 // Migrate brings the schema of the database at url up to date.
 func Migrate(ctx context.Context, url string) error {
+	latest, err := latestMigration()
+	if err != nil {
+		return err
+	}
+	return MigrateTo(ctx, url, latest)
+}
+
+// MigrateTo brings the schema of the database at url to the given version,
+// forward or back. Going back is for the rare case that a schema change
+// itself has to be undone: it drops what the newer migrations added, with
+// the data in it. Going back to an earlier release does not need it.
+func MigrateTo(ctx context.Context, url string, version int64) error {
+	latest, err := latestMigration()
+	if err != nil {
+		return err
+	}
+	if version < 0 || version > latest {
+		return fmt.Errorf("there is no schema version %d; the newest is %d", version, latest)
+	}
 	pool, err := pgxpool.New(ctx, url)
 	if err != nil {
 		return fmt.Errorf("connect to database: %w", err)
@@ -50,18 +69,23 @@ func Migrate(ctx context.Context, url string) error {
 	if err != nil {
 		return err
 	}
-	applied, err := provider.Up(ctx)
-	for _, migration := range applied {
-		slog.InfoContext(ctx, "applied migration", "version", migration.Source.Version, "duration", migration.Duration.String())
+	current, err := provider.GetDBVersion(ctx)
+	if err != nil {
+		return err
+	}
+	move := provider.UpTo
+	if version < current {
+		move = provider.DownTo
+	}
+	moved, err := move(ctx, version)
+	for _, migration := range moved {
+		slog.InfoContext(ctx, "ran migration", "version", migration.Source.Version,
+			"direction", migration.Direction, "duration", migration.Duration.String())
 	}
 	if err != nil {
 		return fmt.Errorf("migrate database: %w", err)
 	}
-	version, err := provider.GetDBVersion(ctx)
-	if err != nil {
-		return err
-	}
-	slog.InfoContext(ctx, "database schema is up to date", "version", version)
+	slog.InfoContext(ctx, "database schema is at version", "version", version)
 	return nil
 }
 

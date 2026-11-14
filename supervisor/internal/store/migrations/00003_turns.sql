@@ -12,3 +12,6 @@ create table turns (
 
 -- A session runs one turn at a time.
 create unique index turns_unfinished_per_session on turns (session_id) where ended_at is null;
+
+-- +goose Down
+drop table turns;
