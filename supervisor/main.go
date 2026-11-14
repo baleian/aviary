@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -42,20 +43,32 @@ func main() {
 	slog.SetDefault(logger)
 	// The Kubernetes client logs through klog.
 	klog.SetSlogLogger(logger)
-	if err := run(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if err := run(ctx, os.Args[1:]); err != nil {
 		slog.Error("supervisor stopped", "error", err)
+		stop()
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
+// run serves, or with the argument "migrate" brings the database schema up
+// to date. A release migrates once, before it starts its Supervisors.
+func run(ctx context.Context, args []string) error {
 	database, err := env(databaseURL)
 	if err != nil {
 		return err
 	}
+	switch {
+	case len(args) == 0:
+		return serve(ctx, database)
+	case len(args) == 1 && args[0] == "migrate":
+		return store.Migrate(ctx, database)
+	}
+	return errors.New("usage: aviary-supervisor [migrate]")
+}
+
+func serve(ctx context.Context, database string) error {
 	st, err := store.Open(ctx, database)
 	if err != nil {
 		return err

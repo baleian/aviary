@@ -1,0 +1,44 @@
+# Brings the database schema up to date before the Supervisors of this
+# release start. It runs once for every install and upgrade, and the release
+# does not go on if it fails. The Supervisors themselves do not change the
+# schema, so the ones of the release before keep running on it meanwhile.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: aviary-migrate
+  labels:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: migrate
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    # A failed Job is kept until the next run, so that its log can be read.
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aviary
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: {{ .Values.supervisor.image }}
+          args: ["migrate"]
+          env:
+            - name: AVIARY_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.supervisor.database.secretName }}
+                  key: {{ .Values.supervisor.database.secretKey }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

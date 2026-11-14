@@ -5,19 +5,14 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"embed"
 	"errors"
 	"fmt"
-	"io/fs"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jackc/pgx/v5/stdlib"
-	"github.com/pressly/goose/v3"
-	"github.com/pressly/goose/v3/lock"
 )
 
 var (
@@ -43,9 +38,6 @@ const uniqueViolation = "23505"
 // dispatchLock is the key of the advisory lock that is held while turns are
 // dispatched.
 const dispatchLock int64 = 0x617669617279 // "aviary"
-
-//go:embed migrations/*.sql
-var migrations embed.FS
 
 type Store struct {
 	pool *pgxpool.Pool
@@ -109,15 +101,16 @@ type Dispatch struct {
 	Token string
 }
 
-// Open connects to the database at url and brings its schema up to date.
+// Open connects to the database at url. Its schema must be at least as new
+// as this build needs; Migrate brings it there.
 func Open(ctx context.Context, url string) (*Store, error) {
 	pool, err := pgxpool.New(ctx, url)
 	if err != nil {
 		return nil, fmt.Errorf("connect to database: %w", err)
 	}
-	if err := migrate(ctx, pool); err != nil {
+	if err := checkSchema(ctx, pool); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("migrate database: %w", err)
+		return nil, err
 	}
 	return &Store{pool: pool}, nil
 }
@@ -405,25 +398,4 @@ func (s *Store) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool) (
 func hashToken(token string) []byte {
 	hash := sha256.Sum256([]byte(token))
 	return hash[:]
-}
-
-// migrate holds a lock in a table rather than on the connection, so that
-// several Supervisors can start at once behind a connection pooler.
-func migrate(ctx context.Context, pool *pgxpool.Pool) error {
-	files, err := fs.Sub(migrations, "migrations")
-	if err != nil {
-		return err
-	}
-	locker, err := lock.NewPostgresTableLocker()
-	if err != nil {
-		return err
-	}
-	db := stdlib.OpenDBFromPool(pool)
-	defer db.Close()
-	provider, err := goose.NewProvider(goose.DialectPostgres, db, files, goose.WithLocker(locker))
-	if err != nil {
-		return err
-	}
-	_, err = provider.Up(ctx)
-	return err
 }

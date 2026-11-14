@@ -56,13 +56,6 @@ spec:
               containerPort: 8080
             - name: grpc
               containerPort: 9090
-          # The Supervisor updates the database schema before it listens.
-          startupProbe:
-            httpGet:
-              path: /healthz
-              port: http
-            periodSeconds: 2
-            failureThreshold: 150
           readinessProbe:
             httpGet:
               path: /healthz
