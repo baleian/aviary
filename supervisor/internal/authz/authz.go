@@ -5,10 +5,12 @@ package authz
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"log/slog"
 	"strings"
 
+	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	rpcstatus "google.golang.org/genproto/googleapis/rpc/status"
@@ -28,18 +30,27 @@ func New(st *store.Store) authv3.AuthorizationServer {
 	return &authorizer{store: st}
 }
 
-// Check allows a request that carries the token of a running turn as its
-// bearer token. The proxy gets the ID of the turn back as metadata, which it
-// writes to its access log.
+// Check allows a request that carries the token of a running turn. The
+// proxy gets the ID of the turn back as metadata, which it writes to its
+// access log.
+//
+// A request to the model endpoint carries the token as its bearer token, in
+// place of the API key. A request to the forward proxy carries it as the
+// password of the proxy. The proxy says which of the two a request is with
+// the context extension "listener".
 func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*authv3.CheckResponse, error) {
 	headers := request.GetAttributes().GetRequest().GetHttp().GetHeaders()
-	token, found := strings.CutPrefix(headers["authorization"], "Bearer ")
-	if !found || token == "" {
-		return denied(), nil
+	forward := request.GetAttributes().GetContextExtensions()["listener"] == "forward"
+	token := bearerToken(headers["authorization"])
+	if forward {
+		token = proxyPassword(headers["proxy-authorization"])
+	}
+	if token == "" {
+		return denied(forward), nil
 	}
 	turnID, err := a.store.RunningTurn(ctx, token)
 	if errors.Is(err, store.ErrNotFound) {
-		return denied(), nil
+		return denied(forward), nil
 	}
 	if err != nil {
 		// The proxy refuses a request that it gets no answer about.
@@ -59,12 +70,42 @@ func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*
 	}, nil
 }
 
-func denied() *authv3.CheckResponse {
+// bearerToken reads the token from an Authorization header.
+func bearerToken(header string) string {
+	token, _ := strings.CutPrefix(header, "Bearer ")
+	return token
+}
+
+// proxyPassword reads the password from a Proxy-Authorization header. The
+// user name can be anything.
+func proxyPassword(header string) string {
+	encoded, found := strings.CutPrefix(header, "Basic ")
+	if !found {
+		return ""
+	}
+	credentials, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return ""
+	}
+	_, password, _ := strings.Cut(string(credentials), ":")
+	return password
+}
+
+// denied refuses a request. The forward proxy asks for its password: some
+// clients, git among them, send none before they are asked.
+func denied(forward bool) *authv3.CheckResponse {
+	response := &authv3.DeniedHttpResponse{
+		Status: &typev3.HttpStatus{Code: typev3.StatusCode_Unauthorized},
+		Body:   "the token belongs to no running turn\n",
+	}
+	if forward {
+		response.Status.Code = typev3.StatusCode_ProxyAuthenticationRequired
+		response.Headers = []*corev3.HeaderValueOption{{
+			Header: &corev3.HeaderValue{Key: "Proxy-Authenticate", Value: `Basic realm="aviary"`},
+		}}
+	}
 	return &authv3.CheckResponse{
-		Status: &rpcstatus.Status{Code: int32(codes.Unauthenticated)},
-		HttpResponse: &authv3.CheckResponse_DeniedResponse{DeniedResponse: &authv3.DeniedHttpResponse{
-			Status: &typev3.HttpStatus{Code: typev3.StatusCode_Unauthorized},
-			Body:   "the token belongs to no running turn\n",
-		}},
+		Status:       &rpcstatus.Status{Code: int32(codes.Unauthenticated)},
+		HttpResponse: &authv3.CheckResponse_DeniedResponse{DeniedResponse: response},
 	}
 }
