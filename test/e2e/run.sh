@@ -126,6 +126,15 @@ proxied() {
        END { exit !found }' <<< "$log"
 }
 
+# reported tells whether its input is the token usage that mock-llm reports.
+# Every answer of mock-llm reports 11 tokens in and 7 out, and a harness
+# reports the usage of one answer of a turn or of all of them.
+reported() {
+  jq --exit-status '((.total_tokens // 0) / 18) as $answers
+    | $answers >= 1 and $answers == ($answers | floor)
+      and .input_tokens == 11 * $answers and .output_tokens == 7 * $answers' > /dev/null
+}
+
 # For the e2e the model endpoint is mock-llm, and one turn runs at a time,
 # which the check of the queue needs.
 mkdir -p "$out"
@@ -227,5 +236,12 @@ run_turn "$killed" queue-turn-4 "say done"
 [[ $(answer queue-turn-4) == *done* ]] ||
   fail "the session of the failed turn did not answer, see $out/queue-turn-4.jsonl"
 
+# A turn records the token usage that its harness reported, and its last
+# event carries it.
+field "/v1/turns/$turn" usage | reported ||
+  fail "turn $turn does not record the token usage that mock-llm reported"
+jq --slurp 'last.data.usage' "$out/queue-turn-4.jsonl" | reported ||
+  fail "the last event of turn $turn lacks the token usage, see $out/queue-turn-4.jsonl"
+
 echo "PASS: $harness ran turns through the API, continued a session, kept sessions apart," \
-  "reached the model without holding its key and queued turns"
+  "reached the model without holding its key, queued turns and recorded token usage"

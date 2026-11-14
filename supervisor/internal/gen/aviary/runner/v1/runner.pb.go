@@ -363,7 +363,9 @@ func (x *Started) GetHarnessSessionId() string {
 type Finished struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// One of end_turn, max_tokens, max_turn_requests, refusal, cancelled.
-	StopReason    string `protobuf:"bytes,1,opt,name=stop_reason,json=stopReason,proto3" json:"stop_reason,omitempty"`
+	StopReason string `protobuf:"bytes,1,opt,name=stop_reason,json=stopReason,proto3" json:"stop_reason,omitempty"`
+	// The token usage of the turn, if the harness reported it.
+	Usage         *Usage `protobuf:"bytes,2,opt,name=usage,proto3" json:"usage,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -405,6 +407,103 @@ func (x *Finished) GetStopReason() string {
 	return ""
 }
 
+func (x *Finished) GetUsage() *Usage {
+	if x != nil {
+		return x.Usage
+	}
+	return nil
+}
+
+// Usage is the token usage of a turn as the harness reports it. It is not a
+// measurement: harnesses differ in what they count. One reports the sum of
+// the model requests of the turn, another only the last request.
+type Usage struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The sum of the kinds of tokens.
+	TotalTokens  int64 `protobuf:"varint,1,opt,name=total_tokens,json=totalTokens,proto3" json:"total_tokens,omitempty"`
+	InputTokens  int64 `protobuf:"varint,2,opt,name=input_tokens,json=inputTokens,proto3" json:"input_tokens,omitempty"`
+	OutputTokens int64 `protobuf:"varint,3,opt,name=output_tokens,json=outputTokens,proto3" json:"output_tokens,omitempty"`
+	// The tokens of the model's reasoning.
+	ThoughtTokens *int64 `protobuf:"varint,4,opt,name=thought_tokens,json=thoughtTokens,proto3,oneof" json:"thought_tokens,omitempty"`
+	// The input tokens that were read from, or written to, the model's cache.
+	CachedReadTokens  *int64 `protobuf:"varint,5,opt,name=cached_read_tokens,json=cachedReadTokens,proto3,oneof" json:"cached_read_tokens,omitempty"`
+	CachedWriteTokens *int64 `protobuf:"varint,6,opt,name=cached_write_tokens,json=cachedWriteTokens,proto3,oneof" json:"cached_write_tokens,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *Usage) Reset() {
+	*x = Usage{}
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Usage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Usage) ProtoMessage() {}
+
+func (x *Usage) ProtoReflect() protoreflect.Message {
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Usage.ProtoReflect.Descriptor instead.
+func (*Usage) Descriptor() ([]byte, []int) {
+	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *Usage) GetTotalTokens() int64 {
+	if x != nil {
+		return x.TotalTokens
+	}
+	return 0
+}
+
+func (x *Usage) GetInputTokens() int64 {
+	if x != nil {
+		return x.InputTokens
+	}
+	return 0
+}
+
+func (x *Usage) GetOutputTokens() int64 {
+	if x != nil {
+		return x.OutputTokens
+	}
+	return 0
+}
+
+func (x *Usage) GetThoughtTokens() int64 {
+	if x != nil && x.ThoughtTokens != nil {
+		return *x.ThoughtTokens
+	}
+	return 0
+}
+
+func (x *Usage) GetCachedReadTokens() int64 {
+	if x != nil && x.CachedReadTokens != nil {
+		return *x.CachedReadTokens
+	}
+	return 0
+}
+
+func (x *Usage) GetCachedWriteTokens() int64 {
+	if x != nil && x.CachedWriteTokens != nil {
+		return *x.CachedWriteTokens
+	}
+	return 0
+}
+
 // MessageDelta is the next piece of what the agent says.
 type MessageDelta struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -417,7 +516,7 @@ type MessageDelta struct {
 
 func (x *MessageDelta) Reset() {
 	*x = MessageDelta{}
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[5]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -429,7 +528,7 @@ func (x *MessageDelta) String() string {
 func (*MessageDelta) ProtoMessage() {}
 
 func (x *MessageDelta) ProtoReflect() protoreflect.Message {
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[5]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -442,7 +541,7 @@ func (x *MessageDelta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MessageDelta.ProtoReflect.Descriptor instead.
 func (*MessageDelta) Descriptor() ([]byte, []int) {
-	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{5}
+	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *MessageDelta) GetText() string {
@@ -471,7 +570,7 @@ type ThoughtDelta struct {
 
 func (x *ThoughtDelta) Reset() {
 	*x = ThoughtDelta{}
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[6]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -483,7 +582,7 @@ func (x *ThoughtDelta) String() string {
 func (*ThoughtDelta) ProtoMessage() {}
 
 func (x *ThoughtDelta) ProtoReflect() protoreflect.Message {
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[6]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -496,7 +595,7 @@ func (x *ThoughtDelta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ThoughtDelta.ProtoReflect.Descriptor instead.
 func (*ThoughtDelta) Descriptor() ([]byte, []int) {
-	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{6}
+	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ThoughtDelta) GetText() string {
@@ -536,7 +635,7 @@ type ToolCall struct {
 
 func (x *ToolCall) Reset() {
 	*x = ToolCall{}
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[7]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -548,7 +647,7 @@ func (x *ToolCall) String() string {
 func (*ToolCall) ProtoMessage() {}
 
 func (x *ToolCall) ProtoReflect() protoreflect.Message {
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[7]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -561,7 +660,7 @@ func (x *ToolCall) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolCall.ProtoReflect.Descriptor instead.
 func (*ToolCall) Descriptor() ([]byte, []int) {
-	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{7}
+	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ToolCall) GetId() string {
@@ -629,7 +728,7 @@ type ToolUpdate struct {
 
 func (x *ToolUpdate) Reset() {
 	*x = ToolUpdate{}
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[8]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -641,7 +740,7 @@ func (x *ToolUpdate) String() string {
 func (*ToolUpdate) ProtoMessage() {}
 
 func (x *ToolUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[8]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -654,7 +753,7 @@ func (x *ToolUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolUpdate.ProtoReflect.Descriptor instead.
 func (*ToolUpdate) Descriptor() ([]byte, []int) {
-	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{8}
+	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ToolUpdate) GetId() string {
@@ -716,7 +815,7 @@ type PlanUpdate struct {
 
 func (x *PlanUpdate) Reset() {
 	*x = PlanUpdate{}
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[9]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -728,7 +827,7 @@ func (x *PlanUpdate) String() string {
 func (*PlanUpdate) ProtoMessage() {}
 
 func (x *PlanUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[9]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -741,7 +840,7 @@ func (x *PlanUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanUpdate.ProtoReflect.Descriptor instead.
 func (*PlanUpdate) Descriptor() ([]byte, []int) {
-	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{9}
+	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *PlanUpdate) GetEntries() []*PlanEntry {
@@ -764,7 +863,7 @@ type PlanEntry struct {
 
 func (x *PlanEntry) Reset() {
 	*x = PlanEntry{}
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[10]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -776,7 +875,7 @@ func (x *PlanEntry) String() string {
 func (*PlanEntry) ProtoMessage() {}
 
 func (x *PlanEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[10]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -789,7 +888,7 @@ func (x *PlanEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanEntry.ProtoReflect.Descriptor instead.
 func (*PlanEntry) Descriptor() ([]byte, []int) {
-	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{10}
+	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *PlanEntry) GetContent() string {
@@ -837,10 +936,21 @@ const file_aviary_runner_v1_runner_proto_rawDesc = "" +
 	"\x12harness_session_id\x18\x02 \x01(\tH\x00R\x10harnessSessionId\x88\x01\x01B\x15\n" +
 	"\x13_harness_session_id\"7\n" +
 	"\aStarted\x12,\n" +
-	"\x12harness_session_id\x18\x01 \x01(\tR\x10harnessSessionId\"+\n" +
+	"\x12harness_session_id\x18\x01 \x01(\tR\x10harnessSessionId\"Z\n" +
 	"\bFinished\x12\x1f\n" +
 	"\vstop_reason\x18\x01 \x01(\tR\n" +
-	"stopReason\"U\n" +
+	"stopReason\x12-\n" +
+	"\x05usage\x18\x02 \x01(\v2\x17.aviary.runner.v1.UsageR\x05usage\"\xc8\x02\n" +
+	"\x05Usage\x12!\n" +
+	"\ftotal_tokens\x18\x01 \x01(\x03R\vtotalTokens\x12!\n" +
+	"\finput_tokens\x18\x02 \x01(\x03R\vinputTokens\x12#\n" +
+	"\routput_tokens\x18\x03 \x01(\x03R\foutputTokens\x12*\n" +
+	"\x0ethought_tokens\x18\x04 \x01(\x03H\x00R\rthoughtTokens\x88\x01\x01\x121\n" +
+	"\x12cached_read_tokens\x18\x05 \x01(\x03H\x01R\x10cachedReadTokens\x88\x01\x01\x123\n" +
+	"\x13cached_write_tokens\x18\x06 \x01(\x03H\x02R\x11cachedWriteTokens\x88\x01\x01B\x11\n" +
+	"\x0f_thought_tokensB\x15\n" +
+	"\x13_cached_read_tokensB\x16\n" +
+	"\x14_cached_write_tokens\"U\n" +
 	"\fMessageDelta\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12\"\n" +
 	"\n" +
@@ -894,45 +1004,47 @@ func file_aviary_runner_v1_runner_proto_rawDescGZIP() []byte {
 	return file_aviary_runner_v1_runner_proto_rawDescData
 }
 
-var file_aviary_runner_v1_runner_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_aviary_runner_v1_runner_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_aviary_runner_v1_runner_proto_goTypes = []any{
 	(*RunTurnRequest)(nil),  // 0: aviary.runner.v1.RunTurnRequest
 	(*RunTurnResponse)(nil), // 1: aviary.runner.v1.RunTurnResponse
 	(*Start)(nil),           // 2: aviary.runner.v1.Start
 	(*Started)(nil),         // 3: aviary.runner.v1.Started
 	(*Finished)(nil),        // 4: aviary.runner.v1.Finished
-	(*MessageDelta)(nil),    // 5: aviary.runner.v1.MessageDelta
-	(*ThoughtDelta)(nil),    // 6: aviary.runner.v1.ThoughtDelta
-	(*ToolCall)(nil),        // 7: aviary.runner.v1.ToolCall
-	(*ToolUpdate)(nil),      // 8: aviary.runner.v1.ToolUpdate
-	(*PlanUpdate)(nil),      // 9: aviary.runner.v1.PlanUpdate
-	(*PlanEntry)(nil),       // 10: aviary.runner.v1.PlanEntry
-	(*structpb.Value)(nil),  // 11: google.protobuf.Value
-	(*structpb.Struct)(nil), // 12: google.protobuf.Struct
+	(*Usage)(nil),           // 5: aviary.runner.v1.Usage
+	(*MessageDelta)(nil),    // 6: aviary.runner.v1.MessageDelta
+	(*ThoughtDelta)(nil),    // 7: aviary.runner.v1.ThoughtDelta
+	(*ToolCall)(nil),        // 8: aviary.runner.v1.ToolCall
+	(*ToolUpdate)(nil),      // 9: aviary.runner.v1.ToolUpdate
+	(*PlanUpdate)(nil),      // 10: aviary.runner.v1.PlanUpdate
+	(*PlanEntry)(nil),       // 11: aviary.runner.v1.PlanEntry
+	(*structpb.Value)(nil),  // 12: google.protobuf.Value
+	(*structpb.Struct)(nil), // 13: google.protobuf.Struct
 }
 var file_aviary_runner_v1_runner_proto_depIdxs = []int32{
 	3,  // 0: aviary.runner.v1.RunTurnRequest.started:type_name -> aviary.runner.v1.Started
 	4,  // 1: aviary.runner.v1.RunTurnRequest.finished:type_name -> aviary.runner.v1.Finished
-	5,  // 2: aviary.runner.v1.RunTurnRequest.message_delta:type_name -> aviary.runner.v1.MessageDelta
-	6,  // 3: aviary.runner.v1.RunTurnRequest.thought_delta:type_name -> aviary.runner.v1.ThoughtDelta
-	7,  // 4: aviary.runner.v1.RunTurnRequest.tool_call:type_name -> aviary.runner.v1.ToolCall
-	8,  // 5: aviary.runner.v1.RunTurnRequest.tool_update:type_name -> aviary.runner.v1.ToolUpdate
-	9,  // 6: aviary.runner.v1.RunTurnRequest.plan_update:type_name -> aviary.runner.v1.PlanUpdate
+	6,  // 2: aviary.runner.v1.RunTurnRequest.message_delta:type_name -> aviary.runner.v1.MessageDelta
+	7,  // 3: aviary.runner.v1.RunTurnRequest.thought_delta:type_name -> aviary.runner.v1.ThoughtDelta
+	8,  // 4: aviary.runner.v1.RunTurnRequest.tool_call:type_name -> aviary.runner.v1.ToolCall
+	9,  // 5: aviary.runner.v1.RunTurnRequest.tool_update:type_name -> aviary.runner.v1.ToolUpdate
+	10, // 6: aviary.runner.v1.RunTurnRequest.plan_update:type_name -> aviary.runner.v1.PlanUpdate
 	2,  // 7: aviary.runner.v1.RunTurnResponse.start:type_name -> aviary.runner.v1.Start
-	11, // 8: aviary.runner.v1.ToolCall.input:type_name -> google.protobuf.Value
-	11, // 9: aviary.runner.v1.ToolCall.output:type_name -> google.protobuf.Value
-	12, // 10: aviary.runner.v1.ToolCall.meta:type_name -> google.protobuf.Struct
-	11, // 11: aviary.runner.v1.ToolUpdate.input:type_name -> google.protobuf.Value
-	11, // 12: aviary.runner.v1.ToolUpdate.output:type_name -> google.protobuf.Value
-	12, // 13: aviary.runner.v1.ToolUpdate.meta:type_name -> google.protobuf.Struct
-	10, // 14: aviary.runner.v1.PlanUpdate.entries:type_name -> aviary.runner.v1.PlanEntry
-	0,  // 15: aviary.runner.v1.RunnerService.RunTurn:input_type -> aviary.runner.v1.RunTurnRequest
-	1,  // 16: aviary.runner.v1.RunnerService.RunTurn:output_type -> aviary.runner.v1.RunTurnResponse
-	16, // [16:17] is the sub-list for method output_type
-	15, // [15:16] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	5,  // 8: aviary.runner.v1.Finished.usage:type_name -> aviary.runner.v1.Usage
+	12, // 9: aviary.runner.v1.ToolCall.input:type_name -> google.protobuf.Value
+	12, // 10: aviary.runner.v1.ToolCall.output:type_name -> google.protobuf.Value
+	13, // 11: aviary.runner.v1.ToolCall.meta:type_name -> google.protobuf.Struct
+	12, // 12: aviary.runner.v1.ToolUpdate.input:type_name -> google.protobuf.Value
+	12, // 13: aviary.runner.v1.ToolUpdate.output:type_name -> google.protobuf.Value
+	13, // 14: aviary.runner.v1.ToolUpdate.meta:type_name -> google.protobuf.Struct
+	11, // 15: aviary.runner.v1.PlanUpdate.entries:type_name -> aviary.runner.v1.PlanEntry
+	0,  // 16: aviary.runner.v1.RunnerService.RunTurn:input_type -> aviary.runner.v1.RunTurnRequest
+	1,  // 17: aviary.runner.v1.RunnerService.RunTurn:output_type -> aviary.runner.v1.RunTurnResponse
+	17, // [17:18] is the sub-list for method output_type
+	16, // [16:17] is the sub-list for method input_type
+	16, // [16:16] is the sub-list for extension type_name
+	16, // [16:16] is the sub-list for extension extendee
+	0,  // [0:16] is the sub-list for field type_name
 }
 
 func init() { file_aviary_runner_v1_runner_proto_init() }
@@ -955,14 +1067,15 @@ func file_aviary_runner_v1_runner_proto_init() {
 	file_aviary_runner_v1_runner_proto_msgTypes[2].OneofWrappers = []any{}
 	file_aviary_runner_v1_runner_proto_msgTypes[5].OneofWrappers = []any{}
 	file_aviary_runner_v1_runner_proto_msgTypes[6].OneofWrappers = []any{}
-	file_aviary_runner_v1_runner_proto_msgTypes[8].OneofWrappers = []any{}
+	file_aviary_runner_v1_runner_proto_msgTypes[7].OneofWrappers = []any{}
+	file_aviary_runner_v1_runner_proto_msgTypes[9].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_aviary_runner_v1_runner_proto_rawDesc), len(file_aviary_runner_v1_runner_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   11,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

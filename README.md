@@ -131,11 +131,18 @@ The events of a turn:
 | `tool.call` | `id`, `title`, `kind`, `status`, `input`: the agent started to use a tool. |
 | `tool.update` | `id` and what changed of `title`, `kind`, `status`, `input`, `output`. |
 | `plan.update` | `entries`: the agent's plan, each entry with `content`, `priority` and `status`. |
-| `turn.completed` | `stop_reason`: why the harness ended the turn. The last event of the turn. |
+| `turn.completed` | `stop_reason`: why the harness ended the turn. `usage`: the token usage that the harness reported, if it did. The last event of the turn. |
 | `turn.failed` | The turn did not complete. The last event of the turn. |
 
 The fields of the events that come from the agent are defined in
 [`proto/aviary/runner/v1/runner.proto`](proto/aviary/runner/v1/runner.proto).
+
+`usage` holds `total_tokens`, `input_tokens` and `output_tokens`, and
+`thought_tokens`, `cached_read_tokens` and `cached_write_tokens` if the
+harness gives them. A turn that has ended has it too. It is what the harness
+says, not a measurement, and harnesses count differently: Codex reports the
+sum of the model requests of a turn, OpenCode only the last one. What the
+Egress Proxy logs can be relied on: every model request, with its turn.
 
 ## Configuration
 
@@ -176,6 +183,8 @@ To run a harness that is not in this repository, see
 - **Authentication.** Anyone who reaches the API can use it.
 - **Network control.** A turn pod can connect wherever the cluster lets it.
   Only its requests to the model go through the Egress Proxy.
+- **Measured token usage.** The usage of a turn is what its harness reports.
+  The Egress Proxy does not count tokens.
 - **Cancelling a turn** and **reading a conversation back**. The events of a
   turn are kept for 24 hours after it ended.
 - **The reason for a failed turn.** `turn.failed` does not say why, for

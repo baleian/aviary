@@ -82,7 +82,7 @@ func (g *gateway) receive(ctx context.Context, turnID uuid.UUID, request *runner
 		}
 		return g.events.Append(ctx, turnID, events.TurnStarted, struct{}{})
 	case *runnerv1.RunTurnRequest_Finished:
-		return g.store.SetStopReason(ctx, turnID, message.Finished.GetStopReason())
+		return g.store.SetFinished(ctx, turnID, message.Finished.GetStopReason(), usage(message.Finished.GetUsage()))
 	}
 	// The rest of the messages are the events of the turn. A runner newer
 	// than the Supervisor may send one that the Supervisor does not know.
@@ -97,6 +97,22 @@ func (g *gateway) receive(ctx context.Context, turnID uuid.UUID, request *runner
 	}
 	name := strings.ReplaceAll(string(field.Name()), "_", ".")
 	return g.events.Append(ctx, turnID, name, json.RawMessage(data))
+}
+
+// usage is the token usage that the runner passed on from the harness, if
+// the harness reported it.
+func usage(reported *runnerv1.Usage) *store.Usage {
+	if reported == nil {
+		return nil
+	}
+	return &store.Usage{
+		TotalTokens:       reported.GetTotalTokens(),
+		InputTokens:       reported.GetInputTokens(),
+		OutputTokens:      reported.GetOutputTokens(),
+		ThoughtTokens:     reported.ThoughtTokens,
+		CachedReadTokens:  reported.CachedReadTokens,
+		CachedWriteTokens: reported.CachedWriteTokens,
+	}
 }
 
 // eventJSON writes an event with the field names of the .proto file.

@@ -73,6 +73,40 @@ type Turn struct {
 	// StopReason is why the harness ended the turn, once it has.
 	StopReason *string    `json:"stop_reason,omitempty"`
 	EndedAt    *time.Time `json:"ended_at,omitempty"`
+	// Usage is the token usage of the turn, if the harness reported it.
+	Usage *Usage `json:"usage,omitempty"`
+}
+
+// Usage is the token usage of a turn as its harness reported it. It is not a
+// measurement: harnesses differ in what they count. One reports the sum of
+// the model requests of the turn, another only the last request.
+type Usage struct {
+	TotalTokens       int64  `json:"total_tokens"`
+	InputTokens       int64  `json:"input_tokens"`
+	OutputTokens      int64  `json:"output_tokens"`
+	ThoughtTokens     *int64 `json:"thought_tokens,omitempty"`
+	CachedReadTokens  *int64 `json:"cached_read_tokens,omitempty"`
+	CachedWriteTokens *int64 `json:"cached_write_tokens,omitempty"`
+}
+
+// turnColumns are the columns of a turn, but for its ID, in the order in
+// which scanTurn reads them.
+const turnColumns = `session_id, seq, state, text, created_at, stop_reason, ended_at,
+	total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens`
+
+func scanTurn(row pgx.Row, turn *Turn) error {
+	var usage Usage
+	var total, input, output *int64
+	err := row.Scan(&turn.SessionID, &turn.Seq, &turn.State, &turn.Text, &turn.CreatedAt, &turn.StopReason, &turn.EndedAt,
+		&total, &input, &output, &usage.ThoughtTokens, &usage.CachedReadTokens, &usage.CachedWriteTokens)
+	if err != nil {
+		return err
+	}
+	if total != nil && input != nil && output != nil {
+		usage.TotalTokens, usage.InputTokens, usage.OutputTokens = *total, *input, *output
+		turn.Usage = &usage
+	}
+	return nil
 }
 
 // DispatchedTurn is a turn that was dispatched and has not ended.
@@ -249,9 +283,7 @@ func (s *Store) QueuedTurns(ctx context.Context) ([]uuid.UUID, error) {
 
 func (s *Store) Turn(ctx context.Context, id uuid.UUID) (Turn, error) {
 	turn := Turn{ID: id}
-	err := s.pool.QueryRow(ctx,
-		`select session_id, seq, state, text, created_at, stop_reason, ended_at from turns where id = $1`, id,
-	).Scan(&turn.SessionID, &turn.Seq, &turn.State, &turn.Text, &turn.CreatedAt, &turn.StopReason, &turn.EndedAt)
+	err := scanTurn(s.pool.QueryRow(ctx, `select `+turnColumns+` from turns where id = $1`, id), &turn)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Turn{}, ErrNotFound
 	}
@@ -382,9 +414,20 @@ func (s *Store) SetHarnessSession(ctx context.Context, turnID uuid.UUID, harness
 	return err
 }
 
-// SetStopReason records why the harness ended the turn.
-func (s *Store) SetStopReason(ctx context.Context, turnID uuid.UUID, stopReason string) error {
-	_, err := s.pool.Exec(ctx, `update turns set stop_reason = $2 where id = $1`, turnID, stopReason)
+// SetFinished records how the harness ended the turn: why it stopped and,
+// if the harness reported it, the token usage of the turn.
+func (s *Store) SetFinished(ctx context.Context, turnID uuid.UUID, stopReason string, usage *Usage) error {
+	if usage == nil {
+		_, err := s.pool.Exec(ctx, `update turns set stop_reason = $2 where id = $1`, turnID, stopReason)
+		return err
+	}
+	_, err := s.pool.Exec(ctx,
+		`update turns set stop_reason = $2, total_tokens = $3, input_tokens = $4, output_tokens = $5,
+		        thought_tokens = $6, cached_read_tokens = $7, cached_write_tokens = $8
+		 where id = $1`,
+		turnID, stopReason, usage.TotalTokens, usage.InputTokens, usage.OutputTokens,
+		usage.ThoughtTokens, usage.CachedReadTokens, usage.CachedWriteTokens,
+	)
 	return err
 }
 
@@ -394,13 +437,13 @@ func (s *Store) SetStopReason(ctx context.Context, turnID uuid.UUID, stopReason 
 // second result is false if the turn had ended before, or does not exist.
 func (s *Store) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool) (Turn, bool, error) {
 	turn := Turn{ID: turnID}
-	err := s.pool.QueryRow(ctx,
+	err := scanTurn(s.pool.QueryRow(ctx,
 		`update turns set ended_at = now(),
 		        state = case when $2 and stop_reason is not null then $3 else $4 end
 		 where id = $1 and ended_at is null
-		 returning session_id, seq, state, text, created_at, stop_reason, ended_at`,
+		 returning `+turnColumns,
 		turnID, succeeded, TurnCompleted, TurnFailed,
-	).Scan(&turn.SessionID, &turn.Seq, &turn.State, &turn.Text, &turn.CreatedAt, &turn.StopReason, &turn.EndedAt)
+	), &turn)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Turn{}, false, nil
 	}

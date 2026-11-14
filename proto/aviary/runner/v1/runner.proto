@@ -57,6 +57,23 @@ message Started {
 message Finished {
   // One of end_turn, max_tokens, max_turn_requests, refusal, cancelled.
   string stop_reason = 1;
+  // The token usage of the turn, if the harness reported it.
+  Usage usage = 2;
+}
+
+// Usage is the token usage of a turn as the harness reports it. It is not a
+// measurement: harnesses differ in what they count. One reports the sum of
+// the model requests of the turn, another only the last request.
+message Usage {
+  // The sum of the kinds of tokens.
+  int64 total_tokens = 1;
+  int64 input_tokens = 2;
+  int64 output_tokens = 3;
+  // The tokens of the model's reasoning.
+  optional int64 thought_tokens = 4;
+  // The input tokens that were read from, or written to, the model's cache.
+  optional int64 cached_read_tokens = 5;
+  optional int64 cached_write_tokens = 6;
 }
 
 // MessageDelta is the next piece of what the agent says.

@@ -5,7 +5,7 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-agent-client-protocol = { version = "5.2.0", features = ["process"] }
+agent-client-protocol = { version = "5.2.0", features = ["process", "unstable_end_turn_token_usage"] }
 futures = { version = "0.3.34", default-features = false, features = ["async-await", "std"] }
 prost = "0.14.6"
 prost-types = "0.14.6"

@@ -106,8 +106,9 @@ func Last(turn store.Turn) (eventType string, data any) {
 		return TurnFailed, struct{}{}
 	}
 	return TurnCompleted, struct {
-		StopReason *string `json:"stop_reason"`
-	}{turn.StopReason}
+		StopReason *string      `json:"stop_reason"`
+		Usage      *store.Usage `json:"usage,omitempty"`
+	}{turn.StopReason, turn.Usage}
 }
 
 // IsLast reports whether an event of this type is the last of its turn.

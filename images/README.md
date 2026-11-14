@@ -55,6 +55,10 @@ prompt returns, the turn is over and the harness is stopped.
 Environment variables that begin with `AVIARY_` are reserved for Aviary. The
 harness also sees the ones that the runner uses, such as `AVIARY_GATEWAY_URL`.
 
+A harness may report the token usage of a turn in its answer to
+`session/prompt`, as `usage`. Aviary records it with the turn as the harness
+gives it. ACP marks this field as unstable.
+
 ## What to look out for
 
 A harness is usually written to be started once and to stay up. Aviary starts

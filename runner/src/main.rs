@@ -24,7 +24,7 @@ use proto::run_turn_response::Message as Order;
 use proto::runner_service_client::RunnerServiceClient;
 use proto::{
     Finished, MessageDelta, PlanEntry, PlanUpdate, RunTurnRequest, Started, ThoughtDelta, ToolCall,
-    ToolUpdate,
+    ToolUpdate, Usage,
 };
 
 /// The protocol between the runner and the Supervisor, generated from proto/.
@@ -137,6 +137,14 @@ async fn run_turn() -> Result<(), Box<dyn Error>> {
                 .await?;
             let finished = Finished {
                 stop_reason: name(&outcome.stop_reason),
+                usage: outcome.usage.map(|usage| Usage {
+                    total_tokens: count(usage.total_tokens),
+                    input_tokens: count(usage.input_tokens),
+                    output_tokens: count(usage.output_tokens),
+                    thought_tokens: usage.thought_tokens.map(count),
+                    cached_read_tokens: usage.cached_read_tokens.map(count),
+                    cached_write_tokens: usage.cached_write_tokens.map(count),
+                }),
             };
             report(&reports, Report::Finished(finished)).await
         });
@@ -236,6 +244,11 @@ fn name(value: &impl Serialize) -> String {
         Ok(serde_json::Value::String(name)) => name,
         _ => String::new(),
     }
+}
+
+/// A number of tokens in the form that the Supervisor takes.
+fn count(tokens: u64) -> i64 {
+    i64::try_from(tokens).unwrap_or(i64::MAX)
 }
 
 fn value(json: serde_json::Value) -> prost_types::Value {
