@@ -14,10 +14,12 @@ import (
 	"syscall"
 	"time"
 
+	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	"google.golang.org/grpc"
 	"k8s.io/klog/v2"
 
 	"aviary/supervisor/internal/api"
+	"aviary/supervisor/internal/authz"
 	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/internal/events"
 	"aviary/supervisor/internal/gateway"
@@ -35,6 +37,7 @@ const (
 	maxConcurrentTurns = "AVIARY_MAX_CONCURRENT_TURNS"
 	apiAddr            = ":8080"
 	gatewayAddr        = ":9090"
+	authzAddr          = ":9091"
 	shutdownTimeout    = 10 * time.Second
 )
 
@@ -110,17 +113,26 @@ func serve(ctx context.Context, database string) error {
 	if err != nil {
 		return err
 	}
+	authzListener, err := net.Listen("tcp", authzAddr)
+	if err != nil {
+		return err
+	}
 	apiServer := &http.Server{
 		Handler:           api.New(st, ev, dr, ctx.Done()),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	gatewayServer := grpc.NewServer()
 	runnerv1.RegisterRunnerServiceServer(gatewayServer, gateway.New(st, ev))
-	failed := make(chan error, 2)
+	// The Egress Proxy asks on a port of its own, so that the turn pods can
+	// be kept from it.
+	authzServer := grpc.NewServer()
+	authv3.RegisterAuthorizationServer(authzServer, authz.New(st))
+	failed := make(chan error, 3)
 	go func() { failed <- apiServer.Serve(apiListener) }()
 	go func() { failed <- gatewayServer.Serve(gatewayListener) }()
+	go func() { failed <- authzServer.Serve(authzListener) }()
 	go dr.Run(ctx)
-	slog.Info("listening", "api", apiAddr, "gateway", gatewayAddr)
+	slog.Info("listening", "api", apiAddr, "gateway", gatewayAddr, "authz", authzAddr)
 
 	select {
 	case err := <-failed:
@@ -137,6 +149,8 @@ func serve(ctx context.Context, database string) error {
 	}()
 	err = apiServer.Shutdown(draining)
 	gatewayServer.GracefulStop()
+	// The turns that still run call the model until their runners are gone.
+	authzServer.GracefulStop()
 	return err
 }
 

@@ -17,3 +17,7 @@ spec:
     - name: grpc
       port: 9090
       targetPort: grpc
+    # The Egress Proxy asks on this port which turn a request comes from.
+    - name: authz
+      port: 9091
+      targetPort: authz

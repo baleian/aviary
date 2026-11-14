@@ -56,6 +56,8 @@ spec:
               containerPort: 8080
             - name: grpc
               containerPort: 9090
+            - name: authz
+              containerPort: 9091
           readinessProbe:
             httpGet:
               path: /healthz

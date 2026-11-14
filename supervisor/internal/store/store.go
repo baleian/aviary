@@ -356,7 +356,21 @@ func (s *Store) TakeTurn(ctx context.Context, token string) (TakenTurn, error) {
 	return TakenTurn{}, ErrNotFound
 }
 
-// SetHarnessSession records the harness session that the turn runs in, for
+// RunningTurn returns the turn that the token belongs to, while that turn
+// runs. It returns ErrNotFound for any other token.
+func (s *Store) RunningTurn(ctx context.Context, token string) (uuid.UUID, error) {
+	var id uuid.UUID
+	err := s.pool.QueryRow(ctx,
+		`select id from turns where token_hash = $1 and state = $2`,
+		hashToken(token), TurnRunning,
+	).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, ErrNotFound
+	}
+	return id, err
+}
+
+// SetHarnessSessionrecords the harness session that the turn runs in, for
 // the next turn of the session to continue.
 func (s *Store) SetHarnessSession(ctx context.Context, turnID uuid.UUID, harnessSessionID string) error {
 	_, err := s.pool.Exec(ctx,
