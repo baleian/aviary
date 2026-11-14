@@ -1,5 +1,6 @@
 use std::env;
 use std::error::Error;
+use std::fmt::{self, Display};
 use std::fs;
 use std::path::Path;
 use std::str::FromStr;
@@ -42,6 +43,11 @@ const TURN_TOKEN: &str = "AVIARY_TURN_TOKEN";
 /// back.
 const REPORTS_AHEAD: usize = 64;
 
+/// Where the runner leaves the reason for a turn that it could not finish.
+/// Kubernetes keeps what a container writes there with the pod, which is
+/// where the Supervisor reads it.
+const TERMINATION_LOG: &str = "/dev/termination-log";
+
 /// How often the runner asks the Supervisor whether it is still there, and
 /// how long it waits for the answer. A Supervisor whose machine is gone
 /// closes no connection, so without the question the turn would run on with
@@ -52,14 +58,76 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     match args[..] {
-        [] => tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?
-            .block_on(run_turn()),
+        [] => {
+            let outcome = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(run_turn());
+            if let Err(failure) = &outcome {
+                // Nothing can be done about a reason that cannot be written.
+                let _ = fs::write(TERMINATION_LOG, failure.to_json());
+            }
+            Ok(outcome?)
+        }
         ["init-home", home] => init_home(Path::new(home)),
         _ => Err(USAGE.into()),
     }
 }
+
+/// Why the runner could not finish the turn.
+#[derive(Debug)]
+struct Failure {
+    /// One of harness_error, supervisor_lost, runner_error.
+    reason: &'static str,
+    message: String,
+}
+
+impl Failure {
+    /// The harness could not be started, or it answered with an error. That
+    /// is also how a harness reports that the model endpoint refused it.
+    fn harness(error: impl Display) -> Self {
+        Self::new("harness_error", error)
+    }
+
+    /// The harness answered with an error. What it says of the error is for
+    /// a person to read. The data that it adds is for a program.
+    fn answered(error: agent_client_protocol::Error) -> Self {
+        Self::harness(error.message)
+    }
+
+    /// The Supervisor could not be reached, or the connection to it broke.
+    fn supervisor(error: impl Display) -> Self {
+        Self::new("supervisor_lost", error)
+    }
+
+    /// The Supervisor ended the call with an error.
+    fn refused(status: tonic::Status) -> Self {
+        Self::supervisor(status.message())
+    }
+
+    /// The runner is not set up as it should be.
+    fn runner(error: impl Display) -> Self {
+        Self::new("runner_error", error)
+    }
+
+    fn new(reason: &'static str, error: impl Display) -> Self {
+        // Kubernetes keeps a few kilobytes of what the container leaves.
+        let message = error.to_string().chars().take(2000).collect();
+        Self { reason, message }
+    }
+
+    fn to_json(&self) -> String {
+        serde_json::json!({"reason": self.reason, "message": self.message}).to_string()
+    }
+}
+
+impl Display for Failure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.reason, self.message)
+    }
+}
+
+impl Error for Failure {}
 
 /// Creates the home of a session, which the harness container then mounts.
 fn init_home(home: &Path) -> Result<(), Box<dyn Error>> {
@@ -69,29 +137,35 @@ fn init_home(home: &Path) -> Result<(), Box<dyn Error>> {
 
 /// Takes the turn from the Supervisor, runs it on the harness and reports
 /// what the agent does.
-async fn run_turn() -> Result<(), Box<dyn Error>> {
+async fn run_turn() -> Result<(), Failure> {
     let command = variable(HARNESS_COMMAND)?;
-    let harness = AcpAgent::from_str(&command)?;
-    let cwd = env::current_dir()?;
+    let harness = AcpAgent::from_str(&command).map_err(Failure::harness)?;
+    let cwd = env::current_dir().map_err(Failure::runner)?;
 
-    let channel = Endpoint::from_shared(variable(GATEWAY_URL)?)?
+    let channel = Endpoint::from_shared(variable(GATEWAY_URL)?)
+        .map_err(Failure::runner)?
         .http2_keep_alive_interval(KEEPALIVE)
         .keep_alive_timeout(KEEPALIVE)
         .keep_alive_while_idle(true)
         .connect()
-        .await?;
+        .await
+        .map_err(Failure::supervisor)?;
     let (reports, outgoing) = mpsc::channel(REPORTS_AHEAD);
     let mut request = Request::new(outgoing);
     request.metadata_mut().insert(
         "authorization",
-        format!("Bearer {}", variable(TURN_TOKEN)?).parse()?,
+        format!("Bearer {}", variable(TURN_TOKEN)?)
+            .parse()
+            .map_err(Failure::runner)?,
     );
     let mut orders = RunnerServiceClient::new(channel)
         .run_turn(request)
-        .await?
+        .await
+        .map_err(Failure::refused)?
         .into_inner();
-    let Some(Order::Start(start)) = orders.message().await?.and_then(|order| order.message) else {
-        return Err("the Supervisor did not start the turn".into());
+    let first = orders.message().await.map_err(Failure::refused)?;
+    let Some(Order::Start(start)) = first.and_then(|order| order.message) else {
+        return Err(Failure::supervisor("the Supervisor did not start the turn"));
     };
     // Carries the Supervisor's order to cancel to where the harness is
     // talked to. One order is enough, so more are dropped.
@@ -180,26 +254,34 @@ async fn run_turn() -> Result<(), Box<dyn Error>> {
         futures::pin_mut!(turn);
         loop {
             futures::select! {
-                outcome = turn => break outcome?,
-                order = orders.message().fuse() => match order?.and_then(|order| order.message) {
-                    Some(Order::Cancel(_)) => {
-                        let _ = cancel.try_send(());
+                // A report that the Supervisor no longer takes also ends
+                // the talk with the harness with an error.
+                outcome = turn => break outcome.map_err(|error| if reports.is_closed() {
+                    Failure::supervisor("the Supervisor closed the turn")
+                } else {
+                    Failure::answered(error)
+                })?,
+                order = orders.message().fuse() => {
+                    match order.map_err(Failure::refused)?.and_then(|order| order.message) {
+                        Some(Order::Cancel(_)) => {
+                            let _ = cancel.try_send(());
+                        }
+                        Some(Order::Start(_)) => {}
+                        None => return Err(Failure::supervisor("the Supervisor ended the turn")),
                     }
-                    Some(Order::Start(_)) => {}
-                    None => return Err("the Supervisor ended the turn".into()),
-                },
+                }
             }
         }
     }
     // Closing the reports tells the Supervisor that there are no more. The
     // turn is reported once the Supervisor has closed its side without error.
     drop(reports);
-    while orders.message().await?.is_some() {}
+    while orders.message().await.map_err(Failure::refused)?.is_some() {}
     Ok(())
 }
 
-fn variable(name: &str) -> Result<String, Box<dyn Error>> {
-    env::var(name).map_err(|_| format!("{name} is not set").into())
+fn variable(name: &str) -> Result<String, Failure> {
+    env::var(name).map_err(|_| Failure::runner(format!("{name} is not set")))
 }
 
 async fn report(

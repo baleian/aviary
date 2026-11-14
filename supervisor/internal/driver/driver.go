@@ -4,6 +4,7 @@ package driver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -36,6 +37,9 @@ const (
 const (
 	// turnLabel is on the Job of a turn and holds the turn's ID.
 	turnLabel = "aviary.io/turn"
+	// agentContainer is the container of a turn pod in which the runner
+	// and the harness run.
+	agentContainer = "agent"
 	// agentUser is the user that the harness images run as.
 	agentUser = 10000
 	// resync is how often the Jobs are looked at again, which retries the
@@ -310,9 +314,64 @@ func (d *Driver) observe(ctx context.Context, job *batchv1.Job) {
 		slog.ErrorContext(ctx, "job has no turn", "job", job.Name, "error", err)
 		return
 	}
-	if d.end(ctx, turnID, succeeded) {
+	var failure store.Failure
+	if !succeeded {
+		failure = d.failure(ctx, job)
+	}
+	if d.end(ctx, turnID, succeeded, failure) {
 		d.deleteJob(ctx, job.Name)
 	}
+}
+
+// failure tells why the Job of a turn failed, from what Kubernetes says of
+// the Job and its pod and from what the runner left with the pod.
+func (d *Driver) failure(ctx context.Context, job *batchv1.Job) store.Failure {
+	for _, condition := range job.Status.Conditions {
+		if condition.Type == batchv1.JobFailed && condition.Reason == batchv1.JobReasonDeadlineExceeded {
+			return store.Failure{
+				Reason:  store.FailureTimedOut,
+				Message: fmt.Sprintf("the turn ran for longer than %s", d.config.MaxTurn),
+			}
+		}
+	}
+	selector := metav1.ListOptions{LabelSelector: turnLabel + "=" + job.Labels[turnLabel]}
+	pods, err := d.client.CoreV1().Pods(namespace).List(ctx, selector)
+	if err != nil {
+		slog.ErrorContext(ctx, "read the pod of a failed turn", "job", job.Name, "error", err)
+		return store.Failure{Reason: store.FailureRunner}
+	}
+	if len(pods.Items) == 0 {
+		return store.Failure{Reason: store.FailurePodLost, Message: "the pod of the turn was deleted"}
+	}
+	pod := pods.Items[0]
+	if pod.Status.Reason == "Evicted" {
+		return store.Failure{Reason: store.FailurePodLost, Message: pod.Status.Message}
+	}
+	for _, container := range pod.Status.ContainerStatuses {
+		terminated := container.State.Terminated
+		if container.Name != agentContainer || terminated == nil {
+			continue
+		}
+		// What the runner left is the most that is known.
+		var left store.Failure
+		if json.Unmarshal([]byte(terminated.Message), &left) == nil {
+			switch left.Reason {
+			case store.FailureHarness, store.FailureSupervisorLost, store.FailureRunner:
+				return left
+			}
+		}
+		switch {
+		case terminated.Reason == "OOMKilled":
+			return store.Failure{Reason: store.FailureOutOfMemory, Message: "the pod used more memory than it may"}
+		case terminated.Signal != 0 || terminated.ExitCode > 128:
+			return store.Failure{Reason: store.FailurePodLost, Message: "the pod was stopped"}
+		}
+		return store.Failure{
+			Reason:  store.FailureRunner,
+			Message: fmt.Sprintf("the runner ended with exit code %d", terminated.ExitCode),
+		}
+	}
+	return store.Failure{Reason: store.FailureRunner, Message: "the pod failed before the agent started"}
 }
 
 // reconcile ends the turns that have lost their Job and deletes the Jobs
@@ -354,7 +413,9 @@ func (d *Driver) reconcile(ctx context.Context) {
 		dispatched[turn.ID.String()] = true
 		if !inCluster[turn.ID.String()] && turn.Age > lostAfter {
 			slog.WarnContext(ctx, "turn has no job", "turn", turn.ID)
-			d.end(ctx, turn.ID, false)
+			d.end(ctx, turn.ID, false, store.Failure{
+				Reason: store.FailurePodLost, Message: "the Job and the pod of the turn are gone",
+			})
 		}
 		// The harness did not stop when it was asked to. Without its Job
 		// the pod is stopped, and the turn ends when the pod is gone.
@@ -373,8 +434,8 @@ func (d *Driver) reconcile(ctx context.Context) {
 
 // end ends a turn whose pod has stopped, and reports whether the turn is
 // now ended.
-func (d *Driver) end(ctx context.Context, turnID uuid.UUID, succeeded bool) bool {
-	turn, changed, err := d.store.EndTurn(ctx, turnID, succeeded)
+func (d *Driver) end(ctx context.Context, turnID uuid.UUID, succeeded bool, failure store.Failure) bool {
+	turn, changed, err := d.store.EndTurn(ctx, turnID, succeeded, failure)
 	if err != nil {
 		slog.ErrorContext(ctx, "end turn", "turn", turnID, "error", err)
 		return false
@@ -474,7 +535,7 @@ func (d *Driver) job(dispatch store.Dispatch, harness Harness, hosts []corev1.Ho
 						VolumeMounts:    []corev1.VolumeMount{{Name: "store", MountPath: "/store"}},
 					}},
 					Containers: []corev1.Container{{
-						Name:       "agent",
+						Name:       agentContainer,
 						Image:      harness.Image,
 						Command:    []string{"/aviary/bin/aviary-runner"},
 						WorkingDir: "/home/workspace",

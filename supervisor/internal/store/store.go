@@ -92,7 +92,37 @@ type Turn struct {
 	// CancelRequestedAt is when the turn was asked to stop, if it was. A
 	// turn that had been dispatched by then ends once its pod has stopped.
 	CancelRequestedAt *time.Time `json:"cancel_requested_at,omitempty"`
+	// Failure is why the turn failed, if it did.
+	Failure *Failure `json:"failure,omitempty"`
 }
+
+// Failure is why a turn failed.
+type Failure struct {
+	// Reason is a word for the kind of failure, one of the Failure
+	// constants.
+	Reason string `json:"reason"`
+	// Message is what is known of this failure, for a person to read.
+	Message string `json:"message,omitempty"`
+}
+
+// The kinds of failure of a turn.
+const (
+	// FailureHarness: the harness could not be started or answered with an
+	// error. That is also how a harness reports that the model endpoint
+	// refused it.
+	FailureHarness = "harness_error"
+	// FailureTimedOut: the turn ran for longer than a turn may.
+	FailureTimedOut = "timed_out"
+	// FailureOutOfMemory: the pod used more memory than it may.
+	FailureOutOfMemory = "out_of_memory"
+	// FailurePodLost: the pod was stopped from outside, or is gone.
+	FailurePodLost = "pod_lost"
+	// FailureSupervisorLost: the runner lost its connection to the
+	// Supervisor.
+	FailureSupervisorLost = "supervisor_lost"
+	// FailureRunner: the runner failed in another way.
+	FailureRunner = "runner_error"
+)
 
 // Usage is the token usage of a turn as its harness reported it. It is not a
 // measurement: harnesses differ in what they count. One reports the sum of
@@ -108,17 +138,26 @@ type Usage struct {
 
 // turnColumns are the columns of a turn, but for its ID, in the order in
 // which scanTurn reads them.
-const turnColumns = `session_id, seq, state, text, created_at, stop_reason, ended_at, cancel_requested_at,
-	total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens`
+const turnColumns = `turns.session_id, turns.seq, turns.state, turns.text, turns.created_at, turns.stop_reason,
+	turns.ended_at, turns.cancel_requested_at, turns.failure_reason, turns.failure_message,
+	turns.total_tokens, turns.input_tokens, turns.output_tokens, turns.thought_tokens,
+	turns.cached_read_tokens, turns.cached_write_tokens`
 
 func scanTurn(row pgx.Row, turn *Turn) error {
 	var usage Usage
 	var total, input, output *int64
+	var reason, message *string
 	err := row.Scan(&turn.SessionID, &turn.Seq, &turn.State, &turn.Text, &turn.CreatedAt, &turn.StopReason, &turn.EndedAt,
-		&turn.CancelRequestedAt,
+		&turn.CancelRequestedAt, &reason, &message,
 		&total, &input, &output, &usage.ThoughtTokens, &usage.CachedReadTokens, &usage.CachedWriteTokens)
 	if err != nil {
 		return err
+	}
+	if reason != nil {
+		turn.Failure = &Failure{Reason: *reason}
+		if message != nil {
+			turn.Failure.Message = *message
+		}
 	}
 	if total != nil && input != nil && output != nil {
 		usage.TotalTokens, usage.InputTokens, usage.OutputTokens = *total, *input, *output
@@ -559,23 +598,29 @@ func (s *Store) SetFinished(ctx context.Context, turnID uuid.UUID, stopReason st
 
 // EndTurn records that the pod of the turn has ended. The turn is completed
 // if the pod succeeded and the runner reported why the harness stopped, and
-// failed otherwise. A turn that was asked to stop is cancelled, unless the
-// harness had ended it by itself. From then on the session accepts its next
-// message. The
-// second result is false if the turn had ended before, or does not exist.
-func (s *Store) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool) (Turn, bool, error) {
+// failed otherwise, for the reason that failure gives. A turn that was asked
+// to stop is cancelled, unless the harness had ended it by itself. From then
+// on the session accepts its next message. The second result is false if the
+// turn had ended before, or does not exist.
+func (s *Store) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool, failure Failure) (Turn, bool, error) {
 	turn := Turn{ID: turnID}
 	err := scanTurn(s.pool.QueryRow(ctx,
-		`update turns set ended_at = now(),
-		        state = case
-		            when cancel_requested_at is not null
-		                 and not ($2 and coalesce(stop_reason, $6) <> $6) then $5
-		            when $2 and stop_reason is not null then $3
-		            else $4
-		        end
-		 where id = $1 and ended_at is null
+		`with ending as (
+		     select case
+		                when cancel_requested_at is not null
+		                     and not ($2 and coalesce(stop_reason, $6) <> $6) then $5
+		                when $2 and stop_reason is not null then $3
+		                else $4
+		            end as state
+		     from turns where id = $1 and ended_at is null
+		 )
+		 update turns set ended_at = now(), state = ending.state,
+		        failure_reason = case when ending.state = $4 then $7 end,
+		        failure_message = case when ending.state = $4 then nullif($8, '') end
+		 from ending
+		 where turns.id = $1 and turns.ended_at is null
 		 returning `+turnColumns,
-		turnID, succeeded, TurnCompleted, TurnFailed, TurnCancelled, stopCancelled,
+		turnID, succeeded, TurnCompleted, TurnFailed, TurnCancelled, stopCancelled, failure.Reason, failure.Message,
 	), &turn)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Turn{}, false, nil

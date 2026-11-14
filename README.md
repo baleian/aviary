@@ -138,12 +138,25 @@ The events of a turn:
 | `tool.update` | `id` and what changed of `title`, `kind`, `status`, `input`, `output`. |
 | `plan.update` | `entries`: the agent's plan, each entry with `content`, `priority` and `status`. |
 | `turn.completed` | `stop_reason`: why the harness ended the turn. `usage`: the token usage that the harness reported, if it did. The last event of the turn. |
-| `turn.failed` | The turn did not complete. The last event of the turn. |
+| `turn.failed` | The turn did not complete. `reason`: one of the words below. `message`: what is known of the failure. The last event of the turn. |
 | `turn.cancelled` | The turn was cancelled. The last event of the turn. |
 | `turn.expired` | The turn waited to run for longer than it may. The last event of the turn. |
 
 The fields of the events that come from the agent are defined in
 [`proto/aviary/runner/v1/runner.proto`](proto/aviary/runner/v1/runner.proto).
+
+The reasons for a failed turn:
+
+| Reason | |
+| --- | --- |
+| `harness_error` | The harness could not be started or answered with an error. That is also how a harness reports that the model endpoint refused it. |
+| `timed_out` | The turn ran for longer than a turn may. |
+| `out_of_memory` | The pod used more memory than it may. |
+| `pod_lost` | The pod was stopped from outside, or is gone. |
+| `supervisor_lost` | The runner lost its connection to the Supervisor. |
+| `runner_error` | The runner failed in another way. |
+
+A turn that has ended has its reason too, as `failure`.
 
 `usage` holds `total_tokens`, `input_tokens` and `output_tokens`, and
 `thought_tokens`, `cached_read_tokens` and `cached_write_tokens` if the
@@ -202,8 +215,6 @@ To run a harness that is not in this repository, see
   The Egress Proxy does not count tokens.
 - **Reading a conversation back.** The events of a turn are kept for 24
   hours after it ended.
-- **The reason for a failed turn.** `turn.failed` does not say why, for
-  example that the model server did not answer.
 - **Surviving the loss of a Supervisor.** Several Supervisors can run side
   by side, and one that is stopped first finishes the turns whose runners
   are connected to it. If it is killed, those turns fail.

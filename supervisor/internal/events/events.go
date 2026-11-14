@@ -148,7 +148,14 @@ func Last(turn store.Turn) (eventType string, data any) {
 	case store.TurnExpired:
 		return TurnExpired, struct{}{}
 	}
-	return TurnFailed, struct{}{}
+	var failure store.Failure
+	if turn.Failure != nil {
+		failure = *turn.Failure
+	}
+	return TurnFailed, struct {
+		Reason  string `json:"reason,omitempty"`
+		Message string `json:"message,omitempty"`
+	}{failure.Reason, failure.Message}
 }
 
 // IsLast reports whether an event of this type is the last of its turn.
