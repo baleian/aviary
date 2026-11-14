@@ -39,6 +39,9 @@ const (
 	// resync is how often the Jobs are looked at again, which retries the
 	// ending of a turn that failed.
 	resync = 30 * time.Second
+	// recheck is how often the driver looks for queued turns without being
+	// woken, which retries a dispatch that failed.
+	recheck = 5 * time.Second
 )
 
 type Config struct {
@@ -48,6 +51,9 @@ type Config struct {
 	RunnerImage string
 	// Harnesses are the harnesses that agents can use, by name.
 	Harnesses map[string]Harness
+	// MaxConcurrentTurns is the most turns that run at once. The turns
+	// beyond it wait in the order in which they were accepted.
+	MaxConcurrentTurns int
 }
 
 type Harness struct {
@@ -59,6 +65,7 @@ type Driver struct {
 	client kubernetes.Interface
 	store  *store.Store
 	events *events.Streams
+	wake   chan struct{}
 }
 
 // New returns a driver for the cluster that the Supervisor runs in.
@@ -71,7 +78,7 @@ func New(config Config, st *store.Store, ev *events.Streams) (*Driver, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Driver{config: config, client: client, store: st, events: ev}, nil
+	return &Driver{config: config, client: client, store: st, events: ev, wake: make(chan struct{}, 1)}, nil
 }
 
 // HasHarness reports whether turns can run on the harness of that name.
@@ -80,22 +87,43 @@ func (d *Driver) HasHarness(name string) bool {
 	return found
 }
 
-// Launch creates the Job that runs a queued turn.
-func (d *Driver) Launch(ctx context.Context, turnID uuid.UUID) error {
-	dispatch, err := d.store.DispatchTurn(ctx, turnID)
-	if err != nil {
-		return err
+// Wake makes the driver look for queued turns to run. It is called when a
+// turn was queued or a running one ended.
+func (d *Driver) Wake() {
+	select {
+	case d.wake <- struct{}{}:
+	default:
+		// The driver has not yet acted on an earlier call, which covers this one.
 	}
+}
+
+// dispatch runs the queued turns that fit under the limit, oldest first.
+func (d *Driver) dispatch(ctx context.Context) {
+	dispatches, err := d.store.DispatchTurns(ctx, d.config.MaxConcurrentTurns)
+	if err != nil {
+		slog.ErrorContext(ctx, "dispatch turns", "error", err)
+		return
+	}
+	for _, dispatch := range dispatches {
+		if err := d.launch(ctx, dispatch); err != nil {
+			slog.ErrorContext(ctx, "launch turn", "turn", dispatch.TurnID, "error", err)
+		}
+	}
+}
+
+// launch creates the Job that runs a dispatched turn.
+func (d *Driver) launch(ctx context.Context, dispatch store.Dispatch) error {
 	harness, found := d.config.Harnesses[dispatch.Harness]
 	if !found {
 		return fmt.Errorf("harness %q is not configured", dispatch.Harness)
 	}
-	_, err = d.client.BatchV1().Jobs(namespace).Create(ctx, d.job(dispatch, harness), metav1.CreateOptions{})
+	_, err := d.client.BatchV1().Jobs(namespace).Create(ctx, d.job(dispatch, harness), metav1.CreateOptions{})
 	return err
 }
 
-// Run ends the turns whose Jobs have ended, until ctx is done. It also sees
-// the Jobs that ended while no Supervisor was running.
+// Run runs the queued turns and ends the turns whose Jobs have ended, until
+// ctx is done. It also sees the turns that were queued and the Jobs that
+// ended while no Supervisor was running.
 func (d *Driver) Run(ctx context.Context) {
 	factory := informers.NewSharedInformerFactoryWithOptions(d.client, resync,
 		informers.WithNamespace(namespace),
@@ -112,8 +140,19 @@ func (d *Driver) Run(ctx context.Context) {
 		panic(err)
 	}
 	factory.Start(ctx.Done())
-	<-ctx.Done()
-	factory.Shutdown()
+	defer factory.Shutdown()
+
+	ticker := time.NewTicker(recheck)
+	defer ticker.Stop()
+	for {
+		d.dispatch(ctx)
+		select {
+		case <-d.wake:
+		case <-ticker.C:
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 // observe ends the turn of a Job that has ended and deletes the Job. A Job
@@ -140,6 +179,8 @@ func (d *Driver) observe(ctx context.Context, job *batchv1.Job) {
 		if err := d.events.AppendLast(ctx, turn); err != nil {
 			slog.ErrorContext(ctx, "publish turn event", "turn", turnID, "error", err)
 		}
+		// The turn no longer counts against the limit.
+		d.Wake()
 	}
 	background := metav1.DeletePropagationBackground
 	err = d.client.BatchV1().Jobs(namespace).Delete(ctx, job.Name, metav1.DeleteOptions{PropagationPolicy: &background})

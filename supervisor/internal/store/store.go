@@ -40,6 +40,10 @@ const (
 // uniqueViolation is the PostgreSQL error code for a broken unique constraint.
 const uniqueViolation = "23505"
 
+// dispatchLock is the key of the advisory lock that is held while turns are
+// dispatched.
+const dispatchLock int64 = 0x617669617279 // "aviary"
+
 //go:embed migrations/*.sql
 var migrations embed.FS
 
@@ -236,22 +240,52 @@ func (s *Store) Turn(ctx context.Context, id uuid.UUID) (Turn, error) {
 	return turn, err
 }
 
-// DispatchTurn makes a queued turn wait for its runner and returns what it
-// takes to run it. It returns ErrNotFound if no queued turn has the ID.
-func (s *Store) DispatchTurn(ctx context.Context, turnID uuid.UUID) (Dispatch, error) {
-	dispatch := Dispatch{TurnID: turnID, Token: rand.Text()}
-	err := s.pool.QueryRow(ctx,
-		`update turns set state = $2, token_hash = $3
-		 from sessions, agents
-		 where turns.id = $1 and turns.state = $4
-		   and sessions.id = turns.session_id and agents.id = sessions.agent_id
-		 returning sessions.id, agents.id, agents.project_id, agents.harness`,
-		turnID, TurnDispatching, hashToken(dispatch.Token), TurnQueued,
-	).Scan(&dispatch.SessionID, &dispatch.AgentID, &dispatch.ProjectID, &dispatch.Harness)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Dispatch{}, ErrNotFound
+// DispatchTurns makes queued turns wait for their runners, oldest first, for
+// as long as fewer than limit turns are running or about to. It returns what
+// it takes to run each of them.
+func (s *Store) DispatchTurns(ctx context.Context, limit int) ([]Dispatch, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return dispatch, err
+	defer tx.Rollback(ctx)
+	// One Supervisor at a time counts the running turns and picks the next,
+	// so that several Supervisors together stay within the limit.
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1)`, dispatchLock); err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx,
+		`select turns.id, sessions.id, agents.id, agents.project_id, agents.harness
+		 from turns
+		 join sessions on sessions.id = turns.session_id
+		 join agents on agents.id = sessions.agent_id
+		 where turns.state = $1
+		 order by turns.created_at, turns.id
+		 limit greatest($2 - (select count(*) from turns where state in ($3, $4)), 0)`,
+		TurnQueued, limit, TurnDispatching, TurnRunning,
+	)
+	if err != nil {
+		return nil, err
+	}
+	dispatches, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Dispatch, error) {
+		var dispatch Dispatch
+		err := row.Scan(&dispatch.TurnID, &dispatch.SessionID, &dispatch.AgentID, &dispatch.ProjectID, &dispatch.Harness)
+		return dispatch, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	for i := range dispatches {
+		dispatches[i].Token = rand.Text()
+		_, err := tx.Exec(ctx,
+			`update turns set state = $2, token_hash = $3 where id = $1`,
+			dispatches[i].TurnID, TurnDispatching, hashToken(dispatches[i].Token),
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return dispatches, tx.Commit(ctx)
 }
 
 // TakeTurn gives the turn that the token opens to its runner. A turn is given

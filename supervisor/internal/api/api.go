@@ -2,7 +2,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -173,10 +172,7 @@ func (a *api) createMessage(w http.ResponseWriter, r *http.Request) error {
 	if err := a.events.Append(r.Context(), turn.ID, events.TurnQueued, struct{}{}); err != nil {
 		slog.ErrorContext(r.Context(), "publish turn event", "turn", turn.ID, "event", events.TurnQueued, "error", err)
 	}
-	// The turn is launched even if the client does not wait for the reply.
-	if err := a.driver.Launch(context.WithoutCancel(r.Context()), turn.ID); err != nil {
-		slog.ErrorContext(r.Context(), "launch turn", "turn", turn.ID, "error", err)
-	}
+	a.driver.Wake()
 	respond(w, http.StatusAccepted, turn)
 	return nil
 }

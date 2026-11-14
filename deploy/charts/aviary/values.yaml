@@ -13,6 +13,9 @@ supervisor:
     secretKey: uri
 
 runtime:
+  # The most turns that run at once. The turns beyond it wait in the order in
+  # which they were accepted.
+  maxConcurrentTurns: 50
   # The image that holds the runner. Every turn pod mounts it.
   runnerImage: aviary-runner:dev
   # The harnesses that agents can use, by the name that an agent is created

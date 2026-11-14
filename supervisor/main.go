@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -24,14 +25,15 @@ import (
 )
 
 const (
-	databaseURL     = "AVIARY_DATABASE_URL"
-	valkeyURL       = "AVIARY_VALKEY_URL"
-	gatewayURL      = "AVIARY_GATEWAY_URL"
-	runnerImage     = "AVIARY_RUNNER_IMAGE"
-	harnesses       = "AVIARY_HARNESSES"
-	apiAddr         = ":8080"
-	gatewayAddr     = ":9090"
-	shutdownTimeout = 10 * time.Second
+	databaseURL        = "AVIARY_DATABASE_URL"
+	valkeyURL          = "AVIARY_VALKEY_URL"
+	gatewayURL         = "AVIARY_GATEWAY_URL"
+	runnerImage        = "AVIARY_RUNNER_IMAGE"
+	harnesses          = "AVIARY_HARNESSES"
+	maxConcurrentTurns = "AVIARY_MAX_CONCURRENT_TURNS"
+	apiAddr            = ":8080"
+	gatewayAddr        = ":9090"
+	shutdownTimeout    = 10 * time.Second
 )
 
 func main() {
@@ -133,6 +135,13 @@ func driverConfig() (driver.Config, error) {
 	}
 	if err := json.Unmarshal([]byte(encoded), &config.Harnesses); err != nil {
 		return config, fmt.Errorf("%s: %w", harnesses, err)
+	}
+	limit, err := env(maxConcurrentTurns)
+	if err != nil {
+		return config, err
+	}
+	if config.MaxConcurrentTurns, err = strconv.Atoi(limit); err != nil || config.MaxConcurrentTurns < 1 {
+		return config, fmt.Errorf("%s must be a number above zero", maxConcurrentTurns)
 	}
 	return config, nil
 }
