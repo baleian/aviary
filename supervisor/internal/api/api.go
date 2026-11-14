@@ -20,7 +20,14 @@ type api struct {
 	store   *store.Store
 	events  *events.Streams
 	driver  *driver.Driver
+	runners Runners
 	closing <-chan struct{}
+}
+
+// Runners reaches the runners of the turns that run.
+type Runners interface {
+	// Cancel tells the runner of the turn to stop the turn.
+	Cancel(turnID uuid.UUID)
 }
 
 type apiError struct {
@@ -34,15 +41,14 @@ func (e *apiError) Error() string { return e.Message }
 var (
 	errNotFound    = &apiError{http.StatusNotFound, "not_found", "no such resource"}
 	errSessionBusy = &apiError{http.StatusConflict, "session_busy", "the session has a turn that has not finished"}
-	errTurnRunning = &apiError{http.StatusConflict, "turn_running", "the turn is running"}
 	errTurnEnded   = &apiError{http.StatusConflict, "turn_ended", "the turn has ended"}
 	errInternal    = &apiError{http.StatusInternalServerError, "internal", "internal error"}
 )
 
 // New returns the handler of the API. An event stream stays open for as long
 // as its client does, so the streams end when closing is closed.
-func New(st *store.Store, ev *events.Streams, dr *driver.Driver, closing <-chan struct{}) http.Handler {
-	a := &api{store: st, events: ev, driver: dr, closing: closing}
+func New(st *store.Store, ev *events.Streams, dr *driver.Driver, runners Runners, closing <-chan struct{}) http.Handler {
+	a := &api{store: st, events: ev, driver: dr, runners: runners, closing: closing}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
 	mux.Handle("POST /v1/projects", handler(a.createProject))
@@ -193,27 +199,31 @@ func (a *api) getTurn(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// cancelTurn cancels a turn that waits to run. Cancelling a turn that was
-// cancelled before changes nothing and succeeds.
+// cancelTurn cancels a turn. A turn that waits to run ends at once, and the
+// reply is 200. A turn that runs is told to stop and ends when its pod has
+// stopped, so the reply is 202 with the turn to follow. Cancelling a turn
+// that was cancelled before changes nothing and succeeds.
 func (a *api) cancelTurn(w http.ResponseWriter, r *http.Request) error {
 	id, err := pathID(r, "tid")
 	if err != nil {
 		return err
 	}
-	turn, cancelled, err := a.store.CancelQueuedTurn(r.Context(), id)
+	turn, unended, err := a.store.CancelTurn(r.Context(), id)
 	switch {
 	case err != nil:
 		return err
-	case cancelled:
+	case !unended && turn.State != store.TurnCancelled:
+		return errTurnEnded
+	case !unended:
+	case turn.State == store.TurnCancelled:
 		if err := a.events.AppendLast(r.Context(), turn); err != nil {
 			slog.ErrorContext(r.Context(), "publish turn event", "turn", turn.ID, "event", events.TurnCancelled, "error", err)
 		}
 		a.driver.QueueMoved()
-	case turn.State == store.TurnCancelled:
-	case turn.EndedAt != nil:
-		return errTurnEnded
 	default:
-		return errTurnRunning
+		a.runners.Cancel(turn.ID)
+		respond(w, http.StatusAccepted, turn)
+		return nil
 	}
 	respond(w, http.StatusOK, turn)
 	return nil

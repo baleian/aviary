@@ -51,6 +51,9 @@ const (
 	// to have lost it. The Job is created right after the dispatch, so
 	// until then it may only be on its way.
 	lostAfter = time.Minute
+	// cancelGrace is how long a turn that was asked to stop is given to end
+	// by itself before its Job is deleted.
+	cancelGrace = 30 * time.Second
 )
 
 type Config struct {
@@ -305,9 +308,10 @@ func (d *Driver) reconcile(ctx context.Context) {
 	}
 
 	// A turn whose Job is gone may still have a pod that is shutting down.
-	inCluster := map[string]bool{}
+	inCluster, hasJob := map[string]bool{}, map[string]bool{}
 	for _, job := range jobs.Items {
 		inCluster[job.Labels[turnLabel]] = true
+		hasJob[job.Labels[turnLabel]] = true
 	}
 	for _, pod := range pods.Items {
 		inCluster[pod.Labels[turnLabel]] = true
@@ -318,6 +322,12 @@ func (d *Driver) reconcile(ctx context.Context) {
 		if !inCluster[turn.ID.String()] && turn.Age > lostAfter {
 			slog.WarnContext(ctx, "turn has no job", "turn", turn.ID)
 			d.end(ctx, turn.ID, false)
+		}
+		// The harness did not stop when it was asked to. Without its Job
+		// the pod is stopped, and the turn ends when the pod is gone.
+		if hasJob[turn.ID.String()] && turn.Cancelling > cancelGrace {
+			slog.WarnContext(ctx, "turn did not stop when cancelled", "turn", turn.ID)
+			d.deleteJob(ctx, jobName(turn.ID))
 		}
 	}
 	for _, job := range jobs.Items {
@@ -346,6 +356,10 @@ func (d *Driver) end(ctx context.Context, turnID uuid.UUID, succeeded bool) bool
 		d.Wake()
 	}
 	return true
+}
+
+func jobName(turnID uuid.UUID) string {
+	return "turn-" + turnID.String()
 }
 
 func (d *Driver) deleteJob(ctx context.Context, name string) {
@@ -388,7 +402,7 @@ func (d *Driver) job(dispatch store.Dispatch, harness Harness, hosts []corev1.Ho
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 	}
 	return &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{Name: "turn-" + dispatch.TurnID.String(), Labels: labels},
+		ObjectMeta: metav1.ObjectMeta{Name: jobName(dispatch.TurnID), Labels: labels},
 		Spec: batchv1.JobSpec{
 			// A turn is not repeated: the agent may already have acted.
 			BackoffLimit:          new(int32(0)),

@@ -119,12 +119,13 @@ func serve(ctx context.Context, database string) error {
 	if err != nil {
 		return err
 	}
+	runners := gateway.New(st, ev)
 	apiServer := &http.Server{
-		Handler:           api.New(st, ev, dr, ctx.Done()),
+		Handler:           api.New(st, ev, dr, runners, ctx.Done()),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	gatewayServer := grpc.NewServer()
-	runnerv1.RegisterRunnerServiceServer(gatewayServer, gateway.New(st, ev))
+	runnerv1.RegisterRunnerServiceServer(gatewayServer, runners)
 	// The Egress Proxy asks on a port of its own, so that the turn pods can
 	// be kept from it.
 	authzServer := grpc.NewServer()

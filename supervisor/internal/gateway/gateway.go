@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
@@ -22,17 +23,35 @@ import (
 	"aviary/supervisor/internal/store"
 )
 
-type gateway struct {
+type Gateway struct {
 	runnerv1.UnimplementedRunnerServiceServer
 	store  *store.Store
 	events *events.Streams
+	// cancels holds, for every turn whose runner is connected, the channel
+	// that tells that runner to stop the turn.
+	mu      sync.Mutex
+	cancels map[uuid.UUID]chan struct{}
 }
 
-func New(st *store.Store, ev *events.Streams) runnerv1.RunnerServiceServer {
-	return &gateway{store: st, events: ev}
+func New(st *store.Store, ev *events.Streams) *Gateway {
+	return &Gateway{store: st, events: ev, cancels: map[uuid.UUID]chan struct{}{}}
 }
 
-func (g *gateway) RunTurn(stream grpc.BidiStreamingServer[runnerv1.RunTurnRequest, runnerv1.RunTurnResponse]) error {
+// Cancel tells the runner of the turn to stop the turn, if the runner is
+// connected. If it is not, the turn is not started when it connects.
+func (g *Gateway) Cancel(turnID uuid.UUID) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if cancel, connected := g.cancels[turnID]; connected {
+		select {
+		case cancel <- struct{}{}:
+		default:
+			// The runner has not yet been told of an earlier call.
+		}
+	}
+}
+
+func (g *Gateway) RunTurn(stream grpc.BidiStreamingServer[runnerv1.RunTurnRequest, runnerv1.RunTurnResponse]) error {
 	ctx := stream.Context()
 	token, err := bearerToken(ctx)
 	if err != nil {
@@ -44,6 +63,8 @@ func (g *gateway) RunTurn(stream grpc.BidiStreamingServer[runnerv1.RunTurnReques
 		return status.Error(codes.Unauthenticated, "the token opens no turn")
 	case errors.Is(err, store.ErrTurnTaken):
 		return status.Error(codes.FailedPrecondition, "the turn was already taken")
+	case errors.Is(err, store.ErrTurnCancelled):
+		return status.Error(codes.Canceled, "the turn was cancelled")
 	case err != nil:
 		return g.internal(ctx, "take turn", err)
 	}
@@ -55,6 +76,35 @@ func (g *gateway) RunTurn(stream grpc.BidiStreamingServer[runnerv1.RunTurnReques
 	if err := stream.Send(start); err != nil {
 		return err
 	}
+
+	// From here on only the goroutine below sends to the runner.
+	cancel := make(chan struct{}, 1)
+	g.mu.Lock()
+	g.cancels[turn.ID] = cancel
+	g.mu.Unlock()
+	defer func() {
+		g.mu.Lock()
+		delete(g.cancels, turn.ID)
+		g.mu.Unlock()
+	}()
+	go func() {
+		select {
+		case <-cancel:
+			order := &runnerv1.RunTurnResponse{Message: &runnerv1.RunTurnResponse_Cancel{Cancel: &runnerv1.Cancel{}}}
+			if err := stream.Send(order); err != nil {
+				slog.WarnContext(ctx, "tell the runner to cancel", "turn", turn.ID, "error", err)
+			}
+		case <-ctx.Done():
+		}
+	}()
+	// A request to cancel that came after the runner took the turn and
+	// before the lines above found no runner to tell.
+	if requested, err := g.store.Turn(ctx, turn.ID); err != nil {
+		return g.internal(ctx, "read turn", err, "turn", turn.ID)
+	} else if requested.CancelRequestedAt != nil {
+		g.Cancel(turn.ID)
+	}
+
 	for {
 		request, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
@@ -70,7 +120,7 @@ func (g *gateway) RunTurn(stream grpc.BidiStreamingServer[runnerv1.RunTurnReques
 }
 
 // receive handles one message from the runner of the turn.
-func (g *gateway) receive(ctx context.Context, turnID uuid.UUID, request *runnerv1.RunTurnRequest) error {
+func (g *Gateway) receive(ctx context.Context, turnID uuid.UUID, request *runnerv1.RunTurnRequest) error {
 	switch message := request.Message.(type) {
 	case *runnerv1.RunTurnRequest_Started:
 		harnessSessionID := message.Started.GetHarnessSessionId()
@@ -119,7 +169,7 @@ func usage(reported *runnerv1.Usage) *store.Usage {
 var eventJSON = protojson.MarshalOptions{UseProtoNames: true}
 
 // internal logs a failure that the runner is not told the details of.
-func (g *gateway) internal(ctx context.Context, doing string, err error, attributes ...any) error {
+func (g *Gateway) internal(ctx context.Context, doing string, err error, attributes ...any) error {
 	if ctx.Err() != nil {
 		return status.FromContextError(ctx.Err()).Err()
 	}

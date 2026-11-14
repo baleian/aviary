@@ -19,6 +19,9 @@ var (
 	ErrNotFound    = errors.New("not found")
 	ErrSessionBusy = errors.New("session has an unfinished turn")
 	ErrTurnTaken   = errors.New("turn was already taken")
+	// ErrTurnCancelled is returned for a turn that was cancelled before its
+	// runner took it.
+	ErrTurnCancelled = errors.New("turn was cancelled")
 )
 
 // The states of a turn. A queued turn waits to run, a dispatching one waits
@@ -32,6 +35,10 @@ const (
 	TurnFailed      = "failed"
 	TurnCancelled   = "cancelled"
 )
+
+// stopCancelled is the stop reason of a turn that its harness stopped
+// because it was told to.
+const stopCancelled = "cancelled"
 
 // uniqueViolation is the PostgreSQL error code for a broken unique constraint.
 const uniqueViolation = "23505"
@@ -76,6 +83,9 @@ type Turn struct {
 	EndedAt    *time.Time `json:"ended_at,omitempty"`
 	// Usage is the token usage of the turn, if the harness reported it.
 	Usage *Usage `json:"usage,omitempty"`
+	// CancelRequestedAt is when the turn was asked to stop, if it was. A
+	// turn that had been dispatched by then ends once its pod has stopped.
+	CancelRequestedAt *time.Time `json:"cancel_requested_at,omitempty"`
 }
 
 // Usage is the token usage of a turn as its harness reported it. It is not a
@@ -92,13 +102,14 @@ type Usage struct {
 
 // turnColumns are the columns of a turn, but for its ID, in the order in
 // which scanTurn reads them.
-const turnColumns = `session_id, seq, state, text, created_at, stop_reason, ended_at,
+const turnColumns = `session_id, seq, state, text, created_at, stop_reason, ended_at, cancel_requested_at,
 	total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens`
 
 func scanTurn(row pgx.Row, turn *Turn) error {
 	var usage Usage
 	var total, input, output *int64
 	err := row.Scan(&turn.SessionID, &turn.Seq, &turn.State, &turn.Text, &turn.CreatedAt, &turn.StopReason, &turn.EndedAt,
+		&turn.CancelRequestedAt,
 		&total, &input, &output, &usage.ThoughtTokens, &usage.CachedReadTokens, &usage.CachedWriteTokens)
 	if err != nil {
 		return err
@@ -115,6 +126,9 @@ type DispatchedTurn struct {
 	ID uuid.UUID
 	// Age is how long ago the turn was dispatched.
 	Age time.Duration
+	// Cancelling is how long ago the turn was asked to stop, or zero if it
+	// was not.
+	Cancelling time.Duration
 }
 
 // TakenTurn is a turn as its runner gets it.
@@ -339,12 +353,19 @@ func (s *Store) DispatchTurns(ctx context.Context, limit int) ([]Dispatch, error
 	return dispatches, tx.Commit(ctx)
 }
 
-// CancelQueuedTurn ends the turn as cancelled if it still waits to run. It
-// returns the turn as it then is, and whether this call cancelled it.
-func (s *Store) CancelQueuedTurn(ctx context.Context, id uuid.UUID) (Turn, bool, error) {
+// CancelTurn cancels a turn that has not ended. A turn that waits to run
+// ends as cancelled at once. A turn that was dispatched is marked: it ends
+// when its pod has stopped. CancelTurn returns the turn as it then is, and
+// whether the turn had not ended before.
+func (s *Store) CancelTurn(ctx context.Context, id uuid.UUID) (Turn, bool, error) {
 	turn := Turn{ID: id}
 	err := scanTurn(s.pool.QueryRow(ctx,
-		`update turns set state = $2, ended_at = now() where id = $1 and state = $3 returning `+turnColumns,
+		`update turns set
+		        state = case when state = $3 then $2 else state end,
+		        ended_at = case when state = $3 then now() end,
+		        cancel_requested_at = coalesce(cancel_requested_at, now())
+		 where id = $1 and ended_at is null
+		 returning `+turnColumns,
 		id, TurnCancelled, TurnQueued,
 	), &turn)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -357,7 +378,8 @@ func (s *Store) CancelQueuedTurn(ctx context.Context, id uuid.UUID) (Turn, bool,
 // DispatchedTurns returns the turns that were dispatched and have not ended.
 func (s *Store) DispatchedTurns(ctx context.Context) ([]DispatchedTurn, error) {
 	rows, err := s.pool.Query(ctx,
-		`select id, extract(epoch from now() - coalesce(dispatched_at, created_at))::float8
+		`select id, extract(epoch from now() - coalesce(dispatched_at, created_at))::float8,
+		        coalesce(extract(epoch from now() - cancel_requested_at), 0)::float8
 		 from turns where state in ($1, $2)`,
 		TurnDispatching, TurnRunning,
 	)
@@ -366,9 +388,10 @@ func (s *Store) DispatchedTurns(ctx context.Context) ([]DispatchedTurn, error) {
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (DispatchedTurn, error) {
 		var turn DispatchedTurn
-		var seconds float64
-		err := row.Scan(&turn.ID, &seconds)
-		turn.Age = time.Duration(seconds * float64(time.Second))
+		var age, cancelling float64
+		err := row.Scan(&turn.ID, &age, &cancelling)
+		turn.Age = time.Duration(age * float64(time.Second))
+		turn.Cancelling = time.Duration(cancelling * float64(time.Second))
 		return turn, err
 	})
 }
@@ -383,7 +406,8 @@ func (s *Store) TakeTurn(ctx context.Context, token string) (TakenTurn, error) {
 	err := s.pool.QueryRow(ctx,
 		`update turns set state = $2
 		 from sessions
-		 where turns.token_hash = $1 and turns.state = $3 and sessions.id = turns.session_id
+		 where turns.token_hash = $1 and turns.state = $3 and turns.cancel_requested_at is null
+		       and sessions.id = turns.session_id
 		 returning turns.id, turns.session_id, turns.seq, turns.text, turns.created_at,
 		           sessions.harness_session_id`,
 		hash, turn.State, TurnDispatching,
@@ -391,17 +415,21 @@ func (s *Store) TakeTurn(ctx context.Context, token string) (TakenTurn, error) {
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return turn, err
 	}
-	var known bool
+	var dispatching bool
 	err = s.pool.QueryRow(ctx,
-		`select exists (select from turns where token_hash = $1)`, hash,
-	).Scan(&known)
-	if err != nil {
+		`select state = $2 from turns where token_hash = $1`, hash, TurnDispatching,
+	).Scan(&dispatching)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return TakenTurn{}, ErrNotFound
+	case err != nil:
 		return TakenTurn{}, err
+	case dispatching:
+		// The turn was not taken, so it is the request to cancel it that
+		// keeps it from being taken.
+		return TakenTurn{}, ErrTurnCancelled
 	}
-	if known {
-		return TakenTurn{}, ErrTurnTaken
-	}
-	return TakenTurn{}, ErrNotFound
+	return TakenTurn{}, ErrTurnTaken
 }
 
 // RunningTurn returns the turn that the token belongs to, while that turn
@@ -449,16 +477,23 @@ func (s *Store) SetFinished(ctx context.Context, turnID uuid.UUID, stopReason st
 
 // EndTurn records that the pod of the turn has ended. The turn is completed
 // if the pod succeeded and the runner reported why the harness stopped, and
-// failed otherwise. From then on the session accepts its next message. The
+// failed otherwise. A turn that was asked to stop is cancelled, unless the
+// harness had ended it by itself. From then on the session accepts its next
+// message. The
 // second result is false if the turn had ended before, or does not exist.
 func (s *Store) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool) (Turn, bool, error) {
 	turn := Turn{ID: turnID}
 	err := scanTurn(s.pool.QueryRow(ctx,
 		`update turns set ended_at = now(),
-		        state = case when $2 and stop_reason is not null then $3 else $4 end
+		        state = case
+		            when cancel_requested_at is not null
+		                 and not ($2 and coalesce(stop_reason, $6) <> $6) then $5
+		            when $2 and stop_reason is not null then $3
+		            else $4
+		        end
 		 where id = $1 and ended_at is null
 		 returning `+turnColumns,
-		turnID, succeeded, TurnCompleted, TurnFailed,
+		turnID, succeeded, TurnCompleted, TurnFailed, TurnCancelled, stopCancelled,
 	), &turn)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Turn{}, false, nil
