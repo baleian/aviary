@@ -33,7 +33,7 @@ type RunnerServiceClient interface {
 	// RunTurn carries one turn. The runner calls it with the token of its turn
 	// in the authorization metadata, as "Bearer <token>". The Supervisor sends
 	// Start. The runner sends Started, then the events of the turn, then
-	// Finished.
+	// Finished. While the turn runs the Supervisor may send Cancel.
 	RunTurn(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[RunTurnRequest, RunTurnResponse], error)
 }
 
@@ -67,7 +67,7 @@ type RunnerServiceServer interface {
 	// RunTurn carries one turn. The runner calls it with the token of its turn
 	// in the authorization metadata, as "Bearer <token>". The Supervisor sends
 	// Start. The runner sends Started, then the events of the turn, then
-	// Finished.
+	// Finished. While the turn runs the Supervisor may send Cancel.
 	RunTurn(grpc.BidiStreamingServer[RunTurnRequest, RunTurnResponse]) error
 	mustEmbedUnimplementedRunnerServiceServer()
 }

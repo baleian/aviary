@@ -10,7 +10,7 @@ service RunnerService {
   // RunTurn carries one turn. The runner calls it with the token of its turn
   // in the authorization metadata, as "Bearer <token>". The Supervisor sends
   // Start. The runner sends Started, then the events of the turn, then
-  // Finished.
+  // Finished. While the turn runs the Supervisor may send Cancel.
   rpc RunTurn(stream RunTurnRequest) returns (stream RunTurnResponse);
 }
 
@@ -35,6 +35,7 @@ message RunTurnRequest {
 message RunTurnResponse {
   oneof message {
     Start start = 1;
+    Cancel cancel = 2;
   }
 }
 
@@ -46,6 +47,11 @@ message Start {
   // session, for which the runner starts a new harness session.
   optional string harness_session_id = 2;
 }
+
+// Cancel tells the runner to stop the turn. The runner asks the harness to
+// stop what it is doing. A harness that does ends the turn with the stop
+// reason cancelled, which the runner reports with Finished as for any turn.
+message Cancel {}
 
 // Started reports that the harness is ready and has been given the message.
 message Started {

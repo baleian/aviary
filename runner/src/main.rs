@@ -7,14 +7,14 @@ use std::str::FromStr;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
-    ContentBlock, ContentChunk, InitializeRequest, NewSessionRequest, PermissionOptionKind,
-    PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    ResumeSessionRequest, SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate,
-    TextContent,
+    CancelNotification, ContentBlock, ContentChunk, InitializeRequest, NewSessionRequest,
+    PermissionOptionKind, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, ResumeSessionRequest, SelectedPermissionOutcome, SessionId,
+    SessionNotification, SessionUpdate, TextContent,
 };
 use agent_client_protocol::{AcpAgent, Agent, Client};
 use futures::channel::mpsc;
-use futures::{FutureExt, SinkExt};
+use futures::{FutureExt, SinkExt, StreamExt};
 use serde::Serialize;
 use tonic::Request;
 use tonic::transport::Endpoint;
@@ -83,6 +83,9 @@ async fn run_turn() -> Result<(), Box<dyn Error>> {
     let Some(Order::Start(start)) = orders.message().await?.and_then(|order| order.message) else {
         return Err("the Supervisor did not start the turn".into());
     };
+    // Carries the Supervisor's order to cancel to where the harness is
+    // talked to. One order is enough, so more are dropped.
+    let (mut cancel, mut cancelled) = mpsc::channel::<()>(1);
 
     let turn = Client
         .v1()
@@ -128,13 +131,24 @@ async fn run_turn() -> Result<(), Box<dyn Error>> {
                 harness_session_id: session_id.to_string(),
             };
             report(&reports, Report::Started(started)).await?;
-            let outcome = harness
+            let prompt = harness
                 .send_request(PromptRequest::new(
-                    session_id,
+                    session_id.clone(),
                     vec![ContentBlock::Text(TextContent::new(start.text))],
                 ))
                 .block_task()
-                .await?;
+                .fuse();
+            futures::pin_mut!(prompt);
+            // The harness answers the prompt when the turn has ended, also
+            // when it was told to stop.
+            let outcome = loop {
+                futures::select! {
+                    outcome = prompt => break outcome?,
+                    () = cancelled.select_next_some() => {
+                        harness.send_notification(CancelNotification::new(session_id.clone()))?;
+                    }
+                }
+            };
             let finished = Finished {
                 stop_reason: name(&outcome.stop_reason),
                 usage: outcome.usage.map(|usage| Usage {
@@ -149,13 +163,22 @@ async fn run_turn() -> Result<(), Box<dyn Error>> {
             report(&reports, Report::Finished(finished)).await
         });
 
-    // The Supervisor sends nothing more while the turn runs, so its stream
-    // ends early only if the Supervisor fails the turn.
-    futures::select! {
-        outcome = turn.fuse() => outcome?,
-        order = orders.message().fuse() => {
-            order?;
-            return Err("the Supervisor ended the turn".into());
+    // While the turn runs the Supervisor may cancel it. Its stream ends
+    // early only if the Supervisor fails the turn.
+    {
+        let turn = turn.fuse();
+        futures::pin_mut!(turn);
+        loop {
+            futures::select! {
+                outcome = turn => break outcome?,
+                order = orders.message().fuse() => match order?.and_then(|order| order.message) {
+                    Some(Order::Cancel(_)) => {
+                        let _ = cancel.try_send(());
+                    }
+                    Some(Order::Start(_)) => {}
+                    None => return Err("the Supervisor ended the turn".into()),
+                },
+            }
         }
     }
     // Closing the reports tells the Supervisor that there are no more. The
