@@ -140,6 +140,7 @@ The events of a turn:
 | `turn.completed` | `stop_reason`: why the harness ended the turn. `usage`: the token usage that the harness reported, if it did. The last event of the turn. |
 | `turn.failed` | The turn did not complete. The last event of the turn. |
 | `turn.cancelled` | The turn was cancelled. The last event of the turn. |
+| `turn.expired` | The turn waited to run for longer than it may. The last event of the turn. |
 
 The fields of the events that come from the agent are defined in
 [`proto/aviary/runner/v1/runner.proto`](proto/aviary/runner/v1/runner.proto).
@@ -165,6 +166,7 @@ does not install PostgreSQL or Valkey.
 | `egressProxy.allowedHosts` | The hosts that the Egress Proxy lets requests through to, the model endpoint among them. The default, `*`, is every host. |
 | `egressProxy.insideCIDRs`, `.extraEgress` | A network policy keeps the Egress Proxy itself out of these address ranges, so that it is no way into the cluster. `extraEgress` names what it may still reach there, such as a model endpoint that is a service in the cluster. |
 | `runtime.maxConcurrentTurns` | The most turns that run at once. Default 50. |
+| `runtime.maxQueueWaitSeconds` | How long a turn may wait to run before it ends as expired. Default 120, and 0 is no limit. |
 | `runtime.harnesses` | The harnesses that agents can use, each with its image. |
 | `runtime.store.storageClassName`, `.size` | The volume for the session homes. Its storage class must offer ReadWriteMany. |
 

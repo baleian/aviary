@@ -25,11 +25,12 @@ const (
 	TurnQueued = "turn.queued"
 	// TurnStarted reports that the harness has been given the message.
 	TurnStarted = "turn.started"
-	// TurnCompleted, TurnFailed and TurnCancelled report how the turn ended.
-	// One of them is the last event of every turn.
+	// TurnCompleted, TurnFailed, TurnCancelled and TurnExpired report how
+	// the turn ended. One of them is the last event of every turn.
 	TurnCompleted = "turn.completed"
 	TurnFailed    = "turn.failed"
 	TurnCancelled = "turn.cancelled"
+	TurnExpired   = "turn.expired"
 )
 
 // keptFor is how long the events of a turn are kept after its last event.
@@ -111,13 +112,19 @@ func Last(turn store.Turn) (eventType string, data any) {
 		}{turn.StopReason, turn.Usage}
 	case store.TurnCancelled:
 		return TurnCancelled, struct{}{}
+	case store.TurnExpired:
+		return TurnExpired, struct{}{}
 	}
 	return TurnFailed, struct{}{}
 }
 
 // IsLast reports whether an event of this type is the last of its turn.
 func IsLast(eventType string) bool {
-	return eventType == TurnCompleted || eventType == TurnFailed || eventType == TurnCancelled
+	switch eventType {
+	case TurnCompleted, TurnFailed, TurnCancelled, TurnExpired:
+		return true
+	}
+	return false
 }
 
 // AppendLast adds the last event of the turn to its stream and sets the

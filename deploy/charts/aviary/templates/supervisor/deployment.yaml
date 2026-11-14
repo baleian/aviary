@@ -58,6 +58,8 @@ spec:
               value: {{ .Values.runtime.harnesses | toJson | quote }}
             - name: AVIARY_MAX_CONCURRENT_TURNS
               value: {{ .Values.runtime.maxConcurrentTurns | quote }}
+            - name: AVIARY_MAX_QUEUE_WAIT_SECONDS
+              value: {{ .Values.runtime.maxQueueWaitSeconds | quote }}
           ports:
             - name: http
               containerPort: 8080

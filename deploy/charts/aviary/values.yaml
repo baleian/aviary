@@ -63,6 +63,9 @@ runtime:
   # The most turns that run at once. The turns beyond it wait in the order in
   # which they were accepted.
   maxConcurrentTurns: 50
+  # How long a turn may wait in that order. A turn that waits longer ends as
+  # expired, and its client is told so. Zero is no limit.
+  maxQueueWaitSeconds: 120
   # The image that holds the runner. Every turn pod mounts it.
   runnerImage: aviary-runner:dev
   # The harnesses that agents can use, by the name that an agent is created

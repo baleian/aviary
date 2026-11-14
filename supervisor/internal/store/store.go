@@ -26,7 +26,7 @@ var (
 
 // The states of a turn. A queued turn waits to run, a dispatching one waits
 // for its runner, and a running one has been taken by its runner. A turn ends
-// as completed, failed or cancelled.
+// as completed, failed or cancelled, or as expired if it waited too long.
 const (
 	TurnQueued      = "queued"
 	TurnDispatching = "dispatching"
@@ -34,6 +34,7 @@ const (
 	TurnCompleted   = "completed"
 	TurnFailed      = "failed"
 	TurnCancelled   = "cancelled"
+	TurnExpired     = "expired"
 )
 
 // stopCancelled is the stop reason of a turn that its harness stopped
@@ -373,6 +374,31 @@ func (s *Store) CancelTurn(ctx context.Context, id uuid.UUID) (Turn, bool, error
 		return turn, false, err
 	}
 	return turn, err == nil, err
+}
+
+// ExpireTurns ends the turns that have waited to run for longer than wait
+// as expired, and returns them.
+func (s *Store) ExpireTurns(ctx context.Context, wait time.Duration) ([]Turn, error) {
+	rows, err := s.pool.Query(ctx,
+		`update turns set state = $1, ended_at = now()
+		 where state = $2 and created_at < now() - make_interval(secs => $3)
+		 returning id`,
+		TurnExpired, TurnQueued, wait.Seconds(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		return nil, err
+	}
+	turns := make([]Turn, len(ids))
+	for i, id := range ids {
+		if turns[i], err = s.Turn(ctx, id); err != nil {
+			return nil, err
+		}
+	}
+	return turns, nil
 }
 
 // DispatchedTurns returns the turns that were dispatched and have not ended.

@@ -70,6 +70,9 @@ type Config struct {
 	ProxyURL string
 	// Harnesses are the harnesses that agents can use, by name.
 	Harnesses map[string]Harness
+	// MaxQueueWait is how long a turn may wait to run. A turn that waits
+	// longer ends as expired. Zero is no limit.
+	MaxQueueWait time.Duration
 	// MaxConcurrentTurns is the most turns that run at once. The turns
 	// beyond it wait in the order in which they were accepted.
 	MaxConcurrentTurns int
@@ -176,6 +179,7 @@ func (d *Driver) QueueMoved() {
 
 // dispatch runs the queued turns that fit under the limit, oldest first.
 func (d *Driver) dispatch(ctx context.Context) {
+	expired := d.expire(ctx)
 	dispatches, err := d.store.DispatchTurns(ctx, d.config.MaxConcurrentTurns)
 	if err != nil {
 		slog.ErrorContext(ctx, "dispatch turns", "error", err)
@@ -195,9 +199,29 @@ func (d *Driver) dispatch(ctx context.Context) {
 			slog.ErrorContext(ctx, "launch turn", "turn", dispatch.TurnID, "error", err)
 		}
 	}
-	if d.moved.Swap(false) || len(dispatches) > 0 {
+	if d.moved.Swap(false) || expired || len(dispatches) > 0 {
 		d.announcePositions(ctx)
 	}
+}
+
+// expire ends the turns that have waited to run for too long. It reports
+// whether there were any.
+func (d *Driver) expire(ctx context.Context) bool {
+	if d.config.MaxQueueWait == 0 {
+		return false
+	}
+	turns, err := d.store.ExpireTurns(ctx, d.config.MaxQueueWait)
+	if err != nil {
+		slog.ErrorContext(ctx, "expire turns", "error", err)
+		return false
+	}
+	for _, turn := range turns {
+		slog.InfoContext(ctx, "turn ended", "turn", turn.ID, "state", turn.State)
+		if err := d.events.AppendLast(ctx, turn); err != nil {
+			slog.ErrorContext(ctx, "publish turn event", "turn", turn.ID, "error", err)
+		}
+	}
+	return len(turns) > 0
 }
 
 // announcePositions tells the turns that still wait their new positions in

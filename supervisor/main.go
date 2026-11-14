@@ -37,6 +37,7 @@ const (
 	proxyURL           = "AVIARY_PROXY_URL"
 	harnesses          = "AVIARY_HARNESSES"
 	maxConcurrentTurns = "AVIARY_MAX_CONCURRENT_TURNS"
+	maxQueueWait       = "AVIARY_MAX_QUEUE_WAIT_SECONDS"
 	apiAddr            = ":8080"
 	gatewayAddr        = ":9090"
 	authzAddr          = ":9091"
@@ -190,6 +191,15 @@ func driverConfig() (driver.Config, error) {
 	if config.MaxConcurrentTurns, err = strconv.Atoi(limit); err != nil || config.MaxConcurrentTurns < 1 {
 		return config, fmt.Errorf("%s must be a number above zero", maxConcurrentTurns)
 	}
+	wait, err := env(maxQueueWait)
+	if err != nil {
+		return config, err
+	}
+	seconds, err := strconv.Atoi(wait)
+	if err != nil || seconds < 0 {
+		return config, fmt.Errorf("%s must be a number of seconds, or zero for no limit", maxQueueWait)
+	}
+	config.MaxQueueWait = time.Duration(seconds) * time.Second
 	return config, nil
 }
 
