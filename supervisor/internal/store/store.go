@@ -48,6 +48,10 @@ const uniqueViolation = "23505"
 // dispatched.
 const dispatchLock int64 = 0x617669617279 // "aviary"
 
+// queueLock is the key of the advisory lock that is held while turns that
+// wait are told their positions.
+const queueLock int64 = dispatchLock + 1
+
 type Store struct {
 	pool *pgxpool.Pool
 }
@@ -253,43 +257,64 @@ func (s *Store) Session(ctx context.Context, id uuid.UUID) (Session, error) {
 	return session, err
 }
 
-// CreateTurn queues a message as the session's next turn and returns the
-// turn with its position in the queue, which is 1 for the turn that runs
-// next. It returns ErrNotFound if the session does not exist and
-// ErrSessionBusy if the session has a turn that has not finished.
-func (s *Store) CreateTurn(ctx context.Context, sessionID uuid.UUID, text string) (Turn, int, error) {
+// CreateTurn queues a message as the session's next turn. It returns
+// ErrNotFound if the session does not exist and ErrSessionBusy if the
+// session has a turn that has not finished.
+func (s *Store) CreateTurn(ctx context.Context, sessionID uuid.UUID, text string) (Turn, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
-		return Turn{}, 0, err
+		return Turn{}, err
 	}
 	turn := Turn{ID: id, SessionID: sessionID, State: TurnQueued, Text: text}
-	var position int
-	// The count does not see the turn that the same statement inserts.
 	err = s.pool.QueryRow(ctx,
-		`with accepted as (
-		     insert into turns (id, session_id, seq, state, text)
-		     select $1, id, (select coalesce(max(seq), 0) + 1 from turns where session_id = $2), $3, $4
-		     from sessions where id = $2
-		     returning seq, created_at
-		 )
-		 select seq, created_at, (select count(*) from turns where state = $3) + 1 from accepted`,
+		`insert into turns (id, session_id, seq, state, text)
+		 select $1, id, (select coalesce(max(seq), 0) + 1 from turns where session_id = $2), $3, $4
+		 from sessions where id = $2
+		 returning seq, created_at`,
 		turn.ID, turn.SessionID, turn.State, turn.Text,
-	).Scan(&turn.Seq, &turn.CreatedAt, &position)
+	).Scan(&turn.Seq, &turn.CreatedAt)
 	var failure *pgconn.PgError
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return Turn{}, 0, ErrNotFound
+		return Turn{}, ErrNotFound
 	case errors.As(err, &failure) && failure.Code == uniqueViolation:
-		return Turn{}, 0, ErrSessionBusy
+		return Turn{}, ErrSessionBusy
 	}
-	return turn, position, err
+	return turn, err
 }
 
-// QueuedTurns returns the IDs of the queued turns in the order in which they
-// will run.
-func (s *Store) QueuedTurns(ctx context.Context) ([]uuid.UUID, error) {
+// AnnounceQueue calls announce with the turns that wait to run, in the order
+// in which they will run. Only one such call runs at a time, also across
+// Supervisors, so that of two calls the later one has the newer queue: the
+// positions that the turns are told last are the latest.
+func (s *Store) AnnounceQueue(ctx context.Context, announce func(queued []uuid.UUID) error) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1)`, queueLock); err != nil {
+		return err
+	}
+	rows, err := tx.Query(ctx, `select id from turns where state = $1 order by created_at, id`, TurnQueued)
+	if err != nil {
+		return err
+	}
+	queued, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		return err
+	}
+	if err := announce(queued); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// CancellingTurns returns the turns that were asked to stop and have not
+// ended.
+func (s *Store) CancellingTurns(ctx context.Context) ([]uuid.UUID, error) {
 	rows, err := s.pool.Query(ctx,
-		`select id from turns where state = $1 order by created_at, id`, TurnQueued,
+		`select id from turns where ended_at is null and cancel_requested_at is not null`,
 	)
 	if err != nil {
 		return nil, err

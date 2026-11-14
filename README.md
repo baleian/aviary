@@ -159,6 +159,7 @@ does not install PostgreSQL or Valkey.
 
 | Value | |
 | --- | --- |
+| `supervisor.replicas`, `egressProxy.replicas` | How many Supervisors and Egress Proxies run. Each of them serves any request. Default 1. |
 | `supervisor.database.secretName`, `.secretKey` | A secret with the PostgreSQL connection URL. |
 | `supervisor.valkey.secretName`, `.secretKey` | A secret with the Valkey connection URL. |
 | `llm.url`, `llm.model` | The base URL of the model endpoint and the model that the harnesses ask it for. |
@@ -201,8 +202,9 @@ To run a harness that is not in this repository, see
   hours after it ended.
 - **The reason for a failed turn.** `turn.failed` does not say why, for
   example that the model server did not answer.
-- **More than one Supervisor.** A turn that is running when the Supervisor
-  restarts fails.
+- **Restarting a Supervisor without failing turns.** Several Supervisors
+  can run side by side, but a turn fails if the Supervisor that its runner
+  is connected to stops.
 - **Approval by a person.** When a harness asks for permission to act, the
   runner allows it.
 - **Anything but a local cluster.** Aviary has not run on a cloud provider's

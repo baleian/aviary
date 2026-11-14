@@ -227,16 +227,16 @@ func (d *Driver) expire(ctx context.Context) bool {
 // announcePositions tells the turns that still wait their new positions in
 // the queue, after the turns ahead of them were dispatched.
 func (d *Driver) announcePositions(ctx context.Context) {
-	queued, err := d.store.QueuedTurns(ctx)
-	if err != nil {
-		slog.ErrorContext(ctx, "read queued turns", "error", err)
-		return
-	}
-	for i, turnID := range queued {
-		if err := d.events.AppendQueued(ctx, turnID, i+1); err != nil {
-			slog.ErrorContext(ctx, "publish turn event", "turn", turnID, "event", events.TurnQueued, "error", err)
-			return
+	err := d.store.AnnounceQueue(ctx, func(queued []uuid.UUID) error {
+		for i, turnID := range queued {
+			if err := d.events.AppendQueued(ctx, turnID, i+1); err != nil {
+				return err
+			}
 		}
+		return nil
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "tell the queued turns their positions", "error", err)
 	}
 }
 

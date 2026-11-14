@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strconv"
 	"strings"
@@ -32,6 +33,10 @@ const (
 	TurnCancelled = "turn.cancelled"
 	TurnExpired   = "turn.expired"
 )
+
+// cancelChannel is the Valkey channel on which a Supervisor tells the others
+// that a turn was asked to stop.
+const cancelChannel = "turns:cancel"
 
 // keptFor is how long the events of a turn are kept after its last event.
 const keptFor = 24 * time.Hour
@@ -100,6 +105,34 @@ func (s *Streams) AppendQueued(ctx context.Context, turnID uuid.UUID, position i
 	return s.Append(ctx, turnID, TurnQueued, struct {
 		Position int `json:"position"`
 	}{position})
+}
+
+// AnnounceCancel tells every Supervisor that the turn was asked to stop. The
+// runner of the turn is connected to one of them.
+func (s *Streams) AnnounceCancel(ctx context.Context, turnID uuid.UUID) error {
+	return s.client.Do(ctx, s.client.B().Publish().Channel(cancelChannel).Message(turnID.String()).Build()).Error()
+}
+
+// WatchCancels calls cancel for every turn that a Supervisor announces as
+// asked to stop, until ctx is done. It misses what is announced while Valkey
+// cannot be reached.
+func (s *Streams) WatchCancels(ctx context.Context, cancel func(turnID uuid.UUID)) {
+	for ctx.Err() == nil {
+		err := s.client.Receive(ctx, s.client.B().Subscribe().Channel(cancelChannel).Build(),
+			func(message valkey.PubSubMessage) {
+				if turnID, err := uuid.Parse(message.Message); err == nil {
+					cancel(turnID)
+				}
+			})
+		if ctx.Err() != nil {
+			return
+		}
+		slog.WarnContext(ctx, "watch for cancelled turns", "error", err)
+		select {
+		case <-time.After(time.Second):
+		case <-ctx.Done():
+		}
+	}
 }
 
 // Last returns the last event of a turn that has ended.

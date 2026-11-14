@@ -6,7 +6,7 @@ metadata:
     app.kubernetes.io/name: aviary
     app.kubernetes.io/component: supervisor
 spec:
-  replicas: 1
+  replicas: {{ .Values.supervisor.replicas }}
   selector:
     matchLabels:
       app.kubernetes.io/name: aviary

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
@@ -37,8 +38,36 @@ func New(st *store.Store, ev *events.Streams) *Gateway {
 	return &Gateway{store: st, events: ev, cancels: map[uuid.UUID]chan struct{}{}}
 }
 
+// sweep is how often the turns that were asked to stop are looked up, in case
+// the announcement of one was missed.
+const sweep = 10 * time.Second
+
+// Run passes requests to stop a turn on to the runners that are connected to
+// this Supervisor, until ctx is done. A request reaches any Supervisor, which
+// records it and announces it to all of them.
+func (g *Gateway) Run(ctx context.Context) {
+	go g.events.WatchCancels(ctx, g.Cancel)
+	ticker := time.NewTicker(sweep)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			return
+		}
+		turns, err := g.store.CancellingTurns(ctx)
+		if err != nil {
+			slog.ErrorContext(ctx, "read the turns to cancel", "error", err)
+			continue
+		}
+		for _, turnID := range turns {
+			g.Cancel(turnID)
+		}
+	}
+}
+
 // Cancel tells the runner of the turn to stop the turn, if the runner is
-// connected. If it is not, the turn is not started when it connects.
+// connected to this Supervisor.
 func (g *Gateway) Cancel(turnID uuid.UUID) {
 	g.mu.Lock()
 	defer g.mu.Unlock()

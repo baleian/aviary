@@ -122,7 +122,7 @@ func serve(ctx context.Context, database string) error {
 	}
 	runners := gateway.New(st, ev)
 	apiServer := &http.Server{
-		Handler:           api.New(st, ev, dr, runners, ctx.Done()),
+		Handler:           api.New(st, ev, dr, ctx.Done()),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	gatewayServer := grpc.NewServer()
@@ -136,6 +136,7 @@ func serve(ctx context.Context, database string) error {
 	go func() { failed <- gatewayServer.Serve(gatewayListener) }()
 	go func() { failed <- authzServer.Serve(authzListener) }()
 	go dr.Run(ctx)
+	go runners.Run(ctx)
 	slog.Info("listening", "api", apiAddr, "gateway", gatewayAddr, "authz", authzAddr)
 
 	select {

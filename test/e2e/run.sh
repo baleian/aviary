@@ -120,9 +120,11 @@ running() { [ "$(field "/v1/turns/$1" state)" = running ]; }
 # recorded <turn> <route> <host> <status> tells whether the Egress Proxy
 # recorded a request of the turn to the host that ended with the status. The
 # route is llm for a request to the model endpoint and forward for any other.
+# There may be several proxies, and any of them may have served the request.
 recorded() {
   local log
-  log=$($kubectl --namespace aviary-system logs deployment/aviary-egress-proxy --since 10m)
+  log=$($kubectl --namespace aviary-system logs --selector app.kubernetes.io/component=egress-proxy \
+    --tail -1 --since 10m)
   awk -v turn="\"turn\":\"$1\"" -v route="\"route\":\"$2\"" -v host="\"host\":\"$3\"" -v status="\"status\":$4," \
     'index($0, turn) && index($0, route) && index($0, host) && index($0, status) { found = 1 }
      END { exit !found }' <<< "$log"

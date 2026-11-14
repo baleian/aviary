@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 
 	"github.com/google/uuid"
 
@@ -20,14 +21,7 @@ type api struct {
 	store   *store.Store
 	events  *events.Streams
 	driver  *driver.Driver
-	runners Runners
 	closing <-chan struct{}
-}
-
-// Runners reaches the runners of the turns that run.
-type Runners interface {
-	// Cancel tells the runner of the turn to stop the turn.
-	Cancel(turnID uuid.UUID)
 }
 
 type apiError struct {
@@ -47,8 +41,8 @@ var (
 
 // New returns the handler of the API. An event stream stays open for as long
 // as its client does, so the streams end when closing is closed.
-func New(st *store.Store, ev *events.Streams, dr *driver.Driver, runners Runners, closing <-chan struct{}) http.Handler {
-	a := &api{store: st, events: ev, driver: dr, runners: runners, closing: closing}
+func New(st *store.Store, ev *events.Streams, dr *driver.Driver, closing <-chan struct{}) http.Handler {
+	a := &api{store: st, events: ev, driver: dr, closing: closing}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
 	mux.Handle("POST /v1/projects", handler(a.createProject))
@@ -172,13 +166,20 @@ func (a *api) createMessage(w http.ResponseWriter, r *http.Request) error {
 	if request.Text == "" {
 		return invalid("text is required")
 	}
-	turn, position, err := a.store.CreateTurn(r.Context(), sessionID, request.Text)
+	turn, err := a.store.CreateTurn(r.Context(), sessionID, request.Text)
 	if err != nil {
 		return err
 	}
 	// The turn is accepted once it is stored. The event only reports that, so
-	// failing to publish it does not fail the request.
-	if err := a.events.AppendQueued(r.Context(), turn.ID, position); err != nil {
+	// failing to publish it does not fail the request. A turn that was
+	// dispatched in the meantime has no position to be told.
+	err = a.store.AnnounceQueue(r.Context(), func(queued []uuid.UUID) error {
+		if position := slices.Index(queued, turn.ID); position >= 0 {
+			return a.events.AppendQueued(r.Context(), turn.ID, position+1)
+		}
+		return nil
+	})
+	if err != nil {
 		slog.ErrorContext(r.Context(), "publish turn event", "turn", turn.ID, "event", events.TurnQueued, "error", err)
 	}
 	a.driver.Wake()
@@ -221,7 +222,11 @@ func (a *api) cancelTurn(w http.ResponseWriter, r *http.Request) error {
 		}
 		a.driver.QueueMoved()
 	default:
-		a.runners.Cancel(turn.ID)
+		// The request is recorded. If it cannot be announced, the Supervisor
+		// that the runner is connected to finds it a little later.
+		if err := a.events.AnnounceCancel(r.Context(), turn.ID); err != nil {
+			slog.ErrorContext(r.Context(), "announce the cancelled turn", "turn", turn.ID, "error", err)
+		}
 		respond(w, http.StatusAccepted, turn)
 		return nil
 	}
