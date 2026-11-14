@@ -11,6 +11,7 @@ RUNNER_IMAGE := aviary-runner:dev
 HARNESS_BASE_IMAGE := aviary-harness-base:dev
 OPENCODE_IMAGE := aviary-harness-opencode:dev
 CODEX_IMAGE := aviary-harness-codex:dev
+MOCK_LLM_IMAGE := aviary-mock-llm:dev
 
 KUBECTL := kubectl --context kind-$(CLUSTER)
 HELM := helm --kube-context kind-$(CLUSTER)
@@ -60,7 +61,8 @@ images:
 	docker build --tag $(HARNESS_BASE_IMAGE) images/harness-base
 	docker build --tag $(OPENCODE_IMAGE) images/harness-opencode
 	docker build --tag $(CODEX_IMAGE) images/harness-codex
-	kind load docker-image --name $(CLUSTER) $(SUPERVISOR_IMAGE) $(RUNNER_IMAGE) $(OPENCODE_IMAGE) $(CODEX_IMAGE)
+	docker build --file images/mock-llm/Dockerfile --tag $(MOCK_LLM_IMAGE) .
+	kind load docker-image --name $(CLUSTER) $(SUPERVISOR_IMAGE) $(RUNNER_IMAGE) $(OPENCODE_IMAGE) $(CODEX_IMAGE) $(MOCK_LLM_IMAGE)
 
 # CloudNativePG writes the database's connection secret next to the database.
 # A pod can only read secrets in its own namespace, so the secret is copied to
