@@ -27,8 +27,9 @@ type apiError struct {
 func (e *apiError) Error() string { return e.Message }
 
 var (
-	errNotFound = &apiError{http.StatusNotFound, "not_found", "no such resource"}
-	errInternal = &apiError{http.StatusInternalServerError, "internal", "internal error"}
+	errNotFound    = &apiError{http.StatusNotFound, "not_found", "no such resource"}
+	errSessionBusy = &apiError{http.StatusConflict, "session_busy", "the session has a turn that has not finished"}
+	errInternal    = &apiError{http.StatusInternalServerError, "internal", "internal error"}
 )
 
 func New(st *store.Store) http.Handler {
@@ -41,6 +42,8 @@ func New(st *store.Store) http.Handler {
 	mux.Handle("GET /v1/agents/{aid}", handler(a.getAgent))
 	mux.Handle("POST /v1/agents/{aid}/sessions", handler(a.createSession))
 	mux.Handle("GET /v1/sessions/{sid}", handler(a.getSession))
+	mux.Handle("POST /v1/sessions/{sid}/messages", handler(a.createMessage))
+	mux.Handle("GET /v1/turns/{tid}", handler(a.getTurn))
 	return mux
 }
 
@@ -136,6 +139,43 @@ func (a *api) getSession(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+// createMessage accepts a message as the session's next turn. The turn runs
+// later, so the reply is 202 with the turn to follow.
+func (a *api) createMessage(w http.ResponseWriter, r *http.Request) error {
+	sessionID, err := pathID(r, "sid")
+	if err != nil {
+		return err
+	}
+	var request struct {
+		Text string `json:"text"`
+	}
+	if err := decode(w, r, &request); err != nil {
+		return err
+	}
+	if request.Text == "" {
+		return invalid("text is required")
+	}
+	turn, err := a.store.CreateTurn(r.Context(), sessionID, request.Text)
+	if err != nil {
+		return err
+	}
+	respond(w, http.StatusAccepted, turn)
+	return nil
+}
+
+func (a *api) getTurn(w http.ResponseWriter, r *http.Request) error {
+	id, err := pathID(r, "tid")
+	if err != nil {
+		return err
+	}
+	turn, err := a.store.Turn(r.Context(), id)
+	if err != nil {
+		return err
+	}
+	respond(w, http.StatusOK, turn)
+	return nil
+}
+
 // handler turns the error a handler returns into the error response.
 type handler func(w http.ResponseWriter, r *http.Request) error
 
@@ -149,6 +189,8 @@ func (h handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case errors.As(err, &failure):
 	case errors.Is(err, store.ErrNotFound):
 		failure = errNotFound
+	case errors.Is(err, store.ErrSessionBusy):
+		failure = errSessionBusy
 	default:
 		slog.ErrorContext(r.Context(), "request failed", "method", r.Method, "path", r.URL.Path, "error", err)
 		failure = errInternal

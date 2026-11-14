@@ -11,13 +11,22 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 	"github.com/pressly/goose/v3/lock"
 )
 
-var ErrNotFound = errors.New("not found")
+var (
+	ErrNotFound    = errors.New("not found")
+	ErrSessionBusy = errors.New("session has an unfinished turn")
+)
+
+const TurnQueued = "queued"
+
+// uniqueViolation is the PostgreSQL error code for a broken unique constraint.
+const uniqueViolation = "23505"
 
 //go:embed migrations/*.sql
 var migrations embed.FS
@@ -42,6 +51,16 @@ type Agent struct {
 type Session struct {
 	ID        uuid.UUID `json:"id"`
 	AgentID   uuid.UUID `json:"agent_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// Turn is one message to a session and the work the agent does in reply.
+type Turn struct {
+	ID        uuid.UUID `json:"id"`
+	SessionID uuid.UUID `json:"session_id"`
+	Seq       int       `json:"seq"`
+	State     string    `json:"state"`
+	Text      string    `json:"text"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -144,6 +163,43 @@ func (s *Store) Session(ctx context.Context, id uuid.UUID) (Session, error) {
 		return Session{}, ErrNotFound
 	}
 	return session, err
+}
+
+// CreateTurn queues a message as the session's next turn. It returns
+// ErrNotFound if the session does not exist and ErrSessionBusy if the session
+// has a turn that has not finished.
+func (s *Store) CreateTurn(ctx context.Context, sessionID uuid.UUID, text string) (Turn, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return Turn{}, err
+	}
+	turn := Turn{ID: id, SessionID: sessionID, State: TurnQueued, Text: text}
+	err = s.pool.QueryRow(ctx,
+		`insert into turns (id, session_id, seq, state, text)
+		 select $1, id, (select coalesce(max(seq), 0) + 1 from turns where session_id = $2), $3, $4
+		 from sessions where id = $2
+		 returning seq, created_at`,
+		turn.ID, turn.SessionID, turn.State, turn.Text,
+	).Scan(&turn.Seq, &turn.CreatedAt)
+	var failure *pgconn.PgError
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return Turn{}, ErrNotFound
+	case errors.As(err, &failure) && failure.Code == uniqueViolation:
+		return Turn{}, ErrSessionBusy
+	}
+	return turn, err
+}
+
+func (s *Store) Turn(ctx context.Context, id uuid.UUID) (Turn, error) {
+	turn := Turn{ID: id}
+	err := s.pool.QueryRow(ctx,
+		`select session_id, seq, state, text, created_at from turns where id = $1`, id,
+	).Scan(&turn.SessionID, &turn.Seq, &turn.State, &turn.Text, &turn.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Turn{}, ErrNotFound
+	}
+	return turn, err
 }
 
 // migrate holds a lock in a table rather than on the connection, so that
