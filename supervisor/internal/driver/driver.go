@@ -6,7 +6,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -75,6 +77,9 @@ type Harness struct {
 
 type Driver struct {
 	config Config
+	// hosts are the names of what a turn pod connects to: the Supervisor
+	// and the Egress Proxy.
+	hosts []string
 	// proxy is the forward proxy, and noProxy the hosts that a turn pod
 	// reaches without it.
 	proxy   *url.URL
@@ -95,21 +100,49 @@ func New(config Config, st *store.Store, ev *events.Streams) (*Driver, error) {
 	if err != nil {
 		return nil, err
 	}
-	proxy, err := url.Parse(config.ProxyURL)
+	gateway, err := url.Parse(config.GatewayURL)
 	if err != nil {
-		return nil, fmt.Errorf("the proxy URL: %w", err)
+		return nil, err
 	}
 	llm, err := url.Parse(config.LLMBaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("the URL of the model endpoint: %w", err)
+		return nil, err
 	}
-	// A harness may talk to itself over the loopback interface, and the
-	// model endpoint is the proxy itself, on another port.
-	noProxy := []string{"localhost", "127.0.0.1", "::1", llm.Hostname()}
+	proxy, err := url.Parse(config.ProxyURL)
+	if err != nil {
+		return nil, err
+	}
+	var hosts []string
+	for _, address := range []*url.URL{gateway, llm, proxy} {
+		if !slices.Contains(hosts, address.Hostname()) {
+			hosts = append(hosts, address.Hostname())
+		}
+	}
+	// A harness may talk to itself over the loopback interface. The model
+	// endpoint is the proxy itself, on another port, and the Supervisor is
+	// reached directly.
+	noProxy := []string{"localhost", "127.0.0.1", "::1", llm.Hostname(), gateway.Hostname()}
 	return &Driver{
-		config: config, proxy: proxy, noProxy: strings.Join(noProxy, ","),
+		config: config, hosts: hosts, proxy: proxy, noProxy: strings.Join(noProxy, ","),
 		client: client, store: st, events: ev, wake: make(chan struct{}, 1),
 	}, nil
+}
+
+// hostAliases looks up the addresses of what a turn pod connects to. The pod
+// has no DNS, so it gets them written into its hosts file.
+func (d *Driver) hostAliases(ctx context.Context) ([]corev1.HostAlias, error) {
+	var aliases []corev1.HostAlias
+	for _, host := range d.hosts {
+		ips, err := net.DefaultResolver.LookupHost(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		// A host that is configured by its address needs no entry.
+		if ips[0] != host {
+			aliases = append(aliases, corev1.HostAlias{IP: ips[0], Hostnames: []string{host}})
+		}
+	}
+	return aliases, nil
 }
 
 // HasHarness reports whether turns can run on the harness of that name.
@@ -135,8 +168,17 @@ func (d *Driver) dispatch(ctx context.Context) {
 		slog.ErrorContext(ctx, "dispatch turns", "error", err)
 		return
 	}
+	var hosts []corev1.HostAlias
+	if len(dispatches) > 0 {
+		// Without the addresses no turn is launched. The turns then fail as
+		// turns that lost their Job.
+		if hosts, err = d.hostAliases(ctx); err != nil {
+			slog.ErrorContext(ctx, "look up the addresses for the turn pods", "error", err)
+			return
+		}
+	}
 	for _, dispatch := range dispatches {
-		if err := d.launch(ctx, dispatch); err != nil {
+		if err := d.launch(ctx, dispatch, hosts); err != nil {
 			slog.ErrorContext(ctx, "launch turn", "turn", dispatch.TurnID, "error", err)
 		}
 	}
@@ -162,12 +204,12 @@ func (d *Driver) announcePositions(ctx context.Context) {
 }
 
 // launch creates the Job that runs a dispatched turn.
-func (d *Driver) launch(ctx context.Context, dispatch store.Dispatch) error {
+func (d *Driver) launch(ctx context.Context, dispatch store.Dispatch, hosts []corev1.HostAlias) error {
 	harness, found := d.config.Harnesses[dispatch.Harness]
 	if !found {
 		return fmt.Errorf("harness %q is not configured", dispatch.Harness)
 	}
-	_, err := d.client.BatchV1().Jobs(namespace).Create(ctx, d.job(dispatch, harness), metav1.CreateOptions{})
+	_, err := d.client.BatchV1().Jobs(namespace).Create(ctx, d.job(dispatch, harness, hosts), metav1.CreateOptions{})
 	return err
 }
 
@@ -324,7 +366,7 @@ func outcome(job *batchv1.Job) (succeeded, ended bool) {
 // job returns the Job that runs a turn. The harness container sees only the
 // home of its session. The runner comes from its own image, so the harness
 // images do not have to contain it.
-func (d *Driver) job(dispatch store.Dispatch, harness Harness) *batchv1.Job {
+func (d *Driver) job(dispatch store.Dispatch, harness Harness, hosts []corev1.HostAlias) *batchv1.Job {
 	home := fmt.Sprintf("projects/%s/agents/%s/sessions/%s/home", dispatch.ProjectID, dispatch.AgentID, dispatch.SessionID)
 	// The password of the proxy is the turn token, by which the proxy knows
 	// the turn of a request.
@@ -344,7 +386,19 @@ func (d *Driver) job(dispatch store.Dispatch, harness Harness) *batchv1.Job {
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
-					RestartPolicy:                corev1.RestartPolicyNever,
+					RestartPolicy: corev1.RestartPolicyNever,
+					// The pod has no DNS: the network policy lets no lookup
+					// out, because a lookup can carry data out of the
+					// cluster. The pod finds the Supervisor and the Egress
+					// Proxy in its hosts file. A program that looks another
+					// name up gets its failure in a second or two, with
+					// these options, and not in twenty.
+					HostAliases: hosts,
+					DNSConfig: &corev1.PodDNSConfig{Options: []corev1.PodDNSConfigOption{
+						{Name: "timeout", Value: new("1")},
+						{Name: "attempts", Value: new("1")},
+						{Name: "ndots", Value: new("1")},
+					}},
 					AutomountServiceAccountToken: new(false),
 					EnableServiceLinks:           new(false),
 					SecurityContext: &corev1.PodSecurityContext{

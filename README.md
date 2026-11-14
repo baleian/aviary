@@ -13,9 +13,9 @@ and the number of turns that run at once is a setting.
 
 > **Status.** Aviary is at an early stage. A message sent to the API runs as
 > a turn, sessions continue across turns, and turns beyond a limit wait their
-> turn. It has only run on a local cluster. The API has no authentication,
-> and the pods of the agents are not yet cut off from the network. See
-> [What is missing](#what-is-missing).
+> turn. The pod of a turn reaches the outside only through a proxy that
+> keeps a record. It has only run on a local cluster, and the API has no
+> authentication. See [What is missing](#what-is-missing).
 
 ## How it works
 
@@ -47,7 +47,11 @@ and the number of turns that run at once is a setting.
    stream of events. The harness reaches the model through the **Egress
    Proxy**. The pod holds no key of the model endpoint, only the token of
    its turn: the proxy asks the Supervisor which turn the token belongs to,
-   puts the key in its place and records the request.
+   puts the key in its place and records the request. Whatever else the
+   agent fetches goes through the same proxy, which lets a request through
+   to the hosts that the installation allows and records it with its turn.
+   A network policy keeps the pod from connecting to anything but the
+   Supervisor and the proxy, and it has no DNS.
 5. When Kubernetes reports that the pod has stopped, the Supervisor ends the
    turn and deletes the Job. Only then does the session take its next
    message, so two pods never work on the same session home.
@@ -162,8 +166,9 @@ does not install PostgreSQL or Valkey.
 | `runtime.store.storageClassName`, `.size` | The volume for the session homes. Its storage class must offer ReadWriteMany. |
 
 The turn pods mount the runner as an image volume, so the cluster's
-Kubernetes and container runtime must support image volumes. The local
-cluster runs Kubernetes 1.37.
+Kubernetes and container runtime must support image volumes, and its
+network plugin must enforce network policies: they are what cuts the turn
+pods off. The local cluster runs Kubernetes 1.37.
 
 To run a harness that is not in this repository, see
 [Harness images](images/README.md).
@@ -183,8 +188,8 @@ To run a harness that is not in this repository, see
 ## What is missing
 
 - **Authentication.** Anyone who reaches the API can use it.
-- **Network control.** A turn pod can connect wherever the cluster lets it.
-  Only its requests to the model go through the Egress Proxy.
+- **Looking into what an agent sends.** The Egress Proxy records which host
+  a turn connects to. It does not read what is sent over HTTPS.
 - **Measured token usage.** The usage of a turn is what its harness reports.
   The Egress Proxy does not count tokens.
 - **Cancelling a turn** and **reading a conversation back**. The events of a
