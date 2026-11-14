@@ -150,6 +150,7 @@ The reasons for a failed turn:
 | Reason | |
 | --- | --- |
 | `harness_error` | The harness could not be started or answered with an error. That is also how a harness reports that the model endpoint refused it. |
+| `startup_timed_out` | The pod of the turn did not start in time, for example because an image could not be pulled. |
 | `timed_out` | The turn ran for longer than a turn may. |
 | `out_of_memory` | The pod used more memory than it may. |
 | `pod_lost` | The pod was stopped from outside, or is gone. |
@@ -182,6 +183,7 @@ does not install PostgreSQL or Valkey.
 | `runtime.maxConcurrentTurns` | The most turns that run at once. Default 50. |
 | `runtime.maxQueuedTurns` | The most turns that may wait to run. A message beyond it is answered with 429. Default 500, and 0 is no limit. |
 | `runtime.maxQueueWaitSeconds` | How long a turn may wait to run before it ends as expired. Default 120, and 0 is no limit. |
+| `runtime.maxStartupSeconds` | How long the pod of a turn may take to start before the turn fails. Default 90, and 0 is no limit. |
 | `runtime.maxTurnSeconds` | How long a turn may run before it is stopped and fails. Default 1800. |
 | `runtime.harnesses` | The harnesses that agents can use, each with its image. |
 | `runtime.store.storageClassName`, `.size` | The volume for the session homes. Its storage class must offer ReadWriteMany. |

@@ -40,6 +40,7 @@ const (
 	maxConcurrentTurns = "AVIARY_MAX_CONCURRENT_TURNS"
 	maxQueuedTurns     = "AVIARY_MAX_QUEUED_TURNS"
 	maxQueueWait       = "AVIARY_MAX_QUEUE_WAIT_SECONDS"
+	maxStartup         = "AVIARY_MAX_STARTUP_SECONDS"
 	maxTurn            = "AVIARY_MAX_TURN_SECONDS"
 	apiAddr            = ":8080"
 	gatewayAddr        = ":9090"
@@ -232,6 +233,14 @@ func driverConfig() (driver.Config, error) {
 		return config, fmt.Errorf("%s must be a number of seconds, or zero for no limit", maxQueueWait)
 	}
 	config.MaxQueueWait = time.Duration(seconds) * time.Second
+	startup, err := env(maxStartup)
+	if err != nil {
+		return config, err
+	}
+	if seconds, err = strconv.Atoi(startup); err != nil || seconds < 0 {
+		return config, fmt.Errorf("%s must be a number of seconds, or zero for no limit", maxStartup)
+	}
+	config.MaxStartup = time.Duration(seconds) * time.Second
 	longest, err := env(maxTurn)
 	if err != nil {
 		return config, err

@@ -72,6 +72,9 @@ type Config struct {
 	ProxyURL string
 	// Harnesses are the harnesses that agents can use, by name.
 	Harnesses map[string]Harness
+	// MaxStartup is how long the pod of a turn may take until its runner
+	// has connected. A turn whose pod takes longer fails. Zero is no limit.
+	MaxStartup time.Duration
 	// MaxTurn is how long a turn may run before Kubernetes ends its pod.
 	MaxTurn time.Duration
 	// MaxQueueWait is how long a turn may wait to run. A turn that waits
@@ -405,8 +408,10 @@ func (d *Driver) reconcile(ctx context.Context) {
 		inCluster[job.Labels[turnLabel]] = true
 		hasJob[job.Labels[turnLabel]] = true
 	}
-	for _, pod := range pods.Items {
+	podOf := map[string]*corev1.Pod{}
+	for i, pod := range pods.Items {
 		inCluster[pod.Labels[turnLabel]] = true
+		podOf[pod.Labels[turnLabel]] = &pods.Items[i]
 	}
 	dispatched := map[string]bool{}
 	for _, turn := range turns {
@@ -416,6 +421,19 @@ func (d *Driver) reconcile(ctx context.Context) {
 			d.end(ctx, turn.ID, false, store.Failure{
 				Reason: store.FailurePodLost, Message: "the Job and the pod of the turn are gone",
 			})
+		}
+		// The pod has not started: it cannot be scheduled, or an image
+		// cannot be pulled. The turn is given up, and ends when the pod is
+		// gone.
+		if d.config.MaxStartup > 0 && !turn.Taken && turn.Age > d.config.MaxStartup && hasJob[turn.ID.String()] {
+			failure := store.Failure{Reason: store.FailureStartup, Message: holdup(podOf[turn.ID.String()])}
+			givenUp, err := d.store.GiveUpTurn(ctx, turn.ID, failure)
+			if err != nil {
+				slog.ErrorContext(ctx, "give up turn", "turn", turn.ID, "error", err)
+			} else if givenUp {
+				slog.WarnContext(ctx, "the pod of the turn did not start", "turn", turn.ID, "holdup", failure.Message)
+				d.deleteJob(ctx, jobName(turn.ID))
+			}
 		}
 		// The harness did not stop when it was asked to. Without its Job
 		// the pod is stopped, and the turn ends when the pod is gone.
@@ -450,6 +468,26 @@ func (d *Driver) end(ctx context.Context, turnID uuid.UUID, succeeded bool, fail
 		d.Wake()
 	}
 	return true
+}
+
+// holdup tells what keeps a pod from starting, as far as Kubernetes says.
+func holdup(pod *corev1.Pod) string {
+	if pod == nil {
+		return "the pod was not created"
+	}
+	for _, statuses := range [][]corev1.ContainerStatus{pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses} {
+		for _, container := range statuses {
+			if waiting := container.State.Waiting; waiting != nil && waiting.Message != "" {
+				return waiting.Reason + ": " + waiting.Message
+			}
+		}
+	}
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == corev1.PodScheduled && condition.Status == corev1.ConditionFalse {
+			return condition.Reason + ": " + condition.Message
+		}
+	}
+	return "the runner did not connect"
 }
 
 func jobName(turnID uuid.UUID) string {

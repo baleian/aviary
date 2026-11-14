@@ -66,6 +66,8 @@ spec:
               value: {{ .Values.runtime.maxQueuedTurns | quote }}
             - name: AVIARY_MAX_QUEUE_WAIT_SECONDS
               value: {{ .Values.runtime.maxQueueWaitSeconds | quote }}
+            - name: AVIARY_MAX_STARTUP_SECONDS
+              value: {{ .Values.runtime.maxStartupSeconds | quote }}
             - name: AVIARY_MAX_TURN_SECONDS
               value: {{ .Values.runtime.maxTurnSeconds | quote }}
           ports:
