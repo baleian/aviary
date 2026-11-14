@@ -37,11 +37,16 @@ const (
 	// deadline is how long a turn's pod may run before Kubernetes ends it.
 	deadline = 30 * time.Minute
 	// resync is how often the Jobs are looked at again, which retries the
-	// ending of a turn that failed.
+	// ending of a turn that failed, and how often the turns and the Jobs are
+	// reconciled.
 	resync = 30 * time.Second
 	// recheck is how often the driver looks for queued turns without being
 	// woken, which retries a dispatch that failed.
 	recheck = 5 * time.Second
+	// lostAfter is how long after its dispatch a turn without a Job is taken
+	// to have lost it. The Job is created right after the dispatch, so
+	// until then it may only be on its way.
+	lostAfter = time.Minute
 )
 
 type Config struct {
@@ -163,11 +168,15 @@ func (d *Driver) Run(ctx context.Context) {
 
 	ticker := time.NewTicker(recheck)
 	defer ticker.Stop()
+	reconciling := time.NewTicker(resync)
+	defer reconciling.Stop()
 	for {
 		d.dispatch(ctx)
 		select {
 		case <-d.wake:
 		case <-ticker.C:
+		case <-reconciling.C:
+			d.reconcile(ctx)
 		case <-ctx.Done():
 			return
 		}
@@ -187,10 +196,67 @@ func (d *Driver) observe(ctx context.Context, job *batchv1.Job) {
 		slog.ErrorContext(ctx, "job has no turn", "job", job.Name, "error", err)
 		return
 	}
+	if d.end(ctx, turnID, succeeded) {
+		d.deleteJob(ctx, job.Name)
+	}
+}
+
+// reconcile ends the turns that have lost their Job and deletes the Jobs
+// whose turn has ended. Neither comes about while everything works: a Job
+// was not created, or was deleted by someone else, or a turn was ended
+// without its Job. Left alone, such a turn would keep its session busy and
+// count against the limit for good.
+func (d *Driver) reconcile(ctx context.Context) {
+	// The Jobs are read before the turns. The other way around, the Job of a
+	// turn that is dispatched in between would look like it has no turn.
+	selector := metav1.ListOptions{LabelSelector: turnLabel}
+	jobs, err := d.client.BatchV1().Jobs(namespace).List(ctx, selector)
+	if err != nil {
+		slog.ErrorContext(ctx, "list jobs", "error", err)
+		return
+	}
+	pods, err := d.client.CoreV1().Pods(namespace).List(ctx, selector)
+	if err != nil {
+		slog.ErrorContext(ctx, "list pods", "error", err)
+		return
+	}
+	turns, err := d.store.DispatchedTurns(ctx)
+	if err != nil {
+		slog.ErrorContext(ctx, "read dispatched turns", "error", err)
+		return
+	}
+
+	// A turn whose Job is gone may still have a pod that is shutting down.
+	inCluster := map[string]bool{}
+	for _, job := range jobs.Items {
+		inCluster[job.Labels[turnLabel]] = true
+	}
+	for _, pod := range pods.Items {
+		inCluster[pod.Labels[turnLabel]] = true
+	}
+	dispatched := map[string]bool{}
+	for _, turn := range turns {
+		dispatched[turn.ID.String()] = true
+		if !inCluster[turn.ID.String()] && turn.Age > lostAfter {
+			slog.WarnContext(ctx, "turn has no job", "turn", turn.ID)
+			d.end(ctx, turn.ID, false)
+		}
+	}
+	for _, job := range jobs.Items {
+		if !dispatched[job.Labels[turnLabel]] {
+			slog.WarnContext(ctx, "job has no running turn", "job", job.Name)
+			d.deleteJob(ctx, job.Name)
+		}
+	}
+}
+
+// end ends a turn whose pod has stopped, and reports whether the turn is
+// now ended.
+func (d *Driver) end(ctx context.Context, turnID uuid.UUID, succeeded bool) bool {
 	turn, changed, err := d.store.EndTurn(ctx, turnID, succeeded)
 	if err != nil {
 		slog.ErrorContext(ctx, "end turn", "turn", turnID, "error", err)
-		return
+		return false
 	}
 	if changed {
 		slog.InfoContext(ctx, "turn ended", "turn", turnID, "state", turn.State)
@@ -201,10 +267,14 @@ func (d *Driver) observe(ctx context.Context, job *batchv1.Job) {
 		// The turn no longer counts against the limit.
 		d.Wake()
 	}
+	return true
+}
+
+func (d *Driver) deleteJob(ctx context.Context, name string) {
 	background := metav1.DeletePropagationBackground
-	err = d.client.BatchV1().Jobs(namespace).Delete(ctx, job.Name, metav1.DeleteOptions{PropagationPolicy: &background})
+	err := d.client.BatchV1().Jobs(namespace).Delete(ctx, name, metav1.DeleteOptions{PropagationPolicy: &background})
 	if err != nil && !apierrors.IsNotFound(err) {
-		slog.ErrorContext(ctx, "delete job", "job", job.Name, "error", err)
+		slog.ErrorContext(ctx, "delete job", "job", name, "error", err)
 	}
 }
 

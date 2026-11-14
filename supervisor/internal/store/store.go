@@ -83,6 +83,13 @@ type Turn struct {
 	EndedAt    *time.Time `json:"ended_at,omitempty"`
 }
 
+// DispatchedTurn is a turn that was dispatched and has not ended.
+type DispatchedTurn struct {
+	ID uuid.UUID
+	// Age is how long ago the turn was dispatched.
+	Age time.Duration
+}
+
 // TakenTurn is a turn as its runner gets it.
 type TakenTurn struct {
 	Turn
@@ -296,7 +303,7 @@ func (s *Store) DispatchTurns(ctx context.Context, limit int) ([]Dispatch, error
 	for i := range dispatches {
 		dispatches[i].Token = rand.Text()
 		_, err := tx.Exec(ctx,
-			`update turns set state = $2, token_hash = $3 where id = $1`,
+			`update turns set state = $2, token_hash = $3, dispatched_at = now() where id = $1`,
 			dispatches[i].TurnID, TurnDispatching, hashToken(dispatches[i].Token),
 		)
 		if err != nil {
@@ -304,6 +311,25 @@ func (s *Store) DispatchTurns(ctx context.Context, limit int) ([]Dispatch, error
 		}
 	}
 	return dispatches, tx.Commit(ctx)
+}
+
+// DispatchedTurns returns the turns that were dispatched and have not ended.
+func (s *Store) DispatchedTurns(ctx context.Context) ([]DispatchedTurn, error) {
+	rows, err := s.pool.Query(ctx,
+		`select id, extract(epoch from now() - coalesce(dispatched_at, created_at))::float8
+		 from turns where state in ($1, $2)`,
+		TurnDispatching, TurnRunning,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (DispatchedTurn, error) {
+		var turn DispatchedTurn
+		var seconds float64
+		err := row.Scan(&turn.ID, &seconds)
+		turn.Age = time.Duration(seconds * float64(time.Second))
+		return turn, err
+	})
 }
 
 // TakeTurn gives the turn that the token opens to its runner. A turn is given
