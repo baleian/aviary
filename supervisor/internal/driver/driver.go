@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -88,6 +89,8 @@ type Driver struct {
 	store   *store.Store
 	events  *events.Streams
 	wake    chan struct{}
+	// moved is set when a turn left the queue without being dispatched.
+	moved atomic.Bool
 }
 
 // New returns a driver for the cluster that the Supervisor runs in.
@@ -161,6 +164,13 @@ func (d *Driver) Wake() {
 	}
 }
 
+// QueueMoved tells the driver that a turn left the queue without running,
+// so that it tells the turns behind it their new positions.
+func (d *Driver) QueueMoved() {
+	d.moved.Store(true)
+	d.Wake()
+}
+
 // dispatch runs the queued turns that fit under the limit, oldest first.
 func (d *Driver) dispatch(ctx context.Context) {
 	dispatches, err := d.store.DispatchTurns(ctx, d.config.MaxConcurrentTurns)
@@ -182,7 +192,7 @@ func (d *Driver) dispatch(ctx context.Context) {
 			slog.ErrorContext(ctx, "launch turn", "turn", dispatch.TurnID, "error", err)
 		}
 	}
-	if len(dispatches) > 0 {
+	if d.moved.Swap(false) || len(dispatches) > 0 {
 		d.announcePositions(ctx)
 	}
 }

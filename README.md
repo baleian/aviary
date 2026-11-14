@@ -123,6 +123,7 @@ still knows what was said and finds the file.
 | `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"harness": "..."}`, one of the configured harnesses. |
 | `POST /v1/agents/{id}/sessions` | Creates a session. |
 | `POST /v1/sessions/{id}/messages` | Sends a message. Body: `{"text": "..."}`. Answers 202 with the turn, or 409 if a turn of the session has not ended. |
+| `POST /v1/turns/{id}/cancel` | Cancels a turn that waits to run. Answers with the turn, or 409 if the turn runs or has ended. |
 | `GET /v1/turns/{id}/events` | The events of the turn, as server-sent events. A client that reconnects sends `Last-Event-ID` and gets the events after it. |
 | `GET /v1/projects/{id}`, `/v1/agents/{id}`, `/v1/sessions/{id}`, `/v1/turns/{id}` | Reads what was created. |
 
@@ -138,6 +139,7 @@ The events of a turn:
 | `plan.update` | `entries`: the agent's plan, each entry with `content`, `priority` and `status`. |
 | `turn.completed` | `stop_reason`: why the harness ended the turn. `usage`: the token usage that the harness reported, if it did. The last event of the turn. |
 | `turn.failed` | The turn did not complete. The last event of the turn. |
+| `turn.cancelled` | The turn was cancelled. The last event of the turn. |
 
 The fields of the events that come from the agent are defined in
 [`proto/aviary/runner/v1/runner.proto`](proto/aviary/runner/v1/runner.proto).

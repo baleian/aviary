@@ -34,6 +34,8 @@ func (e *apiError) Error() string { return e.Message }
 var (
 	errNotFound    = &apiError{http.StatusNotFound, "not_found", "no such resource"}
 	errSessionBusy = &apiError{http.StatusConflict, "session_busy", "the session has a turn that has not finished"}
+	errTurnRunning = &apiError{http.StatusConflict, "turn_running", "the turn is running"}
+	errTurnEnded   = &apiError{http.StatusConflict, "turn_ended", "the turn has ended"}
 	errInternal    = &apiError{http.StatusInternalServerError, "internal", "internal error"}
 )
 
@@ -51,6 +53,7 @@ func New(st *store.Store, ev *events.Streams, dr *driver.Driver, closing <-chan 
 	mux.Handle("GET /v1/sessions/{sid}", handler(a.getSession))
 	mux.Handle("POST /v1/sessions/{sid}/messages", handler(a.createMessage))
 	mux.Handle("GET /v1/turns/{tid}", handler(a.getTurn))
+	mux.Handle("POST /v1/turns/{tid}/cancel", handler(a.cancelTurn))
 	mux.Handle("GET /v1/turns/{tid}/events", handler(a.streamEvents))
 	return mux
 }
@@ -185,6 +188,32 @@ func (a *api) getTurn(w http.ResponseWriter, r *http.Request) error {
 	turn, err := a.store.Turn(r.Context(), id)
 	if err != nil {
 		return err
+	}
+	respond(w, http.StatusOK, turn)
+	return nil
+}
+
+// cancelTurn cancels a turn that waits to run. Cancelling a turn that was
+// cancelled before changes nothing and succeeds.
+func (a *api) cancelTurn(w http.ResponseWriter, r *http.Request) error {
+	id, err := pathID(r, "tid")
+	if err != nil {
+		return err
+	}
+	turn, cancelled, err := a.store.CancelQueuedTurn(r.Context(), id)
+	switch {
+	case err != nil:
+		return err
+	case cancelled:
+		if err := a.events.AppendLast(r.Context(), turn); err != nil {
+			slog.ErrorContext(r.Context(), "publish turn event", "turn", turn.ID, "event", events.TurnCancelled, "error", err)
+		}
+		a.driver.QueueMoved()
+	case turn.State == store.TurnCancelled:
+	case turn.EndedAt != nil:
+		return errTurnEnded
+	default:
+		return errTurnRunning
 	}
 	respond(w, http.StatusOK, turn)
 	return nil

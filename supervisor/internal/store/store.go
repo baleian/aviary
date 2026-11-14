@@ -23,13 +23,14 @@ var (
 
 // The states of a turn. A queued turn waits to run, a dispatching one waits
 // for its runner, and a running one has been taken by its runner. A turn ends
-// as completed or failed.
+// as completed, failed or cancelled.
 const (
 	TurnQueued      = "queued"
 	TurnDispatching = "dispatching"
 	TurnRunning     = "running"
 	TurnCompleted   = "completed"
 	TurnFailed      = "failed"
+	TurnCancelled   = "cancelled"
 )
 
 // uniqueViolation is the PostgreSQL error code for a broken unique constraint.
@@ -336,6 +337,21 @@ func (s *Store) DispatchTurns(ctx context.Context, limit int) ([]Dispatch, error
 		}
 	}
 	return dispatches, tx.Commit(ctx)
+}
+
+// CancelQueuedTurn ends the turn as cancelled if it still waits to run. It
+// returns the turn as it then is, and whether this call cancelled it.
+func (s *Store) CancelQueuedTurn(ctx context.Context, id uuid.UUID) (Turn, bool, error) {
+	turn := Turn{ID: id}
+	err := scanTurn(s.pool.QueryRow(ctx,
+		`update turns set state = $2, ended_at = now() where id = $1 and state = $3 returning `+turnColumns,
+		id, TurnCancelled, TurnQueued,
+	), &turn)
+	if errors.Is(err, pgx.ErrNoRows) {
+		turn, err = s.Turn(ctx, id)
+		return turn, false, err
+	}
+	return turn, err == nil, err
 }
 
 // DispatchedTurns returns the turns that were dispatched and have not ended.
