@@ -17,9 +17,12 @@ supervisor:
 llm:
   # The base URL of the endpoint, for example https://api.openai.com/v1
   url: ""
+  # The model that the harnesses ask the endpoint for.
+  model: ""
   apiKey:
     # A secret in the release namespace with the API key of the endpoint. Only
-    # the Egress Proxy reads it. It sends the key as a bearer token.
+    # the Egress Proxy reads it. A turn pod sends its turn token as the API
+    # key, and the proxy sends the key in its place, as a bearer token.
     secretName: aviary-llm
     secretKey: api-key
 
@@ -32,10 +35,6 @@ runtime:
   maxConcurrentTurns: 50
   # The image that holds the runner. Every turn pod mounts it.
   runnerImage: aviary-runner:dev
-  # A secret in the runtime namespace that tells the harnesses how to reach
-  # the model server: AVIARY_LLM_BASE_URL, AVIARY_LLM_API_KEY and
-  # AVIARY_LLM_MODEL. Every turn pod gets its values as environment variables.
-  llmSecretName: aviary-llm
   # The harnesses that agents can use, by the name that an agent is created
   # with.
   harnesses:

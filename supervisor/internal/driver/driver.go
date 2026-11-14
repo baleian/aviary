@@ -53,9 +53,10 @@ type Config struct {
 	GatewayURL string
 	// RunnerImage holds the runner, which every turn pod mounts.
 	RunnerImage string
-	// LLMSecret is the secret in the runtime namespace that tells the
-	// harnesses how to reach the model server.
-	LLMSecret string
+	// LLMBaseURL is where the harnesses reach the model endpoint, which is
+	// the Egress Proxy, and LLMModel is the model that they ask it for.
+	LLMBaseURL string
+	LLMModel   string
 	// Harnesses are the harnesses that agents can use, by name.
 	Harnesses map[string]Harness
 	// MaxConcurrentTurns is the most turns that run at once. The turns
@@ -343,10 +344,13 @@ func (d *Driver) job(dispatch store.Dispatch, harness Harness) *batchv1.Job {
 							{Name: "HOME", Value: "/home"},
 							{Name: "AVIARY_GATEWAY_URL", Value: d.config.GatewayURL},
 							{Name: "AVIARY_TURN_TOKEN", Value: dispatch.Token},
+							// The pod holds no key of the model endpoint. The
+							// harness sends the turn token as its API key, and
+							// the Egress Proxy puts the key in its place.
+							{Name: "AVIARY_LLM_BASE_URL", Value: d.config.LLMBaseURL},
+							{Name: "AVIARY_LLM_API_KEY", Value: dispatch.Token},
+							{Name: "AVIARY_LLM_MODEL", Value: d.config.LLMModel},
 						},
-						EnvFrom: []corev1.EnvFromSource{{
-							SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: d.config.LLMSecret}},
-						}},
 						SecurityContext: restricted,
 						VolumeMounts: []corev1.VolumeMount{
 							{Name: "store", MountPath: "/home", SubPath: home},

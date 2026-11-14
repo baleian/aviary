@@ -16,6 +16,9 @@ MOCK_LLM_IMAGE := aviary-mock-llm:dev
 KUBECTL := kubectl --context kind-$(CLUSTER)
 HELM := helm --kube-context kind-$(CLUSTER)
 
+# The value of a variable in .env, or nothing if there is no .env.
+dotenv = $$(test ! -f .env || sed --quiet 's/^$(1)=//p' .env)
+
 .PHONY: proto cluster-up cluster-down images deploy e2e
 
 # Writes the Go code for proto/ to supervisor/internal/gen. Run it after
@@ -68,9 +71,9 @@ images:
 # A pod can only read secrets in its own namespace, so the secret is copied to
 # the Supervisor's. Valkey has no such secret, so its URL is put together
 # from its password. The image ID makes the pod restart when the image changes.
-# The turn pods read the model server's address and key from the aviary-llm
-# secret, which is made from .env if there is one. The e2e does not need it:
-# it brings a model server of its own.
+# The model endpoint is taken from .env if there is one: its address and the
+# model's name become chart values, and its key a secret that only the Egress
+# Proxy reads. The e2e does not need it: it brings a model server of its own.
 deploy:
 	$(KUBECTL) create namespace aviary-system --dry-run=client --output yaml | $(KUBECTL) apply -f -
 	$(KUBECTL) get secret postgres-app --namespace aviary-data --output json | \
@@ -79,13 +82,16 @@ deploy:
 	$(KUBECTL) get secret valkey-users --namespace aviary-data --output json | \
 		jq '{apiVersion, kind, type, metadata: {name: "aviary-valkey"}, stringData: {uri: ("valkey://default:" + (.data.default | @base64d) + "@valkey.aviary-data:6379")}}' | \
 		$(KUBECTL) apply --namespace aviary-system -f -
+	test ! -f .env || sed --quiet 's/^AVIARY_LLM_API_KEY=//p' .env | tr --delete '\n' | \
+		$(KUBECTL) create secret generic aviary-llm --namespace aviary-system --from-file=api-key=/dev/stdin \
+			--dry-run=client --output yaml | $(KUBECTL) apply -f -
 	$(HELM) upgrade --install aviary deploy/charts/aviary \
 		--namespace aviary-system \
 		--set-string 'supervisor.podAnnotations.aviary\.io/image-id='$$(docker image inspect --format '{{.Id}}' $(SUPERVISOR_IMAGE)) \
+		--set-string llm.url="$(call dotenv,AVIARY_LLM_BASE_URL)" \
+		--set-string llm.model="$(call dotenv,AVIARY_LLM_MODEL)" \
 		--wait
-	@test -f .env || echo "There is no .env, so the turn pods have no model server. It sets AVIARY_LLM_BASE_URL, AVIARY_LLM_API_KEY and AVIARY_LLM_MODEL."
-	test ! -f .env || $(KUBECTL) create secret generic aviary-llm --namespace aviary-runtime --from-env-file .env \
-		--dry-run=client --output yaml | $(KUBECTL) apply -f -
+	@test -f .env || echo "There is no .env, so the turns have no model endpoint. It sets AVIARY_LLM_BASE_URL, AVIARY_LLM_API_KEY and AVIARY_LLM_MODEL."
 
 e2e:
 	test/e2e/run.sh $(HARNESS)

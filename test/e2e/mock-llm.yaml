@@ -1,5 +1,5 @@
 # The model server that the e2e uses in place of a real one, and the secret
-# that points the turn pods to it.
+# with its API key for the Egress Proxy.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -29,7 +29,7 @@ spec:
         - name: mock-llm
           image: aviary-mock-llm:dev
           env:
-            # The same key is in the aviary-llm-mock secret below.
+            # The same key is in the secret below.
             - name: MOCK_LLM_API_KEY
               value: mock-llm-key
           ports:
@@ -62,8 +62,6 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: aviary-llm-mock
-  namespace: aviary-runtime
+  namespace: aviary-system
 stringData:
-  AVIARY_LLM_BASE_URL: http://mock-llm.aviary-e2e/v1
-  AVIARY_LLM_API_KEY: mock-llm-key
-  AVIARY_LLM_MODEL: mock
+  api-key: mock-llm-key

@@ -27,7 +27,10 @@ and the number of turns that run at once is a setting.
                     Valkey     │      └─ what the agent does up ────│   │ ACP         │
                                                                     │ harness         │
                                                                     │   /home ── session volume
-                                                                    └─────────────────┘
+                                                                    └────────┬────────┘
+                                       model requests, with the turn's token │
+              model endpoint ◀─────────────── Egress Proxy ◀─────────────────┘
+                              with the API key
 ```
 
 1. A client creates a project, an agent in it and a session of the agent,
@@ -41,14 +44,19 @@ and the number of turns that run at once is a setting.
    know which harness it is.
 4. The harness works on the message with the session's home mounted at
    `/home`. The runner reports what it does, and the client reads that as a
-   stream of events.
+   stream of events. The harness reaches the model through the **Egress
+   Proxy**. The pod holds no key of the model endpoint, only the token of
+   its turn: the proxy asks the Supervisor which turn the token belongs to,
+   puts the key in its place and records the request.
 5. When Kubernetes reports that the pod has stopped, the Supervisor ends the
    turn and deletes the Job. Only then does the session take its next
    message, so two pods never work on the same session home.
 
 The Supervisor keeps its records in PostgreSQL and the events of running
 turns in Valkey. It only needs their addresses, so both can be managed
-services.
+services. The Egress Proxy is [Envoy](https://www.envoyproxy.io), which the
+chart installs. The model endpoint is a URL and a key, so it can be the API
+of a provider, an AI gateway or a model server of your own.
 
 ## Try it locally
 
@@ -64,16 +72,17 @@ make e2e HARNESS=opencode  # or HARNESS=codex
 ```
 
 `make e2e` creates sessions through the API and checks that turns run, that
-a session continues, that sessions do not see each other, and that turns
-queue. It needs no model: it uses a mock model server that answers by a
-script. `make cluster-down` deletes the cluster.
+a session continues, that sessions do not see each other, that the agent
+does not hold the model's key, and that turns queue. It needs no model: it
+uses a mock model server that answers by a script. `make cluster-down`
+deletes the cluster.
 
 ### Sending a message yourself
 
-To have a real model answer, write the address of a model server, its key
+To have a real model answer, write the base URL of a model endpoint, its key
 and the model's name to a file named `.env` in the repository, and run
-`make deploy` again. The server must be reachable from the pods of the
-cluster, so `localhost` will not do. OpenCode needs a server with the Chat
+`make deploy` again. The endpoint must be reachable from the cluster, so
+`localhost` will not do. OpenCode needs a server with the Chat
 Completions API of OpenAI, Codex one with the Responses API.
 
 ```sh
@@ -137,9 +146,10 @@ does not install PostgreSQL or Valkey.
 | --- | --- |
 | `supervisor.database.secretName`, `.secretKey` | A secret with the PostgreSQL connection URL. |
 | `supervisor.valkey.secretName`, `.secretKey` | A secret with the Valkey connection URL. |
+| `llm.url`, `llm.model` | The base URL of the model endpoint and the model that the harnesses ask it for. |
+| `llm.apiKey.secretName`, `.secretKey` | A secret with the API key of the model endpoint. Only the Egress Proxy reads it. |
 | `runtime.maxConcurrentTurns` | The most turns that run at once. Default 50. |
 | `runtime.harnesses` | The harnesses that agents can use, each with its image. |
-| `runtime.llmSecretName` | A secret in the namespace of the turn pods with `AVIARY_LLM_BASE_URL`, `AVIARY_LLM_API_KEY` and `AVIARY_LLM_MODEL`. |
 | `runtime.store.storageClassName`, `.size` | The volume for the session homes. Its storage class must offer ReadWriteMany. |
 
 The turn pods mount the runner as an image volume, so the cluster's
@@ -164,8 +174,8 @@ To run a harness that is not in this repository, see
 ## What is missing
 
 - **Authentication.** Anyone who reaches the API can use it.
-- **Network control.** A turn pod can connect wherever the cluster lets it,
-  and the model server's key is in its environment.
+- **Network control.** A turn pod can connect wherever the cluster lets it.
+  Only its requests to the model go through the Egress Proxy.
 - **Cancelling a turn** and **reading a conversation back**. The events of a
   turn are kept for 24 hours after it ended.
 - **The reason for a failed turn.** `turn.failed` does not say why, for

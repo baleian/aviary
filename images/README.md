@@ -20,7 +20,7 @@ The container is set up like this:
 | User | UID 10000, GID 10000. Not root, no privilege escalation, all capabilities dropped. |
 | Home | `/home`, with `HOME` set to it. It is the home of the session, on a volume. It is the only part of the file system that the next turn of the session sees again. |
 | Working directory | `/home/workspace` |
-| Model server | `AVIARY_LLM_BASE_URL`, `AVIARY_LLM_API_KEY` and `AVIARY_LLM_MODEL`, from the secret named by the chart value `runtime.llmSecretName`. |
+| Model endpoint | `AVIARY_LLM_BASE_URL`, `AVIARY_LLM_API_KEY` and `AVIARY_LLM_MODEL`. The address is the Egress Proxy and the key is the token of the turn. The proxy puts the real key in its place, so the pod never holds it. |
 | Kubernetes API | No service account token is mounted. |
 | Time | The pod is stopped 30 minutes after it started. |
 
@@ -44,9 +44,11 @@ prompt returns, the turn is over and the harness is stopped.
 3. **Its state is under `/home`.** Whatever the harness must find again in
    the next turn, above all its record of the conversation, has to be written
    below `/home`. Everything else is lost with the pod.
-4. **It takes the model server from the environment.** The image configures
-   the harness so that it reads `AVIARY_LLM_BASE_URL`, `AVIARY_LLM_API_KEY`
-   and `AVIARY_LLM_MODEL`.
+4. **It takes the model endpoint from the environment.** The image
+   configures the harness so that it reads `AVIARY_LLM_BASE_URL`,
+   `AVIARY_LLM_API_KEY` and `AVIARY_LLM_MODEL`, and sends the key as a bearer
+   token (`Authorization: Bearer ...`). The Egress Proxy looks for the key
+   there.
 5. **It supports `session/resume`.** A later turn of a session continues the
    harness session that the first turn started, in a new process.
 

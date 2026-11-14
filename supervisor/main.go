@@ -32,7 +32,8 @@ const (
 	valkeyURL          = "AVIARY_VALKEY_URL"
 	gatewayURL         = "AVIARY_GATEWAY_URL"
 	runnerImage        = "AVIARY_RUNNER_IMAGE"
-	llmSecret          = "AVIARY_LLM_SECRET"
+	llmBaseURL         = "AVIARY_LLM_BASE_URL"
+	llmModel           = "AVIARY_LLM_MODEL"
 	harnesses          = "AVIARY_HARNESSES"
 	maxConcurrentTurns = "AVIARY_MAX_CONCURRENT_TURNS"
 	apiAddr            = ":8080"
@@ -165,9 +166,11 @@ func driverConfig() (driver.Config, error) {
 	if config.RunnerImage, err = env(runnerImage); err != nil {
 		return config, err
 	}
-	if config.LLMSecret, err = env(llmSecret); err != nil {
+	if config.LLMBaseURL, err = env(llmBaseURL); err != nil {
 		return config, err
 	}
+	// An installation without a model endpoint names no model.
+	config.LLMModel = os.Getenv(llmModel)
 	encoded, err := env(harnesses)
 	if err != nil {
 		return config, err

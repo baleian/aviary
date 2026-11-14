@@ -117,15 +117,25 @@ wait_for() {
 cleaned_up() { [ -z "$(in_cluster "$1")" ]; }
 running() { [ "$(field "/v1/turns/$1" state)" = running ]; }
 
-# For the e2e the turn pods use mock-llm, and one turn runs at a time, which
-# the check of the queue needs.
+# proxied <turn> tells whether the Egress Proxy recorded a model request of
+# the turn that the model endpoint answered.
+proxied() {
+  local log
+  log=$($kubectl --namespace aviary-system logs deployment/aviary-egress-proxy --since 10m)
+  awk -v turn="\"turn\":\"$1\"" 'index($0, turn) && index($0, "\"status\":200") { found = 1 }
+       END { exit !found }' <<< "$log"
+}
+
+# For the e2e the model endpoint is mock-llm, and one turn runs at a time,
+# which the check of the queue needs.
 mkdir -p "$out"
 $kubectl apply --filename test/e2e/mock-llm.yaml > /dev/null
 $kubectl --namespace aviary-e2e rollout status deployment/mock-llm --timeout 120s > /dev/null ||
   fail "mock-llm did not start; run make images"
 $helm get values aviary --output yaml > "$out/values.yaml" || fail "Aviary is not installed; run make deploy"
 changed=yes
-install --set runtime.llmSecretName=aviary-llm-mock --set runtime.maxConcurrentTurns=1
+install --set llm.url=http://mock-llm.aviary-e2e/v1 --set llm.model=mock \
+  --set llm.apiKey.secretName=aviary-llm-mock --set runtime.maxConcurrentTurns=1
 connect
 
 file=note-$(new_id | cut --characters 1-8).txt
@@ -162,6 +172,20 @@ run_turn "$other" other-turn-2 "run ls -a"
 if grep --quiet --fixed-strings "$file" "$out/other-turn-2.jsonl"; then
   fail "the other session saw the file, see $out/other-turn-2.jsonl"
 fi
+
+# The agent does not hold the key of the model endpoint. Its pod has the
+# Egress Proxy as the endpoint and the token of its turn as the key, and the
+# proxy records which turn a model request came from. mock-llm answers only
+# requests with its key, so every turn that completes got it from the proxy.
+llm_key=$($kubectl --namespace aviary-system get secret aviary-llm-mock \
+  --output jsonpath='{.data.api-key}' | base64 --decode)
+run_turn "$other" other-turn-3 "run tr '\\0' '\\n' < /proc/1/environ"
+grep --quiet --fixed-strings AVIARY_LLM_BASE_URL=http://aviary-egress-proxy "$out/other-turn-3.jsonl" ||
+  fail "the pod of turn $turn does not have the Egress Proxy as its model endpoint, see $out/other-turn-3.jsonl"
+if grep --quiet --fixed-strings "$llm_key" "$out/other-turn-3.jsonl"; then
+  fail "the pod of turn $turn holds the key of the model endpoint, see $out/other-turn-3.jsonl"
+fi
+wait_for 30 proxied "$turn" || fail "the Egress Proxy recorded no model request of turn $turn"
 
 # The records outlast the Supervisor.
 $kubectl --namespace aviary-system rollout restart deployment/aviary-supervisor > /dev/null
@@ -203,4 +227,5 @@ run_turn "$killed" queue-turn-4 "say done"
 [[ $(answer queue-turn-4) == *done* ]] ||
   fail "the session of the failed turn did not answer, see $out/queue-turn-4.jsonl"
 
-echo "PASS: $harness ran turns through the API, continued a session, kept sessions apart and queued turns"
+echo "PASS: $harness ran turns through the API, continued a session, kept sessions apart," \
+  "reached the model without holding its key and queued turns"

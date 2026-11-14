@@ -2,6 +2,9 @@
 {{- if and .Values.llm.url (or (not (has $url.scheme (list "http" "https"))) (not $url.hostname)) }}
 {{- fail "llm.url must be a URL that begins with http:// or https://" }}
 {{- end }}
+{{- if and .Values.llm.url (not .Values.llm.model) }}
+{{- fail "llm.model must name the model of the endpoint at llm.url" }}
+{{- end }}
 {{- $tls := eq $url.scheme "https" }}
 {{- $port := ternary 443 80 $tls }}
 {{- with regexFind ":[0-9]+$" $url.host }}

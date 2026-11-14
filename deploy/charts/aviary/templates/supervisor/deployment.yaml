@@ -45,8 +45,12 @@ spec:
               value: http://aviary-supervisor.{{ .Release.Namespace }}:9090
             - name: AVIARY_RUNNER_IMAGE
               value: {{ .Values.runtime.runnerImage }}
-            - name: AVIARY_LLM_SECRET
-              value: {{ .Values.runtime.llmSecretName }}
+            # Where the harnesses in the turn pods reach the model endpoint: the
+            # Egress Proxy, which serves it under the path of llm.url.
+            - name: AVIARY_LLM_BASE_URL
+              value: http://aviary-egress-proxy.{{ .Release.Namespace }}:8080{{ (urlParse .Values.llm.url).path | trimSuffix "/" }}
+            - name: AVIARY_LLM_MODEL
+              value: {{ .Values.llm.model | quote }}
             - name: AVIARY_HARNESSES
               value: {{ .Values.runtime.harnesses | toJson | quote }}
             - name: AVIARY_MAX_CONCURRENT_TURNS
