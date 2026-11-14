@@ -16,6 +16,7 @@ import (
 
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 	"k8s.io/klog/v2"
 
 	"aviary/supervisor/internal/api"
@@ -47,6 +48,10 @@ const (
 	handover = 5 * time.Second
 	// shutdownTimeout is how long the requests to the API get to finish.
 	shutdownTimeout = 10 * time.Second
+	// keepaliveInterval is how often the Supervisor asks the other end of an
+	// idle connection whether it is still there, and how long it waits for
+	// the answer. The runners and the Egress Proxy ask the same of it.
+	keepaliveInterval = 30 * time.Second
 )
 
 func main() {
@@ -130,11 +135,20 @@ func serve(ctx context.Context, database string) error {
 		Handler:           api.New(st, ev, dr, ctx.Done()),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	gatewayServer := grpc.NewServer()
+	// A machine that is gone closes no connection. Both ends of a connection
+	// find that out by asking, and close it.
+	alive := []grpc.ServerOption{
+		grpc.KeepaliveParams(keepalive.ServerParameters{Time: keepaliveInterval, Timeout: keepaliveInterval}),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             keepaliveInterval / 2,
+			PermitWithoutStream: true,
+		}),
+	}
+	gatewayServer := grpc.NewServer(alive...)
 	runnerv1.RegisterRunnerServiceServer(gatewayServer, runners)
 	// The Egress Proxy asks on a port of its own, so that the turn pods can
 	// be kept from it.
-	authzServer := grpc.NewServer()
+	authzServer := grpc.NewServer(alive...)
 	authv3.RegisterAuthorizationServer(authzServer, authz.New(st))
 	failed := make(chan error, 3)
 	go func() { failed <- apiServer.Serve(apiListener) }()

@@ -3,6 +3,7 @@ use std::error::Error;
 use std::fs;
 use std::path::Path;
 use std::str::FromStr;
+use std::time::Duration;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::ConnectionTo;
@@ -41,6 +42,12 @@ const TURN_TOKEN: &str = "AVIARY_TURN_TOKEN";
 /// back.
 const REPORTS_AHEAD: usize = 64;
 
+/// How often the runner asks the Supervisor whether it is still there, and
+/// how long it waits for the answer. A Supervisor whose machine is gone
+/// closes no connection, so without the question the turn would run on with
+/// nobody to report to.
+const KEEPALIVE: Duration = Duration::from_secs(30);
+
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -68,6 +75,9 @@ async fn run_turn() -> Result<(), Box<dyn Error>> {
     let cwd = env::current_dir()?;
 
     let channel = Endpoint::from_shared(variable(GATEWAY_URL)?)?
+        .http2_keep_alive_interval(KEEPALIVE)
+        .keep_alive_timeout(KEEPALIVE)
+        .keep_alive_while_idle(true)
         .connect()
         .await?;
     let (reports, outgoing) = mpsc::channel(REPORTS_AHEAD);

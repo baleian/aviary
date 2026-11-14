@@ -198,7 +198,10 @@ data:
             envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
               "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
               explicit_http_config:
-                http2_protocol_options: {}
+                http2_protocol_options:
+                  # A Supervisor whose machine is gone closes no connection.
+                  # Envoy finds that out by asking, and connects to another.
+                  connection_keepalive: {interval: 30s, timeout: 10s}
           load_assignment:
             cluster_name: supervisor
             endpoints:
