@@ -42,7 +42,11 @@ const (
 	apiAddr            = ":8080"
 	gatewayAddr        = ":9090"
 	authzAddr          = ":9091"
-	shutdownTimeout    = 10 * time.Second
+	// handover is how long a Supervisor that was told to stop goes on
+	// serving. For that long the cluster may still send it new requests.
+	handover = 5 * time.Second
+	// shutdownTimeout is how long the requests to the API get to finish.
+	shutdownTimeout = 10 * time.Second
 )
 
 func main() {
@@ -137,7 +141,11 @@ func serve(ctx context.Context, database string) error {
 	go func() { failed <- gatewayServer.Serve(gatewayListener) }()
 	go func() { failed <- authzServer.Serve(authzListener) }()
 	go dr.Run(ctx)
-	go runners.Run(ctx)
+	// The runners that are connected are served until their turns have
+	// ended, which is after the Supervisor was told to stop.
+	serving, served := context.WithCancel(context.Background())
+	defer served()
+	go runners.Run(serving)
 	slog.Info("listening", "api", apiAddr, "gateway", gatewayAddr, "authz", authzAddr)
 
 	select {
@@ -145,15 +153,15 @@ func serve(ctx context.Context, database string) error {
 		return err
 	case <-ctx.Done():
 	}
-	draining, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	// A Supervisor that is told to stop takes on no more turns, and the other
+	// Supervisors go on. It finishes the turns whose runners are connected
+	// to it: a turn whose runner loses its Supervisor fails. Kubernetes gives
+	// the pod longer to stop than a turn may run.
+	slog.Info("stopping when the connected runners have finished")
+	time.Sleep(handover)
+	stopping, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	// A turn can run for longer than the Supervisor may take to stop, so the
-	// runners that are still connected when the time is up are cut off.
-	go func() {
-		<-draining.Done()
-		gatewayServer.Stop()
-	}()
-	err = apiServer.Shutdown(draining)
+	err = apiServer.Shutdown(stopping)
 	gatewayServer.GracefulStop()
 	// The turns that still run call the model until their runners are gone.
 	authzServer.GracefulStop()

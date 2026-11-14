@@ -22,6 +22,10 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: aviary-supervisor
+      # A Supervisor that is told to stop first finishes the turns whose
+      # runners are connected to it, so it is given a little longer to stop
+      # than a turn may run.
+      terminationGracePeriodSeconds: {{ add .Values.runtime.maxTurnSeconds 60 }}
       securityContext:
         runAsNonRoot: true
         seccompProfile:
