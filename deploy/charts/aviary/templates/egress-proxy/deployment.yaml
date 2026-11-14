@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aviary-egress-proxy
+  labels:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: egress-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aviary
+      app.kubernetes.io/component: egress-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aviary
+        app.kubernetes.io/component: egress-proxy
+      annotations:
+        # Envoy reads its configuration when it starts.
+        checksum/config: {{ include (print $.Template.BasePath "/egress-proxy/configmap.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: envoy
+          image: {{ .Values.egressProxy.image }}
+          args: ["--config-path", "/etc/envoy/envoy.yaml", "--disable-hot-restart"]
+          ports:
+            - name: llm
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: llm
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: llm
+          volumeMounts:
+            - name: config
+              mountPath: /etc/envoy
+              readOnly: true
+            {{- if .Values.llm.url }}
+            - name: llm-api-key
+              mountPath: /etc/aviary/llm
+              readOnly: true
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: config
+          configMap:
+            name: aviary-egress-proxy
+        {{- if .Values.llm.url }}
+        - name: llm-api-key
+          secret:
+            secretName: {{ .Values.llm.apiKey.secretName }}
+            items:
+              - key: {{ .Values.llm.apiKey.secretKey }}
+                path: api-key
+        {{- end }}

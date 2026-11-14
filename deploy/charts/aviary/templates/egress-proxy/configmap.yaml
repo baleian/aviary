@@ -1,0 +1,179 @@
+{{- $url := urlParse .Values.llm.url }}
+{{- if and .Values.llm.url (or (not (has $url.scheme (list "http" "https"))) (not $url.hostname)) }}
+{{- fail "llm.url must be a URL that begins with http:// or https://" }}
+{{- end }}
+{{- $tls := eq $url.scheme "https" }}
+{{- $port := ternary 443 80 $tls }}
+{{- with regexFind ":[0-9]+$" $url.host }}
+{{- $port = trimPrefix ":" . | int }}
+{{- end }}
+{{- $path := trimSuffix "/" $url.path }}
+# The configuration of the Egress Proxy, which is Envoy. A turn pod reaches
+# the model endpoint through it. The pod sends its turn token in place of the
+# API key. Envoy asks the Supervisor which turn the token belongs to, puts
+# the API key in the token's place and passes the request on. It reads no
+# request or response body.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aviary-egress-proxy
+  labels:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: egress-proxy
+data:
+  envoy.yaml: |
+    node:
+      id: aviary-egress-proxy
+      cluster: aviary-egress-proxy
+    static_resources:
+      listeners:
+        - name: llm
+          address:
+            socket_address: {address: 0.0.0.0, port_value: 8080}
+          filter_chains:
+            - filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: llm
+                    # A model can be silent for minutes before it answers.
+                    # No turn runs for an hour, so a stream that is silent
+                    # for that long belongs to a pod that is gone.
+                    stream_idle_timeout: 3600s
+                    access_log:
+                      - name: envoy.access_loggers.stdout
+                        filter:
+                          not_health_check_filter: {}
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                          log_format:
+                            json_format:
+                              time: "%START_TIME%"
+                              route: llm
+                              turn: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:turn)%"
+                              method: "%REQ(:METHOD)%"
+                              host: "%REQ(:AUTHORITY)%"
+                              path: "%PATH(NQ)%"
+                              status: "%RESPONSE_CODE%"
+                              details: "%RESPONSE_CODE_DETAILS%"
+                              request_bytes: "%BYTES_RECEIVED%"
+                              response_bytes: "%BYTES_SENT%"
+                              duration_ms: "%DURATION%"
+                    route_config:
+                      virtual_hosts:
+                        - name: llm
+                          domains: ["*"]
+                          routes:
+                            {{- if not .Values.llm.url }}
+                            - match: {prefix: /}
+                              direct_response:
+                                status: 503
+                                body:
+                                  inline_string: "no model endpoint is set: the chart value llm.url is empty\n"
+                            {{- else }}
+                            - match:
+                                {{- if $path }}
+                                path_separated_prefix: {{ $path | quote }}
+                                {{- else }}
+                                prefix: /
+                                {{- end }}
+                              route:
+                                cluster: llm
+                                # The turn's deadline ends a request, not Envoy.
+                                timeout: 0s
+                                host_rewrite_literal: {{ $url.host | quote }}
+                            {{- end }}
+                    http_filters:
+                      # Answers the kubelet's probe.
+                      - name: envoy.filters.http.health_check
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.health_check.v3.HealthCheck
+                          pass_through_mode: false
+                          headers:
+                            - name: ":path"
+                              string_match: {exact: /healthz}
+                      # Asks the Supervisor which turn the request comes from,
+                      # and refuses the request if the Supervisor names none.
+                      - name: envoy.filters.http.ext_authz
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+                          transport_api_version: V3
+                          grpc_service:
+                            envoy_grpc: {cluster_name: supervisor}
+                            timeout: 5s
+                      {{- if .Values.llm.url }}
+                      # Puts the API key where the pod sent its turn token.
+                      - name: envoy.filters.http.credential_injector
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.credential_injector.v3.CredentialInjector
+                          overwrite: true
+                          credential:
+                            name: envoy.http.injected_credentials.generic
+                            typed_config:
+                              "@type": type.googleapis.com/envoy.extensions.http.injected_credentials.generic.v3.Generic
+                              header: Authorization
+                              header_value_prefix: "Bearer "
+                              credential:
+                                name: llm-api-key
+                                sds_config:
+                                  path_config_source:
+                                    path: /etc/envoy/llm-api-key.yaml
+                                    watched_directory: {path: /etc/aviary/llm}
+                      {{- end }}
+                      - name: envoy.filters.http.router
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+      clusters:
+        - name: supervisor
+          type: STRICT_DNS
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              explicit_http_config:
+                http2_protocol_options: {}
+          load_assignment:
+            cluster_name: supervisor
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address: {address: aviary-supervisor.{{ .Release.Namespace }}, port_value: 9091}
+        {{- if .Values.llm.url }}
+        - name: llm
+          type: LOGICAL_DNS
+          dns_lookup_family: V4_PREFERRED
+          load_assignment:
+            cluster_name: llm
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address: {address: {{ $url.hostname | quote }}, port_value: {{ $port }}}
+          {{- if $tls }}
+          # HTTP/2 if the endpoint offers it, so that many turns share a few
+          # connections.
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              auto_config: {}
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+              sni: {{ $url.hostname | quote }}
+              common_tls_context:
+                validation_context:
+                  trusted_ca: {filename: /etc/ssl/certs/ca-certificates.crt}
+                  match_typed_subject_alt_names:
+                    - san_type: DNS
+                      matcher: {exact: {{ $url.hostname | quote }}}
+          {{- end }}
+        {{- end }}
+  {{- if .Values.llm.url }}
+  llm-api-key.yaml: |
+    resources:
+      - "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret
+        name: llm-api-key
+        generic_secret:
+          secret: {filename: /etc/aviary/llm/api-key}
+  {{- end }}

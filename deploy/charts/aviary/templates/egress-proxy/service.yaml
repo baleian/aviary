@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: aviary-egress-proxy
+  labels:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: egress-proxy
+spec:
+  selector:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: egress-proxy
+  ports:
+    # The harnesses in the turn pods send their model requests to this port.
+    - name: llm
+      port: 8080
+      targetPort: llm
