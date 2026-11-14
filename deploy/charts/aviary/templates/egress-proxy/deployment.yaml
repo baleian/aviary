@@ -32,6 +32,8 @@ spec:
           ports:
             - name: llm
               containerPort: 8080
+            - name: forward
+              containerPort: 3128
           readinessProbe:
             httpGet:
               path: /healthz

@@ -14,3 +14,7 @@ spec:
     - name: llm
       port: 8080
       targetPort: llm
+    # The proxy for everything else that a turn pod sends out.
+    - name: forward
+      port: 3128
+      targetPort: forward
