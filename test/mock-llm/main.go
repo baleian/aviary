@@ -10,6 +10,10 @@
 //	               one per line, or "nothing" if there are none
 //
 // A message that is not an instruction gets the reply "mock".
+//
+// A request must carry the API key that mock-llm was started with, which is
+// in the variable MOCK_LLM_API_KEY. Every answer reports the same token
+// usage, 11 tokens in and 7 out.
 package main
 
 import (
@@ -23,12 +27,23 @@ import (
 	"time"
 )
 
+// The token usage that every answer reports.
+const (
+	inputTokens  = 11
+	outputTokens = 7
+)
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	apiKey := os.Getenv("MOCK_LLM_API_KEY")
+	if apiKey == "" {
+		slog.Error("MOCK_LLM_API_KEY is not set")
+		os.Exit(1)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
-	mux.HandleFunc("POST /v1/chat/completions", chatCompletions)
-	mux.HandleFunc("POST /v1/responses", responses)
+	mux.HandleFunc("POST /v1/chat/completions", withKey(apiKey, chatCompletions))
+	mux.HandleFunc("POST /v1/responses", withKey(apiKey, responses))
 	server := &http.Server{Addr: ":8080", Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	slog.Info("listening", "addr", server.Addr)
 	if err := server.ListenAndServe(); err != nil {
@@ -174,12 +189,24 @@ func (s stream) send(event string, data any) {
 	http.NewResponseController(s.w).Flush()
 }
 
-func refuse(w http.ResponseWriter, message string) {
+func refuse(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusBadRequest)
+	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]string{"message": message, "type": "invalid_request_error"},
 	})
+}
+
+// withKey passes on the requests that carry the API key as a bearer token.
+func withKey(apiKey string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+apiKey {
+			slog.Info("refused", "path", r.URL.Path)
+			refuse(w, http.StatusUnauthorized, "the request does not carry the API key of mock-llm")
+			return
+		}
+		next(w, r)
+	}
 }
 
 // chatCompletions serves the Chat Completions API, which OpenCode uses.
@@ -196,11 +223,11 @@ func chatCompletions(w http.ResponseWriter, r *http.Request) {
 		} `json:"tools"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		refuse(w, "the request is not JSON: "+err.Error())
+		refuse(w, http.StatusBadRequest, "the request is not JSON: "+err.Error())
 		return
 	}
 	if !request.Stream {
-		refuse(w, "mock-llm only streams; set stream to true")
+		refuse(w, http.StatusBadRequest, "mock-llm only streams; set stream to true")
 		return
 	}
 	var c conversation
@@ -231,7 +258,10 @@ func chatCompletions(w http.ResponseWriter, r *http.Request) {
 			"choices": []map[string]any{{"index": 0, "delta": delta, "finish_reason": finish}},
 		}
 		if finish != nil {
-			data["usage"] = map[string]int{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+			data["usage"] = map[string]int{
+				"prompt_tokens": inputTokens, "completion_tokens": outputTokens,
+				"total_tokens": inputTokens + outputTokens,
+			}
 		}
 		out.send("", data)
 	}
@@ -267,11 +297,11 @@ func responses(w http.ResponseWriter, r *http.Request) {
 		Tools  []tool          `json:"tools"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		refuse(w, "the request is not JSON: "+err.Error())
+		refuse(w, http.StatusBadRequest, "the request is not JSON: "+err.Error())
 		return
 	}
 	if !request.Stream {
-		refuse(w, "mock-llm only streams; set stream to true")
+		refuse(w, http.StatusBadRequest, "mock-llm only streams; set stream to true")
 		return
 	}
 	// The input is a text or a list of items: messages, tool calls and their
@@ -351,9 +381,9 @@ func responses(w http.ResponseWriter, r *http.Request) {
 	response["status"] = "completed"
 	response["output"] = []any{item}
 	response["usage"] = map[string]any{
-		"input_tokens": 0, "input_tokens_details": map[string]int{"cached_tokens": 0},
-		"output_tokens": 0, "output_tokens_details": map[string]int{"reasoning_tokens": 0},
-		"total_tokens": 0,
+		"input_tokens": inputTokens, "input_tokens_details": map[string]int{"cached_tokens": 0},
+		"output_tokens": outputTokens, "output_tokens_details": map[string]int{"reasoning_tokens": 0},
+		"total_tokens": inputTokens + outputTokens,
 	}
 	send("response.completed", map[string]any{"response": response})
 }

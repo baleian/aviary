@@ -28,6 +28,10 @@ spec:
       containers:
         - name: mock-llm
           image: aviary-mock-llm:dev
+          env:
+            # The same key is in the aviary-llm-mock secret below.
+            - name: MOCK_LLM_API_KEY
+              value: mock-llm-key
           ports:
             - name: http
               containerPort: 8080
@@ -61,5 +65,5 @@ metadata:
   namespace: aviary-runtime
 stringData:
   AVIARY_LLM_BASE_URL: http://mock-llm.aviary-e2e/v1
-  AVIARY_LLM_API_KEY: mock
+  AVIARY_LLM_API_KEY: mock-llm-key
   AVIARY_LLM_MODEL: mock
