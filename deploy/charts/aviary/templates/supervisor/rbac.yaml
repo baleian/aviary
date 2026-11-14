@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aviary-supervisor
+  labels:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: supervisor
+---
+# The Supervisor runs each turn as a Job in the runtime namespace. It has no
+# access to anything else in the cluster.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aviary-supervisor
+  namespace: aviary-runtime
+  labels:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: supervisor
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "delete", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aviary-supervisor
+  namespace: aviary-runtime
+  labels:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: supervisor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aviary-supervisor
+subjects:
+  - kind: ServiceAccount
+    name: aviary-supervisor
+    namespace: {{ .Release.Namespace }}

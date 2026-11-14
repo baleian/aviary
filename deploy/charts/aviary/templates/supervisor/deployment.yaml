@@ -21,7 +21,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
-      automountServiceAccountToken: false
+      serviceAccountName: aviary-supervisor
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -40,6 +40,13 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.supervisor.valkey.secretName }}
                   key: {{ .Values.supervisor.valkey.secretKey }}
+            # Where the runners in the turn pods reach this Supervisor.
+            - name: AVIARY_GATEWAY_URL
+              value: http://aviary-supervisor.{{ .Release.Namespace }}:9090
+            - name: AVIARY_RUNNER_IMAGE
+              value: {{ .Values.runtime.runnerImage }}
+            - name: AVIARY_HARNESSES
+              value: {{ .Values.runtime.harnesses | toJson | quote }}
           ports:
             - name: http
               containerPort: 8080

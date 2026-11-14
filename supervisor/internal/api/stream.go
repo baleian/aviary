@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -15,15 +16,16 @@ import (
 // writing it is how a client that went away is noticed.
 const keepalive = 15 * time.Second
 
-// streamEvents sends the turn's events as server-sent events and keeps the
-// response open for those to come. A client that reconnects sends the ID of
+// streamEvents sends the turn's events as server-sent events, up to the one
+// that reports how the turn ended. A client that reconnects sends the ID of
 // the last event it received in Last-Event-ID and gets the ones after it.
 func (a *api) streamEvents(w http.ResponseWriter, r *http.Request) error {
 	turnID, err := pathID(r, "tid")
 	if err != nil {
 		return err
 	}
-	if _, err := a.store.Turn(r.Context(), turnID); err != nil {
+	turn, err := a.store.Turn(r.Context(), turnID)
+	if err != nil {
 		return err
 	}
 	after := r.Header.Get("Last-Event-ID")
@@ -54,7 +56,13 @@ func (a *api) streamEvents(w http.ResponseWriter, r *http.Request) error {
 		if err := response.Flush(); err != nil {
 			return nil
 		}
-		batch, err := a.events.Read(ctx, turnID, after, keepalive)
+		// A turn that has ended gets no more events, so there is nothing to
+		// wait for.
+		wait := keepalive
+		if turn.EndedAt != nil {
+			wait = time.Millisecond
+		}
+		batch, err := a.events.Read(ctx, turnID, after, wait)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -62,17 +70,38 @@ func (a *api) streamEvents(w http.ResponseWriter, r *http.Request) error {
 			slog.ErrorContext(ctx, "read turn events", "turn", turnID, "error", err)
 			return nil
 		}
-		if len(batch) == 0 {
+		for _, event := range batch {
+			if _, err := fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n\n", event.ID, event.Type, event.Data); err != nil {
+				return nil
+			}
+			if events.IsLast(event.Type) {
+				return nil
+			}
+			after = event.ID
+		}
+		if len(batch) > 0 {
+			continue
+		}
+		// The stream is silent. If the turn has ended, its last event is not
+		// in the stream: it was not written, or the events are no longer
+		// kept. The event is then made from the turn's record.
+		if turn, err = a.store.Turn(ctx, turnID); err != nil {
+			slog.ErrorContext(ctx, "read turn", "turn", turnID, "error", err)
+			return nil
+		}
+		if turn.EndedAt == nil {
 			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
 				return nil
 			}
 			continue
 		}
-		for _, event := range batch {
-			if _, err := fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n\n", event.ID, event.Type, event.Data); err != nil {
-				return nil
-			}
-			after = event.ID
+		eventType, data := events.Last(turn)
+		encoded, err := json.Marshal(data)
+		if err != nil {
+			slog.ErrorContext(ctx, "encode turn event", "turn", turnID, "error", err)
+			return nil
 		}
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, encoded)
+		return nil
 	}
 }

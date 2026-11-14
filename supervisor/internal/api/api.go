@@ -2,6 +2,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/internal/events"
 	"aviary/supervisor/internal/store"
 )
@@ -18,6 +20,7 @@ const maxBodyBytes = 1 << 20
 type api struct {
 	store   *store.Store
 	events  *events.Streams
+	driver  *driver.Driver
 	closing <-chan struct{}
 }
 
@@ -37,8 +40,8 @@ var (
 
 // New returns the handler of the API. An event stream stays open for as long
 // as its client does, so the streams end when closing is closed.
-func New(st *store.Store, ev *events.Streams, closing <-chan struct{}) http.Handler {
-	a := &api{store: st, events: ev, closing: closing}
+func New(st *store.Store, ev *events.Streams, dr *driver.Driver, closing <-chan struct{}) http.Handler {
+	a := &api{store: st, events: ev, driver: dr, closing: closing}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
 	mux.Handle("POST /v1/projects", handler(a.createProject))
@@ -95,8 +98,8 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 	if err := decode(w, r, &request); err != nil {
 		return err
 	}
-	if request.Harness == "" {
-		return invalid("harness is required")
+	if !a.driver.HasHarness(request.Harness) {
+		return invalid("harness is not one of the configured harnesses")
 	}
 	agent, err := a.store.CreateAgent(r.Context(), projectID, request.Harness)
 	if err != nil {
@@ -169,6 +172,10 @@ func (a *api) createMessage(w http.ResponseWriter, r *http.Request) error {
 	// failing to publish it does not fail the request.
 	if err := a.events.Append(r.Context(), turn.ID, events.TurnQueued, struct{}{}); err != nil {
 		slog.ErrorContext(r.Context(), "publish turn event", "turn", turn.ID, "event", events.TurnQueued, "error", err)
+	}
+	// The turn is launched even if the client does not wait for the reply.
+	if err := a.driver.Launch(context.WithoutCancel(r.Context()), turn.ID); err != nil {
+		slog.ErrorContext(r.Context(), "launch turn", "turn", turn.ID, "error", err)
 	}
 	respond(w, http.StatusAccepted, turn)
 	return nil

@@ -13,6 +13,15 @@ supervisor:
     secretKey: uri
 
 runtime:
+  # The image that holds the runner. Every turn pod mounts it.
+  runnerImage: aviary-runner:dev
+  # The harnesses that agents can use, by the name that an agent is created
+  # with.
+  harnesses:
+    opencode:
+      image: aviary-harness-opencode:dev
+    codex:
+      image: aviary-harness-codex:dev
   # The volume that holds the sessions of the default tenant. Turn pods on
   # any node mount it, so the storage class must offer ReadWriteMany.
   store:

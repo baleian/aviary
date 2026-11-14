@@ -14,6 +14,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/valkey-io/valkey-go"
+
+	"aviary/supervisor/internal/store"
 )
 
 // The events that the Supervisor writes itself. The others come from the
@@ -23,7 +25,14 @@ const (
 	TurnQueued = "turn.queued"
 	// TurnStarted reports that the harness has been given the message.
 	TurnStarted = "turn.started"
+	// TurnCompleted and TurnFailed report how the turn ended. One of them is
+	// the last event of every turn.
+	TurnCompleted = "turn.completed"
+	TurnFailed    = "turn.failed"
 )
+
+// keptFor is how long the events of a turn are kept after its last event.
+const keptFor = 24 * time.Hour
 
 // Start is the position before a turn's first event.
 const Start = "0-0"
@@ -81,6 +90,31 @@ func (s *Streams) Append(ctx context.Context, turnID uuid.UUID, eventType string
 	}
 	return s.client.Do(ctx, s.client.B().Xadd().Key(key(turnID)).Id("*").
 		FieldValue().FieldValue("type", eventType).FieldValue("data", string(encoded)).Build()).Error()
+}
+
+// Last returns the last event of a turn that has ended.
+func Last(turn store.Turn) (eventType string, data any) {
+	if turn.State != store.TurnCompleted {
+		return TurnFailed, struct{}{}
+	}
+	return TurnCompleted, struct {
+		StopReason *string `json:"stop_reason"`
+	}{turn.StopReason}
+}
+
+// IsLast reports whether an event of this type is the last of its turn.
+func IsLast(eventType string) bool {
+	return eventType == TurnCompleted || eventType == TurnFailed
+}
+
+// AppendLast adds the last event of the turn to its stream and sets the
+// stream to be deleted once it has been kept long enough.
+func (s *Streams) AppendLast(ctx context.Context, turn store.Turn) error {
+	eventType, data := Last(turn)
+	if err := s.Append(ctx, turn.ID, eventType, data); err != nil {
+		return err
+	}
+	return s.client.Do(ctx, s.client.B().Expire().Key(key(turn.ID)).Seconds(int64(keptFor.Seconds())).Build()).Error()
 }
 
 // Read returns the turn's events that follow the position after, oldest

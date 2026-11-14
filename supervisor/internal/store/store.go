@@ -3,6 +3,7 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"embed"
 	"errors"
@@ -26,11 +27,14 @@ var (
 )
 
 // The states of a turn. A queued turn waits to run, a dispatching one waits
-// for its runner, and a running one has been taken by its runner.
+// for its runner, and a running one has been taken by its runner. A turn ends
+// as completed or failed.
 const (
 	TurnQueued      = "queued"
 	TurnDispatching = "dispatching"
 	TurnRunning     = "running"
+	TurnCompleted   = "completed"
+	TurnFailed      = "failed"
 )
 
 // uniqueViolation is the PostgreSQL error code for a broken unique constraint.
@@ -70,6 +74,20 @@ type Turn struct {
 	State     string    `json:"state"`
 	Text      string    `json:"text"`
 	CreatedAt time.Time `json:"created_at"`
+	// StopReason is why the harness ended the turn, once it has.
+	StopReason *string    `json:"stop_reason,omitempty"`
+	EndedAt    *time.Time `json:"ended_at,omitempty"`
+}
+
+// Dispatch is what it takes to run a turn.
+type Dispatch struct {
+	TurnID    uuid.UUID
+	SessionID uuid.UUID
+	AgentID   uuid.UUID
+	ProjectID uuid.UUID
+	Harness   string
+	// Token is what the runner takes the turn with. Only its hash is stored.
+	Token string
 }
 
 // Open connects to the database at url and brings its schema up to date.
@@ -202,12 +220,30 @@ func (s *Store) CreateTurn(ctx context.Context, sessionID uuid.UUID, text string
 func (s *Store) Turn(ctx context.Context, id uuid.UUID) (Turn, error) {
 	turn := Turn{ID: id}
 	err := s.pool.QueryRow(ctx,
-		`select session_id, seq, state, text, created_at from turns where id = $1`, id,
-	).Scan(&turn.SessionID, &turn.Seq, &turn.State, &turn.Text, &turn.CreatedAt)
+		`select session_id, seq, state, text, created_at, stop_reason, ended_at from turns where id = $1`, id,
+	).Scan(&turn.SessionID, &turn.Seq, &turn.State, &turn.Text, &turn.CreatedAt, &turn.StopReason, &turn.EndedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Turn{}, ErrNotFound
 	}
 	return turn, err
+}
+
+// DispatchTurn makes a queued turn wait for its runner and returns what it
+// takes to run it. It returns ErrNotFound if no queued turn has the ID.
+func (s *Store) DispatchTurn(ctx context.Context, turnID uuid.UUID) (Dispatch, error) {
+	dispatch := Dispatch{TurnID: turnID, Token: rand.Text()}
+	err := s.pool.QueryRow(ctx,
+		`update turns set state = $2, token_hash = $3
+		 from sessions, agents
+		 where turns.id = $1 and turns.state = $4
+		   and sessions.id = turns.session_id and agents.id = sessions.agent_id
+		 returning sessions.id, agents.id, agents.project_id, agents.harness`,
+		turnID, TurnDispatching, hashToken(dispatch.Token), TurnQueued,
+	).Scan(&dispatch.SessionID, &dispatch.AgentID, &dispatch.ProjectID, &dispatch.Harness)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Dispatch{}, ErrNotFound
+	}
+	return dispatch, err
 }
 
 // TakeTurn gives the turn that the token opens to its runner. A turn is given
@@ -242,6 +278,25 @@ func (s *Store) TakeTurn(ctx context.Context, token string) (Turn, error) {
 func (s *Store) SetStopReason(ctx context.Context, turnID uuid.UUID, stopReason string) error {
 	_, err := s.pool.Exec(ctx, `update turns set stop_reason = $2 where id = $1`, turnID, stopReason)
 	return err
+}
+
+// EndTurn records that the pod of the turn has ended. The turn is completed
+// if the pod succeeded and the runner reported why the harness stopped, and
+// failed otherwise. From then on the session accepts its next message. The
+// second result is false if the turn had ended before, or does not exist.
+func (s *Store) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool) (Turn, bool, error) {
+	turn := Turn{ID: turnID}
+	err := s.pool.QueryRow(ctx,
+		`update turns set ended_at = now(),
+		        state = case when $2 and stop_reason is not null then $3 else $4 end
+		 where id = $1 and ended_at is null
+		 returning session_id, seq, state, text, created_at, stop_reason, ended_at`,
+		turnID, succeeded, TurnCompleted, TurnFailed,
+	).Scan(&turn.SessionID, &turn.Seq, &turn.State, &turn.Text, &turn.CreatedAt, &turn.StopReason, &turn.EndedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Turn{}, false, nil
+	}
+	return turn, err == nil, err
 }
 
 // hashToken returns what is stored of a turn token. The token is random, so
