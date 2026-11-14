@@ -56,25 +56,32 @@ content=$(new_id | cut --characters 1-8)
 project=$(create /v1/projects '{"name": "e2e"}')
 agent=$(create "/v1/projects/$project/agents" "$(jq --null-input --arg harness "$harness" '{harness: $harness}')")
 
-# A session keeps its files from one turn to the next. Each turn runs in a
-# new pod.
+recall="Read the file you created earlier and reply with its content."
+
+# A session keeps its conversation and its files from one turn to the next.
+# Each turn runs in a new pod. The second message does not name the file, so
+# the agent can only find it by what was said in the first turn.
 session=$(create "/v1/agents/$agent/sessions")
 run_turn "$session" session-turn-1 \
   "Create a file named $file in the current directory with this content: $content"
-run_turn "$session" session-turn-2 \
-  "Read the file $file in the current directory and reply with its content."
+run_turn "$session" session-turn-2 "$recall"
 [[ $(answer session-turn-2) == *"$content"* ]] ||
   fail "turn 2 did not answer with the file content, see $out/session-turn-2.jsonl"
 [[ $(tool_events session-turn-2) == *"$content"* ]] ||
   fail "turn 2 did not read the file, see $out/session-turn-2.jsonl"
 
-# Another session does not see those files.
+# Another session sees neither that conversation nor those files.
 other=$(create "/v1/agents/$agent/sessions")
-run_turn "$other" other-turn-1 \
+run_turn "$other" other-turn-1 "$recall"
+[ -n "$(answer other-turn-1)" ] || fail "the other session did not answer, see $out/other-turn-1.jsonl"
+if grep --quiet --fixed-strings "$content" "$out/other-turn-1.jsonl"; then
+  fail "the other session saw the file content, see $out/other-turn-1.jsonl"
+fi
+run_turn "$other" other-turn-2 \
   'Run `ls -al` in the current directory and reply with its output.'
-[ -n "$(tool_events other-turn-1)" ] || fail "the other session ran no tool, see $out/other-turn-1.jsonl"
-if grep --quiet --fixed-strings "$file" "$out/other-turn-1.jsonl"; then
-  fail "the other session saw the file, see $out/other-turn-1.jsonl"
+[ -n "$(tool_events other-turn-2)" ] || fail "the other session ran no tool, see $out/other-turn-2.jsonl"
+if grep --quiet --fixed-strings "$file" "$out/other-turn-2.jsonl"; then
+  fail "the other session saw the file, see $out/other-turn-2.jsonl"
 fi
 
-echo "PASS: $harness ran turns through the API, kept a session's files and kept sessions apart"
+echo "PASS: $harness continued a session in a new pod and kept sessions apart"

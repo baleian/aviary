@@ -50,7 +50,7 @@ func (g *gateway) RunTurn(stream grpc.BidiStreamingServer[runnerv1.RunTurnReques
 	slog.InfoContext(ctx, "runner took its turn", "turn", turn.ID)
 
 	start := &runnerv1.RunTurnResponse{Message: &runnerv1.RunTurnResponse_Start{
-		Start: &runnerv1.Start{Text: turn.Text},
+		Start: &runnerv1.Start{Text: turn.Text, HarnessSessionId: turn.HarnessSessionID},
 	}}
 	if err := stream.Send(start); err != nil {
 		return err
@@ -73,6 +73,13 @@ func (g *gateway) RunTurn(stream grpc.BidiStreamingServer[runnerv1.RunTurnReques
 func (g *gateway) receive(ctx context.Context, turnID uuid.UUID, request *runnerv1.RunTurnRequest) error {
 	switch message := request.Message.(type) {
 	case *runnerv1.RunTurnRequest_Started:
+		harnessSessionID := message.Started.GetHarnessSessionId()
+		if harnessSessionID == "" {
+			return errors.New("runner started without a harness session")
+		}
+		if err := g.store.SetHarnessSession(ctx, turnID, harnessSessionID); err != nil {
+			return err
+		}
 		return g.events.Append(ctx, turnID, events.TurnStarted, struct{}{})
 	case *runnerv1.RunTurnRequest_Finished:
 		return g.store.SetStopReason(ctx, turnID, message.Finished.GetStopReason())

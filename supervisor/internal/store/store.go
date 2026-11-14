@@ -79,6 +79,14 @@ type Turn struct {
 	EndedAt    *time.Time `json:"ended_at,omitempty"`
 }
 
+// TakenTurn is a turn as its runner gets it.
+type TakenTurn struct {
+	Turn
+	// HarnessSessionID is the harness session to continue. It is nil in the
+	// first turn of a session, which starts the harness session.
+	HarnessSessionID *string
+}
+
 // Dispatch is what it takes to run a turn.
 type Dispatch struct {
 	TurnID    uuid.UUID
@@ -250,14 +258,17 @@ func (s *Store) DispatchTurn(ctx context.Context, turnID uuid.UUID) (Dispatch, e
 // only once, because a runner that took it may already have acted on it. It
 // returns ErrNotFound if the token opens no turn and ErrTurnTaken if the turn
 // was given before.
-func (s *Store) TakeTurn(ctx context.Context, token string) (Turn, error) {
+func (s *Store) TakeTurn(ctx context.Context, token string) (TakenTurn, error) {
 	hash := hashToken(token)
-	turn := Turn{State: TurnRunning}
+	turn := TakenTurn{Turn: Turn{State: TurnRunning}}
 	err := s.pool.QueryRow(ctx,
-		`update turns set state = $2 where token_hash = $1 and state = $3
-		 returning id, session_id, seq, text, created_at`,
+		`update turns set state = $2
+		 from sessions
+		 where turns.token_hash = $1 and turns.state = $3 and sessions.id = turns.session_id
+		 returning turns.id, turns.session_id, turns.seq, turns.text, turns.created_at,
+		           sessions.harness_session_id`,
 		hash, turn.State, TurnDispatching,
-	).Scan(&turn.ID, &turn.SessionID, &turn.Seq, &turn.Text, &turn.CreatedAt)
+	).Scan(&turn.ID, &turn.SessionID, &turn.Seq, &turn.Text, &turn.CreatedAt, &turn.HarnessSessionID)
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return turn, err
 	}
@@ -266,12 +277,24 @@ func (s *Store) TakeTurn(ctx context.Context, token string) (Turn, error) {
 		`select exists (select from turns where token_hash = $1)`, hash,
 	).Scan(&known)
 	if err != nil {
-		return Turn{}, err
+		return TakenTurn{}, err
 	}
 	if known {
-		return Turn{}, ErrTurnTaken
+		return TakenTurn{}, ErrTurnTaken
 	}
-	return Turn{}, ErrNotFound
+	return TakenTurn{}, ErrNotFound
+}
+
+// SetHarnessSession records the harness session that the turn runs in, for
+// the next turn of the session to continue.
+func (s *Store) SetHarnessSession(ctx context.Context, turnID uuid.UUID, harnessSessionID string) error {
+	_, err := s.pool.Exec(ctx,
+		`update sessions set harness_session_id = $2
+		 from turns
+		 where turns.id = $1 and sessions.id = turns.session_id`,
+		turnID, harnessSessionID,
+	)
+	return err
 }
 
 // SetStopReason records why the harness ended the turn.
