@@ -1,0 +1,116 @@
+syntax = "proto3";
+
+// The protocol between the runner in a turn pod and the Supervisor.
+package aviary.runner.v1;
+
+import "google/protobuf/struct.proto";
+
+// RunnerService is served by the Supervisor to the runners.
+service RunnerService {
+  // RunTurn carries one turn. The runner calls it with the token of its turn
+  // in the authorization metadata, as "Bearer <token>". The Supervisor sends
+  // Start. The runner sends Started, then the events of the turn, then
+  // Finished.
+  rpc RunTurn(stream RunTurnRequest) returns (stream RunTurnResponse);
+}
+
+// RunTurnRequest is a message from the runner.
+message RunTurnRequest {
+  oneof message {
+    Started started = 1;
+    Finished finished = 2;
+
+    // The events of the turn. The Supervisor passes them on to the clients of
+    // its API, each as JSON under the name of its field with a dot for the
+    // underscore: message.delta, tool.call and so on.
+    MessageDelta message_delta = 3;
+    ThoughtDelta thought_delta = 4;
+    ToolCall tool_call = 5;
+    ToolUpdate tool_update = 6;
+    PlanUpdate plan_update = 7;
+  }
+}
+
+// RunTurnResponse is a message from the Supervisor.
+message RunTurnResponse {
+  oneof message {
+    Start start = 1;
+  }
+}
+
+// Start tells the runner what to run.
+message Start {
+  // The message that the user sent.
+  string text = 1;
+  // The harness session to continue. It is unset for the first turn of a
+  // session, for which the runner starts a new harness session.
+  optional string harness_session_id = 2;
+}
+
+// Started reports that the harness is ready and has been given the message.
+message Started {
+  // The harness session of the turn, which a later turn continues.
+  string harness_session_id = 1;
+}
+
+// Finished reports that the harness ended the turn.
+message Finished {
+  // One of end_turn, max_tokens, max_turn_requests, refusal, cancelled.
+  string stop_reason = 1;
+}
+
+// MessageDelta is the next piece of what the agent says.
+message MessageDelta {
+  string text = 1;
+  // Pieces with the same ID belong to one message.
+  optional string message_id = 2;
+}
+
+// ThoughtDelta is the next piece of the agent's reasoning.
+message ThoughtDelta {
+  string text = 1;
+  // Pieces with the same ID belong to one thought.
+  optional string message_id = 2;
+}
+
+// ToolCall reports that the agent started to use a tool.
+message ToolCall {
+  // Names the call in the updates that follow.
+  string id = 1;
+  string title = 2;
+  // One of read, edit, delete, move, search, execute, think, fetch,
+  // switch_mode, other.
+  string kind = 3;
+  // One of pending, in_progress, completed, failed.
+  string status = 4;
+  // What the tool was called with, in the harness's own form.
+  google.protobuf.Value input = 5;
+  // What the tool returned, in the harness's own form.
+  google.protobuf.Value output = 6;
+  // More about the call, in the harness's own form.
+  google.protobuf.Struct meta = 7;
+}
+
+// ToolUpdate reports a change to a tool call. Only what changed is set.
+message ToolUpdate {
+  string id = 1;
+  optional string title = 2;
+  optional string kind = 3;
+  optional string status = 4;
+  google.protobuf.Value input = 5;
+  google.protobuf.Value output = 6;
+  google.protobuf.Struct meta = 7;
+}
+
+// PlanUpdate is the agent's plan as it now stands.
+message PlanUpdate {
+  repeated PlanEntry entries = 1;
+}
+
+message PlanEntry {
+  string content = 1;
+  // One of high, medium, low.
+  string priority = 2;
+  // One of pending, in_progress, completed.
+  string status = 3;
+}

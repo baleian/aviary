@@ -3,6 +3,8 @@ NODE_IMAGE := kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a2659
 NFS_PROVISIONER_CHART := 1.8.0
 CNPG_CHART := 0.29.1
 VALKEY_CHART := 1.0.0
+GO_IMAGE := golang:1.27.4-trixie@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9
+BUF := 1.75.0
 
 SUPERVISOR_IMAGE := aviary-supervisor:dev
 RUNNER_IMAGE := aviary-runner:dev
@@ -13,7 +15,15 @@ CODEX_IMAGE := aviary-harness-codex:dev
 KUBECTL := kubectl --context kind-$(CLUSTER)
 HELM := helm --kube-context kind-$(CLUSTER)
 
-.PHONY: cluster-up cluster-down images deploy e2e
+.PHONY: proto cluster-up cluster-down images deploy e2e
+
+# Writes the Go code for proto/ to supervisor/internal/gen. Run it after
+# changing a .proto file. It runs in the image that builds the Supervisor, so
+# the host needs no Go.
+proto:
+	docker run --rm --user $$(id -u):$$(id -g) --env HOME=/tmp \
+		--volume $(CURDIR):/src --workdir /src $(GO_IMAGE) \
+		go run github.com/bufbuild/buf/cmd/buf@v$(BUF) generate
 
 cluster-up:
 	kind get clusters 2>/dev/null | grep -qx $(CLUSTER) || \

@@ -1,0 +1,16 @@
+version: v2
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: aviary/supervisor/internal/gen
+plugins:
+  # The plugins are tools of the Supervisor's module, which pins their versions.
+  - local: [go, -C, supervisor, tool, protoc-gen-go]
+    out: supervisor/internal/gen
+    opt: paths=source_relative
+  - local: [go, -C, supervisor, tool, protoc-gen-go-grpc]
+    out: supervisor/internal/gen
+    opt: paths=source_relative
+inputs:
+  - directory: proto
