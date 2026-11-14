@@ -29,6 +29,7 @@ const (
 	valkeyURL          = "AVIARY_VALKEY_URL"
 	gatewayURL         = "AVIARY_GATEWAY_URL"
 	runnerImage        = "AVIARY_RUNNER_IMAGE"
+	llmSecret          = "AVIARY_LLM_SECRET"
 	harnesses          = "AVIARY_HARNESSES"
 	maxConcurrentTurns = "AVIARY_MAX_CONCURRENT_TURNS"
 	apiAddr            = ":8080"
@@ -127,6 +128,9 @@ func driverConfig() (driver.Config, error) {
 		return config, err
 	}
 	if config.RunnerImage, err = env(runnerImage); err != nil {
+		return config, err
+	}
+	if config.LLMSecret, err = env(llmSecret); err != nil {
 		return config, err
 	}
 	encoded, err := env(harnesses)

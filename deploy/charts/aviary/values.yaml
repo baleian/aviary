@@ -18,6 +18,10 @@ runtime:
   maxConcurrentTurns: 50
   # The image that holds the runner. Every turn pod mounts it.
   runnerImage: aviary-runner:dev
+  # A secret in the runtime namespace that tells the harnesses how to reach
+  # the model server: AVIARY_LLM_BASE_URL, AVIARY_LLM_API_KEY and
+  # AVIARY_LLM_MODEL. Every turn pod gets its values as environment variables.
+  llmSecretName: aviary-llm
   # The harnesses that agents can use, by the name that an agent is created
   # with.
   harnesses:

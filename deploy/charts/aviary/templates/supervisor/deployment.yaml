@@ -45,6 +45,8 @@ spec:
               value: http://aviary-supervisor.{{ .Release.Namespace }}:9090
             - name: AVIARY_RUNNER_IMAGE
               value: {{ .Values.runtime.runnerImage }}
+            - name: AVIARY_LLM_SECRET
+              value: {{ .Values.runtime.llmSecretName }}
             - name: AVIARY_HARNESSES
               value: {{ .Values.runtime.harnesses | toJson | quote }}
             - name: AVIARY_MAX_CONCURRENT_TURNS

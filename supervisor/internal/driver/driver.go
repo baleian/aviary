@@ -26,7 +26,6 @@ import (
 const (
 	namespace  = "aviary-runtime"
 	storeClaim = "aviary-store-default"
-	llmSecret  = "aviary-llm"
 )
 
 const (
@@ -54,6 +53,9 @@ type Config struct {
 	GatewayURL string
 	// RunnerImage holds the runner, which every turn pod mounts.
 	RunnerImage string
+	// LLMSecret is the secret in the runtime namespace that tells the
+	// harnesses how to reach the model server.
+	LLMSecret string
 	// Harnesses are the harnesses that agents can use, by name.
 	Harnesses map[string]Harness
 	// MaxConcurrentTurns is the most turns that run at once. The turns
@@ -343,7 +345,7 @@ func (d *Driver) job(dispatch store.Dispatch, harness Harness) *batchv1.Job {
 							{Name: "AVIARY_TURN_TOKEN", Value: dispatch.Token},
 						},
 						EnvFrom: []corev1.EnvFromSource{{
-							SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: llmSecret}},
+							SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: d.config.LLMSecret}},
 						}},
 						SecurityContext: restricted,
 						VolumeMounts: []corev1.VolumeMount{
