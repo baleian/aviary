@@ -89,9 +89,11 @@ func MigrateTo(ctx context.Context, url string, version int64) error {
 	return nil
 }
 
-// checkSchema reports an error if the schema is older than this build needs.
-// A newer schema is accepted: the migrations keep the schema usable by the
-// release before the one that applied them.
+// checkSchema reports an error if this build and the schema do not go
+// together: if the schema is older than the build needs, or if it has since
+// dropped something that the build uses. A newer schema is accepted
+// otherwise, because migrations only add to the schema until they raise the
+// floor.
 func checkSchema(ctx context.Context, pool *pgxpool.Pool) error {
 	needed, err := latestMigration()
 	if err != nil {
@@ -108,6 +110,13 @@ func checkSchema(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	if applied < needed {
 		return fmt.Errorf("the database schema is at version %d and this Supervisor needs %d: run `aviary-supervisor migrate` first", applied, needed)
+	}
+	var floor int64
+	if err := pool.QueryRow(ctx, `select version from schema_floor`).Scan(&floor); err != nil {
+		return fmt.Errorf("read the schema floor: %w", err)
+	}
+	if needed < floor {
+		return fmt.Errorf("this Supervisor is built for schema version %d, and the database schema, at version %d, no longer supports Supervisors built for a version before %d", needed, applied, floor)
 	}
 	if applied > needed {
 		slog.InfoContext(ctx, "the database schema is newer than this Supervisor", "schema", applied, "needed", needed)
