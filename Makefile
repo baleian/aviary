@@ -69,9 +69,9 @@ images:
 # the Supervisor's. Valkey has no such secret, so its URL is put together
 # from its password. The image ID makes the pod restart when the image changes.
 # The turn pods read the model server's address and key from the aviary-llm
-# secret, which is made from .env.
+# secret, which is made from .env if there is one. The e2e does not need it:
+# it brings a model server of its own.
 deploy:
-	@test -f .env || { echo ".env is missing; it must set AVIARY_LLM_BASE_URL, AVIARY_LLM_API_KEY and AVIARY_LLM_MODEL"; exit 1; }
 	$(KUBECTL) create namespace aviary-system --dry-run=client --output yaml | $(KUBECTL) apply -f -
 	$(KUBECTL) get secret postgres-app --namespace aviary-data --output json | \
 		jq '{apiVersion, kind, type, data, metadata: {name: "aviary-database"}}' | \
@@ -83,7 +83,8 @@ deploy:
 		--namespace aviary-system \
 		--set-string 'supervisor.podAnnotations.aviary\.io/image-id='$$(docker image inspect --format '{{.Id}}' $(SUPERVISOR_IMAGE)) \
 		--wait
-	$(KUBECTL) create secret generic aviary-llm --namespace aviary-runtime --from-env-file .env \
+	@test -f .env || echo "There is no .env, so the turn pods have no model server. It sets AVIARY_LLM_BASE_URL, AVIARY_LLM_API_KEY and AVIARY_LLM_MODEL."
+	test ! -f .env || $(KUBECTL) create secret generic aviary-llm --namespace aviary-runtime --from-env-file .env \
 		--dry-run=client --output yaml | $(KUBECTL) apply -f -
 
 e2e:

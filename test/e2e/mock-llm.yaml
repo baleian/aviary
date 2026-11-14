@@ -1,0 +1,65 @@
+# The model server that the e2e uses in place of a real one, and the secret
+# that points the turn pods to it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aviary-e2e
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-llm
+  namespace: aviary-e2e
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mock-llm
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mock-llm
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mock-llm
+          image: aviary-mock-llm:dev
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-llm
+  namespace: aviary-e2e
+spec:
+  selector:
+    app.kubernetes.io/name: mock-llm
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aviary-llm-mock
+  namespace: aviary-runtime
+stringData:
+  AVIARY_LLM_BASE_URL: http://mock-llm.aviary-e2e/v1
+  AVIARY_LLM_API_KEY: mock
+  AVIARY_LLM_MODEL: mock

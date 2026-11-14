@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The e2e runs against a model server of its own, mock-llm, which answers by
+# a script. A message to a session is an instruction to it: "say <text>",
+# "run <command>" or "recall". See test/mock-llm/main.go.
+
 harness=${1:?usage: run.sh <harness>}
 cd "$(dirname "$0")/../.."
 
@@ -113,11 +117,20 @@ wait_for() {
 cleaned_up() { [ -z "$(in_cluster "$1")" ]; }
 running() { [ "$(field "/v1/turns/$1" state)" = running ]; }
 
-connect
+# For the e2e the turn pods use mock-llm, and one turn runs at a time, which
+# the check of the queue needs.
 mkdir -p "$out"
+$kubectl apply --filename test/e2e/mock-llm.yaml > /dev/null
+$kubectl --namespace aviary-e2e rollout status deployment/mock-llm --timeout 120s > /dev/null ||
+  fail "mock-llm did not start; run make images"
+$helm get values aviary --output yaml > "$out/values.yaml" || fail "Aviary is not installed; run make deploy"
+changed=yes
+install --set runtime.llmSecretName=aviary-llm-mock --set runtime.maxConcurrentTurns=1
+connect
+
 file=note-$(new_id | cut --characters 1-8).txt
 content=$(new_id | cut --characters 1-8)
-recall="Read the file you created earlier and reply with its content."
+write="run printf '$content' > $file"
 
 project=$(create /v1/projects '{"name": "e2e"}')
 agent=$(create "/v1/projects/$project/agents" "$(jq --null-input --arg harness "$harness" '{harness: $harness}')")
@@ -125,29 +138,26 @@ agent=$(create "/v1/projects/$project/agents" "$(jq --null-input --arg harness "
 # A message runs as a turn in a pod of its own, and nothing is left of the
 # pod afterwards.
 session=$(create "/v1/agents/$agent/sessions")
-run_turn "$session" session-turn-1 \
-  "Create a file named $file in the current directory with this content: $content"
+run_turn "$session" session-turn-1 "$write"
 [ "$(field "/v1/turns/$turn" state)" = completed ] || fail "turn $turn is not recorded as completed"
 wait_for 60 cleaned_up "$turn" || fail "the Job or the pod of turn $turn was not deleted"
 
 # A session keeps its conversation and its files from one turn to the next.
-# The second message does not name the file, so the agent can only find it by
-# what was said in the first turn.
-run_turn "$session" session-turn-2 "$recall"
-[[ $(answer session-turn-2) == *"$content"* ]] ||
-  fail "turn 2 did not answer with the file content, see $out/session-turn-2.jsonl"
-[[ $(tool_events session-turn-2) == *"$content"* ]] ||
-  fail "turn 2 did not read the file, see $out/session-turn-2.jsonl"
+run_turn "$session" session-turn-2 recall
+[[ $(answer session-turn-2) == *"$write"* ]] ||
+  fail "turn 2 did not know what was said in turn 1, see $out/session-turn-2.jsonl"
+run_turn "$session" session-turn-3 "run cat $file"
+[[ $(answer session-turn-3) == *"$content"* ]] ||
+  fail "turn 3 did not answer with the file content, see $out/session-turn-3.jsonl"
+[[ $(tool_events session-turn-3) == *"$content"* ]] ||
+  fail "the tool events of turn 3 lack the file content, see $out/session-turn-3.jsonl"
 
 # Another session sees neither that conversation nor those files.
 other=$(create "/v1/agents/$agent/sessions")
-run_turn "$other" other-turn-1 "$recall"
-[ -n "$(answer other-turn-1)" ] || fail "the other session did not answer, see $out/other-turn-1.jsonl"
-if grep --quiet --fixed-strings "$content" "$out/other-turn-1.jsonl"; then
-  fail "the other session saw the file content, see $out/other-turn-1.jsonl"
-fi
-run_turn "$other" other-turn-2 \
-  'Run `ls -al` in the current directory and reply with its output.'
+run_turn "$other" other-turn-1 recall
+[[ $(answer other-turn-1) == *nothing* ]] ||
+  fail "the other session recalled something, see $out/other-turn-1.jsonl"
+run_turn "$other" other-turn-2 "run ls -a"
 [ -n "$(tool_events other-turn-2)" ] || fail "the other session ran no tool, see $out/other-turn-2.jsonl"
 if grep --quiet --fixed-strings "$file" "$out/other-turn-2.jsonl"; then
   fail "the other session saw the file, see $out/other-turn-2.jsonl"
@@ -162,25 +172,19 @@ connect
 [ "$(field "/v1/sessions/$session" agent_id)" = "$agent" ] || fail "the session is gone after a restart of the Supervisor"
 [ "$(field "/v1/turns/$turn" state)" = completed ] || fail "turn $turn is gone after a restart of the Supervisor"
 
-# Turns beyond the limit wait in the order in which they were sent. For this
-# check the limit is one turn at a time. A turn that loses its pod fails, and
-# the next one runs.
-$helm get values aviary --output yaml > "$out/values.yaml"
-changed=yes
-install --set runtime.maxConcurrentTurns=1
-connect
-reply='Reply with the word done.'
+# Turns beyond the limit wait in the order in which they were sent. A turn
+# that loses its pod fails, and the next one runs.
 killed=$(create "/v1/agents/$agent/sessions")
-first=$(send "$killed" "$reply")
-second=$(send "$(create "/v1/agents/$agent/sessions")" "$reply")
-third=$(send "$(create "/v1/agents/$agent/sessions")" "$reply")
+first=$(send "$killed" "run sleep 30")
+second=$(send "$(create "/v1/agents/$agent/sessions")" "say done")
+third=$(send "$(create "/v1/agents/$agent/sessions")" "say done")
 [ "$(field "/v1/turns/$second" state)$(field "/v1/turns/$third" state)" = queuedqueued ] ||
   fail "turns $second and $third did not wait for turn $first"
 wait_for 60 running "$first" || fail "turn $first did not start"
 
 # A session takes no message while a turn of it has not ended.
 status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
-  --request POST --data '{"text": "again"}' "$api/v1/sessions/$killed/messages")
+  --request POST --data '{"text": "say again"}' "$api/v1/sessions/$killed/messages")
 [ "$status" = 409 ] || fail "a session with a running turn answered a message with $status, not 409"
 
 $kubectl --namespace aviary-runtime delete pod --selector "aviary.io/turn=$first" --wait=false > /dev/null
@@ -195,6 +199,8 @@ follow "$third" queue-turn-3
   fail "turn $third was not told its way up the queue: $(positions queue-turn-3)"
 
 # The session whose turn failed goes on with its next message.
-run_turn "$killed" queue-turn-4 "$reply"
+run_turn "$killed" queue-turn-4 "say done"
+[[ $(answer queue-turn-4) == *done* ]] ||
+  fail "the session of the failed turn did not answer, see $out/queue-turn-4.jsonl"
 
 echo "PASS: $harness ran turns through the API, continued a session, kept sessions apart and queued turns"
