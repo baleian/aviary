@@ -66,6 +66,9 @@ runtime:
   # The most turns that run at once. The turns beyond it wait in the order in
   # which they were accepted.
   maxConcurrentTurns: 50
+  # The most turns that may wait. A message that would make one more is
+  # refused, and its client is told to try again later. Zero is no limit.
+  maxQueuedTurns: 500
   # How long a turn may wait in that order. A turn that waits longer ends as
   # expired, and its client is told so. Zero is no limit.
   maxQueueWaitSeconds: 120

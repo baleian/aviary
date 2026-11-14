@@ -18,6 +18,7 @@ import (
 var (
 	ErrNotFound    = errors.New("not found")
 	ErrSessionBusy = errors.New("session has an unfinished turn")
+	ErrQueueFull   = errors.New("too many turns wait to run")
 	ErrTurnTaken   = errors.New("turn was already taken")
 	// ErrTurnCancelled is returned for a turn that was cancelled before its
 	// runner took it.
@@ -258,15 +259,29 @@ func (s *Store) Session(ctx context.Context, id uuid.UUID) (Session, error) {
 }
 
 // CreateTurn queues a message as the session's next turn. It returns
-// ErrNotFound if the session does not exist and ErrSessionBusy if the
-// session has a turn that has not finished.
-func (s *Store) CreateTurn(ctx context.Context, sessionID uuid.UUID, text string) (Turn, error) {
+// ErrNotFound if the session does not exist, ErrSessionBusy if the session
+// has a turn that has not finished, and ErrQueueFull if more than maxWaiting
+// turns would then wait to run. Zero is no such limit. A queued turn waits
+// only if the turns that run leave it no room among maxRunning.
+func (s *Store) CreateTurn(ctx context.Context, sessionID uuid.UUID, text string, maxWaiting, maxRunning int) (Turn, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return Turn{}, err
 	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Turn{}, err
+	}
+	defer tx.Rollback(ctx)
+	if maxWaiting > 0 {
+		// Messages are accepted one at a time, so that the count holds also
+		// when they reach several Supervisors at once.
+		if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1)`, queueLock); err != nil {
+			return Turn{}, err
+		}
+	}
 	turn := Turn{ID: id, SessionID: sessionID, State: TurnQueued, Text: text}
-	err = s.pool.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`insert into turns (id, session_id, seq, state, text)
 		 select $1, id, (select coalesce(max(seq), 0) + 1 from turns where session_id = $2), $3, $4
 		 from sessions where id = $2
@@ -279,8 +294,24 @@ func (s *Store) CreateTurn(ctx context.Context, sessionID uuid.UUID, text string
 		return Turn{}, ErrNotFound
 	case errors.As(err, &failure) && failure.Code == uniqueViolation:
 		return Turn{}, ErrSessionBusy
+	case err != nil:
+		return Turn{}, err
 	}
-	return turn, err
+	if maxWaiting > 0 {
+		var waiting int
+		err := tx.QueryRow(ctx,
+			`select (select count(*) from turns where state = $1)
+			        - greatest(0, $2::bigint - (select count(*) from turns where state in ($3, $4)))`,
+			TurnQueued, maxRunning, TurnDispatching, TurnRunning,
+		).Scan(&waiting)
+		if err != nil {
+			return Turn{}, err
+		}
+		if waiting > maxWaiting {
+			return Turn{}, ErrQueueFull
+		}
+	}
+	return turn, tx.Commit(ctx)
 }
 
 // AnnounceQueue calls announce with the turns that wait to run, in the order

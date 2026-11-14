@@ -62,6 +62,8 @@ spec:
               value: {{ .Values.runtime.harnesses | toJson | quote }}
             - name: AVIARY_MAX_CONCURRENT_TURNS
               value: {{ .Values.runtime.maxConcurrentTurns | quote }}
+            - name: AVIARY_MAX_QUEUED_TURNS
+              value: {{ .Values.runtime.maxQueuedTurns | quote }}
             - name: AVIARY_MAX_QUEUE_WAIT_SECONDS
               value: {{ .Values.runtime.maxQueueWaitSeconds | quote }}
             - name: AVIARY_MAX_TURN_SECONDS

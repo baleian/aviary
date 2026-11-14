@@ -73,6 +73,9 @@ type Config struct {
 	// MaxQueueWait is how long a turn may wait to run. A turn that waits
 	// longer ends as expired. Zero is no limit.
 	MaxQueueWait time.Duration
+	// MaxQueuedTurns is the most turns that may wait to run. A message that
+	// would make one more is refused. Zero is no limit.
+	MaxQueuedTurns int
 	// MaxConcurrentTurns is the most turns that run at once. The turns
 	// beyond it wait in the order in which they were accepted.
 	MaxConcurrentTurns int
@@ -168,6 +171,12 @@ func (d *Driver) Wake() {
 	default:
 		// The driver has not yet acted on an earlier call, which covers this one.
 	}
+}
+
+// Accept queues a message as the session's next turn, if the queue has
+// room. It returns the errors of store.CreateTurn.
+func (d *Driver) Accept(ctx context.Context, sessionID uuid.UUID, text string) (store.Turn, error) {
+	return d.store.CreateTurn(ctx, sessionID, text, d.config.MaxQueuedTurns, d.config.MaxConcurrentTurns)
 }
 
 // QueueMoved tells the driver that a turn left the queue without running,

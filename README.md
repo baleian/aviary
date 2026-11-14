@@ -122,7 +122,7 @@ still knows what was said and finds the file.
 | `POST /v1/projects` | Creates a project. Body: `{"name": "..."}`. |
 | `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"harness": "..."}`, one of the configured harnesses. |
 | `POST /v1/agents/{id}/sessions` | Creates a session. |
-| `POST /v1/sessions/{id}/messages` | Sends a message. Body: `{"text": "..."}`. Answers 202 with the turn, or 409 if a turn of the session has not ended. |
+| `POST /v1/sessions/{id}/messages` | Sends a message. Body: `{"text": "..."}`. Answers 202 with the turn, 409 if a turn of the session has not ended, or 429 with `Retry-After` if too many turns wait to run. |
 | `POST /v1/turns/{id}/cancel` | Cancels a turn. A turn that waits to run ends at once: 200 with the turn. A turn that runs is told to stop and ends when its pod has stopped: 202 with the turn. Answers 409 if the turn has ended in another way. |
 | `GET /v1/turns/{id}/events` | The events of the turn, as server-sent events. A client that reconnects sends `Last-Event-ID` and gets the events after it. |
 | `GET /v1/projects/{id}`, `/v1/agents/{id}`, `/v1/sessions/{id}`, `/v1/turns/{id}` | Reads what was created. |
@@ -167,6 +167,7 @@ does not install PostgreSQL or Valkey.
 | `egressProxy.allowedHosts` | The hosts that the Egress Proxy lets requests through to, the model endpoint among them. The default, `*`, is every host. |
 | `egressProxy.insideCIDRs`, `.extraEgress` | A network policy keeps the Egress Proxy itself out of these address ranges, so that it is no way into the cluster. `extraEgress` names what it may still reach there, such as a model endpoint that is a service in the cluster. |
 | `runtime.maxConcurrentTurns` | The most turns that run at once. Default 50. |
+| `runtime.maxQueuedTurns` | The most turns that may wait to run. A message beyond it is answered with 429. Default 500, and 0 is no limit. |
 | `runtime.maxQueueWaitSeconds` | How long a turn may wait to run before it ends as expired. Default 120, and 0 is no limit. |
 | `runtime.maxTurnSeconds` | How long a turn may run before it is stopped and fails. Default 1800. |
 | `runtime.harnesses` | The harnesses that agents can use, each with its image. |

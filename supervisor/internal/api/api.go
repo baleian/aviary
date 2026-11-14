@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strconv"
 
 	"github.com/google/uuid"
 
@@ -28,15 +29,19 @@ type apiError struct {
 	status  int
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// retryAfter is how many seconds a client should wait before it sends
+	// the request again, if it helps to send it again.
+	retryAfter int
 }
 
 func (e *apiError) Error() string { return e.Message }
 
 var (
-	errNotFound    = &apiError{http.StatusNotFound, "not_found", "no such resource"}
-	errSessionBusy = &apiError{http.StatusConflict, "session_busy", "the session has a turn that has not finished"}
-	errTurnEnded   = &apiError{http.StatusConflict, "turn_ended", "the turn has ended"}
-	errInternal    = &apiError{http.StatusInternalServerError, "internal", "internal error"}
+	errNotFound    = &apiError{status: http.StatusNotFound, Code: "not_found", Message: "no such resource"}
+	errSessionBusy = &apiError{status: http.StatusConflict, Code: "session_busy", Message: "the session has a turn that has not finished"}
+	errTurnEnded   = &apiError{status: http.StatusConflict, Code: "turn_ended", Message: "the turn has ended"}
+	errQueueFull   = &apiError{status: http.StatusTooManyRequests, Code: "queue_full", Message: "too many turns wait to run", retryAfter: 5}
+	errInternal    = &apiError{status: http.StatusInternalServerError, Code: "internal", Message: "internal error"}
 )
 
 // New returns the handler of the API. An event stream stays open for as long
@@ -166,7 +171,7 @@ func (a *api) createMessage(w http.ResponseWriter, r *http.Request) error {
 	if request.Text == "" {
 		return invalid("text is required")
 	}
-	turn, err := a.store.CreateTurn(r.Context(), sessionID, request.Text)
+	turn, err := a.driver.Accept(r.Context(), sessionID, request.Text)
 	if err != nil {
 		return err
 	}
@@ -249,9 +254,14 @@ func (h handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		failure = errNotFound
 	case errors.Is(err, store.ErrSessionBusy):
 		failure = errSessionBusy
+	case errors.Is(err, store.ErrQueueFull):
+		failure = errQueueFull
 	default:
 		slog.ErrorContext(r.Context(), "request failed", "method", r.Method, "path", r.URL.Path, "error", err)
 		failure = errInternal
+	}
+	if failure.retryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(failure.retryAfter))
 	}
 	respond(w, failure.status, failure)
 }
@@ -267,7 +277,7 @@ func pathID(r *http.Request, name string) (uuid.UUID, error) {
 }
 
 func invalid(message string) error {
-	return &apiError{http.StatusBadRequest, "invalid_request", message}
+	return &apiError{status: http.StatusBadRequest, Code: "invalid_request", Message: message}
 }
 
 func decode(w http.ResponseWriter, r *http.Request, into any) error {
