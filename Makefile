@@ -66,7 +66,10 @@ images:
 # A pod can only read secrets in its own namespace, so the secret is copied to
 # the Supervisor's. Valkey has no such secret, so its URL is put together
 # from its password. The image ID makes the pod restart when the image changes.
+# The turn pods read the model server's address and key from the aviary-llm
+# secret, which is made from .env.
 deploy:
+	@test -f .env || { echo ".env is missing; it must set AVIARY_LLM_BASE_URL, AVIARY_LLM_API_KEY and AVIARY_LLM_MODEL"; exit 1; }
 	$(KUBECTL) create namespace aviary-system --dry-run=client --output yaml | $(KUBECTL) apply -f -
 	$(KUBECTL) get secret postgres-app --namespace aviary-data --output json | \
 		jq '{apiVersion, kind, type, data, metadata: {name: "aviary-database"}}' | \
@@ -78,6 +81,8 @@ deploy:
 		--namespace aviary-system \
 		--set-string 'supervisor.podAnnotations.aviary\.io/image-id='$$(docker image inspect --format '{{.Id}}' $(SUPERVISOR_IMAGE)) \
 		--wait
+	$(KUBECTL) create secret generic aviary-llm --namespace aviary-runtime --from-env-file .env \
+		--dry-run=client --output yaml | $(KUBECTL) apply -f -
 
 e2e:
 	test/e2e/run.sh $(HARNESS)
