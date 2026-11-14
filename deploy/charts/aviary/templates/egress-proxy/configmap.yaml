@@ -53,10 +53,10 @@ data:
                   typed_config:
                     "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                     stat_prefix: llm
-                    # A model can be silent for minutes before it answers.
-                    # No turn runs for an hour, so a stream that is silent
-                    # for that long belongs to a pod that is gone.
-                    stream_idle_timeout: 3600s
+                    # A model can be silent for minutes before it answers. A
+                    # stream that is silent for as long as a turn may run
+                    # belongs to a pod that is gone.
+                    stream_idle_timeout: {{ .Values.runtime.maxTurnSeconds }}s
                     # Envoy does not tell the endpoint the address of the pod.
                     skip_xff_append: true
                     generate_request_id: false
@@ -139,7 +139,7 @@ data:
                   typed_config:
                     "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                     stat_prefix: forward
-                    stream_idle_timeout: 3600s
+                    stream_idle_timeout: {{ .Values.runtime.maxTurnSeconds }}s
                     skip_xff_append: true
                     generate_request_id: false
                     {{- include "aviary.egress-proxy.access-log" "forward" | nindent 20 }}

@@ -38,8 +38,6 @@ const (
 	turnLabel = "aviary.io/turn"
 	// agentUser is the user that the harness images run as.
 	agentUser = 10000
-	// deadline is how long a turn's pod may run before Kubernetes ends it.
-	deadline = 30 * time.Minute
 	// resync is how often the Jobs are looked at again, which retries the
 	// ending of a turn that failed, and how often the turns and the Jobs are
 	// reconciled.
@@ -70,6 +68,8 @@ type Config struct {
 	ProxyURL string
 	// Harnesses are the harnesses that agents can use, by name.
 	Harnesses map[string]Harness
+	// MaxTurn is how long a turn may run before Kubernetes ends its pod.
+	MaxTurn time.Duration
 	// MaxQueueWait is how long a turn may wait to run. A turn that waits
 	// longer ends as expired. Zero is no limit.
 	MaxQueueWait time.Duration
@@ -430,7 +430,7 @@ func (d *Driver) job(dispatch store.Dispatch, harness Harness, hosts []corev1.Ho
 		Spec: batchv1.JobSpec{
 			// A turn is not repeated: the agent may already have acted.
 			BackoffLimit:          new(int32(0)),
-			ActiveDeadlineSeconds: new(int64(deadline.Seconds())),
+			ActiveDeadlineSeconds: new(int64(d.config.MaxTurn.Seconds())),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
