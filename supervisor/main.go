@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -12,15 +11,20 @@ import (
 	"syscall"
 	"time"
 
+	"google.golang.org/grpc"
+
 	"aviary/supervisor/internal/api"
 	"aviary/supervisor/internal/events"
+	"aviary/supervisor/internal/gateway"
+	runnerv1 "aviary/supervisor/internal/gen/aviary/runner/v1"
 	"aviary/supervisor/internal/store"
 )
 
 const (
 	databaseURL     = "AVIARY_DATABASE_URL"
 	valkeyURL       = "AVIARY_VALKEY_URL"
-	listenAddr      = ":8080"
+	apiAddr         = ":8080"
+	gatewayAddr     = ":9090"
 	shutdownTimeout = 10 * time.Second
 )
 
@@ -56,32 +60,41 @@ func run() error {
 	}
 	defer ev.Close()
 
-	listener, err := net.Listen("tcp", listenAddr)
+	apiListener, err := net.Listen("tcp", apiAddr)
 	if err != nil {
 		return err
 	}
-	server := &http.Server{
+	gatewayListener, err := net.Listen("tcp", gatewayAddr)
+	if err != nil {
+		return err
+	}
+	apiServer := &http.Server{
 		Handler:           api.New(st, ev, ctx.Done()),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	served := make(chan error, 1)
-	go func() { served <- server.Serve(listener) }()
-	slog.Info("listening", "addr", listenAddr)
+	gatewayServer := grpc.NewServer()
+	runnerv1.RegisterRunnerServiceServer(gatewayServer, gateway.New(st, ev))
+	failed := make(chan error, 2)
+	go func() { failed <- apiServer.Serve(apiListener) }()
+	go func() { failed <- gatewayServer.Serve(gatewayListener) }()
+	slog.Info("listening", "api", apiAddr, "gateway", gatewayAddr)
 
 	select {
-	case err := <-served:
+	case err := <-failed:
 		return err
 	case <-ctx.Done():
 	}
 	draining, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	if err := server.Shutdown(draining); err != nil {
-		return err
-	}
-	if err := <-served; !errors.Is(err, http.ErrServerClosed) {
-		return err
-	}
-	return nil
+	// A turn can run for longer than the Supervisor may take to stop, so the
+	// runners that are still connected when the time is up are cut off.
+	go func() {
+		<-draining.Done()
+		gatewayServer.Stop()
+	}()
+	err = apiServer.Shutdown(draining)
+	gatewayServer.GracefulStop()
+	return err
 }
 
 func env(name string) (string, error) {

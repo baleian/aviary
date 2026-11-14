@@ -13,3 +13,7 @@ spec:
     - name: http
       port: 80
       targetPort: http
+    # The runners in the turn pods connect to this port.
+    - name: grpc
+      port: 9090
+      targetPort: grpc

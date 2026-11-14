@@ -3,6 +3,7 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
 	"errors"
 	"fmt"
@@ -21,9 +22,16 @@ import (
 var (
 	ErrNotFound    = errors.New("not found")
 	ErrSessionBusy = errors.New("session has an unfinished turn")
+	ErrTurnTaken   = errors.New("turn was already taken")
 )
 
-const TurnQueued = "queued"
+// The states of a turn. A queued turn waits to run, a dispatching one waits
+// for its runner, and a running one has been taken by its runner.
+const (
+	TurnQueued      = "queued"
+	TurnDispatching = "dispatching"
+	TurnRunning     = "running"
+)
 
 // uniqueViolation is the PostgreSQL error code for a broken unique constraint.
 const uniqueViolation = "23505"
@@ -200,6 +208,47 @@ func (s *Store) Turn(ctx context.Context, id uuid.UUID) (Turn, error) {
 		return Turn{}, ErrNotFound
 	}
 	return turn, err
+}
+
+// TakeTurn gives the turn that the token opens to its runner. A turn is given
+// only once, because a runner that took it may already have acted on it. It
+// returns ErrNotFound if the token opens no turn and ErrTurnTaken if the turn
+// was given before.
+func (s *Store) TakeTurn(ctx context.Context, token string) (Turn, error) {
+	hash := hashToken(token)
+	turn := Turn{State: TurnRunning}
+	err := s.pool.QueryRow(ctx,
+		`update turns set state = $2 where token_hash = $1 and state = $3
+		 returning id, session_id, seq, text, created_at`,
+		hash, turn.State, TurnDispatching,
+	).Scan(&turn.ID, &turn.SessionID, &turn.Seq, &turn.Text, &turn.CreatedAt)
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return turn, err
+	}
+	var known bool
+	err = s.pool.QueryRow(ctx,
+		`select exists (select from turns where token_hash = $1)`, hash,
+	).Scan(&known)
+	if err != nil {
+		return Turn{}, err
+	}
+	if known {
+		return Turn{}, ErrTurnTaken
+	}
+	return Turn{}, ErrNotFound
+}
+
+// SetStopReason records why the harness ended the turn.
+func (s *Store) SetStopReason(ctx context.Context, turnID uuid.UUID, stopReason string) error {
+	_, err := s.pool.Exec(ctx, `update turns set stop_reason = $2 where id = $1`, turnID, stopReason)
+	return err
+}
+
+// hashToken returns what is stored of a turn token. The token is random, so
+// a plain hash is enough to keep it from being read back.
+func hashToken(token string) []byte {
+	hash := sha256.Sum256([]byte(token))
+	return hash[:]
 }
 
 // migrate holds a lock in a table rather than on the connection, so that

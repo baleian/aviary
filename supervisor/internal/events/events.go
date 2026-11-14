@@ -16,8 +16,14 @@ import (
 	"github.com/valkey-io/valkey-go"
 )
 
-// TurnQueued reports that the turn was accepted and waits to run.
-const TurnQueued = "turn.queued"
+// The events that the Supervisor writes itself. The others come from the
+// runner of the turn.
+const (
+	// TurnQueued reports that the turn was accepted and waits to run.
+	TurnQueued = "turn.queued"
+	// TurnStarted reports that the harness has been given the message.
+	TurnStarted = "turn.started"
+)
 
 // Start is the position before a turn's first event.
 const Start = "0-0"
