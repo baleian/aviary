@@ -92,6 +92,14 @@ func (s *Streams) Append(ctx context.Context, turnID uuid.UUID, eventType string
 		FieldValue().FieldValue("type", eventType).FieldValue("data", string(encoded)).Build()).Error()
 }
 
+// AppendQueued tells a turn that waits to run its position in the queue,
+// which is 1 for the turn that runs next.
+func (s *Streams) AppendQueued(ctx context.Context, turnID uuid.UUID, position int) error {
+	return s.Append(ctx, turnID, TurnQueued, struct {
+		Position int `json:"position"`
+	}{position})
+}
+
 // Last returns the last event of a turn that has ended.
 func Last(turn store.Turn) (eventType string, data any) {
 	if turn.State != store.TurnCompleted {

@@ -109,6 +109,25 @@ func (d *Driver) dispatch(ctx context.Context) {
 			slog.ErrorContext(ctx, "launch turn", "turn", dispatch.TurnID, "error", err)
 		}
 	}
+	if len(dispatches) > 0 {
+		d.announcePositions(ctx)
+	}
+}
+
+// announcePositions tells the turns that still wait their new positions in
+// the queue, after the turns ahead of them were dispatched.
+func (d *Driver) announcePositions(ctx context.Context) {
+	queued, err := d.store.QueuedTurns(ctx)
+	if err != nil {
+		slog.ErrorContext(ctx, "read queued turns", "error", err)
+		return
+	}
+	for i, turnID := range queued {
+		if err := d.events.AppendQueued(ctx, turnID, i+1); err != nil {
+			slog.ErrorContext(ctx, "publish turn event", "turn", turnID, "event", events.TurnQueued, "error", err)
+			return
+		}
+	}
 }
 
 // launch creates the Job that runs a dispatched turn.

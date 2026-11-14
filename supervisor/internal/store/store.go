@@ -203,30 +203,48 @@ func (s *Store) Session(ctx context.Context, id uuid.UUID) (Session, error) {
 	return session, err
 }
 
-// CreateTurn queues a message as the session's next turn. It returns
-// ErrNotFound if the session does not exist and ErrSessionBusy if the session
-// has a turn that has not finished.
-func (s *Store) CreateTurn(ctx context.Context, sessionID uuid.UUID, text string) (Turn, error) {
+// CreateTurn queues a message as the session's next turn and returns the
+// turn with its position in the queue, which is 1 for the turn that runs
+// next. It returns ErrNotFound if the session does not exist and
+// ErrSessionBusy if the session has a turn that has not finished.
+func (s *Store) CreateTurn(ctx context.Context, sessionID uuid.UUID, text string) (Turn, int, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
-		return Turn{}, err
+		return Turn{}, 0, err
 	}
 	turn := Turn{ID: id, SessionID: sessionID, State: TurnQueued, Text: text}
+	var position int
+	// The count does not see the turn that the same statement inserts.
 	err = s.pool.QueryRow(ctx,
-		`insert into turns (id, session_id, seq, state, text)
-		 select $1, id, (select coalesce(max(seq), 0) + 1 from turns where session_id = $2), $3, $4
-		 from sessions where id = $2
-		 returning seq, created_at`,
+		`with accepted as (
+		     insert into turns (id, session_id, seq, state, text)
+		     select $1, id, (select coalesce(max(seq), 0) + 1 from turns where session_id = $2), $3, $4
+		     from sessions where id = $2
+		     returning seq, created_at
+		 )
+		 select seq, created_at, (select count(*) from turns where state = $3) + 1 from accepted`,
 		turn.ID, turn.SessionID, turn.State, turn.Text,
-	).Scan(&turn.Seq, &turn.CreatedAt)
+	).Scan(&turn.Seq, &turn.CreatedAt, &position)
 	var failure *pgconn.PgError
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return Turn{}, ErrNotFound
+		return Turn{}, 0, ErrNotFound
 	case errors.As(err, &failure) && failure.Code == uniqueViolation:
-		return Turn{}, ErrSessionBusy
+		return Turn{}, 0, ErrSessionBusy
 	}
-	return turn, err
+	return turn, position, err
+}
+
+// QueuedTurns returns the IDs of the queued turns in the order in which they
+// will run.
+func (s *Store) QueuedTurns(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := s.pool.Query(ctx,
+		`select id from turns where state = $1 order by created_at, id`, TurnQueued,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
 }
 
 func (s *Store) Turn(ctx context.Context, id uuid.UUID) (Turn, error) {

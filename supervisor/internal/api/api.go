@@ -163,13 +163,13 @@ func (a *api) createMessage(w http.ResponseWriter, r *http.Request) error {
 	if request.Text == "" {
 		return invalid("text is required")
 	}
-	turn, err := a.store.CreateTurn(r.Context(), sessionID, request.Text)
+	turn, position, err := a.store.CreateTurn(r.Context(), sessionID, request.Text)
 	if err != nil {
 		return err
 	}
 	// The turn is accepted once it is stored. The event only reports that, so
 	// failing to publish it does not fail the request.
-	if err := a.events.Append(r.Context(), turn.ID, events.TurnQueued, struct{}{}); err != nil {
+	if err := a.events.AppendQueued(r.Context(), turn.ID, position); err != nil {
 		slog.ErrorContext(r.Context(), "publish turn event", "turn", turn.ID, "event", events.TurnQueued, "error", err)
 	}
 	a.driver.Wake()
