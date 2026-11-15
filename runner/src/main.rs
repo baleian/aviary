@@ -38,6 +38,7 @@ const USAGE: &str = "usage: aviary-runner [init-home <directory>]";
 const HARNESS_COMMAND: &str = "AVIARY_HARNESS_COMMAND";
 const GATEWAY_URL: &str = "AVIARY_GATEWAY_URL";
 const TURN_TOKEN: &str = "AVIARY_TURN_TOKEN";
+const MAX_TOOL_OUTPUT: &str = "AVIARY_MAX_TOOL_OUTPUT_BYTES";
 
 /// How many reports may wait for the Supervisor before the harness is held
 /// back.
@@ -141,6 +142,12 @@ async fn run_turn() -> Result<(), Failure> {
     let command = variable(HARNESS_COMMAND)?;
     let harness = AcpAgent::from_str(&command).map_err(Failure::harness)?;
     let cwd = env::current_dir().map_err(Failure::runner)?;
+    // The longest text of a tool call that is reported as it is. Without the
+    // setting, or with zero, all are.
+    let longest = env::var(MAX_TOOL_OUTPUT)
+        .ok()
+        .and_then(|bytes| bytes.parse::<usize>().ok())
+        .filter(|bytes| *bytes > 0);
 
     let channel = Endpoint::from_shared(variable(GATEWAY_URL)?)
         .map_err(Failure::runner)?
@@ -176,7 +183,10 @@ async fn run_turn() -> Result<(), Failure> {
         .on_receive_notification(
             {
                 let reports = reports.clone();
-                async move |notification: SessionNotification, _| match event(notification.update) {
+                async move |notification: SessionNotification, _| match event(
+                    notification.update,
+                    longest,
+                ) {
                     Some(event) => report(&reports, event).await,
                     None => Ok(()),
                 }
@@ -298,7 +308,15 @@ async fn report(
 
 /// Turns an update from the harness into the event that the Supervisor
 /// passes on. Updates that are not events of a turn are dropped.
-fn event(update: SessionUpdate) -> Option<Report> {
+fn event(update: SessionUpdate, longest: Option<usize>) -> Option<Report> {
+    // What a tool was called with and what it returned can be megabytes,
+    // the output of a command for example. The harness keeps all of it for
+    // the model. What is reported is for a person to look at.
+    let value = |json| value(cut(json, longest));
+    let structure = |fields| match cut(serde_json::Value::Object(fields), longest) {
+        serde_json::Value::Object(fields) => structure(fields),
+        _ => unreachable!("cutting an object leaves an object"),
+    };
     match update {
         SessionUpdate::AgentMessageChunk(chunk) => {
             let (text, message_id) = text(chunk)?;
@@ -364,6 +382,38 @@ fn name(value: &impl Serialize) -> String {
 /// A number of tokens in the form that the Supervisor takes.
 fn count(tokens: u64) -> i64 {
     i64::try_from(tokens).unwrap_or(i64::MAX)
+}
+
+/// Cuts the texts in a value that are longer than longest bytes, and says
+/// in each how much is missing.
+fn cut(json: serde_json::Value, longest: Option<usize>) -> serde_json::Value {
+    use serde_json::Value;
+    let Some(longest) = longest else {
+        return json;
+    };
+    match json {
+        Value::String(text) if text.len() > longest => {
+            let mut end = longest;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            let cut = text.len() - end;
+            Value::String(format!("{}... [{cut} more bytes cut]", &text[..end]))
+        }
+        Value::Array(values) => Value::Array(
+            values
+                .into_iter()
+                .map(|value| self::cut(value, Some(longest)))
+                .collect(),
+        ),
+        Value::Object(fields) => Value::Object(
+            fields
+                .into_iter()
+                .map(|(name, value)| (name, self::cut(value, Some(longest))))
+                .collect(),
+        ),
+        other => other,
+    }
 }
 
 fn value(json: serde_json::Value) -> prost_types::Value {

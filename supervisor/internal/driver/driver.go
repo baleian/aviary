@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -72,6 +73,10 @@ type Config struct {
 	ProxyURL string
 	// Harnesses are the harnesses that agents can use, by name.
 	Harnesses map[string]Harness
+	// MaxToolOutputBytes is the longest text of a tool call, in what the
+	// tool was called with or returned, that the runner reports as it is.
+	// It cuts a longer one. Zero is no limit.
+	MaxToolOutputBytes int
 	// MaxStartup is how long the pod of a turn may take until its runner
 	// has connected. A turn whose pod takes longer fails. Zero is no limit.
 	MaxStartup time.Duration
@@ -587,6 +592,7 @@ func (d *Driver) job(dispatch store.Dispatch, harness Harness, hosts []corev1.Ho
 							{Name: "AVIARY_LLM_BASE_URL", Value: d.config.LLMBaseURL},
 							{Name: "AVIARY_LLM_API_KEY", Value: dispatch.Token},
 							{Name: "AVIARY_LLM_MODEL", Value: d.config.LLMModel},
+							{Name: "AVIARY_MAX_TOOL_OUTPUT_BYTES", Value: strconv.Itoa(d.config.MaxToolOutputBytes)},
 							// Everything else that the programs in the pod fetch
 							// goes through the proxy. Some programs read the
 							// names in capitals and some the others.

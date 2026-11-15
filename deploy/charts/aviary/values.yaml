@@ -81,6 +81,11 @@ runtime:
   # that an agent does for one message, which can be many requests to the
   # model. A turn that runs longer is stopped and fails.
   maxTurnSeconds: 1800
+  # The longest text of a tool call, in what the tool was called with or
+  # returned, that is reported in the events of a turn as it is. A longer
+  # text, such as the output of a command, is cut to this many bytes. The
+  # agent itself still has all of it. Zero is no limit.
+  maxToolOutputBytes: 65536
   # The image that holds the runner. Every turn pod mounts it.
   runnerImage: aviary-runner:dev
   # The harnesses that agents can use, by the name that an agent is created
