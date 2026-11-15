@@ -4,6 +4,8 @@
 // answers: the last message of the user is an instruction.
 //
 //	say <text>     replies with the text
+//	drawl <text>   replies with the text slowly, a word every half second,
+//	               which leaves time to stop the turn in the middle of it
 //	run <command>  runs the command with the harness's shell tool, then
 //	               replies with what the tool returned
 //	recall         replies with the instructions that the user gave before,
@@ -34,6 +36,9 @@ const (
 	inputTokens  = 11
 	outputTokens = 7
 )
+
+// drawlPause is how long a slow answer waits after each of its pieces.
+const drawlPause = 500 * time.Millisecond
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
@@ -71,12 +76,24 @@ type shellTool struct {
 }
 
 // answer is what the model does next: it calls the shell tool with command,
-// or else it says text. If failure is set there is no answer: the request is
-// refused with it.
+// or else it says text, with a pause after each piece. If failure is set
+// there is no answer: the request is refused with it.
 type answer struct {
 	text    string
+	pause   time.Duration
 	command string
 	failure string
+}
+
+// wait pauses after a piece of the answer. It reports false if the harness
+// has gone meanwhile.
+func (a answer) wait(r *http.Request) bool {
+	select {
+	case <-time.After(a.pause):
+		return true
+	case <-r.Context().Done():
+		return false
+	}
 }
 
 func (c conversation) next() answer {
@@ -92,6 +109,8 @@ func (c conversation) next() answer {
 		return answer{text: "mock"}
 	case word == "say":
 		return answer{text: rest}
+	case word == "drawl":
+		return answer{text: rest, pause: drawlPause}
 	case word == "fail":
 		return answer{failure: rest}
 	case word == "run" && c.shell == nil:
@@ -117,7 +136,7 @@ func (c conversation) next() answer {
 func instruction(message string) (word, rest string, found bool) {
 	word, rest, _ = strings.Cut(strings.TrimSpace(message), " ")
 	switch word {
-	case "say", "run", "recall", "fail":
+	case "say", "drawl", "run", "recall", "fail":
 		return word, strings.TrimSpace(rest), true
 	}
 	return "", "", false
@@ -282,6 +301,9 @@ func chatCompletions(w http.ResponseWriter, r *http.Request) {
 	if next.command == "" {
 		for _, piece := range pieces(next.text) {
 			chunk(map[string]any{"content": piece}, nil)
+			if !next.wait(r) {
+				return
+			}
 		}
 		chunk(map[string]any{}, "stop")
 	} else {
@@ -379,6 +401,9 @@ func responses(w http.ResponseWriter, r *http.Request) {
 		send("response.content_part.added", at(map[string]any{"part": part("")}))
 		for _, piece := range pieces(next.text) {
 			send("response.output_text.delta", at(map[string]any{"delta": piece}))
+			if !next.wait(r) {
+				return
+			}
 		}
 		send("response.output_text.done", at(map[string]any{"text": next.text}))
 		send("response.content_part.done", at(map[string]any{"part": part(next.text)}))
