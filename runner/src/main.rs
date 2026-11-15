@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::env;
 use std::error::Error;
 use std::fmt::{self, Display};
@@ -78,7 +79,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 /// Why the runner could not finish the turn.
 #[derive(Debug)]
 struct Failure {
-    /// One of harness_error, supervisor_lost, runner_error.
+    /// One of harness_error, resume_failed, supervisor_lost, runner_error.
     reason: &'static str,
     message: String,
 }
@@ -94,6 +95,18 @@ impl Failure {
     /// a person to read. The data that it adds is for a program.
     fn answered(error: agent_client_protocol::Error) -> Self {
         Self::harness(error.message)
+    }
+
+    /// The harness could not continue its session of an earlier turn: what
+    /// it had kept of the conversation is gone or cannot be read.
+    fn forgotten(error: agent_client_protocol::Error) -> Self {
+        Self::new(
+            "resume_failed",
+            format!(
+                "the harness could not continue its session: {}",
+                error.message
+            ),
+        )
     }
 
     /// The Supervisor could not be reached, or the connection to it broke.
@@ -174,6 +187,8 @@ async fn run_turn() -> Result<(), Failure> {
     let Some(Order::Start(start)) = first.and_then(|order| order.message) else {
         return Err(Failure::supervisor("the Supervisor did not start the turn"));
     };
+    // Set when the harness could not continue its session.
+    let forgotten = Cell::new(false);
     // Carries the Supervisor's order to cancel to where the harness is
     // talked to. One order is enough, so more are dropped.
     let (mut cancel, mut cancelled) = mpsc::channel::<()>(1);
@@ -210,7 +225,8 @@ async fn run_turn() -> Result<(), Failure> {
                     harness
                         .send_request(ResumeSessionRequest::new(session_id.clone(), cwd))
                         .block_task()
-                        .await?;
+                        .await
+                        .inspect_err(|_| forgotten.set(true))?;
                     session_id
                 }
                 None => {
@@ -268,6 +284,8 @@ async fn run_turn() -> Result<(), Failure> {
                 // the talk with the harness with an error.
                 outcome = turn => break outcome.map_err(|error| if reports.is_closed() {
                     Failure::supervisor("the Supervisor closed the turn")
+                } else if forgotten.get() {
+                    Failure::forgotten(error)
                 } else {
                     Failure::answered(error)
                 })?,

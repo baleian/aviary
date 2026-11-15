@@ -114,6 +114,10 @@ const (
 	// FailureStartup: the pod of the turn did not start in time, for example
 	// because an image could not be pulled.
 	FailureStartup = "startup_timed_out"
+	// FailureResume: the harness could not continue its session, because
+	// what it had kept of the conversation is gone or cannot be read. The
+	// next turn of the session starts a new harness session.
+	FailureResume = "resume_failed"
 	// FailureTimedOut: the turn ran for longer than a turn may.
 	FailureTimedOut = "timed_out"
 	// FailureOutOfMemory: the pod used more memory than it may.
@@ -622,8 +626,13 @@ func (s *Store) GiveUpTurn(ctx context.Context, turnID uuid.UUID, failure Failur
 // on the session accepts its next message. The second result is false if the
 // turn had ended before, or does not exist.
 func (s *Store) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool, failure Failure) (Turn, bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Turn{}, false, err
+	}
+	defer tx.Rollback(ctx)
 	turn := Turn{ID: turnID}
-	err := scanTurn(s.pool.QueryRow(ctx,
+	err = scanTurn(tx.QueryRow(ctx,
 		`with ending as (
 		     select case
 		                when cancel_requested_at is not null
@@ -648,7 +657,19 @@ func (s *Store) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool, f
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Turn{}, false, nil
 	}
-	return turn, err == nil, err
+	if err != nil {
+		return Turn{}, false, err
+	}
+	// A harness session that cannot be continued is not tried again: the
+	// next turn of the session starts a new one. The session keeps its
+	// files, and the agent starts without its memory of the conversation.
+	if turn.Failure != nil && turn.Failure.Reason == FailureResume {
+		_, err := tx.Exec(ctx, `update sessions set harness_session_id = null where id = $1`, turn.SessionID)
+		if err != nil {
+			return Turn{}, false, err
+		}
+	}
+	return turn, true, tx.Commit(ctx)
 }
 
 // hashToken returns what is stored of a turn token. The token is random, so

@@ -364,7 +364,7 @@ func (d *Driver) failure(ctx context.Context, job *batchv1.Job) store.Failure {
 		var left store.Failure
 		if json.Unmarshal([]byte(terminated.Message), &left) == nil {
 			switch left.Reason {
-			case store.FailureHarness, store.FailureSupervisorLost, store.FailureRunner:
+			case store.FailureHarness, store.FailureResume, store.FailureSupervisorLost, store.FailureRunner:
 				return left
 			}
 		}
