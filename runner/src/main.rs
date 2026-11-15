@@ -386,6 +386,10 @@ impl Link {
     fn new() -> Result<Self, Failure> {
         let channel = Endpoint::from_shared(variable(GATEWAY_URL)?)
             .map_err(Failure::runner)?
+            // An attempt to connect that gets no answer is not given up
+            // otherwise, and no other is made: the runner would not find
+            // the Supervisors that come later.
+            .connect_timeout(ANSWER)
             .http2_keep_alive_interval(KEEPALIVE)
             .keep_alive_timeout(KEEPALIVE)
             .keep_alive_while_idle(true)
