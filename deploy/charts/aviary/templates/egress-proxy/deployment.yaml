@@ -21,6 +21,12 @@ spec:
         checksum/config: {{ include (print $.Template.BasePath "/egress-proxy/configmap.yaml") . | sha256sum }}
     spec:
       automountServiceAccountToken: false
+      # A proxy that is to stop goes on for as long as a turn may run. From
+      # the moment that it is to stop, new connections go to the other
+      # proxies, and the turns that have connections to this one end within
+      # that time. Envoy stops at once when it is told to, without regard to
+      # the requests that it is passing on, so it is told only then.
+      terminationGracePeriodSeconds: {{ add .Values.runtime.maxTurnSeconds 60 }}
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -29,6 +35,10 @@ spec:
         - name: envoy
           image: {{ .Values.egressProxy.image }}
           args: ["--config-path", "/etc/envoy/envoy.yaml", "--disable-hot-restart"]
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: {{ add .Values.runtime.maxTurnSeconds 30 }}
           ports:
             - name: llm
               containerPort: 8080

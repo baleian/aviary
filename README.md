@@ -292,6 +292,12 @@ A LimitRange or a ResourceQuota on the namespace of the turn pods,
 `aviary-runtime`, does that: Kubernetes then refuses the pod of a turn that
 asks for more, and the turn fails as `startup_timed_out`.
 
+A Supervisor that is to stop, as when its deployment is scaled in or rolled
+out, first finishes the turns whose runners are connected to it. An Egress
+Proxy that is to stop goes on for as long as a turn may run,
+`runtime.maxTurnSeconds`, because the turns that are connected to it may
+send requests until they end. Its pod shows as `Terminating` for that long.
+
 To run a harness that is not in this repository, see
 [Harness images](images/README.md).
 
