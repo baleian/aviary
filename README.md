@@ -80,21 +80,11 @@ curl and bash. The commands were tested with kind 0.33, Helm 4.3 and
 Docker 29 on Linux.
 
 ```sh
-make cluster-up            # a kind cluster with an NFS volume, PostgreSQL and Valkey
-make images                # builds the images and loads them into the cluster
-make deploy                # installs Aviary with its Helm chart
-make e2e HARNESS=opencode  # or HARNESS=codex
+make cluster-up   # a kind cluster with an NFS volume, PostgreSQL and Valkey
+make images       # builds the images and loads them into the cluster
+make deploy       # installs Aviary with its Helm chart
 ```
 
-`make e2e` creates sessions through the API and checks that turns run, that
-a session continues, that sessions do not see each other, that the agent
-does not hold the model's key and reaches the outside only through the
-Egress Proxy, that turns queue, can be cancelled and expire, that a failed
-turn says why, that the conversation can be read back, also of a turn that
-was cut off, that an agent is told its instructions, that the metrics tell
-of the turns and the requests, that the turn pods get their resources, and
-that a turn outlasts its Supervisor.
-It needs no model: it uses a mock model server that answers by a script.
 `make cluster-down` deletes the cluster.
 
 ### Sending a message yourself
@@ -304,6 +294,20 @@ proxy was passing on break.
 To run a harness that is not in this repository, see
 [Harness images](images/README.md).
 
+## Tests
+
+```sh
+make test          # each part by itself, without a cluster
+make test-harness  # the harness images, in containers set up as the pods of turns
+make e2e           # the parts together, in a kind cluster of its own
+```
+
+None of them needs a model: a mock model server answers by a script. The
+first two also need Rust, which rustup installs in the version that
+`rust-toolchain.toml` names. `make e2e` makes its cluster anew and removes it
+when the tests have passed, so it does not touch the cluster of
+`make cluster-up`.
+
 ## Repository
 
 | Path | |
@@ -314,7 +318,7 @@ To run a harness that is not in this repository, see
 | `images/` | The images of the Supervisor, the runner and the harnesses. |
 | `deploy/charts/aviary/` | The Helm chart. |
 | `hack/kind/` | The local cluster. |
-| `test/` | The end-to-end test and its mock model server. |
+| `test/` | The tests of the chart, of the Egress Proxy and of the parts together, and the mock model server. The tests of the Supervisor and of the runner are with their code. |
 
 ## What is missing
 

@@ -20,6 +20,11 @@ HARNESS_IMAGES ?= $(OPENCODE_IMAGE) $(CODEX_IMAGE)
 
 KUBECTL := kubectl --context kind-$(CLUSTER)
 HELM := helm --kube-context kind-$(CLUSTER)
+# The cluster that the e2e makes for itself, and the harnesses that it runs
+# turns of. The first of them runs what does not depend on the harness.
+E2E_CLUSTER := aviary-e2e
+E2E_KUBECTL := kubectl --context kind-$(E2E_CLUSTER)
+E2E_HARNESSES ?= opencode codex
 # Runs go in the image that builds the Supervisor, so the host needs no Go.
 # It is called with the directory of a module, and with options for docker if
 # there are any. The volume keeps what go downloads and builds.
@@ -45,7 +50,7 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 # The value of a variable in .env, or nothing if there is no .env.
 dotenv = $$(test ! -f .env || sed --quiet 's/^$(1)=//p' .env)
 
-.PHONY: proto sqlc test test-supervisor test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down build images deploy e2e
+.PHONY: proto sqlc test test-supervisor test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down build images secrets deploy e2e e2e-up e2e-run e2e-down
 
 # Writes the Go code for proto/ to supervisor/internal/gen. Run it after
 # changing a .proto file. It runs in the image that builds the Supervisor, so
@@ -172,11 +177,8 @@ images: build
 # CloudNativePG writes the database's connection secret next to the database.
 # A pod can only read secrets in its own namespace, so the secret is copied to
 # the Supervisor's. Valkey has no such secret, so its URL is put together
-# from its password. The image ID makes the pod restart when the image changes.
-# The model endpoint is taken from .env if there is one: its address and the
-# model's name become chart values, and its key a secret that only the Egress
-# Proxy reads. The e2e does not need it: it brings a model server of its own.
-deploy:
+# from its password.
+secrets:
 	$(KUBECTL) create namespace aviary-system --dry-run=client --output yaml | $(KUBECTL) apply -f -
 	$(KUBECTL) get secret postgres-app --namespace aviary-data --output json | \
 		jq '{apiVersion, kind, type, data, metadata: {name: "aviary-database"}}' | \
@@ -184,6 +186,12 @@ deploy:
 	$(KUBECTL) get secret valkey-users --namespace aviary-data --output json | \
 		jq '{apiVersion, kind, type, metadata: {name: "aviary-valkey"}, stringData: {uri: ("valkey://default:" + (.data.default | @base64d) + "@valkey.aviary-data:6379")}}' | \
 		$(KUBECTL) apply --namespace aviary-system -f -
+
+# The image ID makes the pod restart when the image changes. The model
+# endpoint is taken from .env if there is one: its address and the model's
+# name become chart values, and its key a secret that only the Egress Proxy
+# reads.
+deploy: secrets
 	test ! -f .env || sed --quiet 's/^AVIARY_LLM_API_KEY=//p' .env | tr --delete '\n' | \
 		$(KUBECTL) create secret generic aviary-llm --namespace aviary-system --from-file=api-key=/dev/stdin \
 			--dry-run=client --output yaml | $(KUBECTL) apply -f -
@@ -195,5 +203,37 @@ deploy:
 		--wait
 	@test -f .env || echo "There is no .env, so the turns have no model endpoint. It sets AVIARY_LLM_BASE_URL, AVIARY_LLM_API_KEY and AVIARY_LLM_MODEL."
 
-e2e:
-	test/e2e/run.sh $(HARNESS)
+# Runs the e2e in a cluster of its own, which it makes anew, so that nothing
+# of an earlier run or of the cluster that make cluster-up makes plays a part.
+# The cluster is removed when the tests have passed. After a failure it
+# stays, and what its pods logged is in .out/e2e: make e2e-run runs the tests
+# in it again, and make e2e-down removes it.
+e2e: e2e-up
+	$(MAKE) e2e-run
+	$(MAKE) e2e-down
+
+e2e-up:
+	$(MAKE) cluster-down cluster-up images secrets CLUSTER=$(E2E_CLUSTER)
+	$(E2E_KUBECTL) apply --filename test/e2e/mock-llm.yaml
+	helm --kube-context kind-$(E2E_CLUSTER) upgrade --install aviary deploy/charts/aviary \
+		--namespace aviary-system --values test/e2e/values.yaml --wait
+	$(E2E_KUBECTL) --namespace aviary-e2e rollout status deployment/mock-llm --timeout 120s
+
+# The tests reach the cluster over the network of its nodes.
+e2e-run:
+	mkdir -p .out/e2e
+	kind get kubeconfig --internal --name $(E2E_CLUSTER) > .out/e2e/kubeconfig
+	$(call GO,test,--network kind --env AVIARY_E2E_KUBECONFIG=/src/.out/e2e/kubeconfig \
+		--env AVIARY_E2E_HARNESSES="$(E2E_HARNESSES)") test -count=1 -timeout 20m -v ./e2e/... $(TESTS); \
+		status=$$?; [ $$status = 0 ] || { \
+			for part in supervisor egress-proxy; do \
+				$(E2E_KUBECTL) --namespace aviary-system logs --selector app.kubernetes.io/component=$$part \
+					--prefix --tail -1 > .out/e2e/$$part.log 2>&1; \
+			done; \
+			$(E2E_KUBECTL) get pods,jobs --all-namespaces --output wide > .out/e2e/pods.txt 2>&1; \
+			$(E2E_KUBECTL) get events --all-namespaces --sort-by .lastTimestamp > .out/e2e/events.txt 2>&1; \
+			echo "The e2e failed. The cluster $(E2E_CLUSTER) is left as it is, and what it tells is in .out/e2e."; \
+		}; exit $$status
+
+e2e-down:
+	$(MAKE) cluster-down CLUSTER=$(E2E_CLUSTER)
