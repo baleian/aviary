@@ -801,3 +801,264 @@ fn allow_once(request: &RequestPermissionRequest) -> RequestPermissionOutcome {
             ))
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    /// The update that a harness sends as the JSON.
+    fn update(json: serde_json::Value) -> SessionUpdate {
+        serde_json::from_value(json).expect("an update of a session")
+    }
+
+    /// A value of a report as the JSON that the Supervisor makes of it.
+    fn json(value: &prost_types::Value) -> serde_json::Value {
+        use prost_types::value::Kind;
+        match value.kind.as_ref().expect("a value") {
+            Kind::NullValue(_) => serde_json::Value::Null,
+            Kind::BoolValue(value) => json!(value),
+            Kind::NumberValue(value) => json!(value),
+            Kind::StringValue(value) => json!(value),
+            Kind::ListValue(list) => list.values.iter().map(json).collect(),
+            Kind::StructValue(fields) => fields
+                .fields
+                .iter()
+                .map(|(name, value)| (name.clone(), json(value)))
+                .collect::<serde_json::Map<_, _>>()
+                .into(),
+        }
+    }
+
+    #[test]
+    fn texts_that_are_too_long_are_cut() {
+        assert_eq!(
+            cut(json!("0123456789"), Some(4)),
+            json!("0123... [6 more bytes cut]")
+        );
+        assert_eq!(cut(json!("0123"), Some(4)), json!("0123"));
+        assert_eq!(cut(json!("0123456789"), None), json!("0123456789"));
+        // A text is cut between two characters, not within one.
+        assert_eq!(
+            cut(json!("가나다"), Some(4)),
+            json!("가... [6 more bytes cut]")
+        );
+        assert_eq!(
+            cut(
+                json!({"command": ["cat", "0123456789"], "exit": 0, "out": {"text": "0123456789", "ok": true}}),
+                Some(4)
+            ),
+            json!({
+                "command": ["cat", "0123... [6 more bytes cut]"],
+                "exit": 0,
+                "out": {"text": "0123... [6 more bytes cut]", "ok": true},
+            })
+        );
+    }
+
+    #[test]
+    fn what_the_agent_says_and_thinks_is_reported() {
+        let said = update(json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": "Hello"},
+            "messageId": "m1",
+        }));
+        match event(said, None) {
+            Some(Report::MessageDelta(delta)) => {
+                assert_eq!(delta.text, "Hello");
+                assert_eq!(delta.message_id.as_deref(), Some("m1"));
+            }
+            other => panic!("the message was reported as {other:?}"),
+        }
+        let thought = update(json!({
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {"type": "text", "text": "Hm"},
+        }));
+        match event(thought, None) {
+            Some(Report::ThoughtDelta(delta)) => {
+                assert_eq!(delta.text, "Hm");
+                assert_eq!(delta.message_id, None);
+            }
+            other => panic!("the thought was reported as {other:?}"),
+        }
+    }
+
+    #[test]
+    fn what_is_no_event_of_a_turn_is_not_reported() {
+        for dropped in [
+            json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "image", "data": "", "mimeType": "image/png"},
+            }),
+            json!({
+                "sessionUpdate": "user_message_chunk",
+                "content": {"type": "text", "text": "Hello"},
+            }),
+            json!({"sessionUpdate": "available_commands_update", "availableCommands": []}),
+        ] {
+            let reported = event(update(dropped.clone()), None);
+            assert!(reported.is_none(), "{dropped} was reported as {reported:?}");
+        }
+    }
+
+    #[test]
+    fn tool_calls_are_reported_with_their_long_texts_cut() {
+        let call = update(json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": "t1",
+            "title": "cat notes.txt",
+            "kind": "execute",
+            "status": "in_progress",
+            "rawInput": {"command": "cat notes.txt"},
+            "_meta": {"terminal": "0123456789"},
+        }));
+        match event(call, Some(15)) {
+            Some(Report::ToolCall(call)) => {
+                assert_eq!(
+                    (
+                        call.id.as_str(),
+                        call.title.as_str(),
+                        call.kind.as_str(),
+                        call.status.as_str()
+                    ),
+                    ("t1", "cat notes.txt", "execute", "in_progress")
+                );
+                assert_eq!(
+                    call.input.as_ref().map(json),
+                    Some(json!({"command": "cat notes.txt"}))
+                );
+                assert_eq!(call.output, None);
+                let meta = prost_types::Value {
+                    kind: call.meta.map(prost_types::value::Kind::StructValue),
+                };
+                assert_eq!(json(&meta), json!({"terminal": "0123456789"}));
+            }
+            other => panic!("the tool call was reported as {other:?}"),
+        }
+
+        let output = "0123456789".repeat(10);
+        let update = update(json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "t1",
+            "status": "completed",
+            "rawOutput": {"output": output, "exit_code": 0},
+        }));
+        match event(update, Some(15)) {
+            Some(Report::ToolUpdate(update)) => {
+                assert_eq!(update.id, "t1");
+                assert_eq!(update.status.as_deref(), Some("completed"));
+                // An update tells only what has changed.
+                assert_eq!(
+                    (update.title, update.kind, update.input),
+                    (None, None, None)
+                );
+                assert_eq!(
+                    update.output.as_ref().map(json),
+                    Some(
+                        json!({"output": "012345678901234... [85 more bytes cut]", "exit_code": 0.0})
+                    )
+                );
+            }
+            other => panic!("the update of the tool call was reported as {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_plan_is_reported() {
+        let plan = update(json!({
+            "sessionUpdate": "plan",
+            "entries": [
+                {"content": "read the notes", "priority": "high", "status": "completed"},
+                {"content": "answer", "priority": "medium", "status": "pending"},
+            ],
+        }));
+        match event(plan, None) {
+            Some(Report::PlanUpdate(plan)) => {
+                let entries: Vec<_> = plan
+                    .entries
+                    .iter()
+                    .map(|entry| {
+                        (
+                            entry.content.as_str(),
+                            entry.priority.as_str(),
+                            entry.status.as_str(),
+                        )
+                    })
+                    .collect();
+                assert_eq!(
+                    entries,
+                    [
+                        ("read the notes", "high", "completed"),
+                        ("answer", "medium", "pending")
+                    ]
+                );
+            }
+            other => panic!("the plan was reported as {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_permission_is_given_for_once() {
+        let ask = |options: serde_json::Value| -> RequestPermissionRequest {
+            serde_json::from_value(json!({
+                "sessionId": "s1",
+                "toolCall": {"toolCallId": "t1"},
+                "options": options,
+            }))
+            .expect("a request for permission")
+        };
+        let offered = ask(json!([
+            {"optionId": "always", "name": "Always", "kind": "allow_always"},
+            {"optionId": "once", "name": "Once", "kind": "allow_once"},
+            {"optionId": "no", "name": "No", "kind": "reject_once"},
+        ]));
+        match allow_once(&offered) {
+            RequestPermissionOutcome::Selected(selected) => {
+                assert_eq!(selected.option_id.to_string(), "once");
+            }
+            other => panic!("the request was answered with {other:?}"),
+        }
+        // A harness that does not offer to allow it once is not allowed more.
+        let not_offered = ask(json!([
+            {"optionId": "always", "name": "Always", "kind": "allow_always"},
+        ]));
+        assert!(matches!(
+            allow_once(&not_offered),
+            RequestPermissionOutcome::Cancelled
+        ));
+    }
+
+    #[test]
+    fn the_runner_calls_again_unless_the_supervisor_refused_it_for_good() {
+        for (code, is) in [
+            (Code::Unauthenticated, true),
+            (Code::FailedPrecondition, true),
+            (Code::InvalidArgument, true),
+            (Code::DataLoss, true),
+            (Code::ResourceExhausted, true),
+            (Code::Unavailable, false),
+            (Code::Internal, false),
+            (Code::Cancelled, false),
+            (Code::Unknown, false),
+            (Code::DeadlineExceeded, false),
+        ] {
+            assert_eq!(is_final(&Status::new(code, "")), is, "{code:?}");
+        }
+    }
+
+    #[test]
+    fn a_failure_is_left_as_its_reason_and_what_is_known_of_it() {
+        let left: serde_json::Value =
+            serde_json::from_str(&Failure::harness("the model is out of order").to_json())
+                .expect("JSON");
+        assert_eq!(
+            left,
+            json!({"reason": "harness_error", "message": "the model is out of order"})
+        );
+        // Kubernetes keeps only a few kilobytes of it.
+        let long = Failure::runner("가".repeat(5000));
+        assert_eq!(long.message.chars().count(), 2000);
+        assert!(long.to_json().len() < 4096 * 2);
+    }
+}

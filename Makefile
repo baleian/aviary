@@ -30,7 +30,7 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 # The value of a variable in .env, or nothing if there is no .env.
 dotenv = $$(test ! -f .env || sed --quiet 's/^$(1)=//p' .env)
 
-.PHONY: proto sqlc test test-supervisor cluster-up cluster-down images deploy e2e
+.PHONY: proto sqlc test test-supervisor test-runner cluster-up cluster-down images deploy e2e
 
 # Writes the Go code for proto/ to supervisor/internal/gen. Run it after
 # changing a .proto file. It runs in the image that builds the Supervisor, so
@@ -47,17 +47,22 @@ sqlc:
 	docker run --rm --user $$(id -u):$$(id -g) \
 		--volume $(CURDIR)/supervisor:/src --workdir /src $(SQLC_IMAGE) generate
 
-# The tests that need no cluster.
-test: test-supervisor
+# The tests that need no cluster. TESTS narrows a run to some of the tests
+# of one of them, for example
+# make test-supervisor TESTS='-run TestEndTurn ./internal/store'
+# make test-runner TESTS=cut
+test: test-supervisor test-runner
 
 # The services are started anew for every run and removed after it, also
-# when a test fails. TESTS narrows a run to some of the tests, for example
-# make test-supervisor TESTS='-run TestEndTurn ./internal/store'
-TESTS ?= ./...
+# when a test fails.
+test-supervisor: TESTS ?= ./...
 test-supervisor:
 	$(SERVICES) up --detach --wait --force-recreate
 	$(call GO,$(IN_SERVICES)) test -race -shuffle=on -count=1 -timeout 2m $(TESTS); \
 		status=$$?; $(SERVICES) down --volumes; exit $$status
+
+test-runner:
+	cargo test --locked --package aviary-runner $(TESTS)
 
 cluster-up:
 	kind get clusters 2>/dev/null | grep -qx $(CLUSTER) || \
