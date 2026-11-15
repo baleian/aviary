@@ -1,0 +1,8 @@
+# A model endpoint that the list of allowed hosts does not allow, at an
+# address inside the cluster.
+llm:
+  url: http://10.1.2.3:8000/v1
+  model: a-model
+egressProxy:
+  allowedHosts:
+    - packages.example.com

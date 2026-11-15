@@ -26,6 +26,10 @@ HELM := helm --kube-context kind-$(CLUSTER)
 GO = docker run --rm --user $$(id -u):$$(id -g) --env HOME=/tmp --env GOCACHE=/go/cache \
 	--volume aviary-go:/go --volume $(CURDIR):/src --workdir /src/$(1) $(2) $(GO_IMAGE) go
 GO_TEST := test -race -shuffle=on -count=1 -timeout 2m
+# What the tests make of the chart, and the image of Envoy that the chart
+# runs as the Egress Proxy.
+RENDER := helm template aviary deploy/charts/aviary --namespace aviary-system
+ENVOY_IMAGE = $(shell sed --quiet 's/^  image: \(envoyproxy.*\)/\1/p' deploy/charts/aviary/values.yaml)
 # What the tests of the Supervisor run against, and how the tests reach it.
 SERVICES := docker compose --file test/compose.yaml --project-name aviary-test-supervisor
 IN_SERVICES := --network aviary-test-supervisor_default \
@@ -35,7 +39,7 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 # The value of a variable in .env, or nothing if there is no .env.
 dotenv = $$(test ! -f .env || sed --quiet 's/^$(1)=//p' .env)
 
-.PHONY: proto sqlc test test-supervisor test-runner test-mock-llm test-harness cluster-up cluster-down build images deploy e2e
+.PHONY: proto sqlc test test-supervisor test-runner test-mock-llm test-chart test-harness cluster-up cluster-down build images deploy e2e
 
 # Writes the Go code for proto/ to supervisor/internal/gen. Run it after
 # changing a .proto file. It runs in the image that builds the Supervisor, so
@@ -56,7 +60,7 @@ sqlc:
 # of one of them, for example
 # make test-supervisor TESTS='-run TestEndTurn ./internal/store'
 # make test-runner TESTS=cut
-test: test-supervisor test-runner test-mock-llm
+test: test-supervisor test-runner test-mock-llm test-chart
 
 # The services are started anew for every run and removed after it, also
 # when a test fails.
@@ -72,6 +76,28 @@ test-runner:
 test-mock-llm: TESTS ?= ./...
 test-mock-llm:
 	$(call GO,test/mock-llm) $(GO_TEST) $(TESTS)
+
+# Renders the chart with its own values and with those in test/chart, checks
+# what it makes of them and that it refuses what it can make nothing of, and
+# has Envoy check the configuration that it is given.
+test-chart: TESTS ?= ./chart/...
+test-chart:
+	helm lint --strict --quiet deploy/charts/aviary
+	mkdir -p .out/chart/llm
+	echo key > .out/chart/llm/api-key
+	$(RENDER) > .out/chart/default.yaml
+	$(RENDER) --values test/chart/set.yaml > .out/chart/set.yaml
+	$(RENDER) --values test/chart/closed.yaml > .out/chart/closed.yaml
+	! $(RENDER) --set llm.url=llm.example.com/v1 --set llm.model=a-model > /dev/null 2>&1
+	! $(RENDER) --set llm.url=https://llm.example.com/v1 > /dev/null 2>&1
+	! $(RENDER) --set 'egressProxy.allowedHosts={https://example.com}' > /dev/null 2>&1
+	$(call GO,test,--env AVIARY_TEST_RENDERED=/src/.out/chart) $(GO_TEST) $(TESTS)
+	for values in default set closed; do \
+		$(call GO,test) run ./internal/unpack /src/.out/chart/$$values.yaml /src/.out/chart/$$values && \
+		docker run --rm --volume $(CURDIR)/.out/chart/$$values:/etc/envoy:ro \
+			--volume $(CURDIR)/.out/chart/llm:/etc/aviary/llm:ro \
+			$(ENVOY_IMAGE) --mode validate --log-level error --config-path /etc/envoy/envoy.yaml || exit 1; \
+	done
 
 # Tests the harness images as the pods of turns run them, in containers and
 # without a cluster. A few at a time: a harness takes some memory.
