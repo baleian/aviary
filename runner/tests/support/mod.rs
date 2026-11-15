@@ -55,6 +55,8 @@ pub struct State {
     pub holding: bool,
     /// What the next call is ended with, in place of a start.
     pub refusal: Option<(Code, &'static str)>,
+    /// How many calls are still to be taken and left without a start.
+    pub stalls: u32,
     /// The reports that are recorded, in order and each once.
     pub reports: Vec<Report>,
     /// The number of the last of them.
@@ -66,6 +68,8 @@ pub struct State {
     /// Whether the runner ended a call itself, as it does when it has done.
     pub left: bool,
     orders: Option<UnboundedSender<Result<RunTurnResponse, Status>>>,
+    /// The calls that were left without a start, which stay open.
+    stalled: Vec<UnboundedSender<Result<RunTurnResponse, Status>>>,
 }
 
 impl State {
@@ -138,6 +142,11 @@ impl RunnerService for Service {
             if let Some((code, message)) = state.refusal.take() {
                 return Err(Status::new(code, message));
             }
+            if state.stalls > 0 {
+                state.stalls -= 1;
+                state.stalled.push(orders);
+                return Ok(Response::new(Box::pin(responses)));
+            }
             let start = Start {
                 text: state.text.clone(),
                 harness_session_id: state.harness_session.clone(),
@@ -196,8 +205,6 @@ pub struct Supervisor {
     address: SocketAddr,
     relay: Option<JoinHandle<()>>,
     connections: Arc<Mutex<Vec<JoinHandle<()>>>>,
-    /// Whether the connections are taken and then left without an answer.
-    silent: Arc<Mutex<bool>>,
 }
 
 impl Supervisor {
@@ -223,7 +230,6 @@ impl Supervisor {
             address: "127.0.0.1:0".parse().unwrap(),
             relay: None,
             connections: Arc::default(),
-            silent: Arc::default(),
         };
         supervisor.come_back().await;
         supervisor
@@ -295,29 +301,17 @@ impl Supervisor {
     pub async fn come_back(&mut self) {
         let listener = TcpListener::bind(self.address).await.unwrap();
         self.address = listener.local_addr().unwrap();
-        let (server, connections, silent) =
-            (self.server, self.connections.clone(), self.silent.clone());
+        let (server, connections) = (self.server, self.connections.clone());
         self.relay = Some(tokio::spawn(async move {
             while let Ok((mut incoming, _)) = listener.accept().await {
-                let silent = *silent.lock().unwrap();
                 let connection = tokio::spawn(async move {
-                    if silent {
-                        // Reads what comes and says nothing.
-                        let mut sink = Vec::new();
-                        let _ = incoming.read_to_end(&mut sink).await;
-                    } else if let Ok(mut outgoing) = TcpStream::connect(server).await {
+                    if let Ok(mut outgoing) = TcpStream::connect(server).await {
                         let _ = copy_bidirectional(&mut incoming, &mut outgoing).await;
                     }
                 });
                 connections.lock().unwrap().push(connection);
             }
         }));
-    }
-
-    /// From now on, takes connections and leaves them without an answer, or
-    /// answers again.
-    pub fn silent(&self, silent: bool) {
-        *self.silent.lock().unwrap() = silent;
     }
 }
 
