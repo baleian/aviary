@@ -34,6 +34,8 @@ spec:
               containerPort: 8080
             - name: forward
               containerPort: 3128
+            - name: metrics
+              containerPort: 9092
           readinessProbe:
             httpGet:
               path: /healthz

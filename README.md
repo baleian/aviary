@@ -230,6 +230,21 @@ moment, because no Supervisor holds them. The length of the queue is
 measured whenever a turn is accepted instead. The metrics of the Go runtime
 and of the process are served as well.
 
+An Egress Proxy serves the metrics of Envoy on the same port and path. Among
+them:
+
+| Metric | |
+| --- | --- |
+| `envoy_http_downstream_rq_total`, `envoy_http_downstream_rq_xx` | The requests and the classes of their response codes. The label `envoy_http_conn_manager_prefix` is `llm` for the requests to the model endpoint, where the probes of Kubernetes count as well, and `forward` for all others. |
+| `envoy_http_downstream_rq_time` | How long the requests took, in milliseconds. |
+| `envoy_http_ext_authz_ok`, `envoy_http_ext_authz_denied`, `envoy_http_ext_authz_error` | What the Supervisor answered when it was asked for the turn of a request. |
+| `envoy_http_rbac_denied` | The requests to hosts that `egressProxy.allowedHosts` does not allow. It is there only if the list names hosts. |
+
+Of the interface that Envoy has for its operator, the metrics are all that
+can be reached. A turn pod can read them too, if it asks the forward proxy
+for the proxy's own address and `egressProxy.allowedHosts` allows that
+address, which the default does.
+
 ## Configuration
 
 Aviary is installed with the Helm chart in `deploy/charts/aviary`. The chart

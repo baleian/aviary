@@ -39,6 +39,14 @@ data:
     node:
       id: aviary-egress-proxy
       cluster: aviary-egress-proxy
+    # Envoy's own interface can stop Envoy and show its configuration. It
+    # listens on a socket that has no address, so nothing outside the pod
+    # reaches it, and the forward proxy below cannot be asked to connect to
+    # it. Of what it serves, only the metrics are passed on: see the listener
+    # for them.
+    admin:
+      address:
+        pipe: {path: "@aviary-egress-proxy-admin"}
     static_resources:
       listeners:
         # The model endpoint. The pod sends its turn token in place of the
@@ -191,7 +199,35 @@ data:
                           "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig
                           dns_cache_config: {name: forward, dns_lookup_family: V4_PREFERRED}
                       {{- include "aviary.egress-proxy.router" . | nindent 22 }}
+        # The metrics, in the form that Prometheus reads.
+        - name: metrics
+          address:
+            socket_address: {address: 0.0.0.0, port_value: 9092}
+          filter_chains:
+            - filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: metrics
+                    route_config:
+                      virtual_hosts:
+                        - name: metrics
+                          domains: ["*"]
+                          routes:
+                            - match: {path: /metrics}
+                              route: {cluster: admin, prefix_rewrite: /stats/prometheus}
+                    http_filters:
+                      {{- include "aviary.egress-proxy.router" . | nindent 22 }}
       clusters:
+        - name: admin
+          type: STATIC
+          load_assignment:
+            cluster_name: admin
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        pipe: {path: "@aviary-egress-proxy-admin"}
         - name: supervisor
           type: STRICT_DNS
           typed_extension_protocol_options:
