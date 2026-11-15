@@ -41,6 +41,7 @@ const (
 	maxConcurrentTurns = "AVIARY_MAX_CONCURRENT_TURNS"
 	maxQueuedTurns     = "AVIARY_MAX_QUEUED_TURNS"
 	maxQueueWait       = "AVIARY_MAX_QUEUE_WAIT_SECONDS"
+	maxReconnect       = "AVIARY_MAX_RECONNECT_SECONDS"
 	maxStartup         = "AVIARY_MAX_STARTUP_SECONDS"
 	maxToolOutput      = "AVIARY_MAX_TOOL_OUTPUT_BYTES"
 	maxTurn            = "AVIARY_MAX_TURN_SECONDS"
@@ -272,6 +273,14 @@ func driverConfig() (driver.Config, error) {
 		return config, fmt.Errorf("%s must be a number of seconds above zero", maxTurn)
 	}
 	config.MaxTurn = time.Duration(seconds) * time.Second
+	reconnect, err := env(maxReconnect)
+	if err != nil {
+		return config, err
+	}
+	if seconds, err = strconv.Atoi(reconnect); err != nil || seconds < 0 {
+		return config, fmt.Errorf("%s must be a number of seconds, or zero for no limit", maxReconnect)
+	}
+	config.MaxReconnect = time.Duration(seconds) * time.Second
 	return config, nil
 }
 

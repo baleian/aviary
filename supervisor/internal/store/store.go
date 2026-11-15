@@ -139,8 +139,8 @@ const (
 	FailureOutOfMemory = "out_of_memory"
 	// FailurePodLost: the pod was stopped from outside, or is gone.
 	FailurePodLost = "pod_lost"
-	// FailureSupervisorLost: the runner lost its connection to the
-	// Supervisor.
+	// FailureSupervisorLost: the runner lost its Supervisor and reached
+	// none again in time, or the Supervisor refused it.
 	FailureSupervisorLost = "supervisor_lost"
 	// FailureRunner: the runner failed in another way.
 	FailureRunner = "runner_error"

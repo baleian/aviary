@@ -72,6 +72,8 @@ spec:
               value: {{ .Values.runtime.maxStartupSeconds | quote }}
             - name: AVIARY_MAX_TURN_SECONDS
               value: {{ .Values.runtime.maxTurnSeconds | quote }}
+            - name: AVIARY_MAX_RECONNECT_SECONDS
+              value: {{ .Values.runtime.maxReconnectSeconds | quote }}
           ports:
             - name: http
               containerPort: 8080

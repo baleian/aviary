@@ -1,12 +1,14 @@
 use std::cell::Cell;
+use std::collections::VecDeque;
 use std::env;
 use std::error::Error;
 use std::fmt::{self, Display};
 use std::fs;
+use std::future::poll_fn;
 use std::path::Path;
 use std::process;
 use std::str::FromStr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::ConnectionTo;
@@ -19,17 +21,21 @@ use agent_client_protocol::v1::schema::{
 use agent_client_protocol::{AcpAgent, Agent, Client};
 use futures::channel::mpsc;
 use futures::{FutureExt, SinkExt, StreamExt};
+use prost::Message;
 use serde::Serialize;
 use tokio::signal::unix::{SignalKind, signal};
-use tonic::Request;
-use tonic::transport::Endpoint;
+use tokio::time;
+use tonic::metadata::AsciiMetadataValue;
+use tonic::transport::{Channel, Endpoint};
+use tonic::{Code, Request, Status, Streaming};
+use uuid::Uuid;
 
 use proto::run_turn_request::Message as Report;
 use proto::run_turn_response::Message as Order;
 use proto::runner_service_client::RunnerServiceClient;
 use proto::{
-    Finished, MessageDelta, PlanEntry, PlanUpdate, RunTurnRequest, Started, ThoughtDelta, ToolCall,
-    ToolUpdate, Usage,
+    Finished, MessageDelta, PlanEntry, PlanUpdate, RunTurnRequest, RunTurnResponse, Start, Started,
+    ThoughtDelta, ToolCall, ToolUpdate, Usage,
 };
 
 /// The protocol between the runner and the Supervisor, generated from proto/.
@@ -42,11 +48,21 @@ const HARNESS_COMMAND: &str = "AVIARY_HARNESS_COMMAND";
 const GATEWAY_URL: &str = "AVIARY_GATEWAY_URL";
 const TURN_TOKEN: &str = "AVIARY_TURN_TOKEN";
 const MAX_TOOL_OUTPUT: &str = "AVIARY_MAX_TOOL_OUTPUT_BYTES";
+const MAX_RECONNECT: &str = "AVIARY_MAX_RECONNECT_SECONDS";
 const INSTRUCTIONS_FILE: &str = "AVIARY_INSTRUCTIONS_FILE";
 
-/// How many reports may wait for the Supervisor before the harness is held
-/// back.
-const REPORTS_AHEAD: usize = 64;
+/// The most bytes of reports that may wait for a Supervisor to record them
+/// before the harness is held back.
+const REPORTS_HELD: usize = 1 << 20;
+
+/// How long a Supervisor may take to answer a call. A call that hangs would
+/// otherwise keep the runner from one that another Supervisor answers.
+const ANSWER: Duration = Duration::from_secs(5);
+
+/// The first and the longest pause before the runner calls again after a
+/// call that failed. The pauses double from one to the other.
+const FIRST_PAUSE: Duration = Duration::from_millis(200);
+const LONGEST_PAUSE: Duration = Duration::from_secs(5);
 
 /// Where the runner leaves the reason for a turn that it could not finish.
 /// Kubernetes keeps what a container writes there with the pod, which is
@@ -184,37 +200,19 @@ async fn run_turn(stopped: &Cell<bool>) -> Result<(), Failure> {
         .and_then(|bytes| bytes.parse::<usize>().ok())
         .filter(|bytes| *bytes > 0);
 
-    let channel = Endpoint::from_shared(variable(GATEWAY_URL)?)
-        .map_err(Failure::runner)?
-        .http2_keep_alive_interval(KEEPALIVE)
-        .keep_alive_timeout(KEEPALIVE)
-        .keep_alive_while_idle(true)
-        .connect()
-        .await
-        .map_err(Failure::supervisor)?;
-    let (reports, outgoing) = mpsc::channel(REPORTS_AHEAD);
-    let mut request = Request::new(outgoing);
-    request.metadata_mut().insert(
-        "authorization",
-        format!("Bearer {}", variable(TURN_TOKEN)?)
-            .parse()
-            .map_err(Failure::runner)?,
-    );
-    let mut orders = RunnerServiceClient::new(channel)
-        .run_turn(request)
-        .await
-        .map_err(Failure::refused)?
-        .into_inner();
-    let first = orders.message().await.map_err(Failure::refused)?;
-    let Some(Order::Start(start)) = first.and_then(|order| order.message) else {
-        return Err(Failure::supervisor("the Supervisor did not start the turn"));
-    };
+    let mut link = Link::new()?;
+    let (call, start) = link.attach().await?;
     instruct(&start.instructions)?;
     // Set when the harness could not continue its session.
     let forgotten = Cell::new(false);
+    // The link holds the reports until a Supervisor has recorded them, so
+    // the channel to it needs no room of its own.
+    let (reports, reported) = mpsc::channel(0);
     // Carries the order to cancel to where the harness is talked to. One
     // order is enough, so more are dropped.
     let (mut cancel, mut cancelled) = mpsc::channel::<()>(1);
+    let passing = link.pass_on(call, reported, cancel.clone()).fuse();
+    futures::pin_mut!(passing);
 
     let turn = Client
         .v1()
@@ -279,12 +277,17 @@ async fn run_turn(stopped: &Cell<bool>) -> Result<(), Failure> {
                 .fuse();
             futures::pin_mut!(prompt);
             // The harness answers the prompt when the turn has ended, also
-            // when it was told to stop.
+            // when it was told to stop. It is told once: the order comes
+            // again with every Supervisor that the runner calls.
+            let mut told = false;
             let outcome = loop {
                 futures::select! {
                     outcome = prompt => break outcome?,
                     () = cancelled.select_next_some() => {
-                        harness.send_notification(CancelNotification::new(session_id.clone()))?;
+                        if !told {
+                            harness.send_notification(CancelNotification::new(session_id.clone()))?;
+                            told = true;
+                        }
                     }
                 }
             };
@@ -304,31 +307,20 @@ async fn run_turn(stopped: &Cell<bool>) -> Result<(), Failure> {
         });
 
     // While the turn runs the Supervisor may cancel it, and the pod may be
-    // told to stop. The Supervisor's stream ends early only if the
-    // Supervisor fails the turn.
-    let stop_reason = {
+    // told to stop.
+    let outcome = {
         let turn = turn.fuse();
         futures::pin_mut!(turn);
         loop {
             futures::select! {
-                // A report that the Supervisor no longer takes also ends
-                // the talk with the harness with an error.
-                outcome = turn => break outcome.map_err(|error| if reports.is_closed() {
-                    Failure::supervisor("the Supervisor closed the turn")
-                } else if forgotten.get() {
+                outcome = turn => break outcome.map_err(|error| if forgotten.get() {
                     Failure::forgotten(error)
                 } else {
                     Failure::answered(error)
-                })?,
-                order = orders.message().fuse() => {
-                    match order.map_err(Failure::refused)?.and_then(|order| order.message) {
-                        Some(Order::Cancel(_)) => {
-                            let _ = cancel.try_send(());
-                        }
-                        Some(Order::Start(_) | Order::Received(_)) => {}
-                        None => return Err(Failure::supervisor("the Supervisor ended the turn")),
-                    }
-                }
+                }),
+                // The reports end with the turn, so before that the link
+                // ends only when the Supervisor is lost.
+                lost = passing => return lost,
                 // The harness is asked to stop, so that it can write down
                 // how the turn ended in the time that the pod has left.
                 _ = terminate.recv().fuse() => {
@@ -338,16 +330,291 @@ async fn run_turn(stopped: &Cell<bool>) -> Result<(), Failure> {
             }
         }
     };
+    // The end of the reports tells the link that there are no more. The
+    // turn is reported once a Supervisor has recorded them all, which is
+    // waited for also when the turn failed.
+    drop(reports);
+    let reported = passing.await;
+    let stop_reason = outcome?;
+    reported?;
     // A harness that stops when it is asked to ends the turn as cancelled. A
     // turn that it ended in another way had completed, and stands.
     if stop_reason != StopReason::Cancelled {
         stopped.set(false);
     }
-    // Closing the reports tells the Supervisor that there are no more. The
-    // turn is reported once the Supervisor has closed its side without error.
-    drop(reports);
-    while orders.message().await.map_err(Failure::refused)?.is_some() {}
     Ok(())
+}
+
+/// A call to a Supervisor.
+struct Call {
+    reports: mpsc::Sender<RunTurnRequest>,
+    orders: Streaming<RunTurnResponse>,
+    /// Set when the call takes no more reports. Its orders then tell why.
+    closed: bool,
+}
+
+/// The runner's side of the talk with the Supervisors. When a call breaks,
+/// the runner calls again, to whichever Supervisor answers, and sends again
+/// the reports that none has recorded.
+struct Link {
+    client: RunnerServiceClient<Channel>,
+    token: AsciiMetadataValue,
+    /// The name that the runner made up for itself. A turn is given again
+    /// only to the runner that took it.
+    runner: AsciiMetadataValue,
+    /// How long the runner goes on without a Supervisor, if that has an
+    /// end.
+    patience: Option<Duration>,
+    /// Since when it has been without one.
+    lost: Option<Instant>,
+    /// How long it waits before it calls again.
+    pause: Duration,
+    /// Whether the Supervisor says what it has recorded. A Supervisor of an
+    /// older release does not, and gives no turn again.
+    answers: bool,
+    /// The reports that no Supervisor has recorded, oldest first, and their
+    /// size in bytes.
+    held: VecDeque<RunTurnRequest>,
+    bytes: usize,
+    /// How many of them the call has been given.
+    given: usize,
+    /// The number of the last report.
+    last: u64,
+}
+
+impl Link {
+    fn new() -> Result<Self, Failure> {
+        let channel = Endpoint::from_shared(variable(GATEWAY_URL)?)
+            .map_err(Failure::runner)?
+            .http2_keep_alive_interval(KEEPALIVE)
+            .keep_alive_timeout(KEEPALIVE)
+            .keep_alive_while_idle(true)
+            .connect_lazy();
+        let patience = env::var(MAX_RECONNECT)
+            .ok()
+            .and_then(|seconds| seconds.parse().ok())
+            .filter(|seconds| *seconds > 0)
+            .map(Duration::from_secs);
+        Ok(Self {
+            client: RunnerServiceClient::new(channel),
+            token: format!("Bearer {}", variable(TURN_TOKEN)?)
+                .parse()
+                .map_err(Failure::runner)?,
+            runner: Uuid::new_v4()
+                .to_string()
+                .parse()
+                .map_err(Failure::runner)?,
+            patience,
+            lost: None,
+            pause: Duration::ZERO,
+            answers: false,
+            held: VecDeque::new(),
+            bytes: 0,
+            given: 0,
+            last: 0,
+        })
+    }
+
+    /// Calls a Supervisor, which answers with Start.
+    async fn call(&self) -> Result<(Call, Start), Status> {
+        let (reports, outgoing) = mpsc::channel(0);
+        let mut request = Request::new(outgoing);
+        let metadata = request.metadata_mut();
+        metadata.insert("authorization", self.token.clone());
+        metadata.insert("aviary-runner", self.runner.clone());
+        let answer = async {
+            let mut orders = self.client.clone().run_turn(request).await?.into_inner();
+            match orders.message().await?.and_then(|order| order.message) {
+                Some(Order::Start(start)) => Ok((
+                    Call {
+                        reports,
+                        orders,
+                        closed: false,
+                    },
+                    start,
+                )),
+                _ => Err(Status::unavailable("the Supervisor did not start the turn")),
+            }
+        };
+        time::timeout(ANSWER, answer)
+            .await
+            .unwrap_or_else(|_| Err(Status::unavailable("the Supervisor did not answer")))
+    }
+
+    /// Calls until a Supervisor gives the runner its turn, for as long as
+    /// the runner may go on without one.
+    async fn attach(&mut self) -> Result<(Call, Start), Failure> {
+        let lost = *self.lost.get_or_insert_with(Instant::now);
+        let patience = self.patience;
+        let mut why = String::from("the Supervisor did not answer");
+        let calling = async {
+            loop {
+                // The pauses of the runners differ, so that those that lost
+                // the same Supervisor do not all call again at once.
+                time::sleep(self.pause.mul_f64(0.5 + fastrand::f64() / 2.0)).await;
+                match self.call().await {
+                    Ok(taken) => break Ok(taken),
+                    Err(status) if is_final(&status) => break Err(Failure::refused(status)),
+                    Err(status) => why = status.message().to_owned(),
+                }
+                self.wait_longer();
+            }
+        };
+        let called = match patience {
+            Some(patience) => time::timeout_at((lost + patience).into(), calling).await,
+            None => Ok(calling.await),
+        };
+        let Ok(called) = called else {
+            return Err(Failure::supervisor(format!(
+                "no Supervisor for {} seconds: {why}",
+                lost.elapsed().as_secs()
+            )));
+        };
+        let (call, start) = called?;
+        self.answers = start.received.is_some();
+        self.given = 0;
+        self.recorded(start.received.unwrap_or(0));
+        if self.held.is_empty() {
+            self.found();
+        }
+        Ok((call, start))
+    }
+
+    /// Passes the reports on to the Supervisor, and the Supervisor's orders
+    /// to cancel on to where the harness is talked to, until the reports
+    /// end and a Supervisor has recorded them all.
+    async fn pass_on(
+        mut self,
+        call: Call,
+        mut reported: mpsc::Receiver<Report>,
+        mut cancel: mpsc::Sender<()>,
+    ) -> Result<(), Failure> {
+        let mut call = Some(call);
+        let mut more = true;
+        while more || !self.held.is_empty() {
+            let Some(current) = &mut call else {
+                call = Some(self.attach().await?.0);
+                continue;
+            };
+            let broken = tokio::select! {
+                order = current.orders.message() => match order {
+                    Ok(Some(order)) => {
+                        match order.message {
+                            Some(Order::Received(received)) => self.recorded(received.seq),
+                            Some(Order::Cancel(_)) => {
+                                let _ = cancel.try_send(());
+                            }
+                            Some(Order::Start(_)) | None => {}
+                        }
+                        None
+                    }
+                    Ok(None) => Some(Status::unavailable("the Supervisor ended the turn")),
+                    Err(status) => Some(status),
+                },
+                ready = poll_fn(|context| current.reports.poll_ready(context)),
+                    if !current.closed && self.given < self.held.len() =>
+                {
+                    let report = self.held[self.given].clone();
+                    match ready.and_then(|()| current.reports.start_send(report)) {
+                        Ok(()) if self.answers => self.given += 1,
+                        // Nothing says what this Supervisor has recorded,
+                        // so what it was given is let go of.
+                        Ok(()) => self.let_go(),
+                        Err(_) => current.closed = true,
+                    }
+                    None
+                }
+                report = reported.next(), if more && self.bytes < REPORTS_HELD => {
+                    match report {
+                        Some(report) => self.hold(report),
+                        None => more = false,
+                    }
+                    None
+                }
+            };
+            if let Some(status) = broken {
+                if !self.answers || is_final(&status) {
+                    return Err(Failure::refused(status));
+                }
+                self.lost.get_or_insert_with(Instant::now);
+                // Without the pause, a runner whose reports a Supervisor
+                // cannot record would call it again without a break.
+                self.wait_longer();
+                call = None;
+            }
+        }
+        // The Supervisor ends the call when the runner has ended its side.
+        if let Some(Call {
+            reports,
+            mut orders,
+            ..
+        }) = call
+        {
+            drop(reports);
+            loop {
+                match orders.message().await {
+                    Ok(Some(_)) => {}
+                    Ok(None) => break,
+                    // What a Supervisor has recorded stands.
+                    Err(_) if self.answers => break,
+                    Err(status) => return Err(Failure::refused(status)),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Takes a report to hold until a Supervisor has recorded it.
+    fn hold(&mut self, report: Report) {
+        self.last += 1;
+        let report = RunTurnRequest {
+            message: Some(report),
+            seq: self.last,
+        };
+        self.bytes += report.encoded_len();
+        self.held.push_back(report);
+    }
+
+    /// Lets go of the reports up to the one with the number, which a
+    /// Supervisor has recorded.
+    fn recorded(&mut self, seq: u64) {
+        while self.held.front().is_some_and(|report| report.seq <= seq) {
+            self.let_go();
+            self.given = self.given.saturating_sub(1);
+            self.found();
+        }
+    }
+
+    /// Lets go of the oldest report.
+    fn let_go(&mut self) {
+        if let Some(report) = self.held.pop_front() {
+            self.bytes -= report.encoded_len();
+        }
+    }
+
+    /// Notes that a Supervisor is there again.
+    fn found(&mut self) {
+        self.lost = None;
+        self.pause = Duration::ZERO;
+    }
+
+    /// Makes the pause before the next call longer.
+    fn wait_longer(&mut self) {
+        self.pause = (self.pause * 2).clamp(FIRST_PAUSE, LONGEST_PAUSE);
+    }
+}
+
+/// Whether a Supervisor ended a call for a reason that another call would
+/// meet again.
+fn is_final(status: &Status) -> bool {
+    matches!(
+        status.code(),
+        Code::Unauthenticated
+            | Code::FailedPrecondition
+            | Code::InvalidArgument
+            | Code::DataLoss
+            | Code::ResourceExhausted
+    )
 }
 
 /// Writes the agent's instructions to the file that the harness reads them
@@ -375,16 +642,14 @@ fn variable(name: &str) -> Result<String, Failure> {
 }
 
 async fn report(
-    reports: &mpsc::Sender<RunTurnRequest>,
+    reports: &mpsc::Sender<Report>,
     report: Report,
 ) -> agent_client_protocol::Result<()> {
-    let request = RunTurnRequest {
-        message: Some(report),
-        seq: 0,
-    };
-    reports.clone().send(request).await.map_err(|_| {
-        agent_client_protocol::Error::internal_error().data("the Supervisor closed the turn")
-    })
+    reports
+        .clone()
+        .send(report)
+        .await
+        .map_err(|_| agent_client_protocol::Error::internal_error().data("the Supervisor is lost"))
 }
 
 /// Turns an update from the harness into the event that the Supervisor

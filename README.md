@@ -44,7 +44,8 @@ and the number of turns that run at once is a setting.
    know which harness it is.
 4. The harness works on the message with the session's home mounted at
    `/home`. The runner reports what it does, and the client reads that as a
-   stream of events. The harness reaches the model through the **Egress
+   stream of events. A runner that loses its Supervisor goes on with
+   another. The harness reaches the model through the **Egress
    Proxy**. The pod holds no key of the model endpoint, only the token of
    its turn: the proxy asks the Supervisor which turn the token belongs to,
    puts the key in its place and records the request. Whatever else the
@@ -168,7 +169,7 @@ The reasons for a failed turn:
 | `timed_out` | The turn ran for longer than a turn may. |
 | `out_of_memory` | The pod used more memory than it may. |
 | `pod_lost` | The pod was stopped from outside, or is gone. |
-| `supervisor_lost` | The runner lost its connection to the Supervisor. |
+| `supervisor_lost` | The runner lost its Supervisor and reached none again in time. |
 | `runner_error` | The runner failed in another way. |
 
 A turn that has ended has its reason too, as `failure`. What makes a turn
@@ -274,6 +275,7 @@ does not install PostgreSQL or Valkey.
 | `runtime.maxQueueWaitSeconds` | How long a turn may wait to run before it ends as expired. Default 120, and 0 is no limit. |
 | `runtime.maxStartupSeconds` | How long the pod of a turn may take to start before the turn fails. Default 90, and 0 is no limit. |
 | `runtime.maxTurnSeconds` | How long a turn may run before it is stopped and fails. Default 1800. |
+| `runtime.maxReconnectSeconds` | How long the runner of a turn goes on without a Supervisor before the turn fails. Default 60, and 0 is no limit. |
 | `runtime.maxToolOutputBytes` | The longest text of a tool call that the events carry as it is. A longer text is cut. Default 65536, and 0 is no limit. |
 | `runtime.harnesses` | The harnesses that agents can use, each with its image and with the resources for the turns of the agents that have none of their own. |
 | `runtime.store.storageClassName`, `.size` | The volume for the session homes. Its storage class must offer ReadWriteMany. |
@@ -318,9 +320,6 @@ To run a harness that is not in this repository, see
   a turn connects to. It does not read what is sent over HTTPS.
 - **Measured token usage.** The usage of a turn is what its harness reports.
   The Egress Proxy does not count tokens.
-- **Surviving the loss of a Supervisor.** Several Supervisors can run side
-  by side, and one that is stopped first finishes the turns whose runners
-  are connected to it. If it is killed, those turns fail.
 - **Approval by a person.** When a harness asks for permission to act, the
   runner allows it.
 - **Anything but a local cluster.** Aviary has not run on a cloud provider's

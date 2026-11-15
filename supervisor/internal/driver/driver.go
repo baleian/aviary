@@ -85,6 +85,10 @@ type Config struct {
 	MaxStartup time.Duration
 	// MaxTurn is how long a turn may run before Kubernetes ends its pod.
 	MaxTurn time.Duration
+	// MaxReconnect is how long the runner of a turn goes on when it has
+	// lost its Supervisor. A turn whose runner reaches none in that time
+	// fails. Zero is no limit.
+	MaxReconnect time.Duration
 	// MaxQueueWait is how long a turn may wait to run. A turn that waits
 	// longer ends as expired. Zero is no limit.
 	MaxQueueWait time.Duration
@@ -707,6 +711,7 @@ func (d *Driver) job(dispatch store.Dispatch, harness Harness, resources corev1.
 							{Name: "AVIARY_LLM_API_KEY", Value: dispatch.Token},
 							{Name: "AVIARY_LLM_MODEL", Value: d.config.LLMModel},
 							{Name: "AVIARY_MAX_TOOL_OUTPUT_BYTES", Value: strconv.Itoa(d.config.MaxToolOutputBytes)},
+							{Name: "AVIARY_MAX_RECONNECT_SECONDS", Value: strconv.Itoa(int(d.config.MaxReconnect.Seconds()))},
 							// Everything else that the programs in the pod fetch
 							// goes through the proxy. Some programs read the
 							// names in capitals and some the others.

@@ -101,7 +101,7 @@ func (g *Gateway) RunTurn(stream grpc.BidiStreamingServer[runnerv1.RunTurnReques
 	case errors.Is(err, store.ErrTurnEnded):
 		return status.Error(codes.FailedPrecondition, "the turn has ended")
 	case errors.Is(err, store.ErrTurnCancelled):
-		return status.Error(codes.Canceled, "the turn was cancelled")
+		return status.Error(codes.FailedPrecondition, "the turn was cancelled")
 	case err != nil:
 		return g.internal(ctx, "take turn", err)
 	}
