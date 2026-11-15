@@ -78,7 +78,8 @@ make e2e HARNESS=opencode  # or HARNESS=codex
 `make e2e` creates sessions through the API and checks that turns run, that
 a session continues, that sessions do not see each other, that the agent
 does not hold the model's key and reaches the outside only through the
-Egress Proxy, and that turns queue. It needs no model: it
+Egress Proxy, that turns queue, can be cancelled and expire, and that a
+failed turn says why. It needs no model: it
 uses a mock model server that answers by a script. `make cluster-down`
 deletes the cluster.
 
@@ -158,7 +159,10 @@ The reasons for a failed turn:
 | `supervisor_lost` | The runner lost its connection to the Supervisor. |
 | `runner_error` | The runner failed in another way. |
 
-A turn that has ended has its reason too, as `failure`.
+A turn that has ended has its reason too, as `failure`. What makes a turn
+fail is up to the harness: when the model endpoint answers with an error,
+OpenCode fails the turn, and Codex mostly ends it with the error as what the
+agent says.
 
 `usage` holds `total_tokens`, `input_tokens` and `output_tokens`, and
 `thought_tokens`, `cached_read_tokens` and `cached_write_tokens` if the

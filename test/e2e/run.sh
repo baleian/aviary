@@ -3,7 +3,7 @@ set -euo pipefail
 
 # The e2e runs against a model server of its own, mock-llm, which answers by
 # a script. A message to a session is an instruction to it: "say <text>",
-# "run <command>" or "recall". See test/mock-llm/main.go.
+# "run <command>", "recall" or "fail <text>". See test/mock-llm/main.go.
 
 harness=${1:?usage: run.sh <harness>}
 cd "$(dirname "$0")/../.."
@@ -114,6 +114,17 @@ wait_for() {
   return 1
 }
 
+# cancel <turn> asks for the turn to be cancelled and prints the status of
+# the answer.
+cancel() {
+  curl --silent --output /dev/null --write-out '%{http_code}' --request POST "$api/v1/turns/$1/cancel"
+}
+
+# reason <log-name> prints why the turn of that log failed.
+reason() {
+  jq --slurp --raw-output 'last.data.reason' "$out/$1.jsonl"
+}
+
 cleaned_up() { [ -z "$(in_cluster "$1")" ]; }
 running() { [ "$(field "/v1/turns/$1" state)" = running ]; }
 
@@ -159,10 +170,13 @@ $kubectl --namespace aviary-e2e rollout status deployment/mock-llm --timeout 120
   fail "mock-llm did not start; run make images"
 $helm get values aviary --output yaml > "$out/values.yaml" || fail "Aviary is not installed; run make deploy"
 changed=yes
-install --set llm.url=http://mock-llm.aviary-e2e/v1 --set llm.model=mock \
-  --set llm.apiKey.secretName=aviary-llm-mock --set runtime.maxConcurrentTurns=1 \
-  --set-json "egressProxy.extraEgress=$mock_llm_egress" \
+settings=(
+  --set llm.url=http://mock-llm.aviary-e2e/v1 --set llm.model=mock
+  --set llm.apiKey.secretName=aviary-llm-mock --set runtime.maxConcurrentTurns=1
+  --set-json "egressProxy.extraEgress=$mock_llm_egress"
   --set 'egressProxy.allowedHosts={mock-llm.aviary-e2e}'
+)
+install "${settings[@]}"
 connect
 
 file=note-$(new_id | cut --characters 1-8).txt
@@ -249,9 +263,16 @@ killed=$(create "/v1/agents/$agent/sessions")
 first=$(send "$killed" "run sleep 30")
 second=$(send "$(create "/v1/agents/$agent/sessions")" "say done")
 third=$(send "$(create "/v1/agents/$agent/sessions")" "say done")
+fourth=$(send "$(create "/v1/agents/$agent/sessions")" "say never")
 [ "$(field "/v1/turns/$second" state)$(field "/v1/turns/$third" state)" = queuedqueued ] ||
   fail "turns $second and $third did not wait for turn $first"
 wait_for 60 running "$first" || fail "turn $first did not start"
+
+# A turn that waits is cancelled at once and never runs.
+[ "$(cancel "$fourth")" = 200 ] || fail "cancelling the waiting turn $fourth was not answered with 200"
+follow "$fourth" queue-turn-cancelled
+[ "$(ended queue-turn-cancelled)" = turn.cancelled ] ||
+  fail "turn $fourth did not end as cancelled, see $out/queue-turn-cancelled.jsonl"
 
 # A session takes no message while a turn of it has not ended.
 status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
@@ -261,6 +282,8 @@ status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
 $kubectl --namespace aviary-runtime delete pod --selector "aviary.io/turn=$first" --wait=false > /dev/null
 follow "$first" queue-turn-1
 [ "$(ended queue-turn-1)" = turn.failed ] || fail "turn $first did not fail without its pod, see $out/queue-turn-1.jsonl"
+[ "$(reason queue-turn-1)" = pod_lost ] ||
+  fail "turn $first, whose pod was deleted, failed for the reason $(reason queue-turn-1)"
 [ "$(field "/v1/turns/$third" state)" = queued ] || fail "turn $third did not wait for turn $second"
 follow "$second" queue-turn-2
 [ "$(ended queue-turn-2)" = turn.completed ] || fail "turn $second did not complete, see $out/queue-turn-2.jsonl"
@@ -268,6 +291,9 @@ follow "$third" queue-turn-3
 [ "$(ended queue-turn-3)" = turn.completed ] || fail "turn $third did not complete, see $out/queue-turn-3.jsonl"
 [[ $(positions queue-turn-3) =~ ^\[[2-9].*,1\]$ ]] ||
   fail "turn $third was not told its way up the queue: $(positions queue-turn-3)"
+if grep --quiet turn.started "$out/queue-turn-cancelled.jsonl" || ! cleaned_up "$fourth"; then
+  fail "the cancelled turn $fourth ran"
+fi
 
 # The session whose turn failed goes on with its next message.
 run_turn "$killed" queue-turn-4 "say done"
@@ -281,6 +307,36 @@ field "/v1/turns/$turn" usage | reported ||
 jq --slurp 'last.data.usage' "$out/queue-turn-4.jsonl" | reported ||
   fail "the last event of turn $turn lacks the token usage, see $out/queue-turn-4.jsonl"
 
+# A turn that fails says why. The model endpoint refuses this one, and the
+# pod of the one above was deleted.
+refused=$(send "$killed" "fail the model is out of order")
+follow "$refused" refused-turn
+[ "$(ended refused-turn)" = turn.failed ] ||
+  fail "turn $refused did not fail when the model endpoint refused it, see $out/refused-turn.jsonl"
+[ "$(reason refused-turn)" = harness_error ] ||
+  fail "turn $refused, which the model endpoint refused, failed for the reason $(reason refused-turn)"
+
+# No more turns wait than may, a turn does not wait for longer than it may,
+# and a turn that runs is stopped when it is cancelled.
+install "${settings[@]}" --set runtime.maxQueuedTurns=1 --set runtime.maxQueueWaitSeconds=5
+connect
+stopped=$(create "/v1/agents/$agent/sessions")
+running=$(send "$stopped" "run sleep 120")
+wait_for 60 running "$running" || fail "turn $running did not start"
+waiting=$(send "$(create "/v1/agents/$agent/sessions")" "say late")
+status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  --request POST --data '{"text": "say more"}' "$api/v1/sessions/$(create "/v1/agents/$agent/sessions")/messages")
+[ "$status" = 429 ] || fail "a message beyond the most that may wait was answered with $status, not 429"
+follow "$waiting" queue-turn-expired
+[ "$(ended queue-turn-expired)" = turn.expired ] ||
+  fail "turn $waiting did not expire, see $out/queue-turn-expired.jsonl"
+[ "$(cancel "$running")" = 202 ] || fail "cancelling the running turn $running was not answered with 202"
+follow "$running" cancelled-turn
+[ "$(ended cancelled-turn)" = turn.cancelled ] ||
+  fail "turn $running did not end as cancelled, see $out/cancelled-turn.jsonl"
+wait_for 60 cleaned_up "$running" || fail "the Job or the pod of the cancelled turn $running was not deleted"
+run_turn "$stopped" cancelled-turn-next "say done"
+
 echo "PASS: $harness ran turns through the API, continued a session, kept sessions apart," \
   "reached the model without holding its key and the outside only through the Egress Proxy," \
-  "queued turns and recorded token usage"
+  "queued, cancelled and expired turns, gave failed turns a reason and recorded token usage"

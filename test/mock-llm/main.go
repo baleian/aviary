@@ -8,6 +8,8 @@
 //	               replies with what the tool returned
 //	recall         replies with the instructions that the user gave before,
 //	               one per line, or "nothing" if there are none
+//	fail <text>    refuses the request with the text as the error, the way
+//	               a model server refuses a caller that it does not know
 //
 // A message that is not an instruction gets the reply "mock".
 //
@@ -69,10 +71,12 @@ type shellTool struct {
 }
 
 // answer is what the model does next: it calls the shell tool with command,
-// or else it says text.
+// or else it says text. If failure is set there is no answer: the request is
+// refused with it.
 type answer struct {
 	text    string
 	command string
+	failure string
 }
 
 func (c conversation) next() answer {
@@ -88,6 +92,8 @@ func (c conversation) next() answer {
 		return answer{text: "mock"}
 	case word == "say":
 		return answer{text: rest}
+	case word == "fail":
+		return answer{failure: rest}
 	case word == "run" && c.shell == nil:
 		return answer{text: "mock: the harness offers no tool that runs a command"}
 	case word == "run":
@@ -111,7 +117,7 @@ func (c conversation) next() answer {
 func instruction(message string) (word, rest string, found bool) {
 	word, rest, _ = strings.Cut(strings.TrimSpace(message), " ")
 	switch word {
-	case "say", "run", "recall":
+	case "say", "run", "recall", "fail":
 		return word, strings.TrimSpace(rest), true
 	}
 	return "", "", false
@@ -248,7 +254,14 @@ func chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	c.shell = findShell(tools)
 	next := c.next()
-	slog.Info("answered", "api", "chat completions", "said", len(c.said), "command", next.command, "text", next.text)
+	slog.Info("answered", "api", "chat completions", "said", len(c.said), "command", next.command, "text", next.text, "failure", next.failure)
+	if next.failure != "" {
+		// Both harnesses give up at once on this status and report it as an
+		// error. An error of another kind one of them repeats for a while,
+		// and one ends the turn with the error as its answer.
+		refuse(w, http.StatusUnauthorized, next.failure)
+		return
+	}
 
 	id, created := newID("chatcmpl-"), time.Now().Unix()
 	out := newStream(w)
@@ -327,7 +340,14 @@ func responses(w http.ResponseWriter, r *http.Request) {
 	}
 	c.shell = findShell(request.Tools)
 	next := c.next()
-	slog.Info("answered", "api", "responses", "said", len(c.said), "command", next.command, "text", next.text)
+	slog.Info("answered", "api", "responses", "said", len(c.said), "command", next.command, "text", next.text, "failure", next.failure)
+	if next.failure != "" {
+		// Both harnesses give up at once on this status and report it as an
+		// error. An error of another kind one of them repeats for a while,
+		// and one ends the turn with the error as its answer.
+		refuse(w, http.StatusUnauthorized, next.failure)
+		return
+	}
 
 	response := map[string]any{
 		"id": newID("resp_"), "object": "response", "created_at": time.Now().Unix(),
