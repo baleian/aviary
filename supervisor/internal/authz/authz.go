@@ -31,8 +31,10 @@ func New(st *store.Store) authv3.AuthorizationServer {
 }
 
 // Check allows a request that carries the token of a running turn. The
-// proxy gets the ID of the turn back as metadata, which it writes to its
-// access log.
+// proxy gets back, as metadata, the ID of the turn and those of the session,
+// the agent and the project that the turn belongs to. It writes them to its
+// access log, so that a line of the log tells by itself where a request
+// came from.
 //
 // A request to the model endpoint carries the token as its bearer token, in
 // place of the API key. A request to the forward proxy carries it as the
@@ -48,7 +50,7 @@ func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*
 	if token == "" {
 		return denied(forward), nil
 	}
-	turnID, err := a.store.RunningTurn(ctx, token)
+	origin, err := a.store.RunningTurn(ctx, token)
 	if errors.Is(err, store.ErrNotFound) {
 		return denied(forward), nil
 	}
@@ -60,7 +62,12 @@ func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*
 		slog.ErrorContext(ctx, "look up the turn of a token", "error", err)
 		return nil, status.Error(codes.Internal, "internal error")
 	}
-	metadata, err := structpb.NewStruct(map[string]any{"turn": turnID.String()})
+	metadata, err := structpb.NewStruct(map[string]any{
+		"turn":    origin.TurnID.String(),
+		"session": origin.SessionID.String(),
+		"agent":   origin.AgentID.String(),
+		"project": origin.ProjectID.String(),
+	})
 	if err != nil {
 		return nil, status.Error(codes.Internal, "internal error")
 	}

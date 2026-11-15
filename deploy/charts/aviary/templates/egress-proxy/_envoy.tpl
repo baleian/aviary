@@ -31,6 +31,9 @@ access_log:
           time: "%START_TIME%"
           route: {{ . }}
           turn: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:turn)%"
+          session: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:session)%"
+          agent: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:agent)%"
+          project: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:project)%"
           method: "%REQ(:METHOD)%"
           host: "%REQ(:AUTHORITY)%"
           path: "%PATH(NQ)%"

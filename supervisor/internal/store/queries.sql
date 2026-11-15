@@ -107,7 +107,12 @@ returning turns.id, turns.session_id, turns.seq, turns.text, turns.created_at, s
 select (state = 'dispatching')::boolean as dispatching from turns where token_hash = @token_hash;
 
 -- name: RunningTurn :one
-select id from turns where token_hash = @token_hash and state = 'running';
+-- The running turn that the token belongs to, and what the turn belongs to.
+select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id
+from turns
+join sessions on sessions.id = turns.session_id
+join agents on agents.id = sessions.agent_id
+where turns.token_hash = @token_hash and turns.state = 'running';
 
 -- name: SetFinished :exec
 update turns set stop_reason = @stop_reason::text, total_tokens = @total_tokens, input_tokens = @input_tokens,

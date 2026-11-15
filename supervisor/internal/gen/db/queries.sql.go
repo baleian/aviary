@@ -661,14 +661,31 @@ func (q *Queries) QueuedTurns(ctx context.Context) ([]uuid.UUID, error) {
 }
 
 const runningTurn = `-- name: RunningTurn :one
-select id from turns where token_hash = $1 and state = 'running'
+select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id
+from turns
+join sessions on sessions.id = turns.session_id
+join agents on agents.id = sessions.agent_id
+where turns.token_hash = $1 and turns.state = 'running'
 `
 
-func (q *Queries) RunningTurn(ctx context.Context, tokenHash []byte) (uuid.UUID, error) {
+type RunningTurnRow struct {
+	TurnID    uuid.UUID
+	SessionID uuid.UUID
+	AgentID   uuid.UUID
+	ProjectID uuid.UUID
+}
+
+// The running turn that the token belongs to, and what the turn belongs to.
+func (q *Queries) RunningTurn(ctx context.Context, tokenHash []byte) (RunningTurnRow, error) {
 	row := q.db.QueryRow(ctx, runningTurn, tokenHash)
-	var id uuid.UUID
-	err := row.Scan(&id)
-	return id, err
+	var i RunningTurnRow
+	err := row.Scan(
+		&i.TurnID,
+		&i.SessionID,
+		&i.AgentID,
+		&i.ProjectID,
+	)
+	return i, err
 }
 
 const setFinished = `-- name: SetFinished :exec

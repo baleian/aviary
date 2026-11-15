@@ -170,6 +170,14 @@ recorded() {
      END { exit !found }' <<< "$log"
 }
 
+# origin <turn> prints the session, the agent and the project that the
+# Egress Proxy recorded a request of the turn with.
+origin() {
+  $kubectl --namespace aviary-system logs --selector app.kubernetes.io/component=egress-proxy \
+    --tail -1 --since 10m | grep --fixed-strings "\"turn\":\"$1\"" | head --lines 1 |
+    jq --raw-output '[.session, .agent, .project] | join(" ")'
+}
+
 # Commands for the agent to run in its pod. fetch gets a URL the way the
 # pod is set up to, which is through the Egress Proxy, and prints the status
 # of the answer. connect opens a connection to port 80 of an address, without
@@ -303,6 +311,8 @@ if grep --quiet --fixed-strings "$llm_key" "$out/other-turn-3.jsonl"; then
 fi
 wait_for 30 recorded "$turn" llm mock-llm.aviary-e2e 200 ||
   fail "the Egress Proxy recorded no model request of turn $turn"
+[ "$(origin "$turn")" = "$other $agent $project" ] ||
+  fail "the Egress Proxy recorded turn $turn with the session, agent and project $(origin "$turn")"
 
 # The pod reaches the outside only through the Egress Proxy, which lets a
 # request through to an allowed host and refuses any other, and records both

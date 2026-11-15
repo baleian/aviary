@@ -63,6 +63,14 @@ services. The Egress Proxy is [Envoy](https://www.envoyproxy.io), which the
 chart installs. The model endpoint is a URL and a key, so it can be the API
 of a provider, an AI gateway or a model server of your own.
 
+The record of the Egress Proxy is a line of JSON for every request, on its
+standard output. A line names the turn and the session, the agent and the
+project that the turn belongs to, so it tells by itself where a request came
+from. It also has the time, the host, the path if the request was not for an
+HTTPS URL, the status of the answer, the bytes in both directions and how
+long the request took. How long the lines are kept is up to what collects
+the logs of the cluster.
+
 ## Try it locally
 
 You need Docker, [kind](https://kind.sigs.k8s.io), kubectl, Helm, jq, make,

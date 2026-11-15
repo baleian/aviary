@@ -501,14 +501,24 @@ func (s *Store) TakeTurn(ctx context.Context, token string) (TakenTurn, error) {
 	return TakenTurn{}, ErrTurnTaken
 }
 
+// Origin is where a request from a turn pod comes from: the turn, and the
+// session, the agent and the project that the turn belongs to.
+type Origin struct {
+	TurnID    uuid.UUID
+	SessionID uuid.UUID
+	AgentID   uuid.UUID
+	ProjectID uuid.UUID
+}
+
 // RunningTurn returns the turn that the token belongs to, while that turn
-// runs. It returns ErrNotFound for any other token.
-func (s *Store) RunningTurn(ctx context.Context, token string) (uuid.UUID, error) {
-	id, err := s.queries.RunningTurn(ctx, hashToken(token))
+// runs, and what the turn belongs to. It returns ErrNotFound for any other
+// token.
+func (s *Store) RunningTurn(ctx context.Context, token string) (Origin, error) {
+	row, err := s.queries.RunningTurn(ctx, hashToken(token))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return uuid.Nil, ErrNotFound
+		return Origin{}, ErrNotFound
 	}
-	return id, err
+	return Origin(row), err
 }
 
 // StartTurn records that the harness of the turn has been given the message,
