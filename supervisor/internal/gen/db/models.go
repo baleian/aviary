@@ -11,10 +11,11 @@ import (
 )
 
 type Agent struct {
-	ID        uuid.UUID
-	ProjectID uuid.UUID
-	Harness   string
-	CreatedAt time.Time
+	ID           uuid.UUID
+	ProjectID    uuid.UUID
+	Harness      string
+	CreatedAt    time.Time
+	Instructions string
 }
 
 type Project struct {

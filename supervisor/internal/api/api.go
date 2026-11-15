@@ -110,7 +110,8 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	var request struct {
-		Harness string `json:"harness"`
+		Harness      string `json:"harness"`
+		Instructions string `json:"instructions"`
 	}
 	if err := decode(w, r, &request); err != nil {
 		return err
@@ -118,7 +119,7 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 	if !a.driver.HasHarness(request.Harness) {
 		return invalid("harness is not one of the configured harnesses")
 	}
-	agent, err := a.store.CreateAgent(r.Context(), projectID, request.Harness)
+	agent, err := a.store.CreateAgent(r.Context(), projectID, request.Harness, request.Instructions)
 	if err != nil {
 		return err
 	}

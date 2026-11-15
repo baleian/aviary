@@ -95,25 +95,32 @@ func (q *Queries) CountWaitingTurns(ctx context.Context, maxRunning int64) (int6
 }
 
 const createAgent = `-- name: CreateAgent :one
-insert into agents (id, project_id, harness)
-select $1::uuid, projects.id, $2::text from projects where projects.id = $3
-returning id, project_id, harness, created_at
+insert into agents (id, project_id, harness, instructions)
+select $1::uuid, projects.id, $2::text, $3::text from projects where projects.id = $4
+returning id, project_id, harness, created_at, instructions
 `
 
 type CreateAgentParams struct {
-	ID        uuid.UUID
-	Harness   string
-	ProjectID uuid.UUID
+	ID           uuid.UUID
+	Harness      string
+	Instructions string
+	ProjectID    uuid.UUID
 }
 
 func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent, error) {
-	row := q.db.QueryRow(ctx, createAgent, arg.ID, arg.Harness, arg.ProjectID)
+	row := q.db.QueryRow(ctx, createAgent,
+		arg.ID,
+		arg.Harness,
+		arg.Instructions,
+		arg.ProjectID,
+	)
 	var i Agent
 	err := row.Scan(
 		&i.ID,
 		&i.ProjectID,
 		&i.Harness,
 		&i.CreatedAt,
+		&i.Instructions,
 	)
 	return i, err
 }
@@ -377,7 +384,7 @@ func (q *Queries) ForgetHarnessSession(ctx context.Context, id uuid.UUID) error 
 }
 
 const getAgent = `-- name: GetAgent :one
-select id, project_id, harness, created_at from agents where id = $1
+select id, project_id, harness, created_at, instructions from agents where id = $1
 `
 
 func (q *Queries) GetAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
@@ -388,6 +395,7 @@ func (q *Queries) GetAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
 		&i.ProjectID,
 		&i.Harness,
 		&i.CreatedAt,
+		&i.Instructions,
 	)
 	return i, err
 }
@@ -710,9 +718,11 @@ func (q *Queries) StartTurn(ctx context.Context, arg StartTurnParams) error {
 const takeTurn = `-- name: TakeTurn :one
 update turns set state = 'running'
 from sessions
+join agents on agents.id = sessions.agent_id
 where turns.token_hash = $1 and turns.state = 'dispatching' and turns.cancel_requested_at is null
       and turns.failure_reason is null and sessions.id = turns.session_id
-returning turns.id, turns.session_id, turns.seq, turns.text, turns.created_at, sessions.harness_session_id
+returning turns.id, turns.session_id, turns.seq, turns.text, turns.created_at, sessions.harness_session_id,
+          agents.instructions
 `
 
 type TakeTurnRow struct {
@@ -722,6 +732,7 @@ type TakeTurnRow struct {
 	Text             string
 	CreatedAt        time.Time
 	HarnessSessionID *string
+	Instructions     string
 }
 
 func (q *Queries) TakeTurn(ctx context.Context, tokenHash []byte) (TakeTurnRow, error) {
@@ -734,6 +745,7 @@ func (q *Queries) TakeTurn(ctx context.Context, tokenHash []byte) (TakeTurnRow, 
 		&i.Text,
 		&i.CreatedAt,
 		&i.HarnessSessionID,
+		&i.Instructions,
 	)
 	return i, err
 }

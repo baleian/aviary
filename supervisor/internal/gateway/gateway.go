@@ -100,7 +100,9 @@ func (g *Gateway) RunTurn(stream grpc.BidiStreamingServer[runnerv1.RunTurnReques
 	slog.InfoContext(ctx, "runner took its turn", "turn", turn.ID)
 
 	start := &runnerv1.RunTurnResponse{Message: &runnerv1.RunTurnResponse_Start{
-		Start: &runnerv1.Start{Text: turn.Text, HarnessSessionId: turn.HarnessSessionID},
+		Start: &runnerv1.Start{
+			Text: turn.Text, HarnessSessionId: turn.HarnessSessionID, Instructions: turn.Instructions,
+		},
 	}}
 	if err := stream.Send(start); err != nil {
 		return err

@@ -5,8 +5,8 @@ insert into projects (id, name) values (@id, @name) returning *;
 select * from projects where id = @id;
 
 -- name: CreateAgent :one
-insert into agents (id, project_id, harness)
-select @id::uuid, projects.id, @harness::text from projects where projects.id = @project_id
+insert into agents (id, project_id, harness, instructions)
+select @id::uuid, projects.id, @harness::text, @instructions::text from projects where projects.id = @project_id
 returning *;
 
 -- name: GetAgent :one
@@ -89,9 +89,11 @@ from turns where state in ('dispatching', 'running');
 -- name: TakeTurn :one
 update turns set state = 'running'
 from sessions
+join agents on agents.id = sessions.agent_id
 where turns.token_hash = @token_hash and turns.state = 'dispatching' and turns.cancel_requested_at is null
       and turns.failure_reason is null and sessions.id = turns.session_id
-returning turns.id, turns.session_id, turns.seq, turns.text, turns.created_at, sessions.harness_session_id;
+returning turns.id, turns.session_id, turns.seq, turns.text, turns.created_at, sessions.harness_session_id,
+          agents.instructions;
 
 -- name: IsTurnDispatching :one
 select (state = 'dispatching')::boolean as dispatching from turns where token_hash = @token_hash;

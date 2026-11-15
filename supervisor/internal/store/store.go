@@ -71,6 +71,8 @@ type Agent struct {
 	ProjectID uuid.UUID `json:"project_id"`
 	Harness   string    `json:"harness"`
 	CreatedAt time.Time `json:"created_at"`
+	// Instructions are what the agent is told before every turn, if anything.
+	Instructions string `json:"instructions,omitempty"`
 }
 
 type Session struct {
@@ -167,6 +169,8 @@ type TakenTurn struct {
 	// HarnessSessionID is the harness session to continue. It is nil in the
 	// first turn of a session, which starts the harness session.
 	HarnessSessionID *string
+	// Instructions are the instructions of the session's agent.
+	Instructions string
 }
 
 // Dispatch is what it takes to run a turn.
@@ -216,12 +220,14 @@ func (s *Store) Project(ctx context.Context, id uuid.UUID) (Project, error) {
 }
 
 // CreateAgent returns ErrNotFound if the project does not exist.
-func (s *Store) CreateAgent(ctx context.Context, projectID uuid.UUID, harness string) (Agent, error) {
+func (s *Store) CreateAgent(ctx context.Context, projectID uuid.UUID, harness, instructions string) (Agent, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return Agent{}, err
 	}
-	row, err := s.queries.CreateAgent(ctx, db.CreateAgentParams{ID: id, ProjectID: projectID, Harness: harness})
+	row, err := s.queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: id, ProjectID: projectID, Harness: harness, Instructions: instructions,
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Agent{}, ErrNotFound
 	}
@@ -469,6 +475,7 @@ func (s *Store) TakeTurn(ctx context.Context, token string) (TakenTurn, error) {
 				CreatedAt: row.CreatedAt,
 			},
 			HarnessSessionID: row.HarnessSessionID,
+			Instructions:     row.Instructions,
 		}, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {

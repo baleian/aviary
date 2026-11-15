@@ -46,6 +46,9 @@ message Start {
   // The harness session to continue. It is unset for the first turn of a
   // session, for which the runner starts a new harness session.
   optional string harness_session_id = 2;
+  // What the agent is told before every turn, in the words of whoever set
+  // the agent up. It is empty for an agent without instructions.
+  string instructions = 3;
 }
 
 // Cancel tells the runner to stop the turn. The runner asks the harness to

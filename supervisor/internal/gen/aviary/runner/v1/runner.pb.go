@@ -281,8 +281,11 @@ type Start struct {
 	// The harness session to continue. It is unset for the first turn of a
 	// session, for which the runner starts a new harness session.
 	HarnessSessionId *string `protobuf:"bytes,2,opt,name=harness_session_id,json=harnessSessionId,proto3,oneof" json:"harness_session_id,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// What the agent is told before every turn, in the words of whoever set
+	// the agent up. It is empty for an agent without instructions.
+	Instructions  string `protobuf:"bytes,3,opt,name=instructions,proto3" json:"instructions,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Start) Reset() {
@@ -325,6 +328,13 @@ func (x *Start) GetText() string {
 func (x *Start) GetHarnessSessionId() string {
 	if x != nil && x.HarnessSessionId != nil {
 		return *x.HarnessSessionId
+	}
+	return ""
+}
+
+func (x *Start) GetInstructions() string {
+	if x != nil {
+		return x.Instructions
 	}
 	return ""
 }
@@ -986,10 +996,11 @@ const file_aviary_runner_v1_runner_proto_rawDesc = "" +
 	"\x0fRunTurnResponse\x12/\n" +
 	"\x05start\x18\x01 \x01(\v2\x17.aviary.runner.v1.StartH\x00R\x05start\x122\n" +
 	"\x06cancel\x18\x02 \x01(\v2\x18.aviary.runner.v1.CancelH\x00R\x06cancelB\t\n" +
-	"\amessage\"e\n" +
+	"\amessage\"\x89\x01\n" +
 	"\x05Start\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x121\n" +
-	"\x12harness_session_id\x18\x02 \x01(\tH\x00R\x10harnessSessionId\x88\x01\x01B\x15\n" +
+	"\x12harness_session_id\x18\x02 \x01(\tH\x00R\x10harnessSessionId\x88\x01\x01\x12\"\n" +
+	"\finstructions\x18\x03 \x01(\tR\finstructionsB\x15\n" +
 	"\x13_harness_session_id\"\b\n" +
 	"\x06Cancel\"7\n" +
 	"\aStarted\x12,\n" +
