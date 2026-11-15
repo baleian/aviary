@@ -25,6 +25,7 @@ import (
 	"aviary/supervisor/internal/events"
 	"aviary/supervisor/internal/gateway"
 	runnerv1 "aviary/supervisor/internal/gen/aviary/runner/v1"
+	"aviary/supervisor/internal/metrics"
 	"aviary/supervisor/internal/store"
 )
 
@@ -46,6 +47,7 @@ const (
 	apiAddr            = ":8080"
 	gatewayAddr        = ":9090"
 	authzAddr          = ":9091"
+	metricsAddr        = ":9092"
 	// handover is how long a Supervisor that was told to stop goes on
 	// serving. For that long the cluster may still send it new requests.
 	handover = 5 * time.Second
@@ -116,7 +118,8 @@ func serve(ctx context.Context, database string) error {
 	if err != nil {
 		return err
 	}
-	dr, err := driver.New(config, st, ev)
+	m := metrics.New()
+	dr, err := driver.New(config, st, ev, m)
 	if err != nil {
 		return err
 	}
@@ -133,7 +136,11 @@ func serve(ctx context.Context, database string) error {
 	if err != nil {
 		return err
 	}
-	runners := gateway.New(st, ev)
+	metricsListener, err := net.Listen("tcp", metricsAddr)
+	if err != nil {
+		return err
+	}
+	runners := gateway.New(st, ev, m)
 	apiServer := &http.Server{
 		Handler:           api.New(st, ev, dr, ctx.Done()),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -153,17 +160,25 @@ func serve(ctx context.Context, database string) error {
 	// be kept from it.
 	authzServer := grpc.NewServer(alive...)
 	authv3.RegisterAuthorizationServer(authzServer, authz.New(st))
-	failed := make(chan error, 3)
+	// The metrics are on a port of their own, which the clients of the API
+	// and the turn pods have no way to. They are served until the Supervisor
+	// has stopped.
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("GET /metrics", m.Handler())
+	metricsServer := &http.Server{Handler: metricsMux, ReadHeaderTimeout: 10 * time.Second}
+	defer metricsServer.Close()
+	failed := make(chan error, 4)
 	go func() { failed <- apiServer.Serve(apiListener) }()
 	go func() { failed <- gatewayServer.Serve(gatewayListener) }()
 	go func() { failed <- authzServer.Serve(authzListener) }()
+	go func() { failed <- metricsServer.Serve(metricsListener) }()
 	go dr.Run(ctx)
 	// The runners that are connected are served until their turns have
 	// ended, which is after the Supervisor was told to stop.
 	serving, served := context.WithCancel(context.Background())
 	defer served()
 	go runners.Run(serving)
-	slog.Info("listening", "api", apiAddr, "gateway", gatewayAddr, "authz", authzAddr)
+	slog.Info("listening", "api", apiAddr, "gateway", gatewayAddr, "authz", authzAddr, "metrics", metricsAddr)
 
 	select {
 	case err := <-failed:

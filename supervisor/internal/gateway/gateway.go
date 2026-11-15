@@ -21,21 +21,23 @@ import (
 
 	"aviary/supervisor/internal/events"
 	runnerv1 "aviary/supervisor/internal/gen/aviary/runner/v1"
+	"aviary/supervisor/internal/metrics"
 	"aviary/supervisor/internal/store"
 )
 
 type Gateway struct {
 	runnerv1.UnimplementedRunnerServiceServer
-	store  *store.Store
-	events *events.Streams
+	store   *store.Store
+	events  *events.Streams
+	metrics *metrics.Metrics
 	// cancels holds, for every turn whose runner is connected, the channel
 	// that tells that runner to stop the turn.
 	mu      sync.Mutex
 	cancels map[uuid.UUID]chan struct{}
 }
 
-func New(st *store.Store, ev *events.Streams) *Gateway {
-	return &Gateway{store: st, events: ev, cancels: map[uuid.UUID]chan struct{}{}}
+func New(st *store.Store, ev *events.Streams, m *metrics.Metrics) *Gateway {
+	return &Gateway{store: st, events: ev, metrics: m, cancels: map[uuid.UUID]chan struct{}{}}
 }
 
 // sweep is how often the turns that were asked to stop are looked up, in case
@@ -98,6 +100,7 @@ func (g *Gateway) RunTurn(stream grpc.BidiStreamingServer[runnerv1.RunTurnReques
 		return g.internal(ctx, "take turn", err)
 	}
 	slog.InfoContext(ctx, "runner took its turn", "turn", turn.ID)
+	defer g.metrics.Connected(turn.Harness)()
 
 	start := &runnerv1.RunTurnResponse{Message: &runnerv1.RunTurnResponse_Start{
 		Start: &runnerv1.Start{
@@ -144,26 +147,28 @@ func (g *Gateway) RunTurn(stream grpc.BidiStreamingServer[runnerv1.RunTurnReques
 		if err != nil {
 			return err
 		}
-		if err := g.receive(ctx, turn.ID, request); err != nil {
+		if err := g.receive(ctx, turn, request); err != nil {
 			return g.internal(ctx, "receive from runner", err, "turn", turn.ID)
 		}
 	}
 }
 
 // receive handles one message from the runner of the turn.
-func (g *Gateway) receive(ctx context.Context, turnID uuid.UUID, request *runnerv1.RunTurnRequest) error {
+func (g *Gateway) receive(ctx context.Context, turn store.TakenTurn, request *runnerv1.RunTurnRequest) error {
 	switch message := request.Message.(type) {
 	case *runnerv1.RunTurnRequest_Started:
 		harnessSessionID := message.Started.GetHarnessSessionId()
 		if harnessSessionID == "" {
 			return errors.New("runner started without a harness session")
 		}
-		if err := g.store.StartTurn(ctx, turnID, harnessSessionID); err != nil {
+		startup, err := g.store.StartTurn(ctx, turn.ID, harnessSessionID)
+		if err != nil {
 			return err
 		}
-		return g.events.Append(ctx, turnID, events.TurnStarted, struct{}{})
+		g.metrics.Started(turn.Harness, startup)
+		return g.events.Append(ctx, turn.ID, events.TurnStarted, struct{}{})
 	case *runnerv1.RunTurnRequest_Finished:
-		return g.store.SetFinished(ctx, turnID, message.Finished.GetStopReason(), usage(message.Finished.GetUsage()))
+		return g.store.SetFinished(ctx, turn.ID, message.Finished.GetStopReason(), usage(message.Finished.GetUsage()))
 	}
 	// The rest of the messages are the events of the turn. A runner newer
 	// than the Supervisor may send one that the Supervisor does not know.
@@ -177,7 +182,7 @@ func (g *Gateway) receive(ctx context.Context, turnID uuid.UUID, request *runner
 		return err
 	}
 	name := strings.ReplaceAll(string(field.Name()), "_", ".")
-	return g.events.Append(ctx, turnID, name, json.RawMessage(data))
+	return g.events.Append(ctx, turn.ID, name, json.RawMessage(data))
 }
 
 // usage is the token usage that the runner passed on from the harness, if

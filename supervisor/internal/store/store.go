@@ -169,7 +169,9 @@ type TakenTurn struct {
 	// HarnessSessionID is the harness session to continue. It is nil in the
 	// first turn of a session, which starts the harness session.
 	HarnessSessionID *string
-	// Instructions are the instructions of the session's agent.
+	// Harness and Instructions are the harness and the instructions of the
+	// session's agent.
+	Harness      string
 	Instructions string
 }
 
@@ -182,6 +184,8 @@ type Dispatch struct {
 	Harness   string
 	// Token is what the runner takes the turn with. Only its hash is stored.
 	Token string
+	// Waited is how long the turn waited to run.
+	Waited time.Duration
 }
 
 // Open connects to the database at url. Its schema must be at least as new
@@ -267,15 +271,17 @@ func (s *Store) Session(ctx context.Context, id uuid.UUID) (Session, error) {
 // ErrNotFound if the session does not exist, ErrSessionBusy if the session
 // has a turn that has not finished, and ErrQueueFull if more than maxWaiting
 // turns would then wait to run. Zero is no such limit. A queued turn waits
-// only if the turns that run leave it no room among maxRunning.
-func (s *Store) CreateTurn(ctx context.Context, sessionID uuid.UUID, text string, maxWaiting, maxRunning int) (Turn, error) {
+// only if the turns that run leave it no room among maxRunning. The second
+// result is how many turns then wait to run, the new one among them: zero if
+// it need not wait.
+func (s *Store) CreateTurn(ctx context.Context, sessionID uuid.UUID, text string, maxWaiting, maxRunning int) (Turn, int, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
-		return Turn{}, err
+		return Turn{}, 0, err
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return Turn{}, err
+		return Turn{}, 0, err
 	}
 	defer tx.Rollback(ctx)
 	queries := s.queries.WithTx(tx)
@@ -283,29 +289,27 @@ func (s *Store) CreateTurn(ctx context.Context, sessionID uuid.UUID, text string
 		// Messages are accepted one at a time, so that the count holds also
 		// when they reach several Supervisors at once.
 		if err := queries.Lock(ctx, queueLock); err != nil {
-			return Turn{}, err
+			return Turn{}, 0, err
 		}
 	}
 	row, err := queries.CreateTurn(ctx, db.CreateTurnParams{ID: id, SessionID: sessionID, Text: text})
 	var failure *pgconn.PgError
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return Turn{}, ErrNotFound
+		return Turn{}, 0, ErrNotFound
 	case errors.As(err, &failure) && failure.Code == uniqueViolation:
-		return Turn{}, ErrSessionBusy
+		return Turn{}, 0, ErrSessionBusy
 	case err != nil:
-		return Turn{}, err
+		return Turn{}, 0, err
 	}
-	if maxWaiting > 0 {
-		waiting, err := queries.CountWaitingTurns(ctx, int64(maxRunning))
-		if err != nil {
-			return Turn{}, err
-		}
-		if waiting > int64(maxWaiting) {
-			return Turn{}, ErrQueueFull
-		}
+	waiting, err := queries.CountWaitingTurns(ctx, int64(maxRunning))
+	if err != nil {
+		return Turn{}, 0, err
 	}
-	return turnFrom(row), tx.Commit(ctx)
+	if maxWaiting > 0 && waiting > int64(maxWaiting) {
+		return Turn{}, 0, ErrQueueFull
+	}
+	return turnFrom(row), int(max(waiting, 0)), tx.Commit(ctx)
 }
 
 // AnnounceQueue calls announce with the turns that wait to run, in the order
@@ -403,6 +407,7 @@ func (s *Store) DispatchTurns(ctx context.Context, limit int) ([]Dispatch, error
 			ProjectID: row.ProjectID,
 			Harness:   row.Harness,
 			Token:     rand.Text(),
+			Waited:    time.Duration(row.Waited * float64(time.Second)),
 		}
 		err := queries.DispatchTurn(ctx, db.DispatchTurnParams{ID: row.TurnID, TokenHash: hashToken(dispatches[i].Token)})
 		if err != nil {
@@ -475,6 +480,7 @@ func (s *Store) TakeTurn(ctx context.Context, token string) (TakenTurn, error) {
 				CreatedAt: row.CreatedAt,
 			},
 			HarnessSessionID: row.HarnessSessionID,
+			Harness:          row.Harness,
 			Instructions:     row.Instructions,
 		}, nil
 	}
@@ -507,9 +513,16 @@ func (s *Store) RunningTurn(ctx context.Context, token string) (uuid.UUID, error
 
 // StartTurn records that the harness of the turn has been given the message,
 // and the harness session that the turn runs in, for the next turn of the
-// session to continue.
-func (s *Store) StartTurn(ctx context.Context, turnID uuid.UUID, harnessSessionID string) error {
-	return s.queries.StartTurn(ctx, db.StartTurnParams{TurnID: turnID, HarnessSessionID: harnessSessionID})
+// session to continue. It returns how long the turn took to start, from its
+// dispatch.
+func (s *Store) StartTurn(ctx context.Context, turnID uuid.UUID, harnessSessionID string) (time.Duration, error) {
+	startup, err := s.queries.StartTurn(ctx, db.StartTurnParams{TurnID: turnID, HarnessSessionID: harnessSessionID})
+	return time.Duration(startup * float64(time.Second)), err
+}
+
+// TurnHarness returns the harness of the agent that the turn belongs to.
+func (s *Store) TurnHarness(ctx context.Context, turnID uuid.UUID) (string, error) {
+	return s.queries.GetTurnHarness(ctx, turnID)
 }
 
 // SetFinished records how the harness ended the turn: why it stopped and,

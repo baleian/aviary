@@ -450,6 +450,21 @@ func (q *Queries) GetTurn(ctx context.Context, id uuid.UUID) (Turn, error) {
 	return i, err
 }
 
+const getTurnHarness = `-- name: GetTurnHarness :one
+select agents.harness
+from turns
+join sessions on sessions.id = turns.session_id
+join agents on agents.id = sessions.agent_id
+where turns.id = $1
+`
+
+func (q *Queries) GetTurnHarness(ctx context.Context, id uuid.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, getTurnHarness, id)
+	var harness string
+	err := row.Scan(&harness)
+	return harness, err
+}
+
 const giveUpTurn = `-- name: GiveUpTurn :execrows
 update turns set failure_reason = $1::text, failure_message = nullif($2::text, '')
 where id = $3 and state = 'dispatching' and failure_reason is null and cancel_requested_at is null
@@ -574,7 +589,8 @@ func (q *Queries) Lock(ctx context.Context, key int64) error {
 }
 
 const nextTurns = `-- name: NextTurns :many
-select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, agents.harness
+select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, agents.harness,
+       extract(epoch from now() - turns.created_at)::float8 as waited
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
@@ -589,6 +605,7 @@ type NextTurnsRow struct {
 	AgentID   uuid.UUID
 	ProjectID uuid.UUID
 	Harness   string
+	Waited    float64
 }
 
 // The queued turns that there is room to run, oldest first.
@@ -607,6 +624,7 @@ func (q *Queries) NextTurns(ctx context.Context, maxRunning int64) ([]NextTurnsR
 			&i.AgentID,
 			&i.ProjectID,
 			&i.Harness,
+			&i.Waited,
 		); err != nil {
 			return nil, err
 		}
@@ -685,13 +703,15 @@ func (q *Queries) SetFinished(ctx context.Context, arg SetFinishedParams) error 
 	return err
 }
 
-const startTurn = `-- name: StartTurn :exec
+const startTurn = `-- name: StartTurn :one
 with started as (
-    update turns set started_at = now() where turns.id = $2 returning turns.session_id
+    update turns set started_at = now() where turns.id = $2
+    returning turns.session_id, coalesce(extract(epoch from now() - turns.dispatched_at), 0)::float8 as startup
 )
 update sessions set harness_session_id = $1::text
 from started
 where sessions.id = started.session_id
+returning started.startup
 `
 
 type StartTurnParams struct {
@@ -700,10 +720,13 @@ type StartTurnParams struct {
 }
 
 // The harness of the turn has been given the message. The session keeps the
-// harness session, for its next turn to continue.
-func (q *Queries) StartTurn(ctx context.Context, arg StartTurnParams) error {
-	_, err := q.db.Exec(ctx, startTurn, arg.HarnessSessionID, arg.TurnID)
-	return err
+// harness session, for its next turn to continue. The answer is how long the
+// turn took to start.
+func (q *Queries) StartTurn(ctx context.Context, arg StartTurnParams) (float64, error) {
+	row := q.db.QueryRow(ctx, startTurn, arg.HarnessSessionID, arg.TurnID)
+	var startup float64
+	err := row.Scan(&startup)
+	return startup, err
 }
 
 const takeTurn = `-- name: TakeTurn :one
@@ -713,7 +736,7 @@ join agents on agents.id = sessions.agent_id
 where turns.token_hash = $1 and turns.state = 'dispatching' and turns.cancel_requested_at is null
       and turns.failure_reason is null and sessions.id = turns.session_id
 returning turns.id, turns.session_id, turns.seq, turns.text, turns.created_at, sessions.harness_session_id,
-          agents.instructions
+          agents.harness, agents.instructions
 `
 
 type TakeTurnRow struct {
@@ -723,6 +746,7 @@ type TakeTurnRow struct {
 	Text             string
 	CreatedAt        time.Time
 	HarnessSessionID *string
+	Harness          string
 	Instructions     string
 }
 
@@ -736,6 +760,7 @@ func (q *Queries) TakeTurn(ctx context.Context, tokenHash []byte) (TakeTurnRow, 
 		&i.Text,
 		&i.CreatedAt,
 		&i.HarnessSessionID,
+		&i.Harness,
 		&i.Instructions,
 	)
 	return i, err

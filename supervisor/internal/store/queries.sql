@@ -20,15 +20,18 @@ returning *;
 -- name: GetSession :one
 select * from sessions where id = @id;
 
--- name: StartTurn :exec
+-- name: StartTurn :one
 -- The harness of the turn has been given the message. The session keeps the
--- harness session, for its next turn to continue.
+-- harness session, for its next turn to continue. The answer is how long the
+-- turn took to start.
 with started as (
-    update turns set started_at = now() where turns.id = @turn_id returning turns.session_id
+    update turns set started_at = now() where turns.id = @turn_id
+    returning turns.session_id, coalesce(extract(epoch from now() - turns.dispatched_at), 0)::float8 as startup
 )
 update sessions set harness_session_id = @harness_session_id::text
 from started
-where sessions.id = started.session_id;
+where sessions.id = started.session_id
+returning started.startup;
 
 -- name: Lock :exec
 -- Waits for the advisory lock of the key and holds it until the transaction
@@ -51,6 +54,13 @@ select * from turns where id = @id;
 -- @before, newest first.
 select * from turns where session_id = @session_id and seq < @before order by seq desc limit @count;
 
+-- name: GetTurnHarness :one
+select agents.harness
+from turns
+join sessions on sessions.id = turns.session_id
+join agents on agents.id = sessions.agent_id
+where turns.id = @id;
+
 -- name: CountWaitingTurns :one
 -- A queued turn waits only if the turns that run leave it no room.
 select ((select count(*) from turns where state = 'queued')
@@ -65,7 +75,8 @@ select id from turns where ended_at is null and cancel_requested_at is not null;
 
 -- name: NextTurns :many
 -- The queued turns that there is room to run, oldest first.
-select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, agents.harness
+select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, agents.harness,
+       extract(epoch from now() - turns.created_at)::float8 as waited
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
@@ -90,7 +101,7 @@ join agents on agents.id = sessions.agent_id
 where turns.token_hash = @token_hash and turns.state = 'dispatching' and turns.cancel_requested_at is null
       and turns.failure_reason is null and sessions.id = turns.session_id
 returning turns.id, turns.session_id, turns.seq, turns.text, turns.created_at, sessions.harness_session_id,
-          agents.instructions;
+          agents.harness, agents.instructions;
 
 -- name: IsTurnDispatching :one
 select (state = 'dispatching')::boolean as dispatching from turns where token_hash = @token_hash;

@@ -5,6 +5,7 @@ package driver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -26,6 +27,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 
 	"aviary/supervisor/internal/events"
+	"aviary/supervisor/internal/metrics"
 	"aviary/supervisor/internal/store"
 )
 
@@ -109,13 +111,14 @@ type Driver struct {
 	client  kubernetes.Interface
 	store   *store.Store
 	events  *events.Streams
+	metrics *metrics.Metrics
 	wake    chan struct{}
 	// moved is set when a turn left the queue without being dispatched.
 	moved atomic.Bool
 }
 
 // New returns a driver for the cluster that the Supervisor runs in.
-func New(config Config, st *store.Store, ev *events.Streams) (*Driver, error) {
+func New(config Config, st *store.Store, ev *events.Streams, m *metrics.Metrics) (*Driver, error) {
 	cluster, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, fmt.Errorf("find the cluster: %w", err)
@@ -148,7 +151,7 @@ func New(config Config, st *store.Store, ev *events.Streams) (*Driver, error) {
 	noProxy := []string{"localhost", "127.0.0.1", "::1", llm.Hostname(), gateway.Hostname()}
 	return &Driver{
 		config: config, hosts: hosts, proxy: proxy, noProxy: strings.Join(noProxy, ","),
-		client: client, store: st, events: ev, wake: make(chan struct{}, 1),
+		client: client, store: st, events: ev, metrics: m, wake: make(chan struct{}, 1),
 	}, nil
 }
 
@@ -188,7 +191,16 @@ func (d *Driver) Wake() {
 // Accept queues a message as the session's next turn, if the queue has
 // room. It returns the errors of store.CreateTurn.
 func (d *Driver) Accept(ctx context.Context, sessionID uuid.UUID, text string) (store.Turn, error) {
-	return d.store.CreateTurn(ctx, sessionID, text, d.config.MaxQueuedTurns, d.config.MaxConcurrentTurns)
+	turn, waiting, err := d.store.CreateTurn(ctx, sessionID, text, d.config.MaxQueuedTurns, d.config.MaxConcurrentTurns)
+	switch {
+	case err == nil:
+		d.metrics.Accepted(waiting)
+	case errors.Is(err, store.ErrQueueFull):
+		d.metrics.Refused("queue_full")
+	case errors.Is(err, store.ErrSessionBusy):
+		d.metrics.Refused("session_busy")
+	}
+	return turn, err
 }
 
 // QueueMoved tells the driver that a turn left the queue without running,
@@ -216,6 +228,7 @@ func (d *Driver) dispatch(ctx context.Context) {
 		}
 	}
 	for _, dispatch := range dispatches {
+		d.metrics.Dispatched(dispatch.Harness, dispatch.Waited)
 		if err := d.launch(ctx, dispatch, hosts); err != nil {
 			slog.ErrorContext(ctx, "launch turn", "turn", dispatch.TurnID, "error", err)
 		}
@@ -237,10 +250,7 @@ func (d *Driver) expire(ctx context.Context) bool {
 		return false
 	}
 	for _, turn := range turns {
-		slog.InfoContext(ctx, "turn ended", "turn", turn.ID, "state", turn.State)
-		if err := d.events.AppendLast(ctx, turn); err != nil {
-			slog.ErrorContext(ctx, "publish turn event", "turn", turn.ID, "error", err)
-		}
+		d.Ended(ctx, turn)
 	}
 	return len(turns) > 0
 }
@@ -482,15 +492,27 @@ func (d *Driver) end(ctx context.Context, turnID uuid.UUID, succeeded bool, fail
 		return false
 	}
 	if changed {
-		slog.InfoContext(ctx, "turn ended", "turn", turnID, "state", turn.State)
-		// A client that misses this event gets it from the turn's record.
-		if err := d.events.AppendLast(ctx, turn); err != nil {
-			slog.ErrorContext(ctx, "publish turn event", "turn", turnID, "error", err)
-		}
+		d.Ended(ctx, turn)
 		// The turn no longer counts against the limit.
 		d.Wake()
 	}
 	return true
+}
+
+// Ended tells of a turn that has ended: its clients, with the last event of
+// the turn, and the metrics.
+func (d *Driver) Ended(ctx context.Context, turn store.Turn) {
+	slog.InfoContext(ctx, "turn ended", "turn", turn.ID, "state", turn.State)
+	// A client that misses this event gets it from the turn's record.
+	if err := d.events.AppendLast(ctx, turn); err != nil {
+		slog.ErrorContext(ctx, "publish turn event", "turn", turn.ID, "error", err)
+	}
+	harness, err := d.store.TurnHarness(ctx, turn.ID)
+	if err != nil {
+		slog.ErrorContext(ctx, "read the harness of the turn", "turn", turn.ID, "error", err)
+		return
+	}
+	d.metrics.Ended(harness, turn)
 }
 
 // holdup tells what keeps a pod from starting, as far as Kubernetes says.

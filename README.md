@@ -207,6 +207,29 @@ says, not a measurement, and harnesses count differently: Codex reports the
 sum of the model requests of a turn, OpenCode only the last one. What the
 Egress Proxy logs can be relied on: every model request, with its turn.
 
+## Metrics
+
+A Supervisor serves metrics for Prometheus on port 9092, at `/metrics`. The
+port is not part of its service: the metrics are read from each pod.
+
+| Metric | |
+| --- | --- |
+| `aviary_turn_queue_length` | How many turns waited to run when a turn was accepted, that turn among them. It is zero for a turn that did not have to wait. |
+| `aviary_turns_running` | The turns that run and whose runners are connected to this Supervisor, by `harness`. |
+| `aviary_turns_ended_total` | The turns that have ended, by `harness`, `state` and, for a failed turn, `reason`. |
+| `aviary_turn_queue_duration_seconds` | How long a turn waited to run, from its message to its pod being asked for, by `harness`. |
+| `aviary_turn_startup_duration_seconds` | How long a turn took to start, from its pod being asked for to its harness having the message, by `harness`. |
+| `aviary_turn_run_duration_seconds` | How long a turn ran, from its harness having the message to the turn having ended, by `harness` and `state`. |
+| `aviary_turn_tokens_total` | The token usage that the harnesses reported, by `harness` and `kind`. It is not a measurement, as said above. |
+| `aviary_messages_refused_total` | The messages that were not accepted as turns, by `reason`: `queue_full` or `session_busy`. |
+
+Of several Supervisors, each reports what it did and what it holds itself,
+so the metrics of all of them add up: the sum of `aviary_turns_running` is
+the number of turns that run. No metric tells how many turns wait at this
+moment, because no Supervisor holds them. The length of the queue is
+measured whenever a turn is accepted instead. The metrics of the Go runtime
+and of the process are served as well.
+
 ## Configuration
 
 Aviary is installed with the Helm chart in `deploy/charts/aviary`. The chart

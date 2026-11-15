@@ -296,9 +296,7 @@ func (a *api) cancelTurn(w http.ResponseWriter, r *http.Request) error {
 		return errTurnEnded
 	case !unended:
 	case turn.State == store.TurnCancelled:
-		if err := a.events.AppendLast(r.Context(), turn); err != nil {
-			slog.ErrorContext(r.Context(), "publish turn event", "turn", turn.ID, "event", events.TurnCancelled, "error", err)
-		}
+		a.driver.Ended(r.Context(), turn)
 		a.driver.QueueMoved()
 	default:
 		// The request is recorded. If it cannot be announced, the Supervisor

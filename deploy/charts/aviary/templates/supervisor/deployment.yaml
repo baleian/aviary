@@ -79,6 +79,8 @@ spec:
               containerPort: 9090
             - name: authz
               containerPort: 9091
+            - name: metrics
+              containerPort: 9092
           readinessProbe:
             httpGet:
               path: /healthz
