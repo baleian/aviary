@@ -28,9 +28,14 @@ E2E_HARNESSES ?= opencode codex
 # Runs go in the image that builds the Supervisor, so the host needs no Go.
 # It is called with the directory of a module, and with options for docker if
 # there are any. The volume keeps what go downloads and builds.
-GO = docker run --rm --user $$(id -u):$$(id -g) --env HOME=/tmp --env GOCACHE=/go/cache \
-	--volume aviary-go:/go --volume $(CURDIR):/src --workdir /src/$(1) $(2) $(GO_IMAGE) go
+IN_GO = docker run --rm --user $$(id -u):$$(id -g) --env HOME=/tmp --env GOCACHE=/go/cache \
+	--volume aviary-go:/go --volume $(CURDIR):/src --workdir /src/$(1) $(2) $(GO_IMAGE)
+GO = $(call IN_GO,$(1),$(2)) go
 GO_TEST := test -race -shuffle=on -count=1 -timeout 2m
+# The generators of the Go code in supervisor/internal/gen.
+BUF_GENERATE = $(call GO) run github.com/bufbuild/buf/cmd/buf@v$(BUF) generate
+SQLC_RUN := docker run --rm --user $$(id -u):$$(id -g) \
+	--volume $(CURDIR)/supervisor:/src --workdir /src $(SQLC_IMAGE)
 # What the tests make of the chart, and the image of Envoy that the chart
 # runs as the Egress Proxy.
 RENDER := helm template aviary deploy/charts/aviary --namespace aviary-system
@@ -50,22 +55,31 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 # The value of a variable in .env, or nothing if there is no .env.
 dotenv = $$(test ! -f .env || sed --quiet 's/^$(1)=//p' .env)
 
-.PHONY: proto sqlc test test-supervisor test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down build images secrets deploy e2e e2e-up e2e-run e2e-down
+.PHONY: proto sqlc lint test test-supervisor test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down build images secrets deploy e2e e2e-up e2e-run e2e-down
 
 # Writes the Go code for proto/ to supervisor/internal/gen. Run it after
-# changing a .proto file. It runs in the image that builds the Supervisor, so
-# the host needs no Go.
+# changing a .proto file.
 proto:
-	docker run --rm --user $$(id -u):$$(id -g) --env HOME=/tmp \
-		--volume $(CURDIR):/src --workdir /src $(GO_IMAGE) \
-		go run github.com/bufbuild/buf/cmd/buf@v$(BUF) generate
+	$(BUF_GENERATE)
 
 # Writes the Go code for the Supervisor's queries, which are in
 # supervisor/internal/store/queries.sql, to supervisor/internal/gen/db. Run it
 # after changing a query or adding a migration.
 sqlc:
-	docker run --rm --user $$(id -u):$$(id -g) \
-		--volume $(CURDIR)/supervisor:/src --workdir /src $(SQLC_IMAGE) generate
+	$(SQLC_RUN) generate
+
+# What the formatters and the linters make of the code, and whether the
+# generated code is what the generators make of its sources now.
+lint:
+	@files=$$($(call IN_GO) gofmt -l supervisor test) || exit 1; \
+		[ -z "$$files" ] || { echo "gofmt would change these files:"; echo "$$files"; exit 1; }
+	for module in supervisor test test/mock-llm; do $(call GO,$$module) vet ./... || exit 1; done
+	cargo fmt --all --check
+	cargo clippy --locked --all-targets -- --deny warnings
+	rm -rf .out/gen
+	$(BUF_GENERATE) --output .out/gen
+	diff --recursive .out/gen/supervisor/internal/gen/aviary supervisor/internal/gen/aviary
+	$(SQLC_RUN) diff
 
 # The tests that need no cluster, all at once. Each of them is a target of
 # its own, and TESTS narrows a run of one to some of its tests, for example
