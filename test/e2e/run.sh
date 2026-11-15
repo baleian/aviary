@@ -461,15 +461,36 @@ follow "$refused" refused-turn
 [ "$(reason refused-turn)" = harness_error ] ||
   fail "turn $refused, which the model endpoint refused, failed for the reason $(reason refused-turn)"
 
+# An agent can be given the resources of its turn pods. A turn that takes
+# more memory than its limit fails and says so, and its session goes on.
+limited=$(create "/v1/projects/$project/agents" "$(jq --null-input --arg harness "$harness" \
+  '{harness: $harness, resources: {limits: {memory: "512Mi"}}}')")
+[ "$(field "/v1/agents/$limited" resources.limits.memory)" = 512Mi ] ||
+  fail "agent $limited does not have the resources that it was created with"
+greedy=$(create "/v1/agents/$limited/sessions")
+over=$(send "$greedy" 'run node -e "const a = []; for (;;) a.push(Buffer.alloc(50 * 1048576, 1))"')
+follow "$over" memory-turn
+[ "$(ended memory-turn)" = turn.failed ] ||
+  fail "turn $over did not fail over its limit of memory, see $out/memory-turn.jsonl"
+[ "$(reason memory-turn)" = out_of_memory ] ||
+  fail "turn $over, which took more memory than it may, failed for the reason $(reason memory-turn)"
+run_turn "$greedy" memory-turn-next "say done"
+
 # No more turns wait than may, a turn does not wait for longer than it may,
-# and a turn that runs is stopped when it is cancelled.
-install "${settings[@]}" --set runtime.maxQueuedTurns=1 --set runtime.maxQueueWaitSeconds=5
+# and a turn that runs is stopped when it is cancelled. The resources of the
+# harness change as well: an agent without resources of its own follows them.
+install "${settings[@]}" --set runtime.maxQueuedTurns=1 --set runtime.maxQueueWaitSeconds=5 \
+  --set "runtime.harnesses.$harness.resources.requests.memory=333Mi"
 connect
 stopped=$(create "/v1/agents/$agent/sessions")
 running=$(send "$stopped" "run sleep 120")
 wait_for 60 running "$running" || fail "turn $running did not start"
 wait_for 10 counted aviary_turns_running 1 ||
   fail "the metrics of the Supervisors do not tell of the one turn that runs"
+asked=$($kubectl --namespace aviary-runtime get pods --selector "aviary.io/turn=$running" \
+  --output jsonpath='{.items[0].spec.containers[0].resources.requests.memory}')
+[ "$asked" = 333Mi ] ||
+  fail "the pod of turn $running asks for $asked of memory, not for what the harness now has"
 waiting=$(send "$(create "/v1/agents/$agent/sessions")" "say late")
 status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   --request POST --data '{"text": "say more"}' "$api/v1/sessions/$(create "/v1/agents/$agent/sessions")/messages")
@@ -525,4 +546,4 @@ echo "PASS: $harness ran turns through the API, continued a session, kept sessio
   "reached the model without holding its key and the outside only through the Egress Proxy," \
   "queued, cancelled and expired turns, gave failed turns a reason, recorded token usage," \
   "kept what was said, also in turns that were cut off, told an agent its instructions," \
-  "and reported the turns and the requests in the metrics"
+  "reported the turns and the requests in the metrics and gave the turn pods their resources"
