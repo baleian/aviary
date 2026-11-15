@@ -3,8 +3,8 @@ set -euo pipefail
 
 # The e2e runs against a model server of its own, mock-llm, which answers by
 # a script. A message to a session is an instruction to it: "say <text>",
-# "drawl <text>", "run <command>", "recall" or "fail <text>". See
-# test/mock-llm/main.go.
+# "drawl <text>", "run <command>", "recall", "find <text>" or "fail <text>".
+# See test/mock-llm/main.go.
 
 harness=${1:?usage: run.sh <harness>}
 cd "$(dirname "$0")/../.."
@@ -254,6 +254,23 @@ deleted=$($kubectl --namespace aviary-data exec deployment/valkey --container va
 [ "$(written "$turn")" = "$(answer session-turn-3)" ] ||
   fail "the record of turn $turn is gone with its events"
 
+# An agent is told its instructions in every turn: its harness sends them
+# to the model along with the conversation. An agent without instructions
+# is told nothing of the kind.
+word=$(new_id | cut --characters 1-8)
+instructed=$(create "/v1/projects/$project/agents" "$(jq --null-input --arg harness "$harness" \
+  --arg instructions "The word of the day is $word." '{harness: $harness, instructions: $instructions}')")
+told=$(create "/v1/agents/$instructed/sessions")
+run_turn "$told" instructions-turn-1 "find $word"
+[[ $(answer instructions-turn-1) == *present* ]] ||
+  fail "the model was not sent the instructions of the agent, see $out/instructions-turn-1.jsonl"
+run_turn "$told" instructions-turn-2 "find $word"
+[[ $(answer instructions-turn-2) == *present* ]] ||
+  fail "the model was not sent the instructions in the next turn, see $out/instructions-turn-2.jsonl"
+run_turn "$session" instructions-turn-none "find $word"
+[[ $(answer instructions-turn-none) == *absent* ]] ||
+  fail "an agent without instructions sent the model those of another, see $out/instructions-turn-none.jsonl"
+
 # Another session sees neither that conversation nor those files.
 other=$(create "/v1/agents/$agent/sessions")
 run_turn "$other" other-turn-1 recall
@@ -428,5 +445,5 @@ follow "$cut" cut-turn
 
 echo "PASS: $harness ran turns through the API, continued a session, kept sessions apart," \
   "reached the model without holding its key and the outside only through the Egress Proxy," \
-  "queued, cancelled and expired turns, gave failed turns a reason, recorded token usage" \
-  "and kept what was said, also in turns that were cut off"
+  "queued, cancelled and expired turns, gave failed turns a reason, recorded token usage," \
+  "kept what was said, also in turns that were cut off, and told an agent its instructions"

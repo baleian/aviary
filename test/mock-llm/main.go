@@ -10,6 +10,9 @@
 //	               replies with what the tool returned
 //	recall         replies with the instructions that the user gave before,
 //	               one per line, or "nothing" if there are none
+//	find <text>    replies "present" if the harness sent the text along with
+//	               the conversation, as it does with the instructions of an
+//	               agent, and "absent" if it did not
 //	fail <text>    refuses the request with the text as the error, the way
 //	               a model server refuses a caller that it does not know
 //
@@ -63,6 +66,9 @@ func main() {
 type conversation struct {
 	// said holds the messages of the user, oldest first.
 	said []string
+	// sent holds what else the harness sent of its own: what it tells the
+	// model before the conversation, and what it adds to the conversation.
+	sent []string
 	// toolOutput is what the tool returned, if the conversation ends with it.
 	toolOutput *string
 	// shell is the harness's tool that runs a command, if it offers one.
@@ -96,6 +102,15 @@ func (a answer) wait(r *http.Request) bool {
 	}
 }
 
+// hear takes in a message with the role of the user. A harness adds such
+// messages of its own, which are no instructions to the script.
+func (c *conversation) hear(message string) {
+	c.said = append(c.said, message)
+	if _, _, found := instruction(message); !found {
+		c.sent = append(c.sent, message)
+	}
+}
+
 func (c conversation) next() answer {
 	if c.toolOutput != nil {
 		return answer{text: *c.toolOutput}
@@ -117,6 +132,10 @@ func (c conversation) next() answer {
 		return answer{text: "mock: the harness offers no tool that runs a command"}
 	case word == "run":
 		return answer{command: rest}
+	case word == "find" && strings.Contains(strings.Join(c.sent, "\n"), rest):
+		return answer{text: "present"}
+	case word == "find":
+		return answer{text: "absent"}
 	}
 	var before []string
 	for _, message := range c.said[:len(c.said)-1] {
@@ -136,7 +155,7 @@ func (c conversation) next() answer {
 func instruction(message string) (word, rest string, found bool) {
 	word, rest, _ = strings.Cut(strings.TrimSpace(message), " ")
 	switch word {
-	case "say", "drawl", "run", "recall", "fail":
+	case "say", "drawl", "run", "recall", "find", "fail":
 		return word, strings.TrimSpace(rest), true
 	}
 	return "", "", false
@@ -259,7 +278,9 @@ func chatCompletions(w http.ResponseWriter, r *http.Request) {
 	for i, message := range request.Messages {
 		switch message.Role {
 		case "user":
-			c.said = append(c.said, text(message.Content))
+			c.hear(text(message.Content))
+		case "system", "developer":
+			c.sent = append(c.sent, text(message.Content))
 		case "tool":
 			if i == len(request.Messages)-1 {
 				output := text(message.Content)
@@ -326,10 +347,11 @@ func chatCompletions(w http.ResponseWriter, r *http.Request) {
 // responses serves the Responses API, which Codex uses.
 func responses(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		Model  string          `json:"model"`
-		Stream bool            `json:"stream"`
-		Input  json.RawMessage `json:"input"`
-		Tools  []tool          `json:"tools"`
+		Model        string          `json:"model"`
+		Stream       bool            `json:"stream"`
+		Instructions string          `json:"instructions"`
+		Input        json.RawMessage `json:"input"`
+		Tools        []tool          `json:"tools"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		refuse(w, http.StatusBadRequest, "the request is not JSON: "+err.Error())
@@ -347,14 +369,16 @@ func responses(w http.ResponseWriter, r *http.Request) {
 		Content json.RawMessage `json:"content"`
 		Output  json.RawMessage `json:"output"`
 	}
-	var c conversation
+	c := conversation{sent: []string{request.Instructions}}
 	if json.Unmarshal(request.Input, &items) != nil {
 		c.said = []string{text(request.Input)}
 	}
 	for i, item := range items {
 		switch {
 		case item.Type == "message" && item.Role == "user":
-			c.said = append(c.said, text(item.Content))
+			c.hear(text(item.Content))
+		case item.Type == "message" && (item.Role == "system" || item.Role == "developer"):
+			c.sent = append(c.sent, text(item.Content))
 		case item.Type == "function_call_output" && i == len(items)-1:
 			output := text(item.Output)
 			c.toolOutput = &output
