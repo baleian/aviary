@@ -20,10 +20,15 @@ returning *;
 -- name: GetSession :one
 select * from sessions where id = @id;
 
--- name: SetHarnessSession :exec
+-- name: StartTurn :exec
+-- The harness of the turn has been given the message. The session keeps the
+-- harness session, for its next turn to continue.
+with started as (
+    update turns set started_at = now() where turns.id = @turn_id returning turns.session_id
+)
 update sessions set harness_session_id = @harness_session_id::text
-from turns
-where turns.id = @turn_id and sessions.id = turns.session_id;
+from started
+where sessions.id = started.session_id;
 
 -- name: ForgetHarnessSession :exec
 update sessions set harness_session_id = null where id = @id;

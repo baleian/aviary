@@ -184,13 +184,14 @@ A turn that did not complete keeps what there was until then: the text that
 the agent had written so far, and a tool call with the status that it had.
 How the turn ended is told by its `state`, its `failure` and its
 `stop_reason`. A turn has a `stop_reason` if its harness ended it by itself.
-A turn without one was stopped from outside, or never reached its harness.
+A turn without one was stopped from outside, or never reached its harness:
+a turn has `started_at` once its harness has been given the message.
 
 | `state` | `stop_reason` | |
 | --- | --- | --- |
 | `completed` | `end_turn`, `max_tokens`, `max_turn_requests` or `refusal` | The harness ended the turn. |
 | `cancelled` | `cancelled` | The turn was cancelled, and the harness stopped when it was asked to. |
-| `cancelled` | none | The turn was cancelled before it ran, or its harness did not stop in time and its pod was stopped. |
+| `cancelled` | none | The turn was cancelled before its harness was given the message, if it has no `started_at`. Otherwise its harness did not stop in time and its pod was stopped. |
 | `failed` | none | The turn failed, for the reason in `failure`. |
 | `expired` | none | The turn waited to run for longer than it may. |
 

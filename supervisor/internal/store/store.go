@@ -87,6 +87,8 @@ type Turn struct {
 	State     string    `json:"state"`
 	Text      string    `json:"text"`
 	CreatedAt time.Time `json:"created_at"`
+	// StartedAt is when the harness was given the message, once it has been.
+	StartedAt *time.Time `json:"started_at,omitempty"`
 	// StopReason is why the harness ended the turn, once it has.
 	StopReason *string    `json:"stop_reason,omitempty"`
 	EndedAt    *time.Time `json:"ended_at,omitempty"`
@@ -496,10 +498,11 @@ func (s *Store) RunningTurn(ctx context.Context, token string) (uuid.UUID, error
 	return id, err
 }
 
-// SetHarnessSession records the harness session that the turn runs in, for
-// the next turn of the session to continue.
-func (s *Store) SetHarnessSession(ctx context.Context, turnID uuid.UUID, harnessSessionID string) error {
-	return s.queries.SetHarnessSession(ctx, db.SetHarnessSessionParams{TurnID: turnID, HarnessSessionID: harnessSessionID})
+// StartTurn records that the harness of the turn has been given the message,
+// and the harness session that the turn runs in, for the next turn of the
+// session to continue.
+func (s *Store) StartTurn(ctx context.Context, turnID uuid.UUID, harnessSessionID string) error {
+	return s.queries.StartTurn(ctx, db.StartTurnParams{TurnID: turnID, HarnessSessionID: harnessSessionID})
 }
 
 // SetFinished records how the harness ended the turn: why it stopped and,
@@ -620,6 +623,7 @@ func turnFrom(row db.Turn) Turn {
 		State:             row.State,
 		Text:              row.Text,
 		CreatedAt:         row.CreatedAt,
+		StartedAt:         row.StartedAt,
 		StopReason:        row.StopReason,
 		EndedAt:           row.EndedAt,
 		CancelRequestedAt: row.CancelRequestedAt,

@@ -50,4 +50,5 @@ type Turn struct {
 	CancelRequestedAt *time.Time
 	FailureReason     *string
 	FailureMessage    *string
+	StartedAt         *time.Time
 }

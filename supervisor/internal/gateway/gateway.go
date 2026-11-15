@@ -156,7 +156,7 @@ func (g *Gateway) receive(ctx context.Context, turnID uuid.UUID, request *runner
 		if harnessSessionID == "" {
 			return errors.New("runner started without a harness session")
 		}
-		if err := g.store.SetHarnessSession(ctx, turnID, harnessSessionID); err != nil {
+		if err := g.store.StartTurn(ctx, turnID, harnessSessionID); err != nil {
 			return err
 		}
 		return g.events.Append(ctx, turnID, events.TurnStarted, struct{}{})
