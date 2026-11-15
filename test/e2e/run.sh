@@ -542,8 +542,25 @@ for series in aviary_turn_startup_duration_seconds_sum aviary_turn_run_duration_
   [ "$(total "$supervisors" "$series")" != 0 ] || fail "the metrics of the Supervisors have nothing for $series"
 done
 
+# A turn outlasts its Supervisor. Every Supervisor is deleted while the
+# answer comes in. The runner goes on with one that comes after, and the
+# answer is recorded whole and once.
+words=$(seq --format 'w%g' --separator ' ' 1 30)
+outlasting=$(send "$stopped" "drawl $words")
+wait_for 60 in_events "$outlasting" "w2 " || fail "turn $outlasting did not begin its answer"
+$kubectl --namespace aviary-system delete pod --selector app.kubernetes.io/component=supervisor > /dev/null
+connect
+running "$outlasting" || fail "turn $outlasting ended before its Supervisor was gone, so nothing was checked"
+follow "$outlasting" outlasting-turn
+[ "$(ended outlasting-turn)" = turn.completed ] ||
+  fail "turn $outlasting did not complete without its Supervisor, see $out/outlasting-turn.jsonl"
+said=$(written "$outlasting")
+[ "w1 ${said#*w1 }" = "$words" ] ||
+  fail "the record of turn $outlasting, whose Supervisor was deleted, does not have the answer whole and once: $said"
+
 echo "PASS: $harness ran turns through the API, continued a session, kept sessions apart," \
   "reached the model without holding its key and the outside only through the Egress Proxy," \
   "queued, cancelled and expired turns, gave failed turns a reason, recorded token usage," \
   "kept what was said, also in turns that were cut off, told an agent its instructions," \
-  "reported the turns and the requests in the metrics and gave the turn pods their resources"
+  "reported the turns and the requests in the metrics, gave the turn pods their resources" \
+  "and kept a turn that lost its Supervisor"

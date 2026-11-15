@@ -91,7 +91,8 @@ does not hold the model's key and reaches the outside only through the
 Egress Proxy, that turns queue, can be cancelled and expire, that a failed
 turn says why, that the conversation can be read back, also of a turn that
 was cut off, that an agent is told its instructions, that the metrics tell
-of the turns and the requests, and that the turn pods get their resources.
+of the turns and the requests, that the turn pods get their resources, and
+that a turn outlasts its Supervisor.
 It needs no model: it uses a mock model server that answers by a script.
 `make cluster-down` deletes the cluster.
 
