@@ -274,11 +274,9 @@ func TestCancelBeforeTheRunnerComes(t *testing.T) {
 		t.Errorf("the runner of a cancelled turn was started with %v: %v", start, err)
 	}
 	// The runner gives up, and its pod fails.
-	aviary.end(job, batchv1.JobFailed, &corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{
-		Name: "agent", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
-			ExitCode: 1, Message: `{"reason": "supervisor_lost", "message": "the turn was cancelled"}`,
-		}},
-	}}})
+	aviary.end(job, batchv1.JobFailed, stopped(corev1.ContainerStateTerminated{
+		ExitCode: 1, Message: `{"reason": "supervisor_lost", "message": "the turn was cancelled"}`,
+	}))
 	if events := s.follow(accepted.ID); !slices.Equal(types(events), []string{"turn.cancelled"}) {
 		t.Errorf("the events of the turn that was cancelled before it began are %v", events)
 	}

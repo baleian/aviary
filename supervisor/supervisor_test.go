@@ -425,6 +425,12 @@ func token(job *batchv1.Job) string {
 // that is given, if one is.
 func (i *installation) end(job *batchv1.Job, outcome batchv1.JobConditionType, pod *corev1.PodStatus) {
 	i.t.Helper()
+	i.endAs(job, batchv1.JobCondition{Type: outcome, Status: corev1.ConditionTrue}, pod)
+}
+
+// endAs ends the Job with the condition that Kubernetes gives it.
+func (i *installation) endAs(job *batchv1.Job, condition batchv1.JobCondition, pod *corev1.PodStatus) {
+	i.t.Helper()
 	ctx := context.Background()
 	if pod != nil {
 		_, err := i.cluster.CoreV1().Pods(namespace).Create(ctx, &corev1.Pod{
@@ -436,10 +442,17 @@ func (i *installation) end(job *batchv1.Job, outcome batchv1.JobConditionType, p
 		}
 	}
 	ended := job.DeepCopy()
-	ended.Status.Conditions = append(ended.Status.Conditions, batchv1.JobCondition{Type: outcome, Status: corev1.ConditionTrue})
+	ended.Status.Conditions = append(ended.Status.Conditions, condition)
 	if _, err := i.cluster.BatchV1().Jobs(namespace).UpdateStatus(ctx, ended, metav1.UpdateOptions{}); err != nil {
 		i.t.Fatal(err)
 	}
+}
+
+// stopped is the state of a pod whose agent container has ended as given.
+func stopped(agent corev1.ContainerStateTerminated) *corev1.PodStatus {
+	return &corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{
+		Name: "agent", State: corev1.ContainerState{Terminated: &agent},
+	}}}
 }
 
 // The runner of a turn, which the test plays.
