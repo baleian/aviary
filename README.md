@@ -12,10 +12,11 @@ attack or to leak into, a session costs nothing while nobody talks to it,
 and the number of turns that run at once is a setting.
 
 > **Status.** Aviary is at an early stage. A message sent to the API runs as
-> a turn, sessions continue across turns, and turns beyond a limit wait their
-> turn. The pod of a turn reaches the outside only through a proxy that
-> keeps a record. It has only run on a local cluster, and the API has no
-> authentication. See [What is missing](#what-is-missing).
+> a turn, sessions continue across turns, turns beyond a limit wait their
+> turn, and what was said can be read back. The pod of a turn reaches the
+> outside only through a proxy that keeps a record. Supervisors can be
+> replaced while turns run. It has only run on a local cluster, and the API
+> has no authentication. See [What is missing](#what-is-missing).
 
 ## How it works
 
