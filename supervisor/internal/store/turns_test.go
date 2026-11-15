@@ -1,0 +1,827 @@
+package store_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"math"
+	"slices"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+
+	"aviary/supervisor/internal/store"
+	"aviary/supervisor/internal/testenv"
+)
+
+var ctx = context.Background()
+
+// supervisor is the Store of a Supervisor in a test. Its methods fail the
+// test if the Store does not do what they ask of it.
+type supervisor struct {
+	*store.Store
+	t        *testing.T
+	database string
+}
+
+// open returns a Supervisor's Store on a database of its own.
+func open(t *testing.T) supervisor {
+	t.Helper()
+	database := testenv.Database(t)
+	return supervisor{Store: testenv.Open(t, database), t: t, database: database}
+}
+
+// another returns the Store of another Supervisor on the same database.
+func (s supervisor) another() supervisor {
+	s.t.Helper()
+	return supervisor{Store: testenv.Open(s.t, s.database), t: s.t, database: s.database}
+}
+
+// session creates a session of an agent of its own.
+func (s supervisor) session() uuid.UUID {
+	s.t.Helper()
+	project, err := s.CreateProject(ctx, "test")
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	agent, err := s.CreateAgent(ctx, project.ID, "opencode", "Be brief.", json.RawMessage(`{"limits": {"memory": "2Gi"}}`))
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	session, err := s.CreateSession(ctx, agent.ID)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	return session.ID
+}
+
+// queue accepts a message to the session as a turn, with no limit on the
+// turns that wait.
+func (s supervisor) queue(session uuid.UUID) store.Turn {
+	s.t.Helper()
+	turn, _, err := s.CreateTurn(ctx, session, "hello", 0, 50)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	return turn
+}
+
+// dispatch dispatches the one turn that waits, and returns what runs it.
+func (s supervisor) dispatch() store.Dispatch {
+	s.t.Helper()
+	dispatches, err := s.DispatchTurns(ctx, 50)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	if len(dispatches) != 1 {
+		s.t.Fatalf("%d turns were dispatched, not one", len(dispatches))
+	}
+	return dispatches[0]
+}
+
+// running queues a message to the session and has a runner take its turn.
+// It returns the turn's dispatch and the runner.
+func (s supervisor) running(session uuid.UUID) (store.Dispatch, uuid.UUID) {
+	s.t.Helper()
+	s.queue(session)
+	dispatch, runner := s.dispatch(), uuid.New()
+	if _, err := s.TakeTurn(ctx, dispatch.Token, &runner); err != nil {
+		s.t.Fatal(err)
+	}
+	return dispatch, runner
+}
+
+func (s supervisor) turn(id uuid.UUID) store.Turn {
+	s.t.Helper()
+	turn, err := s.Turn(ctx, id)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	return turn
+}
+
+// end ends the turn as the turn of a pod that succeeded or failed, and
+// returns it.
+func (s supervisor) end(id uuid.UUID, succeeded bool, failure store.Failure) store.Turn {
+	s.t.Helper()
+	turn, changed, err := s.EndTurn(ctx, id, succeeded, failure, nothing)
+	if err != nil || !changed {
+		s.t.Fatalf("the turn was not ended: %v", err)
+	}
+	return turn
+}
+
+// nothing is what a turn said in which the agent said nothing.
+func nothing(context.Context) ([]json.RawMessage, error) { return nil, nil }
+
+func TestCreateTurn(t *testing.T) {
+	t.Parallel()
+	st := open(t)
+	session := st.session()
+	first := st.queue(session)
+	if first.Seq != 1 || first.State != store.TurnQueued || first.Text != "hello" {
+		t.Errorf("the first turn of a session is %+v", first)
+	}
+	if _, _, err := st.CreateTurn(ctx, session, "again", 0, 50); !errors.Is(err, store.ErrSessionBusy) {
+		t.Errorf("a session with a turn that has not ended took a message: %v", err)
+	}
+	if _, _, err := st.CancelTurn(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if second := st.queue(session); second.Seq != 2 {
+		t.Errorf("the second turn of a session has the number %d", second.Seq)
+	}
+	if _, _, err := st.CreateTurn(ctx, uuid.New(), "hello", 0, 50); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("a session that does not exist took a message: %v", err)
+	}
+}
+
+// atOnce calls the function so many times at once, each time with another
+// number from 0, and returns when all the calls have.
+func atOnce(times int, call func(i int)) {
+	start := make(chan struct{})
+	var calls sync.WaitGroup
+	for i := range times {
+		calls.Go(func() {
+			<-start
+			call(i)
+		})
+	}
+	close(start)
+	calls.Wait()
+}
+
+// supervisors returns the Stores of so many Supervisors on the database.
+func (s supervisor) supervisors(count int) []supervisor {
+	s.t.Helper()
+	supervisors := make([]supervisor, count)
+	for i := range supervisors {
+		supervisors[i] = s.another()
+	}
+	return supervisors
+}
+
+func TestCreateTurnTakesOneOfTheMessagesSentAtOnce(t *testing.T) {
+	t.Parallel()
+	st := open(t)
+	session := st.session()
+	var accepted, busy atomic.Int32
+	atOnce(20, func(int) {
+		_, _, err := st.CreateTurn(ctx, session, "hello", 0, 50)
+		switch {
+		case err == nil:
+			accepted.Add(1)
+		case errors.Is(err, store.ErrSessionBusy):
+			busy.Add(1)
+		default:
+			t.Error(err)
+		}
+	})
+	if accepted.Load() != 1 || busy.Load() != 19 {
+		t.Errorf("of 20 messages sent to a session at once, %d were accepted and %d refused", accepted.Load(), busy.Load())
+	}
+}
+
+func TestCreateTurnKeepsToTheMostThatMayWait(t *testing.T) {
+	t.Parallel()
+	st := open(t)
+	const maxWaiting, maxRunning = 2, 2
+	send := func(session uuid.UUID) (int, error) {
+		_, waiting, err := st.CreateTurn(ctx, session, "hello", maxWaiting, maxRunning)
+		return waiting, err
+	}
+	// The first two have room to run, so they do not wait.
+	for _, expected := range []int{0, 0, 1, 2} {
+		if waiting, err := send(st.session()); err != nil || waiting != expected {
+			t.Fatalf("%d turns wait, not %d: %v", waiting, expected, err)
+		}
+	}
+	refused := st.session()
+	if _, err := send(refused); !errors.Is(err, store.ErrQueueFull) {
+		t.Fatalf("a message beyond the most that may wait was accepted: %v", err)
+	}
+	if turns, err := st.Turns(ctx, refused, math.MaxInt32, 10); err != nil || len(turns) != 0 {
+		t.Errorf("the refused message left a turn behind: %v, %v", turns, err)
+	}
+
+	// The two that run make no room in the queue until one of them ends.
+	dispatches, err := st.DispatchTurns(ctx, maxRunning)
+	if err != nil || len(dispatches) != maxRunning {
+		t.Fatalf("%d turns were dispatched: %v", len(dispatches), err)
+	}
+	if _, err := send(refused); !errors.Is(err, store.ErrQueueFull) {
+		t.Errorf("a message beyond the most that may wait was accepted: %v", err)
+	}
+	st.end(dispatches[0].TurnID, false, store.Failure{Reason: store.FailurePodLost})
+	if waiting, err := send(refused); err != nil || waiting != 2 {
+		t.Errorf("after a turn ended, %d turns wait: %v", waiting, err)
+	}
+}
+
+func TestSupervisorsKeepToTheMostThatMayWaitTogether(t *testing.T) {
+	t.Parallel()
+	st := open(t)
+	supervisors, sessions := st.supervisors(12), make([]uuid.UUID, 12)
+	for i := range sessions {
+		sessions[i] = st.session()
+	}
+	var accepted, refused atomic.Int32
+	atOnce(12, func(i int) {
+		// One turn has room to run and three may wait.
+		_, _, err := supervisors[i].CreateTurn(ctx, sessions[i], "hello", 3, 1)
+		switch {
+		case err == nil:
+			accepted.Add(1)
+		case errors.Is(err, store.ErrQueueFull):
+			refused.Add(1)
+		default:
+			t.Error(err)
+		}
+	})
+	if accepted.Load() != 4 || refused.Load() != 8 {
+		t.Errorf("of 12 messages sent at once, %d were accepted and %d refused", accepted.Load(), refused.Load())
+	}
+}
+
+// Messages that come in together are turns that wait only until they are
+// dispatched. With room for all of them to run, none counts as waiting.
+func TestCreateTurnLetsThoseInThatHaveRoomToRun(t *testing.T) {
+	t.Parallel()
+	st := open(t)
+	sessions := make([]uuid.UUID, 12)
+	for i := range sessions {
+		sessions[i] = st.session()
+	}
+	atOnce(len(sessions), func(i int) {
+		if _, waiting, err := st.CreateTurn(ctx, sessions[i], "hello", 2, 50); err != nil || waiting != 0 {
+			t.Errorf("%d turns wait: %v", waiting, err)
+		}
+	})
+}
+
+func TestDispatchTurns(t *testing.T) {
+	t.Parallel()
+	st := open(t)
+	var queued []store.Turn
+	for range 3 {
+		queued = append(queued, st.queue(st.session()))
+	}
+	dispatches, err := st.DispatchTurns(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dispatches) != 2 || dispatches[0].TurnID != queued[0].ID || dispatches[1].TurnID != queued[1].ID {
+		t.Fatalf("the turns %v were dispatched, not the two oldest of %v", dispatches, queued)
+	}
+	first := dispatches[0]
+	session, err := st.Session(ctx, queued[0].SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := st.Agent(ctx, session.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resources struct{ Limits map[string]string }
+	if err := json.Unmarshal(first.Resources, &resources); err != nil {
+		t.Errorf("the resources of the agent are %s: %v", first.Resources, err)
+	}
+	if first.SessionID != session.ID || first.AgentID != agent.ID || first.ProjectID != agent.ProjectID ||
+		first.Harness != "opencode" || resources.Limits["memory"] != "2Gi" {
+		t.Errorf("the dispatch is %+v", first)
+	}
+	if first.Token == "" || first.Token == dispatches[1].Token {
+		t.Errorf("the tokens of two turns are %q and %q", first.Token, dispatches[1].Token)
+	}
+	if state := st.turn(first.TurnID).State; state != store.TurnDispatching {
+		t.Errorf("a dispatched turn is %s", state)
+	}
+
+	// A turn counts against the limit from its dispatch to its end.
+	runner := uuid.New()
+	if _, err := st.TakeTurn(ctx, first.Token, &runner); err != nil {
+		t.Fatal(err)
+	}
+	if more, err := st.DispatchTurns(ctx, 2); err != nil || len(more) != 0 {
+		t.Fatalf("%d turns were dispatched beyond the limit: %v", len(more), err)
+	}
+	st.end(first.TurnID, true, store.Failure{})
+	if last := st.dispatch(); last.TurnID != queued[2].ID {
+		t.Errorf("the turn %s was dispatched, not the one that waited", last.TurnID)
+	}
+}
+
+func TestSupervisorsDispatchWithinTheLimitTogether(t *testing.T) {
+	t.Parallel()
+	st := open(t)
+	for range 20 {
+		st.queue(st.session())
+	}
+	supervisors := st.supervisors(8)
+	var mu sync.Mutex
+	var dispatched []uuid.UUID
+	atOnce(len(supervisors), func(i int) {
+		dispatches, err := supervisors[i].DispatchTurns(ctx, 5)
+		if err != nil {
+			t.Error(err)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		for _, dispatch := range dispatches {
+			dispatched = append(dispatched, dispatch.TurnID)
+		}
+	})
+	slices.SortFunc(dispatched, func(a, b uuid.UUID) int { return slices.Compare(a[:], b[:]) })
+	if len(dispatched) != 5 || len(slices.Compact(dispatched)) != 5 {
+		t.Errorf("eight Supervisors with a limit of 5 dispatched the turns %v", dispatched)
+	}
+}
+
+func TestAnnounceQueue(t *testing.T) {
+	t.Parallel()
+	st := open(t)
+	first, gone, last := st.queue(st.session()), st.queue(st.session()), st.queue(st.session())
+	if _, _, err := st.CancelTurn(ctx, gone.ID); err != nil {
+		t.Fatal(err)
+	}
+	// One announcement at a time, also from several Supervisors. Two at once
+	// could tell a turn an older position after a newer one.
+	supervisors := st.supervisors(4)
+	var announcing atomic.Int32
+	atOnce(len(supervisors), func(i int) {
+		err := supervisors[i].AnnounceQueue(ctx, func(queued []uuid.UUID) error {
+			if announcing.Add(1) != 1 {
+				t.Error("two announcements of the queue ran at once")
+			}
+			defer announcing.Add(-1)
+			time.Sleep(20 * time.Millisecond)
+			if !slices.Equal(queued, []uuid.UUID{first.ID, last.ID}) {
+				t.Errorf("the queue is %v, not %v", queued, []uuid.UUID{first.ID, last.ID})
+			}
+			return nil
+		})
+		if err != nil {
+			t.Error(err)
+		}
+	})
+}
+
+func TestTakeTurn(t *testing.T) {
+	t.Parallel()
+	st := open(t)
+	session := st.session()
+	st.queue(session)
+	dispatch := st.dispatch()
+	if _, err := st.RunningTurn(ctx, dispatch.Token); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("the token of a turn that no runner has taken counts as that of a running turn: %v", err)
+	}
+
+	runner, other := uuid.New(), uuid.New()
+	taken, err := st.TakeTurn(ctx, dispatch.Token, &runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if taken.ID != dispatch.TurnID || taken.Text != "hello" || taken.Harness != "opencode" ||
+		taken.Instructions != "Be brief." || taken.HarnessSessionID != nil || taken.Again {
+		t.Errorf("the runner was given %+v", taken)
+	}
+	if state := st.turn(taken.ID).State; state != store.TurnRunning {
+		t.Errorf("a turn that its runner took is %s", state)
+	}
+	origin, err := st.RunningTurn(ctx, dispatch.Token)
+	if err != nil || origin.TurnID != dispatch.TurnID || origin.SessionID != session ||
+		origin.AgentID != dispatch.AgentID || origin.ProjectID != dispatch.ProjectID {
+		t.Errorf("the token of the running turn belongs to %+v: %v", origin, err)
+	}
+
+	// The runner that took the turn is given it again, by any Supervisor.
+	if again, err := st.another().TakeTurn(ctx, dispatch.Token, &runner); err != nil || !again.Again || again.ID != taken.ID {
+		t.Errorf("the runner that came back was given %+v: %v", again, err)
+	}
+	if _, err := st.TakeTurn(ctx, dispatch.Token, &other); !errors.Is(err, store.ErrTurnTaken) {
+		t.Errorf("another runner was given the turn: %v", err)
+	}
+	// A runner of an older release has no name, and is not told apart from
+	// another.
+	if _, err := st.TakeTurn(ctx, dispatch.Token, nil); !errors.Is(err, store.ErrTurnTaken) {
+		t.Errorf("a runner without a name was given the turn: %v", err)
+	}
+	if _, err := st.TakeTurn(ctx, "another token", &runner); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("a token that opens no turn was taken: %v", err)
+	}
+
+	if _, _, err := st.StartTurn(ctx, taken.ID, "harness-session-1"); err != nil {
+		t.Fatal(err)
+	}
+	st.end(taken.ID, true, store.Failure{})
+	if _, err := st.TakeTurn(ctx, dispatch.Token, &runner); !errors.Is(err, store.ErrTurnEnded) {
+		t.Errorf("the runner was given a turn that has ended: %v", err)
+	}
+	if _, err := st.RunningTurn(ctx, dispatch.Token); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("the token of a turn that has ended counts as that of a running turn: %v", err)
+	}
+
+	// The next turn of the session continues the harness session.
+	st.queue(session)
+	next, err := st.TakeTurn(ctx, st.dispatch().Token, &other)
+	if err != nil || next.HarnessSessionID == nil || *next.HarnessSessionID != "harness-session-1" || next.Seq != 2 {
+		t.Errorf("the runner of the next turn was given %+v: %v", next, err)
+	}
+}
+
+func TestTakeTurnThatIsNotToRun(t *testing.T) {
+	t.Parallel()
+	st := open(t)
+	runner := uuid.New()
+
+	st.queue(st.session())
+	cancelled := st.dispatch()
+	if _, _, err := st.CancelTurn(ctx, cancelled.TurnID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.TakeTurn(ctx, cancelled.Token, &runner); !errors.Is(err, store.ErrTurnCancelled) {
+		t.Errorf("a turn that was cancelled before its runner came was taken: %v", err)
+	}
+
+	st.queue(st.session())
+	givenUp := st.dispatch()
+	failure := store.Failure{Reason: store.FailureStartup, Message: "ErrImagePull"}
+	if changed, err := st.GiveUpTurn(ctx, givenUp.TurnID, failure); err != nil || !changed {
+		t.Fatalf("the turn was not given up: %v", err)
+	}
+	if _, err := st.TakeTurn(ctx, givenUp.Token, &runner); !errors.Is(err, store.ErrTurnCancelled) {
+		t.Errorf("a turn that was given up before its runner came was taken: %v", err)
+	}
+	// A turn is given up for one reason, and only before its runner has it.
+	if changed, err := st.GiveUpTurn(ctx, givenUp.TurnID, store.Failure{Reason: store.FailureRunner}); err != nil || changed {
+		t.Errorf("the turn was given up again: %v", err)
+	}
+	dispatch, _ := st.running(st.session())
+	if changed, err := st.GiveUpTurn(ctx, dispatch.TurnID, failure); err != nil || changed {
+		t.Errorf("a turn that its runner had taken was given up: %v", err)
+	}
+	ended := st.end(givenUp.TurnID, false, store.Failure{Reason: store.FailurePodLost, Message: "the pod is gone"})
+	if ended.State != store.TurnFailed || ended.Failure == nil || *ended.Failure != failure {
+		t.Errorf("the turn that was given up ended as %s, for %+v", ended.State, ended.Failure)
+	}
+}
+
+func TestStartTurn(t *testing.T) {
+	t.Parallel()
+	st := open(t)
+	session := st.session()
+	dispatch, _ := st.running(session)
+	if started := st.turn(dispatch.TurnID).StartedAt; started != nil {
+		t.Fatalf("a turn whose harness has no message yet started at %v", started)
+	}
+	startup, first, err := st.StartTurn(ctx, dispatch.TurnID, "harness-session-1")
+	if err != nil || !first || startup < 0 || startup > time.Minute {
+		t.Fatalf("the turn started after %s, for the first time %t: %v", startup, first, err)
+	}
+	started := st.turn(dispatch.TurnID).StartedAt
+	if started == nil {
+		t.Fatal("the turn has not started")
+	}
+
+	// A runner that lost its Supervisor reports the start again.
+	if _, first, err := st.StartTurn(ctx, dispatch.TurnID, "harness-session-2"); err != nil || first {
+		t.Errorf("the turn started a second time: %v", err)
+	}
+	if again := st.turn(dispatch.TurnID).StartedAt; !again.Equal(*started) {
+		t.Errorf("the turn started at %v and then at %v", started, again)
+	}
+	st.end(dispatch.TurnID, true, store.Failure{})
+	st.queue(session)
+	next, err := st.TakeTurn(ctx, st.dispatch().Token, nil)
+	if err != nil || next.HarnessSessionID == nil || *next.HarnessSessionID != "harness-session-1" {
+		t.Errorf("the next turn continues the harness session %v: %v", next.HarnessSessionID, err)
+	}
+}
+
+func TestCancelTurn(t *testing.T) {
+	t.Parallel()
+	st := open(t)
+
+	// A turn that waits ends at once.
+	session := st.session()
+	queued := st.queue(session)
+	cancelled, unended, err := st.CancelTurn(ctx, queued.ID)
+	if err != nil || !unended || cancelled.State != store.TurnCancelled || cancelled.EndedAt == nil {
+		t.Errorf("a waiting turn that was cancelled is %+v, had not ended %t: %v", cancelled, unended, err)
+	}
+	if again, unended, err := st.CancelTurn(ctx, queued.ID); err != nil || unended || again.State != store.TurnCancelled {
+		t.Errorf("a cancelled turn that was cancelled again is %+v, had not ended %t: %v", again, unended, err)
+	}
+	if dispatches, err := st.DispatchTurns(ctx, 50); err != nil || len(dispatches) != 0 {
+		t.Errorf("a cancelled turn was dispatched: %v, %v", dispatches, err)
+	}
+
+	// A turn that was dispatched is asked to stop, and ends with its pod.
+	dispatch, _ := st.running(session)
+	asked, unended, err := st.CancelTurn(ctx, dispatch.TurnID)
+	if err != nil || !unended || asked.State != store.TurnRunning || asked.CancelRequestedAt == nil || asked.EndedAt != nil {
+		t.Fatalf("a running turn that was cancelled is %+v, had not ended %t: %v", asked, unended, err)
+	}
+	if again, unended, err := st.CancelTurn(ctx, dispatch.TurnID); err != nil || !unended ||
+		!again.CancelRequestedAt.Equal(*asked.CancelRequestedAt) {
+		t.Errorf("a turn that was asked to stop again is %+v, had not ended %t: %v", again, unended, err)
+	}
+	if cancelling, err := st.CancellingTurns(ctx); err != nil || !slices.Equal(cancelling, []uuid.UUID{dispatch.TurnID}) {
+		t.Errorf("the turns that were asked to stop are %v: %v", cancelling, err)
+	}
+	st.end(dispatch.TurnID, false, store.Failure{Reason: store.FailurePodLost})
+	if cancelling, err := st.CancellingTurns(ctx); err != nil || len(cancelling) != 0 {
+		t.Errorf("the turns that were asked to stop are %v: %v", cancelling, err)
+	}
+
+	// A turn that has ended stays as it ended.
+	completed, _ := st.running(session)
+	if err := st.SetFinished(ctx, completed.TurnID, "end_turn", nil); err != nil {
+		t.Fatal(err)
+	}
+	st.end(completed.TurnID, true, store.Failure{})
+	if late, unended, err := st.CancelTurn(ctx, completed.TurnID); err != nil || unended ||
+		late.State != store.TurnCompleted || late.CancelRequestedAt != nil {
+		t.Errorf("a completed turn that was cancelled is %+v, had not ended %t: %v", late, unended, err)
+	}
+	if _, _, err := st.CancelTurn(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("a turn that does not exist was cancelled: %v", err)
+	}
+}
+
+func TestExpireTurns(t *testing.T) {
+	t.Parallel()
+	st := open(t)
+	dispatched, _ := st.running(st.session())
+	old, fresh := st.queue(st.session()), st.queue(st.session())
+	testenv.Exec(t, st.database, `update turns set created_at = now() - interval '1 minute' where id = any($1)`,
+		[]uuid.UUID{old.ID, dispatched.TurnID})
+
+	expired, err := st.ExpireTurns(ctx, 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(expired) != 1 || expired[0].ID != old.ID || expired[0].State != store.TurnExpired || expired[0].EndedAt == nil {
+		t.Errorf("the turns %+v expired, not the one that waited for a minute", expired)
+	}
+	if state := st.turn(fresh.ID).State; state != store.TurnQueued {
+		t.Errorf("a turn that has just been queued is %s", state)
+	}
+	if state := st.turn(dispatched.TurnID).State; state != store.TurnRunning {
+		t.Errorf("a turn that runs is %s after the turns that waited too long expired", state)
+	}
+}
+
+func TestEndTurn(t *testing.T) {
+	t.Parallel()
+	st := open(t)
+	lost := store.Failure{Reason: store.FailurePodLost, Message: "the pod was stopped"}
+	tests := []struct {
+		name string
+		// What the turn went through before its pod ended: whether it was
+		// asked to stop, and why the harness said that it stopped, if it did.
+		cancelled  bool
+		stopReason string
+		succeeded  bool
+		state      string
+		failure    *store.Failure
+	}{
+		{name: "the pod succeeded", stopReason: "end_turn", succeeded: true, state: store.TurnCompleted},
+		{name: "the pod succeeded and the runner reported no end", succeeded: true, state: store.TurnFailed, failure: &lost},
+		{name: "the pod failed", state: store.TurnFailed, failure: &lost},
+		{name: "the pod failed after the harness had ended the turn", stopReason: "end_turn", state: store.TurnFailed, failure: &lost},
+		{name: "the turn was cancelled and its pod failed", cancelled: true, state: store.TurnCancelled},
+		{
+			name:      "the turn was cancelled and the harness stopped it",
+			cancelled: true, stopReason: "cancelled", succeeded: true, state: store.TurnCancelled,
+		},
+		{
+			name:      "the turn was cancelled and its pod succeeded without an end from the runner",
+			cancelled: true, succeeded: true, state: store.TurnCancelled,
+		},
+		{
+			name:      "the turn was cancelled when the harness had ended it by itself",
+			cancelled: true, stopReason: "end_turn", succeeded: true, state: store.TurnCompleted,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			session := st.session()
+			dispatch, _ := st.running(session)
+			if test.cancelled {
+				if _, _, err := st.CancelTurn(ctx, dispatch.TurnID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.stopReason != "" {
+				if err := st.SetFinished(ctx, dispatch.TurnID, test.stopReason, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ended := st.end(dispatch.TurnID, test.succeeded, lost)
+			if ended.State != test.state || ended.EndedAt == nil {
+				t.Errorf("the turn ended as %s, not as %s", ended.State, test.state)
+			}
+			if (ended.Failure == nil) != (test.failure == nil) || ended.Failure != nil && *ended.Failure != *test.failure {
+				t.Errorf("the turn failed for %+v, not for %+v", ended.Failure, test.failure)
+			}
+			if kept := st.turn(dispatch.TurnID); kept.State != ended.State {
+				t.Errorf("the turn is kept as %s", kept.State)
+			}
+
+			// A turn ends once. The Supervisors that come later change nothing.
+			again, changed, err := st.another().EndTurn(ctx, dispatch.TurnID, !test.succeeded, store.Failure{Reason: store.FailureRunner},
+				func(context.Context) ([]json.RawMessage, error) {
+					t.Error("what the turn said was read for a turn that had ended")
+					return nil, nil
+				})
+			if err != nil || changed || again.ID != uuid.Nil {
+				t.Errorf("the turn ended a second time, as %+v: %v", again, err)
+			}
+			if kept := st.turn(dispatch.TurnID); kept.State != ended.State {
+				t.Errorf("the turn is %s after it was ended a second time", kept.State)
+			}
+			// The session takes its next message.
+			next := st.queue(session)
+			if next.Seq != 2 {
+				t.Errorf("the next turn of the session has the number %d", next.Seq)
+			}
+			if _, _, err := st.CancelTurn(ctx, next.ID); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	if _, changed, err := st.EndTurn(ctx, uuid.New(), true, store.Failure{}, nothing); err != nil || changed {
+		t.Errorf("a turn that does not exist was ended: %v", err)
+	}
+}
+
+func TestEndTurnKeepsWhatTheTurnSaid(t *testing.T) {
+	t.Parallel()
+	st := open(t)
+	session := st.session()
+	said := []json.RawMessage{
+		json.RawMessage(`{"type":"message","text":"one"}`),
+		json.RawMessage(`{"type":"tool_call","output":"a\u0000b"}`),
+		json.RawMessage(`{"type":"message","text":"two"}`),
+	}
+
+	// A turn whose items cannot be read has not ended, and is ended later.
+	dispatch, _ := st.running(session)
+	_, _, err := st.EndTurn(ctx, dispatch.TurnID, true, store.Failure{}, func(context.Context) ([]json.RawMessage, error) {
+		return nil, errors.New("the events cannot be read")
+	})
+	if err == nil {
+		t.Fatal("a turn ended whose items could not be read")
+	}
+	if kept := st.turn(dispatch.TurnID); kept.State != store.TurnRunning || kept.EndedAt != nil {
+		t.Fatalf("the turn whose items could not be read is %+v", kept)
+	}
+	if _, changed, err := st.EndTurn(ctx, dispatch.TurnID, true, store.Failure{}, func(context.Context) ([]json.RawMessage, error) {
+		return said, nil
+	}); err != nil || !changed {
+		t.Fatalf("the turn was not ended: %v", err)
+	}
+
+	silent, _ := st.running(st.session())
+	st.end(silent.TurnID, true, store.Failure{})
+	items, err := st.TurnItems(ctx, []uuid.UUID{silent.TurnID, dispatch.TurnID, uuid.New()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || len(items[dispatch.TurnID]) != len(said) {
+		t.Fatalf("the items of the turns are %s", items)
+	}
+	for i, expected := range []map[string]string{
+		{"type": "message", "text": "one"},
+		// PostgreSQL cannot keep the character U+0000.
+		{"type": "tool_call", "output": "a�b"},
+		{"type": "message", "text": "two"},
+	} {
+		var item map[string]string
+		if err := json.Unmarshal(items[dispatch.TurnID][i], &item); err != nil {
+			t.Fatal(err)
+		}
+		if len(item) != len(expected) || item["type"] != expected["type"] ||
+			item["text"] != expected["text"] || item["output"] != expected["output"] {
+			t.Errorf("item %d is %s", i+1, items[dispatch.TurnID][i])
+		}
+	}
+}
+
+func TestSetFinished(t *testing.T) {
+	t.Parallel()
+	st := open(t)
+	thought := int64(3)
+	usage := &store.Usage{TotalTokens: 18, InputTokens: 11, OutputTokens: 7, ThoughtTokens: &thought}
+
+	dispatch, _ := st.running(st.session())
+	if err := st.SetFinished(ctx, dispatch.TurnID, "end_turn", usage); err != nil {
+		t.Fatal(err)
+	}
+	ended := st.end(dispatch.TurnID, true, store.Failure{})
+	if ended.StopReason == nil || *ended.StopReason != "end_turn" || ended.Usage == nil ||
+		ended.Usage.TotalTokens != 18 || ended.Usage.InputTokens != 11 || ended.Usage.OutputTokens != 7 ||
+		ended.Usage.ThoughtTokens == nil || *ended.Usage.ThoughtTokens != 3 || ended.Usage.CachedReadTokens != nil {
+		t.Errorf("the turn ended with the stop reason %v and the usage %+v", ended.StopReason, ended.Usage)
+	}
+
+	silent, _ := st.running(st.session())
+	if err := st.SetFinished(ctx, silent.TurnID, "max_tokens", nil); err != nil {
+		t.Fatal(err)
+	}
+	if ended := st.end(silent.TurnID, true, store.Failure{}); *ended.StopReason != "max_tokens" || ended.Usage != nil {
+		t.Errorf("a turn whose harness reported no usage has %+v", ended.Usage)
+	}
+}
+
+func TestTurns(t *testing.T) {
+	t.Parallel()
+	st := open(t)
+	session := st.session()
+	for range 3 {
+		dispatch, _ := st.running(session)
+		st.end(dispatch.TurnID, false, store.Failure{Reason: store.FailurePodLost})
+	}
+	st.queue(st.session())
+	for _, test := range []struct {
+		before, limit int
+		seqs          []int
+	}{
+		{before: math.MaxInt32, limit: 20, seqs: []int{3, 2, 1}},
+		{before: math.MaxInt32, limit: 2, seqs: []int{3, 2}},
+		{before: 3, limit: 2, seqs: []int{2, 1}},
+		{before: 2, limit: 2, seqs: []int{1}},
+		{before: 1, limit: 2, seqs: []int{}},
+	} {
+		turns, err := st.Turns(ctx, session, test.before, test.limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seqs := []int{}
+		for _, turn := range turns {
+			seqs = append(seqs, turn.Seq)
+		}
+		if !slices.Equal(seqs, test.seqs) {
+			t.Errorf("the %d turns before turn %d are %v, not %v", test.limit, test.before, seqs, test.seqs)
+		}
+	}
+}
+
+func TestDispatchedTurns(t *testing.T) {
+	t.Parallel()
+	st := open(t)
+	st.queue(st.session())
+	waiting := st.dispatch()
+	running, _ := st.running(st.session())
+	ended, _ := st.running(st.session())
+	st.end(ended.TurnID, true, store.Failure{})
+	if _, _, err := st.CancelTurn(ctx, running.TurnID); err != nil {
+		t.Fatal(err)
+	}
+	testenv.Exec(t, st.database, `update turns set dispatched_at = now() - interval '2 minutes',
+		cancel_requested_at = cancel_requested_at - interval '1 minute' where id = $1`, running.TurnID)
+
+	dispatched, err := st.DispatchedTurns(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dispatched) != 2 {
+		t.Fatalf("the dispatched turns are %+v", dispatched)
+	}
+	for _, turn := range dispatched {
+		switch turn.ID {
+		case waiting.TurnID:
+			if turn.Taken || turn.Age < 0 || turn.Age > time.Minute || turn.Cancelling != 0 {
+				t.Errorf("the turn that waits for its runner is %+v", turn)
+			}
+		case running.TurnID:
+			if !turn.Taken || turn.Age < 2*time.Minute || turn.Cancelling < time.Minute {
+				t.Errorf("the turn that runs and was asked to stop is %+v", turn)
+			}
+		default:
+			t.Errorf("the turn %s is not dispatched", turn.ID)
+		}
+	}
+}
+
+func TestNotFound(t *testing.T) {
+	t.Parallel()
+	st := open(t)
+	none := uuid.New()
+	for name, get := range map[string]func() error{
+		"project":         func() error { _, err := st.Project(ctx, none); return err },
+		"agent":           func() error { _, err := st.Agent(ctx, none); return err },
+		"session":         func() error { _, err := st.Session(ctx, none); return err },
+		"turn":            func() error { _, err := st.Turn(ctx, none); return err },
+		"agent of none":   func() error { _, err := st.CreateAgent(ctx, none, "opencode", "", nil); return err },
+		"session of none": func() error { _, err := st.CreateSession(ctx, none); return err },
+	} {
+		if err := get(); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}

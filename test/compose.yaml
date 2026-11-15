@@ -1,0 +1,18 @@
+# What the tests of the Supervisor run against. Each run of the tests starts
+# it anew and removes it, so nothing is kept from one run to the next.
+services:
+  postgres:
+    image: postgres:18.7@sha256:2ea8630df176ad090ec92136dee850397c5af8781e4bcf2e4162593691c61bbc
+    environment:
+      POSTGRES_PASSWORD: test
+    tmpfs:
+      - /var/lib/postgresql
+    # Every test has a database of its own, and they run at once: together
+    # they open more connections than PostgreSQL takes by default.
+    command: ["postgres", "-c", "max_connections=500"]
+    healthcheck:
+      # Over the network: while the image sets the database up, PostgreSQL
+      # answers on its socket only, and is then started again.
+      test: ["CMD", "pg_isready", "--host", "127.0.0.1", "--username", "postgres"]
+      interval: 1s
+      retries: 60

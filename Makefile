@@ -17,9 +17,14 @@ MOCK_LLM_IMAGE := aviary-mock-llm:dev
 KUBECTL := kubectl --context kind-$(CLUSTER)
 HELM := helm --kube-context kind-$(CLUSTER)
 # Runs go for the Supervisor in the image that builds it, so the host needs
-# no Go. The volume keeps what go downloads and builds.
-GO := docker run --rm --user $$(id -u):$$(id -g) --env HOME=/tmp --env GOCACHE=/go/cache \
-	--volume aviary-go:/go --volume $(CURDIR)/supervisor:/src --workdir /src $(GO_IMAGE) go
+# no Go. The volume keeps what go downloads and builds. Called with options
+# for docker, it runs go with them.
+GO = docker run --rm --user $$(id -u):$$(id -g) --env HOME=/tmp --env GOCACHE=/go/cache \
+	--volume aviary-go:/go --volume $(CURDIR)/supervisor:/src --workdir /src $(1) $(GO_IMAGE) go
+# What the tests of the Supervisor run against, and how the tests reach it.
+SERVICES := docker compose --file test/compose.yaml --project-name aviary-test-supervisor
+IN_SERVICES := --network aviary-test-supervisor_default \
+	--env AVIARY_TEST_DATABASE_URL=postgres://postgres:test@postgres:5432/postgres
 
 # The value of a variable in .env, or nothing if there is no .env.
 dotenv = $$(test ! -f .env || sed --quiet 's/^$(1)=//p' .env)
@@ -44,8 +49,14 @@ sqlc:
 # The tests that need no cluster.
 test: test-supervisor
 
+# The services are started anew for every run and removed after it, also
+# when a test fails. TESTS narrows a run to some of the tests, for example
+# make test-supervisor TESTS='-run TestEndTurn ./internal/store'
+TESTS ?= ./...
 test-supervisor:
-	$(GO) test -race -shuffle=on -count=1 ./...
+	$(SERVICES) up --detach --wait --force-recreate
+	$(call GO,$(IN_SERVICES)) test -race -shuffle=on -count=1 $(TESTS); \
+		status=$$?; $(SERVICES) down --volumes; exit $$status
 
 cluster-up:
 	kind get clusters 2>/dev/null | grep -qx $(CLUSTER) || \
