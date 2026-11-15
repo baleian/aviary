@@ -297,16 +297,18 @@ To run a harness that is not in this repository, see
 ## Tests
 
 ```sh
+make lint          # the formatters, the linters and the generated code
 make test          # each part by itself, without a cluster
 make test-harness  # the harness images, in containers set up as the pods of turns
 make e2e           # the parts together, in a kind cluster of its own
 ```
 
-None of them needs a model: a mock model server answers by a script. The
-first two also need Rust, which rustup installs in the version that
+None of them needs a model: a mock model server answers by a script. All but
+the last also need Rust, which rustup installs in the version that
 `rust-toolchain.toml` names. `make e2e` makes its cluster anew and removes it
 when the tests have passed, so it does not touch the cluster of
-`make cluster-up`.
+`make cluster-up`. [test/README.md](test/README.md) tells what each of them
+checks, how to run some of the tests and where a new one goes.
 
 ## Repository
 
