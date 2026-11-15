@@ -32,7 +32,11 @@ sends `initialize`, then `session/new` for the first turn of a session or
 text. From the harness's `session/update` notifications it passes on the
 agent's message and thought text, tool calls and their updates, and plans.
 It answers `session/request_permission` by allowing the action once. When the
-prompt returns, the turn is over and the harness is stopped.
+prompt returns, the turn is over and the harness is stopped. To stop a turn
+before that, because it was cancelled or because its pod is about to be
+stopped, the runner sends `session/cancel`, and a harness that ends the turn
+then answers the prompt with the stop reason `cancelled`. A turn that is
+stopped before the prompt was sent gets none.
 
 ## What the image must provide
 

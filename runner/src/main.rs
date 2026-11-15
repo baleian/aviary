@@ -4,6 +4,7 @@ use std::error::Error;
 use std::fmt::{self, Display};
 use std::fs;
 use std::path::Path;
+use std::process;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -13,12 +14,13 @@ use agent_client_protocol::v1::schema::{
     CancelNotification, ContentBlock, ContentChunk, InitializeRequest, NewSessionRequest,
     PermissionOptionKind, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
     RequestPermissionResponse, ResumeSessionRequest, SelectedPermissionOutcome, SessionId,
-    SessionNotification, SessionUpdate, TextContent,
+    SessionNotification, SessionUpdate, StopReason, TextContent,
 };
 use agent_client_protocol::{AcpAgent, Agent, Client};
 use futures::channel::mpsc;
 use futures::{FutureExt, SinkExt, StreamExt};
 use serde::Serialize;
+use tokio::signal::unix::{SignalKind, signal};
 use tonic::Request;
 use tonic::transport::Endpoint;
 
@@ -56,15 +58,24 @@ const TERMINATION_LOG: &str = "/dev/termination-log";
 /// nobody to report to.
 const KEEPALIVE: Duration = Duration::from_secs(30);
 
+/// The exit code of a process that was ended by SIGTERM, by convention.
+const TERMINATED: i32 = 128 + 15;
+
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     match args[..] {
         [] => {
+            let stopped = Cell::new(false);
             let outcome = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?
-                .block_on(run_turn());
+                .block_on(run_turn(&stopped));
+            // A turn that was stopped with its pod did not complete, whatever
+            // came of it after that. The exit code tells the Supervisor.
+            if stopped.get() {
+                process::exit(TERMINATED);
+            }
             if let Err(failure) = &outcome {
                 // Nothing can be done about a reason that cannot be written.
                 let _ = fs::write(TERMINATION_LOG, failure.to_json());
@@ -150,8 +161,13 @@ fn init_home(home: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 /// Takes the turn from the Supervisor, runs it on the harness and reports
-/// what the agent does.
-async fn run_turn() -> Result<(), Failure> {
+/// what the agent does. It sets stopped if the turn is stopped because the
+/// pod is.
+async fn run_turn(stopped: &Cell<bool>) -> Result<(), Failure> {
+    // Kubernetes sends SIGTERM to a pod that it is about to stop, and kills
+    // the pod a while later. The runner is the first process of the
+    // container, so without this the signal would do nothing.
+    let mut terminate = signal(SignalKind::terminate()).map_err(Failure::runner)?;
     let command = variable(HARNESS_COMMAND)?;
     let harness = AcpAgent::from_str(&command).map_err(Failure::harness)?;
     let cwd = env::current_dir().map_err(Failure::runner)?;
@@ -189,8 +205,8 @@ async fn run_turn() -> Result<(), Failure> {
     };
     // Set when the harness could not continue its session.
     let forgotten = Cell::new(false);
-    // Carries the Supervisor's order to cancel to where the harness is
-    // talked to. One order is enough, so more are dropped.
+    // Carries the order to cancel to where the harness is talked to. One
+    // order is enough, so more are dropped.
     let (mut cancel, mut cancelled) = mpsc::channel::<()>(1);
 
     let turn = Client
@@ -237,6 +253,12 @@ async fn run_turn() -> Result<(), Failure> {
                         .session_id
                 }
             };
+            // A turn that was told to stop while the harness was made ready
+            // is not given to the harness. A harness that is told to stop
+            // in the moment in which it gets the message may fail.
+            if cancelled.try_recv().is_ok() {
+                return Ok(StopReason::Cancelled);
+            }
             let started = Started {
                 harness_session_id: session_id.to_string(),
             };
@@ -270,12 +292,14 @@ async fn run_turn() -> Result<(), Failure> {
                     cached_write_tokens: usage.cached_write_tokens.map(count),
                 }),
             };
-            report(&reports, Report::Finished(finished)).await
+            report(&reports, Report::Finished(finished)).await?;
+            Ok(outcome.stop_reason)
         });
 
-    // While the turn runs the Supervisor may cancel it. Its stream ends
-    // early only if the Supervisor fails the turn.
-    {
+    // While the turn runs the Supervisor may cancel it, and the pod may be
+    // told to stop. The Supervisor's stream ends early only if the
+    // Supervisor fails the turn.
+    let stop_reason = {
         let turn = turn.fuse();
         futures::pin_mut!(turn);
         loop {
@@ -298,8 +322,19 @@ async fn run_turn() -> Result<(), Failure> {
                         None => return Err(Failure::supervisor("the Supervisor ended the turn")),
                     }
                 }
+                // The harness is asked to stop, so that it can write down
+                // how the turn ended in the time that the pod has left.
+                _ = terminate.recv().fuse() => {
+                    stopped.set(true);
+                    let _ = cancel.try_send(());
+                }
             }
         }
+    };
+    // A harness that stops when it is asked to ends the turn as cancelled. A
+    // turn that it ended in another way had completed, and stands.
+    if stop_reason != StopReason::Cancelled {
+        stopped.set(false);
     }
     // Closing the reports tells the Supervisor that there are no more. The
     // turn is reported once the Supervisor has closed its side without error.

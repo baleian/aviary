@@ -192,7 +192,7 @@ a turn has `started_at` once its harness has been given the message.
 | `completed` | `end_turn`, `max_tokens`, `max_turn_requests` or `refusal` | The harness ended the turn. |
 | `cancelled` | `cancelled` | The turn was cancelled, and the harness stopped when it was asked to. |
 | `cancelled` | none | The turn was cancelled before its harness was given the message, if it has no `started_at`. Otherwise its harness did not stop in time and its pod was stopped. |
-| `failed` | none | The turn failed, for the reason in `failure`. |
+| `failed` | none or `cancelled` | The turn failed, for the reason in `failure`. A harness whose pod is about to be stopped, as for `timed_out` and `pod_lost`, is asked to end the turn first. `cancelled` says that it did. |
 | `expired` | none | The turn waited to run for longer than it may. |
 
 The items are what the user saw. What the harness remembers of a turn that
