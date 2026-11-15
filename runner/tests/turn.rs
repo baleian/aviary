@@ -384,6 +384,28 @@ async fn the_runner_makes_the_home_of_a_session() {
     assert!(made.success());
     assert!(fs::metadata(home.join("workspace")).unwrap().is_dir());
 
+    // Every turn of the session makes it, and so finds it there but for the
+    // first.
+    fs::write(home.join("workspace/kept"), "").unwrap();
+    let again = Command::new(env!("CARGO_BIN_EXE_aviary-runner"))
+        .arg("init-home")
+        .arg(&home)
+        .status()
+        .await
+        .unwrap();
+    assert!(again.success());
+    assert!(home.join("workspace/kept").exists());
+
+    // A home that cannot be made fails the pod before the agent starts.
+    fs::write(store.path().join("file"), "").unwrap();
+    let under_a_file = Command::new(env!("CARGO_BIN_EXE_aviary-runner"))
+        .arg("init-home")
+        .arg(store.path().join("file/home"))
+        .status()
+        .await
+        .unwrap();
+    assert!(!under_a_file.success());
+
     let wrong = Command::new(env!("CARGO_BIN_EXE_aviary-runner"))
         .arg("init")
         .output()

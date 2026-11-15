@@ -5,6 +5,7 @@ use std::error::Error;
 use std::fmt::{self, Display};
 use std::fs;
 use std::future::poll_fn;
+use std::io;
 use std::path::Path;
 use std::process;
 use std::str::FromStr;
@@ -177,8 +178,26 @@ impl Display for Failure {
 impl Error for Failure {}
 
 /// Creates the home of a session, which the harness container then mounts.
+///
+/// The directories are made from the top down, and none is looked up before
+/// it is made. A node remembers for a while that a name was not on a network
+/// volume. create_dir_all tries the lowest directory first, which looks the
+/// ones above it up: when a pod on another node then makes one of them, as
+/// that of another session of the same agent does, this pod is told that the
+/// directory exists and yet does not find it, and the turn fails.
 fn init_home(home: &Path) -> Result<(), Box<dyn Error>> {
-    fs::create_dir_all(home.join("workspace"))?;
+    let workspace = home.join("workspace");
+    let mut directories: Vec<&Path> = workspace
+        .ancestors()
+        .filter(|directory| directory.parent().is_some())
+        .collect();
+    directories.reverse();
+    for directory in directories {
+        match fs::create_dir(directory) {
+            Err(error) if error.kind() != io::ErrorKind::AlreadyExists => return Err(error.into()),
+            _ => {}
+        }
+    }
     Ok(())
 }
 
