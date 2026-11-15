@@ -1,4 +1,6 @@
-// Package store keeps the Supervisor's records in PostgreSQL.
+// Package store keeps the Supervisor's records in PostgreSQL. Its queries are
+// in queries.sql, and `make sqlc` writes the Go code for them to
+// internal/gen/db.
 package store
 
 import (
@@ -13,6 +15,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"aviary/supervisor/internal/gen/db"
 )
 
 var (
@@ -38,10 +42,6 @@ const (
 	TurnExpired     = "expired"
 )
 
-// stopCancelled is the stop reason of a turn that its harness stopped
-// because it was told to.
-const stopCancelled = "cancelled"
-
 // uniqueViolation is the PostgreSQL error code for a broken unique constraint.
 const uniqueViolation = "23505"
 
@@ -54,7 +54,8 @@ const dispatchLock int64 = 0x617669617279 // "aviary"
 const queueLock int64 = dispatchLock + 1
 
 type Store struct {
-	pool *pgxpool.Pool
+	pool    *pgxpool.Pool
+	queries *db.Queries
 }
 
 type Project struct {
@@ -143,36 +144,6 @@ type Usage struct {
 	CachedWriteTokens *int64 `json:"cached_write_tokens,omitempty"`
 }
 
-// turnColumns are the columns of a turn, but for its ID, in the order in
-// which scanTurn reads them.
-const turnColumns = `turns.session_id, turns.seq, turns.state, turns.text, turns.created_at, turns.stop_reason,
-	turns.ended_at, turns.cancel_requested_at, turns.failure_reason, turns.failure_message,
-	turns.total_tokens, turns.input_tokens, turns.output_tokens, turns.thought_tokens,
-	turns.cached_read_tokens, turns.cached_write_tokens`
-
-func scanTurn(row pgx.Row, turn *Turn) error {
-	var usage Usage
-	var total, input, output *int64
-	var reason, message *string
-	err := row.Scan(&turn.SessionID, &turn.Seq, &turn.State, &turn.Text, &turn.CreatedAt, &turn.StopReason, &turn.EndedAt,
-		&turn.CancelRequestedAt, &reason, &message,
-		&total, &input, &output, &usage.ThoughtTokens, &usage.CachedReadTokens, &usage.CachedWriteTokens)
-	if err != nil {
-		return err
-	}
-	if reason != nil {
-		turn.Failure = &Failure{Reason: *reason}
-		if message != nil {
-			turn.Failure.Message = *message
-		}
-	}
-	if total != nil && input != nil && output != nil {
-		usage.TotalTokens, usage.InputTokens, usage.OutputTokens = *total, *input, *output
-		turn.Usage = &usage
-	}
-	return nil
-}
-
 // DispatchedTurn is a turn that was dispatched and has not ended.
 type DispatchedTurn struct {
 	ID uuid.UUID
@@ -216,7 +187,7 @@ func Open(ctx context.Context, url string) (*Store, error) {
 		pool.Close()
 		return nil, err
 	}
-	return &Store{pool: pool}, nil
+	return &Store{pool: pool, queries: db.New(pool)}, nil
 }
 
 func (s *Store) Close() {
@@ -228,23 +199,16 @@ func (s *Store) CreateProject(ctx context.Context, name string) (Project, error)
 	if err != nil {
 		return Project{}, err
 	}
-	project := Project{ID: id, Name: name}
-	err = s.pool.QueryRow(ctx,
-		`insert into projects (id, name) values ($1, $2) returning created_at`,
-		project.ID, project.Name,
-	).Scan(&project.CreatedAt)
-	return project, err
+	row, err := s.queries.CreateProject(ctx, db.CreateProjectParams{ID: id, Name: name})
+	return Project(row), err
 }
 
 func (s *Store) Project(ctx context.Context, id uuid.UUID) (Project, error) {
-	project := Project{ID: id}
-	err := s.pool.QueryRow(ctx,
-		`select name, created_at from projects where id = $1`, id,
-	).Scan(&project.Name, &project.CreatedAt)
+	row, err := s.queries.GetProject(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Project{}, ErrNotFound
 	}
-	return project, err
+	return Project(row), err
 }
 
 // CreateAgent returns ErrNotFound if the project does not exist.
@@ -253,28 +217,19 @@ func (s *Store) CreateAgent(ctx context.Context, projectID uuid.UUID, harness st
 	if err != nil {
 		return Agent{}, err
 	}
-	agent := Agent{ID: id, ProjectID: projectID, Harness: harness}
-	err = s.pool.QueryRow(ctx,
-		`insert into agents (id, project_id, harness)
-		 select $1, id, $3 from projects where id = $2
-		 returning created_at`,
-		agent.ID, agent.ProjectID, agent.Harness,
-	).Scan(&agent.CreatedAt)
+	row, err := s.queries.CreateAgent(ctx, db.CreateAgentParams{ID: id, ProjectID: projectID, Harness: harness})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Agent{}, ErrNotFound
 	}
-	return agent, err
+	return Agent(row), err
 }
 
 func (s *Store) Agent(ctx context.Context, id uuid.UUID) (Agent, error) {
-	agent := Agent{ID: id}
-	err := s.pool.QueryRow(ctx,
-		`select project_id, harness, created_at from agents where id = $1`, id,
-	).Scan(&agent.ProjectID, &agent.Harness, &agent.CreatedAt)
+	row, err := s.queries.GetAgent(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Agent{}, ErrNotFound
 	}
-	return agent, err
+	return Agent(row), err
 }
 
 // CreateSession returns ErrNotFound if the agent does not exist.
@@ -283,28 +238,19 @@ func (s *Store) CreateSession(ctx context.Context, agentID uuid.UUID) (Session, 
 	if err != nil {
 		return Session{}, err
 	}
-	session := Session{ID: id, AgentID: agentID}
-	err = s.pool.QueryRow(ctx,
-		`insert into sessions (id, agent_id)
-		 select $1, id from agents where id = $2
-		 returning created_at`,
-		session.ID, session.AgentID,
-	).Scan(&session.CreatedAt)
+	row, err := s.queries.CreateSession(ctx, db.CreateSessionParams{ID: id, AgentID: agentID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}
-	return session, err
+	return sessionFrom(row), err
 }
 
 func (s *Store) Session(ctx context.Context, id uuid.UUID) (Session, error) {
-	session := Session{ID: id}
-	err := s.pool.QueryRow(ctx,
-		`select agent_id, created_at from sessions where id = $1`, id,
-	).Scan(&session.AgentID, &session.CreatedAt)
+	row, err := s.queries.GetSession(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}
-	return session, err
+	return sessionFrom(row), err
 }
 
 // CreateTurn queues a message as the session's next turn. It returns
@@ -322,21 +268,15 @@ func (s *Store) CreateTurn(ctx context.Context, sessionID uuid.UUID, text string
 		return Turn{}, err
 	}
 	defer tx.Rollback(ctx)
+	queries := s.queries.WithTx(tx)
 	if maxWaiting > 0 {
 		// Messages are accepted one at a time, so that the count holds also
 		// when they reach several Supervisors at once.
-		if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1)`, queueLock); err != nil {
+		if err := queries.Lock(ctx, queueLock); err != nil {
 			return Turn{}, err
 		}
 	}
-	turn := Turn{ID: id, SessionID: sessionID, State: TurnQueued, Text: text}
-	err = tx.QueryRow(ctx,
-		`insert into turns (id, session_id, seq, state, text)
-		 select $1, id, (select coalesce(max(seq), 0) + 1 from turns where session_id = $2), $3, $4
-		 from sessions where id = $2
-		 returning seq, created_at`,
-		turn.ID, turn.SessionID, turn.State, turn.Text,
-	).Scan(&turn.Seq, &turn.CreatedAt)
+	row, err := queries.CreateTurn(ctx, db.CreateTurnParams{ID: id, SessionID: sessionID, Text: text})
 	var failure *pgconn.PgError
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -347,20 +287,15 @@ func (s *Store) CreateTurn(ctx context.Context, sessionID uuid.UUID, text string
 		return Turn{}, err
 	}
 	if maxWaiting > 0 {
-		var waiting int
-		err := tx.QueryRow(ctx,
-			`select (select count(*) from turns where state = $1)
-			        - greatest(0, $2::bigint - (select count(*) from turns where state in ($3, $4)))`,
-			TurnQueued, maxRunning, TurnDispatching, TurnRunning,
-		).Scan(&waiting)
+		waiting, err := queries.CountWaitingTurns(ctx, int64(maxRunning))
 		if err != nil {
 			return Turn{}, err
 		}
-		if waiting > maxWaiting {
+		if waiting > int64(maxWaiting) {
 			return Turn{}, ErrQueueFull
 		}
 	}
-	return turn, tx.Commit(ctx)
+	return turnFrom(row), tx.Commit(ctx)
 }
 
 // AnnounceQueue calls announce with the turns that wait to run, in the order
@@ -373,14 +308,11 @@ func (s *Store) AnnounceQueue(ctx context.Context, announce func(queued []uuid.U
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1)`, queueLock); err != nil {
+	queries := s.queries.WithTx(tx)
+	if err := queries.Lock(ctx, queueLock); err != nil {
 		return err
 	}
-	rows, err := tx.Query(ctx, `select id from turns where state = $1 order by created_at, id`, TurnQueued)
-	if err != nil {
-		return err
-	}
-	queued, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	queued, err := queries.QueuedTurns(ctx)
 	if err != nil {
 		return err
 	}
@@ -393,22 +325,15 @@ func (s *Store) AnnounceQueue(ctx context.Context, announce func(queued []uuid.U
 // CancellingTurns returns the turns that were asked to stop and have not
 // ended.
 func (s *Store) CancellingTurns(ctx context.Context) ([]uuid.UUID, error) {
-	rows, err := s.pool.Query(ctx,
-		`select id from turns where ended_at is null and cancel_requested_at is not null`,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	return s.queries.CancellingTurns(ctx)
 }
 
 func (s *Store) Turn(ctx context.Context, id uuid.UUID) (Turn, error) {
-	turn := Turn{ID: id}
-	err := scanTurn(s.pool.QueryRow(ctx, `select `+turnColumns+` from turns where id = $1`, id), &turn)
+	row, err := s.queries.GetTurn(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Turn{}, ErrNotFound
 	}
-	return turn, err
+	return turnFrom(row), err
 }
 
 // DispatchTurns makes queued turns wait for their runners, oldest first, for
@@ -420,38 +345,27 @@ func (s *Store) DispatchTurns(ctx context.Context, limit int) ([]Dispatch, error
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
+	queries := s.queries.WithTx(tx)
 	// One Supervisor at a time counts the running turns and picks the next,
 	// so that several Supervisors together stay within the limit.
-	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1)`, dispatchLock); err != nil {
+	if err := queries.Lock(ctx, dispatchLock); err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(ctx,
-		`select turns.id, sessions.id, agents.id, agents.project_id, agents.harness
-		 from turns
-		 join sessions on sessions.id = turns.session_id
-		 join agents on agents.id = sessions.agent_id
-		 where turns.state = $1
-		 order by turns.created_at, turns.id
-		 limit greatest($2 - (select count(*) from turns where state in ($3, $4)), 0)`,
-		TurnQueued, limit, TurnDispatching, TurnRunning,
-	)
+	rows, err := queries.NextTurns(ctx, int64(limit))
 	if err != nil {
 		return nil, err
 	}
-	dispatches, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Dispatch, error) {
-		var dispatch Dispatch
-		err := row.Scan(&dispatch.TurnID, &dispatch.SessionID, &dispatch.AgentID, &dispatch.ProjectID, &dispatch.Harness)
-		return dispatch, err
-	})
-	if err != nil {
-		return nil, err
-	}
-	for i := range dispatches {
-		dispatches[i].Token = rand.Text()
-		_, err := tx.Exec(ctx,
-			`update turns set state = $2, token_hash = $3, dispatched_at = now() where id = $1`,
-			dispatches[i].TurnID, TurnDispatching, hashToken(dispatches[i].Token),
-		)
+	dispatches := make([]Dispatch, len(rows))
+	for i, row := range rows {
+		dispatches[i] = Dispatch{
+			TurnID:    row.TurnID,
+			SessionID: row.SessionID,
+			AgentID:   row.AgentID,
+			ProjectID: row.ProjectID,
+			Harness:   row.Harness,
+			Token:     rand.Text(),
+		}
+		err := queries.DispatchTurn(ctx, db.DispatchTurnParams{ID: row.TurnID, TokenHash: hashToken(dispatches[i].Token)})
 		if err != nil {
 			return nil, err
 		}
@@ -464,67 +378,44 @@ func (s *Store) DispatchTurns(ctx context.Context, limit int) ([]Dispatch, error
 // when its pod has stopped. CancelTurn returns the turn as it then is, and
 // whether the turn had not ended before.
 func (s *Store) CancelTurn(ctx context.Context, id uuid.UUID) (Turn, bool, error) {
-	turn := Turn{ID: id}
-	err := scanTurn(s.pool.QueryRow(ctx,
-		`update turns set
-		        state = case when state = $3 then $2 else state end,
-		        ended_at = case when state = $3 then now() end,
-		        cancel_requested_at = coalesce(cancel_requested_at, now())
-		 where id = $1 and ended_at is null
-		 returning `+turnColumns,
-		id, TurnCancelled, TurnQueued,
-	), &turn)
+	row, err := s.queries.CancelTurn(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
-		turn, err = s.Turn(ctx, id)
+		turn, err := s.Turn(ctx, id)
 		return turn, false, err
 	}
-	return turn, err == nil, err
+	return turnFrom(row), err == nil, err
 }
 
 // ExpireTurns ends the turns that have waited to run for longer than wait
 // as expired, and returns them.
 func (s *Store) ExpireTurns(ctx context.Context, wait time.Duration) ([]Turn, error) {
-	rows, err := s.pool.Query(ctx,
-		`update turns set state = $1, ended_at = now()
-		 where state = $2 and created_at < now() - make_interval(secs => $3)
-		 returning id`,
-		TurnExpired, TurnQueued, wait.Seconds(),
-	)
+	rows, err := s.queries.ExpireTurns(ctx, wait.Seconds())
 	if err != nil {
 		return nil, err
 	}
-	ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
-	if err != nil {
-		return nil, err
-	}
-	turns := make([]Turn, len(ids))
-	for i, id := range ids {
-		if turns[i], err = s.Turn(ctx, id); err != nil {
-			return nil, err
-		}
+	turns := make([]Turn, len(rows))
+	for i, row := range rows {
+		turns[i] = turnFrom(row)
 	}
 	return turns, nil
 }
 
 // DispatchedTurns returns the turns that were dispatched and have not ended.
 func (s *Store) DispatchedTurns(ctx context.Context) ([]DispatchedTurn, error) {
-	rows, err := s.pool.Query(ctx,
-		`select id, state = $2, extract(epoch from now() - coalesce(dispatched_at, created_at))::float8,
-		        coalesce(extract(epoch from now() - cancel_requested_at), 0)::float8
-		 from turns where state in ($1, $2)`,
-		TurnDispatching, TurnRunning,
-	)
+	rows, err := s.queries.DispatchedTurns(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (DispatchedTurn, error) {
-		var turn DispatchedTurn
-		var age, cancelling float64
-		err := row.Scan(&turn.ID, &turn.Taken, &age, &cancelling)
-		turn.Age = time.Duration(age * float64(time.Second))
-		turn.Cancelling = time.Duration(cancelling * float64(time.Second))
-		return turn, err
-	})
+	turns := make([]DispatchedTurn, len(rows))
+	for i, row := range rows {
+		turns[i] = DispatchedTurn{
+			ID:         row.ID,
+			Taken:      row.Taken,
+			Age:        time.Duration(row.Age * float64(time.Second)),
+			Cancelling: time.Duration(row.Cancelling * float64(time.Second)),
+		}
+	}
+	return turns, nil
 }
 
 // TakeTurn gives the turn that the token opens to its runner. A turn is given
@@ -533,23 +424,24 @@ func (s *Store) DispatchedTurns(ctx context.Context) ([]DispatchedTurn, error) {
 // was given before.
 func (s *Store) TakeTurn(ctx context.Context, token string) (TakenTurn, error) {
 	hash := hashToken(token)
-	turn := TakenTurn{Turn: Turn{State: TurnRunning}}
-	err := s.pool.QueryRow(ctx,
-		`update turns set state = $2
-		 from sessions
-		 where turns.token_hash = $1 and turns.state = $3 and turns.cancel_requested_at is null
-		       and turns.failure_reason is null and sessions.id = turns.session_id
-		 returning turns.id, turns.session_id, turns.seq, turns.text, turns.created_at,
-		           sessions.harness_session_id`,
-		hash, turn.State, TurnDispatching,
-	).Scan(&turn.ID, &turn.SessionID, &turn.Seq, &turn.Text, &turn.CreatedAt, &turn.HarnessSessionID)
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return turn, err
+	row, err := s.queries.TakeTurn(ctx, hash)
+	if err == nil {
+		return TakenTurn{
+			Turn: Turn{
+				ID:        row.ID,
+				SessionID: row.SessionID,
+				Seq:       int(row.Seq),
+				State:     TurnRunning,
+				Text:      row.Text,
+				CreatedAt: row.CreatedAt,
+			},
+			HarnessSessionID: row.HarnessSessionID,
+		}, nil
 	}
-	var dispatching bool
-	err = s.pool.QueryRow(ctx,
-		`select state = $2 from turns where token_hash = $1`, hash, TurnDispatching,
-	).Scan(&dispatching)
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return TakenTurn{}, err
+	}
+	dispatching, err := s.queries.IsTurnDispatching(ctx, hash)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return TakenTurn{}, ErrNotFound
@@ -566,44 +458,32 @@ func (s *Store) TakeTurn(ctx context.Context, token string) (TakenTurn, error) {
 // RunningTurn returns the turn that the token belongs to, while that turn
 // runs. It returns ErrNotFound for any other token.
 func (s *Store) RunningTurn(ctx context.Context, token string) (uuid.UUID, error) {
-	var id uuid.UUID
-	err := s.pool.QueryRow(ctx,
-		`select id from turns where token_hash = $1 and state = $2`,
-		hashToken(token), TurnRunning,
-	).Scan(&id)
+	id, err := s.queries.RunningTurn(ctx, hashToken(token))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return uuid.Nil, ErrNotFound
 	}
 	return id, err
 }
 
-// SetHarnessSessionrecords the harness session that the turn runs in, for
+// SetHarnessSession records the harness session that the turn runs in, for
 // the next turn of the session to continue.
 func (s *Store) SetHarnessSession(ctx context.Context, turnID uuid.UUID, harnessSessionID string) error {
-	_, err := s.pool.Exec(ctx,
-		`update sessions set harness_session_id = $2
-		 from turns
-		 where turns.id = $1 and sessions.id = turns.session_id`,
-		turnID, harnessSessionID,
-	)
-	return err
+	return s.queries.SetHarnessSession(ctx, db.SetHarnessSessionParams{TurnID: turnID, HarnessSessionID: harnessSessionID})
 }
 
 // SetFinished records how the harness ended the turn: why it stopped and,
 // if the harness reported it, the token usage of the turn.
 func (s *Store) SetFinished(ctx context.Context, turnID uuid.UUID, stopReason string, usage *Usage) error {
-	if usage == nil {
-		_, err := s.pool.Exec(ctx, `update turns set stop_reason = $2 where id = $1`, turnID, stopReason)
-		return err
+	finished := db.SetFinishedParams{ID: turnID, StopReason: stopReason}
+	if usage != nil {
+		finished.TotalTokens = &usage.TotalTokens
+		finished.InputTokens = &usage.InputTokens
+		finished.OutputTokens = &usage.OutputTokens
+		finished.ThoughtTokens = usage.ThoughtTokens
+		finished.CachedReadTokens = usage.CachedReadTokens
+		finished.CachedWriteTokens = usage.CachedWriteTokens
 	}
-	_, err := s.pool.Exec(ctx,
-		`update turns set stop_reason = $2, total_tokens = $3, input_tokens = $4, output_tokens = $5,
-		        thought_tokens = $6, cached_read_tokens = $7, cached_write_tokens = $8
-		 where id = $1`,
-		turnID, stopReason, usage.TotalTokens, usage.InputTokens, usage.OutputTokens,
-		usage.ThoughtTokens, usage.CachedReadTokens, usage.CachedWriteTokens,
-	)
-	return err
+	return s.queries.SetFinished(ctx, finished)
 }
 
 // GiveUpTurn records why a turn whose runner has not taken it is given up.
@@ -611,12 +491,8 @@ func (s *Store) SetFinished(ctx context.Context, turnID uuid.UUID, stopReason st
 // that reason once its pod is gone. It reports whether the turn was still
 // waiting for its runner.
 func (s *Store) GiveUpTurn(ctx context.Context, turnID uuid.UUID, failure Failure) (bool, error) {
-	tag, err := s.pool.Exec(ctx,
-		`update turns set failure_reason = $2, failure_message = nullif($3, '')
-		 where id = $1 and state = $4 and failure_reason is null and cancel_requested_at is null`,
-		turnID, failure.Reason, failure.Message, TurnDispatching,
-	)
-	return tag.RowsAffected() == 1, err
+	changed, err := s.queries.GiveUpTurn(ctx, db.GiveUpTurnParams{ID: turnID, Reason: failure.Reason, Message: failure.Message})
+	return changed == 1, err
 }
 
 // EndTurn records that the pod of the turn has ended. The turn is completed
@@ -631,45 +507,66 @@ func (s *Store) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool, f
 		return Turn{}, false, err
 	}
 	defer tx.Rollback(ctx)
-	turn := Turn{ID: turnID}
-	err = scanTurn(tx.QueryRow(ctx,
-		`with ending as (
-		     select case
-		                when cancel_requested_at is not null
-		                     and not ($2 and coalesce(stop_reason, $6) <> $6) then $5
-		                when $2 and stop_reason is not null then $3
-		                else $4
-		            end as state
-		     from turns where id = $1 and ended_at is null
-		 )
-		 update turns set ended_at = now(), state = ending.state,
-		        failure_reason = case when ending.state = $4 then coalesce(turns.failure_reason, $7) end,
-		        failure_message = case
-		            when ending.state <> $4 then null
-		            when turns.failure_reason is not null then turns.failure_message
-		            else nullif($8, '')
-		        end
-		 from ending
-		 where turns.id = $1 and turns.ended_at is null
-		 returning `+turnColumns,
-		turnID, succeeded, TurnCompleted, TurnFailed, TurnCancelled, stopCancelled, failure.Reason, failure.Message,
-	), &turn)
+	queries := s.queries.WithTx(tx)
+	row, err := queries.EndTurn(ctx, db.EndTurnParams{
+		ID:        turnID,
+		Succeeded: succeeded,
+		Reason:    failure.Reason,
+		Message:   failure.Message,
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Turn{}, false, nil
 	}
 	if err != nil {
 		return Turn{}, false, err
 	}
+	turn := turnFrom(row)
 	// A harness session that cannot be continued is not tried again: the
 	// next turn of the session starts a new one. The session keeps its
 	// files, and the agent starts without its memory of the conversation.
 	if turn.Failure != nil && turn.Failure.Reason == FailureResume {
-		_, err := tx.Exec(ctx, `update sessions set harness_session_id = null where id = $1`, turn.SessionID)
-		if err != nil {
+		if err := queries.ForgetHarnessSession(ctx, turn.SessionID); err != nil {
 			return Turn{}, false, err
 		}
 	}
 	return turn, true, tx.Commit(ctx)
+}
+
+// sessionFrom returns a row of the sessions table as a Session.
+func sessionFrom(row db.Session) Session {
+	return Session{ID: row.ID, AgentID: row.AgentID, CreatedAt: row.CreatedAt}
+}
+
+// turnFrom returns a row of the turns table as a Turn.
+func turnFrom(row db.Turn) Turn {
+	turn := Turn{
+		ID:                row.ID,
+		SessionID:         row.SessionID,
+		Seq:               int(row.Seq),
+		State:             row.State,
+		Text:              row.Text,
+		CreatedAt:         row.CreatedAt,
+		StopReason:        row.StopReason,
+		EndedAt:           row.EndedAt,
+		CancelRequestedAt: row.CancelRequestedAt,
+	}
+	if row.FailureReason != nil {
+		turn.Failure = &Failure{Reason: *row.FailureReason}
+		if row.FailureMessage != nil {
+			turn.Failure.Message = *row.FailureMessage
+		}
+	}
+	if row.TotalTokens != nil && row.InputTokens != nil && row.OutputTokens != nil {
+		turn.Usage = &Usage{
+			TotalTokens:       *row.TotalTokens,
+			InputTokens:       *row.InputTokens,
+			OutputTokens:      *row.OutputTokens,
+			ThoughtTokens:     row.ThoughtTokens,
+			CachedReadTokens:  row.CachedReadTokens,
+			CachedWriteTokens: row.CachedWriteTokens,
+		}
+	}
+	return turn
 }
 
 // hashToken returns what is stored of a turn token. The token is random, so

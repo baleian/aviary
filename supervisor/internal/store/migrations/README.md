@@ -52,6 +52,9 @@ deployment.
    with `create index concurrently`, in a migration marked
    `-- +goose NO TRANSACTION`.
 
+After adding a migration, run `make sqlc`. The Go code for the Supervisor's
+queries is written from the schema that the migrations make.
+
 ## Going back
 
 **To the release before:** roll back the release, for example with

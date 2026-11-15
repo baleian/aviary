@@ -5,6 +5,7 @@ CNPG_CHART := 0.29.1
 VALKEY_CHART := 1.0.0
 GO_IMAGE := golang:1.27.4-trixie@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9
 BUF := 1.75.0
+SQLC_IMAGE := sqlc/sqlc:1.31.1@sha256:70f53171d27b2424e9358869975455a6e955a5aa8e58a998a270a6e34e525537
 
 SUPERVISOR_IMAGE := aviary-supervisor:dev
 RUNNER_IMAGE := aviary-runner:dev
@@ -19,7 +20,7 @@ HELM := helm --kube-context kind-$(CLUSTER)
 # The value of a variable in .env, or nothing if there is no .env.
 dotenv = $$(test ! -f .env || sed --quiet 's/^$(1)=//p' .env)
 
-.PHONY: proto cluster-up cluster-down images deploy e2e
+.PHONY: proto sqlc cluster-up cluster-down images deploy e2e
 
 # Writes the Go code for proto/ to supervisor/internal/gen. Run it after
 # changing a .proto file. It runs in the image that builds the Supervisor, so
@@ -28,6 +29,13 @@ proto:
 	docker run --rm --user $$(id -u):$$(id -g) --env HOME=/tmp \
 		--volume $(CURDIR):/src --workdir /src $(GO_IMAGE) \
 		go run github.com/bufbuild/buf/cmd/buf@v$(BUF) generate
+
+# Writes the Go code for the Supervisor's queries, which are in
+# supervisor/internal/store/queries.sql, to supervisor/internal/gen/db. Run it
+# after changing a query or adding a migration.
+sqlc:
+	docker run --rm --user $$(id -u):$$(id -g) \
+		--volume $(CURDIR)/supervisor:/src --workdir /src $(SQLC_IMAGE) generate
 
 cluster-up:
 	kind get clusters 2>/dev/null | grep -qx $(CLUSTER) || \
