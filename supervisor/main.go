@@ -119,8 +119,12 @@ func serve(ctx context.Context, database string) error {
 	if err != nil {
 		return err
 	}
+	client, err := driver.InCluster()
+	if err != nil {
+		return err
+	}
 	m := metrics.New()
-	dr, err := driver.New(config, st, ev, m)
+	dr, err := driver.New(config, client, st, ev, m)
 	if err != nil {
 		return err
 	}

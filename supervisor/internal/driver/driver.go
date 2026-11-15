@@ -125,21 +125,26 @@ type Driver struct {
 	moved atomic.Bool
 }
 
-// New returns a driver for the cluster that the Supervisor runs in.
-func New(config Config, st *store.Store, ev *events.Streams, m *metrics.Metrics) (*Driver, error) {
+// InCluster returns a client of the cluster that the Supervisor runs in.
+func InCluster() (kubernetes.Interface, error) {
 	cluster, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, fmt.Errorf("find the cluster: %w", err)
 	}
+	return newClient(cluster)
+}
+
+func newClient(cluster *rest.Config) (kubernetes.Interface, error) {
 	// By itself the client sends no more than five requests a second, and a
 	// turn takes a few of them: its Job is created and then deleted. That
 	// would hold the turns back long before their limit does. The API server
 	// guards itself against too many requests.
 	cluster.QPS = -1
-	client, err := kubernetes.NewForConfig(cluster)
-	if err != nil {
-		return nil, err
-	}
+	return kubernetes.NewForConfig(cluster)
+}
+
+// New returns a driver that runs the turns in the cluster of the client.
+func New(config Config, client kubernetes.Interface, st *store.Store, ev *events.Streams, m *metrics.Metrics) (*Driver, error) {
 	for name, harness := range config.Harnesses {
 		if err := checkResources(harness.Resources); err != nil {
 			return nil, fmt.Errorf("the resources of the harness %s: %w", name, err)
