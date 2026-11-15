@@ -68,7 +68,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     match args[..] {
         [] => {
             let stopped = Cell::new(false);
-            let outcome = tokio::runtime::Builder::new_current_thread()
+            // The runtime has a thread besides this one. On tokio's
+            // single-threaded runtime, the wait for the harness's process
+            // polls without a pause, and the runner keeps a CPU busy for as
+            // long as the turn runs.
+            let outcome = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
                 .enable_all()
                 .build()?
                 .block_on(run_turn(&stopped));
