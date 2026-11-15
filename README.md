@@ -294,9 +294,7 @@ asks for more, and the turn fails as `startup_timed_out`.
 
 A Supervisor that is to stop, as when its deployment is scaled in or rolled
 out, first finishes the turns whose runners are connected to it. An Egress
-Proxy that is to stop goes on for as long as a turn may run,
-`runtime.maxTurnSeconds`, because the turns that are connected to it may
-send requests until they end. Its pod shows as `Terminating` for that long.
+Proxy does not wait: the requests that it was passing on break.
 
 To run a harness that is not in this repository, see
 [Harness images](images/README.md).
