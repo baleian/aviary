@@ -17,6 +17,18 @@ tonic = { version = "0.14.9", default-features = false, features = ["channel", "
 tonic-prost = "0.14.9"
 uuid = { version = "1.29.2", features = ["v4"] }
 
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["io-util", "net", "process"] }
+tokio-stream = { version = "0.1.19", features = ["net"] }
+tonic = { version = "0.14.9", default-features = false, features = ["router", "server"] }
+
 [build-dependencies]
 protox = "0.10.0"
 tonic-prost-build = "0.14.9"
+
+# The harness that the tests run the runner with. cargo builds the examples
+# of a package before it runs the tests.
+[[example]]
+name = "fake-harness"
+path = "tests/support/fake_harness.rs"
