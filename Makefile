@@ -30,6 +30,12 @@ GO_TEST := test -race -shuffle=on -count=1 -timeout 2m
 # runs as the Egress Proxy.
 RENDER := helm template aviary deploy/charts/aviary --namespace aviary-system
 ENVOY_IMAGE = $(shell sed --quiet 's/^  image: \(envoyproxy.*\)/\1/p' deploy/charts/aviary/values.yaml)
+# The Egress Proxies that the tests of the proxy run against, and the names
+# under which those proxies find the tests.
+PROXIES = ENVOY_IMAGE=$(ENVOY_IMAGE) docker compose --file test/proxy/compose.yaml --project-name aviary-test-proxy
+AMONG_PROXIES := --network aviary-test-proxy_default --env AVIARY_TEST_PROXY=1 \
+	--network-alias aviary-supervisor.aviary-system --network-alias model.test \
+	--network-alias allowed.test --network-alias other.test
 # What the tests of the Supervisor run against, and how the tests reach it.
 SERVICES := docker compose --file test/compose.yaml --project-name aviary-test-supervisor
 IN_SERVICES := --network aviary-test-supervisor_default \
@@ -39,7 +45,7 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 # The value of a variable in .env, or nothing if there is no .env.
 dotenv = $$(test ! -f .env || sed --quiet 's/^$(1)=//p' .env)
 
-.PHONY: proto sqlc test test-supervisor test-runner test-mock-llm test-chart test-harness cluster-up cluster-down build images deploy e2e
+.PHONY: proto sqlc test test-supervisor test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down build images deploy e2e
 
 # Writes the Go code for proto/ to supervisor/internal/gen. Run it after
 # changing a .proto file. It runs in the image that builds the Supervisor, so
@@ -60,7 +66,7 @@ sqlc:
 # of one of them, for example
 # make test-supervisor TESTS='-run TestEndTurn ./internal/store'
 # make test-runner TESTS=cut
-test: test-supervisor test-runner test-mock-llm test-chart
+test: test-supervisor test-runner test-mock-llm test-chart test-proxy
 
 # The services are started anew for every run and removed after it, also
 # when a test fails.
@@ -98,6 +104,22 @@ test-chart:
 			--volume $(CURDIR)/.out/chart/llm:/etc/aviary/llm:ro \
 			$(ENVOY_IMAGE) --mode validate --log-level error --config-path /etc/envoy/envoy.yaml || exit 1; \
 	done
+
+# Runs the Egress Proxy with what the chart makes of each file of values in
+# test/proxy, and sends it requests. The tests are the Supervisor and the
+# hosts of the proxy, so the proxy finds them under those names.
+test-proxy: TESTS ?= ./proxy/...
+test-proxy:
+	mkdir -p .out/proxy/llm
+	printf the-real-key > .out/proxy/llm/api-key
+	for values in listed open closed; do \
+		$(RENDER) --values test/proxy/$$values.yaml > .out/proxy/$$values.yaml && \
+		$(call GO,test) run ./internal/unpack /src/.out/proxy/$$values.yaml /src/.out/proxy/$$values || exit 1; \
+	done
+	$(PROXIES) up --detach --force-recreate
+	$(call GO,test,$(AMONG_PROXIES)) $(GO_TEST) $(TESTS); \
+		status=$$?; [ $$status = 0 ] || $(PROXIES) logs --no-color --tail 40; \
+		$(PROXIES) down --volumes; exit $$status
 
 # Tests the harness images as the pods of turns run them, in containers and
 # without a cluster. A few at a time: a harness takes some memory.
