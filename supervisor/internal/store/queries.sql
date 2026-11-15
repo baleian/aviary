@@ -24,9 +24,9 @@ select * from sessions where id = @id;
 -- name: StartTurn :one
 -- The harness of the turn has been given the message. The session keeps the
 -- harness session, for its next turn to continue. The answer is how long the
--- turn took to start.
+-- turn took to start. There is none for a turn that had started before.
 with started as (
-    update turns set started_at = now() where turns.id = @turn_id
+    update turns set started_at = now() where turns.id = @turn_id and turns.started_at is null
     returning turns.session_id, coalesce(extract(epoch from now() - turns.dispatched_at), 0)::float8 as startup
 )
 update sessions set harness_session_id = @harness_session_id::text
@@ -96,16 +96,23 @@ select id,
 from turns where state in ('dispatching', 'running');
 
 -- name: TakeTurn :one
-update turns set state = 'running'
-from sessions
+-- A turn that waits for its runner is given to the runner that asks. A turn
+-- that runs is given again to the runner that took it.
+with asked as (
+    select turns.id, turns.session_id, turns.state from turns where turns.token_hash = @token_hash for update
+)
+update turns set state = 'running', runner_id = sqlc.narg(runner_id)
+from asked
+join sessions on sessions.id = asked.session_id
 join agents on agents.id = sessions.agent_id
-where turns.token_hash = @token_hash and turns.state = 'dispatching' and turns.cancel_requested_at is null
-      and turns.failure_reason is null and sessions.id = turns.session_id
+where turns.id = asked.id
+      and ((turns.state = 'dispatching' and turns.cancel_requested_at is null and turns.failure_reason is null)
+           or (turns.state = 'running' and turns.runner_id = sqlc.narg(runner_id)))
 returning turns.id, turns.session_id, turns.seq, turns.text, turns.created_at, sessions.harness_session_id,
-          agents.harness, agents.instructions;
+          agents.harness, agents.instructions, (asked.state = 'running')::boolean as again;
 
--- name: IsTurnDispatching :one
-select (state = 'dispatching')::boolean as dispatching from turns where token_hash = @token_hash;
+-- name: GetTurnState :one
+select state from turns where token_hash = @token_hash;
 
 -- name: RunningTurn :one
 -- The running turn that the token belongs to, and what the turn belongs to.

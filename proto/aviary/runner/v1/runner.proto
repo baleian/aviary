@@ -8,9 +8,15 @@ import "google/protobuf/struct.proto";
 // RunnerService is served by the Supervisor to the runners.
 service RunnerService {
   // RunTurn carries one turn. The runner calls it with the token of its turn
-  // in the authorization metadata, as "Bearer <token>". The Supervisor sends
+  // in the authorization metadata, as "Bearer <token>", and with a UUID that
+  // it made up for itself in the aviary-runner metadata. The Supervisor sends
   // Start. The runner sends Started, then the events of the turn, then
   // Finished. While the turn runs the Supervisor may send Cancel.
+  //
+  // The runner numbers its messages, and the Supervisor answers each with
+  // Received. A runner whose call broke calls again, to any Supervisor and
+  // with the same UUID, and sends again the messages that Start does not say
+  // were recorded. A turn is given back only to the runner that took it.
   rpc RunTurn(stream RunTurnRequest) returns (stream RunTurnResponse);
 }
 
@@ -29,6 +35,9 @@ message RunTurnRequest {
     ToolUpdate tool_update = 6;
     PlanUpdate plan_update = 7;
   }
+  // The number of the message among those of the turn, from 1 and without a
+  // gap. A message that is sent again keeps its number.
+  uint64 seq = 8;
 }
 
 // RunTurnResponse is a message from the Supervisor.
@@ -36,6 +45,7 @@ message RunTurnResponse {
   oneof message {
     Start start = 1;
     Cancel cancel = 2;
+    Received received = 3;
   }
 }
 
@@ -49,6 +59,16 @@ message Start {
   // What the agent is told before every turn, in the words of whoever set
   // the agent up. It is empty for an agent without instructions.
   string instructions = 3;
+  // The number of the runner's last message that is recorded, which is 0 for
+  // a runner that calls for the first time. A runner that calls again takes
+  // nothing else from Start.
+  optional uint64 received = 4;
+}
+
+// Received reports that the runner's message with the number is recorded, and
+// with it the ones before.
+message Received {
+  uint64 seq = 1;
 }
 
 // Cancel tells the runner to stop the turn. The runner asks the harness to

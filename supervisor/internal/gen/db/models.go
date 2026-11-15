@@ -53,4 +53,5 @@ type Turn struct {
 	FailureReason     *string
 	FailureMessage    *string
 	StartedAt         *time.Time
+	RunnerID          *uuid.UUID
 }

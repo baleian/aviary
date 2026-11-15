@@ -325,7 +325,7 @@ async fn run_turn(stopped: &Cell<bool>) -> Result<(), Failure> {
                         Some(Order::Cancel(_)) => {
                             let _ = cancel.try_send(());
                         }
-                        Some(Order::Start(_)) => {}
+                        Some(Order::Start(_) | Order::Received(_)) => {}
                         None => return Err(Failure::supervisor("the Supervisor ended the turn")),
                     }
                 }
@@ -380,6 +380,7 @@ async fn report(
 ) -> agent_client_protocol::Result<()> {
     let request = RunTurnRequest {
         message: Some(report),
+        seq: 0,
     };
     reports.clone().send(request).await.map_err(|_| {
         agent_client_protocol::Error::internal_error().data("the Supervisor closed the turn")

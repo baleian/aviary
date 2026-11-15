@@ -31,9 +31,15 @@ const (
 // RunnerService is served by the Supervisor to the runners.
 type RunnerServiceClient interface {
 	// RunTurn carries one turn. The runner calls it with the token of its turn
-	// in the authorization metadata, as "Bearer <token>". The Supervisor sends
+	// in the authorization metadata, as "Bearer <token>", and with a UUID that
+	// it made up for itself in the aviary-runner metadata. The Supervisor sends
 	// Start. The runner sends Started, then the events of the turn, then
 	// Finished. While the turn runs the Supervisor may send Cancel.
+	//
+	// The runner numbers its messages, and the Supervisor answers each with
+	// Received. A runner whose call broke calls again, to any Supervisor and
+	// with the same UUID, and sends again the messages that Start does not say
+	// were recorded. A turn is given back only to the runner that took it.
 	RunTurn(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[RunTurnRequest, RunTurnResponse], error)
 }
 
@@ -65,9 +71,15 @@ type RunnerService_RunTurnClient = grpc.BidiStreamingClient[RunTurnRequest, RunT
 // RunnerService is served by the Supervisor to the runners.
 type RunnerServiceServer interface {
 	// RunTurn carries one turn. The runner calls it with the token of its turn
-	// in the authorization metadata, as "Bearer <token>". The Supervisor sends
+	// in the authorization metadata, as "Bearer <token>", and with a UUID that
+	// it made up for itself in the aviary-runner metadata. The Supervisor sends
 	// Start. The runner sends Started, then the events of the turn, then
 	// Finished. While the turn runs the Supervisor may send Cancel.
+	//
+	// The runner numbers its messages, and the Supervisor answers each with
+	// Received. A runner whose call broke calls again, to any Supervisor and
+	// with the same UUID, and sends again the messages that Start does not say
+	// were recorded. A turn is given back only to the runner that took it.
 	RunTurn(grpc.BidiStreamingServer[RunTurnRequest, RunTurnResponse]) error
 	mustEmbedUnimplementedRunnerServiceServer()
 }

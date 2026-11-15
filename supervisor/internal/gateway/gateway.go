@@ -88,44 +88,70 @@ func (g *Gateway) RunTurn(stream grpc.BidiStreamingServer[runnerv1.RunTurnReques
 	if err != nil {
 		return err
 	}
-	turn, err := g.store.TakeTurn(ctx, token)
+	runner, err := runnerID(ctx)
+	if err != nil {
+		return err
+	}
+	turn, err := g.store.TakeTurn(ctx, token, runner)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		return status.Error(codes.Unauthenticated, "the token opens no turn")
 	case errors.Is(err, store.ErrTurnTaken):
-		return status.Error(codes.FailedPrecondition, "the turn was already taken")
+		return status.Error(codes.FailedPrecondition, "another runner took the turn")
+	case errors.Is(err, store.ErrTurnEnded):
+		return status.Error(codes.FailedPrecondition, "the turn has ended")
 	case errors.Is(err, store.ErrTurnCancelled):
 		return status.Error(codes.Canceled, "the turn was cancelled")
 	case err != nil:
 		return g.internal(ctx, "take turn", err)
 	}
-	slog.InfoContext(ctx, "runner took its turn", "turn", turn.ID)
+	var received uint64
+	if turn.Again {
+		if received, err = g.events.Received(ctx, turn.ID); err != nil {
+			return g.internal(ctx, "read what the runner has reported", err, "turn", turn.ID)
+		}
+		slog.InfoContext(ctx, "runner came back for its turn", "turn", turn.ID, "received", received)
+	} else {
+		slog.InfoContext(ctx, "runner took its turn", "turn", turn.ID)
+	}
 	defer g.metrics.Connected(turn.Harness)()
 
+	// The order to cancel is sent from another goroutine than the rest, and
+	// a stream takes one Send at a time.
+	var sending sync.Mutex
+	send := func(response *runnerv1.RunTurnResponse) error {
+		sending.Lock()
+		defer sending.Unlock()
+		return stream.Send(response)
+	}
 	start := &runnerv1.RunTurnResponse{Message: &runnerv1.RunTurnResponse_Start{
 		Start: &runnerv1.Start{
 			Text: turn.Text, HarnessSessionId: turn.HarnessSessionID, Instructions: turn.Instructions,
+			Received: &received,
 		},
 	}}
-	if err := stream.Send(start); err != nil {
+	if err := send(start); err != nil {
 		return err
 	}
 
-	// From here on only the goroutine below sends to the runner.
 	cancel := make(chan struct{}, 1)
 	g.mu.Lock()
 	g.cancels[turn.ID] = cancel
 	g.mu.Unlock()
 	defer func() {
 		g.mu.Lock()
-		delete(g.cancels, turn.ID)
+		// The runner may have come back to this Supervisor while this call
+		// was still open. The channel is then that of its new call.
+		if g.cancels[turn.ID] == cancel {
+			delete(g.cancels, turn.ID)
+		}
 		g.mu.Unlock()
 	}()
 	go func() {
 		select {
 		case <-cancel:
 			order := &runnerv1.RunTurnResponse{Message: &runnerv1.RunTurnResponse_Cancel{Cancel: &runnerv1.Cancel{}}}
-			if err := stream.Send(order); err != nil {
+			if err := send(order); err != nil {
 				slog.WarnContext(ctx, "tell the runner to cancel", "turn", turn.ID, "error", err)
 			}
 		case <-ctx.Done():
@@ -147,42 +173,76 @@ func (g *Gateway) RunTurn(stream grpc.BidiStreamingServer[runnerv1.RunTurnReques
 		if err != nil {
 			return err
 		}
-		if err := g.receive(ctx, turn, request); err != nil {
+		err = g.receive(ctx, turn, request)
+		if errors.Is(err, events.ErrGap) {
+			slog.ErrorContext(ctx, "receive from runner", "turn", turn.ID, "seq", request.GetSeq(), "error", err)
+			return status.Error(codes.DataLoss, "messages of the runner that were recorded are lost")
+		}
+		if err != nil {
 			return g.internal(ctx, "receive from runner", err, "turn", turn.ID)
+		}
+		if seq := request.GetSeq(); seq > 0 {
+			answer := &runnerv1.RunTurnResponse{Message: &runnerv1.RunTurnResponse_Received{
+				Received: &runnerv1.Received{Seq: seq},
+			}}
+			if err := send(answer); err != nil {
+				return err
+			}
 		}
 	}
 }
 
-// receive handles one message from the runner of the turn.
+// receive handles one message from the runner of the turn. The runner may
+// have sent the message before, to this Supervisor or to another.
 func (g *Gateway) receive(ctx context.Context, turn store.TakenTurn, request *runnerv1.RunTurnRequest) error {
+	seq := request.GetSeq()
 	switch message := request.Message.(type) {
 	case *runnerv1.RunTurnRequest_Started:
 		harnessSessionID := message.Started.GetHarnessSessionId()
 		if harnessSessionID == "" {
 			return errors.New("runner started without a harness session")
 		}
-		startup, err := g.store.StartTurn(ctx, turn.ID, harnessSessionID)
+		startup, first, err := g.store.StartTurn(ctx, turn.ID, harnessSessionID)
 		if err != nil {
 			return err
 		}
-		g.metrics.Started(turn.Harness, startup)
-		return g.events.Append(ctx, turn.ID, events.TurnStarted, struct{}{})
+		if first {
+			g.metrics.Started(turn.Harness, startup)
+		}
+		return g.record(ctx, turn.ID, seq, events.TurnStarted, struct{}{})
 	case *runnerv1.RunTurnRequest_Finished:
-		return g.store.SetFinished(ctx, turn.ID, message.Finished.GetStopReason(), usage(message.Finished.GetUsage()))
+		err := g.store.SetFinished(ctx, turn.ID, message.Finished.GetStopReason(), usage(message.Finished.GetUsage()))
+		if err != nil {
+			return err
+		}
+		return g.record(ctx, turn.ID, seq, "", nil)
 	}
 	// The rest of the messages are the events of the turn. A runner newer
 	// than the Supervisor may send one that the Supervisor does not know.
 	fields := request.ProtoReflect()
 	field := fields.WhichOneof(fields.Descriptor().Oneofs().ByName("message"))
 	if field == nil {
-		return nil
+		return g.record(ctx, turn.ID, seq, "", nil)
 	}
 	data, err := eventJSON.Marshal(fields.Get(field).Message().Interface())
 	if err != nil {
 		return err
 	}
 	name := strings.ReplaceAll(string(field.Name()), "_", ".")
-	return g.events.Append(ctx, turn.ID, name, json.RawMessage(data))
+	return g.record(ctx, turn.ID, seq, name, json.RawMessage(data))
+}
+
+// record records the runner's message with the number seq, and adds its
+// event to the turn's stream. A message without an event has no eventType. A
+// runner of an older release does not number its messages, and seq is 0.
+func (g *Gateway) record(ctx context.Context, turnID uuid.UUID, seq uint64, eventType string, data any) error {
+	switch {
+	case seq > 0:
+		return g.events.Receive(ctx, turnID, seq, eventType, data)
+	case eventType != "":
+		return g.events.Append(ctx, turnID, eventType, data)
+	}
+	return nil
 }
 
 // usage is the token usage that the runner passed on from the harness, if
@@ -211,6 +271,20 @@ func (g *Gateway) internal(ctx context.Context, doing string, err error, attribu
 	}
 	slog.ErrorContext(ctx, doing, append(attributes, "error", err)...)
 	return status.Error(codes.Internal, "internal error")
+}
+
+// runnerID reads the UUID that the runner names itself with from the
+// metadata of a call. A runner of an older release sends none.
+func runnerID(ctx context.Context) (*uuid.UUID, error) {
+	values := metadata.ValueFromIncomingContext(ctx, "aviary-runner")
+	if len(values) == 0 {
+		return nil, nil
+	}
+	id, err := uuid.Parse(values[0])
+	if err != nil || len(values) != 1 {
+		return nil, status.Error(codes.InvalidArgument, "the aviary-runner metadata must be a UUID")
+	}
+	return &id, nil
 }
 
 // bearerToken reads the token from the authorization metadata of a call.

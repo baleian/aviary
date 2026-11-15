@@ -25,10 +25,13 @@ var (
 	ErrNotFound    = errors.New("not found")
 	ErrSessionBusy = errors.New("session has an unfinished turn")
 	ErrQueueFull   = errors.New("too many turns wait to run")
-	ErrTurnTaken   = errors.New("turn was already taken")
+	// ErrTurnTaken is returned to a runner that asks for a turn that another
+	// runner took.
+	ErrTurnTaken = errors.New("turn was taken by another runner")
 	// ErrTurnCancelled is returned for a turn that was cancelled or given up
 	// before its runner took it.
 	ErrTurnCancelled = errors.New("turn was cancelled")
+	ErrTurnEnded     = errors.New("turn has ended")
 )
 
 // The states of a turn. A queued turn waits to run, a dispatching one waits
@@ -178,6 +181,8 @@ type TakenTurn struct {
 	// session's agent.
 	Harness      string
 	Instructions string
+	// Again is set for a turn that its runner had taken before.
+	Again bool
 }
 
 // Dispatch is what it takes to run a turn.
@@ -470,13 +475,17 @@ func (s *Store) DispatchedTurns(ctx context.Context) ([]DispatchedTurn, error) {
 	return turns, nil
 }
 
-// TakeTurn gives the turn that the token opens to its runner. A turn is given
-// only once, because a runner that took it may already have acted on it. It
-// returns ErrNotFound if the token opens no turn and ErrTurnTaken if the turn
-// was given before.
-func (s *Store) TakeTurn(ctx context.Context, token string) (TakenTurn, error) {
+// TakeTurn gives the turn that the token opens to the runner that asks for
+// it, which names itself with runner. A turn is given to one runner only,
+// because a runner that took it may already have acted on it: a second pod
+// of the turn would run the turn again. The runner that took a turn is given
+// it again for as long as the turn runs, unless it has no name.
+//
+// It returns ErrNotFound if the token opens no turn, ErrTurnTaken if another
+// runner took the turn and ErrTurnEnded if the turn has ended.
+func (s *Store) TakeTurn(ctx context.Context, token string, runner *uuid.UUID) (TakenTurn, error) {
 	hash := hashToken(token)
-	row, err := s.queries.TakeTurn(ctx, hash)
+	row, err := s.queries.TakeTurn(ctx, db.TakeTurnParams{TokenHash: hash, RunnerID: runner})
 	if err == nil {
 		return TakenTurn{
 			Turn: Turn{
@@ -490,23 +499,26 @@ func (s *Store) TakeTurn(ctx context.Context, token string) (TakenTurn, error) {
 			HarnessSessionID: row.HarnessSessionID,
 			Harness:          row.Harness,
 			Instructions:     row.Instructions,
+			Again:            row.Again,
 		}, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return TakenTurn{}, err
 	}
-	dispatching, err := s.queries.IsTurnDispatching(ctx, hash)
+	state, err := s.queries.GetTurnState(ctx, hash)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return TakenTurn{}, ErrNotFound
 	case err != nil:
 		return TakenTurn{}, err
-	case dispatching:
+	case state == TurnDispatching:
 		// The turn was not taken, so it was cancelled or given up before
 		// its runner came for it.
 		return TakenTurn{}, ErrTurnCancelled
+	case state == TurnRunning:
+		return TakenTurn{}, ErrTurnTaken
 	}
-	return TakenTurn{}, ErrTurnTaken
+	return TakenTurn{}, ErrTurnEnded
 }
 
 // Origin is where a request from a turn pod comes from: the turn, and the
@@ -532,10 +544,13 @@ func (s *Store) RunningTurn(ctx context.Context, token string) (Origin, error) {
 // StartTurn records that the harness of the turn has been given the message,
 // and the harness session that the turn runs in, for the next turn of the
 // session to continue. It returns how long the turn took to start, from its
-// dispatch.
-func (s *Store) StartTurn(ctx context.Context, turnID uuid.UUID, harnessSessionID string) (time.Duration, error) {
+// dispatch, and reports false for a turn that had started before.
+func (s *Store) StartTurn(ctx context.Context, turnID uuid.UUID, harnessSessionID string) (time.Duration, bool, error) {
 	startup, err := s.queries.StartTurn(ctx, db.StartTurnParams{TurnID: turnID, HarnessSessionID: harnessSessionID})
-	return time.Duration(startup * float64(time.Second)), err
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	return time.Duration(startup * float64(time.Second)), err == nil, err
 }
 
 // TurnHarness returns the harness of the agent that the turn belongs to.
