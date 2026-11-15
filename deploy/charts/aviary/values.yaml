@@ -3,6 +3,14 @@ supervisor:
   # Supervisors are equals: a request can go to any of them.
   replicas: 1
   podAnnotations: {}
+  # What the pod of a Supervisor asks for and may use at most. At rest a
+  # Supervisor takes 50 MiB of memory and with thirty turns at once twice
+  # that, and for a turn it takes a few hundredths of a second of cpu. The
+  # limit leaves room for the output of long turns, which a Supervisor holds
+  # while it puts it into the database.
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {memory: 1Gi}
   database:
     # A secret in the release namespace with the PostgreSQL connection URL,
     # for example postgresql://user:password@host:5432/dbname?sslmode=verify-full
@@ -31,6 +39,11 @@ llm:
 egressProxy:
   image: envoyproxy/envoy:distroless-v1.40.2@sha256:09ca6f2140a61ad8df11779a4a30d52b48433d444466328494f9188c9c35eded
   replicas: 1
+  # What the pod of an Egress Proxy asks for and may use at most. The proxy
+  # reads no bodies, so it takes little: about 20 MiB of memory.
+  resources:
+    requests: {cpu: 100m, memory: 64Mi}
+    limits: {memory: 512Mi}
   # The hosts that the proxy lets requests through to, the model endpoint
   # among them.
   #   "*"        every host.

@@ -261,6 +261,7 @@ does not install PostgreSQL or Valkey.
 | Value | |
 | --- | --- |
 | `supervisor.replicas`, `egressProxy.replicas` | How many Supervisors and Egress Proxies run. Each of them serves any request. Default 1. |
+| `supervisor.resources`, `egressProxy.resources` | What the pod of a Supervisor and of an Egress Proxy asks for and may use at most. |
 | `supervisor.database.secretName`, `.secretKey` | A secret with the PostgreSQL connection URL. |
 | `supervisor.valkey.secretName`, `.secretKey` | A secret with the Valkey connection URL. |
 | `llm.url`, `llm.model` | The base URL of the model endpoint and the model that the harnesses ask it for. |

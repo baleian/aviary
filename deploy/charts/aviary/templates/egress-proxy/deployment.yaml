@@ -53,6 +53,8 @@ spec:
               mountPath: /etc/aviary/llm
               readOnly: true
             {{- end }}
+          resources:
+            {{- toYaml .Values.egressProxy.resources | nindent 12 }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
