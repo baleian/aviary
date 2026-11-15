@@ -3,7 +3,8 @@
 //! in a container of the harness image, as the user of the agent, with the
 //! home of the session as its only lasting storage. The Supervisor is the
 //! one of the runner's tests and the model is mock-llm, each in a container
-//! beside it. The network of the containers leads nowhere else.
+//! beside it. The network of the containers leads nowhere else, and mock-llm
+//! is also their forward proxy, which lets nothing through.
 //!
 //! The tests need the images, so they run with `make test-harness`.
 
@@ -27,6 +28,9 @@ const PATIENCE: Duration = Duration::from_secs(120);
 /// The token of every turn, which is also the key that the model asks for:
 /// no Egress Proxy stands between the harness and the model here.
 const TOKEN: &str = "the-turn-token";
+
+/// The forward proxy of the containers, which is the model server.
+const PROXY: &str = "http://turn:the-turn-token@model:8080";
 
 const RUNNER_IMAGE: &str = "aviary-runner:dev";
 const MODEL_IMAGE: &str = "aviary-mock-llm:dev";
@@ -85,8 +89,7 @@ impl Bench {
             made: AtomicU32::new(0),
         });
         let label = bench.label();
-        // No way out: a harness that fetches something for itself fails here
-        // as it does in a pod.
+        // No way out, as from a pod.
         docker(&[
             "network",
             "create",
@@ -189,6 +192,21 @@ impl Bench {
         volume
     }
 
+    /// The hosts that the proxy was asked for: what the harness and the
+    /// tools of the agent tried to reach outside.
+    async fn asked(&self) -> Vec<String> {
+        let log = docker(&["logs", &format!("{}-model", self.name)]).await;
+        let mut hosts: Vec<String> = log
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|line| line["msg"] == "asked for")
+            .filter_map(|line| line["host"].as_str().map(str::to_owned))
+            .collect();
+        hosts.sort();
+        hosts.dedup();
+        hosts
+    }
+
     /// How many megabytes the home of a session holds.
     async fn megabytes(&self, home: &str) -> u64 {
         let used = docker(&[
@@ -255,6 +273,7 @@ impl Bench {
         std::fs::set_permissions(&left, std::os::unix::fs::PermissionsExt::from_mode(0o666))
             .unwrap();
         let harness = self.next("harness");
+        let direct = format!("localhost,127.0.0.1,::1,model,{supervisor}");
         let mut running = Command::new("docker")
             .args([
                 "run",
@@ -294,6 +313,19 @@ impl Bench {
                 "AVIARY_MAX_TOOL_OUTPUT_BYTES=65536",
                 "--env",
                 "AVIARY_MAX_RECONNECT_SECONDS=60",
+                // Everything else goes to the proxy, as it does in a pod.
+                "--env",
+                &format!("HTTP_PROXY={PROXY}"),
+                "--env",
+                &format!("HTTPS_PROXY={PROXY}"),
+                "--env",
+                &format!("NO_PROXY={direct}"),
+                "--env",
+                &format!("http_proxy={PROXY}"),
+                "--env",
+                &format!("https_proxy={PROXY}"),
+                "--env",
+                &format!("no_proxy={direct}"),
                 &self.image,
                 "/aviary/bin/aviary-runner",
             ])
@@ -875,6 +907,62 @@ async fn a_turn_that_waits_takes_little_cpu() {
             turn.image
         );
         turn.end().await.completed();
+    })
+    .await;
+}
+
+/// What a program in the pod fetches goes to the proxy, which lets through
+/// what the installation allows.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the harness images"]
+async fn what_the_tools_of_an_agent_fetch_goes_to_the_proxy() {
+    each(|bench| async move {
+        let home = bench.home().await;
+        let fetch = r#"run node -e "fetch('http://example.com/').then(r => console.log('status', r.status), () => console.log('failed'))""#;
+        let turn = bench
+            .run(
+                &home,
+                Message {
+                    text: fetch,
+                    ..Message::default()
+                },
+            )
+            .await;
+        turn.completed().says("status 403");
+        let asked = bench.asked().await;
+        assert!(
+            asked.iter().any(|host| host == "example.com"),
+            "{}: the proxy was asked for {asked:?}",
+            bench.image
+        );
+    })
+    .await;
+}
+
+/// A harness is started anew for every turn, in a home that was empty when
+/// the session began. What it fetches for itself when it starts, it fetches
+/// in every turn or into every home.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the harness images"]
+async fn a_harness_fetches_nothing_for_itself() {
+    each(|bench| async move {
+        let home = bench.home().await;
+        let turn = bench
+            .run(
+                &home,
+                Message {
+                    text: "say hello",
+                    ..Message::default()
+                },
+            )
+            .await;
+        turn.completed().says("hello");
+        let asked = bench.asked().await;
+        assert!(
+            asked.is_empty(),
+            "{}: the harness asked the proxy for {asked:?}",
+            bench.image
+        );
     })
     .await;
 }

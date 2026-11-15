@@ -119,7 +119,8 @@ The images here ran into these cases:
    the pods of turns are, and need no cluster. They use a mock model server
    that speaks the Chat Completions API and the Responses API, and they have
    the agent run shell commands, so they need the harness to offer the model
-   a tool with a `command` or a `cmd` parameter.
+   a tool with a `command` or a `cmd` parameter. A harness that fetches
+   something for itself when it starts fails them.
 3. Make the image available to the cluster. For the local cluster that is
    `kind load docker-image --name aviary <image>`.
 4. Add the harness to the chart's values under a name of your choice:

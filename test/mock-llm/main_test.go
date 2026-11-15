@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -290,5 +291,24 @@ func TestRequests(t *testing.T) {
 	}
 	if response, err := http.Get(model.URL + "/healthz"); err != nil || response.StatusCode != http.StatusOK {
 		t.Errorf("the model answered whether it is up with %v: %v", response, err)
+	}
+}
+
+// As a forward proxy mock-llm lets nothing through.
+func TestProxy(t *testing.T) {
+	t.Parallel()
+	model := httptest.NewServer(newMock(apiKey))
+	defer model.Close()
+	proxy, err := url.Parse(model.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	through := http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxy)}}
+	if response, err := through.Get("http://example.com/v1/chat/completions"); err != nil || response.StatusCode != http.StatusForbidden {
+		t.Errorf("a request through the proxy was answered with %v: %v", response, err)
+	}
+	// A request over TLS asks the proxy for a tunnel first.
+	if response, err := through.Get("https://example.com/"); err == nil || !strings.Contains(err.Error(), "Forbidden") {
+		t.Errorf("a tunnel through the proxy was answered with %v: %v", response, err)
 	}
 }

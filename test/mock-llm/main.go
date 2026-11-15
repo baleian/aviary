@@ -24,6 +24,10 @@
 // A request must carry the API key that mock-llm was started with, which is
 // in the variable MOCK_LLM_API_KEY. Every answer reports the same token
 // usage, 11 tokens in and 7 out.
+//
+// mock-llm is also the forward proxy of the tests that run a harness without
+// a cluster. As a proxy it passes nothing on: it refuses the request and logs
+// the host that was asked for, which tells a test what went out.
 package main
 
 import (
@@ -79,7 +83,15 @@ func newMock(apiKey string) http.Handler {
 	mux.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
 	mux.HandleFunc("POST /v1/chat/completions", withKey(apiKey, m.chatCompletions))
 	mux.HandleFunc("POST /v1/responses", withKey(apiKey, m.responses))
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A request for another host takes mock-llm for a forward proxy.
+		if r.Method == http.MethodConnect || r.URL.Host != "" {
+			slog.Info("asked for", "host", r.URL.Hostname())
+			refuse(w, http.StatusForbidden, "mock-llm passes nothing on")
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 // next is what the model does next in the conversation.
