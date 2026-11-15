@@ -16,11 +16,12 @@ MOCK_LLM_IMAGE := aviary-mock-llm:dev
 
 KUBECTL := kubectl --context kind-$(CLUSTER)
 HELM := helm --kube-context kind-$(CLUSTER)
-# Runs go for the Supervisor in the image that builds it, so the host needs
-# no Go. The volume keeps what go downloads and builds. Called with options
-# for docker, it runs go with them.
+# Runs go in the image that builds the Supervisor, so the host needs no Go.
+# It is called with the directory of a module, and with options for docker if
+# there are any. The volume keeps what go downloads and builds.
 GO = docker run --rm --user $$(id -u):$$(id -g) --env HOME=/tmp --env GOCACHE=/go/cache \
-	--volume aviary-go:/go --volume $(CURDIR)/supervisor:/src --workdir /src $(1) $(GO_IMAGE) go
+	--volume aviary-go:/go --volume $(CURDIR):/src --workdir /src/$(1) $(2) $(GO_IMAGE) go
+GO_TEST := test -race -shuffle=on -count=1 -timeout 2m
 # What the tests of the Supervisor run against, and how the tests reach it.
 SERVICES := docker compose --file test/compose.yaml --project-name aviary-test-supervisor
 IN_SERVICES := --network aviary-test-supervisor_default \
@@ -30,7 +31,7 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 # The value of a variable in .env, or nothing if there is no .env.
 dotenv = $$(test ! -f .env || sed --quiet 's/^$(1)=//p' .env)
 
-.PHONY: proto sqlc test test-supervisor test-runner cluster-up cluster-down images deploy e2e
+.PHONY: proto sqlc test test-supervisor test-runner test-mock-llm cluster-up cluster-down images deploy e2e
 
 # Writes the Go code for proto/ to supervisor/internal/gen. Run it after
 # changing a .proto file. It runs in the image that builds the Supervisor, so
@@ -51,18 +52,22 @@ sqlc:
 # of one of them, for example
 # make test-supervisor TESTS='-run TestEndTurn ./internal/store'
 # make test-runner TESTS=cut
-test: test-supervisor test-runner
+test: test-supervisor test-runner test-mock-llm
 
 # The services are started anew for every run and removed after it, also
 # when a test fails.
 test-supervisor: TESTS ?= ./...
 test-supervisor:
 	$(SERVICES) up --detach --wait --force-recreate
-	$(call GO,$(IN_SERVICES)) test -race -shuffle=on -count=1 -timeout 2m $(TESTS); \
+	$(call GO,supervisor,$(IN_SERVICES)) $(GO_TEST) $(TESTS); \
 		status=$$?; $(SERVICES) down --volumes; exit $$status
 
 test-runner:
 	cargo test --locked --package aviary-runner $(TESTS)
+
+test-mock-llm: TESTS ?= ./...
+test-mock-llm:
+	$(call GO,test/mock-llm) $(GO_TEST) $(TESTS)
 
 cluster-up:
 	kind get clusters 2>/dev/null | grep -qx $(CLUSTER) || \

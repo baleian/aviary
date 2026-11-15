@@ -1,0 +1,294 @@
+package main
+
+import (
+	"bufio"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+)
+
+const apiKey = "the-key"
+
+// sent is what a harness sends the model: what it tells the model of itself,
+// the messages of the user so far and, if the model called the tool last,
+// what the tool returned.
+type sent struct {
+	system     string
+	said       []string
+	toolOutput string
+	// noTool is set for a harness that offers the model no tool.
+	noTool bool
+}
+
+// reply is what the model answered with: a text, or the call of a tool with
+// a command, or a refusal.
+type reply struct {
+	status  int
+	refusal string
+	text    string
+	tool    string
+	command string
+	usage   map[string]float64
+}
+
+// events sends a request to the model and returns the status of the answer
+// and the events of its stream, or the refusal.
+func events(t *testing.T, url, key string, request any) (int, []map[string]any, string) {
+	t.Helper()
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	post, err := http.NewRequest("POST", url, strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	post.Header.Set("Authorization", "Bearer "+key)
+	response, err := http.DefaultClient.Do(post)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		var refusal struct{ Error struct{ Message string } }
+		answer, _ := io.ReadAll(response.Body)
+		if err := json.Unmarshal(answer, &refusal); err != nil {
+			t.Fatalf("the refusal is %s: %v", answer, err)
+		}
+		return response.StatusCode, nil, refusal.Error.Message
+	}
+	var stream []map[string]any
+	lines := bufio.NewScanner(response.Body)
+	lines.Buffer(nil, 1<<20)
+	for lines.Scan() {
+		data, found := strings.CutPrefix(lines.Text(), "data: ")
+		if !found || data == "[DONE]" {
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			t.Fatalf("the stream has the line %q: %v", lines.Text(), err)
+		}
+		stream = append(stream, event)
+	}
+	return response.StatusCode, stream, ""
+}
+
+// at returns what is at the path in the JSON value: the names of fields and
+// the indexes of list items.
+func at(value any, path ...any) any {
+	for _, step := range path {
+		switch step := step.(type) {
+		case string:
+			object, _ := value.(map[string]any)
+			value = object[step]
+		case int:
+			list, _ := value.([]any)
+			if step >= len(list) {
+				return nil
+			}
+			value = list[step]
+		}
+	}
+	return value
+}
+
+func str(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+// command returns the command in the arguments of a tool call, whichever
+// name the tool gives it.
+func command(arguments string) string {
+	var named map[string]string
+	json.Unmarshal([]byte(arguments), &named)
+	for _, command := range named {
+		return command
+	}
+	return ""
+}
+
+// chat talks to the model as OpenCode does, with the Chat Completions API.
+func chat(t *testing.T, url string, conversation sent) reply {
+	t.Helper()
+	messages := []map[string]any{{"role": "system", "content": conversation.system}}
+	for _, message := range conversation.said {
+		messages = append(messages, map[string]any{"role": "user", "content": message})
+	}
+	if conversation.toolOutput != "" {
+		messages = append(messages, map[string]any{"role": "assistant", "content": ""},
+			map[string]any{"role": "tool", "content": conversation.toolOutput})
+	}
+	request := map[string]any{"model": "mock", "stream": true, "messages": messages}
+	if !conversation.noTool {
+		request["tools"] = []any{map[string]any{"type": "function", "function": map[string]any{
+			"name": "bash", "parameters": map[string]any{"properties": map[string]any{"command": map[string]any{}}},
+		}}}
+	}
+	status, stream, refusal := events(t, url+"/v1/chat/completions", apiKey, request)
+	answer := reply{status: status, refusal: refusal}
+	var arguments string
+	for _, chunk := range stream {
+		answer.text += str(at(chunk, "choices", 0, "delta", "content"))
+		call := at(chunk, "choices", 0, "delta", "tool_calls", 0, "function")
+		answer.tool += str(at(call, "name"))
+		arguments += str(at(call, "arguments"))
+		if usage, reported := chunk["usage"].(map[string]any); reported {
+			answer.usage = map[string]float64{
+				"input": usage["prompt_tokens"].(float64), "output": usage["completion_tokens"].(float64),
+				"total": usage["total_tokens"].(float64),
+			}
+		}
+	}
+	answer.command = command(arguments)
+	return answer
+}
+
+// respond talks to the model as Codex does, with the Responses API.
+func respond(t *testing.T, url string, conversation sent) reply {
+	t.Helper()
+	input := []map[string]any{}
+	for _, message := range conversation.said {
+		input = append(input, map[string]any{
+			"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": message}},
+		})
+	}
+	if conversation.toolOutput != "" {
+		input = append(input, map[string]any{"type": "function_call", "name": "shell", "arguments": "{}"},
+			map[string]any{"type": "function_call_output", "output": conversation.toolOutput})
+	}
+	request := map[string]any{"model": "mock", "stream": true, "instructions": conversation.system, "input": input}
+	if !conversation.noTool {
+		request["tools"] = []any{map[string]any{
+			"type": "function", "name": "shell", "parameters": map[string]any{"properties": map[string]any{"cmd": map[string]any{}}},
+		}}
+	}
+	status, stream, refusal := events(t, url+"/v1/responses", apiKey, request)
+	answer := reply{status: status, refusal: refusal}
+	for _, event := range stream {
+		switch event["type"] {
+		case "response.output_text.delta":
+			answer.text += str(event["delta"])
+		case "response.function_call_arguments.done":
+			answer.tool, answer.command = str(event["name"]), command(str(event["arguments"]))
+		case "response.completed":
+			usage := at(event, "response", "usage").(map[string]any)
+			answer.usage = map[string]float64{
+				"input": usage["input_tokens"].(float64), "output": usage["output_tokens"].(float64),
+				"total": usage["total_tokens"].(float64),
+			}
+		}
+	}
+	return answer
+}
+
+// The script is the same for the harnesses that speak either API.
+func TestScript(t *testing.T) {
+	for api, ask := range map[string]func(*testing.T, string, sent) reply{"chat completions": chat, "responses": respond} {
+		t.Run(api, func(t *testing.T) {
+			t.Parallel()
+			model := httptest.NewServer(newMock(apiKey))
+			defer model.Close()
+			for _, test := range []struct {
+				name string
+				sent sent
+				// The answer is the text, or the call of the tool with the
+				// command.
+				text, command string
+			}{
+				{name: "say", sent: sent{said: []string{"say hello there"}}, text: "hello there"},
+				{name: "no instruction", sent: sent{said: []string{"hello"}}, text: "mock"},
+				{name: "run", sent: sent{said: []string{"run ls -a"}}, command: "ls -a"},
+				{
+					name: "run without a tool", sent: sent{said: []string{"run ls -a"}, noTool: true},
+					text: "mock: the harness offers no tool that runs a command",
+				},
+				{name: "what the tool returned", sent: sent{said: []string{"run ls -a"}, toolOutput: ". .. notes.txt"}, text: ". .. notes.txt"},
+				{name: "recall at first", sent: sent{said: []string{"recall"}}, text: "nothing"},
+				{
+					// What a harness adds to the conversation is no message
+					// of the user.
+					name: "recall", sent: sent{said: []string{"say one", "<context>today</context>", "run ls", "recall"}},
+					text: "say one\nrun ls",
+				},
+				{
+					name: "find what the harness tells the model",
+					sent: sent{system: "The word of the day is plum.", said: []string{"find plum"}}, text: "present",
+				},
+				{
+					name: "find what the harness adds to the conversation",
+					sent: sent{said: []string{"<context>plum</context>", "find plum"}}, text: "present",
+				},
+				{
+					name: "find what was not sent",
+					sent: sent{system: "The word of the day is plum.", said: []string{"say cherry", "find cherry"}}, text: "absent",
+				},
+			} {
+				answer := ask(t, model.URL, test.sent)
+				if answer.status != http.StatusOK || answer.text != test.text || answer.command != test.command ||
+					(test.command != "") != (answer.tool != "") {
+					t.Errorf("%s: the model answered with %+v", test.name, answer)
+				}
+				// Every answer reports the same usage.
+				if answer.usage["input"] != 11 || answer.usage["output"] != 7 || answer.usage["total"] != 18 {
+					t.Errorf("%s: the model reported the usage %v", test.name, answer.usage)
+				}
+			}
+
+			refused := ask(t, model.URL, sent{said: []string{"fail the model is out of order"}})
+			if refused.status != http.StatusUnauthorized || refused.refusal != "the model is out of order" {
+				t.Errorf("fail: the model answered with %+v", refused)
+			}
+
+			// A request is refused once, and answered when it comes again.
+			busy := sent{said: []string{"flaky later " + api}}
+			if first := ask(t, model.URL, busy); first.status != http.StatusServiceUnavailable {
+				t.Errorf("flaky: the model answered at first with %+v", first)
+			}
+			for range 2 {
+				if again := ask(t, model.URL, busy); again.status != http.StatusOK || again.text != "later "+api {
+					t.Errorf("flaky: the model then answered with %+v", again)
+				}
+			}
+		})
+	}
+}
+
+func TestDrawl(t *testing.T) {
+	t.Parallel()
+	model := httptest.NewServer(newMock(apiKey))
+	defer model.Close()
+	began := time.Now()
+	answer := chat(t, model.URL, sent{said: []string{"drawl one two"}})
+	if answer.text != "one two" || time.Since(began) < 2*drawlPause {
+		t.Errorf("the model answered with %q after %s", answer.text, time.Since(began))
+	}
+}
+
+func TestRequests(t *testing.T) {
+	t.Parallel()
+	model := httptest.NewServer(newMock(apiKey))
+	defer model.Close()
+	messages := []map[string]any{{"role": "user", "content": "say hello"}}
+	for _, path := range []string{"/v1/chat/completions", "/v1/responses"} {
+		// The model answers the Egress Proxy, which holds its key, and not
+		// a turn pod, which holds the token of its turn.
+		for _, key := range []string{"", "a-turn-token"} {
+			status, _, _ := events(t, model.URL+path, key, map[string]any{"stream": true, "messages": messages})
+			if status != http.StatusUnauthorized {
+				t.Errorf("%s with the key %q was answered with %d", path, key, status)
+			}
+		}
+		if status, _, _ := events(t, model.URL+path, apiKey, map[string]any{"messages": messages}); status != http.StatusBadRequest {
+			t.Errorf("%s without a stream was answered with %d", path, status)
+		}
+	}
+	if response, err := http.Get(model.URL + "/healthz"); err != nil || response.StatusCode != http.StatusOK {
+		t.Errorf("the model answered whether it is up with %v: %v", response, err)
+	}
+}

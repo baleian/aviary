@@ -15,6 +15,9 @@
 //	               agent, and "absent" if it did not
 //	fail <text>    refuses the request with the text as the error, the way
 //	               a model server refuses a caller that it does not know
+//	flaky <text>   refuses the request once, the way a model server does that
+//	               cannot take it right now, and replies with the text when
+//	               the harness asks again
 //
 // A message that is not an instruction gets the reply "mock".
 //
@@ -31,6 +34,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -50,16 +54,47 @@ func main() {
 		slog.Error("MOCK_LLM_API_KEY is not set")
 		os.Exit(1)
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
-	mux.HandleFunc("POST /v1/chat/completions", withKey(apiKey, chatCompletions))
-	mux.HandleFunc("POST /v1/responses", withKey(apiKey, responses))
-	server := &http.Server{Addr: ":8080", Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	server := &http.Server{Addr: ":8080", Handler: newMock(apiKey), ReadHeaderTimeout: 10 * time.Second}
 	slog.Info("listening", "addr", server.Addr)
 	if err := server.ListenAndServe(); err != nil {
 		slog.Error("mock-llm stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+// mock is the model server. It keeps nothing of a conversation: a harness
+// sends all of it with every request.
+type mock struct {
+	mu sync.Mutex
+	// refused holds the texts of the flaky instructions that were refused
+	// once.
+	refused map[string]bool
+}
+
+// newMock returns the model server, which answers the requests that carry
+// the API key.
+func newMock(apiKey string) http.Handler {
+	m := &mock{refused: map[string]bool{}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
+	mux.HandleFunc("POST /v1/chat/completions", withKey(apiKey, m.chatCompletions))
+	mux.HandleFunc("POST /v1/responses", withKey(apiKey, m.responses))
+	return mux
+}
+
+// next is what the model does next in the conversation.
+func (m *mock) next(c conversation) answer {
+	next := c.next()
+	if !next.flaky {
+		return next
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.refused[next.text] {
+		return answer{text: next.text}
+	}
+	m.refused[next.text] = true
+	return answer{failure: "the model cannot take the request right now", status: http.StatusServiceUnavailable}
 }
 
 // conversation is what a harness sends, in the terms of the script.
@@ -83,12 +118,15 @@ type shellTool struct {
 
 // answer is what the model does next: it calls the shell tool with command,
 // or else it says text, with a pause after each piece. If failure is set
-// there is no answer: the request is refused with it.
+// there is no answer: the request is refused with it and with the status.
+// An answer that is flaky is given only when it was refused once.
 type answer struct {
 	text    string
 	pause   time.Duration
 	command string
 	failure string
+	status  int
+	flaky   bool
 }
 
 // wait pauses after a piece of the answer. It reports false if the harness
@@ -127,7 +165,12 @@ func (c conversation) next() answer {
 	case word == "drawl":
 		return answer{text: rest, pause: drawlPause}
 	case word == "fail":
-		return answer{failure: rest}
+		// Both harnesses give up at once on this status and report it as an
+		// error. An error of another kind one of them repeats for a while,
+		// and one ends the turn with the error as its answer.
+		return answer{failure: rest, status: http.StatusUnauthorized}
+	case word == "flaky":
+		return answer{text: rest, flaky: true}
 	case word == "run" && c.shell == nil:
 		return answer{text: "mock: the harness offers no tool that runs a command"}
 	case word == "run":
@@ -155,7 +198,7 @@ func (c conversation) next() answer {
 func instruction(message string) (word, rest string, found bool) {
 	word, rest, _ = strings.Cut(strings.TrimSpace(message), " ")
 	switch word {
-	case "say", "drawl", "run", "recall", "find", "fail":
+	case "say", "drawl", "run", "recall", "find", "fail", "flaky":
 		return word, strings.TrimSpace(rest), true
 	}
 	return "", "", false
@@ -254,7 +297,7 @@ func withKey(apiKey string, next http.HandlerFunc) http.HandlerFunc {
 }
 
 // chatCompletions serves the Chat Completions API, which OpenCode uses.
-func chatCompletions(w http.ResponseWriter, r *http.Request) {
+func (m *mock) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Model    string `json:"model"`
 		Stream   bool   `json:"stream"`
@@ -293,13 +336,10 @@ func chatCompletions(w http.ResponseWriter, r *http.Request) {
 		tools = append(tools, offered.Function)
 	}
 	c.shell = findShell(tools)
-	next := c.next()
+	next := m.next(c)
 	slog.Info("answered", "api", "chat completions", "said", len(c.said), "command", next.command, "text", next.text, "failure", next.failure)
 	if next.failure != "" {
-		// Both harnesses give up at once on this status and report it as an
-		// error. An error of another kind one of them repeats for a while,
-		// and one ends the turn with the error as its answer.
-		refuse(w, http.StatusUnauthorized, next.failure)
+		refuse(w, next.status, next.failure)
 		return
 	}
 
@@ -345,7 +385,7 @@ func chatCompletions(w http.ResponseWriter, r *http.Request) {
 }
 
 // responses serves the Responses API, which Codex uses.
-func responses(w http.ResponseWriter, r *http.Request) {
+func (m *mock) responses(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Model        string          `json:"model"`
 		Stream       bool            `json:"stream"`
@@ -385,13 +425,10 @@ func responses(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	c.shell = findShell(request.Tools)
-	next := c.next()
+	next := m.next(c)
 	slog.Info("answered", "api", "responses", "said", len(c.said), "command", next.command, "text", next.text, "failure", next.failure)
 	if next.failure != "" {
-		// Both harnesses give up at once on this status and report it as an
-		// error. An error of another kind one of them repeats for a while,
-		// and one ends the turn with the error as its answer.
-		refuse(w, http.StatusUnauthorized, next.failure)
+		refuse(w, next.status, next.failure)
 		return
 	}
 
