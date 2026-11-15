@@ -279,7 +279,8 @@ does not install PostgreSQL or Valkey.
 The turn pods mount the runner as an image volume, so the cluster's
 Kubernetes and container runtime must support image volumes, and its
 network plugin must enforce network policies: they are what cuts the turn
-pods off. The local cluster runs Kubernetes 1.37.
+pods off. The namespace of the turn pods enforces the restricted level of
+the Pod Security Standards. The local cluster runs Kubernetes 1.37.
 
 To run a harness that is not in this repository, see
 [Harness images](images/README.md).
