@@ -123,6 +123,11 @@ func New(config Config, st *store.Store, ev *events.Streams, m *metrics.Metrics)
 	if err != nil {
 		return nil, fmt.Errorf("find the cluster: %w", err)
 	}
+	// By itself the client sends no more than five requests a second, and a
+	// turn takes a few of them: its Job is created and then deleted. That
+	// would hold the turns back long before their limit does. The API server
+	// guards itself against too many requests.
+	cluster.QPS = -1
 	client, err := kubernetes.NewForConfig(cluster)
 	if err != nil {
 		return nil, err
