@@ -131,7 +131,7 @@ still knows what was said and finds the file.
 | Request | |
 | --- | --- |
 | `POST /v1/projects` | Creates a project. Body: `{"name": "..."}`. |
-| `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"harness": "...", "instructions": "..."}`. The harness is one of the configured harnesses. The instructions are what the agent is told before every turn, and may be left out. |
+| `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"harness": "...", "instructions": "...", "resources": {...}}`. The harness is one of the configured harnesses. The instructions are what the agent is told before every turn, and may be left out. The resources are what the pod of each turn asks for and may use at most, as they are written for Kubernetes: `{"requests": {"cpu": "250m", "memory": "1Gi"}, "limits": {"memory": "4Gi"}}`. Given, they are taken as they are. Left out or empty, the agent has none of its own, and each of its turns gets the default of the harness as it then is. |
 | `POST /v1/agents/{id}/sessions` | Creates a session. |
 | `POST /v1/sessions/{id}/messages` | Sends a message. Body: `{"text": "..."}`. Answers 202 with the turn, 409 if a turn of the session has not ended, or 429 with `Retry-After` if too many turns wait to run. |
 | `POST /v1/turns/{id}/cancel` | Cancels a turn. A turn that waits to run ends at once: 200 with the turn. A turn that runs is told to stop and ends when its pod has stopped: 202 with the turn. Answers 409 if the turn has ended in another way. |
@@ -273,7 +273,7 @@ does not install PostgreSQL or Valkey.
 | `runtime.maxStartupSeconds` | How long the pod of a turn may take to start before the turn fails. Default 90, and 0 is no limit. |
 | `runtime.maxTurnSeconds` | How long a turn may run before it is stopped and fails. Default 1800. |
 | `runtime.maxToolOutputBytes` | The longest text of a tool call that the events carry as it is. A longer text is cut. Default 65536, and 0 is no limit. |
-| `runtime.harnesses` | The harnesses that agents can use, each with its image. |
+| `runtime.harnesses` | The harnesses that agents can use, each with its image and with the resources for the turns of the agents that have none of their own. |
 | `runtime.store.storageClassName`, `.size` | The volume for the session homes. Its storage class must offer ReadWriteMany. |
 
 The turn pods mount the runner as an image volume, so the cluster's
@@ -281,6 +281,14 @@ Kubernetes and container runtime must support image volumes, and its
 network plugin must enforce network policies: they are what cuts the turn
 pods off. The namespace of the turn pods enforces the restricted level of
 the Pod Security Standards. The local cluster runs Kubernetes 1.37.
+
+An agent that was created with resources keeps them, and the pods of its
+turns get exactly those. An agent without follows the default of its
+harness: when `runtime.harnesses` changes, its next turn gets the new
+resources. Aviary sets no bound on what an agent may be given.
+A LimitRange or a ResourceQuota on the namespace of the turn pods,
+`aviary-runtime`, does that: Kubernetes then refuses the pod of a turn that
+asks for more, and the turn fails as `startup_timed_out`.
 
 To run a harness that is not in this repository, see
 [Harness images](images/README.md).

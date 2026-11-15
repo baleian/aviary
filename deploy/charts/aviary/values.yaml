@@ -89,12 +89,25 @@ runtime:
   # The image that holds the runner. Every turn pod mounts it.
   runnerImage: aviary-runner:dev
   # The harnesses that agents can use, by the name that an agent is created
-  # with.
+  # with. The resources are what the pod of a turn asks for and may use at
+  # most, of cpu and of memory, as the resources of a container are written
+  # for Kubernetes. They are for the agents that have no resources of their
+  # own, and a change here holds from the next turn of each of them. The
+  # requests are a little above what the harness takes before the agent does
+  # anything. A turn that goes over its limit of memory fails and says so.
+  # There is no limit of cpu: it would slow a turn down also when the node
+  # has cpu to spare.
   harnesses:
     opencode:
       image: aviary-harness-opencode:dev
+      resources:
+        requests: {cpu: 250m, memory: 1Gi}
+        limits: {memory: 4Gi}
     codex:
       image: aviary-harness-codex:dev
+      resources:
+        requests: {cpu: 250m, memory: 256Mi}
+        limits: {memory: 4Gi}
   # The volume that holds the sessions of the default tenant. Turn pods on
   # any node mount it, so the storage class must offer ReadWriteMany.
   store:

@@ -118,6 +118,10 @@ The images here ran into these cases:
      harnesses:
        myharness:
          image: registry.example.com/aviary-harness-myharness:1.0
+         # What the turns of an agent get that has no resources of its own.
+         resources:
+           requests: {cpu: 250m, memory: 512Mi}
+           limits: {memory: 4Gi}
    ```
 
 4. Create an agent with that name: `{"harness": "myharness"}`.

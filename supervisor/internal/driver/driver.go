@@ -3,6 +3,7 @@
 package driver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -97,6 +98,9 @@ type Config struct {
 
 type Harness struct {
 	Image string `json:"image"`
+	// Resources is what the pod of a turn gets if its agent has no resources
+	// of its own.
+	Resources corev1.ResourceRequirements `json:"resources"`
 }
 
 type Driver struct {
@@ -131,6 +135,11 @@ func New(config Config, st *store.Store, ev *events.Streams, m *metrics.Metrics)
 	client, err := kubernetes.NewForConfig(cluster)
 	if err != nil {
 		return nil, err
+	}
+	for name, harness := range config.Harnesses {
+		if err := checkResources(harness.Resources); err != nil {
+			return nil, fmt.Errorf("the resources of the harness %s: %w", name, err)
+		}
 	}
 	gateway, err := url.Parse(config.GatewayURL)
 	if err != nil {
@@ -181,6 +190,53 @@ func (d *Driver) hostAliases(ctx context.Context) ([]corev1.HostAlias, error) {
 func (d *Driver) HasHarness(name string) bool {
 	_, found := d.config.Harnesses[name]
 	return found
+}
+
+// AgentResources returns the resources that were asked for an agent, as
+// they are kept with the agent. It returns nothing if none were asked for:
+// the turns of such an agent get the default of its harness, as that is when
+// each turn starts. An error tells what is wrong with what was asked for.
+func AgentResources(asked json.RawMessage) (json.RawMessage, error) {
+	if len(asked) == 0 || string(asked) == "null" {
+		return nil, nil
+	}
+	var resources corev1.ResourceRequirements
+	decoder := json.NewDecoder(bytes.NewReader(asked))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&resources); err != nil {
+		return nil, errors.New(`resources must be requests and limits of cpu and memory, ` +
+			`such as {"requests": {"cpu": "500m"}, "limits": {"memory": "2Gi"}}`)
+	}
+	if err := checkResources(resources); err != nil {
+		return nil, err
+	}
+	if len(resources.Requests) == 0 && len(resources.Limits) == 0 {
+		return nil, nil
+	}
+	return json.Marshal(resources)
+}
+
+// checkResources tells what keeps resources from being those of a turn pod.
+func checkResources(resources corev1.ResourceRequirements) error {
+	if len(resources.Claims) > 0 {
+		return errors.New("resources must be requests and limits of cpu and memory")
+	}
+	for _, list := range []corev1.ResourceList{resources.Requests, resources.Limits} {
+		for name, quantity := range list {
+			if name != corev1.ResourceCPU && name != corev1.ResourceMemory {
+				return fmt.Errorf("resources must be cpu and memory, not %s", name)
+			}
+			if quantity.Sign() < 0 {
+				return fmt.Errorf("the %s in resources must not be below zero", name)
+			}
+		}
+	}
+	for name, limit := range resources.Limits {
+		if request, found := resources.Requests[name]; found && request.Cmp(limit) > 0 {
+			return fmt.Errorf("the request for %s in resources is above its limit", name)
+		}
+	}
+	return nil
 }
 
 // Wake makes the driver look for queued turns to run. It is called when a
@@ -282,7 +338,17 @@ func (d *Driver) launch(ctx context.Context, dispatch store.Dispatch, hosts []co
 	if !found {
 		return fmt.Errorf("harness %q is not configured", dispatch.Harness)
 	}
-	_, err := d.client.BatchV1().Jobs(namespace).Create(ctx, d.job(dispatch, harness, hosts), metav1.CreateOptions{})
+	// An agent without resources of its own gets those of its harness, as
+	// they are now.
+	resources := harness.Resources
+	if len(dispatch.Resources) > 0 {
+		resources = corev1.ResourceRequirements{}
+		if err := json.Unmarshal(dispatch.Resources, &resources); err != nil {
+			return fmt.Errorf("the resources of the agent: %w", err)
+		}
+	}
+	job := d.job(dispatch, harness, resources, hosts)
+	_, err := d.client.BatchV1().Jobs(namespace).Create(ctx, job, metav1.CreateOptions{})
 	return err
 }
 
@@ -571,8 +637,9 @@ func outcome(job *batchv1.Job) (succeeded, ended bool) {
 
 // job returns the Job that runs a turn. The harness container sees only the
 // home of its session. The runner comes from its own image, so the harness
-// images do not have to contain it.
-func (d *Driver) job(dispatch store.Dispatch, harness Harness, hosts []corev1.HostAlias) *batchv1.Job {
+// images do not have to contain it. Both containers get the resources: a pod
+// asks for what the larger of the two asks for, not for the sum.
+func (d *Driver) job(dispatch store.Dispatch, harness Harness, resources corev1.ResourceRequirements, hosts []corev1.HostAlias) *batchv1.Job {
 	home := fmt.Sprintf("projects/%s/agents/%s/sessions/%s/home", dispatch.ProjectID, dispatch.AgentID, dispatch.SessionID)
 	// The password of the proxy is the turn token, by which the proxy knows
 	// the turn of a request.
@@ -619,6 +686,7 @@ func (d *Driver) job(dispatch store.Dispatch, harness Harness, hosts []corev1.Ho
 						Name:            "home",
 						Image:           d.config.RunnerImage,
 						Command:         []string{"/aviary-runner", "init-home", "/store/" + home},
+						Resources:       resources,
 						SecurityContext: restricted,
 						VolumeMounts:    []corev1.VolumeMount{{Name: "store", MountPath: "/store"}},
 					}},
@@ -627,6 +695,7 @@ func (d *Driver) job(dispatch store.Dispatch, harness Harness, hosts []corev1.Ho
 						Image:      harness.Image,
 						Command:    []string{"/aviary/bin/aviary-runner"},
 						WorkingDir: "/home/workspace",
+						Resources:  resources,
 						Env: []corev1.EnvVar{
 							{Name: "HOME", Value: "/home"},
 							{Name: "AVIARY_GATEWAY_URL", Value: d.config.GatewayURL},

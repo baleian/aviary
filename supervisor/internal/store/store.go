@@ -73,6 +73,11 @@ type Agent struct {
 	CreatedAt time.Time `json:"created_at"`
 	// Instructions are what the agent is told before every turn, if anything.
 	Instructions string `json:"instructions,omitempty"`
+	// Resources is what the pod of each of the agent's turns asks for and
+	// may use at most, as the resources of a container are written for
+	// Kubernetes. An agent without resources of its own has none: its turns
+	// get the default of its harness, as that is when each turn starts.
+	Resources json.RawMessage `json:"resources,omitempty"`
 }
 
 type Session struct {
@@ -182,6 +187,8 @@ type Dispatch struct {
 	AgentID   uuid.UUID
 	ProjectID uuid.UUID
 	Harness   string
+	// Resources are the resources of the agent, if it has any of its own.
+	Resources json.RawMessage
 	// Token is what the runner takes the turn with. Only its hash is stored.
 	Token string
 	// Waited is how long the turn waited to run.
@@ -224,18 +231,18 @@ func (s *Store) Project(ctx context.Context, id uuid.UUID) (Project, error) {
 }
 
 // CreateAgent returns ErrNotFound if the project does not exist.
-func (s *Store) CreateAgent(ctx context.Context, projectID uuid.UUID, harness, instructions string) (Agent, error) {
+func (s *Store) CreateAgent(ctx context.Context, projectID uuid.UUID, harness, instructions string, resources json.RawMessage) (Agent, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return Agent{}, err
 	}
 	row, err := s.queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: id, ProjectID: projectID, Harness: harness, Instructions: instructions,
+		ID: id, ProjectID: projectID, Harness: harness, Instructions: instructions, Resources: resources,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Agent{}, ErrNotFound
 	}
-	return Agent(row), err
+	return agentFrom(row), err
 }
 
 func (s *Store) Agent(ctx context.Context, id uuid.UUID) (Agent, error) {
@@ -243,7 +250,7 @@ func (s *Store) Agent(ctx context.Context, id uuid.UUID) (Agent, error) {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Agent{}, ErrNotFound
 	}
-	return Agent(row), err
+	return agentFrom(row), err
 }
 
 // CreateSession returns ErrNotFound if the agent does not exist.
@@ -406,6 +413,7 @@ func (s *Store) DispatchTurns(ctx context.Context, limit int) ([]Dispatch, error
 			AgentID:   row.AgentID,
 			ProjectID: row.ProjectID,
 			Harness:   row.Harness,
+			Resources: row.Resources,
 			Token:     rand.Text(),
 			Waited:    time.Duration(row.Waited * float64(time.Second)),
 		}
@@ -629,6 +637,18 @@ func storable(item json.RawMessage) []byte {
 		}
 	}
 	return kept
+}
+
+// agentFrom returns a row of the agents table as an Agent.
+func agentFrom(row db.Agent) Agent {
+	return Agent{
+		ID:           row.ID,
+		ProjectID:    row.ProjectID,
+		Harness:      row.Harness,
+		CreatedAt:    row.CreatedAt,
+		Instructions: row.Instructions,
+		Resources:    row.Resources,
+	}
 }
 
 // sessionFrom returns a row of the sessions table as a Session.

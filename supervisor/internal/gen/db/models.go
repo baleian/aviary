@@ -16,6 +16,7 @@ type Agent struct {
 	Harness      string
 	CreatedAt    time.Time
 	Instructions string
+	Resources    []byte
 }
 
 type Project struct {
