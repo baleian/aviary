@@ -17,6 +17,7 @@ import (
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 
 	"aviary/supervisor/internal/api"
@@ -49,9 +50,6 @@ const (
 	gatewayAddr        = ":9090"
 	authzAddr          = ":9091"
 	metricsAddr        = ":9092"
-	// handover is how long a Supervisor that was told to stop goes on
-	// serving. For that long the cluster may still send it new requests.
-	handover = 5 * time.Second
 	// shutdownTimeout is how long the requests to the API get to finish.
 	shutdownTimeout = 10 * time.Second
 	// keepaliveInterval is how often the Supervisor asks the other end of an
@@ -59,6 +57,16 @@ const (
 	// the answer. The runners and the Egress Proxy ask the same of it.
 	keepaliveInterval = 30 * time.Second
 )
+
+// handover is how long a Supervisor that was told to stop goes on serving.
+// For that long the cluster may still send it new requests. The tests set it
+// lower.
+var handover = 5 * time.Second
+
+// ports are what a Supervisor listens on.
+type ports struct {
+	api, gateway, authz, metrics net.Listener
+}
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -123,25 +131,28 @@ func serve(ctx context.Context, database string) error {
 	if err != nil {
 		return err
 	}
+
+	var on ports
+	if on.api, err = net.Listen("tcp", apiAddr); err != nil {
+		return err
+	}
+	if on.gateway, err = net.Listen("tcp", gatewayAddr); err != nil {
+		return err
+	}
+	if on.authz, err = net.Listen("tcp", authzAddr); err != nil {
+		return err
+	}
+	if on.metrics, err = net.Listen("tcp", metricsAddr); err != nil {
+		return err
+	}
+	return serveOn(ctx, on, st, ev, client, config)
+}
+
+// serveOn serves on the ports until ctx is done, with the turns in the
+// database of the store and their pods in the cluster of the client.
+func serveOn(ctx context.Context, on ports, st *store.Store, ev *events.Streams, client kubernetes.Interface, config driver.Config) error {
 	m := metrics.New()
 	dr, err := driver.New(config, client, st, ev, m)
-	if err != nil {
-		return err
-	}
-
-	apiListener, err := net.Listen("tcp", apiAddr)
-	if err != nil {
-		return err
-	}
-	gatewayListener, err := net.Listen("tcp", gatewayAddr)
-	if err != nil {
-		return err
-	}
-	authzListener, err := net.Listen("tcp", authzAddr)
-	if err != nil {
-		return err
-	}
-	metricsListener, err := net.Listen("tcp", metricsAddr)
 	if err != nil {
 		return err
 	}
@@ -173,17 +184,18 @@ func serve(ctx context.Context, database string) error {
 	metricsServer := &http.Server{Handler: metricsMux, ReadHeaderTimeout: 10 * time.Second}
 	defer metricsServer.Close()
 	failed := make(chan error, 4)
-	go func() { failed <- apiServer.Serve(apiListener) }()
-	go func() { failed <- gatewayServer.Serve(gatewayListener) }()
-	go func() { failed <- authzServer.Serve(authzListener) }()
-	go func() { failed <- metricsServer.Serve(metricsListener) }()
+	go func() { failed <- apiServer.Serve(on.api) }()
+	go func() { failed <- gatewayServer.Serve(on.gateway) }()
+	go func() { failed <- authzServer.Serve(on.authz) }()
+	go func() { failed <- metricsServer.Serve(on.metrics) }()
 	go dr.Run(ctx)
 	// The runners are served for a while after the Supervisor was told to
 	// stop.
 	serving, served := context.WithCancel(context.Background())
 	defer served()
 	go runners.Run(serving)
-	slog.Info("listening", "api", apiAddr, "gateway", gatewayAddr, "authz", authzAddr, "metrics", metricsAddr)
+	slog.Info("listening", "api", on.api.Addr().String(), "gateway", on.gateway.Addr().String(),
+		"authz", on.authz.Addr().String(), "metrics", on.metrics.Addr().String())
 
 	select {
 	case err := <-failed:
