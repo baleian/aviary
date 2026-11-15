@@ -74,8 +74,8 @@ runtime:
   maxQueueWaitSeconds: 120
   # How long the pod of a turn may take to start: to be scheduled, to pull
   # its images and for its runner to connect. A turn whose pod takes longer
-  # fails, for example one whose image does not exist. It is more than a new
-  # node needs to pull a large image. Zero is no limit.
+  # fails, for example one whose image does not exist. The default assumes
+  # that the nodes hold the images already. Zero is no limit.
   maxStartupSeconds: 90
   # How long a turn may run, from the start of its pod. A turn is everything
   # that an agent does for one message, which can be many requests to the
