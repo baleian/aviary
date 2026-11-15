@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -253,28 +254,42 @@ type event struct {
 	ID, Type, Data string
 }
 
-// stream reads the events of the turn after the one with the ID, or all of
-// them without one, until the Supervisor ends the stream: at the end of the
-// turn.
-func (s *supervisor) stream(turn, after string) ([]event, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), patience)
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, "GET", s.api+"/v1/turns/"+turn+"/events", nil)
+// reader is a client that reads the events of a turn as they come.
+type reader struct {
+	t      *testing.T
+	turn   string
+	events chan event
+	// ended holds how the stream ended, once it has: without an error if the
+	// Supervisor ended it.
+	ended chan error
+}
+
+// read begins to read the events of the turn after the one with the ID, or
+// all of them without one.
+func (s *supervisor) read(turn, after string) *reader {
+	ctx, cancel := context.WithCancel(context.Background())
+	s.t.Cleanup(cancel)
+	r := &reader{t: s.t, turn: turn, events: make(chan event, 10000), ended: make(chan error, 1)}
+	go func() { r.ended <- r.stream(ctx, s.api, after) }()
+	return r
+}
+
+func (r *reader) stream(ctx context.Context, api, after string) error {
+	request, err := http.NewRequestWithContext(ctx, "GET", api+"/v1/turns/"+r.turn+"/events", nil)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if after != "" {
 		request.Header.Set("Last-Event-ID", after)
 	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("the events of turn %s were answered with %d", turn, response.StatusCode)
+		return fmt.Errorf("the events of turn %s were answered with %d", r.turn, response.StatusCode)
 	}
-	var events []event
 	var next event
 	lines := bufio.NewScanner(response.Body)
 	lines.Buffer(nil, 1<<20)
@@ -289,52 +304,67 @@ func (s *supervisor) stream(turn, after string) ([]event, error) {
 			next.Data = value
 		case "":
 			if next.Type != "" {
-				events = append(events, next)
+				r.events <- next
 			}
 			next = event{}
 		}
 	}
-	if err := lines.Err(); err != nil {
-		return nil, fmt.Errorf("the events of turn %s did not end with the turn; the stream broke after %v: %w", turn, events, err)
-	}
-	return events, nil
+	return lines.Err()
 }
 
-// follow reads the events of a turn to its end.
+// next waits for the next event that tells what the turn does.
+func (r *reader) next() event {
+	r.t.Helper()
+	for {
+		select {
+		case event := <-r.events:
+			if event.Type != "turn.queued" {
+				return event
+			}
+		case <-time.After(soon):
+			r.t.Fatalf("the reader of turn %s got no event", r.turn)
+		}
+	}
+}
+
+// rest waits for the Supervisor to end the stream, for as long as is given,
+// and returns the events that came since the reader last took one.
+func (r *reader) rest(within time.Duration) []event {
+	r.t.Helper()
+	select {
+	case err := <-r.ended:
+		if err != nil {
+			r.t.Fatalf("the events of turn %s broke off: %v", r.turn, err)
+		}
+	case <-time.After(within):
+		r.t.Fatalf("after %s, the events of turn %s have not ended", within, r.turn)
+	}
+	var rest []event
+	for {
+		select {
+		case event := <-r.events:
+			rest = append(rest, event)
+		default:
+			return rest
+		}
+	}
+}
+
+// follow reads the events of a turn to its end, at which the Supervisor
+// ends the stream.
 func (s *supervisor) follow(turn string) []event {
 	s.t.Helper()
-	events, err := s.stream(turn, "")
-	if err != nil {
-		s.t.Fatal(err)
-	}
-	return events
+	return s.read(turn, "").rest(patience)
 }
 
 // watch reads along with the events of the turn from now on, as a client
 // does while a turn runs. The function that it returns is called when the
 // turn has ended: the client is to have the last event by then.
 func (s *supervisor) watch(turn string) func() []event {
-	type read struct {
-		events []event
-		err    error
-	}
-	done := make(chan read, 1)
-	go func() {
-		events, err := s.stream(turn, "")
-		done <- read{events, err}
-	}()
+	reader := s.read(turn, "")
 	return func() []event {
 		s.t.Helper()
-		select {
-		case read := <-done:
-			if read.err != nil {
-				s.t.Fatal(read.err)
-			}
-			return read.events
-		case <-time.After(soon):
-			s.t.Fatalf("a client that read along with turn %s was not told that it ended", turn)
-			return nil
-		}
+		return reader.rest(soon)
 	}
 }
 
@@ -602,4 +632,46 @@ func (s *supervisor) origin(token string, forward bool) map[string]string {
 		origin[name] = value.GetStringValue()
 	}
 	return origin
+}
+
+// cancelled waits for the Supervisor to tell the runner to stop its turn.
+func (r *runner) cancelled() {
+	r.t.Helper()
+	select {
+	case <-r.call.cancels:
+	case err := <-r.call.ended:
+		r.t.Fatalf("the Supervisor ended the call of a runner whose turn was cancelled: %v", err)
+	case <-time.After(soon):
+		r.t.Fatal("the runner was not told to stop its turn")
+	}
+}
+
+// The metrics, as Prometheus reads them.
+
+// metric adds up the series of the Supervisor whose names and labels begin
+// as given.
+func (s *supervisor) metric(series string) float64 {
+	s.t.Helper()
+	response, err := http.Get(s.metrics + "/metrics")
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var sum float64
+	lines := bufio.NewScanner(response.Body)
+	for lines.Scan() {
+		name, value, found := strings.Cut(lines.Text(), " ")
+		if !found || !strings.HasPrefix(name, series) {
+			continue
+		}
+		number, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			s.t.Fatalf("the metrics have the line %q", lines.Text())
+		}
+		sum += number
+	}
+	if err := lines.Err(); err != nil {
+		s.t.Fatal(err)
+	}
+	return sum
 }
