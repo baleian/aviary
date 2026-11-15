@@ -7,6 +7,8 @@ RUN --mount=type=cache,target=/root/.npm \
 COPY config.toml /etc/codex/config.toml
 COPY --chmod=755 codex-acp-aviary /usr/local/bin/codex-acp-aviary
 # The pod is the sandbox. Codex's own sandbox needs to create namespaces,
-# which a pod does not allow.
+# which a pod does not allow. Codex reads instructions for every session from
+# AGENTS.md in its own directory, which is in the session home.
 ENV INITIAL_AGENT_MODE=agent-full-access \
-    AVIARY_HARNESS_COMMAND=codex-acp-aviary
+    AVIARY_HARNESS_COMMAND=codex-acp-aviary \
+    AVIARY_INSTRUCTIONS_FILE=/home/.codex/AGENTS.md

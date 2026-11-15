@@ -42,6 +42,7 @@ const HARNESS_COMMAND: &str = "AVIARY_HARNESS_COMMAND";
 const GATEWAY_URL: &str = "AVIARY_GATEWAY_URL";
 const TURN_TOKEN: &str = "AVIARY_TURN_TOKEN";
 const MAX_TOOL_OUTPUT: &str = "AVIARY_MAX_TOOL_OUTPUT_BYTES";
+const INSTRUCTIONS_FILE: &str = "AVIARY_INSTRUCTIONS_FILE";
 
 /// How many reports may wait for the Supervisor before the harness is held
 /// back.
@@ -203,6 +204,7 @@ async fn run_turn(stopped: &Cell<bool>) -> Result<(), Failure> {
     let Some(Order::Start(start)) = first.and_then(|order| order.message) else {
         return Err(Failure::supervisor("the Supervisor did not start the turn"));
     };
+    instruct(&start.instructions)?;
     // Set when the harness could not continue its session.
     let forgotten = Cell::new(false);
     // Carries the order to cancel to where the harness is talked to. One
@@ -341,6 +343,26 @@ async fn run_turn(stopped: &Cell<bool>) -> Result<(), Failure> {
     drop(reports);
     while orders.message().await.map_err(Failure::refused)?.is_some() {}
     Ok(())
+}
+
+/// Writes the agent's instructions to the file that the harness reads them
+/// from, which its image names. It is written before the harness starts, and
+/// for an agent without instructions too: the file may be in the session
+/// home, where it would still say what an earlier turn was told.
+fn instruct(instructions: &str) -> Result<(), Failure> {
+    let Ok(file) = env::var(INSTRUCTIONS_FILE) else {
+        if instructions.is_empty() {
+            return Ok(());
+        }
+        return Err(Failure::runner(format!(
+            "the agent has instructions, and the harness image names no file for them in {INSTRUCTIONS_FILE}"
+        )));
+    };
+    let file = Path::new(&file);
+    if let Some(directory) = file.parent() {
+        fs::create_dir_all(directory).map_err(Failure::runner)?;
+    }
+    fs::write(file, instructions).map_err(Failure::runner)
 }
 
 fn variable(name: &str) -> Result<String, Failure> {

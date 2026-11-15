@@ -56,6 +56,13 @@ stopped before the prompt was sent gets none.
    there.
 5. **It supports `session/resume`.** A later turn of a session continues the
    harness session that the first turn started, in a new process.
+6. **The file that the harness reads its instructions from**, in the
+   environment variable `AVIARY_INSTRUCTIONS_FILE`. Before it starts the
+   harness, the runner writes there what the agent is to be told in every
+   turn, or nothing for an agent without instructions. The user of the
+   harness must be able to write the file. Most harnesses have such a file
+   for instructions that hold in every session, often named `AGENTS.md`. An
+   image that names none runs only agents without instructions.
 
 Environment variables that begin with `AVIARY_` are reserved for Aviary. The
 harness also sees the ones that the runner uses, such as `AVIARY_GATEWAY_URL`.
@@ -100,7 +107,7 @@ The images here ran into these cases:
 
 ## Adding a harness
 
-1. Write a Dockerfile that meets the five points above. Building on
+1. Write a Dockerfile that meets the six points above. Building on
    `aviary-harness-base` gives you the user.
 2. Build the image and make it available to the cluster. For the local
    cluster that is `kind load docker-image --name aviary <image>`.

@@ -122,7 +122,7 @@ still knows what was said and finds the file.
 | Request | |
 | --- | --- |
 | `POST /v1/projects` | Creates a project. Body: `{"name": "..."}`. |
-| `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"harness": "..."}`, one of the configured harnesses. |
+| `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"harness": "...", "instructions": "..."}`. The harness is one of the configured harnesses. The instructions are what the agent is told before every turn, and may be left out. |
 | `POST /v1/agents/{id}/sessions` | Creates a session. |
 | `POST /v1/sessions/{id}/messages` | Sends a message. Body: `{"text": "..."}`. Answers 202 with the turn, 409 if a turn of the session has not ended, or 429 with `Retry-After` if too many turns wait to run. |
 | `POST /v1/turns/{id}/cancel` | Cancels a turn. A turn that waits to run ends at once: 200 with the turn. A turn that runs is told to stop and ends when its pod has stopped: 202 with the turn. Answers 409 if the turn has ended in another way. |
