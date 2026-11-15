@@ -12,13 +12,19 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/valkey-io/valkey-go"
 
+	"aviary/supervisor/internal/events"
 	"aviary/supervisor/internal/store"
 )
 
 // databaseURL names the variable with the URL of a PostgreSQL in which the
-// tests may create databases.
-const databaseURL = "AVIARY_TEST_DATABASE_URL"
+// tests may create databases, and valkeyURL the one with the URL of a
+// Valkey.
+const (
+	databaseURL = "AVIARY_TEST_DATABASE_URL"
+	valkeyURL   = "AVIARY_TEST_VALKEY_URL"
+)
 
 func init() {
 	// What the Supervisor logs of every migration and every turn would bury
@@ -26,15 +32,22 @@ func init() {
 	slog.SetLogLoggerLevel(slog.LevelWarn)
 }
 
+// service returns the URL that the variable holds.
+func service(t testing.TB, variable string) string {
+	t.Helper()
+	address := os.Getenv(variable)
+	if address == "" {
+		// A test that was skipped here would look like one that passed.
+		t.Fatalf("%s is not set: run the tests with `make test-supervisor`", variable)
+	}
+	return address
+}
+
 // EmptyDatabase creates a database for the test and returns its URL. The
 // database is dropped when the test ends.
 func EmptyDatabase(t testing.TB) string {
 	t.Helper()
-	server := os.Getenv(databaseURL)
-	if server == "" {
-		// A test that was skipped here would look like one that passed.
-		t.Fatalf("%s is not set: run the tests with `make test-supervisor`", databaseURL)
-	}
+	server := service(t, databaseURL)
 	address, err := url.Parse(server)
 	if err != nil {
 		t.Fatalf("%s: %v", databaseURL, err)
@@ -83,4 +96,39 @@ func Exec(t testing.TB, database, statement string, arguments ...any) {
 	if _, err := conn.Exec(ctx, statement, arguments...); err != nil {
 		t.Fatalf("%s: %v", statement, err)
 	}
+}
+
+// ValkeyURL returns the URL of the Valkey of the tests. The tests share it:
+// what they keep in it is apart by the IDs of their turns.
+func ValkeyURL(t testing.TB) string {
+	t.Helper()
+	return service(t, valkeyURL)
+}
+
+// Events returns the event streams as one Supervisor has them.
+func Events(t testing.TB) *events.Streams {
+	t.Helper()
+	streams, err := events.Open(ValkeyURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(streams.Close)
+	return streams
+}
+
+// Valkey returns a client of the Valkey of the tests, for what a test has to
+// arrange or to look at that the Supervisor has no way to.
+func Valkey(t testing.TB) valkey.Client {
+	t.Helper()
+	options, err := valkey.ParseURL(ValkeyURL(t))
+	if err != nil {
+		t.Fatalf("%s: %v", valkeyURL, err)
+	}
+	options.DisableCache = true
+	client, err := valkey.NewClient(options)
+	if err != nil {
+		t.Fatalf("connect to the Valkey of the tests: %v", err)
+	}
+	t.Cleanup(client.Close)
+	return client
 }

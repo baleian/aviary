@@ -24,7 +24,8 @@ GO = docker run --rm --user $$(id -u):$$(id -g) --env HOME=/tmp --env GOCACHE=/g
 # What the tests of the Supervisor run against, and how the tests reach it.
 SERVICES := docker compose --file test/compose.yaml --project-name aviary-test-supervisor
 IN_SERVICES := --network aviary-test-supervisor_default \
-	--env AVIARY_TEST_DATABASE_URL=postgres://postgres:test@postgres:5432/postgres
+	--env AVIARY_TEST_DATABASE_URL=postgres://postgres:test@postgres:5432/postgres \
+	--env AVIARY_TEST_VALKEY_URL=valkey://default:test@valkey:6379
 
 # The value of a variable in .env, or nothing if there is no .env.
 dotenv = $$(test ! -f .env || sed --quiet 's/^$(1)=//p' .env)
@@ -55,7 +56,7 @@ test: test-supervisor
 TESTS ?= ./...
 test-supervisor:
 	$(SERVICES) up --detach --wait --force-recreate
-	$(call GO,$(IN_SERVICES)) test -race -shuffle=on -count=1 $(TESTS); \
+	$(call GO,$(IN_SERVICES)) test -race -shuffle=on -count=1 -timeout 2m $(TESTS); \
 		status=$$?; $(SERVICES) down --volumes; exit $$status
 
 cluster-up:
