@@ -56,6 +56,9 @@ refuses the request if the Supervisor names none.
     grpc_service:
       envoy_grpc: {cluster_name: supervisor}
       timeout: 5s
+    # Without it, a request that the proxy could not ask a Supervisor about
+    # is answered as forbidden, as if its token were wrong.
+    status_on_error: {code: ServiceUnavailable}
 {{- end }}
 
 {{/*
