@@ -62,11 +62,12 @@ sqlc:
 	docker run --rm --user $$(id -u):$$(id -g) \
 		--volume $(CURDIR)/supervisor:/src --workdir /src $(SQLC_IMAGE) generate
 
-# The tests that need no cluster. TESTS narrows a run to some of the tests
-# of one of them, for example
+# The tests that need no cluster, all at once. Each of them is a target of
+# its own, and TESTS narrows a run of one to some of its tests, for example
 # make test-supervisor TESTS='-run TestEndTurn ./internal/store'
 # make test-runner TESTS=cut
-test: test-supervisor test-runner test-mock-llm test-chart test-proxy
+test:
+	$(MAKE) --jobs --output-sync=target test-supervisor test-runner test-mock-llm test-chart test-proxy
 
 # The services are started anew for every run and removed after it, also
 # when a test fails.
