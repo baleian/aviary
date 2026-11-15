@@ -178,6 +178,29 @@ origin() {
     jq --raw-output '[.session, .agent, .project] | join(" ")'
 }
 
+# metrics <component> prints the metrics of the pods of the Supervisor or of
+# the Egress Proxy, those of all pods that are not on their way out. They
+# are read through the API of the cluster.
+metrics() {
+  local pod
+  for pod in $($kubectl --namespace aviary-system get pods --selector "app.kubernetes.io/component=$1" \
+    --output json | jq --raw-output '.items[] | select(.metadata.deletionTimestamp == null) | .metadata.name'); do
+    $kubectl get --raw "/api/v1/namespaces/aviary-system/pods/$pod:9092/proxy/metrics"
+  done
+}
+
+# total <metrics> <pattern> adds up the series whose names and labels begin
+# as the pattern says, over all pods.
+total() {
+  awk -v pattern="^$2" '$0 ~ pattern { sum += $NF } END { print sum + 0 }' <<< "$1"
+}
+
+# counted <pattern> <number> tells whether the Supervisors together report
+# the number for the series.
+counted() {
+  [ "$(total "$(metrics supervisor)" "$1")" = "$2" ]
+}
+
 # Commands for the agent to run in its pod. fetch gets a URL the way the
 # pod is set up to, which is through the Egress Proxy, and prints the status
 # of the answer. connect opens a connection to port 80 of an address, without
@@ -333,6 +356,16 @@ run_turn "$other" egress-turn-3 "run $connect $mock_llm_ip"
 [[ $(answer egress-turn-3) == *"no answer"* ]] ||
   fail "the pod of turn $turn connected to an address without the Egress Proxy, see $out/egress-turn-3.jsonl"
 
+# The metrics of the Egress Proxy tell of these requests: those that it let
+# through, on both of its ways, the one that it refused, and how long the
+# requests to the model took.
+proxy=$(metrics egress-proxy)
+for series in 'envoy_http_ext_authz_ok[{]envoy_http_conn_manager_prefix="llm"' \
+  'envoy_http_ext_authz_ok[{]envoy_http_conn_manager_prefix="forward"' 'envoy_http_rbac_denied' \
+  'envoy_http_downstream_rq_time_count[{]envoy_http_conn_manager_prefix="llm"'; do
+  [ "$(total "$proxy" "$series")" -ge 1 ] || fail "the metrics of the Egress Proxy have nothing for $series"
+done
+
 # The record has a long answer whole. A turn with more events than are read
 # at once is the check.
 words=$(seq --format 'w%g' --separator ' ' 1 1200)
@@ -435,6 +468,8 @@ connect
 stopped=$(create "/v1/agents/$agent/sessions")
 running=$(send "$stopped" "run sleep 120")
 wait_for 60 running "$running" || fail "turn $running did not start"
+wait_for 10 counted aviary_turns_running 1 ||
+  fail "the metrics of the Supervisors do not tell of the one turn that runs"
 waiting=$(send "$(create "/v1/agents/$agent/sessions")" "say late")
 status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   --request POST --data '{"text": "say more"}' "$api/v1/sessions/$(create "/v1/agents/$agent/sessions")/messages")
@@ -460,7 +495,34 @@ follow "$cut" cut-turn
 [[ $(written "$cut") == "$(answer cut-turn)" && $(written "$cut") == *"w1 w2 "* && $(written "$cut") != *w40* ]] ||
   fail "the record of turn $cut does not have the answer as far as it got, see $out/cut-turn.jsonl"
 
+# The metrics of the Supervisors tell of the turns since the Supervisors were
+# last started, which was for the limits above: four were accepted, one of
+# them when it had to wait, and one message was refused. One turn completed,
+# two were cancelled and one expired. The three that ran were timed.
+wait_for 10 counted 'aviary_turns_ended_total[{].*state="cancelled"' 2 ||
+  fail "the metrics of the Supervisors do not tell of the two cancelled turns"
+supervisors=$(metrics supervisor)
+while read -r series number; do
+  [ "$(total "$supervisors" "$series")" = "$number" ] ||
+    fail "the metrics of the Supervisors have $(total "$supervisors" "$series") for $series, not $number"
+done << 'END'
+aviary_turn_queue_length_count 4
+aviary_turn_queue_length_sum 1
+aviary_messages_refused_total[{]reason="queue_full" 1
+aviary_turns_ended_total[{].*state="completed" 1
+aviary_turns_ended_total[{].*state="expired" 1
+aviary_turn_queue_duration_seconds_count 3
+aviary_turn_startup_duration_seconds_count 3
+aviary_turn_run_duration_seconds_count 3
+aviary_turns_running 0
+END
+for series in aviary_turn_startup_duration_seconds_sum aviary_turn_run_duration_seconds_sum \
+  'aviary_turn_tokens_total[{].*kind="input"'; do
+  [ "$(total "$supervisors" "$series")" != 0 ] || fail "the metrics of the Supervisors have nothing for $series"
+done
+
 echo "PASS: $harness ran turns through the API, continued a session, kept sessions apart," \
   "reached the model without holding its key and the outside only through the Egress Proxy," \
   "queued, cancelled and expired turns, gave failed turns a reason, recorded token usage," \
-  "kept what was said, also in turns that were cut off, and told an agent its instructions"
+  "kept what was said, also in turns that were cut off, told an agent its instructions," \
+  "and reported the turns and the requests in the metrics"
