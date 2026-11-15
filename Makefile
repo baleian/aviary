@@ -13,6 +13,10 @@ HARNESS_BASE_IMAGE := aviary-harness-base:dev
 OPENCODE_IMAGE := aviary-harness-opencode:dev
 CODEX_IMAGE := aviary-harness-codex:dev
 MOCK_LLM_IMAGE := aviary-mock-llm:dev
+FAKE_SUPERVISOR_IMAGE := aviary-fake-supervisor:dev
+# The harness images that make test-harness tests. Another one is tested with
+# make test-harness HARNESS_IMAGES=<image>
+HARNESS_IMAGES ?= $(OPENCODE_IMAGE) $(CODEX_IMAGE)
 
 KUBECTL := kubectl --context kind-$(CLUSTER)
 HELM := helm --kube-context kind-$(CLUSTER)
@@ -31,7 +35,7 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 # The value of a variable in .env, or nothing if there is no .env.
 dotenv = $$(test ! -f .env || sed --quiet 's/^$(1)=//p' .env)
 
-.PHONY: proto sqlc test test-supervisor test-runner test-mock-llm cluster-up cluster-down images deploy e2e
+.PHONY: proto sqlc test test-supervisor test-runner test-mock-llm test-harness cluster-up cluster-down build images deploy e2e
 
 # Writes the Go code for proto/ to supervisor/internal/gen. Run it after
 # changing a .proto file. It runs in the image that builds the Supervisor, so
@@ -69,6 +73,12 @@ test-mock-llm: TESTS ?= ./...
 test-mock-llm:
 	$(call GO,test/mock-llm) $(GO_TEST) $(TESTS)
 
+# Tests the harness images as the pods of turns run them, in containers and
+# without a cluster. A few at a time: a harness takes some memory.
+test-harness: build
+	AVIARY_HARNESS_IMAGES="$(HARNESS_IMAGES)" cargo test --locked --package aviary-runner --test harness -- \
+		--ignored --test-threads 3 $(TESTS)
+
 cluster-up:
 	kind get clusters 2>/dev/null | grep -qx $(CLUSTER) || \
 		kind create cluster --name $(CLUSTER) --image $(NODE_IMAGE) --config hack/kind/cluster.yaml
@@ -98,13 +108,16 @@ cluster-up:
 cluster-down:
 	kind delete cluster --name $(CLUSTER)
 
-images:
+build:
 	docker build --file images/supervisor/Dockerfile --tag $(SUPERVISOR_IMAGE) .
 	docker build --file images/runner/Dockerfile --tag $(RUNNER_IMAGE) .
 	docker build --tag $(HARNESS_BASE_IMAGE) images/harness-base
 	docker build --tag $(OPENCODE_IMAGE) images/harness-opencode
 	docker build --tag $(CODEX_IMAGE) images/harness-codex
 	docker build --file images/mock-llm/Dockerfile --tag $(MOCK_LLM_IMAGE) .
+	docker build --file images/fake-supervisor/Dockerfile --tag $(FAKE_SUPERVISOR_IMAGE) .
+
+images: build
 	kind load docker-image --name $(CLUSTER) $(SUPERVISOR_IMAGE) $(RUNNER_IMAGE) $(OPENCODE_IMAGE) $(CODEX_IMAGE) $(MOCK_LLM_IMAGE)
 
 # CloudNativePG writes the database's connection secret next to the database.

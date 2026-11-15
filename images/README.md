@@ -109,9 +109,20 @@ The images here ran into these cases:
 
 1. Write a Dockerfile that meets the six points above. Building on
    `aviary-harness-base` gives you the user.
-2. Build the image and make it available to the cluster. For the local
-   cluster that is `kind load docker-image --name aviary <image>`.
-3. Add the harness to the chart's values under a name of your choice:
+2. Build the image and test it:
+
+   ```sh
+   make test-harness HARNESS_IMAGES=registry.example.com/aviary-harness-myharness:1.0
+   ```
+
+   The tests run turns of sessions in containers of the image, set up as
+   the pods of turns are, and need no cluster. They use a mock model server
+   that speaks the Chat Completions API and the Responses API, and they have
+   the agent run shell commands, so they need the harness to offer the model
+   a tool with a `command` or a `cmd` parameter.
+3. Make the image available to the cluster. For the local cluster that is
+   `kind load docker-image --name aviary <image>`.
+4. Add the harness to the chart's values under a name of your choice:
 
    ```yaml
    runtime:
@@ -124,10 +135,4 @@ The images here ran into these cases:
            limits: {memory: 4Gi}
    ```
 
-4. Create an agent with that name: `{"harness": "myharness"}`.
-
-`make e2e HARNESS=myharness` then runs the checks of this repository against
-your image. They use a mock model server that speaks the Chat Completions API
-and the Responses API, and they have the agent run shell commands, so they
-need the harness to offer the model a tool with a `command` or a `cmd`
-parameter.
+5. Create an agent with that name: `{"harness": "myharness"}`.

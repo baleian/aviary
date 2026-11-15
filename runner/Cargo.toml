@@ -32,3 +32,9 @@ tonic-prost-build = "0.14.9"
 [[example]]
 name = "fake-harness"
 path = "tests/support/fake_harness.rs"
+
+# The Supervisor of the tests as a program, for the tests that run the runner
+# in a container.
+[[example]]
+name = "fake-supervisor"
+path = "tests/support/fake_supervisor.rs"
