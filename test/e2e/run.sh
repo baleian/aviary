@@ -195,6 +195,13 @@ reported() {
 mock_llm_egress='[{"to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "aviary-e2e"}}}]}]'
 mkdir -p "$out"
 $kubectl apply --filename test/e2e/mock-llm.yaml > /dev/null
+# An image that is built anew keeps its name, so a pod of mock-llm that runs
+# would stay as it is. The pods are given the ID of the image, which replaces
+# them when it has changed.
+mock_llm_image=$(docker image inspect --format '{{.Id}}' aviary-mock-llm:dev) ||
+  fail "the image of mock-llm is not built; run make images"
+$kubectl --namespace aviary-e2e patch deployment mock-llm --patch "$(jq --null-input --arg id "$mock_llm_image" \
+  '{spec: {template: {metadata: {annotations: {"aviary.io/image-id": $id}}}}}')" > /dev/null
 $kubectl --namespace aviary-e2e rollout status deployment/mock-llm --timeout 120s > /dev/null ||
   fail "mock-llm did not start; run make images"
 $helm get values aviary --output yaml > "$out/values.yaml" || fail "Aviary is not installed; run make deploy"
