@@ -44,6 +44,11 @@ returning *;
 -- name: GetTurn :one
 select * from turns where id = @id;
 
+-- name: ListTurns :many
+-- The turns of a session that came before the one with the sequence number
+-- @before, newest first.
+select * from turns where session_id = @session_id and seq < @before order by seq desc limit @count;
+
 -- name: CountWaitingTurns :one
 -- A queued turn waits only if the turns that run leave it no room.
 select ((select count(*) from turns where state = 'queued')
@@ -140,3 +145,6 @@ returning turns.*;
 
 -- name: AddTurnItems :copyfrom
 insert into turn_items (turn_id, seq, item) values (@turn_id, @seq, @item);
+
+-- name: ListTurnItems :many
+select turn_id, item from turn_items where turn_id = any(@turn_ids::uuid[]) order by turn_id, seq;

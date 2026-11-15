@@ -476,6 +476,87 @@ func (q *Queries) IsTurnDispatching(ctx context.Context, tokenHash []byte) (bool
 	return dispatching, err
 }
 
+const listTurnItems = `-- name: ListTurnItems :many
+select turn_id, item from turn_items where turn_id = any($1::uuid[]) order by turn_id, seq
+`
+
+type ListTurnItemsRow struct {
+	TurnID uuid.UUID
+	Item   []byte
+}
+
+func (q *Queries) ListTurnItems(ctx context.Context, turnIds []uuid.UUID) ([]ListTurnItemsRow, error) {
+	rows, err := q.db.Query(ctx, listTurnItems, turnIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListTurnItemsRow
+	for rows.Next() {
+		var i ListTurnItemsRow
+		if err := rows.Scan(&i.TurnID, &i.Item); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTurns = `-- name: ListTurns :many
+select id, session_id, seq, state, text, created_at, ended_at, token_hash, stop_reason, dispatched_at, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens, cancel_requested_at, failure_reason, failure_message from turns where session_id = $1 and seq < $2 order by seq desc limit $3
+`
+
+type ListTurnsParams struct {
+	SessionID uuid.UUID
+	Before    int32
+	Count     int32
+}
+
+// The turns of a session that came before the one with the sequence number
+// @before, newest first.
+func (q *Queries) ListTurns(ctx context.Context, arg ListTurnsParams) ([]Turn, error) {
+	rows, err := q.db.Query(ctx, listTurns, arg.SessionID, arg.Before, arg.Count)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Turn
+	for rows.Next() {
+		var i Turn
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.Seq,
+			&i.State,
+			&i.Text,
+			&i.CreatedAt,
+			&i.EndedAt,
+			&i.TokenHash,
+			&i.StopReason,
+			&i.DispatchedAt,
+			&i.TotalTokens,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.ThoughtTokens,
+			&i.CachedReadTokens,
+			&i.CachedWriteTokens,
+			&i.CancelRequestedAt,
+			&i.FailureReason,
+			&i.FailureMessage,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lock = `-- name: Lock :exec
 select pg_advisory_xact_lock($1)
 `

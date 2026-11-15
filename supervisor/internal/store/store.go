@@ -338,6 +338,35 @@ func (s *Store) Turn(ctx context.Context, id uuid.UUID) (Turn, error) {
 	return turnFrom(row), err
 }
 
+// Turns returns the turns of a session that came before the one with the
+// sequence number before, newest first and at most limit of them.
+func (s *Store) Turns(ctx context.Context, sessionID uuid.UUID, before, limit int) ([]Turn, error) {
+	rows, err := s.queries.ListTurns(ctx, db.ListTurnsParams{SessionID: sessionID, Before: int32(before), Count: int32(limit)})
+	if err != nil {
+		return nil, err
+	}
+	turns := make([]Turn, len(rows))
+	for i, row := range rows {
+		turns[i] = turnFrom(row)
+	}
+	return turns, nil
+}
+
+// TurnItems returns what the agent said and did in each of the turns, in
+// order, by the ID of the turn. A turn has items once it has ended, if the
+// agent said or did anything in it.
+func (s *Store) TurnItems(ctx context.Context, turnIDs []uuid.UUID) (map[uuid.UUID][]json.RawMessage, error) {
+	rows, err := s.queries.ListTurnItems(ctx, turnIDs)
+	if err != nil {
+		return nil, err
+	}
+	items := map[uuid.UUID][]json.RawMessage{}
+	for _, row := range rows {
+		items[row.TurnID] = append(items[row.TurnID], row.Item)
+	}
+	return items, nil
+}
+
 // DispatchTurns makes queued turns wait for their runners, oldest first, for
 // as long as fewer than limit turns are running or about to. It returns what
 // it takes to run each of them.

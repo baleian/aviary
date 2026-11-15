@@ -38,8 +38,10 @@ const (
 // that a turn was asked to stop.
 const cancelChannel = "turns:cancel"
 
-// keptFor is how long the events of a turn are kept after its last event.
-const keptFor = 24 * time.Hour
+// keptFor is how long the events of a turn are kept after its last event,
+// for the clients that still read them. What the turn said is by then in the
+// database.
+const keptFor = time.Hour
 
 // Start is the position before a turn's first event.
 const Start = "0-0"

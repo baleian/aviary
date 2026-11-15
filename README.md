@@ -53,8 +53,9 @@ and the number of turns that run at once is a setting.
    A network policy keeps the pod from connecting to anything but the
    Supervisor and the proxy, and it has no DNS.
 5. When Kubernetes reports that the pod has stopped, the Supervisor ends the
-   turn and deletes the Job. Only then does the session take its next
-   message, so two pods never work on the same session home.
+   turn, keeps what the agent said and did in it, and deletes the Job. Only
+   then does the session take its next message, so two pods never work on
+   the same session home.
 
 The Supervisor keeps its records in PostgreSQL and the events of running
 turns in Valkey. It only needs their addresses, so both can be managed
@@ -126,6 +127,7 @@ still knows what was said and finds the file.
 | `POST /v1/sessions/{id}/messages` | Sends a message. Body: `{"text": "..."}`. Answers 202 with the turn, 409 if a turn of the session has not ended, or 429 with `Retry-After` if too many turns wait to run. |
 | `POST /v1/turns/{id}/cancel` | Cancels a turn. A turn that waits to run ends at once: 200 with the turn. A turn that runs is told to stop and ends when its pod has stopped: 202 with the turn. Answers 409 if the turn has ended in another way. |
 | `GET /v1/turns/{id}/events` | The events of the turn, as server-sent events. A client that reconnects sends `Last-Event-ID` and gets the events after it. |
+| `GET /v1/sessions/{id}/turns` | The turns of the session, newest first: `{"turns": [...]}`. `?limit=` is how many, 20 if it is not given and at most 100. `?before=` is the `seq` of a turn, and the answer then holds the turns before that one: that is how to read on from the last turn of an answer. The first turn of a session has `seq` 1. |
 | `GET /v1/projects/{id}`, `/v1/agents/{id}`, `/v1/sessions/{id}`, `/v1/turns/{id}` | Reads what was created. |
 
 The events of a turn:
@@ -163,6 +165,38 @@ A turn that has ended has its reason too, as `failure`. What makes a turn
 fail is up to the harness: when the model endpoint answers with an error,
 OpenCode fails the turn, and Codex mostly ends it with the error as what the
 agent says.
+
+### The record of a turn
+
+A turn, read on its own or in the turns of its session, has `items`: what
+the agent said and did, in order. They are put together from the events when
+the turn ends, so a turn that has not ended has none yet, and a client
+follows its events. The events themselves are kept for an hour after the
+turn ended.
+
+| Item `type` | |
+| --- | --- |
+| `message`, `thought` | `text`: the pieces that followed one another, as one text. |
+| `tool_call` | The fields of `tool.call`, as the updates of the call left them. |
+| `plan` | `entries`: the plan as it last stood. |
+
+A turn that did not complete keeps what there was until then: the text that
+the agent had written so far, and a tool call with the status that it had.
+How the turn ended is told by its `state`, its `failure` and its
+`stop_reason`. A turn has a `stop_reason` if its harness ended it by itself.
+A turn without one was stopped from outside, or never reached its harness.
+
+| `state` | `stop_reason` | |
+| --- | --- | --- |
+| `completed` | `end_turn`, `max_tokens`, `max_turn_requests` or `refusal` | The harness ended the turn. |
+| `cancelled` | `cancelled` | The turn was cancelled, and the harness stopped when it was asked to. |
+| `cancelled` | none | The turn was cancelled before it ran, or its harness did not stop in time and its pod was stopped. |
+| `failed` | none | The turn failed, for the reason in `failure`. |
+| `expired` | none | The turn waited to run for longer than it may. |
+
+The items are what the user saw. What the harness remembers of a turn that
+did not complete is up to the harness, and it can be less: a harness whose
+pod was stopped did not get to write down what it was saying.
 
 `usage` holds `total_tokens`, `input_tokens` and `output_tokens`, and
 `thought_tokens`, `cached_read_tokens` and `cached_write_tokens` if the
@@ -221,8 +255,6 @@ To run a harness that is not in this repository, see
   a turn connects to. It does not read what is sent over HTTPS.
 - **Measured token usage.** The usage of a turn is what its harness reports.
   The Egress Proxy does not count tokens.
-- **Reading a conversation back.** The events of a turn are kept for 24
-  hours after it ended.
 - **Surviving the loss of a Supervisor.** Several Supervisors can run side
   by side, and one that is stopped first finishes the turns whose runners
   are connected to it. If it is killed, those turns fail.

@@ -2,9 +2,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
 	"net/http"
 	"slices"
 	"strconv"
@@ -17,6 +19,13 @@ import (
 )
 
 const maxBodyBytes = 1 << 20
+
+// defaultTurns is how many turns a list holds if the request does not say,
+// and maxTurns is the most that it may ask for.
+const (
+	defaultTurns = 20
+	maxTurns     = 100
+)
 
 type api struct {
 	store   *store.Store
@@ -57,6 +66,7 @@ func New(st *store.Store, ev *events.Streams, dr *driver.Driver, closing <-chan 
 	mux.Handle("POST /v1/agents/{aid}/sessions", handler(a.createSession))
 	mux.Handle("GET /v1/sessions/{sid}", handler(a.getSession))
 	mux.Handle("POST /v1/sessions/{sid}/messages", handler(a.createMessage))
+	mux.Handle("GET /v1/sessions/{sid}/turns", handler(a.listTurns))
 	mux.Handle("GET /v1/turns/{tid}", handler(a.getTurn))
 	mux.Handle("POST /v1/turns/{tid}/cancel", handler(a.cancelTurn))
 	mux.Handle("GET /v1/turns/{tid}/events", handler(a.streamEvents))
@@ -201,8 +211,71 @@ func (a *api) getTurn(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	respond(w, http.StatusOK, turn)
+	records, err := a.records(r.Context(), []store.Turn{turn})
+	if err != nil {
+		return err
+	}
+	respond(w, http.StatusOK, records[0])
 	return nil
+}
+
+// listTurns returns the turns of a session, newest first. The query
+// parameter limit is how many, and before is the sequence number of a turn:
+// the list then holds the turns that came before it. That is how a client
+// reads on from the last turn of a list. The first turn of a session has the
+// sequence number 1.
+func (a *api) listTurns(w http.ResponseWriter, r *http.Request) error {
+	sessionID, err := pathID(r, "sid")
+	if err != nil {
+		return err
+	}
+	limit, err := queryNumber(r, "limit", defaultTurns, maxTurns)
+	if err != nil {
+		return err
+	}
+	before, err := queryNumber(r, "before", math.MaxInt32, math.MaxInt32)
+	if err != nil {
+		return err
+	}
+	if _, err := a.store.Session(r.Context(), sessionID); err != nil {
+		return err
+	}
+	turns, err := a.store.Turns(r.Context(), sessionID, before, limit)
+	if err != nil {
+		return err
+	}
+	records, err := a.records(r.Context(), turns)
+	if err != nil {
+		return err
+	}
+	respond(w, http.StatusOK, struct {
+		Turns []turnRecord `json:"turns"`
+	}{records})
+	return nil
+}
+
+// turnRecord is a turn with what the agent said and did in it. The items
+// are kept when the turn ends: until then a client follows the turn's events.
+type turnRecord struct {
+	store.Turn
+	Items []json.RawMessage `json:"items"`
+}
+
+func (a *api) records(ctx context.Context, turns []store.Turn) ([]turnRecord, error) {
+	ids := make([]uuid.UUID, len(turns))
+	for i, turn := range turns {
+		ids[i] = turn.ID
+	}
+	items, err := a.store.TurnItems(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	records := make([]turnRecord, len(turns))
+	for i, turn := range turns {
+		// A turn without items has an empty list of them.
+		records[i] = turnRecord{Turn: turn, Items: append([]json.RawMessage{}, items[turn.ID]...)}
+	}
+	return records, nil
 }
 
 // cancelTurn cancels a turn. A turn that waits to run ends at once, and the
@@ -274,6 +347,20 @@ func pathID(r *http.Request, name string) (uuid.UUID, error) {
 		return uuid.Nil, errNotFound
 	}
 	return id, nil
+}
+
+// queryNumber reads a query parameter that is a number from 1 to most. A
+// request without it gets the number absent.
+func queryNumber(r *http.Request, name string, absent, most int) (int, error) {
+	value := r.URL.Query().Get(name)
+	if value == "" {
+		return absent, nil
+	}
+	number, err := strconv.Atoi(value)
+	if err != nil || number < 1 || number > most {
+		return 0, invalid(name + " must be a number from 1 to " + strconv.Itoa(most))
+	}
+	return number, nil
 }
 
 func invalid(message string) error {
