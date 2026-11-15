@@ -448,11 +448,27 @@ func (d *Driver) reconcile(ctx context.Context) {
 		}
 	}
 	for _, job := range jobs.Items {
-		if !dispatched[job.Labels[turnLabel]] {
-			slog.WarnContext(ctx, "job has no running turn", "job", job.Name)
-			d.deleteJob(ctx, job.Name)
+		if dispatched[job.Labels[turnLabel]] {
+			continue
 		}
+		// The Job of a turn that has ended is on its way out: the turn ended
+		// after the Jobs were read, or its Job could not be deleted then.
+		if !d.turnEnded(ctx, &job) {
+			slog.WarnContext(ctx, "job has no running turn", "job", job.Name)
+		}
+		d.deleteJob(ctx, job.Name)
 	}
+}
+
+// turnEnded reports whether the turn of the Job has ended. It has not if
+// there is no such turn.
+func (d *Driver) turnEnded(ctx context.Context, job *batchv1.Job) bool {
+	turnID, err := uuid.Parse(job.Labels[turnLabel])
+	if err != nil {
+		return false
+	}
+	turn, err := d.store.Turn(ctx, turnID)
+	return err == nil && turn.EndedAt != nil
 }
 
 // end ends a turn whose pod has stopped, and reports whether the turn is
