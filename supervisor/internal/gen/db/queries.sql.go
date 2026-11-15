@@ -12,6 +12,12 @@ import (
 	"github.com/google/uuid"
 )
 
+type AddTurnItemsParams struct {
+	TurnID uuid.UUID
+	Seq    int32
+	Item   []byte
+}
+
 const cancelTurn = `-- name: CancelTurn :one
 update turns set
        state = case when state = 'queued' then 'cancelled' else state end,

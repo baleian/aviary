@@ -458,7 +458,9 @@ func (d *Driver) reconcile(ctx context.Context) {
 // end ends a turn whose pod has stopped, and reports whether the turn is
 // now ended.
 func (d *Driver) end(ctx context.Context, turnID uuid.UUID, succeeded bool, failure store.Failure) bool {
-	turn, changed, err := d.store.EndTurn(ctx, turnID, succeeded, failure)
+	turn, changed, err := d.store.EndTurn(ctx, turnID, succeeded, failure, func(ctx context.Context) ([]json.RawMessage, error) {
+		return d.events.Items(ctx, turnID)
+	})
 	if err != nil {
 		slog.ErrorContext(ctx, "end turn", "turn", turnID, "error", err)
 		return false

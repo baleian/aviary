@@ -4,9 +4,11 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -501,7 +503,12 @@ func (s *Store) GiveUpTurn(ctx context.Context, turnID uuid.UUID, failure Failur
 // to stop is cancelled, unless the harness had ended it by itself. From then
 // on the session accepts its next message. The second result is false if the
 // turn had ended before, or does not exist.
-func (s *Store) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool, failure Failure) (Turn, bool, error) {
+//
+// For a turn that it ends, EndTurn calls items and keeps what it returns as
+// what the agent said and did in the turn. If that fails, the turn has not
+// ended.
+func (s *Store) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool, failure Failure,
+	items func(context.Context) ([]json.RawMessage, error)) (Turn, bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Turn{}, false, err
@@ -521,6 +528,21 @@ func (s *Store) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool, f
 		return Turn{}, false, err
 	}
 	turn := turnFrom(row)
+	// Of several Supervisors that end the turn at once, only the one that
+	// gets here keeps the items.
+	said, err := items(ctx)
+	if err != nil {
+		return Turn{}, false, fmt.Errorf("read what the turn said: %w", err)
+	}
+	if len(said) > 0 {
+		rows := make([]db.AddTurnItemsParams, len(said))
+		for i, item := range said {
+			rows[i] = db.AddTurnItemsParams{TurnID: turnID, Seq: int32(i + 1), Item: storable(item)}
+		}
+		if _, err := queries.AddTurnItems(ctx, rows); err != nil {
+			return Turn{}, false, err
+		}
+	}
 	// A harness session that cannot be continued is not tried again: the
 	// next turn of the session starts a new one. The session keeps its
 	// files, and the agent starts without its memory of the conversation.
@@ -530,6 +552,29 @@ func (s *Store) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool, f
 		}
 	}
 	return turn, true, tx.Commit(ctx)
+}
+
+// storable returns an item as PostgreSQL can keep it. It cannot keep the
+// character U+0000 in jsonb, so the replacement character takes its place.
+func storable(item json.RawMessage) []byte {
+	if !bytes.Contains(item, []byte(`\u0000`)) {
+		return item
+	}
+	var kept []byte
+	for i := 0; i < len(item); i++ {
+		switch {
+		case item[i] != '\\':
+			kept = append(kept, item[i])
+		case bytes.HasPrefix(item[i:], []byte(`\u0000`)):
+			kept = append(kept, `\ufffd`...)
+			i += 5
+		default:
+			// Another escaped character, which may be a backslash.
+			kept = append(kept, item[i], item[i+1])
+			i++
+		}
+	}
+	return kept
 }
 
 // sessionFrom returns a row of the sessions table as a Session.

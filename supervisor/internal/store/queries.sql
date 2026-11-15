@@ -137,3 +137,6 @@ update turns set ended_at = now(), state = ending.state,
 from ending
 where turns.id = @id and turns.ended_at is null
 returning turns.*;
+
+-- name: AddTurnItems :copyfrom
+insert into turn_items (turn_id, seq, item) values (@turn_id, @seq, @item);
