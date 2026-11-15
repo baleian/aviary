@@ -123,7 +123,7 @@ const (
 	FailureStartup = "startup_timed_out"
 	// FailureResume: the harness could not continue its session, because
 	// what it had kept of the conversation is gone or cannot be read. The
-	// next turn of the session starts a new harness session.
+	// session keeps its harness session, and its next turn tries again.
 	FailureResume = "resume_failed"
 	// FailureTimedOut: the turn ran for longer than a turn may.
 	FailureTimedOut = "timed_out"
@@ -579,14 +579,6 @@ func (s *Store) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool, f
 			rows[i] = db.AddTurnItemsParams{TurnID: turnID, Seq: int32(i + 1), Item: storable(item)}
 		}
 		if _, err := queries.AddTurnItems(ctx, rows); err != nil {
-			return Turn{}, false, err
-		}
-	}
-	// A harness session that cannot be continued is not tried again: the
-	// next turn of the session starts a new one. The session keeps its
-	// files, and the agent starts without its memory of the conversation.
-	if turn.Failure != nil && turn.Failure.Reason == FailureResume {
-		if err := queries.ForgetHarnessSession(ctx, turn.SessionID); err != nil {
 			return Turn{}, false, err
 		}
 	}

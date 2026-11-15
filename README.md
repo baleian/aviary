@@ -153,7 +153,7 @@ The reasons for a failed turn:
 | Reason | |
 | --- | --- |
 | `harness_error` | The harness could not be started or answered with an error. That is also how a harness reports that the model endpoint refused it. |
-| `resume_failed` | The harness could not continue the session: what it had kept of the conversation is gone or cannot be read. The session keeps its files, and its next turn starts with an agent that does not remember the conversation. |
+| `resume_failed` | The harness could not continue the session: what it had kept of the conversation is gone or cannot be read. The next turn of the session tries again, so a session whose harness cannot recover fails every turn. |
 | `startup_timed_out` | The pod of the turn did not start in time, for example because an image could not be pulled. |
 | `timed_out` | The turn ran for longer than a turn may. |
 | `out_of_memory` | The pod used more memory than it may. |

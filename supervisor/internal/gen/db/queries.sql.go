@@ -374,15 +374,6 @@ func (q *Queries) ExpireTurns(ctx context.Context, seconds float64) ([]Turn, err
 	return items, nil
 }
 
-const forgetHarnessSession = `-- name: ForgetHarnessSession :exec
-update sessions set harness_session_id = null where id = $1
-`
-
-func (q *Queries) ForgetHarnessSession(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.Exec(ctx, forgetHarnessSession, id)
-	return err
-}
-
 const getAgent = `-- name: GetAgent :one
 select id, project_id, harness, created_at, instructions from agents where id = $1
 `

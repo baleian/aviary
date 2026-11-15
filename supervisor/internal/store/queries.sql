@@ -30,9 +30,6 @@ update sessions set harness_session_id = @harness_session_id::text
 from started
 where sessions.id = started.session_id;
 
--- name: ForgetHarnessSession :exec
-update sessions set harness_session_id = null where id = @id;
-
 -- name: Lock :exec
 -- Waits for the advisory lock of the key and holds it until the transaction
 -- ends.
