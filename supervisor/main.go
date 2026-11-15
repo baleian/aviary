@@ -174,8 +174,8 @@ func serve(ctx context.Context, database string) error {
 	go func() { failed <- authzServer.Serve(authzListener) }()
 	go func() { failed <- metricsServer.Serve(metricsListener) }()
 	go dr.Run(ctx)
-	// The runners that are connected are served until their turns have
-	// ended, which is after the Supervisor was told to stop.
+	// The runners are served for a while after the Supervisor was told to
+	// stop.
 	serving, served := context.WithCancel(context.Background())
 	defer served()
 	go runners.Run(serving)
@@ -187,16 +187,15 @@ func serve(ctx context.Context, database string) error {
 	case <-ctx.Done():
 	}
 	// A Supervisor that is told to stop takes on no more turns, and the other
-	// Supervisors go on. It finishes the turns whose runners are connected
-	// to it: a turn whose runner loses its Supervisor fails. Kubernetes gives
-	// the pod longer to stop than a turn may run.
-	slog.Info("stopping when the connected runners have finished")
+	// Supervisors go on.
+	slog.Info("stopping")
 	time.Sleep(handover)
 	stopping, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	err = apiServer.Shutdown(stopping)
-	gatewayServer.GracefulStop()
-	// The turns that still run call the model until their runners are gone.
+	// The runners call another Supervisor. GracefulStop would wait for
+	// their turns to end.
+	gatewayServer.Stop()
 	authzServer.GracefulStop()
 	return err
 }
