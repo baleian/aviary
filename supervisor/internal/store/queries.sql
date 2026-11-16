@@ -183,11 +183,11 @@ insert into approvals (turn_id, id, request) values (@turn_id, @id, @request)
 on conflict (turn_id, id) do nothing;
 
 -- name: ResolveApproval :one
--- The harness has its answer. The answer here is how long the request
+-- The harness has its answer. The answer here is the request and how long it
 -- waited. There is none for a request that was resolved before.
 update approvals set outcome = @outcome, resolved_at = now()
 where turn_id = @turn_id and id = @id and resolved_at is null
-returning extract(epoch from now() - requested_at)::float8 as waited;
+returning request, extract(epoch from now() - requested_at)::float8 as waited;
 
 -- name: GetApproval :one
 select * from approvals where turn_id = @turn_id and id = @id;

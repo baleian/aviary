@@ -778,7 +778,7 @@ func (q *Queries) QueuedTurns(ctx context.Context) ([]uuid.UUID, error) {
 const resolveApproval = `-- name: ResolveApproval :one
 update approvals set outcome = $1, resolved_at = now()
 where turn_id = $2 and id = $3 and resolved_at is null
-returning extract(epoch from now() - requested_at)::float8 as waited
+returning request, extract(epoch from now() - requested_at)::float8 as waited
 `
 
 type ResolveApprovalParams struct {
@@ -787,13 +787,18 @@ type ResolveApprovalParams struct {
 	ID      string
 }
 
-// The harness has its answer. The answer here is how long the request
+type ResolveApprovalRow struct {
+	Request []byte
+	Waited  float64
+}
+
+// The harness has its answer. The answer here is the request and how long it
 // waited. There is none for a request that was resolved before.
-func (q *Queries) ResolveApproval(ctx context.Context, arg ResolveApprovalParams) (float64, error) {
+func (q *Queries) ResolveApproval(ctx context.Context, arg ResolveApprovalParams) (ResolveApprovalRow, error) {
 	row := q.db.QueryRow(ctx, resolveApproval, arg.Outcome, arg.TurnID, arg.ID)
-	var waited float64
-	err := row.Scan(&waited)
-	return waited, err
+	var i ResolveApprovalRow
+	err := row.Scan(&i.Request, &i.Waited)
+	return i, err
 }
 
 const runningTurn = `-- name: RunningTurn :one

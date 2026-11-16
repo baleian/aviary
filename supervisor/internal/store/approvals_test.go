@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -83,14 +84,14 @@ func TestApprovals(t *testing.T) {
 	}
 
 	// The harness has its answer. A report that comes again changes nothing.
-	waited, first, err := st.ResolveApproval(ctx, turn, "1", "selected")
-	if err != nil || !first || waited < 0 || waited > time.Minute {
-		t.Fatalf("the request was resolved after %s, for the first time %t: %v", waited, first, err)
+	resolved, waited, first, err := st.ResolveApproval(ctx, turn, "1", "selected")
+	if err != nil || !first || waited < 0 || waited > time.Minute || !strings.Contains(string(resolved.Request), `"note"`) {
+		t.Fatalf("the request %s was resolved after %s, for the first time %t: %v", resolved.Request, waited, first, err)
 	}
-	if _, first, err := st.ResolveApproval(ctx, turn, "1", "cancelled"); err != nil || first {
+	if _, _, first, err := st.ResolveApproval(ctx, turn, "1", "cancelled"); err != nil || first {
 		t.Errorf("the request was resolved a second time: %v", err)
 	}
-	if _, first, err := st.ResolveApproval(ctx, turn, "3", "selected"); err != nil || first {
+	if _, _, first, err := st.ResolveApproval(ctx, turn, "3", "selected"); err != nil || first {
 		t.Errorf("a request that there is not was resolved: %v", err)
 	}
 	if asked, err := st.Approval(ctx, turn, "1"); err != nil || !asked.Resolved {
@@ -100,7 +101,7 @@ func TestApprovals(t *testing.T) {
 		t.Errorf("an answer that the harness has is still on its way: %v", answers)
 	}
 	// A request that the harness waits for no longer takes no answer.
-	if _, _, err := st.ResolveApproval(ctx, turn, "2", "cancelled"); err != nil {
+	if _, _, _, err := st.ResolveApproval(ctx, turn, "2", "cancelled"); err != nil {
 		t.Fatal(err)
 	}
 	if answered, err := st.AnswerApproval(ctx, turn, "2", "once"); err != nil || answered {

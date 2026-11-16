@@ -286,8 +286,16 @@ func (g *Gateway) receive(ctx context.Context, turn store.TakenTurn, request *ru
 		}
 	case *runnerv1.RunTurnRequest_ApprovalResolved:
 		resolved := message.ApprovalResolved
-		if _, _, err := g.store.ResolveApproval(ctx, turn.ID, resolved.GetId(), resolved.GetOutcome()); err != nil {
+		asked, waited, first, err := g.store.ResolveApproval(ctx, turn.ID, resolved.GetId(), resolved.GetOutcome())
+		if err != nil {
 			return err
+		}
+		if first {
+			outcome := resolved.GetOutcome()
+			if outcome == "selected" {
+				outcome = asked.OptionKind(resolved.GetOptionId())
+			}
+			g.metrics.Approved(turn.Harness, outcome, waited)
 		}
 	}
 	// The rest of the messages are the events of the turn. A runner newer

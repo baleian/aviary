@@ -38,6 +38,20 @@ func TestMetrics(t *testing.T) {
 	}
 	thought := int64(3)
 	runner.report(started("harness-session"))
+	// Its harness asks twice. One request is answered by a person, and the
+	// runner makes up an outcome for the other.
+	runner.report(asks("1", "rm -r build"))
+	runner.report(asks("2", "git push"))
+	if status, _ := one.approve(completed.ID, "1", `{"option_id": "never"}`); status != http.StatusAccepted {
+		t.Fatalf("the answer to a request was answered with %d", status)
+	}
+	runner.answer()
+	runner.report(answered("1", "selected", "never"))
+	// An answer that the runner reports again is not another answer.
+	if _, err := runner.send(runner.seq, answered("1", "selected", "never")); err != nil {
+		t.Fatal(err)
+	}
+	runner.report(answered("2", "made up", ""))
 	runner.report(finished("end_turn", &runnerv1.Usage{TotalTokens: 18, InputTokens: 11, OutputTokens: 7, ThoughtTokens: &thought}))
 	runner.leave()
 	aviary.end(job, batchv1.JobComplete, nil)
@@ -52,6 +66,7 @@ func TestMetrics(t *testing.T) {
 	job = aviary.job(cancelled.ID)
 	runner = one.take(job)
 	runner.report(started("harness-session"))
+	runner.report(asks("1", "rm -r build"))
 	// A start that the runner reports again is not another start.
 	if _, err := runner.send(1, started("harness-session")); err != nil {
 		t.Fatal(err)
@@ -72,6 +87,7 @@ func TestMetrics(t *testing.T) {
 		t.Fatalf("cancelling the running turn was answered with %d", status)
 	}
 	runner.cancelled()
+	runner.report(answered("1", "cancelled", ""))
 	runner.report(finished("cancelled", nil))
 	runner.leave()
 	aviary.end(job, batchv1.JobComplete, nil)
@@ -91,6 +107,11 @@ func TestMetrics(t *testing.T) {
 	}
 
 	expected := map[string]float64{
+		// Three requests for approval have their answers.
+		`aviary_approval_wait_seconds_count{harness="opencode",outcome="reject_once"}`: 1,
+		`aviary_approval_wait_seconds_count{harness="opencode",outcome="cancelled"}`:   1,
+		`aviary_approval_wait_seconds_count{harness="opencode",outcome="other"}`:       1,
+		"aviary_approval_wait_seconds_count":                                           3,
 		// Four messages were accepted, one of them when it had to wait.
 		"aviary_turn_queue_length_count":                       4,
 		"aviary_turn_queue_length_sum":                         1,

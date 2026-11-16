@@ -655,14 +655,32 @@ func (s *Store) AddApproval(ctx context.Context, turnID uuid.UUID, id string, re
 }
 
 // ResolveApproval records that the harness has its answer to the request,
-// and how it got it. It returns how long the request waited, and reports
-// false for a request that was resolved before or that is not kept.
-func (s *Store) ResolveApproval(ctx context.Context, turnID uuid.UUID, id, outcome string) (time.Duration, bool, error) {
-	waited, err := s.queries.ResolveApproval(ctx, db.ResolveApprovalParams{TurnID: turnID, ID: id, Outcome: &outcome})
+// and how it got it. It returns the request and how long it waited, and
+// reports false for a request that was resolved before or that is not kept.
+func (s *Store) ResolveApproval(ctx context.Context, turnID uuid.UUID, id, outcome string) (Approval, time.Duration, bool, error) {
+	row, err := s.queries.ResolveApproval(ctx, db.ResolveApprovalParams{TurnID: turnID, ID: id, Outcome: &outcome})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, nil
+		return Approval{}, 0, false, nil
 	}
-	return time.Duration(waited * float64(time.Second)), err == nil, err
+	resolved := Approval{Request: row.Request, Resolved: true}
+	return resolved, time.Duration(row.Waited * float64(time.Second)), err == nil, err
+}
+
+// OptionKind returns the kind of the request's option with the ID, as the
+// harness gave it, or nothing if the request has no such option.
+func (a Approval) OptionKind(id string) string {
+	var request struct {
+		Options []struct{ ID, Kind string } `json:"options"`
+	}
+	if json.Unmarshal(a.Request, &request) != nil {
+		return ""
+	}
+	for _, option := range request.Options {
+		if option.ID == id {
+			return option.Kind
+		}
+	}
+	return ""
 }
 
 func (s *Store) Approval(ctx context.Context, turnID uuid.UUID, id string) (Approval, error) {

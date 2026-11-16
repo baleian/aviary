@@ -27,6 +27,7 @@ type Metrics struct {
 	ran      *prometheus.HistogramVec
 	tokens   *prometheus.CounterVec
 	refused  *prometheus.CounterVec
+	approved *prometheus.HistogramVec
 }
 
 func New() *Metrics {
@@ -68,9 +69,14 @@ func New() *Metrics {
 			Name: "aviary_messages_refused_total",
 			Help: "The messages that were not accepted as turns, by the reason.",
 		}, []string{"reason"}),
+		approved: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "aviary_approval_wait_seconds",
+			Help:    "How long a request of a harness for approval waited, from the harness asking to the harness having its answer, by the kind of the option that it was given. cancelled: its turn was told to stop before anybody answered.",
+			Buckets: []float64{1, 5, 15, 30, 60, 120, 300, 600, 1200, 1800, 3600},
+		}, []string{"harness", "outcome"}),
 	}
 	m.registry.MustRegister(
-		m.queue, m.running, m.ended, m.waited, m.startup, m.ran, m.tokens, m.refused,
+		m.queue, m.running, m.ended, m.waited, m.startup, m.ran, m.tokens, m.refused, m.approved,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
@@ -130,6 +136,19 @@ func (m *Metrics) Ended(harness string, turn store.Turn) {
 			}
 		}
 	}
+}
+
+// Approved records that a harness got its answer to a request for approval
+// after it had waited for so long. The outcome is the kind of the option that
+// it was given, or cancelled. The kinds are those of the Agent Client
+// Protocol: a runner is not trusted to make up more of them.
+func (m *Metrics) Approved(harness, outcome string, waited time.Duration) {
+	switch outcome {
+	case "allow_once", "allow_always", "reject_once", "reject_always", "cancelled":
+	default:
+		outcome = "other"
+	}
+	m.approved.WithLabelValues(harness, outcome).Observe(waited.Seconds())
 }
 
 // Refused records that a message was not accepted as a turn.
