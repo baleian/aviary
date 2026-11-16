@@ -17,6 +17,9 @@ const (
 	toolCall     = "tool.call"
 	toolUpdate   = "tool.update"
 	planUpdate   = "plan.update"
+	// The harness asked before it went on, and how that was answered to it.
+	approvalRequested = "approval.requested"
+	approvalResolved  = "approval.resolved"
 )
 
 // The types of an item.
@@ -25,6 +28,7 @@ const (
 	itemThought  = "thought"
 	itemToolCall = "tool_call"
 	itemPlan     = "plan"
+	itemApproval = "approval"
 )
 
 // itemsBatch is the most events that Items reads at once.
@@ -39,8 +43,10 @@ const itemsBatch = 1000
 //   - tool_call has the fields of the tool.call event, as the updates of the
 //     call left them.
 //   - plan has the entries of the plan as it last stood.
+//   - approval has the fields of the approval.requested event and, once the
+//     harness had its answer, those of approval.resolved.
 func (s *Streams) Items(ctx context.Context, turnID uuid.UUID) ([]json.RawMessage, error) {
-	turn := record{tools: map[string]*item{}}
+	turn := newRecord()
 	from := "-"
 	for {
 		entries, err := s.client.Do(ctx, s.client.B().Xrange().Key(key(turnID)).Start(from).End("+").
@@ -65,9 +71,15 @@ func (s *Streams) Items(ctx context.Context, turnID uuid.UUID) ([]json.RawMessag
 // record puts the events of a turn together into its items.
 type record struct {
 	items []*item
-	// tools holds the tool calls by their IDs, and plan is the plan.
-	tools map[string]*item
-	plan  *item
+	// tools holds the tool calls by their IDs, approvals the requests for
+	// approval by theirs, and plan is the plan.
+	tools     map[string]*item
+	approvals map[string]*item
+	plan      *item
+}
+
+func newRecord() *record {
+	return &record{tools: map[string]*item{}, approvals: map[string]*item{}}
 }
 
 type item struct {
@@ -92,6 +104,8 @@ func (r *record) add(eventType, data string) error {
 		kind = itemToolCall
 	case planUpdate:
 		kind = itemPlan
+	case approvalRequested, approvalResolved:
+		kind = itemApproval
 	default:
 		return nil
 	}
@@ -115,6 +129,16 @@ func (r *record) add(eventType, data string) error {
 			r.plan = r.begin(itemPlan)
 		}
 		r.plan.fields = fields
+	case itemApproval:
+		// The answer is told where the request was.
+		id := string(fields["id"])
+		asked, found := r.approvals[id]
+		if !found {
+			asked = r.begin(itemApproval)
+			asked.fields = map[string]json.RawMessage{}
+			r.approvals[id] = asked
+		}
+		maps.Copy(asked.fields, fields)
 	default:
 		return r.say(kind, fields)
 	}

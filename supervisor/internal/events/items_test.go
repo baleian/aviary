@@ -53,6 +53,30 @@ func TestRecord(t *testing.T) {
 			},
 		},
 		{
+			name: "a request for approval has its answer where the harness asked",
+			events: []event{
+				{toolCall, `{"id": "t1", "title": "rm -r build", "status": "pending"}`},
+				{approvalRequested, `{"id": "1", "tool_call": {"id": "t1"}, "options": [{"id": "once", "kind": "allow_once", "name": "Once"}]}`},
+				{approvalRequested, `{"id": "2", "tool_call": {"id": "t2"}, "options": []}`},
+				{approvalResolved, `{"id": "2", "outcome": "cancelled"}`},
+				{approvalResolved, `{"id": "1", "outcome": "selected", "option_id": "once"}`},
+				{messageDelta, `{"text": "done"}`},
+			},
+			items: []string{
+				`{"id":"t1","status":"pending","title":"rm -r build","type":"tool_call"}`,
+				`{"id":"1","option_id":"once","options":[{"id":"once","kind":"allow_once","name":"Once"}],"outcome":"selected","tool_call":{"id":"t1"},"type":"approval"}`,
+				`{"id":"2","options":[],"outcome":"cancelled","tool_call":{"id":"t2"},"type":"approval"}`,
+				`{"type":"message","text":"done"}`,
+			},
+		},
+		{
+			name: "a request that the harness got no answer to is kept as it was asked",
+			events: []event{
+				{approvalRequested, `{"id": "1", "tool_call": {"id": "t1"}, "options": []}`},
+			},
+			items: []string{`{"id":"1","options":[],"tool_call":{"id":"t1"},"type":"approval"}`},
+		},
+		{
 			name: "an update changes its tool call where the call began",
 			events: []event{
 				{toolCall, `{"id": "t1", "title": "ls", "status": "pending"}`},
@@ -98,7 +122,7 @@ func TestRecord(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			turn := record{tools: map[string]*item{}}
+			turn := newRecord()
 			for _, event := range test.events {
 				if err := turn.add(event.kind, event.data); err != nil {
 					t.Fatalf("add %s %s: %v", event.kind, event.data, err)
@@ -120,7 +144,7 @@ func TestRecord(t *testing.T) {
 }
 
 func TestRecordLeavesOutWhatItCannotRead(t *testing.T) {
-	turn := record{tools: map[string]*item{}}
+	turn := newRecord()
 	if err := turn.add(messageDelta, `{"text": "kept"}`); err != nil {
 		t.Fatal(err)
 	}
