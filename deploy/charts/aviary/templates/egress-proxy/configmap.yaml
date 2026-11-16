@@ -65,8 +65,6 @@ data:
                     # stream that is silent for as long as a turn may run
                     # belongs to a pod that is gone.
                     stream_idle_timeout: {{ .Values.runtime.maxTurnSeconds }}s
-                    # Envoy does not tell the endpoint the address of the pod.
-                    skip_xff_append: true
                     generate_request_id: false
                     {{- include "aviary.egress-proxy.access-log" "llm" | nindent 20 }}
                     route_config:
@@ -148,11 +146,8 @@ data:
                     "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                     stat_prefix: forward
                     stream_idle_timeout: {{ .Values.runtime.maxTurnSeconds }}s
-                    skip_xff_append: true
                     generate_request_id: false
                     {{- include "aviary.egress-proxy.access-log" "forward" | nindent 20 }}
-                    upgrade_configs:
-                      - upgrade_type: CONNECT
                     route_config:
                       virtual_hosts:
                         - name: forward
