@@ -79,7 +79,10 @@ func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*
 
 // bearerToken reads the token from an Authorization header.
 func bearerToken(header string) string {
-	token, _ := strings.CutPrefix(header, "Bearer ")
+	token, found := strings.CutPrefix(header, "Bearer ")
+	if !found {
+		return ""
+	}
 	return token
 }
 

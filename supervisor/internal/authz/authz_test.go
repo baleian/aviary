@@ -7,6 +7,20 @@ import (
 	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 )
 
+func TestBearerToken(t *testing.T) {
+	for header, token := range map[string]string{
+		"Bearer token": "token",
+		"Bearer ":      "",
+		"token":        "",
+		"Basic token":  "",
+		"":             "",
+	} {
+		if got := bearerToken(header); got != token {
+			t.Errorf("bearerToken(%q) is %q, not %q", header, got, token)
+		}
+	}
+}
+
 func TestProxyPassword(t *testing.T) {
 	basic := func(credentials string) string {
 		return "Basic " + base64.StdEncoding.EncodeToString([]byte(credentials))
