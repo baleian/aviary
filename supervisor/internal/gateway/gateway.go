@@ -30,26 +30,39 @@ type Gateway struct {
 	store   *store.Store
 	events  *events.Streams
 	metrics *metrics.Metrics
-	// cancels holds, for every turn whose runner is connected, the channel
-	// that tells that runner to stop the turn.
-	mu      sync.Mutex
-	cancels map[uuid.UUID]chan struct{}
+	// connected holds, for every turn whose runner is connected, what that
+	// runner is to be told.
+	mu        sync.Mutex
+	connected map[uuid.UUID]*orders
+	sweep     time.Duration
 }
 
-func New(st *store.Store, ev *events.Streams, m *metrics.Metrics) *Gateway {
-	return &Gateway{store: st, events: ev, metrics: m, cancels: map[uuid.UUID]chan struct{}{}}
+// orders are what the runner of a turn is to be told: to stop the turn, and
+// the answers to its requests for approval.
+type orders struct {
+	cancel  chan struct{}
+	answers chan *runnerv1.Approval
 }
 
-// sweep is how often the turns that were asked to stop are looked up, in case
-// the announcement of one was missed.
-const sweep = 10 * time.Second
+// New returns a Gateway that looks every sweep for what it was to pass on
+// and was not told of.
+func New(st *store.Store, ev *events.Streams, m *metrics.Metrics, sweep time.Duration) *Gateway {
+	return &Gateway{store: st, events: ev, metrics: m, connected: map[uuid.UUID]*orders{}, sweep: sweep}
+}
 
-// Run passes requests to stop a turn on to the runners that are connected to
-// this Supervisor, until ctx is done. A request reaches any Supervisor, which
-// records it and announces it to all of them.
+// Sweep is how often the turns that were asked to stop and the answers to
+// requests for approval are looked up, in case the announcement of one was
+// missed.
+const Sweep = 10 * time.Second
+
+// Run passes requests to stop a turn, and the answers to requests for
+// approval, on to the runners that are connected to this Supervisor, until
+// ctx is done. Either reaches any Supervisor, which records it and announces
+// it to all of them.
 func (g *Gateway) Run(ctx context.Context) {
 	go g.events.WatchCancels(ctx, g.Cancel)
-	ticker := time.NewTicker(sweep)
+	go g.events.WatchAnswers(ctx, func(turnID uuid.UUID) { g.answer(ctx, &turnID) })
+	ticker := time.NewTicker(g.sweep)
 	defer ticker.Stop()
 	for {
 		select {
@@ -65,7 +78,41 @@ func (g *Gateway) Run(ctx context.Context) {
 		for _, turnID := range turns {
 			g.Cancel(turnID)
 		}
+		g.answer(ctx, nil)
 	}
+}
+
+// answer gives the runners that are connected to this Supervisor the answers
+// that their harnesses have not got yet: those of the turn, or of all turns
+// if it is nil. A runner drops an answer that it has given its harness.
+func (g *Gateway) answer(ctx context.Context, turnID *uuid.UUID) {
+	if turnID != nil && !g.has(*turnID) {
+		return
+	}
+	answers, err := g.store.Answers(ctx, turnID)
+	if err != nil {
+		slog.ErrorContext(ctx, "read the answers to requests for approval", "error", err)
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, answer := range answers {
+		if runner, connected := g.connected[answer.TurnID]; connected {
+			select {
+			case runner.answers <- &runnerv1.Approval{Id: answer.ID, OptionId: answer.OptionID}:
+			default:
+				// The runner is behind. It is given the answer the next time.
+			}
+		}
+	}
+}
+
+// has tells whether the runner of the turn is connected to this Supervisor.
+func (g *Gateway) has(turnID uuid.UUID) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	_, connected := g.connected[turnID]
+	return connected
 }
 
 // Cancel tells the runner of the turn to stop the turn, if the runner is
@@ -73,9 +120,9 @@ func (g *Gateway) Run(ctx context.Context) {
 func (g *Gateway) Cancel(turnID uuid.UUID) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if cancel, connected := g.cancels[turnID]; connected {
+	if runner, connected := g.connected[turnID]; connected {
 		select {
-		case cancel <- struct{}{}:
+		case runner.cancel <- struct{}{}:
 		default:
 			// The runner has not yet been told of an earlier call.
 		}
@@ -116,8 +163,8 @@ func (g *Gateway) RunTurn(stream grpc.BidiStreamingServer[runnerv1.RunTurnReques
 	}
 	defer g.metrics.Connected(turn.Harness)()
 
-	// The order to cancel is sent from another goroutine than the rest, and
-	// a stream takes one Send at a time.
+	// The orders are sent from another goroutine than the rest, and a stream
+	// takes one Send at a time.
 	var sending sync.Mutex
 	send := func(response *runnerv1.RunTurnResponse) error {
 		sending.Lock()
@@ -134,36 +181,47 @@ func (g *Gateway) RunTurn(stream grpc.BidiStreamingServer[runnerv1.RunTurnReques
 		return err
 	}
 
-	cancel := make(chan struct{}, 1)
+	told := &orders{cancel: make(chan struct{}, 1), answers: make(chan *runnerv1.Approval, 16)}
 	g.mu.Lock()
-	g.cancels[turn.ID] = cancel
+	g.connected[turn.ID] = told
 	g.mu.Unlock()
 	defer func() {
 		g.mu.Lock()
 		// The runner may have come back to this Supervisor while this call
-		// was still open. The channel is then that of its new call.
-		if g.cancels[turn.ID] == cancel {
-			delete(g.cancels, turn.ID)
+		// was still open. The orders are then those of its new call.
+		if g.connected[turn.ID] == told {
+			delete(g.connected, turn.ID)
 		}
 		g.mu.Unlock()
 	}()
 	go func() {
-		select {
-		case <-cancel:
-			order := &runnerv1.RunTurnResponse{Message: &runnerv1.RunTurnResponse_Cancel{Cancel: &runnerv1.Cancel{}}}
-			if err := send(order); err != nil {
-				slog.WarnContext(ctx, "tell the runner to cancel", "turn", turn.ID, "error", err)
+		// The runner is told once to stop, however often it is asked for.
+		cancel := told.cancel
+		for {
+			var order *runnerv1.RunTurnResponse
+			select {
+			case <-cancel:
+				cancel = nil
+				order = &runnerv1.RunTurnResponse{Message: &runnerv1.RunTurnResponse_Cancel{Cancel: &runnerv1.Cancel{}}}
+			case approval := <-told.answers:
+				order = &runnerv1.RunTurnResponse{Message: &runnerv1.RunTurnResponse_Approval{Approval: approval}}
+			case <-ctx.Done():
+				return
 			}
-		case <-ctx.Done():
+			if err := send(order); err != nil {
+				slog.WarnContext(ctx, "pass an order on to the runner", "turn", turn.ID, "error", err)
+				return
+			}
 		}
 	}()
-	// A request to cancel that came after the runner took the turn and
-	// before the lines above found no runner to tell.
+	// A request to cancel, or an answer, that came after the runner took the
+	// turn and before the lines above found no runner to tell.
 	if requested, err := g.store.Turn(ctx, turn.ID); err != nil {
 		return g.internal(ctx, "read turn", err, "turn", turn.ID)
 	} else if requested.CancelRequestedAt != nil {
 		g.Cancel(turn.ID)
 	}
+	g.answer(ctx, &turn.ID)
 
 	for {
 		request, err := stream.Recv()
@@ -216,6 +274,21 @@ func (g *Gateway) receive(ctx context.Context, turn store.TakenTurn, request *ru
 			return err
 		}
 		return g.record(ctx, turn.ID, seq, "", nil)
+	case *runnerv1.RunTurnRequest_ApprovalRequested:
+		// The request is kept for the person who answers it. It is also an
+		// event of the turn, like the messages below.
+		asked, err := eventJSON.Marshal(message.ApprovalRequested)
+		if err != nil {
+			return err
+		}
+		if err := g.store.AddApproval(ctx, turn.ID, message.ApprovalRequested.GetId(), asked); err != nil {
+			return err
+		}
+	case *runnerv1.RunTurnRequest_ApprovalResolved:
+		resolved := message.ApprovalResolved
+		if _, _, err := g.store.ResolveApproval(ctx, turn.ID, resolved.GetId(), resolved.GetOutcome()); err != nil {
+			return err
+		}
 	}
 	// The rest of the messages are the events of the turn. A runner newer
 	// than the Supervisor may send one that the Supervisor does not know.

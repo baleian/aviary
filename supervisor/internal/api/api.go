@@ -49,6 +49,7 @@ var (
 	errNotFound    = &apiError{status: http.StatusNotFound, Code: "not_found", Message: "no such resource"}
 	errSessionBusy = &apiError{status: http.StatusConflict, Code: "session_busy", Message: "the session has a turn that has not finished"}
 	errTurnEnded   = &apiError{status: http.StatusConflict, Code: "turn_ended", Message: "the turn has ended"}
+	errAnswered    = &apiError{status: http.StatusConflict, Code: "approval_answered", Message: "the request for approval has its answer"}
 	errQueueFull   = &apiError{status: http.StatusTooManyRequests, Code: "queue_full", Message: "too many turns wait to run", retryAfter: 5}
 	errInternal    = &apiError{status: http.StatusInternalServerError, Code: "internal", Message: "internal error"}
 )
@@ -69,6 +70,7 @@ func New(st *store.Store, ev *events.Streams, dr *driver.Driver, closing <-chan 
 	mux.Handle("GET /v1/sessions/{sid}/turns", handler(a.listTurns))
 	mux.Handle("GET /v1/turns/{tid}", handler(a.getTurn))
 	mux.Handle("POST /v1/turns/{tid}/cancel", handler(a.cancelTurn))
+	mux.Handle("POST /v1/turns/{tid}/approvals/{rid}", handler(a.answerApproval))
 	mux.Handle("GET /v1/turns/{tid}/events", handler(a.streamEvents))
 	return mux
 }
@@ -262,9 +264,12 @@ func (a *api) listTurns(w http.ResponseWriter, r *http.Request) error {
 
 // turnRecord is a turn with what the agent said and did in it. The items
 // are kept when the turn ends: until then a client follows the turn's events.
+// A turn that has not ended has the requests of its harness for approval
+// that wait for a person, as the approval.requested events told them.
 type turnRecord struct {
 	store.Turn
-	Items []json.RawMessage `json:"items"`
+	Items     []json.RawMessage `json:"items"`
+	Approvals []json.RawMessage `json:"approvals,omitempty"`
 }
 
 func (a *api) records(ctx context.Context, turns []store.Turn) ([]turnRecord, error) {
@@ -280,8 +285,74 @@ func (a *api) records(ctx context.Context, turns []store.Turn) ([]turnRecord, er
 	for i, turn := range turns {
 		// A turn without items has an empty list of them.
 		records[i] = turnRecord{Turn: turn, Items: append([]json.RawMessage{}, items[turn.ID]...)}
+		if turn.EndedAt == nil {
+			if records[i].Approvals, err = a.store.WaitingApprovals(ctx, turn.ID); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return records, nil
+}
+
+// answerApproval takes the answer of a person to a request of a turn's
+// harness for approval: one of the options that the harness gave with the
+// request. The answer is passed on to the runner of the turn, and the
+// approval.resolved event tells when the harness has it. The first answer to
+// a request stands.
+func (a *api) answerApproval(w http.ResponseWriter, r *http.Request) error {
+	turnID, err := pathID(r, "tid")
+	if err != nil {
+		return err
+	}
+	var chosen struct {
+		OptionID string `json:"option_id"`
+	}
+	if err := decode(w, r, &chosen); err != nil {
+		return err
+	}
+	answer := struct {
+		ID       string `json:"id"`
+		OptionID string `json:"option_id"`
+	}{r.PathValue("rid"), chosen.OptionID}
+	asked, err := a.store.Approval(r.Context(), turnID, answer.ID)
+	if err != nil {
+		return err
+	}
+	var request struct {
+		Options []struct {
+			ID string `json:"id"`
+		} `json:"options"`
+	}
+	if err := json.Unmarshal(asked.Request, &request); err != nil {
+		return err
+	}
+	offered := slices.ContainsFunc(request.Options, func(option struct {
+		ID string `json:"id"`
+	}) bool {
+		return option.ID == answer.OptionID
+	})
+	if !offered {
+		return invalid("option_id must be the id of one of the options of the request")
+	}
+	answered, err := a.store.AnswerApproval(r.Context(), turnID, answer.ID, answer.OptionID)
+	if err != nil {
+		return err
+	}
+	if !answered {
+		if turn, err := a.store.Turn(r.Context(), turnID); err != nil {
+			return err
+		} else if turn.EndedAt != nil {
+			return errTurnEnded
+		}
+		return errAnswered
+	}
+	// The answer is recorded. If it cannot be announced, the Supervisor that
+	// the runner is connected to finds it a little later.
+	if err := a.events.AnnounceAnswer(r.Context(), turnID); err != nil {
+		slog.ErrorContext(r.Context(), "announce the answer to a request for approval", "turn", turnID, "error", err)
+	}
+	respond(w, http.StatusAccepted, answer)
+	return nil
 }
 
 // cancelTurn cancels a turn. A turn that waits to run ends at once, and the

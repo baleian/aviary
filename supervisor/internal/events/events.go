@@ -38,6 +38,10 @@ const (
 // that a turn was asked to stop.
 const cancelChannel = "turns:cancel"
 
+// answerChannel is the one on which it tells them that a request of a turn
+// for approval was answered.
+const answerChannel = "turns:answer"
+
 // keptFor is how long the events of a turn are kept after its last event,
 // for the clients that still read them. What the turn said is by then in the
 // database.
@@ -164,24 +168,44 @@ func (s *Streams) AppendQueued(ctx context.Context, turnID uuid.UUID, position i
 // AnnounceCancel tells every Supervisor that the turn was asked to stop. The
 // runner of the turn is connected to one of them.
 func (s *Streams) AnnounceCancel(ctx context.Context, turnID uuid.UUID) error {
-	return s.client.Do(ctx, s.client.B().Publish().Channel(cancelChannel).Message(turnID.String()).Build()).Error()
+	return s.announce(ctx, cancelChannel, turnID)
 }
 
 // WatchCancels calls cancel for every turn that a Supervisor announces as
 // asked to stop, until ctx is done. It misses what is announced while Valkey
 // cannot be reached.
 func (s *Streams) WatchCancels(ctx context.Context, cancel func(turnID uuid.UUID)) {
+	s.watch(ctx, cancelChannel, cancel)
+}
+
+// AnnounceAnswer tells every Supervisor that a request of the turn for
+// approval was answered.
+func (s *Streams) AnnounceAnswer(ctx context.Context, turnID uuid.UUID) error {
+	return s.announce(ctx, answerChannel, turnID)
+}
+
+// WatchAnswers calls answered for every turn that a Supervisor announces an
+// answer for, until ctx is done. It misses what WatchCancels misses.
+func (s *Streams) WatchAnswers(ctx context.Context, answered func(turnID uuid.UUID)) {
+	s.watch(ctx, answerChannel, answered)
+}
+
+func (s *Streams) announce(ctx context.Context, channel string, turnID uuid.UUID) error {
+	return s.client.Do(ctx, s.client.B().Publish().Channel(channel).Message(turnID.String()).Build()).Error()
+}
+
+func (s *Streams) watch(ctx context.Context, channel string, announced func(turnID uuid.UUID)) {
 	for ctx.Err() == nil {
-		err := s.client.Receive(ctx, s.client.B().Subscribe().Channel(cancelChannel).Build(),
+		err := s.client.Receive(ctx, s.client.B().Subscribe().Channel(channel).Build(),
 			func(message valkey.PubSubMessage) {
 				if turnID, err := uuid.Parse(message.Message); err == nil {
-					cancel(turnID)
+					announced(turnID)
 				}
 			})
 		if ctx.Err() != nil {
 			return
 		}
-		slog.WarnContext(ctx, "watch for cancelled turns", "error", err)
+		slog.WarnContext(ctx, "watch for what the Supervisors announce", "channel", channel, "error", err)
 		select {
 		case <-time.After(time.Second):
 		case <-ctx.Done():

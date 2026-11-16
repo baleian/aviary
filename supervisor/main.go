@@ -145,18 +145,20 @@ func serve(ctx context.Context, database string) error {
 	if on.metrics, err = net.Listen("tcp", metricsAddr); err != nil {
 		return err
 	}
-	return serveOn(ctx, on, st, ev, client, config)
+	return serveOn(ctx, on, st, ev, client, config, gateway.Sweep)
 }
 
 // serveOn serves on the ports until ctx is done, with the turns in the
-// database of the store and their pods in the cluster of the client.
-func serveOn(ctx context.Context, on ports, st *store.Store, ev *events.Streams, client kubernetes.Interface, config driver.Config) error {
+// database of the store and their pods in the cluster of the client. Every
+// sweep it looks for what the runners are to be told and no Supervisor
+// announced.
+func serveOn(ctx context.Context, on ports, st *store.Store, ev *events.Streams, client kubernetes.Interface, config driver.Config, sweep time.Duration) error {
 	m := metrics.New()
 	dr, err := driver.New(config, client, st, ev, m)
 	if err != nil {
 		return err
 	}
-	runners := gateway.New(st, ev, m)
+	runners := gateway.New(st, ev, m, sweep)
 	apiServer := &http.Server{
 		Handler:           api.New(st, ev, dr, ctx.Done()),
 		ReadHeaderTimeout: 10 * time.Second,

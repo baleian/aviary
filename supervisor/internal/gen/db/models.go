@@ -19,6 +19,17 @@ type Agent struct {
 	Resources    []byte
 }
 
+type Approval struct {
+	TurnID      uuid.UUID
+	ID          string
+	Request     []byte
+	RequestedAt time.Time
+	OptionID    *string
+	AnsweredAt  *time.Time
+	Outcome     *string
+	ResolvedAt  *time.Time
+}
+
 type Project struct {
 	ID        uuid.UUID
 	Name      string

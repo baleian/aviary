@@ -176,3 +176,42 @@ insert into turn_items (turn_id, seq, item) values (@turn_id, @seq, @item);
 
 -- name: ListTurnItems :many
 select turn_id, item from turn_items where turn_id = any(@turn_ids::uuid[]) order by turn_id, seq;
+
+-- name: AddApproval :exec
+-- A request that its runner reports again is there already.
+insert into approvals (turn_id, id, request) values (@turn_id, @id, @request)
+on conflict (turn_id, id) do nothing;
+
+-- name: ResolveApproval :one
+-- The harness has its answer. The answer here is how long the request
+-- waited. There is none for a request that was resolved before.
+update approvals set outcome = @outcome, resolved_at = now()
+where turn_id = @turn_id and id = @id and resolved_at is null
+returning extract(epoch from now() - requested_at)::float8 as waited;
+
+-- name: GetApproval :one
+select * from approvals where turn_id = @turn_id and id = @id;
+
+-- name: AnswerApproval :execrows
+-- Keeps the option that a person chose, for a request that has no answer
+-- yet and whose turn has not ended.
+update approvals set option_id = @option_id::text, answered_at = now()
+from turns
+where approvals.turn_id = @turn_id and approvals.id = @id
+  and approvals.answered_at is null and approvals.resolved_at is null
+  and turns.id = approvals.turn_id and turns.ended_at is null;
+
+-- name: WaitingApprovals :many
+-- The requests of a turn that wait for a person, oldest first.
+select request from approvals
+where turn_id = @turn_id and answered_at is null and resolved_at is null
+order by requested_at, id;
+
+-- name: Answers :many
+-- The answers that the harnesses of turns that run have not got yet: those
+-- of one turn, or of all.
+select approvals.turn_id, approvals.id, approvals.option_id::text as option_id
+from approvals
+join turns on turns.id = approvals.turn_id
+where approvals.answered_at is not null and approvals.resolved_at is null and turns.ended_at is null
+  and (sqlc.narg(turn_id)::uuid is null or approvals.turn_id = sqlc.narg(turn_id));

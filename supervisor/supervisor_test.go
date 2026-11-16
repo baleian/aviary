@@ -29,6 +29,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 
 	"aviary/supervisor/internal/driver"
+	"aviary/supervisor/internal/gateway"
 	runnerv1 "aviary/supervisor/internal/gen/aviary/runner/v1"
 	"aviary/supervisor/internal/testenv"
 )
@@ -61,6 +62,9 @@ type installation struct {
 	database string
 	cluster  *fake.Clientset
 	config   driver.Config
+	// sweep is how often its Supervisors look for what no Supervisor
+	// announced. A test that waits for that sets it lower.
+	sweep time.Duration
 }
 
 // install returns an installation without Supervisors. The functions change
@@ -89,7 +93,9 @@ func install(t *testing.T, changes ...func(*driver.Config)) *installation {
 	for _, change := range changes {
 		change(&config)
 	}
-	return &installation{t: t, database: testenv.Database(t), cluster: fake.NewClientset(), config: config}
+	return &installation{
+		t: t, database: testenv.Database(t), cluster: fake.NewClientset(), config: config, sweep: gateway.Sweep,
+	}
 }
 
 // supervisor is a Supervisor that serves.
@@ -132,7 +138,7 @@ func (i *installation) supervisor() *supervisor {
 	}
 	ctx, stop := context.WithCancel(context.Background())
 	stopped := make(chan error, 1)
-	go func() { stopped <- serveOn(ctx, on, st, ev, i.cluster, i.config) }()
+	go func() { stopped <- serveOn(ctx, on, st, ev, i.cluster, i.config, i.sweep) }()
 	s.stop = sync.OnceFunc(func() {
 		stop()
 		select {
@@ -176,6 +182,7 @@ type turn struct {
 	Usage             map[string]int64  `json:"usage"`
 	Failure           map[string]string `json:"failure"`
 	Items             []json.RawMessage `json:"items"`
+	Approvals         []json.RawMessage `json:"approvals"`
 }
 
 // request sends a request to the API. It returns the status of the answer
@@ -474,6 +481,7 @@ type call struct {
 	start    *runnerv1.Start
 	received chan uint64
 	cancels  chan struct{}
+	answers  chan *runnerv1.Approval
 	// ended holds how the Supervisor ended the call, once it has.
 	ended chan error
 	hang  context.CancelFunc
@@ -510,6 +518,7 @@ func (r *runner) attach(s *supervisor) (*runnerv1.Start, error) {
 	made := &call{
 		stream: stream, start: first.GetStart(), hang: hang,
 		received: make(chan uint64, 10000), cancels: make(chan struct{}, 100), ended: make(chan error, 1),
+		answers: make(chan *runnerv1.Approval, 100),
 	}
 	go func() {
 		for {
@@ -522,6 +531,8 @@ func (r *runner) attach(s *supervisor) (*runnerv1.Start, error) {
 				made.received <- response.GetReceived().GetSeq()
 			case response.GetCancel() != nil:
 				made.cancels <- struct{}{}
+			case response.GetApproval() != nil:
+				made.answers <- response.GetApproval()
 			}
 		}
 	}()
@@ -657,6 +668,45 @@ func (r *runner) cancelled() {
 	case <-time.After(soon):
 		r.t.Fatal("the runner was not told to stop its turn")
 	}
+}
+
+// asks is the report that the harness asks for approval before it runs the
+// command, with the options that the fake harness of the runner's tests has.
+func asks(id, command string) *runnerv1.RunTurnRequest {
+	return &runnerv1.RunTurnRequest{Message: &runnerv1.RunTurnRequest_ApprovalRequested{
+		ApprovalRequested: &runnerv1.ApprovalRequested{
+			Id:       id,
+			ToolCall: &runnerv1.ToolUpdate{Id: "call-" + id, Title: &command},
+			Options: []*runnerv1.ApprovalOption{
+				{Id: "once", Kind: "allow_once", Name: "Once"},
+				{Id: "never", Kind: "reject_once", Name: "Never"},
+			},
+		},
+	}}
+}
+
+// answered is the report that the harness has its answer to the request.
+func answered(id, outcome, option string) *runnerv1.RunTurnRequest {
+	resolved := &runnerv1.ApprovalResolved{Id: id, Outcome: outcome}
+	if option != "" {
+		resolved.OptionId = &option
+	}
+	return &runnerv1.RunTurnRequest{Message: &runnerv1.RunTurnRequest_ApprovalResolved{ApprovalResolved: resolved}}
+}
+
+// answer waits for the Supervisor to give the runner the answer of a person
+// to a request for approval, and returns the request and the option.
+func (r *runner) answer() (id, option string) {
+	r.t.Helper()
+	select {
+	case answer := <-r.call.answers:
+		return answer.GetId(), answer.GetOptionId()
+	case err := <-r.call.ended:
+		r.t.Fatalf("the Supervisor ended the call of a runner that waits for an answer: %v", err)
+	case <-time.After(soon):
+		r.t.Fatal("the runner was not given the answer to its request for approval")
+	}
+	return "", ""
 }
 
 // The metrics, as Prometheus reads them.

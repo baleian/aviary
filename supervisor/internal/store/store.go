@@ -631,6 +631,84 @@ func (s *Store) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool, f
 	return turn, true, tx.Commit(ctx)
 }
 
+// Approval is what the harness of a turn asked a person before it went on.
+type Approval struct {
+	// Request is the request as the runner reported it.
+	Request json.RawMessage
+	// Answered tells whether a person has chosen an option, and Resolved
+	// whether the harness has its answer.
+	Answered, Resolved bool
+}
+
+// Answer is the option that a person chose for a request for approval, on its
+// way to the harness.
+type Answer struct {
+	TurnID       uuid.UUID
+	ID, OptionID string
+}
+
+// AddApproval keeps a request of the turn's harness for approval, under the
+// name that the runner gave it. A request that is kept already stays as it
+// is.
+func (s *Store) AddApproval(ctx context.Context, turnID uuid.UUID, id string, request json.RawMessage) error {
+	return s.queries.AddApproval(ctx, db.AddApprovalParams{TurnID: turnID, ID: id, Request: storable(request)})
+}
+
+// ResolveApproval records that the harness has its answer to the request,
+// and how it got it. It returns how long the request waited, and reports
+// false for a request that was resolved before or that is not kept.
+func (s *Store) ResolveApproval(ctx context.Context, turnID uuid.UUID, id, outcome string) (time.Duration, bool, error) {
+	waited, err := s.queries.ResolveApproval(ctx, db.ResolveApprovalParams{TurnID: turnID, ID: id, Outcome: &outcome})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	return time.Duration(waited * float64(time.Second)), err == nil, err
+}
+
+func (s *Store) Approval(ctx context.Context, turnID uuid.UUID, id string) (Approval, error) {
+	row, err := s.queries.GetApproval(ctx, db.GetApprovalParams{TurnID: turnID, ID: id})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Approval{}, ErrNotFound
+	}
+	return Approval{Request: row.Request, Answered: row.AnsweredAt != nil, Resolved: row.ResolvedAt != nil}, err
+}
+
+// AnswerApproval keeps the option that a person chose for the request. It
+// reports false for a request that has an answer, that the harness waits for
+// no longer, or whose turn has ended: the first answer stands.
+func (s *Store) AnswerApproval(ctx context.Context, turnID uuid.UUID, id, optionID string) (bool, error) {
+	answered, err := s.queries.AnswerApproval(ctx, db.AnswerApprovalParams{TurnID: turnID, ID: id, OptionID: optionID})
+	return answered == 1, err
+}
+
+// WaitingApprovals returns the requests of the turn that wait for a person,
+// oldest first.
+func (s *Store) WaitingApprovals(ctx context.Context, turnID uuid.UUID) ([]json.RawMessage, error) {
+	rows, err := s.queries.WaitingApprovals(ctx, turnID)
+	if err != nil {
+		return nil, err
+	}
+	requests := make([]json.RawMessage, len(rows))
+	for i, row := range rows {
+		requests[i] = row
+	}
+	return requests, nil
+}
+
+// Answers returns the answers that the harnesses of turns that run have not
+// got yet: those of the turn, or of all turns if it is nil.
+func (s *Store) Answers(ctx context.Context, turnID *uuid.UUID) ([]Answer, error) {
+	rows, err := s.queries.Answers(ctx, turnID)
+	if err != nil {
+		return nil, err
+	}
+	answers := make([]Answer, len(rows))
+	for i, row := range rows {
+		answers[i] = Answer{TurnID: row.TurnID, ID: row.ID, OptionID: row.OptionID}
+	}
+	return answers, nil
+}
+
 // storable returns an item as PostgreSQL can keep it. It cannot keep the
 // character U+0000 in jsonb, so the replacement character takes its place.
 func storable(item json.RawMessage) []byte {

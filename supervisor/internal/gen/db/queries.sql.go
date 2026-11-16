@@ -12,10 +12,87 @@ import (
 	"github.com/google/uuid"
 )
 
+const addApproval = `-- name: AddApproval :exec
+insert into approvals (turn_id, id, request) values ($1, $2, $3)
+on conflict (turn_id, id) do nothing
+`
+
+type AddApprovalParams struct {
+	TurnID  uuid.UUID
+	ID      string
+	Request []byte
+}
+
+// A request that its runner reports again is there already.
+func (q *Queries) AddApproval(ctx context.Context, arg AddApprovalParams) error {
+	_, err := q.db.Exec(ctx, addApproval, arg.TurnID, arg.ID, arg.Request)
+	return err
+}
+
 type AddTurnItemsParams struct {
 	TurnID uuid.UUID
 	Seq    int32
 	Item   []byte
+}
+
+const answerApproval = `-- name: AnswerApproval :execrows
+update approvals set option_id = $1::text, answered_at = now()
+from turns
+where approvals.turn_id = $2 and approvals.id = $3
+  and approvals.answered_at is null and approvals.resolved_at is null
+  and turns.id = approvals.turn_id and turns.ended_at is null
+`
+
+type AnswerApprovalParams struct {
+	OptionID string
+	TurnID   uuid.UUID
+	ID       string
+}
+
+// Keeps the option that a person chose, for a request that has no answer
+// yet and whose turn has not ended.
+func (q *Queries) AnswerApproval(ctx context.Context, arg AnswerApprovalParams) (int64, error) {
+	result, err := q.db.Exec(ctx, answerApproval, arg.OptionID, arg.TurnID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const answers = `-- name: Answers :many
+select approvals.turn_id, approvals.id, approvals.option_id::text as option_id
+from approvals
+join turns on turns.id = approvals.turn_id
+where approvals.answered_at is not null and approvals.resolved_at is null and turns.ended_at is null
+  and ($1::uuid is null or approvals.turn_id = $1)
+`
+
+type AnswersRow struct {
+	TurnID   uuid.UUID
+	ID       string
+	OptionID string
+}
+
+// The answers that the harnesses of turns that run have not got yet: those
+// of one turn, or of all.
+func (q *Queries) Answers(ctx context.Context, turnID *uuid.UUID) ([]AnswersRow, error) {
+	rows, err := q.db.Query(ctx, answers, turnID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AnswersRow
+	for rows.Next() {
+		var i AnswersRow
+		if err := rows.Scan(&i.TurnID, &i.ID, &i.OptionID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const cancelTurn = `-- name: CancelTurn :one
@@ -400,6 +477,31 @@ func (q *Queries) GetAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
 	return i, err
 }
 
+const getApproval = `-- name: GetApproval :one
+select turn_id, id, request, requested_at, option_id, answered_at, outcome, resolved_at from approvals where turn_id = $1 and id = $2
+`
+
+type GetApprovalParams struct {
+	TurnID uuid.UUID
+	ID     string
+}
+
+func (q *Queries) GetApproval(ctx context.Context, arg GetApprovalParams) (Approval, error) {
+	row := q.db.QueryRow(ctx, getApproval, arg.TurnID, arg.ID)
+	var i Approval
+	err := row.Scan(
+		&i.TurnID,
+		&i.ID,
+		&i.Request,
+		&i.RequestedAt,
+		&i.OptionID,
+		&i.AnsweredAt,
+		&i.Outcome,
+		&i.ResolvedAt,
+	)
+	return i, err
+}
+
 const getProject = `-- name: GetProject :one
 select id, name, created_at from projects where id = $1
 `
@@ -673,6 +775,27 @@ func (q *Queries) QueuedTurns(ctx context.Context) ([]uuid.UUID, error) {
 	return items, nil
 }
 
+const resolveApproval = `-- name: ResolveApproval :one
+update approvals set outcome = $1, resolved_at = now()
+where turn_id = $2 and id = $3 and resolved_at is null
+returning extract(epoch from now() - requested_at)::float8 as waited
+`
+
+type ResolveApprovalParams struct {
+	Outcome *string
+	TurnID  uuid.UUID
+	ID      string
+}
+
+// The harness has its answer. The answer here is how long the request
+// waited. There is none for a request that was resolved before.
+func (q *Queries) ResolveApproval(ctx context.Context, arg ResolveApprovalParams) (float64, error) {
+	row := q.db.QueryRow(ctx, resolveApproval, arg.Outcome, arg.TurnID, arg.ID)
+	var waited float64
+	err := row.Scan(&waited)
+	return waited, err
+}
+
 const runningTurn = `-- name: RunningTurn :one
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id
 from turns
@@ -808,4 +931,31 @@ func (q *Queries) TakeTurn(ctx context.Context, arg TakeTurnParams) (TakeTurnRow
 		&i.Again,
 	)
 	return i, err
+}
+
+const waitingApprovals = `-- name: WaitingApprovals :many
+select request from approvals
+where turn_id = $1 and answered_at is null and resolved_at is null
+order by requested_at, id
+`
+
+// The requests of a turn that wait for a person, oldest first.
+func (q *Queries) WaitingApprovals(ctx context.Context, turnID uuid.UUID) ([][]byte, error) {
+	rows, err := q.db.Query(ctx, waitingApprovals, turnID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items [][]byte
+	for rows.Next() {
+		var request []byte
+		if err := rows.Scan(&request); err != nil {
+			return nil, err
+		}
+		items = append(items, request)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
