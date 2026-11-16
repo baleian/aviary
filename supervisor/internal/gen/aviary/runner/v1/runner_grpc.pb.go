@@ -34,7 +34,8 @@ type RunnerServiceClient interface {
 	// in the authorization metadata, as "Bearer <token>", and with a UUID that
 	// it made up for itself in the aviary-runner metadata. The Supervisor sends
 	// Start. The runner sends Started, then the events of the turn, then
-	// Finished. While the turn runs the Supervisor may send Cancel.
+	// Finished. While the turn runs the Supervisor may send Cancel, and
+	// Approval for an ApprovalRequested.
 	//
 	// The runner numbers its messages, and the Supervisor answers each with
 	// Received. A runner whose call broke calls again, to any Supervisor and
@@ -74,7 +75,8 @@ type RunnerServiceServer interface {
 	// in the authorization metadata, as "Bearer <token>", and with a UUID that
 	// it made up for itself in the aviary-runner metadata. The Supervisor sends
 	// Start. The runner sends Started, then the events of the turn, then
-	// Finished. While the turn runs the Supervisor may send Cancel.
+	// Finished. While the turn runs the Supervisor may send Cancel, and
+	// Approval for an ApprovalRequested.
 	//
 	// The runner numbers its messages, and the Supervisor answers each with
 	// Received. A runner whose call broke calls again, to any Supervisor and

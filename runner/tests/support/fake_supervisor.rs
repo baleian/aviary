@@ -55,6 +55,13 @@ fn line(report: &Report) -> Value {
             "input": update.input.as_ref().map(value), "output": update.output.as_ref().map(value),
         }),
         Report::PlanUpdate(plan) => json!({"report": "plan", "entries": plan.entries.len()}),
+        Report::ApprovalRequested(asked) => json!({
+            "report": "approval requested", "id": asked.id,
+            "options": asked.options.iter().map(|option| json!({"id": option.id, "kind": option.kind})).collect::<Vec<_>>(),
+        }),
+        Report::ApprovalResolved(resolved) => json!({
+            "report": "approval resolved", "id": resolved.id, "outcome": resolved.outcome, "option": resolved.option_id,
+        }),
         Report::Finished(finished) => json!({
             "report": "finished", "stop_reason": finished.stop_reason,
             "usage": finished.usage.as_ref().map(|usage| json!({

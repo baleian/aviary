@@ -11,7 +11,7 @@ use tokio::time;
 use tonic::Code;
 
 use support::proto::run_turn_request::Message as Report;
-use support::{Home, Supervisor, TOKEN, run, runner, start};
+use support::{Home, Supervisor, TOKEN, asking, run, runner, start};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_turn_is_reported_as_it_goes() {
@@ -248,7 +248,162 @@ async fn a_harness_that_asks_is_allowed_once() {
     let home = Home::new();
     let supervisor = Supervisor::start("ask").await;
     assert!(run(&supervisor, &home).await.status.success());
-    assert_eq!(supervisor.state(|state| state.said()), "once");
+    // Nobody is asked for a harness that is not set up to ask a person.
+    supervisor.state(|state| {
+        assert_eq!(state.said(), "once");
+        assert!(state.asked().is_empty() && state.resolved().is_empty());
+    });
+}
+
+/// How the requests of the turn were answered to the harness.
+fn resolved(state: &support::State) -> Vec<(&str, &str, Option<&str>)> {
+    state
+        .resolved()
+        .into_iter()
+        .map(|resolved| {
+            (
+                resolved.id.as_str(),
+                resolved.outcome.as_str(),
+                resolved.option_id.as_deref(),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_harness_that_asks_is_answered_by_a_person() {
+    let home = Home::new();
+    let supervisor = Supervisor::start("ask ; say . ; ask").await;
+    let running = start(asking(&supervisor, &home));
+    supervisor
+        .until("the harness has not asked", |state| {
+            state.asked().len() == 1
+        })
+        .await;
+    supervisor.state(|state| {
+        let asked = state.asked()[0];
+        let call = asked.tool_call.as_ref().expect("the tool call");
+        assert_eq!(
+            (
+                asked.id.as_str(),
+                call.id.as_str(),
+                call.title.as_deref(),
+                call.kind.as_deref()
+            ),
+            ("1", "call-0", Some("ask"), Some("execute")),
+        );
+        assert!(
+            format!("{:?}", call.input).contains("command"),
+            "{:?}",
+            call.input
+        );
+        let options: Vec<_> = asked
+            .options
+            .iter()
+            .map(|option| {
+                (
+                    option.id.as_str(),
+                    option.kind.as_str(),
+                    option.name.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            options,
+            [
+                ("always", "allow_always", "Always"),
+                ("once", "allow_once", "Once"),
+                ("never", "reject_once", "Never"),
+            ],
+        );
+    });
+    // The harness waits: nobody has answered.
+    time::sleep(Duration::from_millis(300)).await;
+    supervisor.state(|state| assert!(state.said().is_empty() && state.resolved().is_empty()));
+
+    // What is no answer to the request is dropped: an option that the
+    // harness does not take, and a request that there is not.
+    supervisor.approve("1", "sometimes");
+    supervisor.approve("2", "once");
+    supervisor.approve("1", "never");
+    // An answer that comes again finds nothing to answer.
+    supervisor.approve("1", "always");
+    supervisor
+        .until("the harness has not asked again", |state| {
+            state.asked().len() == 2
+        })
+        .await;
+    supervisor.approve("2", "always");
+
+    let ended = running.end().await;
+    assert!(ended.status.success(), "{}", ended.stderr);
+    supervisor.state(|state| {
+        assert_eq!(state.said(), "never.always");
+        assert_eq!(
+            resolved(state),
+            [
+                ("1", "selected", Some("never")),
+                ("2", "selected", Some("always"))
+            ],
+        );
+        assert_eq!(state.stop_reason(), Some("end_turn"));
+    });
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn requests_that_wait_at_once_are_each_given_their_own_answer() {
+    let home = Home::new();
+    let supervisor = Supervisor::start("ask 2").await;
+    let running = start(asking(&supervisor, &home));
+    supervisor
+        .until("the harness has not asked twice", |state| {
+            state.asked().len() == 2
+        })
+        .await;
+    // The later request is answered first.
+    supervisor.approve("2", "once");
+    supervisor.approve("1", "never");
+
+    let ended = running.end().await;
+    assert!(ended.status.success(), "{}", ended.stderr);
+    supervisor.state(|state| {
+        assert_eq!(state.said(), "never once");
+        assert_eq!(
+            resolved(state),
+            [
+                ("2", "selected", Some("once")),
+                ("1", "selected", Some("never"))
+            ],
+        );
+    });
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_that_is_cancelled_while_its_harness_asks_is_stopped() {
+    let home = Home::new();
+    let supervisor = Supervisor::start("ask 2 ; say and more").await;
+    let running = start(asking(&supervisor, &home));
+    supervisor
+        .until("the harness has not asked twice", |state| {
+            state.asked().len() == 2
+        })
+        .await;
+    supervisor.cancel();
+    // An answer that comes after that is too late.
+    supervisor.approve("1", "once");
+
+    let ended = running.end().await;
+    assert!(ended.status.success(), "{}", ended.stderr);
+    supervisor.state(|state| {
+        // The harness is told that the turn was cancelled, to both requests,
+        // and to stop.
+        assert_eq!(state.said(), "cancelled cancelled[told to stop 1 times]");
+        assert_eq!(
+            resolved(state),
+            [("1", "cancelled", None), ("2", "cancelled", None)]
+        );
+        assert_eq!(state.stop_reason(), Some("cancelled"));
+    });
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -300,6 +455,44 @@ async fn a_turn_that_is_cancelled_before_the_harness_is_ready_is_not_given_to_it
 /// Kubernetes tells a pod to stop before it kills it. The runner has the
 /// harness end the turn in that time, and its exit code tells that the turn
 /// did not complete.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_waits_until_its_pod_is_told_to_stop() {
+    // The pod of a turn is stopped when the turn has run for as long as a
+    // turn may, and that is how long a request waits for its answer.
+    let home = Home::new();
+    let supervisor = Supervisor::start("ask").await;
+    let running = start(asking(&supervisor, &home));
+    supervisor
+        .until("the harness has not asked", |state| {
+            state.asked().len() == 1
+        })
+        .await;
+    running.terminate().await;
+    let ended = running.end().await;
+    assert_eq!(ended.status.code(), Some(143), "{}", ended.stderr);
+    supervisor.state(|state| {
+        assert_eq!(state.said(), "cancelled[told to stop 1 times]");
+        assert_eq!(resolved(state), [("1", "cancelled", None)]);
+        assert_eq!(state.stop_reason(), Some("cancelled"));
+    });
+
+    // A harness that asks when it has been told to stop is not answered by a
+    // person: nobody is asked.
+    let deaf = Supervisor::start("deaf ; sleep 400 ; ask ; say .").await;
+    let running = start(asking(&deaf, &home));
+    deaf.until("the turn has not started", |state| {
+        state.kinds().contains(&"started")
+    })
+    .await;
+    deaf.cancel();
+    let ended = running.end().await;
+    assert!(ended.status.success(), "{}", ended.stderr);
+    deaf.state(|state| {
+        assert_eq!(state.said(), "cancelled.");
+        assert!(state.asked().is_empty());
+    });
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runner_that_is_told_to_stop_has_the_harness_end_the_turn() {
     let home = Home::new();

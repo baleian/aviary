@@ -11,7 +11,8 @@ service RunnerService {
   // in the authorization metadata, as "Bearer <token>", and with a UUID that
   // it made up for itself in the aviary-runner metadata. The Supervisor sends
   // Start. The runner sends Started, then the events of the turn, then
-  // Finished. While the turn runs the Supervisor may send Cancel.
+  // Finished. While the turn runs the Supervisor may send Cancel, and
+  // Approval for an ApprovalRequested.
   //
   // The runner numbers its messages, and the Supervisor answers each with
   // Received. A runner whose call broke calls again, to any Supervisor and
@@ -34,6 +35,8 @@ message RunTurnRequest {
     ToolCall tool_call = 5;
     ToolUpdate tool_update = 6;
     PlanUpdate plan_update = 7;
+    ApprovalRequested approval_requested = 9;
+    ApprovalResolved approval_resolved = 10;
   }
   // The number of the message among those of the turn, from 1 and without a
   // gap. A message that is sent again keeps its number.
@@ -46,6 +49,7 @@ message RunTurnResponse {
     Start start = 1;
     Cancel cancel = 2;
     Received received = 3;
+    Approval approval = 4;
   }
 }
 
@@ -75,6 +79,16 @@ message Received {
 // stop what it is doing. A harness that does ends the turn with the stop
 // reason cancelled, which the runner reports with Finished as for any turn.
 message Cancel {}
+
+// Approval is the answer of a person to an ApprovalRequested. The runner
+// gives it to the harness, and drops one for a request that waits no longer
+// or with an option that the request does not have.
+message Approval {
+  // The ID of the request.
+  string id = 1;
+  // The ID of one of its options.
+  string option_id = 2;
+}
 
 // Started reports that the harness is ready and has been given the message.
 message Started {
@@ -159,4 +173,39 @@ message PlanEntry {
   string priority = 2;
   // One of pending, in_progress, completed.
   string status = 3;
+}
+
+// ApprovalRequested reports that the harness asks before it goes on, as a
+// harness does that is set up to ask before it acts. The harness waits for
+// the answer for as long as the turn runs, and with it the turn. What a
+// harness asks about, and when, is up to the harness.
+message ApprovalRequested {
+  // Names the request in its answer and among the requests of the turn.
+  string id = 1;
+  // The tool call that the harness asks about, as far as the harness says.
+  ToolUpdate tool_call = 2;
+  // The answers that the harness takes.
+  repeated ApprovalOption options = 3;
+}
+
+// ApprovalOption is an answer that a harness takes to its request.
+message ApprovalOption {
+  string id = 1;
+  // One of allow_once, allow_always, reject_once, reject_always. How far
+  // "always" reaches is up to the harness.
+  string kind = 2;
+  // The answer in the harness's words.
+  string name = 3;
+}
+
+// ApprovalResolved reports that the harness has its answer to a request.
+message ApprovalResolved {
+  // The ID of the request.
+  string id = 1;
+  // One of selected, cancelled. selected: the harness was given the option
+  // that a person chose. cancelled: the turn was told to stop before anybody
+  // answered, as it is when it has run for as long as a turn may.
+  string outcome = 2;
+  // The option that the harness was given, if it was given one.
+  optional string option_id = 3;
 }

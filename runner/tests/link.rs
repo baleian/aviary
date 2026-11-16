@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use tokio::time;
 use tonic::Code;
 
-use support::{Home, PATIENCE, Supervisor, runner, start};
+use support::{Home, PATIENCE, Supervisor, asking, runner, start};
 
 /// The message of a turn in which the agent says so many words slowly, and
 /// the words.
@@ -382,4 +382,42 @@ async fn the_harness_is_held_back_while_too_many_reports_wait() {
     let ended = running.end().await;
     assert!(ended.status.success(), "{}", ended.stderr);
     assert_eq!(supervisor.state(|state| state.said().len()), 300 * 10_000);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_answer_reaches_a_runner_that_found_its_supervisor_again() {
+    let home = Home::new();
+    let mut supervisor = Supervisor::start("ask").await;
+    let running = start(asking(&supervisor, &home));
+    supervisor
+        .until("the harness has not asked", |state| {
+            state.asked().len() == 1
+        })
+        .await;
+
+    // The harness waits for its answer while the runner has no Supervisor.
+    supervisor.go_away().await;
+    supervisor.come_back().await;
+    supervisor
+        .until("the runner has not called again", |state| {
+            state.calls.len() == 2
+        })
+        .await;
+    supervisor.approve("1", "once");
+
+    let ended = running.end().await;
+    assert!(ended.status.success(), "{}", ended.stderr);
+    supervisor.state(|state| {
+        assert_eq!(state.said(), "once");
+        // The request is recorded once, and so is its answer.
+        let kinds = state.kinds();
+        assert_eq!(
+            kinds
+                .iter()
+                .filter(|kind| kind.starts_with("approval"))
+                .count(),
+            2
+        );
+        assert_eq!(state.resolved()[0].option_id.as_deref(), Some("once"));
+    });
 }

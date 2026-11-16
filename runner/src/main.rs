@@ -17,9 +17,9 @@ use agent_client_protocol::v1::schema::{
     CancelNotification, ContentBlock, ContentChunk, InitializeRequest, NewSessionRequest,
     PermissionOptionKind, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
     RequestPermissionResponse, ResumeSessionRequest, SelectedPermissionOutcome, SessionId,
-    SessionNotification, SessionUpdate, StopReason, TextContent,
+    SessionNotification, SessionUpdate, StopReason, TextContent, ToolCallUpdate,
 };
-use agent_client_protocol::{AcpAgent, Agent, Client};
+use agent_client_protocol::{AcpAgent, Agent, Client, Responder, V1};
 use futures::channel::mpsc;
 use futures::{FutureExt, SinkExt, StreamExt};
 use prost::Message;
@@ -35,8 +35,9 @@ use proto::run_turn_request::Message as Report;
 use proto::run_turn_response::Message as Order;
 use proto::runner_service_client::RunnerServiceClient;
 use proto::{
-    Finished, MessageDelta, PlanEntry, PlanUpdate, RunTurnRequest, RunTurnResponse, Start, Started,
-    ThoughtDelta, ToolCall, ToolUpdate, Usage,
+    Approval, ApprovalOption, ApprovalRequested, ApprovalResolved, Finished, MessageDelta,
+    PlanEntry, PlanUpdate, RunTurnRequest, RunTurnResponse, Start, Started, ThoughtDelta, ToolCall,
+    ToolUpdate, Usage,
 };
 
 /// The protocol between the runner and the Supervisor, generated from proto/.
@@ -51,6 +52,7 @@ const TURN_TOKEN: &str = "AVIARY_TURN_TOKEN";
 const MAX_TOOL_OUTPUT: &str = "AVIARY_MAX_TOOL_OUTPUT_BYTES";
 const MAX_RECONNECT: &str = "AVIARY_MAX_RECONNECT_SECONDS";
 const INSTRUCTIONS_FILE: &str = "AVIARY_INSTRUCTIONS_FILE";
+const APPROVAL: &str = "AVIARY_APPROVAL";
 
 /// The most bytes of reports that may wait for a Supervisor to record them
 /// before the harness is held back.
@@ -224,6 +226,9 @@ async fn run_turn(stopped: &Cell<bool>) -> Result<(), Failure> {
         .ok()
         .and_then(|bytes| bytes.parse::<usize>().ok())
         .filter(|bytes| *bytes > 0);
+    // A harness that is set up to ask before it acts is answered by a
+    // person. Any other is allowed what it asks for, once.
+    let asks = env::var(APPROVAL).is_ok_and(|approval| approval == "ask");
 
     let mut link = Link::new()?;
     let (call, start) = link.attach().await?;
@@ -233,10 +238,12 @@ async fn run_turn(stopped: &Cell<bool>) -> Result<(), Failure> {
     // The link holds the reports until a Supervisor has recorded them, so
     // the channel to it needs no room of its own.
     let (reports, reported) = mpsc::channel(0);
-    // Carries the order to cancel to where the harness is talked to. One
-    // order is enough, so more are dropped.
-    let (mut cancel, mut cancelled) = mpsc::channel::<()>(1);
-    let passing = link.pass_on(call, reported, cancel.clone()).fuse();
+    // Carries what the turn is told to where the harness is talked to, in
+    // the order in which it was told.
+    let (tell, mut told) = mpsc::unbounded();
+    // The requests of the harness for approval.
+    let (asked, mut asking) = mpsc::unbounded();
+    let passing = link.pass_on(call, reported, tell.clone()).fuse();
     futures::pin_mut!(passing);
 
     let turn = Client
@@ -255,8 +262,14 @@ async fn run_turn(stopped: &Cell<bool>) -> Result<(), Failure> {
             agent_client_protocol::on_receive_notification!(),
         )
         .on_receive_request(
-            async |request: RequestPermissionRequest, responder, _| {
-                responder.respond(RequestPermissionResponse::new(allow_once(&request)))
+            async move |request: RequestPermissionRequest, responder, _| {
+                if !asks {
+                    return responder.respond(RequestPermissionResponse::new(allow_once(&request)));
+                }
+                // The harness waits for the answer, which comes later.
+                asked.unbounded_send((request, responder)).map_err(|_| {
+                    agent_client_protocol::Error::internal_error().data("the turn has ended")
+                })
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -286,8 +299,10 @@ async fn run_turn(stopped: &Cell<bool>) -> Result<(), Failure> {
             // A turn that was told to stop while the harness was made ready
             // is not given to the harness. A harness that is told to stop
             // in the moment in which it gets the message may fail.
-            if cancelled.try_recv().is_ok() {
-                return Ok(StopReason::Cancelled);
+            while let Ok(order) = told.try_recv() {
+                if matches!(order, Told::Stop) {
+                    return Ok(StopReason::Cancelled);
+                }
             }
             let started = Started {
                 harness_session_id: session_id.to_string(),
@@ -304,15 +319,56 @@ async fn run_turn(stopped: &Cell<bool>) -> Result<(), Failure> {
             // The harness answers the prompt when the turn has ended, also
             // when it was told to stop. It is told once: the order comes
             // again with every Supervisor that the runner calls.
-            let mut told = false;
+            let mut stopping = false;
+            // The requests that wait for their answers. They wait for as long
+            // as the turn runs.
+            let mut waiting: Vec<Asked> = Vec::new();
+            let mut requests = 0;
             let outcome = loop {
                 futures::select! {
                     outcome = prompt => break outcome?,
-                    () = cancelled.select_next_some() => {
-                        if !told {
-                            harness.send_notification(CancelNotification::new(session_id.clone()))?;
-                            told = true;
+                    order = told.select_next_some() => match order {
+                        Told::Stop => {
+                            if !stopping {
+                                harness.send_notification(CancelNotification::new(session_id.clone()))?;
+                                stopping = true;
+                            }
+                            // A harness that is told to stop is owed the
+                            // answer that the turn was cancelled to what it
+                            // has asked.
+                            for asked in waiting.drain(..) {
+                                asked.responder.respond(RequestPermissionResponse::new(
+                                    RequestPermissionOutcome::Cancelled,
+                                ))?;
+                                report(&reports, resolved(asked.id, "cancelled", None)).await?;
+                            }
                         }
+                        // An answer may come twice, or late, or be none of
+                        // the answers that the harness takes.
+                        Told::Answer(approval) => {
+                            let answered = waiting.iter().position(|asked| {
+                                asked.id == approval.id && asked.option(&approval.option_id).is_some()
+                            });
+                            if let Some(at) = answered {
+                                let asked = waiting.remove(at);
+                                let option = asked.option(&approval.option_id).expect("found above");
+                                asked.responder.respond(RequestPermissionResponse::new(option))?;
+                                report(&reports, resolved(asked.id, "selected", Some(approval.option_id)))
+                                    .await?;
+                            }
+                        }
+                    },
+                    (request, responder) = asking.select_next_some() => {
+                        if stopping {
+                            responder.respond(RequestPermissionResponse::new(
+                                RequestPermissionOutcome::Cancelled,
+                            ))?;
+                            continue;
+                        }
+                        requests += 1;
+                        let id = requests.to_string();
+                        report(&reports, requested(&id, &request, longest)).await?;
+                        waiting.push(Asked { id, request, responder });
                     }
                 }
             };
@@ -350,7 +406,7 @@ async fn run_turn(stopped: &Cell<bool>) -> Result<(), Failure> {
                 // how the turn ended in the time that the pod has left.
                 _ = terminate.recv().fuse() => {
                     stopped.set(true);
-                    let _ = cancel.try_send(());
+                    let _ = tell.unbounded_send(Told::Stop);
                 }
             }
         }
@@ -510,13 +566,14 @@ impl Link {
     }
 
     /// Passes the reports on to the Supervisor, and the Supervisor's orders
-    /// to cancel on to where the harness is talked to, until the reports
-    /// end and a Supervisor has recorded them all.
+    /// to cancel and its answers to requests for approval on to where the
+    /// harness is talked to, until the reports end and a Supervisor has
+    /// recorded them all.
     async fn pass_on(
         mut self,
         call: Call,
         mut reported: mpsc::Receiver<Report>,
-        mut cancel: mpsc::Sender<()>,
+        tell: mpsc::UnboundedSender<Told>,
     ) -> Result<(), Failure> {
         let mut call = Some(call);
         let mut more = true;
@@ -531,7 +588,10 @@ impl Link {
                         match order.message {
                             Some(Order::Received(received)) => self.recorded(received.seq),
                             Some(Order::Cancel(_)) => {
-                                let _ = cancel.try_send(());
+                                let _ = tell.unbounded_send(Told::Stop);
+                            }
+                            Some(Order::Approval(approval)) => {
+                                let _ = tell.unbounded_send(Told::Answer(approval));
                             }
                             Some(Order::Start(_)) | None => {}
                         }
@@ -710,15 +770,9 @@ fn event(update: SessionUpdate, longest: Option<usize>) -> Option<Report> {
             output: call.raw_output.map(value),
             meta: call.meta.map(structure),
         })),
-        SessionUpdate::ToolCallUpdate(update) => Some(Report::ToolUpdate(ToolUpdate {
-            id: update.tool_call_id.to_string(),
-            title: update.fields.title,
-            kind: update.fields.kind.as_ref().map(name),
-            status: update.fields.status.as_ref().map(name),
-            input: update.fields.raw_input.map(value),
-            output: update.fields.raw_output.map(value),
-            meta: update.meta.map(structure),
-        })),
+        SessionUpdate::ToolCallUpdate(update) => {
+            Some(Report::ToolUpdate(tool_update(update, longest)))
+        }
         SessionUpdate::Plan(plan) => Some(Report::PlanUpdate(PlanUpdate {
             entries: plan
                 .entries
@@ -732,6 +786,82 @@ fn event(update: SessionUpdate, longest: Option<usize>) -> Option<Report> {
         })),
         _ => None,
     }
+}
+
+/// What the harness says of a tool call that it has told of before, or that
+/// it asks about.
+fn tool_update(update: ToolCallUpdate, longest: Option<usize>) -> ToolUpdate {
+    let value = |json| value(cut(json, longest));
+    ToolUpdate {
+        id: update.tool_call_id.to_string(),
+        title: update.fields.title,
+        kind: update.fields.kind.as_ref().map(name),
+        status: update.fields.status.as_ref().map(name),
+        input: update.fields.raw_input.map(value),
+        output: update.fields.raw_output.map(value),
+        meta: update.meta.map(
+            |fields| match cut(serde_json::Value::Object(fields), longest) {
+                serde_json::Value::Object(fields) => structure(fields),
+                _ => unreachable!("cutting an object leaves an object"),
+            },
+        ),
+    }
+}
+
+/// What the turn is told while it runs.
+enum Told {
+    /// To stop: the Supervisor cancelled the turn, or the pod is to stop.
+    Stop,
+    /// The answer of a person to a request for approval.
+    Answer(Approval),
+}
+
+/// A request of the harness for approval that waits for its answer.
+struct Asked {
+    /// Its name among the requests of the turn.
+    id: String,
+    request: RequestPermissionRequest,
+    responder: Responder<RequestPermissionResponse, V1>,
+}
+
+impl Asked {
+    /// The answer that gives the harness the option, if the harness takes it.
+    fn option(&self, id: &str) -> Option<RequestPermissionOutcome> {
+        let option = self
+            .request
+            .options
+            .iter()
+            .find(|option| option.option_id.to_string() == id)?;
+        Some(RequestPermissionOutcome::Selected(
+            SelectedPermissionOutcome::new(option.option_id.clone()),
+        ))
+    }
+}
+
+/// The report of what a harness asks approval for.
+fn requested(id: &str, request: &RequestPermissionRequest, longest: Option<usize>) -> Report {
+    Report::ApprovalRequested(ApprovalRequested {
+        id: id.to_owned(),
+        tool_call: Some(tool_update(request.tool_call.clone(), longest)),
+        options: request
+            .options
+            .iter()
+            .map(|option| ApprovalOption {
+                id: option.option_id.to_string(),
+                kind: name(&option.kind),
+                name: option.name.clone(),
+            })
+            .collect(),
+    })
+}
+
+/// The report of how a request for approval was answered to the harness.
+fn resolved(id: String, outcome: &str, option_id: Option<String>) -> Report {
+    Report::ApprovalResolved(ApprovalResolved {
+        id,
+        outcome: outcome.to_owned(),
+        option_id,
+    })
 }
 
 /// The text of a piece of a message. Other content, such as images, is not
@@ -1021,6 +1151,68 @@ mod tests {
             }
             other => panic!("the plan was reported as {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_request_for_approval_is_reported_as_the_harness_made_it() {
+        let request: RequestPermissionRequest = serde_json::from_value(json!({
+            "sessionId": "s1",
+            "toolCall": {
+                "toolCallId": "t1", "title": "rm -r build", "kind": "execute", "status": "pending",
+                "rawInput": {"command": "rm -r build", "note": "x".repeat(200)},
+            },
+            "options": [
+                {"optionId": "a", "name": "Yes, and do not ask again", "kind": "allow_always"},
+                {"optionId": "b", "name": "No", "kind": "reject_once"},
+                {"optionId": "c", "name": "Never", "kind": "reject_always"},
+            ],
+        }))
+        .expect("a request for permission");
+        let Report::ApprovalRequested(asked) = requested("3", &request, Some(100)) else {
+            panic!("the request is not reported as one");
+        };
+        let call = asked.tool_call.expect("the tool call");
+        assert_eq!(
+            (
+                asked.id.as_str(),
+                call.id.as_str(),
+                call.title.as_deref(),
+                call.kind.as_deref(),
+                call.status.as_deref()
+            ),
+            (
+                "3",
+                "t1",
+                Some("rm -r build"),
+                Some("execute"),
+                Some("pending")
+            ),
+        );
+        // What the tool is called with is cut as in the events of the turn.
+        let input = format!("{:?}", call.input);
+        assert!(
+            input.contains("rm -r build") && !input.contains(&"x".repeat(200)),
+            "{input}"
+        );
+        let options: Vec<_> = asked
+            .options
+            .iter()
+            .map(|option| {
+                (
+                    option.id.as_str(),
+                    option.kind.as_str(),
+                    option.name.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            options,
+            [
+                ("a", "allow_always", "Yes, and do not ask again"),
+                ("b", "reject_once", "No"),
+                ("c", "reject_always", "Never"),
+            ],
+        );
     }
 
     #[test]

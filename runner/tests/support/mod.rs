@@ -40,6 +40,13 @@ impl Home {
     }
 }
 
+/// The runner of a turn of an agent that asks a person before it acts.
+pub fn asking(supervisor: &Supervisor, home: &Home) -> Command {
+    let mut command = runner(supervisor, home);
+    command.env("AVIARY_APPROVAL", "ask");
+    command
+}
+
 /// The runner of a turn, set up as it is in the pod of the turn.
 pub fn runner(supervisor: &Supervisor, home: &Home) -> Command {
     let runner = Path::new(env!("CARGO_BIN_EXE_aviary-runner"));

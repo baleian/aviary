@@ -36,6 +36,8 @@ type RunTurnRequest struct {
 	//	*RunTurnRequest_ToolCall
 	//	*RunTurnRequest_ToolUpdate
 	//	*RunTurnRequest_PlanUpdate
+	//	*RunTurnRequest_ApprovalRequested
+	//	*RunTurnRequest_ApprovalResolved
 	Message isRunTurnRequest_Message `protobuf_oneof:"message"`
 	// The number of the message among those of the turn, from 1 and without a
 	// gap. A message that is sent again keeps its number.
@@ -144,6 +146,24 @@ func (x *RunTurnRequest) GetPlanUpdate() *PlanUpdate {
 	return nil
 }
 
+func (x *RunTurnRequest) GetApprovalRequested() *ApprovalRequested {
+	if x != nil {
+		if x, ok := x.Message.(*RunTurnRequest_ApprovalRequested); ok {
+			return x.ApprovalRequested
+		}
+	}
+	return nil
+}
+
+func (x *RunTurnRequest) GetApprovalResolved() *ApprovalResolved {
+	if x != nil {
+		if x, ok := x.Message.(*RunTurnRequest_ApprovalResolved); ok {
+			return x.ApprovalResolved
+		}
+	}
+	return nil
+}
+
 func (x *RunTurnRequest) GetSeq() uint64 {
 	if x != nil {
 		return x.Seq
@@ -186,6 +206,14 @@ type RunTurnRequest_PlanUpdate struct {
 	PlanUpdate *PlanUpdate `protobuf:"bytes,7,opt,name=plan_update,json=planUpdate,proto3,oneof"`
 }
 
+type RunTurnRequest_ApprovalRequested struct {
+	ApprovalRequested *ApprovalRequested `protobuf:"bytes,9,opt,name=approval_requested,json=approvalRequested,proto3,oneof"`
+}
+
+type RunTurnRequest_ApprovalResolved struct {
+	ApprovalResolved *ApprovalResolved `protobuf:"bytes,10,opt,name=approval_resolved,json=approvalResolved,proto3,oneof"`
+}
+
 func (*RunTurnRequest_Started) isRunTurnRequest_Message() {}
 
 func (*RunTurnRequest_Finished) isRunTurnRequest_Message() {}
@@ -200,6 +228,10 @@ func (*RunTurnRequest_ToolUpdate) isRunTurnRequest_Message() {}
 
 func (*RunTurnRequest_PlanUpdate) isRunTurnRequest_Message() {}
 
+func (*RunTurnRequest_ApprovalRequested) isRunTurnRequest_Message() {}
+
+func (*RunTurnRequest_ApprovalResolved) isRunTurnRequest_Message() {}
+
 // RunTurnResponse is a message from the Supervisor.
 type RunTurnResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -208,6 +240,7 @@ type RunTurnResponse struct {
 	//	*RunTurnResponse_Start
 	//	*RunTurnResponse_Cancel
 	//	*RunTurnResponse_Received
+	//	*RunTurnResponse_Approval
 	Message       isRunTurnResponse_Message `protobuf_oneof:"message"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -277,6 +310,15 @@ func (x *RunTurnResponse) GetReceived() *Received {
 	return nil
 }
 
+func (x *RunTurnResponse) GetApproval() *Approval {
+	if x != nil {
+		if x, ok := x.Message.(*RunTurnResponse_Approval); ok {
+			return x.Approval
+		}
+	}
+	return nil
+}
+
 type isRunTurnResponse_Message interface {
 	isRunTurnResponse_Message()
 }
@@ -293,11 +335,17 @@ type RunTurnResponse_Received struct {
 	Received *Received `protobuf:"bytes,3,opt,name=received,proto3,oneof"`
 }
 
+type RunTurnResponse_Approval struct {
+	Approval *Approval `protobuf:"bytes,4,opt,name=approval,proto3,oneof"`
+}
+
 func (*RunTurnResponse_Start) isRunTurnResponse_Message() {}
 
 func (*RunTurnResponse_Cancel) isRunTurnResponse_Message() {}
 
 func (*RunTurnResponse_Received) isRunTurnResponse_Message() {}
+
+func (*RunTurnResponse_Approval) isRunTurnResponse_Message() {}
 
 // Start tells the runner what to run.
 type Start struct {
@@ -461,6 +509,63 @@ func (*Cancel) Descriptor() ([]byte, []int) {
 	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{4}
 }
 
+// Approval is the answer of a person to an ApprovalRequested. The runner
+// gives it to the harness, and drops one for a request that waits no longer
+// or with an option that the request does not have.
+type Approval struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The ID of the request.
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// The ID of one of its options.
+	OptionId      string `protobuf:"bytes,2,opt,name=option_id,json=optionId,proto3" json:"option_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Approval) Reset() {
+	*x = Approval{}
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Approval) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Approval) ProtoMessage() {}
+
+func (x *Approval) ProtoReflect() protoreflect.Message {
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Approval.ProtoReflect.Descriptor instead.
+func (*Approval) Descriptor() ([]byte, []int) {
+	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *Approval) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *Approval) GetOptionId() string {
+	if x != nil {
+		return x.OptionId
+	}
+	return ""
+}
+
 // Started reports that the harness is ready and has been given the message.
 type Started struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -472,7 +577,7 @@ type Started struct {
 
 func (x *Started) Reset() {
 	*x = Started{}
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[5]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -484,7 +589,7 @@ func (x *Started) String() string {
 func (*Started) ProtoMessage() {}
 
 func (x *Started) ProtoReflect() protoreflect.Message {
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[5]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -497,7 +602,7 @@ func (x *Started) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Started.ProtoReflect.Descriptor instead.
 func (*Started) Descriptor() ([]byte, []int) {
-	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{5}
+	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Started) GetHarnessSessionId() string {
@@ -520,7 +625,7 @@ type Finished struct {
 
 func (x *Finished) Reset() {
 	*x = Finished{}
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[6]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -532,7 +637,7 @@ func (x *Finished) String() string {
 func (*Finished) ProtoMessage() {}
 
 func (x *Finished) ProtoReflect() protoreflect.Message {
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[6]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -545,7 +650,7 @@ func (x *Finished) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Finished.ProtoReflect.Descriptor instead.
 func (*Finished) Descriptor() ([]byte, []int) {
-	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{6}
+	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *Finished) GetStopReason() string {
@@ -582,7 +687,7 @@ type Usage struct {
 
 func (x *Usage) Reset() {
 	*x = Usage{}
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[7]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -594,7 +699,7 @@ func (x *Usage) String() string {
 func (*Usage) ProtoMessage() {}
 
 func (x *Usage) ProtoReflect() protoreflect.Message {
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[7]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -607,7 +712,7 @@ func (x *Usage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Usage.ProtoReflect.Descriptor instead.
 func (*Usage) Descriptor() ([]byte, []int) {
-	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{7}
+	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *Usage) GetTotalTokens() int64 {
@@ -664,7 +769,7 @@ type MessageDelta struct {
 
 func (x *MessageDelta) Reset() {
 	*x = MessageDelta{}
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[8]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -676,7 +781,7 @@ func (x *MessageDelta) String() string {
 func (*MessageDelta) ProtoMessage() {}
 
 func (x *MessageDelta) ProtoReflect() protoreflect.Message {
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[8]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -689,7 +794,7 @@ func (x *MessageDelta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MessageDelta.ProtoReflect.Descriptor instead.
 func (*MessageDelta) Descriptor() ([]byte, []int) {
-	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{8}
+	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *MessageDelta) GetText() string {
@@ -718,7 +823,7 @@ type ThoughtDelta struct {
 
 func (x *ThoughtDelta) Reset() {
 	*x = ThoughtDelta{}
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[9]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -730,7 +835,7 @@ func (x *ThoughtDelta) String() string {
 func (*ThoughtDelta) ProtoMessage() {}
 
 func (x *ThoughtDelta) ProtoReflect() protoreflect.Message {
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[9]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -743,7 +848,7 @@ func (x *ThoughtDelta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ThoughtDelta.ProtoReflect.Descriptor instead.
 func (*ThoughtDelta) Descriptor() ([]byte, []int) {
-	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{9}
+	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ThoughtDelta) GetText() string {
@@ -783,7 +888,7 @@ type ToolCall struct {
 
 func (x *ToolCall) Reset() {
 	*x = ToolCall{}
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[10]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -795,7 +900,7 @@ func (x *ToolCall) String() string {
 func (*ToolCall) ProtoMessage() {}
 
 func (x *ToolCall) ProtoReflect() protoreflect.Message {
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[10]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -808,7 +913,7 @@ func (x *ToolCall) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolCall.ProtoReflect.Descriptor instead.
 func (*ToolCall) Descriptor() ([]byte, []int) {
-	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{10}
+	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ToolCall) GetId() string {
@@ -876,7 +981,7 @@ type ToolUpdate struct {
 
 func (x *ToolUpdate) Reset() {
 	*x = ToolUpdate{}
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[11]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -888,7 +993,7 @@ func (x *ToolUpdate) String() string {
 func (*ToolUpdate) ProtoMessage() {}
 
 func (x *ToolUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[11]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -901,7 +1006,7 @@ func (x *ToolUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolUpdate.ProtoReflect.Descriptor instead.
 func (*ToolUpdate) Descriptor() ([]byte, []int) {
-	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{11}
+	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ToolUpdate) GetId() string {
@@ -963,7 +1068,7 @@ type PlanUpdate struct {
 
 func (x *PlanUpdate) Reset() {
 	*x = PlanUpdate{}
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[12]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -975,7 +1080,7 @@ func (x *PlanUpdate) String() string {
 func (*PlanUpdate) ProtoMessage() {}
 
 func (x *PlanUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[12]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -988,7 +1093,7 @@ func (x *PlanUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanUpdate.ProtoReflect.Descriptor instead.
 func (*PlanUpdate) Descriptor() ([]byte, []int) {
-	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{12}
+	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *PlanUpdate) GetEntries() []*PlanEntry {
@@ -1011,7 +1116,7 @@ type PlanEntry struct {
 
 func (x *PlanEntry) Reset() {
 	*x = PlanEntry{}
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[13]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1023,7 +1128,7 @@ func (x *PlanEntry) String() string {
 func (*PlanEntry) ProtoMessage() {}
 
 func (x *PlanEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_aviary_runner_v1_runner_proto_msgTypes[13]
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1036,7 +1141,7 @@ func (x *PlanEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanEntry.ProtoReflect.Descriptor instead.
 func (*PlanEntry) Descriptor() ([]byte, []int) {
-	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{13}
+	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *PlanEntry) GetContent() string {
@@ -1060,11 +1165,208 @@ func (x *PlanEntry) GetStatus() string {
 	return ""
 }
 
+// ApprovalRequested reports that the harness asks before it goes on, as a
+// harness does that is set up to ask before it acts. The harness waits for
+// the answer for as long as the turn runs, and with it the turn. What a
+// harness asks about, and when, is up to the harness.
+type ApprovalRequested struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Names the request in its answer and among the requests of the turn.
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// The tool call that the harness asks about, as far as the harness says.
+	ToolCall *ToolUpdate `protobuf:"bytes,2,opt,name=tool_call,json=toolCall,proto3" json:"tool_call,omitempty"`
+	// The answers that the harness takes.
+	Options       []*ApprovalOption `protobuf:"bytes,3,rep,name=options,proto3" json:"options,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApprovalRequested) Reset() {
+	*x = ApprovalRequested{}
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApprovalRequested) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApprovalRequested) ProtoMessage() {}
+
+func (x *ApprovalRequested) ProtoReflect() protoreflect.Message {
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApprovalRequested.ProtoReflect.Descriptor instead.
+func (*ApprovalRequested) Descriptor() ([]byte, []int) {
+	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ApprovalRequested) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *ApprovalRequested) GetToolCall() *ToolUpdate {
+	if x != nil {
+		return x.ToolCall
+	}
+	return nil
+}
+
+func (x *ApprovalRequested) GetOptions() []*ApprovalOption {
+	if x != nil {
+		return x.Options
+	}
+	return nil
+}
+
+// ApprovalOption is an answer that a harness takes to its request.
+type ApprovalOption struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// One of allow_once, allow_always, reject_once, reject_always. How far
+	// "always" reaches is up to the harness.
+	Kind string `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	// The answer in the harness's words.
+	Name          string `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApprovalOption) Reset() {
+	*x = ApprovalOption{}
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApprovalOption) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApprovalOption) ProtoMessage() {}
+
+func (x *ApprovalOption) ProtoReflect() protoreflect.Message {
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApprovalOption.ProtoReflect.Descriptor instead.
+func (*ApprovalOption) Descriptor() ([]byte, []int) {
+	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *ApprovalOption) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *ApprovalOption) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *ApprovalOption) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+// ApprovalResolved reports that the harness has its answer to a request.
+type ApprovalResolved struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The ID of the request.
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// One of selected, cancelled. selected: the harness was given the option
+	// that a person chose. cancelled: the turn was told to stop before anybody
+	// answered, as it is when it has run for as long as a turn may.
+	Outcome string `protobuf:"bytes,2,opt,name=outcome,proto3" json:"outcome,omitempty"`
+	// The option that the harness was given, if it was given one.
+	OptionId      *string `protobuf:"bytes,3,opt,name=option_id,json=optionId,proto3,oneof" json:"option_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApprovalResolved) Reset() {
+	*x = ApprovalResolved{}
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApprovalResolved) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApprovalResolved) ProtoMessage() {}
+
+func (x *ApprovalResolved) ProtoReflect() protoreflect.Message {
+	mi := &file_aviary_runner_v1_runner_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApprovalResolved.ProtoReflect.Descriptor instead.
+func (*ApprovalResolved) Descriptor() ([]byte, []int) {
+	return file_aviary_runner_v1_runner_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *ApprovalResolved) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *ApprovalResolved) GetOutcome() string {
+	if x != nil {
+		return x.Outcome
+	}
+	return ""
+}
+
+func (x *ApprovalResolved) GetOptionId() string {
+	if x != nil && x.OptionId != nil {
+		return *x.OptionId
+	}
+	return ""
+}
+
 var File_aviary_runner_v1_runner_proto protoreflect.FileDescriptor
 
 const file_aviary_runner_v1_runner_proto_rawDesc = "" +
 	"\n" +
-	"\x1daviary/runner/v1/runner.proto\x12\x10aviary.runner.v1\x1a\x1cgoogle/protobuf/struct.proto\"\xe9\x03\n" +
+	"\x1daviary/runner/v1/runner.proto\x12\x10aviary.runner.v1\x1a\x1cgoogle/protobuf/struct.proto\"\x92\x05\n" +
 	"\x0eRunTurnRequest\x125\n" +
 	"\astarted\x18\x01 \x01(\v2\x19.aviary.runner.v1.StartedH\x00R\astarted\x128\n" +
 	"\bfinished\x18\x02 \x01(\v2\x1a.aviary.runner.v1.FinishedH\x00R\bfinished\x12E\n" +
@@ -1074,13 +1376,17 @@ const file_aviary_runner_v1_runner_proto_rawDesc = "" +
 	"\vtool_update\x18\x06 \x01(\v2\x1c.aviary.runner.v1.ToolUpdateH\x00R\n" +
 	"toolUpdate\x12?\n" +
 	"\vplan_update\x18\a \x01(\v2\x1c.aviary.runner.v1.PlanUpdateH\x00R\n" +
-	"planUpdate\x12\x10\n" +
+	"planUpdate\x12T\n" +
+	"\x12approval_requested\x18\t \x01(\v2#.aviary.runner.v1.ApprovalRequestedH\x00R\x11approvalRequested\x12Q\n" +
+	"\x11approval_resolved\x18\n" +
+	" \x01(\v2\".aviary.runner.v1.ApprovalResolvedH\x00R\x10approvalResolved\x12\x10\n" +
 	"\x03seq\x18\b \x01(\x04R\x03seqB\t\n" +
-	"\amessage\"\xbb\x01\n" +
+	"\amessage\"\xf5\x01\n" +
 	"\x0fRunTurnResponse\x12/\n" +
 	"\x05start\x18\x01 \x01(\v2\x17.aviary.runner.v1.StartH\x00R\x05start\x122\n" +
 	"\x06cancel\x18\x02 \x01(\v2\x18.aviary.runner.v1.CancelH\x00R\x06cancel\x128\n" +
-	"\breceived\x18\x03 \x01(\v2\x1a.aviary.runner.v1.ReceivedH\x00R\breceivedB\t\n" +
+	"\breceived\x18\x03 \x01(\v2\x1a.aviary.runner.v1.ReceivedH\x00R\breceived\x128\n" +
+	"\bapproval\x18\x04 \x01(\v2\x1a.aviary.runner.v1.ApprovalH\x00R\bapprovalB\t\n" +
 	"\amessage\"\xb7\x01\n" +
 	"\x05Start\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x121\n" +
@@ -1092,6 +1398,9 @@ const file_aviary_runner_v1_runner_proto_rawDesc = "" +
 	"\bReceived\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\x04R\x03seq\"\b\n" +
 	"\x06Cancel\"7\n" +
+	"\bApproval\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
+	"\toption_id\x18\x02 \x01(\tR\boptionId\"7\n" +
 	"\aStarted\x12,\n" +
 	"\x12harness_session_id\x18\x01 \x01(\tR\x10harnessSessionId\"Z\n" +
 	"\bFinished\x12\x1f\n" +
@@ -1144,7 +1453,21 @@ const file_aviary_runner_v1_runner_proto_rawDesc = "" +
 	"\tPlanEntry\x12\x18\n" +
 	"\acontent\x18\x01 \x01(\tR\acontent\x12\x1a\n" +
 	"\bpriority\x18\x02 \x01(\tR\bpriority\x12\x16\n" +
-	"\x06status\x18\x03 \x01(\tR\x06status2c\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status\"\x9a\x01\n" +
+	"\x11ApprovalRequested\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x129\n" +
+	"\ttool_call\x18\x02 \x01(\v2\x1c.aviary.runner.v1.ToolUpdateR\btoolCall\x12:\n" +
+	"\aoptions\x18\x03 \x03(\v2 .aviary.runner.v1.ApprovalOptionR\aoptions\"H\n" +
+	"\x0eApprovalOption\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
+	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x12\n" +
+	"\x04name\x18\x03 \x01(\tR\x04name\"l\n" +
+	"\x10ApprovalResolved\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
+	"\aoutcome\x18\x02 \x01(\tR\aoutcome\x12 \n" +
+	"\toption_id\x18\x03 \x01(\tH\x00R\boptionId\x88\x01\x01B\f\n" +
+	"\n" +
+	"_option_id2c\n" +
 	"\rRunnerService\x12R\n" +
 	"\aRunTurn\x12 .aviary.runner.v1.RunTurnRequest\x1a!.aviary.runner.v1.RunTurnResponse(\x010\x01B\xbf\x01\n" +
 	"\x14com.aviary.runner.v1B\vRunnerProtoP\x01Z8aviary/supervisor/internal/gen/aviary/runner/v1;runnerv1\xa2\x02\x03ARX\xaa\x02\x10Aviary.Runner.V1\xca\x02\x10Aviary\\Runner\\V1\xe2\x02\x1cAviary\\Runner\\V1\\GPBMetadata\xea\x02\x12Aviary::Runner::V1b\x06proto3"
@@ -1161,51 +1484,60 @@ func file_aviary_runner_v1_runner_proto_rawDescGZIP() []byte {
 	return file_aviary_runner_v1_runner_proto_rawDescData
 }
 
-var file_aviary_runner_v1_runner_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_aviary_runner_v1_runner_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_aviary_runner_v1_runner_proto_goTypes = []any{
-	(*RunTurnRequest)(nil),  // 0: aviary.runner.v1.RunTurnRequest
-	(*RunTurnResponse)(nil), // 1: aviary.runner.v1.RunTurnResponse
-	(*Start)(nil),           // 2: aviary.runner.v1.Start
-	(*Received)(nil),        // 3: aviary.runner.v1.Received
-	(*Cancel)(nil),          // 4: aviary.runner.v1.Cancel
-	(*Started)(nil),         // 5: aviary.runner.v1.Started
-	(*Finished)(nil),        // 6: aviary.runner.v1.Finished
-	(*Usage)(nil),           // 7: aviary.runner.v1.Usage
-	(*MessageDelta)(nil),    // 8: aviary.runner.v1.MessageDelta
-	(*ThoughtDelta)(nil),    // 9: aviary.runner.v1.ThoughtDelta
-	(*ToolCall)(nil),        // 10: aviary.runner.v1.ToolCall
-	(*ToolUpdate)(nil),      // 11: aviary.runner.v1.ToolUpdate
-	(*PlanUpdate)(nil),      // 12: aviary.runner.v1.PlanUpdate
-	(*PlanEntry)(nil),       // 13: aviary.runner.v1.PlanEntry
-	(*structpb.Value)(nil),  // 14: google.protobuf.Value
-	(*structpb.Struct)(nil), // 15: google.protobuf.Struct
+	(*RunTurnRequest)(nil),    // 0: aviary.runner.v1.RunTurnRequest
+	(*RunTurnResponse)(nil),   // 1: aviary.runner.v1.RunTurnResponse
+	(*Start)(nil),             // 2: aviary.runner.v1.Start
+	(*Received)(nil),          // 3: aviary.runner.v1.Received
+	(*Cancel)(nil),            // 4: aviary.runner.v1.Cancel
+	(*Approval)(nil),          // 5: aviary.runner.v1.Approval
+	(*Started)(nil),           // 6: aviary.runner.v1.Started
+	(*Finished)(nil),          // 7: aviary.runner.v1.Finished
+	(*Usage)(nil),             // 8: aviary.runner.v1.Usage
+	(*MessageDelta)(nil),      // 9: aviary.runner.v1.MessageDelta
+	(*ThoughtDelta)(nil),      // 10: aviary.runner.v1.ThoughtDelta
+	(*ToolCall)(nil),          // 11: aviary.runner.v1.ToolCall
+	(*ToolUpdate)(nil),        // 12: aviary.runner.v1.ToolUpdate
+	(*PlanUpdate)(nil),        // 13: aviary.runner.v1.PlanUpdate
+	(*PlanEntry)(nil),         // 14: aviary.runner.v1.PlanEntry
+	(*ApprovalRequested)(nil), // 15: aviary.runner.v1.ApprovalRequested
+	(*ApprovalOption)(nil),    // 16: aviary.runner.v1.ApprovalOption
+	(*ApprovalResolved)(nil),  // 17: aviary.runner.v1.ApprovalResolved
+	(*structpb.Value)(nil),    // 18: google.protobuf.Value
+	(*structpb.Struct)(nil),   // 19: google.protobuf.Struct
 }
 var file_aviary_runner_v1_runner_proto_depIdxs = []int32{
-	5,  // 0: aviary.runner.v1.RunTurnRequest.started:type_name -> aviary.runner.v1.Started
-	6,  // 1: aviary.runner.v1.RunTurnRequest.finished:type_name -> aviary.runner.v1.Finished
-	8,  // 2: aviary.runner.v1.RunTurnRequest.message_delta:type_name -> aviary.runner.v1.MessageDelta
-	9,  // 3: aviary.runner.v1.RunTurnRequest.thought_delta:type_name -> aviary.runner.v1.ThoughtDelta
-	10, // 4: aviary.runner.v1.RunTurnRequest.tool_call:type_name -> aviary.runner.v1.ToolCall
-	11, // 5: aviary.runner.v1.RunTurnRequest.tool_update:type_name -> aviary.runner.v1.ToolUpdate
-	12, // 6: aviary.runner.v1.RunTurnRequest.plan_update:type_name -> aviary.runner.v1.PlanUpdate
-	2,  // 7: aviary.runner.v1.RunTurnResponse.start:type_name -> aviary.runner.v1.Start
-	4,  // 8: aviary.runner.v1.RunTurnResponse.cancel:type_name -> aviary.runner.v1.Cancel
-	3,  // 9: aviary.runner.v1.RunTurnResponse.received:type_name -> aviary.runner.v1.Received
-	7,  // 10: aviary.runner.v1.Finished.usage:type_name -> aviary.runner.v1.Usage
-	14, // 11: aviary.runner.v1.ToolCall.input:type_name -> google.protobuf.Value
-	14, // 12: aviary.runner.v1.ToolCall.output:type_name -> google.protobuf.Value
-	15, // 13: aviary.runner.v1.ToolCall.meta:type_name -> google.protobuf.Struct
-	14, // 14: aviary.runner.v1.ToolUpdate.input:type_name -> google.protobuf.Value
-	14, // 15: aviary.runner.v1.ToolUpdate.output:type_name -> google.protobuf.Value
-	15, // 16: aviary.runner.v1.ToolUpdate.meta:type_name -> google.protobuf.Struct
-	13, // 17: aviary.runner.v1.PlanUpdate.entries:type_name -> aviary.runner.v1.PlanEntry
-	0,  // 18: aviary.runner.v1.RunnerService.RunTurn:input_type -> aviary.runner.v1.RunTurnRequest
-	1,  // 19: aviary.runner.v1.RunnerService.RunTurn:output_type -> aviary.runner.v1.RunTurnResponse
-	19, // [19:20] is the sub-list for method output_type
-	18, // [18:19] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	6,  // 0: aviary.runner.v1.RunTurnRequest.started:type_name -> aviary.runner.v1.Started
+	7,  // 1: aviary.runner.v1.RunTurnRequest.finished:type_name -> aviary.runner.v1.Finished
+	9,  // 2: aviary.runner.v1.RunTurnRequest.message_delta:type_name -> aviary.runner.v1.MessageDelta
+	10, // 3: aviary.runner.v1.RunTurnRequest.thought_delta:type_name -> aviary.runner.v1.ThoughtDelta
+	11, // 4: aviary.runner.v1.RunTurnRequest.tool_call:type_name -> aviary.runner.v1.ToolCall
+	12, // 5: aviary.runner.v1.RunTurnRequest.tool_update:type_name -> aviary.runner.v1.ToolUpdate
+	13, // 6: aviary.runner.v1.RunTurnRequest.plan_update:type_name -> aviary.runner.v1.PlanUpdate
+	15, // 7: aviary.runner.v1.RunTurnRequest.approval_requested:type_name -> aviary.runner.v1.ApprovalRequested
+	17, // 8: aviary.runner.v1.RunTurnRequest.approval_resolved:type_name -> aviary.runner.v1.ApprovalResolved
+	2,  // 9: aviary.runner.v1.RunTurnResponse.start:type_name -> aviary.runner.v1.Start
+	4,  // 10: aviary.runner.v1.RunTurnResponse.cancel:type_name -> aviary.runner.v1.Cancel
+	3,  // 11: aviary.runner.v1.RunTurnResponse.received:type_name -> aviary.runner.v1.Received
+	5,  // 12: aviary.runner.v1.RunTurnResponse.approval:type_name -> aviary.runner.v1.Approval
+	8,  // 13: aviary.runner.v1.Finished.usage:type_name -> aviary.runner.v1.Usage
+	18, // 14: aviary.runner.v1.ToolCall.input:type_name -> google.protobuf.Value
+	18, // 15: aviary.runner.v1.ToolCall.output:type_name -> google.protobuf.Value
+	19, // 16: aviary.runner.v1.ToolCall.meta:type_name -> google.protobuf.Struct
+	18, // 17: aviary.runner.v1.ToolUpdate.input:type_name -> google.protobuf.Value
+	18, // 18: aviary.runner.v1.ToolUpdate.output:type_name -> google.protobuf.Value
+	19, // 19: aviary.runner.v1.ToolUpdate.meta:type_name -> google.protobuf.Struct
+	14, // 20: aviary.runner.v1.PlanUpdate.entries:type_name -> aviary.runner.v1.PlanEntry
+	12, // 21: aviary.runner.v1.ApprovalRequested.tool_call:type_name -> aviary.runner.v1.ToolUpdate
+	16, // 22: aviary.runner.v1.ApprovalRequested.options:type_name -> aviary.runner.v1.ApprovalOption
+	0,  // 23: aviary.runner.v1.RunnerService.RunTurn:input_type -> aviary.runner.v1.RunTurnRequest
+	1,  // 24: aviary.runner.v1.RunnerService.RunTurn:output_type -> aviary.runner.v1.RunTurnResponse
+	24, // [24:25] is the sub-list for method output_type
+	23, // [23:24] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_aviary_runner_v1_runner_proto_init() }
@@ -1221,24 +1553,28 @@ func file_aviary_runner_v1_runner_proto_init() {
 		(*RunTurnRequest_ToolCall)(nil),
 		(*RunTurnRequest_ToolUpdate)(nil),
 		(*RunTurnRequest_PlanUpdate)(nil),
+		(*RunTurnRequest_ApprovalRequested)(nil),
+		(*RunTurnRequest_ApprovalResolved)(nil),
 	}
 	file_aviary_runner_v1_runner_proto_msgTypes[1].OneofWrappers = []any{
 		(*RunTurnResponse_Start)(nil),
 		(*RunTurnResponse_Cancel)(nil),
 		(*RunTurnResponse_Received)(nil),
+		(*RunTurnResponse_Approval)(nil),
 	}
 	file_aviary_runner_v1_runner_proto_msgTypes[2].OneofWrappers = []any{}
-	file_aviary_runner_v1_runner_proto_msgTypes[7].OneofWrappers = []any{}
 	file_aviary_runner_v1_runner_proto_msgTypes[8].OneofWrappers = []any{}
 	file_aviary_runner_v1_runner_proto_msgTypes[9].OneofWrappers = []any{}
-	file_aviary_runner_v1_runner_proto_msgTypes[11].OneofWrappers = []any{}
+	file_aviary_runner_v1_runner_proto_msgTypes[10].OneofWrappers = []any{}
+	file_aviary_runner_v1_runner_proto_msgTypes[12].OneofWrappers = []any{}
+	file_aviary_runner_v1_runner_proto_msgTypes[17].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_aviary_runner_v1_runner_proto_rawDesc), len(file_aviary_runner_v1_runner_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   14,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

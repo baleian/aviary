@@ -22,7 +22,10 @@ use tonic::{Code, Request, Response, Status, Streaming};
 use proto::run_turn_request::Message as Report;
 use proto::run_turn_response::Message as Order;
 use proto::runner_service_server::{RunnerService, RunnerServiceServer};
-use proto::{Cancel, Received, RunTurnRequest, RunTurnResponse, Start};
+use proto::{
+    Approval, ApprovalRequested, ApprovalResolved, Cancel, Received, RunTurnRequest,
+    RunTurnResponse, Start,
+};
 
 /// The protocol between the runner and the Supervisor, with the Supervisor's
 /// side of it.
@@ -91,6 +94,30 @@ impl State {
                 Report::ToolCall(_) => "tool call",
                 Report::ToolUpdate(_) => "tool update",
                 Report::PlanUpdate(_) => "plan",
+                Report::ApprovalRequested(_) => "approval requested",
+                Report::ApprovalResolved(_) => "approval resolved",
+            })
+            .collect()
+    }
+
+    /// What the harness has asked approval for.
+    pub fn asked(&self) -> Vec<&ApprovalRequested> {
+        self.reports
+            .iter()
+            .filter_map(|report| match report {
+                Report::ApprovalRequested(asked) => Some(asked),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// How its requests were answered to it.
+    pub fn resolved(&self) -> Vec<&ApprovalResolved> {
+        self.reports
+            .iter()
+            .filter_map(|report| match report {
+                Report::ApprovalResolved(resolved) => Some(resolved),
+                _ => None,
             })
             .collect()
     }
@@ -261,6 +288,14 @@ impl Supervisor {
     /// Tells the runner to stop its turn.
     pub fn cancel(&self) {
         self.send(order(Order::Cancel(Cancel {})));
+    }
+
+    /// Gives the runner the answer of a person to a request for approval.
+    pub fn approve(&self, id: &str, option_id: &str) {
+        self.send(order(Order::Approval(Approval {
+            id: id.to_owned(),
+            option_id: option_id.to_owned(),
+        })));
     }
 
     /// Ends the call of the runner with an error.

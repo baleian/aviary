@@ -9,7 +9,8 @@
 //!   big <bytes>        calls a tool that returns so many bytes
 //!   flood <n> <bytes>  says n pieces of so many bytes each
 //!   plan <entry>       makes a plan with the entry
-//!   ask                asks for permission and says which option it was given
+//!   ask [<n>]          asks for permission, n times at once if a number is given, and
+//!                      says which option it was given each time
 //!   instructions       says what its file of instructions holds
 //!   recall             says the messages of the turns before this one
 //!   sleep <ms>         does nothing for so long
@@ -266,27 +267,51 @@ impl Harness {
                     }),
                 ),
                 "ask" => {
-                    send(json!({
-                        "jsonrpc": "2.0", "id": "permission", "method": "session/request_permission",
-                        "params": {
-                            "sessionId": session,
-                            "toolCall": {"toolCallId": "call-0", "title": "ask"},
-                            "options": [
-                                {"optionId": "always", "name": "Always", "kind": "allow_always"},
-                                {"optionId": "once", "name": "Once", "kind": "allow_once"},
-                                {"optionId": "never", "name": "Never", "kind": "reject_once"},
-                            ],
-                        },
-                    }));
-                    let given = self.wait(Duration::from_secs(5), Some("permission"));
-                    let outcome = &given.unwrap_or_default()["result"]["outcome"];
-                    self.say(
-                        session,
-                        outcome["optionId"]
-                            .as_str()
-                            .or(outcome["outcome"].as_str())
-                            .unwrap_or("nothing"),
-                    );
+                    let requests: Vec<String> = (0..rest.parse().unwrap_or(1))
+                        .map(|request| format!("permission-{request}"))
+                        .collect();
+                    for (call, request) in requests.iter().enumerate() {
+                        send(json!({
+                            "jsonrpc": "2.0", "id": request, "method": "session/request_permission",
+                            "params": {
+                                "sessionId": session,
+                                "toolCall": {
+                                    "toolCallId": format!("call-{call}"), "title": "ask",
+                                    "kind": "execute", "rawInput": {"command": "ask"},
+                                },
+                                "options": [
+                                    {"optionId": "always", "name": "Always", "kind": "allow_always"},
+                                    {"optionId": "once", "name": "Once", "kind": "allow_once"},
+                                    {"optionId": "never", "name": "Never", "kind": "reject_once"},
+                                ],
+                            },
+                        }));
+                    }
+                    // The answers come in any order.
+                    let mut given = vec![String::from("nothing"); requests.len()];
+                    let until = Instant::now() + Duration::from_secs(5);
+                    let mut left = requests.len();
+                    while left > 0 {
+                        let Ok(message) = self
+                            .incoming
+                            .recv_timeout(until.saturating_duration_since(Instant::now()))
+                        else {
+                            break;
+                        };
+                        match requests.iter().position(|request| message["id"] == **request) {
+                            Some(request) => {
+                                let outcome = &message["result"]["outcome"];
+                                given[request] = outcome["optionId"]
+                                    .as_str()
+                                    .or(outcome["outcome"].as_str())
+                                    .unwrap_or("nothing")
+                                    .to_owned();
+                                left -= 1;
+                            }
+                            None => self.handle(message),
+                        }
+                    }
+                    self.say(session, &given.join(" "));
                 }
                 "instructions" => {
                     let instructions = env::var("AVIARY_INSTRUCTIONS_FILE")
