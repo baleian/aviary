@@ -445,9 +445,11 @@ func (d *Driver) failure(ctx context.Context, job *batchv1.Job) store.Failure {
 	if pod.Status.Reason == "Evicted" {
 		return store.Failure{Reason: store.FailurePodLost, Message: pod.Status.Message}
 	}
-	for _, container := range pod.Status.ContainerStatuses {
+	// The runner makes the home in one container and runs the agent in the
+	// next. The one that failed tells why the pod did.
+	for _, container := range slices.Concat(pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses) {
 		terminated := container.State.Terminated
-		if container.Name != agentContainer || terminated == nil {
+		if terminated == nil || terminated.ExitCode == 0 && terminated.Signal == 0 {
 			continue
 		}
 		// What the runner left is the most that is known.

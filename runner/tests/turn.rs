@@ -396,15 +396,23 @@ async fn the_runner_makes_the_home_of_a_session() {
     assert!(again.success());
     assert!(home.join("workspace/kept").exists());
 
-    // A home that cannot be made fails the pod before the agent starts.
+    // A home that cannot be made fails the pod before the agent starts, and
+    // the runner leaves the reason as it does for a turn.
     fs::write(store.path().join("file"), "").unwrap();
     let under_a_file = Command::new(env!("CARGO_BIN_EXE_aviary-runner"))
         .arg("init-home")
         .arg(store.path().join("file/home"))
-        .status()
+        .output()
         .await
         .unwrap();
-    assert!(!under_a_file.success());
+    let said = String::from_utf8_lossy(&under_a_file.stderr);
+    assert!(!under_a_file.status.success());
+    assert!(
+        said.contains("reason: \"runner_error\"")
+            && said.contains("the home of the session could not be made")
+            && said.contains("file/home: Not a directory"),
+        "{said}"
+    );
 
     let wrong = Command::new(env!("CARGO_BIN_EXE_aviary-runner"))
         .arg("init")

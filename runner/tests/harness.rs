@@ -710,6 +710,41 @@ async fn the_instructions_of_an_agent_reach_the_model_in_every_turn() {
     .await;
 }
 
+/// The pod of a turn makes the home of its session before the agent starts.
+/// A runner that cannot make it leaves the reason where Kubernetes reads it,
+/// as it does for a turn.
+#[tokio::test]
+#[ignore = "needs the harness images"]
+async fn a_home_that_cannot_be_made_is_why_the_pod_fails() {
+    let files = tempfile::tempdir().unwrap();
+    let left = files.path().join("termination-log");
+    std::fs::write(&left, "").unwrap();
+    std::fs::set_permissions(&left, std::os::unix::fs::PermissionsExt::from_mode(0o666)).unwrap();
+    // The user of the agent may make nothing at the root of the image.
+    let made = Command::new("docker")
+        .args(["run", "--rm", "--user", "10000:10000", "--cap-drop", "ALL"])
+        .args([
+            "--volume",
+            &format!("{}:/dev/termination-log", left.display()),
+        ])
+        .args([RUNNER_IMAGE, "/aviary-runner", "init-home", "/nowhere/home"])
+        .output()
+        .await
+        .expect("docker");
+    let reason: Value =
+        serde_json::from_str(&std::fs::read_to_string(&left).unwrap()).unwrap_or_default();
+    assert!(
+        made.status.code() == Some(1)
+            && reason["reason"] == "runner_error"
+            && reason["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("could not be made: /nowhere:")),
+        "the runner ended with {:?} and left {reason}: {}",
+        made.status.code(),
+        String::from_utf8_lossy(&made.stderr)
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
 async fn a_turn_that_the_model_refuses_fails() {

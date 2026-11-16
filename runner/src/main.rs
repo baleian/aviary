@@ -82,7 +82,7 @@ const TERMINATED: i32 = 128 + 15;
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    match args[..] {
+    let outcome = match args[..] {
         [] => {
             let stopped = Cell::new(false);
             // The runtime has a thread besides this one. On tokio's
@@ -99,15 +99,16 @@ fn main() -> Result<(), Box<dyn Error>> {
             if stopped.get() {
                 process::exit(TERMINATED);
             }
-            if let Err(failure) = &outcome {
-                // Nothing can be done about a reason that cannot be written.
-                let _ = fs::write(TERMINATION_LOG, failure.to_json());
-            }
-            Ok(outcome?)
+            outcome
         }
         ["init-home", home] => init_home(Path::new(home)),
-        _ => Err(USAGE.into()),
+        _ => return Err(USAGE.into()),
+    };
+    if let Err(failure) = &outcome {
+        // Nothing can be done about a reason that cannot be written.
+        let _ = fs::write(TERMINATION_LOG, failure.to_json());
     }
+    Ok(outcome?)
 }
 
 /// Why the runner could not finish the turn.
@@ -185,7 +186,7 @@ impl Error for Failure {}
 /// ones above it up: when a pod on another node then makes one of them, as
 /// that of another session of the same agent does, this pod is told that the
 /// directory exists and yet does not find it, and the turn fails.
-fn init_home(home: &Path) -> Result<(), Box<dyn Error>> {
+fn init_home(home: &Path) -> Result<(), Failure> {
     let workspace = home.join("workspace");
     let mut directories: Vec<&Path> = workspace
         .ancestors()
@@ -194,7 +195,12 @@ fn init_home(home: &Path) -> Result<(), Box<dyn Error>> {
     directories.reverse();
     for directory in directories {
         match fs::create_dir(directory) {
-            Err(error) if error.kind() != io::ErrorKind::AlreadyExists => return Err(error.into()),
+            Err(error) if error.kind() != io::ErrorKind::AlreadyExists => {
+                return Err(Failure::runner(format!(
+                    "the home of the session could not be made: {}: {error}",
+                    directory.display()
+                )));
+            }
             _ => {}
         }
     }

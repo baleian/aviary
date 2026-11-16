@@ -305,10 +305,18 @@ func TestOutcome(t *testing.T) {
 
 func TestFailure(t *testing.T) {
 	failed := batchv1.JobCondition{Type: batchv1.JobFailed, Status: corev1.ConditionTrue}
+	// home is the state of the container that makes the home of the session,
+	// which runs before that of the agent.
+	home := func(terminated corev1.ContainerStateTerminated) []corev1.ContainerStatus {
+		return []corev1.ContainerStatus{{Name: "home", State: corev1.ContainerState{Terminated: &terminated}}}
+	}
 	agent := func(terminated corev1.ContainerStateTerminated) *corev1.PodStatus {
-		return &corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{
-			Name: agentContainer, State: corev1.ContainerState{Terminated: &terminated},
-		}}}
+		return &corev1.PodStatus{
+			InitContainerStatuses: home(corev1.ContainerStateTerminated{Reason: "Completed"}),
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name: agentContainer, State: corev1.ContainerState{Terminated: &terminated},
+			}},
+		}
 	}
 	tests := []struct {
 		name      string
@@ -375,12 +383,24 @@ func TestFailure(t *testing.T) {
 			failure:   store.Failure{Reason: store.FailureRunner, Message: "the runner ended with exit code 101"},
 		},
 		{
-			name:      "the agent never started",
+			name:      "the home of the session could not be made",
 			condition: failed,
-			pod: &corev1.PodStatus{InitContainerStatuses: []corev1.ContainerStatus{{
-				Name: "home", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1}},
-			}}},
-			failure: store.Failure{Reason: store.FailureRunner, Message: "the pod failed before the agent started"},
+			pod: &corev1.PodStatus{InitContainerStatuses: home(corev1.ContainerStateTerminated{
+				ExitCode: 1, Message: `{"reason": "runner_error", "message": "the home of the session could not be made"}`,
+			})},
+			failure: store.Failure{Reason: store.FailureRunner, Message: "the home of the session could not be made"},
+		},
+		{
+			name:      "the runner failed before the agent started and left no reason",
+			condition: failed,
+			pod:       &corev1.PodStatus{InitContainerStatuses: home(corev1.ContainerStateTerminated{ExitCode: 101})},
+			failure:   store.Failure{Reason: store.FailureRunner, Message: "the runner ended with exit code 101"},
+		},
+		{
+			name:      "no container of the pod ran",
+			condition: failed,
+			pod:       &corev1.PodStatus{Reason: "OutOfcpu", Message: "Node didn't have enough resource: cpu"},
+			failure:   store.Failure{Reason: store.FailureRunner, Message: "the pod failed before the agent started"},
 		},
 	}
 	for _, test := range tests {
