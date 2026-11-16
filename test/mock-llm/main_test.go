@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -23,6 +24,19 @@ type sent struct {
 	toolOutput string
 	// noTool is set for a harness that offers the model no tool.
 	noTool bool
+	// sandboxed is set for a harness whose tool keeps a command in a sandbox
+	// unless the model asks otherwise, as the tool of Codex does.
+	sandboxed bool
+}
+
+// parameters returns the parameters of the tool of the harness, of which
+// command is the one that takes the command.
+func (s sent) parameters(command string) map[string]any {
+	properties := map[string]any{command: map[string]any{}}
+	if s.sandboxed {
+		properties["sandbox_permissions"], properties["justification"] = map[string]any{}, map[string]any{}
+	}
+	return map[string]any{"properties": properties}
 }
 
 // reply is what the model answered with: a text, or the call of a tool with
@@ -33,7 +47,9 @@ type reply struct {
 	text    string
 	tool    string
 	command string
-	usage   map[string]float64
+	// others holds what else the call asks of the tool.
+	others map[string]string
+	usage  map[string]float64
 }
 
 // events sends a request to the model and returns the status of the answer
@@ -103,15 +119,14 @@ func str(value any) string {
 	return text
 }
 
-// command returns the command in the arguments of a tool call, whichever
-// name the tool gives it.
-func command(arguments string) string {
-	var named map[string]string
-	json.Unmarshal([]byte(arguments), &named)
-	for _, command := range named {
-		return command
+// called takes in the arguments of a tool call: the command, whichever name
+// the tool gives it, and the others.
+func (r *reply) called(arguments string) {
+	json.Unmarshal([]byte(arguments), &r.others)
+	for _, name := range []string{"command", "cmd"} {
+		r.command += r.others[name]
+		delete(r.others, name)
 	}
-	return ""
 }
 
 // chat talks to the model as OpenCode does, with the Chat Completions API.
@@ -128,7 +143,7 @@ func chat(t *testing.T, url string, conversation sent) reply {
 	request := map[string]any{"model": "mock", "stream": true, "messages": messages}
 	if !conversation.noTool {
 		request["tools"] = []any{map[string]any{"type": "function", "function": map[string]any{
-			"name": "bash", "parameters": map[string]any{"properties": map[string]any{"command": map[string]any{}}},
+			"name": "bash", "parameters": conversation.parameters("command"),
 		}}}
 	}
 	status, stream, refusal := events(t, url+"/v1/chat/completions", apiKey, request)
@@ -146,7 +161,7 @@ func chat(t *testing.T, url string, conversation sent) reply {
 			}
 		}
 	}
-	answer.command = command(arguments)
+	answer.called(arguments)
 	return answer
 }
 
@@ -166,7 +181,7 @@ func respond(t *testing.T, url string, conversation sent) reply {
 	request := map[string]any{"model": "mock", "stream": true, "instructions": conversation.system, "input": input}
 	if !conversation.noTool {
 		request["tools"] = []any{map[string]any{
-			"type": "function", "name": "shell", "parameters": map[string]any{"properties": map[string]any{"cmd": map[string]any{}}},
+			"type": "function", "name": "shell", "parameters": conversation.parameters("cmd"),
 		}}
 	}
 	status, stream, refusal := events(t, url+"/v1/responses", apiKey, request)
@@ -176,7 +191,8 @@ func respond(t *testing.T, url string, conversation sent) reply {
 		case "response.output_text.delta":
 			answer.text += str(event["delta"])
 		case "response.function_call_arguments.done":
-			answer.tool, answer.command = str(event["name"]), command(str(event["arguments"]))
+			answer.tool = str(event["name"])
+			answer.called(str(event["arguments"]))
 		case "response.completed":
 			usage := at(event, "response", "usage").(map[string]any)
 			answer.usage = map[string]float64{
@@ -199,8 +215,9 @@ func TestScript(t *testing.T) {
 				name string
 				sent sent
 				// The answer is the text, or the call of the tool with the
-				// command.
+				// command, which may ask to run it outside the sandbox.
 				text, command string
+				outside       bool
 			}{
 				{name: "say", sent: sent{said: []string{"say hello there"}}, text: "hello there"},
 				{name: "no instruction", sent: sent{said: []string{"hello"}}, text: "mock"},
@@ -210,12 +227,25 @@ func TestScript(t *testing.T) {
 					text: "mock: the harness offers no tool that runs a command",
 				},
 				{name: "what the tool returned", sent: sent{said: []string{"run ls -a"}, toolOutput: ". .. notes.txt"}, text: ". .. notes.txt"},
+				// Only a tool that keeps commands in a sandbox is asked to
+				// run one outside it, and only when the script says so.
+				{name: "escalate", sent: sent{said: []string{"escalate ls -a"}, sandboxed: true}, command: "ls -a", outside: true},
+				{name: "escalate without a sandbox", sent: sent{said: []string{"escalate ls -a"}}, command: "ls -a"},
+				{name: "run in a sandbox", sent: sent{said: []string{"run ls -a"}, sandboxed: true}, command: "ls -a"},
+				{
+					name: "escalate without a tool", sent: sent{said: []string{"escalate ls -a"}, noTool: true},
+					text: "mock: the harness offers no tool that runs a command",
+				},
+				{
+					name: "what the tool returned outside the sandbox",
+					sent: sent{said: []string{"escalate ls -a"}, toolOutput: ". .. notes.txt", sandboxed: true}, text: ". .. notes.txt",
+				},
 				{name: "recall at first", sent: sent{said: []string{"recall"}}, text: "nothing"},
 				{
 					// What a harness adds to the conversation is no message
 					// of the user.
-					name: "recall", sent: sent{said: []string{"say one", "<context>today</context>", "run ls", "recall"}},
-					text: "say one\nrun ls",
+					name: "recall", sent: sent{said: []string{"say one", "<context>today</context>", "run ls", "escalate ls", "recall"}},
+					text: "say one\nrun ls\nescalate ls",
 				},
 				{
 					name: "find what the harness tells the model",
@@ -231,8 +261,12 @@ func TestScript(t *testing.T) {
 				},
 			} {
 				answer := ask(t, model.URL, test.sent)
+				others := map[string]string{}
+				if test.outside {
+					others = map[string]string{"sandbox_permissions": "require_escalated", "justification": "the script says so"}
+				}
 				if answer.status != http.StatusOK || answer.text != test.text || answer.command != test.command ||
-					(test.command != "") != (answer.tool != "") {
+					(test.command != "") != (answer.tool != "") || !maps.Equal(answer.others, others) {
 					t.Errorf("%s: the model answered with %+v", test.name, answer)
 				}
 				// Every answer reports the same usage.

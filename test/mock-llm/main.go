@@ -8,6 +8,11 @@
 //	               which leaves time to stop the turn in the middle of it
 //	run <command>  runs the command with the harness's shell tool, then
 //	               replies with what the tool returned
+//	escalate <command>
+//	               does what run does, and asks for the command to be run
+//	               outside the sandbox of the harness, if its shell tool
+//	               takes such a request. A harness that asks a person
+//	               before it acts asks then
 //	recall         replies with the instructions that the user gave before,
 //	               one per line, or "nothing" if there are none
 //	find <text>    replies "present" if the harness sent the text along with
@@ -35,6 +40,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"strings"
@@ -126,16 +132,39 @@ type shellTool struct {
 	name string
 	// argument is the name of the parameter that takes the command.
 	argument string
+	// sandboxed is set for a tool that keeps a command in a sandbox unless
+	// the model asks otherwise.
+	sandboxed bool
+}
+
+// outside is what the model asks a sandboxed tool with to run a command
+// outside its sandbox. These are the parameters of Codex's tool.
+var outside = map[string]string{
+	"sandbox_permissions": "require_escalated",
+	"justification":       "the script says so",
+}
+
+// arguments returns the arguments of the call that has the tool do what the
+// answer says.
+func (s shellTool) arguments(a answer) string {
+	arguments := map[string]string{s.argument: a.command}
+	if a.outside && s.sandboxed {
+		maps.Copy(arguments, outside)
+	}
+	encoded, _ := json.Marshal(arguments)
+	return string(encoded)
 }
 
 // answer is what the model does next: it calls the shell tool with command,
-// or else it says text, with a pause after each piece. If failure is set
-// there is no answer: the request is refused with it and with the status.
-// An answer that is flaky is given only when it was refused once.
+// which it asks to be run outside the sandbox if outside is set, or else it
+// says text, with a pause after each piece. If failure is set there is no
+// answer: the request is refused with it and with the status. An answer
+// that is flaky is given only when it was refused once.
 type answer struct {
 	text    string
 	pause   time.Duration
 	command string
+	outside bool
 	failure string
 	status  int
 	flaky   bool
@@ -183,10 +212,10 @@ func (c conversation) next() answer {
 		return answer{failure: rest, status: http.StatusUnauthorized}
 	case word == "flaky":
 		return answer{text: rest, flaky: true}
-	case word == "run" && c.shell == nil:
+	case (word == "run" || word == "escalate") && c.shell == nil:
 		return answer{text: "mock: the harness offers no tool that runs a command"}
-	case word == "run":
-		return answer{command: rest}
+	case word == "run" || word == "escalate":
+		return answer{command: rest, outside: word == "escalate"}
 	case word == "find" && strings.Contains(strings.Join(c.sent, "\n"), rest):
 		return answer{text: "present"}
 	case word == "find":
@@ -210,7 +239,7 @@ func (c conversation) next() answer {
 func instruction(message string) (word, rest string, found bool) {
 	word, rest, _ = strings.Cut(strings.TrimSpace(message), " ")
 	switch word {
-	case "say", "drawl", "run", "recall", "find", "fail", "flaky":
+	case "say", "drawl", "run", "escalate", "recall", "find", "fail", "flaky":
 		return word, strings.TrimSpace(rest), true
 	}
 	return "", "", false
@@ -229,7 +258,8 @@ func findShell(tools []tool) *shellTool {
 	for _, tool := range tools {
 		for _, argument := range []string{"command", "cmd"} {
 			if _, found := tool.Parameters.Properties[argument]; found {
-				return &shellTool{name: tool.Name, argument: argument}
+				_, sandboxed := tool.Parameters.Properties["sandbox_permissions"]
+				return &shellTool{name: tool.Name, argument: argument, sandboxed: sandboxed}
 			}
 		}
 	}
@@ -380,7 +410,6 @@ func (m *mock) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		chunk(map[string]any{}, "stop")
 	} else {
-		arguments, _ := json.Marshal(map[string]string{c.shell.argument: next.command})
 		call := func(function map[string]any) map[string]any {
 			return map[string]any{"tool_calls": []map[string]any{function}}
 		}
@@ -389,7 +418,7 @@ func (m *mock) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			"function": map[string]string{"name": c.shell.name, "arguments": ""},
 		}), nil)
 		chunk(call(map[string]any{
-			"index": 0, "function": map[string]string{"arguments": string(arguments)},
+			"index": 0, "function": map[string]string{"arguments": c.shell.arguments(next)},
 		}), nil)
 		chunk(map[string]any{}, "tool_calls")
 	}
@@ -483,17 +512,17 @@ func (m *mock) responses(w http.ResponseWriter, r *http.Request) {
 		item = map[string]any{"id": id, "type": "message", "status": "completed", "role": "assistant", "content": []any{part(next.text)}}
 	} else {
 		id, callID := newID("fc_"), newID("call_")
-		arguments, _ := json.Marshal(map[string]string{c.shell.argument: next.command})
+		arguments := c.shell.arguments(next)
 		call := func(status, arguments string) map[string]any {
 			return map[string]any{
 				"id": id, "type": "function_call", "status": status,
 				"call_id": callID, "name": c.shell.name, "arguments": arguments,
 			}
 		}
-		item = call("completed", string(arguments))
+		item = call("completed", arguments)
 		send("response.output_item.added", map[string]any{"output_index": 0, "item": call("in_progress", "")})
-		send("response.function_call_arguments.delta", map[string]any{"item_id": id, "output_index": 0, "delta": string(arguments)})
-		send("response.function_call_arguments.done", map[string]any{"item_id": id, "output_index": 0, "name": c.shell.name, "arguments": string(arguments)})
+		send("response.function_call_arguments.delta", map[string]any{"item_id": id, "output_index": 0, "delta": arguments})
+		send("response.function_call_arguments.done", map[string]any{"item_id": id, "output_index": 0, "name": c.shell.name, "arguments": arguments})
 	}
 	send("response.output_item.done", map[string]any{"output_index": 0, "item": item})
 	response["status"] = "completed"
