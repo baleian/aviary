@@ -5,8 +5,8 @@ insert into projects (id, name) values (@id, @name) returning *;
 select * from projects where id = @id;
 
 -- name: CreateAgent :one
-insert into agents (id, project_id, harness, instructions, resources)
-select @id::uuid, projects.id, @harness::text, @instructions::text, @resources::jsonb
+insert into agents (id, project_id, harness, instructions, resources, approval)
+select @id::uuid, projects.id, @harness::text, @instructions::text, @resources::jsonb, @approval::text
 from projects where projects.id = @project_id
 returning *;
 
@@ -77,7 +77,7 @@ select id from turns where ended_at is null and cancel_requested_at is not null;
 -- name: NextTurns :many
 -- The queued turns that there is room to run, oldest first.
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, agents.harness,
-       agents.resources, extract(epoch from now() - turns.created_at)::float8 as waited
+       agents.resources, agents.approval, extract(epoch from now() - turns.created_at)::float8 as waited
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id

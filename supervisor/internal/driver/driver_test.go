@@ -184,6 +184,13 @@ func TestJob(t *testing.T) {
 	if !maps.Equal(env, expected) {
 		t.Errorf("the agent container has the variables\n%v, not\n%v", env, expected)
 	}
+
+	// Only the pod of an agent whose harness is to ask is told to ask.
+	dispatch.Approval = Ask
+	asking := driver.job(dispatch, config.Harnesses["opencode"], resources, hosts).Spec.Template.Spec.Containers[0].Env
+	told := slices.IndexFunc(asking, func(variable corev1.EnvVar) bool { return variable.Name == "AVIARY_APPROVAL" })
+	check(len(asking) == len(expected)+1 && told >= 0 && asking[told].Value == "ask",
+		"the pod of an agent with approval is not told to ask")
 }
 
 func TestLaunch(t *testing.T) {

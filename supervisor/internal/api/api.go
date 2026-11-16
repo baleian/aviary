@@ -115,6 +115,7 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 		Harness      string          `json:"harness"`
 		Instructions string          `json:"instructions"`
 		Resources    json.RawMessage `json:"resources"`
+		Approval     string          `json:"approval"`
 	}
 	if err := decode(w, r, &request); err != nil {
 		return err
@@ -126,7 +127,12 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return invalid(err.Error())
 	}
-	agent, err := a.store.CreateAgent(r.Context(), projectID, request.Harness, request.Instructions, resources)
+	if request.Approval != "" && request.Approval != driver.Ask {
+		return invalid(`approval is not "ask"`)
+	}
+	agent, err := a.store.CreateAgent(r.Context(), projectID, store.Agent{
+		Harness: request.Harness, Instructions: request.Instructions, Resources: resources, Approval: request.Approval,
+	})
 	if err != nil {
 		return err
 	}

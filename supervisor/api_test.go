@@ -43,6 +43,7 @@ func TestRefusals(t *testing.T) {
 		{"POST", agents, `{"harness": "another"}`, http.StatusBadRequest, invalid},
 		{"POST", agents, `{"harness": "opencode", "resources": {"limits": {"memory": "-1Gi"}}}`, http.StatusBadRequest, invalid},
 		{"POST", agents, `{"harness": "opencode", "resources": {"limits": {"nvidia.com/gpu": "1"}}}`, http.StatusBadRequest, invalid},
+		{"POST", agents, `{"harness": "opencode", "approval": "always"}`, http.StatusBadRequest, invalid},
 		{"POST", "/v1/projects/" + none + "/agents", `{"harness": "opencode"}`, http.StatusNotFound, notFound},
 		{"GET", "/v1/agents/" + none, ``, http.StatusNotFound, notFound},
 
@@ -96,19 +97,19 @@ func TestResources(t *testing.T) {
 	// An agent has what it was created with. What was not given is not
 	// filled in: an agent without resources follows those of its harness.
 	agents := "/v1/projects/" + project + "/agents"
-	full := get("/v1/agents/" + s.create(agents, `{"harness": "codex", "instructions": "Be brief.",
+	full := get("/v1/agents/" + s.create(agents, `{"harness": "codex", "instructions": "Be brief.", "approval": "ask",
 		"resources": {"requests": {"cpu": "500m"}, "limits": {"memory": "2Gi"}}}`))
 	resources, err := json.Marshal(full["resources"])
 	if err != nil {
 		t.Fatal(err)
 	}
 	if full["project_id"] != project || full["harness"] != "codex" || full["instructions"] != "Be brief." ||
-		string(resources) != `{"limits":{"memory":"2Gi"},"requests":{"cpu":"500m"}}` {
+		full["approval"] != "ask" || string(resources) != `{"limits":{"memory":"2Gi"},"requests":{"cpu":"500m"}}` {
 		t.Errorf("the agent is %v", full)
 	}
-	for _, body := range []string{`{"harness": "opencode"}`, `{"harness": "opencode", "instructions": "", "resources": {}}`} {
+	for _, body := range []string{`{"harness": "opencode"}`, `{"harness": "opencode", "instructions": "", "resources": {}, "approval": ""}`} {
 		plain := get("/v1/agents/" + s.create(agents, body))
-		if _, found := plain["resources"]; found || plain["instructions"] != nil || plain["harness"] != "opencode" {
+		if _, found := plain["resources"]; found || plain["instructions"] != nil || plain["approval"] != nil || plain["harness"] != "opencode" {
 			t.Errorf("the agent that was created with %s is %v", body, plain)
 		}
 	}

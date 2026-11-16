@@ -42,9 +42,12 @@ func TestApproval(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
 	connected, asked := aviary.supervisor(), aviary.supervisor()
-	session := asked.session()
+	session := asked.session(`{"harness": "opencode", "approval": "ask"}`)
 	accepted := asked.send(session, "hello")
 	job := aviary.job(accepted.ID)
+	if approval := told(job, "AVIARY_APPROVAL"); approval != "ask" {
+		t.Errorf("the pod of a turn of an agent with approval is told %q", approval)
+	}
 	runner := connected.take(job)
 	runner.report(started("harness-session"))
 	watching := asked.watch(accepted.ID)

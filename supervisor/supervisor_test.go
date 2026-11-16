@@ -419,8 +419,14 @@ func (i *installation) jobs() []string {
 
 // token returns the token that the pod of the Job holds for its turn.
 func token(job *batchv1.Job) string {
+	return told(job, "AVIARY_TURN_TOKEN")
+}
+
+// told returns what the agent container of the Job has in the variable of
+// that name, which is nothing if it has no such variable.
+func told(job *batchv1.Job, name string) string {
 	for _, variable := range job.Spec.Template.Spec.Containers[0].Env {
-		if variable.Name == "AVIARY_TURN_TOKEN" {
+		if variable.Name == name {
 			return variable.Value
 		}
 	}

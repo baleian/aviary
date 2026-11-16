@@ -62,7 +62,7 @@ func (i *installation) queue() store.Turn {
 	if err != nil {
 		i.t.Fatal(err)
 	}
-	agent, err := i.store.CreateAgent(ctx, project.ID, "opencode", "", nil)
+	agent, err := i.store.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode"})
 	if err != nil {
 		i.t.Fatal(err)
 	}

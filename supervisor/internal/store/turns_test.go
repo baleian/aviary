@@ -47,7 +47,9 @@ func (s supervisor) session() uuid.UUID {
 	if err != nil {
 		s.t.Fatal(err)
 	}
-	agent, err := s.CreateAgent(ctx, project.ID, "opencode", "Be brief.", json.RawMessage(`{"limits": {"memory": "2Gi"}}`))
+	agent, err := s.CreateAgent(ctx, project.ID, store.Agent{
+		Harness: "opencode", Instructions: "Be brief.", Resources: json.RawMessage(`{"limits": {"memory": "2Gi"}}`), Approval: "ask",
+	})
 	if err != nil {
 		s.t.Fatal(err)
 	}
@@ -290,7 +292,7 @@ func TestDispatchTurns(t *testing.T) {
 		t.Errorf("the resources of the agent are %s: %v", first.Resources, err)
 	}
 	if first.SessionID != session.ID || first.AgentID != agent.ID || first.ProjectID != agent.ProjectID ||
-		first.Harness != "opencode" || resources.Limits["memory"] != "2Gi" {
+		first.Harness != "opencode" || resources.Limits["memory"] != "2Gi" || first.Approval != "ask" {
 		t.Errorf("the dispatch is %+v", first)
 	}
 	if first.Token == "" || first.Token == dispatches[1].Token {
@@ -817,7 +819,7 @@ func TestNotFound(t *testing.T) {
 		"agent":           func() error { _, err := st.Agent(ctx, none); return err },
 		"session":         func() error { _, err := st.Session(ctx, none); return err },
 		"turn":            func() error { _, err := st.Turn(ctx, none); return err },
-		"agent of none":   func() error { _, err := st.CreateAgent(ctx, none, "opencode", "", nil); return err },
+		"agent of none":   func() error { _, err := st.CreateAgent(ctx, none, store.Agent{Harness: "opencode"}); return err },
 		"session of none": func() error { _, err := st.CreateSession(ctx, none); return err },
 	} {
 		if err := get(); !errors.Is(err, store.ErrNotFound) {

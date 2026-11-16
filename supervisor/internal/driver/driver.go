@@ -195,6 +195,10 @@ func (d *Driver) hostAliases(ctx context.Context) ([]corev1.HostAlias, error) {
 	return aliases, nil
 }
 
+// Ask is the approval of an agent whose harness asks a person before it
+// acts.
+const Ask = "ask"
+
 // HasHarness reports whether turns can run on the harness of that name.
 func (d *Driver) HasHarness(name string) bool {
 	_, found := d.config.Harnesses[name]
@@ -661,6 +665,33 @@ func (d *Driver) job(dispatch store.Dispatch, harness Harness, resources corev1.
 		AllowPrivilegeEscalation: new(false),
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 	}
+	env := []corev1.EnvVar{
+		{Name: "HOME", Value: "/home"},
+		{Name: "AVIARY_GATEWAY_URL", Value: d.config.GatewayURL},
+		{Name: "AVIARY_TURN_TOKEN", Value: dispatch.Token},
+		// The pod holds no key of the model endpoint. The harness sends the
+		// turn token as its API key, and the Egress Proxy puts the key in
+		// its place.
+		{Name: "AVIARY_LLM_BASE_URL", Value: d.config.LLMBaseURL},
+		{Name: "AVIARY_LLM_API_KEY", Value: dispatch.Token},
+		{Name: "AVIARY_LLM_MODEL", Value: d.config.LLMModel},
+		{Name: "AVIARY_MAX_TOOL_OUTPUT_BYTES", Value: strconv.Itoa(d.config.MaxToolOutputBytes)},
+		{Name: "AVIARY_MAX_RECONNECT_SECONDS", Value: strconv.Itoa(int(d.config.MaxReconnect.Seconds()))},
+		// Everything else that the programs in the pod fetch goes through
+		// the proxy. Some programs read the names in capitals and some the
+		// others.
+		{Name: "HTTP_PROXY", Value: proxy.String()},
+		{Name: "HTTPS_PROXY", Value: proxy.String()},
+		{Name: "NO_PROXY", Value: d.noProxy},
+		{Name: "http_proxy", Value: proxy.String()},
+		{Name: "https_proxy", Value: proxy.String()},
+		{Name: "no_proxy", Value: d.noProxy},
+	}
+	// The harness image and the runner read this: the image starts its
+	// harness so that it asks, and the runner has a person answer.
+	if dispatch.Approval != "" {
+		env = append(env, corev1.EnvVar{Name: "AVIARY_APPROVAL", Value: dispatch.Approval})
+	}
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{Name: jobName(dispatch.TurnID), Labels: labels},
 		Spec: batchv1.JobSpec{
@@ -702,33 +733,12 @@ func (d *Driver) job(dispatch store.Dispatch, harness Harness, resources corev1.
 						VolumeMounts:    []corev1.VolumeMount{{Name: "store", MountPath: "/store"}},
 					}},
 					Containers: []corev1.Container{{
-						Name:       agentContainer,
-						Image:      harness.Image,
-						Command:    []string{"/aviary/bin/aviary-runner"},
-						WorkingDir: "/home/workspace",
-						Resources:  resources,
-						Env: []corev1.EnvVar{
-							{Name: "HOME", Value: "/home"},
-							{Name: "AVIARY_GATEWAY_URL", Value: d.config.GatewayURL},
-							{Name: "AVIARY_TURN_TOKEN", Value: dispatch.Token},
-							// The pod holds no key of the model endpoint. The
-							// harness sends the turn token as its API key, and
-							// the Egress Proxy puts the key in its place.
-							{Name: "AVIARY_LLM_BASE_URL", Value: d.config.LLMBaseURL},
-							{Name: "AVIARY_LLM_API_KEY", Value: dispatch.Token},
-							{Name: "AVIARY_LLM_MODEL", Value: d.config.LLMModel},
-							{Name: "AVIARY_MAX_TOOL_OUTPUT_BYTES", Value: strconv.Itoa(d.config.MaxToolOutputBytes)},
-							{Name: "AVIARY_MAX_RECONNECT_SECONDS", Value: strconv.Itoa(int(d.config.MaxReconnect.Seconds()))},
-							// Everything else that the programs in the pod fetch
-							// goes through the proxy. Some programs read the
-							// names in capitals and some the others.
-							{Name: "HTTP_PROXY", Value: proxy.String()},
-							{Name: "HTTPS_PROXY", Value: proxy.String()},
-							{Name: "NO_PROXY", Value: d.noProxy},
-							{Name: "http_proxy", Value: proxy.String()},
-							{Name: "https_proxy", Value: proxy.String()},
-							{Name: "no_proxy", Value: d.noProxy},
-						},
+						Name:            agentContainer,
+						Image:           harness.Image,
+						Command:         []string{"/aviary/bin/aviary-runner"},
+						WorkingDir:      "/home/workspace",
+						Resources:       resources,
+						Env:             env,
 						SecurityContext: restricted,
 						VolumeMounts: []corev1.VolumeMount{
 							{Name: "store", MountPath: "/home", SubPath: home},

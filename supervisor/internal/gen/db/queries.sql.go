@@ -173,10 +173,10 @@ func (q *Queries) CountWaitingTurns(ctx context.Context, maxRunning int64) (int6
 }
 
 const createAgent = `-- name: CreateAgent :one
-insert into agents (id, project_id, harness, instructions, resources)
-select $1::uuid, projects.id, $2::text, $3::text, $4::jsonb
-from projects where projects.id = $5
-returning id, project_id, harness, created_at, instructions, resources
+insert into agents (id, project_id, harness, instructions, resources, approval)
+select $1::uuid, projects.id, $2::text, $3::text, $4::jsonb, $5::text
+from projects where projects.id = $6
+returning id, project_id, harness, created_at, instructions, resources, approval
 `
 
 type CreateAgentParams struct {
@@ -184,6 +184,7 @@ type CreateAgentParams struct {
 	Harness      string
 	Instructions string
 	Resources    []byte
+	Approval     string
 	ProjectID    uuid.UUID
 }
 
@@ -193,6 +194,7 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 		arg.Harness,
 		arg.Instructions,
 		arg.Resources,
+		arg.Approval,
 		arg.ProjectID,
 	)
 	var i Agent
@@ -203,6 +205,7 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 		&i.CreatedAt,
 		&i.Instructions,
 		&i.Resources,
+		&i.Approval,
 	)
 	return i, err
 }
@@ -460,7 +463,7 @@ func (q *Queries) ExpireTurns(ctx context.Context, seconds float64) ([]Turn, err
 }
 
 const getAgent = `-- name: GetAgent :one
-select id, project_id, harness, created_at, instructions, resources from agents where id = $1
+select id, project_id, harness, created_at, instructions, resources, approval from agents where id = $1
 `
 
 func (q *Queries) GetAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
@@ -473,6 +476,7 @@ func (q *Queries) GetAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
 		&i.CreatedAt,
 		&i.Instructions,
 		&i.Resources,
+		&i.Approval,
 	)
 	return i, err
 }
@@ -703,7 +707,7 @@ func (q *Queries) Lock(ctx context.Context, key int64) error {
 
 const nextTurns = `-- name: NextTurns :many
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, agents.harness,
-       agents.resources, extract(epoch from now() - turns.created_at)::float8 as waited
+       agents.resources, agents.approval, extract(epoch from now() - turns.created_at)::float8 as waited
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
@@ -719,6 +723,7 @@ type NextTurnsRow struct {
 	ProjectID uuid.UUID
 	Harness   string
 	Resources []byte
+	Approval  string
 	Waited    float64
 }
 
@@ -739,6 +744,7 @@ func (q *Queries) NextTurns(ctx context.Context, maxRunning int64) ([]NextTurnsR
 			&i.ProjectID,
 			&i.Harness,
 			&i.Resources,
+			&i.Approval,
 			&i.Waited,
 		); err != nil {
 			return nil, err

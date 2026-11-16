@@ -17,6 +17,7 @@ type Agent struct {
 	CreatedAt    time.Time
 	Instructions string
 	Resources    []byte
+	Approval     string
 }
 
 type Approval struct {

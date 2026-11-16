@@ -81,6 +81,9 @@ type Agent struct {
 	// Kubernetes. An agent without resources of its own has none: its turns
 	// get the default of its harness, as that is when each turn starts.
 	Resources json.RawMessage `json:"resources,omitempty"`
+	// Approval is "ask" if a person answers what the harness asks before it
+	// acts. Nothing is asked of an agent without it.
+	Approval string `json:"approval,omitempty"`
 }
 
 type Session struct {
@@ -194,6 +197,8 @@ type Dispatch struct {
 	Harness   string
 	// Resources are the resources of the agent, if it has any of its own.
 	Resources json.RawMessage
+	// Approval is the approval of the agent, if it has any.
+	Approval string
 	// Token is what the runner takes the turn with. Only its hash is stored.
 	Token string
 	// Waited is how long the turn waited to run.
@@ -235,14 +240,17 @@ func (s *Store) Project(ctx context.Context, id uuid.UUID) (Project, error) {
 	return Project(row), err
 }
 
-// CreateAgent returns ErrNotFound if the project does not exist.
-func (s *Store) CreateAgent(ctx context.Context, projectID uuid.UUID, harness, instructions string, resources json.RawMessage) (Agent, error) {
+// CreateAgent creates an agent with what the given one has of its own: its
+// harness, instructions, resources and approval. It returns ErrNotFound if
+// the project does not exist.
+func (s *Store) CreateAgent(ctx context.Context, projectID uuid.UUID, agent Agent) (Agent, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return Agent{}, err
 	}
 	row, err := s.queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: id, ProjectID: projectID, Harness: harness, Instructions: instructions, Resources: resources,
+		ID: id, ProjectID: projectID, Harness: agent.Harness, Instructions: agent.Instructions,
+		Resources: agent.Resources, Approval: agent.Approval,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Agent{}, ErrNotFound
@@ -419,6 +427,7 @@ func (s *Store) DispatchTurns(ctx context.Context, limit int) ([]Dispatch, error
 			ProjectID: row.ProjectID,
 			Harness:   row.Harness,
 			Resources: row.Resources,
+			Approval:  row.Approval,
 			Token:     rand.Text(),
 			Waited:    time.Duration(row.Waited * float64(time.Second)),
 		}
@@ -759,6 +768,7 @@ func agentFrom(row db.Agent) Agent {
 		CreatedAt:    row.CreatedAt,
 		Instructions: row.Instructions,
 		Resources:    row.Resources,
+		Approval:     row.Approval,
 	}
 }
 
