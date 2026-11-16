@@ -7,7 +7,9 @@
 //! TURN_INSTRUCTIONS the instructions of the agent. It writes what it sees
 //! of the runner to its output, a JSON object on each line: the calls of the
 //! runner and the reports that it records. On SIGUSR1 it tells the runner to
-//! stop the turn. It ends when the runner has ended its call.
+//! stop the turn. On SIGUSR2 it answers what the harness has asked approval
+//! for, as a person would, with the option of the kind that TURN_ANSWER
+//! names. It ends when the runner has ended its call.
 
 #[path = "supervisor.rs"]
 mod supervisor;
@@ -20,6 +22,7 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio::time;
 
 use supervisor::Supervisor;
+use supervisor::proto::ApprovalRequested;
 use supervisor::proto::run_turn_request::Message as Report;
 
 fn value(value: &prost_types::Value) -> Value {
@@ -57,6 +60,8 @@ fn line(report: &Report) -> Value {
         Report::PlanUpdate(plan) => json!({"report": "plan", "entries": plan.entries.len()}),
         Report::ApprovalRequested(asked) => json!({
             "report": "approval requested", "id": asked.id,
+            "title": asked.tool_call.as_ref().and_then(|call| call.title.clone()),
+            "input": asked.tool_call.as_ref().and_then(|call| call.input.as_ref()).map(value),
             "options": asked.options.iter().map(|option| json!({"id": option.id, "kind": option.kind})).collect::<Vec<_>>(),
         }),
         Report::ApprovalResolved(resolved) => json!({
@@ -82,10 +87,25 @@ async fn main() {
         state.instructions = env::var("TURN_INSTRUCTIONS").unwrap_or_default();
     });
     let mut cancel = signal(SignalKind::user_defined1()).expect("a handler for SIGUSR1");
+    let mut answer = signal(SignalKind::user_defined2()).expect("a handler for SIGUSR2");
+    let kind = env::var("TURN_ANSWER").unwrap_or_default();
     let (mut calls, mut reports) = (0, 0);
     loop {
         tokio::select! {
             _ = cancel.recv() => supervisor.cancel(),
+            _ = answer.recv() => {
+                // The runner drops an answer to a request that has one.
+                let answers = supervisor.state(|state| {
+                    let chosen = |asked: &&ApprovalRequested| {
+                        let option = asked.options.iter().find(|option| option.kind == kind)?;
+                        Some((asked.id.clone(), option.id.clone()))
+                    };
+                    state.asked().iter().filter_map(chosen).collect::<Vec<_>>()
+                });
+                for (id, option) in answers {
+                    supervisor.approve(&id, &option);
+                }
+            }
             () = time::sleep(Duration::from_millis(10)) => {}
         }
         let (lines, left) = supervisor.state(|state| {

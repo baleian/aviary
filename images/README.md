@@ -23,6 +23,7 @@ The container is set up like this:
 | Model endpoint | `AVIARY_LLM_BASE_URL`, `AVIARY_LLM_API_KEY` and `AVIARY_LLM_MODEL`. The address is the Egress Proxy and the key is the token of the turn. The proxy puts the real key in its place, so the pod never holds it. |
 | Network | The pod connects to the Supervisor and the Egress Proxy and to nothing else, and it has no DNS. `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`, also in lower case, point to the proxy, which lets requests through to the hosts that the installation allows. |
 | Kubernetes API | No service account token is mounted. |
+| Approval | `AVIARY_APPROVAL=ask` in the turns of an agent that is to ask a person before it acts. Other agents do not have the variable. |
 | Time | The pod is stopped when it has run for as long as the installation lets a turn run, which is 30 minutes unless it is set otherwise. |
 
 The runner talks to the harness over its standard input and output with the
@@ -31,12 +32,18 @@ sends `initialize`, then `session/new` for the first turn of a session or
 `session/resume` for a later one, then `session/prompt` with the message as
 text. From the harness's `session/update` notifications it passes on the
 agent's message and thought text, tool calls and their updates, and plans.
-It answers `session/request_permission` by allowing the action once. When the
-prompt returns, the turn is over and the harness is stopped. To stop a turn
-before that, because it was cancelled or because its pod is about to be
-stopped, the runner sends `session/cancel`, and a harness that ends the turn
-then answers the prompt with the stop reason `cancelled`. A turn that is
+When the prompt returns, the turn is over and the harness is stopped. To stop
+a turn before that, because it was cancelled or because its pod is about to
+be stopped, the runner sends `session/cancel`, and a harness that ends the
+turn then answers the prompt with the stop reason `cancelled`. A turn that is
 stopped before the prompt was sent gets none.
+
+What the runner does with `session/request_permission` depends on the agent.
+For an agent that is to ask, it passes the request on with the options that
+the harness gave, and answers with the option that a person picked. The
+harness waits for that as long as the turn runs. A request that is open when
+the turn is stopped is answered as cancelled. For any other agent the runner
+allows the action once, by itself.
 
 ## What the image must provide
 
@@ -63,6 +70,13 @@ stopped before the prompt was sent gets none.
    harness must be able to write the file. Most harnesses have such a file
    for instructions that hold in every session, often named `AGENTS.md`. An
    image that names none runs only agents without instructions.
+
+7. **It asks before it acts if `AVIARY_APPROVAL` is `ask`.** The image
+   starts the harness so that it sends `session/request_permission` before
+   it does what a person should agree to first. What that covers is for the
+   image to decide, with the settings of its harness. An image that does not
+   read the variable runs an agent that is to ask like any other: nobody is
+   asked.
 
 Environment variables that begin with `AVIARY_` are reserved for Aviary. The
 harness also sees the ones that the runner uses, such as `AVIARY_GATEWAY_URL`.
@@ -94,6 +108,20 @@ The images here ran into these cases:
   tools fetch from outside has to go through the proxy. git, npm and curl
   use the variables. Node's `fetch` does not, unless `NODE_USE_ENV_PROXY=1`
   is set, which `images/harness-base` does.
+- **A sandbox that is the only thing that asks.** Codex asks a person only
+  when a command is to leave its sandbox, and the sandbox does not start in
+  a pod. For an agent that is to ask, the image starts Codex in its
+  read-only mode all the same: a command that the model tries inside the
+  sandbox fails, and it runs when the model has asked for it to run outside
+  and a person has allowed that. The failed try costs one more request to
+  the model.
+- **What the harness makes of a refusal.** Both harnesses here end the turn
+  when a person refuses an action: OpenCode with the stop reason `end_turn`,
+  Codex with `cancelled`. Aviary records the turn as the harness ends it.
+- **How long "always" lasts.** An option of the kind `allow_always` holds for
+  as long as the harness remembers it. OpenCode forgets it with its process,
+  which is at the end of the turn. Codex writes a rule into its directory in
+  the session home, which the later turns of the session read.
 - **Time to start.** The harness starts on every turn, so its startup time
   is part of every answer.
 
@@ -102,12 +130,12 @@ The images here ran into these cases:
 | Image | Contents |
 | --- | --- |
 | `harness-base` | Node.js, git and the user with UID 10000. The base of the two below. |
-| `harness-opencode` | [OpenCode](https://opencode.ai), started with `opencode acp`. It talks to the model server with the Chat Completions API. |
-| `harness-codex` | [Codex](https://github.com/openai/codex) behind its ACP adapter, `codex-acp`. It talks to the model server with the Responses API. |
+| `harness-opencode` | [OpenCode](https://opencode.ai), started with `opencode acp`. It talks to the model server with the Chat Completions API. Told to ask, it asks before it runs a command or changes a file. |
+| `harness-codex` | [Codex](https://github.com/openai/codex) behind its ACP adapter, `codex-acp`. It talks to the model server with the Responses API. Told to ask, it runs in Codex's read-only mode and asks before a command runs outside its sandbox. |
 
 ## Adding a harness
 
-1. Write a Dockerfile that meets the six points above. Building on
+1. Write a Dockerfile that meets the seven points above. Building on
    `aviary-harness-base` gives you the user.
 2. Build the image and test it:
 
@@ -120,7 +148,8 @@ The images here ran into these cases:
    that speaks the Chat Completions API and the Responses API, and they have
    the agent run shell commands, so they need the harness to offer the model
    a tool with a `command` or a `cmd` parameter. A harness that fetches
-   something for itself when it starts fails them.
+   something for itself when it starts fails them, and so does one that runs
+   a command of an agent that is to ask without asking.
 3. Make the image available to the cluster. For the local cluster that is
    `kind load docker-image --name aviary <image>`.
 4. Add the harness to the chart's values under a name of your choice:

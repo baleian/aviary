@@ -76,6 +76,11 @@ struct Message<'a> {
     session: Option<&'a str>,
     /// The instructions of the session's agent.
     instructions: &'a str,
+    /// The approval of the session's agent: "ask", or nothing.
+    approval: &'a str,
+    /// The kind of the option that a person answers with, when the test has
+    /// them answer what the harness asks approval for.
+    answer: &'a str,
 }
 
 impl Bench {
@@ -207,6 +212,21 @@ impl Bench {
         hosts
     }
 
+    /// The names of the files in the workspace of a session.
+    async fn files(&self, home: &str) -> String {
+        docker(&[
+            "run",
+            "--rm",
+            "--volume",
+            &format!("{home}:/store"),
+            "--entrypoint",
+            "ls",
+            &self.image,
+            "/store/home/workspace",
+        ])
+        .await
+    }
+
     /// How many megabytes the home of a session holds.
     async fn megabytes(&self, home: &str) -> u64 {
         let used = docker(&[
@@ -248,6 +268,8 @@ impl Bench {
                 ),
                 "--env",
                 &format!("TURN_INSTRUCTIONS={}", message.instructions),
+                "--env",
+                &format!("TURN_ANSWER={}", message.answer),
                 SUPERVISOR_IMAGE,
             ])
             .stdout(Stdio::piped())
@@ -274,6 +296,9 @@ impl Bench {
             .unwrap();
         let harness = self.next("harness");
         let direct = format!("localhost,127.0.0.1,::1,model,{supervisor}");
+        // Only the pod of an agent that is to ask has the variable.
+        let approval = (!message.approval.is_empty())
+            .then(|| format!("--env=AVIARY_APPROVAL={}", message.approval));
         let mut running = Command::new("docker")
             .args([
                 "run",
@@ -326,9 +351,9 @@ impl Bench {
                 &format!("https_proxy={PROXY}"),
                 "--env",
                 &format!("no_proxy={direct}"),
-                &self.image,
-                "/aviary/bin/aviary-runner",
             ])
+            .args(&approval)
+            .args([&self.image, "/aviary/bin/aviary-runner"])
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
@@ -465,6 +490,12 @@ impl Turn {
     /// Has the Supervisor tell the runner to stop the turn.
     async fn cancel(&self) {
         docker(&["kill", "--signal", "USR1", &self.supervisor]).await;
+    }
+
+    /// Has the Supervisor give the runner the answer of a person to what the
+    /// harness has asked approval for.
+    async fn answer(&self) {
+        docker(&["kill", "--signal", "USR2", &self.supervisor]).await;
     }
 
     /// Tells the container to stop, as Kubernetes tells the pod of a turn.
@@ -691,6 +722,7 @@ async fn the_instructions_of_an_agent_reach_the_model_in_every_turn() {
             text: &find,
             instructions: &instructions,
             session: Some(&session),
+            ..Message::default()
         };
         bench.run(&home, again).await.completed().says("present");
 
@@ -706,6 +738,125 @@ async fn the_instructions_of_an_agent_reach_the_model_in_every_turn() {
             )
             .await;
         untold.completed().says("absent");
+    })
+    .await;
+}
+
+/// An agent that is to ask runs a command when a person has allowed it, and
+/// not one that a person has refused. How the turn ends after a refusal is
+/// up to the harness. The session goes on either way.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the harness images"]
+async fn an_agent_that_is_to_ask_runs_what_a_person_allows() {
+    each(|bench| async move {
+        let home = bench.home().await;
+        let asked = |reports: &[Value]| find(reports, "approval requested").is_some();
+        let resolved = |ended: &Ended| {
+            let resolved = find(&ended.reports, "approval resolved");
+            resolved.map(|resolved| resolved["outcome"].clone())
+        };
+        let (allowed, refused, dropped) = (word("allowed"), word("refused"), word("dropped"));
+
+        let allow = format!("escalate touch {allowed}");
+        let message = Message {
+            text: &allow,
+            approval: "ask",
+            answer: "allow_once",
+            ..Message::default()
+        };
+        let turn = bench.start(&home, message).await;
+        turn.until("the harness asked for no approval", asked).await;
+        // The request tells a person the command, and can be allowed and
+        // refused. The command waits for the answer.
+        let request = find(&turn.reports.lock().unwrap(), "approval requested").cloned();
+        let request = request.unwrap();
+        let kinds: Vec<&str> = request["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|option| option["kind"].as_str())
+            .collect();
+        assert!(
+            request.to_string().contains(&allowed)
+                && kinds.contains(&"allow_once")
+                && kinds.contains(&"reject_once"),
+            "{}: the harness asked {request}",
+            bench.image
+        );
+        assert!(
+            !bench.files(&home).await.contains(&allowed),
+            "{}: the command ran before a person allowed it",
+            bench.image
+        );
+        turn.answer().await;
+        let first = turn.end().await;
+        first.completed();
+        assert!(
+            resolved(&first) == Some("selected".into())
+                && bench.files(&home).await.contains(&allowed),
+            "{}: a command that a person allowed did not run: {:?}",
+            first.image,
+            first.reports
+        );
+        let session = first.session();
+
+        let refuse = format!("escalate touch {refused}");
+        let message = Message {
+            text: &refuse,
+            session: Some(&session),
+            approval: "ask",
+            answer: "reject_once",
+            ..Message::default()
+        };
+        let turn = bench.start(&home, message).await;
+        turn.until("the harness asked for no approval", asked).await;
+        turn.answer().await;
+        let second = turn.end().await;
+        assert!(
+            second.code == Some(0)
+                && find(&second.reports, "finished").is_some()
+                && resolved(&second) == Some("selected".into())
+                && !bench.files(&home).await.contains(&refused),
+            "{}: after a refusal the turn ended with {:?} and {:?}\n{}",
+            second.image,
+            second.code,
+            second.reports,
+            second.log
+        );
+
+        // A turn that is cancelled while its harness asks ends as one that
+        // was cancelled, with nothing run.
+        let drop = format!("escalate touch {dropped}");
+        let message = Message {
+            text: &drop,
+            session: Some(&session),
+            approval: "ask",
+            ..Message::default()
+        };
+        let turn = bench.start(&home, message).await;
+        turn.until("the harness asked for no approval", asked).await;
+        turn.cancel().await;
+        let third = turn.end().await;
+        let finished = find(&third.reports, "finished");
+        assert!(
+            third.code == Some(0)
+                && finished.is_some_and(|finished| finished["stop_reason"] == "cancelled")
+                && resolved(&third) == Some("cancelled".into())
+                && !bench.files(&home).await.contains(&dropped),
+            "{}: a turn that was cancelled while its harness asked ended with {:?} and {:?}\n{}",
+            third.image,
+            third.code,
+            third.reports,
+            third.log
+        );
+
+        let recall = Message {
+            text: "recall",
+            session: Some(&session),
+            approval: "ask",
+            ..Message::default()
+        };
+        bench.run(&home, recall).await.completed().says(&allow);
     })
     .await;
 }
