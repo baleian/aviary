@@ -399,14 +399,14 @@ func (q *Queries) DispatchedTurns(ctx context.Context) ([]DispatchedTurnsRow, er
 
 const endTurn = `-- name: EndTurn :exec
 update turns set ended_at = now(6), state = ?, failure_reason = ?,
-       failure_message = ?
+       failure_message = nullif(?, '')
 where id = ?
 `
 
 type EndTurnParams struct {
 	State          string
 	FailureReason  *string
-	FailureMessage *string
+	FailureMessage interface{}
 	ID             key.ID
 }
 

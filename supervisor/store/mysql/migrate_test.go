@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"aviary/supervisor/internal/testenv"
 )
@@ -225,6 +226,12 @@ func TestConnect(t *testing.T) {
 	if err := db.QueryRow(`select @@session.time_zone, @@session.transaction_isolation`).Scan(&zone, &isolation); err != nil ||
 		zone != "+00:00" || isolation != "READ-COMMITTED" {
 		t.Errorf("a connection has the time zone %s and reads as %s: %v", zone, isolation, err)
+	}
+	// It reads the times as UTC, whatever the time zone of the Supervisor is.
+	var at time.Time
+	if err := db.QueryRow(`select cast('2026-01-02 03:04:05.678901' as datetime(6))`).Scan(&at); err != nil ||
+		at.Location() != time.UTC || !at.Equal(time.Date(2026, 1, 2, 3, 4, 5, 678901000, time.UTC)) {
+		t.Errorf("a time of the database is read as %v: %v", at, err)
 	}
 	// It refuses what does not fit a column, which the server of the tests
 	// is set up to cut to fit.

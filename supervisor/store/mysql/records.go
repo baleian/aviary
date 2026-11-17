@@ -631,10 +631,7 @@ func (s *records) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool,
 		case row.FailureReason != nil:
 			end.FailureReason, end.FailureMessage = row.FailureReason, row.FailureMessage
 		default:
-			end.FailureReason = &failure.Reason
-			if failure.Message != "" {
-				end.FailureMessage = &failure.Message
-			}
+			end.FailureReason, end.FailureMessage = &failure.Reason, failure.Message
 		}
 		if err := queries.EndTurn(ctx, end); err != nil {
 			return err

@@ -201,7 +201,7 @@ where id = sqlc.arg(id) and state = 'dispatching' and failure_reason is null and
 
 -- name: EndTurn :exec
 update turns set ended_at = now(6), state = sqlc.arg(state), failure_reason = sqlc.narg(failure_reason),
-       failure_message = sqlc.narg(failure_message)
+       failure_message = nullif(sqlc.narg(failure_message), '')
 where id = sqlc.arg(id);
 
 -- name: AddTurnItem :exec
