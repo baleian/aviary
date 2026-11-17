@@ -95,8 +95,14 @@ func TestAgentNamesItsModel(t *testing.T) {
 	// What a pod sends through the forward proxy goes where the pod says: the
 	// proxy is told whose request it is, and nothing of the provider.
 	forward := s.check(token(job), true, "/custom/v2/chat/completions")
-	if got := named(t, forward); got != nil || forward.GetDynamicMetadata().GetFields()["turn"].GetStringValue() == "" {
+	if got := named(t, forward); got != nil || forward.GetDynamicMetadata().GetFields()["turn"].GetStringValue() == "" ||
+		forward.GetDynamicMetadata().GetFields()["provider"] != nil {
 		t.Errorf("about a request through the forward proxy, the proxy is told %+v and %v", got, forward.GetDynamicMetadata())
+	}
+	// The record of the proxy tells which provider a model request went to.
+	model := s.check(token(job), false, "/custom/v2/chat/completions")
+	if told := model.GetDynamicMetadata().GetFields()["provider"].GetStringValue(); told != provider {
+		t.Errorf("of a model request, the proxy is told the provider %q, not %q", told, provider)
 	}
 
 	// The endpoint is the URL of the provider and what is below it.

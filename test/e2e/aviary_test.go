@@ -35,6 +35,7 @@ func TestAviary(t *testing.T) {
 		for name, test := range map[string]func(*testing.T){
 			"a turn pod reaches the outside only through the proxy": egress,
 			"an agent uses the provider that it names":              providers,
+			"a provider keeps its key in a secret store":            secretStore,
 			"a turn that fails says why":                            failures,
 			"a turn is cancelled":                                   cancel,
 			"the Supervisors report the turns":                      supervisorMetrics,
@@ -334,6 +335,68 @@ func providers(t *testing.T) {
 	}
 	if next := run(t, session, "say done"); !strings.Contains(next.said(), "done") {
 		t.Errorf("with the key of its provider replaced, the agent said %q", next.said())
+	}
+}
+
+// The key of a provider may be in a secret store of the project, where
+// Aviary reads it when a model request comes. Two agents of one project use
+// two model servers, each with its own key: one key is stored, the other is
+// in the secret store of the cluster.
+func secretStore(t *testing.T) {
+	project := create(t, "/v1/projects", `{"name": "e2e"}`)
+	// The owner of the store gives Aviary a role, which may read the secrets
+	// below a path of its own.
+	name := unique("e2e")
+	owner(t, "POST", "/v1/sys/auth/approle", map[string]string{"type": "approle"}, http.StatusBadRequest)
+	owner(t, "PUT", "/v1/sys/policies/acl/"+name, map[string]string{
+		"policy": fmt.Sprintf(`path "secret/data/%s/*" { capabilities = ["read"] }`, name),
+	})
+	owner(t, "POST", "/v1/auth/approle/role/"+name, map[string]string{"token_policies": name})
+	roleID, _ := owner(t, "GET", "/v1/auth/approle/role/"+name+"/role-id", nil)["role_id"].(string)
+	secretID, _ := owner(t, "POST", "/v1/auth/approle/role/"+name+"/secret-id", nil)["secret_id"].(string)
+	if roleID == "" || secretID == "" {
+		t.Fatal("the secret store gave the role no IDs")
+	}
+	// keep keeps a key in the store, where the provider says that its key is.
+	keep := func(key string) {
+		t.Helper()
+		owner(t, "POST", "/v1/secret/data/"+name+"/model", map[string]any{"data": map[string]string{"api_key": key}})
+	}
+	// The store holds the key of the first server, which the other server
+	// does not take.
+	keep(mockKey)
+	registered := fmt.Sprintf(`{"name": "e2e", "kind": "kv-v2", "settings": {"address": %q, "mount": "secret", "role_id": %q}, "credential": {"value": %q}}`,
+		storeAddress, roleID, secretID)
+	kept := create(t, "/v1/projects/"+project+"/secret-stores", registered)
+	stored := provider(t, project, mockKey)
+	elsewhere := create(t, "/v1/projects/"+project+"/providers",
+		fmt.Sprintf(`{"name": "other", "url": %q, "api_key": {"store": %q, "path": %q, "key": "api_key"}}`, otherURL, kept, name+"/model"))
+	first := agentOf(t, project, stored, harness(harnesses[0]))
+	second := agentOf(t, project, elsewhere, harness(harnesses[0]))
+
+	// Each agent asks its own server, with the key of its own provider.
+	completed := run(t, first.session(t), "say done")
+	if line := logged(t, completed.ID, "llm", "mock-llm.aviary-e2e", 200); line["provider"] != stored {
+		t.Errorf("the record of the proxy has the model request of the first agent go to the provider %v, not %s", line["provider"], stored)
+	}
+	session := second.session(t)
+	refused := send(t, session, "say done")
+	if last := read(t, refused.ID).end(t); last.Type != "turn.failed" {
+		t.Fatalf("the turn of an agent whose secret store holds a key that its server does not take ended with %s %s", last.Type, last.Data)
+	}
+	logged(t, refused.ID, "llm", otherHost, 401)
+
+	// The key in the store is changed. A Supervisor goes on with what it
+	// read for as long as the installation says, and no longer: after that
+	// time the model requests carry the key that the store has now.
+	keep(otherKey)
+	time.Sleep(remembered)
+	next := run(t, session, "say done")
+	if !strings.Contains(next.said(), "done") {
+		t.Errorf("with the key in its secret store changed, the agent said %q", next.said())
+	}
+	if line := logged(t, next.ID, "llm", otherHost, 200); line["provider"] != elsewhere {
+		t.Errorf("the record of the proxy has the model request of the second agent go to the provider %v, not %s", line["provider"], elsewhere)
 	}
 }
 

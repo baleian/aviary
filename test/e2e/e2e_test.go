@@ -15,7 +15,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -133,6 +135,59 @@ const (
 func provider(t *testing.T, project, key string) string {
 	t.Helper()
 	return create(t, "/v1/projects/"+project+"/providers", fmt.Sprintf(`{"name": "mock", "url": %q, "api_key": {"value": %q}}`, mockURL, key))
+}
+
+// The other model server of the tests, which has a key of its own, and the
+// secret store of the cluster, where the tests keep that key.
+const (
+	otherURL     = "http://mock-llm-other.aviary-e2e/v1"
+	otherHost    = "mock-llm-other.aviary-e2e"
+	otherKey     = "other-mock-llm-key"
+	storeAddress = "http://openbao.aviary-data:8200"
+	data         = "aviary-data"
+	// remembered is for how long a Supervisor of the installation uses what
+	// it read from a secret store, as the values of the e2e set it.
+	remembered = 5 * time.Second
+)
+
+// rootToken is the token of the secret store's owner, which `make
+// secret-store` keeps in a secret beside the store.
+var rootToken = sync.OnceValues(func() (string, error) {
+	root, err := cluster.CoreV1().Secrets(data).Get(ctx, "openbao-root", metav1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+	return string(root.Data["token"]), nil
+})
+
+// owner sends the secret store of the cluster a request as its owner does,
+// through the API server, and returns the data of the answer. The store may
+// answer with one of the statuses beside those of success.
+func owner(t *testing.T, method, path string, body any, statuses ...int) map[string]any {
+	t.Helper()
+	token, err := rootToken()
+	if err != nil {
+		t.Fatalf("the root token of the secret store: %v: `make e2e` installs the store", err)
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answered := cluster.CoreV1().RESTClient().Verb(method).Namespace(data).
+		Resource("services").Name("openbao:http").SubResource("proxy").Suffix(path).
+		SetHeader("X-Vault-Token", token).Body(encoded).Do(ctx)
+	var status int
+	answered.StatusCode(&status)
+	raw, err := answered.Raw()
+	if status == 0 {
+		t.Fatalf("%s %s of the secret store: %v", method, path, err)
+	}
+	if !slices.Contains(append(statuses, http.StatusOK, http.StatusNoContent), status) {
+		t.Fatalf("the secret store answered %s %s with %d %s", method, path, status, raw)
+	}
+	var answer struct{ Data map[string]any }
+	json.Unmarshal(raw, &answer)
+	return answer.Data
 }
 
 // agent is an agent of a project.

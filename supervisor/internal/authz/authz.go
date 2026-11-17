@@ -48,7 +48,8 @@ func New(st store.Store, keys *secret.Keys, stores *secret.Stores) authv3.Author
 
 // Check allows a request that carries the token of a running turn. The
 // proxy gets back, as metadata, the ID of the turn and those of the session,
-// the agent and the project that the turn belongs to. It writes them to its
+// the agent and the project that the turn belongs to, and for a model
+// request that of the provider that it goes to. It writes them to its
 // access log, so that a line of the log tells by itself where a request
 // came from.
 //
@@ -84,12 +85,16 @@ func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*
 		slog.ErrorContext(ctx, "look up the turn of a token", "error", err)
 		return nil, status.Error(codes.Internal, "internal error")
 	}
-	metadata, err := structpb.NewStruct(map[string]any{
+	from := map[string]any{
 		"turn":    origin.TurnID.String(),
 		"session": origin.SessionID.String(),
 		"agent":   origin.AgentID.String(),
 		"project": origin.ProjectID.String(),
-	})
+	}
+	if !forward && origin.Provider != nil {
+		from["provider"] = origin.Provider.ID.String()
+	}
+	metadata, err := structpb.NewStruct(from)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "internal error")
 	}

@@ -71,6 +71,10 @@ func TestTurn(t *testing.T) {
 		if origin["turn"] != accepted.ID || origin["session"] != session || origin["agent"] == "" || origin["project"] == "" {
 			t.Errorf("the token of the running turn is that of %v", origin)
 		}
+		// A model request goes to a provider, which the proxy is told too.
+		if _, provider := origin["provider"]; provider == forward {
+			t.Errorf("of a request that is through the forward proxy %t, the proxy is told the provider %q", forward, origin["provider"])
+		}
 	}
 	if origin := s.origin("another-token", false); origin != nil {
 		t.Errorf("a token of no turn is that of %v", origin)

@@ -78,6 +78,24 @@ func TestEgressProxy(t *testing.T) {
 	}
 }
 
+// A line of the proxy's record tells by itself where a request came from,
+// and of a model request which provider it went to.
+func TestEgressProxyRecordsWhereARequestCameFrom(t *testing.T) {
+	_, envoy := chart(t, "default")
+	told := func(field string) string { return "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:" + field + ")%" }
+	for name, model := range map[string]bool{"llm": true, "forward": false} {
+		record, _ := at(listener(envoy, name), "access_log", 0, "typed_config", "log_format", "json_format").(map[string]any)
+		for _, field := range []string{"turn", "session", "agent", "project"} {
+			if record[field] != told(field) {
+				t.Errorf("a line of the record of %s has %v as its %s", name, record[field], field)
+			}
+		}
+		if provider, recorded := record["provider"]; recorded != model || (model && provider != told("provider")) {
+			t.Errorf("a line of the record of %s has %v as its provider", name, provider)
+		}
+	}
+}
+
 // A turn may run for as long as the installation says, and a request of it
 // may be silent for that long: a model that thinks, a download.
 func TestEgressProxyKeepsARequestForAsLongAsATurn(t *testing.T) {

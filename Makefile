@@ -54,7 +54,7 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 	--env AVIARY_TEST_EVENTS_URL=valkey://default:test@events:6379 \
 	--env AVIARY_TEST_SECRET_STORE_URL=http://secret-store:8200
 
-.PHONY: proto sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down build images secrets deploy e2e e2e-up e2e-run e2e-down
+.PHONY: proto sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down secret-store build images secrets deploy e2e e2e-up e2e-run e2e-down
 
 # Writes the Go code for proto/ to supervisor/internal/gen. Run it after
 # changing a .proto file.
@@ -176,6 +176,16 @@ cluster-up:
 cluster-down:
 	kind delete cluster --name $(CLUSTER)
 
+# Installs a secret store in the local cluster, for trying the secret stores
+# of the projects. Aviary needs none: it is for a project that keeps its
+# secrets in one. Its root token is made once and kept in a secret.
+secret-store:
+	$(KUBECTL) get secret openbao-root --namespace aviary-data >/dev/null 2>&1 || \
+		$(KUBECTL) create secret generic openbao-root --namespace aviary-data \
+			--from-literal=token=$$(openssl rand -hex 24)
+	$(KUBECTL) apply -f hack/kind/openbao.yaml
+	$(KUBECTL) --namespace aviary-data rollout status deployment/openbao --timeout 180s
+
 build:
 	docker build --file images/supervisor/Dockerfile --tag $(SUPERVISOR_IMAGE) .
 	docker build --file images/runner/Dockerfile --tag $(RUNNER_IMAGE) .
@@ -226,11 +236,12 @@ e2e: e2e-up
 	$(MAKE) e2e-down
 
 e2e-up:
-	$(MAKE) cluster-down cluster-up images secrets CLUSTER=$(E2E_CLUSTER)
+	$(MAKE) cluster-down cluster-up secret-store images secrets CLUSTER=$(E2E_CLUSTER)
 	$(E2E_KUBECTL) apply --filename test/e2e/mock-llm.yaml
 	helm --kube-context kind-$(E2E_CLUSTER) upgrade --install aviary deploy/charts/aviary \
 		--namespace aviary-system --values test/e2e/values.yaml --wait
 	$(E2E_KUBECTL) --namespace aviary-e2e rollout status deployment/mock-llm --timeout 120s
+	$(E2E_KUBECTL) --namespace aviary-e2e rollout status deployment/mock-llm-other --timeout 120s
 
 # The tests reach the cluster over the network of its nodes.
 e2e-run:

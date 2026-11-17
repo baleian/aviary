@@ -21,6 +21,9 @@ access_log:
           session: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:session)%"
           agent: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:agent)%"
           project: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:project)%"
+          {{- if eq . "llm" }}
+          provider: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:provider)%"
+          {{- end }}
           method: "%REQ(:METHOD)%"
           host: "%REQ(:AUTHORITY)%"
           path: "%PATH(NQ)%"

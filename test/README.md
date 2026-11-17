@@ -44,10 +44,12 @@ repository is tested the same way: see [Harness images](../images/README.md).
 
 ## The e2e
 
-`make e2e` is `make e2e-up`, `make e2e-run` and `make e2e-down`. When a test
-fails the cluster stays, and the logs of the Supervisors and of the Egress
-Proxies are written to `.out/e2e`. `make e2e-run` then runs the tests in it
-again, or some of them:
+`make e2e` is `make e2e-up`, `make e2e-run` and `make e2e-down`. Its
+cluster has what the local cluster has, PostgreSQL and Valkey, and with them
+two mock model servers and a secret store, OpenBao, for the test of a key
+that is kept in one. When a test fails the cluster stays, and the logs of
+the Supervisors and of the Egress Proxies are written to `.out/e2e`.
+`make e2e-run` then runs the tests in it again, or some of them:
 
 ```sh
 make e2e-run TESTS='-run "TestAviary/(the_installation|turns)/a_turn_is_cancelled"'
