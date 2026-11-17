@@ -90,6 +90,7 @@ type suite struct {
 func Run(t *testing.T, create func(t *testing.T) Database) {
 	suite := suite{create: create}
 	for name, test := range map[string]func(*testing.T){
+		"Agents":            suite.testAgents,
 		"Providers":         suite.testProviders,
 		"SecretStores":      suite.testSecretStores,
 		"KeyInASecretStore": suite.testKeyInASecretStore,

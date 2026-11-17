@@ -171,12 +171,36 @@ func TestReadRemembersForAWhile(t *testing.T) {
 	if value, err, _, _ := read(); err == nil || value != "" {
 		t.Errorf("a value that was taken out of the store was read as %q: %v", value, err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for stores.values.Len() != 0 || len(stores.values.Keys()) != 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("the Supervisor still holds %d values", stores.values.Len())
+}
+
+// A value that is asked for all the time is read again when its time is up
+// all the same: asking for a value does not keep it.
+func TestReadAgainOfAValueThatIsAskedForAllTheTime(t *testing.T) {
+	t.Parallel()
+	stores, held := shelved(t, lasts)
+	from := aStore()
+	for until := time.Now().Add(lasts + lasts/2); time.Now().Before(until); time.Sleep(50 * time.Millisecond) {
+		if _, err := stores.Read(context.Background(), from, "the-credential", "llm/model", "api_key"); err != nil {
+			t.Fatal(err)
 		}
-		time.Sleep(50 * time.Millisecond)
+	}
+	if _, reads := held.asked(); reads < 2 {
+		t.Errorf("a value that was asked for all the time was read from its store %d times", reads)
+	}
+}
+
+// A value is taken out of the memory when it is used no longer, also if
+// nobody asks for it again.
+func TestReadForgetsWhatItUsesNoLonger(t *testing.T) {
+	t.Parallel()
+	stores, _ := shelved(t, 200*time.Millisecond)
+	if _, err := stores.Read(context.Background(), aStore(), "the-credential", "llm/model", "api_key"); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); stores.values.Metrics().Evictions == 0; time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the Supervisor still holds a value that it uses no longer")
+		}
 	}
 }
 

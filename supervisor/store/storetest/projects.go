@@ -12,6 +12,58 @@ import (
 	"aviary/supervisor/store"
 )
 
+// An agent is kept with all that it is created with, and a session with the
+// agent that it is of.
+func (suite suite) testAgents(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	project, err := st.CreateProject(ctx, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := st.CreateProvider(ctx, store.Provider{ID: uuid.New(), ProjectID: project.ID, Name: "a provider", URL: "https://api.example.com/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	given := store.Agent{
+		Harness: "opencode", Instructions: "Be brief.", Resources: json.RawMessage(`{"limits": {"memory": "2Gi"}}`), Approval: "ask",
+		Model: &store.Model{Provider: provider.ID, Name: "a-model"},
+	}
+	created, err := st.CreateAgent(ctx, project.ID, given)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := st.Agent(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for how, agent := range map[string]store.Agent{"created": created, "read": read} {
+		if agent.ID == uuid.Nil || agent.ID != created.ID || agent.ProjectID != project.ID || agent.Harness != "opencode" ||
+			agent.Instructions != "Be brief." || !keeps(t, agent.Resources, string(given.Resources)) || agent.Approval != "ask" ||
+			!reflect.DeepEqual(agent.Model, given.Model) || agent.CreatedAt.IsZero() || !agent.CreatedAt.Equal(created.CreatedAt) {
+			t.Errorf("the agent is %s as %+v, with the model %+v", how, agent, agent.Model)
+		}
+	}
+	// An agent with nothing of its own but its harness.
+	plain, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read, err := st.Agent(ctx, plain.ID); err != nil || read.Harness != "codex" || read.Instructions != "" || read.Resources != nil ||
+		read.Approval != "" || read.Model != nil {
+		t.Errorf("the agent with nothing of its own is read as %+v: %v", read, err)
+	}
+
+	session, err := st.CreateSession(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read, err := st.Session(ctx, session.ID); err != nil || read.ID != session.ID || read.AgentID != created.ID ||
+		session.AgentID != created.ID || session.CreatedAt.IsZero() || !read.CreatedAt.Equal(session.CreatedAt) {
+		t.Errorf("the session %+v is read as %+v: %v", session, read, err)
+	}
+}
+
 // A project has model providers. A provider is created with the ID that it
 // is given, and replaced whole.
 func (suite suite) testProviders(t *testing.T) {

@@ -60,4 +60,13 @@ func TestBuild(t *testing.T) {
 	if err := app.Run(ctx, []string{"migrate"}, plugins); err == nil || !strings.Contains(err.Error(), "memory") {
 		t.Errorf("the build migrated a database that it has no plugin for with: %v", err)
 	}
+	// So it is with its event log.
+	log, err := events.Open("memory://events", plugins.EventLogs...)
+	if err != nil {
+		t.Fatalf("the build opened its event log with: %v", err)
+	}
+	log.Close()
+	if _, err := events.Open("valkey://user:secret@events.example:6379", plugins.EventLogs...); err == nil || !strings.Contains(err.Error(), "memory") {
+		t.Errorf("the build opened an event log that it has no plugin for with: %v", err)
+	}
 }
