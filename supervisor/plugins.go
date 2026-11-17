@@ -7,6 +7,7 @@ import (
 	"aviary/supervisor/secret"
 	"aviary/supervisor/secret/kv2"
 	"aviary/supervisor/store"
+	"aviary/supervisor/store/mysql"
 	"aviary/supervisor/store/postgres"
 )
 
@@ -15,7 +16,7 @@ import (
 // stores of the projects. A build for another kind of one of them adds its
 // plugin here.
 var plugins = app.Plugins{
-	Databases:    []store.Plugin{postgres.Plugin{}},
+	Databases:    []store.Plugin{postgres.Plugin{}, mysql.Plugin{}},
 	EventLogs:    []events.Plugin{resp.Plugin{}},
 	SecretStores: []secret.Plugin{kv2.Plugin{}},
 }

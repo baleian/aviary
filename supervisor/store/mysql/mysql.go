@@ -57,6 +57,10 @@ func connect(address string) (*sql.DB, error) {
 	// row looks at the row again when it has it. That is not the default of
 	// MySQL, and it is what the operations are written for.
 	config.Params = map[string]string{"time_zone": "'+00:00'", "transaction_isolation": "'READ-COMMITTED'"}
+	// What does not fit its column is refused, not cut to fit, whatever the
+	// mode of the server is. This is the mode that MySQL has by default.
+	config.Params["sql_mode"] = "'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE," +
+		"ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'"
 	for name, values := range parsed.Query() {
 		if name != "tls" {
 			return nil, fmt.Errorf("the URL of the database has the parameter %q, and the only one that it may have is tls", name)

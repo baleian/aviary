@@ -17,9 +17,9 @@ import (
 // another.
 func TestPluginsOfThisBuild(t *testing.T) {
 	ctx := context.Background()
-	t.Setenv("AVIARY_DATABASE_URL", "mysql://user:secret@host/records")
+	t.Setenv("AVIARY_DATABASE_URL", "another://user:secret@host/records")
 	if err := app.Run(ctx, []string{"migrate"}, plugins); err == nil ||
-		!strings.Contains(err.Error(), "postgres, postgresql") || strings.Contains(err.Error(), "secret") {
+		!strings.Contains(err.Error(), "postgres, postgresql, mysql") || strings.Contains(err.Error(), "secret") {
 		t.Errorf("a database that the build has no plugin for was migrated with: %v", err)
 	}
 	if _, err := events.Open("amqp://user:secret@host", plugins.EventLogs...); err == nil ||

@@ -27,3 +27,55 @@ sql:
               import: time
               type: Time
               pointer: true
+  - engine: mysql
+    schema: store/mysql/migrations
+    queries: store/mysql/queries.sql
+    gen:
+      go:
+        package: db
+        out: store/mysql/internal/db
+        omit_unused_structs: true
+        overrides:
+          - db_type: binary
+            go_type: aviary/supervisor/store/mysql/internal/key.ID
+          - db_type: binary
+            nullable: true
+            go_type:
+              import: aviary/supervisor/store/mysql/internal/key
+              type: ID
+              pointer: true
+          - db_type: datetime
+            nullable: true
+            go_type:
+              import: time
+              type: Time
+              pointer: true
+          - db_type: mediumtext
+            nullable: true
+            go_type:
+              type: string
+              pointer: true
+          - db_type: varchar
+            nullable: true
+            go_type:
+              type: string
+              pointer: true
+          - db_type: bigint
+            nullable: true
+            go_type:
+              type: int64
+              pointer: true
+          - db_type: json
+            nullable: true
+            go_type:
+              import: encoding/json
+              type: RawMessage
+              pointer: true
+          - db_type: varbinary
+            nullable: true
+            go_type:
+              type: "[]byte"
+          - db_type: blob
+            nullable: true
+            go_type:
+              type: "[]byte"

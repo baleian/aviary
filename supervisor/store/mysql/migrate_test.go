@@ -226,4 +226,23 @@ func TestConnect(t *testing.T) {
 		zone != "+00:00" || isolation != "READ-COMMITTED" {
 		t.Errorf("a connection has the time zone %s and reads as %s: %v", zone, isolation, err)
 	}
+	// It refuses what does not fit a column, which the server of the tests
+	// is set up to cut to fit.
+	if _, err := db.Exec(`create table short (name varchar(4))`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`insert into short (name) values ('longer')`); !failed(err, 1406) {
+		t.Errorf("a value that is too long for its column was taken: %v", err)
+	}
+	// And it counts a row that an update found and left as it was.
+	if _, err := db.Exec(`insert into short (name) values ('same')`); err != nil {
+		t.Fatal(err)
+	}
+	left, err := db.Exec(`update short set name = 'same'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count, err := left.RowsAffected(); err != nil || count != 1 {
+		t.Errorf("an update that left its row as it was counts %d rows: %v", count, err)
+	}
 }

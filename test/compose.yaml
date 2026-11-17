@@ -28,8 +28,10 @@ services:
     tmpfs:
       - /var/lib/mysql
     # Every test has a database of its own, and they run at once: together
-    # they open more connections than MySQL takes by default.
-    command: ["--max-connections=1000"]
+    # they open more connections than MySQL takes by default. The server
+    # takes what does not fit a column, as some are set up to: the plugin is
+    # to refuse it all the same.
+    command: ["--max-connections=1000", "--sql-mode="]
     healthcheck:
       # Over the network: while the image sets the server up, MySQL answers
       # on its socket only, and is then started again.
