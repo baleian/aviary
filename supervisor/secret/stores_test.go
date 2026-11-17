@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// asking is a driver of the tests. A store of its kind has an address, and
+// asking is a plugin of the tests. A store of its kind has an address, and
 // is logged in to by asking for that address: the store takes the login if
 // it answers so.
 type asking struct{}

@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"context"
@@ -7,9 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"aviary/supervisor/events"
-	"aviary/supervisor/internal/secret/kv2"
-	"aviary/supervisor/store"
+	"aviary/supervisor/secret"
 )
 
 // settings are the variables of a Supervisor as the chart sets them.
@@ -99,45 +97,31 @@ func TestDriverConfig(t *testing.T) {
 // and asks the stores of the kinds that it was built with.
 func TestSecretStoreSettings(t *testing.T) {
 	t.Setenv(secretStoreHosts, `["secrets.example.com:8200"]`)
-	stores, err := allowedSecretStores()
+	plugins := []secret.Plugin{scripted{}}
+	stores, err := allowedSecretStores(plugins)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// A store of a kind that the build knows is held against the list.
 	at := func(address string) json.RawMessage {
-		return json.RawMessage(`{"address": "` + address + `", "mount": "secret", "role_id": "a-role"}`)
+		return json.RawMessage(`{"address": "` + address + `", "takes": "a-credential"}`)
 	}
-	err = stores.Check(context.Background(), kv2.Kind, at("https://other.example.com:8200"), "a-credential")
+	if err := stores.Check(context.Background(), "scripted", at("https://secrets.example.com:8200"), "a-credential"); err != nil {
+		t.Errorf("a store at a host that is listed is checked as: %v", err)
+	}
+	err = stores.Check(context.Background(), "scripted", at("https://other.example.com:8200"), "a-credential")
 	if err == nil || !strings.Contains(err.Error(), "supervisor.secretStores.allowedHosts") {
 		t.Errorf("a store at a host that is not listed is checked as: %v", err)
 	}
-	if err := stores.Check(context.Background(), "another", at("https://secrets.example.com:8200"), "a-credential"); err == nil || !strings.Contains(err.Error(), kv2.Kind) {
+	if err := stores.Check(context.Background(), "another", at("https://secrets.example.com:8200"), "a-credential"); err == nil || !strings.Contains(err.Error(), "scripted") {
 		t.Errorf("a store of a kind that the build does not know is checked as: %v", err)
 	}
 
 	// A Supervisor with a list that it cannot use does not start.
 	for _, wrong := range []string{"", "secrets.example.com", `["https://secrets.example.com"]`} {
 		t.Setenv(secretStoreHosts, wrong)
-		if stores, err := allowedSecretStores(); err == nil {
+		if stores, err := allowedSecretStores(plugins); err == nil {
 			t.Errorf("with the hosts %q, the stores are %+v", wrong, stores)
 		}
-	}
-}
-
-// This build connects to the kinds of database and of event log that its
-// plugins are for, and tells of them when it is given another.
-func TestPluginsOfThisBuild(t *testing.T) {
-	ctx := context.Background()
-	if _, err := store.Open(ctx, "mysql://user:secret@host/records", databases...); err == nil ||
-		!strings.Contains(err.Error(), "postgres, postgresql") || strings.Contains(err.Error(), "secret") {
-		t.Errorf("a database that the build has no plugin for was opened with: %v", err)
-	}
-	if _, err := events.Open("amqp://user:secret@host", eventLogs...); err == nil ||
-		!strings.Contains(err.Error(), "valkey, valkeys, redis, rediss") || strings.Contains(err.Error(), "secret") {
-		t.Errorf("an event log that the build has no plugin for was opened with: %v", err)
-	}
-	// An address that the plugin of its scheme cannot use.
-	if _, err := events.Open("valkey://user:secret@host:port", eventLogs...); err == nil || strings.Contains(err.Error(), "secret") {
-		t.Errorf("an event log with a port that is none was opened with: %v", err)
 	}
 }

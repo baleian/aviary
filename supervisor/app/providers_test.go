@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"bytes"
@@ -13,7 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"aviary/supervisor/internal/secret"
+	"aviary/supervisor/secret"
 	"aviary/supervisor/store"
 )
 

@@ -29,7 +29,7 @@ services:
       test: ["CMD", "valkey-cli", "--no-auth-warning", "-a", "test", "ping"]
       interval: 1s
       retries: 60
-  # A secret store, for the tests of the driver that asks stores of its
+  # A secret store, for the tests of the plugin that asks stores of its
   # kind. It is OpenBao, which runs unsealed here and keeps nothing, and the
   # tests set it up with its root token.
   secret-store:

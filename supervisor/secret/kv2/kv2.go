@@ -28,10 +28,10 @@ import (
 // Kind is the name of the kind of store that this package asks.
 const Kind = "kv-v2"
 
-// Driver asks the stores of the kind.
-type Driver struct{}
+// Plugin asks the stores of the kind.
+type Plugin struct{}
 
-func (Driver) Kind() string { return Kind }
+func (Plugin) Kind() string { return Kind }
 
 // settings are the settings of a store.
 type settings struct {
@@ -66,7 +66,7 @@ func read(raw json.RawMessage) (settings, error) {
 	return store, nil
 }
 
-func (Driver) Address(raw json.RawMessage) (string, error) {
+func (Plugin) Address(raw json.RawMessage) (string, error) {
 	store, err := read(raw)
 	return store.Address, err
 }
@@ -74,7 +74,7 @@ func (Driver) Address(raw json.RawMessage) (string, error) {
 // Login logs in to the store as the role, with the secret ID of the role. A
 // store answers with a token, which is what it is read with, and with how
 // long the token is good.
-func (Driver) Login(ctx context.Context, client *http.Client, raw json.RawMessage, secretID string) (any, time.Duration, error) {
+func (Plugin) Login(ctx context.Context, client *http.Client, raw json.RawMessage, secretID string) (any, time.Duration, error) {
 	store, err := read(raw)
 	if err != nil {
 		return nil, 0, err

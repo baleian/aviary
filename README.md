@@ -27,8 +27,8 @@ and the number of turns that run at once is a setting.
             messages, events                     one Job per turn
   client ───────────────────▶ Supervisor ─────────────────────────▶ turn pod
                                │      ▲                             ┌─────────────────┐
-                    PostgreSQL │      │ gRPC: the message down,     │ runner          │
-                    Valkey     │      └─ what the agent does up ────│   │ ACP         │
+                    database   │      │ gRPC: the message down,     │ runner          │
+                    event log  │      └─ what the agent does up ────│   │ ACP         │
                                                                     │ harness         │
                                                                     │   /home ── session volume
                                                                     └────────┬────────┘
@@ -65,9 +65,11 @@ and the number of turns that run at once is a setting.
    then does the session take its next message, so two pods never work on
    the same session home.
 
-The Supervisor keeps its records in PostgreSQL and the events of running
-turns in Valkey. It only needs their addresses, so both can be managed
-services. The Egress Proxy is [Envoy](https://www.envoyproxy.io), which the
+The Supervisor keeps its records in a database and the events of running
+turns in an event log, and reaches each through a plugin. It has plugins for
+PostgreSQL and for Valkey and only needs their addresses, so both can be
+managed services. [Plugins](PLUGINS.md) tells how to connect it to another
+product. The Egress Proxy is [Envoy](https://www.envoyproxy.io), which the
 chart installs. A model provider is a URL and a key, so it can be the API
 of a provider, an AI gateway or a model server of your own.
 
@@ -313,15 +315,15 @@ address, which the default does.
 ## Configuration
 
 Aviary is installed with the Helm chart in `deploy/charts/aviary`. The chart
-does not install PostgreSQL or Valkey. `make deploy VALUES=<file>` installs
-it in the local cluster with a file of values of your own.
+does not install a database or an event log. `make deploy VALUES=<file>`
+installs it in the local cluster with a file of values of your own.
 
 | Value | |
 | --- | --- |
 | `supervisor.replicas`, `egressProxy.replicas` | How many Supervisors and Egress Proxies run. Each of them serves any request. Default 1. |
 | `supervisor.resources`, `egressProxy.resources` | What the pod of a Supervisor and of an Egress Proxy asks for and may use at most. |
-| `supervisor.database.secretName`, `.secretKey` | A secret with the PostgreSQL connection URL. |
-| `supervisor.events.secretName`, `.secretKey` | A secret with the URL of the event log, which is Valkey: `valkey://…`, or `valkeys://…` with TLS. |
+| `supervisor.database.secretName`, `.secretKey` | A secret with the URL of the database. Its scheme names the kind of the database: `postgresql://…` is PostgreSQL. |
+| `supervisor.events.secretName`, `.secretKey` | A secret with the URL of the event log. Its scheme names the kind of the log: `valkey://…` is Valkey, and `valkeys://…` is Valkey with TLS. |
 | `supervisor.encryption.secretName`, `.key` | A secret with the keys that the Supervisor seals secrets with before it stores them, and the entry of it that seals. An entry is 32 random bytes in base64. To replace the key, add an entry and name it, and keep the entries from before. |
 | `egressProxy.allowedHosts` | The hosts that the Egress Proxy lets requests through to, those of the model providers among them. The default, `*`, is every host. |
 | `egressProxy.insideCIDRs`, `.extraEgress` | A network policy keeps the Egress Proxy itself out of these address ranges, so that it is no way into the cluster. `extraEgress` names what it may still reach there, as egress rules of a network policy: the endpoint of a model provider that is a service in the cluster or at a private address needs one. |
@@ -355,7 +357,9 @@ runners of the Supervisor go on with another, and the requests that the
 proxy was passing on break.
 
 To run a harness that is not in this repository, see
-[Harness images](images/README.md).
+[Harness images](images/README.md). To connect Aviary to a database, an
+event log or a secret store that it has no plugin for, see
+[Plugins](PLUGINS.md).
 
 ## Tests
 
@@ -377,13 +381,13 @@ checks, how to run some of the tests and where a new one goes.
 
 | Path | |
 | --- | --- |
-| `supervisor/` | The Supervisor, in Go: the API, the queue, the Jobs, the connection to the runners, the event streams. |
+| `supervisor/` | The Supervisor, in Go: the API, the queue, the Jobs, the connection to the runners, the event streams. Its plugins are in `store/`, `events/` and `secret/`, and `plugins.go` lists those of the build. |
 | `runner/` | The runner, in Rust. |
 | `proto/` | The protocol between the runner and the Supervisor. |
 | `images/` | The images of the Supervisor, the runner and the harnesses. |
 | `deploy/charts/aviary/` | The Helm chart. |
 | `hack/kind/` | The local cluster. |
-| `test/` | The tests of the chart, of the Egress Proxy and of the parts together, and the mock model server. The tests of the Supervisor and of the runner are with their code. |
+| `test/` | The tests of the chart, of the Egress Proxy and of the parts together, the mock model server, and a build of the Supervisor with plugins of its own. The tests of the Supervisor and of the runner are with their code. |
 
 ## What is missing
 

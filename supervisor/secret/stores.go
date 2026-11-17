@@ -22,13 +22,13 @@ const timeout = 3 * time.Second
 // a port or without.
 var host = regexp.MustCompile(`^[^/@ *]+$`)
 
-// Driver asks the secret stores of one kind. A kind is a way in which a
+// Plugin asks the secret stores of one kind. A kind is a way in which a
 // store is asked, whatever product the store is. The Supervisor knows the
 // kinds that it was built with: a store of another kind is served by
-// writing a driver for it and adding the driver where the Supervisor
-// starts. A driver keeps nothing of a store. It is told the settings of the
-// store with every request.
-type Driver interface {
+// writing a plugin for it and adding the plugin to the build. A plugin
+// keeps nothing of a store. It is told the settings of the store with every
+// request.
+type Plugin interface {
 	// Kind is the name of the kind, which a project gives with a store.
 	Kind() string
 	// Address reads the settings of a store, as a project gave them, and
@@ -37,8 +37,8 @@ type Driver interface {
 	// logged in to with is its credential.
 	Address(settings json.RawMessage) (string, error)
 	// Login logs in to a store with its credential. It returns what the
-	// store is read with from then on, into which only the driver looks,
-	// and how long that is good. The driver sends its requests through the
+	// store is read with from then on, into which only the plugin looks,
+	// and how long that is good. The plugin sends its requests through the
 	// client.
 	Login(ctx context.Context, client *http.Client, settings json.RawMessage, credential string) (session any, good time.Duration, err error)
 }
@@ -48,15 +48,15 @@ type Driver interface {
 // which hosts a store may be, since the Supervisor itself connects to it.
 type Stores struct {
 	hosts   []string
-	drivers map[string]Driver
+	plugins map[string]Plugin
 	client  *http.Client
 }
 
 // NewStores returns the stores of an installation that allows them at the
-// hosts and asks them with the drivers. A host is written as for the Egress
+// hosts and asks them with the plugins. A host is written as for the Egress
 // Proxy: "*" is every host, a name the host on the ports of HTTPS and HTTP,
 // and a name with a port the host on that port.
-func NewStores(hosts []string, drivers ...Driver) (*Stores, error) {
+func NewStores(hosts []string, plugins ...Plugin) (*Stores, error) {
 	for _, allowed := range hosts {
 		if allowed != "*" && !host.MatchString(allowed) {
 			return nil, fmt.Errorf(`a secret store may be at "*" or at a host name, with a port if it is neither 443 nor 80, and %q is neither`, allowed)
@@ -66,15 +66,15 @@ func NewStores(hosts []string, drivers ...Driver) (*Stores, error) {
 	// environment.
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
-	stores := &Stores{hosts: hosts, drivers: map[string]Driver{}, client: &http.Client{
+	stores := &Stores{hosts: hosts, plugins: map[string]Plugin{}, client: &http.Client{
 		Timeout:   timeout,
 		Transport: transport,
 		// A store that sends the Supervisor elsewhere is not followed: where
 		// it leads may be a host that the installation does not allow.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
-	for _, driver := range drivers {
-		stores.drivers[driver.Kind()] = driver
+	for _, plugin := range plugins {
+		stores.plugins[plugin.Kind()] = plugin
 	}
 	return stores, nil
 }
@@ -85,19 +85,19 @@ func NewStores(hosts []string, drivers ...Driver) (*Stores, error) {
 // store is then tried, so that what does not work is found now and not in a
 // turn: the Supervisor logs in to it with the credential.
 func (s *Stores) Check(ctx context.Context, kind string, settings json.RawMessage, credential string) error {
-	driver, known := s.drivers[kind]
+	plugin, known := s.plugins[kind]
 	if !known {
-		kinds := slices.Sorted(maps.Keys(s.drivers))
+		kinds := slices.Sorted(maps.Keys(s.plugins))
 		return fmt.Errorf("kind is not a kind of secret store that this installation knows, which are: %s", strings.Join(kinds, ", "))
 	}
-	address, err := driver.Address(settings)
+	address, err := plugin.Address(settings)
 	if err != nil {
 		return fmt.Errorf("settings: %w", err)
 	}
 	if !s.allows(address) {
 		return errors.New("settings name a host that the installation allows no secret store at: supervisor.secretStores.allowedHosts lists them")
 	}
-	if _, _, err := driver.Login(ctx, s.client, settings, credential); err != nil {
+	if _, _, err := plugin.Login(ctx, s.client, settings, credential); err != nil {
 		return fmt.Errorf("the store does not take the login: %w", err)
 	}
 	return nil

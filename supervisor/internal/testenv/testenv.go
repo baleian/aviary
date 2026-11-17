@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"aviary/supervisor/internal/secret"
+	"aviary/supervisor/secret"
 )
 
 // databaseURL names the variable with the URL of a database server in which
@@ -67,7 +67,7 @@ func Keys(t testing.TB) *secret.Keys {
 }
 
 // SecretStoreURL returns the address of the secret store of the tests,
-// which the drivers that ask a store are tested with. Its root token is
+// which the plugins that ask a store are tested with. Its root token is
 // "test". The tests share it: what a test keeps in it is apart by a name of
 // its own.
 func SecretStoreURL(t testing.TB) string {

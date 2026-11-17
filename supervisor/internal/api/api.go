@@ -15,7 +15,7 @@ import (
 
 	"aviary/supervisor/events"
 	"aviary/supervisor/internal/driver"
-	"aviary/supervisor/internal/secret"
+	"aviary/supervisor/secret"
 	"aviary/supervisor/store"
 )
 

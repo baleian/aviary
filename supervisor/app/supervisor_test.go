@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"bufio"
@@ -33,8 +33,8 @@ import (
 	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/internal/gateway"
 	runnerv1 "aviary/supervisor/internal/gen/aviary/runner/v1"
-	"aviary/supervisor/internal/secret"
 	"aviary/supervisor/internal/testenv"
+	"aviary/supervisor/secret"
 	memorystore "aviary/supervisor/store/memory"
 )
 
@@ -71,7 +71,7 @@ type installation struct {
 	config  driver.Config
 	keys    *secret.Keys
 	// stores are the secret stores that the installation allows, of the
-	// kind that the tests have a driver for.
+	// kind that the tests have a plugin for.
 	stores *secret.Stores
 	// log is the event log of the installation, which its Supervisors share.
 	log *memorylog.Log
@@ -112,7 +112,7 @@ func install(t *testing.T, changes ...func(*driver.Config)) *installation {
 }
 
 // allowing returns the secret stores of an installation that allows them at
-// the hosts, and that asks them with the driver of the tests.
+// the hosts, and that asks them with the plugin of the tests.
 func allowing(t *testing.T, hosts ...string) *secret.Stores {
 	t.Helper()
 	stores, err := secret.NewStores(hosts, scripted{})

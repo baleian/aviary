@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"aviary/supervisor/internal/secret"
 	"aviary/supervisor/internal/testenv"
+	"aviary/supervisor/secret"
 )
 
 // of returns the settings of a store.
@@ -32,7 +32,7 @@ func TestSettings(t *testing.T) {
 		of(address+"/", "team/secrets", "a-role"),
 		of("http://10.0.0.5:8200", "secret", "a-role"),
 	} {
-		if got, err := (Driver{}).Address(good); err != nil || got != strings.TrimSuffix(field(good, "address"), "/") {
+		if got, err := (Plugin{}).Address(good); err != nil || got != strings.TrimSuffix(field(good, "address"), "/") {
 			t.Errorf("the store with the settings %s is at %q: %v", good, got, err)
 		}
 	}
@@ -53,7 +53,7 @@ func TestSettings(t *testing.T) {
 		of(address, "secret/", "a-role"),
 		of(address, "secret", ""),
 	} {
-		if got, err := (Driver{}).Address(bad); err == nil {
+		if got, err := (Plugin{}).Address(bad); err == nil {
 			t.Errorf("the store with the settings %s is at %q", bad, got)
 		}
 	}
@@ -66,7 +66,7 @@ func field(object json.RawMessage, name string) string {
 	return fields[name]
 }
 
-// What the driver asks a store to log in, and what it makes of the answers.
+// What the plugin asks a store to log in, and what it makes of the answers.
 func TestLoginIsAsked(t *testing.T) {
 	t.Parallel()
 	const roleID, secretID = "the-role-id", "the-secret-id"
@@ -87,7 +87,7 @@ func TestLoginIsAsked(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	session, good, err := (Driver{}).Login(ctx, http.DefaultClient, answering(http.StatusOK, `{"auth": {"client_token": "the-token", "lease_duration": 3600}}`), secretID)
+	session, good, err := (Plugin{}).Login(ctx, http.DefaultClient, answering(http.StatusOK, `{"auth": {"client_token": "the-token", "lease_duration": 3600}}`), secretID)
 	if err != nil || session != "the-token" || good != time.Hour {
 		t.Errorf("the login gave %v, good for %s: %v", session, good, err)
 	}
@@ -103,7 +103,7 @@ func TestLoginIsAsked(t *testing.T) {
 		{of("http://127.0.0.1:1", "secret", roleID), "was not reached"},
 		{of("http://127.0.0.1:1", "", roleID), "mount is required"},
 	} {
-		session, _, err := (Driver{}).Login(ctx, http.DefaultClient, refusing.store, secretID)
+		session, _, err := (Plugin{}).Login(ctx, http.DefaultClient, refusing.store, secretID)
 		if err == nil || session != nil || !strings.Contains(err.Error(), refusing.why) || strings.Contains(err.Error(), "the-detail") || strings.Contains(err.Error(), secretID) {
 			t.Errorf("a store that answers the login with %s gave %v: %v", refusing.why, session, err)
 		}
@@ -166,7 +166,7 @@ func role(t *testing.T) (roleID, secretID, path string) {
 	return roleID, secretID, name
 }
 
-// A store that serves the API takes the login of the driver, as the
+// A store that serves the API takes the login of the plugin, as the
 // Supervisor asks it: with the stores of an installation.
 func TestLoginToAStore(t *testing.T) {
 	t.Parallel()
@@ -175,7 +175,7 @@ func TestLoginToAStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stores, err := secret.NewStores([]string{parsed.Host}, Driver{})
+	stores, err := secret.NewStores([]string{parsed.Host}, Plugin{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func TestLoginToAStore(t *testing.T) {
 	if err := stores.Check(ctx, Kind, of(address, "secret", roleID), secretID); err != nil {
 		t.Errorf("the store does not take the login of its role: %v", err)
 	}
-	session, good, err := (Driver{}).Login(ctx, http.DefaultClient, of(address, "secret", other), another)
+	session, good, err := (Plugin{}).Login(ctx, http.DefaultClient, of(address, "secret", other), another)
 	if token, _ := session.(string); err != nil || token == "" || good != time.Hour {
 		t.Errorf("the login gave %v, good for %s: %v", session, good, err)
 	}

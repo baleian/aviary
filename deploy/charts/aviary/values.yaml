@@ -12,8 +12,10 @@ supervisor:
     requests: {cpu: 100m, memory: 128Mi}
     limits: {memory: 1Gi}
   database:
-    # A secret in the release namespace with the PostgreSQL connection URL,
-    # for example postgresql://user:password@host:5432/dbname?sslmode=verify-full
+    # A secret in the release namespace with the URL of the database, which
+    # holds the Supervisor's records. The scheme of the URL names the kind of
+    # the database, for example
+    # postgresql://user:password@host:5432/dbname?sslmode=verify-full
     secretName: aviary-database
     secretKey: uri
   events:

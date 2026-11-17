@@ -20,7 +20,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 
-	"aviary/supervisor/internal/secret"
+	"aviary/supervisor/secret"
 	"aviary/supervisor/store"
 )
 

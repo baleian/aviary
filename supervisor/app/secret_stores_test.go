@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"bytes"
@@ -16,7 +16,7 @@ import (
 	"aviary/supervisor/store"
 )
 
-// scripted is a driver of the tests, for secret stores of a kind that needs
+// scripted is a plugin of the tests, for secret stores of a kind that needs
 // no store to be there. The settings of such a store say where it is and
 // which credential it takes.
 type scripted struct{}

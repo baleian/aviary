@@ -7,7 +7,7 @@ create table secret_stores (
     project_id uuid not null references projects (id),
     name text not null,
     -- The kind of the store, which says how it is asked. The Supervisor has
-    -- a driver for each kind that it knows.
+    -- a plugin for each kind that it knows.
     kind text not null,
     -- How the store is reached, as its kind has it, without what is secret.
     settings jsonb not null,

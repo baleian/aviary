@@ -54,7 +54,7 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 	--env AVIARY_TEST_EVENTS_URL=valkey://default:test@events:6379 \
 	--env AVIARY_TEST_SECRET_STORE_URL=http://secret-store:8200
 
-.PHONY: proto sqlc lint test test-supervisor test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down build images secrets deploy e2e e2e-up e2e-run e2e-down
+.PHONY: proto sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down build images secrets deploy e2e e2e-up e2e-run e2e-down
 
 # Writes the Go code for proto/ to supervisor/internal/gen. Run it after
 # changing a .proto file.
@@ -72,7 +72,7 @@ sqlc:
 lint:
 	@files=$$($(call IN_GO) gofmt -l supervisor test) || exit 1; \
 		[ -z "$$files" ] || { echo "gofmt would change these files:"; echo "$$files"; exit 1; }
-	for module in supervisor test test/mock-llm; do $(call GO,$$module) vet ./... || exit 1; done
+	for module in supervisor test test/mock-llm test/plugin; do $(call GO,$$module) vet ./... || exit 1; done
 	cargo fmt --all --check
 	cargo clippy --locked --all-targets -- --deny warnings
 	rm -rf .out/gen
@@ -85,7 +85,7 @@ lint:
 # make test-supervisor TESTS='-run TestStore/EndTurn ./store/postgres'
 # make test-runner TESTS=cut
 test:
-	$(MAKE) --jobs --output-sync=target test-supervisor test-runner test-mock-llm test-chart test-proxy
+	$(MAKE) --jobs --output-sync=target test-supervisor test-plugin test-runner test-mock-llm test-chart test-proxy
 
 # The services are started anew for every run and removed after it, also
 # when a test fails.
@@ -94,6 +94,11 @@ test-supervisor:
 	$(SERVICES) up --detach --wait --force-recreate
 	$(call GO,supervisor,$(IN_SERVICES)) $(GO_TEST) $(TESTS); \
 		status=$$?; $(SERVICES) down --volumes; exit $$status
+
+# A build of the Supervisor outside its module, with plugins of its own.
+test-plugin: TESTS ?= ./...
+test-plugin:
+	$(call GO,test/plugin) $(GO_TEST) $(TESTS)
 
 test-runner:
 	cargo test --locked --package aviary-runner $(TESTS)
@@ -187,8 +192,8 @@ images: build
 # A pod can only read secrets in its own namespace, so the secret is copied to
 # the Supervisor's. The event log, which is Valkey here, has no such secret,
 # so its URL is put together from its password. The key that the Supervisor
-# seals secrets with is made
-# once: what was sealed with it does not open with another.
+# seals secrets with is made once: what was sealed with it does not open
+# with another.
 secrets:
 	$(KUBECTL) create namespace aviary-system --dry-run=client --output yaml | $(KUBECTL) apply -f -
 	$(KUBECTL) get secret postgres-app --namespace aviary-data --output json | \
