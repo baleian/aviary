@@ -67,8 +67,9 @@ and the number of turns that run at once is a setting.
 
 The Supervisor keeps its records in a database and the events of running
 turns in an event log, and reaches each through a plugin. It has plugins for
-PostgreSQL and for Valkey and only needs their addresses, so both can be
-managed services. [Plugins](PLUGINS.md) tells how to connect it to another
+PostgreSQL, for MySQL and for Valkey and only needs their addresses, so both
+can be managed services. [Plugins](PLUGINS.md) lists the products and
+versions that it is tested with, and tells how to connect it to another
 product. The Egress Proxy is [Envoy](https://www.envoyproxy.io), which the
 chart installs. A model provider is a URL and a key, so it can be the API
 of a provider, an AI gateway or a model server of your own.
@@ -380,7 +381,7 @@ installs it in the local cluster with a file of values of your own.
 | --- | --- |
 | `supervisor.replicas`, `egressProxy.replicas` | How many Supervisors and Egress Proxies run. Each of them serves any request. Default 1. |
 | `supervisor.resources`, `egressProxy.resources` | What the pod of a Supervisor and of an Egress Proxy asks for and may use at most. |
-| `supervisor.database.secretName`, `.secretKey` | A secret with the URL of the database. Its scheme names the kind of the database: `postgresql://…` is PostgreSQL. |
+| `supervisor.database.secretName`, `.secretKey` | A secret with the URL of the database. Its scheme names the kind of the database: `postgresql://…` is PostgreSQL, and `mysql://…` is MySQL. |
 | `supervisor.events.secretName`, `.secretKey` | A secret with the URL of the event log. Its scheme names the kind of the log: `valkey://…` is Valkey, and `valkeys://…` is Valkey with TLS. |
 | `supervisor.secretStores.allowedHosts` | The hosts at which the projects may have secret stores: `*` for every host, a host name for the host on the ports of HTTPS and HTTP, or a host name with a port. The default allows none. |
 | `supervisor.secretStores.cacheSeconds` | For how long a Supervisor uses a value that it read from a secret store before it reads the value again. Default 60, and with 0 the store is read for every model request. |

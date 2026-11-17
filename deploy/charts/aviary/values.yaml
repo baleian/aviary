@@ -16,6 +16,7 @@ supervisor:
     # holds the Supervisor's records. The scheme of the URL names the kind of
     # the database, for example
     # postgresql://user:password@host:5432/dbname?sslmode=verify-full
+    # or mysql://user:password@host:3306/dbname?tls=true
     secretName: aviary-database
     secretKey: uri
   events:

@@ -8,12 +8,31 @@ plugins that its Supervisor was built with.
 
 | What | Interface | How an installation picks | Plugins in this repository |
 | --- | --- | --- | --- |
-| The database that holds the records | `store.Plugin` in `supervisor/store` | The scheme of the URL in the secret that `supervisor.database` names | `store/postgres`: PostgreSQL, at `postgres://` or `postgresql://` |
-| The log of the events of the turns | `events.Plugin` in `supervisor/events` | The scheme of the URL in the secret that `supervisor.events` names | `events/resp`: a server with the stream and publish commands of RESP, tested with Valkey, at `valkey://`, `valkeys://`, `redis://` or `rediss://` |
-| The secret stores of the projects | `secret.Plugin` in `supervisor/secret` | The `kind` that a project gives when it registers a store | `secret/kv2`: KV version 2 with the AppRole login, tested with OpenBao, as the kind `kv-v2` |
+| The database that holds the records | `store.Plugin` in `supervisor/store` | The scheme of the URL in the secret that `supervisor.database` names | `store/postgres`: PostgreSQL, at `postgres://` or `postgresql://`. `store/mysql`: MySQL, at `mysql://` |
+| The log of the events of the turns | `events.Plugin` in `supervisor/events` | The scheme of the URL in the secret that `supervisor.events` names | `events/resp`: a server with the stream and publish commands of RESP, at `valkey://`, `valkeys://`, `redis://` or `rediss://` |
+| The secret stores of the projects | `secret.Plugin` in `supervisor/secret` | The `kind` that a project gives when it registers a store | `secret/kv2`: KV version 2 with the AppRole login, as the kind `kv-v2` |
 
 A Supervisor that is given a URL with a scheme that it has no plugin for
 does not start, and says which schemes it has.
+
+## What the plugins are tested with
+
+Aviary is supported on these products, in these versions. Each is what the
+tests of its plugin run against, and the e2e runs Aviary on those that the
+table says.
+
+| Product | Version | Plugin | Tested by |
+| --- | --- | --- | --- |
+| PostgreSQL | 18 | `store/postgres` | The tests of the plugin, and the e2e |
+| MySQL | 8.4 | `store/mysql` | The tests of the plugin, and the e2e in a cluster made with `DATABASE=mysql` |
+| Valkey | 9.1 | `events/resp` | The tests of the plugin, and the e2e |
+| Redis | 7.2 | `events/resp` | The tests of the plugin |
+| OpenBao | 2.7 | `secret/kv2` | The tests of the plugin, and the e2e |
+
+Another version, or another product that speaks the same protocol, may work
+and is not tested. Redis 7.2 is the last Redis under the BSD licence, and
+the later ones are not tested. Nor is MariaDB, which is another product
+than MySQL.
 
 ## Writing a plugin
 
@@ -39,7 +58,10 @@ Aviary to a product that it has no plugin for, write one.
 
    `storetest.Database` is what the suite needs of a test's database: a way
    to open one more store on it, and a way to make turns older. The tests of
-   `store/postgres` and `events/resp` show both suites in use. There is no
+   `store/postgres`, `store/mysql` and `events/resp` show both suites in
+   use. The two databases do the same in different ways: in places
+   PostgreSQL does in one statement what MySQL does by locking a row and
+   then deciding. There is no
    suite for secret stores yet: the tests of `secret/kv2` show what to test.
 3. **Keep it where you like.** A plugin may be a package of this repository
    or of a module of your own that depends on `aviary/supervisor`. That
