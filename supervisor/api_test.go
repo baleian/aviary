@@ -23,6 +23,8 @@ func TestRefusals(t *testing.T) {
 	project := s.create("/v1/projects", `{"name": "test"}`)
 	agents := "/v1/projects/" + project + "/agents"
 	session := s.create("/v1/agents/"+s.create(agents, `{"harness": "opencode"}`)+"/sessions", "")
+	providers := "/v1/projects/" + project + "/providers"
+	provider := "/v1/providers/" + s.create(providers, `{"name": "a provider", "url": "https://api.example.com/v1"}`)
 	none := uuid.NewString()
 	long, err := json.Marshal(map[string]string{"text": strings.Repeat("a", 1<<20)})
 	if err != nil {
@@ -39,6 +41,24 @@ func TestRefusals(t *testing.T) {
 		{"POST", "/v1/projects", `{"name": "test", "owner": "someone"}`, http.StatusBadRequest, invalid},
 		{"GET", "/v1/projects/" + none, ``, http.StatusNotFound, notFound},
 		{"GET", "/v1/projects/not-an-id", ``, http.StatusNotFound, notFound},
+
+		{"POST", providers, `{}`, http.StatusBadRequest, invalid},
+		{"POST", providers, `{"url": "https://api.example.com/v1"}`, http.StatusBadRequest, invalid},
+		{"POST", providers, `{"name": "a provider"}`, http.StatusBadRequest, invalid},
+		{"POST", providers, `{"name": "a provider", "url": "api.example.com/v1"}`, http.StatusBadRequest, invalid},
+		{"POST", providers, `{"name": "a provider", "url": "ftp://api.example.com/v1"}`, http.StatusBadRequest, invalid},
+		{"POST", providers, `{"name": "a provider", "url": "https:///v1"}`, http.StatusBadRequest, invalid},
+		{"POST", providers, `{"name": "a provider", "url": "https://user:password@api.example.com/v1"}`, http.StatusBadRequest, invalid},
+		{"POST", providers, `{"name": "a provider", "url": "https://api.example.com/v1?key=value"}`, http.StatusBadRequest, invalid},
+		{"POST", providers, `{"name": "a provider", "url": "https://api.example.com/v1?"}`, http.StatusBadRequest, invalid},
+		{"POST", providers, `{"name": "a provider", "url": "https://api.example.com/v1#part"}`, http.StatusBadRequest, invalid},
+		{"POST", providers, `{"name": "a provider", "url": "https://api.example.com/v1", "api_key": "sk-a-key"}`, http.StatusBadRequest, invalid},
+		{"POST", providers, `{"name": "a provider", "url": "https://api.example.com/v1", "api_key": {}}`, http.StatusBadRequest, invalid},
+		{"POST", providers, `{"name": "a provider", "url": "https://api.example.com/v1", "api_key": {"value": "sk-a-key", "stored": true}}`, http.StatusBadRequest, invalid},
+		{"POST", "/v1/projects/" + none + "/providers", `{"name": "a provider", "url": "https://api.example.com/v1"}`, http.StatusNotFound, notFound},
+		{"GET", "/v1/providers/" + none, ``, http.StatusNotFound, notFound},
+		{"PUT", provider, `{"name": "a provider"}`, http.StatusBadRequest, invalid},
+		{"PUT", "/v1/providers/" + none, `{"name": "a provider", "url": "https://api.example.com/v1"}`, http.StatusNotFound, notFound},
 
 		{"POST", agents, `{"harness": "another"}`, http.StatusBadRequest, invalid},
 		{"POST", agents, `{"harness": "opencode", "resources": {"limits": {"memory": "-1Gi"}}}`, http.StatusBadRequest, invalid},

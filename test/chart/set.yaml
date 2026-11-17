@@ -1,6 +1,9 @@
 # Values that differ from the chart's own, to see that the chart follows them.
 supervisor:
   replicas: 3
+  encryption:
+    secretName: other-keys
+    key: k2
 llm:
   url: https://llm.example.com/v1
   model: a-model

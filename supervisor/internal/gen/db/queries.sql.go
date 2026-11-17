@@ -226,6 +226,42 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 	return i, err
 }
 
+const createProvider = `-- name: CreateProvider :one
+insert into providers (id, project_id, name, url, api_key)
+select $1::uuid, projects.id, $2::text, $3::text, $4::bytea
+from projects where projects.id = $5
+returning id, project_id, name, url, api_key, created_at, updated_at
+`
+
+type CreateProviderParams struct {
+	ID        uuid.UUID
+	Name      string
+	Url       string
+	ApiKey    []byte
+	ProjectID uuid.UUID
+}
+
+func (q *Queries) CreateProvider(ctx context.Context, arg CreateProviderParams) (Provider, error) {
+	row := q.db.QueryRow(ctx, createProvider,
+		arg.ID,
+		arg.Name,
+		arg.Url,
+		arg.ApiKey,
+		arg.ProjectID,
+	)
+	var i Provider
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Name,
+		&i.Url,
+		&i.ApiKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const createSession = `-- name: CreateSession :one
 insert into sessions (id, agent_id)
 select $1::uuid, agents.id from agents where agents.id = $2
@@ -517,6 +553,25 @@ func (q *Queries) GetProject(ctx context.Context, id uuid.UUID) (Project, error)
 	return i, err
 }
 
+const getProvider = `-- name: GetProvider :one
+select id, project_id, name, url, api_key, created_at, updated_at from providers where id = $1
+`
+
+func (q *Queries) GetProvider(ctx context.Context, id uuid.UUID) (Provider, error) {
+	row := q.db.QueryRow(ctx, getProvider, id)
+	var i Provider
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Name,
+		&i.Url,
+		&i.ApiKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getSession = `-- name: GetSession :one
 select id, agent_id, created_at, harness_session_id from sessions where id = $1
 `
@@ -779,6 +834,41 @@ func (q *Queries) QueuedTurns(ctx context.Context) ([]uuid.UUID, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const replaceProvider = `-- name: ReplaceProvider :one
+update providers set name = $1, url = $2, api_key = $3, updated_at = now()
+where id = $4
+returning id, project_id, name, url, api_key, created_at, updated_at
+`
+
+type ReplaceProviderParams struct {
+	Name   string
+	Url    string
+	ApiKey []byte
+	ID     uuid.UUID
+}
+
+// The provider gets the name, the URL and the key that are given, in place
+// of all that it had.
+func (q *Queries) ReplaceProvider(ctx context.Context, arg ReplaceProviderParams) (Provider, error) {
+	row := q.db.QueryRow(ctx, replaceProvider,
+		arg.Name,
+		arg.Url,
+		arg.ApiKey,
+		arg.ID,
+	)
+	var i Provider
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Name,
+		&i.Url,
+		&i.ApiKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const resolveApproval = `-- name: ResolveApproval :one

@@ -40,6 +40,11 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.supervisor.valkey.secretName }}
                   key: {{ .Values.supervisor.valkey.secretKey }}
+            # The keys that secrets are sealed with, and the one that seals.
+            - name: AVIARY_ENCRYPTION_KEYS
+              value: /etc/aviary/encryption
+            - name: AVIARY_ENCRYPTION_KEY
+              value: {{ .Values.supervisor.encryption.key | quote }}
             # Where the runners in the turn pods reach this Supervisor.
             - name: AVIARY_GATEWAY_URL
               value: http://aviary-supervisor.{{ .Release.Namespace }}:9090
@@ -89,8 +94,16 @@ spec:
               port: http
           resources:
             {{- toYaml .Values.supervisor.resources | nindent 12 }}
+          volumeMounts:
+            - name: encryption
+              mountPath: /etc/aviary/encryption
+              readOnly: true
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+      volumes:
+        - name: encryption
+          secret:
+            secretName: {{ .Values.supervisor.encryption.secretName }}

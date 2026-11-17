@@ -31,6 +31,7 @@ import (
 	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/internal/gateway"
 	runnerv1 "aviary/supervisor/internal/gen/aviary/runner/v1"
+	"aviary/supervisor/internal/secret"
 	"aviary/supervisor/internal/testenv"
 )
 
@@ -56,12 +57,13 @@ func TestMain(m *testing.M) {
 }
 
 // installation is what the Supervisors of a test share: a database, the
-// Valkey of the tests and a cluster.
+// Valkey of the tests, a cluster and the keys that secrets are sealed with.
 type installation struct {
 	t        *testing.T
 	database string
 	cluster  *fake.Clientset
 	config   driver.Config
+	keys     *secret.Keys
 	// sweep is how often its Supervisors look for what no Supervisor
 	// announced. A test that waits for that sets it lower.
 	sweep time.Duration
@@ -94,7 +96,8 @@ func install(t *testing.T, changes ...func(*driver.Config)) *installation {
 		change(&config)
 	}
 	return &installation{
-		t: t, database: testenv.Database(t), cluster: fake.NewClientset(), config: config, sweep: gateway.Sweep,
+		t: t, database: testenv.Database(t), cluster: fake.NewClientset(), config: config,
+		keys: testenv.Keys(t), sweep: gateway.Sweep,
 	}
 }
 
@@ -138,7 +141,7 @@ func (i *installation) supervisor() *supervisor {
 	}
 	ctx, stop := context.WithCancel(context.Background())
 	stopped := make(chan error, 1)
-	go func() { stopped <- serveOn(ctx, on, st, ev, i.cluster, i.config, i.sweep) }()
+	go func() { stopped <- serveOn(ctx, on, st, ev, i.cluster, i.config, i.keys, i.sweep) }()
 	s.stop = sync.OnceFunc(func() {
 		stop()
 		select {

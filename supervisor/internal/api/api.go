@@ -15,6 +15,7 @@ import (
 
 	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/internal/events"
+	"aviary/supervisor/internal/secret"
 	"aviary/supervisor/internal/store"
 )
 
@@ -28,9 +29,11 @@ const (
 )
 
 type api struct {
-	store   *store.Store
-	events  *events.Streams
-	driver  *driver.Driver
+	store  *store.Store
+	events *events.Streams
+	driver *driver.Driver
+	// keys seal the secrets that the API is given, before they are stored.
+	keys    *secret.Keys
 	closing <-chan struct{}
 }
 
@@ -56,12 +59,15 @@ var (
 
 // New returns the handler of the API. An event stream stays open for as long
 // as its client does, so the streams end when closing is closed.
-func New(st *store.Store, ev *events.Streams, dr *driver.Driver, closing <-chan struct{}) http.Handler {
-	a := &api{store: st, events: ev, driver: dr, closing: closing}
+func New(st *store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Keys, closing <-chan struct{}) http.Handler {
+	a := &api{store: st, events: ev, driver: dr, keys: keys, closing: closing}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
 	mux.Handle("POST /v1/projects", handler(a.createProject))
 	mux.Handle("GET /v1/projects/{pid}", handler(a.getProject))
+	mux.Handle("POST /v1/projects/{pid}/providers", handler(a.createProvider))
+	mux.Handle("GET /v1/providers/{provider}", handler(a.getProvider))
+	mux.Handle("PUT /v1/providers/{provider}", handler(a.replaceProvider))
 	mux.Handle("POST /v1/projects/{pid}/agents", handler(a.createAgent))
 	mux.Handle("GET /v1/agents/{aid}", handler(a.getAgent))
 	mux.Handle("POST /v1/agents/{aid}/sessions", handler(a.createSession))

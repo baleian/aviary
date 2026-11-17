@@ -179,6 +179,7 @@ func TestSupervisorSettings(t *testing.T) {
 	settings := env(rendered.Find(objects, "Deployment", "aviary-supervisor"))
 	for name, value := range map[string]string{
 		"AVIARY_GATEWAY_URL":            "http://aviary-supervisor.aviary-system:9090",
+		"AVIARY_ENCRYPTION_KEY":         "k1",
 		"AVIARY_LLM_BASE_URL":           "http://aviary-egress-proxy.aviary-system:8080",
 		"AVIARY_LLM_MODEL":              "",
 		"AVIARY_PROXY_URL":              "http://aviary-egress-proxy.aviary-system:3128",
@@ -200,6 +201,7 @@ func TestSupervisorSettings(t *testing.T) {
 	supervisor := rendered.Find(objects, "Deployment", "aviary-supervisor")
 	settings = env(supervisor)
 	for name, value := range map[string]string{
+		"AVIARY_ENCRYPTION_KEY": "k2",
 		// The harnesses reach the model under the path of its URL.
 		"AVIARY_LLM_BASE_URL":           "http://aviary-egress-proxy.aviary-system:8080/v1",
 		"AVIARY_LLM_MODEL":              "a-model",
@@ -236,6 +238,24 @@ func TestSupervisorSettings(t *testing.T) {
 		opencode.Resources.Requests["memory"] != "333Mi" || opencode.Resources.Requests["cpu"] != "250m" ||
 		opencode.Resources.Limits["memory"] != "4Gi" || codex.Resources.Requests["memory"] != "256Mi" {
 		t.Errorf("the Supervisor is told the harnesses %s", settings["AVIARY_HARNESSES"])
+	}
+}
+
+// The Supervisor finds the keys that it seals secrets with where it is told
+// that they are: the entries of the secret that the values name.
+func TestSupervisorEncryptionKeys(t *testing.T) {
+	for values, secret := range map[string]string{"default": "aviary-encryption", "set": "other-keys"} {
+		objects, _ := chart(t, values)
+		supervisor := rendered.Find(objects, "Deployment", "aviary-supervisor")
+		pod := at(supervisor, "spec", "template", "spec")
+		mount := named(at(pod, "containers", 0, "volumeMounts"), "encryption")
+		told := env(supervisor)["AVIARY_ENCRYPTION_KEYS"]
+		if told == "" || at(mount, "mountPath") != told || at(mount, "readOnly") != true {
+			t.Errorf("%s: the Supervisor is told that the keys are in %q, and they are mounted as %v", values, told, mount)
+		}
+		if mounted := at(named(at(pod, "volumes"), "encryption"), "secret", "secretName"); mounted != secret {
+			t.Errorf("%s: the keys are those of the secret %v, not of %s", values, mounted, secret)
+		}
 	}
 }
 

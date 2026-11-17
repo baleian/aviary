@@ -21,6 +21,18 @@ supervisor:
     # example valkeys://user:password@host:6379 (valkeys is Valkey over TLS)
     secretName: aviary-valkey
     secretKey: uri
+  # What the Supervisor seals secrets with before it stores them, such as the
+  # API key of a model provider. The database holds them sealed, and is of no
+  # use without the keys.
+  encryption:
+    # A secret in the release namespace with the keys. Each entry is a key
+    # under a name of your choosing: 32 random bytes in base64, as
+    # `openssl rand -base64 32` prints them.
+    secretName: aviary-encryption
+    # The entry that secrets are sealed with. To replace the key, add an
+    # entry and name it here. Keep the entries from before: what was sealed
+    # with one does not open without it.
+    key: k1
 
 # The model endpoint. It can be the API of a provider, an AI gateway or a
 # model server of your own.

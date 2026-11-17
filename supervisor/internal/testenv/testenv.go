@@ -5,9 +5,11 @@ package testenv
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"log/slog"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/valkey-io/valkey-go"
 
 	"aviary/supervisor/internal/events"
+	"aviary/supervisor/internal/secret"
 	"aviary/supervisor/internal/store"
 )
 
@@ -96,6 +99,23 @@ func Exec(t testing.TB, database, statement string, arguments ...any) {
 	if _, err := conn.Exec(ctx, statement, arguments...); err != nil {
 		t.Fatalf("%s: %v", statement, err)
 	}
+}
+
+// Keys returns the keys of an installation, which its Supervisors seal
+// secrets with: one key, as the secret of a new installation holds it.
+func Keys(t testing.TB) *secret.Keys {
+	t.Helper()
+	key := make([]byte, 32)
+	rand.Read(key)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "k1"), []byte(base64.StdEncoding.EncodeToString(key)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := secret.Load(dir, "k1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return keys
 }
 
 // ValkeyURL returns the URL of the Valkey of the tests. The tests share it:

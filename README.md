@@ -298,6 +298,7 @@ does not install PostgreSQL or Valkey.
 | `supervisor.resources`, `egressProxy.resources` | What the pod of a Supervisor and of an Egress Proxy asks for and may use at most. |
 | `supervisor.database.secretName`, `.secretKey` | A secret with the PostgreSQL connection URL. |
 | `supervisor.valkey.secretName`, `.secretKey` | A secret with the Valkey connection URL. |
+| `supervisor.encryption.secretName`, `.key` | A secret with the keys that the Supervisor seals secrets with before it stores them, and the entry of it that seals. An entry is 32 random bytes in base64. To replace the key, add an entry and name it, and keep the entries from before. |
 | `llm.url`, `llm.model` | The base URL of the model endpoint and the model that the harnesses ask it for. |
 | `llm.apiKey.secretName`, `.secretKey` | A secret with the API key of the model endpoint. Only the Egress Proxy reads it. |
 | `egressProxy.allowedHosts` | The hosts that the Egress Proxy lets requests through to, the model endpoint among them. The default, `*`, is every host. |

@@ -92,6 +92,29 @@ type Session struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// Provider is a model provider of a project: a model endpoint and the key
+// to it.
+type Provider struct {
+	ID        uuid.UUID `json:"id"`
+	ProjectID uuid.UUID `json:"project_id"`
+	Name      string    `json:"name"`
+	// URL is the base URL of the model endpoint.
+	URL string `json:"url"`
+	// APIKey is the API key of the endpoint as it is stored: sealed for the
+	// place that ProviderKeyPlace names. An endpoint that takes no key has
+	// none.
+	APIKey    []byte    `json:"-"`
+	CreatedAt time.Time `json:"created_at"`
+	// UpdatedAt is when the URL and the key were last given.
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ProviderKeyPlace names the place of a provider's API key among the secrets
+// that are stored. A secret is sealed for its place and opens nowhere else.
+func ProviderKeyPlace(id uuid.UUID) string {
+	return "providers/" + id.String() + "/api_key"
+}
+
 // Turn is one message to a session and the work the agent does in reply.
 type Turn struct {
 	ID        uuid.UUID `json:"id"`
@@ -285,6 +308,41 @@ func (s *Store) Session(ctx context.Context, id uuid.UUID) (Session, error) {
 		return Session{}, ErrNotFound
 	}
 	return sessionFrom(row), err
+}
+
+// CreateProvider creates the provider as it is given, with its ID: the key
+// of a provider is sealed for that ID before it is stored. It returns
+// ErrNotFound if the project does not exist.
+func (s *Store) CreateProvider(ctx context.Context, provider Provider) (Provider, error) {
+	row, err := s.queries.CreateProvider(ctx, db.CreateProviderParams{
+		ID: provider.ID, ProjectID: provider.ProjectID, Name: provider.Name, Url: provider.URL, ApiKey: provider.APIKey,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Provider{}, ErrNotFound
+	}
+	return providerFrom(row), err
+}
+
+func (s *Store) Provider(ctx context.Context, id uuid.UUID) (Provider, error) {
+	row, err := s.queries.GetProvider(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Provider{}, ErrNotFound
+	}
+	return providerFrom(row), err
+}
+
+// ReplaceProvider gives the provider with the ID of the given one its name,
+// its URL and its key, in place of all that it had: a provider that is given
+// no key has none from then on. It returns ErrNotFound if there is no such
+// provider.
+func (s *Store) ReplaceProvider(ctx context.Context, provider Provider) (Provider, error) {
+	row, err := s.queries.ReplaceProvider(ctx, db.ReplaceProviderParams{
+		ID: provider.ID, Name: provider.Name, Url: provider.URL, ApiKey: provider.APIKey,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Provider{}, ErrNotFound
+	}
+	return providerFrom(row), err
 }
 
 // CreateTurn queues a message as the session's next turn. It returns
@@ -769,6 +827,19 @@ func agentFrom(row db.Agent) Agent {
 		Instructions: row.Instructions,
 		Resources:    row.Resources,
 		Approval:     row.Approval,
+	}
+}
+
+// providerFrom returns a row of the providers table as a Provider.
+func providerFrom(row db.Provider) Provider {
+	return Provider{
+		ID:        row.ID,
+		ProjectID: row.ProjectID,
+		Name:      row.Name,
+		URL:       row.Url,
+		APIKey:    row.ApiKey,
+		CreatedAt: row.CreatedAt,
+		UpdatedAt: row.UpdatedAt,
 	}
 }
 

@@ -37,6 +37,16 @@ type Project struct {
 	CreatedAt time.Time
 }
 
+type Provider struct {
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+	Name      string
+	Url       string
+	ApiKey    []byte
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 type Session struct {
 	ID               uuid.UUID
 	AgentID          uuid.UUID

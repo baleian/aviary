@@ -27,6 +27,7 @@ import (
 	"aviary/supervisor/internal/gateway"
 	runnerv1 "aviary/supervisor/internal/gen/aviary/runner/v1"
 	"aviary/supervisor/internal/metrics"
+	"aviary/supervisor/internal/secret"
 	"aviary/supervisor/internal/store"
 )
 
@@ -38,6 +39,8 @@ const (
 	llmBaseURL         = "AVIARY_LLM_BASE_URL"
 	llmModel           = "AVIARY_LLM_MODEL"
 	proxyURL           = "AVIARY_PROXY_URL"
+	encryptionKeys     = "AVIARY_ENCRYPTION_KEYS"
+	encryptionKey      = "AVIARY_ENCRYPTION_KEY"
 	harnesses          = "AVIARY_HARNESSES"
 	maxConcurrentTurns = "AVIARY_MAX_CONCURRENT_TURNS"
 	maxQueuedTurns     = "AVIARY_MAX_QUEUED_TURNS"
@@ -123,6 +126,10 @@ func serve(ctx context.Context, database string) error {
 	}
 	defer ev.Close()
 
+	keys, err := encryption()
+	if err != nil {
+		return err
+	}
 	config, err := driverConfig()
 	if err != nil {
 		return err
@@ -145,14 +152,14 @@ func serve(ctx context.Context, database string) error {
 	if on.metrics, err = net.Listen("tcp", metricsAddr); err != nil {
 		return err
 	}
-	return serveOn(ctx, on, st, ev, client, config, gateway.Sweep)
+	return serveOn(ctx, on, st, ev, client, config, keys, gateway.Sweep)
 }
 
 // serveOn serves on the ports until ctx is done, with the turns in the
-// database of the store and their pods in the cluster of the client. Every
-// sweep it looks for what the runners are to be told and no Supervisor
-// announced.
-func serveOn(ctx context.Context, on ports, st *store.Store, ev *events.Streams, client kubernetes.Interface, config driver.Config, sweep time.Duration) error {
+// database of the store and their pods in the cluster of the client. It
+// seals the secrets that it stores with the keys. Every sweep it looks for
+// what the runners are to be told and no Supervisor announced.
+func serveOn(ctx context.Context, on ports, st *store.Store, ev *events.Streams, client kubernetes.Interface, config driver.Config, keys *secret.Keys, sweep time.Duration) error {
 	m := metrics.New()
 	dr, err := driver.New(config, client, st, ev, m)
 	if err != nil {
@@ -160,7 +167,7 @@ func serveOn(ctx context.Context, on ports, st *store.Store, ev *events.Streams,
 	}
 	runners := gateway.New(st, ev, m, sweep)
 	apiServer := &http.Server{
-		Handler:           api.New(st, ev, dr, ctx.Done()),
+		Handler:           api.New(st, ev, dr, keys, ctx.Done()),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	// A machine that is gone closes no connection. Both ends of a connection
@@ -216,6 +223,20 @@ func serveOn(ctx context.Context, on ports, st *store.Store, ev *events.Streams,
 	gatewayServer.Stop()
 	authzServer.GracefulStop()
 	return err
+}
+
+// encryption reads the keys that secrets are sealed with: the directory
+// that holds them, and the name of the one that seals.
+func encryption() (*secret.Keys, error) {
+	dir, err := env(encryptionKeys)
+	if err != nil {
+		return nil, err
+	}
+	current, err := env(encryptionKey)
+	if err != nil {
+		return nil, err
+	}
+	return secret.Load(dir, current)
 }
 
 // driverConfig reads how turns are run. The harnesses are a JSON object such

@@ -21,6 +21,22 @@ returning *;
 -- name: GetSession :one
 select * from sessions where id = @id;
 
+-- name: CreateProvider :one
+insert into providers (id, project_id, name, url, api_key)
+select @id::uuid, projects.id, @name::text, @url::text, sqlc.narg(api_key)::bytea
+from projects where projects.id = @project_id
+returning *;
+
+-- name: GetProvider :one
+select * from providers where id = @id;
+
+-- name: ReplaceProvider :one
+-- The provider gets the name, the URL and the key that are given, in place
+-- of all that it had.
+update providers set name = @name, url = @url, api_key = sqlc.narg(api_key), updated_at = now()
+where id = @id
+returning *;
+
 -- name: StartTurn :one
 -- The harness of the turn has been given the message. The session keeps the
 -- harness session, for its next turn to continue. The answer is how long the
