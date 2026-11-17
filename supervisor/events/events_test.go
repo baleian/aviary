@@ -2,7 +2,6 @@ package events
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"aviary/supervisor/internal/store"
@@ -70,32 +69,5 @@ func TestLast(t *testing.T) {
 	}
 	if IsLast(TurnStarted) || IsLast(TurnQueued) || IsLast(messageDelta) {
 		t.Error("an event before the end of a turn counts as its last")
-	}
-}
-
-func TestIsID(t *testing.T) {
-	for id, is := range map[string]bool{
-		Start:             true,
-		"1763280000000-3": true,
-		"":                false,
-		"1763280000000":   false,
-		"1763280000000-":  false,
-		"-3":              false,
-		"1-2-3":           false,
-		"$":               false,
-	} {
-		if IsID(id) != is {
-			t.Errorf("IsID(%q) is %t", id, !is)
-		}
-	}
-}
-
-func TestOpenKeepsThePasswordToItself(t *testing.T) {
-	_, err := Open("valkey://default:secret@valkey:port")
-	if err == nil {
-		t.Fatal("Open took a URL without a port number")
-	}
-	if strings.Contains(err.Error(), "secret") {
-		t.Errorf("the error tells the password: %v", err)
 	}
 }

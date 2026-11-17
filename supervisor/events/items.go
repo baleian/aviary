@@ -47,24 +47,23 @@ const itemsBatch = 1000
 //     harness had its answer, those of approval.resolved.
 func (s *Streams) Items(ctx context.Context, turnID uuid.UUID) ([]json.RawMessage, error) {
 	turn := newRecord()
-	from := "-"
+	after := Start
 	for {
-		entries, err := s.client.Do(ctx, s.client.B().Xrange().Key(key(turnID)).Start(from).End("+").
-			Count(itemsBatch).Build()).AsXRange()
+		batch, err := s.log.Read(ctx, turnID, after, 0)
 		if err != nil {
 			return nil, err
 		}
-		for _, entry := range entries {
-			// An event that cannot be read is left out: a turn must end also
-			// then.
-			if err := turn.add(entry.FieldValues["type"], entry.FieldValues["data"]); err != nil {
-				slog.WarnContext(ctx, "read turn event", "turn", turnID, "event", entry.ID, "error", err)
-			}
-		}
-		if len(entries) < itemsBatch {
+		if len(batch) == 0 {
 			return turn.encode()
 		}
-		from = "(" + entries[len(entries)-1].ID
+		for _, event := range batch {
+			// An event that cannot be read is left out: a turn must end also
+			// then.
+			if err := turn.add(event.Type, event.Data); err != nil {
+				slog.WarnContext(ctx, "read turn event", "turn", turnID, "event", event.ID, "error", err)
+			}
+		}
+		after = batch[len(batch)-1].ID
 	}
 }
 

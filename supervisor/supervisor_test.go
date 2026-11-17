@@ -28,6 +28,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
+	"aviary/supervisor/events"
+	"aviary/supervisor/events/memory"
 	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/internal/gateway"
 	runnerv1 "aviary/supervisor/internal/gen/aviary/runner/v1"
@@ -56,8 +58,8 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// installation is what the Supervisors of a test share: a database, the
-// Valkey of the tests, a cluster and the keys that secrets are sealed with.
+// installation is what the Supervisors of a test share: a database, an
+// event log, a cluster and the keys that secrets are sealed with.
 type installation struct {
 	t        *testing.T
 	database string
@@ -67,6 +69,8 @@ type installation struct {
 	// stores are the secret stores that the installation allows, of the
 	// kind that the tests have a driver for.
 	stores *secret.Stores
+	// log is the event log of the installation, which its Supervisors share.
+	log *memory.Log
 	// sweep is how often its Supervisors look for what no Supervisor
 	// announced. A test that waits for that sets it lower.
 	sweep time.Duration
@@ -99,7 +103,7 @@ func install(t *testing.T, changes ...func(*driver.Config)) *installation {
 	}
 	return &installation{
 		t: t, database: testenv.Database(t), cluster: fake.NewClientset(), config: config,
-		keys: testenv.Keys(t), stores: allowing(t, storeHost), sweep: gateway.Sweep,
+		keys: testenv.Keys(t), stores: allowing(t, storeHost), log: memory.New(), sweep: gateway.Sweep,
 	}
 }
 
@@ -128,7 +132,7 @@ type supervisor struct {
 // supervisor starts a Supervisor of the installation.
 func (i *installation) supervisor() *supervisor {
 	i.t.Helper()
-	st, ev := testenv.Open(i.t, i.database), testenv.Events(i.t)
+	st, ev := testenv.Open(i.t, i.database), events.New(i.log)
 	listen := func() net.Listener {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {

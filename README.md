@@ -321,7 +321,7 @@ it in the local cluster with a file of values of your own.
 | `supervisor.replicas`, `egressProxy.replicas` | How many Supervisors and Egress Proxies run. Each of them serves any request. Default 1. |
 | `supervisor.resources`, `egressProxy.resources` | What the pod of a Supervisor and of an Egress Proxy asks for and may use at most. |
 | `supervisor.database.secretName`, `.secretKey` | A secret with the PostgreSQL connection URL. |
-| `supervisor.valkey.secretName`, `.secretKey` | A secret with the Valkey connection URL. |
+| `supervisor.events.secretName`, `.secretKey` | A secret with the URL of the event log, which is Valkey: `valkey://…`, or `valkeys://…` with TLS. |
 | `supervisor.encryption.secretName`, `.key` | A secret with the keys that the Supervisor seals secrets with before it stores them, and the entry of it that seals. An entry is 32 random bytes in base64. To replace the key, add an entry and name it, and keep the entries from before. |
 | `egressProxy.allowedHosts` | The hosts that the Egress Proxy lets requests through to, those of the model providers among them. The default, `*`, is every host. |
 | `egressProxy.insideCIDRs`, `.extraEgress` | A network policy keeps the Egress Proxy itself out of these address ranges, so that it is no way into the cluster. `extraEgress` names what it may still reach there, as egress rules of a network policy: the endpoint of a model provider that is a service in the cluster or at a private address needs one. |

@@ -20,10 +20,11 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 
+	"aviary/supervisor/events"
+	"aviary/supervisor/events/resp"
 	"aviary/supervisor/internal/api"
 	"aviary/supervisor/internal/authz"
 	"aviary/supervisor/internal/driver"
-	"aviary/supervisor/internal/events"
 	"aviary/supervisor/internal/gateway"
 	runnerv1 "aviary/supervisor/internal/gen/aviary/runner/v1"
 	"aviary/supervisor/internal/metrics"
@@ -34,7 +35,7 @@ import (
 
 const (
 	databaseURL        = "AVIARY_DATABASE_URL"
-	valkeyURL          = "AVIARY_VALKEY_URL"
+	eventsURL          = "AVIARY_EVENTS_URL"
 	gatewayURL         = "AVIARY_GATEWAY_URL"
 	runnerImage        = "AVIARY_RUNNER_IMAGE"
 	llmBaseURL         = "AVIARY_LLM_BASE_URL"
@@ -117,11 +118,13 @@ func serve(ctx context.Context, database string) error {
 	}
 	defer st.Close()
 
-	valkey, err := env(valkeyURL)
+	address, err := env(eventsURL)
 	if err != nil {
 		return err
 	}
-	ev, err := events.Open(valkey)
+	// The plugins are the kinds of event log that this build connects to:
+	// another kind is added here.
+	ev, err := events.Open(address, resp.Plugin{})
 	if err != nil {
 		return err
 	}

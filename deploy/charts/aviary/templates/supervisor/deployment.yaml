@@ -35,11 +35,11 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.supervisor.database.secretName }}
                   key: {{ .Values.supervisor.database.secretKey }}
-            - name: AVIARY_VALKEY_URL
+            - name: AVIARY_EVENTS_URL
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.supervisor.valkey.secretName }}
-                  key: {{ .Values.supervisor.valkey.secretKey }}
+                  name: {{ .Values.supervisor.events.secretName }}
+                  key: {{ .Values.supervisor.events.secretKey }}
             # The keys that secrets are sealed with, and the one that seals.
             - name: AVIARY_ENCRYPTION_KEYS
               value: /etc/aviary/encryption

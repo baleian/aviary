@@ -13,8 +13,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"aviary/supervisor/events"
 	"aviary/supervisor/internal/driver"
-	"aviary/supervisor/internal/events"
 	"aviary/supervisor/internal/secret"
 	"aviary/supervisor/internal/store"
 )

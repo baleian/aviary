@@ -14,19 +14,17 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/valkey-io/valkey-go"
 
-	"aviary/supervisor/internal/events"
 	"aviary/supervisor/internal/secret"
 	"aviary/supervisor/internal/store"
 )
 
 // databaseURL names the variable with the URL of a PostgreSQL in which the
-// tests may create databases, valkeyURL the one with the URL of a Valkey,
-// and secretStoreURL the one with the address of a secret store.
+// tests may create databases, eventsURL the one with the address of an
+// event log, and secretStoreURL the one with the address of a secret store.
 const (
 	databaseURL    = "AVIARY_TEST_DATABASE_URL"
-	valkeyURL      = "AVIARY_TEST_VALKEY_URL"
+	eventsURL      = "AVIARY_TEST_EVENTS_URL"
 	secretStoreURL = "AVIARY_TEST_SECRET_STORE_URL"
 )
 
@@ -128,37 +126,10 @@ func SecretStoreURL(t testing.TB) string {
 	return service(t, secretStoreURL)
 }
 
-// ValkeyURL returns the URL of the Valkey of the tests. The tests share it:
-// what they keep in it is apart by the IDs of their turns.
-func ValkeyURL(t testing.TB) string {
+// EventsURL returns the address of the event log of the tests, which the
+// plugins that connect to a log are tested with. The tests share it: what
+// they keep in it is apart by the IDs of their turns.
+func EventsURL(t testing.TB) string {
 	t.Helper()
-	return service(t, valkeyURL)
-}
-
-// Events returns the event streams as one Supervisor has them.
-func Events(t testing.TB) *events.Streams {
-	t.Helper()
-	streams, err := events.Open(ValkeyURL(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(streams.Close)
-	return streams
-}
-
-// Valkey returns a client of the Valkey of the tests, for what a test has to
-// arrange or to look at that the Supervisor has no way to.
-func Valkey(t testing.TB) valkey.Client {
-	t.Helper()
-	options, err := valkey.ParseURL(ValkeyURL(t))
-	if err != nil {
-		t.Fatalf("%s: %v", valkeyURL, err)
-	}
-	options.DisableCache = true
-	client, err := valkey.NewClient(options)
-	if err != nil {
-		t.Fatalf("connect to the Valkey of the tests: %v", err)
-	}
-	t.Cleanup(client.Close)
-	return client
+	return service(t, eventsURL)
 }

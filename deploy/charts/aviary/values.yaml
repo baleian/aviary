@@ -16,10 +16,12 @@ supervisor:
     # for example postgresql://user:password@host:5432/dbname?sslmode=verify-full
     secretName: aviary-database
     secretKey: uri
-  valkey:
-    # A secret in the release namespace with the Valkey connection URL, for
-    # example valkeys://user:password@host:6379 (valkeys is Valkey over TLS)
-    secretName: aviary-valkey
+  events:
+    # A secret in the release namespace with the URL of the event log, where
+    # the Supervisors keep the events of the turns that run and tell each
+    # other of them. The scheme of the URL names the kind of the log, for
+    # example valkeys://user:password@host:6379 (valkeys is with TLS)
+    secretName: aviary-events
     secretKey: uri
   # What the Supervisor seals secrets with before it stores them, such as the
   # API key of a model provider. The database holds them sealed, and is of no

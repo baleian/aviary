@@ -51,7 +51,7 @@ AMONG_PROXIES := --network aviary-test-proxy_default --env AVIARY_TEST_PROXY=1 \
 SERVICES := docker compose --file test/compose.yaml --project-name aviary-test-supervisor
 IN_SERVICES := --network aviary-test-supervisor_default \
 	--env AVIARY_TEST_DATABASE_URL=postgres://postgres:test@postgres:5432/postgres \
-	--env AVIARY_TEST_VALKEY_URL=valkey://default:test@valkey:6379 \
+	--env AVIARY_TEST_EVENTS_URL=valkey://default:test@events:6379 \
 	--env AVIARY_TEST_SECRET_STORE_URL=http://secret-store:8200
 
 .PHONY: proto sqlc lint test test-supervisor test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down build images secrets deploy e2e e2e-up e2e-run e2e-down
@@ -185,8 +185,9 @@ images: build
 
 # CloudNativePG writes the database's connection secret next to the database.
 # A pod can only read secrets in its own namespace, so the secret is copied to
-# the Supervisor's. Valkey has no such secret, so its URL is put together
-# from its password. The key that the Supervisor seals secrets with is made
+# the Supervisor's. The event log, which is Valkey here, has no such secret,
+# so its URL is put together from its password. The key that the Supervisor
+# seals secrets with is made
 # once: what was sealed with it does not open with another.
 secrets:
 	$(KUBECTL) create namespace aviary-system --dry-run=client --output yaml | $(KUBECTL) apply -f -
@@ -194,7 +195,7 @@ secrets:
 		jq '{apiVersion, kind, type, data, metadata: {name: "aviary-database"}}' | \
 		$(KUBECTL) apply --namespace aviary-system -f -
 	$(KUBECTL) get secret valkey-users --namespace aviary-data --output json | \
-		jq '{apiVersion, kind, type, metadata: {name: "aviary-valkey"}, stringData: {uri: ("valkey://default:" + (.data.default | @base64d) + "@valkey.aviary-data:6379")}}' | \
+		jq '{apiVersion, kind, type, metadata: {name: "aviary-events"}, stringData: {uri: ("valkey://default:" + (.data.default | @base64d) + "@valkey.aviary-data:6379")}}' | \
 		$(KUBECTL) apply --namespace aviary-system -f -
 	$(KUBECTL) get secret aviary-encryption --namespace aviary-system >/dev/null 2>&1 || \
 		$(KUBECTL) create secret generic aviary-encryption --namespace aviary-system \

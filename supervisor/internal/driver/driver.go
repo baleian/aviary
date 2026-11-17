@@ -27,7 +27,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 
-	"aviary/supervisor/internal/events"
+	"aviary/supervisor/events"
 	"aviary/supervisor/internal/metrics"
 	"aviary/supervisor/internal/store"
 )

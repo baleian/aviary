@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 
 	runnerv1 "aviary/supervisor/internal/gen/aviary/runner/v1"
-	"aviary/supervisor/internal/testenv"
 )
 
 // final tells whether a runner takes the error that ended its call as the
@@ -83,8 +83,9 @@ func TestRunnerComesBack(t *testing.T) {
 	}
 }
 
-// The events of a turn are in Valkey while the turn runs. A turn whose
-// events Valkey has lost cannot be recorded whole, and its runner is told.
+// The events of a turn are in the event log while the turn runs. A turn
+// whose events the log has lost cannot be recorded whole, and its runner is
+// told.
 func TestRunnerIsToldOfLostReports(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
@@ -94,13 +95,11 @@ func TestRunnerIsToldOfLostReports(t *testing.T) {
 	runner.report(started("harness-session"))
 	runner.report(said("one "))
 
-	client := testenv.Valkey(t)
-	lost := client.B().Del().Key("turn:"+accepted.ID, "{turn:"+accepted.ID+"}:received").Build()
-	if err := client.Do(context.Background(), lost).Error(); err != nil {
+	if err := aviary.log.Expire(context.Background(), uuid.MustParse(accepted.ID), 0); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := runner.send(3, said("two")); status.Code(err) != codes.DataLoss {
-		t.Errorf("a report after reports that Valkey lost was answered with: %v", err)
+		t.Errorf("a report after reports that the event log lost was answered with: %v", err)
 	}
 }
 

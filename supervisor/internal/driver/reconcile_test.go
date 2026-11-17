@@ -11,7 +11,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
-	"aviary/supervisor/internal/events"
+	"aviary/supervisor/events"
+	inmemory "aviary/supervisor/events/memory"
 	"aviary/supervisor/internal/metrics"
 	"aviary/supervisor/internal/store"
 	"aviary/supervisor/internal/testenv"
@@ -45,7 +46,7 @@ func install(t *testing.T, changes ...func(*Config)) *installation {
 	}
 	database := testenv.Database(t)
 	i := &installation{
-		t: t, database: database, store: testenv.Open(t, database), events: testenv.Events(t), cluster: fake.NewClientset(),
+		t: t, database: database, store: testenv.Open(t, database), events: events.New(inmemory.New()), cluster: fake.NewClientset(),
 	}
 	driver, err := New(config, i.cluster, i.store, i.events, metrics.New())
 	if err != nil {

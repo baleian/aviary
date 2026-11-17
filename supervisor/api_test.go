@@ -10,8 +10,6 @@ import (
 
 	"github.com/google/uuid"
 	batchv1 "k8s.io/api/batch/v1"
-
-	"aviary/supervisor/internal/testenv"
 )
 
 // What the API cannot take, it answers with a status and a code that tell
@@ -196,8 +194,8 @@ func TestTurnsOfASession(t *testing.T) {
 }
 
 // A client reads the events of a turn as they come, and reads on after the
-// last one that it has when its connection broke. Valkey keeps the events
-// only for a while. The record of the turn does not need them.
+// last one that it has when its connection broke. The event log keeps the
+// events only for a while. The record of the turn does not need them.
 func TestEventsAreReadOn(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
@@ -239,8 +237,7 @@ func TestEventsAreReadOn(t *testing.T) {
 
 	// The events are gone. A client still learns how the turn ended, and the
 	// record has what the agent said.
-	valkey := testenv.Valkey(t)
-	if err := valkey.Do(context.Background(), valkey.B().Del().Key("turn:"+accepted.ID).Build()).Error(); err != nil {
+	if err := aviary.log.Expire(context.Background(), uuid.MustParse(accepted.ID), 0); err != nil {
 		t.Fatal(err)
 	}
 	late := s.follow(accepted.ID)

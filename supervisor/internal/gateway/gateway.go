@@ -19,7 +19,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	"aviary/supervisor/internal/events"
+	"aviary/supervisor/events"
 	runnerv1 "aviary/supervisor/internal/gen/aviary/runner/v1"
 	"aviary/supervisor/internal/metrics"
 	"aviary/supervisor/internal/store"

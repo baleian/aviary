@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"aviary/supervisor/internal/events"
+	"aviary/supervisor/events"
 )
 
 // keepalive is how long an event stream stays silent before a comment line
@@ -32,7 +32,7 @@ func (a *api) streamEvents(w http.ResponseWriter, r *http.Request) error {
 	switch {
 	case after == "":
 		after = events.Start
-	case !events.IsID(after):
+	case !a.events.IsID(after):
 		return invalid("Last-Event-ID is not an event ID")
 	}
 
