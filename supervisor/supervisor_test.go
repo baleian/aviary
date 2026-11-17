@@ -640,10 +640,10 @@ func (s *supervisor) run(job *batchv1.Job, text string) {
 
 // The Egress Proxy, which asks whose request a token belongs to.
 
-// origin asks as the proxy does for a request to the model endpoint, or for
-// one to the forward proxy. It returns where the request comes from, or
-// nothing for a request that is to be refused.
-func (s *supervisor) origin(token string, forward bool) map[string]string {
+// check asks the Supervisor about a request as the proxy does: a model
+// request for the path, which carries the token as its bearer token, or one
+// through the forward proxy, which carries it as the password.
+func (s *supervisor) check(token string, forward bool, path string) *authv3.CheckResponse {
 	s.t.Helper()
 	headers, extensions := map[string]string{"authorization": "Bearer " + token}, map[string]string{"listener": "llm"}
 	if forward {
@@ -651,12 +651,20 @@ func (s *supervisor) origin(token string, forward bool) map[string]string {
 		extensions["listener"] = "forward"
 	}
 	answer, err := s.proxies.Check(context.Background(), &authv3.CheckRequest{Attributes: &authv3.AttributeContext{
-		Request:           &authv3.AttributeContext_Request{Http: &authv3.AttributeContext_HttpRequest{Headers: headers}},
+		Request:           &authv3.AttributeContext_Request{Http: &authv3.AttributeContext_HttpRequest{Headers: headers, Path: path}},
 		ContextExtensions: extensions,
 	}})
 	if err != nil {
 		s.t.Fatal(err)
 	}
+	return answer
+}
+
+// origin returns where the Supervisor says a request with the token comes
+// from, or nothing if it refuses the request.
+func (s *supervisor) origin(token string, forward bool) map[string]string {
+	s.t.Helper()
+	answer := s.check(token, forward, "/v1/chat/completions")
 	if codes.Code(answer.GetStatus().GetCode()) != codes.OK {
 		return nil
 	}

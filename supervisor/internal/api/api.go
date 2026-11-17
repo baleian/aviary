@@ -122,6 +122,10 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 		Instructions string          `json:"instructions"`
 		Resources    json.RawMessage `json:"resources"`
 		Approval     string          `json:"approval"`
+		Model        *struct {
+			Provider string `json:"provider"`
+			Name     string `json:"name"`
+		} `json:"model"`
 	}
 	if err := decode(w, r, &request); err != nil {
 		return err
@@ -136,8 +140,27 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 	if request.Approval != "" && request.Approval != driver.Ask {
 		return invalid(`approval is not "ask"`)
 	}
+	var model *store.Model
+	if request.Model != nil {
+		// The provider is one of the agent's own project.
+		id, err := uuid.Parse(request.Model.Provider)
+		if err != nil {
+			return invalid("model.provider is not a provider of the project")
+		}
+		provider, err := a.store.Provider(r.Context(), id)
+		switch {
+		case errors.Is(err, store.ErrNotFound) || (err == nil && provider.ProjectID != projectID):
+			return invalid("model.provider is not a provider of the project")
+		case err != nil:
+			return err
+		case request.Model.Name == "":
+			return invalid("model.name is required")
+		}
+		model = &store.Model{Provider: id, Name: request.Model.Name}
+	}
 	agent, err := a.store.CreateAgent(r.Context(), projectID, store.Agent{
 		Harness: request.Harness, Instructions: request.Instructions, Resources: resources, Approval: request.Approval,
+		Model: model,
 	})
 	if err != nil {
 		return err

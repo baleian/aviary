@@ -112,6 +112,9 @@ type Driver struct {
 	// hosts are the names of what a turn pod connects to: the Supervisor
 	// and the Egress Proxy.
 	hosts []string
+	// llm is where a turn pod reaches the model endpoint of the
+	// installation: the Egress Proxy, under the path of the endpoint's URL.
+	llm *url.URL
 	// proxy is the forward proxy, and noProxy the hosts that a turn pod
 	// reaches without it.
 	proxy   *url.URL
@@ -173,7 +176,7 @@ func New(config Config, client kubernetes.Interface, st *store.Store, ev *events
 	// reached directly.
 	noProxy := []string{"localhost", "127.0.0.1", "::1", llm.Hostname(), gateway.Hostname()}
 	return &Driver{
-		config: config, hosts: hosts, proxy: proxy, noProxy: strings.Join(noProxy, ","),
+		config: config, hosts: hosts, llm: llm, proxy: proxy, noProxy: strings.Join(noProxy, ","),
 		client: client, store: st, events: ev, metrics: m, wake: make(chan struct{}, 1),
 	}, nil
 }
@@ -665,6 +668,15 @@ func (d *Driver) job(dispatch store.Dispatch, harness Harness, resources corev1.
 		AllowPrivilegeEscalation: new(false),
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 	}
+	// The harness reaches its model at the Egress Proxy, which passes a
+	// request on to the endpoint of the request's turn. For an agent that
+	// names its model that is the endpoint of the agent's provider, which the
+	// proxy serves under the path of the provider's URL. The URL was checked
+	// when the provider was given it.
+	llm, model := *d.llm, d.config.LLMModel
+	if endpoint, err := url.Parse(dispatch.ProviderURL); err == nil && dispatch.ProviderURL != "" {
+		llm.Path, model = strings.TrimSuffix(endpoint.Path, "/"), dispatch.Model
+	}
 	env := []corev1.EnvVar{
 		{Name: "HOME", Value: "/home"},
 		{Name: "AVIARY_GATEWAY_URL", Value: d.config.GatewayURL},
@@ -672,9 +684,9 @@ func (d *Driver) job(dispatch store.Dispatch, harness Harness, resources corev1.
 		// The pod holds no key of the model endpoint. The harness sends the
 		// turn token as its API key, and the Egress Proxy puts the key in
 		// its place.
-		{Name: "AVIARY_LLM_BASE_URL", Value: d.config.LLMBaseURL},
+		{Name: "AVIARY_LLM_BASE_URL", Value: llm.String()},
 		{Name: "AVIARY_LLM_API_KEY", Value: dispatch.Token},
-		{Name: "AVIARY_LLM_MODEL", Value: d.config.LLMModel},
+		{Name: "AVIARY_LLM_MODEL", Value: model},
 		{Name: "AVIARY_MAX_TOOL_OUTPUT_BYTES", Value: strconv.Itoa(d.config.MaxToolOutputBytes)},
 		{Name: "AVIARY_MAX_RECONNECT_SECONDS", Value: strconv.Itoa(int(d.config.MaxReconnect.Seconds()))},
 		// Everything else that the programs in the pod fetch goes through

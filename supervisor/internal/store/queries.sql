@@ -5,8 +5,9 @@ insert into projects (id, name) values (@id, @name) returning *;
 select * from projects where id = @id;
 
 -- name: CreateAgent :one
-insert into agents (id, project_id, harness, instructions, resources, approval)
-select @id::uuid, projects.id, @harness::text, @instructions::text, @resources::jsonb, @approval::text
+insert into agents (id, project_id, harness, instructions, resources, approval, provider_id, model)
+select @id::uuid, projects.id, @harness::text, @instructions::text, @resources::jsonb, @approval::text,
+       sqlc.narg(provider_id)::uuid, @model::text
 from projects where projects.id = @project_id
 returning *;
 
@@ -91,12 +92,16 @@ select id from turns where state = 'queued' order by created_at, id;
 select id from turns where ended_at is null and cancel_requested_at is not null;
 
 -- name: NextTurns :many
--- The queued turns that there is room to run, oldest first.
+-- The queued turns that there is room to run, oldest first. A turn of an
+-- agent that names its model has the URL of the agent's provider and the
+-- name of the model.
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, agents.harness,
-       agents.resources, agents.approval, extract(epoch from now() - turns.created_at)::float8 as waited
+       agents.resources, agents.approval, coalesce(providers.url, '')::text as provider_url, agents.model,
+       extract(epoch from now() - turns.created_at)::float8 as waited
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
+left join providers on providers.id = agents.provider_id
 where turns.state = 'queued'
 order by turns.created_at, turns.id
 limit greatest(sqlc.arg(max_running)::bigint - (select count(*) from turns where state in ('dispatching', 'running')), 0);
@@ -131,11 +136,14 @@ returning turns.id, turns.session_id, turns.seq, turns.text, turns.created_at, s
 select state from turns where token_hash = @token_hash;
 
 -- name: RunningTurn :one
--- The running turn that the token belongs to, and what the turn belongs to.
-select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id
+-- The running turn that the token belongs to, what the turn belongs to, and
+-- the provider of its agent as it is now, if the agent names its model.
+select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id,
+       agents.provider_id, coalesce(providers.url, '')::text as provider_url, providers.api_key as provider_api_key
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
+left join providers on providers.id = agents.provider_id
 where turns.token_hash = @token_hash and turns.state = 'running';
 
 -- name: SetFinished :exec

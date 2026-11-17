@@ -173,10 +173,11 @@ func (q *Queries) CountWaitingTurns(ctx context.Context, maxRunning int64) (int6
 }
 
 const createAgent = `-- name: CreateAgent :one
-insert into agents (id, project_id, harness, instructions, resources, approval)
-select $1::uuid, projects.id, $2::text, $3::text, $4::jsonb, $5::text
-from projects where projects.id = $6
-returning id, project_id, harness, created_at, instructions, resources, approval
+insert into agents (id, project_id, harness, instructions, resources, approval, provider_id, model)
+select $1::uuid, projects.id, $2::text, $3::text, $4::jsonb, $5::text,
+       $6::uuid, $7::text
+from projects where projects.id = $8
+returning id, project_id, harness, created_at, instructions, resources, approval, provider_id, model
 `
 
 type CreateAgentParams struct {
@@ -185,6 +186,8 @@ type CreateAgentParams struct {
 	Instructions string
 	Resources    []byte
 	Approval     string
+	ProviderID   *uuid.UUID
+	Model        string
 	ProjectID    uuid.UUID
 }
 
@@ -195,6 +198,8 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 		arg.Instructions,
 		arg.Resources,
 		arg.Approval,
+		arg.ProviderID,
+		arg.Model,
 		arg.ProjectID,
 	)
 	var i Agent
@@ -206,6 +211,8 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 		&i.Instructions,
 		&i.Resources,
 		&i.Approval,
+		&i.ProviderID,
+		&i.Model,
 	)
 	return i, err
 }
@@ -499,7 +506,7 @@ func (q *Queries) ExpireTurns(ctx context.Context, seconds float64) ([]Turn, err
 }
 
 const getAgent = `-- name: GetAgent :one
-select id, project_id, harness, created_at, instructions, resources, approval from agents where id = $1
+select id, project_id, harness, created_at, instructions, resources, approval, provider_id, model from agents where id = $1
 `
 
 func (q *Queries) GetAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
@@ -513,6 +520,8 @@ func (q *Queries) GetAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
 		&i.Instructions,
 		&i.Resources,
 		&i.Approval,
+		&i.ProviderID,
+		&i.Model,
 	)
 	return i, err
 }
@@ -762,27 +771,33 @@ func (q *Queries) Lock(ctx context.Context, key int64) error {
 
 const nextTurns = `-- name: NextTurns :many
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, agents.harness,
-       agents.resources, agents.approval, extract(epoch from now() - turns.created_at)::float8 as waited
+       agents.resources, agents.approval, coalesce(providers.url, '')::text as provider_url, agents.model,
+       extract(epoch from now() - turns.created_at)::float8 as waited
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
+left join providers on providers.id = agents.provider_id
 where turns.state = 'queued'
 order by turns.created_at, turns.id
 limit greatest($1::bigint - (select count(*) from turns where state in ('dispatching', 'running')), 0)
 `
 
 type NextTurnsRow struct {
-	TurnID    uuid.UUID
-	SessionID uuid.UUID
-	AgentID   uuid.UUID
-	ProjectID uuid.UUID
-	Harness   string
-	Resources []byte
-	Approval  string
-	Waited    float64
+	TurnID      uuid.UUID
+	SessionID   uuid.UUID
+	AgentID     uuid.UUID
+	ProjectID   uuid.UUID
+	Harness     string
+	Resources   []byte
+	Approval    string
+	ProviderUrl string
+	Model       string
+	Waited      float64
 }
 
-// The queued turns that there is room to run, oldest first.
+// The queued turns that there is room to run, oldest first. A turn of an
+// agent that names its model has the URL of the agent's provider and the
+// name of the model.
 func (q *Queries) NextTurns(ctx context.Context, maxRunning int64) ([]NextTurnsRow, error) {
 	rows, err := q.db.Query(ctx, nextTurns, maxRunning)
 	if err != nil {
@@ -800,6 +815,8 @@ func (q *Queries) NextTurns(ctx context.Context, maxRunning int64) ([]NextTurnsR
 			&i.Harness,
 			&i.Resources,
 			&i.Approval,
+			&i.ProviderUrl,
+			&i.Model,
 			&i.Waited,
 		); err != nil {
 			return nil, err
@@ -898,21 +915,27 @@ func (q *Queries) ResolveApproval(ctx context.Context, arg ResolveApprovalParams
 }
 
 const runningTurn = `-- name: RunningTurn :one
-select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id
+select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id,
+       agents.provider_id, coalesce(providers.url, '')::text as provider_url, providers.api_key as provider_api_key
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
+left join providers on providers.id = agents.provider_id
 where turns.token_hash = $1 and turns.state = 'running'
 `
 
 type RunningTurnRow struct {
-	TurnID    uuid.UUID
-	SessionID uuid.UUID
-	AgentID   uuid.UUID
-	ProjectID uuid.UUID
+	TurnID         uuid.UUID
+	SessionID      uuid.UUID
+	AgentID        uuid.UUID
+	ProjectID      uuid.UUID
+	ProviderID     *uuid.UUID
+	ProviderUrl    string
+	ProviderApiKey []byte
 }
 
-// The running turn that the token belongs to, and what the turn belongs to.
+// The running turn that the token belongs to, what the turn belongs to, and
+// the provider of its agent as it is now, if the agent names its model.
 func (q *Queries) RunningTurn(ctx context.Context, tokenHash []byte) (RunningTurnRow, error) {
 	row := q.db.QueryRow(ctx, runningTurn, tokenHash)
 	var i RunningTurnRow
@@ -921,6 +944,9 @@ func (q *Queries) RunningTurn(ctx context.Context, tokenHash []byte) (RunningTur
 		&i.SessionID,
 		&i.AgentID,
 		&i.ProjectID,
+		&i.ProviderID,
+		&i.ProviderUrl,
+		&i.ProviderApiKey,
 	)
 	return i, err
 }

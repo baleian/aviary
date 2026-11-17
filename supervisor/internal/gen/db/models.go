@@ -18,6 +18,8 @@ type Agent struct {
 	Instructions string
 	Resources    []byte
 	Approval     string
+	ProviderID   *uuid.UUID
+	Model        string
 }
 
 type Approval struct {

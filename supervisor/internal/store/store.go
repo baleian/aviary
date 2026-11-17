@@ -84,6 +84,16 @@ type Agent struct {
 	// Approval is "ask" if a person answers what the harness asks before it
 	// acts. Nothing is asked of an agent without it.
 	Approval string `json:"approval,omitempty"`
+	// Model is the model that the agent's turns use, if the agent names one.
+	Model *Model `json:"model,omitempty"`
+}
+
+// Model is a model of a provider.
+type Model struct {
+	// Provider is the ID of a provider of the agent's project.
+	Provider uuid.UUID `json:"provider"`
+	// Name is the name of the model as the provider knows it.
+	Name string `json:"name"`
 }
 
 type Session struct {
@@ -222,6 +232,10 @@ type Dispatch struct {
 	Resources json.RawMessage
 	// Approval is the approval of the agent, if it has any.
 	Approval string
+	// ProviderURL is the URL of the agent's provider and Model the name of
+	// the agent's model, if the agent names its model.
+	ProviderURL string
+	Model       string
 	// Token is what the runner takes the turn with. Only its hash is stored.
 	Token string
 	// Waited is how long the turn waited to run.
@@ -264,17 +278,21 @@ func (s *Store) Project(ctx context.Context, id uuid.UUID) (Project, error) {
 }
 
 // CreateAgent creates an agent with what the given one has of its own: its
-// harness, instructions, resources and approval. It returns ErrNotFound if
-// the project does not exist.
+// harness, instructions, resources, approval and model. It returns
+// ErrNotFound if the project does not exist.
 func (s *Store) CreateAgent(ctx context.Context, projectID uuid.UUID, agent Agent) (Agent, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return Agent{}, err
 	}
-	row, err := s.queries.CreateAgent(ctx, db.CreateAgentParams{
+	params := db.CreateAgentParams{
 		ID: id, ProjectID: projectID, Harness: agent.Harness, Instructions: agent.Instructions,
 		Resources: agent.Resources, Approval: agent.Approval,
-	})
+	}
+	if agent.Model != nil {
+		params.ProviderID, params.Model = &agent.Model.Provider, agent.Model.Name
+	}
+	row, err := s.queries.CreateAgent(ctx, params)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Agent{}, ErrNotFound
 	}
@@ -486,8 +504,11 @@ func (s *Store) DispatchTurns(ctx context.Context, limit int) ([]Dispatch, error
 			Harness:   row.Harness,
 			Resources: row.Resources,
 			Approval:  row.Approval,
-			Token:     rand.Text(),
-			Waited:    time.Duration(row.Waited * float64(time.Second)),
+			// The agent's provider and model, if it names its model.
+			ProviderURL: row.ProviderUrl,
+			Model:       row.Model,
+			Token:       rand.Text(),
+			Waited:      time.Duration(row.Waited * float64(time.Second)),
 		}
 		err := queries.DispatchTurn(ctx, db.DispatchTurnParams{ID: row.TurnID, TokenHash: hashToken(dispatches[i].Token)})
 		if err != nil {
@@ -595,6 +616,9 @@ type Origin struct {
 	SessionID uuid.UUID
 	AgentID   uuid.UUID
 	ProjectID uuid.UUID
+	// Provider is the provider of the agent as it is now, if the agent
+	// names its model: its ID, its URL and its API key as it is stored.
+	Provider *Provider
 }
 
 // RunningTurn returns the turn that the token belongs to, while that turn
@@ -605,7 +629,13 @@ func (s *Store) RunningTurn(ctx context.Context, token string) (Origin, error) {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Origin{}, ErrNotFound
 	}
-	return Origin(row), err
+	origin := Origin{TurnID: row.TurnID, SessionID: row.SessionID, AgentID: row.AgentID, ProjectID: row.ProjectID}
+	if row.ProviderID != nil {
+		origin.Provider = &Provider{
+			ID: *row.ProviderID, ProjectID: row.ProjectID, URL: row.ProviderUrl, APIKey: row.ProviderApiKey,
+		}
+	}
+	return origin, err
 }
 
 // StartTurn records that the harness of the turn has been given the message,
@@ -819,7 +849,7 @@ func storable(item json.RawMessage) []byte {
 
 // agentFrom returns a row of the agents table as an Agent.
 func agentFrom(row db.Agent) Agent {
-	return Agent{
+	agent := Agent{
 		ID:           row.ID,
 		ProjectID:    row.ProjectID,
 		Harness:      row.Harness,
@@ -828,6 +858,10 @@ func agentFrom(row db.Agent) Agent {
 		Resources:    row.Resources,
 		Approval:     row.Approval,
 	}
+	if row.ProviderID != nil {
+		agent.Model = &Model{Provider: *row.ProviderID, Name: row.Model}
+	}
+	return agent
 }
 
 // providerFrom returns a row of the providers table as a Provider.
