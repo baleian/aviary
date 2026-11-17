@@ -34,7 +34,8 @@ type api struct {
 	driver *driver.Driver
 	// keys seal the secrets that the API is given, before they are stored.
 	keys *secret.Keys
-	// stores are tried when a project registers one.
+	// stores are tried when a project registers one, and read when a
+	// project says that a secret is in one.
 	stores  *secret.Stores
 	closing <-chan struct{}
 }

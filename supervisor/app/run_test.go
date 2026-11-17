@@ -94,6 +94,10 @@ func (secretStores) Login(context.Context, *http.Client, json.RawMessage, string
 	return nil, 0, errors.New("there is no such store")
 }
 
+func (secretStores) Read(context.Context, *http.Client, json.RawMessage, any, string, string) (string, error) {
+	return "", errors.New("there is no such store")
+}
+
 // With the argument "migrate" a Supervisor brings the schema of its database
 // up to date, or moves it to a version, with the plugin that the address of
 // the database names.

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 
@@ -15,33 +16,49 @@ type secretValue struct {
 	Value string `json:"value"`
 }
 
+// secretField is a secret that a request gives as its value, which is then
+// stored sealed, or as where it is in a secret store of the project, which
+// is all that is then stored of it.
+type secretField struct {
+	Value string `json:"value"`
+	Store string `json:"store"`
+	Path  string `json:"path"`
+	Key   string `json:"key"`
+}
+
 // stored stands for a secret in what the API answers: it tells that the
 // secret is stored and not what it is.
 type stored struct {
 	Stored bool `json:"stored"`
 }
 
-// provider is a model provider as the API answers it.
+// provider is a model provider as the API answers it. Of a key that is
+// stored it tells only that, and of a key in a secret store where it is.
 type provider struct {
 	store.Provider
-	APIKey *stored `json:"api_key,omitempty"`
+	APIKey any `json:"api_key,omitempty"`
 }
 
 func answered(from store.Provider) provider {
 	answer := provider{Provider: from}
-	if from.APIKey != nil {
-		answer.APIKey = &stored{Stored: true}
+	switch {
+	case from.APIKeyAt != nil:
+		answer.APIKey = from.APIKeyAt
+	case from.APIKey != nil:
+		answer.APIKey = stored{Stored: true}
 	}
 	return answer
 }
 
-// readProvider reads what a provider is created with or replaced with: all
-// that makes the provider with the ID. The key is sealed for that provider.
-func (a *api) readProvider(w http.ResponseWriter, r *http.Request, id uuid.UUID) (store.Provider, error) {
+// readProvider reads what a provider of the project is created with or
+// replaced with: all that makes the provider with the ID. A key that is
+// given as its value is sealed for that provider. A key in a secret store
+// is read once, so that what cannot be read is found now and not in a turn.
+func (a *api) readProvider(w http.ResponseWriter, r *http.Request, id, projectID uuid.UUID) (store.Provider, error) {
 	var request struct {
 		Name   string       `json:"name"`
 		URL    string       `json:"url"`
-		APIKey *secretValue `json:"api_key"`
+		APIKey *secretField `json:"api_key"`
 	}
 	if err := decode(w, r, &request); err != nil {
 		return store.Provider{}, err
@@ -53,16 +70,50 @@ func (a *api) readProvider(w http.ResponseWriter, r *http.Request, id uuid.UUID)
 		return store.Provider{}, err
 	}
 	read := store.Provider{ID: id, Name: request.Name, URL: request.URL}
-	if request.APIKey != nil {
-		if request.APIKey.Value == "" {
-			return store.Provider{}, invalid("api_key.value is required: an endpoint that takes no key has no api_key")
-		}
+	key := request.APIKey
+	switch {
+	case key == nil:
+	case key.Value != "" && key.Store == "" && key.Path == "" && key.Key == "":
 		var err error
-		if read.APIKey, err = a.keys.Seal(request.APIKey.Value, store.ProviderKeyPlace(id)); err != nil {
+		if read.APIKey, err = a.keys.Seal(key.Value, store.ProviderKeyPlace(id)); err != nil {
 			return store.Provider{}, err
 		}
+	case key.Value == "" && key.Store != "" && key.Path != "" && key.Key != "":
+		at, err := a.keyInStore(r, projectID, *key)
+		if err != nil {
+			return store.Provider{}, err
+		}
+		read.APIKeyAt = &at
+	default:
+		return store.Provider{}, invalid(`api_key is {"value": "…"} for a key that Aviary stores, or {"store": "…", "path": "…", "key": "…"} ` +
+			`for a key in a secret store of the project: an endpoint that takes no key has no api_key`)
 	}
 	return read, nil
+}
+
+// keyInStore checks where a request says that a key is: in a secret store
+// of the project, at a path and under a key that the store gives a value
+// for now.
+func (a *api) keyInStore(r *http.Request, projectID uuid.UUID, key secretField) (store.SecretReference, error) {
+	id, err := uuid.Parse(key.Store)
+	if err != nil {
+		return store.SecretReference{}, invalid("api_key.store must be the ID of a secret store of the project")
+	}
+	in, err := a.store.SecretStore(r.Context(), id)
+	switch {
+	case errors.Is(err, store.ErrNotFound) || (err == nil && in.ProjectID != projectID):
+		return store.SecretReference{}, invalid("api_key.store must be the ID of a secret store of the project")
+	case err != nil:
+		return store.SecretReference{}, err
+	}
+	credential, err := a.keys.Open(in.Credential, store.SecretStoreCredentialPlace(in.ID))
+	if err != nil {
+		return store.SecretReference{}, err
+	}
+	if _, err := a.stores.Read(r.Context(), in, credential, key.Path, key.Key); err != nil {
+		return store.SecretReference{}, invalid("api_key cannot be read from the secret store: " + err.Error())
+	}
+	return store.SecretReference{Store: id, Path: key.Path, Key: key.Key}, nil
 }
 
 // endpoint checks the base URL of a model endpoint.
@@ -84,11 +135,14 @@ func (a *api) createProvider(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	if _, err := a.store.Project(r.Context(), projectID); err != nil {
+		return err
+	}
 	id, err := uuid.NewV7()
 	if err != nil {
 		return err
 	}
-	read, err := a.readProvider(w, r, id)
+	read, err := a.readProvider(w, r, id, projectID)
 	if err != nil {
 		return err
 	}
@@ -122,7 +176,11 @@ func (a *api) replaceProvider(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	read, err := a.readProvider(w, r, id)
+	existing, err := a.store.Provider(r.Context(), id)
+	if err != nil {
+		return err
+	}
+	read, err := a.readProvider(w, r, id, existing.ProjectID)
 	if err != nil {
 		return err
 	}

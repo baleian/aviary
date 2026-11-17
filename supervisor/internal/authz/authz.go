@@ -35,12 +35,15 @@ const (
 type authorizer struct {
 	authv3.UnimplementedAuthorizationServer
 	store store.Store
-	// keys open the API keys of the providers.
+	// keys open the API keys of the providers that are stored.
 	keys *secret.Keys
+	// stores are read for the API keys that are in the secret stores of the
+	// projects.
+	stores *secret.Stores
 }
 
-func New(st store.Store, keys *secret.Keys) authv3.AuthorizationServer {
-	return &authorizer{store: st, keys: keys}
+func New(st store.Store, keys *secret.Keys, stores *secret.Stores) authv3.AuthorizationServer {
+	return &authorizer{store: st, keys: keys, stores: stores}
 }
 
 // Check allows a request that carries the token of a running turn. The
@@ -101,7 +104,7 @@ func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*
 		// A turn of an agent from before agents named their models.
 		return refused(typev3.StatusCode_NotFound, "the agent of the turn names no model\n"), nil
 	}
-	endpoint, refusal := a.endpoint(ctx, origin.Provider, request.GetAttributes().GetRequest().GetHttp().GetPath())
+	endpoint, refusal := a.endpoint(ctx, origin, request.GetAttributes().GetRequest().GetHttp().GetPath())
 	if refusal != nil {
 		return refusal, nil
 	}
@@ -109,12 +112,13 @@ func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*
 	return allowed, nil
 }
 
-// endpoint returns what the proxy is to make of a model request for the
-// path: pass it on to the endpoint of the provider, with the key of the
-// provider where the pod sent its turn token. An endpoint that takes no key
-// does not get the token either. A request for a path beside that of the
-// endpoint is refused, and so is one whose key cannot be read.
-func (a *authorizer) endpoint(ctx context.Context, provider *store.Provider, path string) (*authv3.OkHttpResponse, *authv3.CheckResponse) {
+// endpoint returns what the proxy is to make of a model request of a turn
+// for the path: pass it on to the endpoint of the turn's provider, with the
+// key of the provider where the pod sent its turn token. An endpoint that
+// takes no key does not get the token either. A request for a path beside
+// that of the endpoint is refused, and so is one whose key cannot be read.
+func (a *authorizer) endpoint(ctx context.Context, origin store.Origin, path string) (*authv3.OkHttpResponse, *authv3.CheckResponse) {
+	provider := origin.Provider
 	address, err := url.Parse(provider.URL)
 	if err != nil {
 		slog.ErrorContext(ctx, "read the URL of a provider", "provider", provider.ID, "error", err)
@@ -133,14 +137,30 @@ func (a *authorizer) endpoint(ctx context.Context, provider *store.Provider, pat
 		set(upstreamHeader, address.Host),
 		set(upstreamTLSHeader, strconv.FormatBool(address.Scheme == "https")),
 	}}
-	if provider.APIKey == nil {
+	var key string
+	switch in := origin.SecretStore; {
+	case provider.APIKeyAt != nil && in != nil:
+		// The key is in a secret store of the project, and is read from it.
+		// The reason that it cannot be read is the project's to know: it
+		// holds nothing of the key.
+		credential, err := a.keys.Open(in.Credential, store.SecretStoreCredentialPlace(in.ID))
+		if err != nil {
+			slog.ErrorContext(ctx, "open the credential of a secret store", "store", in.ID, "error", err)
+			return nil, refused(typev3.StatusCode_ServiceUnavailable, "the credential of the secret store of the model provider cannot be read\n")
+		}
+		if key, err = a.stores.Read(ctx, *in, credential, provider.APIKeyAt.Path, provider.APIKeyAt.Key); err != nil {
+			slog.WarnContext(ctx, "read the API key of a provider from its secret store", "provider", provider.ID, "store", in.ID, "error", err)
+			return nil, refused(typev3.StatusCode_ServiceUnavailable,
+				"the API key of the model provider cannot be read from its secret store: "+err.Error()+"\n")
+		}
+	case provider.APIKey != nil:
+		if key, err = a.keys.Open(provider.APIKey, store.ProviderKeyPlace(provider.ID)); err != nil {
+			slog.ErrorContext(ctx, "open the API key of a provider", "provider", provider.ID, "error", err)
+			return nil, refused(typev3.StatusCode_ServiceUnavailable, "the API key of the model provider cannot be read\n")
+		}
+	default:
 		endpoint.HeadersToRemove = []string{"authorization"}
 		return endpoint, nil
-	}
-	key, err := a.keys.Open(provider.APIKey, store.ProviderKeyPlace(provider.ID))
-	if err != nil {
-		slog.ErrorContext(ctx, "open the API key of a provider", "provider", provider.ID, "error", err)
-		return nil, refused(typev3.StatusCode_ServiceUnavailable, "the API key of the model provider cannot be read\n")
 	}
 	endpoint.Headers = append(endpoint.Headers, set("authorization", "Bearer "+key))
 	return endpoint, nil

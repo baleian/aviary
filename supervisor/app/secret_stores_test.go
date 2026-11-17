@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,8 +19,30 @@ import (
 
 // scripted is a plugin of the tests, for secret stores of a kind that needs
 // no store to be there. The settings of such a store say where it is and
-// which credential it takes.
-type scripted struct{}
+// which credential it takes, and the test says what the stores hold.
+type scripted struct{ holding *shelves }
+
+// shelves are what the secret stores of the tests' kind hold: values by the
+// address of their store, the path and the key.
+type shelves struct {
+	mu     sync.Mutex
+	values map[string]string
+}
+
+// put has the store at the address hold the value at the path and under the
+// key, or no value there if it is empty.
+func (s *shelves) put(address, path, key, value string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.values == nil {
+		s.values = map[string]string{}
+	}
+	if value == "" {
+		delete(s.values, address+" "+path+" "+key)
+		return
+	}
+	s.values[address+" "+path+" "+key] = value
+}
 
 // storeHost is where the installations of the tests allow secret stores.
 const storeHost = "store.test:8200"
@@ -50,6 +73,23 @@ func (s scripted) Login(_ context.Context, _ *http.Client, settings json.RawMess
 		return nil, 0, errors.New("the store takes another credential")
 	}
 	return credential, time.Hour, nil
+}
+
+func (s scripted) Read(_ context.Context, _ *http.Client, settings json.RawMessage, _ any, path, key string) (string, error) {
+	address, _, err := s.settings(settings)
+	if err != nil {
+		return "", err
+	}
+	if s.holding == nil {
+		return "", errors.New("the store holds nothing")
+	}
+	s.holding.mu.Lock()
+	defer s.holding.mu.Unlock()
+	value, found := s.holding.values[address+" "+path+" "+key]
+	if !found {
+		return "", errors.New("the store has no value at the path and under the key")
+	}
+	return value, nil
 }
 
 // secretStore is a secret store as the API answers it.
@@ -170,7 +210,7 @@ func TestSecretStoresThatAreRefused(t *testing.T) {
 	aviary := install(t)
 	s := aviary.supervisor()
 	closed := install(t)
-	closed.stores = allowing(t)
+	closed.storeHosts = nil
 	unlisted := closed.supervisor()
 	const address, credential = "https://" + storeHost, "a-credential"
 	project := s.create("/v1/projects", `{"name": "test"}`)

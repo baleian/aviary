@@ -40,13 +40,16 @@ type Project struct {
 }
 
 type Provider struct {
-	ID        uuid.UUID
-	ProjectID uuid.UUID
-	Name      string
-	Url       string
-	ApiKey    []byte
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID            uuid.UUID
+	ProjectID     uuid.UUID
+	Name          string
+	Url           string
+	ApiKey        []byte
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	ApiKeyStoreID *uuid.UUID
+	ApiKeyPath    string
+	ApiKeyName    string
 }
 
 type SecretStore struct {

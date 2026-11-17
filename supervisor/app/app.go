@@ -187,6 +187,7 @@ func serve(ctx context.Context, database string, plugins Plugins) error {
 // no Supervisor announced.
 func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, client kubernetes.Interface, config driver.Config, keys *secret.Keys, stores *secret.Stores, sweep time.Duration) error {
 	m := metrics.New()
+	stores.Asked = m.SecretRead
 	dr, err := driver.New(config, client, st, ev, m)
 	if err != nil {
 		return err
@@ -210,7 +211,7 @@ func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, 
 	// The Egress Proxy asks on a port of its own, so that the turn pods can
 	// be kept from it.
 	authzServer := grpc.NewServer(alive...)
-	authv3.RegisterAuthorizationServer(authzServer, authz.New(st, keys))
+	authv3.RegisterAuthorizationServer(authzServer, authz.New(st, keys, stores))
 	// The metrics are on a port of their own, which the clients of the API
 	// and the turn pods have no way to. They are served until the Supervisor
 	// has stopped.

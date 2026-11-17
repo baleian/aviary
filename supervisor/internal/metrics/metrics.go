@@ -28,6 +28,9 @@ type Metrics struct {
 	tokens   *prometheus.CounterVec
 	refused  *prometheus.CounterVec
 	approved *prometheus.HistogramVec
+	// secretRead is how long the secret stores of the projects took to give
+	// their values.
+	secretRead *prometheus.HistogramVec
 }
 
 func New() *Metrics {
@@ -74,9 +77,14 @@ func New() *Metrics {
 			Help:    "How long a request of a harness for approval waited, from the harness asking to the harness having its answer, by the kind of the option that it was given. cancelled: its turn was told to stop before anybody answered.",
 			Buckets: []float64{1, 5, 15, 30, 60, 120, 300, 600, 1200, 1800, 3600},
 		}, []string{"harness", "outcome"}),
+		secretRead: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "aviary_secret_read_seconds",
+			Help:    "How long a secret store of a project took to give a value, by the kind of the store and by whether it gave it. A value that this Supervisor remembers is not read, and is not counted.",
+			Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 3},
+		}, []string{"kind", "outcome"}),
 	}
 	m.registry.MustRegister(
-		m.queue, m.running, m.ended, m.waited, m.startup, m.ran, m.tokens, m.refused, m.approved,
+		m.queue, m.running, m.ended, m.waited, m.startup, m.ran, m.tokens, m.refused, m.approved, m.secretRead,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
@@ -149,6 +157,16 @@ func (m *Metrics) Approved(harness, outcome string, waited time.Duration) {
 		outcome = "other"
 	}
 	m.approved.WithLabelValues(harness, outcome).Observe(waited.Seconds())
+}
+
+// SecretRead records that a secret store of the kind was asked for a value
+// and took so long, and whether it gave the value.
+func (m *Metrics) SecretRead(kind string, took time.Duration, err error) {
+	outcome := "read"
+	if err != nil {
+		outcome = "failed"
+	}
+	m.secretRead.WithLabelValues(kind, outcome).Observe(took.Seconds())
 }
 
 // Refused records that a message was not accepted as a turn.

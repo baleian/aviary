@@ -130,8 +130,10 @@ still knows what was said and finds the file.
 | Request | |
 | --- | --- |
 | `POST /v1/projects` | Creates a project. Body: `{"name": "..."}`. |
-| `POST /v1/projects/{id}/providers` | Creates a model provider of the project. Body: `{"name": "...", "url": "...", "api_key": {"value": "..."}}`. The URL is the base URL of a model endpoint, and the key is sent to it as a bearer token. An endpoint that takes no key has no `api_key`. See [Model providers](#model-providers). |
+| `POST /v1/projects/{id}/providers` | Creates a model provider of the project. Body: `{"name": "...", "url": "...", "api_key": {"value": "..."}}`. The URL is the base URL of a model endpoint, and the key is sent to it as a bearer token. A key that is in a secret store of the project is given as where it is: `"api_key": {"store": "...", "path": "...", "key": "..."}`. An endpoint that takes no key has no `api_key`. See [Model providers](#model-providers). |
 | `PUT /v1/providers/{id}` | Replaces the name, the URL and the key of a provider, all three at once: a provider that is given no key has none from then on. |
+| `POST /v1/projects/{id}/secret-stores` | Registers a secret store of the project. Body: `{"name": "...", "kind": "...", "settings": {...}, "credential": {"value": "..."}}`. See [Secret stores](#secret-stores). |
+| `PUT /v1/secret-stores/{id}` | Replaces the name, the kind, the settings and the credential of a secret store, all at once. |
 | `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"harness": "...", "model": {"provider": "...", "name": "..."}, "instructions": "...", "resources": {...}, "approval": "ask"}`. The harness is one of the configured harnesses. The model is a provider of the project, by its ID, and the name of a model as that provider knows it. The instructions are what the agent is told before every turn, and may be left out. The resources are what the pod of each turn asks for and may use at most, as they are written for Kubernetes: `{"requests": {"cpu": "250m", "memory": "1Gi"}, "limits": {"memory": "4Gi"}}`. Given, they are taken as they are. Left out or empty, the agent has none of its own, and each of its turns gets the default of the harness as it then is. With `"approval": "ask"`, the agent asks a person before it acts: see [Approval](#approval). Left out, it asks nobody. |
 | `POST /v1/agents/{id}/sessions` | Creates a session. |
 | `POST /v1/sessions/{id}/messages` | Sends a message. Body: `{"text": "..."}`. Answers 202 with the turn, 409 if a turn of the session has not ended, or 429 with `Retry-After` if too many turns wait to run. |
@@ -139,7 +141,7 @@ still knows what was said and finds the file.
 | `POST /v1/turns/{id}/approvals/{request}` | Answers a request for approval of the turn. Body: `{"option_id": "..."}`, the `id` of one of the options of the request. Answers 202 when the answer is on its way to the harness, 400 if the request has no such option, and 409 if the request has its answer or the turn has ended. |
 | `GET /v1/turns/{id}/events` | The events of the turn, as server-sent events. A client that reconnects sends `Last-Event-ID` and gets the events after it. |
 | `GET /v1/sessions/{id}/turns` | The turns of the session, newest first: `{"turns": [...]}`. `?limit=` is how many, 20 if it is not given and at most 100. `?before=` is the `seq` of a turn, and the answer then holds the turns before that one: that is how to read on from the last turn of an answer. The first turn of a session has `seq` 1. |
-| `GET /v1/projects/{id}`, `/v1/providers/{id}`, `/v1/agents/{id}`, `/v1/sessions/{id}`, `/v1/turns/{id}` | Reads what was created. |
+| `GET /v1/projects/{id}`, `/v1/providers/{id}`, `/v1/secret-stores/{id}`, `/v1/agents/{id}`, `/v1/sessions/{id}`, `/v1/turns/{id}` | Reads what was created. |
 
 The events of a turn:
 
@@ -187,6 +189,9 @@ agent names, for the model that the agent names.
 - **The key goes in and does not come out.** It is stored sealed with a key
   of the installation, which the database does not hold. A provider is read
   with `"api_key": {"stored": true}` in place of its key.
+- **Or the key stays in a secret store of the project.** Aviary then stores
+  where the key is and not the key, and reads it from the store when a model
+  request comes: see [Secret stores](#secret-stores).
 - **The key goes to its endpoint and nowhere else.** The Egress Proxy puts
   it into the model requests of the turns that use the provider, which it
   passes on to the host of the provider's URL, below the path of the URL.
@@ -197,6 +202,45 @@ agent names, for the model that the agent names.
 - **The host of a provider is a host like any other.** If the installation
   lists the hosts that the Egress Proxy lets requests through to, the list
   has to allow it.
+
+### Secret stores
+
+A project that keeps its secrets in a store of its own registers the store,
+and then says of a secret where it is in the store in place of giving it.
+The key of a model provider is such a secret.
+
+```sh
+store=$(curl -s -X POST localhost:8080/v1/projects/$project/secret-stores \
+  -d '{"name": "team store", "kind": "kv-v2", "credential": {"value": "..."},
+       "settings": {"address": "https://secrets.example.com:8200", "mount": "secret", "role_id": "..."}}' | jq -r .id)
+provider=$(curl -s -X POST localhost:8080/v1/projects/$project/providers \
+  -d '{"name": "a model server", "url": "https://api.example.com/v1",
+       "api_key": {"store": "'$store'", "path": "team/model", "key": "api_key"}}' | jq -r .id)
+```
+
+- **The kind says how the store is asked.** `kv-v2` is a store that serves
+  the HTTP API known as KV version 2 and that a program logs in to as an
+  AppRole, such as OpenBao. Its settings are its address, the mount of its
+  secrets and the ID of the role, and its credential is the secret ID of the
+  role. A secret is at a path below the mount and holds values under keys.
+  Another kind of store takes a [plugin](PLUGINS.md).
+- **The installation says where a store may be.** The Supervisor itself
+  connects to a store, so a project can only register one at a host that
+  `supervisor.secretStores.allowedHosts` lists. By default it lists none.
+- **What does not work is refused at once.** The Supervisor logs in to a
+  store before it takes it, and reads a key from its place before it takes
+  the provider.
+- **A value is read when it is used.** A Supervisor remembers what it read
+  for a minute, and uses no value for longer than that. A key that changes
+  in the store is the one that the model requests carry within a minute,
+  and a key that is taken out of the store is gone from Aviary as soon.
+- **A request whose key cannot be read is refused.** The model request ends
+  with 503 and the reason, and the turns of other providers go on.
+- **The credential is stored sealed**, as the key of a provider is. A store
+  is read with `"credential": {"stored": true}`.
+- **Give the role no more than Aviary is to read.** Whoever can create a
+  provider in the project can have any value that the role may read sent to
+  an endpoint of their choosing.
 
 ### Approval
 
@@ -289,6 +333,7 @@ port is not part of its service: the metrics are read from each pod.
 | `aviary_turn_tokens_total` | The token usage that the harnesses reported, by `harness` and `kind`. It is not a measurement, as said above. |
 | `aviary_approval_wait_seconds` | How long a request for approval waited, from the harness asking to the harness having its answer, by `harness` and `outcome`: the kind of the option that was picked, or `cancelled` for a request whose turn was stopped first. |
 | `aviary_messages_refused_total` | The messages that were not accepted as turns, by `reason`: `queue_full` or `session_busy`. |
+| `aviary_secret_read_seconds` | How long a secret store of a project took to give a value, by the `kind` of the store and `outcome`: `read` or `failed`. A value that the Supervisor remembers is not read and not counted. |
 
 Of several Supervisors, each reports what it did and what it holds itself,
 so the metrics of all of them add up: the sum of `aviary_turns_running` is
@@ -324,6 +369,7 @@ installs it in the local cluster with a file of values of your own.
 | `supervisor.resources`, `egressProxy.resources` | What the pod of a Supervisor and of an Egress Proxy asks for and may use at most. |
 | `supervisor.database.secretName`, `.secretKey` | A secret with the URL of the database. Its scheme names the kind of the database: `postgresql://…` is PostgreSQL. |
 | `supervisor.events.secretName`, `.secretKey` | A secret with the URL of the event log. Its scheme names the kind of the log: `valkey://…` is Valkey, and `valkeys://…` is Valkey with TLS. |
+| `supervisor.secretStores.allowedHosts` | The hosts at which the projects may have secret stores: `*` for every host, a host name for the host on the ports of HTTPS and HTTP, or a host name with a port. The default allows none. |
 | `supervisor.encryption.secretName`, `.key` | A secret with the keys that the Supervisor seals secrets with before it stores them, and the entry of it that seals. An entry is 32 random bytes in base64. To replace the key, add an entry and name it, and keep the entries from before. |
 | `egressProxy.allowedHosts` | The hosts that the Egress Proxy lets requests through to, those of the model providers among them. The default, `*`, is every host. |
 | `egressProxy.insideCIDRs`, `.extraEgress` | A network policy keeps the Egress Proxy itself out of these address ranges, so that it is no way into the cluster. `extraEgress` names what it may still reach there, as egress rules of a network policy: the endpoint of a model provider that is a service in the cluster or at a private address needs one. |

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,8 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"aviary/supervisor/internal/testenv"
 	"aviary/supervisor/secret"
+	"aviary/supervisor/store"
 )
 
 // of returns the settings of a store.
@@ -199,5 +203,83 @@ func TestLoginToAStore(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "does not take the login: the store answered the login with the status 400") {
 			t.Errorf("the store is checked with %s as: %v", name, err)
 		}
+	}
+}
+
+// A store that serves the API is read as the Supervisor reads it, with the
+// stores of an installation: the value under a key of a secret that the
+// role of the store may read.
+func TestReadFromAStore(t *testing.T) {
+	t.Parallel()
+	address := testenv.SecretStoreURL(t)
+	parsed, err := url.Parse(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stores, err := secret.NewStores([]string{parsed.Host}, Plugin{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	roleID, secretID, own := role(t)
+	_, _, theirs := role(t)
+	ctx := context.Background()
+	// put keeps values at a path of the store, as its owner does.
+	put := func(path string, values map[string]any) {
+		t.Helper()
+		owner(t, "POST", "/v1/secret/data/"+path, map[string]any{"data": values})
+	}
+	put(own+"/model", map[string]any{"api_key": "sk-the-first", "retries": 3})
+	put(own+"/a team/model one", map[string]any{"api_key": "sk-of-a-path-with-spaces"})
+	put(theirs+"/model", map[string]any{"api_key": "sk-of-another-role"})
+	registered := store.SecretStore{ID: uuid.New(), Kind: Kind, Settings: of(address, "secret", roleID), UpdatedAt: time.Now()}
+
+	for path, value := range map[string]string{own + "/model": "sk-the-first", own + "/a team/model one": "sk-of-a-path-with-spaces"} {
+		if read, err := stores.Read(ctx, registered, secretID, path, "api_key"); err != nil || read != value {
+			t.Errorf("the value at %s was read as %q: %v", path, read, err)
+		}
+	}
+	// What the store does not give, and why. No reason holds what the store
+	// said beside its status.
+	for name, refused := range map[string]struct{ path, key, why string }{
+		"a path without a secret":           {own + "/nothing", "api_key", "the store has no secret at the path"},
+		"a path that the role may not read": {theirs + "/model", "api_key", "the store does not let the role read the secret at the path"},
+		"a key that the secret has not":     {own + "/model", "token", "the secret at the path holds no value under the key"},
+		"a value that is no text":           {own + "/model", "retries", "the value under the key is not a text"},
+		"no key":                            {own + "/model", "", "key is required"},
+		"no path":                           {"", "api_key", "path must be the path of a secret"},
+		"a path that begins with a slash":   {"/" + own + "/model", "api_key", "path must be the path of a secret"},
+		"a path with a step back":           {own + "/../" + theirs + "/model", "api_key", "path must be the path of a secret"},
+	} {
+		read, err := stores.Read(ctx, registered, secretID, refused.path, refused.key)
+		if err == nil || read != "" || !strings.Contains(err.Error(), refused.why) || strings.Contains(err.Error(), "sk-") {
+			t.Errorf("%s was read as %q: %v", name, read, err)
+		}
+	}
+	// A store that does not take the login gives nothing.
+	wrong := registered
+	wrong.ID = uuid.New()
+	if read, err := stores.Read(ctx, wrong, "not-the-secret-id", own+"/model", "api_key"); err == nil || read != "" || !strings.Contains(err.Error(), "does not take the login") {
+		t.Errorf("a store that was logged in to with another secret ID was read as %q: %v", read, err)
+	}
+
+	// The plugin reads what the store has now: the Supervisor asks it again
+	// when it no longer remembers.
+	session, _, err := (Plugin{}).Login(ctx, http.DefaultClient, registered.Settings, secretID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	put(own+"/model", map[string]any{"api_key": "sk-the-second"})
+	if read, err := (Plugin{}).Read(ctx, http.DefaultClient, registered.Settings, session, own+"/model", "api_key"); err != nil || read != "sk-the-second" {
+		t.Errorf("after the value changed, it was read as %q: %v", read, err)
+	}
+	// A session that the store has ended is told apart from a path that the
+	// role may not read.
+	owner(t, "POST", "/v1/auth/token/revoke", map[string]any{"token": session})
+	if read, err := (Plugin{}).Read(ctx, http.DefaultClient, registered.Settings, session, own+"/model", "api_key"); !errors.Is(err, secret.ErrSessionEnded) || read != "" {
+		t.Errorf("with a session that has ended, the value was read as %q: %v", read, err)
+	}
+	// The Supervisor, which remembers its own session, logs in again.
+	if read, err := stores.Read(ctx, registered, secretID, own+"/model", "api_key"); err != nil || read != "sk-the-first" {
+		t.Errorf("the value that the Supervisor remembers was read as %q: %v", read, err)
 	}
 }

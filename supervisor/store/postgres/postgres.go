@@ -125,9 +125,13 @@ func (s *records) Session(ctx context.Context, id uuid.UUID) (store.Session, err
 }
 
 func (s *records) CreateProvider(ctx context.Context, provider store.Provider) (store.Provider, error) {
-	row, err := s.queries.CreateProvider(ctx, db.CreateProviderParams{
+	params := db.CreateProviderParams{
 		ID: provider.ID, ProjectID: provider.ProjectID, Name: provider.Name, Url: provider.URL, ApiKey: provider.APIKey,
-	})
+	}
+	if at := provider.APIKeyAt; at != nil {
+		params.ApiKeyStoreID, params.ApiKeyPath, params.ApiKeyName = &at.Store, at.Path, at.Key
+	}
+	row, err := s.queries.CreateProvider(ctx, params)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.Provider{}, store.ErrNotFound
 	}
@@ -143,9 +147,11 @@ func (s *records) Provider(ctx context.Context, id uuid.UUID) (store.Provider, e
 }
 
 func (s *records) ReplaceProvider(ctx context.Context, provider store.Provider) (store.Provider, error) {
-	row, err := s.queries.ReplaceProvider(ctx, db.ReplaceProviderParams{
-		ID: provider.ID, Name: provider.Name, Url: provider.URL, ApiKey: provider.APIKey,
-	})
+	params := db.ReplaceProviderParams{ID: provider.ID, Name: provider.Name, Url: provider.URL, ApiKey: provider.APIKey}
+	if at := provider.APIKeyAt; at != nil {
+		params.ApiKeyStoreID, params.ApiKeyPath, params.ApiKeyName = &at.Store, at.Path, at.Key
+	}
+	row, err := s.queries.ReplaceProvider(ctx, params)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.Provider{}, store.ErrNotFound
 	}
@@ -402,6 +408,15 @@ func (s *records) RunningTurn(ctx context.Context, token string) (store.Origin, 
 			ID: *row.ProviderID, ProjectID: row.ProjectID, URL: row.ProviderUrl, APIKey: row.ProviderApiKey,
 		}
 	}
+	// The key of the provider is in a secret store, which comes with it.
+	if row.ApiKeyStoreID != nil && row.StoreCreatedAt != nil && row.StoreUpdatedAt != nil {
+		origin.Provider.APIKeyAt = &store.SecretReference{Store: *row.ApiKeyStoreID, Path: row.ApiKeyPath, Key: row.ApiKeyName}
+		origin.SecretStore = &store.SecretStore{
+			ID: *row.ApiKeyStoreID, ProjectID: row.ProjectID, Name: row.StoreName, Kind: row.StoreKind,
+			Settings: row.StoreSettings, Credential: row.StoreCredential,
+			CreatedAt: *row.StoreCreatedAt, UpdatedAt: *row.StoreUpdatedAt,
+		}
+	}
 	return origin, err
 }
 
@@ -584,7 +599,7 @@ func secretStoreFrom(row db.SecretStore) store.SecretStore {
 
 // providerFrom returns a row of the providers table as a Provider.
 func providerFrom(row db.Provider) store.Provider {
-	return store.Provider{
+	provider := store.Provider{
 		ID:        row.ID,
 		ProjectID: row.ProjectID,
 		Name:      row.Name,
@@ -593,6 +608,10 @@ func providerFrom(row db.Provider) store.Provider {
 		CreatedAt: row.CreatedAt,
 		UpdatedAt: row.UpdatedAt,
 	}
+	if row.ApiKeyStoreID != nil {
+		provider.APIKeyAt = &store.SecretReference{Store: *row.ApiKeyStoreID, Path: row.ApiKeyPath, Key: row.ApiKeyName}
+	}
+	return provider
 }
 
 // sessionFrom returns a row of the sessions table as a Session.

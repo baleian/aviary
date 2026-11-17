@@ -158,7 +158,7 @@ func agentOf(agent store.Agent) store.Agent {
 }
 
 func providerOf(provider store.Provider) store.Provider {
-	provider.APIKey = bytes.Clone(provider.APIKey)
+	provider.APIKey, provider.APIKeyAt = bytes.Clone(provider.APIKey), clone(provider.APIKeyAt)
 	return provider
 }
 
@@ -292,11 +292,25 @@ func (s *Store) CreateProvider(ctx context.Context, provider store.Provider) (st
 	if _, found := s.providers[provider.ID]; found {
 		return store.Provider{}, fmt.Errorf("there is a provider %s already", provider.ID)
 	}
+	if err := s.keyStore(provider); err != nil {
+		return store.Provider{}, err
+	}
 	created := providerOf(provider)
 	created.CreatedAt = s.now()
 	created.UpdatedAt = created.CreatedAt
 	s.providers[created.ID] = created
 	return providerOf(created), nil
+}
+
+// keyStore tells what is wrong with a provider whose key is in a secret
+// store that there is not. The caller holds the lock.
+func (s *Store) keyStore(provider store.Provider) error {
+	if at := provider.APIKeyAt; at != nil {
+		if _, found := s.secretStores[at.Store]; !found {
+			return fmt.Errorf("the key of the provider is in the secret store %s, which there is not", at.Store)
+		}
+	}
+	return nil
 }
 
 func (s *Store) Provider(ctx context.Context, id uuid.UUID) (store.Provider, error) {
@@ -320,7 +334,11 @@ func (s *Store) ReplaceProvider(ctx context.Context, provider store.Provider) (s
 	if !found {
 		return store.Provider{}, store.ErrNotFound
 	}
-	replaced.Name, replaced.URL, replaced.APIKey = provider.Name, provider.URL, bytes.Clone(provider.APIKey)
+	if err := s.keyStore(provider); err != nil {
+		return store.Provider{}, err
+	}
+	replaced.Name, replaced.URL = provider.Name, provider.URL
+	replaced.APIKey, replaced.APIKeyAt = bytes.Clone(provider.APIKey), clone(provider.APIKeyAt)
 	replaced.UpdatedAt = s.now()
 	s.providers[replaced.ID] = replaced
 	return providerOf(replaced), nil
@@ -651,6 +669,12 @@ func (s *Store) RunningTurn(ctx context.Context, token string) (store.Origin, er
 		provider := s.providers[agent.Model.Provider]
 		origin.Provider = &store.Provider{
 			ID: provider.ID, ProjectID: agent.ProjectID, URL: provider.URL, APIKey: bytes.Clone(provider.APIKey),
+			APIKeyAt: clone(provider.APIKeyAt),
+		}
+		// The key of the provider is in a secret store, which comes with it.
+		if provider.APIKeyAt != nil {
+			secrets := secretStoreOf(s.secretStores[provider.APIKeyAt.Store])
+			origin.SecretStore = &secrets
 		}
 	}
 	return origin, nil

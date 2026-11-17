@@ -85,7 +85,98 @@ func (suite suite) testProviders(t *testing.T) {
 func same(one, other store.Provider) bool {
 	return one.ID == other.ID && one.ProjectID == other.ProjectID && one.Name == other.Name && one.URL == other.URL &&
 		bytes.Equal(one.APIKey, other.APIKey) && (one.APIKey == nil) == (other.APIKey == nil) &&
+		reflect.DeepEqual(one.APIKeyAt, other.APIKeyAt) &&
 		one.CreatedAt.Equal(other.CreatedAt) && one.UpdatedAt.Equal(other.UpdatedAt)
+}
+
+// A provider keeps its key in a secret store of the project, in place of a
+// key that is stored: it has the one, the other or none.
+func (suite suite) testKeyInASecretStore(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	project, err := st.CreateProject(ctx, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := st.CreateSecretStore(ctx, store.SecretStore{
+		ID: uuid.New(), ProjectID: project.ID, Name: "a store", Kind: "a kind", Settings: json.RawMessage(`{"where": "there"}`), Credential: []byte("sealed"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := &store.SecretReference{Store: secrets.ID, Path: "llm/a-provider", Key: "api_key"}
+	created, err := st.CreateProvider(ctx, store.Provider{ID: uuid.New(), ProjectID: project.ID, Name: "a provider", URL: "https://api.example.com/v1", APIKeyAt: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.APIKey != nil || !reflect.DeepEqual(created.APIKeyAt, at) {
+		t.Errorf("the provider whose key is in a secret store was created as %+v, with its key at %+v", created, created.APIKeyAt)
+	}
+	if read, err := st.Provider(ctx, created.ID); err != nil || !same(read, created) {
+		t.Errorf("the provider is read as %+v, not as %+v: %v", read, created, err)
+	}
+
+	// All that is replaced is given: the key that is stored takes the place
+	// of the one in the secret store, and the other way around.
+	replacement := store.Provider{ID: created.ID, Name: "a provider", URL: "https://api.example.com/v1", APIKey: []byte("a sealed key")}
+	if stored, err := st.ReplaceProvider(ctx, replacement); err != nil || stored.APIKeyAt != nil || string(stored.APIKey) != "a sealed key" {
+		t.Errorf("the provider that was given a key to store is %+v, with its key at %+v: %v", stored, stored.APIKeyAt, err)
+	}
+	elsewhere := &store.SecretReference{Store: secrets.ID, Path: "llm/another", Key: "key"}
+	replacement.APIKey, replacement.APIKeyAt = nil, elsewhere
+	if kept, err := st.ReplaceProvider(ctx, replacement); err != nil || kept.APIKey != nil || !reflect.DeepEqual(kept.APIKeyAt, elsewhere) {
+		t.Errorf("the provider that was given a key in a secret store is %+v, with its key at %+v: %v", kept, kept.APIKeyAt, err)
+	}
+	if read, err := st.Provider(ctx, created.ID); err != nil || read.APIKey != nil || !reflect.DeepEqual(read.APIKeyAt, elsewhere) {
+		t.Errorf("the replaced provider is read as %+v, with its key at %+v: %v", read, read.APIKeyAt, err)
+	}
+
+	// The key of a provider is in a secret store that there is.
+	nowhere := &store.SecretReference{Store: uuid.New(), Path: "llm/a-provider", Key: "api_key"}
+	if _, err := st.CreateProvider(ctx, store.Provider{ID: uuid.New(), ProjectID: project.ID, Name: "another", URL: "https://api.example.com/v1", APIKeyAt: nowhere}); err == nil {
+		t.Error("a provider was created whose key is in a secret store that there is not")
+	}
+	replacement.APIKeyAt = nowhere
+	if _, err := st.ReplaceProvider(ctx, replacement); err == nil {
+		t.Error("a provider was given a key in a secret store that there is not")
+	}
+	if read, err := st.Provider(ctx, created.ID); err != nil || !reflect.DeepEqual(read.APIKeyAt, elsewhere) {
+		t.Errorf("after that, the provider has its key at %+v: %v", read.APIKeyAt, err)
+	}
+
+	// The token of a running turn tells of the provider with where its key
+	// is, and of the secret store as it is then.
+	agent, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: &store.Model{Provider: created.ID, Name: "a-model"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := st.CreateSession(ctx, agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatch, _ := st.running(session.ID)
+	origin, err := st.RunningTurn(ctx, dispatch.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if origin.Provider == nil || origin.Provider.APIKey != nil || !reflect.DeepEqual(origin.Provider.APIKeyAt, elsewhere) {
+		t.Errorf("the token of the running turn is that of the provider %+v", origin.Provider)
+	}
+	if in := origin.SecretStore; in == nil || in.ID != secrets.ID || in.ProjectID != project.ID || in.Name != "a store" || in.Kind != "a kind" ||
+		!keeps(t, in.Settings, `{"where": "there"}`) || string(in.Credential) != "sealed" || !in.UpdatedAt.Equal(secrets.UpdatedAt) {
+		t.Errorf("the key of the provider is in the secret store %+v", in)
+	}
+	moved, err := st.ReplaceSecretStore(ctx, store.SecretStore{
+		ID: secrets.ID, Name: "a store", Kind: "another kind", Settings: json.RawMessage(`{"where": "elsewhere"}`), Credential: []byte("another"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin, err = st.another().RunningTurn(ctx, dispatch.Token)
+	if in := origin.SecretStore; err != nil || in == nil || in.Kind != "another kind" || !keeps(t, in.Settings, `{"where": "elsewhere"}`) ||
+		string(in.Credential) != "another" || !in.UpdatedAt.Equal(moved.UpdatedAt) || !in.UpdatedAt.After(secrets.UpdatedAt) {
+		t.Errorf("after the secret store was replaced, the key of the provider is in %+v: %v", in, err)
+	}
 }
 
 // second returns the error of an operation.
@@ -179,7 +270,8 @@ func (suite suite) testModelOfAnAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if origin.TurnID != dispatch.TurnID || origin.SessionID != held.ID || origin.AgentID != agent.ID || origin.ProjectID != project.ID ||
-		origin.Provider == nil || origin.Provider.ID != provider.ID || origin.Provider.URL != provider.URL || string(origin.Provider.APIKey) != "a sealed key" {
+		origin.Provider == nil || origin.Provider.ID != provider.ID || origin.Provider.URL != provider.URL || string(origin.Provider.APIKey) != "a sealed key" ||
+		origin.Provider.APIKeyAt != nil || origin.SecretStore != nil {
 		t.Errorf("the token of the running turn is that of %+v, with the provider %+v", origin, origin.Provider)
 	}
 	// An agent names a provider that there is.

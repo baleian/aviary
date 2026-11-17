@@ -70,9 +70,11 @@ type installation struct {
 	cluster *fake.Clientset
 	config  driver.Config
 	keys    *secret.Keys
-	// stores are the secret stores that the installation allows, of the
-	// kind that the tests have a plugin for.
-	stores *secret.Stores
+	// storeHosts are the hosts at which the installation allows the secret
+	// stores of its projects, and secrets is what those stores hold. They
+	// are of the kind that the tests have a plugin for.
+	storeHosts []string
+	secrets    *shelves
 	// log is the event log of the installation, which its Supervisors share.
 	log *memorylog.Log
 	// sweep is how often its Supervisors look for what no Supervisor
@@ -107,17 +109,18 @@ func install(t *testing.T, changes ...func(*driver.Config)) *installation {
 	}
 	return &installation{
 		t: t, records: memorystore.New(), cluster: fake.NewClientset(), config: config,
-		keys: testenv.Keys(t), stores: allowing(t, storeHost), log: memorylog.New(), sweep: gateway.Sweep,
+		keys: testenv.Keys(t), storeHosts: []string{storeHost}, secrets: &shelves{}, log: memorylog.New(), sweep: gateway.Sweep,
 	}
 }
 
-// allowing returns the secret stores of an installation that allows them at
-// the hosts, and that asks them with the plugin of the tests.
-func allowing(t *testing.T, hosts ...string) *secret.Stores {
-	t.Helper()
-	stores, err := secret.NewStores(hosts, scripted{})
+// stores returns the secret stores of the installation as one of its
+// Supervisors has them: it asks them with the plugin of the tests, and
+// remembers by itself what it read.
+func (i *installation) stores() *secret.Stores {
+	i.t.Helper()
+	stores, err := secret.NewStores(i.storeHosts, scripted{i.secrets})
 	if err != nil {
-		t.Fatal(err)
+		i.t.Fatal(err)
 	}
 	return stores
 }
@@ -136,7 +139,7 @@ type supervisor struct {
 // supervisor starts a Supervisor of the installation.
 func (i *installation) supervisor() *supervisor {
 	i.t.Helper()
-	ev := events.New(i.log)
+	ev, stores := events.New(i.log), i.stores()
 	listen := func() net.Listener {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
@@ -162,7 +165,7 @@ func (i *installation) supervisor() *supervisor {
 	}
 	ctx, stop := context.WithCancel(context.Background())
 	stopped := make(chan error, 1)
-	go func() { stopped <- serveOn(ctx, on, i.records, ev, i.cluster, i.config, i.keys, i.stores, i.sweep) }()
+	go func() { stopped <- serveOn(ctx, on, i.records, ev, i.cluster, i.config, i.keys, stores, i.sweep) }()
 	s.stop = sync.OnceFunc(func() {
 		stop()
 		select {

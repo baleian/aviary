@@ -47,6 +47,10 @@ func (a asking) Login(ctx context.Context, client *http.Client, settings json.Ra
 	return credential, time.Hour, nil
 }
 
+func (asking) Read(context.Context, *http.Client, json.RawMessage, any, string, string) (string, error) {
+	return "", errors.New("a store of this kind is not read")
+}
+
 func stores(t *testing.T, hosts ...string) *Stores {
 	t.Helper()
 	stores, err := NewStores(hosts, asking{})

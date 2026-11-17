@@ -95,10 +95,23 @@ type Provider struct {
 	// APIKey is the API key of the endpoint as it is stored: sealed for the
 	// place that ProviderKeyPlace names. An endpoint that takes no key has
 	// none.
-	APIKey    []byte    `json:"-"`
-	CreatedAt time.Time `json:"created_at"`
+	APIKey []byte `json:"-"`
+	// APIKeyAt is where the API key is, if it is kept in a secret store of
+	// the project and not stored. A provider has a key that is stored, a
+	// key in a secret store, or no key.
+	APIKeyAt  *SecretReference `json:"-"`
+	CreatedAt time.Time        `json:"created_at"`
 	// UpdatedAt is when the URL and the key were last given.
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// SecretReference is where a secret is in a secret store of a project: the
+// store, the path of the secret in it, and the key of the value among those
+// that the secret holds.
+type SecretReference struct {
+	Store uuid.UUID `json:"store"`
+	Path  string    `json:"path"`
+	Key   string    `json:"key"`
 }
 
 // SecretStore is a secret store of a project: where the project keeps
@@ -257,8 +270,12 @@ type Origin struct {
 	AgentID   uuid.UUID
 	ProjectID uuid.UUID
 	// Provider is the provider of the agent as it is now, if the agent
-	// names its model: its ID, its URL and its API key as it is stored.
+	// names its model: its ID, its URL and its API key, as it is stored or
+	// where it is.
 	Provider *Provider
+	// SecretStore is the secret store that the key of the provider is in,
+	// as the store is now, if the key is in one.
+	SecretStore *SecretStore
 }
 
 // Approval is what the harness of a turn asked a person before it went on.
@@ -330,16 +347,17 @@ type Store interface {
 
 	// CreateProvider creates the provider as it is given, with its ID: the key
 	// of a provider is sealed for that ID before it is stored. It returns
-	// ErrNotFound if the project does not exist.
+	// ErrNotFound if the project does not exist, and creates no provider whose
+	// key is in a secret store that there is not.
 	CreateProvider(ctx context.Context, provider Provider) (Provider, error)
 
 	// Provider returns the provider with the ID, its key as it is stored.
 	Provider(ctx context.Context, id uuid.UUID) (Provider, error)
 
 	// ReplaceProvider gives the provider with the ID of the given one its name,
-	// its URL and its key, in place of all that it had: a provider that is given
-	// no key has none from then on. It returns ErrNotFound if there is no such
-	// provider.
+	// its URL and its key, stored or in a secret store, in place of all that it
+	// had: a provider that is given no key has none from then on. It returns
+	// ErrNotFound if there is no such provider.
 	ReplaceProvider(ctx context.Context, provider Provider) (Provider, error)
 
 	// CreateSecretStore creates the secret store as it is given, with its ID:

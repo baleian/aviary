@@ -234,18 +234,22 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 }
 
 const createProvider = `-- name: CreateProvider :one
-insert into providers (id, project_id, name, url, api_key)
-select $1::uuid, projects.id, $2::text, $3::text, $4::bytea
-from projects where projects.id = $5
-returning id, project_id, name, url, api_key, created_at, updated_at
+insert into providers (id, project_id, name, url, api_key, api_key_store_id, api_key_path, api_key_name)
+select $1::uuid, projects.id, $2::text, $3::text, $4::bytea,
+       $5::uuid, $6::text, $7::text
+from projects where projects.id = $8
+returning id, project_id, name, url, api_key, created_at, updated_at, api_key_store_id, api_key_path, api_key_name
 `
 
 type CreateProviderParams struct {
-	ID        uuid.UUID
-	Name      string
-	Url       string
-	ApiKey    []byte
-	ProjectID uuid.UUID
+	ID            uuid.UUID
+	Name          string
+	Url           string
+	ApiKey        []byte
+	ApiKeyStoreID *uuid.UUID
+	ApiKeyPath    string
+	ApiKeyName    string
+	ProjectID     uuid.UUID
 }
 
 func (q *Queries) CreateProvider(ctx context.Context, arg CreateProviderParams) (Provider, error) {
@@ -254,6 +258,9 @@ func (q *Queries) CreateProvider(ctx context.Context, arg CreateProviderParams) 
 		arg.Name,
 		arg.Url,
 		arg.ApiKey,
+		arg.ApiKeyStoreID,
+		arg.ApiKeyPath,
+		arg.ApiKeyName,
 		arg.ProjectID,
 	)
 	var i Provider
@@ -265,6 +272,9 @@ func (q *Queries) CreateProvider(ctx context.Context, arg CreateProviderParams) 
 		&i.ApiKey,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ApiKeyStoreID,
+		&i.ApiKeyPath,
+		&i.ApiKeyName,
 	)
 	return i, err
 }
@@ -602,7 +612,7 @@ func (q *Queries) GetProject(ctx context.Context, id uuid.UUID) (Project, error)
 }
 
 const getProvider = `-- name: GetProvider :one
-select id, project_id, name, url, api_key, created_at, updated_at from providers where id = $1
+select id, project_id, name, url, api_key, created_at, updated_at, api_key_store_id, api_key_path, api_key_name from providers where id = $1
 `
 
 func (q *Queries) GetProvider(ctx context.Context, id uuid.UUID) (Provider, error) {
@@ -616,6 +626,9 @@ func (q *Queries) GetProvider(ctx context.Context, id uuid.UUID) (Provider, erro
 		&i.ApiKey,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ApiKeyStoreID,
+		&i.ApiKeyPath,
+		&i.ApiKeyName,
 	)
 	return i, err
 }
@@ -913,25 +926,33 @@ func (q *Queries) QueuedTurns(ctx context.Context) ([]uuid.UUID, error) {
 }
 
 const replaceProvider = `-- name: ReplaceProvider :one
-update providers set name = $1, url = $2, api_key = $3, updated_at = now()
-where id = $4
-returning id, project_id, name, url, api_key, created_at, updated_at
+update providers set name = $1, url = $2, api_key = $3,
+       api_key_store_id = $4, api_key_path = $5, api_key_name = $6,
+       updated_at = now()
+where id = $7
+returning id, project_id, name, url, api_key, created_at, updated_at, api_key_store_id, api_key_path, api_key_name
 `
 
 type ReplaceProviderParams struct {
-	Name   string
-	Url    string
-	ApiKey []byte
-	ID     uuid.UUID
+	Name          string
+	Url           string
+	ApiKey        []byte
+	ApiKeyStoreID *uuid.UUID
+	ApiKeyPath    string
+	ApiKeyName    string
+	ID            uuid.UUID
 }
 
 // The provider gets the name, the URL and the key that are given, in place
-// of all that it had.
+// of all that it had. The key is stored, or in a secret store, or none.
 func (q *Queries) ReplaceProvider(ctx context.Context, arg ReplaceProviderParams) (Provider, error) {
 	row := q.db.QueryRow(ctx, replaceProvider,
 		arg.Name,
 		arg.Url,
 		arg.ApiKey,
+		arg.ApiKeyStoreID,
+		arg.ApiKeyPath,
+		arg.ApiKeyName,
 		arg.ID,
 	)
 	var i Provider
@@ -943,6 +964,9 @@ func (q *Queries) ReplaceProvider(ctx context.Context, arg ReplaceProviderParams
 		&i.ApiKey,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ApiKeyStoreID,
+		&i.ApiKeyPath,
+		&i.ApiKeyName,
 	)
 	return i, err
 }
@@ -1014,26 +1038,43 @@ func (q *Queries) ResolveApproval(ctx context.Context, arg ResolveApprovalParams
 
 const runningTurn = `-- name: RunningTurn :one
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id,
-       agents.provider_id, coalesce(providers.url, '')::text as provider_url, providers.api_key as provider_api_key
+       agents.provider_id, coalesce(providers.url, '')::text as provider_url, providers.api_key as provider_api_key,
+       providers.api_key_store_id, coalesce(providers.api_key_path, '')::text as api_key_path,
+       coalesce(providers.api_key_name, '')::text as api_key_name,
+       coalesce(secret_stores.name, '')::text as store_name, coalesce(secret_stores.kind, '')::text as store_kind,
+       secret_stores.settings as store_settings, secret_stores.credential as store_credential,
+       secret_stores.created_at as store_created_at, secret_stores.updated_at as store_updated_at
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
 left join providers on providers.id = agents.provider_id
+left join secret_stores on secret_stores.id = providers.api_key_store_id
 where turns.token_hash = $1 and turns.state = 'running'
 `
 
 type RunningTurnRow struct {
-	TurnID         uuid.UUID
-	SessionID      uuid.UUID
-	AgentID        uuid.UUID
-	ProjectID      uuid.UUID
-	ProviderID     *uuid.UUID
-	ProviderUrl    string
-	ProviderApiKey []byte
+	TurnID          uuid.UUID
+	SessionID       uuid.UUID
+	AgentID         uuid.UUID
+	ProjectID       uuid.UUID
+	ProviderID      *uuid.UUID
+	ProviderUrl     string
+	ProviderApiKey  []byte
+	ApiKeyStoreID   *uuid.UUID
+	ApiKeyPath      string
+	ApiKeyName      string
+	StoreName       string
+	StoreKind       string
+	StoreSettings   []byte
+	StoreCredential []byte
+	StoreCreatedAt  *time.Time
+	StoreUpdatedAt  *time.Time
 }
 
 // The running turn that the token belongs to, what the turn belongs to, and
-// the provider of its agent as it is now, if the agent names its model.
+// the provider of its agent as it is now, if the agent names its model. A
+// provider whose key is in a secret store comes with that store, as it is
+// now.
 func (q *Queries) RunningTurn(ctx context.Context, tokenHash []byte) (RunningTurnRow, error) {
 	row := q.db.QueryRow(ctx, runningTurn, tokenHash)
 	var i RunningTurnRow
@@ -1045,6 +1086,15 @@ func (q *Queries) RunningTurn(ctx context.Context, tokenHash []byte) (RunningTur
 		&i.ProviderID,
 		&i.ProviderUrl,
 		&i.ProviderApiKey,
+		&i.ApiKeyStoreID,
+		&i.ApiKeyPath,
+		&i.ApiKeyName,
+		&i.StoreName,
+		&i.StoreKind,
+		&i.StoreSettings,
+		&i.StoreCredential,
+		&i.StoreCreatedAt,
+		&i.StoreUpdatedAt,
 	)
 	return i, err
 }

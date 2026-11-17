@@ -23,8 +23,9 @@ returning *;
 select * from sessions where id = @id;
 
 -- name: CreateProvider :one
-insert into providers (id, project_id, name, url, api_key)
-select @id::uuid, projects.id, @name::text, @url::text, sqlc.narg(api_key)::bytea
+insert into providers (id, project_id, name, url, api_key, api_key_store_id, api_key_path, api_key_name)
+select @id::uuid, projects.id, @name::text, @url::text, sqlc.narg(api_key)::bytea,
+       sqlc.narg(api_key_store_id)::uuid, @api_key_path::text, @api_key_name::text
 from projects where projects.id = @project_id
 returning *;
 
@@ -33,8 +34,10 @@ select * from providers where id = @id;
 
 -- name: ReplaceProvider :one
 -- The provider gets the name, the URL and the key that are given, in place
--- of all that it had.
-update providers set name = @name, url = @url, api_key = sqlc.narg(api_key), updated_at = now()
+-- of all that it had. The key is stored, or in a secret store, or none.
+update providers set name = @name, url = @url, api_key = sqlc.narg(api_key),
+       api_key_store_id = sqlc.narg(api_key_store_id), api_key_path = @api_key_path, api_key_name = @api_key_name,
+       updated_at = now()
 where id = @id
 returning *;
 
@@ -154,13 +157,21 @@ select state from turns where token_hash = @token_hash;
 
 -- name: RunningTurn :one
 -- The running turn that the token belongs to, what the turn belongs to, and
--- the provider of its agent as it is now, if the agent names its model.
+-- the provider of its agent as it is now, if the agent names its model. A
+-- provider whose key is in a secret store comes with that store, as it is
+-- now.
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id,
-       agents.provider_id, coalesce(providers.url, '')::text as provider_url, providers.api_key as provider_api_key
+       agents.provider_id, coalesce(providers.url, '')::text as provider_url, providers.api_key as provider_api_key,
+       providers.api_key_store_id, coalesce(providers.api_key_path, '')::text as api_key_path,
+       coalesce(providers.api_key_name, '')::text as api_key_name,
+       coalesce(secret_stores.name, '')::text as store_name, coalesce(secret_stores.kind, '')::text as store_kind,
+       secret_stores.settings as store_settings, secret_stores.credential as store_credential,
+       secret_stores.created_at as store_created_at, secret_stores.updated_at as store_updated_at
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
 left join providers on providers.id = agents.provider_id
+left join secret_stores on secret_stores.id = providers.api_key_store_id
 where turns.token_hash = @token_hash and turns.state = 'running';
 
 -- name: SetFinished :exec
