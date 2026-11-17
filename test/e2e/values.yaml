@@ -1,13 +1,8 @@
 # How the e2e installs Aviary: with more than one of each of its parts, and
-# with the model server of the tests as the model endpoint and as the only
-# host that the Egress Proxy lets requests through to.
+# with the model server of the tests as the only host that the Egress Proxy
+# lets requests through to.
 supervisor:
   replicas: 2
-llm:
-  url: http://mock-llm.aviary-e2e/v1
-  model: mock
-  apiKey:
-    secretName: aviary-llm-mock
 egressProxy:
   replicas: 2
   allowedHosts:

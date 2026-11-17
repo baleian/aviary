@@ -53,9 +53,6 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 	--env AVIARY_TEST_DATABASE_URL=postgres://postgres:test@postgres:5432/postgres \
 	--env AVIARY_TEST_VALKEY_URL=valkey://default:test@valkey:6379
 
-# The value of a variable in .env, or nothing if there is no .env.
-dotenv = $$(test ! -f .env || sed --quiet 's/^$(1)=//p' .env)
-
 .PHONY: proto sqlc lint test test-supervisor test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down build images secrets deploy e2e e2e-up e2e-run e2e-down
 
 # Writes the Go code for proto/ to supervisor/internal/gen. Run it after
@@ -110,19 +107,15 @@ test-mock-llm:
 test-chart: TESTS ?= ./chart/...
 test-chart:
 	helm lint --strict --quiet deploy/charts/aviary
-	mkdir -p .out/chart/llm
-	echo key > .out/chart/llm/api-key
+	mkdir -p .out/chart
 	$(RENDER) > .out/chart/default.yaml
 	$(RENDER) --values test/chart/set.yaml > .out/chart/set.yaml
 	$(RENDER) --values test/chart/closed.yaml > .out/chart/closed.yaml
-	! $(RENDER) --set llm.url=llm.example.com/v1 --set llm.model=a-model > /dev/null 2>&1
-	! $(RENDER) --set llm.url=https://llm.example.com/v1 > /dev/null 2>&1
 	! $(RENDER) --set 'egressProxy.allowedHosts={https://example.com}' > /dev/null 2>&1
 	$(call GO,test,--env AVIARY_TEST_RENDERED=/src/.out/chart) $(GO_TEST) $(TESTS)
 	for values in default set closed; do \
 		$(call GO,test) run ./internal/unpack /src/.out/chart/$$values.yaml /src/.out/chart/$$values && \
 		docker run --rm --volume $(CURDIR)/.out/chart/$$values:/etc/envoy:ro \
-			--volume $(CURDIR)/.out/chart/llm:/etc/aviary/llm:ro \
 			$(ENVOY_IMAGE) --mode validate --log-level error --config-path /etc/envoy/envoy.yaml || exit 1; \
 	done
 
@@ -131,8 +124,7 @@ test-chart:
 # hosts of the proxy, so the proxy finds them under those names.
 test-proxy: TESTS ?= ./proxy/...
 test-proxy:
-	mkdir -p .out/proxy/llm
-	printf the-real-key > .out/proxy/llm/api-key
+	mkdir -p .out/proxy
 	$(call GO,test) run ./internal/selfsigned tls.test /src/.out/proxy/tls
 	for values in listed open closed; do \
 		$(RENDER) --values test/proxy/$$values.yaml > .out/proxy/$$values.yaml && \
@@ -207,21 +199,15 @@ secrets:
 		$(KUBECTL) create secret generic aviary-encryption --namespace aviary-system \
 			--from-literal=k1=$$(openssl rand -base64 32)
 
-# The image ID makes the pod restart when the image changes. The model
-# endpoint is taken from .env if there is one: its address and the model's
-# name become chart values, and its key a secret that only the Egress Proxy
-# reads.
+# The image ID makes the pod restart when the image changes. VALUES names a
+# file of values of your own for the chart, for example
+# make deploy VALUES=my-values.yaml
 deploy: secrets
-	test ! -f .env || sed --quiet 's/^AVIARY_LLM_API_KEY=//p' .env | tr --delete '\n' | \
-		$(KUBECTL) create secret generic aviary-llm --namespace aviary-system --from-file=api-key=/dev/stdin \
-			--dry-run=client --output yaml | $(KUBECTL) apply -f -
 	$(HELM) upgrade --install aviary deploy/charts/aviary \
 		--namespace aviary-system \
 		--set-string 'supervisor.podAnnotations.aviary\.io/image-id='$$(docker image inspect --format '{{.Id}}' $(SUPERVISOR_IMAGE)) \
-		--set-string llm.url="$(call dotenv,AVIARY_LLM_BASE_URL)" \
-		--set-string llm.model="$(call dotenv,AVIARY_LLM_MODEL)" \
+		$(if $(VALUES),--values $(VALUES)) \
 		--wait
-	@test -f .env || echo "There is no .env, so the turns have no model endpoint. It sets AVIARY_LLM_BASE_URL, AVIARY_LLM_API_KEY and AVIARY_LLM_MODEL."
 
 # Runs the e2e in a cluster of its own, which it makes anew, so that nothing
 # of an earlier run or of the cluster that make cluster-up makes plays a part.

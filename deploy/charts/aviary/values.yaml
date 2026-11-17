@@ -34,20 +34,6 @@ supervisor:
     # with one does not open without it.
     key: k1
 
-# The model endpoint. It can be the API of a provider, an AI gateway or a
-# model server of your own.
-llm:
-  # The base URL of the endpoint, for example https://api.openai.com/v1
-  url: ""
-  # The model that the harnesses ask the endpoint for.
-  model: ""
-  apiKey:
-    # A secret in the release namespace with the API key of the endpoint. Only
-    # the Egress Proxy reads it. A turn pod sends its turn token as the API
-    # key, and the proxy sends the key in its place, as a bearer token.
-    secretName: aviary-llm
-    secretKey: api-key
-
 egressProxy:
   image: envoyproxy/envoy:distroless-v1.40.2@sha256:09ca6f2140a61ad8df11779a4a30d52b48433d444466328494f9188c9c35eded
   replicas: 1
@@ -56,21 +42,20 @@ egressProxy:
   resources:
     requests: {cpu: 100m, memory: 64Mi}
     limits: {memory: 512Mi}
-  # The hosts that the proxy lets requests through to, the model endpoint
-  # among them.
+  # The hosts that the proxy lets requests through to, those of the model
+  # providers among them.
   #   "*"        every host.
   #   host       the host, for HTTPS and HTTP on their usual ports. A
   #              subdomain is a host of its own.
   #   host:port  the host on another port.
   # The default allows everything. To restrict the pods, list the hosts
-  # instead. The model endpoint needs "*" or its host in the list: without
-  # it the proxy refuses the model requests, and the turns fail.
+  # instead. A model provider needs "*" or the host of its URL in the list:
+  # without it the proxy refuses the model requests, and the turns fail.
   allowedHosts: ["*"]
   # The turn pods reach the outside through the proxy, so the proxy must not
   # be a way into the cluster. A network policy keeps the proxy itself from
   # connecting to the addresses in these ranges. It still reaches the
-  # Supervisor, the cluster's DNS and, if llm.url holds an IP address, the
-  # model endpoint.
+  # Supervisor and the cluster's DNS.
   insideCIDRs:
     - 10.0.0.0/8
     - 172.16.0.0/12
@@ -80,11 +65,14 @@ egressProxy:
     - fc00::/7
     - fe80::/10
   # More that the proxy may connect to inside, as egress rules of a
-  # NetworkPolicy. A model endpoint or an allowed host that is a service in
-  # the cluster needs one, for example
+  # NetworkPolicy. The endpoint of a model provider or an allowed host needs
+  # one if it is a service in the cluster or at a private address, for
+  # example
   #   - to:
   #       - namespaceSelector:
   #           matchLabels: {kubernetes.io/metadata.name: llm-gateway}
+  #   - to:
+  #       - ipBlock: {cidr: 192.168.1.20/32}
   extraEgress: []
 
 runtime:

@@ -1,4 +1,3 @@
-{{- $url := urlParse .Values.llm.url }}
 {{- $inside4 := list }}
 {{- $inside6 := list }}
 {{- range .Values.egressProxy.insideCIDRs }}
@@ -57,14 +56,6 @@ spec:
             {{- with $inside6 }}
             except: {{ toJson . }}
             {{- end }}
-    {{- if regexMatch "^[0-9]+(\\.[0-9]+){3}$" $url.hostname }}
-    # The model endpoint, whose address may be inside.
-    - to:
-        - ipBlock:
-            cidr: {{ $url.hostname }}/32
-      ports:
-        - {protocol: TCP, port: {{ include "aviary.llm.port" . }}}
-    {{- end }}
     {{- with .Values.egressProxy.extraEgress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

@@ -1,5 +1,4 @@
 # An Egress Proxy that lets requests through to every host, as the chart's
 # own values have it.
-llm:
-  url: http://model.test:8081/v1
-  model: a-model
+egressProxy:
+  allowedHosts: ["*"]

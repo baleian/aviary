@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"aviary/test/internal/rendered"
@@ -34,7 +35,7 @@ func chart(t *testing.T, values string) (objects []map[string]any, envoy map[str
 	return objects, envoy
 }
 
-var at, named = rendered.At, rendered.Named
+var at, named, find = rendered.At, rendered.Named, rendered.Find
 
 // listener returns the settings of the HTTP connection manager of the
 // proxy's listener with the name.
@@ -99,8 +100,8 @@ func TestEgressProxyKeepsARequestForAsLongAsATurn(t *testing.T) {
 				t.Errorf("%s: a request to the model on the route %v is ended after %v", values, at(route, "match"), timeout)
 			}
 		}
-		if expected := map[string]int{"default": 2, "set": 3}[values]; passed != expected {
-			t.Errorf("%s: %d routes pass model requests on, not %d", values, passed, expected)
+		if passed != 2 {
+			t.Errorf("%s: %d routes pass model requests on, not the two for endpoints with TLS and without", values, passed)
 		}
 		// A pod that is to stop does not wait for the turns that use it.
 		for _, name := range []string{"aviary-egress-proxy", "aviary-supervisor"} {
@@ -112,55 +113,43 @@ func TestEgressProxyKeepsARequestForAsLongAsATurn(t *testing.T) {
 	}
 }
 
-func TestModelEndpoint(t *testing.T) {
-	// llm returns the route of the listener for the model endpoint of the
-	// installation: the first that is not for an endpoint that the
-	// Supervisor named.
-	llm := func(envoy map[string]any) any {
+// A model request goes where the Supervisor says, with the key that the
+// Supervisor gives. The chart itself knows no model endpoint and holds no
+// key.
+func TestModelRequestsGoWhereTheSupervisorSays(t *testing.T) {
+	for _, values := range []string{"default", "set", "closed"} {
+		objects, envoy := chart(t, values)
 		routes, _ := at(listener(envoy, "llm"), "route_config", "virtual_hosts", 0, "routes").([]any)
-		for _, route := range routes {
-			if at(route, "match", "headers") == nil {
-				return route
+		if len(routes) != 3 {
+			t.Fatalf("%s: the model requests have the routes %v", values, routes)
+		}
+		for i, cluster := range []string{"model-tls", "model"} {
+			route := routes[i]
+			if at(route, "route", "cluster") != cluster || at(route, "match", "headers", 0, "name") != "x-aviary-upstream-tls" ||
+				at(route, "typed_per_filter_config", "envoy.filters.http.dynamic_forward_proxy", "host_rewrite_header") != "x-aviary-upstream" {
+				t.Errorf("%s: a model request is passed on by the route %v", values, route)
+			}
+			if named(at(envoy, "static_resources", "clusters"), cluster) == nil {
+				t.Errorf("%s: the proxy has no cluster %s", values, cluster)
 			}
 		}
-		return nil
-	}
-
-	// Without a model endpoint the proxy says so.
-	_, none := chart(t, "default")
-	if status := at(llm(none), "direct_response", "status"); status != 503 {
-		t.Errorf("without a model endpoint, a model request is answered with %v", status)
-	}
-	if named(at(none, "static_resources", "clusters"), "llm") != nil {
-		t.Error("without a model endpoint, the proxy has one to pass requests on to")
-	}
-
-	// The endpoint is reached under the path of its URL, over TLS, and the
-	// API key is put where the turn token was.
-	_, set := chart(t, "set")
-	route := llm(set)
-	if at(route, "match", "path_separated_prefix") != "/v1" || at(route, "route", "host_rewrite_literal") != "llm.example.com" {
-		t.Errorf("a model request is passed on by the route %v", route)
-	}
-	cluster := named(at(set, "static_resources", "clusters"), "llm")
-	address := at(cluster, "load_assignment", "endpoints", 0, "lb_endpoints", 0, "endpoint", "address", "socket_address")
-	if at(address, "address") != "llm.example.com" || at(address, "port_value") != 443 || at(cluster, "transport_socket") == nil {
-		t.Errorf("the model endpoint is reached at %v, with the transport %v", address, at(cluster, "transport_socket"))
-	}
-	// Only into the requests to this endpoint: a request to an endpoint
-	// that the Supervisor named is not to carry the key of this one.
-	options := at(cluster, "typed_extension_protocol_options", "envoy.extensions.upstreams.http.v3.HttpProtocolOptions")
-	if named(at(options, "http_filters"), "envoy.filters.http.credential_injector") == nil {
-		t.Error("the proxy does not put the API key into a request to the model endpoint")
-	}
-	if named(at(listener(set, "llm"), "http_filters"), "envoy.filters.http.credential_injector") != nil {
-		t.Error("the proxy puts the API key into every model request")
-	}
-
-	// The model endpoint is a host like any other: the list has to allow it.
-	_, closed := chart(t, "closed")
-	if status := at(llm(closed), "direct_response", "status"); status != 403 {
-		t.Errorf("a model request to an endpoint that is not allowed is answered with %v", status)
+		// Without an endpoint from the Supervisor a request goes nowhere.
+		if last := routes[2]; at(last, "match", "headers") != nil || at(last, "direct_response", "status") != 503 {
+			t.Errorf("%s: a model request without an endpoint is answered by the route %v", values, last)
+		}
+		// The proxy has no key to put into a request, and nothing to read
+		// one from.
+		whole, err := json.Marshal(envoy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(whole), "credential_injector") {
+			t.Errorf("%s: the proxy puts a key of its own into requests", values)
+		}
+		proxy := at(find(objects, "Deployment", "aviary-egress-proxy"), "spec", "template", "spec")
+		if volumes, _ := at(proxy, "volumes").([]any); len(volumes) != 1 || at(volumes[0], "configMap", "name") != "aviary-egress-proxy" {
+			t.Errorf("%s: the pod of the proxy mounts %v", values, at(proxy, "volumes"))
+		}
 	}
 }
 
@@ -200,6 +189,18 @@ func TestAllowedHosts(t *testing.T) {
 		if !slices.Equal(hosts, expected) || at(rules(set, name), "action") != "ALLOW" {
 			t.Errorf("on %s, the proxy lets requests through to %v, not to %v", name, hosts, expected)
 		}
+
+		// An empty list lets nothing through.
+		_, closed := chart(t, "closed")
+		permissions, _ = at(rules(closed, name), "policies", "listed-hosts", "permissions").([]any)
+		for _, permission := range permissions {
+			if at(permission, "header") != nil {
+				t.Errorf("on %s, with no host allowed, the proxy lets requests through by %v", name, permission)
+			}
+		}
+		if at(rules(closed, name), "action") != "ALLOW" {
+			t.Errorf("on %s, with no host allowed, the proxy holds requests against %v", name, rules(closed, name))
+		}
 	}
 }
 
@@ -211,7 +212,6 @@ func TestSupervisorSettings(t *testing.T) {
 		"AVIARY_GATEWAY_URL":            "http://aviary-supervisor.aviary-system:9090",
 		"AVIARY_ENCRYPTION_KEY":         "k1",
 		"AVIARY_LLM_BASE_URL":           "http://aviary-egress-proxy.aviary-system:8080",
-		"AVIARY_LLM_MODEL":              "",
 		"AVIARY_PROXY_URL":              "http://aviary-egress-proxy.aviary-system:3128",
 		"AVIARY_RUNNER_IMAGE":           "aviary-runner:dev",
 		"AVIARY_MAX_CONCURRENT_TURNS":   "50",
@@ -227,14 +227,17 @@ func TestSupervisorSettings(t *testing.T) {
 		}
 	}
 
+	// The model of a turn is that of its agent, and no setting.
+	if model, told := settings["AVIARY_LLM_MODEL"]; told {
+		t.Errorf("the Supervisor is told the model %q", model)
+	}
+
 	objects, _ = chart(t, "set")
 	supervisor := rendered.Find(objects, "Deployment", "aviary-supervisor")
 	settings = env(supervisor)
 	for name, value := range map[string]string{
-		"AVIARY_ENCRYPTION_KEY": "k2",
-		// The harnesses reach the model under the path of its URL.
-		"AVIARY_LLM_BASE_URL":           "http://aviary-egress-proxy.aviary-system:8080/v1",
-		"AVIARY_LLM_MODEL":              "a-model",
+		"AVIARY_ENCRYPTION_KEY":         "k2",
+		"AVIARY_LLM_BASE_URL":           "http://aviary-egress-proxy.aviary-system:8080",
 		"AVIARY_MAX_CONCURRENT_TURNS":   "7",
 		"AVIARY_MAX_QUEUED_TURNS":       "11",
 		"AVIARY_MAX_QUEUE_WAIT_SECONDS": "13",
@@ -350,11 +353,6 @@ func TestEgressProxyIsKeptFromTheInside(t *testing.T) {
 	if set := outside("set"); len(set) != 2 ||
 		at(set[1], "to", 0, "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name") != "llm-gateway" {
 		t.Errorf("with a namespace named besides, the proxy may connect to %v", set)
-	}
-	// A model endpoint at an address inside is reached at that address.
-	if closed := outside("closed"); len(closed) != 2 ||
-		at(closed[1], "to", 0, "ipBlock", "cidr") != "10.1.2.3/32" || at(closed[1], "ports", 0, "port") != 8000 {
-		t.Errorf("with a model endpoint at an address inside, the proxy may connect to %v", closed)
 	}
 }
 

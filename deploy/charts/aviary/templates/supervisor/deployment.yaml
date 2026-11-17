@@ -50,12 +50,11 @@ spec:
               value: http://aviary-supervisor.{{ .Release.Namespace }}:9090
             - name: AVIARY_RUNNER_IMAGE
               value: {{ .Values.runtime.runnerImage }}
-            # Where the harnesses in the turn pods reach the model endpoint: the
-            # Egress Proxy, which serves it under the path of llm.url.
+            # Where the harnesses in the turn pods reach their models: the
+            # Egress Proxy, which passes a request on to the model endpoint
+            # of its turn.
             - name: AVIARY_LLM_BASE_URL
-              value: http://aviary-egress-proxy.{{ .Release.Namespace }}:8080{{ (urlParse .Values.llm.url).path | trimSuffix "/" }}
-            - name: AVIARY_LLM_MODEL
-              value: {{ .Values.llm.model | quote }}
+              value: http://aviary-egress-proxy.{{ .Release.Namespace }}:8080
             # The proxy that the turn pods use for everything else.
             - name: AVIARY_PROXY_URL
               value: http://aviary-egress-proxy.{{ .Release.Namespace }}:3128

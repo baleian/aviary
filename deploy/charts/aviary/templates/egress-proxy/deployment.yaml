@@ -54,11 +54,6 @@ spec:
             - name: config
               mountPath: /etc/envoy
               readOnly: true
-            {{- if .Values.llm.url }}
-            - name: llm-api-key
-              mountPath: /etc/aviary/llm
-              readOnly: true
-            {{- end }}
           resources:
             {{- toYaml .Values.egressProxy.resources | nindent 12 }}
           securityContext:
@@ -70,11 +65,3 @@ spec:
         - name: config
           configMap:
             name: aviary-egress-proxy
-        {{- if .Values.llm.url }}
-        - name: llm-api-key
-          secret:
-            secretName: {{ .Values.llm.apiKey.secretName }}
-            items:
-              - key: {{ .Values.llm.apiKey.secretKey }}
-                path: api-key
-        {{- end }}

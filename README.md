@@ -313,7 +313,8 @@ address, which the default does.
 ## Configuration
 
 Aviary is installed with the Helm chart in `deploy/charts/aviary`. The chart
-does not install PostgreSQL or Valkey.
+does not install PostgreSQL or Valkey. `make deploy VALUES=<file>` installs
+it in the local cluster with a file of values of your own.
 
 | Value | |
 | --- | --- |
@@ -322,10 +323,8 @@ does not install PostgreSQL or Valkey.
 | `supervisor.database.secretName`, `.secretKey` | A secret with the PostgreSQL connection URL. |
 | `supervisor.valkey.secretName`, `.secretKey` | A secret with the Valkey connection URL. |
 | `supervisor.encryption.secretName`, `.key` | A secret with the keys that the Supervisor seals secrets with before it stores them, and the entry of it that seals. An entry is 32 random bytes in base64. To replace the key, add an entry and name it, and keep the entries from before. |
-| `llm.url`, `llm.model` | The base URL of the model endpoint and the model that the harnesses ask it for. |
-| `llm.apiKey.secretName`, `.secretKey` | A secret with the API key of the model endpoint. Only the Egress Proxy reads it. |
-| `egressProxy.allowedHosts` | The hosts that the Egress Proxy lets requests through to, the model endpoint among them. The default, `*`, is every host. |
-| `egressProxy.insideCIDRs`, `.extraEgress` | A network policy keeps the Egress Proxy itself out of these address ranges, so that it is no way into the cluster. `extraEgress` names what it may still reach there, such as a model endpoint that is a service in the cluster. |
+| `egressProxy.allowedHosts` | The hosts that the Egress Proxy lets requests through to, those of the model providers among them. The default, `*`, is every host. |
+| `egressProxy.insideCIDRs`, `.extraEgress` | A network policy keeps the Egress Proxy itself out of these address ranges, so that it is no way into the cluster. `extraEgress` names what it may still reach there, as egress rules of a network policy: the endpoint of a model provider that is a service in the cluster or at a private address needs one. |
 | `runtime.maxConcurrentTurns` | The most turns that run at once. Default 50. |
 | `runtime.maxQueuedTurns` | The most turns that may wait to run. A message beyond it is answered with 429. Default 500, and 0 is no limit. |
 | `runtime.maxQueueWaitSeconds` | How long a turn may wait to run before it ends as expired. Default 120, and 0 is no limit. |

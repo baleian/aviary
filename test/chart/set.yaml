@@ -4,9 +4,6 @@ supervisor:
   encryption:
     secretName: other-keys
     key: k2
-llm:
-  url: https://llm.example.com/v1
-  model: a-model
 egressProxy:
   replicas: 2
   allowedHosts:

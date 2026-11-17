@@ -1,25 +1,8 @@
-{{- $url := urlParse .Values.llm.url }}
-{{- if and .Values.llm.url (or (not (has $url.scheme (list "http" "https"))) (not $url.hostname)) }}
-{{- fail "llm.url must be a URL that begins with http:// or https://" }}
-{{- end }}
-{{- if and .Values.llm.url (not .Values.llm.model) }}
-{{- fail "llm.model must name the model of the endpoint at llm.url" }}
-{{- end }}
-{{- $tls := eq $url.scheme "https" }}
-{{- $port := include "aviary.llm.port" . | int }}
-{{- $path := trimSuffix "/" $url.path }}
 {{- $allowAny := has "*" .Values.egressProxy.allowedHosts }}
 {{- $hosts := without .Values.egressProxy.allowedHosts "*" }}
 {{- range $hosts }}
 {{- if not (regexMatch "^[^/@ *]+$" .) }}
 {{- fail (printf "egressProxy.allowedHosts takes \"*\" and host names, with a port if it is neither 443 nor 80, and %q is neither" .) }}
-{{- end }}
-{{- end }}
-{{- /* The model endpoint is a host like any other: the list has to allow it. */}}
-{{- $llmAllowed := $allowAny }}
-{{- range $hosts }}
-{{- if or (eq (lower .) (printf "%s:%d" (lower $url.hostname) $port)) (and (eq (lower .) (lower $url.hostname)) (has $port (list 443 80))) }}
-{{- $llmAllowed = true }}
 {{- end }}
 {{- end }}
 # The configuration of the Egress Proxy, which is Envoy. Whatever a turn pod
@@ -49,11 +32,11 @@ data:
         pipe: {path: "@aviary-egress-proxy-admin"}
     static_resources:
       listeners:
-        # The model endpoint. The pod sends its turn token in place of the
-        # API key. Envoy puts the API key in the token's place and passes the
-        # request on. If the Supervisor names a model endpoint for the turn
-        # in its answer, the request goes there, with the key that the
-        # answer holds.
+        # The model requests. The pod sends its turn token in place of an
+        # API key. The Supervisor answers with the model endpoint of the
+        # turn, that of the provider that the turn's agent names, and with
+        # its key. Envoy puts the key in the token's place and passes the
+        # request on to that endpoint.
         - name: llm
           address:
             socket_address: {address: 0.0.0.0, port_value: 8080}
@@ -79,6 +62,20 @@ data:
                           mutations:
                             - remove: x-aviary-upstream
                             - remove: x-aviary-upstream-tls
+                    {{- if not $allowAny }}
+                    # A request to an endpoint that is not a listed host is
+                    # refused without a word of why. Envoy itself answers
+                    # nothing else here with this status.
+                    local_reply_config:
+                      mappers:
+                        - filter:
+                            status_code_filter:
+                              comparison:
+                                op: EQ
+                                value: {default_value: 403, runtime_key: none}
+                          body:
+                            inline_string: "the model endpoint of the turn is at a host that egressProxy.allowedHosts does not allow\n"
+                    {{- end }}
                     {{- include "aviary.egress-proxy.access-log" "llm" | nindent 20 }}
                     route_config:
                       virtual_hosts:
@@ -104,40 +101,15 @@ data:
                                   "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.PerRouteConfig
                                   host_rewrite_header: x-aviary-upstream
                             {{- end }}
-                            # To the endpoint of the installation.
-                            {{- if not .Values.llm.url }}
+                            # The Supervisor is asked about a request that
+                            # has a route, and the route is chosen again
+                            # with its answer. An answer that names no
+                            # endpoint leaves the request here.
                             - match: {prefix: /}
                               direct_response:
                                 status: 503
                                 body:
-                                  inline_string: "no model endpoint is set: the chart value llm.url is empty\n"
-                            {{- else if not $llmAllowed }}
-                            - match: {prefix: /}
-                              direct_response:
-                                status: 403
-                                body:
-                                  inline_string: {{ printf "the model endpoint is at %s, which egressProxy.allowedHosts does not allow\n" $url.host | quote }}
-                            {{- else }}
-                            - match:
-                                {{- if $path }}
-                                path_separated_prefix: {{ $path | quote }}
-                                {{- else }}
-                                prefix: /
-                                {{- end }}
-                              route:
-                                cluster: llm
-                                # The turn's deadline ends a request, not Envoy.
-                                timeout: 0s
-                                host_rewrite_literal: {{ $url.host | quote }}
-                            {{- if $path }}
-                            # The Supervisor is asked about a request that
-                            # has a route. This one is for the requests
-                            # beside the path of the installation's endpoint,
-                            # which go on if the Supervisor names another.
-                            - match: {prefix: /}
-                              direct_response: {status: 404}
-                            {{- end }}
-                            {{- end }}
+                                  inline_string: "the Supervisor named no model endpoint for the request\n"
                     http_filters:
                       # Answers the kubelet's probe.
                       - name: envoy.filters.http.health_check
@@ -160,8 +132,8 @@ data:
                               listed-hosts:
                                 principals: [{any: true}]
                                 permissions:
-                                  # The endpoint of the installation, which
-                                  # the routes above hold against the list.
+                                  # A request without an endpoint goes
+                                  # nowhere: its route says so.
                                   - not_rule:
                                       header: {name: x-aviary-upstream, present_match: true}
                                   {{- include "aviary.egress-proxy.hosts" (dict "hosts" $hosts "header" "x-aviary-upstream") | nindent 34 }}
@@ -323,70 +295,3 @@ data:
               common_tls_context:
                 validation_context:
                   trusted_ca: {filename: /etc/ssl/certs/ca-certificates.crt}
-        {{- if .Values.llm.url }}
-        - name: llm
-          type: LOGICAL_DNS
-          dns_lookup_family: V4_PREFERRED
-          load_assignment:
-            cluster_name: llm
-            endpoints:
-              - lb_endpoints:
-                  - endpoint:
-                      address:
-                        socket_address: {address: {{ $url.hostname | quote }}, port_value: {{ $port }}}
-          typed_extension_protocol_options:
-            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
-              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
-              {{- if $tls }}
-              # HTTP/2 if the endpoint offers it, so that many turns share a
-              # few connections.
-              auto_config: {}
-              {{- else }}
-              explicit_http_config: {http_protocol_options: {}}
-              {{- end }}
-              # Puts the API key where the pod sent its turn token. Only the
-              # requests to this endpoint get it: a request to an endpoint
-              # that the Supervisor named has the key that the Supervisor
-              # gave.
-              http_filters:
-                - name: envoy.filters.http.credential_injector
-                  typed_config:
-                    "@type": type.googleapis.com/envoy.extensions.filters.http.credential_injector.v3.CredentialInjector
-                    overwrite: true
-                    credential:
-                      name: envoy.http.injected_credentials.generic
-                      typed_config:
-                        "@type": type.googleapis.com/envoy.extensions.http.injected_credentials.generic.v3.Generic
-                        header: Authorization
-                        header_value_prefix: "Bearer "
-                        credential:
-                          name: llm-api-key
-                          sds_config:
-                            path_config_source:
-                              path: /etc/envoy/llm-api-key.yaml
-                              watched_directory: {path: /etc/aviary/llm}
-                - name: envoy.filters.http.upstream_codec
-                  typed_config:
-                    "@type": type.googleapis.com/envoy.extensions.filters.http.upstream_codec.v3.UpstreamCodec
-          {{- if $tls }}
-          transport_socket:
-            name: envoy.transport_sockets.tls
-            typed_config:
-              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
-              sni: {{ $url.hostname | quote }}
-              common_tls_context:
-                validation_context:
-                  trusted_ca: {filename: /etc/ssl/certs/ca-certificates.crt}
-                  match_typed_subject_alt_names:
-                    - san_type: DNS
-                      matcher: {exact: {{ $url.hostname | quote }}}
-          {{- end }}
-        {{- end }}
-  {{- if .Values.llm.url }}
-  llm-api-key.yaml: |
-    resources:
-      - "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret
-        name: llm-api-key
-        generic_secret:
-          secret: {filename: /etc/aviary/llm/api-key}
-  {{- end }}

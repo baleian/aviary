@@ -9,17 +9,14 @@ services:
     command: ["--config-path", "/etc/envoy/envoy.yaml", "--disable-hot-restart", "--log-level", "warn"]
     volumes:
       - ../../.out/proxy/listed:/etc/envoy:ro
-      - ../../.out/proxy/llm:/etc/aviary/llm:ro
       - ../../.out/proxy/tls/cert.pem:/etc/ssl/certs/ca-certificates.crt:ro
   open:
     <<: *proxy
     volumes:
       - ../../.out/proxy/open:/etc/envoy:ro
-      - ../../.out/proxy/llm:/etc/aviary/llm:ro
       - ../../.out/proxy/tls/cert.pem:/etc/ssl/certs/ca-certificates.crt:ro
   closed:
     <<: *proxy
     volumes:
       - ../../.out/proxy/closed:/etc/envoy:ro
-      - ../../.out/proxy/llm:/etc/aviary/llm:ro
       - ../../.out/proxy/tls/cert.pem:/etc/ssl/certs/ca-certificates.crt:ro

@@ -1,8 +1,5 @@
 # An Egress Proxy that lets requests through to the hosts of a list. The
 # hosts are the tests themselves.
-llm:
-  url: http://model.test:8081/v1
-  model: a-model
 egressProxy:
   allowedHosts:
     - model.test:8081

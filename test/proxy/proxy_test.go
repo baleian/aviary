@@ -32,12 +32,14 @@ import (
 )
 
 const (
-	// token is the token of a turn that runs, and broken one that the
-	// Supervisor fails to look up.
-	token  = "the-turn-token"
-	broken = "a-token-that-cannot-be-looked-up"
-	// key is the API key of the model endpoint of the installation, which
-	// the proxy holds.
+	// token is the token of a turn that runs, broken one that the
+	// Supervisor fails to look up, and nameless that of a turn for which the
+	// Supervisor names no model endpoint.
+	token    = "the-turn-token"
+	broken   = "a-token-that-cannot-be-looked-up"
+	nameless = "a-turn-without-an-endpoint"
+	// key is the API key of the model endpoint of the turn with the token,
+	// which the Supervisor gives the proxy.
 	key = "the-real-key"
 	// patience is how long a test waits for the proxy.
 	patience = 30 * time.Second
@@ -69,6 +71,7 @@ const mistaken = "a-turn-that-the-supervisor-errs-about"
 // endpoints are the model endpoints that the Supervisor names, by the tokens
 // of the turns that it names them for. The hosts are the tests themselves.
 var endpoints = map[string]endpoint{
+	token:                                {host: "model.test:8081", key: key},
 	"a-turn-of-a-provider":               {host: "allowed.test", key: "the-key-of-a-provider"},
 	"a-turn-of-a-provider-without-a-key": {host: "allowed.test"},
 	"a-turn-of-a-provider-with-tls":      {host: "tls.test:8443", secure: true, key: "the-key-of-a-provider"},
@@ -81,9 +84,9 @@ var endpoints = map[string]endpoint{
 // named returns the token of the turn that the Supervisor names the endpoint
 // at the host for.
 func named(host string, key bool) string {
-	for token, endpoint := range endpoints {
-		if endpoint.host == host && (endpoint.key != "") == key && !endpoint.mistaken {
-			return token
+	for turn, endpoint := range endpoints {
+		if endpoint.host == host && (endpoint.key != "") == key && !endpoint.mistaken && turn != token {
+			return turn
 		}
 	}
 	panic("the Supervisor names no endpoint at " + host)
@@ -113,9 +116,9 @@ func (s *supervisor) Check(_ context.Context, request *authv3.CheckRequest) (*au
 	allowed := &authv3.CheckResponse{Status: &rpcstatus.Status{Code: int32(codes.OK)}, DynamicMetadata: origin}
 	endpoint, provided := endpoints[sent]
 	switch {
-	case sent == token:
+	case sent == nameless, provided && forward && !endpoint.mistaken:
 		return allowed, nil
-	case provided && (!forward || endpoint.mistaken):
+	case provided:
 		// The endpoint of the turn's provider, and its key in place of the
 		// token. A provider without a key gets no token either.
 		set := func(name, value string) *corev3.HeaderValueOption {
@@ -180,6 +183,11 @@ func (h *host) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.requests = append(h.requests, r)
 	h.mu.Unlock()
 	body, _ := io.ReadAll(r.Body)
+	// A host refuses the request if the request says so.
+	if status, err := strconv.Atoi(r.URL.Query().Get("status")); err == nil {
+		http.Error(w, "refused by the host", status)
+		return
+	}
 	// The answer comes in two pieces with a pause between them, as the
 	// answer of a model does.
 	fmt.Fprintf(w, "%s %s %s\n", r.Method, r.URL.Path, body)
@@ -329,7 +337,8 @@ func fetch(t *testing.T, proxy, password, address string) answer {
 }
 
 // A model request carries the token of its turn where the API key belongs.
-// The proxy puts the key there and passes the request on as it is.
+// The proxy puts the key of the turn's model endpoint there and passes the
+// request on to that endpoint as it is.
 func TestModelRequest(t *testing.T) {
 	t.Parallel()
 	began := time.Now()
@@ -400,14 +409,18 @@ func TestModelRequestThatIsRefused(t *testing.T) {
 		t.Errorf("a model request that no Supervisor could be asked about was answered with %d %q", unknown.status, unknown.body)
 	}
 
-	// The proxy serves the model endpoint of the installation under the path
-	// of its URL. A request beside it goes nowhere, unless the Supervisor
-	// names another endpoint for it.
-	if elsewhere := ask(t, listed, "/v2/chat/completions", "Bearer "+token); elsewhere.status != http.StatusNotFound {
-		t.Errorf("a request beside the path of the model endpoint was answered with %d", elsewhere.status)
-	}
-	if model.got("/v2/chat/completions") != nil {
-		t.Error("a request beside the path of the model endpoint reached it")
+	// A request goes where the Supervisor says. One for which it names no
+	// endpoint goes nowhere, whether the hosts are listed or not, and not
+	// where its pod says either.
+	for _, proxy := range []string{open, listed} {
+		path := "/v1/nameless/" + proxy
+		unnamed := ask(t, proxy, path, "Bearer "+nameless, "x-aviary-upstream", "allowed.test", "x-aviary-upstream-tls", "false")
+		if unnamed.status != http.StatusServiceUnavailable || !strings.Contains(unnamed.body, "no model endpoint") {
+			t.Errorf("%s: a model request without an endpoint was answered with %d %q", proxy, unnamed.status, unnamed.body)
+		}
+		if model.got(path) != nil || outside.got(path) != nil {
+			t.Errorf("%s: a model request without an endpoint was passed on", proxy)
+		}
 	}
 	if health := ask(t, listed, "/healthz", ""); health.status != http.StatusOK {
 		t.Errorf("the proxy answered whether it is up with %d", health.status)
@@ -420,9 +433,9 @@ func TestModelRequestThatIsRefused(t *testing.T) {
 	}
 }
 
-// The Supervisor may name a model endpoint for the turn of a request: that of
-// the provider that the turn's agent uses. The proxy passes the request on
-// to that endpoint, with the key that the Supervisor gave.
+// A model request goes to the endpoint that the Supervisor names for its
+// turn, that of the provider that the turn's agent uses, with the key that
+// the Supervisor gives.
 func TestModelRequestToANamedEndpoint(t *testing.T) {
 	t.Parallel()
 	const providerKey = "Bearer the-key-of-a-provider"
@@ -447,7 +460,6 @@ func TestModelRequestToANamedEndpoint(t *testing.T) {
 		return got
 	}
 
-	// The path of the endpoint need not be that of the installation's.
 	plain := ask(t, open, "/api/named/plain", "Bearer "+named("allowed.test", true))
 	if plain.status != http.StatusOK || plain.body != "POST /api/named/plain a question\ndone\n" {
 		t.Errorf("a model request to a named endpoint was answered with %d %q", plain.status, plain.body)
@@ -488,8 +500,6 @@ func TestModelRequestToANamedEndpoint(t *testing.T) {
 	}
 
 	// A named endpoint is a host like any other: the list has to allow it.
-	// The model endpoint of the installation need not be on the list for
-	// that.
 	for _, proxy := range []string{listed, closed} {
 		path := "/api/named/" + proxy
 		if on := ask(t, proxy, path, "Bearer "+named("allowed.test", true)); on.status != http.StatusOK {
@@ -497,9 +507,15 @@ func TestModelRequestToANamedEndpoint(t *testing.T) {
 		}
 		reached(proxy+": a model request to a named endpoint on the list", outside, path, "allowed.test", providerKey)
 		off := ask(t, proxy, path+"/off", "Bearer "+named("other.test", true))
-		if off.status != http.StatusForbidden || outside.got(path+"/off") != nil {
+		if off.status != http.StatusForbidden || !strings.Contains(off.body, "egressProxy.allowedHosts") || outside.got(path+"/off") != nil {
 			t.Errorf("%s: a model request to a named endpoint that is not on the list was answered with %d %q", proxy, off.status, off.body)
 		}
+	}
+	// What an endpoint itself refuses reaches the pod as the endpoint said
+	// it, and not as a refusal of the proxy.
+	own := ask(t, listed, "/api/named/refused?status=403", "Bearer "+named("allowed.test", true))
+	if own.status != http.StatusForbidden || own.body != "refused by the host\n" {
+		t.Errorf("the refusal of an endpoint was passed on as %d %q", own.status, own.body)
 	}
 	// On the list with its port, an endpoint is allowed on that port.
 	ask(t, listed, "/v1/named/listed-port", "Bearer "+named("model.test:8081", true))

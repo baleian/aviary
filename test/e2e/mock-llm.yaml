@@ -1,5 +1,5 @@
-# The model server that the e2e uses in place of a real one, and the secret
-# with its API key for the Egress Proxy.
+# The model server that the e2e uses in place of a real one. The tests
+# register it as the provider of their agents.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -29,7 +29,7 @@ spec:
         - name: mock-llm
           image: aviary-mock-llm:dev
           env:
-            # The same key is in the secret below.
+            # The tests give the providers of their agents this key.
             - name: MOCK_LLM_API_KEY
               value: mock-llm-key
           ports:
@@ -57,11 +57,3 @@ spec:
     - name: http
       port: 80
       targetPort: http
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: aviary-llm-mock
-  namespace: aviary-system
-stringData:
-  api-key: mock-llm-key

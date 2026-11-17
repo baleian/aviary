@@ -1,7 +1,4 @@
-# An Egress Proxy whose list does not allow the model endpoint.
-llm:
-  url: http://model.test:8081/v1
-  model: a-model
+# An Egress Proxy whose list does not allow the model endpoint of the tests.
 egressProxy:
   allowedHosts:
     - allowed.test
