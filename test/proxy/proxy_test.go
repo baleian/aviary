@@ -362,6 +362,12 @@ func TestModelRequest(t *testing.T) {
 	if rest, err := io.ReadAll(lines); err != nil || string(rest) != "done\n" || response.StatusCode != http.StatusOK {
 		t.Errorf("the answer ended with %q and the status %d: %v", rest, response.StatusCode, err)
 	}
+	// The proxy adds no header of its own to the answer either.
+	for name := range response.Header {
+		if strings.HasPrefix(strings.ToLower(name), "x-envoy") {
+			t.Errorf("the answer of the model came with the header %s: %s", name, response.Header.Get(name))
+		}
+	}
 
 	got := model.got("/v1/chat/completions")
 	if got == nil {

@@ -83,7 +83,7 @@ for the host on the ports of HTTPS and HTTP.
 
 {{/*
 The last filter, which passes the request on. Envoy adds no headers of its
-own to it.
+own to it, nor to the answer.
 */}}
 {{- define "aviary.egress-proxy.router" -}}
 - name: envoy.filters.http.router
