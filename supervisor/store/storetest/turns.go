@@ -1,4 +1,4 @@
-package postgres_test
+package storetest
 
 import (
 	"context"
@@ -13,31 +13,30 @@ import (
 
 	"github.com/google/uuid"
 
-	"aviary/supervisor/internal/testenv"
 	"aviary/supervisor/store"
 )
 
 var ctx = context.Background()
 
-// supervisor is the Store of a Supervisor in a test. Its methods fail the
-// test if the Store does not do what they ask of it.
+// supervisor is the store of a Supervisor in a test. Its methods fail the
+// test if the store does not do what they ask of it.
 type supervisor struct {
 	store.Store
 	t        *testing.T
-	database string
+	database Database
 }
 
-// open returns a Supervisor's Store on a database of its own.
-func open(t *testing.T) supervisor {
+// open returns a Supervisor's store on a database of its own.
+func (suite suite) open(t *testing.T) supervisor {
 	t.Helper()
-	database := testenv.Database(t)
-	return supervisor{Store: testenv.Open(t, database), t: t, database: database}
+	database := suite.create(t)
+	return supervisor{Store: database.Open(t), t: t, database: database}
 }
 
-// another returns the Store of another Supervisor on the same database.
+// another returns the store of another Supervisor on the same database.
 func (s supervisor) another() supervisor {
 	s.t.Helper()
-	return supervisor{Store: testenv.Open(s.t, s.database), t: s.t, database: s.database}
+	return supervisor{Store: s.database.Open(s.t), t: s.t, database: s.database}
 }
 
 // session creates a session of an agent of its own.
@@ -119,9 +118,9 @@ func (s supervisor) end(id uuid.UUID, succeeded bool, failure store.Failure) sto
 // nothing is what a turn said in which the agent said nothing.
 func nothing(context.Context) ([]json.RawMessage, error) { return nil, nil }
 
-func TestCreateTurn(t *testing.T) {
+func (suite suite) testCreateTurn(t *testing.T) {
 	t.Parallel()
-	st := open(t)
+	st := suite.open(t)
 	session := st.session()
 	first := st.queue(session)
 	if first.Seq != 1 || first.State != store.TurnQueued || first.Text != "hello" {
@@ -166,9 +165,9 @@ func (s supervisor) supervisors(count int) []supervisor {
 	return supervisors
 }
 
-func TestCreateTurnTakesOneOfTheMessagesSentAtOnce(t *testing.T) {
+func (suite suite) testCreateTurnTakesOneOfTheMessagesSentAtOnce(t *testing.T) {
 	t.Parallel()
-	st := open(t)
+	st := suite.open(t)
 	session := st.session()
 	var accepted, busy atomic.Int32
 	atOnce(20, func(int) {
@@ -187,9 +186,9 @@ func TestCreateTurnTakesOneOfTheMessagesSentAtOnce(t *testing.T) {
 	}
 }
 
-func TestCreateTurnKeepsToTheMostThatMayWait(t *testing.T) {
+func (suite suite) testCreateTurnKeepsToTheMostThatMayWait(t *testing.T) {
 	t.Parallel()
-	st := open(t)
+	st := suite.open(t)
 	const maxWaiting, maxRunning = 2, 2
 	send := func(session uuid.UUID) (int, error) {
 		_, waiting, err := st.CreateTurn(ctx, session, "hello", maxWaiting, maxRunning)
@@ -223,9 +222,9 @@ func TestCreateTurnKeepsToTheMostThatMayWait(t *testing.T) {
 	}
 }
 
-func TestSupervisorsKeepToTheMostThatMayWaitTogether(t *testing.T) {
+func (suite suite) testSupervisorsKeepToTheMostThatMayWaitTogether(t *testing.T) {
 	t.Parallel()
-	st := open(t)
+	st := suite.open(t)
 	supervisors, sessions := st.supervisors(12), make([]uuid.UUID, 12)
 	for i := range sessions {
 		sessions[i] = st.session()
@@ -250,9 +249,9 @@ func TestSupervisorsKeepToTheMostThatMayWaitTogether(t *testing.T) {
 
 // Messages that come in together are turns that wait only until they are
 // dispatched. With room for all of them to run, none counts as waiting.
-func TestCreateTurnLetsThoseInThatHaveRoomToRun(t *testing.T) {
+func (suite suite) testCreateTurnLetsThoseInThatHaveRoomToRun(t *testing.T) {
 	t.Parallel()
-	st := open(t)
+	st := suite.open(t)
 	sessions := make([]uuid.UUID, 12)
 	for i := range sessions {
 		sessions[i] = st.session()
@@ -264,9 +263,9 @@ func TestCreateTurnLetsThoseInThatHaveRoomToRun(t *testing.T) {
 	})
 }
 
-func TestDispatchTurns(t *testing.T) {
+func (suite suite) testDispatchTurns(t *testing.T) {
 	t.Parallel()
-	st := open(t)
+	st := suite.open(t)
 	var queued []store.Turn
 	for range 3 {
 		queued = append(queued, st.queue(st.session()))
@@ -316,9 +315,9 @@ func TestDispatchTurns(t *testing.T) {
 	}
 }
 
-func TestSupervisorsDispatchWithinTheLimitTogether(t *testing.T) {
+func (suite suite) testSupervisorsDispatchWithinTheLimitTogether(t *testing.T) {
 	t.Parallel()
-	st := open(t)
+	st := suite.open(t)
 	for range 20 {
 		st.queue(st.session())
 	}
@@ -342,9 +341,9 @@ func TestSupervisorsDispatchWithinTheLimitTogether(t *testing.T) {
 	}
 }
 
-func TestAnnounceQueue(t *testing.T) {
+func (suite suite) testAnnounceQueue(t *testing.T) {
 	t.Parallel()
-	st := open(t)
+	st := suite.open(t)
 	first, gone, last := st.queue(st.session()), st.queue(st.session()), st.queue(st.session())
 	if _, _, err := st.CancelTurn(ctx, gone.ID); err != nil {
 		t.Fatal(err)
@@ -371,9 +370,9 @@ func TestAnnounceQueue(t *testing.T) {
 	})
 }
 
-func TestTakeTurn(t *testing.T) {
+func (suite suite) testTakeTurn(t *testing.T) {
 	t.Parallel()
-	st := open(t)
+	st := suite.open(t)
 	session := st.session()
 	st.queue(session)
 	dispatch := st.dispatch()
@@ -434,9 +433,9 @@ func TestTakeTurn(t *testing.T) {
 	}
 }
 
-func TestTakeTurnThatIsNotToRun(t *testing.T) {
+func (suite suite) testTakeTurnThatIsNotToRun(t *testing.T) {
 	t.Parallel()
-	st := open(t)
+	st := suite.open(t)
 	runner := uuid.New()
 
 	st.queue(st.session())
@@ -471,9 +470,9 @@ func TestTakeTurnThatIsNotToRun(t *testing.T) {
 	}
 }
 
-func TestStartTurn(t *testing.T) {
+func (suite suite) testStartTurn(t *testing.T) {
 	t.Parallel()
-	st := open(t)
+	st := suite.open(t)
 	session := st.session()
 	dispatch, _ := st.running(session)
 	if started := st.turn(dispatch.TurnID).StartedAt; started != nil {
@@ -503,9 +502,9 @@ func TestStartTurn(t *testing.T) {
 	}
 }
 
-func TestCancelTurn(t *testing.T) {
+func (suite suite) testCancelTurn(t *testing.T) {
 	t.Parallel()
-	st := open(t)
+	st := suite.open(t)
 
 	// A turn that waits ends at once.
 	session := st.session()
@@ -554,13 +553,12 @@ func TestCancelTurn(t *testing.T) {
 	}
 }
 
-func TestExpireTurns(t *testing.T) {
+func (suite suite) testExpireTurns(t *testing.T) {
 	t.Parallel()
-	st := open(t)
+	st := suite.open(t)
 	dispatched, _ := st.running(st.session())
 	old, fresh := st.queue(st.session()), st.queue(st.session())
-	testenv.Exec(t, st.database, `update turns set created_at = now() - interval '1 minute' where id = any($1)`,
-		[]uuid.UUID{old.ID, dispatched.TurnID})
+	st.database.Age(t, time.Minute, old.ID, dispatched.TurnID)
 
 	expired, err := st.ExpireTurns(ctx, 30*time.Second)
 	if err != nil {
@@ -577,9 +575,9 @@ func TestExpireTurns(t *testing.T) {
 	}
 }
 
-func TestEndTurn(t *testing.T) {
+func (suite suite) testEndTurn(t *testing.T) {
 	t.Parallel()
-	st := open(t)
+	st := suite.open(t)
 	lost := store.Failure{Reason: store.FailurePodLost, Message: "the pod was stopped"}
 	tests := []struct {
 		name string
@@ -661,13 +659,15 @@ func TestEndTurn(t *testing.T) {
 	}
 }
 
-func TestEndTurnKeepsWhatTheTurnSaid(t *testing.T) {
+func (suite suite) testEndTurnKeepsWhatTheTurnSaid(t *testing.T) {
 	t.Parallel()
-	st := open(t)
+	st := suite.open(t)
 	session := st.session()
+	// What a tool gave may have the character U+0000 in it, which a database
+	// may be unable to keep.
 	said := []json.RawMessage{
 		json.RawMessage(`{"type":"message","text":"one"}`),
-		json.RawMessage(`{"type":"tool_call","output":"a\u0000b"}`),
+		json.RawMessage(`{"type":"tool_call","output":"a\u0000b \\u0000"}`),
 		json.RawMessage(`{"type":"message","text":"two"}`),
 	}
 
@@ -697,26 +697,16 @@ func TestEndTurnKeepsWhatTheTurnSaid(t *testing.T) {
 	if len(items) != 1 || len(items[dispatch.TurnID]) != len(said) {
 		t.Fatalf("the items of the turns are %s", items)
 	}
-	for i, expected := range []map[string]string{
-		{"type": "message", "text": "one"},
-		// PostgreSQL cannot keep the character U+0000.
-		{"type": "tool_call", "output": "a�b"},
-		{"type": "message", "text": "two"},
-	} {
-		var item map[string]string
-		if err := json.Unmarshal(items[dispatch.TurnID][i], &item); err != nil {
-			t.Fatal(err)
-		}
-		if len(item) != len(expected) || item["type"] != expected["type"] ||
-			item["text"] != expected["text"] || item["output"] != expected["output"] {
-			t.Errorf("item %d is %s", i+1, items[dispatch.TurnID][i])
+	for i, given := range said {
+		if !keeps(t, items[dispatch.TurnID][i], string(given)) {
+			t.Errorf("item %d is %s, not %s", i+1, items[dispatch.TurnID][i], given)
 		}
 	}
 }
 
-func TestSetFinished(t *testing.T) {
+func (suite suite) testSetFinished(t *testing.T) {
 	t.Parallel()
-	st := open(t)
+	st := suite.open(t)
 	thought := int64(3)
 	usage := &store.Usage{TotalTokens: 18, InputTokens: 11, OutputTokens: 7, ThoughtTokens: &thought}
 
@@ -740,9 +730,9 @@ func TestSetFinished(t *testing.T) {
 	}
 }
 
-func TestTurns(t *testing.T) {
+func (suite suite) testTurns(t *testing.T) {
 	t.Parallel()
-	st := open(t)
+	st := suite.open(t)
 	session := st.session()
 	for range 3 {
 		dispatch, _ := st.running(session)
@@ -773,9 +763,9 @@ func TestTurns(t *testing.T) {
 	}
 }
 
-func TestDispatchedTurns(t *testing.T) {
+func (suite suite) testDispatchedTurns(t *testing.T) {
 	t.Parallel()
-	st := open(t)
+	st := suite.open(t)
 	st.queue(st.session())
 	waiting := st.dispatch()
 	running, _ := st.running(st.session())
@@ -784,8 +774,7 @@ func TestDispatchedTurns(t *testing.T) {
 	if _, _, err := st.CancelTurn(ctx, running.TurnID); err != nil {
 		t.Fatal(err)
 	}
-	testenv.Exec(t, st.database, `update turns set dispatched_at = now() - interval '2 minutes',
-		cancel_requested_at = cancel_requested_at - interval '1 minute' where id = $1`, running.TurnID)
+	st.database.Age(t, 2*time.Minute, running.TurnID)
 
 	dispatched, err := st.DispatchedTurns(ctx)
 	if err != nil {
@@ -810,9 +799,9 @@ func TestDispatchedTurns(t *testing.T) {
 	}
 }
 
-func TestNotFound(t *testing.T) {
+func (suite suite) testNotFound(t *testing.T) {
 	t.Parallel()
-	st := open(t)
+	st := suite.open(t)
 	none := uuid.New()
 	for name, get := range map[string]func() error{
 		"project":         func() error { _, err := st.Project(ctx, none); return err },

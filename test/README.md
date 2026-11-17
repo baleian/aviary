@@ -32,7 +32,7 @@ or `run ls`.
 
 ```sh
 make test-supervisor TESTS='-run TestQueue .'
-make test-supervisor TESTS='-run TestEndTurn ./store/postgres'
+make test-supervisor TESTS='-run TestStore/EndTurn ./store/postgres'
 make test-runner TESTS=cancel
 make test-harness TESTS=instructions
 make test-harness HARNESS_IMAGES=aviary-harness-codex:dev

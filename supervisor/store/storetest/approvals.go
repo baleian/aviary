@@ -1,30 +1,26 @@
-package postgres_test
+package storetest
 
 import (
+	"encoding/json"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
 	"aviary/supervisor/store"
 )
 
-func TestApprovals(t *testing.T) {
+func (suite suite) testApprovals(t *testing.T) {
 	t.Parallel()
-	st := open(t)
+	st := suite.open(t)
 	dispatch, _ := st.running(st.session())
 	turn := dispatch.TurnID
-	waiting := func() []string {
+	waiting := func() []json.RawMessage {
 		t.Helper()
 		requests, err := st.WaitingApprovals(ctx, turn)
 		if err != nil {
 			t.Fatal(err)
 		}
-		waiting := []string{}
-		for _, request := range requests {
-			waiting = append(waiting, string(request))
-		}
-		return waiting
+		return requests
 	}
 	answers := func(of *store.Dispatch) []store.Answer {
 		t.Helper()
@@ -41,20 +37,24 @@ func TestApprovals(t *testing.T) {
 		return answers
 	}
 
-	// The character that PostgreSQL cannot keep may be in what a tool is
-	// called with.
-	if err := st.AddApproval(ctx, turn, "1", []byte(`{"id": "1", "note": "a\u0000b"}`)); err != nil {
+	// The character U+0000, which a database may be unable to keep, may be
+	// in what a tool is called with.
+	const first, second = `{"id": "1", "note": "a\u0000b"}`, `{"id": "2"}`
+	if err := st.AddApproval(ctx, turn, "1", []byte(first)); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.AddApproval(ctx, turn, "2", []byte(`{"id": "2"}`)); err != nil {
+	if err := st.AddApproval(ctx, turn, "2", []byte(second)); err != nil {
 		t.Fatal(err)
 	}
 	// A runner that lost its Supervisor reports a request again.
 	if err := st.AddApproval(ctx, turn, "1", []byte(`{"id": "another"}`)); err != nil {
 		t.Fatal(err)
 	}
-	if waiting := waiting(); !slices.Equal(waiting, []string{`{"id": "1", "note": "a` + "�" + `b"}`, `{"id": "2"}`}) {
-		t.Errorf("the requests that wait are %q", waiting)
+	if waiting := waiting(); !keepsAll(t, waiting, first, second) {
+		t.Errorf("the requests that wait are %s", waiting)
+	}
+	if asked, err := st.Approval(ctx, turn, "1"); err != nil || !keeps(t, asked.Request, first) || asked.Answered || asked.Resolved {
+		t.Errorf("the request that waits is %+v: %v", asked, err)
 	}
 	if _, err := st.Approval(ctx, turn, "3"); err != store.ErrNotFound {
 		t.Errorf("a request that the runner did not report was read with %v", err)
@@ -74,8 +74,8 @@ func TestApprovals(t *testing.T) {
 		t.Errorf("the answered request is %+v: %v", asked, err)
 	}
 	// It waits for a person no longer, and its answer is on its way.
-	if waiting := waiting(); !slices.Equal(waiting, []string{`{"id": "2"}`}) {
-		t.Errorf("the requests that wait after an answer are %q", waiting)
+	if waiting := waiting(); !keepsAll(t, waiting, second) {
+		t.Errorf("the requests that wait after an answer are %s", waiting)
 	}
 	other, _ := st.running(st.session())
 	on := []store.Answer{{TurnID: turn, ID: "1", OptionID: "once"}}
@@ -84,14 +84,14 @@ func TestApprovals(t *testing.T) {
 	}
 
 	// The harness has its answer. A report that comes again changes nothing.
-	resolved, waited, first, err := st.ResolveApproval(ctx, turn, "1", "selected")
-	if err != nil || !first || waited < 0 || waited > time.Minute || !strings.Contains(string(resolved.Request), `"note"`) {
-		t.Fatalf("the request %s was resolved after %s, for the first time %t: %v", resolved.Request, waited, first, err)
+	resolved, waited, once, err := st.ResolveApproval(ctx, turn, "1", "selected")
+	if err != nil || !once || waited < 0 || waited > time.Minute || !keeps(t, resolved.Request, first) {
+		t.Fatalf("the request %s was resolved after %s, for the first time %t: %v", resolved.Request, waited, once, err)
 	}
-	if _, _, first, err := st.ResolveApproval(ctx, turn, "1", "cancelled"); err != nil || first {
+	if _, _, once, err := st.ResolveApproval(ctx, turn, "1", "cancelled"); err != nil || once {
 		t.Errorf("the request was resolved a second time: %v", err)
 	}
-	if _, _, first, err := st.ResolveApproval(ctx, turn, "3", "selected"); err != nil || first {
+	if _, _, once, err := st.ResolveApproval(ctx, turn, "3", "selected"); err != nil || once {
 		t.Errorf("a request that there is not was resolved: %v", err)
 	}
 	if asked, err := st.Approval(ctx, turn, "1"); err != nil || !asked.Resolved {

@@ -298,6 +298,9 @@ func (a Approval) OptionKind(id string) string {
 // has the same database, and several of them may ask the same of it at
 // once: what an operation promises holds then too. A plugin gives the
 // Supervisor the store of a database of one kind.
+//
+// What a store is given as JSON it returns as the same JSON, which need not
+// be the same text.
 type Store interface {
 	// Close ends the connection to the database.
 	Close()
@@ -443,7 +446,8 @@ type Store interface {
 	//
 	// For a turn that it ends, EndTurn calls items and keeps what it returns as
 	// what the agent said and did in the turn. If that fails, the turn has not
-	// ended.
+	// ended. A database that cannot keep the character U+0000 keeps U+FFFD in
+	// its place, here and in a request for approval.
 	EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool, failure Failure,
 		items func(context.Context) ([]json.RawMessage, error)) (Turn, bool, error)
 
