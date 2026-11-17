@@ -20,9 +20,18 @@ HARNESS_IMAGES ?= $(OPENCODE_IMAGE) $(CODEX_IMAGE)
 
 KUBECTL := kubectl --context kind-$(CLUSTER)
 HELM := helm --kube-context kind-$(CLUSTER)
-# The cluster that the e2e makes for itself, and the harnesses that it runs
-# turns of. The first of them runs what does not depend on the harness.
-E2E_CLUSTER := aviary-e2e
+# The database that make cluster-up gives the cluster: postgres or mysql.
+DATABASE ?= postgres
+ifeq ($(filter $(DATABASE),postgres mysql),)
+$(error DATABASE is postgres or mysql, not "$(DATABASE)")
+endif
+# The cluster that the e2e makes for itself and runs in, where it leaves what
+# the cluster tells after a failure, and the harnesses that it runs turns of.
+# The first of them runs what does not depend on the harness. A cluster under
+# another name is another cluster, so the e2e can run in several at once,
+# each made with what it is to have.
+E2E_CLUSTER ?= aviary-e2e
+E2E_OUT := .out/e2e/$(E2E_CLUSTER)
 E2E_KUBECTL := kubectl --context kind-$(E2E_CLUSTER)
 E2E_HARNESSES ?= opencode codex
 # Runs go in the image that builds the Supervisor, so the host needs no Go.
@@ -157,12 +166,20 @@ cluster-up:
 		--namespace nfs --create-namespace \
 		--values hack/kind/nfs-server-provisioner-values.yaml \
 		--wait
+	$(KUBECTL) create namespace aviary-data --dry-run=client --output yaml | $(KUBECTL) apply -f -
+ifeq ($(DATABASE),mysql)
+	$(KUBECTL) get secret mysql-users --namespace aviary-data >/dev/null 2>&1 || \
+		$(KUBECTL) create secret generic mysql-users --namespace aviary-data \
+			--from-literal=root=$$(openssl rand -hex 24) --from-literal=aviary=$$(openssl rand -hex 24)
+	$(KUBECTL) apply -f hack/kind/mysql.yaml
+else
 	$(HELM) upgrade --install cloudnative-pg cloudnative-pg \
 		--repo https://cloudnative-pg.github.io/charts \
 		--version $(CNPG_CHART) \
 		--namespace cnpg-system --create-namespace \
 		--wait
 	$(KUBECTL) apply -f hack/kind/postgres.yaml
+endif
 	$(KUBECTL) get secret valkey-users --namespace aviary-data >/dev/null 2>&1 || \
 		$(KUBECTL) create secret generic valkey-users --namespace aviary-data \
 			--from-literal=default=$$(openssl rand -hex 24)
@@ -172,7 +189,11 @@ cluster-up:
 		--namespace aviary-data \
 		--values hack/kind/valkey-values.yaml \
 		--wait
+ifeq ($(DATABASE),mysql)
+	$(KUBECTL) --namespace aviary-data rollout status statefulset/mysql --timeout 300s
+else
 	$(KUBECTL) wait --namespace aviary-data --for=condition=Ready cluster/postgres --timeout=5m
+endif
 
 cluster-down:
 	kind delete cluster --name $(CLUSTER)
@@ -201,15 +222,20 @@ images: build
 
 # CloudNativePG writes the database's connection secret next to the database.
 # A pod can only read secrets in its own namespace, so the secret is copied to
-# the Supervisor's. The event log, which is Valkey here, has no such secret,
-# so its URL is put together from its password. The key that the Supervisor
-# seals secrets with is made once: what was sealed with it does not open
-# with another.
+# the Supervisor's. MySQL and the event log, which is Valkey here, have no
+# such secret, so their URLs are put together from their passwords. The
+# database is the one that the cluster was made with. The key that the
+# Supervisor seals secrets with is made once: what was sealed with it does
+# not open with another.
 secrets:
 	$(KUBECTL) create namespace aviary-system --dry-run=client --output yaml | $(KUBECTL) apply -f -
-	$(KUBECTL) get secret postgres-app --namespace aviary-data --output json | \
-		jq '{apiVersion, kind, type, data, metadata: {name: "aviary-database"}}' | \
-		$(KUBECTL) apply --namespace aviary-system -f -
+	if $(KUBECTL) get secret mysql-users --namespace aviary-data >/dev/null 2>&1; then \
+		$(KUBECTL) get secret mysql-users --namespace aviary-data --output json | \
+			jq '{apiVersion, kind, type, metadata: {name: "aviary-database"}, stringData: {uri: ("mysql://aviary:" + (.data.aviary | @base64d) + "@mysql.aviary-data:3306/aviary")}}'; \
+	else \
+		$(KUBECTL) get secret postgres-app --namespace aviary-data --output json | \
+			jq '{apiVersion, kind, type, data, metadata: {name: "aviary-database"}}'; \
+	fi | $(KUBECTL) apply --namespace aviary-system -f -
 	$(KUBECTL) get secret valkey-users --namespace aviary-data --output json | \
 		jq '{apiVersion, kind, type, metadata: {name: "aviary-events"}, stringData: {uri: ("valkey://default:" + (.data.default | @base64d) + "@valkey.aviary-data:6379")}}' | \
 		$(KUBECTL) apply --namespace aviary-system -f -
@@ -231,7 +257,10 @@ deploy: secrets
 # of an earlier run or of the cluster that make cluster-up makes plays a part.
 # The cluster is removed when the tests have passed. After a failure it
 # stays, and what its pods logged is in .out/e2e: make e2e-run runs the tests
-# in it again, and make e2e-down removes it.
+# in it again, and make e2e-down removes it. E2E_CLUSTER names the cluster
+# for each of them, and make e2e-up makes it with what it is given, for
+# example with MySQL in the place of PostgreSQL:
+# make e2e E2E_CLUSTER=aviary-e2e-mysql DATABASE=mysql
 e2e: e2e-up
 	$(MAKE) e2e-run
 	$(MAKE) e2e-down
@@ -246,18 +275,18 @@ e2e-up:
 
 # The tests reach the cluster over the network of its nodes.
 e2e-run:
-	mkdir -p .out/e2e
-	kind get kubeconfig --internal --name $(E2E_CLUSTER) > .out/e2e/kubeconfig
-	$(call GO,test,--network kind --env AVIARY_E2E_KUBECONFIG=/src/.out/e2e/kubeconfig \
+	mkdir -p $(E2E_OUT)
+	kind get kubeconfig --internal --name $(E2E_CLUSTER) > $(E2E_OUT)/kubeconfig
+	$(call GO,test,--network kind --env AVIARY_E2E_KUBECONFIG=/src/$(E2E_OUT)/kubeconfig \
 		--env AVIARY_E2E_HARNESSES="$(E2E_HARNESSES)") test -count=1 -timeout 20m -v ./e2e/... $(TESTS); \
 		status=$$?; [ $$status = 0 ] || { \
 			for part in supervisor egress-proxy; do \
 				$(E2E_KUBECTL) --namespace aviary-system logs --selector app.kubernetes.io/component=$$part \
-					--prefix --tail -1 > .out/e2e/$$part.log 2>&1; \
+					--prefix --tail -1 > $(E2E_OUT)/$$part.log 2>&1; \
 			done; \
-			$(E2E_KUBECTL) get pods,jobs --all-namespaces --output wide > .out/e2e/pods.txt 2>&1; \
-			$(E2E_KUBECTL) get events --all-namespaces --sort-by .lastTimestamp > .out/e2e/events.txt 2>&1; \
-			echo "The e2e failed. The cluster $(E2E_CLUSTER) is left as it is, and what it tells is in .out/e2e."; \
+			$(E2E_KUBECTL) get pods,jobs --all-namespaces --output wide > $(E2E_OUT)/pods.txt 2>&1; \
+			$(E2E_KUBECTL) get events --all-namespaces --sort-by .lastTimestamp > $(E2E_OUT)/events.txt 2>&1; \
+			echo "The e2e failed. The cluster $(E2E_CLUSTER) is left as it is, and what it tells is in $(E2E_OUT)."; \
 		}; exit $$status
 
 e2e-down:

@@ -94,7 +94,8 @@ make images       # builds the images and loads them into the cluster
 make deploy       # installs Aviary with its Helm chart
 ```
 
-`make cluster-down` deletes the cluster.
+`make cluster-down` deletes the cluster. `make cluster-up DATABASE=mysql`
+makes it with MySQL in the place of PostgreSQL.
 
 ### Sending a message yourself
 

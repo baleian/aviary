@@ -1,0 +1,70 @@
+# MySQL for the local cluster, which `make cluster-up DATABASE=mysql` installs
+# in the place of PostgreSQL. The passwords of its users are in the secret
+# mysql-users, and the user aviary owns the database aviary.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+  namespace: aviary-data
+spec:
+  serviceName: mysql
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mysql
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mysql
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: mysql
+          image: mysql:8.4.13@sha256:a81d043930e51745522bd5c430961cf8286f0a23f0a9a2a6e0108f7ea71b0902
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-users
+                  key: root
+            - name: MYSQL_DATABASE
+              value: aviary
+            - name: MYSQL_USER
+              value: aviary
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-users
+                  key: aviary
+          ports:
+            - name: mysql
+              containerPort: 3306
+          # While the image sets the server up, MySQL answers on its socket
+          # only, and is then started again.
+          readinessProbe:
+            tcpSocket:
+              port: mysql
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: aviary-data
+spec:
+  selector:
+    app.kubernetes.io/name: mysql
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: mysql
