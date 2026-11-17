@@ -1,15 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	batchv1 "k8s.io/api/batch/v1"
-
-	"aviary/supervisor/internal/testenv"
 )
 
 // waiting returns the IDs of the requests for approval that the turn shows
@@ -213,8 +213,10 @@ func TestApprovalWithoutAnnouncement(t *testing.T) {
 	runner.report(started("harness-session"))
 	runner.report(asks("1", "rm -r build"))
 	// The answer is recorded as the API records it, and nothing is announced.
-	testenv.Exec(t, aviary.database,
-		`update approvals set option_id = 'never', answered_at = now() where turn_id = $1 and id = '1'`, accepted.ID)
+	answered, err := aviary.records.AnswerApproval(context.Background(), uuid.MustParse(accepted.ID), "1", "never")
+	if err != nil || !answered {
+		t.Fatalf("the request was answered %t: %v", answered, err)
+	}
 	if id, option := runner.answer(); id != "1" || option != "never" {
 		t.Errorf("the runner was given the answer %q to the request %q", option, id)
 	}

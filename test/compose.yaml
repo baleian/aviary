@@ -1,7 +1,11 @@
-# What the tests of the Supervisor run against. Each run of the tests starts
-# it anew and removes it, so nothing is kept from one run to the next.
+# What the tests of the Supervisor's plugins run against: the tests of the
+# Supervisor itself keep their records and events in memory. Each run of the
+# tests starts it anew and removes it, so nothing is kept from one run to the
+# next.
 services:
-  postgres:
+  # A database server, for the tests of the plugin that connects to
+  # databases of its kind. It is PostgreSQL.
+  database:
     image: postgres:18.7@sha256:2ea8630df176ad090ec92136dee850397c5af8781e4bcf2e4162593691c61bbc
     environment:
       POSTGRES_PASSWORD: test

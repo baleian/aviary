@@ -300,7 +300,8 @@ func (a Approval) OptionKind(id string) string {
 // Supervisor the store of a database of one kind.
 //
 // What a store is given as JSON it returns as the same JSON, which need not
-// be the same text.
+// be the same text. An operation whose context is done fails, and has done
+// nothing.
 type Store interface {
 	// Close ends the connection to the database.
 	Close()
@@ -314,7 +315,8 @@ type Store interface {
 
 	// CreateAgent creates an agent with what the given one has of its own: its
 	// harness, instructions, resources, approval and model. It returns
-	// ErrNotFound if the project does not exist.
+	// ErrNotFound if the project does not exist, and creates no agent that
+	// names a provider that there is not.
 	CreateAgent(ctx context.Context, projectID uuid.UUID, agent Agent) (Agent, error)
 
 	// Agent returns the agent with the ID.
@@ -424,7 +426,8 @@ type Store interface {
 	// dispatch, and reports false for a turn that had started before.
 	StartTurn(ctx context.Context, turnID uuid.UUID, harnessSessionID string) (time.Duration, bool, error)
 
-	// TurnHarness returns the harness of the agent that the turn belongs to.
+	// TurnHarness returns the harness of the agent that the turn belongs to,
+	// or ErrNotFound if there is no such turn.
 	TurnHarness(ctx context.Context, turnID uuid.UUID) (string, error)
 
 	// SetFinished records how the harness ended the turn: why it stopped and,
@@ -453,7 +456,7 @@ type Store interface {
 
 	// AddApproval keeps a request of the turn's harness for approval, under the
 	// name that the runner gave it. A request that is kept already stays as it
-	// is.
+	// is. A turn that there is not has no requests.
 	AddApproval(ctx context.Context, turnID uuid.UUID, id string, request json.RawMessage) error
 
 	// ResolveApproval records that the harness has its answer to the request,

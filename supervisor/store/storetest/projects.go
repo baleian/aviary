@@ -56,6 +56,10 @@ func (suite suite) testProviders(t *testing.T) {
 	if read, err := st.Provider(ctx, given.ID); err != nil || !same(read, keyless) {
 		t.Errorf("the replaced provider is read as %+v, not as %+v: %v", read, keyless, err)
 	}
+	// A project has a provider once.
+	if _, err := st.CreateProvider(ctx, given); err == nil {
+		t.Error("a provider was created a second time")
+	}
 	// A provider without a key has none, which is not an empty key.
 	local, err := st.CreateProvider(ctx, store.Provider{ID: uuid.New(), ProjectID: project.ID, Name: "local", URL: "http://10.0.0.5:8000/v1"})
 	if err != nil || local.APIKey != nil {
@@ -177,6 +181,10 @@ func (suite suite) testModelOfAnAgent(t *testing.T) {
 	if origin.TurnID != dispatch.TurnID || origin.SessionID != held.ID || origin.AgentID != agent.ID || origin.ProjectID != project.ID ||
 		origin.Provider == nil || origin.Provider.ID != provider.ID || origin.Provider.URL != provider.URL || string(origin.Provider.APIKey) != "a sealed key" {
 		t.Errorf("the token of the running turn is that of %+v, with the provider %+v", origin, origin.Provider)
+	}
+	// An agent names a provider that there is.
+	if _, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: &store.Model{Provider: uuid.New(), Name: "a-model"}}); err == nil {
+		t.Error("an agent was created that names a provider that there is not")
 	}
 	// A provider that is replaced while a turn uses it.
 	if _, err := st.ReplaceProvider(ctx, store.Provider{ID: provider.ID, Name: "a provider", URL: "http://model.example.com:8000"}); err != nil {

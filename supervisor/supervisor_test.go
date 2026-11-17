@@ -29,18 +29,20 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 
 	"aviary/supervisor/events"
-	"aviary/supervisor/events/memory"
+	memorylog "aviary/supervisor/events/memory"
 	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/internal/gateway"
 	runnerv1 "aviary/supervisor/internal/gen/aviary/runner/v1"
 	"aviary/supervisor/internal/secret"
 	"aviary/supervisor/internal/testenv"
+	memorystore "aviary/supervisor/store/memory"
 )
 
 // The tests of this package run whole Supervisors, as serveOn serves them,
-// on a database of their own. Their cluster is a fake in which no pod runs,
-// so a test plays the part of the cluster for the turns that it sends: it is
-// the runner that takes a turn, and it ends the turn's Job.
+// on records and an event log that are in memory. Their cluster is a fake
+// in which no pod runs, so a test plays the part of the cluster for the
+// turns that it sends: it is the runner that takes a turn, and it ends the
+// turn's Job.
 
 // patience is how long a test waits for what the Supervisor is to do, and
 // soon how long for what it is to do at once: a Supervisor that does it only
@@ -58,19 +60,21 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// installation is what the Supervisors of a test share: a database, an
+// installation is what the Supervisors of a test share: their records, an
 // event log, a cluster and the keys that secrets are sealed with.
 type installation struct {
-	t        *testing.T
-	database string
-	cluster  *fake.Clientset
-	config   driver.Config
-	keys     *secret.Keys
+	t *testing.T
+	// records are the records of the installation, as its database holds
+	// them.
+	records *memorystore.Store
+	cluster *fake.Clientset
+	config  driver.Config
+	keys    *secret.Keys
 	// stores are the secret stores that the installation allows, of the
 	// kind that the tests have a driver for.
 	stores *secret.Stores
 	// log is the event log of the installation, which its Supervisors share.
-	log *memory.Log
+	log *memorylog.Log
 	// sweep is how often its Supervisors look for what no Supervisor
 	// announced. A test that waits for that sets it lower.
 	sweep time.Duration
@@ -102,8 +106,8 @@ func install(t *testing.T, changes ...func(*driver.Config)) *installation {
 		change(&config)
 	}
 	return &installation{
-		t: t, database: testenv.Database(t), cluster: fake.NewClientset(), config: config,
-		keys: testenv.Keys(t), stores: allowing(t, storeHost), log: memory.New(), sweep: gateway.Sweep,
+		t: t, records: memorystore.New(), cluster: fake.NewClientset(), config: config,
+		keys: testenv.Keys(t), stores: allowing(t, storeHost), log: memorylog.New(), sweep: gateway.Sweep,
 	}
 }
 
@@ -132,7 +136,7 @@ type supervisor struct {
 // supervisor starts a Supervisor of the installation.
 func (i *installation) supervisor() *supervisor {
 	i.t.Helper()
-	st, ev := testenv.Open(i.t, i.database), events.New(i.log)
+	ev := events.New(i.log)
 	listen := func() net.Listener {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
@@ -158,7 +162,7 @@ func (i *installation) supervisor() *supervisor {
 	}
 	ctx, stop := context.WithCancel(context.Background())
 	stopped := make(chan error, 1)
-	go func() { stopped <- serveOn(ctx, on, st, ev, i.cluster, i.config, i.keys, i.stores, i.sweep) }()
+	go func() { stopped <- serveOn(ctx, on, i.records, ev, i.cluster, i.config, i.keys, i.stores, i.sweep) }()
 	s.stop = sync.OnceFunc(func() {
 		stop()
 		select {

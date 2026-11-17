@@ -414,7 +414,11 @@ func (s *records) StartTurn(ctx context.Context, turnID uuid.UUID, harnessSessio
 }
 
 func (s *records) TurnHarness(ctx context.Context, turnID uuid.UUID) (string, error) {
-	return s.queries.GetTurnHarness(ctx, turnID)
+	harness, err := s.queries.GetTurnHarness(ctx, turnID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", store.ErrNotFound
+	}
+	return harness, err
 }
 
 func (s *records) SetFinished(ctx context.Context, turnID uuid.UUID, stopReason string, usage *store.Usage) error {

@@ -21,7 +21,7 @@ or `run ls`.
 
 | Target | Where | What the part runs against |
 | --- | --- | --- |
-| `test-supervisor` | `supervisor/` | Kubernetes is the fake of client-go, and the test is the runner, the API client and the Egress Proxy. The tests in `supervisor/*_test.go` run the whole Supervisor, several of them where it matters, with its records in PostgreSQL in a container and with an event log in memory. Those in the other directories test a package. A plugin is tested against what it connects to, in containers that the run starts and removes: an event log (Valkey) and a secret store (OpenBao). What holds of every event log is in `supervisor/events/eventstest`, which the log in memory passes too. |
+| `test-supervisor` | `supervisor/` | Kubernetes is the fake of client-go, and the test is the runner, the API client and the Egress Proxy. The tests in `supervisor/*_test.go` run the whole Supervisor, several of them where it matters, with its records and its event log in memory. Those in the other directories test a package. A plugin is tested against what it connects to, in containers that the run starts and removes: a database (PostgreSQL), an event log (Valkey) and a secret store (OpenBao). What holds of every store of the records is in `supervisor/store/storetest`, and what holds of every event log in `supervisor/events/eventstest`: the plugins pass them, and so do the store and the log in memory. |
 | `test-runner` | `runner/` | The tests in `tests/turn.rs` and `tests/link.rs` run the runner between a Supervisor that the test plays and `fake-harness`, a harness that does what its message says. Those in `src/main.rs` test its functions. |
 | `test-chart` | `test/chart/` | What the chart renders from its own values and from those in the directory, and Envoy's own check of the configuration that it is given. |
 | `test-proxy` | `test/proxy/` | Envoy with what the chart renders. The test is the pod, the Supervisor, the model endpoint and the hosts outside. |
@@ -65,7 +65,7 @@ and every harness runs one session.
 - Put it at the lowest level that shows the fact. A test of the e2e is for
   what no single part can show.
 - A test makes what it needs and shares nothing: every test of the Supervisor
-  has a database of its own, every harness test a network and a home of its
+  has records of its own, every harness test a network and a home of its
   own, every e2e test its own project. That is what lets the tests run at
   once, and those of the Supervisor in a different order every time.
 - Wait for what is to happen, with a deadline. Do not sleep for as long as it

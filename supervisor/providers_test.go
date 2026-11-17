@@ -14,7 +14,6 @@ import (
 	"github.com/google/uuid"
 
 	"aviary/supervisor/internal/secret"
-	"aviary/supervisor/internal/testenv"
 	"aviary/supervisor/store"
 )
 
@@ -36,7 +35,7 @@ func TestProviders(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
 	s := aviary.supervisor()
-	records := testenv.Open(t, aviary.database)
+	records := aviary.records
 	const first, second = "sk-the-first-key", "sk-the-second-key"
 	// answer sends a request about a provider and returns the provider that
 	// the API answers with. No answer holds a key.

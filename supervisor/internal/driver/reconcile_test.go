@@ -12,26 +12,25 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 
 	"aviary/supervisor/events"
-	inmemory "aviary/supervisor/events/memory"
+	memorylog "aviary/supervisor/events/memory"
 	"aviary/supervisor/internal/metrics"
-	"aviary/supervisor/internal/testenv"
 	"aviary/supervisor/store"
+	memorystore "aviary/supervisor/store/memory"
 )
 
-// The tests of this file run a driver on a database of its own and a cluster
-// in which nothing runs. They call what the driver does when it is woken and
+// The tests of this file run a driver on records in memory and a cluster in
+// which nothing runs. They call what the driver does when it is woken and
 // when its time to reconcile comes, and they make the time pass in the
-// database.
+// records.
 
 var ctx = context.Background()
 
 type installation struct {
-	t        *testing.T
-	database string
-	store    store.Store
-	events   *events.Streams
-	cluster  *fake.Clientset
-	driver   *Driver
+	t       *testing.T
+	store   *memorystore.Store
+	events  *events.Streams
+	cluster *fake.Clientset
+	driver  *Driver
 }
 
 func install(t *testing.T, changes ...func(*Config)) *installation {
@@ -44,10 +43,7 @@ func install(t *testing.T, changes ...func(*Config)) *installation {
 	for _, change := range changes {
 		change(&config)
 	}
-	database := testenv.Database(t)
-	i := &installation{
-		t: t, database: database, store: testenv.Open(t, database), events: events.New(inmemory.New()), cluster: fake.NewClientset(),
-	}
+	i := &installation{t: t, store: memorystore.New(), events: events.New(memorylog.New()), cluster: fake.NewClientset()}
 	driver, err := New(config, i.cluster, i.store, i.events, metrics.New())
 	if err != nil {
 		t.Fatal(err)
@@ -136,11 +132,10 @@ func (i *installation) lose(turn uuid.UUID) {
 	i.cluster.CoreV1().Pods(namespace).Delete(ctx, jobName(turn), metav1.DeleteOptions{})
 }
 
-// ago moves a time of the turn so far into the past: when it was dispatched,
-// or when it was asked to stop.
-func (i *installation) ago(turn uuid.UUID, column string, ago time.Duration) {
-	i.t.Helper()
-	testenv.Exec(i.t, i.database, "update turns set "+column+" = now() - make_interval(secs => $2) where id = $1", turn, ago.Seconds())
+// ago makes the turn so much older: it was dispatched, and asked to stop if
+// it was, that long before.
+func (i *installation) ago(turn uuid.UUID, ago time.Duration) {
+	i.store.Age(ago, turn)
 }
 
 func (i *installation) turn(id uuid.UUID) store.Turn {
@@ -183,7 +178,7 @@ func TestReconcileEndsTurnsWithoutAJob(t *testing.T) {
 	i.lose(stopping.ID)
 	i.pod(stopping.ID, corev1.PodStatus{Phase: corev1.PodRunning})
 	for _, turn := range []store.Turn{lost, stopping, kept} {
-		i.ago(turn.ID, "dispatched_at", 2*time.Minute)
+		i.ago(turn.ID, 2*time.Minute)
 	}
 
 	i.driver.reconcile(ctx)
@@ -219,8 +214,8 @@ func TestReconcileGivesUpTurnsWhosePodDoesNotStart(t *testing.T) {
 		Type: corev1.PodScheduled, Status: corev1.ConditionFalse,
 		Reason: "Unschedulable", Message: "0/3 nodes are available: 3 Insufficient cpu.",
 	}}})
-	i.ago(stuck.ID, "dispatched_at", 20*time.Second)
-	i.ago(taken.ID, "dispatched_at", 20*time.Second)
+	i.ago(stuck.ID, 20*time.Second)
+	i.ago(taken.ID, 20*time.Second)
 
 	i.driver.reconcile(ctx)
 	// The turn is given up and its pod is stopped. It ends when the pod is
@@ -239,7 +234,7 @@ func TestReconcileGivesUpTurnsWhosePodDoesNotStart(t *testing.T) {
 	}
 
 	i.lose(stuck.ID)
-	i.ago(stuck.ID, "dispatched_at", 2*time.Minute)
+	i.ago(stuck.ID, 2*time.Minute)
 	i.driver.reconcile(ctx)
 	ended := i.turn(stuck.ID)
 	holdup := store.Failure{Reason: store.FailureStartup, Message: "Unschedulable: 0/3 nodes are available: 3 Insufficient cpu."}
@@ -250,7 +245,7 @@ func TestReconcileGivesUpTurnsWhosePodDoesNotStart(t *testing.T) {
 	// Without a limit no turn is given up.
 	unlimited := install(t, func(config *Config) { config.MaxStartup = 0 })
 	waiting := unlimited.dispatched()
-	unlimited.ago(waiting.ID, "dispatched_at", 50*time.Second)
+	unlimited.ago(waiting.ID, 50*time.Second)
 	unlimited.driver.reconcile(ctx)
 	if unlimited.job(waiting.ID) == nil || unlimited.turn(waiting.ID).Failure != nil {
 		t.Error("a turn was given up although its pod may take any time to start")
@@ -268,7 +263,7 @@ func TestReconcileStopsTurnsThatDoNotStopWhenCancelled(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	i.ago(stubborn.ID, "cancel_requested_at", 40*time.Second)
+	i.ago(stubborn.ID, 40*time.Second)
 
 	i.driver.reconcile(ctx)
 	if i.job(stubborn.ID) != nil {
@@ -281,7 +276,7 @@ func TestReconcileStopsTurnsThatDoNotStopWhenCancelled(t *testing.T) {
 		t.Errorf("the turn that did not stop ended as %s before its pod was gone", left.State)
 	}
 
-	i.ago(stubborn.ID, "dispatched_at", 2*time.Minute)
+	i.ago(stubborn.ID, 2*time.Minute)
 	i.driver.reconcile(ctx)
 	if ended := i.turn(stubborn.ID); ended.State != store.TurnCancelled || ended.Failure != nil {
 		t.Errorf("the turn that did not stop ended as %s, for %+v", ended.State, ended.Failure)

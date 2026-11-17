@@ -1,14 +1,17 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"slices"
 	"testing"
 
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
+	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 
 	"aviary/supervisor/internal/testenv"
+	"aviary/supervisor/store"
 )
 
 // endpoint is what the Supervisor tells the proxy to make of a model
@@ -156,7 +159,14 @@ func TestAgentNamesItsModel(t *testing.T) {
 		t.Errorf("a model request whose key cannot be opened is refused with %d %q", status, why)
 	}
 	// A URL that cannot be read, which the API does not take.
-	testenv.Exec(t, aviary.database, `update providers set url = 'http://[::1' where id = $1`, provider)
+	kept, err := aviary.records.Provider(context.Background(), uuid.MustParse(provider))
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept.URL = "http://[::1"
+	if _, err := aviary.records.ReplaceProvider(context.Background(), kept); err != nil {
+		t.Fatal(err)
+	}
 	if status, why := refusal(s.check(token(job), false, "/v1/chat/completions")); status != http.StatusServiceUnavailable || why != "the URL of the model provider cannot be read\n" {
 		t.Errorf("a model request to a provider whose URL cannot be read is refused with %d %q", status, why)
 	}
@@ -168,11 +178,22 @@ func TestAgentFromBeforeModels(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
 	s := aviary.supervisor()
-	session := s.session()
-	job := aviary.job(s.send(session, "hello").ID)
+	// The API creates no such agent and takes no message for one, so the
+	// agent and its turn are recorded as an older release left them.
+	ctx := context.Background()
+	agent, err := aviary.records.CreateAgent(ctx, uuid.MustParse(s.create("/v1/projects", `{"name": "test"}`)), store.Agent{Harness: "opencode"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := s.create("/v1/agents/"+agent.ID.String()+"/sessions", "")
+	queued, _, err := aviary.records.CreateTurn(ctx, uuid.MustParse(session), "hello", 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A Supervisor dispatches the turns that wait when it takes a message.
+	s.send(s.session(), "hello")
+	job := aviary.job(queued.ID.String())
 	s.take(job)
-	testenv.Exec(t, aviary.database,
-		`update agents set provider_id = null, model = '' where id = (select agent_id from sessions where id = $1)`, session)
 
 	if status, why := refusal(s.check(token(job), false, "/v1/chat/completions")); status != http.StatusNotFound || why != "the agent of the turn names no model\n" {
 		t.Errorf("a model request of a turn whose agent names no model is refused with %d %q", status, why)

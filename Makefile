@@ -50,7 +50,7 @@ AMONG_PROXIES := --network aviary-test-proxy_default --env AVIARY_TEST_PROXY=1 \
 # What the tests of the Supervisor run against, and how the tests reach it.
 SERVICES := docker compose --file test/compose.yaml --project-name aviary-test-supervisor
 IN_SERVICES := --network aviary-test-supervisor_default \
-	--env AVIARY_TEST_DATABASE_URL=postgres://postgres:test@postgres:5432/postgres \
+	--env AVIARY_TEST_DATABASE_URL=postgres://postgres:test@database:5432/postgres \
 	--env AVIARY_TEST_EVENTS_URL=valkey://default:test@events:6379 \
 	--env AVIARY_TEST_SECRET_STORE_URL=http://secret-store:8200
 

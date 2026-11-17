@@ -13,7 +13,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"aviary/supervisor/internal/testenv"
 	"aviary/supervisor/store"
 )
 
@@ -81,7 +80,7 @@ func TestSecretStores(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
 	s := aviary.supervisor()
-	records := testenv.Open(t, aviary.database)
+	records := aviary.records
 	const address, first, second = "https://" + storeHost, "the-first-credential", "the-second-credential"
 	// answer sends a request about a store and returns the store that the
 	// API answers with. No answer holds what a store is logged in to with.

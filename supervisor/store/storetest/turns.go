@@ -433,6 +433,31 @@ func (suite suite) testTakeTurn(t *testing.T) {
 	}
 }
 
+// A turn is given to one runner only, also when several ask for it at once
+// through several Supervisors.
+func (suite suite) testTakeTurnGivesTheTurnToOneOfTheRunnersThatAskAtOnce(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	st.queue(st.session())
+	dispatch, supervisors := st.dispatch(), st.supervisors(8)
+	var given, refused atomic.Int32
+	atOnce(len(supervisors), func(i int) {
+		runner := uuid.New()
+		_, err := supervisors[i].TakeTurn(ctx, dispatch.Token, &runner)
+		switch {
+		case err == nil:
+			given.Add(1)
+		case errors.Is(err, store.ErrTurnTaken):
+			refused.Add(1)
+		default:
+			t.Error(err)
+		}
+	})
+	if given.Load() != 1 || refused.Load() != 7 {
+		t.Errorf("of eight runners that asked for a turn at once, %d were given it and %d were refused", given.Load(), refused.Load())
+	}
+}
+
 func (suite suite) testTakeTurnThatIsNotToRun(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -659,6 +684,35 @@ func (suite suite) testEndTurn(t *testing.T) {
 	}
 }
 
+// A turn ends once, also when several Supervisors end it at once: one of
+// them reads what the turn said and keeps it.
+func (suite suite) testSupervisorsEndATurnOnceTogether(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	dispatch, _ := st.running(st.session())
+	supervisors := st.supervisors(8)
+	var ended, read atomic.Int32
+	atOnce(len(supervisors), func(i int) {
+		_, changed, err := supervisors[i].EndTurn(ctx, dispatch.TurnID, i%2 == 0, store.Failure{Reason: store.FailurePodLost},
+			func(context.Context) ([]json.RawMessage, error) {
+				read.Add(1)
+				return []json.RawMessage{json.RawMessage(`{"type":"message","text":"one"}`)}, nil
+			})
+		if err != nil {
+			t.Error(err)
+		}
+		if changed {
+			ended.Add(1)
+		}
+	})
+	if ended.Load() != 1 || read.Load() != 1 {
+		t.Errorf("of eight Supervisors that ended a turn at once, %d ended it and %d read what it said", ended.Load(), read.Load())
+	}
+	if items, err := st.TurnItems(ctx, []uuid.UUID{dispatch.TurnID}); err != nil || len(items[dispatch.TurnID]) != 1 {
+		t.Errorf("the items of the turn are %s: %v", items, err)
+	}
+}
+
 func (suite suite) testEndTurnKeepsWhatTheTurnSaid(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -799,6 +853,24 @@ func (suite suite) testDispatchedTurns(t *testing.T) {
 	}
 }
 
+// An operation whose caller waits for it no longer fails.
+func (suite suite) testCallerThatWaitsNoLonger(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	session := st.session()
+	gone, leave := context.WithCancel(ctx)
+	leave()
+	if _, _, err := st.CreateTurn(gone, session, "hello", 0, 50); err == nil {
+		t.Error("a message was accepted whose sender waits no longer")
+	}
+	if turns, err := st.Turns(ctx, session, math.MaxInt32, 10); err != nil || len(turns) != 0 {
+		t.Errorf("the message left a turn behind: %v, %v", turns, err)
+	}
+	if _, err := st.Session(gone, session); err == nil {
+		t.Error("a session was read for a caller that waits no longer")
+	}
+}
+
 func (suite suite) testNotFound(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -808,6 +880,7 @@ func (suite suite) testNotFound(t *testing.T) {
 		"agent":           func() error { _, err := st.Agent(ctx, none); return err },
 		"session":         func() error { _, err := st.Session(ctx, none); return err },
 		"turn":            func() error { _, err := st.Turn(ctx, none); return err },
+		"harness of none": func() error { _, err := st.TurnHarness(ctx, none); return err },
 		"agent of none":   func() error { _, err := st.CreateAgent(ctx, none, store.Agent{Harness: "opencode"}); return err },
 		"session of none": func() error { _, err := st.CreateSession(ctx, none); return err },
 	} {

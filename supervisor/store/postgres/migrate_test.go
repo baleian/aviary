@@ -9,7 +9,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"aviary/supervisor/internal/testenv"
 	"aviary/supervisor/store/postgres"
 )
 
@@ -58,7 +57,7 @@ func schema(t *testing.T, database string) []string {
 func TestMigrate(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	database := testenv.EmptyDatabase(t)
+	database := emptyDatabase(t)
 	if st, err := (postgres.Plugin{}).Open(ctx, database); err == nil {
 		st.Close()
 		t.Fatal("a database without the schema was opened")
@@ -104,15 +103,15 @@ func TestMigrate(t *testing.T) {
 
 func TestOpenChecksTheSchema(t *testing.T) {
 	t.Parallel()
-	database := testenv.Database(t)
+	database := newDatabase(t)
 
 	// A newer release has added to the schema. This one runs on it.
-	testenv.Exec(t, database, `insert into goose_db_version (version_id, is_applied)
+	exec(t, database, `insert into goose_db_version (version_id, is_applied)
 		select max(version_id) + 1, true from goose_db_version`)
-	testenv.Open(t, database)
+	open(t, database)
 
 	// A newer release has dropped what this one uses.
-	testenv.Exec(t, database, `update schema_floor set version = (select max(version_id) from goose_db_version)`)
+	exec(t, database, `update schema_floor set version = (select max(version_id) from goose_db_version)`)
 	if st, err := (postgres.Plugin{}).Open(context.Background(), database); err == nil {
 		st.Close()
 		t.Error("a database that no longer supports this build was opened")

@@ -1,27 +1,22 @@
 // Package testenv gives the tests of the Supervisor what the Supervisor runs
-// on. `make test-supervisor` starts it and tells the tests where it is.
+// on. The tests of the plugins connect to a database, an event log and a
+// secret store: `make test-supervisor` starts those and tells the tests
+// where they are.
 package testenv
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"log/slog"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
-
 	"aviary/supervisor/internal/secret"
-	"aviary/supervisor/store"
-	"aviary/supervisor/store/postgres"
 )
 
-// databaseURL names the variable with the URL of a PostgreSQL in which the
-// tests may create databases, eventsURL the one with the address of an
+// databaseURL names the variable with the URL of a database server in which
+// the tests may create databases, eventsURL the one with the address of an
 // event log, and secretStoreURL the one with the address of a secret store.
 const (
 	databaseURL    = "AVIARY_TEST_DATABASE_URL"
@@ -46,59 +41,12 @@ func service(t testing.TB, variable string) string {
 	return address
 }
 
-// EmptyDatabase creates a database for the test and returns its URL. The
-// database is dropped when the test ends.
-func EmptyDatabase(t testing.TB) string {
+// DatabaseURL returns the address of the database server of the tests, which
+// the plugins that connect to a database are tested with. The tests share
+// it: each creates a database of its own in it.
+func DatabaseURL(t testing.TB) string {
 	t.Helper()
-	server := service(t, databaseURL)
-	address, err := url.Parse(server)
-	if err != nil {
-		t.Fatalf("%s: %v", databaseURL, err)
-	}
-	name := "test_" + strings.ToLower(rand.Text())
-	Exec(t, server, "create database "+name)
-	t.Cleanup(func() { Exec(t, server, "drop database "+name+" with (force)") })
-	address.Path = "/" + name
-	return address.String()
-}
-
-// Database creates a database with the schema of this build for the test
-// and returns its URL.
-func Database(t testing.TB) string {
-	t.Helper()
-	database := EmptyDatabase(t)
-	if err := (postgres.Plugin{}).Migrate(context.Background(), database); err != nil {
-		t.Fatal(err)
-	}
-	return database
-}
-
-// Open returns a Store on the database, as one Supervisor has it. Several
-// Supervisors are several Stores on one database.
-func Open(t testing.TB, database string) store.Store {
-	t.Helper()
-	st, err := postgres.Plugin{}.Open(context.Background(), database)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(st.Close)
-	return st
-}
-
-// Exec runs a statement on the database, for what a test has to arrange
-// that the Supervisor has no way to: time that has passed, or a schema that
-// another release left.
-func Exec(t testing.TB, database, statement string, arguments ...any) {
-	t.Helper()
-	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, database)
-	if err != nil {
-		t.Fatalf("connect to the PostgreSQL of the tests: %v", err)
-	}
-	defer conn.Close(ctx)
-	if _, err := conn.Exec(ctx, statement, arguments...); err != nil {
-		t.Fatalf("%s: %v", statement, err)
-	}
+	return service(t, databaseURL)
 }
 
 // Keys returns the keys of an installation, which its Supervisors seal

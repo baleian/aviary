@@ -3,11 +3,40 @@ package storetest
 import (
 	"encoding/json"
 	"slices"
+	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"aviary/supervisor/store"
 )
+
+// Of the answers that are given to a request at once, through several
+// Supervisors, one stands.
+func (suite suite) testAnswerApprovalKeepsOneOfTheAnswersGivenAtOnce(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	dispatch, _ := st.running(st.session())
+	if err := st.AddApproval(ctx, dispatch.TurnID, "1", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	supervisors := st.supervisors(8)
+	var kept atomic.Int32
+	atOnce(len(supervisors), func(i int) {
+		answered, err := supervisors[i].AnswerApproval(ctx, dispatch.TurnID, "1", strconv.Itoa(i))
+		if err != nil {
+			t.Error(err)
+		}
+		if answered {
+			kept.Add(1)
+		}
+	})
+	if answers, err := st.Answers(ctx, &dispatch.TurnID); err != nil || len(answers) != 1 || kept.Load() != 1 {
+		t.Errorf("of eight answers given at once, %d were kept, and those on their way are %v: %v", kept.Load(), answers, err)
+	}
+}
 
 func (suite suite) testApprovals(t *testing.T) {
 	t.Parallel()
@@ -58,6 +87,9 @@ func (suite suite) testApprovals(t *testing.T) {
 	}
 	if _, err := st.Approval(ctx, turn, "3"); err != store.ErrNotFound {
 		t.Errorf("a request that the runner did not report was read with %v", err)
+	}
+	if err := st.AddApproval(ctx, uuid.New(), "1", []byte(`{}`)); err == nil {
+		t.Error("a request of a turn that there is not was kept")
 	}
 
 	// The first answer stands.
