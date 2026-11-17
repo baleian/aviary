@@ -162,21 +162,29 @@ func TestAgentNamesItsModel(t *testing.T) {
 	}
 }
 
-// The turns of an agent that names no model use the model endpoint of the
-// installation, as they did before agents could name one.
-func TestAgentWithoutAModel(t *testing.T) {
+// An agent from before agents named their models has none. Its sessions
+// take no more messages, and a turn of it that still runs reaches no model.
+func TestAgentFromBeforeModels(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
 	s := aviary.supervisor()
-	job := aviary.job(s.send(s.session(), "hello").ID)
-	if base, model := told(job, "AVIARY_LLM_BASE_URL"), told(job, "AVIARY_LLM_MODEL"); base != "http://127.0.0.2:8080/v1" || model != "model" {
-		t.Errorf("the pod of the turn is told the model %q at %q", model, base)
-	}
+	session := s.session()
+	job := aviary.job(s.send(session, "hello").ID)
 	s.take(job)
-	for _, forward := range []bool{false, true} {
-		if got := named(t, s.check(token(job), forward, "/v1/chat/completions")); got != nil {
-			t.Errorf("the proxy is told to pass a request on to %+v", got)
-		}
+	testenv.Exec(t, aviary.database,
+		`update agents set provider_id = null, model = '' where id = (select agent_id from sessions where id = $1)`, session)
+
+	if status, why := refusal(s.check(token(job), false, "/v1/chat/completions")); status != http.StatusNotFound || why != "the agent of the turn names no model\n" {
+		t.Errorf("a model request of a turn whose agent names no model is refused with %d %q", status, why)
+	}
+	// What else the turn sends out goes on as before.
+	if got := named(t, s.check(token(job), true, "/")); got != nil {
+		t.Errorf("about a request through the forward proxy, the proxy is told %+v", got)
+	}
+	var refused struct{ Code, Message string }
+	status, _ := s.request("POST", "/v1/sessions/"+session+"/messages", `{"text": "hello again"}`, &refused)
+	if status != http.StatusConflict || refused.Code != "agent_without_model" || refused.Message == "" {
+		t.Errorf("a message to a session of an agent that names no model was answered with %d %s %q", status, refused.Code, refused.Message)
 	}
 }
 
@@ -197,18 +205,12 @@ func TestModelsThatAnAgentCannotName(t *testing.T) {
 		"nothing":                         `{}`,
 		"more than a model":               `{"provider": "` + provider + `", "name": "a-model", "url": "https://other.example.com"}`,
 		"only a name":                     `"a-model"`,
+		"a model that is none":            `null`,
 	} {
 		var refused struct{ Code, Message string }
 		status, _ := s.request("POST", "/v1/projects/"+project+"/agents", `{"harness": "opencode", "model": `+model+`}`, &refused)
 		if status != http.StatusBadRequest || refused.Code != "invalid_request" || refused.Message == "" {
 			t.Errorf("an agent that names %s was answered with %d %s %q", name, status, refused.Code, refused.Message)
-		}
-	}
-	// What is left out is no model, as before.
-	for _, body := range []string{`{"harness": "opencode"}`, `{"harness": "opencode", "model": null}`} {
-		var created map[string]any
-		if status, _ := s.request("POST", "/v1/projects/"+project+"/agents", body, &created); status != http.StatusCreated || created["model"] != nil {
-			t.Errorf("an agent that was created with %s was answered with %d %v", body, status, created)
 		}
 	}
 }

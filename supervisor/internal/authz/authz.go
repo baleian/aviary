@@ -54,11 +54,11 @@ func New(st *store.Store, keys *secret.Keys) authv3.AuthorizationServer {
 // password of the proxy. The proxy says which of the two a request is with
 // the context extension "listener".
 //
-// For a model request of a turn whose agent names its model, the proxy is
-// also told where the request goes and with which key: to the endpoint of
-// the agent's provider. Of a request to the forward proxy it is told
-// nothing of the kind. That request goes where the pod says, and the key of
-// a provider is for its endpoint alone.
+// For a model request the proxy is also told where the request goes and
+// with which key: to the endpoint of the provider that the turn's agent
+// names. Of a request to the forward proxy it is told nothing of the kind.
+// That request goes where the pod says, and the key of a provider is for its
+// endpoint alone.
 func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*authv3.CheckResponse, error) {
 	headers := request.GetAttributes().GetRequest().GetHttp().GetHeaders()
 	forward := request.GetAttributes().GetContextExtensions()["listener"] == "forward"
@@ -94,13 +94,18 @@ func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*
 		Status:          &rpcstatus.Status{Code: int32(codes.OK)},
 		DynamicMetadata: metadata,
 	}
-	if origin.Provider != nil && !forward {
-		endpoint, refusal := a.endpoint(ctx, origin.Provider, request.GetAttributes().GetRequest().GetHttp().GetPath())
-		if refusal != nil {
-			return refusal, nil
-		}
-		allowed.HttpResponse = &authv3.CheckResponse_OkResponse{OkResponse: endpoint}
+	if forward {
+		return allowed, nil
 	}
+	if origin.Provider == nil {
+		// A turn of an agent from before agents named their models.
+		return refused(typev3.StatusCode_NotFound, "the agent of the turn names no model\n"), nil
+	}
+	endpoint, refusal := a.endpoint(ctx, origin.Provider, request.GetAttributes().GetRequest().GetHttp().GetPath())
+	if refusal != nil {
+		return refusal, nil
+	}
+	allowed.HttpResponse = &authv3.CheckResponse_OkResponse{OkResponse: endpoint}
 	return allowed, nil
 }
 

@@ -121,14 +121,45 @@ func create(t *testing.T, path, body string) string {
 	return created.ID
 }
 
-// agent is an agent of a project of its own.
+// The model server of the tests, which answers only the requests that carry
+// its key.
+const (
+	mockURL = "http://mock-llm.aviary-e2e/v1"
+	mockKey = "mock-llm-key"
+)
+
+// provider creates a provider of the project: the model server of the
+// tests, with the key.
+func provider(t *testing.T, project, key string) string {
+	t.Helper()
+	return create(t, "/v1/projects/"+project+"/providers", fmt.Sprintf(`{"name": "mock", "url": %q, "api_key": {"value": %q}}`, mockURL, key))
+}
+
+// agent is an agent of a project.
 type agent struct{ id, project string }
 
-// newAgent creates an agent as the body says.
+// agentOf creates an agent of the project as the body says, whose model is
+// one of the provider.
+func agentOf(t *testing.T, project, provider, body string) agent {
+	t.Helper()
+	var settings map[string]any
+	if err := json.Unmarshal([]byte(body), &settings); err != nil {
+		t.Fatal(err)
+	}
+	settings["model"] = map[string]string{"provider": provider, "name": "mock"}
+	with, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return agent{create(t, "/v1/projects/"+project+"/agents", string(with)), project}
+}
+
+// newAgent creates an agent as the body says, in a project of its own. Its
+// model is the model server of the tests.
 func newAgent(t *testing.T, body string) agent {
 	t.Helper()
 	project := create(t, "/v1/projects", `{"name": "e2e"}`)
-	return agent{create(t, "/v1/projects/"+project+"/agents", body), project}
+	return agentOf(t, project, provider(t, project, mockKey), body)
 }
 
 // session creates a session of the agent.
@@ -413,6 +444,22 @@ func recorded(t *testing.T, id string) []map[string]any {
 		log.Close()
 	}
 	return requests
+}
+
+// logged waits for the proxies to have recorded a request of the turn to the
+// host that ended with the status, and returns the record.
+func logged(t *testing.T, id, route, host string, status float64) map[string]any {
+	t.Helper()
+	var found map[string]any
+	eventually(t, soon, fmt.Sprintf("no Egress Proxy has recorded a %s request of the turn to %s that ended with %v", route, host, status), func() bool {
+		for _, line := range recorded(t, id) {
+			if line["route"] == route && line["host"] == host && line["status"] == status {
+				found = line
+			}
+		}
+		return found != nil
+	})
+	return found
 }
 
 // words returns so many words, w1 and on, and the message that has the

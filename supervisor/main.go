@@ -37,7 +37,6 @@ const (
 	gatewayURL         = "AVIARY_GATEWAY_URL"
 	runnerImage        = "AVIARY_RUNNER_IMAGE"
 	llmBaseURL         = "AVIARY_LLM_BASE_URL"
-	llmModel           = "AVIARY_LLM_MODEL"
 	proxyURL           = "AVIARY_PROXY_URL"
 	encryptionKeys     = "AVIARY_ENCRYPTION_KEYS"
 	encryptionKey      = "AVIARY_ENCRYPTION_KEY"
@@ -253,8 +252,6 @@ func driverConfig() (driver.Config, error) {
 	if config.LLMBaseURL, err = env(llmBaseURL); err != nil {
 		return config, err
 	}
-	// An installation without a model endpoint names no model.
-	config.LLMModel = os.Getenv(llmModel)
 	if config.ProxyURL, err = env(proxyURL); err != nil {
 		return config, err
 	}

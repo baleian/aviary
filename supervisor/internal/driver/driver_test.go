@@ -27,8 +27,7 @@ func config() Config {
 	return Config{
 		GatewayURL:  "http://aviary-supervisor.aviary-system:9090",
 		RunnerImage: "registry.example/runner:1",
-		LLMBaseURL:  "http://aviary-egress-proxy.aviary-system:8080/v1",
-		LLMModel:    "a-model",
+		LLMBaseURL:  "http://aviary-egress-proxy.aviary-system:8080",
 		ProxyURL:    "http://aviary-egress-proxy.aviary-system:3128",
 		Harnesses: map[string]Harness{"opencode": {
 			Image:     "registry.example/opencode:1",
@@ -90,7 +89,7 @@ func TestJob(t *testing.T) {
 	}
 	dispatch := store.Dispatch{
 		TurnID: uuid.New(), SessionID: uuid.New(), AgentID: uuid.New(), ProjectID: uuid.New(),
-		Harness: "opencode", Token: "the-token",
+		Harness: "opencode", Token: "the-token", ProviderURL: "https://api.example.com/v1/", Model: "a-model",
 	}
 	resources := memory("2Gi")
 	hosts := []corev1.HostAlias{{IP: "10.96.0.7", Hostnames: []string{"aviary-supervisor.aviary-system"}}}

@@ -22,9 +22,12 @@ func TestRefusals(t *testing.T) {
 	s := aviary.supervisor()
 	project := s.create("/v1/projects", `{"name": "test"}`)
 	agents := "/v1/projects/" + project + "/agents"
-	session := s.create("/v1/agents/"+s.create(agents, `{"harness": "opencode"}`)+"/sessions", "")
+	session := s.create("/v1/agents/"+s.agent(project, `{"harness": "opencode"}`)+"/sessions", "")
 	providers := "/v1/projects/" + project + "/providers"
-	provider := "/v1/providers/" + s.create(providers, `{"name": "a provider", "url": "https://api.example.com/v1"}`)
+	provided := s.create(providers, `{"name": "a provider", "url": "https://api.example.com/v1"}`)
+	provider := "/v1/providers/" + provided
+	// model is the model of an agent that is otherwise as it should be.
+	model := `"model": {"provider": "` + provided + `", "name": "a-model"}`
 	none := uuid.NewString()
 	long, err := json.Marshal(map[string]string{"text": strings.Repeat("a", 1<<20)})
 	if err != nil {
@@ -60,11 +63,12 @@ func TestRefusals(t *testing.T) {
 		{"PUT", provider, `{"name": "a provider"}`, http.StatusBadRequest, invalid},
 		{"PUT", "/v1/providers/" + none, `{"name": "a provider", "url": "https://api.example.com/v1"}`, http.StatusNotFound, notFound},
 
-		{"POST", agents, `{"harness": "another"}`, http.StatusBadRequest, invalid},
-		{"POST", agents, `{"harness": "opencode", "resources": {"limits": {"memory": "-1Gi"}}}`, http.StatusBadRequest, invalid},
-		{"POST", agents, `{"harness": "opencode", "resources": {"limits": {"nvidia.com/gpu": "1"}}}`, http.StatusBadRequest, invalid},
-		{"POST", agents, `{"harness": "opencode", "approval": "always"}`, http.StatusBadRequest, invalid},
-		{"POST", "/v1/projects/" + none + "/agents", `{"harness": "opencode"}`, http.StatusNotFound, notFound},
+		{"POST", agents, `{"harness": "another", ` + model + `}`, http.StatusBadRequest, invalid},
+		{"POST", agents, `{"harness": "opencode", "resources": {"limits": {"memory": "-1Gi"}}, ` + model + `}`, http.StatusBadRequest, invalid},
+		{"POST", agents, `{"harness": "opencode", "resources": {"limits": {"nvidia.com/gpu": "1"}}, ` + model + `}`, http.StatusBadRequest, invalid},
+		{"POST", agents, `{"harness": "opencode", "approval": "always", ` + model + `}`, http.StatusBadRequest, invalid},
+		{"POST", agents, `{"harness": "opencode"}`, http.StatusBadRequest, invalid},
+		{"POST", "/v1/projects/" + none + "/agents", `{"harness": "opencode", ` + model + `}`, http.StatusNotFound, notFound},
 		{"GET", "/v1/agents/" + none, ``, http.StatusNotFound, notFound},
 
 		{"POST", "/v1/agents/" + none + "/sessions", ``, http.StatusNotFound, notFound},
@@ -116,8 +120,7 @@ func TestResources(t *testing.T) {
 
 	// An agent has what it was created with. What was not given is not
 	// filled in: an agent without resources follows those of its harness.
-	agents := "/v1/projects/" + project + "/agents"
-	full := get("/v1/agents/" + s.create(agents, `{"harness": "codex", "instructions": "Be brief.", "approval": "ask",
+	full := get("/v1/agents/" + s.agent(project, `{"harness": "codex", "instructions": "Be brief.", "approval": "ask",
 		"resources": {"requests": {"cpu": "500m"}, "limits": {"memory": "2Gi"}}}`))
 	resources, err := json.Marshal(full["resources"])
 	if err != nil {
@@ -128,7 +131,7 @@ func TestResources(t *testing.T) {
 		t.Errorf("the agent is %v", full)
 	}
 	for _, body := range []string{`{"harness": "opencode"}`, `{"harness": "opencode", "instructions": "", "resources": {}, "approval": ""}`} {
-		plain := get("/v1/agents/" + s.create(agents, body))
+		plain := get("/v1/agents/" + s.agent(project, body))
 		if _, found := plain["resources"]; found || plain["instructions"] != nil || plain["approval"] != nil || plain["harness"] != "opencode" {
 			t.Errorf("the agent that was created with %s is %v", body, plain)
 		}

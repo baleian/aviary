@@ -14,8 +14,10 @@ and the number of turns that run at once is a setting.
 > **Status.** Aviary is at an early stage. A message sent to the API runs as
 > a turn, sessions continue across turns, turns beyond a limit wait their
 > turn, and what was said can be read back. The pod of a turn reaches the
-> outside only through a proxy that keeps a record. An agent can be made to
-> ask a person before it acts. Supervisors can be replaced while turns run.
+> outside only through a proxy that keeps a record. Every agent names its
+> model, at an endpoint that its project registers with a key that no pod
+> holds. An agent can be made to ask a person before it acts. Supervisors
+> can be replaced while turns run.
 > It has only run on a local cluster, and the API has no authentication. See
 > [What is missing](#what-is-missing).
 
@@ -35,8 +37,9 @@ and the number of turns that run at once is a setting.
                               with the API key
 ```
 
-1. A client creates a project, an agent in it and a session of the agent,
-   and sends the session a message.
+1. A client creates a project, in it a model provider and an agent that
+   uses a model of that provider, and a session of the agent, and sends the
+   session a message.
 2. The **Supervisor** records the message as a turn. If fewer turns are
    running than the limit allows, it creates a Job for the turn. Otherwise
    the turn waits, and turns run in the order in which they were sent.
@@ -50,7 +53,9 @@ and the number of turns that run at once is a setting.
    another. The harness reaches the model through the **Egress
    Proxy**. The pod holds no key of the model endpoint, only the token of
    its turn: the proxy asks the Supervisor which turn the token belongs to,
-   puts the key in its place and records the request. Whatever else the
+   and the Supervisor answers with the endpoint of the agent's provider and
+   its key. The proxy puts the key in the token's place, passes the request
+   on to that endpoint and records it. Whatever else the
    agent fetches goes through the same proxy, which lets a request through
    to the hosts that the installation allows and records it with its turn.
    A network policy keeps the pod from connecting to anything but the
@@ -63,7 +68,7 @@ and the number of turns that run at once is a setting.
 The Supervisor keeps its records in PostgreSQL and the events of running
 turns in Valkey. It only needs their addresses, so both can be managed
 services. The Egress Proxy is [Envoy](https://www.envoyproxy.io), which the
-chart installs. The model endpoint is a URL and a key, so it can be the API
+chart installs. A model provider is a URL and a key, so it can be the API
 of a provider, an AI gateway or a model server of your own.
 
 The record of the Egress Proxy is a line of JSON for every request, on its
@@ -90,26 +95,23 @@ make deploy       # installs Aviary with its Helm chart
 
 ### Sending a message yourself
 
-To have a real model answer, write the base URL of a model endpoint, its key
-and the model's name to a file named `.env` in the repository, and run
-`make deploy` again. The endpoint must be reachable from the cluster, so
-`localhost` will not do. OpenCode needs a server with the Chat
+The API listens inside the cluster. Forward a port to it, tell the project
+where its model is, and send a message. A model provider is the base URL of
+a model endpoint and its key. The endpoint must be reachable from the
+cluster, so `localhost` will not do, and an endpoint at a private address
+needs an entry in `egressProxy.extraEgress`: see
+[Configuration](#configuration). OpenCode needs a server with the Chat
 Completions API of OpenAI, Codex one with the Responses API.
-
-```sh
-AVIARY_LLM_BASE_URL=http://model-server.example.com/v1
-AVIARY_LLM_API_KEY=...
-AVIARY_LLM_MODEL=...
-```
-
-The API listens inside the cluster. Forward a port to it and send a message:
 
 ```sh
 kubectl --context kind-aviary --namespace aviary-system \
   port-forward service/aviary-supervisor 8080:80 &
 
 project=$(curl -s -X POST localhost:8080/v1/projects -d '{"name": "demo"}' | jq -r .id)
-agent=$(curl -s -X POST localhost:8080/v1/projects/$project/agents -d '{"harness": "opencode"}' | jq -r .id)
+provider=$(curl -s -X POST localhost:8080/v1/projects/$project/providers \
+  -d '{"name": "a model server", "url": "http://model-server.example.com/v1", "api_key": {"value": "..."}}' | jq -r .id)
+agent=$(curl -s -X POST localhost:8080/v1/projects/$project/agents \
+  -d '{"harness": "opencode", "model": {"provider": "'$provider'", "name": "..."}}' | jq -r .id)
 session=$(curl -s -X POST localhost:8080/v1/agents/$agent/sessions | jq -r .id)
 
 turn=$(curl -s -X POST localhost:8080/v1/sessions/$session/messages \
@@ -126,14 +128,16 @@ still knows what was said and finds the file.
 | Request | |
 | --- | --- |
 | `POST /v1/projects` | Creates a project. Body: `{"name": "..."}`. |
-| `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"harness": "...", "instructions": "...", "resources": {...}, "approval": "ask"}`. The harness is one of the configured harnesses. The instructions are what the agent is told before every turn, and may be left out. The resources are what the pod of each turn asks for and may use at most, as they are written for Kubernetes: `{"requests": {"cpu": "250m", "memory": "1Gi"}, "limits": {"memory": "4Gi"}}`. Given, they are taken as they are. Left out or empty, the agent has none of its own, and each of its turns gets the default of the harness as it then is. With `"approval": "ask"`, the agent asks a person before it acts: see [Approval](#approval). Left out, it asks nobody. |
+| `POST /v1/projects/{id}/providers` | Creates a model provider of the project. Body: `{"name": "...", "url": "...", "api_key": {"value": "..."}}`. The URL is the base URL of a model endpoint, and the key is sent to it as a bearer token. An endpoint that takes no key has no `api_key`. See [Model providers](#model-providers). |
+| `PUT /v1/providers/{id}` | Replaces the name, the URL and the key of a provider, all three at once: a provider that is given no key has none from then on. |
+| `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"harness": "...", "model": {"provider": "...", "name": "..."}, "instructions": "...", "resources": {...}, "approval": "ask"}`. The harness is one of the configured harnesses. The model is a provider of the project, by its ID, and the name of a model as that provider knows it. The instructions are what the agent is told before every turn, and may be left out. The resources are what the pod of each turn asks for and may use at most, as they are written for Kubernetes: `{"requests": {"cpu": "250m", "memory": "1Gi"}, "limits": {"memory": "4Gi"}}`. Given, they are taken as they are. Left out or empty, the agent has none of its own, and each of its turns gets the default of the harness as it then is. With `"approval": "ask"`, the agent asks a person before it acts: see [Approval](#approval). Left out, it asks nobody. |
 | `POST /v1/agents/{id}/sessions` | Creates a session. |
 | `POST /v1/sessions/{id}/messages` | Sends a message. Body: `{"text": "..."}`. Answers 202 with the turn, 409 if a turn of the session has not ended, or 429 with `Retry-After` if too many turns wait to run. |
 | `POST /v1/turns/{id}/cancel` | Cancels a turn. A turn that waits to run ends at once: 200 with the turn. A turn that runs is told to stop and ends when its pod has stopped: 202 with the turn. Answers 409 if the turn has ended in another way. |
 | `POST /v1/turns/{id}/approvals/{request}` | Answers a request for approval of the turn. Body: `{"option_id": "..."}`, the `id` of one of the options of the request. Answers 202 when the answer is on its way to the harness, 400 if the request has no such option, and 409 if the request has its answer or the turn has ended. |
 | `GET /v1/turns/{id}/events` | The events of the turn, as server-sent events. A client that reconnects sends `Last-Event-ID` and gets the events after it. |
 | `GET /v1/sessions/{id}/turns` | The turns of the session, newest first: `{"turns": [...]}`. `?limit=` is how many, 20 if it is not given and at most 100. `?before=` is the `seq` of a turn, and the answer then holds the turns before that one: that is how to read on from the last turn of an answer. The first turn of a session has `seq` 1. |
-| `GET /v1/projects/{id}`, `/v1/agents/{id}`, `/v1/sessions/{id}`, `/v1/turns/{id}` | Reads what was created. |
+| `GET /v1/projects/{id}`, `/v1/providers/{id}`, `/v1/agents/{id}`, `/v1/sessions/{id}`, `/v1/turns/{id}` | Reads what was created. |
 
 The events of a turn:
 
@@ -172,6 +176,25 @@ A turn that has ended has its reason too, as `failure`. What makes a turn
 fail is up to the harness: when the model endpoint answers with an error,
 OpenCode fails the turn, and Codex mostly ends it with the error as what the
 agent says.
+
+### Model providers
+
+The turns of an agent ask the model at the endpoint of the provider that the
+agent names, for the model that the agent names.
+
+- **The key goes in and does not come out.** It is stored sealed with a key
+  of the installation, which the database does not hold. A provider is read
+  with `"api_key": {"stored": true}` in place of its key.
+- **The key goes to its endpoint and nowhere else.** The Egress Proxy puts
+  it into the model requests of the turns that use the provider, which it
+  passes on to the host of the provider's URL, below the path of the URL.
+  What else a pod sends out carries no key. The pod cannot say where its
+  model requests go.
+- **A provider can be replaced while turns use it.** Their next model
+  request goes to the endpoint as it is then, with the key as it is then.
+- **The host of a provider is a host like any other.** If the installation
+  lists the hosts that the Egress Proxy lets requests through to, the list
+  has to allow it.
 
 ### Approval
 

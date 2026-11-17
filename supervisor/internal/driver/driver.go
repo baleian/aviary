@@ -67,10 +67,10 @@ type Config struct {
 	GatewayURL string
 	// RunnerImage holds the runner, which every turn pod mounts.
 	RunnerImage string
-	// LLMBaseURL is where the harnesses reach the model endpoint, which is
-	// the Egress Proxy, and LLMModel is the model that they ask it for.
+	// LLMBaseURL is where the harnesses reach their models, which is the
+	// Egress Proxy. Its path is not used: a harness reaches the model
+	// endpoint of its turn under the path of the endpoint's own URL.
 	LLMBaseURL string
-	LLMModel   string
 	// ProxyURL is the Egress Proxy's forward proxy, for everything else
 	// that a turn pod sends out.
 	ProxyURL string
@@ -112,8 +112,7 @@ type Driver struct {
 	// hosts are the names of what a turn pod connects to: the Supervisor
 	// and the Egress Proxy.
 	hosts []string
-	// llm is where a turn pod reaches the model endpoint of the
-	// installation: the Egress Proxy, under the path of the endpoint's URL.
+	// llm is where a turn pod reaches its model: the Egress Proxy.
 	llm *url.URL
 	// proxy is the forward proxy, and noProxy the hosts that a turn pod
 	// reaches without it.
@@ -669,13 +668,12 @@ func (d *Driver) job(dispatch store.Dispatch, harness Harness, resources corev1.
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 	}
 	// The harness reaches its model at the Egress Proxy, which passes a
-	// request on to the endpoint of the request's turn. For an agent that
-	// names its model that is the endpoint of the agent's provider, which the
-	// proxy serves under the path of the provider's URL. The URL was checked
-	// when the provider was given it.
-	llm, model := *d.llm, d.config.LLMModel
-	if endpoint, err := url.Parse(dispatch.ProviderURL); err == nil && dispatch.ProviderURL != "" {
-		llm.Path, model = strings.TrimSuffix(endpoint.Path, "/"), dispatch.Model
+	// request on to the endpoint of the provider that the turn's agent names.
+	// The proxy serves the endpoint under the path of the provider's URL,
+	// which was checked when the provider was given it.
+	llm := *d.llm
+	if endpoint, err := url.Parse(dispatch.ProviderURL); err == nil {
+		llm.Path = strings.TrimSuffix(endpoint.Path, "/")
 	}
 	env := []corev1.EnvVar{
 		{Name: "HOME", Value: "/home"},
@@ -686,7 +684,7 @@ func (d *Driver) job(dispatch store.Dispatch, harness Harness, resources corev1.
 		// its place.
 		{Name: "AVIARY_LLM_BASE_URL", Value: llm.String()},
 		{Name: "AVIARY_LLM_API_KEY", Value: dispatch.Token},
-		{Name: "AVIARY_LLM_MODEL", Value: model},
+		{Name: "AVIARY_LLM_MODEL", Value: dispatch.Model},
 		{Name: "AVIARY_MAX_TOOL_OUTPUT_BYTES", Value: strconv.Itoa(d.config.MaxToolOutputBytes)},
 		{Name: "AVIARY_MAX_RECONNECT_SECONDS", Value: strconv.Itoa(int(d.config.MaxReconnect.Seconds()))},
 		// Everything else that the programs in the pod fetch goes through

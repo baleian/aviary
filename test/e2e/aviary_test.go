@@ -34,6 +34,7 @@ func TestAviary(t *testing.T) {
 		}
 		for name, test := range map[string]func(*testing.T){
 			"a turn pod reaches the outside only through the proxy": egress,
+			"an agent uses the provider that it names":              providers,
 			"a turn that fails says why":                            failures,
 			"a turn is cancelled":                                   cancel,
 			"the Supervisors report the turns":                      supervisorMetrics,
@@ -241,36 +242,17 @@ const (
 // both with the turn.
 func egress(t *testing.T) {
 	agent := newAgent(t, harness(harnesses[0]))
-	// logged waits for the proxies to have recorded a request of the turn
-	// to the host that ended with the status.
-	logged := func(t *testing.T, id, route, host string, status float64) map[string]any {
-		t.Helper()
-		var found map[string]any
-		eventually(t, soon, fmt.Sprintf("no Egress Proxy has recorded a %s request of the turn to %s that ended with %v", route, host, status), func() bool {
-			for _, line := range recorded(t, id) {
-				if line["route"] == route && line["host"] == host && line["status"] == status {
-					found = line
-				}
-			}
-			return found != nil
-		})
-		return found
-	}
 
 	t.Run("requests", func(t *testing.T) {
 		t.Run("to the model", func(t *testing.T) {
 			t.Parallel()
-			secret, err := cluster.CoreV1().Secrets(system).Get(ctx, "aviary-llm-mock", metav1.GetOptions{})
-			if err != nil {
-				t.Fatal(err)
-			}
 			session := agent.session(t)
 			environment := run(t, session, `run tr '\0' '\n' < /proc/1/environ`)
 			seen := environment.said() + environment.tools()
 			if !strings.Contains(seen, "AVIARY_LLM_BASE_URL=http://aviary-egress-proxy") {
 				t.Errorf("the pod does not have the Egress Proxy as its model endpoint: %s", seen)
 			}
-			if strings.Contains(seen, string(secret.Data["api-key"])) {
+			if strings.Contains(seen, mockKey) {
 				t.Error("the pod holds the key of the model endpoint")
 			}
 			// mock-llm answers only requests with its key, so the proxy
@@ -322,6 +304,36 @@ func egress(t *testing.T) {
 		eventually(t, soon, "the metrics of the Egress Proxies have nothing for "+series, func() bool {
 			return total(metrics(t, "egress-proxy"), series) >= 1
 		})
+	}
+}
+
+// The model requests of a turn go to the endpoint of the provider that the
+// turn's agent names, with the key of that provider and of no other. A key
+// that is replaced holds from the next request.
+func providers(t *testing.T) {
+	project := create(t, "/v1/projects", `{"name": "e2e"}`)
+	// Two providers of the same model server, which answers only the
+	// requests that carry its key.
+	right, wrong := provider(t, project, mockKey), provider(t, project, "a-key-that-the-model-does-not-know")
+	able := agentOf(t, project, right, harness(harnesses[0]))
+	unable := agentOf(t, project, wrong, harness(harnesses[0]))
+
+	completed := run(t, able.session(t), "say done")
+	logged(t, completed.ID, "llm", "mock-llm.aviary-e2e", 200)
+
+	session := unable.session(t)
+	refused := send(t, session, "say done")
+	if last := read(t, refused.ID).end(t); last.Type != "turn.failed" {
+		t.Fatalf("the turn of an agent whose provider has a wrong key ended with %s %s", last.Type, last.Data)
+	}
+	logged(t, refused.ID, "llm", "mock-llm.aviary-e2e", 401)
+
+	body := fmt.Sprintf(`{"name": "mock", "url": %q, "api_key": {"value": %q}}`, mockURL, mockKey)
+	if status := request(t, "PUT", "/v1/providers/"+wrong, body, nil); status != http.StatusOK {
+		t.Fatalf("the provider was replaced with %d", status)
+	}
+	if next := run(t, session, "say done"); !strings.Contains(next.said(), "done") {
+		t.Errorf("with the key of its provider replaced, the agent said %q", next.said())
 	}
 }
 

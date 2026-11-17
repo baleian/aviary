@@ -11,7 +11,6 @@ var settings = map[string]string{
 	gatewayURL:         "http://aviary-supervisor.aviary-system:9090",
 	runnerImage:        "registry.example/runner:1",
 	llmBaseURL:         "http://aviary-egress-proxy.aviary-system:8080/v1",
-	llmModel:           "a-model",
 	proxyURL:           "http://aviary-egress-proxy.aviary-system:3128",
 	harnesses:          `{"opencode": {"image": "registry.example/opencode:1", "resources": {"limits": {"memory": "4Gi"}}}}`,
 	maxConcurrentTurns: "50",
@@ -42,7 +41,7 @@ func TestDriverConfig(t *testing.T) {
 		}
 		opencode := config.Harnesses["opencode"]
 		if config.GatewayURL != settings[gatewayURL] || config.RunnerImage != settings[runnerImage] ||
-			config.LLMBaseURL != settings[llmBaseURL] || config.LLMModel != "a-model" || config.ProxyURL != settings[proxyURL] ||
+			config.LLMBaseURL != settings[llmBaseURL] || config.ProxyURL != settings[proxyURL] ||
 			len(config.Harnesses) != 1 || opencode.Image != "registry.example/opencode:1" ||
 			opencode.Resources.Limits.Memory().String() != "4Gi" || len(opencode.Resources.Limits) != 1 {
 			t.Errorf("the turns are run with %+v", config)
@@ -56,13 +55,13 @@ func TestDriverConfig(t *testing.T) {
 
 	t.Run("without the limits that there need not be", func(t *testing.T) {
 		set(t, map[string]string{
-			llmModel: "", maxQueuedTurns: "0", maxQueueWait: "0", maxReconnect: "0", maxStartup: "0", maxToolOutput: "0",
+			maxQueuedTurns: "0", maxQueueWait: "0", maxReconnect: "0", maxStartup: "0", maxToolOutput: "0",
 		})
 		config, err := driverConfig()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if config.LLMModel != "" || config.MaxQueuedTurns != 0 || config.MaxQueueWait != 0 || config.MaxReconnect != 0 ||
+		if config.MaxQueuedTurns != 0 || config.MaxQueueWait != 0 || config.MaxReconnect != 0 ||
 			config.MaxStartup != 0 || config.MaxToolOutputBytes != 0 {
 			t.Errorf("the limits are %+v", config)
 		}

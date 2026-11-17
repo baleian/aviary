@@ -53,6 +53,7 @@ var (
 	errSessionBusy = &apiError{status: http.StatusConflict, Code: "session_busy", Message: "the session has a turn that has not finished"}
 	errTurnEnded   = &apiError{status: http.StatusConflict, Code: "turn_ended", Message: "the turn has ended"}
 	errAnswered    = &apiError{status: http.StatusConflict, Code: "approval_answered", Message: "the request for approval has its answer"}
+	errNoModel     = &apiError{status: http.StatusConflict, Code: "agent_without_model", Message: "the agent of the session names no model: create an agent that names one"}
 	errQueueFull   = &apiError{status: http.StatusTooManyRequests, Code: "queue_full", Message: "too many turns wait to run", retryAfter: 5}
 	errInternal    = &apiError{status: http.StatusInternalServerError, Code: "internal", Message: "internal error"}
 )
@@ -117,6 +118,9 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	if _, err := a.store.Project(r.Context(), projectID); err != nil {
+		return err
+	}
 	var request struct {
 		Harness      string          `json:"harness"`
 		Instructions string          `json:"instructions"`
@@ -140,27 +144,26 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 	if request.Approval != "" && request.Approval != driver.Ask {
 		return invalid(`approval is not "ask"`)
 	}
-	var model *store.Model
-	if request.Model != nil {
-		// The provider is one of the agent's own project.
-		id, err := uuid.Parse(request.Model.Provider)
-		if err != nil {
-			return invalid("model.provider is not a provider of the project")
-		}
-		provider, err := a.store.Provider(r.Context(), id)
-		switch {
-		case errors.Is(err, store.ErrNotFound) || (err == nil && provider.ProjectID != projectID):
-			return invalid("model.provider is not a provider of the project")
-		case err != nil:
-			return err
-		case request.Model.Name == "":
-			return invalid("model.name is required")
-		}
-		model = &store.Model{Provider: id, Name: request.Model.Name}
+	if request.Model == nil {
+		return invalid("model is required")
+	}
+	// The provider is one of the agent's own project.
+	providerID, err := uuid.Parse(request.Model.Provider)
+	if err != nil {
+		return invalid("model.provider is not a provider of the project")
+	}
+	provider, err := a.store.Provider(r.Context(), providerID)
+	switch {
+	case errors.Is(err, store.ErrNotFound) || (err == nil && provider.ProjectID != projectID):
+		return invalid("model.provider is not a provider of the project")
+	case err != nil:
+		return err
+	case request.Model.Name == "":
+		return invalid("model.name is required")
 	}
 	agent, err := a.store.CreateAgent(r.Context(), projectID, store.Agent{
 		Harness: request.Harness, Instructions: request.Instructions, Resources: resources, Approval: request.Approval,
-		Model: model,
+		Model: &store.Model{Provider: providerID, Name: request.Model.Name},
 	})
 	if err != nil {
 		return err
@@ -223,6 +226,17 @@ func (a *api) createMessage(w http.ResponseWriter, r *http.Request) error {
 	}
 	if request.Text == "" {
 		return invalid("text is required")
+	}
+	// An agent from before agents named their models has none, and its
+	// turns would have no model to ask.
+	session, err := a.store.Session(r.Context(), sessionID)
+	if err != nil {
+		return err
+	}
+	if agent, err := a.store.Agent(r.Context(), session.AgentID); err != nil {
+		return err
+	} else if agent.Model == nil {
+		return errNoModel
 	}
 	turn, err := a.driver.Accept(r.Context(), sessionID, request.Text)
 	if err != nil {

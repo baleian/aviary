@@ -77,8 +77,7 @@ func install(t *testing.T, changes ...func(*driver.Config)) *installation {
 		// Addresses, which the driver does not look up.
 		GatewayURL:  "http://127.0.0.1:9090",
 		RunnerImage: "runner",
-		LLMBaseURL:  "http://127.0.0.2:8080/v1",
-		LLMModel:    "model",
+		LLMBaseURL:  "http://127.0.0.2:8080",
 		ProxyURL:    "http://127.0.0.2:3128",
 		Harnesses: map[string]driver.Harness{
 			"opencode": {Image: "opencode"},
@@ -231,8 +230,25 @@ func (s *supervisor) session(agent ...string) string {
 	if len(agent) > 0 {
 		body = agent[0]
 	}
-	project := s.create("/v1/projects", `{"name": "test"}`)
-	return s.create("/v1/agents/"+s.create("/v1/projects/"+project+"/agents", body)+"/sessions", "")
+	return s.create("/v1/agents/"+s.agent(s.create("/v1/projects", `{"name": "test"}`), body)+"/sessions", "")
+}
+
+// agent creates an agent of the project as the body says. Its model is one
+// of a new provider of the project.
+func (s *supervisor) agent(project, body string) string {
+	s.t.Helper()
+	var settings map[string]any
+	if err := json.Unmarshal([]byte(body), &settings); err != nil {
+		s.t.Fatal(err)
+	}
+	provider := s.create("/v1/projects/"+project+"/providers",
+		`{"name": "a provider", "url": "https://api.example.com/v1", "api_key": {"value": "sk-a-key"}}`)
+	settings["model"] = map[string]string{"provider": provider, "name": "a-model"}
+	with, err := json.Marshal(settings)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	return s.create("/v1/projects/"+project+"/agents", string(with))
 }
 
 // send sends a message to the session and returns its turn.
