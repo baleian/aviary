@@ -147,6 +147,17 @@ type turn struct {
 	Usage      map[string]int64  `json:"usage"`
 	Failure    map[string]string `json:"failure"`
 	Items      []json.RawMessage `json:"items"`
+	// Approvals are the requests for approval that wait for a person.
+	Approvals []approvalRequest `json:"approvals"`
+}
+
+// approvalRequest is what a harness asks a person before it acts.
+type approvalRequest struct {
+	ID       string `json:"id"`
+	ToolCall struct {
+		Input json.RawMessage `json:"input"`
+	} `json:"tool_call"`
+	Options []struct{ ID, Kind string } `json:"options"`
 }
 
 // said returns what the record of a turn has the agent say.

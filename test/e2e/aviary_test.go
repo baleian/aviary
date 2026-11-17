@@ -27,6 +27,10 @@ func TestAviary(t *testing.T) {
 				t.Parallel()
 				session(t, harness)
 			})
+			t.Run("an agent of "+harness+" that is to ask", func(t *testing.T) {
+				t.Parallel()
+				approval(t, harness)
+			})
 		}
 		for name, test := range map[string]func(*testing.T){
 			"a turn pod reaches the outside only through the proxy": egress,
@@ -150,6 +154,74 @@ func session(t *testing.T, name string) {
 			t.Errorf("another session saw the files %q with the tools %s", listed.said(), listed.tools())
 		}
 	})
+}
+
+// An agent that is to ask runs a command when a person has allowed it and
+// not when a person has refused it. Its turn waits for the answer, which
+// the API takes.
+func approval(t *testing.T, name string) {
+	session := newAgent(t, fmt.Sprintf(`{"harness": %q, "approval": "ask"}`, name)).session(t)
+	// answered sends the message and has a person answer what the harness
+	// asks with the option of the kind. It returns the turn as it ended.
+	answered := func(text, kind string) turn {
+		t.Helper()
+		accepted := send(t, session, text)
+		events := read(t, accepted.ID)
+		var asked approvalRequest
+		events.until(t, "asked for approval", func(next event) bool {
+			return next.Type == "approval.requested" && json.Unmarshal([]byte(next.Data), &asked) == nil
+		})
+		// The request tells the command. The turn runs while it waits, and
+		// shows the request to whoever reads the turn.
+		command := strings.TrimPrefix(text, "escalate ")
+		waiting := record(t, accepted.ID)
+		if !strings.Contains(string(asked.ToolCall.Input), command) || waiting.State != "running" ||
+			len(waiting.Approvals) != 1 || waiting.Approvals[0].ID != asked.ID {
+			t.Errorf("the harness asked %+v, and the turn is %s with the requests %+v", asked, waiting.State, waiting.Approvals)
+		}
+		var option string
+		for _, offered := range asked.Options {
+			if offered.Kind == kind {
+				option = offered.ID
+			}
+		}
+		answer := fmt.Sprintf(`{"option_id": %q}`, option)
+		if status := request(t, "POST", "/v1/turns/"+accepted.ID+"/approvals/"+asked.ID, answer, nil); status != http.StatusAccepted {
+			t.Fatalf("the answer %s to the request %+v was answered with %d", answer, asked, status)
+		}
+		// How a harness ends a turn after a refusal is up to it, but the
+		// turn does not fail.
+		if last := events.end(t); last.Type != "turn.completed" {
+			t.Fatalf("the turn of the message %q ended with %s %s", text, last.Type, last.Data)
+		}
+		ended := record(t, accepted.ID)
+		var kept []map[string]any
+		for _, encoded := range ended.Items {
+			var item map[string]any
+			if json.Unmarshal(encoded, &item) == nil && item["type"] == "approval" {
+				kept = append(kept, item)
+			}
+		}
+		if len(kept) != 1 || kept[0]["id"] != asked.ID || kept[0]["outcome"] != "selected" || kept[0]["option_id"] != option ||
+			len(ended.Approvals) != 0 {
+			t.Errorf("the record of the turn of %q keeps the requests %v, and shows %+v as waiting", text, kept, ended.Approvals)
+		}
+		return ended
+	}
+
+	allowed, refused := unique("allowed"), unique("refused")
+	answered("escalate touch "+allowed, "allow_once")
+	answered("escalate touch "+refused, "reject_once")
+	listed := answered("escalate ls", "allow_once")
+	if files := listed.said() + listed.tools(); !strings.Contains(files, allowed) || strings.Contains(files, refused) {
+		t.Errorf("after one command was allowed and one refused, the files are %q", files)
+	}
+	for _, outcome := range []string{"allow_once", "reject_once"} {
+		series := fmt.Sprintf(`aviary_approval_wait_seconds_count{harness=%q,outcome=%q}`, name, outcome)
+		eventually(t, soon, "the metrics of the Supervisors have nothing for "+series, func() bool {
+			return total(metrics(t, "supervisor"), series) >= 1
+		})
+	}
 }
 
 // Commands for the agent to run in its pod. fetch gets a URL the way the
