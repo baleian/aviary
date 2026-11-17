@@ -46,7 +46,8 @@ access_log:
 
 {{/*
 The filter that asks the Supervisor which turn a request comes from, and
-refuses the request if the Supervisor names none.
+refuses the request if the Supervisor names none. The argument tells
+whether the answer of the Supervisor also says where the request goes.
 */}}
 {{- define "aviary.egress-proxy.ext-authz" -}}
 - name: envoy.filters.http.ext_authz
@@ -59,18 +60,25 @@ refuses the request if the Supervisor names none.
     # Without it, a request that the proxy could not ask a Supervisor about
     # is answered as forbidden, as if its token were wrong.
     status_on_error: {code: ServiceUnavailable}
+    {{- if . }}
+    # The route of the request is chosen again, with what the Supervisor
+    # answered.
+    clear_route_cache: true
+    {{- end }}
 {{- end }}
 
 {{/*
-The rules that match a request to one of the listed hosts. The argument is
-the list. A host name stands for the host on the ports of HTTPS and HTTP.
+The rules that match a request to one of the listed hosts. The arguments are
+the list and the header that holds the host of a request. A host name stands
+for the host on the ports of HTTPS and HTTP.
 */}}
 {{- define "aviary.egress-proxy.hosts" -}}
-{{- range . }}
-- header: {name: ":authority", string_match: {exact: {{ . | quote }}, ignore_case: true}}
+{{- $header := .header }}
+{{- range .hosts }}
+- header: {name: {{ $header | quote }}, string_match: {exact: {{ . | quote }}, ignore_case: true}}
 {{- if not (regexMatch ":[0-9]+$" .) }}
-- header: {name: ":authority", string_match: {exact: {{ printf "%s:443" . | quote }}, ignore_case: true}}
-- header: {name: ":authority", string_match: {exact: {{ printf "%s:80" . | quote }}, ignore_case: true}}
+- header: {name: {{ $header | quote }}, string_match: {exact: {{ printf "%s:443" . | quote }}, ignore_case: true}}
+- header: {name: {{ $header | quote }}, string_match: {exact: {{ printf "%s:80" . | quote }}, ignore_case: true}}
 {{- end }}
 {{- end }}
 {{- end }}

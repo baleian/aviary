@@ -36,7 +36,8 @@ const (
 	// Supervisor fails to look up.
 	token  = "the-turn-token"
 	broken = "a-token-that-cannot-be-looked-up"
-	// key is the API key of the model endpoint, which the proxy holds.
+	// key is the API key of the model endpoint of the installation, which
+	// the proxy holds.
 	key = "the-real-key"
 	// patience is how long a test waits for the proxy.
 	patience = 30 * time.Second
@@ -48,6 +49,36 @@ const (
 	open   = "open"
 	closed = "closed"
 )
+
+// endpoint is a model endpoint that the Supervisor names in its answer: its
+// host, whether it is reached with TLS, and its key if it takes one.
+type endpoint struct {
+	host   string
+	secure bool
+	key    string
+}
+
+// endpoints are the model endpoints that the Supervisor names, by the tokens
+// of the turns that it names them for. The hosts are the tests themselves.
+var endpoints = map[string]endpoint{
+	"a-turn-of-a-provider":               {host: "allowed.test", key: "the-key-of-a-provider"},
+	"a-turn-of-a-provider-without-a-key": {host: "allowed.test"},
+	"a-turn-of-a-provider-with-tls":      {host: "tls.test:8443", secure: true, key: "the-key-of-a-provider"},
+	"a-turn-of-a-provider-of-another":    {host: "unnamed.test:8443", secure: true, key: "the-key-of-a-provider"},
+	"a-turn-of-a-provider-not-on-a-list": {host: "other.test", key: "the-key-of-a-provider"},
+	"a-turn-of-a-provider-on-a-port":     {host: "model.test:8081", key: "the-key-of-a-provider"},
+}
+
+// named returns the token of the turn that the Supervisor names the endpoint
+// at the host for.
+func named(host string, key bool) string {
+	for token, endpoint := range endpoints {
+		if endpoint.host == host && (endpoint.key != "") == key {
+			return token
+		}
+	}
+	panic("the Supervisor names no endpoint at " + host)
+}
 
 // supervisor answers the proxy as a Supervisor does, and keeps what the
 // proxy asked.
@@ -69,11 +100,33 @@ func (s *supervisor) Check(_ context.Context, request *authv3.CheckRequest) (*au
 		credentials, _ := base64.StdEncoding.DecodeString(encoded)
 		_, sent, _ = strings.Cut(string(credentials), ":")
 	}
-	switch sent {
-	case token:
-		origin, _ := structpb.NewStruct(map[string]any{"turn": "a-turn", "session": "a-session", "agent": "an-agent", "project": "a-project"})
-		return &authv3.CheckResponse{Status: &rpcstatus.Status{Code: int32(codes.OK)}, DynamicMetadata: origin}, nil
-	case broken:
+	origin, _ := structpb.NewStruct(map[string]any{"turn": "a-turn", "session": "a-session", "agent": "an-agent", "project": "a-project"})
+	allowed := &authv3.CheckResponse{Status: &rpcstatus.Status{Code: int32(codes.OK)}, DynamicMetadata: origin}
+	endpoint, provided := endpoints[sent]
+	switch {
+	case sent == token:
+		return allowed, nil
+	case provided && !forward:
+		// The endpoint of the turn's provider, and its key in place of the
+		// token. A provider without a key gets no token either.
+		set := func(name, value string) *corev3.HeaderValueOption {
+			return &corev3.HeaderValueOption{
+				Header:       &corev3.HeaderValue{Key: name, Value: value},
+				AppendAction: corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
+			}
+		}
+		answer := &authv3.OkHttpResponse{Headers: []*corev3.HeaderValueOption{
+			set("x-aviary-upstream", endpoint.host),
+			set("x-aviary-upstream-tls", strconv.FormatBool(endpoint.secure)),
+		}}
+		if endpoint.key != "" {
+			answer.Headers = append(answer.Headers, set("authorization", "Bearer "+endpoint.key))
+		} else {
+			answer.HeadersToRemove = []string{"authorization"}
+		}
+		allowed.HttpResponse = &authv3.CheckResponse_OkResponse{OkResponse: answer}
+		return allowed, nil
+	case sent == broken:
 		return nil, status.Error(codes.Internal, "internal error")
 	}
 	denied := &authv3.DeniedHttpResponse{
@@ -140,10 +193,13 @@ func (h *host) got(path string) *http.Request {
 	return nil
 }
 
+// The servers that the tests are: the Supervisor, the model endpoint of the
+// installation, the hosts outside, and a host that is reached with TLS.
 var (
 	asked   = &supervisor{}
 	model   = &host{}
 	outside = &host{}
+	secured = &host{}
 )
 
 func TestMain(m *testing.M) {
@@ -165,6 +221,9 @@ func TestMain(m *testing.M) {
 	go checks.Serve(listen(":9091"))
 	go http.Serve(listen(":8081"), model)
 	go http.Serve(listen(":80"), outside)
+	// With the certificate that `make test-proxy` made for tls.test, which
+	// is the only authority that the proxies trust.
+	go http.ServeTLS(listen(":8443"), secured, "../../.out/proxy/tls/cert.pem", "../../.out/proxy/tls/key.pem")
 	// What a pod sends through a tunnel comes back as it is.
 	tunnels := listen(":443")
 	go func() {
@@ -223,8 +282,9 @@ func send(t *testing.T, client *http.Client, request *http.Request) answer {
 }
 
 // ask sends a request to the model endpoint as a harness does: to the proxy,
-// with what the pod holds in place of the API key.
-func ask(t *testing.T, proxy, path, credential string) answer {
+// with what the pod holds in place of the API key. The headers are more
+// that the pod sends, as names and values in turn.
+func ask(t *testing.T, proxy, path, credential string, headers ...string) answer {
 	t.Helper()
 	request, err := http.NewRequest("POST", "http://"+proxy+":8080"+path, strings.NewReader("a question"))
 	if err != nil {
@@ -232,6 +292,9 @@ func ask(t *testing.T, proxy, path, credential string) answer {
 	}
 	if credential != "" {
 		request.Header.Set("Authorization", credential)
+	}
+	for i := 0; i+1 < len(headers); i += 2 {
+		request.Header.Set(headers[i], headers[i+1])
 	}
 	return send(t, http.DefaultClient, request)
 }
@@ -328,13 +391,14 @@ func TestModelRequestThatIsRefused(t *testing.T) {
 		t.Errorf("a model request that no Supervisor could be asked about was answered with %d %q", unknown.status, unknown.body)
 	}
 
-	// The proxy serves the model endpoint under the path of its URL, and
-	// asks no Supervisor about what is not there.
+	// The proxy serves the model endpoint of the installation under the path
+	// of its URL. A request beside it goes nowhere, unless the Supervisor
+	// names another endpoint for it.
 	if elsewhere := ask(t, listed, "/v2/chat/completions", "Bearer "+token); elsewhere.status != http.StatusNotFound {
 		t.Errorf("a request beside the path of the model endpoint was answered with %d", elsewhere.status)
 	}
-	if questions := asked.questions("/v2/chat/completions"); len(questions) != 0 {
-		t.Errorf("the Supervisor was asked about a request beside the path of the model endpoint: %v", questions)
+	if model.got("/v2/chat/completions") != nil {
+		t.Error("a request beside the path of the model endpoint reached it")
 	}
 	if health := ask(t, listed, "/healthz", ""); health.status != http.StatusOK {
 		t.Errorf("the proxy answered whether it is up with %d", health.status)
@@ -344,6 +408,95 @@ func TestModelRequestThatIsRefused(t *testing.T) {
 	notAllowed := ask(t, closed, "/v1/chat/completions", "Bearer "+token)
 	if notAllowed.status != http.StatusForbidden || !strings.Contains(notAllowed.body, "egressProxy.allowedHosts") {
 		t.Errorf("a model request to an endpoint that is not allowed was answered with %d %q", notAllowed.status, notAllowed.body)
+	}
+}
+
+// The Supervisor may name a model endpoint for the turn of a request: that of
+// the provider that the turn's agent uses. The proxy passes the request on
+// to that endpoint, with the key that the Supervisor gave.
+func TestModelRequestToANamedEndpoint(t *testing.T) {
+	t.Parallel()
+	const providerKey = "Bearer the-key-of-a-provider"
+	// reached checks that the host got the request with the path as the
+	// endpoint at the address is to get it.
+	reached := func(what string, at *host, path, address, credential string) *http.Request {
+		t.Helper()
+		got := at.got(path)
+		if got == nil {
+			t.Errorf("%s did not reach its endpoint", what)
+			return nil
+		}
+		if got.Host != address || got.Header.Get("Authorization") != credential {
+			t.Errorf("%s reached %s with the authorization %q, not %s with %q", what, got.Host, got.Header.Get("Authorization"), address, credential)
+		}
+		// The endpoint learns nothing of the pod or of the proxy.
+		for name := range got.Header {
+			if lower := strings.ToLower(name); strings.HasPrefix(lower, "x-aviary") || strings.HasPrefix(lower, "x-forwarded") || strings.HasPrefix(lower, "x-envoy") {
+				t.Errorf("%s: the endpoint got the header %s: %s", what, name, got.Header.Get(name))
+			}
+		}
+		return got
+	}
+
+	// The path of the endpoint need not be that of the installation's.
+	plain := ask(t, open, "/api/named/plain", "Bearer "+named("allowed.test", true))
+	if plain.status != http.StatusOK || plain.body != "POST /api/named/plain a question\ndone\n" {
+		t.Errorf("a model request to a named endpoint was answered with %d %q", plain.status, plain.body)
+	}
+	reached("a model request to a named endpoint", outside, "/api/named/plain", "allowed.test", providerKey)
+
+	// An endpoint without a key gets none, and not the token of the turn.
+	ask(t, open, "/api/named/keyless", "Bearer "+named("allowed.test", false))
+	reached("a model request to an endpoint without a key", outside, "/api/named/keyless", "allowed.test", "")
+
+	// An endpoint on a port of its own.
+	ask(t, open, "/v1/named/port", "Bearer "+named("model.test:8081", true))
+	reached("a model request to an endpoint on a port", model, "/v1/named/port", "model.test:8081", providerKey)
+
+	// With TLS, and with HTTP/2 since the endpoint offers it.
+	if encrypted := ask(t, open, "/api/named/tls", "Bearer "+named("tls.test:8443", true)); encrypted.status != http.StatusOK {
+		t.Errorf("a model request to an endpoint with TLS was answered with %d %q", encrypted.status, encrypted.body)
+	}
+	if got := reached("a model request to an endpoint with TLS", secured, "/api/named/tls", "tls.test:8443", providerKey); got != nil && (got.TLS == nil || got.ProtoMajor != 2) {
+		t.Errorf("the endpoint with TLS got the request with %s and the TLS state %v", got.Proto, got.TLS)
+	}
+	// The certificate of an endpoint has to be for its host name.
+	if another := ask(t, open, "/api/named/unnamed", "Bearer "+named("unnamed.test:8443", true)); another.status != http.StatusServiceUnavailable {
+		t.Errorf("a model request to an endpoint with the certificate of another host was answered with %d %q", another.status, another.body)
+	}
+	if secured.got("/api/named/unnamed") != nil {
+		t.Error("a model request reached an endpoint with the certificate of another host")
+	}
+
+	// Where a request goes is for the Supervisor to say, not for the pod.
+	chosen := []string{"x-aviary-upstream", "other.test", "x-aviary-upstream-tls", "false"}
+	ask(t, open, "/v1/named/chosen", "Bearer "+token, chosen...)
+	reached("a model request of a pod that named an endpoint itself", model, "/v1/named/chosen", "model.test:8081", "Bearer "+key)
+	ask(t, open, "/api/named/chosen", "Bearer "+named("allowed.test", true), chosen...)
+	reached("a model request of a pod that named another endpoint", outside, "/api/named/chosen", "allowed.test", providerKey)
+	if outside.got("/v1/named/chosen") != nil {
+		t.Error("a model request reached the endpoint that its pod named")
+	}
+
+	// A named endpoint is a host like any other: the list has to allow it.
+	// The model endpoint of the installation need not be on the list for
+	// that.
+	for _, proxy := range []string{listed, closed} {
+		path := "/api/named/" + proxy
+		if on := ask(t, proxy, path, "Bearer "+named("allowed.test", true)); on.status != http.StatusOK {
+			t.Errorf("%s: a model request to a named endpoint on the list was answered with %d %q", proxy, on.status, on.body)
+		}
+		reached(proxy+": a model request to a named endpoint on the list", outside, path, "allowed.test", providerKey)
+		off := ask(t, proxy, path+"/off", "Bearer "+named("other.test", true))
+		if off.status != http.StatusForbidden || outside.got(path+"/off") != nil {
+			t.Errorf("%s: a model request to a named endpoint that is not on the list was answered with %d %q", proxy, off.status, off.body)
+		}
+	}
+	// On the list with its port, an endpoint is allowed on that port.
+	ask(t, listed, "/v1/named/listed-port", "Bearer "+named("model.test:8081", true))
+	reached("a model request to a listed endpoint on a port", model, "/v1/named/listed-port", "model.test:8081", providerKey)
+	if off := ask(t, closed, "/v1/named/closed-port", "Bearer "+named("model.test:8081", true)); off.status != http.StatusForbidden {
+		t.Errorf("a model request to an endpoint on a port that is not on the list was answered with %d %q", off.status, off.body)
 	}
 }
 

@@ -87,11 +87,20 @@ func TestEgressProxyKeepsARequestForAsLongAsATurn(t *testing.T) {
 				t.Errorf("%s: a silent request on %s is ended after %v, not after %s", values, name, idle, longest)
 			}
 		}
-		if values == "set" {
-			route := at(listener(envoy, "llm"), "route_config", "virtual_hosts", 0, "routes", 0, "route")
-			if timeout := at(route, "timeout"); timeout != "0s" {
-				t.Errorf("a request to the model is ended after %v", timeout)
+		// The deadline of the turn ends a model request, not Envoy.
+		routes, _ := at(listener(envoy, "llm"), "route_config", "virtual_hosts", 0, "routes").([]any)
+		passed := 0
+		for _, route := range routes {
+			if at(route, "route") == nil {
+				continue
 			}
+			passed++
+			if timeout := at(route, "route", "timeout"); timeout != "0s" {
+				t.Errorf("%s: a request to the model on the route %v is ended after %v", values, at(route, "match"), timeout)
+			}
+		}
+		if expected := map[string]int{"default": 2, "set": 3}[values]; passed != expected {
+			t.Errorf("%s: %d routes pass model requests on, not %d", values, passed, expected)
 		}
 		// A pod that is to stop does not wait for the turns that use it.
 		for _, name := range []string{"aviary-egress-proxy", "aviary-supervisor"} {
@@ -104,9 +113,17 @@ func TestEgressProxyKeepsARequestForAsLongAsATurn(t *testing.T) {
 }
 
 func TestModelEndpoint(t *testing.T) {
-	// llm returns the first route of the listener for the model endpoint.
+	// llm returns the route of the listener for the model endpoint of the
+	// installation: the first that is not for an endpoint that the
+	// Supervisor named.
 	llm := func(envoy map[string]any) any {
-		return at(listener(envoy, "llm"), "route_config", "virtual_hosts", 0, "routes", 0)
+		routes, _ := at(listener(envoy, "llm"), "route_config", "virtual_hosts", 0, "routes").([]any)
+		for _, route := range routes {
+			if at(route, "match", "headers") == nil {
+				return route
+			}
+		}
+		return nil
 	}
 
 	// Without a model endpoint the proxy says so.
@@ -130,8 +147,14 @@ func TestModelEndpoint(t *testing.T) {
 	if at(address, "address") != "llm.example.com" || at(address, "port_value") != 443 || at(cluster, "transport_socket") == nil {
 		t.Errorf("the model endpoint is reached at %v, with the transport %v", address, at(cluster, "transport_socket"))
 	}
-	if named(at(listener(set, "llm"), "http_filters"), "envoy.filters.http.credential_injector") == nil {
-		t.Error("the proxy does not put the API key into a model request")
+	// Only into the requests to this endpoint: a request to an endpoint
+	// that the Supervisor named is not to carry the key of this one.
+	options := at(cluster, "typed_extension_protocol_options", "envoy.extensions.upstreams.http.v3.HttpProtocolOptions")
+	if named(at(options, "http_filters"), "envoy.filters.http.credential_injector") == nil {
+		t.Error("the proxy does not put the API key into a request to the model endpoint")
+	}
+	if named(at(listener(set, "llm"), "http_filters"), "envoy.filters.http.credential_injector") != nil {
+		t.Error("the proxy puts the API key into every model request")
 	}
 
 	// The model endpoint is a host like any other: the list has to allow it.
@@ -142,34 +165,41 @@ func TestModelEndpoint(t *testing.T) {
 }
 
 func TestAllowedHosts(t *testing.T) {
-	rules := func(envoy map[string]any) any {
-		return at(named(at(listener(envoy, "forward"), "http_filters"), "envoy.filters.http.rbac"), "typed_config", "rules")
+	rules := func(envoy map[string]any, name string) any {
+		return at(named(at(listener(envoy, name), "http_filters"), "envoy.filters.http.rbac"), "typed_config", "rules")
 	}
-	// The default lets every host through: there is no list to hold a
-	// request against.
-	if _, open := chart(t, "default"); rules(open) != nil {
-		t.Errorf("with every host allowed, the proxy holds requests against %v", rules(open))
-	}
-
-	_, set := chart(t, "set")
-	var hosts []string
-	permissions, _ := at(rules(set), "policies", "listed-hosts", "permissions").([]any)
-	for _, permission := range permissions {
-		host, _ := at(permission, "header", "string_match", "exact").(string)
-		hosts = append(hosts, host)
-		if at(permission, "header", "string_match", "ignore_case") != true {
-			t.Errorf("the host %s is allowed only as it is written", host)
+	// A request through the forward proxy names its host itself. The host
+	// of a model request is the one that the Supervisor named.
+	for name, header := range map[string]string{"forward": ":authority", "llm": "x-aviary-upstream"} {
+		// The default lets every host through: there is no list to hold a
+		// request against.
+		if _, open := chart(t, "default"); rules(open, name) != nil {
+			t.Errorf("with every host allowed, the proxy holds requests on %s against %v", name, rules(open, name))
 		}
-	}
-	// A host stands for itself on the ports of HTTPS and HTTP, and a host
-	// with a port for that port alone.
-	expected := []string{
-		"llm.example.com", "llm.example.com:443", "llm.example.com:80",
-		"packages.example.com", "packages.example.com:443", "packages.example.com:80",
-		"git.example.com:8443",
-	}
-	if !slices.Equal(hosts, expected) || at(rules(set), "action") != "ALLOW" {
-		t.Errorf("the proxy lets requests through to %v, not to %v", hosts, expected)
+
+		_, set := chart(t, "set")
+		var hosts []string
+		permissions, _ := at(rules(set, name), "policies", "listed-hosts", "permissions").([]any)
+		for _, permission := range permissions {
+			if at(permission, "header") == nil {
+				continue
+			}
+			host, _ := at(permission, "header", "string_match", "exact").(string)
+			hosts = append(hosts, host)
+			if at(permission, "header", "string_match", "ignore_case") != true || at(permission, "header", "name") != header {
+				t.Errorf("on %s, the host %s is allowed by %v", name, host, permission)
+			}
+		}
+		// A host stands for itself on the ports of HTTPS and HTTP, and a
+		// host with a port for that port alone.
+		expected := []string{
+			"llm.example.com", "llm.example.com:443", "llm.example.com:80",
+			"packages.example.com", "packages.example.com:443", "packages.example.com:80",
+			"git.example.com:8443",
+		}
+		if !slices.Equal(hosts, expected) || at(rules(set, name), "action") != "ALLOW" {
+			t.Errorf("on %s, the proxy lets requests through to %v, not to %v", name, hosts, expected)
+		}
 	}
 }
 

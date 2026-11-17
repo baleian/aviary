@@ -51,7 +51,9 @@ data:
       listeners:
         # The model endpoint. The pod sends its turn token in place of the
         # API key. Envoy puts the API key in the token's place and passes the
-        # request on.
+        # request on. If the Supervisor names a model endpoint for the turn
+        # in its answer, the request goes there, with the key that the
+        # answer holds.
         - name: llm
           address:
             socket_address: {address: 0.0.0.0, port_value: 8080}
@@ -66,15 +68,43 @@ data:
                     # belongs to a pod that is gone.
                     stream_idle_timeout: {{ .Values.runtime.maxTurnSeconds }}s
                     generate_request_id: false
+                    # The Supervisor names an endpoint in these headers: its
+                    # host, and whether it is reached with TLS. Only the
+                    # Supervisor is to say where a request goes, so what a
+                    # pod sends in them is dropped before a route is chosen.
+                    early_header_mutation_extensions:
+                      - name: envoy.http.early_header_mutation.header_mutation
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.http.early_header_mutation.header_mutation.v3.HeaderMutation
+                          mutations:
+                            - remove: x-aviary-upstream
+                            - remove: x-aviary-upstream-tls
                     {{- include "aviary.egress-proxy.access-log" "llm" | nindent 20 }}
                     route_config:
                       virtual_hosts:
                         - name: llm
                           domains: ["*"]
-                          # It would say "http", which is how the pod reached
-                          # Envoy and not how Envoy reaches the endpoint.
-                          request_headers_to_remove: [x-forwarded-proto]
+                          # The first would say "http", which is how the pod
+                          # reached Envoy and not how Envoy reaches the
+                          # endpoint. The others are for Envoy.
+                          request_headers_to_remove: [x-forwarded-proto, x-aviary-upstream, x-aviary-upstream-tls]
                           routes:
+                            # To the endpoint that the Supervisor named.
+                            {{- range $secure := list true false }}
+                            - match:
+                                prefix: /
+                                headers:
+                                  - name: x-aviary-upstream-tls
+                                    string_match: {exact: {{ $secure | quote }}}
+                              route:
+                                cluster: {{ ternary "model-tls" "model" $secure }}
+                                timeout: 0s
+                              typed_per_filter_config:
+                                envoy.filters.http.dynamic_forward_proxy:
+                                  "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.PerRouteConfig
+                                  host_rewrite_header: x-aviary-upstream
+                            {{- end }}
+                            # To the endpoint of the installation.
                             {{- if not .Values.llm.url }}
                             - match: {prefix: /}
                               direct_response:
@@ -99,6 +129,14 @@ data:
                                 # The turn's deadline ends a request, not Envoy.
                                 timeout: 0s
                                 host_rewrite_literal: {{ $url.host | quote }}
+                            {{- if $path }}
+                            # The Supervisor is asked about a request that
+                            # has a route. This one is for the requests
+                            # beside the path of the installation's endpoint,
+                            # which go on if the Supervisor names another.
+                            - match: {prefix: /}
+                              direct_response: {status: 404}
+                            {{- end }}
                             {{- end }}
                     http_filters:
                       # Answers the kubelet's probe.
@@ -109,26 +147,31 @@ data:
                           headers:
                             - name: ":path"
                               string_match: {exact: /healthz}
-                      {{- include "aviary.egress-proxy.ext-authz" . | nindent 22 }}
-                      {{- if .Values.llm.url }}
-                      # Puts the API key where the pod sent its turn token.
-                      - name: envoy.filters.http.credential_injector
+                      {{- include "aviary.egress-proxy.ext-authz" true | nindent 22 }}
+                      {{- if not $allowAny }}
+                      # Refuses a request to an endpoint that the Supervisor
+                      # named and that is not a listed host.
+                      - name: envoy.filters.http.rbac
                         typed_config:
-                          "@type": type.googleapis.com/envoy.extensions.filters.http.credential_injector.v3.CredentialInjector
-                          overwrite: true
-                          credential:
-                            name: envoy.http.injected_credentials.generic
-                            typed_config:
-                              "@type": type.googleapis.com/envoy.extensions.http.injected_credentials.generic.v3.Generic
-                              header: Authorization
-                              header_value_prefix: "Bearer "
-                              credential:
-                                name: llm-api-key
-                                sds_config:
-                                  path_config_source:
-                                    path: /etc/envoy/llm-api-key.yaml
-                                    watched_directory: {path: /etc/aviary/llm}
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC
+                          rules:
+                            action: ALLOW
+                            policies:
+                              listed-hosts:
+                                principals: [{any: true}]
+                                permissions:
+                                  # The endpoint of the installation, which
+                                  # the routes above hold against the list.
+                                  - not_rule:
+                                      header: {name: x-aviary-upstream, present_match: true}
+                                  {{- include "aviary.egress-proxy.hosts" (dict "hosts" $hosts "header" "x-aviary-upstream") | nindent 34 }}
                       {{- end }}
+                      # Looks up the host of an endpoint that the Supervisor
+                      # named.
+                      - name: envoy.filters.http.dynamic_forward_proxy
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig
+                          dns_cache_config: {name: model, dns_lookup_family: V4_PREFERRED}
                       {{- include "aviary.egress-proxy.router" . | nindent 22 }}
         # Everything else, as a forward proxy. The pod has it in its proxy
         # variables, with its turn token as the password. Envoy lets a
@@ -172,7 +215,7 @@ data:
                             - match: {prefix: /}
                               route: {cluster: forward, timeout: 0s}
                     http_filters:
-                      {{- include "aviary.egress-proxy.ext-authz" . | nindent 22 }}
+                      {{- include "aviary.egress-proxy.ext-authz" false | nindent 22 }}
                       {{- if not $allowAny }}
                       # Refuses a request to a host that is not listed,
                       # before the host's address is looked up.
@@ -186,7 +229,7 @@ data:
                               listed-hosts:
                                 principals: [{any: true}]
                                 permissions:
-                                  {{- include "aviary.egress-proxy.hosts" $hosts | nindent 34 }}
+                                  {{- include "aviary.egress-proxy.hosts" (dict "hosts" $hosts "header" ":authority") | nindent 34 }}
                             {{- end }}
                       {{- end }}
                       - name: envoy.filters.http.dynamic_forward_proxy
@@ -247,6 +290,39 @@ data:
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig
               dns_cache_config: {name: forward, dns_lookup_family: V4_PREFERRED}
+        # The model endpoints that the Supervisor names, which are reached by
+        # their host names: those without TLS, and those with it. Envoy
+        # holds the certificate of an endpoint against its host name.
+        - name: model
+          lb_policy: CLUSTER_PROVIDED
+          cluster_type:
+            name: envoy.clusters.dynamic_forward_proxy
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig
+              dns_cache_config: {name: model, dns_lookup_family: V4_PREFERRED}
+        - name: model-tls
+          lb_policy: CLUSTER_PROVIDED
+          cluster_type:
+            name: envoy.clusters.dynamic_forward_proxy
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig
+              dns_cache_config: {name: model, dns_lookup_family: V4_PREFERRED}
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              # The host name of the endpoint is the name that Envoy asks
+              # for and that the certificate has to be for.
+              upstream_http_protocol_options: {auto_sni: true, auto_san_validation: true}
+              # HTTP/2 if the endpoint offers it, so that many turns share a
+              # few connections.
+              auto_config: {}
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+              common_tls_context:
+                validation_context:
+                  trusted_ca: {filename: /etc/ssl/certs/ca-certificates.crt}
         {{- if .Values.llm.url }}
         - name: llm
           type: LOGICAL_DNS
@@ -258,13 +334,41 @@ data:
                   - endpoint:
                       address:
                         socket_address: {address: {{ $url.hostname | quote }}, port_value: {{ $port }}}
-          {{- if $tls }}
-          # HTTP/2 if the endpoint offers it, so that many turns share a few
-          # connections.
           typed_extension_protocol_options:
             envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
               "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              {{- if $tls }}
+              # HTTP/2 if the endpoint offers it, so that many turns share a
+              # few connections.
               auto_config: {}
+              {{- else }}
+              explicit_http_config: {http_protocol_options: {}}
+              {{- end }}
+              # Puts the API key where the pod sent its turn token. Only the
+              # requests to this endpoint get it: a request to an endpoint
+              # that the Supervisor named has the key that the Supervisor
+              # gave.
+              http_filters:
+                - name: envoy.filters.http.credential_injector
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.http.credential_injector.v3.CredentialInjector
+                    overwrite: true
+                    credential:
+                      name: envoy.http.injected_credentials.generic
+                      typed_config:
+                        "@type": type.googleapis.com/envoy.extensions.http.injected_credentials.generic.v3.Generic
+                        header: Authorization
+                        header_value_prefix: "Bearer "
+                        credential:
+                          name: llm-api-key
+                          sds_config:
+                            path_config_source:
+                              path: /etc/envoy/llm-api-key.yaml
+                              watched_directory: {path: /etc/aviary/llm}
+                - name: envoy.filters.http.upstream_codec
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.http.upstream_codec.v3.UpstreamCodec
+          {{- if $tls }}
           transport_socket:
             name: envoy.transport_sockets.tls
             typed_config:

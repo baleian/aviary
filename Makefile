@@ -45,7 +45,8 @@ ENVOY_IMAGE = $(shell sed --quiet 's/^  image: \(envoyproxy.*\)/\1/p' deploy/cha
 PROXIES = ENVOY_IMAGE=$(ENVOY_IMAGE) docker compose --file test/proxy/compose.yaml --project-name aviary-test-proxy
 AMONG_PROXIES := --network aviary-test-proxy_default --env AVIARY_TEST_PROXY=1 \
 	--network-alias aviary-supervisor.aviary-system --network-alias model.test \
-	--network-alias allowed.test --network-alias other.test
+	--network-alias allowed.test --network-alias other.test \
+	--network-alias tls.test --network-alias unnamed.test
 # What the tests of the Supervisor run against, and how the tests reach it.
 SERVICES := docker compose --file test/compose.yaml --project-name aviary-test-supervisor
 IN_SERVICES := --network aviary-test-supervisor_default \
@@ -132,6 +133,7 @@ test-proxy: TESTS ?= ./proxy/...
 test-proxy:
 	mkdir -p .out/proxy/llm
 	printf the-real-key > .out/proxy/llm/api-key
+	$(call GO,test) run ./internal/selfsigned tls.test /src/.out/proxy/tls
 	for values in listed open closed; do \
 		$(RENDER) --values test/proxy/$$values.yaml > .out/proxy/$$values.yaml && \
 		$(call GO,test) run ./internal/unpack /src/.out/proxy/$$values.yaml /src/.out/proxy/$$values || exit 1; \
