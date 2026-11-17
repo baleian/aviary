@@ -385,8 +385,9 @@ func (q *Queries) CreateTurn(ctx context.Context, arg CreateTurnParams) (Turn, e
 	return i, err
 }
 
-const dispatchTurn = `-- name: DispatchTurn :exec
-update turns set state = 'dispatching', token_hash = $1, dispatched_at = now() where id = $2
+const dispatchTurn = `-- name: DispatchTurn :execrows
+update turns set state = 'dispatching', token_hash = $1, dispatched_at = now()
+where id = $2 and state = 'queued'
 `
 
 type DispatchTurnParams struct {
@@ -394,9 +395,13 @@ type DispatchTurnParams struct {
 	ID        uuid.UUID
 }
 
-func (q *Queries) DispatchTurn(ctx context.Context, arg DispatchTurnParams) error {
-	_, err := q.db.Exec(ctx, dispatchTurn, arg.TokenHash, arg.ID)
-	return err
+// A turn that was cancelled since it was read is left as it is.
+func (q *Queries) DispatchTurn(ctx context.Context, arg DispatchTurnParams) (int64, error) {
+	result, err := q.db.Exec(ctx, dispatchTurn, arg.TokenHash, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const dispatchedTurns = `-- name: DispatchedTurns :many

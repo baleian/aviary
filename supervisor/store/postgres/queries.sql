@@ -126,8 +126,10 @@ where turns.state = 'queued'
 order by turns.created_at, turns.id
 limit greatest(sqlc.arg(max_running)::bigint - (select count(*) from turns where state in ('dispatching', 'running')), 0);
 
--- name: DispatchTurn :exec
-update turns set state = 'dispatching', token_hash = @token_hash, dispatched_at = now() where id = @id;
+-- name: DispatchTurn :execrows
+-- A turn that was cancelled since it was read is left as it is.
+update turns set state = 'dispatching', token_hash = @token_hash, dispatched_at = now()
+where id = @id and state = 'queued';
 
 -- name: DispatchedTurns :many
 select id,

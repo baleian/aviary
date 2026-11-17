@@ -297,9 +297,9 @@ func (s *records) DispatchTurns(ctx context.Context, limit int) ([]store.Dispatc
 	if err != nil {
 		return nil, err
 	}
-	dispatches := make([]store.Dispatch, len(rows))
-	for i, row := range rows {
-		dispatches[i] = store.Dispatch{
+	dispatches := []store.Dispatch{}
+	for _, row := range rows {
+		dispatch := store.Dispatch{
 			TurnID:    row.TurnID,
 			SessionID: row.SessionID,
 			AgentID:   row.AgentID,
@@ -313,9 +313,12 @@ func (s *records) DispatchTurns(ctx context.Context, limit int) ([]store.Dispatc
 			Token:       store.NewToken(),
 			Waited:      time.Duration(row.Waited * float64(time.Second)),
 		}
-		err := queries.DispatchTurn(ctx, db.DispatchTurnParams{ID: row.TurnID, TokenHash: store.HashToken(dispatches[i].Token)})
+		taken, err := queries.DispatchTurn(ctx, db.DispatchTurnParams{ID: row.TurnID, TokenHash: store.HashToken(dispatch.Token)})
 		if err != nil {
 			return nil, err
+		}
+		if taken == 1 {
+			dispatches = append(dispatches, dispatch)
 		}
 	}
 	return dispatches, tx.Commit(ctx)

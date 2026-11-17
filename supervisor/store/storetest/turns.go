@@ -341,6 +341,97 @@ func (suite suite) testSupervisorsDispatchWithinTheLimitTogether(t *testing.T) {
 	}
 }
 
+// The limit holds also while messages come. A Supervisor that counts the
+// turns that run and then picks the next may find other turns to pick than
+// another that counted at the same time.
+func (suite suite) testSupervisorsDispatchWithinTheLimitWhileTurnsCome(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	supervisors := st.supervisors(4)
+	sessions := make([]uuid.UUID, 8)
+	for i := range sessions {
+		sessions[i] = st.session()
+	}
+	for range 20 {
+		var coming atomic.Bool
+		coming.Store(true)
+		var dispatching sync.WaitGroup
+		for _, supervisor := range supervisors {
+			dispatching.Go(func() {
+				for coming.Load() {
+					if _, err := supervisor.DispatchTurns(ctx, 1); err != nil {
+						t.Error(err)
+						return
+					}
+				}
+			})
+		}
+		turns := make([]uuid.UUID, len(sessions))
+		atOnce(len(sessions), func(i int) {
+			turn, _, err := st.CreateTurn(ctx, sessions[i], "hello", 0, 1)
+			if err != nil {
+				t.Error(err)
+			}
+			turns[i] = turn.ID
+		})
+		coming.Store(false)
+		dispatching.Wait()
+		dispatched, err := st.DispatchedTurns(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(dispatched) > 1 {
+			t.Fatalf("four Supervisors with a limit of 1 dispatched %d turns", len(dispatched))
+		}
+		// The turns end, for the next to come to a session with none.
+		for _, turn := range turns {
+			if _, _, err := st.CancelTurn(ctx, turn); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, turn := range dispatched {
+			st.end(turn.ID, false, store.Failure{Reason: store.FailurePodLost})
+		}
+	}
+}
+
+// A turn that is cancelled while the turns are dispatched has ended and is
+// not dispatched, or is dispatched and asked to stop: never both.
+func (suite suite) testDispatchTurnsLeavesATurnThatWasCancelledMeanwhile(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	dispatcher := st.another()
+	turns := make([]store.Turn, 40)
+	for i := range turns {
+		turns[i] = st.queue(st.session())
+	}
+	var dispatches []store.Dispatch
+	atOnce(len(turns)+1, func(i int) {
+		if i == len(turns) {
+			var err error
+			if dispatches, err = dispatcher.DispatchTurns(ctx, len(turns)); err != nil {
+				t.Error(err)
+			}
+			return
+		}
+		if _, _, err := st.CancelTurn(ctx, turns[i].ID); err != nil {
+			t.Error(err)
+		}
+	})
+	dispatched := map[uuid.UUID]bool{}
+	for _, dispatch := range dispatches {
+		dispatched[dispatch.TurnID] = true
+	}
+	for _, queued := range turns {
+		turn := st.turn(queued.ID)
+		ended := turn.State == store.TurnCancelled && turn.EndedAt != nil
+		asked := turn.State == store.TurnDispatching && turn.EndedAt == nil && turn.CancelRequestedAt != nil
+		if (dispatched[turn.ID] && !asked) || (!dispatched[turn.ID] && !ended) {
+			t.Errorf("a turn that was cancelled while the turns were dispatched is %+v, dispatched %t", turn, dispatched[turn.ID])
+		}
+	}
+}
+
 func (suite suite) testAnnounceQueue(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
