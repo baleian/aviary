@@ -48,6 +48,9 @@ spec:
             # The hosts at which a project may register a secret store.
             - name: AVIARY_SECRET_STORE_HOSTS
               value: {{ .Values.supervisor.secretStores.allowedHosts | toJson | quote }}
+            # For how long a value that was read from a secret store is used.
+            - name: AVIARY_SECRET_CACHE_SECONDS
+              value: {{ .Values.supervisor.secretStores.cacheSeconds | quote }}
             # Where the runners in the turn pods reach this Supervisor.
             - name: AVIARY_GATEWAY_URL
               value: http://aviary-supervisor.{{ .Release.Namespace }}:9090

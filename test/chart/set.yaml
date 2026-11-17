@@ -8,6 +8,7 @@ supervisor:
     allowedHosts:
       - secrets.example.com:8200
       - store.example.com
+    cacheSeconds: 5
 egressProxy:
   replicas: 2
   allowedHosts:

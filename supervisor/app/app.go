@@ -45,6 +45,7 @@ const (
 	encryptionKeys     = "AVIARY_ENCRYPTION_KEYS"
 	encryptionKey      = "AVIARY_ENCRYPTION_KEY"
 	secretStoreHosts   = "AVIARY_SECRET_STORE_HOSTS"
+	secretCacheSeconds = "AVIARY_SECRET_CACHE_SECONDS"
 	harnesses          = "AVIARY_HARNESSES"
 	maxConcurrentTurns = "AVIARY_MAX_CONCURRENT_TURNS"
 	maxQueuedTurns     = "AVIARY_MAX_QUEUED_TURNS"
@@ -155,6 +156,7 @@ func serve(ctx context.Context, database string, plugins Plugins) error {
 	if err != nil {
 		return err
 	}
+	defer stores.Close()
 	config, err := driverConfig()
 	if err != nil {
 		return err
@@ -267,8 +269,10 @@ func encryption() (*secret.Keys, error) {
 }
 
 // allowedSecretStores reads the hosts at which the installation allows the
-// secret stores of the projects: a JSON list such as
-// ["secrets.example.com:8200"]. The stores are asked with the plugins.
+// secret stores of the projects, a JSON list such as
+// ["secrets.example.com:8200"], and for how many seconds a value that was
+// read from a store is used before it is read again. The stores are asked
+// with the plugins.
 func allowedSecretStores(plugins []secret.Plugin) (*secret.Stores, error) {
 	encoded, err := env(secretStoreHosts)
 	if err != nil {
@@ -278,7 +282,15 @@ func allowedSecretStores(plugins []secret.Plugin) (*secret.Stores, error) {
 	if err := json.Unmarshal([]byte(encoded), &hosts); err != nil {
 		return nil, fmt.Errorf("%s: %w", secretStoreHosts, err)
 	}
-	return secret.NewStores(hosts, plugins...)
+	written, err := env(secretCacheSeconds)
+	if err != nil {
+		return nil, err
+	}
+	seconds, err := strconv.Atoi(written)
+	if err != nil || seconds < 0 {
+		return nil, fmt.Errorf("%s must be a number of seconds, or zero to read a store every time", secretCacheSeconds)
+	}
+	return secret.NewStores(hosts, time.Duration(seconds)*time.Second, plugins...)
 }
 
 // driverConfig reads how turns are run. The harnesses are a JSON object such

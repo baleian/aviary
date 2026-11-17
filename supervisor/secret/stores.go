@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jellydator/ttlcache/v3"
+	"golang.org/x/sync/singleflight"
 
 	"aviary/supervisor/store"
 )
@@ -23,9 +25,18 @@ import (
 // little longer for the Supervisor, which may ask a store before it answers.
 const timeout = 3 * time.Second
 
-// remembered is how long the Supervisor uses a value that it read from a
-// store before it reads the value again.
-const remembered = time.Minute
+// What a Supervisor remembers of the secret stores is no more than this,
+// however many stores and values it is asked for. A value is no longer than
+// maxValue bytes. No more than maxValues of them are remembered, which
+// together with their places are no more than maxBytes, and of no more than
+// maxStores stores the session of a login. Beyond that the Supervisor
+// forgets what it used longest ago.
+const (
+	maxValue  = 8 << 10
+	maxValues = 10000
+	maxBytes  = 16 << 20
+	maxStores = 1000
+)
 
 // ErrSessionEnded is what a plugin answers a read with when the store no
 // longer takes the session that it logged in for. The store is then logged
@@ -74,50 +85,47 @@ type Stores struct {
 	// a value: the kind of the store, how long the store took, and what went
 	// wrong, if anything did. It is set before the stores are read.
 	Asked func(kind string, took time.Duration, err error)
-	// now tells the time. The tests set it.
-	now func() time.Time
 
-	// mu guards what is remembered of the stores, but for their sessions.
-	mu sync.Mutex
-	// known is what is remembered of the stores that were read, each as it
-	// was registered last.
-	known map[registration]*known
+	// lasts is for how long a value is remembered.
+	lasts time.Duration
+	// values are the values that were read, each until it is to be read
+	// again, and sessions the sessions of the logins, each until it ends.
+	// Neither holds more than it may: it forgets what was used longest ago.
+	values   *ttlcache.Cache[placed, string]
+	sessions *ttlcache.Cache[registration, any]
+	// reading and logging hold what is under way, so that many requests at
+	// once for the same value, or for a login to the same store, are one.
+	reading, logging singleflight.Group
+	// closed is closed when the stores are, and closing sees to it once.
+	closed  chan struct{}
+	closing sync.Once
 }
 
 // registration tells a secret store as it was registered at a time from
-// other stores, and from itself as it was before.
+// other stores, and from itself as it was before: what is remembered of a
+// store is of the store as it was registered last.
 type registration struct {
 	id uuid.UUID
 	at int64
 }
 
-// known is what the Supervisor remembers of a secret store: the session of
-// its login, and the values that it read.
-type known struct {
-	// asking is held by the one that asks the store, to whom the session
-	// is. A store is asked one thing at a time, so that many requests for a
-	// value that is not remembered are one login and one read.
-	asking  chan struct{}
-	session any
-	// ends is when the session ends, if the store said.
-	ends   time.Time
-	values map[place]value
+func registered(from store.SecretStore) registration {
+	return registration{id: from.ID, at: from.UpdatedAt.UnixNano()}
 }
 
-// place is the place of a value in a store.
-type place struct{ path, key string }
-
-// value is a value as it was read, and until when it is used.
-type value struct {
-	value string
-	until time.Time
+// placed is the place of a value in a store.
+type placed struct {
+	registration
+	path, key string
 }
 
 // NewStores returns the stores of an installation that allows them at the
 // hosts and asks them with the plugins. A host is written as for the Egress
 // Proxy: "*" is every host, a name the host on the ports of HTTPS and HTTP,
-// and a name with a port the host on that port.
-func NewStores(hosts []string, plugins ...Plugin) (*Stores, error) {
+// and a name with a port the host on that port. A value that is read from a
+// store is remembered for so long, and not at all with zero: the store is
+// then read every time. The stores are closed when they are of no more use.
+func NewStores(hosts []string, remembered time.Duration, plugins ...Plugin) (*Stores, error) {
 	for _, allowed := range hosts {
 		if allowed != "*" && !host.MatchString(allowed) {
 			return nil, fmt.Errorf(`a secret store may be at "*" or at a host name, with a port if it is neither 443 nor 80, and %q is neither`, allowed)
@@ -127,17 +135,51 @@ func NewStores(hosts []string, plugins ...Plugin) (*Stores, error) {
 	// environment.
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
-	stores := &Stores{hosts: hosts, plugins: map[string]Plugin{}, now: time.Now, known: map[registration]*known{}, client: &http.Client{
+	stores := &Stores{hosts: hosts, plugins: map[string]Plugin{}, lasts: remembered, closed: make(chan struct{}), client: &http.Client{
 		Timeout:   timeout,
 		Transport: transport,
 		// A store that sends the Supervisor elsewhere is not followed: where
 		// it leads may be a host that the installation does not allow.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
+	// A value that is read again does not stay for longer.
+	stores.values = ttlcache.New(
+		ttlcache.WithDisableTouchOnHit[placed, string](),
+		ttlcache.WithCapacity[placed, string](maxValues),
+		ttlcache.WithMaxCost(maxBytes, func(item ttlcache.CostItem[placed, string]) uint64 {
+			return uint64(len(item.Key.path) + len(item.Key.key) + len(item.Value))
+		}),
+	)
+	stores.sessions = ttlcache.New(
+		ttlcache.WithDisableTouchOnHit[registration, any](),
+		ttlcache.WithCapacity[registration, any](maxStores),
+	)
+	go stores.forget()
 	for _, plugin := range plugins {
 		stores.plugins[plugin.Kind()] = plugin
 	}
 	return stores, nil
+}
+
+// forget takes what is no longer used out of the memory, until the stores
+// are closed: a value is not kept for longer than it is used.
+func (s *Stores) forget() {
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-tick.C:
+			s.values.DeleteExpired()
+			s.sessions.DeleteExpired()
+		case <-s.closed:
+			return
+		}
+	}
+}
+
+// Close ends what the stores do by themselves. They are not read after it.
+func (s *Stores) Close() {
+	s.closing.Do(func() { close(s.closed) })
 }
 
 // Check tells what is wrong with a store that a project gives, if anything
@@ -168,11 +210,11 @@ func (s *Stores) Check(ctx context.Context, kind string, settings json.RawMessag
 // a secret store of a project. The credential is what the store is logged
 // in to with, opened.
 //
-// The Supervisor remembers a value for a minute, and for that long it does
-// not ask the store again. It uses no value for longer than that, also when
-// the store cannot be asked: a value that the project took out of its store
-// is gone from Aviary within the minute. What it remembers is of the store
-// as it was last registered.
+// The Supervisor remembers a value for as long as the installation says,
+// and for that long it does not ask the store again. It uses no value for
+// longer than that, also when the store cannot be asked: a value that the
+// project took out of its store is gone from Aviary by then. What it
+// remembers is of the store as it was last registered.
 func (s *Stores) Read(ctx context.Context, from store.SecretStore, credential, path, key string) (string, error) {
 	plugin, found := s.plugins[from.Kind]
 	if !found {
@@ -186,85 +228,56 @@ func (s *Stores) Read(ctx context.Context, from store.SecretStore, credential, p
 		return "", errors.New("the installation allows no secret store at the host of the store: supervisor.secretStores.allowedHosts lists them")
 	}
 
-	at := place{path, key}
-	kept, read, found := s.remembered(from, at)
-	if found {
-		return read, nil
+	at := placed{registered(from), path, key}
+	if kept := s.values.Get(at); kept != nil {
+		return kept.Value(), nil
 	}
+	// The store is asked for as long as it may take, also if the request
+	// that asks first is gone by then: others may wait for the same.
+	asking := context.WithoutCancel(ctx)
+	asked := s.reading.DoChan(fmt.Sprintf("%s %d %q %q", at.id, at.at, path, key), func() (any, error) {
+		// Another request may have asked the store for the value by now.
+		if kept := s.values.Get(at); kept != nil {
+			return kept.Value(), nil
+		}
+		began := time.Now()
+		read, err := s.ask(asking, plugin, from, credential, path, key)
+		if err == nil && len(read) > maxValue {
+			err = fmt.Errorf("the value is longer than a secret may be, which is %d bytes", maxValue)
+		}
+		if s.Asked != nil {
+			s.Asked(from.Kind, time.Since(began), err)
+		}
+		if err != nil {
+			return "", err
+		}
+		if s.lasts > 0 {
+			s.values.Set(at, read, s.lasts)
+		}
+		return read, nil
+	})
 	select {
-	case kept.asking <- struct{}{}:
+	case answer := <-asked:
+		if answer.Err != nil {
+			return "", answer.Err
+		}
+		return answer.Val.(string), nil
 	case <-ctx.Done():
 		return "", ctx.Err()
 	}
-	defer func() { <-kept.asking }()
-	// Another request may have asked the store for the value by now.
-	if _, read, found := s.remembered(from, at); found {
-		return read, nil
-	}
-	began := s.now()
-	read, err = s.ask(ctx, plugin, from.Settings, credential, kept, at)
-	if s.Asked != nil {
-		s.Asked(from.Kind, s.now().Sub(began), err)
-	}
-	if err != nil {
-		return "", err
-	}
-	until := s.now().Add(remembered)
-	s.mu.Lock()
-	kept.values[at] = value{value: read, until: until}
-	s.mu.Unlock()
-	// A value is not kept for longer than it is used.
-	time.AfterFunc(remembered, func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if held, found := kept.values[at]; found && held.until.Equal(until) {
-			delete(kept.values, at)
-		}
-	})
-	return read, nil
 }
 
-// remembered returns what is remembered of a store as it is registered now,
-// and the value at the place, if it was read within the last minute.
-func (s *Stores) remembered(from store.SecretStore, at place) (*known, string, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	as := registration{id: from.ID, at: from.UpdatedAt.UnixNano()}
-	kept := s.known[as]
-	if kept == nil {
-		// What is remembered of the store as it was before is of no use.
-		for other := range s.known {
-			if other.id == from.ID {
-				delete(s.known, other)
-			}
-		}
-		kept = &known{asking: make(chan struct{}, 1), values: map[place]value{}}
-		s.known[as] = kept
-	}
-	read, found := kept.values[at]
-	return kept, read.value, found && s.now().Before(read.until)
-}
-
-// ask reads a value from a store, which it logs in to if it holds no
-// session of the store that is still good. A store that takes its session
-// no longer is logged in to once more. The caller is the one that asks the
-// store.
-func (s *Stores) ask(ctx context.Context, plugin Plugin, settings json.RawMessage, credential string, kept *known, at place) (string, error) {
+// ask reads a value from a store, with the session of a login to it. A
+// store that takes the session no longer is logged in to once more.
+func (s *Stores) ask(ctx context.Context, plugin Plugin, from store.SecretStore, credential, path, key string) (string, error) {
 	for again := false; ; again = true {
-		if kept.session == nil || (!kept.ends.IsZero() && !s.now().Before(kept.ends)) {
-			session, good, err := plugin.Login(ctx, s.client, settings, credential)
-			if err != nil {
-				kept.session = nil
-				return "", fmt.Errorf("the store does not take the login: %w", err)
-			}
-			kept.session, kept.ends = session, time.Time{}
-			if good > 0 {
-				kept.ends = s.now().Add(good)
-			}
+		session, err := s.session(ctx, plugin, from, credential)
+		if err != nil {
+			return "", err
 		}
-		read, err := plugin.Read(ctx, s.client, settings, kept.session, at.path, at.key)
+		read, err := plugin.Read(ctx, s.client, from.Settings, session, path, key)
 		if errors.Is(err, ErrSessionEnded) {
-			kept.session = nil
+			s.sessions.Delete(registered(from))
 			if !again {
 				continue
 			}
@@ -272,6 +285,32 @@ func (s *Stores) ask(ctx context.Context, plugin Plugin, settings json.RawMessag
 		}
 		return read, err
 	}
+}
+
+// session returns the session of a login to a store. The Supervisor logs in
+// if it holds none that is still good, once for all that ask at that
+// moment, and holds the session for as long as the store says that it is
+// good.
+func (s *Stores) session(ctx context.Context, plugin Plugin, from store.SecretStore, credential string) (any, error) {
+	as := registered(from)
+	if kept := s.sessions.Get(as); kept != nil {
+		return kept.Value(), nil
+	}
+	session, err, _ := s.logging.Do(fmt.Sprintf("%s %d", as.id, as.at), func() (any, error) {
+		if kept := s.sessions.Get(as); kept != nil {
+			return kept.Value(), nil
+		}
+		session, good, err := plugin.Login(ctx, s.client, from.Settings, credential)
+		if err != nil {
+			return nil, fmt.Errorf("the store does not take the login: %w", err)
+		}
+		if good <= 0 {
+			good = ttlcache.NoTTL
+		}
+		s.sessions.Set(as, session, good)
+		return session, nil
+	})
+	return session, err
 }
 
 // allows tells whether the installation allows a store at the address.

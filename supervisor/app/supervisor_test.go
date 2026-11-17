@@ -118,10 +118,11 @@ func install(t *testing.T, changes ...func(*driver.Config)) *installation {
 // remembers by itself what it read.
 func (i *installation) stores() *secret.Stores {
 	i.t.Helper()
-	stores, err := secret.NewStores(i.storeHosts, scripted{i.secrets})
+	stores, err := secret.NewStores(i.storeHosts, time.Minute, scripted{i.secrets})
 	if err != nil {
 		i.t.Fatal(err)
 	}
+	i.t.Cleanup(stores.Close)
 	return stores
 }
 

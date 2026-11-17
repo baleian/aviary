@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"aviary/supervisor/app"
 	"aviary/supervisor/events"
@@ -29,10 +30,11 @@ func TestPluginsOfThisBuild(t *testing.T) {
 	if _, err := events.Open("valkey://user:secret@host:port", plugins.EventLogs...); err == nil || strings.Contains(err.Error(), "secret") {
 		t.Errorf("an event log with a port that is none was opened with: %v", err)
 	}
-	stores, err := secret.NewStores([]string{"*"}, plugins.SecretStores...)
+	stores, err := secret.NewStores([]string{"*"}, time.Minute, plugins.SecretStores...)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stores.Close()
 	if err := stores.Check(ctx, "another", json.RawMessage(`{}`), "a-credential"); err == nil || !strings.Contains(err.Error(), "kv-v2") {
 		t.Errorf("a secret store of a kind that the build has no plugin for is checked as: %v", err)
 	}

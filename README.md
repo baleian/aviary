@@ -234,6 +234,11 @@ provider=$(curl -s -X POST localhost:8080/v1/projects/$project/providers \
   for a minute, and uses no value for longer than that. A key that changes
   in the store is the one that the model requests carry within a minute,
   and a key that is taken out of the store is gone from Aviary as soon.
+  The installation sets that time with `supervisor.secretStores.cacheSeconds`.
+- **What a Supervisor remembers is bounded.** It holds at most 10,000
+  values, 16 MiB of them, and the logins to at most 1,000 stores, and
+  forgets what it used longest ago. A value of more than 8 KiB is not taken
+  for a secret.
 - **A request whose key cannot be read is refused.** The model request ends
   with 503 and the reason, and the turns of other providers go on.
 - **The credential is stored sealed**, as the key of a provider is. A store
@@ -370,6 +375,7 @@ installs it in the local cluster with a file of values of your own.
 | `supervisor.database.secretName`, `.secretKey` | A secret with the URL of the database. Its scheme names the kind of the database: `postgresql://…` is PostgreSQL. |
 | `supervisor.events.secretName`, `.secretKey` | A secret with the URL of the event log. Its scheme names the kind of the log: `valkey://…` is Valkey, and `valkeys://…` is Valkey with TLS. |
 | `supervisor.secretStores.allowedHosts` | The hosts at which the projects may have secret stores: `*` for every host, a host name for the host on the ports of HTTPS and HTTP, or a host name with a port. The default allows none. |
+| `supervisor.secretStores.cacheSeconds` | For how long a Supervisor uses a value that it read from a secret store before it reads the value again. Default 60, and with 0 the store is read for every model request. |
 | `supervisor.encryption.secretName`, `.key` | A secret with the keys that the Supervisor seals secrets with before it stores them, and the entry of it that seals. An entry is 32 random bytes in base64. To replace the key, add an entry and name it, and keep the entries from before. |
 | `egressProxy.allowedHosts` | The hosts that the Egress Proxy lets requests through to, those of the model providers among them. The default, `*`, is every host. |
 | `egressProxy.insideCIDRs`, `.extraEgress` | A network policy keeps the Egress Proxy itself out of these address ranges, so that it is no way into the cluster. `extraEgress` names what it may still reach there, as egress rules of a network policy: the endpoint of a model provider that is a service in the cluster or at a private address needs one. |

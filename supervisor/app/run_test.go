@@ -164,6 +164,7 @@ func TestRunConnectsWithThePluginsOfTheBuild(t *testing.T) {
 	t.Setenv(encryptionKeys, keys)
 	t.Setenv(encryptionKey, "k1")
 	t.Setenv(secretStoreHosts, `["*"]`)
+	t.Setenv(secretCacheSeconds, "60")
 	t.Setenv(gatewayURL, "")
 	build.asked = nil
 	err = Run(context.Background(), nil, build.plugins())

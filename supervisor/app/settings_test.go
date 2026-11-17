@@ -7,7 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"aviary/supervisor/secret"
+	"aviary/supervisor/store"
 )
 
 // settings are the variables of a Supervisor as the chart sets them.
@@ -93,15 +96,18 @@ func TestDriverConfig(t *testing.T) {
 	}
 }
 
-// The Supervisor is told at which hosts the projects may have secret stores,
-// and asks the stores of the kinds that it was built with.
+// The Supervisor is told at which hosts the projects may have secret stores
+// and for how long it is to use what it read from one, and asks the stores
+// of the kinds that it was built with.
 func TestSecretStoreSettings(t *testing.T) {
 	t.Setenv(secretStoreHosts, `["secrets.example.com:8200"]`)
+	t.Setenv(secretCacheSeconds, "60")
 	plugins := []secret.Plugin{scripted{}}
 	stores, err := allowedSecretStores(plugins)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stores.Close()
 	// A store of a kind that the build knows is held against the list.
 	at := func(address string) json.RawMessage {
 		return json.RawMessage(`{"address": "` + address + `", "takes": "a-credential"}`)
@@ -117,7 +123,36 @@ func TestSecretStoreSettings(t *testing.T) {
 		t.Errorf("a store of a kind that the build does not know is checked as: %v", err)
 	}
 
-	// A Supervisor with a list that it cannot use does not start.
+	// A value that was read from a store is used for as long as the
+	// installation says, and with zero the store is read every time.
+	const address = "https://secrets.example.com:8200"
+	holding := &shelves{}
+	registered := store.SecretStore{ID: uuid.New(), Kind: "scripted", Settings: at(address), UpdatedAt: time.Now()}
+	for seconds, remembered := range map[string]string{"60": "the-first", "0": "the-second"} {
+		t.Setenv(secretCacheSeconds, seconds)
+		stores, err := allowedSecretStores([]secret.Plugin{scripted{holding}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stores.Close()
+		holding.put(address, "a/path", "a-key", "the-first")
+		if _, err := stores.Read(context.Background(), registered, "a-credential", "a/path", "a-key"); err != nil {
+			t.Fatal(err)
+		}
+		holding.put(address, "a/path", "a-key", "the-second")
+		if read, err := stores.Read(context.Background(), registered, "a-credential", "a/path", "a-key"); err != nil || read != remembered {
+			t.Errorf("with %s seconds, the value that the store has changed was read as %q: %v", seconds, read, err)
+		}
+	}
+
+	// A Supervisor with a setting that it cannot use does not start.
+	for _, wrong := range []string{"", "-1", "soon", "1.5"} {
+		t.Setenv(secretCacheSeconds, wrong)
+		if stores, err := allowedSecretStores(plugins); err == nil || !strings.Contains(err.Error(), secretCacheSeconds) {
+			t.Errorf("with %q seconds, the stores are %+v: %v", wrong, stores, err)
+		}
+	}
+	t.Setenv(secretCacheSeconds, "60")
 	for _, wrong := range []string{"", "secrets.example.com", `["https://secrets.example.com"]`} {
 		t.Setenv(secretStoreHosts, wrong)
 		if stores, err := allowedSecretStores(plugins); err == nil {

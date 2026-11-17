@@ -53,10 +53,11 @@ func (asking) Read(context.Context, *http.Client, json.RawMessage, any, string, 
 
 func stores(t *testing.T, hosts ...string) *Stores {
 	t.Helper()
-	stores, err := NewStores(hosts, asking{})
+	stores, err := NewStores(hosts, time.Minute, asking{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(stores.Close)
 	return stores
 }
 
@@ -94,7 +95,7 @@ func TestHostsOfStores(t *testing.T) {
 		}
 	}
 	for _, host := range []string{"https://secrets.example.com", "secrets.example.com/v1", "*.example.com", "a host", "user@secrets.example.com", ""} {
-		if _, err := NewStores([]string{"secrets.example.com", host}); err == nil || !strings.Contains(err.Error(), host) {
+		if _, err := NewStores([]string{"secrets.example.com", host}, time.Minute); err == nil || !strings.Contains(err.Error(), host) {
 			t.Errorf("stores are allowed at %q: %v", host, err)
 		}
 	}

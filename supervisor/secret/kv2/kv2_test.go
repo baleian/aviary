@@ -179,10 +179,11 @@ func TestLoginToAStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stores, err := secret.NewStores([]string{parsed.Host}, Plugin{})
+	stores, err := secret.NewStores([]string{parsed.Host}, time.Minute, Plugin{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(stores.Close)
 	roleID, secretID, _ := role(t)
 	other, another, _ := role(t)
 	ctx := context.Background()
@@ -216,10 +217,11 @@ func TestReadFromAStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stores, err := secret.NewStores([]string{parsed.Host}, Plugin{})
+	stores, err := secret.NewStores([]string{parsed.Host}, time.Minute, Plugin{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(stores.Close)
 	roleID, secretID, own := role(t)
 	_, _, theirs := role(t)
 	ctx := context.Background()

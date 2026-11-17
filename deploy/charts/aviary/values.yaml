@@ -48,6 +48,11 @@ supervisor:
     #              secrets.example.com:8200
     # The default allows none: no project registers a secret store.
     allowedHosts: []
+    # For how many seconds a Supervisor uses a value that it read from a
+    # store before it reads the value again. A value that changes in a store
+    # is used within that time, and for that long a store is not asked for
+    # it again. With 0 a store is read for every model request.
+    cacheSeconds: 60
 
 egressProxy:
   image: envoyproxy/envoy:distroless-v1.40.2@sha256:09ca6f2140a61ad8df11779a4a30d52b48433d444466328494f9188c9c35eded
