@@ -3,9 +3,9 @@
 # tests starts it anew and removes it, so nothing is kept from one run to the
 # next.
 services:
-  # A database server, for the tests of the plugin that connects to
-  # databases of its kind. It is PostgreSQL.
-  database:
+  # A database server of each kind that the Supervisor has a plugin for, for
+  # the tests of that plugin. This one is PostgreSQL.
+  database-postgres:
     image: postgres:18.7@sha256:2ea8630df176ad090ec92136dee850397c5af8781e4bcf2e4162593691c61bbc
     environment:
       POSTGRES_PASSWORD: test
@@ -18,6 +18,22 @@ services:
       # Over the network: while the image sets the database up, PostgreSQL
       # answers on its socket only, and is then started again.
       test: ["CMD", "pg_isready", "--host", "127.0.0.1", "--username", "postgres"]
+      interval: 1s
+      retries: 60
+  # And this one is MySQL.
+  database-mysql:
+    image: mysql:8.4.13@sha256:a81d043930e51745522bd5c430961cf8286f0a23f0a9a2a6e0108f7ea71b0902
+    environment:
+      MYSQL_ROOT_PASSWORD: test
+    tmpfs:
+      - /var/lib/mysql
+    # Every test has a database of its own, and they run at once: together
+    # they open more connections than MySQL takes by default.
+    command: ["--max-connections=1000"]
+    healthcheck:
+      # Over the network: while the image sets the server up, MySQL answers
+      # on its socket only, and is then started again.
+      test: ["CMD", "mysqladmin", "ping", "--host", "127.0.0.1", "--user", "root", "--password=test"]
       interval: 1s
       retries: 60
   # An event log, for the tests of the plugin that connects to logs of its

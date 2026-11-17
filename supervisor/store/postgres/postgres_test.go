@@ -21,7 +21,7 @@ import (
 // database is dropped when the test ends.
 func emptyDatabase(t *testing.T) string {
 	t.Helper()
-	server := testenv.DatabaseURL(t)
+	server := testenv.DatabaseURL(t, "postgres")
 	address, err := url.Parse(server)
 	if err != nil {
 		t.Fatalf("the URL of the database server of the tests: %v", err)

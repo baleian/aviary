@@ -4,6 +4,7 @@ go 1.27.4
 
 require (
 	github.com/envoyproxy/go-control-plane/envoy v1.40.0
+	github.com/go-sql-driver/mysql v1.10.2
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/jellydator/ttlcache/v3 v3.4.1
@@ -21,6 +22,7 @@ require (
 )
 
 require (
+	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cncf/xds/go v0.0.0-20260202195803-dba9d589def2 // indirect

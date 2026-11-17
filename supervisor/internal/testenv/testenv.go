@@ -10,16 +10,15 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"aviary/supervisor/secret"
 )
 
-// databaseURL names the variable with the URL of a database server in which
-// the tests may create databases, eventsURL the one with the address of an
-// event log, and secretStoreURL the one with the address of a secret store.
+// eventsURL names the variable with the address of an event log, and
+// secretStoreURL the one with the address of a secret store.
 const (
-	databaseURL    = "AVIARY_TEST_DATABASE_URL"
 	eventsURL      = "AVIARY_TEST_EVENTS_URL"
 	secretStoreURL = "AVIARY_TEST_SECRET_STORE_URL"
 )
@@ -41,12 +40,13 @@ func service(t testing.TB, variable string) string {
 	return address
 }
 
-// DatabaseURL returns the address of the database server of the tests, which
-// the plugins that connect to a database are tested with. The tests share
-// it: each creates a database of its own in it.
-func DatabaseURL(t testing.TB) string {
+// DatabaseURL returns the address of the database server of the tests whose
+// addresses begin with the scheme, which the plugin for databases of that
+// kind is tested with. The tests share it: each creates a database of its
+// own in it.
+func DatabaseURL(t testing.TB, scheme string) string {
 	t.Helper()
-	return service(t, databaseURL)
+	return service(t, "AVIARY_TEST_"+strings.ToUpper(scheme)+"_URL")
 }
 
 // Keys returns the keys of an installation, which its Supervisors seal
