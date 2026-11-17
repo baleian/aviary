@@ -56,7 +56,15 @@ type endpoint struct {
 	host   string
 	secure bool
 	key    string
+	// mistaken is set for an endpoint that the Supervisor names by mistake
+	// also for what is no model request: a request through the forward
+	// proxy.
+	mistaken bool
 }
+
+// mistaken is the token of a turn about which the Supervisor answers the
+// forward proxy as it answers about a model request.
+const mistaken = "a-turn-that-the-supervisor-errs-about"
 
 // endpoints are the model endpoints that the Supervisor names, by the tokens
 // of the turns that it names them for. The hosts are the tests themselves.
@@ -67,13 +75,14 @@ var endpoints = map[string]endpoint{
 	"a-turn-of-a-provider-of-another":    {host: "unnamed.test:8443", secure: true, key: "the-key-of-a-provider"},
 	"a-turn-of-a-provider-not-on-a-list": {host: "other.test", key: "the-key-of-a-provider"},
 	"a-turn-of-a-provider-on-a-port":     {host: "model.test:8081", key: "the-key-of-a-provider"},
+	mistaken:                             {host: "other.test", key: "the-key-of-a-provider", mistaken: true},
 }
 
 // named returns the token of the turn that the Supervisor names the endpoint
 // at the host for.
 func named(host string, key bool) string {
 	for token, endpoint := range endpoints {
-		if endpoint.host == host && (endpoint.key != "") == key {
+		if endpoint.host == host && (endpoint.key != "") == key && !endpoint.mistaken {
 			return token
 		}
 	}
@@ -106,7 +115,7 @@ func (s *supervisor) Check(_ context.Context, request *authv3.CheckRequest) (*au
 	switch {
 	case sent == token:
 		return allowed, nil
-	case provided && !forward:
+	case provided && (!forward || endpoint.mistaken):
 		// The endpoint of the turn's provider, and its key in place of the
 		// token. A provider without a key gets no token either.
 		set := func(name, value string) *corev3.HeaderValueOption {
@@ -555,6 +564,28 @@ func TestForward(t *testing.T) {
 	}
 	if refused := fetch(t, open, "", "http://other.test/anywhere"); refused.status != http.StatusProxyAuthRequired {
 		t.Errorf("with every host allowed, a request without a password was answered with %d", refused.status)
+	}
+}
+
+// About a request through the forward proxy, the Supervisor answers whose
+// it is. If it answered with more, as it does about a model request, the
+// key of a model endpoint would go to whatever host the pod asked for. The
+// proxy takes nothing from the answer that changes the request, and refuses
+// a request whose answer would.
+func TestForwardTakesNoKey(t *testing.T) {
+	t.Parallel()
+	for _, proxy := range []string{open, listed} {
+		path := "/mistaken/" + proxy
+		refused := fetch(t, proxy, mistaken, "http://allowed.test"+path)
+		if refused.status != http.StatusInternalServerError {
+			t.Errorf("%s: a request about which the Supervisor answered with a key was answered with %d %q", proxy, refused.status, refused.body)
+		}
+		if got := outside.got(path); got != nil {
+			t.Errorf("%s: the request reached %s with the authorization %q", proxy, got.Host, got.Header.Get("Authorization"))
+		}
+		if status, _, _ := tunnel(t, proxy, mistaken, "allowed.test:443"); status != http.StatusInternalServerError {
+			t.Errorf("%s: a tunnel about which the Supervisor answered with a key was answered with %d", proxy, status)
+		}
 	}
 }
 

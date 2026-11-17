@@ -64,6 +64,14 @@ whether the answer of the Supervisor also says where the request goes.
     # The route of the request is chosen again, with what the Supervisor
     # answered.
     clear_route_cache: true
+    {{- else }}
+    # The answer tells whose request it is and nothing more. What the
+    # Supervisor adds to a model request, the key of a model endpoint, is
+    # never to go to another host: Envoy takes no change of the request from
+    # the answer, and refuses a request whose answer holds one.
+    decoder_header_mutation_rules:
+      disallow_all: true
+      disallow_is_error: true
     {{- end }}
 {{- end }}
 
