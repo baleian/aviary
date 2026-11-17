@@ -21,7 +21,7 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"aviary/supervisor/internal/secret"
-	"aviary/supervisor/internal/store"
+	"aviary/supervisor/store"
 )
 
 // The headers in which the proxy is told the model endpoint of a request:
@@ -34,12 +34,12 @@ const (
 
 type authorizer struct {
 	authv3.UnimplementedAuthorizationServer
-	store *store.Store
+	store store.Store
 	// keys open the API keys of the providers.
 	keys *secret.Keys
 }
 
-func New(st *store.Store, keys *secret.Keys) authv3.AuthorizationServer {
+func New(st store.Store, keys *secret.Keys) authv3.AuthorizationServer {
 	return &authorizer{store: st, keys: keys}
 }
 

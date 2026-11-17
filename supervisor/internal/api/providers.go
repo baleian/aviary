@@ -6,7 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"aviary/supervisor/internal/store"
+	"aviary/supervisor/store"
 )
 
 // secretValue is a secret as a request gives it. The API takes a secret and

@@ -22,12 +22,12 @@ import (
 	"aviary/supervisor/events"
 	runnerv1 "aviary/supervisor/internal/gen/aviary/runner/v1"
 	"aviary/supervisor/internal/metrics"
-	"aviary/supervisor/internal/store"
+	"aviary/supervisor/store"
 )
 
 type Gateway struct {
 	runnerv1.UnimplementedRunnerServiceServer
-	store   *store.Store
+	store   store.Store
 	events  *events.Streams
 	metrics *metrics.Metrics
 	// connected holds, for every turn whose runner is connected, what that
@@ -46,7 +46,7 @@ type orders struct {
 
 // New returns a Gateway that looks every sweep for what it was to pass on
 // and was not told of.
-func New(st *store.Store, ev *events.Streams, m *metrics.Metrics, sweep time.Duration) *Gateway {
+func New(st store.Store, ev *events.Streams, m *metrics.Metrics, sweep time.Duration) *Gateway {
 	return &Gateway{store: st, events: ev, metrics: m, connected: map[uuid.UUID]*orders{}, sweep: sweep}
 }
 

@@ -1,12 +1,12 @@
 version: "2"
 sql:
   - engine: postgresql
-    schema: internal/store/migrations
-    queries: internal/store/queries.sql
+    schema: store/postgres/migrations
+    queries: store/postgres/queries.sql
     gen:
       go:
         package: db
-        out: internal/gen/db
+        out: store/postgres/internal/db
         sql_package: pgx/v5
         emit_pointers_for_null_types: true
         omit_unused_structs: true

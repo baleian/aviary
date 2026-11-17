@@ -14,8 +14,8 @@ import (
 	"aviary/supervisor/events"
 	inmemory "aviary/supervisor/events/memory"
 	"aviary/supervisor/internal/metrics"
-	"aviary/supervisor/internal/store"
 	"aviary/supervisor/internal/testenv"
+	"aviary/supervisor/store"
 )
 
 // The tests of this file run a driver on a database of its own and a cluster
@@ -28,7 +28,7 @@ var ctx = context.Background()
 type installation struct {
 	t        *testing.T
 	database string
-	store    *store.Store
+	store    store.Store
 	events   *events.Streams
 	cluster  *fake.Clientset
 	driver   *Driver

@@ -1,4 +1,4 @@
-package store_test
+package postgres_test
 
 import (
 	"context"
@@ -13,8 +13,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"aviary/supervisor/internal/store"
 	"aviary/supervisor/internal/testenv"
+	"aviary/supervisor/store"
 )
 
 var ctx = context.Background()
@@ -22,7 +22,7 @@ var ctx = context.Background()
 // supervisor is the Store of a Supervisor in a test. Its methods fail the
 // test if the Store does not do what they ask of it.
 type supervisor struct {
-	*store.Store
+	store.Store
 	t        *testing.T
 	database string
 }

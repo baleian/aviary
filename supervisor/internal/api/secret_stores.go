@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"aviary/supervisor/internal/store"
+	"aviary/supervisor/store"
 )
 
 // secretStore is a secret store as the API answers it. What the store is

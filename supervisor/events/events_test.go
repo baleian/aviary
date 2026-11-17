@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"aviary/supervisor/internal/store"
+	"aviary/supervisor/store"
 )
 
 func TestLast(t *testing.T) {

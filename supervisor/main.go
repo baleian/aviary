@@ -21,7 +21,6 @@ import (
 	"k8s.io/klog/v2"
 
 	"aviary/supervisor/events"
-	"aviary/supervisor/events/resp"
 	"aviary/supervisor/internal/api"
 	"aviary/supervisor/internal/authz"
 	"aviary/supervisor/internal/driver"
@@ -29,8 +28,7 @@ import (
 	runnerv1 "aviary/supervisor/internal/gen/aviary/runner/v1"
 	"aviary/supervisor/internal/metrics"
 	"aviary/supervisor/internal/secret"
-	"aviary/supervisor/internal/secret/kv2"
-	"aviary/supervisor/internal/store"
+	"aviary/supervisor/store"
 )
 
 const (
@@ -100,19 +98,19 @@ func run(ctx context.Context, args []string) error {
 	case len(args) == 0:
 		return serve(ctx, database)
 	case len(args) == 1 && args[0] == "migrate":
-		return store.Migrate(ctx, database)
+		return store.Migrate(ctx, database, databases...)
 	case len(args) == 2 && args[0] == "migrate":
 		version, err := strconv.ParseInt(args[1], 10, 64)
 		if err != nil {
 			return fmt.Errorf("%q is not a schema version", args[1])
 		}
-		return store.MigrateTo(ctx, database, version)
+		return store.MigrateTo(ctx, database, version, databases...)
 	}
 	return errors.New("usage: aviary-supervisor [migrate [<version>]]")
 }
 
 func serve(ctx context.Context, database string) error {
-	st, err := store.Open(ctx, database)
+	st, err := store.Open(ctx, database, databases...)
 	if err != nil {
 		return err
 	}
@@ -122,9 +120,7 @@ func serve(ctx context.Context, database string) error {
 	if err != nil {
 		return err
 	}
-	// The plugins are the kinds of event log that this build connects to:
-	// another kind is added here.
-	ev, err := events.Open(address, resp.Plugin{})
+	ev, err := events.Open(address, eventLogs...)
 	if err != nil {
 		return err
 	}
@@ -134,7 +130,7 @@ func serve(ctx context.Context, database string) error {
 	if err != nil {
 		return err
 	}
-	stores, err := secretStores()
+	stores, err := allowedSecretStores()
 	if err != nil {
 		return err
 	}
@@ -168,7 +164,7 @@ func serve(ctx context.Context, database string) error {
 // seals the secrets that it stores with the keys, and reads the others from
 // the stores. Every sweep it looks for what the runners are to be told and
 // no Supervisor announced.
-func serveOn(ctx context.Context, on ports, st *store.Store, ev *events.Streams, client kubernetes.Interface, config driver.Config, keys *secret.Keys, stores *secret.Stores, sweep time.Duration) error {
+func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, client kubernetes.Interface, config driver.Config, keys *secret.Keys, stores *secret.Stores, sweep time.Duration) error {
 	m := metrics.New()
 	dr, err := driver.New(config, client, st, ev, m)
 	if err != nil {
@@ -248,11 +244,10 @@ func encryption() (*secret.Keys, error) {
 	return secret.Load(dir, current)
 }
 
-// secretStores reads the hosts at which the installation allows the secret
-// stores of the projects: a JSON list such as ["secrets.example.com:8200"].
-// The drivers are the kinds of store that this build asks: another kind is
-// added here.
-func secretStores() (*secret.Stores, error) {
+// allowedSecretStores reads the hosts at which the installation allows the
+// secret stores of the projects: a JSON list such as
+// ["secrets.example.com:8200"].
+func allowedSecretStores() (*secret.Stores, error) {
 	encoded, err := env(secretStoreHosts)
 	if err != nil {
 		return nil, err
@@ -261,7 +256,7 @@ func secretStores() (*secret.Stores, error) {
 	if err := json.Unmarshal([]byte(encoded), &hosts); err != nil {
 		return nil, fmt.Errorf("%s: %w", secretStoreHosts, err)
 	}
-	return secret.NewStores(hosts, kv2.Driver{})
+	return secret.NewStores(hosts, secretStores...)
 }
 
 // driverConfig reads how turns are run. The harnesses are a JSON object such

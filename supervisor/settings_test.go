@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"aviary/supervisor/events"
 	"aviary/supervisor/internal/secret/kv2"
+	"aviary/supervisor/store"
 )
 
 // settings are the variables of a Supervisor as the chart sets them.
@@ -97,7 +99,7 @@ func TestDriverConfig(t *testing.T) {
 // and asks the stores of the kinds that it was built with.
 func TestSecretStoreSettings(t *testing.T) {
 	t.Setenv(secretStoreHosts, `["secrets.example.com:8200"]`)
-	stores, err := secretStores()
+	stores, err := allowedSecretStores()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,8 +118,26 @@ func TestSecretStoreSettings(t *testing.T) {
 	// A Supervisor with a list that it cannot use does not start.
 	for _, wrong := range []string{"", "secrets.example.com", `["https://secrets.example.com"]`} {
 		t.Setenv(secretStoreHosts, wrong)
-		if stores, err := secretStores(); err == nil {
+		if stores, err := allowedSecretStores(); err == nil {
 			t.Errorf("with the hosts %q, the stores are %+v", wrong, stores)
 		}
+	}
+}
+
+// This build connects to the kinds of database and of event log that its
+// plugins are for, and tells of them when it is given another.
+func TestPluginsOfThisBuild(t *testing.T) {
+	ctx := context.Background()
+	if _, err := store.Open(ctx, "mysql://user:secret@host/records", databases...); err == nil ||
+		!strings.Contains(err.Error(), "postgres, postgresql") || strings.Contains(err.Error(), "secret") {
+		t.Errorf("a database that the build has no plugin for was opened with: %v", err)
+	}
+	if _, err := events.Open("amqp://user:secret@host", eventLogs...); err == nil ||
+		!strings.Contains(err.Error(), "valkey, valkeys, redis, rediss") || strings.Contains(err.Error(), "secret") {
+		t.Errorf("an event log that the build has no plugin for was opened with: %v", err)
+	}
+	// An address that the plugin of its scheme cannot use.
+	if _, err := events.Open("valkey://user:secret@host:port", eventLogs...); err == nil || strings.Contains(err.Error(), "secret") {
+		t.Errorf("an event log with a port that is none was opened with: %v", err)
 	}
 }

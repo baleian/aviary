@@ -15,7 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"aviary/supervisor/internal/store"
+	"aviary/supervisor/store"
 )
 
 // The events that the Supervisor writes itself. The others come from the

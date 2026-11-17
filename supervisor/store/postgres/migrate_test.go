@@ -1,4 +1,4 @@
-package store_test
+package postgres_test
 
 import (
 	"context"
@@ -9,8 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"aviary/supervisor/internal/store"
 	"aviary/supervisor/internal/testenv"
+	"aviary/supervisor/store/postgres"
 )
 
 // rows returns the rows that the query finds in the database, each as text.
@@ -59,35 +59,35 @@ func TestMigrate(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	database := testenv.EmptyDatabase(t)
-	if st, err := store.Open(ctx, database); err == nil {
+	if st, err := (postgres.Plugin{}).Open(ctx, database); err == nil {
 		st.Close()
 		t.Fatal("a database without the schema was opened")
 	} else if !strings.Contains(err.Error(), "aviary-supervisor migrate") {
 		t.Errorf("the error does not say what to do about a database without the schema: %v", err)
 	}
 
-	if err := store.Migrate(ctx, database); err != nil {
+	if err := (postgres.Plugin{}).Migrate(ctx, database); err != nil {
 		t.Fatal(err)
 	}
 	newest := schema(t, database)
 	if len(newest) == 0 {
 		t.Fatal("the migrations made nothing")
 	}
-	if err := store.Migrate(ctx, database); err != nil {
+	if err := (postgres.Plugin{}).Migrate(ctx, database); err != nil {
 		t.Fatalf("migrate a database that is up to date: %v", err)
 	}
 
 	// Every migration can be undone by itself.
 	versions := rows(t, database, `select version_id from goose_db_version where version_id > 0 order by 1 desc`)
 	for i := range versions {
-		if err := store.MigrateTo(ctx, database, int64(len(versions)-i-1)); err != nil {
+		if err := (postgres.Plugin{}).MigrateTo(ctx, database, int64(len(versions)-i-1)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if left := schema(t, database); len(left) != 0 {
 		t.Errorf("the migrations, undone, leave behind:\n%s", strings.Join(left, "\n"))
 	}
-	if err := store.Migrate(ctx, database); err != nil {
+	if err := (postgres.Plugin{}).Migrate(ctx, database); err != nil {
 		t.Fatal(err)
 	}
 	if again := schema(t, database); !slices.Equal(again, newest) {
@@ -96,7 +96,7 @@ func TestMigrate(t *testing.T) {
 	}
 
 	for _, version := range []int64{-1, int64(len(versions)) + 1} {
-		if err := store.MigrateTo(ctx, database, version); err == nil {
+		if err := (postgres.Plugin{}).MigrateTo(ctx, database, version); err == nil {
 			t.Errorf("the schema was moved to version %d, which there is not", version)
 		}
 	}
@@ -113,7 +113,7 @@ func TestOpenChecksTheSchema(t *testing.T) {
 
 	// A newer release has dropped what this one uses.
 	testenv.Exec(t, database, `update schema_floor set version = (select max(version_id) from goose_db_version)`)
-	if st, err := store.Open(context.Background(), database); err == nil {
+	if st, err := (postgres.Plugin{}).Open(context.Background(), database); err == nil {
 		st.Close()
 		t.Error("a database that no longer supports this build was opened")
 	}

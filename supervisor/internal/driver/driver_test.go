@@ -19,7 +19,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
 
-	"aviary/supervisor/internal/store"
+	"aviary/supervisor/store"
 )
 
 // config is how a driver is set up in the tests.

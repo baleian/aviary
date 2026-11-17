@@ -1,4 +1,4 @@
-package store
+package postgres
 
 import (
 	"context"
@@ -27,20 +27,20 @@ var migrations embed.FS
 // undefinedTable is the PostgreSQL error code for a table that does not exist.
 const undefinedTable = "42P01"
 
-// Migrate brings the schema of the database at url up to date.
-func Migrate(ctx context.Context, url string) error {
+// Migrate brings the schema of the database at the address up to date.
+func (p Plugin) Migrate(ctx context.Context, address string) error {
 	latest, err := latestMigration()
 	if err != nil {
 		return err
 	}
-	return MigrateTo(ctx, url, latest)
+	return p.MigrateTo(ctx, address, latest)
 }
 
-// MigrateTo brings the schema of the database at url to the given version,
-// forward or back. Going back is for the rare case that a schema change
-// itself has to be undone: it drops what the newer migrations added, with
-// the data in it. Going back to an earlier release does not need it.
-func MigrateTo(ctx context.Context, url string, version int64) error {
+// MigrateTo brings the schema of the database at the address to the given
+// version, forward or back. Going back is for the rare case that a schema
+// change itself has to be undone: it drops what the newer migrations added,
+// with the data in it. Going back to an earlier release does not need it.
+func (Plugin) MigrateTo(ctx context.Context, address string, version int64) error {
 	latest, err := latestMigration()
 	if err != nil {
 		return err
@@ -48,7 +48,7 @@ func MigrateTo(ctx context.Context, url string, version int64) error {
 	if version < 0 || version > latest {
 		return fmt.Errorf("there is no schema version %d; the newest is %d", version, latest)
 	}
-	pool, err := pgxpool.New(ctx, url)
+	pool, err := pgxpool.New(ctx, address)
 	if err != nil {
 		return fmt.Errorf("connect to database: %w", err)
 	}

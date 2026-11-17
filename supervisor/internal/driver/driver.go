@@ -29,7 +29,7 @@ import (
 
 	"aviary/supervisor/events"
 	"aviary/supervisor/internal/metrics"
-	"aviary/supervisor/internal/store"
+	"aviary/supervisor/store"
 )
 
 // What the chart names the things that the turn pods use.
@@ -119,7 +119,7 @@ type Driver struct {
 	proxy   *url.URL
 	noProxy string
 	client  kubernetes.Interface
-	store   *store.Store
+	store   store.Store
 	events  *events.Streams
 	metrics *metrics.Metrics
 	wake    chan struct{}
@@ -146,7 +146,7 @@ func newClient(cluster *rest.Config) (kubernetes.Interface, error) {
 }
 
 // New returns a driver that runs the turns in the cluster of the client.
-func New(config Config, client kubernetes.Interface, st *store.Store, ev *events.Streams, m *metrics.Metrics) (*Driver, error) {
+func New(config Config, client kubernetes.Interface, st store.Store, ev *events.Streams, m *metrics.Metrics) (*Driver, error) {
 	for name, harness := range config.Harnesses {
 		if err := checkResources(harness.Resources); err != nil {
 			return nil, fmt.Errorf("the resources of the harness %s: %w", name, err)

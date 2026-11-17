@@ -10,7 +10,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"aviary/supervisor/internal/store"
+	"aviary/supervisor/store"
 )
 
 // Metrics counts and times the turns. Of several Supervisors, each reports

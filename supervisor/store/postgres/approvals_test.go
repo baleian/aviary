@@ -1,4 +1,4 @@
-package store_test
+package postgres_test
 
 import (
 	"slices"
@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"aviary/supervisor/internal/store"
+	"aviary/supervisor/store"
 )
 
 func TestApprovals(t *testing.T) {

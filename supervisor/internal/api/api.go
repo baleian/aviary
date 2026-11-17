@@ -16,7 +16,7 @@ import (
 	"aviary/supervisor/events"
 	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/internal/secret"
-	"aviary/supervisor/internal/store"
+	"aviary/supervisor/store"
 )
 
 const maxBodyBytes = 1 << 20
@@ -29,7 +29,7 @@ const (
 )
 
 type api struct {
-	store  *store.Store
+	store  store.Store
 	events *events.Streams
 	driver *driver.Driver
 	// keys seal the secrets that the API is given, before they are stored.
@@ -62,7 +62,7 @@ var (
 
 // New returns the handler of the API. An event stream stays open for as long
 // as its client does, so the streams end when closing is closed.
-func New(st *store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Keys, stores *secret.Stores, closing <-chan struct{}) http.Handler {
+func New(st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Keys, stores *secret.Stores, closing <-chan struct{}) http.Handler {
 	a := &api{store: st, events: ev, driver: dr, keys: keys, stores: stores, closing: closing}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})

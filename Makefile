@@ -61,9 +61,9 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 proto:
 	$(BUF_GENERATE)
 
-# Writes the Go code for the Supervisor's queries, which are in
-# supervisor/internal/store/queries.sql, to supervisor/internal/gen/db. Run it
-# after changing a query or adding a migration.
+# Writes the Go code for the queries of the Supervisor's PostgreSQL plugin,
+# which are in supervisor/store/postgres/queries.sql, to internal/db beside
+# them. Run it after changing a query or adding a migration.
 sqlc:
 	$(SQLC_RUN) generate
 
@@ -82,7 +82,7 @@ lint:
 
 # The tests that need no cluster, all at once. Each of them is a target of
 # its own, and TESTS narrows a run of one to some of its tests, for example
-# make test-supervisor TESTS='-run TestEndTurn ./internal/store'
+# make test-supervisor TESTS='-run TestEndTurn ./store/postgres'
 # make test-runner TESTS=cut
 test:
 	$(MAKE) --jobs --output-sync=target test-supervisor test-runner test-mock-llm test-chart test-proxy

@@ -1,0 +1,630 @@
+// Package postgres keeps the Supervisor's records in PostgreSQL. Its queries
+// are in queries.sql, and `make sqlc` writes the Go code for them to
+// internal/db.
+package postgres
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"aviary/supervisor/store"
+	"aviary/supervisor/store/postgres/internal/db"
+)
+
+// uniqueViolation is the PostgreSQL error code for a broken unique constraint.
+const uniqueViolation = "23505"
+
+// dispatchLock is the key of the advisory lock that is held while turns are
+// dispatched.
+const dispatchLock int64 = 0x617669617279 // "aviary"
+
+// queueLock is the key of the advisory lock that is held while turns that
+// wait are told their positions.
+const queueLock int64 = dispatchLock + 1
+
+type records struct {
+	pool    *pgxpool.Pool
+	queries *db.Queries
+}
+
+// Plugin connects the Supervisor to PostgreSQL databases, whose addresses
+// begin with postgres:// or postgresql://.
+type Plugin struct{}
+
+func (Plugin) Schemes() []string { return []string{"postgres", "postgresql"} }
+
+// Open connects to the database at the address. Its schema must be at least
+// as new as this build needs; Migrate brings it there.
+func (Plugin) Open(ctx context.Context, address string) (store.Store, error) {
+	pool, err := pgxpool.New(ctx, address)
+	if err != nil {
+		return nil, fmt.Errorf("connect to database: %w", err)
+	}
+	if err := checkSchema(ctx, pool); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return &records{pool: pool, queries: db.New(pool)}, nil
+}
+
+func (s *records) Close() {
+	s.pool.Close()
+}
+
+func (s *records) CreateProject(ctx context.Context, name string) (store.Project, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return store.Project{}, err
+	}
+	row, err := s.queries.CreateProject(ctx, db.CreateProjectParams{ID: id, Name: name})
+	return store.Project(row), err
+}
+
+func (s *records) Project(ctx context.Context, id uuid.UUID) (store.Project, error) {
+	row, err := s.queries.GetProject(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.Project{}, store.ErrNotFound
+	}
+	return store.Project(row), err
+}
+
+func (s *records) CreateAgent(ctx context.Context, projectID uuid.UUID, agent store.Agent) (store.Agent, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return store.Agent{}, err
+	}
+	params := db.CreateAgentParams{
+		ID: id, ProjectID: projectID, Harness: agent.Harness, Instructions: agent.Instructions,
+		Resources: agent.Resources, Approval: agent.Approval,
+	}
+	if agent.Model != nil {
+		params.ProviderID, params.Model = &agent.Model.Provider, agent.Model.Name
+	}
+	row, err := s.queries.CreateAgent(ctx, params)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.Agent{}, store.ErrNotFound
+	}
+	return agentFrom(row), err
+}
+
+func (s *records) Agent(ctx context.Context, id uuid.UUID) (store.Agent, error) {
+	row, err := s.queries.GetAgent(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.Agent{}, store.ErrNotFound
+	}
+	return agentFrom(row), err
+}
+
+func (s *records) CreateSession(ctx context.Context, agentID uuid.UUID) (store.Session, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return store.Session{}, err
+	}
+	row, err := s.queries.CreateSession(ctx, db.CreateSessionParams{ID: id, AgentID: agentID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.Session{}, store.ErrNotFound
+	}
+	return sessionFrom(row), err
+}
+
+func (s *records) Session(ctx context.Context, id uuid.UUID) (store.Session, error) {
+	row, err := s.queries.GetSession(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.Session{}, store.ErrNotFound
+	}
+	return sessionFrom(row), err
+}
+
+func (s *records) CreateProvider(ctx context.Context, provider store.Provider) (store.Provider, error) {
+	row, err := s.queries.CreateProvider(ctx, db.CreateProviderParams{
+		ID: provider.ID, ProjectID: provider.ProjectID, Name: provider.Name, Url: provider.URL, ApiKey: provider.APIKey,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.Provider{}, store.ErrNotFound
+	}
+	return providerFrom(row), err
+}
+
+func (s *records) Provider(ctx context.Context, id uuid.UUID) (store.Provider, error) {
+	row, err := s.queries.GetProvider(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.Provider{}, store.ErrNotFound
+	}
+	return providerFrom(row), err
+}
+
+func (s *records) ReplaceProvider(ctx context.Context, provider store.Provider) (store.Provider, error) {
+	row, err := s.queries.ReplaceProvider(ctx, db.ReplaceProviderParams{
+		ID: provider.ID, Name: provider.Name, Url: provider.URL, ApiKey: provider.APIKey,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.Provider{}, store.ErrNotFound
+	}
+	return providerFrom(row), err
+}
+
+func (s *records) CreateSecretStore(ctx context.Context, secrets store.SecretStore) (store.SecretStore, error) {
+	row, err := s.queries.CreateSecretStore(ctx, db.CreateSecretStoreParams{
+		ID: secrets.ID, ProjectID: secrets.ProjectID, Name: secrets.Name, Kind: secrets.Kind,
+		Settings: secrets.Settings, Credential: secrets.Credential,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.SecretStore{}, store.ErrNotFound
+	}
+	return secretStoreFrom(row), err
+}
+
+func (s *records) SecretStore(ctx context.Context, id uuid.UUID) (store.SecretStore, error) {
+	row, err := s.queries.GetSecretStore(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.SecretStore{}, store.ErrNotFound
+	}
+	return secretStoreFrom(row), err
+}
+
+func (s *records) ReplaceSecretStore(ctx context.Context, secrets store.SecretStore) (store.SecretStore, error) {
+	row, err := s.queries.ReplaceSecretStore(ctx, db.ReplaceSecretStoreParams{
+		ID: secrets.ID, Name: secrets.Name, Kind: secrets.Kind, Settings: secrets.Settings, Credential: secrets.Credential,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.SecretStore{}, store.ErrNotFound
+	}
+	return secretStoreFrom(row), err
+}
+
+func (s *records) CreateTurn(ctx context.Context, sessionID uuid.UUID, text string, maxWaiting, maxRunning int) (store.Turn, int, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return store.Turn{}, 0, err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.Turn{}, 0, err
+	}
+	defer tx.Rollback(ctx)
+	queries := s.queries.WithTx(tx)
+	if maxWaiting > 0 {
+		// Messages are accepted one at a time, so that the count holds also
+		// when they reach several Supervisors at once.
+		if err := queries.Lock(ctx, queueLock); err != nil {
+			return store.Turn{}, 0, err
+		}
+	}
+	row, err := queries.CreateTurn(ctx, db.CreateTurnParams{ID: id, SessionID: sessionID, Text: text})
+	var failure *pgconn.PgError
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return store.Turn{}, 0, store.ErrNotFound
+	case errors.As(err, &failure) && failure.Code == uniqueViolation:
+		return store.Turn{}, 0, store.ErrSessionBusy
+	case err != nil:
+		return store.Turn{}, 0, err
+	}
+	waiting, err := queries.CountWaitingTurns(ctx, int64(maxRunning))
+	if err != nil {
+		return store.Turn{}, 0, err
+	}
+	if maxWaiting > 0 && waiting > int64(maxWaiting) {
+		return store.Turn{}, 0, store.ErrQueueFull
+	}
+	return turnFrom(row), int(max(waiting, 0)), tx.Commit(ctx)
+}
+
+func (s *records) AnnounceQueue(ctx context.Context, announce func(queued []uuid.UUID) error) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	queries := s.queries.WithTx(tx)
+	if err := queries.Lock(ctx, queueLock); err != nil {
+		return err
+	}
+	queued, err := queries.QueuedTurns(ctx)
+	if err != nil {
+		return err
+	}
+	if err := announce(queued); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *records) CancellingTurns(ctx context.Context) ([]uuid.UUID, error) {
+	return s.queries.CancellingTurns(ctx)
+}
+
+func (s *records) Turn(ctx context.Context, id uuid.UUID) (store.Turn, error) {
+	row, err := s.queries.GetTurn(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.Turn{}, store.ErrNotFound
+	}
+	return turnFrom(row), err
+}
+
+func (s *records) Turns(ctx context.Context, sessionID uuid.UUID, before, limit int) ([]store.Turn, error) {
+	rows, err := s.queries.ListTurns(ctx, db.ListTurnsParams{SessionID: sessionID, Before: int32(before), Count: int32(limit)})
+	if err != nil {
+		return nil, err
+	}
+	turns := make([]store.Turn, len(rows))
+	for i, row := range rows {
+		turns[i] = turnFrom(row)
+	}
+	return turns, nil
+}
+
+func (s *records) TurnItems(ctx context.Context, turnIDs []uuid.UUID) (map[uuid.UUID][]json.RawMessage, error) {
+	rows, err := s.queries.ListTurnItems(ctx, turnIDs)
+	if err != nil {
+		return nil, err
+	}
+	items := map[uuid.UUID][]json.RawMessage{}
+	for _, row := range rows {
+		items[row.TurnID] = append(items[row.TurnID], row.Item)
+	}
+	return items, nil
+}
+
+func (s *records) DispatchTurns(ctx context.Context, limit int) ([]store.Dispatch, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	queries := s.queries.WithTx(tx)
+	// One Supervisor at a time counts the running turns and picks the next,
+	// so that several Supervisors together stay within the limit.
+	if err := queries.Lock(ctx, dispatchLock); err != nil {
+		return nil, err
+	}
+	rows, err := queries.NextTurns(ctx, int64(limit))
+	if err != nil {
+		return nil, err
+	}
+	dispatches := make([]store.Dispatch, len(rows))
+	for i, row := range rows {
+		dispatches[i] = store.Dispatch{
+			TurnID:    row.TurnID,
+			SessionID: row.SessionID,
+			AgentID:   row.AgentID,
+			ProjectID: row.ProjectID,
+			Harness:   row.Harness,
+			Resources: row.Resources,
+			Approval:  row.Approval,
+			// The agent's provider and model, if it names its model.
+			ProviderURL: row.ProviderUrl,
+			Model:       row.Model,
+			Token:       store.NewToken(),
+			Waited:      time.Duration(row.Waited * float64(time.Second)),
+		}
+		err := queries.DispatchTurn(ctx, db.DispatchTurnParams{ID: row.TurnID, TokenHash: store.HashToken(dispatches[i].Token)})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return dispatches, tx.Commit(ctx)
+}
+
+func (s *records) CancelTurn(ctx context.Context, id uuid.UUID) (store.Turn, bool, error) {
+	row, err := s.queries.CancelTurn(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		turn, err := s.Turn(ctx, id)
+		return turn, false, err
+	}
+	return turnFrom(row), err == nil, err
+}
+
+func (s *records) ExpireTurns(ctx context.Context, wait time.Duration) ([]store.Turn, error) {
+	rows, err := s.queries.ExpireTurns(ctx, wait.Seconds())
+	if err != nil {
+		return nil, err
+	}
+	turns := make([]store.Turn, len(rows))
+	for i, row := range rows {
+		turns[i] = turnFrom(row)
+	}
+	return turns, nil
+}
+
+func (s *records) DispatchedTurns(ctx context.Context) ([]store.DispatchedTurn, error) {
+	rows, err := s.queries.DispatchedTurns(ctx)
+	if err != nil {
+		return nil, err
+	}
+	turns := make([]store.DispatchedTurn, len(rows))
+	for i, row := range rows {
+		turns[i] = store.DispatchedTurn{
+			ID:         row.ID,
+			Taken:      row.Taken,
+			Age:        time.Duration(row.Age * float64(time.Second)),
+			Cancelling: time.Duration(row.Cancelling * float64(time.Second)),
+		}
+	}
+	return turns, nil
+}
+
+func (s *records) TakeTurn(ctx context.Context, token string, runner *uuid.UUID) (store.TakenTurn, error) {
+	hash := store.HashToken(token)
+	row, err := s.queries.TakeTurn(ctx, db.TakeTurnParams{TokenHash: hash, RunnerID: runner})
+	if err == nil {
+		return store.TakenTurn{
+			Turn: store.Turn{
+				ID:        row.ID,
+				SessionID: row.SessionID,
+				Seq:       int(row.Seq),
+				State:     store.TurnRunning,
+				Text:      row.Text,
+				CreatedAt: row.CreatedAt,
+			},
+			HarnessSessionID: row.HarnessSessionID,
+			Harness:          row.Harness,
+			Instructions:     row.Instructions,
+			Again:            row.Again,
+		}, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return store.TakenTurn{}, err
+	}
+	state, err := s.queries.GetTurnState(ctx, hash)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return store.TakenTurn{}, store.ErrNotFound
+	case err != nil:
+		return store.TakenTurn{}, err
+	case state == store.TurnDispatching:
+		// The turn was not taken, so it was cancelled or given up before
+		// its runner came for it.
+		return store.TakenTurn{}, store.ErrTurnCancelled
+	case state == store.TurnRunning:
+		return store.TakenTurn{}, store.ErrTurnTaken
+	}
+	return store.TakenTurn{}, store.ErrTurnEnded
+}
+
+func (s *records) RunningTurn(ctx context.Context, token string) (store.Origin, error) {
+	row, err := s.queries.RunningTurn(ctx, store.HashToken(token))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.Origin{}, store.ErrNotFound
+	}
+	origin := store.Origin{TurnID: row.TurnID, SessionID: row.SessionID, AgentID: row.AgentID, ProjectID: row.ProjectID}
+	if row.ProviderID != nil {
+		origin.Provider = &store.Provider{
+			ID: *row.ProviderID, ProjectID: row.ProjectID, URL: row.ProviderUrl, APIKey: row.ProviderApiKey,
+		}
+	}
+	return origin, err
+}
+
+func (s *records) StartTurn(ctx context.Context, turnID uuid.UUID, harnessSessionID string) (time.Duration, bool, error) {
+	startup, err := s.queries.StartTurn(ctx, db.StartTurnParams{TurnID: turnID, HarnessSessionID: harnessSessionID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	return time.Duration(startup * float64(time.Second)), err == nil, err
+}
+
+func (s *records) TurnHarness(ctx context.Context, turnID uuid.UUID) (string, error) {
+	return s.queries.GetTurnHarness(ctx, turnID)
+}
+
+func (s *records) SetFinished(ctx context.Context, turnID uuid.UUID, stopReason string, usage *store.Usage) error {
+	finished := db.SetFinishedParams{ID: turnID, StopReason: stopReason}
+	if usage != nil {
+		finished.TotalTokens = &usage.TotalTokens
+		finished.InputTokens = &usage.InputTokens
+		finished.OutputTokens = &usage.OutputTokens
+		finished.ThoughtTokens = usage.ThoughtTokens
+		finished.CachedReadTokens = usage.CachedReadTokens
+		finished.CachedWriteTokens = usage.CachedWriteTokens
+	}
+	return s.queries.SetFinished(ctx, finished)
+}
+
+func (s *records) GiveUpTurn(ctx context.Context, turnID uuid.UUID, failure store.Failure) (bool, error) {
+	changed, err := s.queries.GiveUpTurn(ctx, db.GiveUpTurnParams{ID: turnID, Reason: failure.Reason, Message: failure.Message})
+	return changed == 1, err
+}
+
+func (s *records) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool, failure store.Failure,
+	items func(context.Context) ([]json.RawMessage, error)) (store.Turn, bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.Turn{}, false, err
+	}
+	defer tx.Rollback(ctx)
+	queries := s.queries.WithTx(tx)
+	row, err := queries.EndTurn(ctx, db.EndTurnParams{
+		ID:        turnID,
+		Succeeded: succeeded,
+		Reason:    failure.Reason,
+		Message:   failure.Message,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.Turn{}, false, nil
+	}
+	if err != nil {
+		return store.Turn{}, false, err
+	}
+	turn := turnFrom(row)
+	// Of several Supervisors that end the turn at once, only the one that
+	// gets here keeps the items.
+	said, err := items(ctx)
+	if err != nil {
+		return store.Turn{}, false, fmt.Errorf("read what the turn said: %w", err)
+	}
+	if len(said) > 0 {
+		rows := make([]db.AddTurnItemsParams, len(said))
+		for i, item := range said {
+			rows[i] = db.AddTurnItemsParams{TurnID: turnID, Seq: int32(i + 1), Item: storable(item)}
+		}
+		if _, err := queries.AddTurnItems(ctx, rows); err != nil {
+			return store.Turn{}, false, err
+		}
+	}
+	return turn, true, tx.Commit(ctx)
+}
+
+func (s *records) AddApproval(ctx context.Context, turnID uuid.UUID, id string, request json.RawMessage) error {
+	return s.queries.AddApproval(ctx, db.AddApprovalParams{TurnID: turnID, ID: id, Request: storable(request)})
+}
+
+func (s *records) ResolveApproval(ctx context.Context, turnID uuid.UUID, id, outcome string) (store.Approval, time.Duration, bool, error) {
+	row, err := s.queries.ResolveApproval(ctx, db.ResolveApprovalParams{TurnID: turnID, ID: id, Outcome: &outcome})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.Approval{}, 0, false, nil
+	}
+	resolved := store.Approval{Request: row.Request, Resolved: true}
+	return resolved, time.Duration(row.Waited * float64(time.Second)), err == nil, err
+}
+
+func (s *records) Approval(ctx context.Context, turnID uuid.UUID, id string) (store.Approval, error) {
+	row, err := s.queries.GetApproval(ctx, db.GetApprovalParams{TurnID: turnID, ID: id})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.Approval{}, store.ErrNotFound
+	}
+	return store.Approval{Request: row.Request, Answered: row.AnsweredAt != nil, Resolved: row.ResolvedAt != nil}, err
+}
+
+func (s *records) AnswerApproval(ctx context.Context, turnID uuid.UUID, id, optionID string) (bool, error) {
+	answered, err := s.queries.AnswerApproval(ctx, db.AnswerApprovalParams{TurnID: turnID, ID: id, OptionID: optionID})
+	return answered == 1, err
+}
+
+func (s *records) WaitingApprovals(ctx context.Context, turnID uuid.UUID) ([]json.RawMessage, error) {
+	rows, err := s.queries.WaitingApprovals(ctx, turnID)
+	if err != nil {
+		return nil, err
+	}
+	requests := make([]json.RawMessage, len(rows))
+	for i, row := range rows {
+		requests[i] = row
+	}
+	return requests, nil
+}
+
+func (s *records) Answers(ctx context.Context, turnID *uuid.UUID) ([]store.Answer, error) {
+	rows, err := s.queries.Answers(ctx, turnID)
+	if err != nil {
+		return nil, err
+	}
+	answers := make([]store.Answer, len(rows))
+	for i, row := range rows {
+		answers[i] = store.Answer{TurnID: row.TurnID, ID: row.ID, OptionID: row.OptionID}
+	}
+	return answers, nil
+}
+
+// storable returns an item as PostgreSQL can keep it. It cannot keep the
+// character U+0000 in jsonb, so the replacement character takes its place.
+func storable(item json.RawMessage) []byte {
+	if !bytes.Contains(item, []byte(`\u0000`)) {
+		return item
+	}
+	var kept []byte
+	for i := 0; i < len(item); i++ {
+		switch {
+		case item[i] != '\\':
+			kept = append(kept, item[i])
+		case bytes.HasPrefix(item[i:], []byte(`\u0000`)):
+			kept = append(kept, `\ufffd`...)
+			i += 5
+		default:
+			// Another escaped character, which may be a backslash.
+			kept = append(kept, item[i], item[i+1])
+			i++
+		}
+	}
+	return kept
+}
+
+// agentFrom returns a row of the agents table as an Agent.
+func agentFrom(row db.Agent) store.Agent {
+	agent := store.Agent{
+		ID:           row.ID,
+		ProjectID:    row.ProjectID,
+		Harness:      row.Harness,
+		CreatedAt:    row.CreatedAt,
+		Instructions: row.Instructions,
+		Resources:    row.Resources,
+		Approval:     row.Approval,
+	}
+	if row.ProviderID != nil {
+		agent.Model = &store.Model{Provider: *row.ProviderID, Name: row.Model}
+	}
+	return agent
+}
+
+// secretStoreFrom returns a row of the secret_stores table as a SecretStore.
+func secretStoreFrom(row db.SecretStore) store.SecretStore {
+	return store.SecretStore{
+		ID:         row.ID,
+		ProjectID:  row.ProjectID,
+		Name:       row.Name,
+		Kind:       row.Kind,
+		Settings:   row.Settings,
+		Credential: row.Credential,
+		CreatedAt:  row.CreatedAt,
+		UpdatedAt:  row.UpdatedAt,
+	}
+}
+
+// providerFrom returns a row of the providers table as a Provider.
+func providerFrom(row db.Provider) store.Provider {
+	return store.Provider{
+		ID:        row.ID,
+		ProjectID: row.ProjectID,
+		Name:      row.Name,
+		URL:       row.Url,
+		APIKey:    row.ApiKey,
+		CreatedAt: row.CreatedAt,
+		UpdatedAt: row.UpdatedAt,
+	}
+}
+
+// sessionFrom returns a row of the sessions table as a Session.
+func sessionFrom(row db.Session) store.Session {
+	return store.Session{ID: row.ID, AgentID: row.AgentID, CreatedAt: row.CreatedAt}
+}
+
+// turnFrom returns a row of the turns table as a Turn.
+func turnFrom(row db.Turn) store.Turn {
+	turn := store.Turn{
+		ID:                row.ID,
+		SessionID:         row.SessionID,
+		Seq:               int(row.Seq),
+		State:             row.State,
+		Text:              row.Text,
+		CreatedAt:         row.CreatedAt,
+		StartedAt:         row.StartedAt,
+		StopReason:        row.StopReason,
+		EndedAt:           row.EndedAt,
+		CancelRequestedAt: row.CancelRequestedAt,
+	}
+	if row.FailureReason != nil {
+		turn.Failure = &store.Failure{Reason: *row.FailureReason}
+		if row.FailureMessage != nil {
+			turn.Failure.Message = *row.FailureMessage
+		}
+	}
+	if row.TotalTokens != nil && row.InputTokens != nil && row.OutputTokens != nil {
+		turn.Usage = &store.Usage{
+			TotalTokens:       *row.TotalTokens,
+			InputTokens:       *row.InputTokens,
+			OutputTokens:      *row.OutputTokens,
+			ThoughtTokens:     row.ThoughtTokens,
+			CachedReadTokens:  row.CachedReadTokens,
+			CachedWriteTokens: row.CachedWriteTokens,
+		}
+	}
+	return turn
+}

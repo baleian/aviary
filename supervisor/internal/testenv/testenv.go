@@ -16,7 +16,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"aviary/supervisor/internal/secret"
-	"aviary/supervisor/internal/store"
+	"aviary/supervisor/store"
+	"aviary/supervisor/store/postgres"
 )
 
 // databaseURL names the variable with the URL of a PostgreSQL in which the
@@ -66,7 +67,7 @@ func EmptyDatabase(t testing.TB) string {
 func Database(t testing.TB) string {
 	t.Helper()
 	database := EmptyDatabase(t)
-	if err := store.Migrate(context.Background(), database); err != nil {
+	if err := (postgres.Plugin{}).Migrate(context.Background(), database); err != nil {
 		t.Fatal(err)
 	}
 	return database
@@ -74,9 +75,9 @@ func Database(t testing.TB) string {
 
 // Open returns a Store on the database, as one Supervisor has it. Several
 // Supervisors are several Stores on one database.
-func Open(t testing.TB, database string) *store.Store {
+func Open(t testing.TB, database string) store.Store {
 	t.Helper()
-	st, err := store.Open(context.Background(), database)
+	st, err := postgres.Plugin{}.Open(context.Background(), database)
 	if err != nil {
 		t.Fatal(err)
 	}

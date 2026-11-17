@@ -14,8 +14,8 @@ import (
 	"github.com/google/uuid"
 
 	"aviary/supervisor/internal/secret"
-	"aviary/supervisor/internal/store"
 	"aviary/supervisor/internal/testenv"
+	"aviary/supervisor/store"
 )
 
 // provider is a model provider as the API answers it.

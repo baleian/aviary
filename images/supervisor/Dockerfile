@@ -6,7 +6,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 go build -trimpath -o /aviary-supervisor .
 
 # Distroless adds what a static binary lacks: a non-root user, and the CA
-# certificates for verifying TLS connections to managed PostgreSQL and Valkey.
+# certificates for verifying TLS connections to a managed database and event
+# log.
 FROM gcr.io/distroless/static-debian13:nonroot@sha256:aafe993665bf6200db38a02c11a9351e782a84b6a45e7f33b6695638c88e3931
 COPY --from=build /aviary-supervisor /aviary-supervisor
 ENTRYPOINT ["/aviary-supervisor"]

@@ -15,7 +15,7 @@ import (
 
 	"aviary/supervisor/events"
 	"aviary/supervisor/events/memory"
-	"aviary/supervisor/internal/store"
+	"aviary/supervisor/store"
 )
 
 var ctx = context.Background()

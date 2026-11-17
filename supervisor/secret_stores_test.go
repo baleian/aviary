@@ -13,8 +13,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"aviary/supervisor/internal/store"
 	"aviary/supervisor/internal/testenv"
+	"aviary/supervisor/store"
 )
 
 // scripted is a driver of the tests, for secret stores of a kind that needs
