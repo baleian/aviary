@@ -14,9 +14,10 @@ and the number of turns that run at once is a setting.
 > **Status.** Aviary is at an early stage. A message sent to the API runs as
 > a turn, sessions continue across turns, turns beyond a limit wait their
 > turn, and what was said can be read back. The pod of a turn reaches the
-> outside only through a proxy that keeps a record. Supervisors can be
-> replaced while turns run. It has only run on a local cluster, and the API
-> has no authentication. See [What is missing](#what-is-missing).
+> outside only through a proxy that keeps a record. An agent can be made to
+> ask a person before it acts. Supervisors can be replaced while turns run.
+> It has only run on a local cluster, and the API has no authentication. See
+> [What is missing](#what-is-missing).
 
 ## How it works
 
@@ -125,10 +126,11 @@ still knows what was said and finds the file.
 | Request | |
 | --- | --- |
 | `POST /v1/projects` | Creates a project. Body: `{"name": "..."}`. |
-| `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"harness": "...", "instructions": "...", "resources": {...}}`. The harness is one of the configured harnesses. The instructions are what the agent is told before every turn, and may be left out. The resources are what the pod of each turn asks for and may use at most, as they are written for Kubernetes: `{"requests": {"cpu": "250m", "memory": "1Gi"}, "limits": {"memory": "4Gi"}}`. Given, they are taken as they are. Left out or empty, the agent has none of its own, and each of its turns gets the default of the harness as it then is. |
+| `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"harness": "...", "instructions": "...", "resources": {...}, "approval": "ask"}`. The harness is one of the configured harnesses. The instructions are what the agent is told before every turn, and may be left out. The resources are what the pod of each turn asks for and may use at most, as they are written for Kubernetes: `{"requests": {"cpu": "250m", "memory": "1Gi"}, "limits": {"memory": "4Gi"}}`. Given, they are taken as they are. Left out or empty, the agent has none of its own, and each of its turns gets the default of the harness as it then is. With `"approval": "ask"`, the agent asks a person before it acts: see [Approval](#approval). Left out, it asks nobody. |
 | `POST /v1/agents/{id}/sessions` | Creates a session. |
 | `POST /v1/sessions/{id}/messages` | Sends a message. Body: `{"text": "..."}`. Answers 202 with the turn, 409 if a turn of the session has not ended, or 429 with `Retry-After` if too many turns wait to run. |
 | `POST /v1/turns/{id}/cancel` | Cancels a turn. A turn that waits to run ends at once: 200 with the turn. A turn that runs is told to stop and ends when its pod has stopped: 202 with the turn. Answers 409 if the turn has ended in another way. |
+| `POST /v1/turns/{id}/approvals/{request}` | Answers a request for approval of the turn. Body: `{"option_id": "..."}`, the `id` of one of the options of the request. Answers 202 when the answer is on its way to the harness, 400 if the request has no such option, and 409 if the request has its answer or the turn has ended. |
 | `GET /v1/turns/{id}/events` | The events of the turn, as server-sent events. A client that reconnects sends `Last-Event-ID` and gets the events after it. |
 | `GET /v1/sessions/{id}/turns` | The turns of the session, newest first: `{"turns": [...]}`. `?limit=` is how many, 20 if it is not given and at most 100. `?before=` is the `seq` of a turn, and the answer then holds the turns before that one: that is how to read on from the last turn of an answer. The first turn of a session has `seq` 1. |
 | `GET /v1/projects/{id}`, `/v1/agents/{id}`, `/v1/sessions/{id}`, `/v1/turns/{id}` | Reads what was created. |
@@ -143,6 +145,8 @@ The events of a turn:
 | `tool.call` | `id`, `title`, `kind`, `status`, `input`: the agent started to use a tool. |
 | `tool.update` | `id` and what changed of `title`, `kind`, `status`, `input`, `output`. A text in `input` or `output` that is longer than the installation allows is cut, and says so at its end. |
 | `plan.update` | `entries`: the agent's plan, each entry with `content`, `priority` and `status`. |
+| `approval.requested` | The harness asks a person before it acts, and waits. `id`: the request. `tool_call`: what it is about to do, with the fields of `tool.call`. `options`: what a person can answer, each with `id`, `name` and `kind`, which is `allow_once`, `allow_always`, `reject_once` or `reject_always`. |
+| `approval.resolved` | The harness has its answer to the request `id`. `outcome`: `selected`, with the `option_id` that it was given, or `cancelled` if the turn was stopped before an answer came. |
 | `turn.completed` | `stop_reason`: why the harness ended the turn. `usage`: the token usage that the harness reported, if it did. The last event of the turn. |
 | `turn.failed` | The turn did not complete. `reason`: one of the words below. `message`: what is known of the failure. The last event of the turn. |
 | `turn.cancelled` | The turn was cancelled. The last event of the turn. |
@@ -169,6 +173,39 @@ fail is up to the harness: when the model endpoint answers with an error,
 OpenCode fails the turn, and Codex mostly ends it with the error as what the
 agent says.
 
+### Approval
+
+An agent that was created with `"approval": "ask"` has a person agree to
+what it does. Before its harness acts, the turn gets the event
+`approval.requested`, and the harness waits. A client answers with
+`POST /v1/turns/{id}/approvals/{request}` and one of the options that the
+harness gave. The harness goes on with that answer, and the turn gets
+`approval.resolved`. While a request waits, the turn has it in `approvals`
+when it is read, on its own or in the turns of its session, so a client that
+comes later finds what there is to answer.
+
+- **What is asked is up to the harness**, and to how its image sets it up.
+  Aviary passes the requests and the answers on as they are. Of the images
+  here, OpenCode asks before it runs a command or changes a file, and Codex
+  before a command runs outside its sandbox:
+  [`images/README.md`](images/README.md) tells more.
+- **A request waits for as long as its turn runs.** It has no time limit of
+  its own. A turn that waits for a person is a running turn: it keeps its
+  pod, and it is stopped when it has run for `runtime.maxTurnSeconds`. The
+  request then ends as `cancelled` and the turn fails as `timed_out`.
+  Cancelling the turn ends its requests in the same way.
+- **What an option does is up to the harness too.** How long an
+  `allow_always` holds differs: in OpenCode until the turn ends, in Codex
+  for the rest of the session. After a refusal both end the turn, Codex with
+  the stop reason `cancelled`.
+- **It is not what keeps an agent in.** The harness that asks runs in the
+  pod, beside the tools of the agent and as the same user. Approval keeps an
+  agent that means well from acting on a mistake. What a pod can reach is
+  bounded by the network policy and the Egress Proxy, whatever was approved.
+
+An agent without `approval` asks nobody. If its harness asks for permission
+all the same, the runner allows the action once.
+
 ### The record of a turn
 
 A turn, read on its own or in the turns of its session, has `items`: what
@@ -182,6 +219,7 @@ turn ended.
 | `message`, `thought` | `text`: the pieces that followed one another, as one text. |
 | `tool_call` | The fields of `tool.call`, as the updates of the call left them. |
 | `plan` | `entries`: the plan as it last stood. |
+| `approval` | The fields of `approval.requested`, and how the request ended: `outcome` and, if an option was selected, `option_id`. |
 
 A turn that did not complete keeps what there was until then: the text that
 the agent had written so far, and a tool call with the status that it had.
@@ -193,6 +231,7 @@ a turn has `started_at` once its harness has been given the message.
 | `state` | `stop_reason` | |
 | --- | --- | --- |
 | `completed` | `end_turn`, `max_tokens`, `max_turn_requests` or `refusal` | The harness ended the turn. |
+| `completed` | `cancelled` | The harness ended the turn because a person refused what it asked approval for. Codex does. |
 | `cancelled` | `cancelled` | The turn was cancelled, and the harness stopped when it was asked to. |
 | `cancelled` | none | The turn was cancelled before its harness was given the message, if it has no `started_at`. Otherwise its harness did not stop in time and its pod was stopped. |
 | `failed` | none or `cancelled` | The turn failed, for the reason in `failure`. A harness whose pod is about to be stopped, as for `timed_out` and `pod_lost`, is asked to end the turn first. `cancelled` says that it did. |
@@ -223,6 +262,7 @@ port is not part of its service: the metrics are read from each pod.
 | `aviary_turn_startup_duration_seconds` | How long a turn took to start, from its pod being asked for to its harness having the message, by `harness`. |
 | `aviary_turn_run_duration_seconds` | How long a turn ran, from its harness having the message to the turn having ended, by `harness` and `state`. |
 | `aviary_turn_tokens_total` | The token usage that the harnesses reported, by `harness` and `kind`. It is not a measurement, as said above. |
+| `aviary_approval_wait_seconds` | How long a request for approval waited, from the harness asking to the harness having its answer, by `harness` and `outcome`: the kind of the option that was picked, or `cancelled` for a request whose turn was stopped first. |
 | `aviary_messages_refused_total` | The messages that were not accepted as turns, by `reason`: `queue_full` or `session_busy`. |
 
 Of several Supervisors, each reports what it did and what it holds itself,
@@ -329,8 +369,9 @@ checks, how to run some of the tests and where a new one goes.
   a turn connects to. It does not read what is sent over HTTPS.
 - **Measured token usage.** The usage of a turn is what its harness reports.
   The Egress Proxy does not count tokens.
-- **Approval by a person.** When a harness asks for permission to act, the
-  runner allows it.
+- **Approval that outlasts the turn.** A request for approval waits in a
+  running pod, for as long as a turn may run. It cannot be left open for
+  days and answered then.
 - **Anything but a local cluster.** Aviary has not run on a cloud provider's
   Kubernetes or under load.
 
