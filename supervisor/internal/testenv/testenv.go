@@ -16,12 +16,8 @@ import (
 	"aviary/supervisor/secret"
 )
 
-// eventsURL names the variable with the address of an event log, and
-// secretStoreURL the one with the address of a secret store.
-const (
-	eventsURL      = "AVIARY_TEST_EVENTS_URL"
-	secretStoreURL = "AVIARY_TEST_SECRET_STORE_URL"
-)
+// secretStoreURL names the variable with the address of a secret store.
+const secretStoreURL = "AVIARY_TEST_SECRET_STORE_URL"
 
 func init() {
 	// What the Supervisor logs of every migration and every turn would bury
@@ -75,10 +71,11 @@ func SecretStoreURL(t testing.TB) string {
 	return service(t, secretStoreURL)
 }
 
-// EventsURL returns the address of the event log of the tests, which the
-// plugins that connect to a log are tested with. The tests share it: what
-// they keep in it is apart by the IDs of their turns.
-func EventsURL(t testing.TB) string {
+// EventsURL returns the address of the event log of the tests whose
+// addresses begin with the scheme, which the plugin for logs of that kind is
+// tested with. The tests share it: what they keep in it is apart by the IDs
+// of their turns.
+func EventsURL(t testing.TB, scheme string) string {
 	t.Helper()
-	return service(t, eventsURL)
+	return service(t, "AVIARY_TEST_"+strings.ToUpper(scheme)+"_URL")
 }

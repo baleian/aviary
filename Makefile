@@ -61,7 +61,8 @@ SERVICES := docker compose --file test/compose.yaml --project-name aviary-test-s
 IN_SERVICES := --network aviary-test-supervisor_default \
 	--env AVIARY_TEST_POSTGRES_URL=postgres://postgres:test@database-postgres:5432/postgres \
 	--env AVIARY_TEST_MYSQL_URL=mysql://root:test@database-mysql:3306/ \
-	--env AVIARY_TEST_EVENTS_URL=valkey://default:test@events:6379 \
+	--env AVIARY_TEST_VALKEY_URL=valkey://default:test@events-valkey:6379 \
+	--env AVIARY_TEST_REDIS_URL=redis://default:test@events-redis:6379 \
 	--env AVIARY_TEST_SECRET_STORE_URL=http://secret-store:8200
 
 .PHONY: proto sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down secret-store build images secrets deploy e2e e2e-up e2e-run e2e-down

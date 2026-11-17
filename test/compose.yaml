@@ -38,13 +38,21 @@ services:
       test: ["CMD", "mysqladmin", "ping", "--host", "127.0.0.1", "--user", "root", "--password=test"]
       interval: 1s
       retries: 60
-  # An event log, for the tests of the plugin that connects to logs of its
-  # kind. It is Valkey.
-  events:
+  # An event log of each product that the plugin for logs of their kind is
+  # tested with. This one is Valkey.
+  events-valkey:
     image: valkey/valkey:9.1.3@sha256:3add1a336a920ea54770a001ab6feb3da5fceea96a40373a3a2cd469b815f0b7
     command: ["valkey-server", "--requirepass", "test", "--save", "", "--appendonly", "no"]
     healthcheck:
       test: ["CMD", "valkey-cli", "--no-auth-warning", "-a", "test", "ping"]
+      interval: 1s
+      retries: 60
+  # And this one is Redis, of the last line that is under the BSD licence.
+  events-redis:
+    image: redis:7.2.17@sha256:5b816bb37d9707a70f10ef5002ecf8ee431750d397010fc4314c93dca887962f
+    command: ["redis-server", "--requirepass", "test", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "test", "ping"]
       interval: 1s
       retries: 60
   # A secret store, for the tests of the plugin that asks stores of its

@@ -21,10 +21,11 @@ import (
 
 var ctx = context.Background()
 
-// open connects to the log of the tests.
-func open(t *testing.T) events.Log {
+// connect connects to the log of the tests whose addresses begin with the
+// scheme.
+func connect(t *testing.T, scheme string) events.Log {
 	t.Helper()
-	log, err := resp.Plugin{}.Open(testenv.EventsURL(t))
+	log, err := resp.Plugin{}.Open(testenv.EventsURL(t, scheme))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,8 +33,20 @@ func open(t *testing.T) events.Log {
 	return log
 }
 
+// open connects to the log that the tests of the plugin itself run against.
+func open(t *testing.T) events.Log {
+	t.Helper()
+	return connect(t, "valkey")
+}
+
+// The plugin does what every log is to do, on each of the servers that it is
+// tested with.
 func TestLog(t *testing.T) {
-	eventstest.Run(t, open)
+	for _, server := range []string{"valkey", "redis"} {
+		t.Run(server, func(t *testing.T) {
+			eventstest.Run(t, func(t *testing.T) events.Log { return connect(t, server) })
+		})
+	}
 }
 
 func TestIsID(t *testing.T) {
@@ -70,7 +83,7 @@ func TestOpenKeepsThePasswordToItself(t *testing.T) {
 func TestWatchPassesOverWhatIsNoTurn(t *testing.T) {
 	t.Parallel()
 	log, channel := open(t), "tests:"+uuid.NewString()
-	options, err := valkey.ParseURL(testenv.EventsURL(t))
+	options, err := valkey.ParseURL(testenv.EventsURL(t, "valkey"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +132,7 @@ func TestWatchPassesOverWhatIsNoTurn(t *testing.T) {
 // waiting, with no word of what is wrong.
 func TestReadFailsWithoutTheServer(t *testing.T) {
 	t.Parallel()
-	address, err := url.Parse(testenv.EventsURL(t))
+	address, err := url.Parse(testenv.EventsURL(t, "valkey"))
 	if err != nil {
 		t.Fatal(err)
 	}
