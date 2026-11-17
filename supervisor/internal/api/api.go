@@ -33,7 +33,9 @@ type api struct {
 	events *events.Streams
 	driver *driver.Driver
 	// keys seal the secrets that the API is given, before they are stored.
-	keys    *secret.Keys
+	keys *secret.Keys
+	// stores are tried when a project registers one.
+	stores  *secret.Stores
 	closing <-chan struct{}
 }
 
@@ -60,12 +62,15 @@ var (
 
 // New returns the handler of the API. An event stream stays open for as long
 // as its client does, so the streams end when closing is closed.
-func New(st *store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Keys, closing <-chan struct{}) http.Handler {
-	a := &api{store: st, events: ev, driver: dr, keys: keys, closing: closing}
+func New(st *store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Keys, stores *secret.Stores, closing <-chan struct{}) http.Handler {
+	a := &api{store: st, events: ev, driver: dr, keys: keys, stores: stores, closing: closing}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
 	mux.Handle("POST /v1/projects", handler(a.createProject))
 	mux.Handle("GET /v1/projects/{pid}", handler(a.getProject))
+	mux.Handle("POST /v1/projects/{pid}/secret-stores", handler(a.createSecretStore))
+	mux.Handle("GET /v1/secret-stores/{store}", handler(a.getSecretStore))
+	mux.Handle("PUT /v1/secret-stores/{store}", handler(a.replaceSecretStore))
 	mux.Handle("POST /v1/projects/{pid}/providers", handler(a.createProvider))
 	mux.Handle("GET /v1/providers/{provider}", handler(a.getProvider))
 	mux.Handle("PUT /v1/providers/{provider}", handler(a.replaceProvider))

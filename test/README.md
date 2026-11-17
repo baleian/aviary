@@ -21,7 +21,7 @@ or `run ls`.
 
 | Target | Where | What the part runs against |
 | --- | --- | --- |
-| `test-supervisor` | `supervisor/` | PostgreSQL and Valkey in containers, which the run starts and removes. Kubernetes is the fake of client-go, and the test is the runner, the API client and the Egress Proxy. The tests in `supervisor/*_test.go` run the whole Supervisor, several of them where it matters. Those in `internal/` test a package. |
+| `test-supervisor` | `supervisor/` | PostgreSQL and Valkey in containers, which the run starts and removes, and with them a secret store, OpenBao, for the tests of the driver that asks stores of its kind. Kubernetes is the fake of client-go, and the test is the runner, the API client and the Egress Proxy. The tests in `supervisor/*_test.go` run the whole Supervisor, several of them where it matters. Those in `internal/` test a package. |
 | `test-runner` | `runner/` | The tests in `tests/turn.rs` and `tests/link.rs` run the runner between a Supervisor that the test plays and `fake-harness`, a harness that does what its message says. Those in `src/main.rs` test its functions. |
 | `test-chart` | `test/chart/` | What the chart renders from its own values and from those in the directory, and Envoy's own check of the configuration that it is given. |
 | `test-proxy` | `test/proxy/` | Envoy with what the chart renders. The test is the pod, the Supervisor, the model endpoint and the hosts outside. |

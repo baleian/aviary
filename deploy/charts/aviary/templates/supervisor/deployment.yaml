@@ -45,6 +45,9 @@ spec:
               value: /etc/aviary/encryption
             - name: AVIARY_ENCRYPTION_KEY
               value: {{ .Values.supervisor.encryption.key | quote }}
+            # The hosts at which a project may register a secret store.
+            - name: AVIARY_SECRET_STORE_HOSTS
+              value: {{ .Values.supervisor.secretStores.allowedHosts | toJson | quote }}
             # Where the runners in the turn pods reach this Supervisor.
             - name: AVIARY_GATEWAY_URL
               value: http://aviary-supervisor.{{ .Release.Namespace }}:9090

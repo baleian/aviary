@@ -51,7 +51,8 @@ AMONG_PROXIES := --network aviary-test-proxy_default --env AVIARY_TEST_PROXY=1 \
 SERVICES := docker compose --file test/compose.yaml --project-name aviary-test-supervisor
 IN_SERVICES := --network aviary-test-supervisor_default \
 	--env AVIARY_TEST_DATABASE_URL=postgres://postgres:test@postgres:5432/postgres \
-	--env AVIARY_TEST_VALKEY_URL=valkey://default:test@valkey:6379
+	--env AVIARY_TEST_VALKEY_URL=valkey://default:test@valkey:6379 \
+	--env AVIARY_TEST_SECRET_STORE_URL=http://secret-store:8200
 
 .PHONY: proto sqlc lint test test-supervisor test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down build images secrets deploy e2e e2e-up e2e-run e2e-down
 

@@ -269,6 +269,45 @@ func (q *Queries) CreateProvider(ctx context.Context, arg CreateProviderParams) 
 	return i, err
 }
 
+const createSecretStore = `-- name: CreateSecretStore :one
+insert into secret_stores (id, project_id, name, kind, settings, credential)
+select $1::uuid, projects.id, $2::text, $3::text, $4::jsonb, $5::bytea
+from projects where projects.id = $6
+returning id, project_id, name, kind, settings, credential, created_at, updated_at
+`
+
+type CreateSecretStoreParams struct {
+	ID         uuid.UUID
+	Name       string
+	Kind       string
+	Settings   []byte
+	Credential []byte
+	ProjectID  uuid.UUID
+}
+
+func (q *Queries) CreateSecretStore(ctx context.Context, arg CreateSecretStoreParams) (SecretStore, error) {
+	row := q.db.QueryRow(ctx, createSecretStore,
+		arg.ID,
+		arg.Name,
+		arg.Kind,
+		arg.Settings,
+		arg.Credential,
+		arg.ProjectID,
+	)
+	var i SecretStore
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Name,
+		&i.Kind,
+		&i.Settings,
+		&i.Credential,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const createSession = `-- name: CreateSession :one
 insert into sessions (id, agent_id)
 select $1::uuid, agents.id from agents where agents.id = $2
@@ -581,6 +620,26 @@ func (q *Queries) GetProvider(ctx context.Context, id uuid.UUID) (Provider, erro
 	return i, err
 }
 
+const getSecretStore = `-- name: GetSecretStore :one
+select id, project_id, name, kind, settings, credential, created_at, updated_at from secret_stores where id = $1
+`
+
+func (q *Queries) GetSecretStore(ctx context.Context, id uuid.UUID) (SecretStore, error) {
+	row := q.db.QueryRow(ctx, getSecretStore, id)
+	var i SecretStore
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Name,
+		&i.Kind,
+		&i.Settings,
+		&i.Credential,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getSession = `-- name: GetSession :one
 select id, agent_id, created_at, harness_session_id from sessions where id = $1
 `
@@ -882,6 +941,45 @@ func (q *Queries) ReplaceProvider(ctx context.Context, arg ReplaceProviderParams
 		&i.Name,
 		&i.Url,
 		&i.ApiKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const replaceSecretStore = `-- name: ReplaceSecretStore :one
+update secret_stores
+set name = $1, kind = $2, settings = $3, credential = $4, updated_at = now()
+where id = $5
+returning id, project_id, name, kind, settings, credential, created_at, updated_at
+`
+
+type ReplaceSecretStoreParams struct {
+	Name       string
+	Kind       string
+	Settings   []byte
+	Credential []byte
+	ID         uuid.UUID
+}
+
+// The store gets the name, the kind, the settings and the credential that
+// are given, in place of all that it had.
+func (q *Queries) ReplaceSecretStore(ctx context.Context, arg ReplaceSecretStoreParams) (SecretStore, error) {
+	row := q.db.QueryRow(ctx, replaceSecretStore,
+		arg.Name,
+		arg.Kind,
+		arg.Settings,
+		arg.Credential,
+		arg.ID,
+	)
+	var i SecretStore
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Name,
+		&i.Kind,
+		&i.Settings,
+		&i.Credential,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

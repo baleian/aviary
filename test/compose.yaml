@@ -23,3 +23,16 @@ services:
       test: ["CMD", "valkey-cli", "--no-auth-warning", "-a", "test", "ping"]
       interval: 1s
       retries: 60
+  # A secret store, for the tests of the driver that asks stores of its
+  # kind. It is OpenBao, which runs unsealed here and keeps nothing, and the
+  # tests set it up with its root token.
+  secret-store:
+    image: openbao/openbao:2.7.2@sha256:5046911075e137e154ce49ab051502f4ec7cf367d484ae4a4dce665d9b90561f
+    cap_add: ["IPC_LOCK"]
+    environment:
+      BAO_DEV_ROOT_TOKEN_ID: test
+      BAO_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    healthcheck:
+      test: ["CMD", "bao", "status", "-address=http://127.0.0.1:8200"]
+      interval: 1s
+      retries: 60

@@ -22,11 +22,12 @@ import (
 )
 
 // databaseURL names the variable with the URL of a PostgreSQL in which the
-// tests may create databases, and valkeyURL the one with the URL of a
-// Valkey.
+// tests may create databases, valkeyURL the one with the URL of a Valkey,
+// and secretStoreURL the one with the address of a secret store.
 const (
-	databaseURL = "AVIARY_TEST_DATABASE_URL"
-	valkeyURL   = "AVIARY_TEST_VALKEY_URL"
+	databaseURL    = "AVIARY_TEST_DATABASE_URL"
+	valkeyURL      = "AVIARY_TEST_VALKEY_URL"
+	secretStoreURL = "AVIARY_TEST_SECRET_STORE_URL"
 )
 
 func init() {
@@ -116,6 +117,15 @@ func Keys(t testing.TB) *secret.Keys {
 		t.Fatal(err)
 	}
 	return keys
+}
+
+// SecretStoreURL returns the address of the secret store of the tests,
+// which the drivers that ask a store are tested with. Its root token is
+// "test". The tests share it: what a test keeps in it is apart by a name of
+// its own.
+func SecretStoreURL(t testing.TB) string {
+	t.Helper()
+	return service(t, secretStoreURL)
 }
 
 // ValkeyURL returns the URL of the Valkey of the tests. The tests share it:

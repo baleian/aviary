@@ -49,6 +49,17 @@ type Provider struct {
 	UpdatedAt time.Time
 }
 
+type SecretStore struct {
+	ID         uuid.UUID
+	ProjectID  uuid.UUID
+	Name       string
+	Kind       string
+	Settings   []byte
+	Credential []byte
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
 type Session struct {
 	ID               uuid.UUID
 	AgentID          uuid.UUID

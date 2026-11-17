@@ -119,6 +119,31 @@ type Provider struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// SecretStore is a secret store of a project: where the project keeps
+// secrets that it does not give to Aviary to store.
+type SecretStore struct {
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+	Name      string
+	// Kind is the kind of the store, which says how it is asked.
+	Kind string
+	// Settings is what the kind needs to know of the store, without what is
+	// secret.
+	Settings json.RawMessage
+	// Credential is what the Supervisor logs in to the store with, as it is
+	// stored: sealed for the place that SecretStoreCredentialPlace names.
+	Credential []byte
+	CreatedAt  time.Time
+	// UpdatedAt is when the store was last given how it is reached.
+	UpdatedAt time.Time
+}
+
+// SecretStoreCredentialPlace names the place of a secret store's credential
+// among the secrets that are stored.
+func SecretStoreCredentialPlace(id uuid.UUID) string {
+	return "secret_stores/" + id.String() + "/credential"
+}
+
 // ProviderKeyPlace names the place of a provider's API key among the secrets
 // that are stored. A secret is sealed for its place and opens nowhere else.
 func ProviderKeyPlace(id uuid.UUID) string {
@@ -361,6 +386,41 @@ func (s *Store) ReplaceProvider(ctx context.Context, provider Provider) (Provide
 		return Provider{}, ErrNotFound
 	}
 	return providerFrom(row), err
+}
+
+// CreateSecretStore creates the secret store as it is given, with its ID:
+// the credential of a store is sealed for that ID before it is stored. It
+// returns ErrNotFound if the project does not exist.
+func (s *Store) CreateSecretStore(ctx context.Context, secrets SecretStore) (SecretStore, error) {
+	row, err := s.queries.CreateSecretStore(ctx, db.CreateSecretStoreParams{
+		ID: secrets.ID, ProjectID: secrets.ProjectID, Name: secrets.Name, Kind: secrets.Kind,
+		Settings: secrets.Settings, Credential: secrets.Credential,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SecretStore{}, ErrNotFound
+	}
+	return secretStoreFrom(row), err
+}
+
+func (s *Store) SecretStore(ctx context.Context, id uuid.UUID) (SecretStore, error) {
+	row, err := s.queries.GetSecretStore(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SecretStore{}, ErrNotFound
+	}
+	return secretStoreFrom(row), err
+}
+
+// ReplaceSecretStore gives the secret store with the ID of the given one its
+// name, its kind, its settings and its credential, in place of all that it
+// had. It returns ErrNotFound if there is no such store.
+func (s *Store) ReplaceSecretStore(ctx context.Context, secrets SecretStore) (SecretStore, error) {
+	row, err := s.queries.ReplaceSecretStore(ctx, db.ReplaceSecretStoreParams{
+		ID: secrets.ID, Name: secrets.Name, Kind: secrets.Kind, Settings: secrets.Settings, Credential: secrets.Credential,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SecretStore{}, ErrNotFound
+	}
+	return secretStoreFrom(row), err
 }
 
 // CreateTurn queues a message as the session's next turn. It returns
@@ -862,6 +922,20 @@ func agentFrom(row db.Agent) Agent {
 		agent.Model = &Model{Provider: *row.ProviderID, Name: row.Model}
 	}
 	return agent
+}
+
+// secretStoreFrom returns a row of the secret_stores table as a SecretStore.
+func secretStoreFrom(row db.SecretStore) SecretStore {
+	return SecretStore{
+		ID:         row.ID,
+		ProjectID:  row.ProjectID,
+		Name:       row.Name,
+		Kind:       row.Kind,
+		Settings:   row.Settings,
+		Credential: row.Credential,
+		CreatedAt:  row.CreatedAt,
+		UpdatedAt:  row.UpdatedAt,
+	}
 }
 
 // providerFrom returns a row of the providers table as a Provider.

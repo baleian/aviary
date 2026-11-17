@@ -28,6 +28,7 @@ import (
 	runnerv1 "aviary/supervisor/internal/gen/aviary/runner/v1"
 	"aviary/supervisor/internal/metrics"
 	"aviary/supervisor/internal/secret"
+	"aviary/supervisor/internal/secret/kv2"
 	"aviary/supervisor/internal/store"
 )
 
@@ -40,6 +41,7 @@ const (
 	proxyURL           = "AVIARY_PROXY_URL"
 	encryptionKeys     = "AVIARY_ENCRYPTION_KEYS"
 	encryptionKey      = "AVIARY_ENCRYPTION_KEY"
+	secretStoreHosts   = "AVIARY_SECRET_STORE_HOSTS"
 	harnesses          = "AVIARY_HARNESSES"
 	maxConcurrentTurns = "AVIARY_MAX_CONCURRENT_TURNS"
 	maxQueuedTurns     = "AVIARY_MAX_QUEUED_TURNS"
@@ -129,6 +131,10 @@ func serve(ctx context.Context, database string) error {
 	if err != nil {
 		return err
 	}
+	stores, err := secretStores()
+	if err != nil {
+		return err
+	}
 	config, err := driverConfig()
 	if err != nil {
 		return err
@@ -151,14 +157,15 @@ func serve(ctx context.Context, database string) error {
 	if on.metrics, err = net.Listen("tcp", metricsAddr); err != nil {
 		return err
 	}
-	return serveOn(ctx, on, st, ev, client, config, keys, gateway.Sweep)
+	return serveOn(ctx, on, st, ev, client, config, keys, stores, gateway.Sweep)
 }
 
 // serveOn serves on the ports until ctx is done, with the turns in the
 // database of the store and their pods in the cluster of the client. It
-// seals the secrets that it stores with the keys. Every sweep it looks for
-// what the runners are to be told and no Supervisor announced.
-func serveOn(ctx context.Context, on ports, st *store.Store, ev *events.Streams, client kubernetes.Interface, config driver.Config, keys *secret.Keys, sweep time.Duration) error {
+// seals the secrets that it stores with the keys, and reads the others from
+// the stores. Every sweep it looks for what the runners are to be told and
+// no Supervisor announced.
+func serveOn(ctx context.Context, on ports, st *store.Store, ev *events.Streams, client kubernetes.Interface, config driver.Config, keys *secret.Keys, stores *secret.Stores, sweep time.Duration) error {
 	m := metrics.New()
 	dr, err := driver.New(config, client, st, ev, m)
 	if err != nil {
@@ -166,7 +173,7 @@ func serveOn(ctx context.Context, on ports, st *store.Store, ev *events.Streams,
 	}
 	runners := gateway.New(st, ev, m, sweep)
 	apiServer := &http.Server{
-		Handler:           api.New(st, ev, dr, keys, ctx.Done()),
+		Handler:           api.New(st, ev, dr, keys, stores, ctx.Done()),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	// A machine that is gone closes no connection. Both ends of a connection
@@ -236,6 +243,22 @@ func encryption() (*secret.Keys, error) {
 		return nil, err
 	}
 	return secret.Load(dir, current)
+}
+
+// secretStores reads the hosts at which the installation allows the secret
+// stores of the projects: a JSON list such as ["secrets.example.com:8200"].
+// The drivers are the kinds of store that this build asks: another kind is
+// added here.
+func secretStores() (*secret.Stores, error) {
+	encoded, err := env(secretStoreHosts)
+	if err != nil {
+		return nil, err
+	}
+	var hosts []string
+	if err := json.Unmarshal([]byte(encoded), &hosts); err != nil {
+		return nil, fmt.Errorf("%s: %w", secretStoreHosts, err)
+	}
+	return secret.NewStores(hosts, kv2.Driver{})
 }
 
 // driverConfig reads how turns are run. The harnesses are a JSON object such

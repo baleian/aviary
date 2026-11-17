@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
+
+	"aviary/supervisor/internal/secret/kv2"
 )
 
 // settings are the variables of a Supervisor as the chart sets them.
@@ -86,5 +90,34 @@ func TestDriverConfig(t *testing.T) {
 				t.Errorf("the turns are run with %+v: %v", config, err)
 			}
 		})
+	}
+}
+
+// The Supervisor is told at which hosts the projects may have secret stores,
+// and asks the stores of the kinds that it was built with.
+func TestSecretStoreSettings(t *testing.T) {
+	t.Setenv(secretStoreHosts, `["secrets.example.com:8200"]`)
+	stores, err := secretStores()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A store of a kind that the build knows is held against the list.
+	at := func(address string) json.RawMessage {
+		return json.RawMessage(`{"address": "` + address + `", "mount": "secret", "role_id": "a-role"}`)
+	}
+	err = stores.Check(context.Background(), kv2.Kind, at("https://other.example.com:8200"), "a-credential")
+	if err == nil || !strings.Contains(err.Error(), "supervisor.secretStores.allowedHosts") {
+		t.Errorf("a store at a host that is not listed is checked as: %v", err)
+	}
+	if err := stores.Check(context.Background(), "another", at("https://secrets.example.com:8200"), "a-credential"); err == nil || !strings.Contains(err.Error(), kv2.Kind) {
+		t.Errorf("a store of a kind that the build does not know is checked as: %v", err)
+	}
+
+	// A Supervisor with a list that it cannot use does not start.
+	for _, wrong := range []string{"", "secrets.example.com", `["https://secrets.example.com"]`} {
+		t.Setenv(secretStoreHosts, wrong)
+		if stores, err := secretStores(); err == nil {
+			t.Errorf("with the hosts %q, the stores are %+v", wrong, stores)
+		}
 	}
 }

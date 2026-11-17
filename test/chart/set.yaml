@@ -4,6 +4,10 @@ supervisor:
   encryption:
     secretName: other-keys
     key: k2
+  secretStores:
+    allowedHosts:
+      - secrets.example.com:8200
+      - store.example.com
 egressProxy:
   replicas: 2
   allowedHosts:

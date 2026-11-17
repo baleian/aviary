@@ -64,6 +64,9 @@ type installation struct {
 	cluster  *fake.Clientset
 	config   driver.Config
 	keys     *secret.Keys
+	// stores are the secret stores that the installation allows, of the
+	// kind that the tests have a driver for.
+	stores *secret.Stores
 	// sweep is how often its Supervisors look for what no Supervisor
 	// announced. A test that waits for that sets it lower.
 	sweep time.Duration
@@ -96,8 +99,19 @@ func install(t *testing.T, changes ...func(*driver.Config)) *installation {
 	}
 	return &installation{
 		t: t, database: testenv.Database(t), cluster: fake.NewClientset(), config: config,
-		keys: testenv.Keys(t), sweep: gateway.Sweep,
+		keys: testenv.Keys(t), stores: allowing(t, storeHost), sweep: gateway.Sweep,
 	}
+}
+
+// allowing returns the secret stores of an installation that allows them at
+// the hosts, and that asks them with the driver of the tests.
+func allowing(t *testing.T, hosts ...string) *secret.Stores {
+	t.Helper()
+	stores, err := secret.NewStores(hosts, scripted{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return stores
 }
 
 // supervisor is a Supervisor that serves.
@@ -140,7 +154,7 @@ func (i *installation) supervisor() *supervisor {
 	}
 	ctx, stop := context.WithCancel(context.Background())
 	stopped := make(chan error, 1)
-	go func() { stopped <- serveOn(ctx, on, st, ev, i.cluster, i.config, i.keys, i.sweep) }()
+	go func() { stopped <- serveOn(ctx, on, st, ev, i.cluster, i.config, i.keys, i.stores, i.sweep) }()
 	s.stop = sync.OnceFunc(func() {
 		stop()
 		select {

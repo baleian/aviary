@@ -38,6 +38,23 @@ update providers set name = @name, url = @url, api_key = sqlc.narg(api_key), upd
 where id = @id
 returning *;
 
+-- name: CreateSecretStore :one
+insert into secret_stores (id, project_id, name, kind, settings, credential)
+select @id::uuid, projects.id, @name::text, @kind::text, @settings::jsonb, @credential::bytea
+from projects where projects.id = @project_id
+returning *;
+
+-- name: GetSecretStore :one
+select * from secret_stores where id = @id;
+
+-- name: ReplaceSecretStore :one
+-- The store gets the name, the kind, the settings and the credential that
+-- are given, in place of all that it had.
+update secret_stores
+set name = @name, kind = @kind, settings = @settings, credential = @credential, updated_at = now()
+where id = @id
+returning *;
+
 -- name: StartTurn :one
 -- The harness of the turn has been given the message. The session keeps the
 -- harness session, for its next turn to continue. The answer is how long the

@@ -211,6 +211,7 @@ func TestSupervisorSettings(t *testing.T) {
 	for name, value := range map[string]string{
 		"AVIARY_GATEWAY_URL":            "http://aviary-supervisor.aviary-system:9090",
 		"AVIARY_ENCRYPTION_KEY":         "k1",
+		"AVIARY_SECRET_STORE_HOSTS":     "[]",
 		"AVIARY_LLM_BASE_URL":           "http://aviary-egress-proxy.aviary-system:8080",
 		"AVIARY_PROXY_URL":              "http://aviary-egress-proxy.aviary-system:3128",
 		"AVIARY_RUNNER_IMAGE":           "aviary-runner:dev",
@@ -237,6 +238,7 @@ func TestSupervisorSettings(t *testing.T) {
 	settings = env(supervisor)
 	for name, value := range map[string]string{
 		"AVIARY_ENCRYPTION_KEY":         "k2",
+		"AVIARY_SECRET_STORE_HOSTS":     `["secrets.example.com:8200","store.example.com"]`,
 		"AVIARY_LLM_BASE_URL":           "http://aviary-egress-proxy.aviary-system:8080",
 		"AVIARY_MAX_CONCURRENT_TURNS":   "7",
 		"AVIARY_MAX_QUEUED_TURNS":       "11",
