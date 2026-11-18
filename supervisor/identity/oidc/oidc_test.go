@@ -244,20 +244,26 @@ func TestIssuerChangesItsKey(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	i.mu.Lock()
+	fetched := i.fetched
+	i.mu.Unlock()
+	if fetched != 1 {
+		t.Errorf("the keys were fetched %d times for three tokens, not once", fetched)
+	}
 	before := i.token(nil)
 	i.rotate()
 	if _, err := provider.Caller(context.Background(), i.token(nil)); err != nil {
 		t.Errorf("a token that was signed with the new key is refused: %v", err)
 	}
-	if _, err := provider.Caller(context.Background(), before); err == nil {
-		t.Error("a token that was signed with a key that the issuer has no more is taken")
-	}
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	// Once for the first token, once for the new key and once for the key
-	// that is gone.
-	if i.fetched != 3 {
-		t.Errorf("the keys were fetched %d times, not three", i.fetched)
+	// The key that the issuer has no more is forgotten a moment after the
+	// new ones were fetched, not at once.
+	for forgotten := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		if _, err := provider.Caller(context.Background(), before); err != nil {
+			break
+		}
+		if time.Now().After(forgotten) {
+			t.Fatal("a token that was signed with a key that the issuer has no more is still taken")
+		}
 	}
 }
 
