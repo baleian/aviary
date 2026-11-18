@@ -3,7 +3,9 @@ module aviary/supervisor
 go 1.27.4
 
 require (
+	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/envoyproxy/go-control-plane/envoy v1.40.0
+	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/go-sql-driver/mysql v1.10.2
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.13.0
