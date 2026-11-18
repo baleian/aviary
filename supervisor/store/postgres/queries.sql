@@ -269,3 +269,19 @@ from approvals
 join turns on turns.id = approvals.turn_id
 where approvals.answered_at is not null and approvals.resolved_at is null and turns.ended_at is null
   and (sqlc.narg(turn_id)::uuid is null or approvals.turn_id = sqlc.narg(turn_id));
+
+-- name: GetUserBySubject :one
+select * from users where subject = @subject;
+
+-- name: FreeUsername :exec
+-- The username is that of the user whom the provider gives it to now.
+update users set username = null where username = @username::text and subject <> @subject::text;
+
+-- name: SeeUser :one
+-- Supervisors may see a user for the first time at once: one of them makes
+-- the user. A user that is given no username keeps the one that it has.
+insert into users (id, subject, username, display_name)
+values (@id, @subject, sqlc.narg(username), @display_name)
+on conflict (subject) do update
+set username = coalesce(excluded.username, users.username), display_name = excluded.display_name
+returning *;

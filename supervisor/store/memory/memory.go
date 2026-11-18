@@ -29,7 +29,9 @@ type Store struct {
 	// last is the time that the clock gave last.
 	last time.Time
 
-	projects     map[uuid.UUID]store.Project
+	projects map[uuid.UUID]store.Project
+	// users are the users by their subjects.
+	users        map[string]*store.User
 	agents       map[uuid.UUID]store.Agent
 	sessions     map[uuid.UUID]*session
 	providers    map[uuid.UUID]store.Provider
@@ -76,6 +78,7 @@ type approval struct {
 func New() *Store {
 	return &Store{
 		projects:     map[uuid.UUID]store.Project{},
+		users:        map[string]*store.User{},
 		agents:       map[uuid.UUID]store.Agent{},
 		sessions:     map[uuid.UUID]*session{},
 		providers:    map[uuid.UUID]store.Provider{},
@@ -238,6 +241,32 @@ func (s *Store) CreateAgent(ctx context.Context, projectID uuid.UUID, agent stor
 	})
 	s.agents[id] = created
 	return agentOf(created), nil
+}
+
+func (s *Store) UserOf(ctx context.Context, subject, username, displayName string) (store.User, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return store.User{}, err
+	}
+	if err := s.begin(ctx); err != nil {
+		return store.User{}, err
+	}
+	defer s.mu.Unlock()
+	user, found := s.users[subject]
+	if !found {
+		user = &store.User{ID: id, Subject: subject, CreatedAt: s.now()}
+		s.users[subject] = user
+	}
+	user.DisplayName = displayName
+	if username != "" {
+		for _, other := range s.users {
+			if other.Username == username {
+				other.Username = ""
+			}
+		}
+		user.Username = username
+	}
+	return *user, nil
 }
 
 func (s *Store) Agent(ctx context.Context, id uuid.UUID) (store.Agent, error) {

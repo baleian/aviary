@@ -90,12 +90,14 @@ type suite struct {
 func Run(t *testing.T, create func(t *testing.T) Database) {
 	suite := suite{create: create}
 	for name, test := range map[string]func(*testing.T){
-		"Agents":            suite.testAgents,
-		"Providers":         suite.testProviders,
-		"SecretStores":      suite.testSecretStores,
-		"KeyInASecretStore": suite.testKeyInASecretStore,
-		"ModelOfAnAgent":    suite.testModelOfAnAgent,
-		"CreateTurn":        suite.testCreateTurn,
+		"Users":                            suite.testUsers,
+		"SupervisorsSeeAUserFirstTogether": suite.testSupervisorsSeeAUserFirstTogether,
+		"Agents":                           suite.testAgents,
+		"Providers":                        suite.testProviders,
+		"SecretStores":                     suite.testSecretStores,
+		"KeyInASecretStore":                suite.testKeyInASecretStore,
+		"ModelOfAnAgent":                   suite.testModelOfAnAgent,
+		"CreateTurn":                       suite.testCreateTurn,
 		"CreateTurnTakesOneOfTheMessagesSentAtOnce":         suite.testCreateTurnTakesOneOfTheMessagesSentAtOnce,
 		"CreateTurnKeepsToTheMostThatMayWait":               suite.testCreateTurnKeepsToTheMostThatMayWait,
 		"SupervisorsKeepToTheMostThatMayWaitTogether":       suite.testSupervisorsKeepToTheMostThatMayWaitTogether,

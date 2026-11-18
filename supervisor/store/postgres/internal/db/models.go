@@ -93,3 +93,11 @@ type Turn struct {
 	StartedAt         *time.Time
 	RunnerID          *uuid.UUID
 }
+
+type User struct {
+	ID          uuid.UUID
+	Subject     string
+	Username    *string
+	DisplayName string
+	CreatedAt   time.Time
+}

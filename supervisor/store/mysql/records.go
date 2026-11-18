@@ -130,6 +130,48 @@ func (s *records) Project(ctx context.Context, id uuid.UUID) (store.Project, err
 	return store.Project{ID: uuid.UUID(row.ID), Name: row.Name, CreatedAt: row.CreatedAt}, found(err)
 }
 
+func (s *records) UserOf(ctx context.Context, subject, username, displayName string) (store.User, error) {
+	// Most requests come from a user of whom nothing has changed.
+	row, err := s.queries.GetUserBySubject(ctx, subject)
+	if err == nil && row.DisplayName == displayName && (username == "" || (row.Username != nil && *row.Username == username)) {
+		return userFrom(row), nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return store.User{}, err
+	}
+	id, err := uuid.NewV7()
+	if err != nil {
+		return store.User{}, err
+	}
+	var given *string
+	if username != "" {
+		if err := s.queries.FreeUsername(ctx, db.FreeUsernameParams{Username: &username, Subject: subject}); err != nil {
+			return store.User{}, err
+		}
+		given = &username
+	}
+	// Of the Supervisors that see a user first at once, one makes the user,
+	// and the others find the user made.
+	err = s.queries.CreateUser(ctx, db.CreateUserParams{ID: key.ID(id), Subject: subject, Username: given, DisplayName: displayName})
+	if failed(err, duplicateEntry) {
+		err = s.queries.UpdateUser(ctx, db.UpdateUserParams{Username: given, DisplayName: displayName, Subject: subject})
+	}
+	if err != nil {
+		return store.User{}, err
+	}
+	row, err = s.queries.GetUserBySubject(ctx, subject)
+	return userFrom(row), err
+}
+
+// userFrom returns a row of the users table as a User.
+func userFrom(row db.User) store.User {
+	user := store.User{ID: uuid.UUID(row.ID), Subject: row.Subject, DisplayName: row.DisplayName, CreatedAt: row.CreatedAt}
+	if row.Username != nil {
+		user.Username = *row.Username
+	}
+	return user
+}
+
 func (s *records) CreateAgent(ctx context.Context, projectID uuid.UUID, agent store.Agent) (store.Agent, error) {
 	id, err := uuid.NewV7()
 	if err != nil {

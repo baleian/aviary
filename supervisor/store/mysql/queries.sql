@@ -246,3 +246,18 @@ from approvals
 join turns on turns.id = approvals.turn_id
 where approvals.answered_at is not null and approvals.resolved_at is null and turns.ended_at is null
   and (sqlc.narg(turn_id) is null or approvals.turn_id = sqlc.narg(turn_id));
+
+-- name: GetUserBySubject :one
+select * from users where subject = ?;
+
+-- name: FreeUsername :exec
+-- The username is that of the user whom the provider gives it to now.
+update users set username = null where username = sqlc.arg(username) and subject <> sqlc.arg(subject);
+
+-- name: CreateUser :exec
+insert into users (id, subject, username, display_name) values (?, ?, ?, ?);
+
+-- name: UpdateUser :exec
+-- A user that is given no username keeps the one that it has.
+update users set username = coalesce(sqlc.narg(username), username), display_name = sqlc.arg(display_name)
+where subject = sqlc.arg(subject);

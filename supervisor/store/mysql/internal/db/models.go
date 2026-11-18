@@ -94,3 +94,11 @@ type Turn struct {
 	CachedReadTokens  *int64
 	CachedWriteTokens *int64
 }
+
+type User struct {
+	ID          key.ID
+	Subject     string
+	Username    *string
+	DisplayName string
+	CreatedAt   time.Time
+}

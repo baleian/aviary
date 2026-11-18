@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"aviary/supervisor/identity"
 	"aviary/supervisor/internal/api"
 )
@@ -26,6 +28,7 @@ func (t tokens) Caller(_ context.Context, token string) (identity.Caller, error)
 
 // me is what the API answers of the caller of a request.
 type me struct {
+	ID          string   `json:"id"`
 	Subject     string   `json:"subject"`
 	Username    string   `json:"username"`
 	DisplayName string   `json:"display_name"`
@@ -81,9 +84,46 @@ func TestCallersAreAskedWhoTheyAre(t *testing.T) {
 	}
 	s.token = "token-of-alice"
 	var told me
-	if status, _ := s.request(http.MethodGet, "/v1/me", "", &told); status != http.StatusOK ||
-		!reflect.DeepEqual(told, me{Subject: "subject-1", Username: "alice@example.com", DisplayName: "Alice Kim", Groups: []string{"team-a"}}) {
+	if status, _ := s.request(http.MethodGet, "/v1/me", "", &told); status != http.StatusOK || uuid.Validate(told.ID) != nil ||
+		!reflect.DeepEqual(told, me{ID: told.ID, Subject: "subject-1", Username: "alice@example.com", DisplayName: "Alice Kim", Groups: []string{"team-a"}}) {
 		t.Errorf("the caller is told %d %+v", status, told)
+	}
+}
+
+// A caller is a user of the installation from the first request on: the
+// same one with every request and through every Supervisor, and another
+// than every other caller.
+func TestCallersAreUsers(t *testing.T) {
+	installation := install(t)
+	installation.callers = api.Callers{Provider: tokens{
+		"token-of-alice":   {Subject: "subject-1", Username: "alice@example.com", DisplayName: "Alice"},
+		"another-of-alice": {Subject: "subject-1", Username: "alice@example.com", DisplayName: "Alice Kim"},
+		"token-of-bob":     {Subject: "subject-2"},
+	}}
+	one, other := installation.supervisor(), installation.supervisor()
+	ask := func(s *supervisor, token string) me {
+		t.Helper()
+		s.token = token
+		var told me
+		if status, _ := s.request(http.MethodGet, "/v1/me", "", &told); status != http.StatusOK || uuid.Validate(told.ID) != nil {
+			t.Fatalf("the caller with %s is told %d %+v", token, status, told)
+		}
+		return told
+	}
+	alice := ask(one, "token-of-alice")
+	if again := ask(other, "token-of-alice"); again.ID != alice.ID {
+		t.Errorf("a caller is the user %s to one Supervisor and %s to another", alice.ID, again.ID)
+	}
+	// A token that tells something else of the same caller.
+	if renamed := ask(one, "another-of-alice"); renamed.ID != alice.ID || renamed.DisplayName != "Alice Kim" {
+		t.Errorf("the caller is told %+v with another of its tokens, and was the user %s", renamed, alice.ID)
+	}
+	if bob := ask(other, "token-of-bob"); bob.ID == alice.ID {
+		t.Errorf("two callers are the same user, %s", bob.ID)
+	}
+	user, err := installation.records.UserOf(context.Background(), "subject-1", "", "Alice Kim")
+	if err != nil || user.ID.String() != alice.ID || user.Username != "alice@example.com" {
+		t.Errorf("the records have the user %+v, with the error %v", user, err)
 	}
 }
 

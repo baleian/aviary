@@ -77,6 +77,49 @@ func (s *records) Project(ctx context.Context, id uuid.UUID) (store.Project, err
 	return store.Project(row), err
 }
 
+func (s *records) UserOf(ctx context.Context, subject, username, displayName string) (store.User, error) {
+	// Most requests come from a user of whom nothing has changed.
+	row, err := s.queries.GetUserBySubject(ctx, subject)
+	if err == nil && row.DisplayName == displayName && (username == "" || (row.Username != nil && *row.Username == username)) {
+		return userFrom(row), nil
+	}
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return store.User{}, err
+	}
+	id, err := uuid.NewV7()
+	if err != nil {
+		return store.User{}, err
+	}
+	seen := db.SeeUserParams{ID: id, Subject: subject, DisplayName: displayName}
+	if username != "" {
+		seen.Username = &username
+	}
+	// A Supervisor that sees the user first at the same moment may have
+	// made the user with the username meanwhile: then the user is there.
+	for attempt := 1; ; attempt++ {
+		if username != "" {
+			if err := s.queries.FreeUsername(ctx, db.FreeUsernameParams{Username: username, Subject: subject}); err != nil {
+				return store.User{}, err
+			}
+		}
+		row, err = s.queries.SeeUser(ctx, seen)
+		var refused *pgconn.PgError
+		if attempt < 5 && errors.As(err, &refused) && refused.Code == uniqueViolation {
+			continue
+		}
+		return userFrom(row), err
+	}
+}
+
+// userFrom returns a row of the users table as a User.
+func userFrom(row db.User) store.User {
+	user := store.User{ID: row.ID, Subject: row.Subject, DisplayName: row.DisplayName, CreatedAt: row.CreatedAt}
+	if row.Username != nil {
+		user.Username = *row.Username
+	}
+	return user
+}
+
 func (s *records) CreateAgent(ctx context.Context, projectID uuid.UUID, agent store.Agent) (store.Agent, error) {
 	id, err := uuid.NewV7()
 	if err != nil {

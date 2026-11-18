@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"aviary/supervisor/identity"
 )
 
@@ -28,6 +30,9 @@ type Callers struct {
 // caller is who sends a request, and what the installation makes of them.
 type caller struct {
 	identity.Caller
+	// id is the ID of the caller as a user of the installation. A caller
+	// that is not asked who they are is no user, and has none.
+	id uuid.UUID
 	// admin says that the caller is an administrator of the installation.
 	admin bool
 }
@@ -48,8 +53,9 @@ var (
 
 // identified passes on the requests whose caller the identity provider
 // knows, each with its caller. A request tells who sends it with a token of
-// the provider, in the header "Authorization: Bearer <token>". An
-// installation without a provider asks nobody.
+// the provider, in the header "Authorization: Bearer <token>", and is a user
+// of the installation from the first request on. An installation without a
+// provider asks nobody.
 func (a *api) identified(next http.Handler) http.Handler {
 	return handler(func(w http.ResponseWriter, r *http.Request) error {
 		who := caller{admin: true}
@@ -63,7 +69,11 @@ func (a *api) identified(next http.Handler) http.Handler {
 				slog.InfoContext(r.Context(), "a request was refused for its token", "method", r.Method, "path", r.URL.Path, "error", err)
 				return errNoCaller
 			}
-			who = caller{Caller: told, admin: among(told.Groups, a.callers.Admins)}
+			user, err := a.store.UserOf(r.Context(), told.Subject, told.Username, told.DisplayName)
+			if err != nil {
+				return err
+			}
+			who = caller{Caller: told, id: user.ID, admin: among(told.Groups, a.callers.Admins)}
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), callerKey{}, who)))
 		return nil
@@ -88,18 +98,24 @@ func among(groups, named []string) bool {
 	return slices.ContainsFunc(groups, func(group string) bool { return slices.Contains(named, group) })
 }
 
-// me answers who sends the request, as the identity provider tells it, and
-// whether the installation takes them for an administrator. It is how to
-// see what the installation reads from a token, also for a caller that may
-// not use the rest of the API.
+// me answers who sends the request: the ID of the caller as a user of the
+// installation, what the identity provider tells of the caller, and whether
+// the installation takes the caller for an administrator. It is how to see
+// what the installation reads from a token, also for a caller that may not
+// use the rest of the API.
 func (a *api) me(w http.ResponseWriter, r *http.Request) error {
 	who := callerOf(r)
+	var id string
+	if who.id != uuid.Nil {
+		id = who.id.String()
+	}
 	respond(w, http.StatusOK, struct {
+		ID          string   `json:"id,omitempty"`
 		Subject     string   `json:"subject,omitempty"`
 		Username    string   `json:"username,omitempty"`
 		DisplayName string   `json:"display_name,omitempty"`
 		Groups      []string `json:"groups,omitempty"`
 		Admin       bool     `json:"admin"`
-	}{who.Subject, who.Username, who.DisplayName, who.Groups, who.admin})
+	}{id, who.Subject, who.Username, who.DisplayName, who.Groups, who.admin})
 	return nil
 }

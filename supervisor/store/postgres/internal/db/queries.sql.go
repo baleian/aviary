@@ -559,6 +559,21 @@ func (q *Queries) ExpireTurns(ctx context.Context, seconds float64) ([]Turn, err
 	return items, nil
 }
 
+const freeUsername = `-- name: FreeUsername :exec
+update users set username = null where username = $1::text and subject <> $2::text
+`
+
+type FreeUsernameParams struct {
+	Username string
+	Subject  string
+}
+
+// The username is that of the user whom the provider gives it to now.
+func (q *Queries) FreeUsername(ctx context.Context, arg FreeUsernameParams) error {
+	_, err := q.db.Exec(ctx, freeUsername, arg.Username, arg.Subject)
+	return err
+}
+
 const getAgent = `-- name: GetAgent :one
 select id, project_id, harness, created_at, instructions, resources, approval, provider_id, model from agents where id = $1
 `
@@ -731,6 +746,23 @@ func (q *Queries) GetTurnState(ctx context.Context, tokenHash []byte) (string, e
 	var state string
 	err := row.Scan(&state)
 	return state, err
+}
+
+const getUserBySubject = `-- name: GetUserBySubject :one
+select id, subject, username, display_name, created_at from users where subject = $1
+`
+
+func (q *Queries) GetUserBySubject(ctx context.Context, subject string) (User, error) {
+	row := q.db.QueryRow(ctx, getUserBySubject, subject)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Subject,
+		&i.Username,
+		&i.DisplayName,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const giveUpTurn = `-- name: GiveUpTurn :execrows
@@ -1100,6 +1132,41 @@ func (q *Queries) RunningTurn(ctx context.Context, tokenHash []byte) (RunningTur
 		&i.StoreCredential,
 		&i.StoreCreatedAt,
 		&i.StoreUpdatedAt,
+	)
+	return i, err
+}
+
+const seeUser = `-- name: SeeUser :one
+insert into users (id, subject, username, display_name)
+values ($1, $2, $3, $4)
+on conflict (subject) do update
+set username = coalesce(excluded.username, users.username), display_name = excluded.display_name
+returning id, subject, username, display_name, created_at
+`
+
+type SeeUserParams struct {
+	ID          uuid.UUID
+	Subject     string
+	Username    *string
+	DisplayName string
+}
+
+// Supervisors may see a user for the first time at once: one of them makes
+// the user. A user that is given no username keeps the one that it has.
+func (q *Queries) SeeUser(ctx context.Context, arg SeeUserParams) (User, error) {
+	row := q.db.QueryRow(ctx, seeUser,
+		arg.ID,
+		arg.Subject,
+		arg.Username,
+		arg.DisplayName,
+	)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Subject,
+		&i.Username,
+		&i.DisplayName,
+		&i.CreatedAt,
 	)
 	return i, err
 }

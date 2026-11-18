@@ -51,6 +51,20 @@ type Project struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// User is someone whom the identity provider of the installation told of
+// when they sent a request.
+type User struct {
+	ID uuid.UUID `json:"id"`
+	// Subject is what the provider knows the user by. It never changes.
+	Subject string `json:"subject"`
+	// Username is a name of the user that a person can read and that no
+	// other user has at the provider. It is empty if the provider gave none.
+	Username string `json:"username,omitempty"`
+	// DisplayName is what the user is shown as.
+	DisplayName string    `json:"display_name,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
 type Agent struct {
 	ID        uuid.UUID `json:"id"`
 	ProjectID uuid.UUID `json:"project_id"`
@@ -329,6 +343,16 @@ type Store interface {
 	// Project, like the other operations that read one record by its ID,
 	// returns ErrNotFound if there is none.
 	Project(ctx context.Context, id uuid.UUID) (Project, error)
+
+	// UserOf returns the user whom the identity provider knows by the
+	// subject, and makes the user if this is the first that is seen of
+	// them: of the Supervisors that see a user first at once, one makes the
+	// user. The user has the display name that is given, and the username
+	// if one is given: a user that is given none keeps the one that it has.
+	// No two users have the same username. The provider gives a username to
+	// one user at a time, so a user that is given the username of another
+	// has it from then on, and the other has none.
+	UserOf(ctx context.Context, subject, username, displayName string) (User, error)
 
 	// CreateAgent creates an agent with what the given one has of its own: its
 	// harness, instructions, resources, approval and model. It returns

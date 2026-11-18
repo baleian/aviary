@@ -196,10 +196,11 @@ Aviary logs nobody in and keeps no passwords. An installation names an
 identity provider, `supervisor.auth.provider`, and a caller gets a token
 from that provider and sends it with every request. A request without a
 token that the provider issued for this installation is answered with 401.
-`GET /v1/me` answers what the installation read from the token of the
-request, and whether it takes the caller for an administrator:
-`{"subject": "...", "username": "...", "display_name": "...", "groups":
-[...], "admin": false}`.
+A caller is a user of the installation from the first request on.
+`GET /v1/me` answers the ID of that user, what the installation read from
+the token of the request, and whether it takes the caller for an
+administrator: `{"id": "...", "subject": "...", "username": "...",
+"display_name": "...", "groups": [...], "admin": false}`.
 
 The groups that the provider gives a caller say what the caller is to the
 installation. Aviary sets no names for them: an installation names the

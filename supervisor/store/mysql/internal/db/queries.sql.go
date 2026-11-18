@@ -336,6 +336,27 @@ func (q *Queries) CreateTurn(ctx context.Context, arg CreateTurnParams) error {
 	return err
 }
 
+const createUser = `-- name: CreateUser :exec
+insert into users (id, subject, username, display_name) values (?, ?, ?, ?)
+`
+
+type CreateUserParams struct {
+	ID          key.ID
+	Subject     string
+	Username    *string
+	DisplayName string
+}
+
+func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) error {
+	_, err := q.db.ExecContext(ctx, createUser,
+		arg.ID,
+		arg.Subject,
+		arg.Username,
+		arg.DisplayName,
+	)
+	return err
+}
+
 const dispatchTurn = `-- name: DispatchTurn :execrows
 update turns set state = 'dispatching', token_hash = ?, dispatched_at = now(6)
 where id = ? and state = 'queued'
@@ -426,6 +447,21 @@ update turns set state = 'expired', ended_at = now(6) where id = ?
 
 func (q *Queries) ExpireTurn(ctx context.Context, id key.ID) error {
 	_, err := q.db.ExecContext(ctx, expireTurn, id)
+	return err
+}
+
+const freeUsername = `-- name: FreeUsername :exec
+update users set username = null where username = ? and subject <> ?
+`
+
+type FreeUsernameParams struct {
+	Username *string
+	Subject  string
+}
+
+// The username is that of the user whom the provider gives it to now.
+func (q *Queries) FreeUsername(ctx context.Context, arg FreeUsernameParams) error {
+	_, err := q.db.ExecContext(ctx, freeUsername, arg.Username, arg.Subject)
 	return err
 }
 
@@ -590,6 +626,23 @@ func (q *Queries) GetTurnHarness(ctx context.Context, id key.ID) (string, error)
 	var harness string
 	err := row.Scan(&harness)
 	return harness, err
+}
+
+const getUserBySubject = `-- name: GetUserBySubject :one
+select id, subject, username, display_name, created_at from users where subject = ?
+`
+
+func (q *Queries) GetUserBySubject(ctx context.Context, subject string) (User, error) {
+	row := q.db.QueryRowContext(ctx, getUserBySubject, subject)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Subject,
+		&i.Username,
+		&i.DisplayName,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const giveUpTurn = `-- name: GiveUpTurn :execrows
@@ -1185,6 +1238,23 @@ type TakeTurnParams struct {
 
 func (q *Queries) TakeTurn(ctx context.Context, arg TakeTurnParams) error {
 	_, err := q.db.ExecContext(ctx, takeTurn, arg.RunnerID, arg.ID)
+	return err
+}
+
+const updateUser = `-- name: UpdateUser :exec
+update users set username = coalesce(?, username), display_name = ?
+where subject = ?
+`
+
+type UpdateUserParams struct {
+	Username    *string
+	DisplayName string
+	Subject     string
+}
+
+// A user that is given no username keeps the one that it has.
+func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) error {
+	_, err := q.db.ExecContext(ctx, updateUser, arg.Username, arg.DisplayName, arg.Subject)
 	return err
 }
 
