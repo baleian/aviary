@@ -25,6 +25,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"aviary/supervisor/events"
+	"aviary/supervisor/identity"
 	"aviary/supervisor/internal/api"
 	"aviary/supervisor/internal/authz"
 	"aviary/supervisor/internal/driver"
@@ -46,6 +47,7 @@ const (
 	encryptionKey      = "AVIARY_ENCRYPTION_KEY"
 	secretStoreHosts   = "AVIARY_SECRET_STORE_HOSTS"
 	secretCacheSeconds = "AVIARY_SECRET_CACHE_SECONDS"
+	identityProvider   = "AVIARY_IDENTITY_PROVIDER"
 	harnesses          = "AVIARY_HARNESSES"
 	maxConcurrentTurns = "AVIARY_MAX_CONCURRENT_TURNS"
 	maxQueuedTurns     = "AVIARY_MAX_QUEUED_TURNS"
@@ -60,6 +62,9 @@ const (
 	metricsAddr        = ":9092"
 	// shutdownTimeout is how long the requests to the API get to finish.
 	shutdownTimeout = 10 * time.Second
+	// identityPatience is how long the identity provider may take to answer
+	// when the Supervisor starts.
+	identityPatience = 30 * time.Second
 	// keepaliveInterval is how often the Supervisor asks the other end of an
 	// idle connection whether it is still there, and how long it waits for
 	// the answer. The runners and the Egress Proxy ask the same of it.
@@ -89,6 +94,9 @@ type Plugins struct {
 	// SecretStores ask the secret stores of the projects, each those of its
 	// kind.
 	SecretStores []secret.Plugin
+	// IdentityProviders ask the identity provider of the installation who
+	// sends a request. The kind of the provider says which of them does.
+	IdentityProviders []identity.Plugin
 }
 
 // Main runs the Supervisor with the arguments of the program until the
@@ -157,6 +165,10 @@ func serve(ctx context.Context, database string, plugins Plugins) error {
 		return err
 	}
 	defer stores.Close()
+	callers, err := identityOf(ctx, plugins.IdentityProviders)
+	if err != nil {
+		return err
+	}
 	config, err := driverConfig()
 	if err != nil {
 		return err
@@ -179,15 +191,16 @@ func serve(ctx context.Context, database string, plugins Plugins) error {
 	if on.metrics, err = net.Listen("tcp", metricsAddr); err != nil {
 		return err
 	}
-	return serveOn(ctx, on, st, ev, client, config, keys, stores, gateway.Sweep)
+	return serveOn(ctx, on, st, ev, client, config, keys, stores, callers, gateway.Sweep)
 }
 
 // serveOn serves on the ports until ctx is done, with the turns in the
 // database of the store and their pods in the cluster of the client. It
 // seals the secrets that it stores with the keys, and reads the others from
-// the stores. Every sweep it looks for what the runners are to be told and
-// no Supervisor announced.
-func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, client kubernetes.Interface, config driver.Config, keys *secret.Keys, stores *secret.Stores, sweep time.Duration) error {
+// the stores. The callers tell who sends a request to the API, and are nil
+// if nobody is asked. Every sweep it looks for what the runners are to be
+// told and no Supervisor announced.
+func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, client kubernetes.Interface, config driver.Config, keys *secret.Keys, stores *secret.Stores, callers identity.Provider, sweep time.Duration) error {
 	m := metrics.New()
 	stores.Asked = m.SecretRead
 	dr, err := driver.New(config, client, st, ev, m)
@@ -196,7 +209,7 @@ func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, 
 	}
 	runners := gateway.New(st, ev, m, sweep)
 	apiServer := &http.Server{
-		Handler:           api.New(st, ev, dr, keys, stores, ctx.Done()),
+		Handler:           api.New(st, ev, dr, keys, stores, callers, ctx.Done()),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	// A machine that is gone closes no connection. Both ends of a connection
@@ -291,6 +304,30 @@ func allowedSecretStores(plugins []secret.Plugin) (*secret.Stores, error) {
 		return nil, fmt.Errorf("%s must be a number of seconds, or zero to read a store every time", secretCacheSeconds)
 	}
 	return secret.NewStores(hosts, time.Duration(seconds)*time.Second, plugins...)
+}
+
+// identityOf reads the identity provider of the installation, a JSON object
+// such as {"kind": "oidc", "settings": {...}}, and connects to it with the
+// plugin for its kind. An installation that names no kind has no provider:
+// nobody who sends a request is asked who they are.
+func identityOf(ctx context.Context, plugins []identity.Plugin) (identity.Provider, error) {
+	encoded, err := env(identityProvider)
+	if err != nil {
+		return nil, err
+	}
+	var provider struct {
+		Kind     string          `json:"kind"`
+		Settings json.RawMessage `json:"settings"`
+	}
+	if err := json.Unmarshal([]byte(encoded), &provider); err != nil {
+		return nil, fmt.Errorf("%s: %w", identityProvider, err)
+	}
+	if provider.Kind == "" {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, identityPatience)
+	defer cancel()
+	return identity.Open(ctx, provider.Kind, provider.Settings, plugins...)
 }
 
 // driverConfig reads how turns are run. The harnesses are a JSON object such

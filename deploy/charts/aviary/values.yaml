@@ -54,6 +54,21 @@ supervisor:
     # is used within that time, and for that long a store is not asked for
     # it again. With 0 a store is read for every model request.
     cacheSeconds: 60
+  # Who sends a request to the API.
+  auth:
+    # The identity provider of the installation: its kind, and the settings
+    # of a provider of that kind. With a provider, the API takes a request
+    # only with a token of it, which tells who sends the request. Without a
+    # kind there is none, and the API asks nobody. The kind "oidc" is an
+    # OpenID Connect issuer:
+    #   kind: oidc
+    #   settings:
+    #     issuer: https://login.example.com/realms/main
+    #     audience: aviary
+    #     claims: {username: email}
+    provider:
+      kind: ""
+      settings: {}
 
 egressProxy:
   image: envoyproxy/envoy:distroless-v1.40.2@sha256:09ca6f2140a61ad8df11779a4a30d52b48433d444466328494f9188c9c35eded

@@ -18,7 +18,8 @@ and the number of turns that run at once is a setting.
 > model, at an endpoint that its project registers with a key that no pod
 > holds. An agent can be made to ask a person before it acts. Supervisors
 > can be replaced while turns run.
-> It has only run on a local cluster, and the API has no authentication. See
+> It has only run on a local cluster, and a caller whom the API takes may do
+> everything with it. See
 > [What is missing](#what-is-missing).
 
 ## How it works
@@ -130,6 +131,10 @@ still knows what was said and finds the file.
 
 ## API
 
+An installation with an identity provider takes a request only with a token
+of the provider, in the header `Authorization: Bearer <token>`: see
+[Callers](#callers). An installation without one asks nobody.
+
 | Request | |
 | --- | --- |
 | `POST /v1/projects` | Creates a project. Body: `{"name": "..."}`. |
@@ -145,6 +150,7 @@ still knows what was said and finds the file.
 | `GET /v1/turns/{id}/events` | The events of the turn, as server-sent events. A client that reconnects sends `Last-Event-ID` and gets the events after it. |
 | `GET /v1/sessions/{id}/turns` | The turns of the session, newest first: `{"turns": [...]}`. `?limit=` is how many, 20 if it is not given and at most 100. `?before=` is the `seq` of a turn, and the answer then holds the turns before that one: that is how to read on from the last turn of an answer. The first turn of a session has `seq` 1. |
 | `GET /v1/projects/{id}`, `/v1/providers/{id}`, `/v1/secret-stores/{id}`, `/v1/agents/{id}`, `/v1/sessions/{id}`, `/v1/turns/{id}` | Reads what was created. |
+| `GET /v1/me` | Who sends the request, as the identity provider of the installation tells it. See [Callers](#callers). |
 
 The events of a turn:
 
@@ -183,6 +189,44 @@ A turn that has ended has its reason too, as `failure`. What makes a turn
 fail is up to the harness: when the model endpoint answers with an error,
 OpenCode fails the turn, and Codex mostly ends it with the error as what the
 agent says.
+
+### Callers
+
+Aviary logs nobody in and keeps no passwords. An installation names an
+identity provider, `supervisor.auth.provider`, and a caller gets a token
+from that provider and sends it with every request. A request without a
+token that the provider issued for this installation is answered with 401.
+`GET /v1/me` answers what the installation read from the token of the
+request: `{"subject": "...", "username": "...", "display_name": "...",
+"groups": [...]}`.
+
+A provider of the kind `oidc` is an OpenID Connect issuer. Its settings:
+
+```yaml
+supervisor:
+  auth:
+    provider:
+      kind: oidc
+      settings:
+        issuer: https://login.example.com/realms/main
+        audience: aviary
+        claims: {subject: sub, username: email, displayName: name, groups: groups}
+```
+
+- **The issuer** is the URL below which the provider publishes its
+  configuration and the keys that it signs with. A Supervisor reads the
+  configuration when it starts, and does not start if it cannot.
+- **The audience** is whom a token must be meant for. A token is a JWT that
+  the issuer signed for that audience and that has not expired, an ID token
+  or an access token.
+- **The claims** say where a token tells of its caller. The subject is what
+  the provider knows the caller by and never changes, `sub` unless the
+  settings say otherwise. The username is a name that a person can read and
+  that no other caller has, and a caller has one only if the settings name
+  its claim. The display name is `name` and the groups are `groups` unless
+  the settings say otherwise. A claim inside another is named by its path,
+  such as `realm_access.roles`. An email address is a username only if the
+  token says `"email_verified": true`.
 
 ### Model providers
 
@@ -385,6 +429,7 @@ installs it in the local cluster with a file of values of your own.
 | `supervisor.events.secretName`, `.secretKey` | A secret with the URL of the event log. Its scheme names the kind of the log: `valkey://…` is Valkey, and `valkeys://…` is Valkey with TLS. |
 | `supervisor.secretStores.allowedHosts` | The hosts at which the projects may have secret stores: `*` for every host, a host name for the host on the ports of HTTPS and HTTP, or a host name with a port. The default allows none. |
 | `supervisor.secretStores.cacheSeconds` | For how long a Supervisor uses a value that it read from a secret store before it reads the value again. Default 60, and with 0 the store is read for every model request. |
+| `supervisor.auth.provider` | The identity provider whose tokens tell who sends a request to the API: its `kind`, and the `settings` of a provider of that kind. The default is none, and the API then asks nobody. See [Callers](#callers). |
 | `supervisor.encryption.secretName`, `.key` | A secret with the keys that the Supervisor seals secrets with before it stores them, and the entry of it that seals. An entry is 32 random bytes in base64. To replace the key, add an entry and name it, and keep the entries from before. |
 | `egressProxy.allowedHosts` | The hosts that the Egress Proxy lets requests through to, those of the model providers among them. The default, `*`, is every host. |
 | `egressProxy.insideCIDRs`, `.extraEgress` | A network policy keeps the Egress Proxy itself out of these address ranges, so that it is no way into the cluster. `extraEgress` names what it may still reach there, as egress rules of a network policy: the endpoint of a model provider that is a service in the cluster or at a private address needs one. |
@@ -452,7 +497,8 @@ checks, how to run some of the tests and where a new one goes.
 
 ## What is missing
 
-- **Authentication.** Anyone who reaches the API can use it.
+- **Permissions.** A caller whom the API takes may do everything with it.
+  Without an identity provider that is anyone who reaches the API.
 - **Looking into what an agent sends.** The Egress Proxy records which host
   a turn connects to. It does not read what is sent over HTTPS.
 - **Measured token usage.** The usage of a turn is what its harness reports.

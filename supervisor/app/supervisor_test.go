@@ -30,6 +30,7 @@ import (
 
 	"aviary/supervisor/events"
 	memorylog "aviary/supervisor/events/memory"
+	"aviary/supervisor/identity"
 	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/internal/gateway"
 	runnerv1 "aviary/supervisor/internal/gen/aviary/runner/v1"
@@ -80,6 +81,9 @@ type installation struct {
 	// sweep is how often its Supervisors look for what no Supervisor
 	// announced. A test that waits for that sets it lower.
 	sweep time.Duration
+	// callers is the identity provider of the installation. Most
+	// installations of the tests have none.
+	callers identity.Provider
 }
 
 // install returns an installation without Supervisors. The functions change
@@ -135,6 +139,9 @@ type supervisor struct {
 	// stop tells the Supervisor to stop, as Kubernetes does, and returns
 	// when it has.
 	stop func()
+	// token is what the requests of the test tell who they are with, if
+	// they tell it.
+	token string
 }
 
 // supervisor starts a Supervisor of the installation.
@@ -166,7 +173,9 @@ func (i *installation) supervisor() *supervisor {
 	}
 	ctx, stop := context.WithCancel(context.Background())
 	stopped := make(chan error, 1)
-	go func() { stopped <- serveOn(ctx, on, i.records, ev, i.cluster, i.config, i.keys, stores, i.sweep) }()
+	go func() {
+		stopped <- serveOn(ctx, on, i.records, ev, i.cluster, i.config, i.keys, stores, i.callers, i.sweep)
+	}()
 	s.stop = sync.OnceFunc(func() {
 		stop()
 		select {
@@ -220,6 +229,9 @@ func (s *supervisor) request(method, path, body string, into any) (int, http.Hea
 	request, err := http.NewRequest(method, s.api+path, strings.NewReader(body))
 	if err != nil {
 		s.t.Fatal(err)
+	}
+	if s.token != "" {
+		request.Header.Set("Authorization", "Bearer "+s.token)
 	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {

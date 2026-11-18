@@ -51,6 +51,10 @@ spec:
             # For how long a value that was read from a secret store is used.
             - name: AVIARY_SECRET_CACHE_SECONDS
               value: {{ .Values.supervisor.secretStores.cacheSeconds | quote }}
+            # The identity provider that tells who sends a request to the
+            # API, if the installation has one.
+            - name: AVIARY_IDENTITY_PROVIDER
+              value: {{ .Values.supervisor.auth.provider | toJson | quote }}
             # Where the runners in the turn pods reach this Supervisor.
             - name: AVIARY_GATEWAY_URL
               value: http://aviary-supervisor.{{ .Release.Namespace }}:9090

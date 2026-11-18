@@ -9,6 +9,13 @@ supervisor:
       - secrets.example.com:8200
       - store.example.com
     cacheSeconds: 5
+  auth:
+    provider:
+      kind: oidc
+      settings:
+        issuer: https://login.example.com/realms/main
+        audience: aviary
+        claims: {username: email}
 egressProxy:
   replicas: 2
   allowedHosts:

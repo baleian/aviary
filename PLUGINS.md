@@ -2,8 +2,8 @@
 
 The core of Aviary is the Supervisor, the runner and the Egress Proxy. What
 an installation keeps its data in is not part of the core: the Supervisor
-knows a database, an event log and a secret store only by an interface, and
-a plugin connects it to one kind of each. An installation picks among the
+knows a database, an event log, a secret store and an identity provider
+only by an interface, and a plugin connects it to one kind of each. An installation picks among the
 plugins that its Supervisor was built with.
 
 | What | Interface | How an installation picks | Plugins in this repository |
@@ -11,6 +11,7 @@ plugins that its Supervisor was built with.
 | The database that holds the records | `store.Plugin` in `supervisor/store` | The scheme of the URL in the secret that `supervisor.database` names | `store/postgres`: PostgreSQL, at `postgres://` or `postgresql://`. `store/mysql`: MySQL, at `mysql://` |
 | The log of the events of the turns | `events.Plugin` in `supervisor/events` | The scheme of the URL in the secret that `supervisor.events` names | `events/resp`: a server with the stream and publish commands of RESP, at `valkey://`, `valkeys://`, `redis://` or `rediss://` |
 | The secret stores of the projects | `secret.Plugin` in `supervisor/secret` | The `kind` that a project gives when it registers a store | `secret/kv2`: KV version 2 with the AppRole login, as the kind `kv-v2` |
+| The identity provider that tells who sends a request | `identity.Plugin` in `supervisor/identity` | The `kind` of `supervisor.auth.provider` | `identity/oidc`: an OpenID Connect issuer, as the kind `oidc` |
 
 A Supervisor that is given a URL with a scheme that it has no plugin for
 does not start, and says which schemes it has.

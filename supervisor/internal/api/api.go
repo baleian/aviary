@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"aviary/supervisor/events"
+	"aviary/supervisor/identity"
 	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/secret"
 	"aviary/supervisor/store"
@@ -36,7 +37,10 @@ type api struct {
 	keys *secret.Keys
 	// stores are tried when a project registers one, and read when a
 	// project says that a secret is in one.
-	stores  *secret.Stores
+	stores *secret.Stores
+	// callers tells who sends a request. An installation without an
+	// identity provider has none.
+	callers identity.Provider
 	closing <-chan struct{}
 }
 
@@ -61,12 +65,14 @@ var (
 	errInternal    = &apiError{status: http.StatusInternalServerError, Code: "internal", Message: "internal error"}
 )
 
-// New returns the handler of the API. An event stream stays open for as long
-// as its client does, so the streams end when closing is closed.
-func New(st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Keys, stores *secret.Stores, closing <-chan struct{}) http.Handler {
-	a := &api{store: st, events: ev, driver: dr, keys: keys, stores: stores, closing: closing}
+// New returns the handler of the API. The callers tell who sends a request,
+// and are nil for an installation without an identity provider. An event
+// stream stays open for as long as its client does, so the streams end when
+// closing is closed.
+func New(st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Keys, stores *secret.Stores, callers identity.Provider, closing <-chan struct{}) http.Handler {
+	a := &api{store: st, events: ev, driver: dr, keys: keys, stores: stores, callers: callers, closing: closing}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
+	mux.Handle("GET /v1/me", handler(a.me))
 	mux.Handle("POST /v1/projects", handler(a.createProject))
 	mux.Handle("GET /v1/projects/{pid}", handler(a.getProject))
 	mux.Handle("POST /v1/projects/{pid}/secret-stores", handler(a.createSecretStore))
@@ -85,7 +91,11 @@ func New(st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Key
 	mux.Handle("POST /v1/turns/{tid}/cancel", handler(a.cancelTurn))
 	mux.Handle("POST /v1/turns/{tid}/approvals/{rid}", handler(a.answerApproval))
 	mux.Handle("GET /v1/turns/{tid}/events", handler(a.streamEvents))
-	return mux
+	// Kubernetes asks whether the Supervisor is up without saying who it is.
+	all := http.NewServeMux()
+	all.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
+	all.Handle("/", a.identified(mux))
+	return all
 }
 
 func (a *api) createProject(w http.ResponseWriter, r *http.Request) error {
@@ -465,6 +475,9 @@ func (h handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if failure.retryAfter > 0 {
 		w.Header().Set("Retry-After", strconv.Itoa(failure.retryAfter))
+	}
+	if failure.status == http.StatusUnauthorized {
+		w.Header().Set("WWW-Authenticate", "Bearer")
 	}
 	respond(w, failure.status, failure)
 }

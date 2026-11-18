@@ -17,6 +17,7 @@ import (
 
 	"aviary/supervisor/events"
 	memorylog "aviary/supervisor/events/memory"
+	"aviary/supervisor/identity"
 	"aviary/supervisor/secret"
 	"aviary/supervisor/store"
 	memorystore "aviary/supervisor/store/memory"
@@ -32,7 +33,17 @@ type build struct {
 func (b *build) plugins() Plugins {
 	return Plugins{
 		Databases: []store.Plugin{database{b}}, EventLogs: []events.Plugin{eventLog{b}}, SecretStores: []secret.Plugin{secretStores{b}},
+		IdentityProviders: []identity.Plugin{identityProviders{b}},
 	}
+}
+
+type identityProviders struct{ *build }
+
+func (identityProviders) Kind() string { return "callers" }
+
+func (p identityProviders) Open(_ context.Context, settings json.RawMessage) (identity.Provider, error) {
+	p.asked = append(p.asked, "open the identity provider "+string(settings))
+	return tokens{}, nil
 }
 
 type database struct{ *build }
@@ -165,6 +176,7 @@ func TestRunConnectsWithThePluginsOfTheBuild(t *testing.T) {
 	t.Setenv(encryptionKey, "k1")
 	t.Setenv(secretStoreHosts, `["*"]`)
 	t.Setenv(secretCacheSeconds, "60")
+	t.Setenv(identityProvider, `{"kind": "callers", "settings": {"of": "the test"}}`)
 	t.Setenv(gatewayURL, "")
 	build.asked = nil
 	err = Run(context.Background(), nil, build.plugins())
@@ -173,7 +185,7 @@ func TestRunConnectsWithThePluginsOfTheBuild(t *testing.T) {
 	}
 	expected = []string{
 		"open records://db.example/aviary", "open log://events.example:6379", "the kind of the secret stores",
-		"close the event log", "close the database",
+		`open the identity provider {"of": "the test"}`, "close the event log", "close the database",
 	}
 	if !slices.Equal(build.asked, expected) {
 		t.Errorf("the plugins were asked %q, not %q", build.asked, expected)
