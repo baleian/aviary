@@ -30,7 +30,7 @@ import (
 
 	"aviary/supervisor/events"
 	memorylog "aviary/supervisor/events/memory"
-	"aviary/supervisor/identity"
+	"aviary/supervisor/internal/api"
 	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/internal/gateway"
 	runnerv1 "aviary/supervisor/internal/gen/aviary/runner/v1"
@@ -81,9 +81,9 @@ type installation struct {
 	// sweep is how often its Supervisors look for what no Supervisor
 	// announced. A test that waits for that sets it lower.
 	sweep time.Duration
-	// callers is the identity provider of the installation. Most
-	// installations of the tests have none.
-	callers identity.Provider
+	// callers are who may use the API of the installation. Most
+	// installations of the tests have no identity provider.
+	callers api.Callers
 }
 
 // install returns an installation without Supervisors. The functions change

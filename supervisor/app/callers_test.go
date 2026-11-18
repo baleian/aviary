@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"aviary/supervisor/identity"
+	"aviary/supervisor/internal/api"
 )
 
 // tokens is an identity provider that knows the callers of some tokens.
@@ -29,6 +30,7 @@ type me struct {
 	Username    string   `json:"username"`
 	DisplayName string   `json:"display_name"`
 	Groups      []string `json:"groups"`
+	Admin       bool     `json:"admin"`
 }
 
 // An installation with an identity provider takes a request only with a
@@ -36,7 +38,7 @@ type me struct {
 func TestCallersAreAskedWhoTheyAre(t *testing.T) {
 	installation := install(t)
 	alice := identity.Caller{Subject: "subject-1", Username: "alice@example.com", DisplayName: "Alice Kim", Groups: []string{"team-a"}}
-	installation.callers = tokens{"token-of-alice": alice}
+	installation.callers = api.Callers{Provider: tokens{"token-of-alice": alice}}
 	s := installation.supervisor()
 
 	// send sends a request with the header that tells who sends it.
@@ -85,14 +87,83 @@ func TestCallersAreAskedWhoTheyAre(t *testing.T) {
 	}
 }
 
+// The groups that the identity provider gives a caller say whether the
+// caller is an administrator of the installation, and whether the caller
+// may use the API at all.
+func TestGroupsOfAdministratorsAndOfUsers(t *testing.T) {
+	provider := tokens{
+		"an-administrator": {Subject: "1", Groups: []string{"others", "platform"}},
+		"a-user":           {Subject: "2", Groups: []string{"team-b"}},
+		"a-stranger":       {Subject: "3", Groups: []string{"others"}},
+		"without-groups":   {Subject: "4"},
+	}
+	for name, test := range map[string]struct {
+		callers api.Callers
+		// admins and refused are the tokens of the callers that are
+		// administrators and of those that may not use the API.
+		admins, refused []string
+	}{
+		"groups of administrators and of users": {
+			callers: api.Callers{Provider: provider, Admins: []string{"platform", "owners"}, Users: []string{"team-a", "team-b"}},
+			admins:  []string{"an-administrator"}, refused: []string{"a-stranger", "without-groups"},
+		},
+		"no groups of users: everyone whom the provider knows may use the API": {
+			callers: api.Callers{Provider: provider, Admins: []string{"platform"}},
+			admins:  []string{"an-administrator"},
+		},
+		"no groups of administrators: nobody is one": {
+			callers: api.Callers{Provider: provider, Users: []string{"team-b"}},
+			refused: []string{"an-administrator", "a-stranger", "without-groups"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			installation := install(t)
+			installation.callers = test.callers
+			s := installation.supervisor()
+			for token, caller := range provider {
+				s.token = token
+				// Every caller is told who the installation takes them for,
+				// also one that may do nothing else.
+				var told me
+				if status, _ := s.request(http.MethodGet, "/v1/me", "", &told); status != http.StatusOK ||
+					told.Subject != caller.Subject || told.Admin != contains(test.admins, token) {
+					t.Errorf("%s is told %d %+v", token, status, told)
+				}
+				status, expected := http.StatusCreated, http.StatusCreated
+				var answer struct{ Code string }
+				if contains(test.refused, token) {
+					expected = http.StatusForbidden
+				}
+				if status, _ = s.request(http.MethodPost, "/v1/projects", `{"name": "a project"}`, &answer); status != expected ||
+					(expected == http.StatusForbidden) != (answer.Code == "forbidden") {
+					t.Errorf("%s creates a project, and that is answered with %d %q, not %d", token, status, answer.Code, expected)
+				}
+			}
+		})
+	}
+}
+
+func contains(all []string, one string) bool {
+	for _, each := range all {
+		if each == one {
+			return true
+		}
+	}
+	return false
+}
+
 // An installation without an identity provider asks nobody: a request needs
-// no token, and what it brings is not looked at.
+// no token, what it brings is not looked at, and its caller is an
+// administrator.
 func TestNobodyIsAskedWithoutAnIdentityProvider(t *testing.T) {
-	s := install(t).supervisor()
+	installation := install(t)
+	// Groups mean nothing without a provider that gives them.
+	installation.callers = api.Callers{Admins: []string{"platform"}, Users: []string{"team-a"}}
+	s := installation.supervisor()
 	for _, token := range []string{"", "any-token"} {
 		s.token = token
 		var answer map[string]any
-		if status, _ := s.request(http.MethodGet, "/v1/me", "", &answer); status != http.StatusOK || len(answer) != 0 {
+		if status, _ := s.request(http.MethodGet, "/v1/me", "", &answer); status != http.StatusOK || !reflect.DeepEqual(answer, map[string]any{"admin": true}) {
 			t.Errorf("a caller with the token %q is told %d %v", token, status, answer)
 		}
 		if status, _ := s.request(http.MethodPost, "/v1/projects", `{"name": "a project"}`, nil); status != http.StatusCreated {
@@ -115,33 +186,45 @@ func (providers) Open(_ context.Context, settings json.RawMessage) (identity.Pro
 	return known, nil
 }
 
-// The identity provider of an installation is the one that its settings
-// name, opened by the plugin for its kind. An installation that names none
-// has none.
-func TestIdentityProviderSettings(t *testing.T) {
+// Who may use the API is what the settings of the installation say: the
+// identity provider that they name, opened by the plugin for its kind, and
+// the groups of administrators and of users. An installation that names no
+// provider has none, and no groups.
+func TestCallerSettings(t *testing.T) {
 	ctx := context.Background()
+	plugins := []identity.Plugin{providers{}}
+	t.Setenv(adminGroups, `["platform"]`)
+	t.Setenv(userGroups, `["team-a", "team-b"]`)
 	for _, none := range []string{`{}`, `{"kind": "", "settings": {}}`} {
 		t.Setenv(identityProvider, none)
-		if callers, err := identityOf(ctx, []identity.Plugin{providers{}}); err != nil || callers != nil {
-			t.Errorf("with %s the installation has the identity provider %v, with the error %v", none, callers, err)
+		if callers, err := callersOf(ctx, plugins); err != nil || !reflect.DeepEqual(callers, api.Callers{}) {
+			t.Errorf("with the provider %s the callers are %+v, with the error %v", none, callers, err)
 		}
 	}
 	t.Setenv(identityProvider, `{"kind": "tokens", "settings": {"a-token": {"Subject": "subject-1"}}}`)
-	callers, err := identityOf(ctx, []identity.Plugin{providers{}})
+	callers, err := callersOf(ctx, plugins)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if caller, err := callers.Caller(ctx, "a-token"); err != nil || caller.Subject != "subject-1" {
+	if caller, err := callers.Provider.Caller(ctx, "a-token"); err != nil || caller.Subject != "subject-1" {
 		t.Errorf("the provider tells of the caller %+v, with the error %v", caller, err)
 	}
-	for wrong, says := range map[string]string{
-		`{"kind": "another"}`:                    "tokens",
-		`{"kind": "tokens", "settings": "none"}`: "cannot unmarshal",
-		`not JSON`:                               identityProvider,
+	if !reflect.DeepEqual(callers.Admins, []string{"platform"}) || !reflect.DeepEqual(callers.Users, []string{"team-a", "team-b"}) {
+		t.Errorf("the administrators are %q and the users %q", callers.Admins, callers.Users)
+	}
+
+	for _, wrong := range []struct{ name, value, says string }{
+		{identityProvider, `{"kind": "another"}`, "tokens"},
+		{identityProvider, `{"kind": "tokens", "settings": "none"}`, "cannot unmarshal"},
+		{identityProvider, `not JSON`, identityProvider},
+		{adminGroups, `platform`, adminGroups},
+		{userGroups, `{"team-a": true}`, userGroups},
 	} {
-		t.Setenv(identityProvider, wrong)
-		if _, err := identityOf(ctx, []identity.Plugin{providers{}}); err == nil || !strings.Contains(err.Error(), says) {
-			t.Errorf("with %s the provider is refused with %v, which does not say %q", wrong, err, says)
-		}
+		t.Run(wrong.name+"="+wrong.value, func(t *testing.T) {
+			t.Setenv(wrong.name, wrong.value)
+			if _, err := callersOf(ctx, plugins); err == nil || !strings.Contains(err.Error(), wrong.says) {
+				t.Errorf("the callers are refused with %v, which does not say %q", err, wrong.says)
+			}
+		})
 	}
 }

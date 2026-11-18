@@ -14,7 +14,6 @@ import (
 	"github.com/google/uuid"
 
 	"aviary/supervisor/events"
-	"aviary/supervisor/identity"
 	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/secret"
 	"aviary/supervisor/store"
@@ -38,9 +37,8 @@ type api struct {
 	// stores are tried when a project registers one, and read when a
 	// project says that a secret is in one.
 	stores *secret.Stores
-	// callers tells who sends a request. An installation without an
-	// identity provider has none.
-	callers identity.Provider
+	// callers are who may use the API.
+	callers Callers
 	closing <-chan struct{}
 }
 
@@ -65,14 +63,12 @@ var (
 	errInternal    = &apiError{status: http.StatusInternalServerError, Code: "internal", Message: "internal error"}
 )
 
-// New returns the handler of the API. The callers tell who sends a request,
-// and are nil for an installation without an identity provider. An event
-// stream stays open for as long as its client does, so the streams end when
-// closing is closed.
-func New(st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Keys, stores *secret.Stores, callers identity.Provider, closing <-chan struct{}) http.Handler {
+// New returns the handler of the API, for the callers that may use it. An
+// event stream stays open for as long as its client does, so the streams end
+// when closing is closed.
+func New(st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Keys, stores *secret.Stores, callers Callers, closing <-chan struct{}) http.Handler {
 	a := &api{store: st, events: ev, driver: dr, keys: keys, stores: stores, callers: callers, closing: closing}
 	mux := http.NewServeMux()
-	mux.Handle("GET /v1/me", handler(a.me))
 	mux.Handle("POST /v1/projects", handler(a.createProject))
 	mux.Handle("GET /v1/projects/{pid}", handler(a.getProject))
 	mux.Handle("POST /v1/projects/{pid}/secret-stores", handler(a.createSecretStore))
@@ -94,7 +90,8 @@ func New(st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Key
 	// Kubernetes asks whether the Supervisor is up without saying who it is.
 	all := http.NewServeMux()
 	all.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
-	all.Handle("/", a.identified(mux))
+	all.Handle("GET /v1/me", a.identified(handler(a.me)))
+	all.Handle("/", a.identified(a.allowed(mux)))
 	return all
 }
 

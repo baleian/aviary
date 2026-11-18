@@ -197,8 +197,18 @@ identity provider, `supervisor.auth.provider`, and a caller gets a token
 from that provider and sends it with every request. A request without a
 token that the provider issued for this installation is answered with 401.
 `GET /v1/me` answers what the installation read from the token of the
-request: `{"subject": "...", "username": "...", "display_name": "...",
-"groups": [...]}`.
+request, and whether it takes the caller for an administrator:
+`{"subject": "...", "username": "...", "display_name": "...", "groups":
+[...], "admin": false}`.
+
+The groups that the provider gives a caller say what the caller is to the
+installation. Aviary sets no names for them: an installation names the
+groups of its provider. The members of the groups in `supervisor.auth.admins`
+are its administrators. The members of the groups in `supervisor.auth.users`
+may use the API, as the administrators may, and with no group named there
+everyone whom the provider knows may. A caller that may not is answered with
+403, and can still ask `GET /v1/me`. In an installation without a provider
+every caller is an administrator.
 
 A provider of the kind `oidc` is an OpenID Connect issuer. Its settings:
 
@@ -430,6 +440,7 @@ installs it in the local cluster with a file of values of your own.
 | `supervisor.secretStores.allowedHosts` | The hosts at which the projects may have secret stores: `*` for every host, a host name for the host on the ports of HTTPS and HTTP, or a host name with a port. The default allows none. |
 | `supervisor.secretStores.cacheSeconds` | For how long a Supervisor uses a value that it read from a secret store before it reads the value again. Default 60, and with 0 the store is read for every model request. |
 | `supervisor.auth.provider` | The identity provider whose tokens tell who sends a request to the API: its `kind`, and the `settings` of a provider of that kind. The default is none, and the API then asks nobody. See [Callers](#callers). |
+| `supervisor.auth.admins`, `.users` | The groups of the identity provider whose members are the administrators of the installation, and the groups whose members may use the API. The default of both is none: nobody is an administrator, and everyone whom the provider knows may use the API. |
 | `supervisor.encryption.secretName`, `.key` | A secret with the keys that the Supervisor seals secrets with before it stores them, and the entry of it that seals. An entry is 32 random bytes in base64. To replace the key, add an entry and name it, and keep the entries from before. |
 | `egressProxy.allowedHosts` | The hosts that the Egress Proxy lets requests through to, those of the model providers among them. The default, `*`, is every host. |
 | `egressProxy.insideCIDRs`, `.extraEgress` | A network policy keeps the Egress Proxy itself out of these address ranges, so that it is no way into the cluster. `extraEgress` names what it may still reach there, as egress rules of a network policy: the endpoint of a model provider that is a service in the cluster or at a private address needs one. |

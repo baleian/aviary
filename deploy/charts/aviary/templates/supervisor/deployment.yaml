@@ -55,6 +55,12 @@ spec:
             # API, if the installation has one.
             - name: AVIARY_IDENTITY_PROVIDER
               value: {{ .Values.supervisor.auth.provider | toJson | quote }}
+            # The groups of the provider whose members are administrators,
+            # and those whose members may use the API.
+            - name: AVIARY_ADMIN_GROUPS
+              value: {{ .Values.supervisor.auth.admins | toJson | quote }}
+            - name: AVIARY_USER_GROUPS
+              value: {{ .Values.supervisor.auth.users | toJson | quote }}
             # Where the runners in the turn pods reach this Supervisor.
             - name: AVIARY_GATEWAY_URL
               value: http://aviary-supervisor.{{ .Release.Namespace }}:9090

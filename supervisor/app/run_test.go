@@ -177,6 +177,8 @@ func TestRunConnectsWithThePluginsOfTheBuild(t *testing.T) {
 	t.Setenv(secretStoreHosts, `["*"]`)
 	t.Setenv(secretCacheSeconds, "60")
 	t.Setenv(identityProvider, `{"kind": "callers", "settings": {"of": "the test"}}`)
+	t.Setenv(adminGroups, `[]`)
+	t.Setenv(userGroups, `[]`)
 	t.Setenv(gatewayURL, "")
 	build.asked = nil
 	err = Run(context.Background(), nil, build.plugins())

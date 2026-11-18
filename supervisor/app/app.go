@@ -48,6 +48,8 @@ const (
 	secretStoreHosts   = "AVIARY_SECRET_STORE_HOSTS"
 	secretCacheSeconds = "AVIARY_SECRET_CACHE_SECONDS"
 	identityProvider   = "AVIARY_IDENTITY_PROVIDER"
+	adminGroups        = "AVIARY_ADMIN_GROUPS"
+	userGroups         = "AVIARY_USER_GROUPS"
 	harnesses          = "AVIARY_HARNESSES"
 	maxConcurrentTurns = "AVIARY_MAX_CONCURRENT_TURNS"
 	maxQueuedTurns     = "AVIARY_MAX_QUEUED_TURNS"
@@ -165,7 +167,7 @@ func serve(ctx context.Context, database string, plugins Plugins) error {
 		return err
 	}
 	defer stores.Close()
-	callers, err := identityOf(ctx, plugins.IdentityProviders)
+	callers, err := callersOf(ctx, plugins.IdentityProviders)
 	if err != nil {
 		return err
 	}
@@ -197,10 +199,9 @@ func serve(ctx context.Context, database string, plugins Plugins) error {
 // serveOn serves on the ports until ctx is done, with the turns in the
 // database of the store and their pods in the cluster of the client. It
 // seals the secrets that it stores with the keys, and reads the others from
-// the stores. The callers tell who sends a request to the API, and are nil
-// if nobody is asked. Every sweep it looks for what the runners are to be
-// told and no Supervisor announced.
-func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, client kubernetes.Interface, config driver.Config, keys *secret.Keys, stores *secret.Stores, callers identity.Provider, sweep time.Duration) error {
+// the stores. The callers are who may use the API. Every sweep it looks for
+// what the runners are to be told and no Supervisor announced.
+func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, client kubernetes.Interface, config driver.Config, keys *secret.Keys, stores *secret.Stores, callers api.Callers, sweep time.Duration) error {
 	m := metrics.New()
 	stores.Asked = m.SecretRead
 	dr, err := driver.New(config, client, st, ev, m)
@@ -306,28 +307,42 @@ func allowedSecretStores(plugins []secret.Plugin) (*secret.Stores, error) {
 	return secret.NewStores(hosts, time.Duration(seconds)*time.Second, plugins...)
 }
 
-// identityOf reads the identity provider of the installation, a JSON object
-// such as {"kind": "oidc", "settings": {...}}, and connects to it with the
-// plugin for its kind. An installation that names no kind has no provider:
-// nobody who sends a request is asked who they are.
-func identityOf(ctx context.Context, plugins []identity.Plugin) (identity.Provider, error) {
+// callersOf reads who may use the API. The identity provider of the
+// installation is a JSON object such as {"kind": "oidc", "settings": {...}},
+// and is connected to with the plugin for its kind. The groups of the
+// provider whose members are administrators, and those whose members may use
+// the API, are JSON lists such as ["platform-team"]. An installation that
+// names no kind has no provider: nobody who sends a request is asked who
+// they are, and the groups mean nothing.
+func callersOf(ctx context.Context, plugins []identity.Plugin) (api.Callers, error) {
+	var callers api.Callers
 	encoded, err := env(identityProvider)
 	if err != nil {
-		return nil, err
+		return callers, err
 	}
 	var provider struct {
 		Kind     string          `json:"kind"`
 		Settings json.RawMessage `json:"settings"`
 	}
 	if err := json.Unmarshal([]byte(encoded), &provider); err != nil {
-		return nil, fmt.Errorf("%s: %w", identityProvider, err)
+		return callers, fmt.Errorf("%s: %w", identityProvider, err)
+	}
+	for name, groups := range map[string]*[]string{adminGroups: &callers.Admins, userGroups: &callers.Users} {
+		encoded, err := env(name)
+		if err != nil {
+			return callers, err
+		}
+		if err := json.Unmarshal([]byte(encoded), groups); err != nil {
+			return callers, fmt.Errorf("%s: %w", name, err)
+		}
 	}
 	if provider.Kind == "" {
-		return nil, nil
+		return api.Callers{}, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, identityPatience)
 	defer cancel()
-	return identity.Open(ctx, provider.Kind, provider.Settings, plugins...)
+	callers.Provider, err = identity.Open(ctx, provider.Kind, provider.Settings, plugins...)
+	return callers, err
 }
 
 // driverConfig reads how turns are run. The harnesses are a JSON object such
