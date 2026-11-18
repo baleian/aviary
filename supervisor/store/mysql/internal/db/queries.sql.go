@@ -1596,7 +1596,7 @@ func (q *Queries) ResolveApproval(ctx context.Context, arg ResolveApprovalParams
 }
 
 const runningTurn = `-- name: RunningTurn :one
-select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id,
+select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
        agents.provider_id, coalesce(providers.url, '') as provider_url, providers.api_key as provider_api_key,
        providers.api_key_store_id, coalesce(providers.api_key_path, '') as api_key_path,
        coalesce(providers.api_key_name, '') as api_key_name,
@@ -1616,6 +1616,7 @@ type RunningTurnRow struct {
 	SessionID       key.ID
 	AgentID         key.ID
 	ProjectID       key.ID
+	CreatedBy       *key.ID
 	ProviderID      *key.ID
 	ProviderUrl     string
 	ProviderApiKey  []byte
@@ -1642,6 +1643,7 @@ func (q *Queries) RunningTurn(ctx context.Context, tokenHash []byte) (RunningTur
 		&i.SessionID,
 		&i.AgentID,
 		&i.ProjectID,
+		&i.CreatedBy,
 		&i.ProviderID,
 		&i.ProviderUrl,
 		&i.ProviderApiKey,

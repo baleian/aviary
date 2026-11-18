@@ -670,6 +670,9 @@ func (s *records) RunningTurn(ctx context.Context, token string) (store.Origin, 
 		return store.Origin{}, store.ErrNotFound
 	}
 	origin := store.Origin{TurnID: row.TurnID, SessionID: row.SessionID, AgentID: row.AgentID, ProjectID: row.ProjectID}
+	if row.CreatedBy != nil {
+		origin.UserID = *row.CreatedBy
+	}
 	if row.ProviderID != nil {
 		origin.Provider = &store.Provider{
 			ID: *row.ProviderID, ProjectID: row.ProjectID, URL: row.ProviderUrl, APIKey: row.ProviderApiKey,

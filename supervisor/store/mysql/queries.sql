@@ -160,7 +160,7 @@ where sessions.id = ?;
 -- the provider of its agent as it is now, if the agent names its model. A
 -- provider whose key is in a secret store comes with that store, as it is
 -- now.
-select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id,
+select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
        agents.provider_id, coalesce(providers.url, '') as provider_url, providers.api_key as provider_api_key,
        providers.api_key_store_id, coalesce(providers.api_key_path, '') as api_key_path,
        coalesce(providers.api_key_name, '') as api_key_name,

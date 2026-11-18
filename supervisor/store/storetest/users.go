@@ -100,7 +100,8 @@ func (suite suite) testSupervisorsSeeAUserFirstTogether(t *testing.T) {
 }
 
 // A session is that of the user who created it, and a turn that of the user
-// who sent its message, or they are nobody's.
+// who sent its message, or they are nobody's. A request of a running turn
+// comes from the one who sent the message of the turn.
 func (suite suite) testSessionOfAUser(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -124,11 +125,19 @@ func (suite suite) testSessionOfAUser(t *testing.T) {
 		t.Errorf("the session of the user %s was created as %+v and is read as %+v", user.ID, created, read)
 	}
 
-	for session, sender := range map[uuid.UUID]uuid.UUID{created.ID: user.ID, nobodys.ID: uuid.Nil} {
+	// The store keeps who sent a message, whoever's session it is sent to:
+	// another user, the user and nobody.
+	other, err := st.UserOf(ctx, "subject-b", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	senders := map[uuid.UUID]uuid.UUID{}
+	for session, sender := range map[uuid.UUID]uuid.UUID{created.ID: other.ID, nobodys.ID: user.ID, st.session(): uuid.Nil} {
 		sent, _, err := st.CreateTurn(ctx, session, sender, "hello", 0, 50)
 		if err != nil {
 			t.Fatal(err)
 		}
+		senders[sent.ID] = sender
 		one, err := st.Turn(ctx, sent.ID)
 		if err != nil {
 			t.Fatal(err)
@@ -139,6 +148,21 @@ func (suite suite) testSessionOfAUser(t *testing.T) {
 		}
 		if sent.CreatedBy != sender || one.CreatedBy != sender || listed[0].CreatedBy != sender {
 			t.Errorf("the turn that %s sent was created as %+v, is read as %+v and is listed as %+v", sender, sent, one, listed[0])
+		}
+	}
+
+	dispatches, err := st.DispatchTurns(ctx, 50)
+	if err != nil || len(dispatches) != 3 {
+		t.Fatalf("the turns were dispatched as %+v, with the error %v", dispatches, err)
+	}
+	for _, dispatch := range dispatches {
+		runner := uuid.New()
+		if _, err := st.TakeTurn(ctx, dispatch.Token, &runner); err != nil {
+			t.Fatal(err)
+		}
+		sender, sent := senders[dispatch.TurnID]
+		if origin, err := st.RunningTurn(ctx, dispatch.Token); err != nil || !sent || origin.UserID != sender {
+			t.Errorf("a request of the running turn that %s sent comes from %+v, with the error %v", sender, origin, err)
 		}
 	}
 }

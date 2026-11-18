@@ -78,7 +78,9 @@ of a provider, an AI gateway or a model server of your own.
 The record of the Egress Proxy is a line of JSON for every request, on its
 standard output. A line names the turn and the session, the agent and the
 project that the turn belongs to, so it tells by itself where a request came
-from. The line of a model request also names the provider that it went to.
+from. In an installation with an identity provider it also names the user
+who sent the message of the turn, by the ID that `GET /v1/me` answers that
+user. The line of a model request also names the provider that it went to.
 It also has the time, the host, the path if the request was not for an
 HTTPS URL, the status of the answer, the bytes in both directions and how
 long the request took. How long the lines are kept is up to what collects

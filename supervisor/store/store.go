@@ -326,6 +326,9 @@ type Origin struct {
 	SessionID uuid.UUID
 	AgentID   uuid.UUID
 	ProjectID uuid.UUID
+	// UserID is the user who sent the message of the turn. It is uuid.Nil
+	// if nobody did who was asked who they are.
+	UserID uuid.UUID
 	// Provider is the provider of the agent as it is now, if the agent
 	// names its model: its ID, its URL and its API key, as it is stored or
 	// where it is.

@@ -956,7 +956,7 @@ func (s *Store) RunningTurn(ctx context.Context, token string) (store.Origin, er
 		return store.Origin{}, store.ErrNotFound
 	}
 	agent := s.agents[s.sessions[turn.SessionID].AgentID]
-	origin := store.Origin{TurnID: turn.ID, SessionID: turn.SessionID, AgentID: agent.ID, ProjectID: agent.ProjectID}
+	origin := store.Origin{TurnID: turn.ID, SessionID: turn.SessionID, AgentID: agent.ID, ProjectID: agent.ProjectID, UserID: turn.CreatedBy}
 	if agent.Model != nil {
 		provider := s.providers[agent.Model.Provider]
 		origin.Provider = &store.Provider{

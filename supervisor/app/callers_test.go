@@ -338,3 +338,39 @@ func TestASessionIsOfItsCreator(t *testing.T) {
 		t.Errorf("a turn that nobody sent is said to be that of %v", by)
 	}
 }
+
+// The Egress Proxy is told who sent the message of the turn that a request
+// comes from, for its record.
+func TestProxyIsToldWhoSentTheMessageOfATurn(t *testing.T) {
+	aviary := install(t)
+	aviary.callers = api.Callers{
+		Provider: tokens{
+			"an-administrator": {Subject: "1", Groups: []string{"platform"}},
+			"token-of-alice":   {Subject: "2", Username: "alice@example.com"},
+		},
+		Admins: []string{"platform"},
+	}
+	s := aviary.supervisor()
+	s.token = "an-administrator"
+	project := s.create("/v1/projects", `{"name": "test"}`)
+	agent := s.agent(project, `{"harness": "opencode"}`)
+	s.create("/v1/projects/"+project+"/members", `{"user": "alice@example.com", "role": "user"}`)
+
+	senders := map[string]bool{}
+	for _, sender := range []string{"token-of-alice", "an-administrator"} {
+		s.token = sender
+		var who me
+		s.request(http.MethodGet, "/v1/me", "", &who)
+		job := aviary.job(s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID)
+		s.take(job)
+		for _, forward := range []bool{false, true} {
+			if origin := s.origin(token(job), forward); who.ID == "" || origin["user"] != who.ID {
+				t.Errorf("of a request of the turn that the user %q sent, through the forward proxy %t, the proxy is told %v", who.ID, forward, origin)
+			}
+		}
+		senders[who.ID] = true
+	}
+	if len(senders) != 2 {
+		t.Errorf("the two who sent messages are %v", senders)
+	}
+}

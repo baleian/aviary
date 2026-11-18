@@ -267,6 +267,10 @@ func egress(t *testing.T) {
 			if line["session"] != session || line["agent"] != agent.id || line["project"] != agent.project {
 				t.Errorf("the model request of the turn is recorded as %v", line)
 			}
+			// And who sent the message, if the installation asks who does.
+			if _, sent := line["user"].(string); sent != identity {
+				t.Errorf("the model request of the turn is recorded as that of the user %v", line["user"])
+			}
 		})
 		t.Run("to an allowed host", func(t *testing.T) {
 			t.Parallel()
@@ -738,6 +742,10 @@ func callers(t *testing.T) {
 	}
 	if status := requestAs(t, member, "GET", "/v1/turns/"+accepted.ID, "", &sent); status != http.StatusOK || sent.CreatedBy != bob.ID {
 		t.Errorf("the turn of the member %s was answered with %d, as sent by %q", bob.ID, status, sent.CreatedBy)
+	}
+	// The Egress Proxy records whose turn a request comes from.
+	if line := logged(t, accepted.ID, "llm", "mock-llm.aviary-e2e", 200); line["user"] != bob.ID {
+		t.Errorf("the model request of the turn of the member %s is recorded as %v", bob.ID, line)
 	}
 
 	for _, try := range []struct {
