@@ -25,7 +25,7 @@ func (suite suite) testAnswerApprovalKeepsOneOfTheAnswersGivenAtOnce(t *testing.
 	supervisors := st.supervisors(8)
 	var kept atomic.Int32
 	atOnce(len(supervisors), func(i int) {
-		answered, err := supervisors[i].AnswerApproval(ctx, dispatch.TurnID, "1", strconv.Itoa(i))
+		answered, err := supervisors[i].AnswerApproval(ctx, dispatch.TurnID, "1", strconv.Itoa(i), uuid.Nil)
 		if err != nil {
 			t.Error(err)
 		}
@@ -93,17 +93,25 @@ func (suite suite) testApprovals(t *testing.T) {
 	}
 
 	// The first answer stands.
-	if answered, err := st.AnswerApproval(ctx, turn, "1", "once"); err != nil || !answered {
+	// An answer is that of the user who gave it, and the first one stands.
+	user, err := st.UserOf(ctx, "subject-a", "alice@example.com", "Alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asked, err := st.Approval(ctx, turn, "1"); err != nil || asked.Answered || asked.AnsweredBy != uuid.Nil {
+		t.Errorf("a request without an answer is %+v: %v", asked, err)
+	}
+	if answered, err := st.AnswerApproval(ctx, turn, "1", "once", user.ID); err != nil || !answered {
 		t.Fatalf("the request was answered %t: %v", answered, err)
 	}
-	if answered, err := st.AnswerApproval(ctx, turn, "1", "never"); err != nil || answered {
+	if answered, err := st.AnswerApproval(ctx, turn, "1", "never", uuid.Nil); err != nil || answered {
 		t.Errorf("the request was answered a second time %t: %v", answered, err)
 	}
-	if answered, err := st.AnswerApproval(ctx, turn, "3", "once"); err != nil || answered {
+	if answered, err := st.AnswerApproval(ctx, turn, "3", "once", uuid.Nil); err != nil || answered {
 		t.Errorf("a request that there is not was answered %t: %v", answered, err)
 	}
-	if asked, err := st.Approval(ctx, turn, "1"); err != nil || !asked.Answered || asked.Resolved {
-		t.Errorf("the answered request is %+v: %v", asked, err)
+	if asked, err := st.Approval(ctx, turn, "1"); err != nil || !asked.Answered || asked.Resolved || asked.AnsweredBy != user.ID {
+		t.Errorf("the request that the user %s answered is %+v: %v", user.ID, asked, err)
 	}
 	// It waits for a person no longer, and its answer is on its way.
 	if waiting := waiting(); !keepsAll(t, waiting, second) {
@@ -136,7 +144,7 @@ func (suite suite) testApprovals(t *testing.T) {
 	if _, _, _, err := st.ResolveApproval(ctx, turn, "2", "cancelled"); err != nil {
 		t.Fatal(err)
 	}
-	if answered, err := st.AnswerApproval(ctx, turn, "2", "once"); err != nil || answered {
+	if answered, err := st.AnswerApproval(ctx, turn, "2", "once", uuid.Nil); err != nil || answered {
 		t.Errorf("a request that was resolved was answered %t: %v", answered, err)
 	}
 
@@ -148,11 +156,11 @@ func (suite suite) testApprovals(t *testing.T) {
 	if err := st.AddApproval(ctx, other.TurnID, "2", []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
-	if answered, err := st.AnswerApproval(ctx, other.TurnID, "1", "once"); err != nil || !answered {
+	if answered, err := st.AnswerApproval(ctx, other.TurnID, "1", "once", uuid.Nil); err != nil || !answered {
 		t.Fatalf("the request of the other turn was answered %t: %v", answered, err)
 	}
 	st.end(other.TurnID, false, store.Failure{Reason: store.FailurePodLost})
-	if answered, err := st.AnswerApproval(ctx, other.TurnID, "2", "once"); err != nil || answered {
+	if answered, err := st.AnswerApproval(ctx, other.TurnID, "2", "once", uuid.Nil); err != nil || answered {
 		t.Errorf("a request of a turn that has ended was answered %t: %v", answered, err)
 	}
 	if answers := answers(nil); len(answers) != 0 {

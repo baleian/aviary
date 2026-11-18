@@ -77,8 +77,10 @@ type approval struct {
 	id          string
 	request     json.RawMessage
 	requestedAt time.Time
-	// optionID is the option that a person chose, if answered.
+	// optionID is the option that a person chose, if answered, and
+	// answeredBy the user who chose it.
 	optionID           string
+	answeredBy         uuid.UUID
 	answered, resolved bool
 }
 
@@ -1094,10 +1096,10 @@ func (s *Store) Approval(ctx context.Context, turnID uuid.UUID, id string) (stor
 	if kept == nil {
 		return store.Approval{}, store.ErrNotFound
 	}
-	return store.Approval{Request: bytes.Clone(kept.request), Answered: kept.answered, Resolved: kept.resolved}, nil
+	return store.Approval{Request: bytes.Clone(kept.request), Answered: kept.answered, Resolved: kept.resolved, AnsweredBy: kept.answeredBy}, nil
 }
 
-func (s *Store) AnswerApproval(ctx context.Context, turnID uuid.UUID, id, optionID string) (bool, error) {
+func (s *Store) AnswerApproval(ctx context.Context, turnID uuid.UUID, id, optionID string, by uuid.UUID) (bool, error) {
 	if err := s.begin(ctx); err != nil {
 		return false, err
 	}
@@ -1106,7 +1108,7 @@ func (s *Store) AnswerApproval(ctx context.Context, turnID uuid.UUID, id, option
 	if kept == nil || kept.answered || kept.resolved || turn.EndedAt != nil {
 		return false, nil
 	}
-	kept.optionID, kept.answered = optionID, true
+	kept.optionID, kept.answeredBy, kept.answered = optionID, by, true
 	return true, nil
 }
 

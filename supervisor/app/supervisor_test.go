@@ -320,9 +320,10 @@ type event struct {
 
 // reader is a client that reads the events of a turn as they come.
 type reader struct {
-	t      *testing.T
-	turn   string
-	events chan event
+	t *testing.T
+	// token is what the reader tells who it is with, if it tells it.
+	turn, token string
+	events      chan event
 	// ended holds how the stream ended, once it has: without an error if the
 	// Supervisor ended it.
 	ended chan error
@@ -333,7 +334,7 @@ type reader struct {
 func (s *supervisor) read(turn, after string) *reader {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.t.Cleanup(cancel)
-	r := &reader{t: s.t, turn: turn, events: make(chan event, 10000), ended: make(chan error, 1)}
+	r := &reader{t: s.t, turn: turn, token: s.token, events: make(chan event, 10000), ended: make(chan error, 1)}
 	go func() { r.ended <- r.stream(ctx, s.api, after) }()
 	return r
 }
@@ -345,6 +346,9 @@ func (r *reader) stream(ctx context.Context, api, after string) error {
 	}
 	if after != "" {
 		request.Header.Set("Last-Event-ID", after)
+	}
+	if r.token != "" {
+		request.Header.Set("Authorization", "Bearer "+r.token)
 	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {

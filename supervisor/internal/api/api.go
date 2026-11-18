@@ -425,7 +425,7 @@ func (a *api) answerApproval(w http.ResponseWriter, r *http.Request) error {
 	if !offered {
 		return invalid("option_id must be the id of one of the options of the request")
 	}
-	answered, err := a.store.AnswerApproval(r.Context(), turnID, answer.ID, answer.OptionID)
+	answered, err := a.store.AnswerApproval(r.Context(), turnID, answer.ID, answer.OptionID, callerOf(r).id)
 	if err != nil {
 		return err
 	}

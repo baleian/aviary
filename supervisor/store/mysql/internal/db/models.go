@@ -32,6 +32,7 @@ type Approval struct {
 	AnsweredAt  *time.Time
 	Outcome     *string
 	ResolvedAt  *time.Time
+	AnsweredBy  *key.ID
 }
 
 type Project struct {

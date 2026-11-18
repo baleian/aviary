@@ -31,6 +31,7 @@ type Approval struct {
 	AnsweredAt  *time.Time
 	Outcome     *string
 	ResolvedAt  *time.Time
+	AnsweredBy  *uuid.UUID
 }
 
 type Project struct {

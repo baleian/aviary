@@ -342,6 +342,9 @@ type Approval struct {
 	// Answered tells whether a person has chosen an option, and Resolved
 	// whether the harness has its answer.
 	Answered, Resolved bool
+	// AnsweredBy is the user who chose the option. It is uuid.Nil if nobody
+	// has, or nobody who was asked who they are.
+	AnsweredBy uuid.UUID
 }
 
 // Answer is the option that a person chose for a request for approval, on its
@@ -607,8 +610,9 @@ type Store interface {
 
 	// AnswerApproval keeps the option that a person chose for the request. It
 	// reports false for a request that has an answer, that the harness waits for
-	// no longer, or whose turn has ended: the first answer stands.
-	AnswerApproval(ctx context.Context, turnID uuid.UUID, id, optionID string) (bool, error)
+	// no longer, or whose turn has ended: the first answer stands. The answer
+	// is that of the user by, or of nobody if by is uuid.Nil.
+	AnswerApproval(ctx context.Context, turnID uuid.UUID, id, optionID string, by uuid.UUID) (bool, error)
 
 	// WaitingApprovals returns the requests of the turn that wait for a person,
 	// oldest first.

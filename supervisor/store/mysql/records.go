@@ -947,11 +947,19 @@ func (s *records) ResolveApproval(ctx context.Context, turnID uuid.UUID, id, out
 
 func (s *records) Approval(ctx context.Context, turnID uuid.UUID, id string) (store.Approval, error) {
 	row, err := s.queries.GetApproval(ctx, db.GetApprovalParams{TurnID: key.ID(turnID), ID: id})
-	return store.Approval{Request: row.Request, Answered: row.AnsweredAt != nil, Resolved: row.ResolvedAt != nil}, found(err)
+	approval := store.Approval{Request: row.Request, Answered: row.AnsweredAt != nil, Resolved: row.ResolvedAt != nil}
+	if row.AnsweredBy != nil {
+		approval.AnsweredBy = uuid.UUID(*row.AnsweredBy)
+	}
+	return approval, found(err)
 }
 
-func (s *records) AnswerApproval(ctx context.Context, turnID uuid.UUID, id, optionID string) (bool, error) {
-	answered, err := s.queries.AnswerApproval(ctx, db.AnswerApprovalParams{TurnID: key.ID(turnID), ID: id, OptionID: &optionID})
+func (s *records) AnswerApproval(ctx context.Context, turnID uuid.UUID, id, optionID string, by uuid.UUID) (bool, error) {
+	params := db.AnswerApprovalParams{TurnID: key.ID(turnID), ID: id, OptionID: &optionID}
+	if by != uuid.Nil {
+		params.AnsweredBy = (*key.ID)(&by)
+	}
+	answered, err := s.queries.AnswerApproval(ctx, params)
 	return answered == 1, err
 }
 

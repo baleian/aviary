@@ -175,7 +175,7 @@ The events of a turn:
 | `tool.update` | `id` and what changed of `title`, `kind`, `status`, `input`, `output`. A text in `input` or `output` that is longer than the installation allows is cut, and says so at its end. |
 | `plan.update` | `entries`: the agent's plan, each entry with `content`, `priority` and `status`. |
 | `approval.requested` | The harness asks a person before it acts, and waits. `id`: the request. `tool_call`: what it is about to do, with the fields of `tool.call`. `options`: what a person can answer, each with `id`, `name` and `kind`, which is `allow_once`, `allow_always`, `reject_once` or `reject_always`. |
-| `approval.resolved` | The harness has its answer to the request `id`. `outcome`: `selected`, with the `option_id` that it was given, or `cancelled` if the turn was stopped before an answer came. |
+| `approval.resolved` | The harness has its answer to the request `id`. `outcome`: `selected`, with the `option_id` that it was given, or `cancelled` if the turn was stopped before an answer came. `answered_by`: the ID of the user whose answer it was, if the installation asks its callers who they are. |
 | `turn.completed` | `stop_reason`: why the harness ended the turn. `usage`: the token usage that the harness reported, if it did. The last event of the turn. |
 | `turn.failed` | The turn did not complete. `reason`: one of the words below. `message`: what is known of the failure. The last event of the turn. |
 | `turn.cancelled` | The turn was cancelled. The last event of the turn. |
@@ -378,7 +378,7 @@ what it does. Before its harness acts, the turn gets the event
 `approval.requested`, and the harness waits. A client answers with
 `POST /v1/turns/{id}/approvals/{request}` and one of the options that the
 harness gave. The harness goes on with that answer, and the turn gets
-`approval.resolved`. While a request waits, the turn has it in `approvals`
+`approval.resolved`, which says who answered. While a request waits, the turn has it in `approvals`
 when it is read, on its own or in the turns of its session, so a client that
 comes later finds what there is to answer.
 

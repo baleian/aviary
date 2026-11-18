@@ -227,7 +227,7 @@ where turn_id = sqlc.arg(turn_id) and id = sqlc.arg(id) and resolved_at is null;
 -- name: AnswerApproval :execrows
 -- Keeps the option that a person chose, for a request that has no answer
 -- yet and whose turn has not ended.
-update approvals set option_id = sqlc.arg(option_id), answered_at = now(6)
+update approvals set option_id = sqlc.arg(option_id), answered_at = now(6), answered_by = sqlc.narg(answered_by)
 where approvals.turn_id = sqlc.arg(turn_id) and approvals.id = sqlc.arg(id)
   and approvals.answered_at is null and approvals.resolved_at is null
   and exists (select 1 from turns where turns.id = approvals.turn_id and turns.ended_at is null);

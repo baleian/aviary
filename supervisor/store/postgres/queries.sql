@@ -249,7 +249,7 @@ select * from approvals where turn_id = @turn_id and id = @id;
 -- name: AnswerApproval :execrows
 -- Keeps the option that a person chose, for a request that has no answer
 -- yet and whose turn has not ended.
-update approvals set option_id = @option_id::text, answered_at = now()
+update approvals set option_id = @option_id::text, answered_at = now(), answered_by = sqlc.narg(answered_by)
 from turns
 where approvals.turn_id = @turn_id and approvals.id = @id
   and approvals.answered_at is null and approvals.resolved_at is null

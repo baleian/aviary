@@ -10,6 +10,8 @@ import (
 
 	"github.com/google/uuid"
 	batchv1 "k8s.io/api/batch/v1"
+
+	"aviary/supervisor/internal/api"
 )
 
 // waiting returns the IDs of the requests for approval that the turn shows
@@ -141,7 +143,8 @@ func TestApproval(t *testing.T) {
 	}
 	var resolved map[string]string
 	selected := of("approval.resolved")[0].Data
-	if err := json.Unmarshal([]byte(selected), &resolved); err != nil ||
+	// Nobody is asked who they are here, so nobody is said to have answered.
+	if err := json.Unmarshal([]byte(selected), &resolved); err != nil || len(resolved) != 3 ||
 		resolved["id"] != "2" || resolved["outcome"] != "selected" || resolved["option_id"] != "once" {
 		t.Errorf("the answer to a request is told as %s: %v", selected, err)
 	}
@@ -213,11 +216,82 @@ func TestApprovalWithoutAnnouncement(t *testing.T) {
 	runner.report(started("harness-session"))
 	runner.report(asks("1", "rm -r build"))
 	// The answer is recorded as the API records it, and nothing is announced.
-	answered, err := aviary.records.AnswerApproval(context.Background(), uuid.MustParse(accepted.ID), "1", "never")
+	answered, err := aviary.records.AnswerApproval(context.Background(), uuid.MustParse(accepted.ID), "1", "never", uuid.Nil)
 	if err != nil || !answered {
 		t.Fatalf("the request was answered %t: %v", answered, err)
 	}
 	if id, option := runner.answer(); id != "1" || option != "never" {
 		t.Errorf("the runner was given the answer %q to the request %q", option, id)
+	}
+}
+
+// The answer to a request for approval is that of the caller who gave it:
+// the event and the record of the answer say who that was.
+func TestApprovalIsAnsweredBySomeone(t *testing.T) {
+	t.Parallel()
+	aviary := install(t)
+	aviary.callers = api.Callers{
+		Provider: tokens{
+			"an-administrator": {Subject: "1", Groups: []string{"platform"}},
+			"token-of-alice":   {Subject: "2", Username: "alice@example.com"},
+			"token-of-carol":   {Subject: "3", Username: "carol@example.com"},
+		},
+		Admins: []string{"platform"},
+	}
+	s := aviary.supervisor()
+	s.token = "an-administrator"
+	project := s.create("/v1/projects", `{"name": "test"}`)
+	agent := s.agent(project, `{"harness": "opencode", "approval": "ask"}`)
+	s.create("/v1/projects/"+project+"/members", `{"user": "alice@example.com", "role": "user"}`)
+	s.create("/v1/projects/"+project+"/members", `{"user": "carol@example.com", "role": "owner"}`)
+
+	s.token = "token-of-carol"
+	var carol me
+	s.request(http.MethodGet, "/v1/me", "", &carol)
+	s.token = "token-of-alice"
+	accepted := s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello")
+	runner := s.take(aviary.job(accepted.ID))
+	runner.report(started("harness-session"))
+	watching := s.watch(accepted.ID)
+	runner.report(asks("1", "rm -r build"))
+	runner.report(asks("2", "git push"))
+
+	// Another member, who may answer for the turns of others, answers both
+	// requests. The harness gets the answer to the one, and the turn is
+	// told to stop before it gets the other: that one was answered by
+	// nobody.
+	s.token = "token-of-carol"
+	for _, request := range []string{"1", "2"} {
+		if status, reply := s.approve(accepted.ID, request, `{"option_id": "once"}`); status != http.StatusAccepted {
+			t.Fatalf("the answer to a request was answered with %d %v", status, reply)
+		}
+		runner.answer()
+	}
+	runner.report(answered("1", "selected", "once"))
+	runner.report(answered("2", "cancelled", ""))
+	runner.report(finished("end_turn", nil))
+	runner.leave()
+	aviary.end(aviary.job(accepted.ID), batchv1.JobComplete, nil)
+
+	var resolved []map[string]string
+	for _, event := range watching() {
+		if event.Type == "approval.resolved" {
+			var data map[string]string
+			if err := json.Unmarshal([]byte(event.Data), &data); err != nil {
+				t.Fatal(err)
+			}
+			resolved = append(resolved, data)
+		}
+	}
+	if len(resolved) != 2 || resolved[0]["id"] != "1" || resolved[0]["outcome"] != "selected" || resolved[0]["option_id"] != "once" ||
+		resolved[0]["answered_by"] != carol.ID || carol.ID == "" {
+		t.Errorf("the answer of the user %s is told as %v", carol.ID, resolved)
+	}
+	if by, told := resolved[len(resolved)-1]["answered_by"]; told {
+		t.Errorf("a request that nobody answered is said to be answered by %v", by)
+	}
+	kept := items(t, s.turn(accepted.ID))
+	if len(kept) != 2 || kept[0]["id"] != "1" || kept[0]["answered_by"] != carol.ID || kept[1]["answered_by"] != nil {
+		t.Errorf("the record of the turn has the items %v", kept)
 	}
 }

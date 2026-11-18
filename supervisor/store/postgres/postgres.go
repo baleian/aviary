@@ -748,11 +748,19 @@ func (s *records) Approval(ctx context.Context, turnID uuid.UUID, id string) (st
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.Approval{}, store.ErrNotFound
 	}
-	return store.Approval{Request: row.Request, Answered: row.AnsweredAt != nil, Resolved: row.ResolvedAt != nil}, err
+	approval := store.Approval{Request: row.Request, Answered: row.AnsweredAt != nil, Resolved: row.ResolvedAt != nil}
+	if row.AnsweredBy != nil {
+		approval.AnsweredBy = *row.AnsweredBy
+	}
+	return approval, err
 }
 
-func (s *records) AnswerApproval(ctx context.Context, turnID uuid.UUID, id, optionID string) (bool, error) {
-	answered, err := s.queries.AnswerApproval(ctx, db.AnswerApprovalParams{TurnID: turnID, ID: id, OptionID: optionID})
+func (s *records) AnswerApproval(ctx context.Context, turnID uuid.UUID, id, optionID string, by uuid.UUID) (bool, error) {
+	params := db.AnswerApprovalParams{TurnID: turnID, ID: id, OptionID: optionID}
+	if by != uuid.Nil {
+		params.AnsweredBy = &by
+	}
+	answered, err := s.queries.AnswerApproval(ctx, params)
 	return answered == 1, err
 }
 

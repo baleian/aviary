@@ -254,6 +254,9 @@ func (g *Gateway) RunTurn(stream grpc.BidiStreamingServer[runnerv1.RunTurnReques
 // have sent the message before, to this Supervisor or to another.
 func (g *Gateway) receive(ctx context.Context, turn store.TakenTurn, request *runnerv1.RunTurnRequest) error {
 	seq := request.GetSeq()
+	// answeredBy is the user whose answer the harness got, if the message
+	// says that it got one.
+	var answeredBy uuid.UUID
 	switch message := request.Message.(type) {
 	case *runnerv1.RunTurnRequest_Started:
 		harnessSessionID := message.Started.GetHarnessSessionId()
@@ -290,6 +293,15 @@ func (g *Gateway) receive(ctx context.Context, turn store.TakenTurn, request *ru
 		if err != nil {
 			return err
 		}
+		// The harness got the answer of a person. The runner does not know
+		// whose it was.
+		if resolved.GetOutcome() == "selected" {
+			kept, err := g.store.Approval(ctx, turn.ID, resolved.GetId())
+			if err != nil && !errors.Is(err, store.ErrNotFound) {
+				return err
+			}
+			answeredBy = kept.AnsweredBy
+		}
 		if first {
 			outcome := resolved.GetOutcome()
 			if outcome == "selected" {
@@ -309,8 +321,23 @@ func (g *Gateway) receive(ctx context.Context, turn store.TakenTurn, request *ru
 	if err != nil {
 		return err
 	}
+	if answeredBy != uuid.Nil {
+		if data, err = with(data, "answered_by", answeredBy); err != nil {
+			return err
+		}
+	}
 	name := strings.ReplaceAll(string(field.Name()), "_", ".")
 	return g.record(ctx, turn.ID, seq, name, json.RawMessage(data))
+}
+
+// with returns the JSON object with one more field.
+func with(object []byte, name string, value any) ([]byte, error) {
+	fields := map[string]any{}
+	if err := json.Unmarshal(object, &fields); err != nil {
+		return nil, err
+	}
+	fields[name] = value
+	return json.Marshal(fields)
 }
 
 // record records the runner's message with the number seq, and adds its

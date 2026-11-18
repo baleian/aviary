@@ -81,22 +81,28 @@ func (q *Queries) AddTurnItem(ctx context.Context, arg AddTurnItemParams) error 
 }
 
 const answerApproval = `-- name: AnswerApproval :execrows
-update approvals set option_id = ?, answered_at = now(6)
+update approvals set option_id = ?, answered_at = now(6), answered_by = ?
 where approvals.turn_id = ? and approvals.id = ?
   and approvals.answered_at is null and approvals.resolved_at is null
   and exists (select 1 from turns where turns.id = approvals.turn_id and turns.ended_at is null)
 `
 
 type AnswerApprovalParams struct {
-	OptionID *string
-	TurnID   key.ID
-	ID       string
+	OptionID   *string
+	AnsweredBy *key.ID
+	TurnID     key.ID
+	ID         string
 }
 
 // Keeps the option that a person chose, for a request that has no answer
 // yet and whose turn has not ended.
 func (q *Queries) AnswerApproval(ctx context.Context, arg AnswerApprovalParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, answerApproval, arg.OptionID, arg.TurnID, arg.ID)
+	result, err := q.db.ExecContext(ctx, answerApproval,
+		arg.OptionID,
+		arg.AnsweredBy,
+		arg.TurnID,
+		arg.ID,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -554,7 +560,7 @@ func (q *Queries) GetAgent(ctx context.Context, id key.ID) (Agent, error) {
 }
 
 const getApproval = `-- name: GetApproval :one
-select turn_id, id, request, requested_at, option_id, answered_at, outcome, resolved_at from approvals where turn_id = ? and id = ?
+select turn_id, id, request, requested_at, option_id, answered_at, outcome, resolved_at, answered_by from approvals where turn_id = ? and id = ?
 `
 
 type GetApprovalParams struct {
@@ -574,6 +580,7 @@ func (q *Queries) GetApproval(ctx context.Context, arg GetApprovalParams) (Appro
 		&i.AnsweredAt,
 		&i.Outcome,
 		&i.ResolvedAt,
+		&i.AnsweredBy,
 	)
 	return i, err
 }
