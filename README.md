@@ -151,6 +151,8 @@ of the provider, in the header `Authorization: Bearer <token>`: see
 | `GET /v1/sessions/{id}/turns` | The turns of the session, newest first: `{"turns": [...]}`. `?limit=` is how many, 20 if it is not given and at most 100. `?before=` is the `seq` of a turn, and the answer then holds the turns before that one: that is how to read on from the last turn of an answer. The first turn of a session has `seq` 1. |
 | `GET /v1/projects/{id}`, `/v1/providers/{id}`, `/v1/secret-stores/{id}`, `/v1/agents/{id}`, `/v1/sessions/{id}`, `/v1/turns/{id}` | Reads what was created. |
 | `GET /v1/me` | Who sends the request, as the identity provider of the installation tells it. See [Callers](#callers). |
+| `GET /v1/roles` | The roles, and what each of them may do: `{"roles": [{"name": "editor", "permissions": [...]}, ...]}`. See [Roles](#roles). |
+| `PUT /v1/roles/{name}` | Gives a role its permissions. Body: `{"permissions": [...]}`. Only an administrator may: another caller is answered with 403. Answers 400 for a name that is no permission, and 404 for a role that there is not. |
 
 The events of a turn:
 
@@ -210,6 +212,34 @@ may use the API, as the administrators may, and with no group named there
 everyone whom the provider knows may. A caller that may not is answered with
 403, and can still ask `GET /v1/me`. In an installation without a provider
 every caller is an administrator.
+
+### Roles
+
+A role is what a member of a project may do there: a set of permissions
+under a name.
+
+| Permission | |
+| --- | --- |
+| `project.view` | See the project and what it is made of: its agents, its model providers and its secret stores, without their secrets. Every role has it. |
+| `agents.manage` | Create the agents of the project. |
+| `connections.manage` | Register and replace the model providers and the secret stores of the project. |
+| `sessions.run` | Create sessions, and in one's own send messages, stop the turns, answer their requests for approval and read what was said. |
+| `sessions.view_all` | Read the sessions of the other members. |
+| `sessions.control_all` | Stop the turns of the other members and answer their requests for approval. A role with it has `sessions.view_all` too. |
+
+An installation has five roles, and no others. An administrator changes
+what a role may do, with `PUT /v1/roles/{name}`, and that holds from then on
+for everyone who has the role. At the start they are:
+
+| Role | Permissions |
+| --- | --- |
+| `owner` | All of them. |
+| `editor` | `project.view`, `agents.manage`, `connections.manage`, `sessions.run` |
+| `user` | `project.view`, `sessions.run` |
+| `viewer` | `project.view` |
+| `auditor` | `project.view`, `sessions.view_all` |
+
+### Identity providers
 
 A provider of the kind `oidc` is an OpenID Connect issuer. Its settings:
 
@@ -509,8 +539,9 @@ checks, how to run some of the tests and where a new one goes.
 
 ## What is missing
 
-- **Permissions.** A caller whom the API takes may do everything with it.
-  Without an identity provider that is anyone who reaches the API.
+- **Permissions.** A caller whom the API takes may do everything with it:
+  the roles are there, and a project has no members yet who are held to
+  them. Without an identity provider that is anyone who reaches the API.
 - **Looking into what an agent sends.** The Egress Proxy records which host
   a turn connects to. It does not read what is sent over HTTPS.
 - **Measured token usage.** The usage of a turn is what its harness reports.

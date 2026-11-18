@@ -261,3 +261,13 @@ insert into users (id, subject, username, display_name) values (?, ?, ?, ?);
 -- A user that is given no username keeps the one that it has.
 update users set username = coalesce(sqlc.narg(username), username), display_name = sqlc.arg(display_name)
 where subject = sqlc.arg(subject);
+
+-- name: ListRoles :many
+select * from roles order by name;
+
+-- name: GetRole :one
+select * from roles where name = ?;
+
+-- name: SetRole :exec
+update roles set permissions = sqlc.arg(permissions), updated_at = now(6), updated_by = sqlc.narg(updated_by)
+where name = sqlc.arg(name);

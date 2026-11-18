@@ -92,6 +92,18 @@ type Model struct {
 	Name string `json:"name"`
 }
 
+// Role is what a member of a project may do: a set of permissions under a
+// name. The store keeps the names of the permissions and does not know what
+// they mean.
+type Role struct {
+	Name        string    `json:"name"`
+	Permissions []string  `json:"permissions"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	// UpdatedBy is the user who changed the permissions last. It is
+	// uuid.Nil if nobody has, or nobody who was asked who they are.
+	UpdatedBy uuid.UUID `json:"updated_by,omitzero"`
+}
+
 type Session struct {
 	ID      uuid.UUID `json:"id"`
 	AgentID uuid.UUID `json:"agent_id"`
@@ -360,6 +372,16 @@ type Store interface {
 	// one user at a time, so a user that is given the username of another
 	// has it from then on, and the other has none.
 	UserOf(ctx context.Context, subject, username, displayName string) (User, error)
+
+	// Roles returns the roles in the order of their names. A database has
+	// the roles owner, editor, user, viewer and auditor from the start, and
+	// no others.
+	Roles(ctx context.Context) ([]Role, error)
+
+	// SetRole gives the role with the name these permissions, in this
+	// order, as the user by or as nobody if by is uuid.Nil. It returns
+	// ErrNotFound if there is no such role.
+	SetRole(ctx context.Context, name string, permissions []string, by uuid.UUID) (Role, error)
 
 	// CreateAgent creates an agent with what the given one has of its own: its
 	// harness, instructions, resources, approval and model. It returns

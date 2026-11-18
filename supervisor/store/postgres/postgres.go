@@ -77,6 +77,37 @@ func (s *records) Project(ctx context.Context, id uuid.UUID) (store.Project, err
 	return store.Project(row), err
 }
 
+func (s *records) Roles(ctx context.Context) ([]store.Role, error) {
+	rows, err := s.queries.ListRoles(ctx)
+	roles := make([]store.Role, len(rows))
+	for i, row := range rows {
+		roles[i] = roleFrom(row)
+	}
+	return roles, err
+}
+
+func (s *records) SetRole(ctx context.Context, name string, permissions []string, by uuid.UUID) (store.Role, error) {
+	// An empty list and not none: a role may have no permissions.
+	params := db.SetRoleParams{Name: name, Permissions: append([]string{}, permissions...)}
+	if by != uuid.Nil {
+		params.UpdatedBy = &by
+	}
+	row, err := s.queries.SetRole(ctx, params)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.Role{}, store.ErrNotFound
+	}
+	return roleFrom(row), err
+}
+
+// roleFrom returns a row of the roles table as a Role.
+func roleFrom(row db.Role) store.Role {
+	role := store.Role{Name: row.Name, Permissions: row.Permissions, UpdatedAt: row.UpdatedAt}
+	if row.UpdatedBy != nil {
+		role.UpdatedBy = *row.UpdatedBy
+	}
+	return role
+}
+
 func (s *records) UserOf(ctx context.Context, subject, username, displayName string) (store.User, error) {
 	// Most requests come from a user of whom nothing has changed.
 	row, err := s.queries.GetUserBySubject(ctx, subject)

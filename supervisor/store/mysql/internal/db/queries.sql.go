@@ -547,6 +547,22 @@ func (q *Queries) GetProvider(ctx context.Context, id key.ID) (Provider, error) 
 	return i, err
 }
 
+const getRole = `-- name: GetRole :one
+select name, permissions, updated_at, updated_by from roles where name = ?
+`
+
+func (q *Queries) GetRole(ctx context.Context, name string) (Role, error) {
+	row := q.db.QueryRowContext(ctx, getRole, name)
+	var i Role
+	err := row.Scan(
+		&i.Name,
+		&i.Permissions,
+		&i.UpdatedAt,
+		&i.UpdatedBy,
+	)
+	return i, err
+}
+
 const getSecretStore = `-- name: GetSecretStore :one
 select id, project_id, name, kind, settings, credential, created_at, updated_at from secret_stores where id = ?
 `
@@ -667,6 +683,38 @@ func (q *Queries) GiveUpTurn(ctx context.Context, arg GiveUpTurnParams) (int64, 
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const listRoles = `-- name: ListRoles :many
+select name, permissions, updated_at, updated_by from roles order by name
+`
+
+func (q *Queries) ListRoles(ctx context.Context) ([]Role, error) {
+	rows, err := q.db.QueryContext(ctx, listRoles)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Role
+	for rows.Next() {
+		var i Role
+		if err := rows.Scan(
+			&i.Name,
+			&i.Permissions,
+			&i.UpdatedAt,
+			&i.UpdatedBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listTurnItems = `-- name: ListTurnItems :many
@@ -1211,6 +1259,22 @@ type SetHarnessSessionParams struct {
 
 func (q *Queries) SetHarnessSession(ctx context.Context, arg SetHarnessSessionParams) error {
 	_, err := q.db.ExecContext(ctx, setHarnessSession, arg.HarnessSessionID, arg.ID)
+	return err
+}
+
+const setRole = `-- name: SetRole :exec
+update roles set permissions = ?, updated_at = now(6), updated_by = ?
+where name = ?
+`
+
+type SetRoleParams struct {
+	Permissions json.RawMessage
+	UpdatedBy   *key.ID
+	Name        string
+}
+
+func (q *Queries) SetRole(ctx context.Context, arg SetRoleParams) error {
+	_, err := q.db.ExecContext(ctx, setRole, arg.Permissions, arg.UpdatedBy, arg.Name)
 	return err
 }
 

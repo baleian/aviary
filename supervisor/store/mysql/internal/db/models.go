@@ -53,6 +53,13 @@ type Provider struct {
 	UpdatedAt     time.Time
 }
 
+type Role struct {
+	Name        string
+	Permissions json.RawMessage
+	UpdatedAt   time.Time
+	UpdatedBy   *key.ID
+}
+
 type SecretStore struct {
 	ID         key.ID
 	ProjectID  key.ID

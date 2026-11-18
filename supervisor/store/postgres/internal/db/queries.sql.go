@@ -798,6 +798,35 @@ func (q *Queries) GiveUpTurn(ctx context.Context, arg GiveUpTurnParams) (int64, 
 	return result.RowsAffected(), nil
 }
 
+const listRoles = `-- name: ListRoles :many
+select name, permissions, updated_at, updated_by from roles order by name
+`
+
+func (q *Queries) ListRoles(ctx context.Context) ([]Role, error) {
+	rows, err := q.db.Query(ctx, listRoles)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Role
+	for rows.Next() {
+		var i Role
+		if err := rows.Scan(
+			&i.Name,
+			&i.Permissions,
+			&i.UpdatedAt,
+			&i.UpdatedBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTurnItems = `-- name: ListTurnItems :many
 select turn_id, item from turn_items where turn_id = any($1::uuid[]) order by turn_id, seq
 `
@@ -1216,6 +1245,30 @@ func (q *Queries) SetFinished(ctx context.Context, arg SetFinishedParams) error 
 		arg.ID,
 	)
 	return err
+}
+
+const setRole = `-- name: SetRole :one
+update roles set permissions = $1, updated_at = now(), updated_by = $2
+where name = $3
+returning name, permissions, updated_at, updated_by
+`
+
+type SetRoleParams struct {
+	Permissions []string
+	UpdatedBy   *uuid.UUID
+	Name        string
+}
+
+func (q *Queries) SetRole(ctx context.Context, arg SetRoleParams) (Role, error) {
+	row := q.db.QueryRow(ctx, setRole, arg.Permissions, arg.UpdatedBy, arg.Name)
+	var i Role
+	err := row.Scan(
+		&i.Name,
+		&i.Permissions,
+		&i.UpdatedAt,
+		&i.UpdatedBy,
+	)
+	return i, err
 }
 
 const startTurn = `-- name: StartTurn :one

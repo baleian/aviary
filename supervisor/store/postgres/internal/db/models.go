@@ -52,6 +52,13 @@ type Provider struct {
 	ApiKeyName    string
 }
 
+type Role struct {
+	Name        string
+	Permissions []string
+	UpdatedAt   time.Time
+	UpdatedBy   *uuid.UUID
+}
+
 type SecretStore struct {
 	ID         uuid.UUID
 	ProjectID  uuid.UUID

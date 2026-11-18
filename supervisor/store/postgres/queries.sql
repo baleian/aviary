@@ -285,3 +285,11 @@ values (@id, @subject, sqlc.narg(username), @display_name)
 on conflict (subject) do update
 set username = coalesce(excluded.username, users.username), display_name = excluded.display_name
 returning *;
+
+-- name: ListRoles :many
+select * from roles order by name;
+
+-- name: SetRole :one
+update roles set permissions = @permissions, updated_at = now(), updated_by = sqlc.narg(updated_by)
+where name = @name
+returning *;

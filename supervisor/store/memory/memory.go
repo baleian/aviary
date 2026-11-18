@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +31,8 @@ type Store struct {
 	last time.Time
 
 	projects map[uuid.UUID]store.Project
+	// roles are the roles by their names.
+	roles map[string]*store.Role
 	// users are the users by their subjects.
 	users        map[string]*store.User
 	agents       map[uuid.UUID]store.Agent
@@ -76,7 +79,18 @@ type approval struct {
 }
 
 func New() *Store {
+	roles := map[string]*store.Role{}
+	for name, permissions := range map[string][]string{
+		"owner":   {"project.view", "agents.manage", "connections.manage", "sessions.run", "sessions.view_all", "sessions.control_all"},
+		"editor":  {"project.view", "agents.manage", "connections.manage", "sessions.run"},
+		"user":    {"project.view", "sessions.run"},
+		"viewer":  {"project.view"},
+		"auditor": {"project.view", "sessions.view_all"},
+	} {
+		roles[name] = &store.Role{Name: name, Permissions: permissions, UpdatedAt: time.Now()}
+	}
 	return &Store{
+		roles:        roles,
 		projects:     map[uuid.UUID]store.Project{},
 		users:        map[string]*store.User{},
 		agents:       map[uuid.UUID]store.Agent{},
@@ -241,6 +255,32 @@ func (s *Store) CreateAgent(ctx context.Context, projectID uuid.UUID, agent stor
 	})
 	s.agents[id] = created
 	return agentOf(created), nil
+}
+
+func (s *Store) Roles(ctx context.Context) ([]store.Role, error) {
+	if err := s.begin(ctx); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+	roles := make([]store.Role, 0, len(s.roles))
+	for _, role := range s.roles {
+		roles = append(roles, store.Role{Name: role.Name, Permissions: slices.Clone(role.Permissions), UpdatedAt: role.UpdatedAt, UpdatedBy: role.UpdatedBy})
+	}
+	slices.SortFunc(roles, func(one, other store.Role) int { return strings.Compare(one.Name, other.Name) })
+	return roles, nil
+}
+
+func (s *Store) SetRole(ctx context.Context, name string, permissions []string, by uuid.UUID) (store.Role, error) {
+	if err := s.begin(ctx); err != nil {
+		return store.Role{}, err
+	}
+	defer s.mu.Unlock()
+	role, found := s.roles[name]
+	if !found {
+		return store.Role{}, store.ErrNotFound
+	}
+	role.Permissions, role.UpdatedAt, role.UpdatedBy = slices.Clone(permissions), s.now(), by
+	return store.Role{Name: name, Permissions: slices.Clone(permissions), UpdatedAt: role.UpdatedAt, UpdatedBy: by}, nil
 }
 
 func (s *Store) UserOf(ctx context.Context, subject, username, displayName string) (store.User, error) {

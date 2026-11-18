@@ -69,6 +69,8 @@ var (
 func New(st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Keys, stores *secret.Stores, callers Callers, closing <-chan struct{}) http.Handler {
 	a := &api{store: st, events: ev, driver: dr, keys: keys, stores: stores, callers: callers, closing: closing}
 	mux := http.NewServeMux()
+	mux.Handle("GET /v1/roles", handler(a.listRoles))
+	mux.Handle("PUT /v1/roles/{name}", handler(a.setRole))
 	mux.Handle("POST /v1/projects", handler(a.createProject))
 	mux.Handle("GET /v1/projects/{pid}", handler(a.getProject))
 	mux.Handle("POST /v1/projects/{pid}/secret-stores", handler(a.createSecretStore))

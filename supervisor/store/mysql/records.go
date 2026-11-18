@@ -130,6 +130,49 @@ func (s *records) Project(ctx context.Context, id uuid.UUID) (store.Project, err
 	return store.Project{ID: uuid.UUID(row.ID), Name: row.Name, CreatedAt: row.CreatedAt}, found(err)
 }
 
+func (s *records) Roles(ctx context.Context) ([]store.Role, error) {
+	rows, err := s.queries.ListRoles(ctx)
+	if err != nil {
+		return nil, err
+	}
+	roles := make([]store.Role, len(rows))
+	for i, row := range rows {
+		if roles[i], err = roleFrom(row); err != nil {
+			return nil, err
+		}
+	}
+	return roles, nil
+}
+
+func (s *records) SetRole(ctx context.Context, name string, permissions []string, by uuid.UUID) (store.Role, error) {
+	// An empty list and not none: a role may have no permissions.
+	encoded, err := json.Marshal(append([]string{}, permissions...))
+	if err != nil {
+		return store.Role{}, err
+	}
+	params := db.SetRoleParams{Name: name, Permissions: encoded}
+	if by != uuid.Nil {
+		params.UpdatedBy = (*key.ID)(&by)
+	}
+	if err := s.queries.SetRole(ctx, params); err != nil {
+		return store.Role{}, err
+	}
+	row, err := s.queries.GetRole(ctx, name)
+	if err != nil {
+		return store.Role{}, found(err)
+	}
+	return roleFrom(row)
+}
+
+// roleFrom returns a row of the roles table as a Role.
+func roleFrom(row db.Role) (store.Role, error) {
+	role := store.Role{Name: row.Name, UpdatedAt: row.UpdatedAt}
+	if row.UpdatedBy != nil {
+		role.UpdatedBy = uuid.UUID(*row.UpdatedBy)
+	}
+	return role, json.Unmarshal(row.Permissions, &role.Permissions)
+}
+
 func (s *records) UserOf(ctx context.Context, subject, username, displayName string) (store.User, error) {
 	// Most requests come from a user of whom nothing has changed.
 	row, err := s.queries.GetUserBySubject(ctx, subject)
