@@ -31,6 +31,9 @@ type Store struct {
 	last time.Time
 
 	projects map[uuid.UUID]store.Project
+	// members are the members of the projects in the order in which they
+	// were added.
+	members []*member
 	// roles are the roles by their names.
 	roles map[string]*store.Role
 	// users are the users by their subjects.
@@ -257,6 +260,137 @@ func (s *Store) CreateAgent(ctx context.Context, projectID uuid.UUID, agent stor
 	return agentOf(created), nil
 }
 
+// member is a member of a project. If it is a user, that is the user whose
+// subject it has, or else someone awaited under the username that it has.
+type member struct {
+	store.Member
+	subject, username string
+}
+
+// record returns the member as the store gives it out: with its user as
+// the user is now.
+func (s *Store) record(of *member) store.Member {
+	record := of.Member
+	record.Permissions = slices.Clone(of.Permissions)
+	switch {
+	case of.subject != "":
+		user := *s.users[of.subject]
+		record.User = &user
+	case of.username != "":
+		record.User = &store.User{Username: of.username}
+	}
+	return record
+}
+
+// claim makes the user with the username the member that projects await
+// under it.
+func (s *Store) claim(username string) {
+	var user *store.User
+	for _, known := range s.users {
+		if known.Username == username {
+			user = known
+		}
+	}
+	if user == nil {
+		return
+	}
+	awaited := map[uuid.UUID]bool{}
+	for _, member := range s.members {
+		if member.username == username {
+			awaited[member.ProjectID] = true
+		}
+	}
+	s.members = slices.DeleteFunc(s.members, func(member *member) bool {
+		return member.subject == user.Subject && awaited[member.ProjectID]
+	})
+	for _, member := range s.members {
+		if member.username == username {
+			member.subject, member.username = user.Subject, ""
+		}
+	}
+}
+
+func (s *Store) AddMember(ctx context.Context, added store.Member, by uuid.UUID) (store.Member, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return store.Member{}, err
+	}
+	if err := s.begin(ctx); err != nil {
+		return store.Member{}, err
+	}
+	defer s.mu.Unlock()
+	if _, found := s.projects[added.ProjectID]; !found {
+		return store.Member{}, store.ErrNotFound
+	}
+	created := &member{Member: store.Member{
+		ID: id, ProjectID: added.ProjectID, Group: added.Group, Role: added.Role, CreatedAt: s.now(), UpdatedBy: by,
+	}}
+	if added.Role == "" {
+		created.Permissions = slices.Clone(added.Permissions)
+	}
+	created.UpdatedAt = created.CreatedAt
+	if added.User != nil {
+		created.username, created.Group = added.User.Username, ""
+	}
+	for _, other := range s.members {
+		if other.ProjectID != added.ProjectID {
+			continue
+		}
+		user := other.subject != "" && created.username != "" && s.users[other.subject].Username == created.username
+		if user || (other.username != "" && other.username == created.username) || (other.Group != "" && other.Group == created.Group) {
+			return store.Member{}, store.ErrMemberExists
+		}
+	}
+	s.members = append(s.members, created)
+	if created.username != "" {
+		s.claim(created.username)
+	}
+	return s.record(created), nil
+}
+
+func (s *Store) SetMember(ctx context.Context, id uuid.UUID, role string, permissions []string, by uuid.UUID) (store.Member, error) {
+	if err := s.begin(ctx); err != nil {
+		return store.Member{}, err
+	}
+	defer s.mu.Unlock()
+	for _, member := range s.members {
+		if member.ID == id {
+			member.Role, member.Permissions, member.UpdatedAt, member.UpdatedBy = role, nil, s.now(), by
+			if role == "" {
+				member.Permissions = slices.Clone(permissions)
+			}
+			return s.record(member), nil
+		}
+	}
+	return store.Member{}, store.ErrNotFound
+}
+
+func (s *Store) RemoveMember(ctx context.Context, id uuid.UUID) error {
+	if err := s.begin(ctx); err != nil {
+		return err
+	}
+	defer s.mu.Unlock()
+	before := len(s.members)
+	if s.members = slices.DeleteFunc(s.members, func(member *member) bool { return member.ID == id }); len(s.members) == before {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) Members(ctx context.Context, projectID uuid.UUID) ([]store.Member, error) {
+	if err := s.begin(ctx); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+	members := []store.Member{}
+	for _, member := range s.members {
+		if member.ProjectID == projectID {
+			members = append(members, s.record(member))
+		}
+	}
+	return members, nil
+}
+
 func (s *Store) Roles(ctx context.Context) ([]store.Role, error) {
 	if err := s.begin(ctx); err != nil {
 		return nil, err
@@ -305,6 +439,7 @@ func (s *Store) UserOf(ctx context.Context, subject, username, displayName strin
 			}
 		}
 		user.Username = username
+		s.claim(username)
 	}
 	return *user, nil
 }

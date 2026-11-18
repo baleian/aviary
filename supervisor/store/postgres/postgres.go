@@ -5,6 +5,7 @@ package postgres
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -138,8 +139,123 @@ func (s *records) UserOf(ctx context.Context, subject, username, displayName str
 		if attempt < 5 && errors.As(err, &refused) && refused.Code == uniqueViolation {
 			continue
 		}
+		if err == nil && username != "" {
+			err = s.claim(ctx, username)
+		}
 		return userFrom(row), err
 	}
+}
+
+// claim makes the user with the username the member that projects await
+// under it.
+func (s *records) claim(ctx context.Context, username string) error {
+	if err := s.queries.DropMembersBeforeClaim(ctx, username); err != nil {
+		return err
+	}
+	return s.queries.ClaimMembers(ctx, username)
+}
+
+func (s *records) AddMember(ctx context.Context, member store.Member, by uuid.UUID) (store.Member, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return store.Member{}, err
+	}
+	params := db.AddMemberParams{ID: id, ProjectID: member.ProjectID, Permissions: member.Permissions}
+	if member.Role != "" {
+		params.Role, params.Permissions = &member.Role, nil
+	}
+	if by != uuid.Nil {
+		params.UpdatedBy = &by
+	}
+	var username string
+	if member.User != nil {
+		username = member.User.Username
+		params.Username = &username
+		if is, err := s.queries.IsMember(ctx, db.IsMemberParams{ProjectID: member.ProjectID, Username: username}); err != nil || is {
+			return store.Member{}, cmp.Or(err, store.ErrMemberExists)
+		}
+	} else {
+		params.GroupName = &member.Group
+	}
+	var refused *pgconn.PgError
+	switch _, err := s.queries.AddMember(ctx, params); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return store.Member{}, store.ErrNotFound
+	case errors.As(err, &refused) && refused.Code == uniqueViolation:
+		return store.Member{}, store.ErrMemberExists
+	case err != nil:
+		return store.Member{}, err
+	}
+	if username != "" {
+		if err := s.claim(ctx, username); err != nil {
+			return store.Member{}, err
+		}
+	}
+	return s.member(ctx, id)
+}
+
+func (s *records) SetMember(ctx context.Context, id uuid.UUID, role string, permissions []string, by uuid.UUID) (store.Member, error) {
+	params := db.SetMemberParams{ID: id, Permissions: permissions}
+	if role != "" {
+		params.Role, params.Permissions = &role, nil
+	}
+	if by != uuid.Nil {
+		params.UpdatedBy = &by
+	}
+	if changed, err := s.queries.SetMember(ctx, params); err != nil || changed == 0 {
+		return store.Member{}, cmp.Or(err, store.ErrNotFound)
+	}
+	return s.member(ctx, id)
+}
+
+func (s *records) RemoveMember(ctx context.Context, id uuid.UUID) error {
+	removed, err := s.queries.RemoveMember(ctx, id)
+	if err == nil && removed == 0 {
+		return store.ErrNotFound
+	}
+	return err
+}
+
+func (s *records) Members(ctx context.Context, projectID uuid.UUID) ([]store.Member, error) {
+	rows, err := s.queries.ListMembers(ctx, projectID)
+	members := make([]store.Member, len(rows))
+	for i, row := range rows {
+		members[i] = memberFrom(db.GetMemberRow(row))
+	}
+	return members, err
+}
+
+func (s *records) member(ctx context.Context, id uuid.UUID) (store.Member, error) {
+	row, err := s.queries.GetMember(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.Member{}, store.ErrNotFound
+	}
+	return memberFrom(row), err
+}
+
+// memberFrom returns a row of the members of a project, with the user of
+// the member if it has one, as a Member.
+func memberFrom(row db.GetMemberRow) store.Member {
+	member := store.Member{ID: row.ID, ProjectID: row.ProjectID, Permissions: row.Permissions, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+	if row.GroupName != nil {
+		member.Group = *row.GroupName
+	}
+	if row.Role != nil {
+		member.Role = *row.Role
+	}
+	if row.UpdatedBy != nil {
+		member.UpdatedBy = *row.UpdatedBy
+	}
+	switch {
+	case row.UserID != nil:
+		member.User = &store.User{ID: *row.UserID, Subject: *row.Subject, DisplayName: *row.DisplayName, CreatedAt: *row.UserCreatedAt}
+		if row.UserUsername != nil {
+			member.User.Username = *row.UserUsername
+		}
+	case row.Username != nil:
+		member.User = &store.User{Username: *row.Username}
+	}
+	return member
 }
 
 // userFrom returns a row of the users table as a User.

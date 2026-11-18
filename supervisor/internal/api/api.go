@@ -73,6 +73,10 @@ func New(st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Key
 	mux.Handle("PUT /v1/roles/{name}", handler(a.setRole))
 	mux.Handle("POST /v1/projects", handler(a.createProject))
 	mux.Handle("GET /v1/projects/{pid}", handler(a.getProject))
+	mux.Handle("GET /v1/projects/{pid}/members", handler(a.listMembers))
+	mux.Handle("POST /v1/projects/{pid}/members", handler(a.addMember))
+	mux.Handle("PUT /v1/members/{mid}", handler(a.setMember))
+	mux.Handle("DELETE /v1/members/{mid}", handler(a.removeMember))
 	mux.Handle("POST /v1/projects/{pid}/secret-stores", handler(a.createSecretStore))
 	mux.Handle("GET /v1/secret-stores/{store}", handler(a.getSecretStore))
 	mux.Handle("PUT /v1/secret-stores/{store}", handler(a.replaceSecretStore))
@@ -468,6 +472,8 @@ func (h handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		failure = errSessionBusy
 	case errors.Is(err, store.ErrQueueFull):
 		failure = errQueueFull
+	case errors.Is(err, store.ErrMemberExists):
+		failure = errMemberExists
 	default:
 		slog.ErrorContext(r.Context(), "request failed", "method", r.Method, "path", r.URL.Path, "error", err)
 		failure = errInternal

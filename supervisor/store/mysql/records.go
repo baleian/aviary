@@ -1,6 +1,7 @@
 package mysql
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -199,11 +200,138 @@ func (s *records) UserOf(ctx context.Context, subject, username, displayName str
 	if failed(err, duplicateEntry) {
 		err = s.queries.UpdateUser(ctx, db.UpdateUserParams{Username: given, DisplayName: displayName, Subject: subject})
 	}
+	if err == nil && username != "" {
+		err = s.claim(ctx, username)
+	}
 	if err != nil {
 		return store.User{}, err
 	}
 	row, err = s.queries.GetUserBySubject(ctx, subject)
 	return userFrom(row), err
+}
+
+// claim makes the user with the username the member that projects await
+// under it.
+func (s *records) claim(ctx context.Context, username string) error {
+	if err := s.queries.DropMembersBeforeClaim(ctx, db.DropMembersBeforeClaimParams{Username: &username}); err != nil {
+		return err
+	}
+	return s.queries.ClaimMembers(ctx, &username)
+}
+
+func (s *records) AddMember(ctx context.Context, member store.Member, by uuid.UUID) (store.Member, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return store.Member{}, err
+	}
+	params := db.AddMemberParams{ID: key.ID(id), ProjectID: key.ID(member.ProjectID)}
+	if member.Role != "" {
+		params.Role = &member.Role
+	} else if params.Permissions, err = encoded(member.Permissions); err != nil {
+		return store.Member{}, err
+	}
+	if by != uuid.Nil {
+		params.UpdatedBy = (*key.ID)(&by)
+	}
+	var username string
+	if member.User != nil {
+		username = member.User.Username
+		params.Username = &username
+		if is, err := s.queries.IsMember(ctx, db.IsMemberParams{ProjectID: key.ID(member.ProjectID), Username: &username}); err != nil || is {
+			return store.Member{}, cmp.Or(err, store.ErrMemberExists)
+		}
+	} else {
+		params.GroupName = &member.Group
+	}
+	switch err := created(s.queries.AddMember(ctx, params)); {
+	case failed(err, duplicateEntry):
+		return store.Member{}, store.ErrMemberExists
+	case err != nil:
+		return store.Member{}, err
+	}
+	if username != "" {
+		if err := s.claim(ctx, username); err != nil {
+			return store.Member{}, err
+		}
+	}
+	return s.member(ctx, id)
+}
+
+// encoded returns the permissions as the JSON that a row keeps them as.
+func encoded(permissions []string) (*json.RawMessage, error) {
+	list, err := json.Marshal(append([]string{}, permissions...))
+	return (*json.RawMessage)(&list), err
+}
+
+func (s *records) SetMember(ctx context.Context, id uuid.UUID, role string, permissions []string, by uuid.UUID) (store.Member, error) {
+	params := db.SetMemberParams{ID: key.ID(id)}
+	var err error
+	if role != "" {
+		params.Role = &role
+	} else if params.Permissions, err = encoded(permissions); err != nil {
+		return store.Member{}, err
+	}
+	if by != uuid.Nil {
+		params.UpdatedBy = (*key.ID)(&by)
+	}
+	if err := s.queries.SetMember(ctx, params); err != nil {
+		return store.Member{}, err
+	}
+	return s.member(ctx, id)
+}
+
+func (s *records) RemoveMember(ctx context.Context, id uuid.UUID) error {
+	return created(s.queries.RemoveMember(ctx, key.ID(id)))
+}
+
+func (s *records) Members(ctx context.Context, projectID uuid.UUID) ([]store.Member, error) {
+	rows, err := s.queries.ListMembers(ctx, key.ID(projectID))
+	if err != nil {
+		return nil, err
+	}
+	members := make([]store.Member, len(rows))
+	for i, row := range rows {
+		if members[i], err = memberFrom(db.GetMemberRow(row)); err != nil {
+			return nil, err
+		}
+	}
+	return members, nil
+}
+
+func (s *records) member(ctx context.Context, id uuid.UUID) (store.Member, error) {
+	row, err := s.queries.GetMember(ctx, key.ID(id))
+	if err != nil {
+		return store.Member{}, found(err)
+	}
+	return memberFrom(row)
+}
+
+// memberFrom returns a row of the members of a project, with the user of
+// the member if it has one, as a Member.
+func memberFrom(row db.GetMemberRow) (store.Member, error) {
+	member := store.Member{ID: uuid.UUID(row.ID), ProjectID: uuid.UUID(row.ProjectID), CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+	if row.GroupName != nil {
+		member.Group = *row.GroupName
+	}
+	if row.Role != nil {
+		member.Role = *row.Role
+	}
+	if row.UpdatedBy != nil {
+		member.UpdatedBy = uuid.UUID(*row.UpdatedBy)
+	}
+	switch {
+	case row.UserID != nil:
+		member.User = &store.User{ID: uuid.UUID(*row.UserID), Subject: *row.Subject, DisplayName: row.DisplayName.String, CreatedAt: *row.UserCreatedAt}
+		if row.UserUsername != nil {
+			member.User.Username = *row.UserUsername
+		}
+	case row.Username != nil:
+		member.User = &store.User{Username: *row.Username}
+	}
+	if row.Permissions == nil {
+		return member, nil
+	}
+	return member, json.Unmarshal(*row.Permissions, &member.Permissions)
 }
 
 // userFrom returns a row of the users table as a User.

@@ -23,6 +23,8 @@ var (
 	ErrNotFound    = errors.New("not found")
 	ErrSessionBusy = errors.New("session has an unfinished turn")
 	ErrQueueFull   = errors.New("too many turns wait to run")
+	// ErrMemberExists is the error for a member that a project has already.
+	ErrMemberExists = errors.New("the project has this member already")
 	// ErrTurnTaken is returned to a runner that asks for a turn that another
 	// runner took.
 	ErrTurnTaken = errors.New("turn was taken by another runner")
@@ -102,6 +104,28 @@ type Role struct {
 	// UpdatedBy is the user who changed the permissions last. It is
 	// uuid.Nil if nobody has, or nobody who was asked who they are.
 	UpdatedBy uuid.UUID `json:"updated_by,omitzero"`
+}
+
+// Member is who may do something in a project, and what.
+type Member struct {
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+	// User is the member, if the member is one person: the user, or only
+	// the username of someone who has not been seen yet.
+	User *User
+	// Group is the name of the group of the identity provider whose members
+	// are the member, if the member is not one person.
+	Group string
+	// Role is the name of the role whose permissions the member has. It is
+	// empty for a member with permissions of its own.
+	Role string
+	// Permissions are those of a member without a role.
+	Permissions []string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	// UpdatedBy is the user who gave the member what it may do. It is
+	// uuid.Nil if nobody did who was asked who they are.
+	UpdatedBy uuid.UUID
 }
 
 type Session struct {
@@ -370,8 +394,33 @@ type Store interface {
 	// if one is given: a user that is given none keeps the one that it has.
 	// No two users have the same username. The provider gives a username to
 	// one user at a time, so a user that is given the username of another
-	// has it from then on, and the other has none.
+	// has it from then on, and the other has none. Where a project awaits
+	// a member under the username that a user is given, the user is that
+	// member from then on.
 	UserOf(ctx context.Context, subject, username, displayName string) (User, error)
+
+	// AddMember makes a member of the project of the one who is given: the
+	// user with the username, or the group. The member has the role that is
+	// given, or the permissions if no role is given, as the user by gave
+	// them or as nobody did if by is uuid.Nil. A user with the username who has
+	// been seen is the member. Of someone who has not, the username is
+	// kept, and the user who is seen with it is the member: if that user
+	// is a member of the project by then, the user is the member that was
+	// awaited, and not the other any more. It returns ErrNotFound if there
+	// is no such project, and ErrMemberExists if the project has the user,
+	// the username or the group as a member already.
+	AddMember(ctx context.Context, member Member, by uuid.UUID) (Member, error)
+
+	// SetMember gives the member the role, or the permissions if no role is
+	// given, as the user by or as nobody.
+	SetMember(ctx context.Context, id uuid.UUID, role string, permissions []string, by uuid.UUID) (Member, error)
+
+	// RemoveMember makes the member no member of its project.
+	RemoveMember(ctx context.Context, id uuid.UUID) error
+
+	// Members returns the members of the project, in the order in which
+	// they were added.
+	Members(ctx context.Context, projectID uuid.UUID) ([]Member, error)
 
 	// Roles returns the roles in the order of their names. A database has
 	// the roles owner, editor, user, viewer and auditor from the start, and

@@ -271,3 +271,50 @@ select * from roles where name = ?;
 -- name: SetRole :exec
 update roles set permissions = sqlc.arg(permissions), updated_at = now(6), updated_by = sqlc.narg(updated_by)
 where name = sqlc.arg(name);
+
+-- name: IsMember :one
+-- Whether the user with the username is a member of the project.
+select exists (
+    select 1 from project_members
+    join users on users.id = project_members.user_id
+    where project_members.project_id = sqlc.arg(project_id) and users.username = sqlc.arg(username)
+);
+
+-- name: AddMember :execrows
+insert into project_members (id, project_id, username, group_name, role, permissions, updated_by)
+select sqlc.arg(id), projects.id, sqlc.narg(username), sqlc.narg(group_name),
+       sqlc.narg(role), sqlc.narg(permissions), sqlc.narg(updated_by)
+from projects where projects.id = sqlc.arg(project_id);
+
+-- name: DropMembersBeforeClaim :exec
+-- A user who is a member of a project, and is given a username under which
+-- the project was given a member since, is the member that was given last.
+delete member from project_members as member
+join project_members as awaited on awaited.project_id = member.project_id and awaited.username = sqlc.arg(username)
+join users on users.id = member.user_id and users.username = sqlc.arg(username);
+
+-- name: ClaimMembers :exec
+-- The members that were awaited under the username are the user that has it.
+update project_members
+join users on users.username = project_members.username
+set project_members.user_id = users.id, project_members.username = null
+where project_members.username = sqlc.arg(username);
+
+-- name: SetMember :exec
+update project_members
+set role = sqlc.narg(role), permissions = sqlc.narg(permissions), updated_at = now(6), updated_by = sqlc.narg(updated_by)
+where id = sqlc.arg(id);
+
+-- name: RemoveMember :execrows
+delete from project_members where id = ?;
+
+-- name: GetMember :one
+select project_members.*, users.subject, users.username as user_username, users.display_name, users.created_at as user_created_at
+from project_members left join users on users.id = project_members.user_id
+where project_members.id = ?;
+
+-- name: ListMembers :many
+select project_members.*, users.subject, users.username as user_username, users.display_name, users.created_at as user_created_at
+from project_members left join users on users.id = project_members.user_id
+where project_members.project_id = ?
+order by project_members.created_at, project_members.id;

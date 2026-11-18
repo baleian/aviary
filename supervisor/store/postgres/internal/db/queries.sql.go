@@ -29,6 +29,39 @@ func (q *Queries) AddApproval(ctx context.Context, arg AddApprovalParams) error 
 	return err
 }
 
+const addMember = `-- name: AddMember :one
+insert into project_members (id, project_id, username, group_name, role, permissions, updated_by)
+select $1::uuid, projects.id, $2::text, $3::text,
+       $4::text, $5::text[], $6::uuid
+from projects where projects.id = $7
+returning id
+`
+
+type AddMemberParams struct {
+	ID          uuid.UUID
+	Username    *string
+	GroupName   *string
+	Role        *string
+	Permissions []string
+	UpdatedBy   *uuid.UUID
+	ProjectID   uuid.UUID
+}
+
+func (q *Queries) AddMember(ctx context.Context, arg AddMemberParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, addMember,
+		arg.ID,
+		arg.Username,
+		arg.GroupName,
+		arg.Role,
+		arg.Permissions,
+		arg.UpdatedBy,
+		arg.ProjectID,
+	)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 type AddTurnItemsParams struct {
 	TurnID uuid.UUID
 	Seq    int32
@@ -157,6 +190,18 @@ func (q *Queries) CancellingTurns(ctx context.Context) ([]uuid.UUID, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const claimMembers = `-- name: ClaimMembers :exec
+update project_members set user_id = users.id, username = null
+from users
+where project_members.username = $1::text and users.username = $1::text
+`
+
+// The members that were awaited under the username are the user that has it.
+func (q *Queries) ClaimMembers(ctx context.Context, username string) error {
+	_, err := q.db.Exec(ctx, claimMembers, username)
+	return err
 }
 
 const countWaitingTurns = `-- name: CountWaitingTurns :one
@@ -454,6 +499,20 @@ func (q *Queries) DispatchedTurns(ctx context.Context) ([]DispatchedTurnsRow, er
 	return items, nil
 }
 
+const dropMembersBeforeClaim = `-- name: DropMembersBeforeClaim :exec
+delete from project_members as member
+using project_members as awaited, users
+where awaited.project_id = member.project_id and awaited.username = $1::text
+  and users.id = member.user_id and users.username = $1::text
+`
+
+// A user who is a member of a project, and is given a username under which
+// the project was given a member since, is the member that was given last.
+func (q *Queries) DropMembersBeforeClaim(ctx context.Context, username string) error {
+	_, err := q.db.Exec(ctx, dropMembersBeforeClaim, username)
+	return err
+}
+
 const endTurn = `-- name: EndTurn :one
 with ending as (
     select case
@@ -632,6 +691,51 @@ func (q *Queries) GetApproval(ctx context.Context, arg GetApprovalParams) (Appro
 	return i, err
 }
 
+const getMember = `-- name: GetMember :one
+select project_members.id, project_members.project_id, project_members.user_id, project_members.username, project_members.group_name, project_members.role, project_members.permissions, project_members.created_at, project_members.updated_at, project_members.updated_by, users.subject, users.username as user_username, users.display_name, users.created_at as user_created_at
+from project_members left join users on users.id = project_members.user_id
+where project_members.id = $1
+`
+
+type GetMemberRow struct {
+	ID            uuid.UUID
+	ProjectID     uuid.UUID
+	UserID        *uuid.UUID
+	Username      *string
+	GroupName     *string
+	Role          *string
+	Permissions   []string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	UpdatedBy     *uuid.UUID
+	Subject       *string
+	UserUsername  *string
+	DisplayName   *string
+	UserCreatedAt *time.Time
+}
+
+func (q *Queries) GetMember(ctx context.Context, id uuid.UUID) (GetMemberRow, error) {
+	row := q.db.QueryRow(ctx, getMember, id)
+	var i GetMemberRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.UserID,
+		&i.Username,
+		&i.GroupName,
+		&i.Role,
+		&i.Permissions,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.UpdatedBy,
+		&i.Subject,
+		&i.UserUsername,
+		&i.DisplayName,
+		&i.UserCreatedAt,
+	)
+	return i, err
+}
+
 const getProject = `-- name: GetProject :one
 select id, name, created_at from projects where id = $1
 `
@@ -796,6 +900,86 @@ func (q *Queries) GiveUpTurn(ctx context.Context, arg GiveUpTurnParams) (int64, 
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const isMember = `-- name: IsMember :one
+select exists (
+    select 1 from project_members
+    join users on users.id = project_members.user_id
+    where project_members.project_id = $1 and users.username = $2::text
+)
+`
+
+type IsMemberParams struct {
+	ProjectID uuid.UUID
+	Username  string
+}
+
+// Whether the user with the username is a member of the project.
+func (q *Queries) IsMember(ctx context.Context, arg IsMemberParams) (bool, error) {
+	row := q.db.QueryRow(ctx, isMember, arg.ProjectID, arg.Username)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const listMembers = `-- name: ListMembers :many
+select project_members.id, project_members.project_id, project_members.user_id, project_members.username, project_members.group_name, project_members.role, project_members.permissions, project_members.created_at, project_members.updated_at, project_members.updated_by, users.subject, users.username as user_username, users.display_name, users.created_at as user_created_at
+from project_members left join users on users.id = project_members.user_id
+where project_members.project_id = $1
+order by project_members.created_at, project_members.id
+`
+
+type ListMembersRow struct {
+	ID            uuid.UUID
+	ProjectID     uuid.UUID
+	UserID        *uuid.UUID
+	Username      *string
+	GroupName     *string
+	Role          *string
+	Permissions   []string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	UpdatedBy     *uuid.UUID
+	Subject       *string
+	UserUsername  *string
+	DisplayName   *string
+	UserCreatedAt *time.Time
+}
+
+func (q *Queries) ListMembers(ctx context.Context, projectID uuid.UUID) ([]ListMembersRow, error) {
+	rows, err := q.db.Query(ctx, listMembers, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListMembersRow
+	for rows.Next() {
+		var i ListMembersRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.UserID,
+			&i.Username,
+			&i.GroupName,
+			&i.Role,
+			&i.Permissions,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.UpdatedBy,
+			&i.Subject,
+			&i.UserUsername,
+			&i.DisplayName,
+			&i.UserCreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listRoles = `-- name: ListRoles :many
@@ -1004,6 +1188,18 @@ func (q *Queries) QueuedTurns(ctx context.Context) ([]uuid.UUID, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const removeMember = `-- name: RemoveMember :execrows
+delete from project_members where id = $1
+`
+
+func (q *Queries) RemoveMember(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, removeMember, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const replaceProvider = `-- name: ReplaceProvider :one
@@ -1245,6 +1441,32 @@ func (q *Queries) SetFinished(ctx context.Context, arg SetFinishedParams) error 
 		arg.ID,
 	)
 	return err
+}
+
+const setMember = `-- name: SetMember :execrows
+update project_members
+set role = $1, permissions = $2::text[], updated_at = now(), updated_by = $3
+where id = $4
+`
+
+type SetMemberParams struct {
+	Role        *string
+	Permissions []string
+	UpdatedBy   *uuid.UUID
+	ID          uuid.UUID
+}
+
+func (q *Queries) SetMember(ctx context.Context, arg SetMemberParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setMember,
+		arg.Role,
+		arg.Permissions,
+		arg.UpdatedBy,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setRole = `-- name: SetRole :one

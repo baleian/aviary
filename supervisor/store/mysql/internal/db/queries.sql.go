@@ -7,6 +7,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"strings"
 	"time"
@@ -29,6 +30,39 @@ type AddApprovalParams struct {
 func (q *Queries) AddApproval(ctx context.Context, arg AddApprovalParams) error {
 	_, err := q.db.ExecContext(ctx, addApproval, arg.TurnID, arg.ID, arg.Request)
 	return err
+}
+
+const addMember = `-- name: AddMember :execrows
+insert into project_members (id, project_id, username, group_name, role, permissions, updated_by)
+select ?, projects.id, ?, ?,
+       ?, ?, ?
+from projects where projects.id = ?
+`
+
+type AddMemberParams struct {
+	ID          key.ID
+	Username    *string
+	GroupName   *string
+	Role        *string
+	Permissions *json.RawMessage
+	UpdatedBy   *key.ID
+	ProjectID   key.ID
+}
+
+func (q *Queries) AddMember(ctx context.Context, arg AddMemberParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, addMember,
+		arg.ID,
+		arg.Username,
+		arg.GroupName,
+		arg.Role,
+		arg.Permissions,
+		arg.UpdatedBy,
+		arg.ProjectID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const addTurnItem = `-- name: AddTurnItem :exec
@@ -158,6 +192,19 @@ func (q *Queries) CancellingTurns(ctx context.Context) ([]key.ID, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const claimMembers = `-- name: ClaimMembers :exec
+update project_members
+join users on users.username = project_members.username
+set project_members.user_id = users.id, project_members.username = null
+where project_members.username = ?
+`
+
+// The members that were awaited under the username are the user that has it.
+func (q *Queries) ClaimMembers(ctx context.Context, username *string) error {
+	_, err := q.db.ExecContext(ctx, claimMembers, username)
+	return err
 }
 
 const countDispatchedTurns = `-- name: CountDispatchedTurns :one
@@ -421,6 +468,23 @@ func (q *Queries) DispatchedTurns(ctx context.Context) ([]DispatchedTurnsRow, er
 	return items, nil
 }
 
+const dropMembersBeforeClaim = `-- name: DropMembersBeforeClaim :exec
+delete member from project_members as member
+join project_members as awaited on awaited.project_id = member.project_id and awaited.username = ?
+join users on users.id = member.user_id and users.username = ?
+`
+
+type DropMembersBeforeClaimParams struct {
+	Username *string
+}
+
+// A user who is a member of a project, and is given a username under which
+// the project was given a member since, is the member that was given last.
+func (q *Queries) DropMembersBeforeClaim(ctx context.Context, arg DropMembersBeforeClaimParams) error {
+	_, err := q.db.ExecContext(ctx, dropMembersBeforeClaim, arg.Username, arg.Username)
+	return err
+}
+
 const endTurn = `-- name: EndTurn :exec
 update turns set ended_at = now(6), state = ?, failure_reason = ?,
        failure_message = nullif(?, '')
@@ -510,6 +574,51 @@ func (q *Queries) GetApproval(ctx context.Context, arg GetApprovalParams) (Appro
 		&i.AnsweredAt,
 		&i.Outcome,
 		&i.ResolvedAt,
+	)
+	return i, err
+}
+
+const getMember = `-- name: GetMember :one
+select project_members.id, project_members.project_id, project_members.user_id, project_members.username, project_members.group_name, project_members.role, project_members.permissions, project_members.created_at, project_members.updated_at, project_members.updated_by, users.subject, users.username as user_username, users.display_name, users.created_at as user_created_at
+from project_members left join users on users.id = project_members.user_id
+where project_members.id = ?
+`
+
+type GetMemberRow struct {
+	ID            key.ID
+	ProjectID     key.ID
+	UserID        *key.ID
+	Username      *string
+	GroupName     *string
+	Role          *string
+	Permissions   *json.RawMessage
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	UpdatedBy     *key.ID
+	Subject       *string
+	UserUsername  *string
+	DisplayName   sql.NullString
+	UserCreatedAt *time.Time
+}
+
+func (q *Queries) GetMember(ctx context.Context, id key.ID) (GetMemberRow, error) {
+	row := q.db.QueryRowContext(ctx, getMember, id)
+	var i GetMemberRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.UserID,
+		&i.Username,
+		&i.GroupName,
+		&i.Role,
+		&i.Permissions,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.UpdatedBy,
+		&i.Subject,
+		&i.UserUsername,
+		&i.DisplayName,
+		&i.UserCreatedAt,
 	)
 	return i, err
 }
@@ -683,6 +792,89 @@ func (q *Queries) GiveUpTurn(ctx context.Context, arg GiveUpTurnParams) (int64, 
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const isMember = `-- name: IsMember :one
+select exists (
+    select 1 from project_members
+    join users on users.id = project_members.user_id
+    where project_members.project_id = ? and users.username = ?
+)
+`
+
+type IsMemberParams struct {
+	ProjectID key.ID
+	Username  *string
+}
+
+// Whether the user with the username is a member of the project.
+func (q *Queries) IsMember(ctx context.Context, arg IsMemberParams) (bool, error) {
+	row := q.db.QueryRowContext(ctx, isMember, arg.ProjectID, arg.Username)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const listMembers = `-- name: ListMembers :many
+select project_members.id, project_members.project_id, project_members.user_id, project_members.username, project_members.group_name, project_members.role, project_members.permissions, project_members.created_at, project_members.updated_at, project_members.updated_by, users.subject, users.username as user_username, users.display_name, users.created_at as user_created_at
+from project_members left join users on users.id = project_members.user_id
+where project_members.project_id = ?
+order by project_members.created_at, project_members.id
+`
+
+type ListMembersRow struct {
+	ID            key.ID
+	ProjectID     key.ID
+	UserID        *key.ID
+	Username      *string
+	GroupName     *string
+	Role          *string
+	Permissions   *json.RawMessage
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	UpdatedBy     *key.ID
+	Subject       *string
+	UserUsername  *string
+	DisplayName   sql.NullString
+	UserCreatedAt *time.Time
+}
+
+func (q *Queries) ListMembers(ctx context.Context, projectID key.ID) ([]ListMembersRow, error) {
+	rows, err := q.db.QueryContext(ctx, listMembers, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListMembersRow
+	for rows.Next() {
+		var i ListMembersRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.UserID,
+			&i.Username,
+			&i.GroupName,
+			&i.Role,
+			&i.Permissions,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.UpdatedBy,
+			&i.Subject,
+			&i.UserUsername,
+			&i.DisplayName,
+			&i.UserCreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listRoles = `-- name: ListRoles :many
@@ -1044,6 +1236,18 @@ func (q *Queries) QueuedTurns(ctx context.Context) ([]key.ID, error) {
 	return items, nil
 }
 
+const removeMember = `-- name: RemoveMember :execrows
+delete from project_members where id = ?
+`
+
+func (q *Queries) RemoveMember(ctx context.Context, id key.ID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, removeMember, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const replaceProvider = `-- name: ReplaceProvider :execrows
 update providers set name = ?, url = ?, api_key = ?,
        api_key_store_id = ?, api_key_path = ?,
@@ -1259,6 +1463,29 @@ type SetHarnessSessionParams struct {
 
 func (q *Queries) SetHarnessSession(ctx context.Context, arg SetHarnessSessionParams) error {
 	_, err := q.db.ExecContext(ctx, setHarnessSession, arg.HarnessSessionID, arg.ID)
+	return err
+}
+
+const setMember = `-- name: SetMember :exec
+update project_members
+set role = ?, permissions = ?, updated_at = now(6), updated_by = ?
+where id = ?
+`
+
+type SetMemberParams struct {
+	Role        *string
+	Permissions *json.RawMessage
+	UpdatedBy   *key.ID
+	ID          key.ID
+}
+
+func (q *Queries) SetMember(ctx context.Context, arg SetMemberParams) error {
+	_, err := q.db.ExecContext(ctx, setMember,
+		arg.Role,
+		arg.Permissions,
+		arg.UpdatedBy,
+		arg.ID,
+	)
 	return err
 }
 

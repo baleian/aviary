@@ -151,6 +151,10 @@ of the provider, in the header `Authorization: Bearer <token>`: see
 | `GET /v1/sessions/{id}/turns` | The turns of the session, newest first: `{"turns": [...]}`. `?limit=` is how many, 20 if it is not given and at most 100. `?before=` is the `seq` of a turn, and the answer then holds the turns before that one: that is how to read on from the last turn of an answer. The first turn of a session has `seq` 1. |
 | `GET /v1/projects/{id}`, `/v1/providers/{id}`, `/v1/secret-stores/{id}`, `/v1/agents/{id}`, `/v1/sessions/{id}`, `/v1/turns/{id}` | Reads what was created. |
 | `GET /v1/me` | Who sends the request, as the identity provider of the installation tells it. See [Callers](#callers). |
+| `GET /v1/projects/{id}/members` | The members of the project, in the order in which they were added: `{"members": [...]}`. See [Roles](#roles). |
+| `POST /v1/projects/{id}/members` | Makes a member of the project of a user or of a group. Body: `{"user": "..."}`, the username of the user, or `{"group": "..."}`, the name of a group of the identity provider, and with it `{"role": "..."}` or `{"permissions": [...]}`. Only an administrator may. Answers 409 if the project has that member already. |
+| `PUT /v1/members/{id}` | Gives a member another role, or other permissions of its own. Body: `{"role": "..."}` or `{"permissions": [...]}`. Only an administrator may. |
+| `DELETE /v1/members/{id}` | Makes the member no member of its project: 204. Only an administrator may. |
 | `GET /v1/roles` | The roles, and what each of them may do: `{"roles": [{"name": "editor", "permissions": [...]}, ...]}`. See [Roles](#roles). |
 | `PUT /v1/roles/{name}` | Gives a role its permissions. Body: `{"permissions": [...]}`. Only an administrator may: another caller is answered with 403. Answers 400 for a name that is no permission, and 404 for a role that there is not. |
 
@@ -226,6 +230,17 @@ under a name.
 | `sessions.run` | Create sessions, and in one's own send messages, stop the turns, answer their requests for approval and read what was said. |
 | `sessions.view_all` | Read the sessions of the other members. |
 | `sessions.control_all` | Stop the turns of the other members and answer their requests for approval. A role with it has `sessions.view_all` too. |
+
+An administrator gives a project its members. A member is a user, by the
+username, or a group of the identity provider, which is everyone whom the
+provider says to be in it. A member has a role, or permissions of its own:
+`"role": "custom"` and the permissions. A member with a role may do what the
+role may now. One with permissions of its own keeps them as they were given.
+
+A user can be made a member before they have ever sent a request: the user
+who is then seen with that username is the member. Who a user is does not
+hang on the username after that. If the provider gives the username to
+someone else, the member stays the user that it was, and the other is none.
 
 An installation has five roles, and no others. An administrator changes
 what a role may do, with `PUT /v1/roles/{name}`, and that holds from then on
@@ -540,8 +555,8 @@ checks, how to run some of the tests and where a new one goes.
 ## What is missing
 
 - **Permissions.** A caller whom the API takes may do everything with it:
-  the roles are there, and a project has no members yet who are held to
-  them. Without an identity provider that is anyone who reaches the API.
+  the roles and the members of the projects are there, and nobody is held
+  to them yet. Without an identity provider that is anyone who reaches the API.
 - **Looking into what an agent sends.** The Egress Proxy records which host
   a turn connects to. It does not read what is sent over HTTPS.
 - **Measured token usage.** The usage of a turn is what its harness reports.
