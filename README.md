@@ -18,8 +18,8 @@ and the number of turns that run at once is a setting.
 > model, at an endpoint that its project registers with a key that no pod
 > holds. An agent can be made to ask a person before it acts. Supervisors
 > can be replaced while turns run.
-> It has only run on a local cluster, and a caller whom the API takes may do
-> everything with it. See
+> With an identity provider, it knows its callers and holds each to what
+> they may do in a project. It has only run on a local cluster. See
 > [What is missing](#what-is-missing).
 
 ## How it works
@@ -133,7 +133,12 @@ still knows what was said and finds the file.
 
 An installation with an identity provider takes a request only with a token
 of the provider, in the header `Authorization: Bearer <token>`: see
-[Callers](#callers). An installation without one asks nobody.
+[Callers](#callers). A caller may do in a project what its members that are
+the caller, or one of the groups of the caller, may do: see [Roles](#roles).
+A project of which the caller is no member is answered as one that there is
+not, with 404, and a request that takes a permission that the caller lacks
+with 403. An administrator may do everything. An installation without an
+identity provider asks nobody, and every caller is an administrator.
 
 | Request | |
 | --- | --- |
@@ -223,6 +228,9 @@ every caller is an administrator.
 A role is what a member of a project may do there: a set of permissions
 under a name.
 
+An administrator creates the projects, gives them their members and changes
+what the roles may do. Everything else takes a permission in the project:
+
 | Permission | |
 | --- | --- |
 | `project.view` | See the project and what it is made of: its agents, its model providers and its secret stores, without their secrets. Every role has it. |
@@ -242,6 +250,12 @@ A user can be made a member before they have ever sent a request: the user
 who is then seen with that username is the member. Who a user is does not
 hang on the username after that. If the provider gives the username to
 someone else, the member stays the user that it was, and the other is none.
+
+A session is that of the caller who created it, and only that caller sends
+messages to it. To read a session of one's own, to stop its turns and to
+answer their requests for approval takes `sessions.run`. With a session of
+another member the same takes `sessions.view_all` to read and
+`sessions.control_all` to stop and to answer.
 
 An installation has five roles, and no others. An administrator changes
 what a role may do, with `PUT /v1/roles/{name}`, and that holds from then on
@@ -555,9 +569,6 @@ checks, how to run some of the tests and where a new one goes.
 
 ## What is missing
 
-- **Permissions.** A caller whom the API takes may do everything with it:
-  the roles and the members of the projects are there, and nobody is held
-  to them yet. Without an identity provider that is anyone who reaches the API.
 - **Looking into what an agent sends.** The Egress Proxy records which host
   a turn connects to. It does not read what is sent over HTTPS.
 - **Measured token usage.** The usage of a turn is what its harness reports.

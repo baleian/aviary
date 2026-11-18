@@ -74,9 +74,6 @@ func (a *api) listRoles(w http.ResponseWriter, r *http.Request) error {
 // them from their next request on.
 func (a *api) setRole(w http.ResponseWriter, r *http.Request) error {
 	who := callerOf(r)
-	if !who.admin {
-		return errAdminOnly
-	}
 	var request struct {
 		Permissions *[]string `json:"permissions"`
 	}

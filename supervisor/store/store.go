@@ -429,6 +429,13 @@ type Store interface {
 	// they were added.
 	Members(ctx context.Context, projectID uuid.UUID) ([]Member, error)
 
+	// Permissions returns what the user and the groups may do in the
+	// project, each permission once and in the order of their names: what
+	// the members of the project that are the user or one of the groups may
+	// do together. A member with a role may do what the role may now. There
+	// are none if neither the user nor a group is a member.
+	Permissions(ctx context.Context, projectID, userID uuid.UUID, groups []string) ([]string, error)
+
 	// Roles returns the roles in the order of their names. A database has
 	// the roles owner, editor, user, viewer and auditor from the start, and
 	// no others.

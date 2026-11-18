@@ -424,6 +424,27 @@ func (s *Store) projectsThat(ctx context.Context, pick func(uuid.UUID) bool) ([]
 	return projects, nil
 }
 
+func (s *Store) Permissions(ctx context.Context, projectID, userID uuid.UUID, groups []string) ([]string, error) {
+	if err := s.begin(ctx); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+	var held []string
+	for _, member := range s.members {
+		user := member.subject != "" && s.users[member.subject].ID == userID
+		if member.ProjectID != projectID || !(user || (member.Group != "" && slices.Contains(groups, member.Group))) {
+			continue
+		}
+		if member.Role != "" {
+			held = append(held, s.roles[member.Role].Permissions...)
+		} else {
+			held = append(held, member.Permissions...)
+		}
+	}
+	slices.Sort(held)
+	return slices.Compact(held), nil
+}
+
 func (s *Store) Roles(ctx context.Context) ([]store.Role, error) {
 	if err := s.begin(ctx); err != nil {
 		return nil, err

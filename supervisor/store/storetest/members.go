@@ -295,3 +295,62 @@ func (suite suite) testProjects(t *testing.T) {
 		}
 	}
 }
+
+// What a user may do in a project is what the members that are the user or
+// one of its groups may do together.
+func (suite suite) testPermissions(t *testing.T) {
+	t.Parallel()
+	st := membership{suite.open(t)}
+	project, other := st.project(), st.project()
+	alice, bob := st.user("subject-a", "alice@example.com"), st.user("subject-b", "")
+	st.add(project, "alice@example.com", "", "", "project.view", "sessions.view_all")
+	st.add(project, "", "team-a", "editor")
+	st.add(project, "", "team-b", "", "sessions.control_all", "project.view")
+	st.add(project, "carol@example.com", "", "owner")
+	st.add(other, "", "team-a", "viewer")
+
+	editor := []string{"agents.manage", "connections.manage", "project.view", "sessions.run"}
+	for _, asked := range []struct {
+		who     string
+		project uuid.UUID
+		user    uuid.UUID
+		groups  []string
+		held    []string
+	}{
+		{"a member with permissions of its own", project, alice.ID, nil, []string{"project.view", "sessions.view_all"}},
+		{"a member in a group with a role", project, alice.ID, []string{"others", "team-a"}, []string{"agents.manage", "connections.manage", "project.view", "sessions.run", "sessions.view_all"}},
+		{"a member in two groups", project, alice.ID, []string{"team-a", "team-b"}, []string{"agents.manage", "connections.manage", "project.view", "sessions.control_all", "sessions.run", "sessions.view_all"}},
+		{"a user who is a member through a group", project, bob.ID, []string{"team-a"}, editor},
+		{"nobody, in a group", project, uuid.Nil, []string{"team-b"}, []string{"project.view", "sessions.control_all"}},
+		{"a user who is no member, in no group", project, bob.ID, nil, nil},
+		{"a user who is no member, in a group that is none", project, bob.ID, []string{"others"}, nil},
+		{"nobody, in no group", project, uuid.Nil, nil, nil},
+		{"a member of another project", other, alice.ID, nil, nil},
+		{"a group in another project", other, alice.ID, []string{"team-a"}, []string{"project.view"}},
+		{"a project that there is not", uuid.New(), alice.ID, []string{"team-a"}, nil},
+	} {
+		if held, err := st.Permissions(ctx, asked.project, asked.user, asked.groups); err != nil || !slices.Equal(held, asked.held) {
+			t.Errorf("%s may %q, not %q: %v", asked.who, held, asked.held, err)
+		}
+	}
+
+	// A role is given other permissions: its members have them from then
+	// on, and a member with permissions of its own has what it had.
+	if _, err := st.SetRole(ctx, "editor", []string{"project.view", "sessions.run"}, uuid.Nil); err != nil {
+		t.Fatal(err)
+	}
+	if held, err := st.Permissions(ctx, project, bob.ID, []string{"team-a"}); err != nil || !slices.Equal(held, []string{"project.view", "sessions.run"}) {
+		t.Errorf("after its role was changed, a member may %q: %v", held, err)
+	}
+	if held, err := st.Permissions(ctx, project, alice.ID, nil); err != nil || !slices.Equal(held, []string{"project.view", "sessions.view_all"}) {
+		t.Errorf("after a role was changed, a member with permissions of its own may %q: %v", held, err)
+	}
+	// Someone who is awaited may nothing until they are seen.
+	if held, err := st.Permissions(ctx, project, uuid.Nil, nil); err != nil || len(held) != 0 {
+		t.Errorf("nobody may %q in a project that awaits a member: %v", held, err)
+	}
+	carol := st.user("subject-c", "carol@example.com")
+	if held, err := st.Permissions(ctx, project, carol.ID, nil); err != nil || len(held) != 6 {
+		t.Errorf("the member that was awaited may %q: %v", held, err)
+	}
+}

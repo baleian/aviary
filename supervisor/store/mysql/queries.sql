@@ -331,3 +331,11 @@ where exists (
       and (project_members.user_id = sqlc.narg(user_id) or project_members.group_name in (sqlc.slice(group_names)))
 )
 order by projects.created_at, projects.id;
+
+-- name: ListPermissions :many
+-- What the members of the project that are the user or one of the groups may
+-- do: of each, the permissions of its own, or those that its role has now.
+select cast(coalesce(project_members.permissions, roles.permissions) as json) as permissions
+from project_members left join roles on roles.name = project_members.role
+where project_members.project_id = sqlc.arg(project_id)
+  and (project_members.user_id = sqlc.narg(user_id) or project_members.group_name in (sqlc.slice(group_names)));

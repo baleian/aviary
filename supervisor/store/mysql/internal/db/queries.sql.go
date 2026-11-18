@@ -877,6 +877,56 @@ func (q *Queries) ListMembers(ctx context.Context, projectID key.ID) ([]ListMemb
 	return items, nil
 }
 
+const listPermissions = `-- name: ListPermissions :many
+select cast(coalesce(project_members.permissions, roles.permissions) as json) as permissions
+from project_members left join roles on roles.name = project_members.role
+where project_members.project_id = ?
+  and (project_members.user_id = ? or project_members.group_name in (/*SLICE:group_names*/?))
+`
+
+type ListPermissionsParams struct {
+	ProjectID  key.ID
+	UserID     *key.ID
+	GroupNames []*string
+}
+
+// What the members of the project that are the user or one of the groups may
+// do: of each, the permissions of its own, or those that its role has now.
+func (q *Queries) ListPermissions(ctx context.Context, arg ListPermissionsParams) ([]json.RawMessage, error) {
+	query := listPermissions
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.ProjectID)
+	queryParams = append(queryParams, arg.UserID)
+	if len(arg.GroupNames) > 0 {
+		for _, v := range arg.GroupNames {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:group_names*/?", strings.Repeat(",?", len(arg.GroupNames))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:group_names*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []json.RawMessage
+	for rows.Next() {
+		var permissions json.RawMessage
+		if err := rows.Scan(&permissions); err != nil {
+			return nil, err
+		}
+		items = append(items, permissions)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProjects = `-- name: ListProjects :many
 select id, name, created_at from projects order by created_at, id
 `

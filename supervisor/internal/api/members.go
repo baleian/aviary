@@ -115,9 +115,6 @@ func (a *api) listMembers(w http.ResponseWriter, r *http.Request) error {
 // group of the identity provider. The user need not have been seen yet.
 func (a *api) addMember(w http.ResponseWriter, r *http.Request) error {
 	who := callerOf(r)
-	if !who.admin {
-		return errAdminOnly
-	}
 	projectID, err := pathID(r, "pid")
 	if err != nil {
 		return err
@@ -153,9 +150,6 @@ func (a *api) addMember(w http.ResponseWriter, r *http.Request) error {
 // setMember gives a member another role, or other permissions of its own.
 func (a *api) setMember(w http.ResponseWriter, r *http.Request) error {
 	who := callerOf(r)
-	if !who.admin {
-		return errAdminOnly
-	}
 	id, err := pathID(r, "mid")
 	if err != nil {
 		return err
@@ -180,9 +174,6 @@ func (a *api) setMember(w http.ResponseWriter, r *http.Request) error {
 
 func (a *api) removeMember(w http.ResponseWriter, r *http.Request) error {
 	who := callerOf(r)
-	if !who.admin {
-		return errAdminOnly
-	}
 	id, err := pathID(r, "mid")
 	if err != nil {
 		return err

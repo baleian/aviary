@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -321,6 +322,30 @@ func (s *records) Members(ctx context.Context, projectID uuid.UUID) ([]store.Mem
 		}
 	}
 	return members, nil
+}
+
+func (s *records) Permissions(ctx context.Context, projectID, userID uuid.UUID, groups []string) ([]string, error) {
+	params := db.ListPermissionsParams{ProjectID: key.ID(projectID)}
+	if userID != uuid.Nil {
+		params.UserID = (*key.ID)(&userID)
+	}
+	for _, group := range groups {
+		params.GroupNames = append(params.GroupNames, &group)
+	}
+	sets, err := s.queries.ListPermissions(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	var held []string
+	for _, set := range sets {
+		var permissions []string
+		if err := json.Unmarshal(set, &permissions); err != nil {
+			return nil, err
+		}
+		held = append(held, permissions...)
+	}
+	slices.Sort(held)
+	return slices.Compact(held), nil
 }
 
 func (s *records) member(ctx context.Context, id uuid.UUID) (store.Member, error) {

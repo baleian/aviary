@@ -78,8 +78,8 @@ func TestCallersAreAskedWhoTheyAre(t *testing.T) {
 	}
 
 	for _, authorization := range []string{"Bearer token-of-alice", "bearer token-of-alice"} {
-		if response := send(http.MethodPost, "/v1/projects", authorization); response.StatusCode != http.StatusCreated {
-			t.Errorf("a project is created with the header %q, and that is answered with %d", authorization, response.StatusCode)
+		if response := send(http.MethodGet, "/v1/projects", authorization); response.StatusCode != http.StatusOK {
+			t.Errorf("the projects are asked for with the header %q, and that is answered with %d", authorization, response.StatusCode)
 		}
 	}
 	s.token = "token-of-alice"
@@ -169,14 +169,14 @@ func TestGroupsOfAdministratorsAndOfUsers(t *testing.T) {
 					told.Subject != caller.Subject || told.Admin != contains(test.admins, token) {
 					t.Errorf("%s is told %d %+v", token, status, told)
 				}
-				status, expected := http.StatusCreated, http.StatusCreated
+				status, expected := http.StatusOK, http.StatusOK
 				var answer struct{ Code string }
 				if contains(test.refused, token) {
 					expected = http.StatusForbidden
 				}
-				if status, _ = s.request(http.MethodPost, "/v1/projects", `{"name": "a project"}`, &answer); status != expected ||
+				if status, _ = s.request(http.MethodGet, "/v1/projects", "", &answer); status != expected ||
 					(expected == http.StatusForbidden) != (answer.Code == "forbidden") {
-					t.Errorf("%s creates a project, and that is answered with %d %q, not %d", token, status, answer.Code, expected)
+					t.Errorf("%s asks for its projects, and that is answered with %d %q, not %d", token, status, answer.Code, expected)
 				}
 			}
 		})
@@ -274,7 +274,14 @@ func TestCallerSettings(t *testing.T) {
 // are, they are nobody's.
 func TestASessionIsOfItsCreator(t *testing.T) {
 	installation := install(t)
-	installation.callers = api.Callers{Provider: tokens{"token-of-alice": {Subject: "subject-1"}, "token-of-bob": {Subject: "subject-2"}}}
+	installation.callers = api.Callers{
+		Provider: tokens{
+			"an-administrator": {Subject: "subject-0", Groups: []string{"platform"}},
+			"token-of-alice":   {Subject: "subject-1", Username: "alice@example.com"},
+			"token-of-bob":     {Subject: "subject-2", Username: "bob@example.com"},
+		},
+		Admins: []string{"platform"},
+	}
 	s := installation.supervisor()
 	// session creates a session of the agent with the token, and returns
 	// who the caller is and whose the session is: as it was created and as
@@ -293,8 +300,11 @@ func TestASessionIsOfItsCreator(t *testing.T) {
 		}
 		return caller, created, read
 	}
-	s.token = "token-of-alice"
-	agent := s.agent(s.create("/v1/projects", `{"name": "test"}`), `{"harness": "opencode"}`)
+	s.token = "an-administrator"
+	project := s.create("/v1/projects", `{"name": "test"}`)
+	agent := s.agent(project, `{"harness": "opencode"}`)
+	s.create("/v1/projects/"+project+"/members", `{"user": "alice@example.com", "role": "user"}`)
+	s.create("/v1/projects/"+project+"/members", `{"user": "bob@example.com", "role": "user"}`)
 	alice, created, read := session("token-of-alice", agent)
 	if created["created_by"] != alice.ID || read["created_by"] != alice.ID {
 		t.Errorf("the session of the user %s was created as %v and is read as %v", alice.ID, created, read)

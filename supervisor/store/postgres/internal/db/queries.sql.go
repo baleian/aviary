@@ -982,6 +982,41 @@ func (q *Queries) ListMembers(ctx context.Context, projectID uuid.UUID) ([]ListM
 	return items, nil
 }
 
+const listPermissions = `-- name: ListPermissions :many
+select coalesce(project_members.permissions, roles.permissions)::text[] as permissions
+from project_members left join roles on roles.name = project_members.role
+where project_members.project_id = $1
+  and (project_members.user_id = $2::uuid or project_members.group_name = any($3::text[]))
+`
+
+type ListPermissionsParams struct {
+	ProjectID uuid.UUID
+	UserID    *uuid.UUID
+	Groups    []string
+}
+
+// What the members of the project that are the user or one of the groups may
+// do: of each, the permissions of its own, or those that its role has now.
+func (q *Queries) ListPermissions(ctx context.Context, arg ListPermissionsParams) ([][]string, error) {
+	rows, err := q.db.Query(ctx, listPermissions, arg.ProjectID, arg.UserID, arg.Groups)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items [][]string
+	for rows.Next() {
+		var permissions []string
+		if err := rows.Scan(&permissions); err != nil {
+			return nil, err
+		}
+		items = append(items, permissions)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProjects = `-- name: ListProjects :many
 select id, name, created_at from projects order by created_at, id
 `

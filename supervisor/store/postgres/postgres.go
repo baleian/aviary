@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -246,6 +247,18 @@ func (s *records) Members(ctx context.Context, projectID uuid.UUID) ([]store.Mem
 		members[i] = memberFrom(db.GetMemberRow(row))
 	}
 	return members, err
+}
+
+func (s *records) Permissions(ctx context.Context, projectID, userID uuid.UUID, groups []string) ([]string, error) {
+	// A list and not none: no group is asked for, and not every group.
+	params := db.ListPermissionsParams{ProjectID: projectID, Groups: append([]string{}, groups...)}
+	if userID != uuid.Nil {
+		params.UserID = &userID
+	}
+	sets, err := s.queries.ListPermissions(ctx, params)
+	held := slices.Concat(sets...)
+	slices.Sort(held)
+	return slices.Compact(held), err
 }
 
 func (s *records) member(ctx context.Context, id uuid.UUID) (store.Member, error) {

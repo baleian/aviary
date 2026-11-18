@@ -354,3 +354,11 @@ where exists (
       and (project_members.user_id = sqlc.narg(user_id)::uuid or project_members.group_name = any(@groups::text[]))
 )
 order by projects.created_at, projects.id;
+
+-- name: ListPermissions :many
+-- What the members of the project that are the user or one of the groups may
+-- do: of each, the permissions of its own, or those that its role has now.
+select coalesce(project_members.permissions, roles.permissions)::text[] as permissions
+from project_members left join roles on roles.name = project_members.role
+where project_members.project_id = @project_id
+  and (project_members.user_id = sqlc.narg(user_id)::uuid or project_members.group_name = any(@groups::text[]));
