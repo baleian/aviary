@@ -12,7 +12,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"os"
 	"slices"
@@ -24,7 +27,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
@@ -41,6 +43,8 @@ const (
 var (
 	ctx     = context.Background()
 	cluster *kubernetes.Clientset
+	// apiURL is where the API of Aviary is: a port of a node of the cluster.
+	apiURL = os.Getenv("AVIARY_E2E_API")
 	// harnesses are the harnesses that the installation has, by the names
 	// that agents are created with. The first runs what does not depend on
 	// the harness.
@@ -49,9 +53,9 @@ var (
 
 func TestMain(m *testing.M) {
 	kubeconfig := os.Getenv("AVIARY_E2E_KUBECONFIG")
-	if kubeconfig == "" || len(harnesses) == 0 {
+	if kubeconfig == "" || apiURL == "" || len(harnesses) == 0 {
 		// Tests that were skipped here would look like tests that passed.
-		fmt.Fprintln(os.Stderr, "AVIARY_E2E_KUBECONFIG and AVIARY_E2E_HARNESSES are not set: run the tests with `make e2e`")
+		fmt.Fprintln(os.Stderr, "AVIARY_E2E_KUBECONFIG, AVIARY_E2E_API and AVIARY_E2E_HARNESSES are not set: run the tests with `make e2e`")
 		os.Exit(1)
 	}
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
@@ -79,38 +83,58 @@ func eventually(t *testing.T, within time.Duration, what string, holds func() bo
 	}
 }
 
-// The API of Aviary, as its clients see it. A request goes through the API
-// server of the cluster, which passes it on to one of the Supervisors.
+// The API of Aviary, as its clients see it. A request goes to a port of a
+// node, from where the cluster passes it on to one of the Supervisors. Every
+// request has a connection of its own, so that none is sent to a Supervisor
+// that has stopped since the request before it. A connection that is not
+// there after a moment is given up: the node may have passed it on to a
+// Supervisor that has just gone.
+var client = &http.Client{Transport: &http.Transport{
+	DisableKeepAlives: true,
+	DialContext:       (&net.Dialer{Timeout: 2 * time.Second}).DialContext,
+}}
 
-func api(method, path string) *rest.Request {
-	path, query, _ := strings.Cut(path, "?")
-	request := cluster.CoreV1().RESTClient().Verb(method).Namespace(system).
-		Resource("services").Name("aviary-supervisor:http").SubResource("proxy").Suffix(path)
-	for _, parameter := range strings.Split(query, "&") {
-		if name, value, found := strings.Cut(parameter, "="); found {
-			request = request.Param(name, value)
+// call sends a request to the API, with the headers that are given as names
+// and values. While the Supervisors are replaced, a node may take no
+// connection for a moment: the request, of which nothing was sent, is then
+// sent again.
+func call(ctx context.Context, method, path, body string, headers ...string) (*http.Response, error) {
+	for refused := time.Now().Add(soon); ; time.Sleep(200 * time.Millisecond) {
+		request, err := http.NewRequestWithContext(ctx, method, apiURL+path, strings.NewReader(body))
+		if err != nil {
+			return nil, err
 		}
+		for i := 0; i+1 < len(headers); i += 2 {
+			request.Header.Set(headers[i], headers[i+1])
+		}
+		response, err := client.Do(request)
+		var failed *net.OpError
+		if errors.As(err, &failed) && failed.Op == "dial" && time.Now().Before(refused) {
+			continue
+		}
+		return response, err
 	}
-	return request
 }
 
 // request sends a request to the API. It returns the status of the answer
 // and decodes the body of the answer into the last argument, if there is one.
 func request(t *testing.T, method, path, body string, into any) int {
 	t.Helper()
-	answered := api(method, path).Body([]byte(body)).Do(ctx)
-	var status int
-	answered.StatusCode(&status)
-	answer, err := answered.Raw()
-	if status == 0 {
+	response, err := call(ctx, method, path, body)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	defer response.Body.Close()
+	answer, err := io.ReadAll(response.Body)
+	if err != nil {
 		t.Fatalf("%s %s: %v", method, path, err)
 	}
 	if into != nil {
 		if err := json.Unmarshal(answer, into); err != nil {
-			t.Fatalf("%s %s was answered with %d %s: %v", method, path, status, answer, err)
+			t.Fatalf("%s %s was answered with %d %s: %v", method, path, response.StatusCode, answer, err)
 		}
 	}
-	return status
+	return response.StatusCode
 }
 
 // create creates a resource and returns its ID.
@@ -326,11 +350,16 @@ func read(t *testing.T, id string) *reader {
 		defer close(r.events)
 		var last string
 		for following.Err() == nil {
-			stream, err := api("GET", "/v1/turns/"+id+"/events").SetHeader("Last-Event-ID", last).Stream(following)
+			response, err := call(following, "GET", "/v1/turns/"+id+"/events", "", "Last-Event-ID", last)
+			if err == nil && response.StatusCode != http.StatusOK {
+				response.Body.Close()
+				err = fmt.Errorf("the events were answered with %d", response.StatusCode)
+			}
 			if err != nil {
 				time.Sleep(200 * time.Millisecond)
 				continue
 			}
+			stream := response.Body
 			var next event
 			lines := bufio.NewScanner(stream)
 			lines.Buffer(nil, 1<<20)

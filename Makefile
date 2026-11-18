@@ -268,17 +268,19 @@ e2e: e2e-up
 
 e2e-up:
 	$(MAKE) cluster-down cluster-up secret-store images secrets CLUSTER=$(E2E_CLUSTER)
-	$(E2E_KUBECTL) apply --filename test/e2e/mock-llm.yaml
+	$(E2E_KUBECTL) apply --filename test/e2e/mock-llm.yaml --filename test/e2e/api.yaml
 	helm --kube-context kind-$(E2E_CLUSTER) upgrade --install aviary deploy/charts/aviary \
 		--namespace aviary-system --values test/e2e/values.yaml --wait
 	$(E2E_KUBECTL) --namespace aviary-e2e rollout status deployment/mock-llm --timeout 120s
 	$(E2E_KUBECTL) --namespace aviary-e2e rollout status deployment/mock-llm-other --timeout 120s
 
-# The tests reach the cluster over the network of its nodes.
+# The tests reach the cluster over the network of its nodes, and the API of
+# Aviary at the port of a node that test/e2e/api.yaml opens.
 e2e-run:
 	mkdir -p $(E2E_OUT)
 	kind get kubeconfig --internal --name $(E2E_CLUSTER) > $(E2E_OUT)/kubeconfig
 	$(call GO,test,--network kind --env AVIARY_E2E_KUBECONFIG=/src/$(E2E_OUT)/kubeconfig \
+		--env AVIARY_E2E_API=http://$(E2E_CLUSTER)-control-plane:30080 \
 		--env AVIARY_E2E_HARNESSES="$(E2E_HARNESSES)") test -count=1 -timeout 20m -v ./e2e/... $(TESTS); \
 		status=$$?; [ $$status = 0 ] || { \
 			for part in supervisor egress-proxy; do \

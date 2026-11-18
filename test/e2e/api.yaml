@@ -1,0 +1,19 @@
+# The API of Aviary at a port of every node of the cluster. The e2e reaches
+# it there, as a client of Aviary does, and not through the API server of the
+# cluster: the API server keeps the Authorization header of a request to
+# itself, so a caller could not tell Aviary who they are.
+apiVersion: v1
+kind: Service
+metadata:
+  name: aviary-supervisor-e2e
+  namespace: aviary-system
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: supervisor
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      nodePort: 30080
