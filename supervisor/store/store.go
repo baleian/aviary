@@ -170,6 +170,9 @@ type Turn struct {
 	Seq       int       `json:"seq"`
 	State     string    `json:"state"`
 	Text      string    `json:"text"`
+	// CreatedBy is the user who sent the message. It is uuid.Nil for a turn
+	// of an installation that asks nobody who they are.
+	CreatedBy uuid.UUID `json:"created_by,omitzero"`
 	CreatedAt time.Time `json:"created_at"`
 	// StartedAt is when the harness was given the message, once it has been.
 	StartedAt *time.Time `json:"started_at,omitempty"`
@@ -410,8 +413,9 @@ type Store interface {
 	// turns would then wait to run. Zero is no such limit. A queued turn waits
 	// only if the turns that run leave it no room among maxRunning. The second
 	// result is how many turns then wait to run, the new one among them: zero if
-	// it need not wait.
-	CreateTurn(ctx context.Context, sessionID uuid.UUID, text string, maxWaiting, maxRunning int) (Turn, int, error)
+	// it need not wait. The turn is of the user who sent the message, by, or
+	// of nobody if by is uuid.Nil.
+	CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, maxWaiting, maxRunning int) (Turn, int, error)
 
 	// AnnounceQueue calls announce with the turns that wait to run, in the order
 	// in which they will run. Only one such call runs at a time, also across

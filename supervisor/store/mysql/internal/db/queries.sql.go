@@ -316,8 +316,8 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (i
 }
 
 const createTurn = `-- name: CreateTurn :exec
-insert into turns (id, session_id, seq, state, text)
-values (?, ?, ?, 'queued', ?)
+insert into turns (id, session_id, seq, state, text, created_by)
+values (?, ?, ?, 'queued', ?, ?)
 `
 
 type CreateTurnParams struct {
@@ -325,6 +325,7 @@ type CreateTurnParams struct {
 	SessionID key.ID
 	Seq       int32
 	Text      string
+	CreatedBy *key.ID
 }
 
 func (q *Queries) CreateTurn(ctx context.Context, arg CreateTurnParams) error {
@@ -333,6 +334,7 @@ func (q *Queries) CreateTurn(ctx context.Context, arg CreateTurnParams) error {
 		arg.SessionID,
 		arg.Seq,
 		arg.Text,
+		arg.CreatedBy,
 	)
 	return err
 }
@@ -583,7 +585,7 @@ func (q *Queries) GetSession(ctx context.Context, id key.ID) (Session, error) {
 }
 
 const getTurn = `-- name: GetTurn :one
-select id, session_id, seq, state, text, created_at, dispatched_at, started_at, cancel_requested_at, ended_at, token_hash, runner_id, stop_reason, failure_reason, failure_message, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens from turns where id = ?
+select id, session_id, seq, state, text, created_at, dispatched_at, started_at, cancel_requested_at, ended_at, token_hash, runner_id, stop_reason, failure_reason, failure_message, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens, created_by from turns where id = ?
 `
 
 func (q *Queries) GetTurn(ctx context.Context, id key.ID) (Turn, error) {
@@ -611,6 +613,7 @@ func (q *Queries) GetTurn(ctx context.Context, id key.ID) (Turn, error) {
 		&i.ThoughtTokens,
 		&i.CachedReadTokens,
 		&i.CachedWriteTokens,
+		&i.CreatedBy,
 	)
 	return i, err
 }
@@ -709,7 +712,7 @@ func (q *Queries) ListTurnItems(ctx context.Context, turnIds []key.ID) ([]ListTu
 }
 
 const listTurns = `-- name: ListTurns :many
-select id, session_id, seq, state, text, created_at, dispatched_at, started_at, cancel_requested_at, ended_at, token_hash, runner_id, stop_reason, failure_reason, failure_message, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens from turns where session_id = ? and seq < ? order by seq desc limit ?
+select id, session_id, seq, state, text, created_at, dispatched_at, started_at, cancel_requested_at, ended_at, token_hash, runner_id, stop_reason, failure_reason, failure_message, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens, created_by from turns where session_id = ? and seq < ? order by seq desc limit ?
 `
 
 type ListTurnsParams struct {
@@ -751,6 +754,7 @@ func (q *Queries) ListTurns(ctx context.Context, arg ListTurnsParams) ([]Turn, e
 			&i.ThoughtTokens,
 			&i.CachedReadTokens,
 			&i.CachedWriteTokens,
+			&i.CreatedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -792,7 +796,7 @@ func (q *Queries) LockSession(ctx context.Context, id key.ID) (key.ID, error) {
 }
 
 const lockTurn = `-- name: LockTurn :one
-select id, session_id, seq, state, text, created_at, dispatched_at, started_at, cancel_requested_at, ended_at, token_hash, runner_id, stop_reason, failure_reason, failure_message, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens from turns where id = ? for update
+select id, session_id, seq, state, text, created_at, dispatched_at, started_at, cancel_requested_at, ended_at, token_hash, runner_id, stop_reason, failure_reason, failure_message, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens, created_by from turns where id = ? for update
 `
 
 // Holds the turn until the transaction ends: what is done to a turn at once
@@ -822,12 +826,13 @@ func (q *Queries) LockTurn(ctx context.Context, id key.ID) (Turn, error) {
 		&i.ThoughtTokens,
 		&i.CachedReadTokens,
 		&i.CachedWriteTokens,
+		&i.CreatedBy,
 	)
 	return i, err
 }
 
 const lockTurnOfToken = `-- name: LockTurnOfToken :one
-select id, session_id, seq, state, text, created_at, dispatched_at, started_at, cancel_requested_at, ended_at, token_hash, runner_id, stop_reason, failure_reason, failure_message, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens from turns where token_hash = ? for update
+select id, session_id, seq, state, text, created_at, dispatched_at, started_at, cancel_requested_at, ended_at, token_hash, runner_id, stop_reason, failure_reason, failure_message, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens, created_by from turns where token_hash = ? for update
 `
 
 func (q *Queries) LockTurnOfToken(ctx context.Context, tokenHash []byte) (Turn, error) {
@@ -855,6 +860,7 @@ func (q *Queries) LockTurnOfToken(ctx context.Context, tokenHash []byte) (Turn, 
 		&i.ThoughtTokens,
 		&i.CachedReadTokens,
 		&i.CachedWriteTokens,
+		&i.CreatedBy,
 	)
 	return i, err
 }

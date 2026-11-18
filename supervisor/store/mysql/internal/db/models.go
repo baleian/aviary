@@ -94,6 +94,7 @@ type Turn struct {
 	ThoughtTokens     *int64
 	CachedReadTokens  *int64
 	CachedWriteTokens *int64
+	CreatedBy         *key.ID
 }
 
 type User struct {

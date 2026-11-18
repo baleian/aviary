@@ -269,8 +269,9 @@ func TestCallerSettings(t *testing.T) {
 	}
 }
 
-// A session is that of the caller who created it. In an installation that
-// asks nobody who they are, it is nobody's.
+// A session is that of the caller who created it, and a turn that of the
+// caller who sent its message. In an installation that asks nobody who they
+// are, they are nobody's.
 func TestASessionIsOfItsCreator(t *testing.T) {
 	installation := install(t)
 	installation.callers = api.Callers{Provider: tokens{"token-of-alice": {Subject: "subject-1"}, "token-of-bob": {Subject: "subject-2"}}}
@@ -302,6 +303,14 @@ func TestASessionIsOfItsCreator(t *testing.T) {
 	if bob.ID == alice.ID || created["created_by"] != bob.ID || read["created_by"] != bob.ID {
 		t.Errorf("the session of the user %s was created as %v and is read as %v", bob.ID, created, read)
 	}
+	var sent, one map[string]any
+	if status, _ := s.request(http.MethodPost, "/v1/sessions/"+created["id"].(string)+"/messages", `{"text": "hello"}`, &sent); status != http.StatusAccepted {
+		t.Fatalf("a message is answered with %d %v", status, sent)
+	}
+	if status, _ := s.request(http.MethodGet, "/v1/turns/"+sent["id"].(string), "", &one); status != http.StatusOK ||
+		sent["created_by"] != bob.ID || one["created_by"] != bob.ID {
+		t.Errorf("the turn of the user %s was created as %v and is read with %d as %v", bob.ID, sent, status, one)
+	}
 
 	nobody := install(t).supervisor()
 	var nobodys map[string]any
@@ -310,5 +319,12 @@ func TestASessionIsOfItsCreator(t *testing.T) {
 	}
 	if by, told := nobodys["created_by"]; told {
 		t.Errorf("a session that nobody created is said to be that of %v", by)
+	}
+	var unsigned map[string]any
+	if status, _ := nobody.request(http.MethodPost, "/v1/sessions/"+nobodys["id"].(string)+"/messages", `{"text": "hello"}`, &unsigned); status != http.StatusAccepted || unsigned["id"] == nil {
+		t.Fatalf("a message is answered with %d %v", status, unsigned)
+	}
+	if by, told := unsigned["created_by"]; told {
+		t.Errorf("a turn that nobody sent is said to be that of %v", by)
 	}
 }

@@ -192,7 +192,7 @@ func TestAgentFromBeforeModels(t *testing.T) {
 		t.Fatal(err)
 	}
 	session := s.create("/v1/agents/"+agent.ID.String()+"/sessions", "")
-	queued, _, err := aviary.records.CreateTurn(ctx, uuid.MustParse(session), "hello", 0, 50)
+	queued, _, err := aviary.records.CreateTurn(ctx, uuid.MustParse(session), uuid.Nil, "hello", 0, 50)
 	if err != nil {
 		t.Fatal(err)
 	}

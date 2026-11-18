@@ -77,10 +77,10 @@ returning started.startup;
 select pg_advisory_xact_lock(@key);
 
 -- name: CreateTurn :one
-insert into turns (id, session_id, seq, state, text)
+insert into turns (id, session_id, seq, state, text, created_by)
 select @id::uuid, sessions.id,
        (select coalesce(max(seq), 0) + 1 from turns where session_id = sessions.id),
-       'queued', @text::text
+       'queued', @text::text, sqlc.narg(created_by)::uuid
 from sessions where sessions.id = @session_id
 returning *;
 

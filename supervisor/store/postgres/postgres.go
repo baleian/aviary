@@ -234,7 +234,7 @@ func (s *records) ReplaceSecretStore(ctx context.Context, secrets store.SecretSt
 	return secretStoreFrom(row), err
 }
 
-func (s *records) CreateTurn(ctx context.Context, sessionID uuid.UUID, text string, maxWaiting, maxRunning int) (store.Turn, int, error) {
+func (s *records) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, maxWaiting, maxRunning int) (store.Turn, int, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return store.Turn{}, 0, err
@@ -252,7 +252,11 @@ func (s *records) CreateTurn(ctx context.Context, sessionID uuid.UUID, text stri
 			return store.Turn{}, 0, err
 		}
 	}
-	row, err := queries.CreateTurn(ctx, db.CreateTurnParams{ID: id, SessionID: sessionID, Text: text})
+	params := db.CreateTurnParams{ID: id, SessionID: sessionID, Text: text}
+	if by != uuid.Nil {
+		params.CreatedBy = &by
+	}
+	row, err := queries.CreateTurn(ctx, params)
 	var failure *pgconn.PgError
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -686,6 +690,9 @@ func turnFrom(row db.Turn) store.Turn {
 		StopReason:        row.StopReason,
 		EndedAt:           row.EndedAt,
 		CancelRequestedAt: row.CancelRequestedAt,
+	}
+	if row.CreatedBy != nil {
+		turn.CreatedBy = *row.CreatedBy
 	}
 	if row.FailureReason != nil {
 		turn.Failure = &store.Failure{Reason: *row.FailureReason}

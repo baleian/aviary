@@ -99,7 +99,8 @@ func (suite suite) testSupervisorsSeeAUserFirstTogether(t *testing.T) {
 	}
 }
 
-// A session is that of the user who created it, or nobody's.
+// A session is that of the user who created it, and a turn that of the user
+// who sent its message, or they are nobody's.
 func (suite suite) testSessionOfAUser(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -121,5 +122,23 @@ func (suite suite) testSessionOfAUser(t *testing.T) {
 	}
 	if created.CreatedBy != user.ID || read.CreatedBy != user.ID || read.ID == nobodys.ID {
 		t.Errorf("the session of the user %s was created as %+v and is read as %+v", user.ID, created, read)
+	}
+
+	for session, sender := range map[uuid.UUID]uuid.UUID{created.ID: user.ID, nobodys.ID: uuid.Nil} {
+		sent, _, err := st.CreateTurn(ctx, session, sender, "hello", 0, 50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		one, err := st.Turn(ctx, sent.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		listed, err := st.Turns(ctx, session, 2, 10)
+		if err != nil || len(listed) != 1 {
+			t.Fatalf("the turns of the session are %+v, with the error %v", listed, err)
+		}
+		if sent.CreatedBy != sender || one.CreatedBy != sender || listed[0].CreatedBy != sender {
+			t.Errorf("the turn that %s sent was created as %+v, is read as %+v and is listed as %+v", sender, sent, one, listed[0])
+		}
 	}
 }

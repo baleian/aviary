@@ -63,7 +63,7 @@ func (s supervisor) session() uuid.UUID {
 // turns that wait.
 func (s supervisor) queue(session uuid.UUID) store.Turn {
 	s.t.Helper()
-	turn, _, err := s.CreateTurn(ctx, session, "hello", 0, 50)
+	turn, _, err := s.CreateTurn(ctx, session, uuid.Nil, "hello", 0, 50)
 	if err != nil {
 		s.t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func (suite suite) testCreateTurn(t *testing.T) {
 	if first.Seq != 1 || first.State != store.TurnQueued || first.Text != "hello" {
 		t.Errorf("the first turn of a session is %+v", first)
 	}
-	if _, _, err := st.CreateTurn(ctx, session, "again", 0, 50); !errors.Is(err, store.ErrSessionBusy) {
+	if _, _, err := st.CreateTurn(ctx, session, uuid.Nil, "again", 0, 50); !errors.Is(err, store.ErrSessionBusy) {
 		t.Errorf("a session with a turn that has not ended took a message: %v", err)
 	}
 	if _, _, err := st.CancelTurn(ctx, first.ID); err != nil {
@@ -135,7 +135,7 @@ func (suite suite) testCreateTurn(t *testing.T) {
 	if second := st.queue(session); second.Seq != 2 {
 		t.Errorf("the second turn of a session has the number %d", second.Seq)
 	}
-	if _, _, err := st.CreateTurn(ctx, uuid.New(), "hello", 0, 50); !errors.Is(err, store.ErrNotFound) {
+	if _, _, err := st.CreateTurn(ctx, uuid.New(), uuid.Nil, "hello", 0, 50); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("a session that does not exist took a message: %v", err)
 	}
 }
@@ -171,7 +171,7 @@ func (suite suite) testCreateTurnTakesOneOfTheMessagesSentAtOnce(t *testing.T) {
 	session := st.session()
 	var accepted, busy atomic.Int32
 	atOnce(20, func(int) {
-		_, _, err := st.CreateTurn(ctx, session, "hello", 0, 50)
+		_, _, err := st.CreateTurn(ctx, session, uuid.Nil, "hello", 0, 50)
 		switch {
 		case err == nil:
 			accepted.Add(1)
@@ -191,7 +191,7 @@ func (suite suite) testCreateTurnKeepsToTheMostThatMayWait(t *testing.T) {
 	st := suite.open(t)
 	const maxWaiting, maxRunning = 2, 2
 	send := func(session uuid.UUID) (int, error) {
-		_, waiting, err := st.CreateTurn(ctx, session, "hello", maxWaiting, maxRunning)
+		_, waiting, err := st.CreateTurn(ctx, session, uuid.Nil, "hello", maxWaiting, maxRunning)
 		return waiting, err
 	}
 	// The first two have room to run, so they do not wait.
@@ -232,7 +232,7 @@ func (suite suite) testSupervisorsKeepToTheMostThatMayWaitTogether(t *testing.T)
 	var accepted, refused atomic.Int32
 	atOnce(12, func(i int) {
 		// One turn has room to run and three may wait.
-		_, _, err := supervisors[i].CreateTurn(ctx, sessions[i], "hello", 3, 1)
+		_, _, err := supervisors[i].CreateTurn(ctx, sessions[i], uuid.Nil, "hello", 3, 1)
 		switch {
 		case err == nil:
 			accepted.Add(1)
@@ -257,7 +257,7 @@ func (suite suite) testCreateTurnLetsThoseInThatHaveRoomToRun(t *testing.T) {
 		sessions[i] = st.session()
 	}
 	atOnce(len(sessions), func(i int) {
-		if _, waiting, err := st.CreateTurn(ctx, sessions[i], "hello", 2, 50); err != nil || waiting != 0 {
+		if _, waiting, err := st.CreateTurn(ctx, sessions[i], uuid.Nil, "hello", 2, 50); err != nil || waiting != 0 {
 			t.Errorf("%d turns wait: %v", waiting, err)
 		}
 	})
@@ -368,7 +368,7 @@ func (suite suite) testSupervisorsDispatchWithinTheLimitWhileTurnsCome(t *testin
 		}
 		turns := make([]uuid.UUID, len(sessions))
 		atOnce(len(sessions), func(i int) {
-			turn, _, err := st.CreateTurn(ctx, sessions[i], "hello", 0, 1)
+			turn, _, err := st.CreateTurn(ctx, sessions[i], uuid.Nil, "hello", 0, 1)
 			if err != nil {
 				t.Error(err)
 			}
@@ -951,7 +951,7 @@ func (suite suite) testCallerThatWaitsNoLonger(t *testing.T) {
 	session := st.session()
 	gone, leave := context.WithCancel(ctx)
 	leave()
-	if _, _, err := st.CreateTurn(gone, session, "hello", 0, 50); err == nil {
+	if _, _, err := st.CreateTurn(gone, session, uuid.Nil, "hello", 0, 50); err == nil {
 		t.Error("a message was accepted whose sender waits no longer")
 	}
 	if turns, err := st.Turns(ctx, session, math.MaxInt32, 10); err != nil || len(turns) != 0 {

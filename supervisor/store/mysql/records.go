@@ -301,7 +301,7 @@ func (s *records) ReplaceSecretStore(ctx context.Context, secrets store.SecretSt
 	return s.SecretStore(ctx, secrets.ID)
 }
 
-func (s *records) CreateTurn(ctx context.Context, sessionID uuid.UUID, text string, maxWaiting, maxRunning int) (store.Turn, int, error) {
+func (s *records) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, maxWaiting, maxRunning int) (store.Turn, int, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return store.Turn{}, 0, err
@@ -324,7 +324,11 @@ func (s *records) CreateTurn(ctx context.Context, sessionID uuid.UUID, text stri
 		if err != nil {
 			return err
 		}
-		err = queries.CreateTurn(ctx, db.CreateTurnParams{ID: key.ID(id), SessionID: key.ID(sessionID), Seq: int32(seq), Text: text})
+		params := db.CreateTurnParams{ID: key.ID(id), SessionID: key.ID(sessionID), Seq: int32(seq), Text: text}
+		if by != uuid.Nil {
+			params.CreatedBy = (*key.ID)(&by)
+		}
+		err = queries.CreateTurn(ctx, params)
 		if failed(err, duplicateEntry) {
 			return store.ErrSessionBusy
 		}
@@ -769,6 +773,9 @@ func turnFrom(row db.Turn) store.Turn {
 		if row.FailureMessage != nil {
 			turn.Failure.Message = *row.FailureMessage
 		}
+	}
+	if row.CreatedBy != nil {
+		turn.CreatedBy = uuid.UUID(*row.CreatedBy)
 	}
 	if row.TotalTokens != nil && row.InputTokens != nil && row.OutputTokens != nil {
 		turn.Usage = &store.Usage{

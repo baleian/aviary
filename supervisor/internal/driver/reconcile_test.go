@@ -67,7 +67,7 @@ func (i *installation) queue() store.Turn {
 	if err != nil {
 		i.t.Fatal(err)
 	}
-	turn, err := i.driver.Accept(ctx, session.ID, "hello")
+	turn, err := i.driver.Accept(ctx, session.ID, uuid.Nil, "hello")
 	if err != nil {
 		i.t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestReconcileEndsTurnsWithoutAJob(t *testing.T) {
 	if last := i.last(lost.ID); last != events.TurnFailed {
 		t.Errorf("the last event of the turn whose Job is gone is %q", last)
 	}
-	if _, _, err := i.store.CreateTurn(ctx, lost.SessionID, "again", 0, 50); err != nil {
+	if _, _, err := i.store.CreateTurn(ctx, lost.SessionID, uuid.Nil, "again", 0, 50); err != nil {
 		t.Errorf("the session of the turn whose Job is gone takes no message: %v", err)
 	}
 	for name, turn := range map[string]store.Turn{

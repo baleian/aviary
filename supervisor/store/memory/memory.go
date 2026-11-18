@@ -455,7 +455,7 @@ func (s *Store) running() int {
 	return running
 }
 
-func (s *Store) CreateTurn(ctx context.Context, sessionID uuid.UUID, text string, maxWaiting, maxRunning int) (store.Turn, int, error) {
+func (s *Store) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, maxWaiting, maxRunning int) (store.Turn, int, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return store.Turn{}, 0, err
@@ -477,7 +477,7 @@ func (s *Store) CreateTurn(ctx context.Context, sessionID uuid.UUID, text string
 		return store.Turn{}, 0, store.ErrQueueFull
 	}
 	created := &turn{Turn: store.Turn{
-		ID: id, SessionID: sessionID, Seq: len(session.turns) + 1, State: store.TurnQueued, Text: text, CreatedAt: s.now(),
+		ID: id, SessionID: sessionID, Seq: len(session.turns) + 1, State: store.TurnQueued, Text: text, CreatedBy: by, CreatedAt: s.now(),
 	}}
 	s.turns[id], s.created, session.turns = created, append(s.created, created), append(session.turns, created)
 	return created.record(), max(waiting, 0), nil

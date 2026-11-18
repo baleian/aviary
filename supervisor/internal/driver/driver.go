@@ -265,9 +265,10 @@ func (d *Driver) Wake() {
 }
 
 // Accept queues a message as the session's next turn, if the queue has
-// room. It returns the errors of store.CreateTurn.
-func (d *Driver) Accept(ctx context.Context, sessionID uuid.UUID, text string) (store.Turn, error) {
-	turn, waiting, err := d.store.CreateTurn(ctx, sessionID, text, d.config.MaxQueuedTurns, d.config.MaxConcurrentTurns)
+// room. The turn is of the user who sent the message, by, or of nobody. It
+// returns the errors of store.CreateTurn.
+func (d *Driver) Accept(ctx context.Context, sessionID, by uuid.UUID, text string) (store.Turn, error) {
+	turn, waiting, err := d.store.CreateTurn(ctx, sessionID, by, text, d.config.MaxQueuedTurns, d.config.MaxConcurrentTurns)
 	switch {
 	case err == nil:
 		d.metrics.Accepted(waiting)

@@ -251,7 +251,7 @@ func (a *api) createMessage(w http.ResponseWriter, r *http.Request) error {
 	} else if agent.Model == nil {
 		return errNoModel
 	}
-	turn, err := a.driver.Accept(r.Context(), sessionID, request.Text)
+	turn, err := a.driver.Accept(r.Context(), sessionID, callerOf(r).id, request.Text)
 	if err != nil {
 		return err
 	}

@@ -93,6 +93,7 @@ type Turn struct {
 	FailureMessage    *string
 	StartedAt         *time.Time
 	RunnerID          *uuid.UUID
+	CreatedBy         *uuid.UUID
 }
 
 type User struct {

@@ -67,8 +67,8 @@ select name from locks where name = ? for update;
 select cast(coalesce(max(seq), 0) + 1 as signed) as seq from turns where session_id = ?;
 
 -- name: CreateTurn :exec
-insert into turns (id, session_id, seq, state, text)
-values (sqlc.arg(id), sqlc.arg(session_id), sqlc.arg(seq), 'queued', sqlc.arg(text));
+insert into turns (id, session_id, seq, state, text, created_by)
+values (sqlc.arg(id), sqlc.arg(session_id), sqlc.arg(seq), 'queued', sqlc.arg(text), sqlc.narg(created_by));
 
 -- name: GetTurn :one
 select * from turns where id = ?;
