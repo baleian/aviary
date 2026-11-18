@@ -157,3 +157,55 @@ func TestMembersAreGivenByAdministrators(t *testing.T) {
 		t.Errorf("after a user tried to change them, the members are %+v", after)
 	}
 }
+
+// A caller is listed the projects of which the caller, or one of its groups,
+// is a member, and an administrator all of them.
+func TestProjectsOfACaller(t *testing.T) {
+	installation := install(t)
+	installation.callers = api.Callers{
+		Provider: tokens{
+			"an-administrator": {Subject: "1", Groups: []string{"platform"}},
+			"token-of-alice":   {Subject: "2", Username: "alice@example.com", Groups: []string{"team-a"}},
+			"token-of-bob":     {Subject: "3", Username: "bob@example.com"},
+		},
+		Admins: []string{"platform"},
+	}
+	s := installation.supervisor()
+	// projects returns the IDs of the projects that the caller is listed.
+	projects := func(token string) []string {
+		t.Helper()
+		s.token = token
+		var listed struct{ Projects []struct{ ID, Name string } }
+		if status, _ := s.request(http.MethodGet, "/v1/projects", "", &listed); status != http.StatusOK || listed.Projects == nil {
+			t.Fatalf("the projects of the caller with %s are answered with %d %+v", token, status, listed)
+		}
+		ids := []string{}
+		for _, project := range listed.Projects {
+			ids = append(ids, project.ID)
+		}
+		return ids
+	}
+	if none := projects("an-administrator"); len(none) != 0 {
+		t.Errorf("an installation without projects lists %v", none)
+	}
+	one, two, three := s.create("/v1/projects", `{"name": "one"}`), s.create("/v1/projects", `{"name": "two"}`), s.create("/v1/projects", `{"name": "three"}`)
+	s.create("/v1/projects/"+one+"/members", `{"user": "alice@example.com", "role": "viewer"}`)
+	s.create("/v1/projects/"+three+"/members", `{"group": "team-a", "role": "user"}`)
+	for token, expected := range map[string][]string{
+		"an-administrator": {one, two, three},
+		"token-of-alice":   {one, three},
+		"token-of-bob":     {},
+	} {
+		if listed := projects(token); !slices.Equal(listed, expected) {
+			t.Errorf("the caller with %s is listed %v, not %v", token, listed, expected)
+		}
+	}
+
+	// Without an identity provider every caller is an administrator.
+	nobody := install(t).supervisor()
+	first, second := nobody.create("/v1/projects", `{"name": "one"}`), nobody.create("/v1/projects", `{"name": "two"}`)
+	s = nobody
+	if listed := projects(""); !slices.Equal(listed, []string{first, second}) {
+		t.Errorf("a caller of an installation that asks nobody is listed %v", listed)
+	}
+}

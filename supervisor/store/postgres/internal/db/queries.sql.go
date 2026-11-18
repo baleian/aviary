@@ -982,6 +982,66 @@ func (q *Queries) ListMembers(ctx context.Context, projectID uuid.UUID) ([]ListM
 	return items, nil
 }
 
+const listProjects = `-- name: ListProjects :many
+select id, name, created_at from projects order by created_at, id
+`
+
+func (q *Queries) ListProjects(ctx context.Context) ([]Project, error) {
+	rows, err := q.db.Query(ctx, listProjects)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Project
+	for rows.Next() {
+		var i Project
+		if err := rows.Scan(&i.ID, &i.Name, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProjectsOfMember = `-- name: ListProjectsOfMember :many
+select projects.id, projects.name, projects.created_at from projects
+where exists (
+    select 1 from project_members
+    where project_members.project_id = projects.id
+      and (project_members.user_id = $1::uuid or project_members.group_name = any($2::text[]))
+)
+order by projects.created_at, projects.id
+`
+
+type ListProjectsOfMemberParams struct {
+	UserID *uuid.UUID
+	Groups []string
+}
+
+// The projects of which the user, or one of the groups, is a member.
+func (q *Queries) ListProjectsOfMember(ctx context.Context, arg ListProjectsOfMemberParams) ([]Project, error) {
+	rows, err := q.db.Query(ctx, listProjectsOfMember, arg.UserID, arg.Groups)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Project
+	for rows.Next() {
+		var i Project
+		if err := rows.Scan(&i.ID, &i.Name, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRoles = `-- name: ListRoles :many
 select name, permissions, updated_at, updated_by from roles order by name
 `

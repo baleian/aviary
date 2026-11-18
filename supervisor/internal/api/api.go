@@ -72,6 +72,7 @@ func New(st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Key
 	mux.Handle("GET /v1/roles", handler(a.listRoles))
 	mux.Handle("PUT /v1/roles/{name}", handler(a.setRole))
 	mux.Handle("POST /v1/projects", handler(a.createProject))
+	mux.Handle("GET /v1/projects", handler(a.listProjects))
 	mux.Handle("GET /v1/projects/{pid}", handler(a.getProject))
 	mux.Handle("GET /v1/projects/{pid}/members", handler(a.listMembers))
 	mux.Handle("POST /v1/projects/{pid}/members", handler(a.addMember))
@@ -116,6 +117,25 @@ func (a *api) createProject(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	respond(w, http.StatusCreated, project)
+	return nil
+}
+
+// listProjects answers the projects of the caller: those of which the
+// caller, or one of the groups of the caller, is a member. An administrator
+// has them all.
+func (a *api) listProjects(w http.ResponseWriter, r *http.Request) error {
+	who := callerOf(r)
+	list := a.store.Projects
+	if !who.admin {
+		list = func(ctx context.Context) ([]store.Project, error) { return a.store.ProjectsOf(ctx, who.id, who.Groups) }
+	}
+	projects, err := list(r.Context())
+	if err != nil {
+		return err
+	}
+	respond(w, http.StatusOK, struct {
+		Projects []store.Project `json:"projects"`
+	}{projects})
 	return nil
 }
 

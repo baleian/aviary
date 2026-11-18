@@ -6,6 +6,7 @@ package memory
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -389,6 +390,38 @@ func (s *Store) Members(ctx context.Context, projectID uuid.UUID) ([]store.Membe
 		}
 	}
 	return members, nil
+}
+
+func (s *Store) Projects(ctx context.Context) ([]store.Project, error) {
+	return s.projectsThat(ctx, func(uuid.UUID) bool { return true })
+}
+
+func (s *Store) ProjectsOf(ctx context.Context, userID uuid.UUID, groups []string) ([]store.Project, error) {
+	return s.projectsThat(ctx, func(project uuid.UUID) bool {
+		return slices.ContainsFunc(s.members, func(member *member) bool {
+			user := member.subject != "" && s.users[member.subject].ID == userID
+			return member.ProjectID == project && (user || (member.Group != "" && slices.Contains(groups, member.Group)))
+		})
+	})
+}
+
+// projectsThat returns the projects that the function picks, in the order
+// in which they were created.
+func (s *Store) projectsThat(ctx context.Context, pick func(uuid.UUID) bool) ([]store.Project, error) {
+	if err := s.begin(ctx); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+	projects := []store.Project{}
+	for _, project := range s.projects {
+		if pick(project.ID) {
+			projects = append(projects, project)
+		}
+	}
+	slices.SortFunc(projects, func(one, other store.Project) int {
+		return cmp.Or(one.CreatedAt.Compare(other.CreatedAt), bytes.Compare(one.ID[:], other.ID[:]))
+	})
+	return projects, nil
 }
 
 func (s *Store) Roles(ctx context.Context) ([]store.Role, error) {

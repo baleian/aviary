@@ -341,3 +341,16 @@ select project_members.*, users.subject, users.username as user_username, users.
 from project_members left join users on users.id = project_members.user_id
 where project_members.project_id = @project_id
 order by project_members.created_at, project_members.id;
+
+-- name: ListProjects :many
+select * from projects order by created_at, id;
+
+-- name: ListProjectsOfMember :many
+-- The projects of which the user, or one of the groups, is a member.
+select projects.* from projects
+where exists (
+    select 1 from project_members
+    where project_members.project_id = projects.id
+      and (project_members.user_id = sqlc.narg(user_id)::uuid or project_members.group_name = any(@groups::text[]))
+)
+order by projects.created_at, projects.id;

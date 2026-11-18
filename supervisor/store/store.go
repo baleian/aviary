@@ -387,6 +387,13 @@ type Store interface {
 	// returns ErrNotFound if there is none.
 	Project(ctx context.Context, id uuid.UUID) (Project, error)
 
+	// Projects returns the projects in the order in which they were created.
+	Projects(ctx context.Context) ([]Project, error)
+
+	// ProjectsOf returns the projects of which the user, or one of the
+	// groups, is a member, in the order in which they were created.
+	ProjectsOf(ctx context.Context, userID uuid.UUID, groups []string) ([]Project, error)
+
 	// UserOf returns the user whom the identity provider knows by the
 	// subject, and makes the user if this is the first that is seen of
 	// them: of the Supervisors that see a user first at once, one makes the

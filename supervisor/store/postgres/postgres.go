@@ -78,6 +78,29 @@ func (s *records) Project(ctx context.Context, id uuid.UUID) (store.Project, err
 	return store.Project(row), err
 }
 
+func (s *records) Projects(ctx context.Context) ([]store.Project, error) {
+	rows, err := s.queries.ListProjects(ctx)
+	return projectsFrom(rows), err
+}
+
+func (s *records) ProjectsOf(ctx context.Context, userID uuid.UUID, groups []string) ([]store.Project, error) {
+	// A list and not none: no group is asked for, and not every group.
+	params := db.ListProjectsOfMemberParams{Groups: append([]string{}, groups...)}
+	if userID != uuid.Nil {
+		params.UserID = &userID
+	}
+	rows, err := s.queries.ListProjectsOfMember(ctx, params)
+	return projectsFrom(rows), err
+}
+
+func projectsFrom(rows []db.Project) []store.Project {
+	projects := make([]store.Project, len(rows))
+	for i, row := range rows {
+		projects[i] = store.Project(row)
+	}
+	return projects
+}
+
 func (s *records) Roles(ctx context.Context) ([]store.Role, error) {
 	rows, err := s.queries.ListRoles(ctx)
 	roles := make([]store.Role, len(rows))

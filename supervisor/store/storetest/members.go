@@ -240,3 +240,58 @@ func (suite suite) testMembersWhoseUsernamesChange(t *testing.T) {
 		t.Errorf("the members of the other project are %+v", elsewhere)
 	}
 }
+
+// The projects are listed in the order in which they were created: all of
+// them, or those of which a user or one of its groups is a member.
+func (suite suite) testProjects(t *testing.T) {
+	t.Parallel()
+	st := membership{suite.open(t)}
+	if all, err := st.Projects(ctx); err != nil || len(all) != 0 {
+		t.Errorf("a database without projects has %+v, with the error %v", all, err)
+	}
+	one, two, three, four := st.project(), st.project(), st.project(), st.project()
+	alice, bob := st.user("subject-a", "alice@example.com"), st.user("subject-b", "")
+	st.add(three, "alice@example.com", "", "viewer")
+	st.add(one, "alice@example.com", "", "", "project.view")
+	st.add(two, "", "team-a", "editor")
+	st.add(three, "", "team-a", "user")
+	st.add(four, "", "team-b", "user")
+	st.add(four, "carol@example.com", "", "user")
+
+	// projects returns the IDs of the projects that the store lists.
+	projects := func(list func() ([]store.Project, error)) []uuid.UUID {
+		t.Helper()
+		listed, err := list()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids := make([]uuid.UUID, len(listed))
+		for i, project := range listed {
+			if ids[i] = project.ID; project.Name != "test" || project.CreatedAt.IsZero() {
+				t.Errorf("a project is listed as %+v", project)
+			}
+		}
+		return ids
+	}
+	of := func(user uuid.UUID, groups ...string) func() ([]store.Project, error) {
+		return func() ([]store.Project, error) { return st.ProjectsOf(ctx, user, groups) }
+	}
+	for _, listed := range []struct {
+		who      string
+		list     func() ([]store.Project, error)
+		projects []uuid.UUID
+	}{
+		{"all", func() ([]store.Project, error) { return st.Projects(ctx) }, []uuid.UUID{one, two, three, four}},
+		{"a user", of(alice.ID), []uuid.UUID{one, three}},
+		{"a user in a group", of(alice.ID, "team-b", "others"), []uuid.UUID{one, three, four}},
+		{"a user in groups, one of which is a member with the user", of(alice.ID, "team-a", "team-b"), []uuid.UUID{one, two, three, four}},
+		{"a user who is a member of none, in a group", of(bob.ID, "team-a"), []uuid.UUID{two, three}},
+		{"a user who is a member of none, in no group", of(bob.ID), []uuid.UUID{}},
+		{"nobody, in a group", of(uuid.Nil, "team-b"), []uuid.UUID{four}},
+		{"nobody, in no group", of(uuid.Nil), []uuid.UUID{}},
+	} {
+		if ids := projects(listed.list); !slices.Equal(ids, listed.projects) {
+			t.Errorf("the projects of %s are %v, not %v", listed.who, ids, listed.projects)
+		}
+	}
+}

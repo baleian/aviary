@@ -92,6 +92,7 @@ func Run(t *testing.T, create func(t *testing.T) Database) {
 	for name, test := range map[string]func(*testing.T){
 		"Members":                          suite.testMembers,
 		"MembersWhoseUsernamesChange":      suite.testMembersWhoseUsernamesChange,
+		"Projects":                         suite.testProjects,
 		"Roles":                            suite.testRoles,
 		"SessionOfAUser":                   suite.testSessionOfAUser,
 		"Users":                            suite.testUsers,
