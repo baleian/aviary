@@ -416,6 +416,23 @@ func (s *records) Agent(ctx context.Context, id uuid.UUID) (store.Agent, error) 
 	if err != nil {
 		return store.Agent{}, found(err)
 	}
+	return agentFrom(row), nil
+}
+
+func (s *records) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agent, error) {
+	rows, err := s.queries.ListAgents(ctx, key.ID(projectID))
+	if err != nil {
+		return nil, err
+	}
+	agents := make([]store.Agent, len(rows))
+	for i, row := range rows {
+		agents[i] = agentFrom(row)
+	}
+	return agents, nil
+}
+
+// agentFrom returns a row of the agents table as an Agent.
+func agentFrom(row db.Agent) store.Agent {
 	agent := store.Agent{
 		ID: uuid.UUID(row.ID), ProjectID: uuid.UUID(row.ProjectID), Harness: row.Harness, CreatedAt: row.CreatedAt,
 		Instructions: row.Instructions, Resources: document(row.Resources), Approval: row.Approval,
@@ -423,7 +440,7 @@ func (s *records) Agent(ctx context.Context, id uuid.UUID) (store.Agent, error) 
 	if row.ProviderID != nil {
 		agent.Model = &store.Model{Provider: uuid.UUID(*row.ProviderID), Name: row.Model}
 	}
-	return agent, nil
+	return agent
 }
 
 func (s *records) CreateSession(ctx context.Context, agentID, by uuid.UUID) (store.Session, error) {
@@ -443,11 +460,36 @@ func (s *records) CreateSession(ctx context.Context, agentID, by uuid.UUID) (sto
 
 func (s *records) Session(ctx context.Context, id uuid.UUID) (store.Session, error) {
 	row, err := s.queries.GetSession(ctx, key.ID(id))
+	return sessionFrom(row), found(err)
+}
+
+func (s *records) Sessions(ctx context.Context, agentID, by, before uuid.UUID, limit int) ([]store.Session, error) {
+	var rows []db.Session
+	var err error
+	if by == uuid.Nil {
+		rows, err = s.queries.ListSessions(ctx, db.ListSessionsParams{AgentID: key.ID(agentID), Before: key.ID(before), Limit: int32(limit)})
+	} else {
+		rows, err = s.queries.ListSessionsOf(ctx, db.ListSessionsOfParams{
+			AgentID: key.ID(agentID), CreatedBy: (*key.ID)(&by), Before: key.ID(before), Limit: int32(limit),
+		})
+	}
+	if err != nil {
+		return nil, err
+	}
+	sessions := make([]store.Session, len(rows))
+	for i, row := range rows {
+		sessions[i] = sessionFrom(row)
+	}
+	return sessions, nil
+}
+
+// sessionFrom returns a row of the sessions table as a Session.
+func sessionFrom(row db.Session) store.Session {
 	session := store.Session{ID: uuid.UUID(row.ID), AgentID: uuid.UUID(row.AgentID), CreatedAt: row.CreatedAt}
 	if row.CreatedBy != nil {
 		session.CreatedBy = uuid.UUID(*row.CreatedBy)
 	}
-	return session, found(err)
+	return session
 }
 
 // keyAt returns where the key of a provider is as the queries take it.

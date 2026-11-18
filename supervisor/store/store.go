@@ -458,6 +458,10 @@ type Store interface {
 	// Agent returns the agent with the ID.
 	Agent(ctx context.Context, id uuid.UUID) (Agent, error)
 
+	// Agents returns the agents of the project, in the order in which they
+	// were created.
+	Agents(ctx context.Context, projectID uuid.UUID) ([]Agent, error)
+
 	// CreateSession creates a session of the agent for the user who creates
 	// it, or for nobody if by is uuid.Nil. It returns ErrNotFound if the
 	// agent does not exist.
@@ -465,6 +469,14 @@ type Store interface {
 
 	// Session returns the session with the ID.
 	Session(ctx context.Context, id uuid.UUID) (Session, error)
+
+	// Sessions returns the sessions of the agent whose IDs are below the ID
+	// before, newest first and at most limit of them: those of the user by,
+	// or of everyone if by is uuid.Nil. The ID of a session rises with the
+	// time at which the session is created, so the newest session has the
+	// greatest ID, and the ID of the last session of one answer is where
+	// the next goes on.
+	Sessions(ctx context.Context, agentID, by, before uuid.UUID, limit int) ([]Session, error)
 
 	// CreateProvider creates the provider as it is given, with its ID: the key
 	// of a provider is sealed for that ID before it is stored. It returns

@@ -21,11 +21,11 @@ import (
 
 const maxBodyBytes = 1 << 20
 
-// defaultTurns is how many turns a list holds if the request does not say,
-// and maxTurns is the most that it may ask for.
+// defaultListed is how many sessions or turns a list holds if the request
+// does not say, and maxListed is the most that it may ask for.
 const (
-	defaultTurns = 20
-	maxTurns     = 100
+	defaultListed = 20
+	maxListed     = 100
 )
 
 type api struct {
@@ -88,8 +88,11 @@ func New(st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Key
 	mux.Handle("GET /v1/providers/{provider}", a.ofProject(projectView, "provider", a.ofProvider, a.getProvider))
 	mux.Handle("PUT /v1/providers/{provider}", a.ofProject(connectionsManage, "provider", a.ofProvider, a.replaceProvider))
 	mux.Handle("POST /v1/projects/{pid}/agents", a.inProject(agentsManage, a.createAgent))
+	mux.Handle("GET /v1/projects/{pid}/agents", a.inProject(projectView, a.listAgents))
 	mux.Handle("GET /v1/agents/{aid}", a.ofProject(projectView, "aid", a.ofAgent, a.getAgent))
 	mux.Handle("POST /v1/agents/{aid}/sessions", a.ofProject(sessionsRun, "aid", a.ofAgent, a.createSession))
+	// The sessions of the agent that the caller may read.
+	mux.Handle("GET /v1/agents/{aid}/sessions", handler(a.listSessions))
 	mux.Handle("GET /v1/sessions/{sid}", a.withSession(reads, a.getSession))
 	mux.Handle("POST /v1/sessions/{sid}/messages", a.withSession(sends, a.createMessage))
 	mux.Handle("GET /v1/sessions/{sid}/turns", a.withSession(reads, a.listTurns))
@@ -227,6 +230,24 @@ func (a *api) getAgent(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+func (a *api) listAgents(w http.ResponseWriter, r *http.Request) error {
+	projectID, err := pathID(r, "pid")
+	if err != nil {
+		return err
+	}
+	if _, err := a.store.Project(r.Context(), projectID); err != nil {
+		return err
+	}
+	agents, err := a.store.Agents(r.Context(), projectID)
+	if err != nil {
+		return err
+	}
+	respond(w, http.StatusOK, struct {
+		Agents []store.Agent `json:"agents"`
+	}{agents})
+	return nil
+}
+
 func (a *api) createSession(w http.ResponseWriter, r *http.Request) error {
 	agentID, err := pathID(r, "aid")
 	if err != nil {
@@ -237,6 +258,49 @@ func (a *api) createSession(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	respond(w, http.StatusCreated, session)
+	return nil
+}
+
+// listSessions lists the sessions of an agent that the caller may read:
+// the caller's own with the permission to run sessions, and those of
+// everyone with the one to view them all, or as an administrator.
+func (a *api) listSessions(w http.ResponseWriter, r *http.Request) error {
+	agentID, err := pathID(r, "aid")
+	if err != nil {
+		return err
+	}
+	limit, err := queryNumber(r, "limit", defaultListed, maxListed)
+	if err != nil {
+		return err
+	}
+	before, err := queryID(r, "before", uuid.Max)
+	if err != nil {
+		return err
+	}
+	agent, err := a.store.Agent(r.Context(), agentID)
+	if err != nil {
+		return err
+	}
+	// The caller reads the sessions of everyone, or their own, or none.
+	by, readable := uuid.Nil, true
+	if who := callerOf(r); !who.admin {
+		held, err := a.held(r, agent.ProjectID)
+		if err != nil {
+			return err
+		}
+		if !slices.Contains(held, sessionsViewAll) {
+			by, readable = who.id, slices.Contains(held, sessionsRun)
+		}
+	}
+	sessions := []store.Session{}
+	if readable {
+		if sessions, err = a.store.Sessions(r.Context(), agentID, by, before, limit); err != nil {
+			return err
+		}
+	}
+	respond(w, http.StatusOK, struct {
+		Sessions []store.Session `json:"sessions"`
+	}{sessions})
 	return nil
 }
 
@@ -328,7 +392,7 @@ func (a *api) listTurns(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	limit, err := queryNumber(r, "limit", defaultTurns, maxTurns)
+	limit, err := queryNumber(r, "limit", defaultListed, maxListed)
 	if err != nil {
 		return err
 	}
@@ -532,6 +596,20 @@ func queryNumber(r *http.Request, name string, absent, most int) (int, error) {
 		return 0, invalid(name + " must be a number from 1 to " + strconv.Itoa(most))
 	}
 	return number, nil
+}
+
+// queryID reads a query parameter that is an ID. A request without it gets
+// the ID absent.
+func queryID(r *http.Request, name string, absent uuid.UUID) (uuid.UUID, error) {
+	value := r.URL.Query().Get(name)
+	if value == "" {
+		return absent, nil
+	}
+	id, err := uuid.Parse(value)
+	if err != nil {
+		return uuid.Nil, invalid(name + " must be an ID")
+	}
+	return id, nil
 }
 
 func invalid(message string) error {

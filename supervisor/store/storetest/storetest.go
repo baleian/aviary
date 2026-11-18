@@ -99,6 +99,8 @@ func Run(t *testing.T, create func(t *testing.T) Database) {
 		"Users":                            suite.testUsers,
 		"SupervisorsSeeAUserFirstTogether": suite.testSupervisorsSeeAUserFirstTogether,
 		"Agents":                           suite.testAgents,
+		"AgentsOfAProject":                 suite.testAgentsOfAProject,
+		"SessionsOfAnAgent":                suite.testSessionsOfAnAgent,
 		"Providers":                        suite.testProviders,
 		"SecretStores":                     suite.testSecretStores,
 		"KeyInASecretStore":                suite.testKeyInASecretStore,

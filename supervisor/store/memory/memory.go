@@ -512,6 +512,23 @@ func (s *Store) Agent(ctx context.Context, id uuid.UUID) (store.Agent, error) {
 	return agentOf(agent), nil
 }
 
+func (s *Store) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agent, error) {
+	if err := s.begin(ctx); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+	agents := []store.Agent{}
+	for _, agent := range s.agents {
+		if agent.ProjectID == projectID {
+			agents = append(agents, agentOf(agent))
+		}
+	}
+	slices.SortFunc(agents, func(one, other store.Agent) int {
+		return cmp.Or(one.CreatedAt.Compare(other.CreatedAt), bytes.Compare(one.ID[:], other.ID[:]))
+	})
+	return agents, nil
+}
+
 func (s *Store) CreateSession(ctx context.Context, agentID, by uuid.UUID) (store.Session, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
@@ -539,6 +556,21 @@ func (s *Store) Session(ctx context.Context, id uuid.UUID) (store.Session, error
 		return store.Session{}, store.ErrNotFound
 	}
 	return session.Session, nil
+}
+
+func (s *Store) Sessions(ctx context.Context, agentID, by, before uuid.UUID, limit int) ([]store.Session, error) {
+	if err := s.begin(ctx); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+	sessions := []store.Session{}
+	for _, session := range s.sessions {
+		if session.AgentID == agentID && (by == uuid.Nil || session.CreatedBy == by) && bytes.Compare(session.ID[:], before[:]) < 0 {
+			sessions = append(sessions, session.Session)
+		}
+	}
+	slices.SortFunc(sessions, func(one, other store.Session) int { return bytes.Compare(other.ID[:], one.ID[:]) })
+	return sessions[:min(limit, len(sessions))], nil
 }
 
 func (s *Store) CreateProvider(ctx context.Context, provider store.Provider) (store.Provider, error) {

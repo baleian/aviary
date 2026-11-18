@@ -330,6 +330,18 @@ func (s *records) Agent(ctx context.Context, id uuid.UUID) (store.Agent, error) 
 	return agentFrom(row), err
 }
 
+func (s *records) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agent, error) {
+	rows, err := s.queries.ListAgents(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	agents := make([]store.Agent, len(rows))
+	for i, row := range rows {
+		agents[i] = agentFrom(row)
+	}
+	return agents, nil
+}
+
 func (s *records) CreateSession(ctx context.Context, agentID, by uuid.UUID) (store.Session, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
@@ -352,6 +364,24 @@ func (s *records) Session(ctx context.Context, id uuid.UUID) (store.Session, err
 		return store.Session{}, store.ErrNotFound
 	}
 	return sessionFrom(row), err
+}
+
+func (s *records) Sessions(ctx context.Context, agentID, by, before uuid.UUID, limit int) ([]store.Session, error) {
+	var rows []db.Session
+	var err error
+	if by == uuid.Nil {
+		rows, err = s.queries.ListSessions(ctx, db.ListSessionsParams{AgentID: agentID, Before: before, Count: int32(limit)})
+	} else {
+		rows, err = s.queries.ListSessionsOf(ctx, db.ListSessionsOfParams{AgentID: agentID, CreatedBy: by, Before: before, Count: int32(limit)})
+	}
+	if err != nil {
+		return nil, err
+	}
+	sessions := make([]store.Session, len(rows))
+	for i, row := range rows {
+		sessions[i] = sessionFrom(row)
+	}
+	return sessions, nil
 }
 
 func (s *records) CreateProvider(ctx context.Context, provider store.Provider) (store.Provider, error) {

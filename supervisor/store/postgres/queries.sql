@@ -14,6 +14,9 @@ returning *;
 -- name: GetAgent :one
 select * from agents where id = @id;
 
+-- name: ListAgents :many
+select * from agents where project_id = @project_id order by created_at, id;
+
 -- name: CreateSession :one
 insert into sessions (id, agent_id, created_by)
 select @id::uuid, agents.id, sqlc.narg(created_by)::uuid from agents where agents.id = @agent_id
@@ -21,6 +24,16 @@ returning *;
 
 -- name: GetSession :one
 select * from sessions where id = @id;
+
+-- name: ListSessions :many
+-- The sessions of an agent whose IDs are below @before, newest first: the ID
+-- of a session rises with the time at which it was created.
+select * from sessions where agent_id = @agent_id and id < @before order by id desc limit @count;
+
+-- name: ListSessionsOf :many
+-- Those of them that one user created.
+select * from sessions where agent_id = @agent_id and created_by = @created_by::uuid and id < @before
+order by id desc limit @count;
 
 -- name: CreateProvider :one
 insert into providers (id, project_id, name, url, api_key, api_key_store_id, api_key_path, api_key_name)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/google/uuid"
@@ -61,6 +62,147 @@ func (suite suite) testAgents(t *testing.T) {
 	if read, err := st.Session(ctx, session.ID); err != nil || read.ID != session.ID || read.AgentID != created.ID ||
 		session.AgentID != created.ID || session.CreatedAt.IsZero() || !read.CreatedAt.Equal(session.CreatedAt) {
 		t.Errorf("the session %+v is read as %+v: %v", session, read, err)
+	}
+}
+
+// The agents of a project are listed in the order in which they were
+// created, each as it is read by itself.
+func (suite suite) testAgentsOfAProject(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	project, err := st.CreateProject(ctx, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := st.CreateProject(ctx, "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agents, err := st.Agents(ctx, project.ID); err != nil || agents == nil || len(agents) != 0 {
+		t.Errorf("a project without agents has %+v, with the error %v", agents, err)
+	}
+	provider, err := st.CreateProvider(ctx, store.Provider{ID: uuid.New(), ProjectID: project.ID, Name: "a provider", URL: "https://api.example.com/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created []store.Agent
+	for _, given := range []struct {
+		project uuid.UUID
+		agent   store.Agent
+	}{
+		{project.ID, store.Agent{Harness: "opencode", Instructions: "Be brief.", Resources: json.RawMessage(`{"limits": {"memory": "2Gi"}}`), Approval: "ask"}},
+		{other.ID, store.Agent{Harness: "opencode"}},
+		{project.ID, store.Agent{Harness: "codex", Model: &store.Model{Provider: provider.ID, Name: "a-model"}}},
+		{project.ID, store.Agent{Harness: "opencode"}},
+	} {
+		agent, err := st.CreateAgent(ctx, given.project, given.agent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		created = append(created, agent)
+	}
+	for _, listed := range []struct {
+		project uuid.UUID
+		agents  []store.Agent
+	}{
+		{project.ID, []store.Agent{created[0], created[2], created[3]}},
+		{other.ID, []store.Agent{created[1]}},
+		{uuid.New(), []store.Agent{}},
+	} {
+		agents, err := st.Agents(ctx, listed.project)
+		if err != nil || len(agents) != len(listed.agents) {
+			t.Fatalf("the agents of a project with %d are %+v, with the error %v", len(listed.agents), agents, err)
+		}
+		for i, agent := range agents {
+			read, err := st.Agent(ctx, listed.agents[i].ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if agent.ID != read.ID || agent.ProjectID != listed.project || agent.Harness != read.Harness || agent.Instructions != read.Instructions ||
+				!bytes.Equal(agent.Resources, read.Resources) || agent.Approval != read.Approval || !reflect.DeepEqual(agent.Model, read.Model) ||
+				!agent.CreatedAt.Equal(read.CreatedAt) {
+				t.Errorf("the agent %d of the project is listed as %+v and read as %+v", i, agent, read)
+			}
+		}
+	}
+}
+
+// The sessions of an agent are listed newest first, a few at a time, and
+// those of one user by themselves.
+func (suite suite) testSessionsOfAnAgent(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	var users []uuid.UUID
+	for _, subject := range []string{"subject-a", "subject-b", "subject-c"} {
+		user, err := st.UserOf(ctx, subject, "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		users = append(users, user.ID)
+	}
+	alice, bob, carol := users[0], users[1], users[2]
+	first, err := st.Session(ctx, st.session())
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := first.AgentID
+	if sessions, err := st.Sessions(ctx, uuid.New(), uuid.Nil, uuid.Max, 10); err != nil || sessions == nil || len(sessions) != 0 {
+		t.Errorf("an agent that there is not has the sessions %+v, with the error %v", sessions, err)
+	}
+	// The sessions of the agent, oldest first: nobody's, and those of two
+	// users.
+	created := []store.Session{first}
+	for _, by := range []uuid.UUID{alice, bob, alice, uuid.Nil, alice} {
+		session, err := st.CreateSession(ctx, agent, by)
+		if err != nil {
+			t.Fatal(err)
+		}
+		created = append(created, session)
+	}
+	elsewhere, err := st.Session(ctx, st.session())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateSession(ctx, elsewhere.AgentID, alice); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, listed := range []struct {
+		what   string
+		by     uuid.UUID
+		before uuid.UUID
+		limit  int
+		// sessions are the sessions of the answer, by when they were created.
+		sessions []int
+	}{
+		{"all", uuid.Nil, uuid.Max, 10, []int{5, 4, 3, 2, 1, 0}},
+		{"as many as there are", uuid.Nil, uuid.Max, 6, []int{5, 4, 3, 2, 1, 0}},
+		{"the newest", uuid.Nil, uuid.Max, 2, []int{5, 4}},
+		{"those before one", uuid.Nil, created[4].ID, 3, []int{3, 2, 1}},
+		{"those before the second", uuid.Nil, created[1].ID, 3, []int{0}},
+		{"those before the first", uuid.Nil, created[0].ID, 3, []int{}},
+		{"those of a user", alice, uuid.Max, 10, []int{5, 3, 1}},
+		{"the newest of a user", alice, uuid.Max, 2, []int{5, 3}},
+		{"those of a user before one of them", alice, created[3].ID, 10, []int{1}},
+		{"those of a user before one of another", alice, created[4].ID, 10, []int{3, 1}},
+		{"those of another user", bob, uuid.Max, 10, []int{2}},
+		{"those of a user who has none", carol, uuid.Max, 10, []int{}},
+	} {
+		sessions, err := st.Sessions(ctx, agent, listed.by, listed.before, listed.limit)
+		if err != nil || sessions == nil {
+			t.Fatalf("%s: the sessions are %+v, with the error %v", listed.what, sessions, err)
+		}
+		var answer []int
+		for _, session := range sessions {
+			at := slices.IndexFunc(created, func(one store.Session) bool { return one.ID == session.ID })
+			if at < 0 || session.AgentID != agent || session.CreatedBy != created[at].CreatedBy || !session.CreatedAt.Equal(created[at].CreatedAt) {
+				t.Errorf("%s: a session is listed as %+v", listed.what, session)
+			}
+			answer = append(answer, at)
+		}
+		if !slices.Equal(answer, listed.sessions) {
+			t.Errorf("%s: the sessions are %v, not %v", listed.what, answer, listed.sessions)
+		}
 	}
 }
 

@@ -822,6 +822,43 @@ func (q *Queries) IsMember(ctx context.Context, arg IsMemberParams) (bool, error
 	return exists, err
 }
 
+const listAgents = `-- name: ListAgents :many
+select id, project_id, harness, instructions, resources, approval, provider_id, model, created_at from agents where project_id = ? order by created_at, id
+`
+
+func (q *Queries) ListAgents(ctx context.Context, projectID key.ID) ([]Agent, error) {
+	rows, err := q.db.QueryContext(ctx, listAgents, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Agent
+	for rows.Next() {
+		var i Agent
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Harness,
+			&i.Instructions,
+			&i.Resources,
+			&i.Approval,
+			&i.ProviderID,
+			&i.Model,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMembers = `-- name: ListMembers :many
 select project_members.id, project_members.project_id, project_members.user_id, project_members.username, project_members.group_name, project_members.role, project_members.permissions, project_members.created_at, project_members.updated_at, project_members.updated_by, users.subject, users.username as user_username, users.display_name, users.created_at as user_created_at
 from project_members left join users on users.id = project_members.user_id
@@ -1029,6 +1066,95 @@ func (q *Queries) ListRoles(ctx context.Context) ([]Role, error) {
 			&i.Permissions,
 			&i.UpdatedAt,
 			&i.UpdatedBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSessions = `-- name: ListSessions :many
+select id, agent_id, harness_session_id, created_at, created_by from sessions where agent_id = ? and id < ? order by id desc limit ?
+`
+
+type ListSessionsParams struct {
+	AgentID key.ID
+	Before  key.ID
+	Limit   int32
+}
+
+// The sessions of an agent whose IDs are below the one that is given, newest
+// first: the ID of a session rises with the time at which it was created.
+func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]Session, error) {
+	rows, err := q.db.QueryContext(ctx, listSessions, arg.AgentID, arg.Before, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Session
+	for rows.Next() {
+		var i Session
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.HarnessSessionID,
+			&i.CreatedAt,
+			&i.CreatedBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSessionsOf = `-- name: ListSessionsOf :many
+select id, agent_id, harness_session_id, created_at, created_by from sessions
+where agent_id = ? and created_by = ? and id < ?
+order by id desc limit ?
+`
+
+type ListSessionsOfParams struct {
+	AgentID   key.ID
+	CreatedBy *key.ID
+	Before    key.ID
+	Limit     int32
+}
+
+// Those of them that one user created.
+func (q *Queries) ListSessionsOf(ctx context.Context, arg ListSessionsOfParams) ([]Session, error) {
+	rows, err := q.db.QueryContext(ctx, listSessionsOf,
+		arg.AgentID,
+		arg.CreatedBy,
+		arg.Before,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Session
+	for rows.Next() {
+		var i Session
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.HarnessSessionID,
+			&i.CreatedAt,
+			&i.CreatedBy,
 		); err != nil {
 			return nil, err
 		}

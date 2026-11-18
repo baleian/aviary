@@ -13,12 +13,26 @@ from projects where projects.id = sqlc.arg(project_id);
 -- name: GetAgent :one
 select * from agents where id = ?;
 
+-- name: ListAgents :many
+select * from agents where project_id = ? order by created_at, id;
+
 -- name: CreateSession :execrows
 insert into sessions (id, agent_id, created_by)
 select sqlc.arg(id), agents.id, sqlc.narg(created_by) from agents where agents.id = sqlc.arg(agent_id);
 
 -- name: GetSession :one
 select * from sessions where id = ?;
+
+-- name: ListSessions :many
+-- The sessions of an agent whose IDs are below the one that is given, newest
+-- first: the ID of a session rises with the time at which it was created.
+select * from sessions where agent_id = sqlc.arg(agent_id) and id < sqlc.arg(before) order by id desc limit ?;
+
+-- name: ListSessionsOf :many
+-- Those of them that one user created.
+select * from sessions
+where agent_id = sqlc.arg(agent_id) and created_by = sqlc.arg(created_by) and id < sqlc.arg(before)
+order by id desc limit ?;
 
 -- name: LockSession :one
 -- Holds the session until the transaction ends: the messages that reach a

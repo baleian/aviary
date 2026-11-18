@@ -87,6 +87,7 @@ func TestWhoMayDoWhat(t *testing.T) {
 		// There is no such member: an administrator is told so.
 		{"DELETE", "/v1/members/" + none, ``, "hfffffffff"},
 		{"POST", "/v1/projects/" + project + "/agents", `{}`, "pppfffffph"},
+		{"GET", "/v1/projects/" + project + "/agents", ``, everyMember},
 		{"GET", "/v1/agents/" + agent, ``, everyMember},
 		{"POST", "/v1/projects/" + project + "/providers", `{}`, connections},
 		{"GET", "/v1/providers/" + models, ``, everyMember},
@@ -95,6 +96,8 @@ func TestWhoMayDoWhat(t *testing.T) {
 		{"GET", "/v1/secret-stores/" + secrets, ``, everyMember},
 		{"PUT", "/v1/secret-stores/" + secrets, `{}`, connections},
 		{"POST", "/v1/agents/" + agent + "/sessions", ``, "ppppffpffh"},
+		// Every member is listed the sessions that they may read, if any.
+		{"GET", "/v1/agents/" + agent + "/sessions", ``, everyMember},
 		{"GET", "/v1/sessions/" + session, ``, reading},
 		{"GET", "/v1/sessions/" + session + "/turns", ``, reading},
 		{"GET", "/v1/turns/" + turn, ``, reading},
