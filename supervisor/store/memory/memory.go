@@ -281,7 +281,7 @@ func (s *Store) Agent(ctx context.Context, id uuid.UUID) (store.Agent, error) {
 	return agentOf(agent), nil
 }
 
-func (s *Store) CreateSession(ctx context.Context, agentID uuid.UUID) (store.Session, error) {
+func (s *Store) CreateSession(ctx context.Context, agentID, by uuid.UUID) (store.Session, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return store.Session{}, err
@@ -293,7 +293,7 @@ func (s *Store) CreateSession(ctx context.Context, agentID uuid.UUID) (store.Ses
 	if _, found := s.agents[agentID]; !found {
 		return store.Session{}, store.ErrNotFound
 	}
-	created := &session{Session: store.Session{ID: id, AgentID: agentID, CreatedAt: s.now()}}
+	created := &session{Session: store.Session{ID: id, AgentID: agentID, CreatedBy: by, CreatedAt: s.now()}}
 	s.sessions[id] = created
 	return created.Session, nil
 }

@@ -93,8 +93,12 @@ type Model struct {
 }
 
 type Session struct {
-	ID        uuid.UUID `json:"id"`
-	AgentID   uuid.UUID `json:"agent_id"`
+	ID      uuid.UUID `json:"id"`
+	AgentID uuid.UUID `json:"agent_id"`
+	// CreatedBy is the user who created the session, whose session it is.
+	// It is uuid.Nil for a session of an installation that asks nobody who
+	// they are.
+	CreatedBy uuid.UUID `json:"created_by,omitzero"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -363,8 +367,10 @@ type Store interface {
 	// Agent returns the agent with the ID.
 	Agent(ctx context.Context, id uuid.UUID) (Agent, error)
 
-	// CreateSession returns ErrNotFound if the agent does not exist.
-	CreateSession(ctx context.Context, agentID uuid.UUID) (Session, error)
+	// CreateSession creates a session of the agent for the user who creates
+	// it, or for nobody if by is uuid.Nil. It returns ErrNotFound if the
+	// agent does not exist.
+	CreateSession(ctx context.Context, agentID, by uuid.UUID) (Session, error)
 
 	// Session returns the session with the ID.
 	Session(ctx context.Context, id uuid.UUID) (Session, error)

@@ -69,6 +69,7 @@ type Session struct {
 	AgentID          key.ID
 	HarnessSessionID *string
 	CreatedAt        time.Time
+	CreatedBy        *key.ID
 }
 
 type Turn struct {

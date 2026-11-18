@@ -98,3 +98,28 @@ func (suite suite) testSupervisorsSeeAUserFirstTogether(t *testing.T) {
 		}
 	}
 }
+
+// A session is that of the user who created it, or nobody's.
+func (suite suite) testSessionOfAUser(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	user, err := st.UserOf(ctx, "subject-a", "alice@example.com", "Alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nobodys, err := st.Session(ctx, st.session())
+	if err != nil || nobodys.CreatedBy != uuid.Nil {
+		t.Fatalf("a session that nobody created is %+v, with the error %v", nobodys, err)
+	}
+	created, err := st.CreateSession(ctx, nobodys.AgentID, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := st.Session(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.CreatedBy != user.ID || read.CreatedBy != user.ID || read.ID == nobodys.ID {
+		t.Errorf("the session of the user %s was created as %+v and is read as %+v", user.ID, created, read)
+	}
+}

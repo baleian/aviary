@@ -268,3 +268,47 @@ func TestCallerSettings(t *testing.T) {
 		})
 	}
 }
+
+// A session is that of the caller who created it. In an installation that
+// asks nobody who they are, it is nobody's.
+func TestASessionIsOfItsCreator(t *testing.T) {
+	installation := install(t)
+	installation.callers = api.Callers{Provider: tokens{"token-of-alice": {Subject: "subject-1"}, "token-of-bob": {Subject: "subject-2"}}}
+	s := installation.supervisor()
+	// session creates a session of the agent with the token, and returns
+	// who the caller is and whose the session is: as it was created and as
+	// it is read.
+	session := func(token, agent string) (caller me, created, read map[string]any) {
+		t.Helper()
+		s.token = token
+		if status, _ := s.request(http.MethodGet, "/v1/me", "", &caller); status != http.StatusOK {
+			t.Fatalf("the caller with %s is told %d", token, status)
+		}
+		if status, _ := s.request(http.MethodPost, "/v1/agents/"+agent+"/sessions", "", &created); status != http.StatusCreated {
+			t.Fatalf("the session of the caller with %s is answered with %d", token, status)
+		}
+		if status, _ := s.request(http.MethodGet, "/v1/sessions/"+created["id"].(string), "", &read); status != http.StatusOK {
+			t.Fatalf("the session of the caller with %s is read with %d", token, status)
+		}
+		return caller, created, read
+	}
+	s.token = "token-of-alice"
+	agent := s.agent(s.create("/v1/projects", `{"name": "test"}`), `{"harness": "opencode"}`)
+	alice, created, read := session("token-of-alice", agent)
+	if created["created_by"] != alice.ID || read["created_by"] != alice.ID {
+		t.Errorf("the session of the user %s was created as %v and is read as %v", alice.ID, created, read)
+	}
+	bob, created, read := session("token-of-bob", agent)
+	if bob.ID == alice.ID || created["created_by"] != bob.ID || read["created_by"] != bob.ID {
+		t.Errorf("the session of the user %s was created as %v and is read as %v", bob.ID, created, read)
+	}
+
+	nobody := install(t).supervisor()
+	var nobodys map[string]any
+	if status, _ := nobody.request(http.MethodGet, "/v1/sessions/"+nobody.session(), "", &nobodys); status != http.StatusOK || nobodys["id"] == nil {
+		t.Fatalf("a session is read with %d %v", status, nobodys)
+	}
+	if by, told := nobodys["created_by"]; told {
+		t.Errorf("a session that nobody created is said to be that of %v", by)
+	}
+}

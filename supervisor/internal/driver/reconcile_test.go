@@ -63,7 +63,7 @@ func (i *installation) queue() store.Turn {
 	if err != nil {
 		i.t.Fatal(err)
 	}
-	session, err := i.store.CreateSession(ctx, agent.ID)
+	session, err := i.store.CreateSession(ctx, agent.ID, uuid.Nil)
 	if err != nil {
 		i.t.Fatal(err)
 	}

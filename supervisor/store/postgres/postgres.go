@@ -147,12 +147,16 @@ func (s *records) Agent(ctx context.Context, id uuid.UUID) (store.Agent, error) 
 	return agentFrom(row), err
 }
 
-func (s *records) CreateSession(ctx context.Context, agentID uuid.UUID) (store.Session, error) {
+func (s *records) CreateSession(ctx context.Context, agentID, by uuid.UUID) (store.Session, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return store.Session{}, err
 	}
-	row, err := s.queries.CreateSession(ctx, db.CreateSessionParams{ID: id, AgentID: agentID})
+	params := db.CreateSessionParams{ID: id, AgentID: agentID}
+	if by != uuid.Nil {
+		params.CreatedBy = &by
+	}
+	row, err := s.queries.CreateSession(ctx, params)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.Session{}, store.ErrNotFound
 	}
@@ -662,7 +666,11 @@ func providerFrom(row db.Provider) store.Provider {
 
 // sessionFrom returns a row of the sessions table as a Session.
 func sessionFrom(row db.Session) store.Session {
-	return store.Session{ID: row.ID, AgentID: row.AgentID, CreatedAt: row.CreatedAt}
+	session := store.Session{ID: row.ID, AgentID: row.AgentID, CreatedAt: row.CreatedAt}
+	if row.CreatedBy != nil {
+		session.CreatedBy = *row.CreatedBy
+	}
+	return session
 }
 
 // turnFrom returns a row of the turns table as a Turn.

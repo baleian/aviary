@@ -52,7 +52,7 @@ func (s supervisor) session() uuid.UUID {
 	if err != nil {
 		s.t.Fatal(err)
 	}
-	session, err := s.CreateSession(ctx, agent.ID)
+	session, err := s.CreateSession(ctx, agent.ID, uuid.Nil)
 	if err != nil {
 		s.t.Fatal(err)
 	}
@@ -973,7 +973,7 @@ func (suite suite) testNotFound(t *testing.T) {
 		"turn":            func() error { _, err := st.Turn(ctx, none); return err },
 		"harness of none": func() error { _, err := st.TurnHarness(ctx, none); return err },
 		"agent of none":   func() error { _, err := st.CreateAgent(ctx, none, store.Agent{Harness: "opencode"}); return err },
-		"session of none": func() error { _, err := st.CreateSession(ctx, none); return err },
+		"session of none": func() error { _, err := st.CreateSession(ctx, none, uuid.Nil); return err },
 	} {
 		if err := get(); !errors.Is(err, store.ErrNotFound) {
 			t.Errorf("%s: %v", name, err)

@@ -14,8 +14,8 @@ from projects where projects.id = sqlc.arg(project_id);
 select * from agents where id = ?;
 
 -- name: CreateSession :execrows
-insert into sessions (id, agent_id)
-select sqlc.arg(id), agents.id from agents where agents.id = sqlc.arg(agent_id);
+insert into sessions (id, agent_id, created_by)
+select sqlc.arg(id), agents.id, sqlc.narg(created_by) from agents where agents.id = sqlc.arg(agent_id);
 
 -- name: GetSession :one
 select * from sessions where id = ?;

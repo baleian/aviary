@@ -319,24 +319,26 @@ func (q *Queries) CreateSecretStore(ctx context.Context, arg CreateSecretStorePa
 }
 
 const createSession = `-- name: CreateSession :one
-insert into sessions (id, agent_id)
-select $1::uuid, agents.id from agents where agents.id = $2
-returning id, agent_id, created_at, harness_session_id
+insert into sessions (id, agent_id, created_by)
+select $1::uuid, agents.id, $2::uuid from agents where agents.id = $3
+returning id, agent_id, created_at, harness_session_id, created_by
 `
 
 type CreateSessionParams struct {
-	ID      uuid.UUID
-	AgentID uuid.UUID
+	ID        uuid.UUID
+	CreatedBy *uuid.UUID
+	AgentID   uuid.UUID
 }
 
 func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error) {
-	row := q.db.QueryRow(ctx, createSession, arg.ID, arg.AgentID)
+	row := q.db.QueryRow(ctx, createSession, arg.ID, arg.CreatedBy, arg.AgentID)
 	var i Session
 	err := row.Scan(
 		&i.ID,
 		&i.AgentID,
 		&i.CreatedAt,
 		&i.HarnessSessionID,
+		&i.CreatedBy,
 	)
 	return i, err
 }
@@ -674,7 +676,7 @@ func (q *Queries) GetSecretStore(ctx context.Context, id uuid.UUID) (SecretStore
 }
 
 const getSession = `-- name: GetSession :one
-select id, agent_id, created_at, harness_session_id from sessions where id = $1
+select id, agent_id, created_at, harness_session_id, created_by from sessions where id = $1
 `
 
 func (q *Queries) GetSession(ctx context.Context, id uuid.UUID) (Session, error) {
@@ -685,6 +687,7 @@ func (q *Queries) GetSession(ctx context.Context, id uuid.UUID) (Session, error)
 		&i.AgentID,
 		&i.CreatedAt,
 		&i.HarnessSessionID,
+		&i.CreatedBy,
 	)
 	return i, err
 }

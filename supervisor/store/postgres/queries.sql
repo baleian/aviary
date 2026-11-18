@@ -15,8 +15,8 @@ returning *;
 select * from agents where id = @id;
 
 -- name: CreateSession :one
-insert into sessions (id, agent_id)
-select @id::uuid, agents.id from agents where agents.id = @agent_id
+insert into sessions (id, agent_id, created_by)
+select @id::uuid, agents.id, sqlc.narg(created_by)::uuid from agents where agents.id = @agent_id
 returning *;
 
 -- name: GetSession :one

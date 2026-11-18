@@ -297,17 +297,18 @@ func (q *Queries) CreateSecretStore(ctx context.Context, arg CreateSecretStorePa
 }
 
 const createSession = `-- name: CreateSession :execrows
-insert into sessions (id, agent_id)
-select ?, agents.id from agents where agents.id = ?
+insert into sessions (id, agent_id, created_by)
+select ?, agents.id, ? from agents where agents.id = ?
 `
 
 type CreateSessionParams struct {
-	ID      key.ID
-	AgentID key.ID
+	ID        key.ID
+	CreatedBy *key.ID
+	AgentID   key.ID
 }
 
 func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, createSession, arg.ID, arg.AgentID)
+	result, err := q.db.ExecContext(ctx, createSession, arg.ID, arg.CreatedBy, arg.AgentID)
 	if err != nil {
 		return 0, err
 	}
@@ -565,7 +566,7 @@ func (q *Queries) GetSecretStore(ctx context.Context, id key.ID) (SecretStore, e
 }
 
 const getSession = `-- name: GetSession :one
-select id, agent_id, harness_session_id, created_at from sessions where id = ?
+select id, agent_id, harness_session_id, created_at, created_by from sessions where id = ?
 `
 
 func (q *Queries) GetSession(ctx context.Context, id key.ID) (Session, error) {
@@ -576,6 +577,7 @@ func (q *Queries) GetSession(ctx context.Context, id key.ID) (Session, error) {
 		&i.AgentID,
 		&i.HarnessSessionID,
 		&i.CreatedAt,
+		&i.CreatedBy,
 	)
 	return i, err
 }

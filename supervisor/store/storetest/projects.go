@@ -54,7 +54,7 @@ func (suite suite) testAgents(t *testing.T) {
 		t.Errorf("the agent with nothing of its own is read as %+v: %v", read, err)
 	}
 
-	session, err := st.CreateSession(ctx, created.ID)
+	session, err := st.CreateSession(ctx, created.ID, uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func (suite suite) testKeyInASecretStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := st.CreateSession(ctx, agent.ID)
+	session, err := st.CreateSession(ctx, agent.ID, uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func (suite suite) testModelOfAnAgent(t *testing.T) {
 			!reflect.DeepEqual(read.Model, model) || !reflect.DeepEqual(agent.Model, model) {
 			t.Errorf("the agent with the model %+v is %+v and is read as %+v: %v", model, agent, read, err)
 		}
-		session, err := st.CreateSession(ctx, agent.ID)
+		session, err := st.CreateSession(ctx, agent.ID, uuid.Nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -356,7 +356,7 @@ func (suite suite) testModelOfAnAgent(t *testing.T) {
 	if _, err := st.RunningTurn(ctx, dispatch.Token); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("the token of a turn that has ended: %v", err)
 	}
-	waiting, err := st.CreateSession(ctx, agent.ID)
+	waiting, err := st.CreateSession(ctx, agent.ID, uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}

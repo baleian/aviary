@@ -205,12 +205,16 @@ func (s *records) Agent(ctx context.Context, id uuid.UUID) (store.Agent, error) 
 	return agent, nil
 }
 
-func (s *records) CreateSession(ctx context.Context, agentID uuid.UUID) (store.Session, error) {
+func (s *records) CreateSession(ctx context.Context, agentID, by uuid.UUID) (store.Session, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return store.Session{}, err
 	}
-	if err := created(s.queries.CreateSession(ctx, db.CreateSessionParams{ID: key.ID(id), AgentID: key.ID(agentID)})); err != nil {
+	params := db.CreateSessionParams{ID: key.ID(id), AgentID: key.ID(agentID)}
+	if by != uuid.Nil {
+		params.CreatedBy = (*key.ID)(&by)
+	}
+	if err := created(s.queries.CreateSession(ctx, params)); err != nil {
 		return store.Session{}, err
 	}
 	return s.Session(ctx, id)
@@ -218,7 +222,11 @@ func (s *records) CreateSession(ctx context.Context, agentID uuid.UUID) (store.S
 
 func (s *records) Session(ctx context.Context, id uuid.UUID) (store.Session, error) {
 	row, err := s.queries.GetSession(ctx, key.ID(id))
-	return store.Session{ID: uuid.UUID(row.ID), AgentID: uuid.UUID(row.AgentID), CreatedAt: row.CreatedAt}, found(err)
+	session := store.Session{ID: uuid.UUID(row.ID), AgentID: uuid.UUID(row.AgentID), CreatedAt: row.CreatedAt}
+	if row.CreatedBy != nil {
+		session.CreatedBy = uuid.UUID(*row.CreatedBy)
+	}
+	return session, found(err)
 }
 
 // keyAt returns where the key of a provider is as the queries take it.

@@ -203,7 +203,7 @@ func (a *api) createSession(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	session, err := a.store.CreateSession(r.Context(), agentID)
+	session, err := a.store.CreateSession(r.Context(), agentID, callerOf(r).id)
 	if err != nil {
 		return err
 	}
