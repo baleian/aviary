@@ -72,8 +72,9 @@ func TestTurn(t *testing.T) {
 			t.Errorf("the token of the running turn is that of %v", origin)
 		}
 		// The installation asks nobody who they are: nobody sent the message.
-		if user, told := origin["user"]; told {
-			t.Errorf("the proxy is told that the user %q sent the message of the turn", user)
+		_, user := origin["user"]
+		if _, subject := origin["subject"]; user || subject {
+			t.Errorf("the proxy is told that someone sent the message of the turn: %v", origin)
 		}
 		// A model request goes to a provider, which the proxy is told too.
 		if _, provider := origin["provider"]; provider == forward {

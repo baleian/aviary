@@ -340,7 +340,8 @@ func TestASessionIsOfItsCreator(t *testing.T) {
 }
 
 // The Egress Proxy is told who sent the message of the turn that a request
-// comes from, for its record.
+// comes from, for its record: the user, and the subject that the identity
+// provider knows the user by.
 func TestProxyIsToldWhoSentTheMessageOfATurn(t *testing.T) {
 	aviary := install(t)
 	aviary.callers = api.Callers{
@@ -364,8 +365,9 @@ func TestProxyIsToldWhoSentTheMessageOfATurn(t *testing.T) {
 		job := aviary.job(s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID)
 		s.take(job)
 		for _, forward := range []bool{false, true} {
-			if origin := s.origin(token(job), forward); who.ID == "" || origin["user"] != who.ID {
-				t.Errorf("of a request of the turn that the user %q sent, through the forward proxy %t, the proxy is told %v", who.ID, forward, origin)
+			if origin := s.origin(token(job), forward); who.ID == "" || origin["user"] != who.ID || who.Subject == "" || origin["subject"] != who.Subject {
+				t.Errorf("of a request of the turn that the user %q, the subject %q, sent, through the forward proxy %t, the proxy is told %v",
+					who.ID, who.Subject, forward, origin)
 			}
 		}
 		senders[who.ID] = true

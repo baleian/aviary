@@ -842,6 +842,7 @@ func (s *records) RunningTurn(ctx context.Context, token string) (store.Origin, 
 	}
 	origin := store.Origin{
 		TurnID: uuid.UUID(row.TurnID), SessionID: uuid.UUID(row.SessionID), AgentID: uuid.UUID(row.AgentID), ProjectID: uuid.UUID(row.ProjectID),
+		Subject: row.Subject,
 	}
 	if row.CreatedBy != nil {
 		origin.UserID = uuid.UUID(*row.CreatedBy)

@@ -49,11 +49,13 @@ func New(st store.Store, keys *secret.Keys, stores *secret.Stores) authv3.Author
 
 // Check allows a request that carries the token of a running turn. The
 // proxy gets back, as metadata, the ID of the turn and those of the session,
-// the agent and the project that the turn belongs to, that of the user who
-// sent the message of the turn, if the installation asks who its callers
-// are, and for a model request that of the provider that it goes to. It
-// writes them to its access log, so that a line of the log tells by itself
-// where a request came from.
+// the agent and the project that the turn belongs to, and for a model
+// request that of the provider that it goes to. If the installation asks who
+// its callers are, it also gets back the user who sent the message of the
+// turn: the ID of the user, and the subject that the identity provider knows
+// the user by, which tells who it was without the records of Aviary. The
+// proxy writes them to its access log, so that a line of the log tells by
+// itself where a request came from.
 //
 // A request to the model endpoint carries the token as its bearer token, in
 // place of the API key. A request to the forward proxy carries it as the
@@ -94,7 +96,7 @@ func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*
 		"project": origin.ProjectID.String(),
 	}
 	if origin.UserID != uuid.Nil {
-		from["user"] = origin.UserID.String()
+		from["user"], from["subject"] = origin.UserID.String(), origin.Subject
 	}
 	if !forward && origin.Provider != nil {
 		from["provider"] = origin.Provider.ID.String()

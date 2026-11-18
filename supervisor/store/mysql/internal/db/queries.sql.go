@@ -1597,6 +1597,7 @@ func (q *Queries) ResolveApproval(ctx context.Context, arg ResolveApprovalParams
 
 const runningTurn = `-- name: RunningTurn :one
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
+       coalesce(users.subject, '') as subject,
        agents.provider_id, coalesce(providers.url, '') as provider_url, providers.api_key as provider_api_key,
        providers.api_key_store_id, coalesce(providers.api_key_path, '') as api_key_path,
        coalesce(providers.api_key_name, '') as api_key_name,
@@ -1606,6 +1607,7 @@ select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, ag
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
+left join users on users.id = turns.created_by
 left join providers on providers.id = agents.provider_id
 left join secret_stores on secret_stores.id = providers.api_key_store_id
 where turns.token_hash = ? and turns.state = 'running'
@@ -1617,6 +1619,7 @@ type RunningTurnRow struct {
 	AgentID         key.ID
 	ProjectID       key.ID
 	CreatedBy       *key.ID
+	Subject         string
 	ProviderID      *key.ID
 	ProviderUrl     string
 	ProviderApiKey  []byte
@@ -1631,10 +1634,10 @@ type RunningTurnRow struct {
 	StoreUpdatedAt  *time.Time
 }
 
-// The running turn that the token belongs to, what the turn belongs to, and
-// the provider of its agent as it is now, if the agent names its model. A
-// provider whose key is in a secret store comes with that store, as it is
-// now.
+// The running turn that the token belongs to, what the turn belongs to, who
+// sent its message, and the provider of its agent as it is now, if the agent
+// names its model. A provider whose key is in a secret store comes with that
+// store, as it is now.
 func (q *Queries) RunningTurn(ctx context.Context, tokenHash []byte) (RunningTurnRow, error) {
 	row := q.db.QueryRowContext(ctx, runningTurn, tokenHash)
 	var i RunningTurnRow
@@ -1644,6 +1647,7 @@ func (q *Queries) RunningTurn(ctx context.Context, tokenHash []byte) (RunningTur
 		&i.AgentID,
 		&i.ProjectID,
 		&i.CreatedBy,
+		&i.Subject,
 		&i.ProviderID,
 		&i.ProviderUrl,
 		&i.ProviderApiKey,

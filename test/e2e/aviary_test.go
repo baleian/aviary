@@ -268,8 +268,9 @@ func egress(t *testing.T) {
 				t.Errorf("the model request of the turn is recorded as %v", line)
 			}
 			// And who sent the message, if the installation asks who does.
-			if _, sent := line["user"].(string); sent != identity {
-				t.Errorf("the model request of the turn is recorded as that of the user %v", line["user"])
+			_, user := line["user"].(string)
+			if _, subject := line["subject"].(string); user != identity || subject != identity {
+				t.Errorf("the model request of the turn is recorded as that of the user %v, the subject %v", line["user"], line["subject"])
 			}
 		})
 		t.Run("to an allowed host", func(t *testing.T) {
@@ -679,6 +680,7 @@ func supervisorMetrics(t *testing.T) {
 func callers(t *testing.T) {
 	type me struct {
 		ID          string   `json:"id"`
+		Subject     string   `json:"subject"`
 		Username    string   `json:"username"`
 		DisplayName string   `json:"display_name"`
 		Groups      []string `json:"groups"`
@@ -687,7 +689,7 @@ func callers(t *testing.T) {
 	who := func(user string) me {
 		t.Helper()
 		var answer me
-		if status := requestAs(t, user, "GET", "/v1/me", "", &answer); status != http.StatusOK || answer.ID == "" || answer.Username != user {
+		if status := requestAs(t, user, "GET", "/v1/me", "", &answer); status != http.StatusOK || answer.ID == "" || answer.Subject == "" || answer.Username != user {
 			t.Fatalf("the installation answered %s with %d, as %+v", user, status, answer)
 		}
 		return answer
@@ -743,9 +745,10 @@ func callers(t *testing.T) {
 	if status := requestAs(t, member, "GET", "/v1/turns/"+accepted.ID, "", &sent); status != http.StatusOK || sent.CreatedBy != bob.ID {
 		t.Errorf("the turn of the member %s was answered with %d, as sent by %q", bob.ID, status, sent.CreatedBy)
 	}
-	// The Egress Proxy records whose turn a request comes from.
-	if line := logged(t, accepted.ID, "llm", "mock-llm.aviary-e2e", 200); line["user"] != bob.ID {
-		t.Errorf("the model request of the turn of the member %s is recorded as %v", bob.ID, line)
+	// The Egress Proxy records whose turn a request comes from: the user,
+	// and the subject that the identity provider knows the user by.
+	if line := logged(t, accepted.ID, "llm", "mock-llm.aviary-e2e", 200); line["user"] != bob.ID || line["subject"] != bob.Subject {
+		t.Errorf("the model request of the turn of the member %s, the subject %s, is recorded as %v", bob.ID, bob.Subject, line)
 	}
 
 	for _, try := range []struct {

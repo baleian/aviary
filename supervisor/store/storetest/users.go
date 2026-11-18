@@ -101,7 +101,8 @@ func (suite suite) testSupervisorsSeeAUserFirstTogether(t *testing.T) {
 
 // A session is that of the user who created it, and a turn that of the user
 // who sent its message, or they are nobody's. A request of a running turn
-// comes from the one who sent the message of the turn.
+// comes from the one who sent the message of the turn, whom the identity
+// provider knows by a subject.
 func (suite suite) testSessionOfAUser(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -161,8 +162,9 @@ func (suite suite) testSessionOfAUser(t *testing.T) {
 			t.Fatal(err)
 		}
 		sender, sent := senders[dispatch.TurnID]
-		if origin, err := st.RunningTurn(ctx, dispatch.Token); err != nil || !sent || origin.UserID != sender {
-			t.Errorf("a request of the running turn that %s sent comes from %+v, with the error %v", sender, origin, err)
+		subject := map[uuid.UUID]string{user.ID: "subject-a", other.ID: "subject-b"}[sender]
+		if origin, err := st.RunningTurn(ctx, dispatch.Token); err != nil || !sent || origin.UserID != sender || origin.Subject != subject {
+			t.Errorf("a request of the running turn that %s, the subject %q, sent comes from %+v, with the error %v", sender, subject, origin, err)
 		}
 	}
 }

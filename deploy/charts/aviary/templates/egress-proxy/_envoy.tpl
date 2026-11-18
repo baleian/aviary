@@ -21,9 +21,11 @@ access_log:
           session: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:session)%"
           agent: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:agent)%"
           project: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:project)%"
-          # The user who sent the message of the turn, or nothing in an
+          # The user who sent the message of the turn, and what the
+          # identity provider knows that user by, or nothing in an
           # installation that asks nobody who they are.
           user: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:user)%"
+          subject: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:subject)%"
           {{- if eq . "llm" }}
           provider: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:provider)%"
           {{- end }}

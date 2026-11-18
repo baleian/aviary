@@ -669,7 +669,7 @@ func (s *records) RunningTurn(ctx context.Context, token string) (store.Origin, 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.Origin{}, store.ErrNotFound
 	}
-	origin := store.Origin{TurnID: row.TurnID, SessionID: row.SessionID, AgentID: row.AgentID, ProjectID: row.ProjectID}
+	origin := store.Origin{TurnID: row.TurnID, SessionID: row.SessionID, AgentID: row.AgentID, ProjectID: row.ProjectID, Subject: row.Subject}
 	if row.CreatedBy != nil {
 		origin.UserID = *row.CreatedBy
 	}

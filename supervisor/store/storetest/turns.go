@@ -485,7 +485,7 @@ func (suite suite) testTakeTurn(t *testing.T) {
 	}
 	origin, err := st.RunningTurn(ctx, dispatch.Token)
 	if err != nil || origin.TurnID != dispatch.TurnID || origin.SessionID != session ||
-		origin.AgentID != dispatch.AgentID || origin.ProjectID != dispatch.ProjectID || origin.UserID != uuid.Nil {
+		origin.AgentID != dispatch.AgentID || origin.ProjectID != dispatch.ProjectID || origin.UserID != uuid.Nil || origin.Subject != "" {
 		t.Errorf("the token of the running turn belongs to %+v: %v", origin, err)
 	}
 
