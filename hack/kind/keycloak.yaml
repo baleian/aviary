@@ -1,0 +1,126 @@
+# An identity provider for the local cluster, for trying Aviary with callers
+# that it knows. It is Keycloak in its dev mode: it keeps what it is given in
+# its pod, and starts again with the realm below when the pod has stopped.
+# `make identity-provider` installs it, and Aviary asks it when it is
+# installed with the values in aviary-keycloak-values.yaml.
+#
+# The realm is for a local cluster only: the password of each of its users is
+# the name of the user. alice is in the group of the administrators, bob and
+# carol are in that of the users, carol is in team-a too, and dave is in no
+# group. Their IDs are set, so that a user is the same one to Aviary after
+# the provider has started again. A token is asked for with
+#   curl <keycloak>/realms/aviary/protocol/openid-connect/token \
+#     -d grant_type=password -d client_id=aviary -d username=alice -d password=alice
+# and lasts an hour. It has the groups of its user as the claim "groups" and
+# is meant for the audience "aviary".
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-realm
+  namespace: aviary-data
+data:
+  aviary.json: |
+    {
+      "realm": "aviary",
+      "enabled": true,
+      "accessTokenLifespan": 3600,
+      "groups": [{"name": "platform-admins"}, {"name": "platform-users"}, {"name": "team-a"}],
+      "users": [
+        {
+          "id": "00000000-0000-4000-8000-00000000000a", "username": "alice", "enabled": true,
+          "email": "alice@example.com", "emailVerified": true, "firstName": "Alice", "lastName": "Admin",
+          "credentials": [{"type": "password", "value": "alice", "temporary": false}],
+          "groups": ["/platform-admins"]
+        },
+        {
+          "id": "00000000-0000-4000-8000-00000000000b", "username": "bob", "enabled": true,
+          "email": "bob@example.com", "emailVerified": true, "firstName": "Bob", "lastName": "User",
+          "credentials": [{"type": "password", "value": "bob", "temporary": false}],
+          "groups": ["/platform-users"]
+        },
+        {
+          "id": "00000000-0000-4000-8000-00000000000c", "username": "carol", "enabled": true,
+          "email": "carol@example.com", "emailVerified": true, "firstName": "Carol", "lastName": "User",
+          "credentials": [{"type": "password", "value": "carol", "temporary": false}],
+          "groups": ["/platform-users", "/team-a"]
+        },
+        {
+          "id": "00000000-0000-4000-8000-00000000000d", "username": "dave", "enabled": true,
+          "email": "dave@example.com", "emailVerified": true, "firstName": "Dave", "lastName": "Stranger",
+          "credentials": [{"type": "password", "value": "dave", "temporary": false}]
+        }
+      ],
+      "clients": [
+        {
+          "clientId": "aviary", "publicClient": true,
+          "directAccessGrantsEnabled": true, "standardFlowEnabled": false,
+          "protocolMappers": [
+            {
+              "name": "groups", "protocol": "openid-connect", "protocolMapper": "oidc-group-membership-mapper",
+              "config": {"claim.name": "groups", "full.path": "false", "id.token.claim": "true", "access.token.claim": "true"}
+            },
+            {
+              "name": "audience", "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper",
+              "config": {"included.client.audience": "aviary", "access.token.claim": "true"}
+            }
+          ]
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: aviary-data
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keycloak
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keycloak
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.8.2@sha256:c68e286cacd87b942ac1939a0a1481461109d6acd3a57dc496969a319a76bbf0
+          args: ["start-dev", "--import-realm"]
+          env:
+            # The issuer of every token is this address, the one at which
+            # Aviary finds the provider, whichever way the token was asked for.
+            - name: KC_HOSTNAME
+              value: http://keycloak.aviary-data:8080
+            # Otherwise the JVM takes its share of the memory of the node.
+            - name: JAVA_OPTS_KC_HEAP
+              value: -Xms64m -Xmx512m
+          ports:
+            - name: http
+              containerPort: 8080
+          # Ready when it has the realm.
+          readinessProbe:
+            httpGet:
+              path: /realms/aviary/.well-known/openid-configuration
+              port: http
+          volumeMounts:
+            - name: realm
+              mountPath: /opt/keycloak/data/import
+      volumes:
+        - name: realm
+          configMap:
+            name: keycloak-realm
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: aviary-data
+spec:
+  selector:
+    app.kubernetes.io/name: keycloak
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

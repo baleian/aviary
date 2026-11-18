@@ -299,6 +299,23 @@ supervisor:
   such as `realm_access.roles`. An email address is a username only if the
   token says `"email_verified": true`.
 
+To try it in the local cluster, `make identity-provider` installs Keycloak
+there in its dev mode, with the realm in `hack/kind/keycloak.yaml`. The realm
+has four users, each with its name as its password: `alice` is an
+administrator, `bob` and `carol` may use the API, `carol` is in the group
+`team-a` too, and `dave` is in no group. Aviary asks that provider when it
+is installed with `make deploy VALUES=hack/kind/aviary-keycloak-values.yaml`.
+A caller gets a token from the provider and sends it:
+
+```sh
+kubectl --context kind-aviary --namespace aviary-data \
+  port-forward service/keycloak 8081:8080 &
+
+token=$(curl -s localhost:8081/realms/aviary/protocol/openid-connect/token \
+  -d grant_type=password -d client_id=aviary -d username=alice -d password=alice | jq -r .access_token)
+curl -s -H "Authorization: Bearer $token" localhost:8080/v1/me
+```
+
 ### Model providers
 
 The turns of an agent ask the model at the endpoint of the provider that the

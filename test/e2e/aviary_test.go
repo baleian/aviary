@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -32,7 +33,7 @@ func TestAviary(t *testing.T) {
 				approval(t, harness)
 			})
 		}
-		for name, test := range map[string]func(*testing.T){
+		tests := map[string]func(*testing.T){
 			"a turn pod reaches the outside only through the proxy": egress,
 			"an agent uses the provider that it names":              providers,
 			"a provider keeps its key in a secret store":            secretStore,
@@ -40,7 +41,11 @@ func TestAviary(t *testing.T) {
 			"a turn is cancelled":                                   cancel,
 			"the Supervisors report the turns":                      supervisorMetrics,
 			"homes are made on two nodes at once":                   homes,
-		} {
+		}
+		if identity {
+			tests["a caller does what the installation lets them"] = callers
+		}
+		for name, test := range tests {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 				test(t)
@@ -660,6 +665,107 @@ func supervisorMetrics(t *testing.T) {
 		eventually(t, soon, "the metrics of the Supervisors have nothing for "+series, func() bool {
 			return total(metrics(t, "supervisor"), series) >= 1
 		})
+	}
+}
+
+// An installation with an identity provider takes a request only with a
+// token of the provider, tells its administrators and its users by the
+// groups that the provider gives them, and holds a member of a project to
+// what the member may do there.
+func callers(t *testing.T) {
+	type me struct {
+		ID          string   `json:"id"`
+		Username    string   `json:"username"`
+		DisplayName string   `json:"display_name"`
+		Groups      []string `json:"groups"`
+		Admin       bool     `json:"admin"`
+	}
+	who := func(user string) me {
+		t.Helper()
+		var answer me
+		if status := requestAs(t, user, "GET", "/v1/me", "", &answer); status != http.StatusOK || answer.ID == "" || answer.Username != user {
+			t.Fatalf("the installation answered %s with %d, as %+v", user, status, answer)
+		}
+		return answer
+	}
+	if alice := who(administrator); !alice.Admin || alice.DisplayName != "Alice Admin" || len(alice.Groups) != 1 {
+		t.Errorf("the administrator is %+v", alice)
+	}
+	bob := who(member)
+	if carol := who(teammate); bob.Admin || carol.Admin || carol.ID == bob.ID || len(carol.Groups) != 2 {
+		t.Errorf("the users are %+v and %+v", bob, carol)
+	}
+	if dave := who(stranger); dave.Admin || len(dave.Groups) != 0 {
+		t.Errorf("the user that is in no group is %+v", dave)
+	}
+
+	// The administrator makes two projects, and of one of them a user and a
+	// group the members.
+	theirs, other := create(t, "/v1/projects", `{"name": "theirs"}`), create(t, "/v1/projects", `{"name": "other"}`)
+	agent := agentOf(t, theirs, provider(t, theirs, mockKey), harness(harnesses[0]))
+	create(t, "/v1/projects/"+theirs+"/members", fmt.Sprintf(`{"user": %q, "role": "user"}`, member))
+	create(t, "/v1/projects/"+theirs+"/members", fmt.Sprintf(`{"group": %q, "role": "viewer"}`, team))
+
+	var listed struct{ Projects []struct{ ID string } }
+	if status := requestAs(t, member, "GET", "/v1/projects", "", &listed); status != http.StatusOK {
+		t.Fatalf("the projects of the member were answered with %d", status)
+	}
+	var seen []string
+	for _, project := range listed.Projects {
+		seen = append(seen, project.ID)
+	}
+	if !slices.Contains(seen, theirs) || slices.Contains(seen, other) {
+		t.Errorf("the member of the project %s, and not of %s, is listed the projects %v", theirs, other, seen)
+	}
+
+	// The member runs a turn of a session of its own.
+	var session struct {
+		ID        string `json:"id"`
+		CreatedBy string `json:"created_by"`
+	}
+	if status := requestAs(t, member, "POST", "/v1/agents/"+agent.id+"/sessions", "", &session); status != http.StatusCreated || session.CreatedBy != bob.ID {
+		t.Fatalf("a session of the member was answered with %d, as %+v", status, session)
+	}
+	var accepted turn
+	if status := requestAs(t, member, "POST", "/v1/sessions/"+session.ID+"/messages", `{"text": "say done"}`, &accepted); status != http.StatusAccepted {
+		t.Fatalf("a message of the member was answered with %d", status)
+	}
+	if last := read(t, accepted.ID).end(t); last.Type != "turn.completed" {
+		t.Fatalf("the turn of the member ended with %s %s", last.Type, last.Data)
+	}
+	var sent struct {
+		CreatedBy string `json:"created_by"`
+	}
+	if status := requestAs(t, member, "GET", "/v1/turns/"+accepted.ID, "", &sent); status != http.StatusOK || sent.CreatedBy != bob.ID {
+		t.Errorf("the turn of the member %s was answered with %d, as sent by %q", bob.ID, status, sent.CreatedBy)
+	}
+
+	for _, try := range []struct {
+		user, method, path string
+		status             int
+	}{
+		{"", "GET", "/v1/me", http.StatusUnauthorized},
+		{"", "GET", "/v1/projects", http.StatusUnauthorized},
+		{stranger, "GET", "/v1/projects", http.StatusForbidden},
+		{member, "POST", "/v1/projects", http.StatusForbidden},
+		{member, "GET", "/v1/projects/" + other, http.StatusNotFound},
+		{member, "POST", "/v1/projects/" + theirs + "/agents", http.StatusForbidden},
+		{teammate, "GET", "/v1/agents/" + agent.id, http.StatusOK},
+		{teammate, "POST", "/v1/agents/" + agent.id + "/sessions", http.StatusForbidden},
+		{teammate, "GET", "/v1/turns/" + accepted.ID, http.StatusForbidden},
+	} {
+		if status := requestAs(t, try.user, try.method, try.path, "", nil); status != try.status {
+			t.Errorf("%s %s of %q was answered with %d, not %d", try.method, try.path, try.user, status, try.status)
+		}
+	}
+	// What is no token of the provider is as good as none.
+	refused, err := call(ctx, "", "GET", "/v1/me", "", "Authorization", "Bearer not-a-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refused.Body.Close()
+	if refused.StatusCode != http.StatusUnauthorized {
+		t.Errorf("a request with something else than a token was answered with %d", refused.StatusCode)
 	}
 }
 

@@ -34,6 +34,12 @@ E2E_CLUSTER ?= aviary-e2e
 E2E_OUT := .out/e2e/$(E2E_CLUSTER)
 E2E_KUBECTL := kubectl --context kind-$(E2E_CLUSTER)
 E2E_HARNESSES ?= opencode codex
+# The identity provider that make e2e-up gives the cluster of the e2e and has
+# Aviary ask who sends a request: keycloak, or none.
+IDENTITY ?=
+ifneq ($(filter-out keycloak,$(IDENTITY)),)
+$(error IDENTITY is keycloak or nothing, not "$(IDENTITY)")
+endif
 # Runs go in the image that builds the Supervisor, so the host needs no Go.
 # It is called with the directory of a module, and with options for docker if
 # there are any. The volume keeps what go downloads and builds.
@@ -65,7 +71,7 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 	--env AVIARY_TEST_REDIS_URL=redis://default:test@events-redis:6379 \
 	--env AVIARY_TEST_SECRET_STORE_URL=http://secret-store:8200
 
-.PHONY: proto sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down secret-store build images secrets deploy e2e e2e-up e2e-run e2e-down
+.PHONY: proto sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down secret-store identity-provider build images secrets deploy e2e e2e-up e2e-run e2e-down
 
 # Writes the Go code for proto/ to supervisor/internal/gen. Run it after
 # changing a .proto file.
@@ -209,6 +215,13 @@ secret-store:
 	$(KUBECTL) apply -f hack/kind/openbao.yaml
 	$(KUBECTL) --namespace aviary-data rollout status deployment/openbao --timeout 180s
 
+# Installs an identity provider in the local cluster, for trying Aviary with
+# callers that it knows. Aviary needs none, and asks this one when it is
+# installed with make deploy VALUES=hack/kind/aviary-keycloak-values.yaml
+identity-provider:
+	$(KUBECTL) apply -f hack/kind/keycloak.yaml
+	$(KUBECTL) --namespace aviary-data rollout status deployment/keycloak --timeout 300s
+
 build:
 	docker build --file images/supervisor/Dockerfile --tag $(SUPERVISOR_IMAGE) .
 	docker build --file images/runner/Dockerfile --tag $(RUNNER_IMAGE) .
@@ -260,27 +273,32 @@ deploy: secrets
 # stays, and what its pods logged is in .out/e2e: make e2e-run runs the tests
 # in it again, and make e2e-down removes it. E2E_CLUSTER names the cluster
 # for each of them, and make e2e-up makes it with what it is given, for
-# example with MySQL in the place of PostgreSQL:
-# make e2e E2E_CLUSTER=aviary-e2e-mysql DATABASE=mysql
+# example with MySQL in the place of PostgreSQL, and with an identity
+# provider that Aviary asks who sends a request:
+# make e2e E2E_CLUSTER=aviary-e2e-mysql DATABASE=mysql IDENTITY=keycloak
 e2e: e2e-up
 	$(MAKE) e2e-run
 	$(MAKE) e2e-down
 
 e2e-up:
-	$(MAKE) cluster-down cluster-up secret-store images secrets CLUSTER=$(E2E_CLUSTER)
+	$(MAKE) cluster-down cluster-up secret-store $(if $(IDENTITY),identity-provider) images secrets CLUSTER=$(E2E_CLUSTER)
 	$(E2E_KUBECTL) apply --filename test/e2e/mock-llm.yaml --filename test/e2e/api.yaml
 	helm --kube-context kind-$(E2E_CLUSTER) upgrade --install aviary deploy/charts/aviary \
-		--namespace aviary-system --values test/e2e/values.yaml --wait
+		--namespace aviary-system --values test/e2e/values.yaml \
+		$(if $(IDENTITY),--values hack/kind/aviary-keycloak-values.yaml) --wait
 	$(E2E_KUBECTL) --namespace aviary-e2e rollout status deployment/mock-llm --timeout 120s
 	$(E2E_KUBECTL) --namespace aviary-e2e rollout status deployment/mock-llm-other --timeout 120s
 
 # The tests reach the cluster over the network of its nodes, and the API of
-# Aviary at the port of a node that test/e2e/api.yaml opens.
+# Aviary at the port of a node that test/e2e/api.yaml opens. In a cluster
+# that was made with an identity provider, they are run with it too:
+# make e2e-run E2E_CLUSTER=aviary-e2e-mysql IDENTITY=keycloak
 e2e-run:
 	mkdir -p $(E2E_OUT)
 	kind get kubeconfig --internal --name $(E2E_CLUSTER) > $(E2E_OUT)/kubeconfig
 	$(call GO,test,--network kind --env AVIARY_E2E_KUBECONFIG=/src/$(E2E_OUT)/kubeconfig \
 		--env AVIARY_E2E_API=http://$(E2E_CLUSTER)-control-plane:30080 \
+		--env AVIARY_E2E_IDENTITY=$(IDENTITY) \
 		--env AVIARY_E2E_HARNESSES="$(E2E_HARNESSES)") test -count=1 -timeout 20m -v ./e2e/... $(TESTS); \
 		status=$$?; [ $$status = 0 ] || { \
 			for part in supervisor egress-proxy; do \

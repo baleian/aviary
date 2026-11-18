@@ -3,8 +3,8 @@
 The core of Aviary is the Supervisor, the runner and the Egress Proxy. What
 an installation keeps its data in is not part of the core: the Supervisor
 knows a database, an event log, a secret store and an identity provider
-only by an interface, and a plugin connects it to one kind of each. An installation picks among the
-plugins that its Supervisor was built with.
+only by an interface, and a plugin connects it to one kind of each. An
+installation picks among the plugins that its Supervisor was built with.
 
 | What | Interface | How an installation picks | Plugins in this repository |
 | --- | --- | --- | --- |
@@ -18,9 +18,9 @@ does not start, and says which schemes it has.
 
 ## What the plugins are tested with
 
-Aviary is supported on these products, in these versions. Each is what the
-tests of its plugin run against, and the e2e runs Aviary on those that the
-table says.
+Aviary is supported on these products, in these versions. The table says
+what tests each: the tests of a plugin run against the product in a
+container, and the e2e runs Aviary on it in a cluster.
 
 | Product | Version | Plugin | Tested by |
 | --- | --- | --- | --- |
@@ -29,11 +29,14 @@ table says.
 | Valkey | 9.1 | `events/resp` | The tests of the plugin, and the e2e |
 | Redis | 7.2 | `events/resp` | The tests of the plugin |
 | OpenBao | 2.7 | `secret/kv2` | The tests of the plugin, and the e2e |
+| Keycloak | 26.8 | `identity/oidc` | The e2e in a cluster made with `IDENTITY=keycloak`. The tests of the plugin run against an issuer of their own. |
 
 Another version, or another product that speaks the same protocol, may work
 and is not tested. Redis 7.2 is the last Redis under the BSD licence, and
 the later ones are not tested. Nor is MariaDB, which is another product
-than MySQL.
+than MySQL. Another OpenID Connect issuer than Keycloak is told where its
+tokens name the caller and the groups, with the claims in the settings of
+the plugin.
 
 ## Writing a plugin
 
@@ -62,8 +65,9 @@ Aviary to a product that it has no plugin for, write one.
    `store/postgres`, `store/mysql` and `events/resp` show both suites in
    use. The two databases do the same in different ways: in places
    PostgreSQL does in one statement what MySQL does by locking a row and
-   then deciding. There is no
-   suite for secret stores yet: the tests of `secret/kv2` show what to test.
+   then deciding. There is no suite for secret stores or for identity
+   providers yet: the tests of `secret/kv2` and of `identity/oidc` show what
+   to test.
 3. **Keep it where you like.** A plugin may be a package of this repository
    or of a module of your own that depends on `aviary/supervisor`. That
    module path cannot be downloaded, so the other module names a checkout
@@ -90,6 +94,8 @@ Supervisor that lists it. There are two ways.
 - **A secret store.** A project registers a store with the kind of the
   plugin and the settings that the plugin asks for. The installation allows
   the host of the store in `supervisor.secretStores.allowedHosts`.
+- **An identity provider.** Put the kind of the plugin and the settings that
+  the plugin asks for into the chart value `supervisor.auth.provider`.
 
 ## Testing a plugin in a cluster
 

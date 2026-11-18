@@ -1,0 +1,13 @@
+# Values of the chart of Aviary that have it ask the identity provider of the
+# local cluster, which `make identity-provider` installs, who sends a request:
+# make deploy VALUES=hack/kind/aviary-keycloak-values.yaml
+supervisor:
+  auth:
+    provider:
+      kind: oidc
+      settings:
+        issuer: http://keycloak.aviary-data:8080/realms/aviary
+        audience: aviary
+        claims: {username: preferred_username}
+    admins: [platform-admins]
+    users: [platform-users]

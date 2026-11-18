@@ -17,6 +17,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -45,6 +46,10 @@ var (
 	cluster *kubernetes.Clientset
 	// apiURL is where the API of Aviary is: a port of a node of the cluster.
 	apiURL = os.Getenv("AVIARY_E2E_API")
+	// identity says that the installation asks the identity provider of the
+	// cluster who sends a request. It is set in a cluster that was made with
+	// `make e2e IDENTITY=keycloak`.
+	identity = os.Getenv("AVIARY_E2E_IDENTITY") != ""
 	// harnesses are the harnesses that the installation has, by the names
 	// that agents are created with. The first runs what does not depend on
 	// the harness.
@@ -60,7 +65,7 @@ func TestMain(m *testing.M) {
 	}
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err == nil {
-		// The tests send their requests to Aviary through the API server.
+		// The tests that run at once ask the API server often.
 		config.QPS, config.Burst = 200, 400
 		cluster, err = kubernetes.NewForConfig(config)
 	}
@@ -94,11 +99,64 @@ var client = &http.Client{Transport: &http.Transport{
 	DialContext:       (&net.Dialer{Timeout: 2 * time.Second}).DialContext,
 }}
 
+// The users of the identity provider of the cluster, which
+// hack/kind/keycloak.yaml makes. The administrator is in the group of the
+// administrators of the installation, the member and the teammate are in
+// that of its users, the teammate is in the group team too, and the stranger
+// is in none.
+const (
+	administrator = "alice"
+	member        = "bob"
+	teammate      = "carol"
+	stranger      = "dave"
+	team          = "team-a"
+)
+
+// tokens are the tokens of the users of the identity provider. A token of
+// the provider of the cluster lasts an hour, so each user is given one once.
+var tokens = struct {
+	sync.Mutex
+	of map[string]string
+}{of: map[string]string{}}
+
+// token returns a token of a user of the identity provider, which the tests
+// ask through the API server. The password of a user is its name.
+func token(user string) (string, error) {
+	tokens.Lock()
+	defer tokens.Unlock()
+	if given, ok := tokens.of[user]; ok {
+		return given, nil
+	}
+	form := url.Values{"grant_type": {"password"}, "client_id": {"aviary"}, "username": {user}, "password": {user}}
+	raw, err := cluster.CoreV1().RESTClient().Post().Namespace(data).
+		Resource("services").Name("keycloak:http").SubResource("proxy").Suffix("realms/aviary/protocol/openid-connect/token").
+		SetHeader("Content-Type", "application/x-www-form-urlencoded").Body([]byte(form.Encode())).Do(ctx).Raw()
+	var answer struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err == nil {
+		err = json.Unmarshal(raw, &answer)
+	}
+	if err != nil || answer.AccessToken == "" {
+		return "", fmt.Errorf("the identity provider gave no token of %s: %v: %s: `make e2e IDENTITY=keycloak` installs the provider", user, err, raw)
+	}
+	tokens.of[user] = answer.AccessToken
+	return answer.AccessToken, nil
+}
+
 // call sends a request to the API, with the headers that are given as names
-// and values. While the Supervisors are replaced, a node may take no
-// connection for a moment: the request, of which nothing was sent, is then
-// sent again.
-func call(ctx context.Context, method, path, body string, headers ...string) (*http.Response, error) {
+// and values. In an installation that asks who sends a request, it is sent
+// with a token of the user, and without one if no user is named. While the
+// Supervisors are replaced, a node may take no connection for a moment: the
+// request, of which nothing was sent, is then sent again.
+func call(ctx context.Context, user, method, path, body string, headers ...string) (*http.Response, error) {
+	if identity && user != "" {
+		given, err := token(user)
+		if err != nil {
+			return nil, err
+		}
+		headers = slices.Concat(headers, []string{"Authorization", "Bearer " + given})
+	}
 	for refused := time.Now().Add(soon); ; time.Sleep(200 * time.Millisecond) {
 		request, err := http.NewRequestWithContext(ctx, method, apiURL+path, strings.NewReader(body))
 		if err != nil {
@@ -116,11 +174,18 @@ func call(ctx context.Context, method, path, body string, headers ...string) (*h
 	}
 }
 
-// request sends a request to the API. It returns the status of the answer
-// and decodes the body of the answer into the last argument, if there is one.
+// request sends a request to the API as the administrator. It returns the
+// status of the answer and decodes the body of the answer into the last
+// argument, if there is one.
 func request(t *testing.T, method, path, body string, into any) int {
 	t.Helper()
-	response, err := call(ctx, method, path, body)
+	return requestAs(t, administrator, method, path, body, into)
+}
+
+// requestAs sends a request to the API as request does, as the user.
+func requestAs(t *testing.T, user, method, path, body string, into any) int {
+	t.Helper()
+	response, err := call(ctx, user, method, path, body)
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, path, err)
 	}
@@ -350,7 +415,7 @@ func read(t *testing.T, id string) *reader {
 		defer close(r.events)
 		var last string
 		for following.Err() == nil {
-			response, err := call(following, "GET", "/v1/turns/"+id+"/events", "", "Last-Event-ID", last)
+			response, err := call(following, administrator, "GET", "/v1/turns/"+id+"/events", "", "Last-Event-ID", last)
 			if err == nil && response.StatusCode != http.StatusOK {
 				response.Body.Close()
 				err = fmt.Errorf("the events were answered with %d", response.StatusCode)

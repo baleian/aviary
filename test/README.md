@@ -50,11 +50,14 @@ two mock model servers and a secret store, OpenBao, for the test of a key
 that is kept in one. `E2E_CLUSTER` names the cluster for each of the three,
 `aviary-e2e` if it is not given, and `make e2e-up` makes the cluster with
 what it is given: with `DATABASE=mysql` it has MySQL in the place of
-PostgreSQL. Clusters under different names do not touch each other, so the
-e2e can run in several at once, each made in its own way:
+PostgreSQL. With `IDENTITY=keycloak` it has an identity provider, Keycloak,
+and Aviary asks it who sends a request: the tests then send their requests
+with tokens of its users, and one more test checks what each of them may do.
+Clusters under different names do not touch each other, so the e2e can run
+in several at once, each made in its own way:
 
 ```sh
-make e2e & make e2e E2E_CLUSTER=aviary-e2e-mysql DATABASE=mysql & wait
+make e2e & make e2e E2E_CLUSTER=aviary-e2e-mysql DATABASE=mysql IDENTITY=keycloak & wait
 ```
 
 When a test fails the cluster stays, and the logs of the Supervisors and of
@@ -69,7 +72,8 @@ make e2e-run TESTS='-run "TestAviary/(the_installation|a_turn_waits)"'
 
 The first test waits until the new cluster runs turns, and nothing else is
 tried if it fails, so keep it in the pattern. The tests that run at once are
-one level below `turns`.
+one level below `turns`. In a cluster that was made with `IDENTITY`,
+`make e2e-run` is given it too.
 
 What does not depend on the harness runs with the first of `E2E_HARNESSES`,
 and every harness runs one session.
