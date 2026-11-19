@@ -1,0 +1,8 @@
+#!/bin/sh
+# What the sandbox of a session runs, which is the runner. A sandbox starts
+# it as root, in /. The runner and the harness run as the user of the agent,
+# in the workspace of the session.
+set -eu
+cd /home/workspace
+export HOME=/home
+exec setpriv --reuid agent --regid agent --init-groups aviary-runner

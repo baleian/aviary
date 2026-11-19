@@ -1,10 +1,9 @@
 //! Each harness image keeps what images/README.md asks of it. A test runs
-//! the turns of a session the way the sandbox of the session runs them: the
-//! runner in a container of the harness image, as the user of the agent,
-//! with the home of the session, and the test sends it the turns. The model
-//! is mock-llm, in a container beside it. The network of the containers
-//! leads nowhere else, and mock-llm is also their forward proxy, which lets
-//! nothing through.
+//! the turns of a session the way the sandbox of the session runs them: a
+//! container of the harness image runs what the sandbox runs, which starts
+//! the runner, and the test sends it the turns. The model is mock-llm, in a
+//! container beside it. The network of the containers leads nowhere else,
+//! and mock-llm is also their forward proxy, which lets nothing through.
 //!
 //! The tests need the images, so they run with `make test-harness`.
 
@@ -32,7 +31,6 @@ const KEY: &str = "the-key-of-the-model";
 /// The forward proxy of the containers, which is the model server.
 const PROXY: &str = "http://turn:the-key-of-the-model@model:8080";
 
-const RUNNER_IMAGE: &str = "aviary-runner:dev";
 const MODEL_IMAGE: &str = "aviary-mock-llm:dev";
 /// Carries what the test sends to the runner into the network of the
 /// containers, which has no port on the host.
@@ -80,7 +78,6 @@ struct Bench {
     image: String,
     /// A name that nothing else on the machine has.
     name: String,
-    files: tempfile::TempDir,
     made: AtomicU32,
 }
 
@@ -99,7 +96,6 @@ impl Bench {
         let bench = Arc::new(Self {
             image: image.to_owned(),
             name: word("aviary-test"),
-            files: tempfile::TempDir::new().unwrap(),
             made: AtomicU32::new(0),
         });
         let label = bench.label();
@@ -135,26 +131,6 @@ impl Bench {
             assert!(began.elapsed() < PATIENCE, "the model server did not start");
             time::sleep(Duration::from_millis(50)).await;
         }
-        // The runner comes from its own image.
-        let runner = format!("{}-runner", bench.name);
-        docker(&[
-            "create",
-            "--name",
-            &runner,
-            "--label",
-            &label,
-            RUNNER_IMAGE,
-            "/aviary-runner",
-        ])
-        .await;
-        let bin = bench.files.path().join("bin");
-        std::fs::create_dir(&bin).unwrap();
-        docker(&[
-            "cp",
-            &format!("{runner}:/aviary-runner"),
-            bin.to_str().unwrap(),
-        ])
-        .await;
         bench
     }
 
@@ -185,26 +161,10 @@ impl Bench {
         hosts
     }
 
-    /// Starts a session: the runner in a container of the harness image,
-    /// with a home that is empty but for the workspace.
+    /// Starts a session: a container of the harness image that runs what
+    /// the sandbox of a session runs, as root and in / as the sandbox does.
     async fn session(&self) -> Sitting {
         let label = self.label();
-        let home = self.next("home");
-        docker(&["volume", "create", "--label", &label, &home]).await;
-        docker(&[
-            "run",
-            "--rm",
-            "--user",
-            "0:0",
-            "--volume",
-            &format!("{home}:/home"),
-            "--entrypoint",
-            "sh",
-            &self.image,
-            "-c",
-            "mkdir /home/workspace && chown -R 10000:10000 /home",
-        ])
-        .await;
         let harness = self.next("harness");
         docker(&[
             "run",
@@ -216,29 +176,22 @@ impl Bench {
             "--network",
             &self.name,
             "--user",
-            "10000:10000",
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges",
+            "0:0",
             "--workdir",
-            "/home/workspace",
-            "--volume",
-            &format!("{home}:/home"),
-            "--volume",
-            &format!("{}:/aviary/bin:ro", self.files.path().join("bin").display()),
-            "--env",
-            "HOME=/home",
+            "/",
             "--env",
             "AVIARY_MAX_TOOL_OUTPUT_BYTES=65536",
             &self.image,
-            "/aviary/bin/aviary-runner",
+            "aviary-session",
         ])
         .await;
         // The forwarder has a port on the host and a place in the network.
+        // It is started with the port and joins the network then: Docker
+        // sometimes gave the port to nobody when it started with both.
         let forwarder = self.next("forwarder");
         docker(&[
-            "create",
+            "run",
+            "--detach",
             "--name",
             &forwarder,
             "--label",
@@ -251,7 +204,6 @@ impl Bench {
         ])
         .await;
         docker(&["network", "connect", &self.name, &forwarder]).await;
-        docker(&["start", &forwarder]).await;
         let port = docker(&["port", &forwarder, "8700/tcp"]).await;
         let sitting = Sitting {
             image: self.image.clone(),
@@ -666,6 +618,34 @@ async fn a_session_goes_on_in_its_home_and_nowhere_else() {
         // conversation.
         let elsewhere = bench.session().await;
         elsewhere.say("recall").await.completed().says("nothing");
+    })
+    .await;
+}
+
+/// The sandbox of a session is what keeps the agent in. Inside it the agent
+/// is a user like one at a machine of their own, who may become root to
+/// install what the work needs.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the harness images"]
+async fn an_agent_is_a_user_who_may_become_root() {
+    each(|bench| async move {
+        let session = bench.session().await;
+        let who = session
+            .say("run echo I am $(id -un) in $(pwd) with the home $HOME")
+            .await;
+        who.completed();
+        let told = tools(&who.events);
+        assert!(
+            told.contains("I am agent in /home/workspace with the home /home"),
+            "{}: {told}",
+            who.image
+        );
+        let root = session
+            .say("run sudo -n sh -c 'echo I am now $(id -un)'")
+            .await;
+        root.completed();
+        let told = tools(&root.events);
+        assert!(told.contains("I am now root"), "{}: {told}", root.image);
     })
     .await;
 }

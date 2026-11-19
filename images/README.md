@@ -5,44 +5,41 @@ or Codex. A harness image packages one harness. This page describes what
 Aviary does with a harness image and what the image must provide, so that you
 can build an image for a harness that this repository does not ship.
 
-## How a turn uses the image
+## How a session uses the image
 
-For every turn the Supervisor creates a Job with one pod. The pod's `agent`
-container runs the harness image, but not the image's own command: it runs
-the runner, `aviary-runner`, which is mounted from its own image at
-`/aviary/bin`. The runner takes the user's message from the Supervisor,
-starts the harness, and passes on what the harness does.
+A session runs in a sandbox that is made from the harness image. The sandbox
+runs `aviary-session`, which starts the runner, `aviary-runner`. Both are in
+`aviary-harness-base`. The runner takes the turns of the session, starts the
+harness for the first of them, and passes on what the harness does.
 
-The container is set up like this:
+The harness runs like this:
 
 | | |
 | --- | --- |
-| User | UID 10000, GID 10000. Not root, no privilege escalation, all capabilities dropped. |
-| Home | `/home`, with `HOME` set to it. It is the home of the session, on a volume. It is the only part of the file system that the next turn of the session sees again. |
+| User | `agent`, with UID 10000 and GID 10000. The sandbox is what keeps the agent in, so inside it the user may become root with `sudo`, to install what the agent needs. |
+| Home | `/home`, with `HOME` set to it. |
 | Working directory | `/home/workspace` |
-| Model endpoint | `AVIARY_LLM_BASE_URL`, `AVIARY_LLM_API_KEY` and `AVIARY_LLM_MODEL`. The address is the Egress Proxy and the key is the token of the turn. The proxy puts the real key in its place, so the pod never holds it. |
-| Network | The pod connects to the Supervisor and the Egress Proxy and to nothing else, and it has no DNS. `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`, also in lower case, point to the proxy, which lets requests through to the hosts that the installation allows. |
-| Kubernetes API | No service account token is mounted. |
-| Approval | `AVIARY_APPROVAL=ask` in the turns of an agent that is to ask a person before it acts. Other agents do not have the variable. |
-| Time | The pod is stopped when it has run for as long as the installation lets a turn run, which is 30 minutes unless it is set otherwise. |
+| Model endpoint | `AVIARY_LLM_BASE_URL`, `AVIARY_LLM_API_KEY` and `AVIARY_LLM_MODEL`. |
+| Approval | `AVIARY_APPROVAL=ask` for an agent that is to ask a person before it acts. Other agents do not have the variable. |
+| What lasts | Everything, for as long as the session has its sandbox: the whole file system, and the harness itself, which stays when a turn has ended. |
 
 The runner talks to the harness over its standard input and output with the
-[Agent Client Protocol](https://agentclientprotocol.com) (ACP). In a turn it
-sends `initialize`, then `session/new` for the first turn of a session or
-`session/resume` for a later one, then `session/prompt` with the message as
-text. From the harness's `session/update` notifications it passes on the
-agent's message and thought text, tool calls and their updates, and plans.
-When the prompt returns, the turn is over and the harness is stopped. To stop
-a turn before that, because it was cancelled or because its pod is about to
-be stopped, the runner sends `session/cancel`, and a harness that ends the
-turn then answers the prompt with the stop reason `cancelled`. A turn that is
-stopped before the prompt was sent gets none.
+[Agent Client Protocol](https://agentclientprotocol.com) (ACP). When it
+starts the harness it sends `initialize` and then `session/new`, or
+`session/resume` when it starts the harness of a session again. For a turn
+it sends `session/prompt` with the message as text. From the harness's
+`session/update` notifications it passes on the agent's message and thought
+text, tool calls and their updates, and plans. When the prompt returns, the
+turn is over, and the harness stays for the next one. To stop a turn before
+that, because it was cancelled, the runner sends `session/cancel`, and a
+harness that ends the turn then answers the prompt with the stop reason
+`cancelled`. A turn that is stopped before the prompt was sent gets none.
 
 What the runner does with `session/request_permission` depends on the agent.
 For an agent that is to ask, it passes the request on with the options that
 the harness gave, and answers with the option that a person picked. The
 harness waits for that as long as the turn runs. A request that is open when
-the turn is stopped is answered as cancelled. For any other agent the runner
+the turn is cancelled is answered as cancelled. For any other agent the runner
 allows the action once, by itself.
 
 ## What the image must provide
@@ -50,12 +47,13 @@ allows the action once, by itself.
 1. **The command that starts the harness as an ACP agent**, in the
    environment variable `AVIARY_HARNESS_COMMAND`. The runner runs it and
    speaks ACP on its standard input and output.
-2. **It runs as UID 10000 and GID 10000.** Everything the harness needs to
-   read or execute must be usable by that user. `images/harness-base` creates
-   the user.
-3. **Its state is under `/home`.** Whatever the harness must find again in
-   the next turn, above all its record of the conversation, has to be written
-   below `/home`. Everything else is lost with the pod.
+2. **It has what the sandbox runs.** That is `aviary-session` and
+   `aviary-runner`, the user `agent` with UID 10000 and GID 10000, who may
+   use `sudo`, and `/home/workspace`, which is the user's. An image that
+   builds on `images/harness-base` has them. Everything the harness needs to
+   read or execute must be usable by that user.
+3. **Its record of the conversation is on disk.** A harness that is started
+   again continues its session from there.
 4. **It takes the model endpoint from the environment.** The image
    configures the harness so that it reads `AVIARY_LLM_BASE_URL`,
    `AVIARY_LLM_API_KEY` and `AVIARY_LLM_MODEL`, and sends the key as a bearer
@@ -145,7 +143,7 @@ there. The images here ran into these cases:
 ## Adding a harness
 
 1. Write a Dockerfile that meets the seven points above. Building on
-   `aviary-harness-base` gives you the user.
+   `aviary-harness-base` gives you the second.
 2. Build the image and test it:
 
    ```sh

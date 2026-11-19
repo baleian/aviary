@@ -287,7 +287,7 @@ identity-provider:
 build:
 	docker build --file images/supervisor/Dockerfile --tag $(SUPERVISOR_IMAGE) .
 	docker build --file images/runner/Dockerfile --tag $(RUNNER_IMAGE) .
-	docker build --tag $(HARNESS_BASE_IMAGE) images/harness-base
+	docker build --build-arg RUNNER_IMAGE=$(RUNNER_IMAGE) --tag $(HARNESS_BASE_IMAGE) images/harness-base
 	docker build --tag $(OPENCODE_IMAGE) images/harness-opencode
 	docker build --tag $(CODEX_IMAGE) images/harness-codex
 	docker build --file images/mock-llm/Dockerfile --tag $(MOCK_LLM_IMAGE) .
