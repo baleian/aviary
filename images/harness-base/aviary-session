@@ -9,6 +9,14 @@ set -eu
 # a quarter of an hour without. Where the setting cannot be written, the
 # session is in no sandbox that sleeps.
 { echo 6 > /proc/sys/net/ipv4/tcp_retries2; } 2>/dev/null || true
+# A sandbox has the clock of the machine that runs it to set its own by.
+# Without, its clock is that of when its template was built, and falls
+# behind while it sleeps: a certificate looks as if it were not valid yet.
+# The clock is set whenever it is off by a tenth of a second, which it is
+# at once when the sandbox has been woken.
+if [ -e /dev/ptp0 ]; then
+	phc2sys -s /dev/ptp0 -c CLOCK_REALTIME -O 0 -S 0.1 -R 4 -m -q -l 3 < /dev/null &
+fi
 # sudo looks the name of the machine up, which a sandbox does not have in
 # its hosts file.
 name=$(cat /proc/sys/kernel/hostname)
