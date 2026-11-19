@@ -3,6 +3,12 @@
 # it as root, in /. The runner and the harness run as the user of the agent,
 # in the workspace of the session.
 set -eu
+# A connection that is open when the sandbox is put to sleep is dead when it
+# is woken, and nothing says so: what is sent on it is not answered. The
+# kernel gives such a connection up after half a minute with this, and after
+# a quarter of an hour without. Where the setting cannot be written, the
+# session is in no sandbox that sleeps.
+{ echo 6 > /proc/sys/net/ipv4/tcp_retries2; } 2>/dev/null || true
 cd /home/workspace
 export HOME=/home
 exec setpriv --reuid agent --regid agent --init-groups aviary-runner
