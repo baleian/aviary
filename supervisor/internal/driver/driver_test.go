@@ -586,6 +586,92 @@ func TestWhatARunnerTellsIsNotTakenAtItsWord(t *testing.T) {
 	}
 }
 
+func TestASessionThatSleepsIsWokenForItsNextTurn(t *testing.T) {
+	i := install(t, func(config *Config) { config.Idle = 5 * time.Minute })
+	driver, _ := i.supervisor()
+	session := i.session(store.Agent{})
+	first := i.send(driver, session, "hello")
+	given := i.service.Turn(t)
+	if idle := i.service.Idle(given.Sandbox); idle != 300 {
+		t.Errorf("the sandbox of the session is put to sleep after %d idle seconds", idle)
+	}
+	given.Tell("started", started)
+	given.Tell("finished", finished)
+	i.ended(first.ID)
+
+	i.service.Sleep(given.Sandbox)
+	next := i.send(driver, session, "and then")
+	again := i.service.Turn(t)
+	if again.ID != next.ID.String() || again.Sandbox != given.Sandbox || i.service.Woken(given.Sandbox) != 1 {
+		t.Errorf("the next turn was given as %+v, and the sandbox woken %d times", again, i.service.Woken(given.Sandbox))
+	}
+	again.Tell("started", started)
+	again.Tell("finished", finished)
+	if ended := i.ended(next.ID); ended.State != store.TurnCompleted {
+		t.Errorf("the turn ended as %+v", ended)
+	}
+}
+
+// asks is the event of a harness that asks a person before it goes on.
+var asks = map[string]any{"id": "1", "options": []map[string]string{{"id": "once", "kind": "allow_once", "name": "Once"}}}
+
+func TestATurnThatWaitsForAPersonSleepsUntilItIsToldSomething(t *testing.T) {
+	// The turn is answered, or told to stop.
+	for _, answered := range []bool{true, false} {
+		i := install(t)
+		driver, _ := i.supervisor()
+		turn := i.send(driver, i.session(store.Agent{Approval: Ask}), "hello")
+		given := i.service.Turn(t)
+		given.Tell("started", started)
+		given.Tell("approval.requested", asks)
+		i.eventually("the request is recorded", func() bool { return len(i.told(turn.ID)) == 2 })
+
+		// The session is not at work, and its sandbox is put to sleep. It
+		// is left to sleep for as long as nobody answers.
+		i.service.Sleep(given.Sandbox)
+		time.Sleep(6 * i.config.Sweep)
+		if woken := i.service.Woken(given.Sandbox); woken != 0 {
+			t.Fatalf("the sandbox of a turn that waits for a person was woken %d times", woken)
+		}
+		if state := i.turn(turn.ID).State; state != store.TurnRunning {
+			t.Fatalf("the turn that waits for a person is %s", state)
+		}
+
+		if answered {
+			if kept, err := i.store.AnswerApproval(ctx, turn.ID, "1", "once", uuid.Nil); err != nil || !kept {
+				t.Fatalf("the answer was kept: %t, %v", kept, err)
+			}
+			if err := i.events.AnnounceAnswer(ctx, turn.ID); err != nil {
+				t.Fatal(err)
+			}
+			if request, option := given.Answered(t); request != "1" || option != "once" {
+				t.Errorf("the request %q was answered with %q", request, option)
+			}
+			given.Tell("approval.resolved", map[string]string{"id": "1", "outcome": "selected", "option_id": "once"})
+			given.Tell("finished", finished)
+		} else {
+			i.cancel(turn.ID, true)
+			given.Stopped(t)
+			given.Tell("approval.resolved", map[string]string{"id": "1", "outcome": "cancelled"})
+			given.Tell("finished", map[string]string{"stop_reason": "cancelled"})
+		}
+		ended := i.ended(turn.ID)
+		if answered != (ended.State == store.TurnCompleted) || !answered != (ended.State == store.TurnCancelled) {
+			t.Errorf("the turn ended as %+v", ended)
+		}
+		if woken := i.service.Woken(given.Sandbox); woken != 1 {
+			t.Errorf("the sandbox was woken %d times", woken)
+		}
+		want := []string{events.TurnStarted, "approval.requested", "approval.resolved", events.TurnCompleted}
+		if !answered {
+			want[3] = events.TurnCancelled
+		}
+		if told := i.told(turn.ID); !slices.Equal(told, want) {
+			t.Errorf("the clients of the turn read %v", told)
+		}
+	}
+}
+
 func TestAHarnessThatAnInstallationHas(t *testing.T) {
 	i := install(t)
 	driver := New(i.config, i.sandboxes, i.store, i.events, metrics.New())

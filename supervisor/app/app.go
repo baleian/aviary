@@ -53,6 +53,7 @@ const (
 	sandboxesURL       = "AVIARY_SANDBOXES_URL"
 	sandboxesKey       = "AVIARY_SANDBOXES_API_KEY"
 	templateStore      = "AVIARY_TEMPLATE_STORE"
+	sandboxIdle        = "AVIARY_SANDBOX_IDLE_SECONDS"
 	apiAddr            = ":8080"
 	authzAddr          = ":9091"
 	metricsAddr        = ":9092"
@@ -391,6 +392,16 @@ func driverConfig() (driver.Config, error) {
 	if config.Templates, err = templatesOf(); err != nil {
 		return config, err
 	}
+	idle, err := env(sandboxIdle)
+	if err != nil {
+		return config, err
+	}
+	// The sandbox service puts no sandbox to sleep sooner.
+	seconds, err := strconv.Atoi(idle)
+	if err != nil || seconds < 0 || seconds > 0 && seconds < 30 {
+		return config, fmt.Errorf("%s must be a number of seconds, thirty or more, or zero for never", sandboxIdle)
+	}
+	config.Idle = time.Duration(seconds) * time.Second
 	limit, err := env(maxConcurrentTurns)
 	if err != nil {
 		return config, err
@@ -409,8 +420,7 @@ func driverConfig() (driver.Config, error) {
 	if err != nil {
 		return config, err
 	}
-	seconds, err := strconv.Atoi(wait)
-	if err != nil || seconds < 0 {
+	if seconds, err = strconv.Atoi(wait); err != nil || seconds < 0 {
 		return config, fmt.Errorf("%s must be a number of seconds, or zero for no limit", maxQueueWait)
 	}
 	config.MaxQueueWait = time.Duration(seconds) * time.Second

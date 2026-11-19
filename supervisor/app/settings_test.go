@@ -17,6 +17,7 @@ import (
 // settings are the variables of a Supervisor as the chart sets them.
 var settings = map[string]string{
 	templateStore:      "s3://sandboxes/templates",
+	sandboxIdle:        "300",
 	harnesses:          `{"opencode": {"image": "registry.example/opencode:1", "sandbox": {"cpu": "1", "memory": "2Gi", "disk": "4Gi"}}}`,
 	maxConcurrentTurns: "50",
 	maxQueuedTurns:     "500",
@@ -49,20 +50,22 @@ func TestDriverConfig(t *testing.T) {
 			t.Errorf("the turns are run with %+v", config)
 		}
 		if config.MaxConcurrentTurns != 50 || config.MaxQueuedTurns != 500 || config.MaxQueueWait != 2*time.Minute ||
-			config.MaxStartup != 90*time.Second || templates.MaxToolOutputBytes != 65536 || config.MaxTurn != 30*time.Minute {
+			config.MaxStartup != 90*time.Second || templates.MaxToolOutputBytes != 65536 || config.MaxTurn != 30*time.Minute ||
+			config.Idle != 5*time.Minute {
 			t.Errorf("the limits are %+v", config)
 		}
 	})
 
 	t.Run("without the limits that there need not be", func(t *testing.T) {
 		set(t, map[string]string{
-			maxQueuedTurns: "0", maxQueueWait: "0", maxStartup: "0", maxToolOutput: "0",
+			maxQueuedTurns: "0", maxQueueWait: "0", maxStartup: "0", maxToolOutput: "0", sandboxIdle: "0",
 		})
 		config, err := driverConfig()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if config.MaxQueuedTurns != 0 || config.MaxQueueWait != 0 || config.MaxStartup != 0 || config.Templates.MaxToolOutputBytes != 0 {
+		if config.MaxQueuedTurns != 0 || config.MaxQueueWait != 0 || config.MaxStartup != 0 || config.Templates.MaxToolOutputBytes != 0 ||
+			config.Idle != 0 {
 			t.Errorf("the limits are %+v", config)
 		}
 	})
@@ -72,6 +75,9 @@ func TestDriverConfig(t *testing.T) {
 		{harnesses, ""}, {harnesses, `{"opencode": `},
 		{harnesses, `{"opencode": {"image": "registry.example/opencode:1"}}`},
 		{harnesses, `{"opencode": {"sandbox": {"cpu": "1", "memory": "2Gi", "disk": "4Gi"}}}`},
+		// The sandbox service puts no sandbox to sleep sooner than after
+		// thirty seconds.
+		{sandboxIdle, ""}, {sandboxIdle, "-1"}, {sandboxIdle, "29"}, {sandboxIdle, "5m"},
 		{maxConcurrentTurns, ""}, {maxConcurrentTurns, "0"}, {maxConcurrentTurns, "many"},
 		{maxQueuedTurns, ""}, {maxQueuedTurns, "-1"},
 		{maxQueueWait, ""}, {maxQueueWait, "-1"}, {maxQueueWait, "2m"},

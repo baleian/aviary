@@ -73,6 +73,8 @@ spec:
                   key: {{ .Values.sandboxes.apiKey.secretKey }}
             - name: AVIARY_TEMPLATE_STORE
               value: {{ .Values.sandboxes.templateStore | quote }}
+            - name: AVIARY_SANDBOX_IDLE_SECONDS
+              value: {{ .Values.sandboxes.idleSeconds | quote }}
             - name: AVIARY_HARNESSES
               value: {{ .Values.runtime.harnesses | toJson | quote }}
             - name: AVIARY_MAX_CONCURRENT_TURNS

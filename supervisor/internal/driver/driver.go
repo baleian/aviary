@@ -47,6 +47,11 @@ type Config struct {
 	// Templates are what the sandboxes are made from: the harnesses that
 	// agents can use, by name, as the release had their templates built.
 	Templates sandbox.Templates
+	// Idle is how long the sandbox of a session may be idle before it is
+	// put to sleep: no turn of the session runs, or its turn waits for a
+	// person. It is woken for the next turn, and for the answer. Zero is
+	// never to put it to sleep.
+	Idle time.Duration
 	// MaxStartup is how long a turn may take until its harness has the
 	// message: the sandbox of its session may have to be made first. A turn
 	// that takes longer fails. Zero is no limit.

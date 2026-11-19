@@ -22,9 +22,9 @@ type run struct {
 	told *orders
 	// dispatched is when the turn was dispatched.
 	dispatched time.Time
-	// changed is filled when the limit of the turn has changed, and asked
-	// when the turn was asked to stop.
-	changed, asked chan struct{}
+	// changed is filled when the limit of the turn has changed, asked when
+	// the turn was asked to stop, and woken when its sandbox was woken.
+	changed, asked, woken chan struct{}
 
 	mu sync.Mutex
 	// sandbox is the sandbox of the session, once it has one.
@@ -71,7 +71,7 @@ func (d *Driver) run(ctx context.Context, turnID uuid.UUID, told *orders) {
 
 	r := &run{
 		turn: turn, told: told, dispatched: time.Now().Add(-turn.Dispatched),
-		changed: make(chan struct{}, 1), asked: make(chan struct{}, 1),
+		changed: make(chan struct{}, 1), asked: make(chan struct{}, 1), woken: make(chan struct{}, 1),
 		sandbox: turn.Sandbox, started: turn.StartedAt != nil,
 	}
 	if turn.CancelRequestedAt != nil {
@@ -112,7 +112,7 @@ func (d *Driver) watch(following context.Context, leave context.CancelFunc, r *r
 			return
 		case <-r.changed:
 		case <-r.told.stop:
-			if runner := r.stop(); runner != nil {
+			if runner := r.stop(); runner != nil && d.rouse(following, r) {
 				err := runner.Cancel(following, r.turn.ID)
 				if err != nil && !errors.Is(err, sandbox.ErrNotFound) {
 					slog.WarnContext(following, "tell the runner to stop the turn", "turn", r.turn.ID, "error", err)
@@ -137,12 +137,45 @@ func (d *Driver) answer(ctx context.Context, r *run) {
 		slog.ErrorContext(ctx, "read the answers to requests for approval", "turn", r.turn.ID, "error", err)
 		return
 	}
+	if len(answers) == 0 || !d.rouse(ctx, r) {
+		return
+	}
 	for _, answer := range answers {
 		err := runner.Answer(ctx, r.turn.ID, answer.ID, answer.OptionID)
 		if err != nil && !errors.Is(err, sandbox.ErrNotFound) {
 			slog.WarnContext(ctx, "give the runner an answer", "turn", r.turn.ID, "error", err)
 		}
 	}
+}
+
+// rouse has the sandbox of the turn run, for what its runner is to be told:
+// a session that waits for a person sleeps. It reports whether the sandbox
+// runs. What was not told is told again at the next sweep.
+func (d *Driver) rouse(ctx context.Context, r *run) bool {
+	for range 10 {
+		seen, err := d.sandboxes.Sandbox(ctx, r.sandboxID())
+		switch {
+		case err != nil:
+			slog.WarnContext(ctx, "look at the sandbox of the session", "turn", r.turn.ID, "error", err)
+			return false
+		case seen.Status.State == sandbox.Running:
+			poke(r.woken)
+			return true
+		case lost(seen.Status.State):
+			return false
+		case seen.Status.State == sandbox.Paused:
+			if err := d.sandboxes.Resume(ctx, r.sandboxID()); err != nil {
+				slog.WarnContext(ctx, "wake the sandbox of the session", "turn", r.turn.ID, "error", err)
+				return false
+			}
+		}
+		select {
+		case <-time.After(d.again()):
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return false
 }
 
 // reach has the sandbox of the turn's session run and gives the runner in
@@ -208,6 +241,12 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 		return nil, errors.New(gone + ", and a new one is made")
 	case err != nil:
 		return nil, fmt.Errorf("look at the sandbox of the session: %w", err)
+	case seen.Status.State == sandbox.Paused:
+		// The session was not at work, and its sandbox was put to sleep.
+		if err := d.sandboxes.Resume(following, id); err != nil {
+			return nil, fmt.Errorf("wake the sandbox of the session: %w", err)
+		}
+		return nil, errors.New("the sandbox of the session is woken")
 	case seen.Status.State != sandbox.Running:
 		return nil, fmt.Errorf("the sandbox of the session is %s %s", seen.Status.State, seen.Status.Message)
 	}
@@ -244,7 +283,7 @@ func (d *Driver) provide(ctx context.Context, r *run) (string, error) {
 		metadataSession: turn.SessionID.String(),
 		metadataAgent:   turn.AgentID.String(),
 		metadataProject: turn.ProjectID.String(),
-	})
+	}, d.config.Idle)
 	if err != nil {
 		return "", err
 	}
@@ -306,29 +345,37 @@ func (d *Driver) giveUp(ctx context.Context, r *run, failure store.Failure) {
 // one with the number, until the turn has ended.
 func (d *Driver) read(ctx, following context.Context, r *run, runner *sandbox.Runner, after uint64) {
 	turn := r.turn
+	// asleep is whether the sandbox was last seen to sleep, which it does
+	// while its turn waits for a person. It is left alone then: it is woken
+	// when the turn is told something.
+	asleep := false
 	for following.Err() == nil {
-		var ended *ending
-		err := runner.Events(following, turn.ID, after, func(event sandbox.Event) error {
-			how, err := d.record(following, r, event)
-			if err != nil {
-				return err
-			}
-			if after, ended = event.Seq, how; ended != nil {
-				return errEnded
-			}
-			return nil
-		})
-		switch {
-		case ended != nil:
-			d.end(ctx, turn.ID, ended.succeeded, ended.failure)
-			return
-		case following.Err() != nil:
-			return
-		case errors.Is(err, sandbox.ErrNotFound):
-			d.end(ctx, turn.ID, false, store.Failure{
-				Reason: store.FailureRunner, Message: "the runner of the session does not have the turn any more",
+		if !asleep {
+			var ended *ending
+			err := runner.Events(following, turn.ID, after, func(event sandbox.Event) error {
+				how, err := d.record(following, r, event)
+				if err != nil {
+					return err
+				}
+				if after, ended = event.Seq, how; ended != nil {
+					return errEnded
+				}
+				return nil
 			})
-			return
+			switch {
+			case ended != nil:
+				d.end(ctx, turn.ID, ended.succeeded, ended.failure)
+				return
+			case following.Err() != nil:
+				return
+			case errors.Is(err, sandbox.ErrNotFound):
+				d.end(ctx, turn.ID, false, store.Failure{
+					Reason: store.FailureRunner, Message: "the runner of the session does not have the turn any more",
+				})
+				return
+			case err != nil:
+				slog.WarnContext(ctx, "read the events of the turn", "turn", turn.ID, "after", after, "error", err)
+			}
 		}
 		// The reading was cut off, or the runner cannot be reached.
 		seen, gone := d.sandboxes.Sandbox(following, r.sandboxID())
@@ -336,11 +383,13 @@ func (d *Driver) read(ctx, following context.Context, r *run, runner *sandbox.Ru
 			r.giveUp(store.Failure{Reason: store.FailureSandboxLost, Message: "the sandbox of the session is gone"})
 			return
 		}
-		if err != nil {
-			slog.WarnContext(ctx, "read the events of the turn", "turn", turn.ID, "after", after, "error", err)
+		wait := d.again()
+		if asleep = gone == nil && (seen.Status.State == sandbox.Paused || seen.Status.State == "Pausing"); asleep {
+			wait = d.config.Sweep
 		}
 		select {
-		case <-time.After(d.again()):
+		case <-time.After(wait):
+		case <-r.woken:
 		case <-following.Done():
 		}
 		// Another Supervisor may have recorded more of the turn.

@@ -130,6 +130,14 @@ sandboxes:
   # built for each of the harnesses below when the release is installed, and
   # again when a harness has changed.
   templateStore: s3://sandbox-images/publish
+  # After how many seconds a session that is not at work is put to sleep: no
+  # turn of it runs, or its turn waits for a person. A session that sleeps
+  # takes no cpu and no memory, and is woken as it was for its next turn and
+  # for the answer. Thirty or more, and no more than the sandbox service
+  # keeps what it knows of the last use of a sandbox, which is 1800 unless
+  # it is set up otherwise. Zero is never: the sandbox service must be set
+  # up to put sandboxes to sleep for any other value to do something.
+  idleSeconds: 300
 
 runtime:
   # The most turns that run at once. The turns beyond it wait in the order in

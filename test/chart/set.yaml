@@ -31,6 +31,7 @@ egressProxy:
 sandboxes:
   url: https://sandboxes.example.com
   templateStore: s3://example/templates
+  idleSeconds: 0
 runtime:
   maxConcurrentTurns: 7
   maxQueuedTurns: 11

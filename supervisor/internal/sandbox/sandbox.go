@@ -162,8 +162,9 @@ type Sandbox struct {
 
 // SandboxStatus is how the sandbox is.
 type SandboxStatus struct {
-	// State is Pending, Running, Pausing, Paused, Resuming, Stopping,
-	// Terminated or Failed.
+	// State is Pending, Running, Pausing, Paused, Stopping, Terminated or
+	// Failed. A sandbox that is being woken is Pending, as one that is
+	// being made.
 	State   string `json:"state"`
 	Reason  string `json:"reason"`
 	Message string `json:"message"`
@@ -173,8 +174,11 @@ type SandboxStatus struct {
 const (
 	// Running is the state of a sandbox whose runner can be asked.
 	Running = "Running"
-	// Pending is the state of a sandbox that is being made.
+	// Pending is the state of a sandbox that is being made, or woken.
 	Pending = "Pending"
+	// Paused is the state of a sandbox that sleeps: what ran in it is kept
+	// as it was, and goes on when the sandbox is woken.
+	Paused = "Paused"
 )
 
 // kept is for how many seconds a sandbox is kept, which the service wants to
@@ -182,19 +186,57 @@ const (
 // until it is deleted.
 const kept = 100 * 365 * 24 * 60 * 60
 
+// activePath is where the runner tells whether its session is at work.
+const activePath = "/active"
+
+// lifecycle is what the service does with a sandbox by itself.
+type lifecycle struct {
+	IdlePolicy idlePolicy `json:"idlePolicy"`
+}
+
+// idlePolicy has the service put a sandbox to sleep that has not been asked
+// anything for so long, unless the runner in it says that it is at work.
+// Nothing that is sent to a sandbox wakes it: the one who needs it does.
+type idlePolicy struct {
+	IdleTimeoutSeconds int         `json:"idleTimeoutSeconds"`
+	OnIdle             string      `json:"onIdle"`
+	WakeOnAccess       bool        `json:"wakeOnAccess"`
+	ActiveProbe        activeProbe `json:"activeProbe"`
+}
+
+type activeProbe struct {
+	Port int    `json:"port"`
+	Path string `json:"path"`
+}
+
 // CreateSandbox has a sandbox made from the template, and kept until it is
 // deleted. It is there at once, and takes a moment to run: longer on a node
-// that has not run its template before. A template that is not there, or
-// not built, is ErrNotFound.
-func (c *Client) CreateSandbox(ctx context.Context, template string, metadata map[string]string) (Sandbox, error) {
+// that has not run its template before. A sandbox that is not asked
+// anything for as long as idle, and whose runner is not at work, is put to
+// sleep: zero is never. A template that is not there, or not built, is
+// ErrNotFound.
+func (c *Client) CreateSandbox(ctx context.Context, template string, metadata map[string]string, idle time.Duration) (Sandbox, error) {
 	spec := struct {
 		TemplateID string            `json:"templateId"`
 		Timeout    int64             `json:"timeout"`
 		Metadata   map[string]string `json:"metadata,omitempty"`
-	}{template, kept, metadata}
+		Lifecycle  *lifecycle        `json:"lifecycle,omitempty"`
+	}{TemplateID: template, Timeout: kept, Metadata: metadata}
+	if idle > 0 {
+		spec.Lifecycle = &lifecycle{idlePolicy{
+			IdleTimeoutSeconds: int(idle.Seconds()),
+			OnIdle:             "pause",
+			ActiveProbe:        activeProbe{Port: RunnerPort, Path: activePath},
+		}}
+	}
 	var sandbox Sandbox
 	err := c.ask(ctx, http.MethodPost, "/sandboxes", nil, spec, &sandbox)
 	return sandbox, err
+}
+
+// Resume has a sandbox that sleeps woken. It takes a moment to run again.
+func (c *Client) Resume(ctx context.Context, id string) error {
+	return c.ask(ctx, http.MethodPost, "/sandboxes/"+url.PathEscape(id)+"/resume", nil, nil, nil)
 }
 
 // Sandbox returns the sandbox as it is now, or ErrNotFound if it is gone.

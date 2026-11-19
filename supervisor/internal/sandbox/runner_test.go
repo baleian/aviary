@@ -20,7 +20,7 @@ func running(t *testing.T) (*sandboxtest.Service, string, *Runner) {
 	t.Helper()
 	ctx := context.Background()
 	s, c, template := installed(t)
-	made, err := c.CreateSandbox(ctx, template, nil)
+	made, err := c.CreateSandbox(ctx, template, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestWhatATurnIsToldReachesItsRunner(t *testing.T) {
 func TestTheRunnerOfASandboxThatDoesNotRunYetIsNotReached(t *testing.T) {
 	ctx := context.Background()
 	_, c, template := installed(t)
-	made, err := c.CreateSandbox(ctx, template, nil)
+	made, err := c.CreateSandbox(ctx, template, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

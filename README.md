@@ -531,6 +531,7 @@ installs it in the local cluster with a file of values of your own.
 | `egressProxy.insideCIDRs`, `.extraEgress` | A network policy keeps the Egress Proxy itself out of these address ranges, so that it is no way into the cluster. `extraEgress` names what it may still reach there, as egress rules of a network policy: the endpoint of a model provider that is a service in the cluster or at a private address needs one. |
 | `sandboxes.url` | Where the lifecycle API of OpenSandbox is, which runs the sandboxes of the sessions. Default `http://opensandbox-server.opensandbox-system`. |
 | `sandboxes.apiKey.secretName`, `.secretKey` | A secret with the key of that API. |
+| `sandboxes.idleSeconds` | After how many seconds a session that is not at work is put to sleep: one that runs no turn, or whose turn waits for a person. It is woken as it was for its next turn and for the answer. Default 300, and 0 is never. OpenSandbox must be set up to put sandboxes to sleep. |
 | `sandboxes.templateStore` | Where OpenSandbox keeps the templates that the sandboxes are made from, in its object store. Default `s3://sandbox-images/publish`. |
 | `runtime.maxConcurrentTurns` | The most turns that run at once. Default 50. |
 | `runtime.maxQueuedTurns` | The most turns that may wait to run. A message beyond it is answered with 429. Default 500, and 0 is no limit. |

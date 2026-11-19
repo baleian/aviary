@@ -67,6 +67,9 @@ type sandbox struct {
 	template string
 	metadata map[string]string
 	runner   *runner
+	// idle is after how many idle seconds the sandbox is to be put to
+	// sleep, and woken how often it was woken.
+	idle, woken int
 }
 
 // New starts a sandbox service, which is stopped when the test ends.
@@ -83,6 +86,7 @@ func New(t testing.TB) *Service {
 	api.HandleFunc("POST /v1/sandboxes", s.createSandbox)
 	api.HandleFunc("GET /v1/sandboxes/{id}", s.getSandbox)
 	api.HandleFunc("DELETE /v1/sandboxes/{id}", s.deleteSandbox)
+	api.HandleFunc("POST /v1/sandboxes/{id}/resume", s.resumeSandbox)
 	api.HandleFunc("GET /v1/sandboxes/{id}/endpoints/{port}", s.endpoint)
 	lifecycle := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("OPEN-SANDBOX-API-KEY") != Key {
@@ -245,6 +249,17 @@ func (s *Service) createSandbox(w http.ResponseWriter, r *http.Request) {
 		TemplateID string            `json:"templateId"`
 		Timeout    *int64            `json:"timeout"`
 		Metadata   map[string]string `json:"metadata"`
+		Lifecycle  struct {
+			IdlePolicy struct {
+				IdleTimeoutSeconds int    `json:"idleTimeoutSeconds"`
+				OnIdle             string `json:"onIdle"`
+				WakeOnAccess       *bool  `json:"wakeOnAccess"`
+				ActiveProbe        struct {
+					Port int    `json:"port"`
+					Path string `json:"path"`
+				} `json:"activeProbe"`
+			} `json:"idlePolicy"`
+		} `json:"lifecycle"`
 	}
 	if json.NewDecoder(r.Body).Decode(&asked) != nil || asked.Timeout == nil {
 		refuse(w, http.StatusBadRequest, "INVALID", "a sandbox of a template is made with a timeout")
@@ -257,10 +272,19 @@ func (s *Service) createSandbox(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusNotFound, "TEMPLATE_NOT_FOUND", "there is no such template")
 		return
 	}
+	// A sandbox that is put to sleep is one that only its owner wakes, and
+	// whose runner is asked whether it is at work.
+	policy := asked.Lifecycle.IdlePolicy
+	if policy.IdleTimeoutSeconds != 0 && (policy.IdleTimeoutSeconds < 30 || policy.OnIdle != "pause" ||
+		policy.WakeOnAccess == nil || *policy.WakeOnAccess || policy.ActiveProbe.Port != 8700 || policy.ActiveProbe.Path != "/active") {
+		refuse(w, http.StatusBadRequest, "INVALID", "that is no idle policy of a session")
+		return
+	}
 	s.made++
 	id := fmt.Sprintf("sbx-%d", s.made)
 	s.sandboxes[id] = &sandbox{
 		state: "Pending", template: asked.TemplateID, metadata: asked.Metadata, runner: &runner{service: s, sandbox: id},
+		idle: policy.IdleTimeoutSeconds,
 	}
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "status": map[string]string{"state": "Pending"}})
@@ -275,7 +299,9 @@ func (s *Service) getSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A sandbox takes a moment to run: until it is looked at.
-	sandbox.state = "Running"
+	if sandbox.state == "Pending" {
+		sandbox.state = "Running"
+	}
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"id": r.PathValue("id"), "status": map[string]string{"state": sandbox.state},
 	})
@@ -290,6 +316,62 @@ func (s *Service) deleteSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 	delete(s.sandboxes, r.PathValue("id"))
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// resumeSandbox wakes a sandbox that sleeps.
+func (s *Service) resumeSandbox(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sandbox := s.sandboxes[r.PathValue("id")]
+	switch {
+	case sandbox == nil:
+		refuse(w, http.StatusNotFound, "FSB::SANDBOX_NOT_FOUND", "there is no such sandbox")
+	case sandbox.state != "Paused":
+		refuse(w, http.StatusConflict, "CONFLICT", "the sandbox does not sleep")
+	default:
+		sandbox.state = "Pending"
+		sandbox.woken++
+		w.WriteHeader(http.StatusAccepted)
+	}
+}
+
+// Sleep puts the sandbox to sleep, as the service does with one that is
+// idle: what is sent to it is not answered, and those who read the events of
+// its turn are cut off.
+func (s *Service) Sleep(id string) {
+	s.mu.Lock()
+	sandbox := s.sandboxes[id]
+	var turn *Turn
+	if sandbox != nil {
+		sandbox.state = "Paused"
+		sandbox.runner.mu.Lock()
+		turn = sandbox.runner.turn
+		sandbox.runner.mu.Unlock()
+	}
+	s.mu.Unlock()
+	if turn != nil {
+		turn.Cut()
+	}
+}
+
+// Idle returns after how many idle seconds the sandbox is to be put to
+// sleep, which is zero for never, and Woken how often it was woken.
+func (s *Service) Idle(id string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sandbox := s.sandboxes[id]; sandbox != nil {
+		return sandbox.idle
+	}
+	return 0
+}
+
+func (s *Service) Woken(id string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sandbox := s.sandboxes[id]; sandbox != nil {
+		return sandbox.woken
+	}
+	return 0
 }
 
 // endpoint gives the way to a port of a sandbox, also of one that is not
