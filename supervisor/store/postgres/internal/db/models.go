@@ -78,6 +78,7 @@ type Session struct {
 	HarnessSessionID *string
 	CreatedBy        *uuid.UUID
 	Sandbox          *string
+	EndedAt          *time.Time
 }
 
 type Turn struct {

@@ -199,6 +199,13 @@ func usageOf(usage *store.Usage) *store.Usage {
 	return usage
 }
 
+// record returns the session as its record is read.
+func (s *session) record() store.Session {
+	session := s.Session
+	session.EndedAt = clone(s.EndedAt)
+	return session
+}
+
 // record returns the turn as its record is read.
 func (t *turn) record() store.Turn {
 	turn := t.Turn
@@ -543,7 +550,7 @@ func (s *Store) CreateSession(ctx context.Context, agentID, by uuid.UUID) (store
 	}
 	created := &session{Session: store.Session{ID: id, AgentID: agentID, CreatedBy: by, CreatedAt: s.now()}}
 	s.sessions[id] = created
-	return created.Session, nil
+	return created.record(), nil
 }
 
 func (s *Store) Session(ctx context.Context, id uuid.UUID) (store.Session, error) {
@@ -555,7 +562,7 @@ func (s *Store) Session(ctx context.Context, id uuid.UUID) (store.Session, error
 	if !found {
 		return store.Session{}, store.ErrNotFound
 	}
-	return session.Session, nil
+	return session.record(), nil
 }
 
 func (s *Store) SetSandbox(ctx context.Context, sessionID uuid.UUID, from, to string) (bool, error) {
@@ -574,6 +581,25 @@ func (s *Store) SetSandbox(ctx context.Context, sessionID uuid.UUID, from, to st
 	return true, nil
 }
 
+func (s *Store) EndSession(ctx context.Context, id uuid.UUID) (store.Session, error) {
+	if err := s.begin(ctx); err != nil {
+		return store.Session{}, err
+	}
+	defer s.mu.Unlock()
+	session, found := s.sessions[id]
+	if !found {
+		return store.Session{}, store.ErrNotFound
+	}
+	if session.EndedAt == nil {
+		if turns := len(session.turns); turns > 0 && session.turns[turns-1].EndedAt == nil {
+			return store.Session{}, store.ErrSessionBusy
+		}
+		ended := s.now()
+		session.EndedAt = &ended
+	}
+	return session.record(), nil
+}
+
 func (s *Store) Sessions(ctx context.Context, agentID, by, before uuid.UUID, limit int) ([]store.Session, error) {
 	if err := s.begin(ctx); err != nil {
 		return nil, err
@@ -582,7 +608,7 @@ func (s *Store) Sessions(ctx context.Context, agentID, by, before uuid.UUID, lim
 	sessions := []store.Session{}
 	for _, session := range s.sessions {
 		if session.AgentID == agentID && (by == uuid.Nil || session.CreatedBy == by) && bytes.Compare(session.ID[:], before[:]) < 0 {
-			sessions = append(sessions, session.Session)
+			sessions = append(sessions, session.record())
 		}
 	}
 	slices.SortFunc(sessions, func(one, other store.Session) int { return bytes.Compare(other.ID[:], one.ID[:]) })
@@ -746,6 +772,9 @@ func (s *Store) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text st
 	session, found := s.sessions[sessionID]
 	if !found {
 		return store.Turn{}, 0, store.ErrNotFound
+	}
+	if session.EndedAt != nil {
+		return store.Turn{}, 0, store.ErrSessionEnded
 	}
 	if turns := len(session.turns); turns > 0 && session.turns[turns-1].EndedAt == nil {
 		return store.Turn{}, 0, store.ErrSessionBusy

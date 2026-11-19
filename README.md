@@ -155,8 +155,9 @@ identity provider asks nobody, and every caller is an administrator.
 | `PUT /v1/secret-stores/{id}` | Replaces the name, the kind, the settings and the credential of a secret store, all at once. |
 | `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"harness": "...", "model": {"provider": "...", "name": "..."}, "instructions": "...", "approval": "ask"}`. The harness is one of the configured harnesses. The model is a provider of the project, by its ID, and the name of a model as that provider knows it. The instructions are what the agent is told before every turn, and may be left out. With `"approval": "ask"`, the agent asks a person before it acts: see [Approval](#approval). Left out, it asks nobody. |
 | `POST /v1/agents/{id}/sessions` | Creates a session. The session is that of the caller: it has the ID of that user as `created_by`, if the installation asks its callers who they are. |
-| `POST /v1/sessions/{id}/messages` | Sends a message. Body: `{"text": "..."}`. The turn has the ID of the caller as `created_by`, as a session has. Answers 202 with the turn, 409 if a turn of the session has not ended, or 429 with `Retry-After` if too many turns wait to run. |
-| `POST /v1/turns/{id}/cancel` | Cancels a turn. A turn that waits to run ends at once: 200 with the turn. A turn that runs is told to stop and ends when its pod has stopped: 202 with the turn. Answers 409 if the turn has ended in another way. |
+| `POST /v1/sessions/{id}/messages` | Sends a message. Body: `{"text": "..."}`. The turn has the ID of the caller as `created_by`, as a session has. Answers 202 with the turn, 409 if a turn of the session has not ended or the session has, or 429 with `Retry-After` if too many turns wait to run. |
+| `DELETE /v1/sessions/{id}` | Ends a session: 200 with the session, which then has `ended_at`. Its sandbox is deleted, with all that the agent had in it. What was said in the session stays to be read, and the session takes no more messages. Answers 409 if a turn of the session has not ended. |
+| `POST /v1/turns/{id}/cancel` | Cancels a turn. A turn that waits to run ends at once: 200 with the turn. A turn that runs is told to stop and ends when its harness has stopped: 202 with the turn. Answers 409 if the turn has ended in another way. |
 | `POST /v1/turns/{id}/approvals/{request}` | Answers a request for approval of the turn. Body: `{"option_id": "..."}`, the `id` of one of the options of the request. Answers 202 when the answer is on its way to the harness, 400 if the request has no such option, and 409 if the request has its answer or the turn has ended. |
 | `GET /v1/turns/{id}/events` | The events of the turn, as server-sent events. A client that reconnects sends `Last-Event-ID` and gets the events after it. |
 | `GET /v1/sessions/{id}/turns` | The turns of the session, newest first: `{"turns": [...]}`. `?limit=` is how many, 20 if it is not given and at most 100. `?before=` is the `seq` of a turn, and the answer then holds the turns before that one: that is how to read on from the last turn of an answer. The first turn of a session has `seq` 1. |
@@ -242,9 +243,9 @@ what the roles may do. Everything else takes a permission in the project:
 | `project.view` | See the project and what it is made of: its agents, its model providers and its secret stores, without their secrets. Every role has it. |
 | `agents.manage` | Create the agents of the project. |
 | `connections.manage` | Register and replace the model providers and the secret stores of the project. |
-| `sessions.run` | Create sessions, and in one's own send messages, stop the turns, answer their requests for approval and read what was said. |
+| `sessions.run` | Create sessions, and in one's own send messages, stop the turns, answer their requests for approval, read what was said and end it. |
 | `sessions.view_all` | Read the sessions of the other members. |
-| `sessions.control_all` | Stop the turns of the other members and answer their requests for approval. A role with it has `sessions.view_all` too. |
+| `sessions.control_all` | Stop the turns of the other members, answer their requests for approval and end their sessions. A role with it has `sessions.view_all` too. |
 
 An administrator gives a project its members. A member is a user, by the
 username, or a group of the identity provider, which is everyone whom the
@@ -258,10 +259,10 @@ hang on the username after that. If the provider gives the username to
 someone else, the member stays the user that it was, and the other is none.
 
 A session is that of the caller who created it, and only that caller sends
-messages to it. To read a session of one's own, to stop its turns and to
-answer their requests for approval takes `sessions.run`. With a session of
-another member the same takes `sessions.view_all` to read and
-`sessions.control_all` to stop and to answer.
+messages to it. To read a session of one's own, to stop its turns, to
+answer their requests for approval and to end it takes `sessions.run`. With
+a session of another member the same takes `sessions.view_all` to read and
+`sessions.control_all` to stop, to answer and to end.
 
 An installation has five roles, and no others. An administrator changes
 what a role may do, with `PUT /v1/roles/{name}`, and that holds from then on

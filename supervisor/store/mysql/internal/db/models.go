@@ -79,6 +79,7 @@ type Session struct {
 	CreatedAt        time.Time
 	CreatedBy        *key.ID
 	Sandbox          *string
+	EndedAt          *time.Time
 }
 
 type Turn struct {

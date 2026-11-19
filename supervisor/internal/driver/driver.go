@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -141,6 +142,25 @@ func (d *Driver) Accept(ctx context.Context, sessionID, by uuid.UUID, text strin
 		d.metrics.Refused("session_busy")
 	}
 	return turn, err
+}
+
+// EndSession ends the session and has its sandbox deleted, with all that
+// the agent had in it. It returns the errors of store.EndSession. A session
+// whose sandbox could not be deleted is ended all the same, and the error
+// says so: ending it again deletes the sandbox.
+func (d *Driver) EndSession(ctx context.Context, id uuid.UUID) (store.Session, error) {
+	session, err := d.store.EndSession(ctx, id)
+	if err != nil || session.Sandbox == "" {
+		return session, err
+	}
+	if err := d.sandboxes.DeleteSandbox(ctx, session.Sandbox); err != nil {
+		return session, fmt.Errorf("delete the sandbox of the session %s: %w", id, err)
+	}
+	if _, err := d.store.SetSandbox(ctx, id, session.Sandbox, ""); err != nil {
+		return session, err
+	}
+	session.Sandbox = ""
+	return session, nil
 }
 
 // QueueMoved tells the driver that a turn left the queue without running,

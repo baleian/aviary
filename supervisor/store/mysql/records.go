@@ -486,6 +486,40 @@ func (s *records) SetSandbox(ctx context.Context, sessionID uuid.UUID, from, to 
 	return set && err == nil, err
 }
 
+func (s *records) EndSession(ctx context.Context, id uuid.UUID) (store.Session, error) {
+	var session store.Session
+	err := s.within(ctx, func(queries *db.Queries) error {
+		// The session is held first, and its turns are looked at then: a
+		// message that is taken at the same moment is a turn by then, or
+		// finds the session ended.
+		row, err := queries.LockSession(ctx, key.ID(id))
+		if err != nil {
+			return found(err)
+		}
+		if row.EndedAt == nil {
+			busy, err := queries.IsSessionBusy(ctx, key.ID(id))
+			if err != nil {
+				return err
+			}
+			if busy {
+				return store.ErrSessionBusy
+			}
+			if err := queries.EndSession(ctx, key.ID(id)); err != nil {
+				return err
+			}
+			if row, err = queries.GetSession(ctx, key.ID(id)); err != nil {
+				return err
+			}
+		}
+		session = sessionFrom(row)
+		return nil
+	})
+	if err != nil {
+		return store.Session{}, err
+	}
+	return session, nil
+}
+
 func (s *records) Sessions(ctx context.Context, agentID, by, before uuid.UUID, limit int) ([]store.Session, error) {
 	var rows []db.Session
 	var err error
@@ -508,7 +542,7 @@ func (s *records) Sessions(ctx context.Context, agentID, by, before uuid.UUID, l
 
 // sessionFrom returns a row of the sessions table as a Session.
 func sessionFrom(row db.Session) store.Session {
-	session := store.Session{ID: uuid.UUID(row.ID), AgentID: uuid.UUID(row.AgentID), CreatedAt: row.CreatedAt}
+	session := store.Session{ID: uuid.UUID(row.ID), AgentID: uuid.UUID(row.AgentID), CreatedAt: row.CreatedAt, EndedAt: row.EndedAt}
 	if row.CreatedBy != nil {
 		session.CreatedBy = uuid.UUID(*row.CreatedBy)
 	}
@@ -606,8 +640,12 @@ func (s *records) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text 
 			}
 		}
 		// So are the messages to one session, of which one is accepted.
-		if _, err := queries.LockSession(ctx, key.ID(sessionID)); err != nil {
+		session, err := queries.LockSession(ctx, key.ID(sessionID))
+		if err != nil {
 			return found(err)
+		}
+		if session.EndedAt != nil {
+			return store.ErrSessionEnded
 		}
 		seq, err := queries.NextSeq(ctx, key.ID(sessionID))
 		if err != nil {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"slices"
 	"sync/atomic"
@@ -129,8 +130,6 @@ func (suite suite) testAgentsOfAProject(t *testing.T) {
 	}
 }
 
-// The sessions of an agent are listed newest first, a few at a time, and
-// those of one user by themselves.
 // A session keeps the sandbox that it runs in. It is given one, or loses
 // it, only if it has the one that whoever asks says it has: of several
 // Supervisors that give a session a sandbox at once, one does.
@@ -196,6 +195,8 @@ func (suite suite) testSandboxOfASession(t *testing.T) {
 	}
 }
 
+// The sessions of an agent are listed newest first, a few at a time, and
+// those of one user by themselves.
 func (suite suite) testSessionsOfAnAgent(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -269,6 +270,132 @@ func (suite suite) testSessionsOfAnAgent(t *testing.T) {
 		}
 		if !slices.Equal(answer, listed.sessions) {
 			t.Errorf("%s: the sessions are %v, not %v", listed.what, answer, listed.sessions)
+		}
+	}
+}
+
+// A session is ended when none of its turns waits or runs, and once. From
+// then on it takes no message, and what was said in it stays.
+func (suite suite) testEndSession(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	id := st.session()
+	if set, err := st.SetSandbox(ctx, id, "", "sandbox-1"); err != nil || !set {
+		t.Fatalf("the session was not given its sandbox: %v", err)
+	}
+
+	// A session with a turn that has not ended is not ended.
+	st.queue(id)
+	busy := func(turn string) {
+		t.Helper()
+		if _, err := st.EndSession(ctx, id); !errors.Is(err, store.ErrSessionBusy) {
+			t.Errorf("a session with a turn that %s was ended: %v", turn, err)
+		}
+		if session, err := st.another().Session(ctx, id); err != nil || session.EndedAt != nil {
+			t.Errorf("a session with a turn that %s ended at %v: %v", turn, session.EndedAt, err)
+		}
+	}
+	busy("waits to run")
+	dispatch, runner := st.dispatch(), uuid.New()
+	busy("waits for its runner")
+	if _, err := st.TakeTurn(ctx, dispatch.Token, &runner); err != nil {
+		t.Fatal(err)
+	}
+	busy("runs")
+	st.end(dispatch.TurnID, true, store.Failure{})
+
+	ended, err := st.EndSession(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ended.ID != id || ended.EndedAt == nil || ended.EndedAt.Before(ended.CreatedAt) || ended.Sandbox != "sandbox-1" {
+		t.Fatalf("the session was ended as %+v, at %v", ended, ended.EndedAt)
+	}
+	// Who ends it again is given it as it ended.
+	again, err := st.another().EndSession(ctx, id)
+	if err != nil || again.EndedAt == nil || !again.EndedAt.Equal(*ended.EndedAt) || again.Sandbox != "sandbox-1" {
+		t.Errorf("the session that was ended again is %+v, ended at %v and not at %v: %v", again, again.EndedAt, ended.EndedAt, err)
+	}
+	// So it is read, by itself and among the sessions of its agent.
+	read, err := st.another().Session(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := st.Sessions(ctx, ended.AgentID, uuid.Nil, uuid.Max, 10)
+	if err != nil || len(sessions) != 1 {
+		t.Fatalf("the sessions of the agent are %+v: %v", sessions, err)
+	}
+	for how, session := range map[string]store.Session{"read": read, "listed": sessions[0]} {
+		if session.EndedAt == nil || !session.EndedAt.Equal(*ended.EndedAt) {
+			t.Errorf("the session is %s as ended at %v, not at %v", how, session.EndedAt, ended.EndedAt)
+		}
+	}
+
+	// It takes no message, and is told so before anything else: also when
+	// too many turns wait for a message to be taken.
+	if _, _, err := st.CreateTurn(ctx, id, uuid.Nil, "again", 0, 50); !errors.Is(err, store.ErrSessionEnded) {
+		t.Errorf("a session that has ended took a message: %v", err)
+	}
+	st.queue(st.session())
+	if _, _, err := st.CreateTurn(ctx, id, uuid.Nil, "again", 1, 0); !errors.Is(err, store.ErrSessionEnded) {
+		t.Errorf("a session that has ended took a message when too many turns waited: %v", err)
+	}
+	if turns, err := st.Turns(ctx, id, math.MaxInt32, 10); err != nil || len(turns) != 1 || turns[0].ID != dispatch.TurnID {
+		t.Errorf("the turns of the session that has ended are %+v: %v", turns, err)
+	}
+
+	// A session that never took a message is ended too, and one that there
+	// is not is not.
+	if fresh, err := st.EndSession(ctx, st.session()); err != nil || fresh.EndedAt == nil || fresh.Sandbox != "" {
+		t.Errorf("a session without turns was ended as %+v, at %v: %v", fresh, fresh.EndedAt, err)
+	}
+	if _, err := st.EndSession(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("a session that there is not was ended: %v", err)
+	}
+}
+
+// A session is ended or takes a message, also when several Supervisors do
+// the one and the other at once: a session that has ended has no turn that
+// has not.
+func (suite suite) testSupervisorsEndASessionWhileMessagesCome(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	supervisors := st.supervisors(8)
+	for range 20 {
+		id := st.session()
+		var ended, accepted atomic.Int32
+		atOnce(len(supervisors), func(i int) {
+			if i%2 == 0 {
+				switch _, err := supervisors[i].EndSession(ctx, id); {
+				case err == nil:
+					ended.Add(1)
+				case !errors.Is(err, store.ErrSessionBusy):
+					t.Error(err)
+				}
+				return
+			}
+			switch _, _, err := supervisors[i].CreateTurn(ctx, id, uuid.Nil, "hello", 0, 50); {
+			case err == nil:
+				accepted.Add(1)
+			case !errors.Is(err, store.ErrSessionBusy) && !errors.Is(err, store.ErrSessionEnded):
+				t.Error(err)
+			}
+		})
+		session, err := st.Session(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		turns, err := st.Turns(ctx, id, math.MaxInt32, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Either all who ended the session did and no message was taken, or
+		// one message was and nobody ended the session.
+		all := int32(len(supervisors) / 2)
+		if session.EndedAt != nil && (len(turns) != 0 || accepted.Load() != 0 || ended.Load() != all) ||
+			session.EndedAt == nil && (len(turns) != 1 || accepted.Load() != 1 || ended.Load() != 0) {
+			t.Fatalf("a session that four Supervisors ended and four sent a message at once ended at %v with %d turns: %d ended it, and %d messages were taken",
+				session.EndedAt, len(turns), ended.Load(), accepted.Load())
 		}
 	}
 }

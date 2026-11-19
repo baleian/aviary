@@ -24,6 +24,9 @@ const (
 	// a turn that one sent oneself with the permission to run sessions, and
 	// of another's with the one to control them all.
 	controls
+	// ends is to end a session: one's own with the permission to run
+	// sessions, and another's with the one to control them all.
+	ends
 )
 
 var errNotTheirs = &apiError{status: http.StatusForbidden, Code: "forbidden", Message: "only the one whose session it is sends messages to it"}
@@ -81,6 +84,8 @@ func (a *api) mayWith(r *http.Request, session store.Session, sender uuid.UUID, 
 	case do == sends && session.CreatedBy != who.id:
 		return errNotTheirs
 	case do == controls && sender != who.id:
+		needed = sessionsControlAll
+	case do == ends && session.CreatedBy != who.id:
 		needed = sessionsControlAll
 	}
 	if !slices.Contains(held, needed) {

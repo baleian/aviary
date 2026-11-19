@@ -491,6 +491,15 @@ func (q *Queries) DropMembersBeforeClaim(ctx context.Context, arg DropMembersBef
 	return err
 }
 
+const endSession = `-- name: EndSession :exec
+update sessions set ended_at = now(6) where id = ?
+`
+
+func (q *Queries) EndSession(ctx context.Context, id key.ID) error {
+	_, err := q.db.ExecContext(ctx, endSession, id)
+	return err
+}
+
 const endTurn = `-- name: EndTurn :exec
 update turns set ended_at = now(6), state = ?, failure_reason = ?,
        failure_message = nullif(?, '')
@@ -774,7 +783,7 @@ func (q *Queries) GetSecretStore(ctx context.Context, id key.ID) (SecretStore, e
 }
 
 const getSession = `-- name: GetSession :one
-select id, agent_id, harness_session_id, created_at, created_by, sandbox from sessions where id = ?
+select id, agent_id, harness_session_id, created_at, created_by, sandbox, ended_at from sessions where id = ?
 `
 
 func (q *Queries) GetSession(ctx context.Context, id key.ID) (Session, error) {
@@ -787,6 +796,7 @@ func (q *Queries) GetSession(ctx context.Context, id key.ID) (Session, error) {
 		&i.CreatedAt,
 		&i.CreatedBy,
 		&i.Sandbox,
+		&i.EndedAt,
 	)
 	return i, err
 }
@@ -892,6 +902,18 @@ type IsMemberParams struct {
 // Whether the user with the username is a member of the project.
 func (q *Queries) IsMember(ctx context.Context, arg IsMemberParams) (bool, error) {
 	row := q.db.QueryRowContext(ctx, isMember, arg.ProjectID, arg.Username)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const isSessionBusy = `-- name: IsSessionBusy :one
+select exists (select 1 from turns where session_id = ? and ended_at is null)
+`
+
+// Whether a turn of the session has not ended.
+func (q *Queries) IsSessionBusy(ctx context.Context, sessionID key.ID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, isSessionBusy, sessionID)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
@@ -1156,7 +1178,7 @@ func (q *Queries) ListRoles(ctx context.Context) ([]Role, error) {
 }
 
 const listSessions = `-- name: ListSessions :many
-select id, agent_id, harness_session_id, created_at, created_by, sandbox from sessions where agent_id = ? and id < ? order by id desc limit ?
+select id, agent_id, harness_session_id, created_at, created_by, sandbox, ended_at from sessions where agent_id = ? and id < ? order by id desc limit ?
 `
 
 type ListSessionsParams struct {
@@ -1183,6 +1205,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 			&i.CreatedAt,
 			&i.CreatedBy,
 			&i.Sandbox,
+			&i.EndedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1198,7 +1221,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 }
 
 const listSessionsOf = `-- name: ListSessionsOf :many
-select id, agent_id, harness_session_id, created_at, created_by, sandbox from sessions
+select id, agent_id, harness_session_id, created_at, created_by, sandbox, ended_at from sessions
 where agent_id = ? and created_by = ? and id < ?
 order by id desc limit ?
 `
@@ -1232,6 +1255,7 @@ func (q *Queries) ListSessionsOf(ctx context.Context, arg ListSessionsOfParams) 
 			&i.CreatedAt,
 			&i.CreatedBy,
 			&i.Sandbox,
+			&i.EndedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1360,16 +1384,25 @@ func (q *Queries) Lock(ctx context.Context, name string) (string, error) {
 }
 
 const lockSession = `-- name: LockSession :one
-select id from sessions where id = ? for update
+select id, agent_id, harness_session_id, created_at, created_by, sandbox, ended_at from sessions where id = ? for update
 `
 
 // Holds the session until the transaction ends: the messages that reach a
-// session at once are taken one after another.
-func (q *Queries) LockSession(ctx context.Context, id key.ID) (key.ID, error) {
+// session at once are taken one after another, and none of them while the
+// session is being ended.
+func (q *Queries) LockSession(ctx context.Context, id key.ID) (Session, error) {
 	row := q.db.QueryRowContext(ctx, lockSession, id)
-	var id_2 key.ID
-	err := row.Scan(&id_2)
-	return id_2, err
+	var i Session
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.HarnessSessionID,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.Sandbox,
+		&i.EndedAt,
+	)
+	return i, err
 }
 
 const lockTurn = `-- name: LockTurn :one

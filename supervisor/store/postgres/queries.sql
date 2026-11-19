@@ -30,6 +30,25 @@ select * from sessions where id = @id;
 update sessions set sandbox = nullif(sqlc.arg(sandbox)::text, '')
 where id = @id and coalesce(sandbox, '') = sqlc.arg(was)::text;
 
+-- name: HoldSession :one
+-- Keeps the session from being ended until the transaction ends. A message
+-- holds it no more than the turn that it adds does, so that the start of a
+-- turn, which writes to the session, does not wait for a message that waits
+-- for it.
+select id from sessions where id = @id for key share;
+
+-- name: LockSession :one
+-- Holds the session until the transaction ends: no message to it is taken
+-- meanwhile, and of those who end it at once, one does.
+select * from sessions where id = @id for update;
+
+-- name: EndSession :one
+-- A session with a turn that has not ended is left as it is.
+update sessions set ended_at = now()
+where sessions.id = @id
+  and not exists (select 1 from turns where turns.session_id = sessions.id and turns.ended_at is null)
+returning *;
+
 -- name: ListSessions :many
 -- The sessions of an agent whose IDs are below @before, newest first: the ID
 -- of a session rises with the time at which it was created.
@@ -95,11 +114,12 @@ returning started.startup;
 select pg_advisory_xact_lock(@key);
 
 -- name: CreateTurn :one
+-- A session that has ended takes no message.
 insert into turns (id, session_id, seq, state, text, created_by)
 select @id::uuid, sessions.id,
        (select coalesce(max(seq), 0) + 1 from turns where session_id = sessions.id),
        'queued', @text::text, sqlc.narg(created_by)::uuid
-from sessions where sessions.id = @session_id
+from sessions where sessions.id = @session_id and sessions.ended_at is null
 returning *;
 
 -- name: GetTurn :one

@@ -20,9 +20,10 @@ import (
 )
 
 var (
-	ErrNotFound    = errors.New("not found")
-	ErrSessionBusy = errors.New("session has an unfinished turn")
-	ErrQueueFull   = errors.New("too many turns wait to run")
+	ErrNotFound     = errors.New("not found")
+	ErrSessionBusy  = errors.New("session has an unfinished turn")
+	ErrSessionEnded = errors.New("session has ended")
+	ErrQueueFull    = errors.New("too many turns wait to run")
 	// ErrMemberExists is the error for a member that a project has already.
 	ErrMemberExists = errors.New("the project has this member already")
 	// ErrTurnTaken is returned to a runner that asks for a turn that another
@@ -136,6 +137,9 @@ type Session struct {
 	// they are.
 	CreatedBy uuid.UUID `json:"created_by,omitzero"`
 	CreatedAt time.Time `json:"created_at"`
+	// EndedAt is when the session was ended, if it was. A session that has
+	// ended takes no message.
+	EndedAt *time.Time `json:"ended_at,omitempty"`
 	// Sandbox is the sandbox that the session runs in, as the sandbox
 	// service names it. It is empty for a session that has none: one that
 	// has run no turn yet, or whose sandbox is gone.
@@ -511,6 +515,13 @@ type Store interface {
 	// session.
 	SetSandbox(ctx context.Context, sessionID uuid.UUID, from, to string) (bool, error)
 
+	// EndSession ends the session: from then on it takes no message. It
+	// returns the session as it then is, with the sandbox that it has. A
+	// session that had ended before is returned as it is. It returns
+	// ErrNotFound if there is no such session, and ErrSessionBusy if a turn
+	// of the session has not ended.
+	EndSession(ctx context.Context, id uuid.UUID) (Session, error)
+
 	// Sessions returns the sessions of the agent whose IDs are below the ID
 	// before, newest first and at most limit of them: those of the user by,
 	// or of everyone if by is uuid.Nil. The ID of a session rises with the
@@ -549,13 +560,14 @@ type Store interface {
 	ReplaceSecretStore(ctx context.Context, secrets SecretStore) (SecretStore, error)
 
 	// CreateTurn queues a message as the session's next turn. It returns
-	// ErrNotFound if the session does not exist, ErrSessionBusy if the session
-	// has a turn that has not finished, and ErrQueueFull if more than maxWaiting
-	// turns would then wait to run. Zero is no such limit. A queued turn waits
-	// only if the turns that run leave it no room among maxRunning. The second
-	// result is how many turns then wait to run, the new one among them: zero if
-	// it need not wait. The turn is of the user who sent the message, by, or
-	// of nobody if by is uuid.Nil.
+	// ErrNotFound if the session does not exist, ErrSessionEnded if the
+	// session has ended, ErrSessionBusy if the session has a turn that has
+	// not finished, and ErrQueueFull if more than maxWaiting turns would then
+	// wait to run. Zero is no such limit. A queued turn waits only if the
+	// turns that run leave it no room among maxRunning. The second result is
+	// how many turns then wait to run, the new one among them: zero if it need
+	// not wait. The turn is of the user who sent the message, by, or of nobody
+	// if by is uuid.Nil.
 	CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, maxWaiting, maxRunning int) (Turn, int, error)
 
 	// AnnounceQueue calls announce with the turns that wait to run, in the order

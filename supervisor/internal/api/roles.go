@@ -23,13 +23,14 @@ const (
 	// and the secret stores of the project.
 	connectionsManage = "connections.manage"
 	// sessionsRun is to create sessions, and in one's own to send messages,
-	// to stop the turns, to answer their requests for approval and to read
-	// what was said.
+	// to stop the turns, to answer their requests for approval, to read
+	// what was said and to end it.
 	sessionsRun = "sessions.run"
 	// sessionsViewAll is to read the sessions of the other members.
 	sessionsViewAll = "sessions.view_all"
-	// sessionsControlAll is to stop the turns of the other members and to
-	// answer their requests for approval. Who may do that may read them.
+	// sessionsControlAll is to stop the turns of the other members, to
+	// answer their requests for approval and to end their sessions. Who may
+	// do that may read them.
 	sessionsControlAll = "sessions.control_all"
 )
 

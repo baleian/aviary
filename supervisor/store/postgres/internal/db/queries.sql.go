@@ -373,7 +373,7 @@ func (q *Queries) CreateSecretStore(ctx context.Context, arg CreateSecretStorePa
 const createSession = `-- name: CreateSession :one
 insert into sessions (id, agent_id, created_by)
 select $1::uuid, agents.id, $2::uuid from agents where agents.id = $3
-returning id, agent_id, created_at, harness_session_id, created_by, sandbox
+returning id, agent_id, created_at, harness_session_id, created_by, sandbox, ended_at
 `
 
 type CreateSessionParams struct {
@@ -392,6 +392,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		&i.HarnessSessionID,
 		&i.CreatedBy,
 		&i.Sandbox,
+		&i.EndedAt,
 	)
 	return i, err
 }
@@ -401,7 +402,7 @@ insert into turns (id, session_id, seq, state, text, created_by)
 select $1::uuid, sessions.id,
        (select coalesce(max(seq), 0) + 1 from turns where session_id = sessions.id),
        'queued', $2::text, $3::uuid
-from sessions where sessions.id = $4
+from sessions where sessions.id = $4 and sessions.ended_at is null
 returning id, session_id, seq, state, text, created_at, ended_at, token_hash, stop_reason, dispatched_at, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens, cancel_requested_at, failure_reason, failure_message, started_at, runner_id, created_by
 `
 
@@ -412,6 +413,7 @@ type CreateTurnParams struct {
 	SessionID uuid.UUID
 }
 
+// A session that has ended takes no message.
 func (q *Queries) CreateTurn(ctx context.Context, arg CreateTurnParams) (Turn, error) {
 	row := q.db.QueryRow(ctx, createTurn,
 		arg.ID,
@@ -518,6 +520,29 @@ where awaited.project_id = member.project_id and awaited.username = $1::text
 func (q *Queries) DropMembersBeforeClaim(ctx context.Context, username string) error {
 	_, err := q.db.Exec(ctx, dropMembersBeforeClaim, username)
 	return err
+}
+
+const endSession = `-- name: EndSession :one
+update sessions set ended_at = now()
+where sessions.id = $1
+  and not exists (select 1 from turns where turns.session_id = sessions.id and turns.ended_at is null)
+returning id, agent_id, created_at, harness_session_id, created_by, sandbox, ended_at
+`
+
+// A session with a turn that has not ended is left as it is.
+func (q *Queries) EndSession(ctx context.Context, id uuid.UUID) (Session, error) {
+	row := q.db.QueryRow(ctx, endSession, id)
+	var i Session
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.CreatedAt,
+		&i.HarnessSessionID,
+		&i.CreatedBy,
+		&i.Sandbox,
+		&i.EndedAt,
+	)
+	return i, err
 }
 
 const endTurn = `-- name: EndTurn :one
@@ -875,7 +900,7 @@ func (q *Queries) GetSecretStore(ctx context.Context, id uuid.UUID) (SecretStore
 }
 
 const getSession = `-- name: GetSession :one
-select id, agent_id, created_at, harness_session_id, created_by, sandbox from sessions where id = $1
+select id, agent_id, created_at, harness_session_id, created_by, sandbox, ended_at from sessions where id = $1
 `
 
 func (q *Queries) GetSession(ctx context.Context, id uuid.UUID) (Session, error) {
@@ -888,6 +913,7 @@ func (q *Queries) GetSession(ctx context.Context, id uuid.UUID) (Session, error)
 		&i.HarnessSessionID,
 		&i.CreatedBy,
 		&i.Sandbox,
+		&i.EndedAt,
 	)
 	return i, err
 }
@@ -986,6 +1012,21 @@ func (q *Queries) GiveUpTurn(ctx context.Context, arg GiveUpTurnParams) (int64, 
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const holdSession = `-- name: HoldSession :one
+select id from sessions where id = $1 for key share
+`
+
+// Keeps the session from being ended until the transaction ends. A message
+// holds it no more than the turn that it adds does, so that the start of a
+// turn, which writes to the session, does not wait for a message that waits
+// for it.
+func (q *Queries) HoldSession(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, holdSession, id)
+	var id_2 uuid.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
 }
 
 const isMember = `-- name: IsMember :one
@@ -1227,7 +1268,7 @@ func (q *Queries) ListRoles(ctx context.Context) ([]Role, error) {
 }
 
 const listSessions = `-- name: ListSessions :many
-select id, agent_id, created_at, harness_session_id, created_by, sandbox from sessions where agent_id = $1 and id < $2 order by id desc limit $3
+select id, agent_id, created_at, harness_session_id, created_by, sandbox, ended_at from sessions where agent_id = $1 and id < $2 order by id desc limit $3
 `
 
 type ListSessionsParams struct {
@@ -1254,6 +1295,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 			&i.HarnessSessionID,
 			&i.CreatedBy,
 			&i.Sandbox,
+			&i.EndedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1266,7 +1308,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 }
 
 const listSessionsOf = `-- name: ListSessionsOf :many
-select id, agent_id, created_at, harness_session_id, created_by, sandbox from sessions where agent_id = $1 and created_by = $2::uuid and id < $3
+select id, agent_id, created_at, harness_session_id, created_by, sandbox, ended_at from sessions where agent_id = $1 and created_by = $2::uuid and id < $3
 order by id desc limit $4
 `
 
@@ -1299,6 +1341,7 @@ func (q *Queries) ListSessionsOf(ctx context.Context, arg ListSessionsOfParams) 
 			&i.HarnessSessionID,
 			&i.CreatedBy,
 			&i.Sandbox,
+			&i.EndedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1403,6 +1446,27 @@ select pg_advisory_xact_lock($1)
 func (q *Queries) Lock(ctx context.Context, key int64) error {
 	_, err := q.db.Exec(ctx, lock, key)
 	return err
+}
+
+const lockSession = `-- name: LockSession :one
+select id, agent_id, created_at, harness_session_id, created_by, sandbox, ended_at from sessions where id = $1 for update
+`
+
+// Holds the session until the transaction ends: no message to it is taken
+// meanwhile, and of those who end it at once, one does.
+func (q *Queries) LockSession(ctx context.Context, id uuid.UUID) (Session, error) {
+	row := q.db.QueryRow(ctx, lockSession, id)
+	var i Session
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.CreatedAt,
+		&i.HarnessSessionID,
+		&i.CreatedBy,
+		&i.Sandbox,
+		&i.EndedAt,
+	)
+	return i, err
 }
 
 const nextTurns = `-- name: NextTurns :many

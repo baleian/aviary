@@ -39,8 +39,16 @@ order by id desc limit ?;
 
 -- name: LockSession :one
 -- Holds the session until the transaction ends: the messages that reach a
--- session at once are taken one after another.
-select id from sessions where id = ? for update;
+-- session at once are taken one after another, and none of them while the
+-- session is being ended.
+select * from sessions where id = ? for update;
+
+-- name: IsSessionBusy :one
+-- Whether a turn of the session has not ended.
+select exists (select 1 from turns where session_id = ? and ended_at is null);
+
+-- name: EndSession :exec
+update sessions set ended_at = now(6) where id = ?;
 
 -- name: CreateProvider :execrows
 insert into providers (id, project_id, name, url, api_key, api_key_store_id, api_key_path, api_key_name)

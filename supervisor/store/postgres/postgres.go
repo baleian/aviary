@@ -381,6 +381,36 @@ func (s *records) SetSandbox(ctx context.Context, sessionID uuid.UUID, from, to 
 	return false, nil
 }
 
+func (s *records) EndSession(ctx context.Context, id uuid.UUID) (store.Session, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.Session{}, err
+	}
+	defer tx.Rollback(ctx)
+	queries := s.queries.WithTx(tx)
+	// The session is held first, and its turns are looked at then: a message
+	// that is taken at the same moment is a turn by then, or finds the
+	// session ended.
+	row, err := queries.LockSession(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.Session{}, store.ErrNotFound
+	}
+	if err != nil {
+		return store.Session{}, err
+	}
+	if row.EndedAt != nil {
+		return sessionFrom(row), nil
+	}
+	row, err = queries.EndSession(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.Session{}, store.ErrSessionBusy
+	}
+	if err != nil {
+		return store.Session{}, err
+	}
+	return sessionFrom(row), tx.Commit(ctx)
+}
+
 func (s *records) Sessions(ctx context.Context, agentID, by, before uuid.UUID, limit int) ([]store.Session, error) {
 	var rows []db.Session
 	var err error
@@ -480,6 +510,14 @@ func (s *records) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text 
 			return store.Turn{}, 0, err
 		}
 	}
+	// The session is held before it is looked at, so that it is not ended
+	// while the message is taken.
+	if _, err := queries.HoldSession(ctx, sessionID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.Turn{}, 0, store.ErrNotFound
+		}
+		return store.Turn{}, 0, err
+	}
 	params := db.CreateTurnParams{ID: id, SessionID: sessionID, Text: text}
 	if by != uuid.Nil {
 		params.CreatedBy = &by
@@ -488,7 +526,7 @@ func (s *records) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text 
 	var failure *pgconn.PgError
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return store.Turn{}, 0, store.ErrNotFound
+		return store.Turn{}, 0, store.ErrSessionEnded
 	case errors.As(err, &failure) && failure.Code == uniqueViolation:
 		return store.Turn{}, 0, store.ErrSessionBusy
 	case err != nil:
@@ -947,7 +985,7 @@ func providerFrom(row db.Provider) store.Provider {
 
 // sessionFrom returns a row of the sessions table as a Session.
 func sessionFrom(row db.Session) store.Session {
-	session := store.Session{ID: row.ID, AgentID: row.AgentID, CreatedAt: row.CreatedAt}
+	session := store.Session{ID: row.ID, AgentID: row.AgentID, CreatedAt: row.CreatedAt, EndedAt: row.EndedAt}
 	if row.CreatedBy != nil {
 		session.CreatedBy = *row.CreatedBy
 	}
