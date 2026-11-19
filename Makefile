@@ -167,6 +167,8 @@ test-harness: build
 cluster-up:
 	kind get clusters 2>/dev/null | grep -qx $(CLUSTER) || \
 		kind create cluster --name $(CLUSTER) --image $(NODE_IMAGE) --config hack/kind/cluster.yaml
+	kind get nodes --name $(CLUSTER) | xargs --max-procs 0 -I {} \
+		sh -c 'docker exec --interactive {} bash -s < hack/kind/sandbox-node.sh'
 	$(HELM) upgrade --install nfs-server-provisioner nfs-server-provisioner \
 		--repo https://kubernetes-sigs.github.io/nfs-ganesha-server-and-external-provisioner \
 		--version $(NFS_PROVISIONER_CHART) \
