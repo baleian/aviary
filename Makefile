@@ -9,6 +9,13 @@ VALKEY_CHART := 1.0.0
 OPENSANDBOX := 1.2.1
 OPENSANDBOX_COMMIT := db708c218771a8d311356f0e96552c15df6e097a
 OPENSANDBOX_CHARTS := .out/opensandbox-$(OPENSANDBOX)
+# The registry of the local cluster, as an image in it is named, and its
+# certificate. The certificate is made once and every local cluster has the
+# same one, because the builder of templates trusts it by being built with it.
+REGISTRY := registry.aviary-data.svc.cluster.local
+REGISTRY_CERTIFICATE := .out/registry/trusted/registry.crt
+REGISTRY_KEY := .out/registry/tls.key
+SANDBOXTEMPLATE_BUILDER_IMAGE := aviary-sandboxtemplate-builder:dev
 GO_IMAGE := golang:1.27.4-trixie@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9
 BUF := 1.75.0
 SQLC_IMAGE := sqlc/sqlc:1.31.1@sha256:70f53171d27b2424e9358869975455a6e955a5aa8e58a998a270a6e34e525537
@@ -178,7 +185,13 @@ $(OPENSANDBOX_CHARTS):
 			OpenSandbox-$(OPENSANDBOX_COMMIT)/manifests/charts
 	mv $@.new $@
 
-cluster-up: $(OPENSANDBOX_CHARTS)
+$(REGISTRY_CERTIFICATE):
+	mkdir -p $(@D)
+	openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+		-subj "/CN=registry of a local cluster" -addext "subjectAltName=DNS:$(REGISTRY)" \
+		-keyout $(REGISTRY_KEY) -out $@
+
+cluster-up: $(OPENSANDBOX_CHARTS) $(REGISTRY_CERTIFICATE)
 	@test -e /dev/kvm || { echo "the sandboxes of the cluster need KVM, and this host has no /dev/kvm"; exit 1; }
 	kind get clusters 2>/dev/null | grep -qx $(CLUSTER) || \
 		kind create cluster --name $(CLUSTER) --image $(NODE_IMAGE) --config hack/kind/cluster.yaml
@@ -219,12 +232,22 @@ endif
 	$(KUBECTL) apply -f hack/kind/rustfs.yaml
 	$(KUBECTL) --namespace aviary-data rollout status statefulset/rustfs --timeout 300s
 	$(KUBECTL) --namespace aviary-data wait --for=condition=complete job/rustfs-bucket --timeout 300s
+	$(KUBECTL) create secret tls registry-tls --namespace aviary-data \
+		--cert $(REGISTRY_CERTIFICATE) --key $(REGISTRY_KEY) --dry-run=client --output yaml | \
+		$(KUBECTL) apply -f -
+	$(KUBECTL) apply -f hack/kind/registry.yaml
+	$(KUBECTL) --namespace aviary-data rollout status deployment/registry --timeout 300s
+	docker build --file hack/kind/sandboxtemplate-builder.Dockerfile \
+		--build-arg BASE=opensandbox/fsb-sandboxtemplate-builder:release-$(OPENSANDBOX) \
+		--tag $(SANDBOXTEMPLATE_BUILDER_IMAGE) $(dir $(REGISTRY_CERTIFICATE))
+	kind load docker-image --name $(CLUSTER) $(SANDBOXTEMPLATE_BUILDER_IMAGE)
 	$(HELM) upgrade --install opensandbox-base $(OPENSANDBOX_CHARTS)/base --wait
 	bash hack/kind/opensandbox-keys.sh $(KUBECTL)
 	$(HELM) upgrade --install fast-sandbox $(OPENSANDBOX_CHARTS)/fast-sandbox \
 		--namespace opensandbox-system \
 		--set artifactStore.store=s3://sandboxes/publish \
 		--set artifactStore.endpoint=http://rustfs.aviary-data.svc.cluster.local:9000 \
+		--set controller.sandboxtemplateBuilderImage=$(SANDBOXTEMPLATE_BUILDER_IMAGE) \
 		--wait --timeout 10m
 	$(HELM) upgrade --install opensandbox-server $(OPENSANDBOX_CHARTS)/server \
 		--namespace opensandbox-system \
@@ -271,8 +294,19 @@ build:
 	docker build --file images/mock-llm/Dockerfile --tag $(MOCK_LLM_IMAGE) .
 	docker build --file images/fake-supervisor/Dockerfile --tag $(FAKE_SUPERVISOR_IMAGE) .
 
+# The images of the harnesses go into the registry of the cluster too, from a
+# node: it has them from kind. A node does not know the names of the cluster,
+# so it reaches the registry by its address, which the certificate does not
+# name.
 images: build
 	kind load docker-image --name $(CLUSTER) $(SUPERVISOR_IMAGE) $(RUNNER_IMAGE) $(OPENCODE_IMAGE) $(CODEX_IMAGE) $(MOCK_LLM_IMAGE)
+	registry=$$($(KUBECTL) --namespace aviary-data get service registry --output jsonpath='{.spec.clusterIP}') && \
+	for image in $(OPENCODE_IMAGE) $(CODEX_IMAGE); do \
+		docker exec $(CLUSTER)-control-plane ctr --namespace k8s.io images tag --force \
+			docker.io/library/$$image $$registry/$$image >/dev/null && \
+		docker exec $(CLUSTER)-control-plane ctr --namespace k8s.io images push --local --skip-verify \
+			$$registry/$$image >/dev/null || exit 1; \
+	done
 
 # CloudNativePG writes the database's connection secret next to the database.
 # A pod can only read secrets in its own namespace, so the secret is copied to
