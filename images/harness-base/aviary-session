@@ -9,6 +9,10 @@ set -eu
 # a quarter of an hour without. Where the setting cannot be written, the
 # session is in no sandbox that sleeps.
 { echo 6 > /proc/sys/net/ipv4/tcp_retries2; } 2>/dev/null || true
+# sudo looks the name of the machine up, which a sandbox does not have in
+# its hosts file.
+name=$(cat /proc/sys/kernel/hostname)
+grep -qw "$name" /etc/hosts || echo "127.0.0.1 $name" >> /etc/hosts || true
 cd /home/workspace
 export HOME=/home
 exec setpriv --reuid agent --regid agent --init-groups aviary-runner
