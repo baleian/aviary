@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +33,14 @@ func TestAviary(t *testing.T) {
 			t.Run("an agent of "+harness+" that is to ask", func(t *testing.T) {
 				t.Parallel()
 				approval(t, harness)
+			})
+			t.Run("a session of "+harness+" that is idle sleeps", func(t *testing.T) {
+				t.Parallel()
+				sleeps(t, harness)
+			})
+			t.Run("an agent of "+harness+" that waits for a person sleeps", func(t *testing.T) {
+				t.Parallel()
+				waitsAsleep(t, harness)
 			})
 		}
 		tests := map[string]func(*testing.T){
@@ -228,6 +238,88 @@ func approval(t *testing.T, name string) {
 		eventually(t, soon, "the metrics of the Supervisors have nothing for "+series, func() bool {
 			return total(metrics(t, "supervisor"), series) >= 1
 		})
+	}
+}
+
+// A session that is not at work sleeps, and goes on as it was when it is
+// sent its next message: what ran in its sandbox runs on, in the same
+// sandbox, and the clock of the sandbox is right.
+func sleeps(t *testing.T, name string) {
+	session := newAgent(t, harness(name)).session(t)
+	// A process in the background counts the seconds in a file.
+	count := "run setsid nohup sh -c 'echo $$ > counter.pid; while sleep 1; do echo >> counted; done' " +
+		"> /dev/null 2>&1 < /dev/null & sleep 2; echo counter-$(cat counter.pid)"
+	first := run(t, session, count)
+	counter := regexp.MustCompile(`counter-(\d+)`).FindStringSubmatch(first.said() + first.tools())
+	if counter == nil {
+		t.Fatalf("the counter did not start: the agent said %q, and its tools %s", first.said(), first.tools())
+	}
+	before := sandboxes(t, session)
+	asleep(t, session)
+
+	check := "run kill -0 $(cat counter.pid) && echo alive-$(cat counter.pid); echo counted-$(wc -l < counted); " +
+		"sleep 3; echo counted-$(wc -l < counted); echo clock-$(date +%s)"
+	woken := run(t, session, check)
+	told := woken.said() + woken.tools()
+	if !strings.Contains(told, "alive-"+counter[1]) {
+		t.Errorf("the counter %s does not run after the session slept: the agent said %q", counter[1], woken.said())
+	}
+	counts := regexp.MustCompile(`counted-(\d+)`).FindAllStringSubmatch(told, -1)
+	if len(counts) < 2 || counts[0][1] == counts[len(counts)-1][1] {
+		t.Errorf("the counter does not count after the session slept: the agent said %q", woken.said())
+	}
+	clock := regexp.MustCompile(`clock-(\d+)`).FindStringSubmatch(told)
+	if clock == nil {
+		t.Fatalf("the agent told no clock: it said %q", woken.said())
+	}
+	if seconds, _ := strconv.ParseInt(clock[1], 10, 64); time.Since(time.Unix(seconds, 0)).Abs() > 20*time.Second {
+		t.Errorf("after the session slept, the clock of its sandbox is %s off", time.Since(time.Unix(seconds, 0)).Round(time.Second))
+	}
+	if recalled := run(t, session, "recall"); !strings.Contains(recalled.said(), "while sleep 1") {
+		t.Errorf("after the session slept, the agent did not know what was said: %q", recalled.said())
+	}
+	if after := sandboxes(t, session); !slices.Equal(after, before) {
+		t.Errorf("the session had the sandboxes %v before it slept, and %v after", before, after)
+	}
+}
+
+// A turn that waits for a person sleeps with its session for as long as it
+// waits, and goes on when it is answered.
+func waitsAsleep(t *testing.T, name string) {
+	session := newAgent(t, fmt.Sprintf(`{"harness": %q, "approval": "ask"}`, name)).session(t)
+	accepted := send(t, session, "escalate touch "+unique("woken"))
+	events := read(t, accepted.ID)
+	var asked approvalRequest
+	events.until(t, "asked for approval", func(next event) bool {
+		return next.Type == "approval.requested" && json.Unmarshal([]byte(next.Data), &asked) == nil
+	})
+	asleep(t, session)
+	if waiting := record(t, accepted.ID); waiting.State != "running" || len(waiting.Approvals) != 1 {
+		t.Fatalf("the turn whose session sleeps is %s, with the requests %+v", waiting.State, waiting.Approvals)
+	}
+
+	var option string
+	for _, offered := range asked.Options {
+		if offered.Kind == "allow_once" {
+			option = offered.ID
+		}
+	}
+	answer := fmt.Sprintf(`{"option_id": %q}`, option)
+	if status := request(t, "POST", "/v1/turns/"+accepted.ID+"/approvals/"+asked.ID, answer, nil); status != http.StatusAccepted {
+		t.Fatalf("the answer %s to the request %+v was answered with %d", answer, asked, status)
+	}
+	if last := events.end(t); last.Type != "turn.completed" {
+		t.Fatalf("the turn that was answered while its session slept ended with %s %s", last.Type, last.Data)
+	}
+	var given bool
+	for _, encoded := range record(t, accepted.ID).Items {
+		var item struct{ Type, ID, Outcome string }
+		if json.Unmarshal(encoded, &item) == nil && item.Type == "approval" {
+			given = item.ID == asked.ID && item.Outcome == "selected"
+		}
+	}
+	if !given {
+		t.Errorf("the harness did not get the answer that it was given while its session slept")
 	}
 }
 

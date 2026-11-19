@@ -81,6 +81,11 @@ A test ends the sessions that it made, which `session` in
 `test/e2e/e2e_test.go` does for it: the sandbox of a session stays until the
 session is ended, and the pool of the cluster has room for only so many.
 
+A session sleeps after half a minute without work in the e2e
+(`test/e2e/values.yaml`), so that the tests see sessions sleep and wake
+without waiting long for it. A turn that wakes its session may take half a
+minute more than one that does not.
+
 ## Writing a test
 
 - Put it at the lowest level that shows the fact. A test of the e2e is for

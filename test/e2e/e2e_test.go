@@ -567,6 +567,20 @@ func sandboxes(t *testing.T, session string) []string {
 	return ids
 }
 
+// asleep waits for the sandbox service to have put the sandbox of the
+// session to sleep, which it does with a session that is not at work.
+func asleep(t *testing.T, session string) {
+	t.Helper()
+	eventually(t, patience, "the sandbox of the session "+session+" does not sleep", func() bool {
+		status, raw := sandboxService(t, "GET", "sandboxes", "metadata", "aviary-session="+session)
+		var listed struct {
+			Items []struct{ Status struct{ State string } }
+		}
+		return status == http.StatusOK && json.Unmarshal(raw, &listed) == nil &&
+			len(listed.Items) == 1 && listed.Items[0].Status.State == "Paused"
+	})
+}
+
 // total adds up the series whose names and labels begin as given, over the
 // pods whose metrics these are.
 func total(metrics, series string) float64 {

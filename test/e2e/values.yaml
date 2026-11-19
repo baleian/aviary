@@ -10,6 +10,9 @@ supervisor:
     allowedHosts:
       - openbao.aviary-data:8200
     cacheSeconds: 5
+sandboxes:
+  # So that a test sees a session sleep without waiting five minutes for it.
+  idleSeconds: 30
 egressProxy:
   replicas: 2
   allowedHosts:
