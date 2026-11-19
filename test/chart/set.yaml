@@ -28,6 +28,9 @@ egressProxy:
     - to:
         - namespaceSelector:
             matchLabels: {kubernetes.io/metadata.name: llm-gateway}
+sandboxes:
+  url: https://sandboxes.example.com
+  templateStore: s3://example/templates
 runtime:
   maxConcurrentTurns: 7
   maxQueuedTurns: 11
@@ -40,3 +43,4 @@ runtime:
     opencode:
       resources:
         requests: {memory: 333Mi}
+      sandbox: {disk: 16Gi}

@@ -530,6 +530,9 @@ installs it in the local cluster with a file of values of your own.
 | `supervisor.encryption.secretName`, `.key` | A secret with the keys that the Supervisor seals secrets with before it stores them, and the entry of it that seals. An entry is 32 random bytes in base64. To replace the key, add an entry and name it, and keep the entries from before. |
 | `egressProxy.allowedHosts` | The hosts that the Egress Proxy lets requests through to, those of the model providers among them. The default, `*`, is every host. |
 | `egressProxy.insideCIDRs`, `.extraEgress` | A network policy keeps the Egress Proxy itself out of these address ranges, so that it is no way into the cluster. `extraEgress` names what it may still reach there, as egress rules of a network policy: the endpoint of a model provider that is a service in the cluster or at a private address needs one. |
+| `sandboxes.url` | Where the lifecycle API of OpenSandbox is, which runs the sandboxes of the sessions. Default `http://opensandbox-server.opensandbox-system`. |
+| `sandboxes.apiKey.secretName`, `.secretKey` | A secret with the key of that API. |
+| `sandboxes.templateStore` | Where OpenSandbox keeps the templates that the sandboxes are made from, in its object store. Default `s3://sandbox-images/publish`. |
 | `runtime.maxConcurrentTurns` | The most turns that run at once. Default 50. |
 | `runtime.maxQueuedTurns` | The most turns that may wait to run. A message beyond it is answered with 429. Default 500, and 0 is no limit. |
 | `runtime.maxQueueWaitSeconds` | How long a turn may wait to run before it ends as expired. Default 120, and 0 is no limit. |
@@ -537,7 +540,7 @@ installs it in the local cluster with a file of values of your own.
 | `runtime.maxTurnSeconds` | How long a turn may run before it is stopped and fails. Default 1800. |
 | `runtime.maxReconnectSeconds` | How long the runner of a turn goes on without a Supervisor before the turn fails. Default 60, and 0 is no limit. |
 | `runtime.maxToolOutputBytes` | The longest text of a tool call that the events carry as it is. A longer text is cut. Default 65536, and 0 is no limit. |
-| `runtime.harnesses` | The harnesses that agents can use, each with its image and with the resources for the turns of the agents that have none of their own. |
+| `runtime.harnesses` | The harnesses that agents can use, each with its image and with the resources for the turns of the agents that have none of their own. `sandbox` is the size of the sandbox of a session: its `cpu`, `memory` and `disk`. A release has OpenSandbox build a template for each harness, from the image and that size, when it is installed and when either has changed. OpenSandbox takes the image from its registry without credentials. |
 | `runtime.store.storageClassName`, `.size` | The volume for the session homes. Its storage class must offer ReadWriteMany. |
 
 The turn pods mount the runner as an image volume, so the cluster's

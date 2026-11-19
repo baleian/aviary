@@ -1,0 +1,56 @@
+# Has OpenSandbox build the templates that the sandboxes of the sessions are
+# made from: one for each harness, from its image and the size of its
+# sandboxes. It runs once for every install and upgrade, and the release does
+# not go on if it fails. A template that is there is not built again, so a
+# release that changes no harness waits for nothing here. The Supervisors
+# themselves build none.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: aviary-templates
+  labels:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: templates
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    # A failed Job is kept until the next run, so that its log can be read.
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aviary
+        app.kubernetes.io/component: templates
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: templates
+          image: {{ .Values.supervisor.image }}
+          args: ["templates"]
+          env:
+            - name: AVIARY_SANDBOXES_URL
+              value: {{ .Values.sandboxes.url | quote }}
+            - name: AVIARY_SANDBOXES_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.sandboxes.apiKey.secretName }}
+                  key: {{ .Values.sandboxes.apiKey.secretKey }}
+            - name: AVIARY_TEMPLATE_STORE
+              value: {{ .Values.sandboxes.templateStore | quote }}
+            - name: AVIARY_HARNESSES
+              value: {{ .Values.runtime.harnesses | toJson | quote }}
+            - name: AVIARY_MAX_TOOL_OUTPUT_BYTES
+              value: {{ .Values.runtime.maxToolOutputBytes | quote }}
+          resources:
+            {{- toYaml .Values.supervisor.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

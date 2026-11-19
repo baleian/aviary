@@ -32,6 +32,7 @@ import (
 	"aviary/supervisor/internal/gateway"
 	runnerv1 "aviary/supervisor/internal/gen/aviary/runner/v1"
 	"aviary/supervisor/internal/metrics"
+	"aviary/supervisor/internal/sandbox"
 	"aviary/supervisor/secret"
 	"aviary/supervisor/store"
 )
@@ -58,6 +59,9 @@ const (
 	maxStartup         = "AVIARY_MAX_STARTUP_SECONDS"
 	maxToolOutput      = "AVIARY_MAX_TOOL_OUTPUT_BYTES"
 	maxTurn            = "AVIARY_MAX_TURN_SECONDS"
+	sandboxesURL       = "AVIARY_SANDBOXES_URL"
+	sandboxesKey       = "AVIARY_SANDBOXES_API_KEY"
+	templateStore      = "AVIARY_TEMPLATE_STORE"
 	apiAddr            = ":8080"
 	gatewayAddr        = ":9090"
 	authzAddr          = ":9091"
@@ -120,8 +124,13 @@ func Main(plugins Plugins) {
 // Run serves until ctx is done, or with the argument "migrate" brings the
 // database schema up to date. A release migrates once, before it starts its
 // Supervisors. With a version after it, "migrate" moves the schema to that
-// version instead, forward or back.
+// version instead, forward or back. With the argument "templates" it has
+// the templates built that the sandboxes of the sessions are made from,
+// which a release does once too.
 func Run(ctx context.Context, args []string, plugins Plugins) error {
+	if len(args) == 1 && args[0] == "templates" {
+		return bake(ctx)
+	}
 	database, err := env(databaseURL)
 	if err != nil {
 		return err
@@ -138,7 +147,51 @@ func Run(ctx context.Context, args []string, plugins Plugins) error {
 		}
 		return store.MigrateTo(ctx, database, version, plugins.Databases...)
 	}
-	return errors.New("usage: aviary-supervisor [migrate [<version>]]")
+	return errors.New("usage: aviary-supervisor [migrate [<version>] | templates]")
+}
+
+// bake has the sandbox service build the template of every harness that
+// has none, and waits for them. The harnesses are a JSON object such as
+// {"opencode": {"image": "registry.example.com/harness-opencode:1.0",
+// "sandbox": {"cpu": "1", "memory": "2Gi", "disk": "4Gi"}}}.
+func bake(ctx context.Context) error {
+	address, err := env(sandboxesURL)
+	if err != nil {
+		return err
+	}
+	key, err := env(sandboxesKey)
+	if err != nil {
+		return err
+	}
+	templates := sandbox.Templates{}
+	if templates.Store, err = env(templateStore); err != nil {
+		return err
+	}
+	encoded, err := env(harnesses)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal([]byte(encoded), &templates.Harnesses); err != nil {
+		return fmt.Errorf("%s: %w", harnesses, err)
+	}
+	for name, harness := range templates.Harnesses {
+		size := harness.Sandbox
+		if harness.Image == "" || size.CPU == "" || size.Memory == "" || size.Disk == "" {
+			return fmt.Errorf("%s: the harness %s needs an image and the cpu, memory and disk of its sandboxes", harnesses, name)
+		}
+	}
+	output, err := env(maxToolOutput)
+	if err != nil {
+		return err
+	}
+	if templates.MaxToolOutputBytes, err = strconv.Atoi(output); err != nil || templates.MaxToolOutputBytes < 0 {
+		return fmt.Errorf("%s must be a number of bytes, or zero for no limit", maxToolOutput)
+	}
+	client, err := sandbox.New(address, key)
+	if err != nil {
+		return err
+	}
+	return client.Bake(ctx, templates)
 }
 
 func serve(ctx context.Context, database string, plugins Plugins) error {

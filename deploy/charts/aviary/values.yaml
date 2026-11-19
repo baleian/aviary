@@ -117,6 +117,20 @@ egressProxy:
   #       - ipBlock: {cidr: 192.168.1.20/32}
   extraEgress: []
 
+# OpenSandbox, which runs the sessions: each in a sandbox of its own, a small
+# virtual machine that is made from the template of the harness of its agent.
+sandboxes:
+  # Where its lifecycle API is.
+  url: http://opensandbox-server.opensandbox-system
+  # A secret in the release namespace with the key of that API.
+  apiKey:
+    secretName: aviary-sandboxes
+    secretKey: api-key
+  # Where it keeps the templates, in its object store. Aviary has a template
+  # built for each of the harnesses below when the release is installed, and
+  # again when a harness has changed.
+  templateStore: s3://sandbox-images/publish
+
 runtime:
   # The most turns that run at once. The turns beyond it wait in the order in
   # which they were accepted.
@@ -156,17 +170,25 @@ runtime:
   # anything. A turn that goes over its limit of memory fails and says so.
   # There is no limit of cpu: it would slow a turn down also when the node
   # has cpu to spare.
+  #
+  # The sandbox is the size of the sandbox of a session of the harness: its
+  # cpus, its memory and its disk, which holds the image and whatever the
+  # session writes. OpenSandbox takes the image from its registry itself,
+  # without credentials, so the image is named as it is there. A sandbox that
+  # sleeps takes its memory and its disk in the object store.
   harnesses:
     opencode:
       image: aviary-harness-opencode:dev
       resources:
         requests: {cpu: 250m, memory: 1Gi}
         limits: {memory: 4Gi}
+      sandbox: {cpu: "1", memory: 2Gi, disk: 4Gi}
     codex:
       image: aviary-harness-codex:dev
       resources:
         requests: {cpu: 250m, memory: 256Mi}
         limits: {memory: 4Gi}
+      sandbox: {cpu: "1", memory: 2Gi, disk: 4Gi}
   # The volume that holds the sessions of the default tenant. Turn pods on
   # any node mount it, so the storage class must offer ReadWriteMany.
   store:

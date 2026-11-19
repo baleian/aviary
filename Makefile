@@ -325,6 +325,9 @@ secrets:
 	$(KUBECTL) get secret valkey-users --namespace aviary-data --output json | \
 		jq '{apiVersion, kind, type, metadata: {name: "aviary-events"}, stringData: {uri: ("valkey://default:" + (.data.default | @base64d) + "@valkey.aviary-data:6379")}}' | \
 		$(KUBECTL) apply --namespace aviary-system -f -
+	$(KUBECTL) get secret opensandbox-api-key --namespace opensandbox-system --output json | \
+		jq '{apiVersion, kind, type, data, metadata: {name: "aviary-sandboxes"}}' | \
+		$(KUBECTL) apply --namespace aviary-system -f -
 	$(KUBECTL) get secret aviary-encryption --namespace aviary-system >/dev/null 2>&1 || \
 		$(KUBECTL) create secret generic aviary-encryption --namespace aviary-system \
 			--from-literal=k1=$$(openssl rand -base64 32)
@@ -332,10 +335,19 @@ secrets:
 # The image ID makes the pod restart when the image changes. VALUES names a
 # file of values of your own for the chart, for example
 # make deploy VALUES=my-values.yaml
+# The image of a harness as it is named in the registry of the cluster, by
+# the digest that `make images` put there: an image that was built again has
+# another name, and the release has its template built again.
+IN_REGISTRY = $(REGISTRY)/$(firstword $(subst :, ,$(1)))@$$(docker exec $(CLUSTER)-control-plane \
+	ctr --namespace k8s.io images ls name==docker.io/library/$(1) | awk 'NR == 2 {print $$3}')
+
 deploy: secrets
 	$(HELM) upgrade --install aviary deploy/charts/aviary \
 		--namespace aviary-system \
 		--set-string 'supervisor.podAnnotations.aviary\.io/image-id='$$(docker image inspect --format '{{.Id}}' $(SUPERVISOR_IMAGE)) \
+		--set sandboxes.templateStore=s3://sandboxes/publish \
+		--set runtime.harnesses.opencode.image=$(call IN_REGISTRY,$(OPENCODE_IMAGE)) \
+		--set runtime.harnesses.codex.image=$(call IN_REGISTRY,$(CODEX_IMAGE)) \
 		$(if $(VALUES),--values $(VALUES)) \
 		--wait
 

@@ -409,3 +409,48 @@ func TestSupervisorPermissions(t *testing.T) {
 		t.Errorf("the migration is %v", migrate)
 	}
 }
+
+// The templates of the harnesses are built once too, before the Supervisors
+// of a release start, from what the release says of the harnesses.
+func TestTemplatesAreBuiltWithTheRelease(t *testing.T) {
+	objects, _ := chart(t, "default")
+	templates := rendered.Find(objects, "Job", "aviary-templates")
+	if at(templates, "metadata", "annotations", "helm.sh/hook") != "pre-install,pre-upgrade" ||
+		!reflect.DeepEqual(at(templates, "spec", "template", "spec", "containers", 0, "args"), []any{"templates"}) {
+		t.Errorf("the templates are built by %v", templates)
+	}
+	settings := env(templates)
+	for name, value := range map[string]string{
+		"AVIARY_SANDBOXES_URL":         "http://opensandbox-server.opensandbox-system",
+		"AVIARY_TEMPLATE_STORE":        "s3://sandbox-images/publish",
+		"AVIARY_MAX_TOOL_OUTPUT_BYTES": "65536",
+	} {
+		if settings[name] != value {
+			t.Errorf("the Job is told %s=%q, not %q", name, settings[name], value)
+		}
+	}
+	var harnesses map[string]struct {
+		Image   string            `json:"image"`
+		Sandbox map[string]string `json:"sandbox"`
+	}
+	if err := json.Unmarshal([]byte(settings["AVIARY_HARNESSES"]), &harnesses); err != nil {
+		t.Fatal(err)
+	}
+	size := map[string]string{"cpu": "1", "memory": "2Gi", "disk": "4Gi"}
+	if opencode := harnesses["opencode"]; opencode.Image != "aviary-harness-opencode:dev" || !reflect.DeepEqual(opencode.Sandbox, size) {
+		t.Errorf("the Job is told of the harness opencode: %v", opencode)
+	}
+	// The key of the sandbox service is in a secret, and not in the Job.
+	key := named(at(templates, "spec", "template", "spec", "containers", 0, "env"), "AVIARY_SANDBOXES_API_KEY")
+	if !reflect.DeepEqual(at(key, "valueFrom", "secretKeyRef"), map[string]any{"name": "aviary-sandboxes", "key": "api-key"}) {
+		t.Errorf("the key of the sandbox service is %v", key)
+	}
+
+	// An installation with its own.
+	objects, _ = chart(t, "set")
+	settings = env(rendered.Find(objects, "Job", "aviary-templates"))
+	if settings["AVIARY_SANDBOXES_URL"] != "https://sandboxes.example.com" || settings["AVIARY_TEMPLATE_STORE"] != "s3://example/templates" ||
+		!strings.Contains(settings["AVIARY_HARNESSES"], `"disk":"16Gi"`) {
+		t.Errorf("the Job of an installation with its own sandbox service is told %v", settings)
+	}
+}
