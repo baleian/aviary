@@ -49,6 +49,15 @@ redis.call('SET', KEYS[2], ARGV[1])
 return 1
 `)
 
+// follow gives the turn to the Supervisor ARGV[1] for ARGV[2] milliseconds,
+// unless another has it.
+var follow = valkey.NewLuaScript(`
+local follower = redis.call('GET', KEYS[1])
+if follower and follower ~= ARGV[1] then return 0 end
+redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+return 1
+`)
+
 // Plugin connects the Supervisor to the logs of this kind.
 type Plugin struct{}
 
@@ -158,6 +167,14 @@ func (l *log) Expire(ctx context.Context, turnID uuid.UUID, after time.Duration)
 	return nil
 }
 
+func (l *log) Follow(ctx context.Context, turnID, follower uuid.UUID, lease time.Duration) (bool, error) {
+	// A key cannot be kept for less than a millisecond.
+	milliseconds := max(lease.Milliseconds(), 1)
+	given, err := follow.Exec(ctx, l.client, []string{followerKey(turnID)},
+		[]string{follower.String(), strconv.FormatInt(milliseconds, 10)}).AsInt64()
+	return given == 1, err
+}
+
 func (l *log) Announce(ctx context.Context, channel string, turnID uuid.UUID) error {
 	return l.client.Do(ctx, l.client.B().Publish().Channel(channel).Message(turnID.String()).Build()).Error()
 }
@@ -191,4 +208,10 @@ func key(turnID uuid.UUID) string {
 // from the turn's stream, and no script could use both.
 func receivedKey(turnID uuid.UUID) string {
 	return "{turn:" + turnID.String() + "}:received"
+}
+
+// followerKey names where the Supervisor that follows the turn is kept, for
+// as long as its lease.
+func followerKey(turnID uuid.UUID) string {
+	return "{turn:" + turnID.String() + "}:follower"
 }

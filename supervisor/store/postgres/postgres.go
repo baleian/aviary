@@ -366,6 +366,21 @@ func (s *records) Session(ctx context.Context, id uuid.UUID) (store.Session, err
 	return sessionFrom(row), err
 }
 
+func (s *records) SetSandbox(ctx context.Context, sessionID uuid.UUID, from, to string) (bool, error) {
+	set, err := s.queries.SetSandbox(ctx, db.SetSandboxParams{ID: sessionID, Was: from, Sandbox: to})
+	if err != nil || set == 1 {
+		return err == nil, err
+	}
+	// The session is not there, or has another sandbox than it was said to.
+	if _, err := s.queries.GetSession(ctx, sessionID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, store.ErrNotFound
+		}
+		return false, err
+	}
+	return false, nil
+}
+
 func (s *records) Sessions(ctx context.Context, agentID, by, before uuid.UUID, limit int) ([]store.Session, error) {
 	var rows []db.Session
 	var err error
@@ -664,6 +679,44 @@ func (s *records) TakeTurn(ctx context.Context, token string, runner *uuid.UUID)
 	return store.TakenTurn{}, store.ErrTurnEnded
 }
 
+func (s *records) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.FollowedTurn, error) {
+	given, err := s.queries.FollowTurn(ctx, turnID)
+	if err != nil {
+		return store.FollowedTurn{}, err
+	}
+	row, err := s.queries.FollowedTurn(ctx, turnID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.FollowedTurn{}, store.ErrNotFound
+	}
+	if err != nil {
+		return store.FollowedTurn{}, err
+	}
+	turn := turnFrom(row.Turn)
+	switch {
+	case given == 1:
+	case turn.State == store.TurnQueued:
+		return store.FollowedTurn{}, store.ErrNotFound
+	default:
+		// The turn ended since it was looked for.
+		return store.FollowedTurn{}, store.ErrTurnEnded
+	}
+	followed := store.FollowedTurn{
+		Turn:         turn,
+		AgentID:      row.AgentID,
+		ProjectID:    row.ProjectID,
+		Harness:      row.Harness,
+		Instructions: row.Instructions,
+		Approval:     row.Approval,
+		ProviderURL:  row.ProviderUrl,
+		Model:        row.Model,
+		Dispatched:   time.Duration(row.Dispatched * float64(time.Second)),
+	}
+	if row.Sandbox != nil {
+		followed.Sandbox = *row.Sandbox
+	}
+	return followed, nil
+}
+
 func (s *records) RunningTurn(ctx context.Context, token string) (store.Origin, error) {
 	row, err := s.queries.RunningTurn(ctx, store.HashToken(token))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -897,6 +950,9 @@ func sessionFrom(row db.Session) store.Session {
 	session := store.Session{ID: row.ID, AgentID: row.AgentID, CreatedAt: row.CreatedAt}
 	if row.CreatedBy != nil {
 		session.CreatedBy = *row.CreatedBy
+	}
+	if row.Sandbox != nil {
+		session.Sandbox = *row.Sandbox
 	}
 	return session
 }

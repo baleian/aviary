@@ -25,6 +25,11 @@ returning *;
 -- name: GetSession :one
 select * from sessions where id = @id;
 
+-- name: SetSandbox :execrows
+-- The session is given the sandbox if it has the one that it is said to.
+update sessions set sandbox = nullif(sqlc.arg(sandbox)::text, '')
+where id = @id and coalesce(sandbox, '') = sqlc.arg(was)::text;
+
 -- name: ListSessions :many
 -- The sessions of an agent whose IDs are below @before, newest first: the ID
 -- of a session rises with the time at which it was created.
@@ -166,6 +171,21 @@ where turns.id = asked.id
            or (turns.state = 'running' and turns.runner_id = sqlc.narg(runner_id)))
 returning turns.id, turns.session_id, turns.seq, turns.text, turns.created_at, sessions.harness_session_id,
           agents.harness, agents.instructions, (asked.state = 'running')::boolean as again;
+
+-- name: FollowTurn :execrows
+-- A turn that was dispatched and has not ended runs once it is followed.
+update turns set state = 'running' where id = @id and state in ('dispatching', 'running');
+
+-- name: FollowedTurn :one
+-- The turn as the Supervisor that follows it gets it.
+select sqlc.embed(turns), agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
+       agents.approval, coalesce(providers.url, '')::text as provider_url, agents.model, sessions.sandbox,
+       extract(epoch from now() - coalesce(turns.dispatched_at, turns.created_at))::float8 as dispatched
+from turns
+join sessions on sessions.id = turns.session_id
+join agents on agents.id = sessions.agent_id
+left join providers on providers.id = agents.provider_id
+where turns.id = @id;
 
 -- name: GetTurnState :one
 select state from turns where token_hash = @token_hash;

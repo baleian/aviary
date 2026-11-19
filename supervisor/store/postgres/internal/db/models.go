@@ -77,6 +77,7 @@ type Session struct {
 	CreatedAt        time.Time
 	HarnessSessionID *string
 	CreatedBy        *uuid.UUID
+	Sandbox          *string
 }
 
 type Turn struct {

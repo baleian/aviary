@@ -118,6 +118,20 @@ func (s *Streams) Received(ctx context.Context, turnID uuid.UUID) (uint64, error
 	return s.log.Received(ctx, turnID)
 }
 
+// Follow says that the Supervisor follows the turn: it has the turn run and
+// records what comes of it. It reports whether the turn is that Supervisor's
+// for the time of the lease. A Supervisor that follows a turn says so again
+// before the lease is over. One that does not is taken to be gone, and the
+// turn is the next Supervisor's that asks.
+//
+// It keeps the Supervisors from doing the same work, and no more than that:
+// a log that has lost what it held gives a turn that is followed to another.
+// What the Supervisors record of a turn, they record once however many of
+// them do.
+func (s *Streams) Follow(ctx context.Context, turnID, follower uuid.UUID, lease time.Duration) (bool, error) {
+	return s.log.Follow(ctx, turnID, follower, lease)
+}
+
 // AppendQueued tells a turn that waits to run its position in the queue,
 // which is 1 for the turn that runs next.
 func (s *Streams) AppendQueued(ctx context.Context, turnID uuid.UUID, position int) error {

@@ -373,7 +373,7 @@ func (q *Queries) CreateSecretStore(ctx context.Context, arg CreateSecretStorePa
 const createSession = `-- name: CreateSession :one
 insert into sessions (id, agent_id, created_by)
 select $1::uuid, agents.id, $2::uuid from agents where agents.id = $3
-returning id, agent_id, created_at, harness_session_id, created_by
+returning id, agent_id, created_at, harness_session_id, created_by, sandbox
 `
 
 type CreateSessionParams struct {
@@ -391,6 +391,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		&i.CreatedAt,
 		&i.HarnessSessionID,
 		&i.CreatedBy,
+		&i.Sandbox,
 	)
 	return i, err
 }
@@ -636,6 +637,83 @@ func (q *Queries) ExpireTurns(ctx context.Context, seconds float64) ([]Turn, err
 	return items, nil
 }
 
+const followTurn = `-- name: FollowTurn :execrows
+update turns set state = 'running' where id = $1 and state in ('dispatching', 'running')
+`
+
+// A turn that was dispatched and has not ended runs once it is followed.
+func (q *Queries) FollowTurn(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, followTurn, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const followedTurn = `-- name: FollowedTurn :one
+select turns.id, turns.session_id, turns.seq, turns.state, turns.text, turns.created_at, turns.ended_at, turns.token_hash, turns.stop_reason, turns.dispatched_at, turns.total_tokens, turns.input_tokens, turns.output_tokens, turns.thought_tokens, turns.cached_read_tokens, turns.cached_write_tokens, turns.cancel_requested_at, turns.failure_reason, turns.failure_message, turns.started_at, turns.runner_id, turns.created_by, agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
+       agents.approval, coalesce(providers.url, '')::text as provider_url, agents.model, sessions.sandbox,
+       extract(epoch from now() - coalesce(turns.dispatched_at, turns.created_at))::float8 as dispatched
+from turns
+join sessions on sessions.id = turns.session_id
+join agents on agents.id = sessions.agent_id
+left join providers on providers.id = agents.provider_id
+where turns.id = $1
+`
+
+type FollowedTurnRow struct {
+	Turn         Turn
+	AgentID      uuid.UUID
+	ProjectID    uuid.UUID
+	Harness      string
+	Instructions string
+	Approval     string
+	ProviderUrl  string
+	Model        string
+	Sandbox      *string
+	Dispatched   float64
+}
+
+// The turn as the Supervisor that follows it gets it.
+func (q *Queries) FollowedTurn(ctx context.Context, id uuid.UUID) (FollowedTurnRow, error) {
+	row := q.db.QueryRow(ctx, followedTurn, id)
+	var i FollowedTurnRow
+	err := row.Scan(
+		&i.Turn.ID,
+		&i.Turn.SessionID,
+		&i.Turn.Seq,
+		&i.Turn.State,
+		&i.Turn.Text,
+		&i.Turn.CreatedAt,
+		&i.Turn.EndedAt,
+		&i.Turn.TokenHash,
+		&i.Turn.StopReason,
+		&i.Turn.DispatchedAt,
+		&i.Turn.TotalTokens,
+		&i.Turn.InputTokens,
+		&i.Turn.OutputTokens,
+		&i.Turn.ThoughtTokens,
+		&i.Turn.CachedReadTokens,
+		&i.Turn.CachedWriteTokens,
+		&i.Turn.CancelRequestedAt,
+		&i.Turn.FailureReason,
+		&i.Turn.FailureMessage,
+		&i.Turn.StartedAt,
+		&i.Turn.RunnerID,
+		&i.Turn.CreatedBy,
+		&i.AgentID,
+		&i.ProjectID,
+		&i.Harness,
+		&i.Instructions,
+		&i.Approval,
+		&i.ProviderUrl,
+		&i.Model,
+		&i.Sandbox,
+		&i.Dispatched,
+	)
+	return i, err
+}
+
 const freeUsername = `-- name: FreeUsername :exec
 update users set username = null where username = $1::text and subject <> $2::text
 `
@@ -797,7 +875,7 @@ func (q *Queries) GetSecretStore(ctx context.Context, id uuid.UUID) (SecretStore
 }
 
 const getSession = `-- name: GetSession :one
-select id, agent_id, created_at, harness_session_id, created_by from sessions where id = $1
+select id, agent_id, created_at, harness_session_id, created_by, sandbox from sessions where id = $1
 `
 
 func (q *Queries) GetSession(ctx context.Context, id uuid.UUID) (Session, error) {
@@ -809,6 +887,7 @@ func (q *Queries) GetSession(ctx context.Context, id uuid.UUID) (Session, error)
 		&i.CreatedAt,
 		&i.HarnessSessionID,
 		&i.CreatedBy,
+		&i.Sandbox,
 	)
 	return i, err
 }
@@ -1148,7 +1227,7 @@ func (q *Queries) ListRoles(ctx context.Context) ([]Role, error) {
 }
 
 const listSessions = `-- name: ListSessions :many
-select id, agent_id, created_at, harness_session_id, created_by from sessions where agent_id = $1 and id < $2 order by id desc limit $3
+select id, agent_id, created_at, harness_session_id, created_by, sandbox from sessions where agent_id = $1 and id < $2 order by id desc limit $3
 `
 
 type ListSessionsParams struct {
@@ -1174,6 +1253,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 			&i.CreatedAt,
 			&i.HarnessSessionID,
 			&i.CreatedBy,
+			&i.Sandbox,
 		); err != nil {
 			return nil, err
 		}
@@ -1186,7 +1266,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 }
 
 const listSessionsOf = `-- name: ListSessionsOf :many
-select id, agent_id, created_at, harness_session_id, created_by from sessions where agent_id = $1 and created_by = $2::uuid and id < $3
+select id, agent_id, created_at, harness_session_id, created_by, sandbox from sessions where agent_id = $1 and created_by = $2::uuid and id < $3
 order by id desc limit $4
 `
 
@@ -1218,6 +1298,7 @@ func (q *Queries) ListSessionsOf(ctx context.Context, arg ListSessionsOfParams) 
 			&i.CreatedAt,
 			&i.HarnessSessionID,
 			&i.CreatedBy,
+			&i.Sandbox,
 		); err != nil {
 			return nil, err
 		}
@@ -1715,6 +1796,26 @@ func (q *Queries) SetRole(ctx context.Context, arg SetRoleParams) (Role, error) 
 		&i.UpdatedBy,
 	)
 	return i, err
+}
+
+const setSandbox = `-- name: SetSandbox :execrows
+update sessions set sandbox = nullif($1::text, '')
+where id = $2 and coalesce(sandbox, '') = $3::text
+`
+
+type SetSandboxParams struct {
+	Sandbox string
+	ID      uuid.UUID
+	Was     string
+}
+
+// The session is given the sandbox if it has the one that it is said to.
+func (q *Queries) SetSandbox(ctx context.Context, arg SetSandboxParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setSandbox, arg.Sandbox, arg.ID, arg.Was)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const startTurn = `-- name: StartTurn :one

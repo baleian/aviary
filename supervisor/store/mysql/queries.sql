@@ -23,6 +23,9 @@ select sqlc.arg(id), agents.id, sqlc.narg(created_by) from agents where agents.i
 -- name: GetSession :one
 select * from sessions where id = ?;
 
+-- name: SetSandbox :exec
+update sessions set sandbox = sqlc.narg(sandbox) where id = sqlc.arg(id);
+
 -- name: ListSessions :many
 -- The sessions of an agent whose IDs are below the one that is given, newest
 -- first: the ID of a session rises with the time at which it was created.
@@ -147,6 +150,21 @@ from turns where state in ('dispatching', 'running');
 
 -- name: TakeTurn :exec
 update turns set state = 'running', runner_id = sqlc.narg(runner_id) where id = sqlc.arg(id);
+
+-- name: FollowTurn :exec
+-- A turn that was dispatched and has not ended runs once it is followed.
+update turns set state = 'running' where id = ? and state in ('dispatching', 'running');
+
+-- name: FollowedTurn :one
+-- The turn as the Supervisor that follows it gets it.
+select sqlc.embed(turns), agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
+       agents.approval, coalesce(providers.url, '') as provider_url, agents.model, sessions.sandbox,
+       cast(timestampdiff(microsecond, coalesce(turns.dispatched_at, turns.created_at), now(6)) as signed) as dispatched
+from turns
+join sessions on sessions.id = turns.session_id
+join agents on agents.id = sessions.agent_id
+left join providers on providers.id = agents.provider_id
+where turns.id = ?;
 
 -- name: SessionOfTurn :one
 -- What a runner is given of the session of its turn.

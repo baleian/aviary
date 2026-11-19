@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
+	"sync/atomic"
 	"testing"
 
 	"github.com/google/uuid"
@@ -129,6 +131,71 @@ func (suite suite) testAgentsOfAProject(t *testing.T) {
 
 // The sessions of an agent are listed newest first, a few at a time, and
 // those of one user by themselves.
+// A session keeps the sandbox that it runs in. It is given one, or loses
+// it, only if it has the one that whoever asks says it has: of several
+// Supervisors that give a session a sandbox at once, one does.
+func (suite suite) testSandboxOfASession(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	id := st.session()
+	has := func(sandbox string) {
+		t.Helper()
+		if session, err := st.another().Session(ctx, id); err != nil || session.Sandbox != sandbox {
+			t.Errorf("the session has the sandbox %q, not %q: %v", session.Sandbox, sandbox, err)
+		}
+	}
+	has("")
+	for _, step := range []struct {
+		from, to string
+		set      bool
+		then     string
+	}{
+		{from: "", to: "sandbox-1", set: true, then: "sandbox-1"},
+		// Another Supervisor made a sandbox for the session too.
+		{from: "", to: "sandbox-2", then: "sandbox-1"},
+		// The sandbox is gone, and then the session is given the next.
+		{from: "sandbox-2", to: "", then: "sandbox-1"},
+		{from: "sandbox-1", to: "", set: true, then: ""},
+		{from: "sandbox-1", to: "", then: ""},
+		{from: "", to: "sandbox-3", set: true, then: "sandbox-3"},
+		{from: "sandbox-3", to: "sandbox-3", set: true, then: "sandbox-3"},
+	} {
+		set, err := st.SetSandbox(ctx, id, step.from, step.to)
+		if err != nil || set != step.set {
+			t.Errorf("from %q to %q, the session was given the sandbox: %t, %v", step.from, step.to, set, err)
+		}
+		has(step.then)
+	}
+	if _, err := st.SetSandbox(ctx, uuid.New(), "", "sandbox-1"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("a session that there is not was given a sandbox: %v", err)
+	}
+	// The sessions of an agent are told with their sandboxes too.
+	session, err := st.Session(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := st.Sessions(ctx, session.AgentID, uuid.Nil, uuid.Max, 10)
+	if err != nil || len(sessions) != 1 || sessions[0].Sandbox != "sandbox-3" {
+		t.Errorf("the sessions of the agent are %+v: %v", sessions, err)
+	}
+
+	// Several Supervisors give a new session its sandbox at once.
+	fresh, supervisors := st.session(), st.supervisors(8)
+	var given atomic.Int32
+	atOnce(len(supervisors), func(i int) {
+		set, err := supervisors[i].SetSandbox(ctx, fresh, "", fmt.Sprintf("sandbox-of-%d", i))
+		if err != nil {
+			t.Error(err)
+		}
+		if set {
+			given.Add(1)
+		}
+	})
+	if given.Load() != 1 {
+		t.Errorf("of eight Supervisors that gave a session its sandbox at once, %d did", given.Load())
+	}
+}
+
 func (suite suite) testSessionsOfAnAgent(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)

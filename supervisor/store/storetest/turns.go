@@ -524,6 +524,57 @@ func (suite suite) testTakeTurn(t *testing.T) {
 	}
 }
 
+// A Supervisor that follows a turn is given what it takes to run the turn,
+// as it is now.
+func (suite suite) testFollowTurn(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	session := st.session()
+	queued := st.queue(session)
+	if _, err := st.FollowTurn(ctx, queued.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("a turn that waits to run was followed: %v", err)
+	}
+	if _, err := st.FollowTurn(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("a turn that there is not was followed: %v", err)
+	}
+
+	dispatch := st.dispatch()
+	followed, err := st.FollowTurn(ctx, dispatch.TurnID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if followed.ID != dispatch.TurnID || followed.SessionID != session || followed.Seq != 1 || followed.Text != "hello" ||
+		followed.State != store.TurnRunning || followed.CancelRequestedAt != nil ||
+		followed.AgentID != dispatch.AgentID || followed.ProjectID != dispatch.ProjectID ||
+		followed.Harness != "opencode" || followed.Instructions != "Be brief." || followed.Approval != "ask" ||
+		followed.ProviderURL != "" || followed.Model != "" || followed.Sandbox != "" ||
+		followed.Dispatched < 0 || followed.Dispatched > time.Minute {
+		t.Errorf("the Supervisor was given %+v", followed)
+	}
+	if state := st.turn(followed.ID).State; state != store.TurnRunning {
+		t.Errorf("a turn that a Supervisor follows is %s", state)
+	}
+
+	// The sandbox that the session has got meanwhile, and that the turn was
+	// asked to stop, are told to who follows it then: the same Supervisor,
+	// or the one that follows the turn after it.
+	if set, err := st.SetSandbox(ctx, session, "", "sandbox-1"); err != nil || !set {
+		t.Fatalf("the session was not given its sandbox: %v", err)
+	}
+	if _, _, err := st.CancelTurn(ctx, dispatch.TurnID); err != nil {
+		t.Fatal(err)
+	}
+	again, err := st.another().FollowTurn(ctx, dispatch.TurnID)
+	if err != nil || again.ID != followed.ID || again.Sandbox != "sandbox-1" || again.CancelRequestedAt == nil {
+		t.Errorf("the Supervisor that follows the turn then was given %+v: %v", again, err)
+	}
+
+	st.end(dispatch.TurnID, false, store.Failure{Reason: store.FailureRunner})
+	if _, err := st.FollowTurn(ctx, dispatch.TurnID); !errors.Is(err, store.ErrTurnEnded) {
+		t.Errorf("a turn that has ended was followed: %v", err)
+	}
+}
+
 // A turn is given to one runner only, also when several ask for it at once
 // through several Supervisors.
 func (suite suite) testTakeTurnGivesTheTurnToOneOfTheRunnersThatAskAtOnce(t *testing.T) {

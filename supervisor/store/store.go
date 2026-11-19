@@ -136,6 +136,10 @@ type Session struct {
 	// they are.
 	CreatedBy uuid.UUID `json:"created_by,omitzero"`
 	CreatedAt time.Time `json:"created_at"`
+	// Sandbox is the sandbox that the session runs in, as the sandbox
+	// service names it. It is empty for a session that has none: one that
+	// has run no turn yet, or whose sandbox is gone.
+	Sandbox string `json:"-"`
 }
 
 // Provider is a model provider of a project: a model endpoint and the key
@@ -282,6 +286,26 @@ type DispatchedTurn struct {
 	// Cancelling is how long ago the turn was asked to stop, or zero if it
 	// was not.
 	Cancelling time.Duration
+}
+
+// FollowedTurn is a turn as the Supervisor that follows it gets it, with
+// what it takes to run the turn.
+type FollowedTurn struct {
+	Turn
+	AgentID   uuid.UUID
+	ProjectID uuid.UUID
+	// Harness, Instructions and Approval are those of the session's agent.
+	Harness      string
+	Instructions string
+	Approval     string
+	// ProviderURL is the URL of the agent's provider and Model the name of
+	// the agent's model, if the agent names its model.
+	ProviderURL string
+	Model       string
+	// Sandbox is the sandbox of the session, if it has one.
+	Sandbox string
+	// Dispatched is how long ago the turn was dispatched.
+	Dispatched time.Duration
 }
 
 // TakenTurn is a turn as its runner gets it.
@@ -475,6 +499,15 @@ type Store interface {
 	// Session returns the session with the ID.
 	Session(ctx context.Context, id uuid.UUID) (Session, error)
 
+	// SetSandbox records that the session runs in the sandbox to from now
+	// on, where it ran in from before. Either is "" for none: a session is
+	// given its first sandbox from "", and loses its sandbox to "". It
+	// reports false, and records nothing, for a session that does not have
+	// the sandbox from: another Supervisor has given it one meanwhile, or
+	// taken that one away. It returns ErrNotFound if there is no such
+	// session.
+	SetSandbox(ctx context.Context, sessionID uuid.UUID, from, to string) (bool, error)
+
 	// Sessions returns the sessions of the agent whose IDs are below the ID
 	// before, newest first and at most limit of them: those of the user by,
 	// or of everyone if by is uuid.Nil. The ID of a session rises with the
@@ -571,6 +604,15 @@ type Store interface {
 	// It returns ErrNotFound if the token opens no turn, ErrTurnTaken if another
 	// runner took the turn and ErrTurnEnded if the turn has ended.
 	TakeTurn(ctx context.Context, token string, runner *uuid.UUID) (TakenTurn, error)
+
+	// FollowTurn returns a turn that was dispatched and has not ended as the
+	// Supervisor that follows it gets it: the one that has the turn run and
+	// records what comes of it. A turn that is followed runs. Which of the
+	// Supervisors follows a turn, they settle in the event log.
+	//
+	// It returns ErrNotFound if there is no such turn or the turn still
+	// waits to run, and ErrTurnEnded if the turn has ended.
+	FollowTurn(ctx context.Context, turnID uuid.UUID) (FollowedTurn, error)
 
 	// RunningTurn returns the turn that the token belongs to, while that turn
 	// runs, and what the turn belongs to. It returns ErrNotFound for any other

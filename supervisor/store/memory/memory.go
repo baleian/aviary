@@ -558,6 +558,22 @@ func (s *Store) Session(ctx context.Context, id uuid.UUID) (store.Session, error
 	return session.Session, nil
 }
 
+func (s *Store) SetSandbox(ctx context.Context, sessionID uuid.UUID, from, to string) (bool, error) {
+	if err := s.begin(ctx); err != nil {
+		return false, err
+	}
+	defer s.mu.Unlock()
+	session, found := s.sessions[sessionID]
+	if !found {
+		return false, store.ErrNotFound
+	}
+	if session.Sandbox != from {
+		return false, nil
+	}
+	session.Sandbox = to
+	return true, nil
+}
+
 func (s *Store) Sessions(ctx context.Context, agentID, by, before uuid.UUID, limit int) ([]store.Session, error) {
 	if err := s.begin(ctx); err != nil {
 		return nil, err
@@ -908,6 +924,37 @@ func (s *Store) DispatchedTurns(ctx context.Context) ([]store.DispatchedTurn, er
 		dispatched = append(dispatched, one)
 	}
 	return dispatched, nil
+}
+
+func (s *Store) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.FollowedTurn, error) {
+	if err := s.begin(ctx); err != nil {
+		return store.FollowedTurn{}, err
+	}
+	defer s.mu.Unlock()
+	turn, found := s.turns[turnID]
+	now := s.now()
+	switch {
+	case !found || turn.State == store.TurnQueued:
+		return store.FollowedTurn{}, store.ErrNotFound
+	case turn.State != store.TurnDispatching && turn.State != store.TurnRunning:
+		return store.FollowedTurn{}, store.ErrTurnEnded
+	}
+	turn.State = store.TurnRunning
+	session := s.sessions[turn.SessionID]
+	agent := s.agents[session.AgentID]
+	followed := store.FollowedTurn{
+		Turn: turn.Turn, AgentID: agent.ID, ProjectID: agent.ProjectID,
+		Harness: agent.Harness, Instructions: agent.Instructions, Approval: agent.Approval,
+		Sandbox: session.Sandbox, Dispatched: now.Sub(turn.CreatedAt),
+	}
+	if turn.dispatchedAt != nil {
+		followed.Dispatched = now.Sub(*turn.dispatchedAt)
+	}
+	if agent.Model != nil {
+		followed.Model = agent.Model.Name
+		followed.ProviderURL = s.providers[agent.Model.Provider].URL
+	}
+	return followed, nil
 }
 
 func (s *Store) TakeTurn(ctx context.Context, token string, runner *uuid.UUID) (store.TakenTurn, error) {

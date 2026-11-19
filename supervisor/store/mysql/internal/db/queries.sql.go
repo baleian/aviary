@@ -523,6 +523,80 @@ func (q *Queries) ExpireTurn(ctx context.Context, id key.ID) error {
 	return err
 }
 
+const followTurn = `-- name: FollowTurn :exec
+update turns set state = 'running' where id = ? and state in ('dispatching', 'running')
+`
+
+// A turn that was dispatched and has not ended runs once it is followed.
+func (q *Queries) FollowTurn(ctx context.Context, id key.ID) error {
+	_, err := q.db.ExecContext(ctx, followTurn, id)
+	return err
+}
+
+const followedTurn = `-- name: FollowedTurn :one
+select turns.id, turns.session_id, turns.seq, turns.state, turns.text, turns.created_at, turns.dispatched_at, turns.started_at, turns.cancel_requested_at, turns.ended_at, turns.token_hash, turns.runner_id, turns.stop_reason, turns.failure_reason, turns.failure_message, turns.total_tokens, turns.input_tokens, turns.output_tokens, turns.thought_tokens, turns.cached_read_tokens, turns.cached_write_tokens, turns.created_by, agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
+       agents.approval, coalesce(providers.url, '') as provider_url, agents.model, sessions.sandbox,
+       cast(timestampdiff(microsecond, coalesce(turns.dispatched_at, turns.created_at), now(6)) as signed) as dispatched
+from turns
+join sessions on sessions.id = turns.session_id
+join agents on agents.id = sessions.agent_id
+left join providers on providers.id = agents.provider_id
+where turns.id = ?
+`
+
+type FollowedTurnRow struct {
+	Turn         Turn
+	AgentID      key.ID
+	ProjectID    key.ID
+	Harness      string
+	Instructions string
+	Approval     string
+	ProviderUrl  string
+	Model        string
+	Sandbox      *string
+	Dispatched   int64
+}
+
+// The turn as the Supervisor that follows it gets it.
+func (q *Queries) FollowedTurn(ctx context.Context, id key.ID) (FollowedTurnRow, error) {
+	row := q.db.QueryRowContext(ctx, followedTurn, id)
+	var i FollowedTurnRow
+	err := row.Scan(
+		&i.Turn.ID,
+		&i.Turn.SessionID,
+		&i.Turn.Seq,
+		&i.Turn.State,
+		&i.Turn.Text,
+		&i.Turn.CreatedAt,
+		&i.Turn.DispatchedAt,
+		&i.Turn.StartedAt,
+		&i.Turn.CancelRequestedAt,
+		&i.Turn.EndedAt,
+		&i.Turn.TokenHash,
+		&i.Turn.RunnerID,
+		&i.Turn.StopReason,
+		&i.Turn.FailureReason,
+		&i.Turn.FailureMessage,
+		&i.Turn.TotalTokens,
+		&i.Turn.InputTokens,
+		&i.Turn.OutputTokens,
+		&i.Turn.ThoughtTokens,
+		&i.Turn.CachedReadTokens,
+		&i.Turn.CachedWriteTokens,
+		&i.Turn.CreatedBy,
+		&i.AgentID,
+		&i.ProjectID,
+		&i.Harness,
+		&i.Instructions,
+		&i.Approval,
+		&i.ProviderUrl,
+		&i.Model,
+		&i.Sandbox,
+		&i.Dispatched,
+	)
+	return i, err
+}
+
 const freeUsername = `-- name: FreeUsername :exec
 update users set username = null where username = ? and subject <> ?
 `
@@ -700,7 +774,7 @@ func (q *Queries) GetSecretStore(ctx context.Context, id key.ID) (SecretStore, e
 }
 
 const getSession = `-- name: GetSession :one
-select id, agent_id, harness_session_id, created_at, created_by from sessions where id = ?
+select id, agent_id, harness_session_id, created_at, created_by, sandbox from sessions where id = ?
 `
 
 func (q *Queries) GetSession(ctx context.Context, id key.ID) (Session, error) {
@@ -712,6 +786,7 @@ func (q *Queries) GetSession(ctx context.Context, id key.ID) (Session, error) {
 		&i.HarnessSessionID,
 		&i.CreatedAt,
 		&i.CreatedBy,
+		&i.Sandbox,
 	)
 	return i, err
 }
@@ -1081,7 +1156,7 @@ func (q *Queries) ListRoles(ctx context.Context) ([]Role, error) {
 }
 
 const listSessions = `-- name: ListSessions :many
-select id, agent_id, harness_session_id, created_at, created_by from sessions where agent_id = ? and id < ? order by id desc limit ?
+select id, agent_id, harness_session_id, created_at, created_by, sandbox from sessions where agent_id = ? and id < ? order by id desc limit ?
 `
 
 type ListSessionsParams struct {
@@ -1107,6 +1182,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 			&i.HarnessSessionID,
 			&i.CreatedAt,
 			&i.CreatedBy,
+			&i.Sandbox,
 		); err != nil {
 			return nil, err
 		}
@@ -1122,7 +1198,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 }
 
 const listSessionsOf = `-- name: ListSessionsOf :many
-select id, agent_id, harness_session_id, created_at, created_by from sessions
+select id, agent_id, harness_session_id, created_at, created_by, sandbox from sessions
 where agent_id = ? and created_by = ? and id < ?
 order by id desc limit ?
 `
@@ -1155,6 +1231,7 @@ func (q *Queries) ListSessionsOf(ctx context.Context, arg ListSessionsOfParams) 
 			&i.HarnessSessionID,
 			&i.CreatedAt,
 			&i.CreatedBy,
+			&i.Sandbox,
 		); err != nil {
 			return nil, err
 		}
@@ -1768,6 +1845,20 @@ type SetRoleParams struct {
 
 func (q *Queries) SetRole(ctx context.Context, arg SetRoleParams) error {
 	_, err := q.db.ExecContext(ctx, setRole, arg.Permissions, arg.UpdatedBy, arg.Name)
+	return err
+}
+
+const setSandbox = `-- name: SetSandbox :exec
+update sessions set sandbox = ? where id = ?
+`
+
+type SetSandboxParams struct {
+	Sandbox *string
+	ID      key.ID
+}
+
+func (q *Queries) SetSandbox(ctx context.Context, arg SetSandboxParams) error {
+	_, err := q.db.ExecContext(ctx, setSandbox, arg.Sandbox, arg.ID)
 	return err
 }
 

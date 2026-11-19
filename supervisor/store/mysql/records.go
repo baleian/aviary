@@ -463,6 +463,29 @@ func (s *records) Session(ctx context.Context, id uuid.UUID) (store.Session, err
 	return sessionFrom(row), found(err)
 }
 
+func (s *records) SetSandbox(ctx context.Context, sessionID uuid.UUID, from, to string) (bool, error) {
+	set := false
+	err := s.within(ctx, func(queries *db.Queries) error {
+		if _, err := queries.LockSession(ctx, key.ID(sessionID)); err != nil {
+			return found(err)
+		}
+		row, err := queries.GetSession(ctx, key.ID(sessionID))
+		if err != nil {
+			return err
+		}
+		if has := sessionFrom(row).Sandbox; has != from {
+			return nil
+		}
+		set = true
+		params := db.SetSandboxParams{ID: key.ID(sessionID)}
+		if to != "" {
+			params.Sandbox = &to
+		}
+		return queries.SetSandbox(ctx, params)
+	})
+	return set && err == nil, err
+}
+
 func (s *records) Sessions(ctx context.Context, agentID, by, before uuid.UUID, limit int) ([]store.Session, error) {
 	var rows []db.Session
 	var err error
@@ -488,6 +511,9 @@ func sessionFrom(row db.Session) store.Session {
 	session := store.Session{ID: uuid.UUID(row.ID), AgentID: uuid.UUID(row.AgentID), CreatedAt: row.CreatedAt}
 	if row.CreatedBy != nil {
 		session.CreatedBy = uuid.UUID(*row.CreatedBy)
+	}
+	if row.Sandbox != nil {
+		session.Sandbox = *row.Sandbox
 	}
 	return session
 }
@@ -792,6 +818,39 @@ func (s *records) DispatchedTurns(ctx context.Context) ([]store.DispatchedTurn, 
 		}
 	}
 	return turns, nil
+}
+
+func (s *records) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.FollowedTurn, error) {
+	if err := s.queries.FollowTurn(ctx, key.ID(turnID)); err != nil {
+		return store.FollowedTurn{}, err
+	}
+	row, err := s.queries.FollowedTurn(ctx, key.ID(turnID))
+	if err != nil {
+		return store.FollowedTurn{}, found(err)
+	}
+	turn := turnFrom(row.Turn)
+	switch turn.State {
+	case store.TurnRunning:
+	case store.TurnQueued:
+		return store.FollowedTurn{}, store.ErrNotFound
+	default:
+		return store.FollowedTurn{}, store.ErrTurnEnded
+	}
+	followed := store.FollowedTurn{
+		Turn:         turn,
+		AgentID:      uuid.UUID(row.AgentID),
+		ProjectID:    uuid.UUID(row.ProjectID),
+		Harness:      row.Harness,
+		Instructions: row.Instructions,
+		Approval:     row.Approval,
+		ProviderURL:  row.ProviderUrl,
+		Model:        row.Model,
+		Dispatched:   since(row.Dispatched),
+	}
+	if row.Sandbox != nil {
+		followed.Sandbox = *row.Sandbox
+	}
+	return followed, nil
 }
 
 func (s *records) TakeTurn(ctx context.Context, token string, runner *uuid.UUID) (store.TakenTurn, error) {

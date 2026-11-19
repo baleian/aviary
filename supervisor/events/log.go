@@ -51,6 +51,13 @@ type Log interface {
 	// Expire has what the log holds of the turn deleted when the time has
 	// passed, which is at once if it is zero.
 	Expire(ctx context.Context, turnID uuid.UUID, after time.Duration) error
+	// Follow gives the turn to the Supervisor that asks to follow it, which
+	// names itself with follower, for as long as the lease, and reports
+	// whether it did. A turn is given to one Supervisor at a time: to one
+	// that asks while nobody has it, and again to the one that has it, for
+	// another lease. It is not given to another before the lease is over,
+	// also when several ask at once.
+	Follow(ctx context.Context, turnID, follower uuid.UUID, lease time.Duration) (bool, error)
 	// Announce tells the Supervisors that watch the channel of the turn.
 	Announce(ctx context.Context, channel string, turnID uuid.UUID) error
 	// Watch calls announced for every turn that is announced on the channel,
