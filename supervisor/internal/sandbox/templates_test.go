@@ -3,114 +3,45 @@ package sandbox
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"net/http/httptest"
-	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
+
+	"aviary/supervisor/internal/sandbox/sandboxtest"
 )
 
-// service is the sandbox service of the tests: it keeps the templates that
-// it is asked to build, and builds none until the test says how one ended.
-type service struct {
-	*httptest.Server
-	mu        sync.Mutex
-	templates []Template
-	specs     []TemplateSpec
-	// refuses is what the service answers instead, if it is set.
-	refuses int
-}
-
-const key = "the-key-of-the-service"
-
-func serve(t *testing.T) *service {
+// serve starts a sandbox service that builds no template until the test
+// says how its building ended.
+func serve(t *testing.T) *sandboxtest.Service {
 	t.Helper()
-	s := &service{}
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/templates", func(w http.ResponseWriter, r *http.Request) {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		var spec TemplateSpec
-		if r.Header.Get("OPEN-SANDBOX-API-KEY") != key || json.NewDecoder(r.Body).Decode(&spec) != nil {
-			http.Error(w, `{"message": "who are you"}`, http.StatusUnauthorized)
-			return
-		}
-		if s.refuses != 0 {
-			http.Error(w, `{"message": "the store is not there"}`, s.refuses)
-			return
-		}
-		template := Template{
-			ID:       fmt.Sprintf("tpl-%d", len(s.templates)+1),
-			Metadata: spec.Metadata,
-			Status:   TemplateStatus{Phase: "Pending"},
-		}
-		s.templates = append(s.templates, template)
-		s.specs = append(s.specs, spec)
-		_ = json.NewEncoder(w).Encode(template)
-	})
-	mux.HandleFunc("GET /v1/templates", func(w http.ResponseWriter, r *http.Request) {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		name, value, _ := strings.Cut(r.URL.Query().Get("metadata"), "=")
-		var found []Template
-		for _, template := range s.templates {
-			if template.Metadata[name] == value {
-				found = append(found, template)
-			}
-		}
-		// Two to a page, to have more than one.
-		page := 1
-		fmt.Sscan(r.URL.Query().Get("page"), &page)
-		from := min((page-1)*2, len(found))
-		to := min(from+2, len(found))
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"items":      found[from:to],
-			"pagination": map[string]any{"hasNextPage": to < len(found)},
-		})
-	})
-	s.Server = httptest.NewServer(mux)
-	t.Cleanup(s.Close)
+	s := sandboxtest.New(t)
+	s.HoldTemplates()
 	return s
 }
 
-// ends sets how the building of the template ended.
-func (s *service) ends(id, phase, message string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i := range s.templates {
-		if s.templates[i].ID == id {
-			s.templates[i].Status = TemplateStatus{Phase: phase, Message: message}
-		}
-	}
-}
-
-// asked waits until the service was asked for so many templates, and
-// returns what they were to be built from.
-func (s *service) asked(t *testing.T, count int) []TemplateSpec {
+func client(t *testing.T, s *sandboxtest.Service) *Client {
 	t.Helper()
-	for range 500 {
-		s.mu.Lock()
-		specs := slices.Clone(s.specs)
-		s.mu.Unlock()
-		if len(specs) >= count {
-			return specs
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("the service was not asked for %d templates", count)
-	return nil
-}
-
-func (s *service) client(t *testing.T) *Client {
-	t.Helper()
-	client, err := New(s.URL, key)
+	client, err := New(s.URL, sandboxtest.Key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return client
+}
+
+// asked waits until the service was asked for so many templates, and
+// returns what they were to be built from.
+func asked(t *testing.T, s *sandboxtest.Service, count int) []TemplateSpec {
+	t.Helper()
+	var specs []TemplateSpec
+	for _, encoded := range s.Asked(t, count) {
+		var spec TemplateSpec
+		if err := json.Unmarshal(encoded, &spec); err != nil {
+			t.Fatal(err)
+		}
+		specs = append(specs, spec)
+	}
+	return specs
 }
 
 func needed() Templates {
@@ -144,8 +75,8 @@ func outcome(t *testing.T, done <-chan error) error {
 
 func TestATemplateIsBuiltFromTheHarnessAsTheInstallationSetsItUp(t *testing.T) {
 	s := serve(t)
-	done := bake(s.client(t), needed())
-	spec := s.asked(t, 1)[0]
+	done := bake(client(t, s), needed())
+	spec := asked(t, s, 1)[0]
 	digest := spec.Metadata[metadataTemplate]
 	spec.Metadata = nil
 	want := TemplateSpec{
@@ -166,8 +97,8 @@ func TestATemplateIsBuiltFromTheHarnessAsTheInstallationSetsItUp(t *testing.T) {
 		t.Fatalf("the baking ended before the template was built: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
-	s.ends("tpl-1", "Building", "")
-	s.ends("tpl-1", Succeeded, "")
+	s.Ends("tpl-1", "Building", "")
+	s.Ends("tpl-1", Succeeded, "")
 	if err := outcome(t, done); err != nil {
 		t.Fatal(err)
 	}
@@ -182,21 +113,21 @@ func must(encoded []byte, err error) []byte {
 
 func TestATemplateThatIsThereIsNotBuiltAgain(t *testing.T) {
 	s := serve(t)
-	done := bake(s.client(t), needed())
-	s.asked(t, 1)
-	s.ends("tpl-1", Succeeded, "")
+	done := bake(client(t, s), needed())
+	asked(t, s, 1)
+	s.Ends("tpl-1", Succeeded, "")
 	if err := outcome(t, done); err != nil {
 		t.Fatal(err)
 	}
 	// The same installation is set up again, and then with a harness more.
-	if err := outcome(t, bake(s.client(t), needed())); err != nil {
+	if err := outcome(t, bake(client(t, s), needed())); err != nil {
 		t.Fatal(err)
 	}
 	more := needed()
 	more.Harnesses["codex"] = Harness{Image: "registry.example.com/codex:1.0", Sandbox: Size{CPU: "1", Memory: "1Gi", Disk: "4Gi"}}
-	done = bake(s.client(t), more)
-	specs := s.asked(t, 2)
-	s.ends("tpl-2", Succeeded, "")
+	done = bake(client(t, s), more)
+	specs := asked(t, s, 2)
+	s.Ends("tpl-2", Succeeded, "")
 	if err := outcome(t, done); err != nil {
 		t.Fatal(err)
 	}
@@ -241,34 +172,34 @@ func TestAHarnessThatHasChangedHasAnotherTemplate(t *testing.T) {
 func TestATemplateThatIsBeingBuiltIsWaitedFor(t *testing.T) {
 	s := serve(t)
 	// Two set the installation up at once.
-	first := bake(s.client(t), needed())
-	s.asked(t, 1)
-	second := bake(s.client(t), needed())
+	first := bake(client(t, s), needed())
+	asked(t, s, 1)
+	second := bake(client(t, s), needed())
 	time.Sleep(50 * time.Millisecond)
-	s.ends("tpl-1", Succeeded, "")
+	s.Ends("tpl-1", Succeeded, "")
 	for _, done := range []<-chan error{first, second} {
 		if err := outcome(t, done); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if specs := s.asked(t, 1); len(specs) != 1 {
+	if specs := asked(t, s, 1); len(specs) != 1 {
 		t.Errorf("the template was built %d times", len(specs))
 	}
 }
 
 func TestATemplateThatWasNotBuiltIsWhyTheBakingFails(t *testing.T) {
 	s := serve(t)
-	done := bake(s.client(t), needed())
-	s.asked(t, 1)
-	s.ends("tpl-1", Failed, "Error (exit code 1)")
+	done := bake(client(t, s), needed())
+	asked(t, s, 1)
+	s.Ends("tpl-1", Failed, "Error (exit code 1)")
 	err := outcome(t, done)
 	if err == nil || !strings.Contains(err.Error(), "opencode") || !strings.Contains(err.Error(), "tpl-1: Error (exit code 1)") {
 		t.Fatalf("the baking ended with %v", err)
 	}
 	// The next time it is tried again, and the one that failed is left.
-	done = bake(s.client(t), needed())
-	s.asked(t, 2)
-	s.ends("tpl-2", Succeeded, "")
+	done = bake(client(t, s), needed())
+	asked(t, s, 2)
+	s.Ends("tpl-2", Succeeded, "")
 	if err := outcome(t, done); err != nil {
 		t.Fatal(err)
 	}
@@ -276,26 +207,26 @@ func TestATemplateThatWasNotBuiltIsWhyTheBakingFails(t *testing.T) {
 
 func TestWhatTheServiceRefusesIsWhyTheBakingFails(t *testing.T) {
 	s := serve(t)
-	s.refuses = http.StatusBadRequest
-	err := outcome(t, bake(s.client(t), needed()))
+	s.RefuseTemplates(http.StatusBadRequest)
+	err := outcome(t, bake(client(t, s), needed()))
 	if err == nil || !strings.Contains(err.Error(), "400 Bad Request") || !strings.Contains(err.Error(), "the store is not there") {
 		t.Fatalf("the baking ended with %v", err)
 	}
 	// A service that is asked with another key.
 	stranger, _ := New(s.URL, "another-key")
-	s.refuses = 0
+	s.RefuseTemplates(0)
 	err = outcome(t, bake(stranger, needed()))
 	if err == nil || !strings.Contains(err.Error(), "401") {
 		t.Fatalf("the baking with another key ended with %v", err)
 	}
-	if _, err := New("opensandbox-server", key); err == nil {
+	if _, err := New("opensandbox-server", sandboxtest.Key); err == nil {
 		t.Error("an address without a scheme was taken")
 	}
 }
 
 func TestTheTemplatesOfALongListAreAllRead(t *testing.T) {
 	s := serve(t)
-	client := s.client(t)
+	client := client(t, s)
 	for range 5 {
 		if _, err := client.CreateTemplate(context.Background(), TemplateSpec{Metadata: map[string]string{"of": "many"}}); err != nil {
 			t.Fatal(err)

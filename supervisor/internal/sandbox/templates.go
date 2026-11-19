@@ -72,6 +72,25 @@ func (t Templates) spec(name string) (TemplateSpec, error) {
 	return spec, nil
 }
 
+// Template returns the template of the harness as the installation is set
+// up, which a release has had built: ErrNotFound if none has.
+func (c *Client) Template(ctx context.Context, templates Templates, name string) (string, error) {
+	spec, err := templates.spec(name)
+	if err != nil {
+		return "", err
+	}
+	found, err := c.Templates(ctx, metadataTemplate, spec.Metadata[metadataTemplate])
+	if err != nil {
+		return "", fmt.Errorf("the template of the harness %s: %w", name, err)
+	}
+	for _, template := range found {
+		if template.Status.Phase == Succeeded {
+			return template.ID, nil
+		}
+	}
+	return "", fmt.Errorf("the template of the harness %s: %w", name, ErrNotFound)
+}
+
 // Bake has the templates built that the installation needs and does not
 // have, and returns when all of them are built. A template that is being
 // built already is waited for, and not built again.

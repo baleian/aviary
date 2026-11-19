@@ -1,7 +1,8 @@
 # The pool of the local cluster: the pods that its sandboxes run in, each with
 # the egress that all the sandboxes of the pod go out through. A sandbox has
-# the size that its template was made with. `make cluster-up` applies this
-# after OpenSandbox is installed.
+# the size that its template was made with, which must be no more than a pod
+# of the pool has for its sandboxes: five times half of what is written
+# below. `make cluster-up` applies this after OpenSandbox is installed.
 apiVersion: sandbox.fast.io/v1alpha2
 kind: SandboxPool
 metadata:
@@ -99,7 +100,7 @@ spec:
   sandboxResources:
     mode: ResourceAware
     cpu: "1"
-    memory: 512Mi
+    memory: 2Gi
     pids: 128
     overcommitRatio:
       cpu: "2"

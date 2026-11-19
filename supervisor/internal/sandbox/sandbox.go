@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,11 +21,41 @@ import (
 // a few kilobytes.
 const answerLimit = 4 << 20
 
+// ErrNotFound is the error for what is asked for and is not there: a sandbox
+// that is gone, a template that was not built, a turn that a runner does not
+// have.
+var ErrNotFound = errors.New("not found")
+
+// Refusal is an answer that is no success, of the sandbox service or of a
+// runner.
+type Refusal struct {
+	// Who answered, and what it was asked.
+	Who, Asked string
+	// Status is the HTTP status of the answer, and Said what it said.
+	Status int
+	Said   string
+}
+
+func (r *Refusal) Error() string {
+	return fmt.Sprintf("%s answered %d %s to %s: %s", r.Who, r.Status, http.StatusText(r.Status), r.Asked, r.Said)
+}
+
+// Is makes an answer that something is not there an ErrNotFound.
+func (r *Refusal) Is(target error) bool {
+	return target == ErrNotFound && r.Status == http.StatusNotFound
+}
+
 // Client asks the lifecycle API of OpenSandbox.
 type Client struct {
 	address string
 	key     string
 	http    *http.Client
+	// stream is what the runners are asked with: the answer to one who reads
+	// the events of a turn takes as long as the turn.
+	stream *http.Client
+	// quiet is for how long a runner may send nothing to one who reads the
+	// events of a turn.
+	quiet time.Duration
 }
 
 // New returns a client of the lifecycle API at the address, such as
@@ -39,6 +70,8 @@ func New(address, key string) (*Client, error) {
 		address: strings.TrimSuffix(address, "/") + "/v1",
 		key:     key,
 		http:    &http.Client{Timeout: 30 * time.Second},
+		stream:  &http.Client{},
+		quiet:   time.Minute,
 	}, nil
 }
 
@@ -120,6 +153,86 @@ func (c *Client) Templates(ctx context.Context, name, value string) ([]Template,
 	}
 }
 
+// Sandbox is the sandbox of a session: a small virtual machine in which the
+// runner and the harness of the session run.
+type Sandbox struct {
+	ID     string        `json:"id"`
+	Status SandboxStatus `json:"status"`
+}
+
+// SandboxStatus is how the sandbox is.
+type SandboxStatus struct {
+	// State is Pending, Running, Pausing, Paused, Resuming, Stopping,
+	// Terminated or Failed.
+	State   string `json:"state"`
+	Reason  string `json:"reason"`
+	Message string `json:"message"`
+}
+
+// The states of a sandbox that tell what to do with it.
+const (
+	// Running is the state of a sandbox whose runner can be asked.
+	Running = "Running"
+	// Pending is the state of a sandbox that is being made.
+	Pending = "Pending"
+)
+
+// kept is for how many seconds a sandbox is kept, which the service wants to
+// be told for one that is made from a template: a hundred years, which is
+// until it is deleted.
+const kept = 100 * 365 * 24 * 60 * 60
+
+// CreateSandbox has a sandbox made from the template, and kept until it is
+// deleted. It is there at once, and takes a moment to run: longer on a node
+// that has not run its template before. A template that is not there, or
+// not built, is ErrNotFound.
+func (c *Client) CreateSandbox(ctx context.Context, template string, metadata map[string]string) (Sandbox, error) {
+	spec := struct {
+		TemplateID string            `json:"templateId"`
+		Timeout    int64             `json:"timeout"`
+		Metadata   map[string]string `json:"metadata,omitempty"`
+	}{template, kept, metadata}
+	var sandbox Sandbox
+	err := c.ask(ctx, http.MethodPost, "/sandboxes", nil, spec, &sandbox)
+	return sandbox, err
+}
+
+// Sandbox returns the sandbox as it is now, or ErrNotFound if it is gone.
+func (c *Client) Sandbox(ctx context.Context, id string) (Sandbox, error) {
+	var sandbox Sandbox
+	err := c.ask(ctx, http.MethodGet, "/sandboxes/"+url.PathEscape(id), nil, nil, &sandbox)
+	return sandbox, err
+}
+
+// DeleteSandbox has the sandbox deleted, with all that is in it. A sandbox
+// that is gone already is no error.
+func (c *Client) DeleteSandbox(ctx context.Context, id string) error {
+	err := c.ask(ctx, http.MethodDelete, "/sandboxes/"+url.PathEscape(id), nil, nil, nil)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	return err
+}
+
+// Runner returns the runner in the sandbox, as it is reached: through the
+// ingress gateway of the sandbox service, with a route that the service
+// signs. The service gives the route also for a sandbox that is gone.
+func (c *Client) Runner(ctx context.Context, id string) (*Runner, error) {
+	var endpoint struct {
+		Endpoint string            `json:"endpoint"`
+		Headers  map[string]string `json:"headers"`
+	}
+	path := "/sandboxes/" + url.PathEscape(id) + "/endpoints/" + strconv.Itoa(RunnerPort)
+	if err := c.ask(ctx, http.MethodGet, path, nil, nil, &endpoint); err != nil {
+		return nil, err
+	}
+	route := endpoint.Headers[routeHeader]
+	if endpoint.Endpoint == "" || route == "" {
+		return nil, fmt.Errorf("the sandbox service gave no way to the sandbox %s", id)
+	}
+	return &Runner{address: "http://" + endpoint.Endpoint, route: route, http: c.stream, quiet: c.quiet}, nil
+}
+
 // ask sends a request and reads the answer into into. An answer that is no
 // success is an error that says what the service said.
 func (c *Client) ask(ctx context.Context, method, path string, query url.Values, body, into any) error {
@@ -153,8 +266,10 @@ func (c *Client) ask(ctx context.Context, method, path string, query url.Values,
 		return fmt.Errorf("the sandbox service: %w", err)
 	}
 	if answer.StatusCode < 200 || answer.StatusCode > 299 {
-		return fmt.Errorf("the sandbox service answered %s to %s %s: %s",
-			answer.Status, method, path, strings.TrimSpace(string(said)))
+		return &Refusal{
+			Who: "the sandbox service", Asked: method + " " + path,
+			Status: answer.StatusCode, Said: strings.TrimSpace(string(said)),
+		}
 	}
 	if into == nil {
 		return nil
