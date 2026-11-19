@@ -196,6 +196,12 @@ endif
 		--namespace aviary-data \
 		--values hack/kind/valkey-values.yaml \
 		--wait
+	$(KUBECTL) get secret rustfs-keys --namespace aviary-data >/dev/null 2>&1 || \
+		$(KUBECTL) create secret generic rustfs-keys --namespace aviary-data \
+			--from-literal=access=$$(openssl rand -hex 12) --from-literal=secret=$$(openssl rand -hex 24)
+	$(KUBECTL) apply -f hack/kind/rustfs.yaml
+	$(KUBECTL) --namespace aviary-data rollout status statefulset/rustfs --timeout 300s
+	$(KUBECTL) --namespace aviary-data wait --for=condition=complete job/rustfs-bucket --timeout 300s
 ifeq ($(DATABASE),mysql)
 	$(KUBECTL) --namespace aviary-data rollout status statefulset/mysql --timeout 300s
 else
