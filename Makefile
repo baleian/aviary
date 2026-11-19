@@ -238,6 +238,12 @@ endif
 		--set artifactStore.endpoint=http://rustfs.aviary-data.svc.cluster.local:9000 \
 		--set controller.sandboxtemplateBuilderImage=$(SANDBOXTEMPLATE_BUILDER_IMAGE) \
 		--wait --timeout 10m
+	$(KUBECTL) apply -f hack/kind/opensandbox-server-records.yaml
+	$(HELM) upgrade --install opensandbox-valkey valkey \
+		--repo https://valkey.io/valkey-helm/ \
+		--version $(VALKEY_CHART) \
+		--namespace opensandbox-system \
+		--wait
 	$(HELM) upgrade --install opensandbox-server $(OPENSANDBOX_CHARTS)/server \
 		--namespace opensandbox-system \
 		--values hack/kind/opensandbox-server-values.yaml \

@@ -17,6 +17,14 @@ server:
     host: opensandbox-ingress-gateway.opensandbox-system.svc.cluster.local
     secureAccess:
       existingSecret: opensandbox-route-keys
+  # The file of its records, which is to outlast its pod.
+  volumes:
+    - name: records
+      persistentVolumeClaim:
+        claimName: opensandbox-server-records
+  volumeMounts:
+    - name: records
+      mountPath: /root/.opensandbox
 configToml: |
   [server]
   host = "0.0.0.0"
@@ -35,3 +43,12 @@ configToml: |
   template_s3_publish_secret = "sandbox-oss-credentials"
   template_mitm_ca_secret = "opensandbox-mitm-ca"
   template_mitm_ca_secret_key = "ca.crt"
+
+  # A sandbox that says after how long it may be put to sleep is put to
+  # sleep, by what the gateway notes of its last use.
+  [automation.idle_pause]
+  enabled = true
+  sweep_interval_seconds = 5
+  activity_ttl_seconds = 1800
+  redis.dsn = "redis://opensandbox-valkey.opensandbox-system.svc.cluster.local:6379/0"
+  redis.lock_ttl_seconds = 30
