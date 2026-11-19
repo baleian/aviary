@@ -31,7 +31,7 @@ func installed(t *testing.T) (*sandboxtest.Service, *Client, string) {
 func TestASandboxIsMadeFromTheTemplateOfItsHarness(t *testing.T) {
 	ctx := context.Background()
 	s, c, template := installed(t)
-	made, err := c.CreateSandbox(ctx, template, map[string]string{"aviary-session": "a session"}, 0)
+	made, err := c.CreateSandbox(ctx, Request{Template: template, Metadata: map[string]string{"aviary-session": "a session"}})
 	if err != nil || made.ID == "" || made.Status.State != Pending {
 		t.Fatalf("the sandbox was made as %+v: %v", made, err)
 	}
@@ -70,7 +70,7 @@ func TestAHarnessThatHasChangedHasNoTemplateUntilARelease(t *testing.T) {
 	// A sandbox is not made from one that is not built, or not there.
 	s.Ends("tpl-2", "Building", "")
 	for _, template := range []string{"tpl-2", "tpl-none"} {
-		if _, err := c.CreateSandbox(ctx, template, nil, 0); !errors.Is(err, ErrNotFound) {
+		if _, err := c.CreateSandbox(ctx, Request{Template: template}); !errors.Is(err, ErrNotFound) {
 			t.Errorf("a sandbox of the template %s: %v", template, err)
 		}
 	}
@@ -79,7 +79,7 @@ func TestAHarnessThatHasChangedHasNoTemplateUntilARelease(t *testing.T) {
 func TestASandboxThatIsDeletedIsGone(t *testing.T) {
 	ctx := context.Background()
 	s, c, template := installed(t)
-	made, err := c.CreateSandbox(ctx, template, nil, 0)
+	made, err := c.CreateSandbox(ctx, Request{Template: template})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestASandboxThatIsDeletedIsGone(t *testing.T) {
 func TestASandboxThatSleepsIsWoken(t *testing.T) {
 	ctx := context.Background()
 	s, c, template := installed(t)
-	made, err := c.CreateSandbox(ctx, template, nil, 5*time.Minute)
+	made, err := c.CreateSandbox(ctx, Request{Template: template, Idle: 5 * time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestASandboxThatSleepsIsWoken(t *testing.T) {
 		t.Errorf("the sandbox is put to sleep after %d idle seconds", idle)
 	}
 	// One that is never put to sleep is made without a word about it.
-	awake, err := c.CreateSandbox(ctx, template, nil, 0)
+	awake, err := c.CreateSandbox(ctx, Request{Template: template})
 	if err != nil || s.Idle(awake.ID) != 0 {
 		t.Errorf("a sandbox that is not to sleep is put to sleep after %d idle seconds: %v", s.Idle(awake.ID), err)
 	}
@@ -175,7 +175,7 @@ func TestTheSandboxServiceIsAskedWithItsKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	var refusal *Refusal
-	if _, err := stranger.CreateSandbox(ctx, template, nil, 0); !errors.As(err, &refusal) || refusal.Status != http.StatusUnauthorized {
+	if _, err := stranger.CreateSandbox(ctx, Request{Template: template}); !errors.As(err, &refusal) || refusal.Status != http.StatusUnauthorized {
 		t.Errorf("a sandbox that is asked for with another key: %v", err)
 	}
 	if _, err := stranger.Runner(ctx, "sbx-1"); !errors.As(err, &refusal) || refusal.Status != http.StatusUnauthorized {

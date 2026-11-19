@@ -52,6 +52,11 @@ type Config struct {
 	// person. It is woken for the next turn, and for the answer. Zero is
 	// never to put it to sleep.
 	Idle time.Duration
+	// Retention is for how long the sandbox of a session is kept after a
+	// turn of the session was last given to it. A session that is not used
+	// for longer has ended: its sandbox is deleted, with what the agent
+	// had in it. Zero is to keep it until the session is ended.
+	Retention time.Duration
 	// MaxStartup is how long a turn may take until its harness has the
 	// message: the sandbox of its session may have to be made first. A turn
 	// that takes longer fails. Zero is no limit.

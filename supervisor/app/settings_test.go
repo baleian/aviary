@@ -18,6 +18,7 @@ import (
 var settings = map[string]string{
 	templateStore:      "s3://sandboxes/templates",
 	sandboxIdle:        "300",
+	sandboxRetention:   "0",
 	harnesses:          `{"opencode": {"image": "registry.example/opencode:1", "sandbox": {"cpu": "1", "memory": "2Gi", "disk": "4Gi"}}}`,
 	maxConcurrentTurns: "50",
 	maxQueuedTurns:     "500",
@@ -51,7 +52,7 @@ func TestDriverConfig(t *testing.T) {
 		}
 		if config.MaxConcurrentTurns != 50 || config.MaxQueuedTurns != 500 || config.MaxQueueWait != 2*time.Minute ||
 			config.MaxStartup != 90*time.Second || templates.MaxToolOutputBytes != 65536 || config.MaxTurn != 30*time.Minute ||
-			config.Idle != 5*time.Minute {
+			config.Idle != 5*time.Minute || config.Retention != 0 {
 			t.Errorf("the limits are %+v", config)
 		}
 	})
@@ -78,6 +79,8 @@ func TestDriverConfig(t *testing.T) {
 		// The sandbox service puts no sandbox to sleep sooner than after
 		// thirty seconds.
 		{sandboxIdle, ""}, {sandboxIdle, "-1"}, {sandboxIdle, "29"}, {sandboxIdle, "5m"},
+		// Nor does it keep one for less than a minute.
+		{sandboxRetention, ""}, {sandboxRetention, "-1"}, {sandboxRetention, "59"},
 		{maxConcurrentTurns, ""}, {maxConcurrentTurns, "0"}, {maxConcurrentTurns, "many"},
 		{maxQueuedTurns, ""}, {maxQueuedTurns, "-1"},
 		{maxQueueWait, ""}, {maxQueueWait, "-1"}, {maxQueueWait, "2m"},

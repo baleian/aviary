@@ -185,10 +185,25 @@ const (
 	Paused = "Paused"
 )
 
-// kept is for how many seconds a sandbox is kept, which the service wants to
-// be told for one that is made from a template: a hundred years, which is
-// until it is deleted.
-const kept = 100 * 365 * 24 * 60 * 60
+// forever is for how long a sandbox is kept that is kept until it is
+// deleted: a hundred years. The service wants to be told a time for one
+// that is made from a template.
+const forever = 100 * 365 * 24 * time.Hour
+
+// Request is what a sandbox is made as.
+type Request struct {
+	// Template is the template that it is made from.
+	Template string
+	// Metadata is what it is made with, for one who looks at the sandboxes
+	// to know whose each is.
+	Metadata map[string]string
+	// Idle is for how long the sandbox may be asked nothing before it is
+	// put to sleep, unless the runner in it is at work. Zero is never.
+	Idle time.Duration
+	// Kept is for how long the sandbox is kept: then it is deleted, unless
+	// Keep gave it longer. Zero is until it is deleted.
+	Kept time.Duration
+}
 
 // activePath is where the runner tells whether its session is at work.
 const activePath = "/active"
@@ -213,22 +228,23 @@ type activeProbe struct {
 	Path string `json:"path"`
 }
 
-// CreateSandbox has a sandbox made from the template, and kept until it is
-// deleted. It is there at once, and takes a moment to run: longer on a node
-// that has not run its template before. A sandbox that is not asked
-// anything for as long as idle, and whose runner is not at work, is put to
-// sleep: zero is never. A template that is not there, or not built, is
-// ErrNotFound.
-func (c *Client) CreateSandbox(ctx context.Context, template string, metadata map[string]string, idle time.Duration) (Sandbox, error) {
+// CreateSandbox has a sandbox made. It is there at once, and takes a moment
+// to run: longer on a node that has not run its template before. A
+// template that is not there, or not built, is ErrNotFound.
+func (c *Client) CreateSandbox(ctx context.Context, request Request) (Sandbox, error) {
+	kept := request.Kept
+	if kept == 0 {
+		kept = forever
+	}
 	spec := struct {
 		TemplateID string            `json:"templateId"`
 		Timeout    int64             `json:"timeout"`
 		Metadata   map[string]string `json:"metadata,omitempty"`
 		Lifecycle  *lifecycle        `json:"lifecycle,omitempty"`
-	}{TemplateID: template, Timeout: kept, Metadata: metadata}
-	if idle > 0 {
+	}{TemplateID: request.Template, Timeout: int64(kept.Seconds()), Metadata: request.Metadata}
+	if request.Idle > 0 {
 		spec.Lifecycle = &lifecycle{idlePolicy{
-			IdleTimeoutSeconds: int(idle.Seconds()),
+			IdleTimeoutSeconds: int(request.Idle.Seconds()),
 			OnIdle:             "pause",
 			ActiveProbe:        activeProbe{Port: RunnerPort, Path: activePath},
 		}}
@@ -236,6 +252,12 @@ func (c *Client) CreateSandbox(ctx context.Context, template string, metadata ma
 	var sandbox Sandbox
 	err := c.ask(ctx, http.MethodPost, "/sandboxes", nil, spec, &sandbox)
 	return sandbox, err
+}
+
+// Keep has the sandbox kept until the time, and deleted then.
+func (c *Client) Keep(ctx context.Context, id string, until time.Time) error {
+	body := map[string]string{"expiresAt": until.UTC().Format(time.RFC3339)}
+	return c.ask(ctx, http.MethodPost, "/sandboxes/"+url.PathEscape(id)+"/renew-expiration", nil, body, nil)
 }
 
 // Resume has a sandbox that sleeps woken. It takes a moment to run again.

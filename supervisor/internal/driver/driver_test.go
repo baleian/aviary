@@ -2,6 +2,7 @@ package driver
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -699,7 +700,7 @@ func TestASandboxThatItsSessionDoesNotHaveIsDeleted(t *testing.T) {
 	// stray makes a sandbox as a Supervisor does that then goes, before it
 	// has told the session.
 	stray := func(session string) string {
-		made, err := i.sandboxes.CreateSandbox(ctx, template, map[string]string{metadataSession: session}, 0)
+		made, err := i.sandboxes.CreateSandbox(ctx, sandbox.Request{Template: template, Metadata: map[string]string{metadataSession: session}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -774,6 +775,53 @@ func TestATurnWaitsToRunWhileThereIsNoRoomForItsSandbox(t *testing.T) {
 	}
 	if woken := i.service.Woken(given.Sandbox); woken != 0 {
 		t.Errorf("the sandbox for which there was no room was woken %d times", woken)
+	}
+}
+
+func TestASessionThatIsNotUsedForLongerThanItsSandboxIsKeptHasEnded(t *testing.T) {
+	i := install(t, func(config *Config) { config.Retention = time.Hour })
+	driver, _ := i.supervisor()
+	session := i.session(store.Agent{})
+	first := i.send(driver, session, "hello")
+	given := i.service.Turn(t)
+	// The sandbox is kept for that long from when a turn is given to it.
+	if left := time.Until(i.service.Expires(given.Sandbox)); left < 59*time.Minute || left > time.Hour {
+		t.Errorf("the sandbox of the session is kept for %s", left)
+	}
+	given.Tell("started", started)
+	given.Tell("finished", finished)
+	i.ended(first.ID)
+
+	// A sandbox that is lost sooner is another matter: the session goes on
+	// in a new one.
+	if err := i.sandboxes.DeleteSandbox(ctx, given.Sandbox); err != nil {
+		t.Fatal(err)
+	}
+	second := i.send(driver, session, "are you there")
+	again := i.service.Turn(t)
+	if again.Sandbox == given.Sandbox || again.ID != second.ID.String() {
+		t.Errorf("the turn was given as %+v", again)
+	}
+	again.Tell("started", started)
+	again.Tell("finished", finished)
+	i.ended(second.ID)
+
+	// Two hours later, the service has deleted the sandbox.
+	i.store.Age(2*time.Hour, first.ID, second.ID)
+	if err := i.sandboxes.DeleteSandbox(ctx, again.Sandbox); err != nil {
+		t.Fatal(err)
+	}
+	third := i.send(driver, session, "and now")
+	ended := i.ended(third.ID)
+	if !failed(ended, store.FailureSessionExpired) || !strings.Contains(ended.Failure.Message, "1h0m0s") {
+		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
+	}
+	i.eventually("the session has ended", func() bool { return i.sessionOf(session.ID).EndedAt != nil })
+	if _, err := driver.Accept(ctx, session.ID, uuid.Nil, "once more"); !errors.Is(err, store.ErrSessionEnded) {
+		t.Errorf("a message to the session that has ended: %v", err)
+	}
+	if len(i.service.Sandboxes()) != 0 || len(i.service.Given()) != 2 {
+		t.Errorf("the service has the sandboxes %v, and the runners were given %v", i.service.Sandboxes(), i.service.Given())
 	}
 }
 

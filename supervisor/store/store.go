@@ -266,6 +266,10 @@ const (
 	// FailureSupervisorLost: the runner lost its Supervisor and reached
 	// none again in time, or the Supervisor refused it.
 	FailureSupervisorLost = "supervisor_lost"
+	// FailureSessionExpired: the session was not used for longer than the
+	// installation keeps the sandbox of one. The sandbox is gone with what
+	// the agent had in it, and the session has ended.
+	FailureSessionExpired = "session_expired"
 	// FailureRunner: the runner failed in another way.
 	FailureRunner = "runner_error"
 )

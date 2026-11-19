@@ -252,6 +252,13 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 			r.giveUp(store.Failure{Reason: store.FailureSandboxLost, Message: "the sandbox of the session is gone"})
 			return nil, nil
 		}
+		if d.expired(ctx, turn) {
+			r.giveUp(store.Failure{
+				Reason:  store.FailureSessionExpired,
+				Message: fmt.Sprintf("the session was not used for longer than %s, and has ended", d.config.Retention),
+			})
+			return nil, nil
+		}
 		// The sandbox was lost after the last turn of the session, or
 		// could not be made: the session gets a new one.
 		gone := "the sandbox of the session is gone"
@@ -282,6 +289,11 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 	}
 	if given {
 		return runner, nil
+	}
+	if d.config.Retention > 0 {
+		if err := d.sandboxes.Keep(following, id, time.Now().Add(d.config.Retention)); err != nil {
+			return nil, fmt.Errorf("have the sandbox of the session kept: %w", err)
+		}
 	}
 	err = runner.Start(following, turn.ID, sandbox.Turn{
 		Text: turn.Text, Instructions: turn.Instructions, Approval: turn.Approval, Environment: environment(turn),
@@ -324,6 +336,24 @@ func (d *Driver) requeue(ctx context.Context, r *run) bool {
 	return back
 }
 
+// expired reports whether the session of the turn was not used for longer
+// than its sandbox is kept: the turn before this one is that old. A sandbox
+// that is gone then was deleted for that.
+func (d *Driver) expired(ctx context.Context, turn store.FollowedTurn) bool {
+	if d.config.Retention == 0 {
+		return false
+	}
+	before, err := d.store.Turns(ctx, turn.SessionID, turn.Seq, 1)
+	if err != nil || len(before) == 0 {
+		return false
+	}
+	last := before[0].CreatedAt
+	if before[0].StartedAt != nil {
+		last = *before[0].StartedAt
+	}
+	return time.Since(last) >= d.config.Retention
+}
+
 // provide makes the sandbox of the turn's session, and returns it: the one
 // that it made or, if another Supervisor made one first, that one.
 func (d *Driver) provide(ctx context.Context, r *run) (string, error) {
@@ -332,11 +362,16 @@ func (d *Driver) provide(ctx context.Context, r *run) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	made, err := d.sandboxes.CreateSandbox(ctx, template, map[string]string{
-		metadataSession: turn.SessionID.String(),
-		metadataAgent:   turn.AgentID.String(),
-		metadataProject: turn.ProjectID.String(),
-	}, d.config.Idle)
+	made, err := d.sandboxes.CreateSandbox(ctx, sandbox.Request{
+		Template: template,
+		Metadata: map[string]string{
+			metadataSession: turn.SessionID.String(),
+			metadataAgent:   turn.AgentID.String(),
+			metadataProject: turn.ProjectID.String(),
+		},
+		Idle: d.config.Idle,
+		Kept: d.config.Retention,
+	})
 	if err != nil {
 		return "", err
 	}
@@ -391,7 +426,11 @@ func (d *Driver) giveUp(ctx context.Context, r *run, failure store.Failure) {
 			return
 		}
 	}
-	d.end(ctx, r.turn.ID, false, failure)
+	if d.end(ctx, r.turn.ID, false, failure) && failure.Reason == store.FailureSessionExpired {
+		if _, err := d.store.EndSession(ctx, r.turn.SessionID); err != nil {
+			slog.ErrorContext(ctx, "end the session", "session", r.turn.SessionID, "error", err)
+		}
+	}
 }
 
 // read records what the runner tells of the turn, from the event after the

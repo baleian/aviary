@@ -138,6 +138,14 @@ sandboxes:
   # it is set up otherwise. Zero is never: the sandbox service must be set
   # up to put sandboxes to sleep for any other value to do something.
   idleSeconds: 300
+  # For how many seconds the sandbox of a session is kept after a turn of the
+  # session was last given to it. A session that is not used for longer has
+  # ended: its sandbox is deleted with what the agent had in it, also when a
+  # turn of it still waits for a person, and what was said in it stays. A
+  # sandbox that sleeps takes its memory and its disk in the object store
+  # for as long as it is kept. Sixty or more. Zero is to keep it until the
+  # session is ended.
+  retentionSeconds: 0
 
 runtime:
   # The most turns that run at once. The turns beyond it wait in the order in

@@ -54,6 +54,7 @@ const (
 	sandboxesKey       = "AVIARY_SANDBOXES_API_KEY"
 	templateStore      = "AVIARY_TEMPLATE_STORE"
 	sandboxIdle        = "AVIARY_SANDBOX_IDLE_SECONDS"
+	sandboxRetention   = "AVIARY_SANDBOX_RETENTION_SECONDS"
 	apiAddr            = ":8080"
 	authzAddr          = ":9091"
 	metricsAddr        = ":9092"
@@ -402,6 +403,15 @@ func driverConfig() (driver.Config, error) {
 		return config, fmt.Errorf("%s must be a number of seconds, thirty or more, or zero for never", sandboxIdle)
 	}
 	config.Idle = time.Duration(seconds) * time.Second
+	retention, err := env(sandboxRetention)
+	if err != nil {
+		return config, err
+	}
+	// The sandbox service keeps no sandbox for less than a minute.
+	if seconds, err = strconv.Atoi(retention); err != nil || seconds < 0 || seconds > 0 && seconds < 60 {
+		return config, fmt.Errorf("%s must be a number of seconds, sixty or more, or zero for until the session is ended", sandboxRetention)
+	}
+	config.Retention = time.Duration(seconds) * time.Second
 	limit, err := env(maxConcurrentTurns)
 	if err != nil {
 		return config, err

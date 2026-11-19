@@ -202,6 +202,7 @@ The reasons for a failed turn:
 | `startup_timed_out` | The harness did not get the message in time, for example because the sandbox of the session could not be made. The message says what the turn waited for. |
 | `timed_out` | The turn ran for longer than a turn may. |
 | `sandbox_lost` | The sandbox of the session is gone, and what the agent had in it. The next turn of the session gets a new one. |
+| `session_expired` | The session was not used for longer than `sandboxes.retentionSeconds`. Its sandbox is gone, and the session has ended. |
 | `runner_error` | The runner failed in another way. |
 
 A turn that has ended has its reason too, as `failure`. What makes a turn
@@ -532,6 +533,7 @@ installs it in the local cluster with a file of values of your own.
 | `sandboxes.url` | Where the lifecycle API of OpenSandbox is, which runs the sandboxes of the sessions. Default `http://opensandbox-server.opensandbox-system`. |
 | `sandboxes.apiKey.secretName`, `.secretKey` | A secret with the key of that API. |
 | `sandboxes.idleSeconds` | After how many seconds a session that is not at work is put to sleep: one that runs no turn, or whose turn waits for a person. It is woken as it was for its next turn and for the answer. Default 300, and 0 is never. OpenSandbox must be set up to put sandboxes to sleep. |
+| `sandboxes.retentionSeconds` | For how many seconds the sandbox of a session is kept after a turn of the session was last given to it. A session that is not used for longer has ended: its sandbox is deleted, and what was said in it stays. Default 0, which is until the session is ended. |
 | `sandboxes.templateStore` | Where OpenSandbox keeps the templates that the sandboxes are made from, in its object store. Default `s3://sandbox-images/publish`. |
 | `runtime.maxConcurrentTurns` | The most turns that run at once. Default 50. |
 | `runtime.maxQueuedTurns` | The most turns that may wait to run. A message beyond it is answered with 429. Default 500, and 0 is no limit. |

@@ -74,6 +74,8 @@ type sandbox struct {
 	// sleep, and woken how often it was woken.
 	idle, woken int
 	created     time.Time
+	// expires is when the sandbox is deleted, as the service was told.
+	expires time.Time
 }
 
 // New starts a sandbox service, which is stopped when the test ends.
@@ -92,6 +94,7 @@ func New(t testing.TB) *Service {
 	api.HandleFunc("GET /v1/sandboxes/{id}", s.getSandbox)
 	api.HandleFunc("DELETE /v1/sandboxes/{id}", s.deleteSandbox)
 	api.HandleFunc("POST /v1/sandboxes/{id}/resume", s.resumeSandbox)
+	api.HandleFunc("POST /v1/sandboxes/{id}/renew-expiration", s.renewSandbox)
 	api.HandleFunc("GET /v1/sandboxes/{id}/endpoints/{port}", s.endpoint)
 	lifecycle := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("OPEN-SANDBOX-API-KEY") != Key {
@@ -327,6 +330,7 @@ func (s *Service) createSandbox(w http.ResponseWriter, r *http.Request) {
 	s.sandboxes[id] = &sandbox{
 		state: "Pending", template: asked.TemplateID, metadata: asked.Metadata, runner: &runner{service: s, sandbox: id},
 		idle: policy.IdleTimeoutSeconds, created: time.Now(),
+		expires: time.Now().Add(time.Duration(*asked.Timeout) * time.Second),
 	}
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "status": map[string]string{"state": "Pending"}})
@@ -402,6 +406,35 @@ func (s *Service) resumeSandbox(w http.ResponseWriter, r *http.Request) {
 		sandbox.woken++
 		w.WriteHeader(http.StatusAccepted)
 	}
+}
+
+// renewSandbox sets when a sandbox is deleted.
+func (s *Service) renewSandbox(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var asked struct {
+		ExpiresAt time.Time `json:"expiresAt"`
+	}
+	sandbox := s.sandboxes[r.PathValue("id")]
+	switch {
+	case sandbox == nil:
+		refuse(w, http.StatusNotFound, "FSB::SANDBOX_NOT_FOUND", "there is no such sandbox")
+	case json.NewDecoder(r.Body).Decode(&asked) != nil || !asked.ExpiresAt.After(time.Now()):
+		refuse(w, http.StatusBadRequest, "INVALID", "a sandbox is kept until a time that is to come")
+	default:
+		sandbox.expires = asked.ExpiresAt
+		_ = json.NewEncoder(w).Encode(map[string]any{"expiresAt": asked.ExpiresAt})
+	}
+}
+
+// Expires returns when the sandbox is deleted, as the service was told.
+func (s *Service) Expires(id string) time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sandbox := s.sandboxes[id]; sandbox != nil {
+		return sandbox.expires
+	}
+	return time.Time{}
 }
 
 // Sleep puts the sandbox to sleep, as the service does with one that is
