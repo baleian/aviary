@@ -35,9 +35,12 @@ type Service struct {
 	// secret is what the routes that the service gives end with.
 	secret string
 	closed chan struct{}
-	turns  chan *Turn
 
-	mu        sync.Mutex
+	mu sync.Mutex
+	// given are the turns that the runners were given, in their order, and
+	// taken how many of them Turn has returned.
+	given     []*Turn
+	taken     int
 	templates []*template
 	sandboxes map[string]*sandbox
 	made      int
@@ -61,6 +64,7 @@ type template struct {
 
 type sandbox struct {
 	state    string
+	template string
 	metadata map[string]string
 	runner   *runner
 }
@@ -71,7 +75,6 @@ func New(t testing.TB) *Service {
 	s := &Service{
 		secret:    "signed-by-the-service",
 		closed:    make(chan struct{}),
-		turns:     make(chan *Turn, 64),
 		sandboxes: map[string]*sandbox{},
 	}
 	api := http.NewServeMux()
@@ -211,6 +214,30 @@ func (s *Service) Sandboxes() map[string]map[string]string {
 	return sandboxes
 }
 
+// TemplateOf returns the metadata of the template that the sandbox was made
+// from.
+func (s *Service) TemplateOf(id string) map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sandbox := s.sandboxes[id]; sandbox != nil {
+		for _, template := range s.templates {
+			if template.ID == sandbox.template {
+				return template.Metadata
+			}
+		}
+	}
+	return nil
+}
+
+// Restart starts the runner of the sandbox again: it has no turn any more.
+func (s *Service) Restart(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sandbox := s.sandboxes[id]; sandbox != nil {
+		sandbox.runner = &runner{service: s, sandbox: id}
+	}
+}
+
 func (s *Service) createSandbox(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -232,7 +259,9 @@ func (s *Service) createSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 	s.made++
 	id := fmt.Sprintf("sbx-%d", s.made)
-	s.sandboxes[id] = &sandbox{state: "Pending", metadata: asked.Metadata, runner: &runner{service: s, sandbox: id}}
+	s.sandboxes[id] = &sandbox{
+		state: "Pending", template: asked.TemplateID, metadata: asked.Metadata, runner: &runner{service: s, sandbox: id},
+	}
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "status": map[string]string{"state": "Pending"}})
 }
@@ -287,26 +316,65 @@ func (s *Service) gate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	sandbox := s.sandboxes[parts[1]]
-	running := sandbox != nil && sandbox.state == "Running"
+	var runner *runner
+	if sandbox := s.sandboxes[parts[1]]; sandbox != nil && sandbox.state == "Running" {
+		runner = sandbox.runner
+	}
 	s.mu.Unlock()
-	if !running {
+	if runner == nil {
 		http.Error(w, "the sandbox does not run", http.StatusServiceUnavailable)
 		return
 	}
-	sandbox.runner.ServeHTTP(w, r)
+	runner.ServeHTTP(w, r)
 }
 
 // Turn waits for the next turn that a runner of the service is given.
 func (s *Service) Turn(t testing.TB) *Turn {
 	t.Helper()
-	select {
-	case turn := <-s.turns:
-		return turn
-	case <-time.After(patience):
-		t.Fatal("no runner was given a turn")
-		return nil
+	for end := time.Now().Add(patience); ; time.Sleep(5 * time.Millisecond) {
+		s.mu.Lock()
+		if s.taken < len(s.given) {
+			s.taken++
+			turn := s.given[s.taken-1]
+			s.mu.Unlock()
+			return turn
+		}
+		s.mu.Unlock()
+		if time.Now().After(end) {
+			t.Fatal("no runner was given a turn")
+		}
 	}
+}
+
+// TurnWith waits for a runner to be given the turn with the ID, and
+// returns it.
+func (s *Service) TurnWith(t testing.TB, id string) *Turn {
+	t.Helper()
+	for end := time.Now().Add(patience); ; time.Sleep(5 * time.Millisecond) {
+		s.mu.Lock()
+		for _, turn := range s.given {
+			if turn.ID == id {
+				s.mu.Unlock()
+				return turn
+			}
+		}
+		s.mu.Unlock()
+		if time.Now().After(end) {
+			t.Fatalf("no runner was given the turn %s", id)
+		}
+	}
+}
+
+// Given returns the IDs of the turns that the runners were given, in their
+// order.
+func (s *Service) Given() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ids := []string{}
+	for _, turn := range s.given {
+		ids = append(ids, turn.ID)
+	}
+	return ids
 }
 
 // runner is the runner of a sandbox.
@@ -329,13 +397,17 @@ type Turn struct {
 	Approval     string            `json:"approval"`
 	Environment  map[string]string `json:"environment"`
 
-	closed  chan struct{}
-	stops   chan struct{}
-	answers chan [2]string
+	closed chan struct{}
 
 	mu     sync.Mutex
 	events []event
 	ended  bool
+	// stops is how often the turn was told to stop, and answers are the
+	// answers that it was given: the request and the option of each. The
+	// test has seen so many of them.
+	stops, seenStops int
+	answers          [][2]string
+	seenAnswers      int
 	// cuts counts how often those who read the events were cut off.
 	cuts int
 	// changed is closed when there is more to read.
@@ -352,7 +424,11 @@ func (rn *runner) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mux.HandleFunc("PUT /turns/{turn}", rn.start)
 	mux.HandleFunc("GET /turns/{turn}/events", rn.events)
 	mux.HandleFunc("POST /turns/{turn}/cancel", func(w http.ResponseWriter, r *http.Request) {
-		rn.tell(w, r, func(turn *Turn) { turn.stops <- struct{}{} })
+		rn.tell(w, r, func(turn *Turn) {
+			turn.mu.Lock()
+			defer turn.mu.Unlock()
+			turn.stops++
+		})
 	})
 	mux.HandleFunc("PUT /turns/{turn}/approvals/{request}", func(w http.ResponseWriter, r *http.Request) {
 		var answer struct {
@@ -362,7 +438,11 @@ func (rn *runner) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusUnprocessableEntity)
 			return
 		}
-		rn.tell(w, r, func(turn *Turn) { turn.answers <- [2]string{r.PathValue("request"), answer.Option} })
+		rn.tell(w, r, func(turn *Turn) {
+			turn.mu.Lock()
+			defer turn.mu.Unlock()
+			turn.answers = append(turn.answers, [2]string{r.PathValue("request"), answer.Option})
+		})
 	})
 	mux.ServeHTTP(w, r)
 }
@@ -382,8 +462,6 @@ func (rn *runner) start(w http.ResponseWriter, r *http.Request) {
 		Sandbox: rn.sandbox,
 		ID:      r.PathValue("turn"),
 		closed:  rn.service.closed,
-		stops:   make(chan struct{}, 16),
-		answers: make(chan [2]string, 16),
 		changed: make(chan struct{}),
 	}
 	if json.NewDecoder(r.Body).Decode(turn) != nil {
@@ -399,7 +477,9 @@ func (rn *runner) start(w http.ResponseWriter, r *http.Request) {
 		return
 	default:
 		rn.turn = turn
-		rn.service.turns <- turn
+		rn.service.mu.Lock()
+		rn.service.given = append(rn.service.given, turn)
+		rn.service.mu.Unlock()
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -492,25 +572,38 @@ func (t *Turn) Cut() {
 	t.change()
 }
 
-// Stopped waits until the turn was told to stop.
+// Stopped waits until the turn was told to stop once more.
 func (t *Turn) Stopped(tb testing.TB) {
 	tb.Helper()
-	select {
-	case <-t.stops:
-	case <-time.After(patience):
-		tb.Fatalf("the turn %s was not told to stop", t.ID)
+	for end := time.Now().Add(patience); ; time.Sleep(5 * time.Millisecond) {
+		t.mu.Lock()
+		if t.seenStops < t.stops {
+			t.seenStops++
+			t.mu.Unlock()
+			return
+		}
+		t.mu.Unlock()
+		if time.Now().After(end) {
+			tb.Fatalf("the turn %s was not told to stop", t.ID)
+		}
 	}
 }
 
-// Answered waits until a request of the turn was answered, and returns the
-// request and the option that was chosen.
+// Answered waits until a request of the turn was answered once more, and
+// returns the request and the option that was chosen.
 func (t *Turn) Answered(tb testing.TB) (request, option string) {
 	tb.Helper()
-	select {
-	case answer := <-t.answers:
-		return answer[0], answer[1]
-	case <-time.After(patience):
-		tb.Fatalf("no request of the turn %s was answered", t.ID)
-		return "", ""
+	for end := time.Now().Add(patience); ; time.Sleep(5 * time.Millisecond) {
+		t.mu.Lock()
+		if t.seenAnswers < len(t.answers) {
+			t.seenAnswers++
+			answer := t.answers[t.seenAnswers-1]
+			t.mu.Unlock()
+			return answer[0], answer[1]
+		}
+		t.mu.Unlock()
+		if time.Now().After(end) {
+			tb.Fatalf("no request of the turn %s was answered", t.ID)
+		}
 	}
 }

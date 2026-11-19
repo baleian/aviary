@@ -153,7 +153,7 @@ identity provider asks nobody, and every caller is an administrator.
 | `PUT /v1/providers/{id}` | Replaces the name, the URL and the key of a provider, all three at once: a provider that is given no key has none from then on. |
 | `POST /v1/projects/{id}/secret-stores` | Registers a secret store of the project. Body: `{"name": "...", "kind": "...", "settings": {...}, "credential": {"value": "..."}}`. See [Secret stores](#secret-stores). |
 | `PUT /v1/secret-stores/{id}` | Replaces the name, the kind, the settings and the credential of a secret store, all at once. |
-| `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"harness": "...", "model": {"provider": "...", "name": "..."}, "instructions": "...", "resources": {...}, "approval": "ask"}`. The harness is one of the configured harnesses. The model is a provider of the project, by its ID, and the name of a model as that provider knows it. The instructions are what the agent is told before every turn, and may be left out. The resources are what the pod of each turn asks for and may use at most, as they are written for Kubernetes: `{"requests": {"cpu": "250m", "memory": "1Gi"}, "limits": {"memory": "4Gi"}}`. Given, they are taken as they are. Left out or empty, the agent has none of its own, and each of its turns gets the default of the harness as it then is. With `"approval": "ask"`, the agent asks a person before it acts: see [Approval](#approval). Left out, it asks nobody. |
+| `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"harness": "...", "model": {"provider": "...", "name": "..."}, "instructions": "...", "approval": "ask"}`. The harness is one of the configured harnesses. The model is a provider of the project, by its ID, and the name of a model as that provider knows it. The instructions are what the agent is told before every turn, and may be left out. With `"approval": "ask"`, the agent asks a person before it acts: see [Approval](#approval). Left out, it asks nobody. |
 | `POST /v1/agents/{id}/sessions` | Creates a session. The session is that of the caller: it has the ID of that user as `created_by`, if the installation asks its callers who they are. |
 | `POST /v1/sessions/{id}/messages` | Sends a message. Body: `{"text": "..."}`. The turn has the ID of the caller as `created_by`, as a session has. Answers 202 with the turn, 409 if a turn of the session has not ended, or 429 with `Retry-After` if too many turns wait to run. |
 | `POST /v1/turns/{id}/cancel` | Cancels a turn. A turn that waits to run ends at once: 200 with the turn. A turn that runs is told to stop and ends when its pod has stopped: 202 with the turn. Answers 409 if the turn has ended in another way. |
@@ -189,8 +189,8 @@ The events of a turn:
 | `turn.cancelled` | The turn was cancelled. The last event of the turn. |
 | `turn.expired` | The turn waited to run for longer than it may. The last event of the turn. |
 
-The fields of the events that come from the agent are defined in
-[`proto/aviary/runner/v1/runner.proto`](proto/aviary/runner/v1/runner.proto).
+The events that come from the agent are as the runner tells them:
+[`runner/src/main.rs`](runner/src/main.rs).
 
 The reasons for a failed turn:
 
@@ -198,11 +198,9 @@ The reasons for a failed turn:
 | --- | --- |
 | `harness_error` | The harness could not be started or answered with an error. That is also how a harness reports that the model endpoint refused it. |
 | `resume_failed` | The harness could not continue the session: what it had kept of the conversation is gone or cannot be read. The next turn of the session tries again, so a session whose harness cannot recover fails every turn. |
-| `startup_timed_out` | The pod of the turn did not start in time, for example because an image could not be pulled. |
+| `startup_timed_out` | The harness did not get the message in time, for example because the sandbox of the session could not be made. The message says what the turn waited for. |
 | `timed_out` | The turn ran for longer than a turn may. |
-| `out_of_memory` | The pod used more memory than it may. |
-| `pod_lost` | The pod was stopped from outside, or is gone. |
-| `supervisor_lost` | The runner lost its Supervisor and reached none again in time. |
+| `sandbox_lost` | The sandbox of the session is gone, and what the agent had in it. The next turn of the session gets a new one. |
 | `runner_error` | The runner failed in another way. |
 
 A turn that has ended has its reason too, as `failure`. What makes a turn
@@ -479,10 +477,10 @@ port is not part of its service: the metrics are read from each pod.
 | Metric | |
 | --- | --- |
 | `aviary_turn_queue_length` | How many turns waited to run when a turn was accepted, that turn among them. It is zero for a turn that did not have to wait. |
-| `aviary_turns_running` | The turns that run and whose runners are connected to this Supervisor, by `harness`. |
+| `aviary_turns_running` | The turns that run and that this Supervisor follows, by `harness`. |
 | `aviary_turns_ended_total` | The turns that have ended, by `harness`, `state` and, for a failed turn, `reason`. |
-| `aviary_turn_queue_duration_seconds` | How long a turn waited to run, from its message to its pod being asked for, by `harness`. |
-| `aviary_turn_startup_duration_seconds` | How long a turn took to start, from its pod being asked for to its harness having the message, by `harness`. |
+| `aviary_turn_queue_duration_seconds` | How long a turn waited to run, from its message to its leaving the queue, by `harness`. |
+| `aviary_turn_startup_duration_seconds` | How long a turn took to start, from its leaving the queue to its harness having the message, by `harness`. |
 | `aviary_turn_run_duration_seconds` | How long a turn ran, from its harness having the message to the turn having ended, by `harness` and `state`. |
 | `aviary_turn_tokens_total` | The token usage that the harnesses reported, by `harness` and `kind`. It is not a measurement, as said above. |
 | `aviary_approval_wait_seconds` | How long a request for approval waited, from the harness asking to the harness having its answer, by `harness` and `outcome`: the kind of the option that was picked, or `cancelled` for a request whose turn was stopped first. |
@@ -536,12 +534,10 @@ installs it in the local cluster with a file of values of your own.
 | `runtime.maxConcurrentTurns` | The most turns that run at once. Default 50. |
 | `runtime.maxQueuedTurns` | The most turns that may wait to run. A message beyond it is answered with 429. Default 500, and 0 is no limit. |
 | `runtime.maxQueueWaitSeconds` | How long a turn may wait to run before it ends as expired. Default 120, and 0 is no limit. |
-| `runtime.maxStartupSeconds` | How long the pod of a turn may take to start before the turn fails. Default 90, and 0 is no limit. |
-| `runtime.maxTurnSeconds` | How long a turn may run before it is stopped and fails. Default 1800. |
-| `runtime.maxReconnectSeconds` | How long the runner of a turn goes on without a Supervisor before the turn fails. Default 60, and 0 is no limit. |
+| `runtime.maxStartupSeconds` | How long a turn may take until its harness has the message, which for the first turn of a session is after its sandbox was made. A turn that takes longer fails, and its sandbox is deleted. Default 90, and 0 is no limit. |
+| `runtime.maxTurnSeconds` | How long a turn may run before it fails and its sandbox is deleted. Default 1800. |
 | `runtime.maxToolOutputBytes` | The longest text of a tool call that the events carry as it is. A longer text is cut. Default 65536, and 0 is no limit. |
-| `runtime.harnesses` | The harnesses that agents can use, each with its image and with the resources for the turns of the agents that have none of their own. `sandbox` is the size of the sandbox of a session: its `cpu`, `memory` and `disk`. A release has OpenSandbox build a template for each harness, from the image and that size, when it is installed and when either has changed. OpenSandbox takes the image from its registry without credentials. |
-| `runtime.store.storageClassName`, `.size` | The volume for the session homes. Its storage class must offer ReadWriteMany. |
+| `runtime.harnesses` | The harnesses that agents can use, each with its image. `sandbox` is the size of the sandbox of a session: its `cpu`, `memory` and `disk`. A release has OpenSandbox build a template for each harness, from the image and that size, when it is installed and when either has changed. OpenSandbox takes the image from its registry without credentials. |
 
 The turn pods mount the runner as an image volume, so the cluster's
 Kubernetes and container runtime must support image volumes, and its
@@ -587,9 +583,8 @@ checks, how to run some of the tests and where a new one goes.
 
 | Path | |
 | --- | --- |
-| `supervisor/` | The Supervisor, in Go: the API, the queue, the Jobs, the connection to the runners, the event streams. Its plugins are in `store/`, `events/` and `secret/`, and `plugins.go` lists those of the build. |
+| `supervisor/` | The Supervisor, in Go: the API, the queue, the sandboxes of the sessions and the runners in them, the event streams. Its plugins are in `store/`, `events/` and `secret/`, and `plugins.go` lists those of the build. |
 | `runner/` | The runner, in Rust. |
-| `proto/` | The protocol between the runner and the Supervisor. |
 | `images/` | The images of the Supervisor, the runner and the harnesses. |
 | `deploy/charts/aviary/` | The Helm chart. |
 | `hack/kind/` | The local cluster. |

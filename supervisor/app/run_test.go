@@ -237,10 +237,10 @@ func TestRunConnectsWithThePluginsOfTheBuild(t *testing.T) {
 	t.Setenv(identityProvider, `{"kind": "callers", "settings": {"of": "the test"}}`)
 	t.Setenv(adminGroups, `[]`)
 	t.Setenv(userGroups, `[]`)
-	t.Setenv(gatewayURL, "")
+	t.Setenv(templateStore, "")
 	build.asked = nil
 	err = Run(context.Background(), nil, build.plugins())
-	if err == nil || !strings.Contains(err.Error(), gatewayURL) {
+	if err == nil || !strings.Contains(err.Error(), templateStore) {
 		t.Errorf("a Supervisor that is not told how to run turns stopped with: %v", err)
 	}
 	expected = []string{

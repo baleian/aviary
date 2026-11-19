@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	batchv1 "k8s.io/api/batch/v1"
 )
 
 // What the API cannot take, it answers with a status and a code that tell
@@ -62,8 +61,7 @@ func TestRefusals(t *testing.T) {
 		{"PUT", "/v1/providers/" + none, `{"name": "a provider", "url": "https://api.example.com/v1"}`, http.StatusNotFound, notFound},
 
 		{"POST", agents, `{"harness": "another", ` + model + `}`, http.StatusBadRequest, invalid},
-		{"POST", agents, `{"harness": "opencode", "resources": {"limits": {"memory": "-1Gi"}}, ` + model + `}`, http.StatusBadRequest, invalid},
-		{"POST", agents, `{"harness": "opencode", "resources": {"limits": {"nvidia.com/gpu": "1"}}, ` + model + `}`, http.StatusBadRequest, invalid},
+		{"POST", agents, `{"harness": "opencode", "resources": {"limits": {"memory": "2Gi"}}, ` + model + `}`, http.StatusBadRequest, invalid},
 		{"POST", agents, `{"harness": "opencode", "approval": "always", ` + model + `}`, http.StatusBadRequest, invalid},
 		{"POST", agents, `{"harness": "opencode"}`, http.StatusBadRequest, invalid},
 		{"POST", "/v1/projects/" + none + "/agents", `{"harness": "opencode", ` + model + `}`, http.StatusNotFound, notFound},
@@ -117,20 +115,14 @@ func TestResources(t *testing.T) {
 	}
 
 	// An agent has what it was created with. What was not given is not
-	// filled in: an agent without resources follows those of its harness.
-	full := get("/v1/agents/" + s.agent(project, `{"harness": "codex", "instructions": "Be brief.", "approval": "ask",
-		"resources": {"requests": {"cpu": "500m"}, "limits": {"memory": "2Gi"}}}`))
-	resources, err := json.Marshal(full["resources"])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if full["project_id"] != project || full["harness"] != "codex" || full["instructions"] != "Be brief." ||
-		full["approval"] != "ask" || string(resources) != `{"limits":{"memory":"2Gi"},"requests":{"cpu":"500m"}}` {
+	// filled in.
+	full := get("/v1/agents/" + s.agent(project, `{"harness": "codex", "instructions": "Be brief.", "approval": "ask"}`))
+	if full["project_id"] != project || full["harness"] != "codex" || full["instructions"] != "Be brief." || full["approval"] != "ask" {
 		t.Errorf("the agent is %v", full)
 	}
-	for _, body := range []string{`{"harness": "opencode"}`, `{"harness": "opencode", "instructions": "", "resources": {}, "approval": ""}`} {
+	for _, body := range []string{`{"harness": "opencode"}`, `{"harness": "opencode", "instructions": "", "approval": ""}`} {
 		plain := get("/v1/agents/" + s.agent(project, body))
-		if _, found := plain["resources"]; found || plain["instructions"] != nil || plain["approval"] != nil || plain["harness"] != "opencode" {
+		if plain["instructions"] != nil || plain["approval"] != nil || plain["harness"] != "opencode" {
 			t.Errorf("the agent that was created with %s is %v", body, plain)
 		}
 	}
@@ -150,7 +142,7 @@ func TestTurnsOfASession(t *testing.T) {
 	session, other := s.session(), s.session()
 	for _, text := range []string{"one", "two", "three"} {
 		accepted := s.send(session, text)
-		s.run(aviary.job(accepted.ID), "answer to "+text)
+		s.run(accepted.ID, "answer to "+text)
 		s.follow(accepted.ID)
 	}
 	s.send(other, "another")
@@ -201,8 +193,7 @@ func TestEventsAreReadOn(t *testing.T) {
 	aviary := install(t)
 	s := aviary.supervisor()
 	accepted := s.send(s.session(), "hello")
-	job := aviary.job(accepted.ID)
-	runner := s.take(job)
+	runner := aviary.given(accepted.ID)
 	runner.report(started("harness-session"))
 	runner.report(said("one "))
 	runner.report(said("two "))
@@ -226,8 +217,6 @@ func TestEventsAreReadOn(t *testing.T) {
 	}
 
 	runner.report(finished("end_turn", nil))
-	runner.leave()
-	aviary.end(job, batchv1.JobComplete, nil)
 	if rest := client.rest(soon); !slices.Equal(types(rest), []string{"message.delta", "turn.completed"}) {
 		t.Errorf("the client read the events %v to the end of the turn", rest)
 	}

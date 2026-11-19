@@ -1,3 +1,4 @@
+# The Supervisor asks nothing of the cluster that it runs in.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -5,39 +6,3 @@ metadata:
   labels:
     app.kubernetes.io/name: aviary
     app.kubernetes.io/component: supervisor
----
-# The Supervisor runs each turn as a Job in the runtime namespace. It has no
-# access to anything else in the cluster.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: aviary-supervisor
-  namespace: aviary-runtime
-  labels:
-    app.kubernetes.io/name: aviary
-    app.kubernetes.io/component: supervisor
-rules:
-  - apiGroups: ["batch"]
-    resources: ["jobs"]
-    verbs: ["create", "delete", "list", "watch"]
-  # A turn whose Job is gone is not ended while its pod is still there.
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["list"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: aviary-supervisor
-  namespace: aviary-runtime
-  labels:
-    app.kubernetes.io/name: aviary
-    app.kubernetes.io/component: supervisor
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: aviary-supervisor
-subjects:
-  - kind: ServiceAccount
-    name: aviary-supervisor
-    namespace: {{ .Release.Namespace }}

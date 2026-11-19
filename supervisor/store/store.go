@@ -256,6 +256,9 @@ const (
 	FailureOutOfMemory = "out_of_memory"
 	// FailurePodLost: the pod was stopped from outside, or is gone.
 	FailurePodLost = "pod_lost"
+	// FailureSandboxLost: the sandbox of the session is gone, and what the
+	// agent had in it.
+	FailureSandboxLost = "sandbox_lost"
 	// FailureSupervisorLost: the runner lost its Supervisor and reached
 	// none again in time, or the Supervisor refused it.
 	FailureSupervisorLost = "supervisor_lost"

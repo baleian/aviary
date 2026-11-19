@@ -21,16 +21,12 @@ import (
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/klog/v2"
 
 	"aviary/supervisor/events"
 	"aviary/supervisor/identity"
 	"aviary/supervisor/internal/api"
 	"aviary/supervisor/internal/authz"
 	"aviary/supervisor/internal/driver"
-	"aviary/supervisor/internal/gateway"
-	runnerv1 "aviary/supervisor/internal/gen/aviary/runner/v1"
 	"aviary/supervisor/internal/metrics"
 	"aviary/supervisor/internal/sandbox"
 	"aviary/supervisor/secret"
@@ -40,10 +36,6 @@ import (
 const (
 	databaseURL        = "AVIARY_DATABASE_URL"
 	eventsURL          = "AVIARY_EVENTS_URL"
-	gatewayURL         = "AVIARY_GATEWAY_URL"
-	runnerImage        = "AVIARY_RUNNER_IMAGE"
-	llmBaseURL         = "AVIARY_LLM_BASE_URL"
-	proxyURL           = "AVIARY_PROXY_URL"
 	encryptionKeys     = "AVIARY_ENCRYPTION_KEYS"
 	encryptionKey      = "AVIARY_ENCRYPTION_KEY"
 	secretStoreHosts   = "AVIARY_SECRET_STORE_HOSTS"
@@ -55,7 +47,6 @@ const (
 	maxConcurrentTurns = "AVIARY_MAX_CONCURRENT_TURNS"
 	maxQueuedTurns     = "AVIARY_MAX_QUEUED_TURNS"
 	maxQueueWait       = "AVIARY_MAX_QUEUE_WAIT_SECONDS"
-	maxReconnect       = "AVIARY_MAX_RECONNECT_SECONDS"
 	maxStartup         = "AVIARY_MAX_STARTUP_SECONDS"
 	maxToolOutput      = "AVIARY_MAX_TOOL_OUTPUT_BYTES"
 	maxTurn            = "AVIARY_MAX_TURN_SECONDS"
@@ -63,7 +54,6 @@ const (
 	sandboxesKey       = "AVIARY_SANDBOXES_API_KEY"
 	templateStore      = "AVIARY_TEMPLATE_STORE"
 	apiAddr            = ":8080"
-	gatewayAddr        = ":9090"
 	authzAddr          = ":9091"
 	metricsAddr        = ":9092"
 	// shutdownTimeout is how long the requests to the API get to finish.
@@ -73,7 +63,7 @@ const (
 	identityPatience = 30 * time.Second
 	// keepaliveInterval is how often the Supervisor asks the other end of an
 	// idle connection whether it is still there, and how long it waits for
-	// the answer. The runners and the Egress Proxy ask the same of it.
+	// the answer. The Egress Proxy asks the same of it.
 	keepaliveInterval = 30 * time.Second
 )
 
@@ -84,7 +74,7 @@ var handover = 5 * time.Second
 
 // ports are what a Supervisor listens on.
 type ports struct {
-	api, gateway, authz, metrics net.Listener
+	api, authz, metrics net.Listener
 }
 
 // Plugins are the plugins of a build: what connects its Supervisor to the
@@ -110,8 +100,6 @@ type Plugins struct {
 func Main(plugins Plugins) {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
-	// The Kubernetes client logs through klog.
-	klog.SetSlogLogger(logger)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	if err := Run(ctx, os.Args[1:], plugins); err != nil {
@@ -151,47 +139,65 @@ func Run(ctx context.Context, args []string, plugins Plugins) error {
 }
 
 // bake has the sandbox service build the template of every harness that
-// has none, and waits for them. The harnesses are a JSON object such as
-// {"opencode": {"image": "registry.example.com/harness-opencode:1.0",
-// "sandbox": {"cpu": "1", "memory": "2Gi", "disk": "4Gi"}}}.
+// has none, and waits for them.
 func bake(ctx context.Context) error {
-	address, err := env(sandboxesURL)
+	client, err := sandboxes()
 	if err != nil {
 		return err
 	}
-	key, err := env(sandboxesKey)
-	if err != nil {
-		return err
-	}
-	templates := sandbox.Templates{}
-	if templates.Store, err = env(templateStore); err != nil {
-		return err
-	}
-	encoded, err := env(harnesses)
-	if err != nil {
-		return err
-	}
-	if err := json.Unmarshal([]byte(encoded), &templates.Harnesses); err != nil {
-		return fmt.Errorf("%s: %w", harnesses, err)
-	}
-	for name, harness := range templates.Harnesses {
-		size := harness.Sandbox
-		if harness.Image == "" || size.CPU == "" || size.Memory == "" || size.Disk == "" {
-			return fmt.Errorf("%s: the harness %s needs an image and the cpu, memory and disk of its sandboxes", harnesses, name)
-		}
-	}
-	output, err := env(maxToolOutput)
-	if err != nil {
-		return err
-	}
-	if templates.MaxToolOutputBytes, err = strconv.Atoi(output); err != nil || templates.MaxToolOutputBytes < 0 {
-		return fmt.Errorf("%s must be a number of bytes, or zero for no limit", maxToolOutput)
-	}
-	client, err := sandbox.New(address, key)
+	templates, err := templatesOf()
 	if err != nil {
 		return err
 	}
 	return client.Bake(ctx, templates)
+}
+
+// sandboxes reads where the sandbox service is, and the key that it is
+// asked with.
+func sandboxes() (*sandbox.Client, error) {
+	address, err := env(sandboxesURL)
+	if err != nil {
+		return nil, err
+	}
+	key, err := env(sandboxesKey)
+	if err != nil {
+		return nil, err
+	}
+	return sandbox.New(address, key)
+}
+
+// templatesOf reads what the sandboxes of the sessions are made from. The
+// harnesses are a JSON object such as {"opencode": {"image":
+// "registry.example.com/harness-opencode:1.0", "sandbox": {"cpu": "1",
+// "memory": "2Gi", "disk": "4Gi"}}}. A release has the templates built from
+// what its Supervisors then find them by, so both read the same.
+func templatesOf() (sandbox.Templates, error) {
+	templates := sandbox.Templates{}
+	var err error
+	if templates.Store, err = env(templateStore); err != nil {
+		return templates, err
+	}
+	encoded, err := env(harnesses)
+	if err != nil {
+		return templates, err
+	}
+	if err := json.Unmarshal([]byte(encoded), &templates.Harnesses); err != nil {
+		return templates, fmt.Errorf("%s: %w", harnesses, err)
+	}
+	for name, harness := range templates.Harnesses {
+		size := harness.Sandbox
+		if harness.Image == "" || size.CPU == "" || size.Memory == "" || size.Disk == "" {
+			return templates, fmt.Errorf("%s: the harness %s needs an image and the cpu, memory and disk of its sandboxes", harnesses, name)
+		}
+	}
+	output, err := env(maxToolOutput)
+	if err != nil {
+		return templates, err
+	}
+	if templates.MaxToolOutputBytes, err = strconv.Atoi(output); err != nil || templates.MaxToolOutputBytes < 0 {
+		return templates, fmt.Errorf("%s must be a number of bytes, or zero for no limit", maxToolOutput)
+	}
+	return templates, nil
 }
 
 func serve(ctx context.Context, database string, plugins Plugins) error {
@@ -228,7 +234,7 @@ func serve(ctx context.Context, database string, plugins Plugins) error {
 	if err != nil {
 		return err
 	}
-	client, err := driver.InCluster()
+	client, err := sandboxes()
 	if err != nil {
 		return err
 	}
@@ -237,31 +243,23 @@ func serve(ctx context.Context, database string, plugins Plugins) error {
 	if on.api, err = net.Listen("tcp", apiAddr); err != nil {
 		return err
 	}
-	if on.gateway, err = net.Listen("tcp", gatewayAddr); err != nil {
-		return err
-	}
 	if on.authz, err = net.Listen("tcp", authzAddr); err != nil {
 		return err
 	}
 	if on.metrics, err = net.Listen("tcp", metricsAddr); err != nil {
 		return err
 	}
-	return serveOn(ctx, on, st, ev, client, config, keys, stores, callers, gateway.Sweep)
+	return serveOn(ctx, on, st, ev, client, config, keys, stores, callers)
 }
 
 // serveOn serves on the ports until ctx is done, with the turns in the
-// database of the store and their pods in the cluster of the client. It
-// seals the secrets that it stores with the keys, and reads the others from
-// the stores. The callers are who may use the API. Every sweep it looks for
-// what the runners are to be told and no Supervisor announced.
-func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, client kubernetes.Interface, config driver.Config, keys *secret.Keys, stores *secret.Stores, callers api.Callers, sweep time.Duration) error {
+// database of the store and their sandboxes at the sandbox service of the
+// client. It seals the secrets that it stores with the keys, and reads the
+// others from the stores. The callers are who may use the API.
+func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, client *sandbox.Client, config driver.Config, keys *secret.Keys, stores *secret.Stores, callers api.Callers) error {
 	m := metrics.New()
 	stores.Asked = m.SecretRead
-	dr, err := driver.New(config, client, st, ev, m)
-	if err != nil {
-		return err
-	}
-	runners := gateway.New(st, ev, m, sweep)
+	dr := driver.New(config, client, st, ev, m)
 	apiServer := &http.Server{
 		Handler:           api.New(st, ev, dr, keys, stores, callers, ctx.Done()),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -275,31 +273,21 @@ func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, 
 			PermitWithoutStream: true,
 		}),
 	}
-	gatewayServer := grpc.NewServer(alive...)
-	runnerv1.RegisterRunnerServiceServer(gatewayServer, runners)
-	// The Egress Proxy asks on a port of its own, so that the turn pods can
-	// be kept from it.
+	// The Egress Proxy asks on a port of its own.
 	authzServer := grpc.NewServer(alive...)
 	authv3.RegisterAuthorizationServer(authzServer, authz.New(st, keys, stores))
 	// The metrics are on a port of their own, which the clients of the API
-	// and the turn pods have no way to. They are served until the Supervisor
-	// has stopped.
+	// have no way to. They are served until the Supervisor has stopped.
 	metricsMux := http.NewServeMux()
 	metricsMux.Handle("GET /metrics", m.Handler())
 	metricsServer := &http.Server{Handler: metricsMux, ReadHeaderTimeout: 10 * time.Second}
 	defer metricsServer.Close()
-	failed := make(chan error, 4)
+	failed := make(chan error, 3)
 	go func() { failed <- apiServer.Serve(on.api) }()
-	go func() { failed <- gatewayServer.Serve(on.gateway) }()
 	go func() { failed <- authzServer.Serve(on.authz) }()
 	go func() { failed <- metricsServer.Serve(on.metrics) }()
 	go dr.Run(ctx)
-	// The runners are served for a while after the Supervisor was told to
-	// stop.
-	serving, served := context.WithCancel(context.Background())
-	defer served()
-	go runners.Run(serving)
-	slog.Info("listening", "api", on.api.Addr().String(), "gateway", on.gateway.Addr().String(),
+	slog.Info("listening", "api", on.api.Addr().String(),
 		"authz", on.authz.Addr().String(), "metrics", on.metrics.Addr().String())
 
 	select {
@@ -307,16 +295,14 @@ func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, 
 		return err
 	case <-ctx.Done():
 	}
-	// A Supervisor that is told to stop takes on no more turns, and the other
-	// Supervisors go on.
+	// A Supervisor that is told to stop takes on no more turns and follows
+	// none. The other Supervisors go on, and take up the turns that it
+	// followed.
 	slog.Info("stopping")
 	time.Sleep(handover)
 	stopping, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	err = apiServer.Shutdown(stopping)
-	// The runners call another Supervisor. GracefulStop would wait for
-	// their turns to end.
-	gatewayServer.Stop()
+	err := apiServer.Shutdown(stopping)
 	authzServer.GracefulStop()
 	return err
 }
@@ -398,29 +384,12 @@ func callersOf(ctx context.Context, plugins []identity.Plugin) (api.Callers, err
 	return callers, err
 }
 
-// driverConfig reads how turns are run. The harnesses are a JSON object such
-// as {"opencode": {"image": "..."}}.
+// driverConfig reads how turns are run.
 func driverConfig() (driver.Config, error) {
 	var config driver.Config
 	var err error
-	if config.GatewayURL, err = env(gatewayURL); err != nil {
+	if config.Templates, err = templatesOf(); err != nil {
 		return config, err
-	}
-	if config.RunnerImage, err = env(runnerImage); err != nil {
-		return config, err
-	}
-	if config.LLMBaseURL, err = env(llmBaseURL); err != nil {
-		return config, err
-	}
-	if config.ProxyURL, err = env(proxyURL); err != nil {
-		return config, err
-	}
-	encoded, err := env(harnesses)
-	if err != nil {
-		return config, err
-	}
-	if err := json.Unmarshal([]byte(encoded), &config.Harnesses); err != nil {
-		return config, fmt.Errorf("%s: %w", harnesses, err)
 	}
 	limit, err := env(maxConcurrentTurns)
 	if err != nil {
@@ -445,13 +414,6 @@ func driverConfig() (driver.Config, error) {
 		return config, fmt.Errorf("%s must be a number of seconds, or zero for no limit", maxQueueWait)
 	}
 	config.MaxQueueWait = time.Duration(seconds) * time.Second
-	output, err := env(maxToolOutput)
-	if err != nil {
-		return config, err
-	}
-	if config.MaxToolOutputBytes, err = strconv.Atoi(output); err != nil || config.MaxToolOutputBytes < 0 {
-		return config, fmt.Errorf("%s must be a number of bytes, or zero for no limit", maxToolOutput)
-	}
 	startup, err := env(maxStartup)
 	if err != nil {
 		return config, err
@@ -468,14 +430,6 @@ func driverConfig() (driver.Config, error) {
 		return config, fmt.Errorf("%s must be a number of seconds above zero", maxTurn)
 	}
 	config.MaxTurn = time.Duration(seconds) * time.Second
-	reconnect, err := env(maxReconnect)
-	if err != nil {
-		return config, err
-	}
-	if seconds, err = strconv.Atoi(reconnect); err != nil || seconds < 0 {
-		return config, fmt.Errorf("%s must be a number of seconds, or zero for no limit", maxReconnect)
-	}
-	config.MaxReconnect = time.Duration(seconds) * time.Second
 	return config, nil
 }
 

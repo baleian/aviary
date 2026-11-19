@@ -362,10 +362,10 @@ func TestProxyIsToldWhoSentTheMessageOfATurn(t *testing.T) {
 		s.token = sender
 		var who me
 		s.request(http.MethodGet, "/v1/me", "", &who)
-		job := aviary.job(s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID)
-		s.take(job)
+		turn := s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID
+		aviary.given(turn)
 		for _, forward := range []bool{false, true} {
-			if origin := s.origin(token(job), forward); who.ID == "" || origin["user"] != who.ID || who.Subject == "" || origin["subject"] != who.Subject {
+			if origin := s.origin(aviary.token(turn), forward); who.ID == "" || origin["user"] != who.ID || who.Subject == "" || origin["subject"] != who.Subject {
 				t.Errorf("of a request of the turn that the user %q, the subject %q, sent, through the forward proxy %t, the proxy is told %v",
 					who.ID, who.Subject, forward, origin)
 			}

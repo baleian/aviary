@@ -227,22 +227,19 @@ func TestSupervisorSettings(t *testing.T) {
 	objects, _ := chart(t, "default")
 	settings := env(rendered.Find(objects, "Deployment", "aviary-supervisor"))
 	for name, value := range map[string]string{
-		"AVIARY_GATEWAY_URL":            "http://aviary-supervisor.aviary-system:9090",
 		"AVIARY_ENCRYPTION_KEY":         "k1",
 		"AVIARY_SECRET_STORE_HOSTS":     "[]",
 		"AVIARY_SECRET_CACHE_SECONDS":   "60",
 		"AVIARY_IDENTITY_PROVIDER":      `{"kind":"","settings":{}}`,
 		"AVIARY_ADMIN_GROUPS":           "[]",
 		"AVIARY_USER_GROUPS":            "[]",
-		"AVIARY_LLM_BASE_URL":           "http://aviary-egress-proxy.aviary-system:8080",
-		"AVIARY_PROXY_URL":              "http://aviary-egress-proxy.aviary-system:3128",
-		"AVIARY_RUNNER_IMAGE":           "aviary-runner:dev",
+		"AVIARY_SANDBOXES_URL":          "http://opensandbox-server.opensandbox-system",
+		"AVIARY_TEMPLATE_STORE":         "s3://sandbox-images/publish",
 		"AVIARY_MAX_CONCURRENT_TURNS":   "50",
 		"AVIARY_MAX_QUEUED_TURNS":       "500",
 		"AVIARY_MAX_QUEUE_WAIT_SECONDS": "120",
 		"AVIARY_MAX_STARTUP_SECONDS":    "90",
 		"AVIARY_MAX_TURN_SECONDS":       "1800",
-		"AVIARY_MAX_RECONNECT_SECONDS":  "60",
 		"AVIARY_MAX_TOOL_OUTPUT_BYTES":  "65536",
 	} {
 		if settings[name] != value {
@@ -265,13 +262,13 @@ func TestSupervisorSettings(t *testing.T) {
 		"AVIARY_IDENTITY_PROVIDER":      `{"kind":"oidc","settings":{"audience":"aviary","claims":{"username":"email"},"issuer":"https://login.example.com/realms/main"}}`,
 		"AVIARY_ADMIN_GROUPS":           `["platform"]`,
 		"AVIARY_USER_GROUPS":            `["team-a","team-b"]`,
-		"AVIARY_LLM_BASE_URL":           "http://aviary-egress-proxy.aviary-system:8080",
+		"AVIARY_SANDBOXES_URL":          "https://sandboxes.example.com",
+		"AVIARY_TEMPLATE_STORE":         "s3://example/templates",
 		"AVIARY_MAX_CONCURRENT_TURNS":   "7",
 		"AVIARY_MAX_QUEUED_TURNS":       "11",
 		"AVIARY_MAX_QUEUE_WAIT_SECONDS": "13",
 		"AVIARY_MAX_STARTUP_SECONDS":    "17",
 		"AVIARY_MAX_TURN_SECONDS":       "7200",
-		"AVIARY_MAX_RECONNECT_SECONDS":  "19",
 		"AVIARY_MAX_TOOL_OUTPUT_BYTES":  "23",
 	} {
 		if settings[name] != value {
@@ -288,17 +285,32 @@ func TestSupervisorSettings(t *testing.T) {
 	// A value that is set for one harness leaves the rest of the harnesses
 	// as they are.
 	var harnesses map[string]struct {
-		Image     string
-		Resources struct{ Requests, Limits map[string]string }
+		Image   string
+		Sandbox map[string]string
 	}
 	if err := json.Unmarshal([]byte(settings["AVIARY_HARNESSES"]), &harnesses); err != nil {
 		t.Fatalf("the Supervisor is told the harnesses %s: %v", settings["AVIARY_HARNESSES"], err)
 	}
 	opencode, codex := harnesses["opencode"], harnesses["codex"]
 	if len(harnesses) != 2 || opencode.Image != "aviary-harness-opencode:dev" || codex.Image != "aviary-harness-codex:dev" ||
-		opencode.Resources.Requests["memory"] != "333Mi" || opencode.Resources.Requests["cpu"] != "250m" ||
-		opencode.Resources.Limits["memory"] != "4Gi" || codex.Resources.Requests["memory"] != "256Mi" {
+		opencode.Sandbox["disk"] != "16Gi" || opencode.Sandbox["memory"] != "2Gi" || codex.Sandbox["disk"] != "4Gi" {
 		t.Errorf("the Supervisor is told the harnesses %s", settings["AVIARY_HARNESSES"])
+	}
+
+	// A Supervisor finds the template of a harness by what the release had
+	// it built from, so both are told the same of it, and the Supervisor
+	// asks the sandbox service with the same key.
+	built := rendered.Find(objects, "Job", "aviary-templates")
+	for _, name := range []string{"AVIARY_SANDBOXES_URL", "AVIARY_TEMPLATE_STORE", "AVIARY_HARNESSES", "AVIARY_MAX_TOOL_OUTPUT_BYTES"} {
+		if settings[name] == "" || settings[name] != env(built)[name] {
+			t.Errorf("the Supervisor is told %s=%q, and the Job that builds the templates %q", name, settings[name], env(built)[name])
+		}
+	}
+	key := func(object map[string]any) any {
+		return at(named(at(object, "spec", "template", "spec", "containers", 0, "env"), "AVIARY_SANDBOXES_API_KEY"), "valueFrom", "secretKeyRef")
+	}
+	if key(supervisor) == nil || !reflect.DeepEqual(key(supervisor), key(built)) {
+		t.Errorf("the Supervisor asks the sandbox service with the key %v, and the Job with %v", key(supervisor), key(built))
 	}
 }
 
@@ -317,41 +329,6 @@ func TestSupervisorEncryptionKeys(t *testing.T) {
 		if mounted := at(named(at(pod, "volumes"), "encryption"), "secret", "secretName"); mounted != secret {
 			t.Errorf("%s: the keys are those of the secret %v, not of %s", values, mounted, secret)
 		}
-	}
-}
-
-// A turn pod connects to the Supervisor and to the Egress Proxy, and to
-// nothing else: not even to the cluster's DNS, which can carry data out.
-func TestTurnPodsAreCutOff(t *testing.T) {
-	objects, _ := chart(t, "default")
-	policy := at(rendered.Find(objects, "NetworkPolicy", "aviary-turn-pods"), "spec")
-	if at(policy, "podSelector") == nil || len(at(policy, "podSelector").(map[string]any)) != 0 ||
-		!reflect.DeepEqual(at(policy, "policyTypes"), []any{"Ingress", "Egress"}) || at(policy, "ingress") != nil {
-		t.Errorf("the policy of the turn pods is %v", policy)
-	}
-	reached := map[string][]any{}
-	rules, _ := at(policy, "egress").([]any)
-	for _, rule := range rules {
-		peers, _ := at(rule, "to").([]any)
-		if len(peers) != 1 || at(peers[0], "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name") != "aviary-system" {
-			t.Errorf("a turn pod may connect to %v", peers)
-			continue
-		}
-		component, _ := at(peers[0], "podSelector", "matchLabels", "app.kubernetes.io/component").(string)
-		ports, _ := at(rule, "ports").([]any)
-		for _, port := range ports {
-			reached[component] = append(reached[component], at(port, "port"))
-		}
-	}
-	expected := map[string][]any{"supervisor": {9090}, "egress-proxy": {8080, 3128}}
-	if !reflect.DeepEqual(reached, expected) {
-		t.Errorf("a turn pod may connect to %v, not to %v", reached, expected)
-	}
-
-	// Kubernetes holds the turn pods to what a restricted namespace allows.
-	labels := at(rendered.Find(objects, "Namespace", "aviary-runtime"), "metadata", "labels")
-	if at(labels, "pod-security.kubernetes.io/enforce") != "restricted" {
-		t.Errorf("the namespace of the turn pods has the labels %v", labels)
 	}
 }
 
@@ -384,20 +361,13 @@ func TestEgressProxyIsKeptFromTheInside(t *testing.T) {
 	}
 }
 
-// The Supervisor may do in the cluster what it takes to run turns, and no
-// more.
+// The Supervisor may do nothing in the cluster: the sessions run in the
+// sandboxes of the sandbox service, which it asks.
 func TestSupervisorPermissions(t *testing.T) {
 	objects, _ := chart(t, "default")
-	role := rendered.Find(objects, "Role", "aviary-supervisor")
-	expected := []any{
-		map[string]any{"apiGroups": []any{"batch"}, "resources": []any{"jobs"}, "verbs": []any{"create", "delete", "list", "watch"}},
-		map[string]any{"apiGroups": []any{""}, "resources": []any{"pods"}, "verbs": []any{"list"}},
-	}
-	if at(role, "metadata", "namespace") != "aviary-runtime" || !reflect.DeepEqual(at(role, "rules"), expected) {
-		t.Errorf("the Supervisor may %v in the namespace %v", at(role, "rules"), at(role, "metadata", "namespace"))
-	}
 	for _, object := range objects {
-		if kind := object["kind"]; kind == "ClusterRole" || kind == "ClusterRoleBinding" {
+		switch kind := object["kind"]; kind {
+		case "Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding":
 			t.Errorf("the chart makes the %v %v", kind, at(object, "metadata", "name"))
 		}
 	}

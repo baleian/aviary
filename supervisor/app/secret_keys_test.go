@@ -131,13 +131,14 @@ func TestModelRequestWithAKeyFromASecretStore(t *testing.T) {
 	aviary.secrets.put(address, "llm/model", "api_key", "sk-the-first")
 	provider := s.create("/v1/projects/"+project+"/providers", keyed(in(kept, "llm/model", "api_key")))
 	agent := s.create("/v1/projects/"+project+"/agents", `{"harness": "opencode", "model": {"provider": "`+provider+`", "name": "a-model"}}`)
-	job := aviary.job(s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID)
-	s.take(job)
+	turn := s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID
+	aviary.given(turn)
+	token := aviary.token(turn)
 	// told returns the key that a Supervisor tells the proxy to send a model
 	// request of the turn with.
 	told := func(s *supervisor) string {
 		t.Helper()
-		got := named(t, s.check(token(job), false, "/v1/chat/completions"))
+		got := named(t, s.check(token, false, "/v1/chat/completions"))
 		if got == nil || got.host != "api.example.com" || got.secure != "true" || got.keyless {
 			t.Fatalf("the proxy is told to pass a model request on to %+v", got)
 		}
@@ -149,7 +150,7 @@ func TestModelRequestWithAKeyFromASecretStore(t *testing.T) {
 		t.Errorf("the proxy is told to send the model request with %q", key)
 	}
 	// The key of a provider is for its endpoint alone.
-	if got := named(t, s.check(token(job), true, "/")); got != nil {
+	if got := named(t, s.check(token, true, "/")); got != nil {
 		t.Errorf("about a request through the forward proxy, the proxy is told %+v", got)
 	}
 	// The Supervisor read the key once, when the provider was made, and
@@ -167,7 +168,7 @@ func TestModelRequestWithAKeyFromASecretStore(t *testing.T) {
 	// reason, and the other requests of the turn go on.
 	aviary.secrets.put(address, "llm/model", "api_key", "")
 	third := aviary.supervisor()
-	status, why := refusal(third.check(token(job), false, "/v1/chat/completions"))
+	status, why := refusal(third.check(token, false, "/v1/chat/completions"))
 	if status != http.StatusServiceUnavailable ||
 		why != "the API key of the model provider cannot be read from its secret store: the store has no value at the path and under the key\n" {
 		t.Errorf("a model request whose key the store does not give is refused with %d %q", status, why)
@@ -175,7 +176,7 @@ func TestModelRequestWithAKeyFromASecretStore(t *testing.T) {
 	if failed := third.metric(`aviary_secret_read_seconds_count{kind="scripted",outcome="failed"}`); failed != 1 {
 		t.Errorf("the Supervisor counted %v reads that failed", failed)
 	}
-	if got := named(t, third.check(token(job), true, "/")); got != nil {
+	if got := named(t, third.check(token, true, "/")); got != nil {
 		t.Errorf("about a request through the forward proxy, the proxy is told %+v", got)
 	}
 
@@ -193,13 +194,13 @@ func TestModelRequestWithAKeyFromASecretStore(t *testing.T) {
 	// there, and one with other keys cannot log in to it.
 	closed := *aviary
 	closed.storeHosts = nil
-	if status, why := refusal(closed.supervisor().check(token(job), false, "/v1/chat/completions")); status != http.StatusServiceUnavailable ||
+	if status, why := refusal(closed.supervisor().check(token, false, "/v1/chat/completions")); status != http.StatusServiceUnavailable ||
 		!strings.Contains(why, "supervisor.secretStores.allowedHosts") {
 		t.Errorf("a model request whose key is in a store that is not allowed is refused with %d %q", status, why)
 	}
 	stranger := *aviary
 	stranger.keys = testenv.Keys(t)
-	if status, why := refusal(stranger.supervisor().check(token(job), false, "/v1/chat/completions")); status != http.StatusServiceUnavailable ||
+	if status, why := refusal(stranger.supervisor().check(token, false, "/v1/chat/completions")); status != http.StatusServiceUnavailable ||
 		why != "the credential of the secret store of the model provider cannot be read\n" {
 		t.Errorf("a model request whose store cannot be logged in to is refused with %d %q", status, why)
 	}

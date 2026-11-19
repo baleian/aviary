@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -22,28 +21,23 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
-	batchv1 "k8s.io/api/batch/v1"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
 
 	"aviary/supervisor/events"
 	memorylog "aviary/supervisor/events/memory"
 	"aviary/supervisor/internal/api"
 	"aviary/supervisor/internal/driver"
-	"aviary/supervisor/internal/gateway"
-	runnerv1 "aviary/supervisor/internal/gen/aviary/runner/v1"
+	"aviary/supervisor/internal/sandbox"
+	"aviary/supervisor/internal/sandbox/sandboxtest"
 	"aviary/supervisor/internal/testenv"
 	"aviary/supervisor/secret"
+	"aviary/supervisor/store"
 	memorystore "aviary/supervisor/store/memory"
 )
 
 // The tests of this package run whole Supervisors, as serveOn serves them,
-// on records and an event log that are in memory. Their cluster is a fake
-// in which no pod runs, so a test plays the part of the cluster for the
-// turns that it sends: it is the runner that takes a turn, and it ends the
-// turn's Job.
+// on records and an event log that are in memory. Their sandbox service is
+// one in which nothing runs, so a test plays the part of the runner for the
+// turns that it sends: it is given the turn, and tells what comes of it.
 
 // patience is how long a test waits for what the Supervisor is to do, and
 // soon how long for what it is to do at once: a Supervisor that does it only
@@ -53,24 +47,27 @@ const (
 	soon     = 2 * time.Second
 )
 
-// namespace is where the Supervisor runs the turn pods.
-const namespace = "aviary-runtime"
-
 func TestMain(m *testing.M) {
 	handover = 100 * time.Millisecond
 	os.Exit(m.Run())
 }
 
 // installation is what the Supervisors of a test share: their records, an
-// event log, a cluster and the keys that secrets are sealed with.
+// event log, a sandbox service and the keys that secrets are sealed with.
 type installation struct {
 	t *testing.T
 	// records are the records of the installation, as its database holds
 	// them.
 	records *memorystore.Store
-	cluster *fake.Clientset
-	config  driver.Config
-	keys    *secret.Keys
+	// service is the sandbox service of the installation, and sandboxes how
+	// its Supervisors ask it.
+	service   *sandboxtest.Service
+	sandboxes *sandbox.Client
+	config    driver.Config
+	keys      *secret.Keys
+	// tokens are the tokens of the turns that were dispatched, by the IDs
+	// of the turns.
+	tokens *sync.Map
 	// storeHosts are the hosts at which the installation allows the secret
 	// stores of its projects, and secrets is what those stores hold. They
 	// are of the kind that the tests have a plugin for.
@@ -78,43 +75,66 @@ type installation struct {
 	secrets    *shelves
 	// log is the event log of the installation, which its Supervisors share.
 	log *memorylog.Log
-	// sweep is how often its Supervisors look for what no Supervisor
-	// announced. A test that waits for that sets it lower.
-	sweep time.Duration
 	// callers are who may use the API of the installation. Most
 	// installations of the tests have no identity provider.
 	callers api.Callers
 }
 
-// install returns an installation without Supervisors. The functions change
-// how its turns are run from what a chart with default values sets.
+// install returns an installation without Supervisors, whose release has
+// had the templates of its harnesses built. The functions change how its
+// turns are run from what a chart with default values sets. A test that
+// waits for what the Supervisors do only when they sweep sets the sweep
+// lower.
 func install(t *testing.T, changes ...func(*driver.Config)) *installation {
 	t.Helper()
+	service := sandboxtest.New(t)
+	sandboxes, err := sandbox.New(service.URL, sandboxtest.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	size := sandbox.Size{CPU: "1", Memory: "2Gi", Disk: "4Gi"}
 	config := driver.Config{
-		// Addresses, which the driver does not look up.
-		GatewayURL:  "http://127.0.0.1:9090",
-		RunnerImage: "runner",
-		LLMBaseURL:  "http://127.0.0.2:8080",
-		ProxyURL:    "http://127.0.0.2:3128",
-		Harnesses: map[string]driver.Harness{
-			"opencode": {Image: "opencode"},
-			"codex":    {Image: "codex"},
+		Templates: sandbox.Templates{
+			Harnesses: map[string]sandbox.Harness{
+				"opencode": {Image: "opencode", Sandbox: size},
+				"codex":    {Image: "codex", Sandbox: size},
+			},
+			Store:              "s3://sandboxes/templates",
+			MaxToolOutputBytes: 65536,
+			Poll:               5 * time.Millisecond,
 		},
-		MaxToolOutputBytes: 65536,
 		MaxStartup:         90 * time.Second,
 		MaxTurn:            30 * time.Minute,
-		MaxReconnect:       time.Minute,
 		MaxQueueWait:       2 * time.Minute,
 		MaxQueuedTurns:     500,
 		MaxConcurrentTurns: 50,
+	}
+	if err := sandboxes.Bake(context.Background(), config.Templates); err != nil {
+		t.Fatal(err)
 	}
 	for _, change := range changes {
 		change(&config)
 	}
 	return &installation{
-		t: t, records: memorystore.New(), cluster: fake.NewClientset(), config: config,
-		keys: testenv.Keys(t), storeHosts: []string{storeHost}, secrets: &shelves{}, log: memorylog.New(), sweep: gateway.Sweep,
+		t: t, records: memorystore.New(), service: service, sandboxes: sandboxes, config: config, tokens: &sync.Map{},
+		keys: testenv.Keys(t), storeHosts: []string{storeHost}, secrets: &shelves{}, log: memorylog.New(),
 	}
+}
+
+// dispatching are the records as a Supervisor of the tests has them. They
+// note the token of every turn that is dispatched, which only the one who
+// dispatches a turn is told.
+type dispatching struct {
+	store.Store
+	tokens *sync.Map
+}
+
+func (d dispatching) DispatchTurns(ctx context.Context, limit int) ([]store.Dispatch, error) {
+	dispatches, err := d.Store.DispatchTurns(ctx, limit)
+	for _, dispatch := range dispatches {
+		d.tokens.Store(dispatch.TurnID.String(), dispatch.Token)
+	}
+	return dispatches, err
 }
 
 // stores returns the secret stores of the installation as one of its
@@ -134,7 +154,6 @@ func (i *installation) stores() *secret.Stores {
 type supervisor struct {
 	*installation
 	api, metrics string
-	runners      runnerv1.RunnerServiceClient
 	proxies      authv3.AuthorizationClient
 	// stop tells the Supervisor to stop, as Kubernetes does, and returns
 	// when it has.
@@ -155,7 +174,7 @@ func (i *installation) supervisor() *supervisor {
 		}
 		return listener
 	}
-	on := ports{api: listen(), gateway: listen(), authz: listen(), metrics: listen()}
+	on := ports{api: listen(), authz: listen(), metrics: listen()}
 	connect := func(listener net.Listener) *grpc.ClientConn {
 		connection, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err != nil {
@@ -168,13 +187,12 @@ func (i *installation) supervisor() *supervisor {
 		installation: i,
 		api:          "http://" + on.api.Addr().String(),
 		metrics:      "http://" + on.metrics.Addr().String(),
-		runners:      runnerv1.NewRunnerServiceClient(connect(on.gateway)),
 		proxies:      authv3.NewAuthorizationClient(connect(on.authz)),
 	}
 	ctx, stop := context.WithCancel(context.Background())
 	stopped := make(chan error, 1)
 	go func() {
-		stopped <- serveOn(ctx, on, i.records, ev, i.cluster, i.config, i.keys, stores, i.callers, i.sweep)
+		stopped <- serveOn(ctx, on, dispatching{i.records, i.tokens}, ev, i.sandboxes, i.config, i.keys, stores, i.callers)
 	}()
 	s.stop = sync.OnceFunc(func() {
 		stop()
@@ -449,251 +467,105 @@ func types(events []event) []string {
 	return types
 }
 
-// The cluster, which the test plays.
+// The runners in the sandboxes, which the test plays.
 
-// job waits for the Job that runs the turn and returns it. A turn that has
-// room to run is dispatched at once.
-func (i *installation) job(turn string) *batchv1.Job {
-	i.t.Helper()
-	var job *batchv1.Job
-	eventually(i.t, soon, "the turn "+turn+" has no Job", func() bool {
-		found, err := i.cluster.BatchV1().Jobs(namespace).Get(context.Background(), "turn-"+turn, metav1.GetOptions{})
-		job = found
-		return err == nil
-	})
-	return job
-}
-
-// jobs returns the names of the Jobs that the cluster holds.
-func (i *installation) jobs() []string {
-	i.t.Helper()
-	jobs, err := i.cluster.BatchV1().Jobs(namespace).List(context.Background(), metav1.ListOptions{})
-	if err != nil {
-		i.t.Fatal(err)
-	}
-	names := []string{}
-	for _, job := range jobs.Items {
-		names = append(names, job.Name)
-	}
-	return names
-}
-
-// token returns the token that the pod of the Job holds for its turn.
-func token(job *batchv1.Job) string {
-	return told(job, "AVIARY_TURN_TOKEN")
-}
-
-// told returns what the agent container of the Job has in the variable of
-// that name, which is nothing if it has no such variable.
-func told(job *batchv1.Job, name string) string {
-	for _, variable := range job.Spec.Template.Spec.Containers[0].Env {
-		if variable.Name == name {
-			return variable.Value
-		}
-	}
-	return ""
-}
-
-// end ends the Job the way Kubernetes does when the pod of the Job has
-// stopped: as complete, or as failed. The pod is left behind in the state
-// that is given, if one is.
-func (i *installation) end(job *batchv1.Job, outcome batchv1.JobConditionType, pod *corev1.PodStatus) {
-	i.t.Helper()
-	i.endAs(job, batchv1.JobCondition{Type: outcome, Status: corev1.ConditionTrue}, pod)
-}
-
-// endAs ends the Job with the condition that Kubernetes gives it.
-func (i *installation) endAs(job *batchv1.Job, condition batchv1.JobCondition, pod *corev1.PodStatus) {
-	i.t.Helper()
-	ctx := context.Background()
-	if pod != nil {
-		_, err := i.cluster.CoreV1().Pods(namespace).Create(ctx, &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{Name: job.Name, Namespace: namespace, Labels: job.Labels},
-			Status:     *pod,
-		}, metav1.CreateOptions{})
-		if err != nil {
-			i.t.Fatal(err)
-		}
-	}
-	ended := job.DeepCopy()
-	ended.Status.Conditions = append(ended.Status.Conditions, condition)
-	if _, err := i.cluster.BatchV1().Jobs(namespace).UpdateStatus(ctx, ended, metav1.UpdateOptions{}); err != nil {
-		i.t.Fatal(err)
-	}
-}
-
-// stopped is the state of a pod whose agent container has ended as given.
-func stopped(agent corev1.ContainerStateTerminated) *corev1.PodStatus {
-	return &corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{
-		Name: "agent", State: corev1.ContainerState{Terminated: &agent},
-	}}}
-}
-
-// The runner of a turn, which the test plays.
-
-// runner is the runner of a turn. It numbers its reports as a runner does.
+// runner is the runner of a session, with a turn that it was given.
 type runner struct {
-	t     *testing.T
-	token string
-	// id is the name that the runner made up for itself. A runner of an older
-	// release has none.
-	id   string
-	seq  uint64
-	call *call
+	*sandboxtest.Turn
+	installation *installation
+	// seq is the number of the last event that it told of the turn.
+	seq uint64
 }
 
-// call is one call of a runner to a Supervisor.
-type call struct {
-	stream   grpc.BidiStreamingClient[runnerv1.RunTurnRequest, runnerv1.RunTurnResponse]
-	start    *runnerv1.Start
-	received chan uint64
-	cancels  chan struct{}
-	answers  chan *runnerv1.Approval
-	// ended holds how the Supervisor ended the call, once it has.
-	ended chan error
-	hang  context.CancelFunc
+// given waits for a runner to be given the turn, and returns it. A turn
+// that has room to run is dispatched at once.
+func (i *installation) given(turn string) *runner {
+	i.t.Helper()
+	return &runner{Turn: i.service.TurnWith(i.t, turn), installation: i}
 }
 
-// runner returns a runner for the turn that the token opens.
-func (i *installation) runner(token string) *runner {
-	return &runner{t: i.t, token: token, id: uuid.NewString()}
-}
-
-// attach calls the Supervisor, as a runner does at its start and when it has
-// lost its Supervisor. It returns what the Supervisor starts the turn with,
-// or the error that it ends the call with.
-func (r *runner) attach(s *supervisor) (*runnerv1.Start, error) {
-	r.t.Helper()
-	pairs := []string{"authorization", "Bearer " + r.token}
-	if r.id != "" {
-		pairs = append(pairs, "aviary-runner", r.id)
-	}
-	ctx, hang := context.WithCancel(metadata.AppendToOutgoingContext(context.Background(), pairs...))
-	r.t.Cleanup(hang)
-	stream, err := s.runners.RunTurn(ctx)
-	if err != nil {
-		r.t.Fatal(err)
-	}
-	first, err := stream.Recv()
-	if err != nil {
-		hang()
-		return nil, err
-	}
-	if first.GetStart() == nil {
-		r.t.Fatalf("the Supervisor began the call with %v", first)
-	}
-	made := &call{
-		stream: stream, start: first.GetStart(), hang: hang,
-		received: make(chan uint64, 10000), cancels: make(chan struct{}, 100), ended: make(chan error, 1),
-		answers: make(chan *runnerv1.Approval, 100),
-	}
-	go func() {
-		for {
-			response, err := stream.Recv()
-			switch {
-			case err != nil:
-				made.ended <- err
-				return
-			case response.GetReceived() != nil:
-				made.received <- response.GetReceived().GetSeq()
-			case response.GetCancel() != nil:
-				made.cancels <- struct{}{}
-			case response.GetApproval() != nil:
-				made.answers <- response.GetApproval()
-			}
+// token waits for the turn to be dispatched, and returns its token.
+func (i *installation) token(turn string) string {
+	i.t.Helper()
+	var token string
+	eventually(i.t, soon, "the turn "+turn+" is not dispatched", func() bool {
+		noted, found := i.tokens.Load(turn)
+		if found {
+			token = noted.(string)
 		}
-	}()
-	r.call = made
-	return made.start, nil
+		return found
+	})
+	return token
 }
 
-// take has a new runner take the turn of the Job from the Supervisor.
-func (s *supervisor) take(job *batchv1.Job) *runner {
-	s.t.Helper()
-	r := s.runner(token(job))
-	if _, err := r.attach(s); err != nil {
-		s.t.Fatalf("the runner was not given its turn: %v", err)
-	}
-	return r
+// message is what a runner tells of its turn: an event.
+type message struct {
+	name string
+	data any
 }
 
-// send sends a message with the number, and returns the number that the
-// Supervisor answers with or the error that it ends the call with.
-func (r *runner) send(seq uint64, message *runnerv1.RunTurnRequest) (uint64, error) {
-	r.t.Helper()
-	message.Seq = seq
-	if err := r.call.stream.Send(message); err != nil && !errors.Is(err, io.EOF) {
-		r.t.Fatal(err)
-	}
-	select {
-	case received := <-r.call.received:
-		return received, nil
-	case err := <-r.call.ended:
-		r.call.ended <- err
-		return 0, err
-	case <-time.After(patience):
-		r.t.Fatalf("the Supervisor did not answer message %d", seq)
-		return 0, nil
-	}
-}
-
-// report sends the next message of the turn, which the Supervisor is to
-// record.
-func (r *runner) report(message *runnerv1.RunTurnRequest) {
-	r.t.Helper()
+// report tells the next event of the turn, and waits for a Supervisor to
+// record it. After the last event of a turn, it waits for the turn to end.
+func (r *runner) report(told message) {
+	i := r.installation
+	i.t.Helper()
+	r.Tell(told.name, told.data)
 	r.seq++
-	if received, err := r.send(r.seq, message); err != nil || received != r.seq {
-		r.t.Fatalf("message %d was answered with %d: %v", r.seq, received, err)
+	id := uuid.MustParse(r.ID)
+	eventually(i.t, soon, fmt.Sprintf("the event %d of the turn %s is not recorded", r.seq, r.ID), func() bool {
+		recorded, err := events.New(i.log).Received(context.Background(), id)
+		return err == nil && recorded >= r.seq
+	})
+	if told.name == "finished" || told.name == "failed" {
+		eventually(i.t, soon, "the turn "+r.ID+" has not ended", func() bool {
+			turn, err := i.records.Turn(context.Background(), id)
+			return err == nil && turn.EndedAt != nil
+		})
 	}
 }
 
-// The messages of a runner.
-
-func started(harnessSession string) *runnerv1.RunTurnRequest {
-	return &runnerv1.RunTurnRequest{Message: &runnerv1.RunTurnRequest_Started{
-		Started: &runnerv1.Started{HarnessSessionId: harnessSession},
-	}}
-}
-
-func said(text string) *runnerv1.RunTurnRequest {
-	return &runnerv1.RunTurnRequest{Message: &runnerv1.RunTurnRequest_MessageDelta{
-		MessageDelta: &runnerv1.MessageDelta{Text: text},
-	}}
-}
-
-func finished(stopReason string, usage *runnerv1.Usage) *runnerv1.RunTurnRequest {
-	return &runnerv1.RunTurnRequest{Message: &runnerv1.RunTurnRequest_Finished{
-		Finished: &runnerv1.Finished{StopReason: stopReason, Usage: usage},
-	}}
-}
-
-// leave ends the runner's side of the call, as a runner does at the end of
-// its turn, and waits for the Supervisor to end the call.
-func (r *runner) leave() {
-	r.t.Helper()
-	if err := r.call.stream.CloseSend(); err != nil {
-		r.t.Fatal(err)
+// lose takes the sandbox of the runner away, as a node that is lost does.
+func (r *runner) lose() {
+	i := r.installation
+	i.t.Helper()
+	if err := i.sandboxes.DeleteSandbox(context.Background(), r.Sandbox); err != nil {
+		i.t.Fatal(err)
 	}
-	select {
-	case err := <-r.call.ended:
-		if !errors.Is(err, io.EOF) {
-			r.t.Fatalf("the Supervisor ended the call of a runner that had done with: %v", err)
-		}
-	case <-time.After(patience):
-		r.t.Fatal("the Supervisor did not end the call of a runner that had done")
-	}
+	r.Cut()
 }
 
-// run has the runner go through a turn in which the agent says the text,
-// and ends the turn's Job as complete.
-func (s *supervisor) run(job *batchv1.Job, text string) {
+// The events of a runner.
+
+func started(harnessSession string) message {
+	return message{"started", map[string]string{"harness_session_id": harnessSession}}
+}
+
+func said(text string) message {
+	return message{"message.delta", map[string]string{"text": text}}
+}
+
+// finished is the event that the harness ended the turn, with the token
+// usage that it reported, if it reported any.
+func finished(stopReason string, usage *store.Usage) message {
+	data := map[string]any{"stop_reason": stopReason}
+	if usage != nil {
+		data["usage"] = usage
+	}
+	return message{"finished", data}
+}
+
+// failed is the event that the runner could not finish the turn.
+func failed(reason, text string) message {
+	return message{"failed", map[string]string{"reason": reason, "message": text}}
+}
+
+// run has the runner go through a turn in which the agent says the text.
+func (s *supervisor) run(turn, text string) {
 	s.t.Helper()
-	r := s.take(job)
+	r := s.given(turn)
 	r.report(started("harness-session"))
 	r.report(said(text))
 	r.report(finished("end_turn", nil))
-	r.leave()
-	s.end(job, batchv1.JobComplete, nil)
 }
 
 // The Egress Proxy, which asks whose request a token belongs to.
@@ -735,53 +607,37 @@ func (s *supervisor) origin(token string, forward bool) map[string]string {
 
 // cancelled waits for the Supervisor to tell the runner to stop its turn.
 func (r *runner) cancelled() {
-	r.t.Helper()
-	select {
-	case <-r.call.cancels:
-	case err := <-r.call.ended:
-		r.t.Fatalf("the Supervisor ended the call of a runner whose turn was cancelled: %v", err)
-	case <-time.After(soon):
-		r.t.Fatal("the runner was not told to stop its turn")
-	}
+	r.installation.t.Helper()
+	r.Stopped(r.installation.t)
 }
 
-// asks is the report that the harness asks for approval before it runs the
+// asks is the event that the harness asks for approval before it runs the
 // command, with the options that the fake harness of the runner's tests has.
-func asks(id, command string) *runnerv1.RunTurnRequest {
-	return &runnerv1.RunTurnRequest{Message: &runnerv1.RunTurnRequest_ApprovalRequested{
-		ApprovalRequested: &runnerv1.ApprovalRequested{
-			Id:       id,
-			ToolCall: &runnerv1.ToolUpdate{Id: "call-" + id, Title: &command},
-			Options: []*runnerv1.ApprovalOption{
-				{Id: "once", Kind: "allow_once", Name: "Once"},
-				{Id: "never", Kind: "reject_once", Name: "Never"},
-			},
+func asks(id, command string) message {
+	return message{"approval.requested", map[string]any{
+		"id":        id,
+		"tool_call": map[string]string{"id": "call-" + id, "title": command},
+		"options": []map[string]string{
+			{"id": "once", "kind": "allow_once", "name": "Once"},
+			{"id": "never", "kind": "reject_once", "name": "Never"},
 		},
 	}}
 }
 
-// answered is the report that the harness has its answer to the request.
-func answered(id, outcome, option string) *runnerv1.RunTurnRequest {
-	resolved := &runnerv1.ApprovalResolved{Id: id, Outcome: outcome}
+// answered is the event that the harness has its answer to the request.
+func answered(id, outcome, option string) message {
+	data := map[string]string{"id": id, "outcome": outcome}
 	if option != "" {
-		resolved.OptionId = &option
+		data["option_id"] = option
 	}
-	return &runnerv1.RunTurnRequest{Message: &runnerv1.RunTurnRequest_ApprovalResolved{ApprovalResolved: resolved}}
+	return message{"approval.resolved", data}
 }
 
 // answer waits for the Supervisor to give the runner the answer of a person
 // to a request for approval, and returns the request and the option.
 func (r *runner) answer() (id, option string) {
-	r.t.Helper()
-	select {
-	case answer := <-r.call.answers:
-		return answer.GetId(), answer.GetOptionId()
-	case err := <-r.call.ended:
-		r.t.Fatalf("the Supervisor ended the call of a runner that waits for an answer: %v", err)
-	case <-time.After(soon):
-		r.t.Fatal("the runner was not given the answer to its request for approval")
-	}
-	return "", ""
+	r.installation.t.Helper()
+	return r.Answered(r.installation.t)
 }
 
 // The metrics, as Prometheus reads them.

@@ -17,7 +17,6 @@ REGISTRY_CERTIFICATE := .out/registry/trusted/registry.crt
 REGISTRY_KEY := .out/registry/tls.key
 SANDBOXTEMPLATE_BUILDER_IMAGE := aviary-sandboxtemplate-builder:dev
 GO_IMAGE := golang:1.27.4-trixie@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9
-BUF := 1.75.0
 SQLC_IMAGE := sqlc/sqlc:1.31.1@sha256:70f53171d27b2424e9358869975455a6e955a5aa8e58a998a270a6e34e525537
 
 SUPERVISOR_IMAGE := aviary-supervisor:dev
@@ -59,8 +58,7 @@ IN_GO = docker run --rm --user $$(id -u):$$(id -g) --env HOME=/tmp --env GOCACHE
 	--volume aviary-go:/go --volume $(CURDIR):/src --workdir /src/$(1) $(2) $(GO_IMAGE)
 GO = $(call IN_GO,$(1),$(2)) go
 GO_TEST := test -race -shuffle=on -count=1 -timeout 2m
-# The generators of the Go code in supervisor/internal/gen.
-BUF_GENERATE = $(call GO) run github.com/bufbuild/buf/cmd/buf@v$(BUF) generate
+# The generator of the Go code for the queries of the Supervisor.
 SQLC_RUN := docker run --rm --user $$(id -u):$$(id -g) \
 	--volume $(CURDIR)/supervisor:/src --workdir /src $(SQLC_IMAGE)
 # What the tests make of the chart, and the image of Envoy that the chart
@@ -83,12 +81,7 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 	--env AVIARY_TEST_REDIS_URL=redis://default:test@events-redis:6379 \
 	--env AVIARY_TEST_SECRET_STORE_URL=http://secret-store:8200
 
-.PHONY: proto sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down secret-store identity-provider build images secrets deploy e2e e2e-up e2e-run e2e-down
-
-# Writes the Go code for proto/ to supervisor/internal/gen. Run it after
-# changing a .proto file.
-proto:
-	$(BUF_GENERATE)
+.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down secret-store identity-provider build images secrets deploy e2e e2e-up e2e-run e2e-down
 
 # Writes the Go code for the queries of the Supervisor's PostgreSQL plugin,
 # which are in supervisor/store/postgres/queries.sql, to internal/db beside
@@ -97,16 +90,13 @@ sqlc:
 	$(SQLC_RUN) generate
 
 # What the formatters and the linters make of the code, and whether the
-# generated code is what the generators make of its sources now.
+# generated code is what its generator makes of the queries now.
 lint:
 	@files=$$($(call IN_GO) gofmt -l supervisor test) || exit 1; \
 		[ -z "$$files" ] || { echo "gofmt would change these files:"; echo "$$files"; exit 1; }
 	for module in supervisor test test/mock-llm test/plugin; do $(call GO,$$module) vet ./... || exit 1; done
 	cargo fmt --all --check
 	cargo clippy --locked --all-targets -- --deny warnings
-	rm -rf .out/gen
-	$(BUF_GENERATE) --output .out/gen
-	diff --recursive .out/gen/supervisor/internal/gen/aviary supervisor/internal/gen/aviary
 	$(SQLC_RUN) diff
 
 # The tests that need no cluster, all at once. Each of them is a target of

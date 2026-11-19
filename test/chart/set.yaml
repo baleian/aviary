@@ -37,10 +37,7 @@ runtime:
   maxQueueWaitSeconds: 13
   maxStartupSeconds: 17
   maxTurnSeconds: 7200
-  maxReconnectSeconds: 19
   maxToolOutputBytes: 23
   harnesses:
     opencode:
-      resources:
-        requests: {memory: 333Mi}
       sandbox: {disk: 16Gi}

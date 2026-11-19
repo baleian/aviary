@@ -167,10 +167,9 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	var request struct {
-		Harness      string          `json:"harness"`
-		Instructions string          `json:"instructions"`
-		Resources    json.RawMessage `json:"resources"`
-		Approval     string          `json:"approval"`
+		Harness      string `json:"harness"`
+		Instructions string `json:"instructions"`
+		Approval     string `json:"approval"`
 		Model        *struct {
 			Provider string `json:"provider"`
 			Name     string `json:"name"`
@@ -181,10 +180,6 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 	}
 	if !a.driver.HasHarness(request.Harness) {
 		return invalid("harness is not one of the configured harnesses")
-	}
-	resources, err := driver.AgentResources(request.Resources)
-	if err != nil {
-		return invalid(err.Error())
 	}
 	if request.Approval != "" && request.Approval != driver.Ask {
 		return invalid(`approval is not "ask"`)
@@ -207,7 +202,7 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 		return invalid("model.name is required")
 	}
 	agent, err := a.store.CreateAgent(r.Context(), projectID, store.Agent{
-		Harness: request.Harness, Instructions: request.Instructions, Resources: resources, Approval: request.Approval,
+		Harness: request.Harness, Instructions: request.Instructions, Approval: request.Approval,
 		Model: &store.Model{Provider: providerID, Name: request.Model.Name},
 	})
 	if err != nil {

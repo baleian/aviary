@@ -43,7 +43,7 @@ func New() *Metrics {
 		}),
 		running: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "aviary_turns_running",
-			Help: "The turns that run and whose runners are connected to this Supervisor.",
+			Help: "The turns that run and that this Supervisor follows.",
 		}, []string{"harness"}),
 		ended: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "aviary_turns_ended_total",
@@ -51,12 +51,12 @@ func New() *Metrics {
 		}, []string{"harness", "state", "reason"}),
 		waited: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "aviary_turn_queue_duration_seconds",
-			Help:    "How long a turn waited to run, from its message to its pod being asked for.",
+			Help:    "How long a turn waited to run, from its message to its leaving the queue.",
 			Buckets: []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600},
 		}, []string{"harness"}),
 		startup: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "aviary_turn_startup_duration_seconds",
-			Help:    "How long a turn took to start, from its pod being asked for to its harness having the message.",
+			Help:    "How long a turn took to start, from its leaving the queue to its harness having the message.",
 			Buckets: []float64{0.5, 1, 2, 3, 5, 10, 20, 30, 60, 90, 120},
 		}, []string{"harness"}),
 		ran: prometheus.NewHistogramVec(prometheus.HistogramOpts{
@@ -102,10 +102,9 @@ func (m *Metrics) Accepted(waiting int) {
 	m.queue.Observe(float64(waiting))
 }
 
-// Connected records that the runner of a turn of the harness has connected
-// to this Supervisor. The function that it returns records that the runner
-// is gone.
-func (m *Metrics) Connected(harness string) (gone func()) {
+// Following records that this Supervisor follows a turn of the harness. The
+// function that it returns records that it does so no longer.
+func (m *Metrics) Following(harness string) (left func()) {
 	running := m.running.WithLabelValues(harness)
 	running.Inc()
 	return running.Dec
@@ -118,7 +117,7 @@ func (m *Metrics) Dispatched(harness string, waited time.Duration) {
 }
 
 // Started records that the harness got the message of a turn so long after
-// the pod of the turn was asked for.
+// the turn left the queue.
 func (m *Metrics) Started(harness string, startup time.Duration) {
 	m.startup.WithLabelValues(harness).Observe(startup.Seconds())
 }
