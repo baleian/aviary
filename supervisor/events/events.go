@@ -132,6 +132,13 @@ func (s *Streams) Follow(ctx context.Context, turnID, follower uuid.UUID, lease 
 	return s.log.Follow(ctx, turnID, follower, lease)
 }
 
+// Leave says that the Supervisor follows the turn no longer: it has done
+// with the turn, or it stops. The next Supervisor that asks follows the
+// turn, without waiting for the lease to be over.
+func (s *Streams) Leave(ctx context.Context, turnID, follower uuid.UUID) error {
+	return s.log.Leave(ctx, turnID, follower)
+}
+
 // AppendQueued tells a turn that waits to run its position in the queue,
 // which is 1 for the turn that runs next.
 func (s *Streams) AppendQueued(ctx context.Context, turnID uuid.UUID, position int) error {

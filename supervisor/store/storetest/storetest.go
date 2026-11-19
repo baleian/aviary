@@ -21,8 +21,8 @@ type Database interface {
 	// The store is closed when the test ends.
 	Open(t *testing.T) store.Store
 	// Age makes the turns so much older: as if all that the database has
-	// recorded of when something happened to them had happened that long
-	// before it did.
+	// recorded of when something happened to them, and to their requests for
+	// approval, had happened that long before it did.
 	Age(t *testing.T, by time.Duration, turns ...uuid.UUID)
 }
 
@@ -117,6 +117,7 @@ func Run(t *testing.T, create func(t *testing.T) Database) {
 		"SupervisorsDispatchWithinTheLimitTogether":         suite.testSupervisorsDispatchWithinTheLimitTogether,
 		"SupervisorsDispatchWithinTheLimitWhileTurnsCome":   suite.testSupervisorsDispatchWithinTheLimitWhileTurnsCome,
 		"DispatchTurnsLeavesATurnThatWasCancelledMeanwhile": suite.testDispatchTurnsLeavesATurnThatWasCancelledMeanwhile,
+		"DispatchTurnsCountsNoTurnThatWaitsForAPerson":      suite.testDispatchTurnsCountsNoTurnThatWaitsForAPerson,
 		"AnnounceQueue":          suite.testAnnounceQueue,
 		"FollowTurn":             suite.testFollowTurn,
 		"TakeTurn":               suite.testTakeTurn,
@@ -124,10 +125,14 @@ func Run(t *testing.T, create func(t *testing.T) Database) {
 		"TakeTurnGivesTheTurnToOneOfTheRunnersThatAskAtOnce": suite.testTakeTurnGivesTheTurnToOneOfTheRunnersThatAskAtOnce,
 		"SupervisorsEndATurnOnceTogether":                    suite.testSupervisorsEndATurnOnceTogether,
 		"AnswerApprovalKeepsOneOfTheAnswersGivenAtOnce":      suite.testAnswerApprovalKeepsOneOfTheAnswersGivenAtOnce,
+		"FollowTurnTellsWhetherTheTurnWaitsForAPerson":       suite.testFollowTurnTellsWhetherTheTurnWaitsForAPerson,
 		"CallerThatWaitsNoLonger":                            suite.testCallerThatWaitsNoLonger,
 		"StartTurn":                                          suite.testStartTurn,
 		"CancelTurn":                                         suite.testCancelTurn,
 		"ExpireTurns":                                        suite.testExpireTurns,
+		"RequeueTurn":                                        suite.testRequeueTurn,
+		"RequeuedTurnWaitsAsOneThatWasNeverDispatched":       suite.testRequeuedTurnWaitsAsOneThatWasNeverDispatched,
+		"SupervisorsRequeueAndStartATurnAtOnce":              suite.testSupervisorsRequeueAndStartATurnAtOnce,
 		"EndTurn":                                            suite.testEndTurn,
 		"EndTurnKeepsWhatTheTurnSaid":                        suite.testEndTurnKeepsWhatTheTurnSaid,
 		"SetFinished":                                        suite.testSetFinished,

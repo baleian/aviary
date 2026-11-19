@@ -58,6 +58,12 @@ redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
 return 1
 `)
 
+// leave gives the turn up, if the Supervisor ARGV[1] has it.
+var leave = valkey.NewLuaScript(`
+if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('DEL', KEYS[1]) end
+return 1
+`)
+
 // Plugin connects the Supervisor to the logs of this kind.
 type Plugin struct{}
 
@@ -173,6 +179,10 @@ func (l *log) Follow(ctx context.Context, turnID, follower uuid.UUID, lease time
 	given, err := follow.Exec(ctx, l.client, []string{followerKey(turnID)},
 		[]string{follower.String(), strconv.FormatInt(milliseconds, 10)}).AsInt64()
 	return given == 1, err
+}
+
+func (l *log) Leave(ctx context.Context, turnID, follower uuid.UUID) error {
+	return leave.Exec(ctx, l.client, []string{followerKey(turnID)}, []string{follower.String()}).Error()
 }
 
 func (l *log) Announce(ctx context.Context, channel string, turnID uuid.UUID) error {

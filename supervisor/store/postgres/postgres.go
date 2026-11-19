@@ -641,6 +641,11 @@ func (s *records) DispatchTurns(ctx context.Context, limit int) ([]store.Dispatc
 	return dispatches, tx.Commit(ctx)
 }
 
+func (s *records) RequeueTurn(ctx context.Context, turnID uuid.UUID) (bool, error) {
+	requeued, err := s.queries.RequeueTurn(ctx, turnID)
+	return requeued == 1, err
+}
+
 func (s *records) CancelTurn(ctx context.Context, id uuid.UUID) (store.Turn, bool, error) {
 	row, err := s.queries.CancelTurn(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -748,6 +753,8 @@ func (s *records) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.Follo
 		ProviderURL:  row.ProviderUrl,
 		Model:        row.Model,
 		Dispatched:   time.Duration(row.Dispatched * float64(time.Second)),
+		Waiting:      row.Waiting,
+		Answered:     time.Duration(row.Answered * float64(time.Second)),
 	}
 	if row.Sandbox != nil {
 		followed.Sandbox = *row.Sandbox

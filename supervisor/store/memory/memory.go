@@ -82,6 +82,8 @@ type approval struct {
 	optionID           string
 	answeredBy         uuid.UUID
 	answered, resolved bool
+	// resolvedAt is when the harness got its answer, if resolved.
+	resolvedAt time.Time
 }
 
 func New() *Store {
@@ -112,8 +114,8 @@ func New() *Store {
 func (*Store) Close() {}
 
 // Age makes the turns so much older: all that the store has recorded of when
-// something happened to them is that long before. It is how a test lets time
-// pass.
+// something happened to them, and to their requests for approval, is that
+// long before. It is how a test lets time pass.
 func (s *Store) Age(by time.Duration, turns ...uuid.UUID) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -129,6 +131,9 @@ func (s *Store) Age(by time.Duration, turns ...uuid.UUID) {
 			turn.CreatedAt = turn.CreatedAt.Add(-by)
 			turn.dispatchedAt, turn.StartedAt = earlier(turn.dispatchedAt), earlier(turn.StartedAt)
 			turn.CancelRequestedAt, turn.EndedAt = earlier(turn.CancelRequestedAt), earlier(turn.EndedAt)
+			for _, approval := range turn.approvals {
+				approval.requestedAt, approval.resolvedAt = approval.requestedAt.Add(-by), approval.resolvedAt.Add(-by)
+			}
 		}
 	}
 }
@@ -748,12 +753,19 @@ func (s *Store) queued() []*turn {
 	return queued
 }
 
+// waiting tells whether the turn waits for a person: a request of its
+// harness for approval is not resolved.
+func (t *turn) waiting() bool {
+	return slices.ContainsFunc(t.approvals, func(approval *approval) bool { return !approval.resolved })
+}
+
 // running returns how many turns run or are about to: those that were
-// dispatched and have not ended. The caller holds the lock.
+// dispatched and have not ended, without those that wait for a person. The
+// caller holds the lock.
 func (s *Store) running() int {
 	running := 0
 	for _, turn := range s.created {
-		if turn.State == store.TurnDispatching || turn.State == store.TurnRunning {
+		if (turn.State == store.TurnDispatching || turn.State == store.TurnRunning) && !turn.waiting() {
 			running++
 		}
 	}
@@ -895,6 +907,26 @@ func (s *Store) DispatchTurns(ctx context.Context, limit int) ([]store.Dispatch,
 	return dispatches, nil
 }
 
+func (s *Store) RequeueTurn(ctx context.Context, turnID uuid.UUID) (bool, error) {
+	if err := s.begin(ctx); err != nil {
+		return false, err
+	}
+	defer s.mu.Unlock()
+	turn, found := s.turns[turnID]
+	if !found || (turn.State != store.TurnDispatching && turn.State != store.TurnRunning) ||
+		turn.StartedAt != nil || turn.CancelRequestedAt != nil {
+		return false, nil
+	}
+	// Nothing is left of the dispatch: the token of the turn opens nothing.
+	for hash, dispatched := range s.dispatched {
+		if dispatched == turn {
+			delete(s.dispatched, hash)
+		}
+	}
+	turn.State, turn.dispatchedAt, turn.runner, turn.Failure = store.TurnQueued, nil, nil, nil
+	return true, nil
+}
+
 func (s *Store) CancelTurn(ctx context.Context, id uuid.UUID) (store.Turn, bool, error) {
 	if err := s.begin(ctx); err != nil {
 		return store.Turn{}, false, err
@@ -974,10 +1006,19 @@ func (s *Store) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.Followe
 	followed := store.FollowedTurn{
 		Turn: turn.Turn, AgentID: agent.ID, ProjectID: agent.ProjectID,
 		Harness: agent.Harness, Instructions: agent.Instructions, Approval: agent.Approval,
-		Sandbox: session.Sandbox, Dispatched: now.Sub(turn.CreatedAt),
+		Sandbox: session.Sandbox, Dispatched: now.Sub(turn.CreatedAt), Waiting: turn.waiting(),
 	}
 	if turn.dispatchedAt != nil {
 		followed.Dispatched = now.Sub(*turn.dispatchedAt)
+	}
+	var answered time.Time
+	for _, approval := range turn.approvals {
+		if approval.resolved && approval.resolvedAt.After(answered) {
+			answered = approval.resolvedAt
+		}
+	}
+	if !answered.IsZero() {
+		followed.Answered = now.Sub(answered)
 	}
 	if agent.Model != nil {
 		followed.Model = agent.Model.Name
@@ -1059,7 +1100,7 @@ func (s *Store) StartTurn(ctx context.Context, turnID uuid.UUID, harnessSessionI
 	}
 	defer s.mu.Unlock()
 	turn, found := s.turns[turnID]
-	if !found || turn.StartedAt != nil {
+	if !found || turn.StartedAt != nil || turn.State == store.TurnQueued {
 		return 0, false, nil
 	}
 	now := s.now()
@@ -1196,8 +1237,8 @@ func (s *Store) ResolveApproval(ctx context.Context, turnID uuid.UUID, id, _ str
 	if kept == nil || kept.resolved {
 		return store.Approval{}, 0, false, nil
 	}
-	kept.resolved = true
-	return store.Approval{Request: bytes.Clone(kept.request), Resolved: true}, s.now().Sub(kept.requestedAt), true, nil
+	kept.resolved, kept.resolvedAt = true, s.now()
+	return store.Approval{Request: bytes.Clone(kept.request), Resolved: true}, kept.resolvedAt.Sub(kept.requestedAt), true, nil
 }
 
 func (s *Store) Approval(ctx context.Context, turnID uuid.UUID, id string) (store.Approval, error) {

@@ -121,8 +121,13 @@ where turns.id = ?;
 -- name: CountQueuedTurns :one
 select count(*) from turns where state = 'queued';
 
--- name: CountDispatchedTurns :one
-select count(*) from turns where state in ('dispatching', 'running');
+-- name: CountRunningTurns :one
+-- The turns that take the room of a turn that runs: those that were
+-- dispatched and have not ended, without those that wait for a person, which
+-- have a request for approval that is not resolved.
+select count(*) from turns
+where state in ('dispatching', 'running')
+  and not exists (select 1 from approvals where approvals.turn_id = turns.id and approvals.resolved_at is null);
 
 -- name: QueuedTurns :many
 select id from turns where state = 'queued' order by created_at, id;
@@ -150,6 +155,12 @@ limit ?;
 update turns set state = 'dispatching', token_hash = sqlc.arg(token_hash), dispatched_at = now(6)
 where id = sqlc.arg(id) and state = 'queued';
 
+-- name: RequeueTurn :exec
+-- The turn waits to run again, with nothing left of its dispatch.
+update turns set state = 'queued', token_hash = null, dispatched_at = null, runner_id = null,
+       failure_reason = null, failure_message = null
+where id = ?;
+
 -- name: DispatchedTurns :many
 select id, state,
        cast(timestampdiff(microsecond, coalesce(dispatched_at, created_at), now(6)) as signed) as age,
@@ -164,10 +175,15 @@ update turns set state = 'running', runner_id = sqlc.narg(runner_id) where id = 
 update turns set state = 'running' where id = ? and state in ('dispatching', 'running');
 
 -- name: FollowedTurn :one
--- The turn as the Supervisor that follows it gets it.
+-- The turn as the Supervisor that follows it gets it, with whether it has a
+-- request for approval that is not resolved, and how long ago one of its
+-- requests was resolved last.
 select sqlc.embed(turns), agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
        agents.approval, coalesce(providers.url, '') as provider_url, agents.model, sessions.sandbox,
-       cast(timestampdiff(microsecond, coalesce(turns.dispatched_at, turns.created_at), now(6)) as signed) as dispatched
+       cast(timestampdiff(microsecond, coalesce(turns.dispatched_at, turns.created_at), now(6)) as signed) as dispatched,
+       exists (select 1 from approvals where approvals.turn_id = turns.id and approvals.resolved_at is null) as waiting,
+       cast(coalesce((select timestampdiff(microsecond, max(approvals.resolved_at), now(6)) from approvals
+                      where approvals.turn_id = turns.id), 0) as signed) as answered
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id

@@ -83,6 +83,8 @@ func (f fixture) Age(t *testing.T, by time.Duration, turns ...uuid.UUID) {
 	exec(t, string(f), `update turns set created_at = created_at - $2::interval, dispatched_at = dispatched_at - $2::interval,
 		started_at = started_at - $2::interval, cancel_requested_at = cancel_requested_at - $2::interval,
 		ended_at = ended_at - $2::interval where id = any($1)`, turns, by)
+	exec(t, string(f), `update approvals set requested_at = requested_at - $2::interval, answered_at = answered_at - $2::interval,
+		resolved_at = resolved_at - $2::interval where turn_id = any($1)`, turns, by)
 }
 
 // The store on PostgreSQL does what every store is to do.

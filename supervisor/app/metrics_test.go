@@ -57,7 +57,6 @@ func TestMetrics(t *testing.T) {
 	cancelled := other.send(session, "two")
 	runner = aviary.given(cancelled.ID)
 	runner.report(started("harness-session"))
-	runner.report(asks("1", "rm -r build"))
 	// A start that the runner tells again is not another start.
 	runner.report(started("harness-session"))
 	expired := one.send(one.session(), "three")
@@ -71,7 +70,8 @@ func TestMetrics(t *testing.T) {
 		t.Fatalf("the turn that waited ended with %s", state)
 	}
 
-	// The turn that runs is cancelled.
+	// The turn that runs asks, and is cancelled.
+	runner.report(asks("1", "rm -r build"))
 	if status, _ := other.request("POST", "/v1/turns/"+cancelled.ID+"/cancel", "", nil); status != http.StatusAccepted {
 		t.Fatalf("cancelling the running turn was answered with %d", status)
 	}

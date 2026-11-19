@@ -313,6 +313,12 @@ type FollowedTurn struct {
 	Sandbox string
 	// Dispatched is how long ago the turn was dispatched.
 	Dispatched time.Duration
+	// Waiting tells whether the turn waits for a person: its harness has
+	// asked for approval and has not got its answer.
+	Waiting bool
+	// Answered is how long ago the harness last got its answer to a request
+	// for approval. It is zero if it has got none.
+	Answered time.Duration
 }
 
 // TakenTurn is a turn as its runner gets it.
@@ -564,10 +570,11 @@ type Store interface {
 	// session has ended, ErrSessionBusy if the session has a turn that has
 	// not finished, and ErrQueueFull if more than maxWaiting turns would then
 	// wait to run. Zero is no such limit. A queued turn waits only if the
-	// turns that run leave it no room among maxRunning. The second result is
-	// how many turns then wait to run, the new one among them: zero if it need
-	// not wait. The turn is of the user who sent the message, by, or of nobody
-	// if by is uuid.Nil.
+	// turns that run leave it no room among maxRunning. A turn that waits for
+	// a person takes no room there, as it counts for nothing in DispatchTurns.
+	// The second result is how many turns then wait to run, the new one among
+	// them: zero if it need not wait. The turn is of the user who sent the
+	// message, by, or of nobody if by is uuid.Nil.
 	CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, maxWaiting, maxRunning int) (Turn, int, error)
 
 	// AnnounceQueue calls announce with the turns that wait to run, in the order
@@ -593,9 +600,18 @@ type Store interface {
 	TurnItems(ctx context.Context, turnIDs []uuid.UUID) (map[uuid.UUID][]json.RawMessage, error)
 
 	// DispatchTurns makes queued turns wait for their runners, oldest first, for
-	// as long as fewer than limit turns are running or about to. It returns what
-	// it takes to run each of them.
+	// as long as fewer than limit turns are running or about to. A turn that
+	// waits for a person is not counted among those: its harness has asked for
+	// approval and has not got its answer. It returns what it takes to run
+	// each of them.
 	DispatchTurns(ctx context.Context, limit int) ([]Dispatch, error)
+
+	// RequeueTurn puts a turn that was dispatched back among the turns that
+	// wait to run, in the place that it had: the turns wait in the order in
+	// which they were accepted. It reports false, and changes nothing, for
+	// a turn whose harness has been given the message, that was asked to
+	// stop, that has ended or that there is not.
+	RequeueTurn(ctx context.Context, turnID uuid.UUID) (bool, error)
 
 	// CancelTurn cancels a turn that has not ended. A turn that waits to run
 	// ends as cancelled at once. A turn that was dispatched is marked: it ends
@@ -637,7 +653,8 @@ type Store interface {
 	// StartTurn records that the harness of the turn has been given the message,
 	// and the harness session that the turn runs in, for the next turn of the
 	// session to continue. It returns how long the turn took to start, from its
-	// dispatch, and reports false for a turn that had started before.
+	// dispatch, and reports false, and records nothing, for a turn that had
+	// started before or that waits to run.
 	StartTurn(ctx context.Context, turnID uuid.UUID, harnessSessionID string) (time.Duration, bool, error)
 
 	// TurnHarness returns the harness of the agent that the turn belongs to,

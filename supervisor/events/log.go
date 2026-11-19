@@ -58,6 +58,10 @@ type Log interface {
 	// another lease. It is not given to another before the lease is over,
 	// also when several ask at once.
 	Follow(ctx context.Context, turnID, follower uuid.UUID, lease time.Duration) (bool, error)
+	// Leave gives the turn up for the Supervisor that follows it: the next
+	// that asks is given it, without waiting for the lease to be over. It
+	// changes nothing if another Supervisor follows the turn, or none.
+	Leave(ctx context.Context, turnID, follower uuid.UUID) error
 	// Announce tells the Supervisors that watch the channel of the turn.
 	Announce(ctx context.Context, channel string, turnID uuid.UUID) error
 	// Watch calls announced for every turn that is announced on the channel,

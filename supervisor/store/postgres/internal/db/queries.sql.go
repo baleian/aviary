@@ -213,10 +213,15 @@ func (q *Queries) ClaimMembers(ctx context.Context, username string) error {
 const countWaitingTurns = `-- name: CountWaitingTurns :one
 select ((select count(*) from turns where state = 'queued')
         - greatest(0, $1::bigint
-                      - (select count(*) from turns where state in ('dispatching', 'running'))))::bigint as waiting
+                      - (select count(*) from turns
+                         where state in ('dispatching', 'running')
+                           and not exists (select 1 from approvals
+                                           where approvals.turn_id = turns.id and approvals.resolved_at is null))))::bigint as waiting
 `
 
-// A queued turn waits only if the turns that run leave it no room.
+// A queued turn waits only if the turns that run leave it no room. A turn
+// that waits for a person takes none: one with a request for approval that is
+// not resolved.
 func (q *Queries) CountWaitingTurns(ctx context.Context, maxRunning int64) (int64, error) {
 	row := q.db.QueryRow(ctx, countWaitingTurns, maxRunning)
 	var waiting int64
@@ -678,7 +683,11 @@ func (q *Queries) FollowTurn(ctx context.Context, id uuid.UUID) (int64, error) {
 const followedTurn = `-- name: FollowedTurn :one
 select turns.id, turns.session_id, turns.seq, turns.state, turns.text, turns.created_at, turns.ended_at, turns.token_hash, turns.stop_reason, turns.dispatched_at, turns.total_tokens, turns.input_tokens, turns.output_tokens, turns.thought_tokens, turns.cached_read_tokens, turns.cached_write_tokens, turns.cancel_requested_at, turns.failure_reason, turns.failure_message, turns.started_at, turns.runner_id, turns.created_by, agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
        agents.approval, coalesce(providers.url, '')::text as provider_url, agents.model, sessions.sandbox,
-       extract(epoch from now() - coalesce(turns.dispatched_at, turns.created_at))::float8 as dispatched
+       extract(epoch from now() - coalesce(turns.dispatched_at, turns.created_at))::float8 as dispatched,
+       exists (select 1 from approvals
+               where approvals.turn_id = turns.id and approvals.resolved_at is null)::boolean as waiting,
+       coalesce((select extract(epoch from now() - max(approvals.resolved_at)) from approvals
+                 where approvals.turn_id = turns.id), 0)::float8 as answered
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
@@ -697,9 +706,13 @@ type FollowedTurnRow struct {
 	Model        string
 	Sandbox      *string
 	Dispatched   float64
+	Waiting      bool
+	Answered     float64
 }
 
-// The turn as the Supervisor that follows it gets it.
+// The turn as the Supervisor that follows it gets it, with whether it has a
+// request for approval that is not resolved, and how long ago one of its
+// requests was resolved last.
 func (q *Queries) FollowedTurn(ctx context.Context, id uuid.UUID) (FollowedTurnRow, error) {
 	row := q.db.QueryRow(ctx, followedTurn, id)
 	var i FollowedTurnRow
@@ -735,6 +748,8 @@ func (q *Queries) FollowedTurn(ctx context.Context, id uuid.UUID) (FollowedTurnR
 		&i.Model,
 		&i.Sandbox,
 		&i.Dispatched,
+		&i.Waiting,
+		&i.Answered,
 	)
 	return i, err
 }
@@ -1479,7 +1494,11 @@ join agents on agents.id = sessions.agent_id
 left join providers on providers.id = agents.provider_id
 where turns.state = 'queued'
 order by turns.created_at, turns.id
-limit greatest($1::bigint - (select count(*) from turns where state in ('dispatching', 'running')), 0)
+limit greatest($1::bigint
+               - (select count(*) from turns as running
+                  where running.state in ('dispatching', 'running')
+                    and not exists (select 1 from approvals
+                                    where approvals.turn_id = running.id and approvals.resolved_at is null)), 0)
 `
 
 type NextTurnsRow struct {
@@ -1495,7 +1514,8 @@ type NextTurnsRow struct {
 	Waited      float64
 }
 
-// The queued turns that there is room to run, oldest first. A turn of an
+// The queued turns that there is room to run, oldest first. A turn that
+// waits for a person takes no room, as in CountWaitingTurns. A turn of an
 // agent that names its model has the URL of the agent's provider and the
 // name of the model.
 func (q *Queries) NextTurns(ctx context.Context, maxRunning int64) ([]NextTurnsRow, error) {
@@ -1648,6 +1668,23 @@ func (q *Queries) ReplaceSecretStore(ctx context.Context, arg ReplaceSecretStore
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const requeueTurn = `-- name: RequeueTurn :execrows
+update turns set state = 'queued', token_hash = null, dispatched_at = null, runner_id = null,
+       failure_reason = null, failure_message = null
+where id = $1 and state in ('dispatching', 'running') and started_at is null and cancel_requested_at is null
+`
+
+// The turn waits to run again, with nothing left of its dispatch. A turn
+// whose harness has been given the message, or that was asked to stop, is
+// left as it is.
+func (q *Queries) RequeueTurn(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, requeueTurn, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const resolveApproval = `-- name: ResolveApproval :one
@@ -1884,7 +1921,8 @@ func (q *Queries) SetSandbox(ctx context.Context, arg SetSandboxParams) (int64, 
 
 const startTurn = `-- name: StartTurn :one
 with started as (
-    update turns set started_at = now() where turns.id = $2 and turns.started_at is null
+    update turns set started_at = now()
+    where turns.id = $2 and turns.started_at is null and turns.state <> 'queued'
     returning turns.session_id, coalesce(extract(epoch from now() - turns.dispatched_at), 0)::float8 as startup
 )
 update sessions set harness_session_id = $1::text
@@ -1900,7 +1938,8 @@ type StartTurnParams struct {
 
 // The harness of the turn has been given the message. The session keeps the
 // harness session, for its next turn to continue. The answer is how long the
-// turn took to start. There is none for a turn that had started before.
+// turn took to start. There is none for a turn that had started before, or
+// that waits to run.
 func (q *Queries) StartTurn(ctx context.Context, arg StartTurnParams) (float64, error) {
 	row := q.db.QueryRow(ctx, startTurn, arg.HarnessSessionID, arg.TurnID)
 	var startup float64

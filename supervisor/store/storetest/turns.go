@@ -432,6 +432,226 @@ func (suite suite) testDispatchTurnsLeavesATurnThatWasCancelledMeanwhile(t *test
 	}
 }
 
+// A turn that waits for a person takes no place among the turns that run:
+// neither when turns are dispatched, nor when those that wait are counted.
+func (suite suite) testDispatchTurnsCountsNoTurnThatWaitsForAPerson(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	// One turn has room to run.
+	send := func() (uuid.UUID, int) {
+		t.Helper()
+		turn, waiting, err := st.CreateTurn(ctx, st.session(), uuid.Nil, "hello", 0, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return turn.ID, waiting
+	}
+	dispatch := func() []uuid.UUID {
+		t.Helper()
+		dispatches, err := st.DispatchTurns(ctx, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		turns := []uuid.UUID{}
+		for _, dispatch := range dispatches {
+			turns = append(turns, dispatch.TurnID)
+		}
+		return turns
+	}
+	first, _ := send()
+	if turns := dispatch(); !slices.Equal(turns, []uuid.UUID{first}) {
+		t.Fatalf("the turns %v were dispatched, not the one that waited", turns)
+	}
+	second, waiting := send()
+	if turns := dispatch(); waiting != 1 || len(turns) != 0 {
+		t.Errorf("while a turn runs, %d turns wait and the turns %v were dispatched beyond the limit", waiting, turns)
+	}
+
+	if err := st.AddApproval(ctx, first, "1", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if turns := dispatch(); !slices.Equal(turns, []uuid.UUID{second}) {
+		t.Fatalf("while the turn that runs waits for a person, the turns %v were dispatched, not the one that waited", turns)
+	}
+	st.end(second, false, store.Failure{Reason: store.FailurePodLost})
+	// The turn waits also when a person has answered, until its harness has
+	// the answer.
+	if answered, err := st.AnswerApproval(ctx, first, "1", "once", uuid.Nil); err != nil || !answered {
+		t.Fatalf("the request was answered %t: %v", answered, err)
+	}
+	if _, waiting := send(); waiting != 0 {
+		t.Errorf("%d turns wait while the only turn that runs waits for a person", waiting)
+	}
+
+	// It takes its place again when its harness has the answer.
+	if _, _, _, err := st.ResolveApproval(ctx, first, "1", "selected"); err != nil {
+		t.Fatal(err)
+	}
+	if turns := dispatch(); len(turns) != 0 {
+		t.Errorf("the turns %v were dispatched beyond the limit, while a turn runs that waits for a person no longer", turns)
+	}
+}
+
+func (suite suite) testRequeueTurn(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	first, second := st.queue(st.session()), st.queue(st.session())
+	dispatches, err := st.DispatchTurns(ctx, 1)
+	if err != nil || len(dispatches) != 1 || dispatches[0].TurnID != first.ID {
+		t.Fatalf("the turns %v were dispatched, not the oldest: %v", dispatches, err)
+	}
+	dispatch, runner := dispatches[0], uuid.New()
+	if _, err := st.TakeTurn(ctx, dispatch.Token, &runner); err != nil {
+		t.Fatal(err)
+	}
+	if requeued, err := st.RequeueTurn(ctx, first.ID); err != nil || !requeued {
+		t.Fatalf("a dispatched turn was put back %t: %v", requeued, err)
+	}
+	if state := st.turn(first.ID).State; state != store.TurnQueued {
+		t.Errorf("a turn that was put back is %s", state)
+	}
+	// It waits in the place that it had: before the turn that was accepted
+	// after it.
+	err = st.AnnounceQueue(ctx, func(queued []uuid.UUID) error {
+		if !slices.Equal(queued, []uuid.UUID{first.ID, second.ID}) {
+			t.Errorf("the queue is %v, not %v", queued, []uuid.UUID{first.ID, second.ID})
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.FollowTurn(ctx, first.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("a turn that was put back was followed: %v", err)
+	}
+	if dispatched, err := st.DispatchedTurns(ctx); err != nil || len(dispatched) != 0 {
+		t.Errorf("the dispatched turns are %+v: %v", dispatched, err)
+	}
+	// What comes late of the dispatch before does nothing to the turn.
+	if _, err := st.TakeTurn(ctx, dispatch.Token, &runner); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("the token of the dispatch before opens the turn: %v", err)
+	}
+	if _, started, err := st.StartTurn(ctx, first.ID, "harness-session-1"); err != nil || started || st.turn(first.ID).StartedAt != nil {
+		t.Errorf("a turn that waits to run started %t: %v", started, err)
+	}
+
+	// It is dispatched again when it is the oldest, with another token, and
+	// no runner has taken it then.
+	again, err := st.DispatchTurns(ctx, 1)
+	if err != nil || len(again) != 1 || again[0].TurnID != first.ID || again[0].Token == "" || again[0].Token == dispatch.Token {
+		t.Fatalf("after the turn was put back, %+v was dispatched, and its token was %q: %v", again, dispatch.Token, err)
+	}
+	if _, err := st.FollowTurn(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.TakeTurn(ctx, again[0].Token, &runner); !errors.Is(err, store.ErrTurnTaken) {
+		t.Errorf("the runner that took the turn before it was put back counts as the one that has it: %v", err)
+	}
+
+	// Only a turn that was dispatched, and of which nothing has come yet, is
+	// put back. Any other stays as it is.
+	refused := func(what string, id uuid.UUID) {
+		t.Helper()
+		before, _ := st.Turn(ctx, id)
+		if requeued, err := st.RequeueTurn(ctx, id); err != nil || requeued {
+			t.Errorf("%s was put back %t: %v", what, requeued, err)
+		}
+		if after, _ := st.Turn(ctx, id); after.State != before.State {
+			t.Errorf("%s was %s, and is %s after it was not put back", what, before.State, after.State)
+		}
+	}
+	refused("a turn that waits to run", second.ID)
+	refused("a turn that there is not", uuid.New())
+	if _, _, err := st.StartTurn(ctx, first.ID, "harness-session-1"); err != nil {
+		t.Fatal(err)
+	}
+	refused("a turn whose harness has been given the message", first.ID)
+	st.end(first.ID, true, store.Failure{})
+	refused("a turn that has ended", first.ID)
+	asked := st.dispatch()
+	if _, _, err := st.CancelTurn(ctx, asked.TurnID); err != nil {
+		t.Fatal(err)
+	}
+	refused("a turn that was asked to stop", asked.TurnID)
+}
+
+// A turn that was put back waits as one that was never dispatched: it is
+// cancelled at once, it expires by the time since it was accepted, and it
+// is given up no longer.
+func (suite suite) testRequeuedTurnWaitsAsOneThatWasNeverDispatched(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	requeue := func(turn uuid.UUID) {
+		t.Helper()
+		if requeued, err := st.RequeueTurn(ctx, turn); err != nil || !requeued {
+			t.Fatalf("a dispatched turn was put back %t: %v", requeued, err)
+		}
+	}
+
+	st.queue(st.session())
+	cancelled := st.dispatch().TurnID
+	requeue(cancelled)
+	if turn, unended, err := st.CancelTurn(ctx, cancelled); err != nil || !unended || turn.State != store.TurnCancelled || turn.EndedAt == nil {
+		t.Errorf("a turn that was put back and cancelled is %+v, had not ended %t: %v", turn, unended, err)
+	}
+
+	st.queue(st.session())
+	old := st.dispatch().TurnID
+	requeue(old)
+	st.database.Age(t, time.Minute, old)
+	if expired, err := st.ExpireTurns(ctx, 30*time.Second); err != nil || len(expired) != 1 || expired[0].ID != old || expired[0].State != store.TurnExpired {
+		t.Errorf("the turns %+v expired, not the one that was put back and has waited for a minute: %v", expired, err)
+	}
+
+	st.queue(st.session())
+	givenUp := st.dispatch().TurnID
+	if changed, err := st.GiveUpTurn(ctx, givenUp, store.Failure{Reason: store.FailureStartup}); err != nil || !changed {
+		t.Fatalf("the turn was not given up: %v", err)
+	}
+	requeue(givenUp)
+	if failure := st.turn(givenUp).Failure; failure != nil {
+		t.Errorf("a turn that was put back is given up for %+v", failure)
+	}
+	if _, err := st.TakeTurn(ctx, st.dispatch().Token, nil); err != nil {
+		t.Errorf("a turn that was given up before it was put back is not given to its runner: %v", err)
+	}
+}
+
+// A turn is put back or it starts, also when one Supervisor puts it back
+// while another records its start: it never waits to run and has started.
+func (suite suite) testSupervisorsRequeueAndStartATurnAtOnce(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	requeuer, starter, session := st.another(), st.another(), st.session()
+	for range 40 {
+		turn := st.queue(session).ID
+		st.dispatch()
+		var requeued, started bool
+		atOnce(2, func(i int) {
+			var err error
+			if i == 0 {
+				requeued, err = requeuer.RequeueTurn(ctx, turn)
+			} else {
+				_, started, err = starter.StartTurn(ctx, turn, "harness-session-1")
+			}
+			if err != nil {
+				t.Error(err)
+			}
+		})
+		kept := st.turn(turn)
+		if requeued == started || (kept.State == store.TurnQueued) != requeued || (kept.StartedAt != nil) != started {
+			t.Fatalf("a turn that was put back %t and started %t at once is %s, and started at %v", requeued, started, kept.State, kept.StartedAt)
+		}
+		// The turn ends, for the next to come to a session with none.
+		if _, _, err := st.CancelTurn(ctx, turn); err != nil {
+			t.Fatal(err)
+		}
+		if started {
+			st.end(turn, false, store.Failure{Reason: store.FailurePodLost})
+		}
+	}
+}
+
 func (suite suite) testAnnounceQueue(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)

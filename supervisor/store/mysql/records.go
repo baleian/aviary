@@ -666,12 +666,12 @@ func (s *records) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text 
 		if err != nil {
 			return err
 		}
-		dispatched, err := queries.CountDispatchedTurns(ctx)
+		running, err := queries.CountRunningTurns(ctx)
 		if err != nil {
 			return err
 		}
 		// A queued turn waits only if the turns that run leave it no room.
-		waiting = queued - max(0, int64(maxRunning)-dispatched)
+		waiting = queued - max(0, int64(maxRunning)-running)
 		if maxWaiting > 0 && waiting > int64(maxWaiting) {
 			return store.ErrQueueFull
 		}
@@ -754,11 +754,11 @@ func (s *records) DispatchTurns(ctx context.Context, limit int) ([]store.Dispatc
 		if _, err := queries.Lock(ctx, dispatchLock); err != nil {
 			return err
 		}
-		dispatched, err := queries.CountDispatchedTurns(ctx)
+		running, err := queries.CountRunningTurns(ctx)
 		if err != nil {
 			return err
 		}
-		room := int64(limit) - dispatched
+		room := int64(limit) - running
 		if room <= 0 {
 			return nil
 		}
@@ -792,6 +792,28 @@ func (s *records) DispatchTurns(ctx context.Context, limit int) ([]store.Dispatc
 		return nil
 	})
 	return dispatches, err
+}
+
+func (s *records) RequeueTurn(ctx context.Context, turnID uuid.UUID) (bool, error) {
+	var requeued bool
+	err := s.within(ctx, func(queries *db.Queries) error {
+		requeued = false
+		// The turn is held while it is looked at, so that it is not started,
+		// asked to stop or ended before it is put back.
+		row, err := queries.LockTurn(ctx, key.ID(turnID))
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if (row.State != store.TurnDispatching && row.State != store.TurnRunning) || row.StartedAt != nil || row.CancelRequestedAt != nil {
+			return nil
+		}
+		requeued = true
+		return queries.RequeueTurn(ctx, row.ID)
+	})
+	return requeued && err == nil, err
 }
 
 func (s *records) CancelTurn(ctx context.Context, id uuid.UUID) (store.Turn, bool, error) {
@@ -884,6 +906,8 @@ func (s *records) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.Follo
 		ProviderURL:  row.ProviderUrl,
 		Model:        row.Model,
 		Dispatched:   since(row.Dispatched),
+		Waiting:      row.Waiting,
+		Answered:     since(row.Answered),
 	}
 	if row.Sandbox != nil {
 		followed.Sandbox = *row.Sandbox
@@ -967,7 +991,7 @@ func (s *records) StartTurn(ctx context.Context, turnID uuid.UUID, harnessSessio
 	var first bool
 	err := s.within(ctx, func(queries *db.Queries) error {
 		row, err := queries.LockTurn(ctx, key.ID(turnID))
-		if errors.Is(err, sql.ErrNoRows) || (err == nil && row.StartedAt != nil) {
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && (row.StartedAt != nil || row.State == store.TurnQueued)) {
 			first = false
 			return nil
 		}

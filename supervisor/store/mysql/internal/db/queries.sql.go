@@ -213,23 +213,28 @@ func (q *Queries) ClaimMembers(ctx context.Context, username *string) error {
 	return err
 }
 
-const countDispatchedTurns = `-- name: CountDispatchedTurns :one
-select count(*) from turns where state in ('dispatching', 'running')
-`
-
-func (q *Queries) CountDispatchedTurns(ctx context.Context) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countDispatchedTurns)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const countQueuedTurns = `-- name: CountQueuedTurns :one
 select count(*) from turns where state = 'queued'
 `
 
 func (q *Queries) CountQueuedTurns(ctx context.Context) (int64, error) {
 	row := q.db.QueryRowContext(ctx, countQueuedTurns)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countRunningTurns = `-- name: CountRunningTurns :one
+select count(*) from turns
+where state in ('dispatching', 'running')
+  and not exists (select 1 from approvals where approvals.turn_id = turns.id and approvals.resolved_at is null)
+`
+
+// The turns that take the room of a turn that runs: those that were
+// dispatched and have not ended, without those that wait for a person, which
+// have a request for approval that is not resolved.
+func (q *Queries) CountRunningTurns(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countRunningTurns)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -545,7 +550,10 @@ func (q *Queries) FollowTurn(ctx context.Context, id key.ID) error {
 const followedTurn = `-- name: FollowedTurn :one
 select turns.id, turns.session_id, turns.seq, turns.state, turns.text, turns.created_at, turns.dispatched_at, turns.started_at, turns.cancel_requested_at, turns.ended_at, turns.token_hash, turns.runner_id, turns.stop_reason, turns.failure_reason, turns.failure_message, turns.total_tokens, turns.input_tokens, turns.output_tokens, turns.thought_tokens, turns.cached_read_tokens, turns.cached_write_tokens, turns.created_by, agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
        agents.approval, coalesce(providers.url, '') as provider_url, agents.model, sessions.sandbox,
-       cast(timestampdiff(microsecond, coalesce(turns.dispatched_at, turns.created_at), now(6)) as signed) as dispatched
+       cast(timestampdiff(microsecond, coalesce(turns.dispatched_at, turns.created_at), now(6)) as signed) as dispatched,
+       exists (select 1 from approvals where approvals.turn_id = turns.id and approvals.resolved_at is null) as waiting,
+       cast(coalesce((select timestampdiff(microsecond, max(approvals.resolved_at), now(6)) from approvals
+                      where approvals.turn_id = turns.id), 0) as signed) as answered
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
@@ -564,9 +572,13 @@ type FollowedTurnRow struct {
 	Model        string
 	Sandbox      *string
 	Dispatched   int64
+	Waiting      bool
+	Answered     int64
 }
 
-// The turn as the Supervisor that follows it gets it.
+// The turn as the Supervisor that follows it gets it, with whether it has a
+// request for approval that is not resolved, and how long ago one of its
+// requests was resolved last.
 func (q *Queries) FollowedTurn(ctx context.Context, id key.ID) (FollowedTurnRow, error) {
 	row := q.db.QueryRowContext(ctx, followedTurn, id)
 	var i FollowedTurnRow
@@ -602,6 +614,8 @@ func (q *Queries) FollowedTurn(ctx context.Context, id key.ID) (FollowedTurnRow,
 		&i.Model,
 		&i.Sandbox,
 		&i.Dispatched,
+		&i.Waiting,
+		&i.Answered,
 	)
 	return i, err
 }
@@ -1682,6 +1696,18 @@ func (q *Queries) ReplaceSecretStore(ctx context.Context, arg ReplaceSecretStore
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const requeueTurn = `-- name: RequeueTurn :exec
+update turns set state = 'queued', token_hash = null, dispatched_at = null, runner_id = null,
+       failure_reason = null, failure_message = null
+where id = ?
+`
+
+// The turn waits to run again, with nothing left of its dispatch.
+func (q *Queries) RequeueTurn(ctx context.Context, id key.ID) error {
+	_, err := q.db.ExecContext(ctx, requeueTurn, id)
+	return err
 }
 
 const resolveApproval = `-- name: ResolveApproval :execrows

@@ -47,6 +47,9 @@ type Service struct {
 	// holds is whether a template stays unbuilt until Ends tells how its
 	// building ended.
 	holds bool
+	// room is for how many sandboxes that do not sleep the pool has room,
+	// if it is set.
+	room int
 	// refuses is what is answered to one who asks for a template, if it is
 	// set.
 	refuses int
@@ -244,6 +247,31 @@ func (s *Service) Age(id string, by time.Duration) {
 	}
 }
 
+// Room sets for how many sandboxes that do not sleep the pool of the
+// service has room. Zero is for any number.
+func (s *Service) Room(sandboxes int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.room = sandboxes
+}
+
+// full reports whether the pool has no room for one more sandbox, and
+// answers so if it has none.
+func (s *Service) full(w http.ResponseWriter) bool {
+	awake := 0
+	for _, sandbox := range s.sandboxes {
+		if sandbox.state != "Paused" {
+			awake++
+		}
+	}
+	if s.room == 0 || awake < s.room {
+		return false
+	}
+	w.Header().Set("Retry-After", "1")
+	refuse(w, http.StatusTooManyRequests, "POOL_EXHAUSTED", "the pool has no room")
+	return true
+}
+
 // Restart starts the runner of the sandbox again: it has no turn any more.
 func (s *Service) Restart(id string) {
 	s.mu.Lock()
@@ -281,6 +309,9 @@ func (s *Service) createSandbox(w http.ResponseWriter, r *http.Request) {
 	})
 	if !built {
 		refuse(w, http.StatusNotFound, "TEMPLATE_NOT_FOUND", "there is no such template")
+		return
+	}
+	if s.full(w) {
 		return
 	}
 	// A sandbox that is put to sleep is one that only its owner wakes, and
@@ -365,6 +396,7 @@ func (s *Service) resumeSandbox(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusNotFound, "FSB::SANDBOX_NOT_FOUND", "there is no such sandbox")
 	case sandbox.state != "Paused":
 		refuse(w, http.StatusConflict, "CONFLICT", "the sandbox does not sleep")
+	case s.full(w):
 	default:
 		sandbox.state = "Pending"
 		sandbox.woken++

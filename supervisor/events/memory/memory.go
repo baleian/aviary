@@ -173,6 +173,15 @@ func (l *Log) Follow(_ context.Context, turnID, follower uuid.UUID, length time.
 	return true, nil
 }
 
+func (l *Log) Leave(_ context.Context, turnID, follower uuid.UUID) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.followed[turnID].follower == follower {
+		delete(l.followed, turnID)
+	}
+	return nil
+}
+
 func (l *Log) Announce(_ context.Context, channel string, turnID uuid.UUID) error {
 	l.mu.Lock()
 	watching := make([]*func(uuid.UUID), 0, len(l.watchers[channel]))

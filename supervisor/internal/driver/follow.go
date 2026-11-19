@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
@@ -20,6 +21,8 @@ import (
 type run struct {
 	turn store.FollowedTurn
 	told *orders
+	// leave ends the following of the turn.
+	leave context.CancelFunc
 	// dispatched is when the turn was dispatched.
 	dispatched time.Time
 	// changed is filled when the limit of the turn has changed, asked when
@@ -33,6 +36,10 @@ type run struct {
 	runner *sandbox.Runner
 	// started is whether the harness has the message.
 	started bool
+	// asking is how many requests of the turn wait for a person, and
+	// answered when the harness last got its answer to one.
+	asking   int
+	answered time.Time
 	// stopping is when the turn was asked to stop, if it was.
 	stopping time.Time
 	// holdup is why the turn is not with its runner yet.
@@ -66,6 +73,10 @@ func (d *Driver) run(ctx context.Context, turnID uuid.UUID, told *orders) {
 		slog.ErrorContext(ctx, "read what the runner has told", "turn", turnID, "error", err)
 		return
 	}
+	// The turn went back to the queue between the two looks at it.
+	if turn.State == store.TurnQueued {
+		return
+	}
 	slog.InfoContext(ctx, "following turn", "turn", turnID, "received", received)
 	defer d.metrics.Following(turn.Harness)()
 
@@ -77,10 +88,17 @@ func (d *Driver) run(ctx context.Context, turnID uuid.UUID, told *orders) {
 	if turn.CancelRequestedAt != nil {
 		r.stopping = *turn.CancelRequestedAt
 	}
+	if turn.Waiting {
+		r.asking = 1
+	}
+	if turn.Answered > 0 {
+		r.answered = time.Now().Add(-turn.Answered)
+	}
 	// What is done for the turn while it is followed ends with the
 	// following. What settles the turn does not.
 	following, leave := context.WithCancel(ctx)
 	defer leave()
+	r.leave = leave
 	go d.watch(following, leave, r)
 
 	// A turn of which something is recorded was given to its runner, by a
@@ -106,10 +124,12 @@ func (d *Driver) watch(following context.Context, leave context.CancelFunc, r *r
 			timer.Stop()
 			return
 		case <-timer.C:
-			_, failure := r.limit(d.config)
-			r.giveUp(failure)
-			leave()
-			return
+			// The limit moves while the turn waits for a person.
+			if at, failure := r.limit(d.config); !time.Now().Before(at) {
+				r.giveUp(failure)
+				leave()
+				return
+			}
 		case <-r.changed:
 		case <-r.told.stop:
 			if runner := r.stop(); runner != nil && d.rouse(following, r) {
@@ -219,6 +239,9 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 	if id == "" {
 		var err error
 		if id, err = d.provide(ctx, r); err != nil {
+			if full(err) && d.requeue(ctx, r) {
+				return nil, nil
+			}
 			return nil, fmt.Errorf("make the sandbox of the session: %w", err)
 		}
 	}
@@ -244,6 +267,9 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 	case seen.Status.State == sandbox.Paused:
 		// The session was not at work, and its sandbox was put to sleep.
 		if err := d.sandboxes.Resume(following, id); err != nil {
+			if full(err) && !given && d.requeue(ctx, r) {
+				return nil, nil
+			}
 			return nil, fmt.Errorf("wake the sandbox of the session: %w", err)
 		}
 		return nil, errors.New("the sandbox of the session is woken")
@@ -269,6 +295,33 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 		return nil, fmt.Errorf("give the turn to its runner: %w", err)
 	}
 	return runner, nil
+}
+
+// full reports whether the error is that of a sandbox service whose pool
+// has no room for one more sandbox.
+func full(err error) bool {
+	var refusal *sandbox.Refusal
+	return errors.As(err, &refusal) && refusal.Status == http.StatusTooManyRequests
+}
+
+// requeue puts the turn back among those that wait to run, and leaves it:
+// there is no room for the sandbox of its session now. The turn is
+// dispatched again, and waits no longer than a turn may wait to run. It
+// reports whether the turn went back.
+func (d *Driver) requeue(ctx context.Context, r *run) bool {
+	back, err := d.store.RequeueTurn(ctx, r.turn.ID)
+	if err != nil {
+		slog.ErrorContext(ctx, "put the turn back among those that wait", "turn", r.turn.ID, "error", err)
+		return false
+	}
+	if back {
+		slog.InfoContext(ctx, "turn waits for room for the sandbox of its session", "turn", r.turn.ID)
+		// It is told its place among the turns that wait, before it is
+		// dispatched again.
+		d.announcePositions(ctx)
+		r.leave()
+	}
+	return back
 }
 
 // provide makes the sandbox of the turn's session, and returns it: the one
@@ -482,6 +535,7 @@ func (d *Driver) record(ctx context.Context, r *run, event sandbox.Event) (*endi
 		if err := d.store.AddApproval(ctx, turn.ID, asked.ID, data); err != nil {
 			return nil, err
 		}
+		r.ask()
 	case "approval.resolved":
 		var resolved struct {
 			ID       string `json:"id"`
@@ -513,6 +567,7 @@ func (d *Driver) record(ctx context.Context, r *run, event sandbox.Event) (*endi
 		if first {
 			d.metrics.Approved(turn.Harness, outcome, waited)
 		}
+		r.answer()
 	}
 	if !passed[event.Name] {
 		return nil, d.events.Receive(ctx, turn.ID, event.Seq, "", nil)
@@ -535,7 +590,16 @@ func with(object []byte, name string, value any) ([]byte, error) {
 func (r *run) limit(config Config) (time.Time, store.Failure) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	at := r.dispatched.Add(config.MaxTurn)
+	// A turn may wait for a person without end: its time does not pass
+	// while it waits, and starts again when the person has answered.
+	at := r.dispatched
+	if r.answered.After(at) {
+		at = r.answered
+	}
+	if r.asking > 0 {
+		at = time.Now()
+	}
+	at = at.Add(config.MaxTurn)
 	failure := store.Failure{
 		Reason: store.FailureTimedOut, Message: fmt.Sprintf("the turn ran for longer than %s", config.MaxTurn),
 	}
@@ -598,6 +662,23 @@ func (r *run) reached() *sandbox.Runner {
 func (r *run) start() {
 	r.mu.Lock()
 	r.started = true
+	r.mu.Unlock()
+	poke(r.changed)
+}
+
+// ask notes that the harness asks a person, and answer that it has its
+// answer to a request.
+func (r *run) ask() {
+	r.mu.Lock()
+	r.asking++
+	r.mu.Unlock()
+	poke(r.changed)
+}
+
+func (r *run) answer() {
+	r.mu.Lock()
+	r.asking = max(r.asking-1, 0)
+	r.answered = time.Now()
 	r.mu.Unlock()
 	poke(r.changed)
 }

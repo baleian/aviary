@@ -38,6 +38,56 @@ func (suite suite) testAnswerApprovalKeepsOneOfTheAnswersGivenAtOnce(t *testing.
 	}
 }
 
+// The Supervisor that follows a turn is told whether the turn waits for a
+// person, and how long ago its harness last got an answer.
+func (suite suite) testFollowTurnTellsWhetherTheTurnWaitsForAPerson(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	st.queue(st.session())
+	turn := st.dispatch().TurnID
+	// told checks what is told of the turn: whether it waits, and that its
+	// harness was answered no less and no more than so long ago.
+	told := func(what string, waiting bool, least, most time.Duration) {
+		t.Helper()
+		followed, err := st.FollowTurn(ctx, turn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if followed.Waiting != waiting || followed.Answered < least || followed.Answered > most {
+			t.Errorf("a turn %s waits for a person %t, and its harness was answered %s ago", what, followed.Waiting, followed.Answered)
+		}
+	}
+	told("without requests", false, 0, 0)
+
+	// A request is open until the harness has its answer: what a person
+	// chose is only on its way.
+	if err := st.AddApproval(ctx, turn, "1", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	told("with a request", true, 0, 0)
+	if answered, err := st.AnswerApproval(ctx, turn, "1", "once", uuid.Nil); err != nil || !answered {
+		t.Fatalf("the request was answered %t: %v", answered, err)
+	}
+	told("whose answer is on its way", true, 0, 0)
+	if _, _, _, err := st.ResolveApproval(ctx, turn, "1", "selected"); err != nil {
+		t.Fatal(err)
+	}
+	told("whose harness has its answer", false, time.Microsecond, time.Minute)
+	st.database.Age(t, 2*time.Minute, turn)
+	told("whose harness got its answer two minutes ago", false, 2*time.Minute, 3*time.Minute)
+
+	// One request that is open is enough to wait, and the answer that the
+	// harness got last counts, whatever came of the request.
+	if err := st.AddApproval(ctx, turn, "2", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	told("with a resolved request and an open one", true, 2*time.Minute, 3*time.Minute)
+	if _, _, _, err := st.ResolveApproval(ctx, turn, "2", "cancelled"); err != nil {
+		t.Fatal(err)
+	}
+	told("whose harness has another answer", false, time.Microsecond, time.Minute)
+}
+
 func (suite suite) testApprovals(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)

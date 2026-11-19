@@ -386,6 +386,13 @@ func (d *Driver) follow(ctx context.Context, turnID uuid.UUID) {
 			d.mu.Lock()
 			delete(d.following, turnID)
 			d.mu.Unlock()
+			// Whatever is left of the turn is the next Supervisor's that
+			// asks, also when this one was told to stop.
+			leaving, done := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer done()
+			if err := d.events.Leave(leaving, turnID, d.id); err != nil {
+				slog.ErrorContext(ctx, "say that the turn is followed no longer", "turn", turnID, "error", err)
+			}
 		}()
 		d.run(following, turnID, told)
 	}()

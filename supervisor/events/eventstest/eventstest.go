@@ -291,6 +291,21 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 		if follows(log, one, time.Minute) {
 			t.Error("the Supervisor that was gone was given the turn again")
 		}
+
+		// A Supervisor that leaves the turn gives it to the next at once.
+		// One that does not follow the turn leaves nothing.
+		if err := open(t).Leave(ctx, turn, one); err != nil {
+			t.Fatal(err)
+		}
+		if follows(log, one, time.Minute) {
+			t.Error("a Supervisor that did not follow the turn took it from the one that does by leaving it")
+		}
+		if err := log.Leave(ctx, turn, other); err != nil {
+			t.Fatal(err)
+		}
+		if !follows(open(t), one, time.Minute) {
+			t.Error("the turn that its Supervisor left was not given to the next")
+		}
 	})
 
 	t.Run("a turn that several Supervisors ask for at once is given to one", func(t *testing.T) {

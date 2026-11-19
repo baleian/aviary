@@ -107,6 +107,16 @@ func (i *installation) session(agent store.Agent) store.Session {
 	return session
 }
 
+// sessionOf returns the session with the ID.
+func (i *installation) sessionOf(id uuid.UUID) store.Session {
+	i.t.Helper()
+	session, err := i.store.Session(ctx, id)
+	if err != nil {
+		i.t.Fatal(err)
+	}
+	return session
+}
+
 // send accepts a message to the session as its next turn.
 func (i *installation) send(driver *Driver, session store.Session, text string) store.Turn {
 	i.t.Helper()
@@ -713,6 +723,57 @@ func TestASandboxThatItsSessionDoesNotHaveIsDeleted(t *testing.T) {
 		if _, there := sandboxes[id]; !there {
 			t.Errorf("the sandbox %s was deleted", what)
 		}
+	}
+}
+
+func TestATurnWaitsToRunWhileThereIsNoRoomForItsSandbox(t *testing.T) {
+	i := install(t, func(config *Config) { config.MaxQueueWait = time.Hour })
+	driver, _ := i.supervisor()
+	i.service.Room(1)
+	first := i.send(driver, i.session(store.Agent{}), "hello")
+	given := i.service.Turn(t)
+	given.Tell("started", started)
+
+	// The pool has room for one sandbox, which the first session has.
+	waiting := i.session(store.Agent{})
+	second := i.send(driver, waiting, "hello")
+	i.eventually("the turn was dispatched and went back", func() bool {
+		return slices.Contains(i.told(second.ID), events.TurnQueued)
+	})
+	if given := i.service.Given(); len(given) != 1 || i.sandbox(waiting) != "" {
+		t.Errorf("the runners were given %v, and the session that waits has the sandbox %q", given, i.sandbox(waiting))
+	}
+	// A turn that waits to run is cancelled at once.
+	third := i.send(driver, i.session(store.Agent{}), "hello")
+	i.cancel(third.ID, false)
+	if ended := i.ended(third.ID); ended.State != store.TurnCancelled {
+		t.Errorf("the turn that waited for room ended as %+v", ended)
+	}
+
+	// The first session is put to sleep, which makes room.
+	given.Tell("finished", finished)
+	i.ended(first.ID)
+	i.service.Sleep(given.Sandbox)
+	next := i.service.Turn(t)
+	if next.ID != second.ID.String() || next.Sandbox == given.Sandbox {
+		t.Errorf("the turn that waited was given as %+v", next)
+	}
+	next.Tell("started", started)
+	next.Tell("finished", finished)
+	if ended := i.ended(second.ID); ended.State != store.TurnCompleted {
+		t.Errorf("the turn that waited ended as %+v", ended)
+	}
+
+	// Its own session cannot be woken while the other is awake: its next
+	// turn waits too, and no longer than a turn may wait.
+	i.config.MaxQueueWait = 300 * time.Millisecond
+	impatient, _ := i.supervisor()
+	last := i.send(impatient, i.sessionOf(first.SessionID), "again")
+	if ended := i.ended(last.ID); ended.State != store.TurnExpired {
+		t.Errorf("the turn that waited for too long ended as %+v", ended)
+	}
+	if woken := i.service.Woken(given.Sandbox); woken != 0 {
+		t.Errorf("the sandbox for which there was no room was woken %d times", woken)
 	}
 }
 
