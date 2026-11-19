@@ -672,6 +672,50 @@ func TestATurnThatWaitsForAPersonSleepsUntilItIsToldSomething(t *testing.T) {
 	}
 }
 
+func TestASandboxThatItsSessionDoesNotHaveIsDeleted(t *testing.T) {
+	i := install(t)
+	driver, _ := i.supervisor()
+	session := i.session(store.Agent{})
+	turn := i.send(driver, session, "hello")
+	given := i.service.Turn(t)
+	given.Tell("started", started)
+	given.Tell("finished", finished)
+	i.ended(turn.ID)
+
+	template, err := i.sandboxes.Template(ctx, i.config.Templates, "opencode")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// stray makes a sandbox as a Supervisor does that then goes, before it
+	// has told the session.
+	stray := func(session string) string {
+		made, err := i.sandboxes.CreateSandbox(ctx, template, map[string]string{metadataSession: session}, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return made.ID
+	}
+	left, young := stray(session.ID.String()), stray(session.ID.String())
+	// The sandbox of a session that these records do not know, and one
+	// that is no sandbox of a session.
+	foreign, other := stray(uuid.NewString()), stray("")
+	for _, id := range []string{given.Sandbox, left, foreign, other} {
+		i.service.Age(id, time.Hour)
+	}
+	i.eventually("the sandbox that the session does not have is deleted", func() bool {
+		_, there := i.service.Sandboxes()[left]
+		return !there
+	})
+	sandboxes := i.service.Sandboxes()
+	for what, id := range map[string]string{
+		"of the session": given.Sandbox, "that is young": young, "of an unknown session": foreign, "of no session": other,
+	} {
+		if _, there := sandboxes[id]; !there {
+			t.Errorf("the sandbox %s was deleted", what)
+		}
+	}
+}
+
 func TestAHarnessThatAnInstallationHas(t *testing.T) {
 	i := install(t)
 	driver := New(i.config, i.sandboxes, i.store, i.events, metrics.New())

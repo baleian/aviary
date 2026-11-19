@@ -158,6 +158,10 @@ func (c *Client) Templates(ctx context.Context, name, value string) ([]Template,
 type Sandbox struct {
 	ID     string        `json:"id"`
 	Status SandboxStatus `json:"status"`
+	// Metadata is what the sandbox was made with, for one who looks at the
+	// sandboxes to know whose each is.
+	Metadata  map[string]string `json:"metadata"`
+	CreatedAt time.Time         `json:"createdAt"`
 }
 
 // SandboxStatus is how the sandbox is.
@@ -244,6 +248,27 @@ func (c *Client) Sandbox(ctx context.Context, id string) (Sandbox, error) {
 	var sandbox Sandbox
 	err := c.ask(ctx, http.MethodGet, "/sandboxes/"+url.PathEscape(id), nil, nil, &sandbox)
 	return sandbox, err
+}
+
+// Sandboxes returns all the sandboxes that the service has.
+func (c *Client) Sandboxes(ctx context.Context) ([]Sandbox, error) {
+	var sandboxes []Sandbox
+	for page := 1; ; page++ {
+		var listed struct {
+			Items      []Sandbox `json:"items"`
+			Pagination struct {
+				HasNextPage bool `json:"hasNextPage"`
+			} `json:"pagination"`
+		}
+		query := url.Values{"page": {strconv.Itoa(page)}}
+		if err := c.ask(ctx, http.MethodGet, "/sandboxes", query, nil, &listed); err != nil {
+			return nil, err
+		}
+		sandboxes = append(sandboxes, listed.Items...)
+		if !listed.Pagination.HasNextPage {
+			return sandboxes, nil
+		}
+	}
 }
 
 // DeleteSandbox has the sandbox deleted, with all that is in it. A sandbox

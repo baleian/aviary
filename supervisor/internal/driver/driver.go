@@ -84,6 +84,9 @@ type Driver struct {
 	wake      chan struct{}
 	// moved is set when a turn left the queue without being dispatched.
 	moved atomic.Bool
+	// sweeps counts the sweeps, of which only some look for sandboxes that
+	// no session has.
+	sweeps int
 	// following are the turns that this Supervisor follows.
 	mu        sync.Mutex
 	following map[uuid.UUID]*orders
@@ -253,6 +256,45 @@ func (d *Driver) announcePositions(ctx context.Context) {
 	}
 }
 
+// reapEvery is how many sweeps pass between two looks for sandboxes that no
+// session has.
+const reapEvery = 6
+
+// orphaned is how old a sandbox is before it is taken to be one that no
+// session will have: until then it may be on its way to its session.
+func (d *Driver) orphaned() time.Duration {
+	return 30 * d.config.Sweep
+}
+
+// reap deletes the sandboxes of sessions that those sessions do not have: a
+// Supervisor made one and was gone before it had told its session, or a
+// session was ended and its sandbox could not be deleted then. A sandbox of
+// a session that the records do not know is left alone.
+func (d *Driver) reap(ctx context.Context) {
+	sandboxes, err := d.sandboxes.Sandboxes(ctx)
+	if err != nil {
+		slog.ErrorContext(ctx, "list the sandboxes", "error", err)
+		return
+	}
+	for _, made := range sandboxes {
+		sessionID, err := uuid.Parse(made.Metadata[metadataSession])
+		if err != nil || time.Since(made.CreatedAt) < d.orphaned() {
+			continue
+		}
+		session, err := d.store.Session(ctx, sessionID)
+		if err != nil || session.Sandbox == made.ID {
+			if err != nil && !errors.Is(err, store.ErrNotFound) {
+				slog.ErrorContext(ctx, "read the session of a sandbox", "sandbox", made.ID, "error", err)
+			}
+			continue
+		}
+		slog.WarnContext(ctx, "delete a sandbox that its session does not have", "session", sessionID, "sandbox", made.ID)
+		if err := d.sandboxes.DeleteSandbox(ctx, made.ID); err != nil {
+			slog.ErrorContext(ctx, "delete a sandbox that its session does not have", "sandbox", made.ID, "error", err)
+		}
+	}
+}
+
 // lease is for how long a turn is this Supervisor's once it has said that
 // it follows the turn. It says so again with every sweep.
 func (d *Driver) lease() time.Duration {
@@ -262,6 +304,9 @@ func (d *Driver) lease() time.Duration {
 // sweep looks at the turns that run. Nothing of it is needed while every
 // Supervisor stays and every announcement arrives.
 func (d *Driver) sweep(ctx context.Context) {
+	if d.sweeps++; d.sweeps%reapEvery == 0 {
+		d.reap(ctx)
+	}
 	d.mu.Lock()
 	mine := make(map[uuid.UUID]*orders, len(d.following))
 	for turnID, told := range d.following {

@@ -70,6 +70,7 @@ type sandbox struct {
 	// idle is after how many idle seconds the sandbox is to be put to
 	// sleep, and woken how often it was woken.
 	idle, woken int
+	created     time.Time
 }
 
 // New starts a sandbox service, which is stopped when the test ends.
@@ -84,6 +85,7 @@ func New(t testing.TB) *Service {
 	api.HandleFunc("POST /v1/templates", s.createTemplate)
 	api.HandleFunc("GET /v1/templates", s.listTemplates)
 	api.HandleFunc("POST /v1/sandboxes", s.createSandbox)
+	api.HandleFunc("GET /v1/sandboxes", s.listSandboxes)
 	api.HandleFunc("GET /v1/sandboxes/{id}", s.getSandbox)
 	api.HandleFunc("DELETE /v1/sandboxes/{id}", s.deleteSandbox)
 	api.HandleFunc("POST /v1/sandboxes/{id}/resume", s.resumeSandbox)
@@ -233,6 +235,15 @@ func (s *Service) TemplateOf(id string) map[string]string {
 	return nil
 }
 
+// Age makes the sandbox so much older.
+func (s *Service) Age(id string, by time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sandbox := s.sandboxes[id]; sandbox != nil {
+		sandbox.created = sandbox.created.Add(-by)
+	}
+}
+
 // Restart starts the runner of the sandbox again: it has no turn any more.
 func (s *Service) Restart(id string) {
 	s.mu.Lock()
@@ -284,10 +295,36 @@ func (s *Service) createSandbox(w http.ResponseWriter, r *http.Request) {
 	id := fmt.Sprintf("sbx-%d", s.made)
 	s.sandboxes[id] = &sandbox{
 		state: "Pending", template: asked.TemplateID, metadata: asked.Metadata, runner: &runner{service: s, sandbox: id},
-		idle: policy.IdleTimeoutSeconds,
+		idle: policy.IdleTimeoutSeconds, created: time.Now(),
 	}
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "status": map[string]string{"state": "Pending"}})
+}
+
+// listSandboxes lists the sandboxes, two to a page.
+func (s *Service) listSandboxes(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ids := make([]string, 0, len(s.sandboxes))
+	for id := range s.sandboxes {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	from := min(max(page-1, 0)*2, len(ids))
+	to := min(from+2, len(ids))
+	items := []map[string]any{}
+	for _, id := range ids[from:to] {
+		sandbox := s.sandboxes[id]
+		items = append(items, map[string]any{
+			"id": id, "status": map[string]string{"state": sandbox.state},
+			"metadata": sandbox.metadata, "createdAt": sandbox.created,
+		})
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"items":      items,
+		"pagination": map[string]any{"hasNextPage": to < len(ids)},
+	})
 }
 
 func (s *Service) getSandbox(w http.ResponseWriter, r *http.Request) {
