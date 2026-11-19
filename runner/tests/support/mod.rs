@@ -147,6 +147,19 @@ impl Session {
         .await
     }
 
+    /// Whether the runner says that the session is at work.
+    pub async fn active(&self) -> bool {
+        let answer = time::timeout(
+            PATIENCE,
+            self.client.get(format!("{}/active", self.url)).send(),
+        )
+        .await
+        .expect("the runner did not answer")
+        .unwrap();
+        assert_eq!(answer.status(), StatusCode::OK);
+        answer.json::<Value>().await.unwrap()["active"] == json!(true)
+    }
+
     async fn sent(&self, request: reqwest::RequestBuilder) -> StatusCode {
         time::timeout(PATIENCE, request.send())
             .await

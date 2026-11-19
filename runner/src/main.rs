@@ -6,6 +6,7 @@
 //!   GET  /turns/{turn}/events                the events of the turn, as they come
 //!   POST /turns/{turn}/cancel                tells the turn to stop
 //!   PUT  /turns/{turn}/approvals/{request}   answers a request for approval
+//!   GET  /active                             whether the session is at work
 //!
 //! A request may come twice: its sender sends it again when it does not know
 //! what came of it. A turn that the runner has is not started again, and a
@@ -13,6 +14,10 @@
 //!
 //! The harness is started for the first turn and stays when a turn has ended,
 //! with what it knows of the conversation.
+//!
+//! A session that is not at work may be put to sleep, sandbox and all: one
+//! that runs no turn, or whose turn waits for a person. It goes on from where
+//! it was when it is woken.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -60,6 +65,10 @@ const LISTENS: &str = "0.0.0.0:8700";
 /// The events with which a turn ends.
 const FINISHED: &str = "finished";
 const FAILED: &str = "failed";
+/// The events of a request for approval: that the harness asks, and that it
+/// has its answer.
+const REQUESTED: &str = "approval.requested";
+const RESOLVED: &str = "approval.resolved";
 
 fn main() -> Result<(), Box<dyn Error>> {
     // The runtime has a thread besides this one. On tokio's single-threaded
@@ -90,6 +99,7 @@ async fn serve() -> Result<(), Box<dyn Error>> {
         .route("/turns/{turn}/events", get(events))
         .route("/turns/{turn}/cancel", post(cancel))
         .route("/turns/{turn}/approvals/{request}", put(answer))
+        .route("/active", get(active))
         .with_state(runner.clone());
     tokio::spawn(async move { axum::serve(listener, routes).await });
     run_turns(&runner, ordered).await;
@@ -111,6 +121,8 @@ struct Turn {
     /// The events of the turn. The number of an event is its place, from 1.
     events: Vec<Event>,
     ended: bool,
+    /// How many requests of the turn for approval wait for their answers.
+    asking: usize,
     /// Carries what the turn is told to where the harness is talked to, in
     /// the order in which it was told.
     tell: mpsc::UnboundedSender<Told>,
@@ -172,6 +184,11 @@ impl Runner {
                 name,
                 data: data.to_string(),
             });
+            match name {
+                REQUESTED => turn.asking += 1,
+                RESOLVED => turn.asking = turn.asking.saturating_sub(1),
+                _ => {}
+            }
             turn.ended = name == FINISHED || name == FAILED;
         }
         drop(turn);
@@ -235,6 +252,7 @@ async fn start(
         id,
         events: Vec::new(),
         ended: false,
+        asking: 0,
         tell,
     });
     let _ = runner.orders.unbounded_send(Order { start, told });
@@ -301,6 +319,15 @@ async fn answer(
 ) -> StatusCode {
     let option_id = answer.option_id;
     runner.tell(&id, Told::Answer { request, option_id })
+}
+
+/// Whether the session is at work: a turn runs, and waits for no person.
+async fn active(State(runner): State<Arc<Runner>>) -> Json<Value> {
+    let turn = runner.turn.lock().expect("the turn");
+    let active = turn
+        .as_ref()
+        .is_some_and(|turn| !turn.ended && turn.asking == 0);
+    Json(json!({"active": active}))
 }
 
 /// Why the runner could not finish a turn.
@@ -536,7 +563,7 @@ async fn run_harness(
                                     asked.responder.respond(RequestPermissionResponse::new(
                                         RequestPermissionOutcome::Cancelled,
                                     ))?;
-                                    runner.emit("approval.resolved", &resolved(&asked.id, "cancelled", None));
+                                    runner.emit(RESOLVED, &resolved(&asked.id, "cancelled", None));
                                 }
                             }
                             // An answer may come twice, or late, or be none
@@ -550,7 +577,7 @@ async fn run_harness(
                                     let option = asked.option(&option_id).expect("found above");
                                     asked.responder.respond(RequestPermissionResponse::new(option))?;
                                     runner.emit(
-                                        "approval.resolved",
+                                        RESOLVED,
                                         &resolved(&asked.id, "selected", Some(&option_id)),
                                     );
                                 }
@@ -565,7 +592,7 @@ async fn run_harness(
                             }
                             requests += 1;
                             let id = requests.to_string();
-                            runner.emit("approval.requested", &requested(&id, &request, longest));
+                            runner.emit(REQUESTED, &requested(&id, &request, longest));
                             waiting.push(Asked { id, request, responder });
                         }
                     }

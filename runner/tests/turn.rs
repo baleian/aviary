@@ -424,6 +424,35 @@ async fn a_harness_that_asks_is_answered_by_a_person() {
     assert!(events.next().await.is_none());
 }
 
+// A session is at work while a turn of it runs and waits for no person.
+// What runs the sandbox asks, and puts a session to sleep that is not.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_is_at_work_while_its_turn_waits_for_no_person() {
+    let home = Home::new();
+    let runner = start(runner(&home)).await;
+    assert!(!runner.active().await);
+
+    runner
+        .turn_with("t1", json!({"text": "ask ; ask", "approval": "ask"}))
+        .await;
+    assert!(runner.active().await);
+    let mut events = runner.follow("t1", 0).await;
+    assert_eq!(events.next().await.unwrap().name, "started");
+    assert_eq!(events.next().await.unwrap().name, "approval.requested");
+    assert!(!runner.active().await);
+    runner.answer("t1", "1", "once").await;
+    assert_eq!(events.next().await.unwrap().name, "approval.resolved");
+    // The harness goes on to its next request.
+    assert_eq!(events.next().await.unwrap().name, "message.delta");
+    assert_eq!(events.next().await.unwrap().name, "approval.requested");
+    assert!(!runner.active().await);
+    // A turn that is told to stop waits for no answer any more.
+    runner.cancel("t1").await;
+    assert_eq!(events.next().await.unwrap().name, "approval.resolved");
+    while events.next().await.is_some() {}
+    assert!(!runner.active().await);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn requests_that_wait_at_once_are_each_given_their_own_answer() {
     let home = Home::new();
