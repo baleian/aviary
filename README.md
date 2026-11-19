@@ -91,11 +91,13 @@ the logs of the cluster.
 ## Try it locally
 
 You need Docker, [kind](https://kind.sigs.k8s.io), kubectl, Helm, jq, make,
-curl and bash. The commands were tested with kind 0.33, Helm 4.3 and
+curl and bash, and a host with KVM (`/dev/kvm`), which the sandboxes of the
+cluster run on. The commands were tested with kind 0.33, Helm 4.3 and
 Docker 29 on Linux.
 
 ```sh
-make cluster-up   # a kind cluster with an NFS volume, PostgreSQL and Valkey
+make cluster-up   # a kind cluster with an NFS volume, PostgreSQL, Valkey,
+                  # an object store and OpenSandbox
 make images       # builds the images and loads them into the cluster
 make deploy       # installs Aviary with its Helm chart
 ```

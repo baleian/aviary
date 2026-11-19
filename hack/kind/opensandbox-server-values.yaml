@@ -1,0 +1,37 @@
+# The lifecycle server of OpenSandbox in the local cluster. It makes the
+# sandboxes with Fast Sandbox, in the pool of hack/kind/sandbox-pool.yaml, and
+# reads its keys from the secrets that hack/kind/opensandbox-keys.sh makes.
+server:
+  image:
+    repository: opensandbox/server
+  env:
+    - name: OPENSANDBOX_SERVER_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: opensandbox-api-key
+          key: api-key
+  # Where a sandbox is reached: the address that the server gives for a port
+  # of a sandbox is this one, with a header that names the sandbox.
+  gateway:
+    enabled: true
+    host: opensandbox-ingress-gateway.opensandbox-system.svc.cluster.local
+    secureAccess:
+      existingSecret: opensandbox-route-keys
+configToml: |
+  [server]
+  host = "0.0.0.0"
+  port = 80
+
+  [runtime]
+  type = "kubernetes"
+  execd_image = "opensandbox/execd:release-1.2.1"
+  execd_run_as_init = true
+
+  [kubernetes]
+  namespace = "opensandbox-dataplane"
+  fastpath_endpoint = "fast-sandbox-fastpath.opensandbox-system.svc:9090"
+  fastpath_resource_pool = "default"
+  fastpath_wait_ready_seconds = 30.0
+  template_s3_publish_secret = "sandbox-oss-credentials"
+  template_mitm_ca_secret = "opensandbox-mitm-ca"
+  template_mitm_ca_secret_key = "ca.crt"

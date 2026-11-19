@@ -3,6 +3,12 @@ NODE_IMAGE := kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a2659
 NFS_PROVISIONER_CHART := 1.8.0
 CNPG_CHART := 0.29.1
 VALKEY_CHART := 1.0.0
+# OpenSandbox publishes its charts in its repository only, so they are taken
+# from the commit of the release. The images of the release are named in
+# hack/kind too: in opensandbox-server-values.yaml and sandbox-pool.yaml.
+OPENSANDBOX := 1.2.1
+OPENSANDBOX_COMMIT := db708c218771a8d311356f0e96552c15df6e097a
+OPENSANDBOX_CHARTS := .out/opensandbox-$(OPENSANDBOX)
 GO_IMAGE := golang:1.27.4-trixie@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9
 BUF := 1.75.0
 SQLC_IMAGE := sqlc/sqlc:1.31.1@sha256:70f53171d27b2424e9358869975455a6e955a5aa8e58a998a270a6e34e525537
@@ -164,7 +170,16 @@ test-harness: build
 	AVIARY_HARNESS_IMAGES="$(HARNESS_IMAGES)" cargo test --locked --package aviary-runner --test harness -- \
 		--ignored --test-threads 3 $(TESTS)
 
-cluster-up:
+$(OPENSANDBOX_CHARTS):
+	mkdir -p $@.new
+	curl --fail --silent --show-error --location \
+		https://github.com/opensandbox-group/OpenSandbox/archive/$(OPENSANDBOX_COMMIT).tar.gz | \
+		tar --extract --gzip --directory $@.new --strip-components 3 \
+			OpenSandbox-$(OPENSANDBOX_COMMIT)/manifests/charts
+	mv $@.new $@
+
+cluster-up: $(OPENSANDBOX_CHARTS)
+	@test -e /dev/kvm || { echo "the sandboxes of the cluster need KVM, and this host has no /dev/kvm"; exit 1; }
 	kind get clusters 2>/dev/null | grep -qx $(CLUSTER) || \
 		kind create cluster --name $(CLUSTER) --image $(NODE_IMAGE) --config hack/kind/cluster.yaml
 	kind get nodes --name $(CLUSTER) | xargs --max-procs 0 -I {} \
@@ -204,6 +219,23 @@ endif
 	$(KUBECTL) apply -f hack/kind/rustfs.yaml
 	$(KUBECTL) --namespace aviary-data rollout status statefulset/rustfs --timeout 300s
 	$(KUBECTL) --namespace aviary-data wait --for=condition=complete job/rustfs-bucket --timeout 300s
+	$(HELM) upgrade --install opensandbox-base $(OPENSANDBOX_CHARTS)/base --wait
+	bash hack/kind/opensandbox-keys.sh $(KUBECTL)
+	$(HELM) upgrade --install fast-sandbox $(OPENSANDBOX_CHARTS)/fast-sandbox \
+		--namespace opensandbox-system \
+		--set artifactStore.store=s3://sandboxes/publish \
+		--set artifactStore.endpoint=http://rustfs.aviary-data.svc.cluster.local:9000 \
+		--wait --timeout 10m
+	$(HELM) upgrade --install opensandbox-server $(OPENSANDBOX_CHARTS)/server \
+		--namespace opensandbox-system \
+		--values hack/kind/opensandbox-server-values.yaml \
+		--wait
+	$(HELM) upgrade --install opensandbox-ingress-gateway $(OPENSANDBOX_CHARTS)/ingress-gateway \
+		--namespace opensandbox-system \
+		--values hack/kind/opensandbox-gateway-values.yaml \
+		--wait
+	$(KUBECTL) apply -f hack/kind/sandbox-pool.yaml
+	$(KUBECTL) wait --namespace opensandbox-dataplane sandboxpool/default --for=condition=RuntimeReady --timeout=5m
 ifeq ($(DATABASE),mysql)
 	$(KUBECTL) --namespace aviary-data rollout status statefulset/mysql --timeout 300s
 else

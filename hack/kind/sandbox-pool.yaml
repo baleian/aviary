@@ -1,0 +1,119 @@
+# The pool of the local cluster: the pods that its sandboxes run in, each with
+# the egress that all the sandboxes of the pod go out through. A sandbox has
+# the size that its template was made with. `make cluster-up` applies this
+# after OpenSandbox is installed.
+apiVersion: sandbox.fast.io/v1alpha2
+kind: SandboxPool
+metadata:
+  name: default
+  namespace: opensandbox-dataplane
+spec:
+  fastletTemplate:
+    spec:
+      containers:
+        - name: fastlet
+          image: opensandbox/fsb-fastlet:release-1.2.1
+          env:
+            - name: FAST_SANDBOX_RUNTIME_AGENT_SOCKET
+              value: /run/fast-sandbox/firecracker/runtime.sock
+          volumeMounts:
+            - name: agent-socket
+              mountPath: /run/fast-sandbox/firecracker
+        - name: egress
+          image: opensandbox/egress:release-1.2.1
+          env:
+            - name: OPENSANDBOX_EGRESS_PROFILE
+              value: fast-sandbox
+            - name: OPENSANDBOX_EGRESS_MODE
+              value: dns+nft
+            - name: OPENSANDBOX_EGRESS_VAULT_DIR
+              value: /var/lib/opensandbox-egress/vault
+            - name: OPENSANDBOX_EGRESS_POLICY_DIR
+              value: /var/lib/opensandbox-egress/policy
+            - name: OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT
+              value: "true"
+            - name: OPENSANDBOX_EGRESS_MITM_CA_SEED_DIR
+              value: /var/egress/mitm-ca
+            - name: OPENSANDBOX_EGRESS_MITMPROXY_UPSTREAM_EXTRA_CA
+              value: /var/egress/mitm-ca/tls.crt
+          volumeMounts:
+            - name: egress-state
+              mountPath: /var/lib/opensandbox-egress
+            # Fast Sandbox gives the pod this volume, and hands the egress
+            # what a sandbox may send as a file in it.
+            - name: firecracker-state
+              mountPath: /var/lib/fast-sandbox/firecracker
+            - name: mitm-ca
+              mountPath: /var/egress/mitm-ca
+              readOnly: true
+          securityContext:
+            capabilities:
+              add: ["NET_ADMIN", "NET_RAW"]
+          # Fast Sandbox makes no pod for a pool whose egress has no limits.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: agent-socket
+          hostPath:
+            path: /run/fast-sandbox/firecracker
+            type: DirectoryOrCreate
+        - name: egress-state
+          emptyDir: {}
+        - name: mitm-ca
+          secret:
+            secretName: opensandbox-mitm-ca
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+      nodeSelector:
+        fast-sandbox.io/firecracker-node: "true"
+  capacity:
+    poolMin: 1
+    poolMax: 2
+    bufferMin: 0
+    bufferMax: 0
+  maxSandboxesPerPod: 5
+  runtime: firecracker
+  infraComponents:
+    - name: egress
+      delivery: host-process
+      process:
+        command: ["/bin/egress"]
+        healthCheck:
+          tcpConnect: {}
+          timeoutSeconds: 10
+      endpoint:
+        protocol: HTTP
+        port: 18080
+  actionHandlers:
+    - name: egress
+      targetHTTPPort: 18080
+      hooks: ["sandbox.runtime-ready", "sandbox.data-plane-ready"]
+  sandboxResources:
+    mode: ResourceAware
+    cpu: "1"
+    memory: 512Mi
+    pids: 128
+    overcommitRatio:
+      cpu: "2"
+      memory: "2"
+---
+# Where the pods of a pool find the keys of the object store.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fast-sandbox-registry
+  namespace: opensandbox-dataplane
+data:
+  registries.yaml: |
+    registries:
+      - host: rustfs.aviary-data.svc.cluster.local:9000
+        secretRef:
+          name: fast-sandbox-registry

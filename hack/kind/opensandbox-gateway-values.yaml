@@ -1,0 +1,11 @@
+# The ingress gateway of OpenSandbox in the local cluster: what is sent to a
+# sandbox goes through it. It asks Fast Sandbox where the sandbox is, and
+# takes only the routes that the lifecycle server signed.
+gateway:
+  image:
+    repository: opensandbox/ingress
+  providerType: fast-sandbox
+  dataplaneNamespace: opensandbox-system
+  fastpathEndpoint: fast-sandbox-fastpath.opensandbox-system.svc:9090
+  secureAccess:
+    existingSecret: opensandbox-route-keys
