@@ -29,9 +29,10 @@ spec:
         - name: mock-llm
           image: aviary-mock-llm:dev
           env:
-            # The tests give the providers of their agents this key.
+            # What a harness sends as its key: a sandbox holds no key of a
+            # model endpoint.
             - name: MOCK_LLM_API_KEY
-              value: mock-llm-key
+              value: none
           ports:
             - name: http
               containerPort: 8080
@@ -53,60 +54,6 @@ metadata:
 spec:
   selector:
     app.kubernetes.io/name: mock-llm
-  ports:
-    - name: http
-      port: 80
-      targetPort: http
----
-# Another model server, with a key of its own: the tests keep that key in the
-# secret store of the cluster.
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: mock-llm-other
-  namespace: aviary-e2e
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: mock-llm-other
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: mock-llm-other
-    spec:
-      automountServiceAccountToken: false
-      securityContext:
-        runAsNonRoot: true
-        seccompProfile:
-          type: RuntimeDefault
-      containers:
-        - name: mock-llm-other
-          image: aviary-mock-llm:dev
-          env:
-            - name: MOCK_LLM_API_KEY
-              value: other-mock-llm-key
-          ports:
-            - name: http
-              containerPort: 8080
-          readinessProbe:
-            httpGet:
-              path: /healthz
-              port: http
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: ["ALL"]
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: mock-llm-other
-  namespace: aviary-e2e
-spec:
-  selector:
-    app.kubernetes.io/name: mock-llm-other
   ports:
     - name: http
       port: 80

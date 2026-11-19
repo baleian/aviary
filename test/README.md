@@ -9,7 +9,7 @@ cluster.
 | Lint | `make lint` | gofmt, go vet, rustfmt and clippy, and the generators of the Go code. | The code is formatted, the linters object to nothing, and the generated code is what the generators make of its sources now. |
 | Unit and component | `make test` | Each part by itself, with what it talks to played by the test. Takes about 15 seconds. | What a part does: the Supervisor, the runner, the chart, the Egress Proxy, the mock model server. |
 | Harness | `make test-harness` | The harness images in containers, each with the runner that takes the turns of a session, with a mock model server. The tests are in `runner/tests/harness.rs`. Takes under a minute. | A harness and the runner work together: sessions, tools, cancelling, failures, and what the harness asks of the outside. |
-| e2e | `make e2e` | Aviary as the chart installs it, in a kind cluster that the run makes and removes. The tests are in `test/e2e/`. Takes about four minutes. | The parts work together: a turn from the API to a pod and back, the network of the pods, the volume that the nodes share, turns while Supervisors are replaced. |
+| e2e | `make e2e` | Aviary as the chart installs it, in a kind cluster that the run makes and removes. The tests are in `test/e2e/`. Takes about ten minutes, six of them to make the cluster. | The parts work together: a turn from the API to the sandbox of its session and back, a session that is ended, a sandbox that is lost, turns while Supervisors are replaced. |
 
 No test needs a model. The mock model server in `test/mock-llm` answers by a
 script: a message to a session is an instruction to it, such as `say done`
@@ -45,25 +45,24 @@ repository is tested the same way: see [Harness images](../images/README.md).
 ## The e2e
 
 `make e2e` is `make e2e-up`, `make e2e-run` and `make e2e-down`. Its
-cluster has what the local cluster has, PostgreSQL and Valkey, and with them
-two mock model servers and a secret store, OpenBao, for the test of a key
-that is kept in one. `E2E_CLUSTER` names the cluster for each of the three,
-`aviary-e2e` if it is not given, and `make e2e-up` makes the cluster with
-what it is given: with `DATABASE=mysql` it has MySQL in the place of
-PostgreSQL. With `IDENTITY=keycloak` it has an identity provider, Keycloak,
-and Aviary asks it who sends a request: the tests then send their requests
-with tokens of its users, and one more test checks what each of them may do.
-Clusters under different names do not touch each other, so the e2e can run
-in several at once, each made in its own way:
+cluster has what the local cluster has, and with it a mock model server and
+a secret store, OpenBao, which no test uses at present. `E2E_CLUSTER` names
+the cluster for each of the three, `aviary-e2e` if it is not given, and
+`make e2e-up` makes the cluster with what it is given: with `DATABASE=mysql`
+it has MySQL in the place of PostgreSQL. With `IDENTITY=keycloak` it has an
+identity provider, Keycloak, and Aviary asks it who sends a request: the
+tests then send their requests with tokens of its users, and one more test
+checks what each of them may do. Clusters under different names do not touch
+each other, so the e2e can run in several at once, each made in its own way:
 
 ```sh
 make e2e & make e2e E2E_CLUSTER=aviary-e2e-mysql DATABASE=mysql IDENTITY=keycloak & wait
 ```
 
 When a test fails the cluster stays, and the logs of the Supervisors and of
-the Egress Proxies are written to `.out/e2e`, in a directory by the name of
-the cluster. `make e2e-run` then runs the tests in it again, or some of
-them:
+the pods that the sandboxes run in are written to `.out/e2e`, in a directory
+by the name of the cluster. `make e2e-run` then runs the tests in it again,
+or some of them:
 
 ```sh
 make e2e-run TESTS='-run "TestAviary/(the_installation|turns)/a_turn_is_cancelled"'
@@ -77,6 +76,10 @@ one level below `turns`. In a cluster that was made with `IDENTITY`,
 
 What does not depend on the harness runs with the first of `E2E_HARNESSES`,
 and every harness runs one session.
+
+A test ends the sessions that it made, which `session` in
+`test/e2e/e2e_test.go` does for it: the sandbox of a session stays until the
+session is ended, and the pool of the cluster has room for only so many.
 
 ## Writing a test
 

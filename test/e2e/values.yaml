@@ -1,5 +1,5 @@
 # How the e2e installs Aviary: with more than one of each of its parts, and
-# with the model servers of the tests as the only hosts that the Egress Proxy
+# with the model server of the tests as the only host that the Egress Proxy
 # lets requests through to.
 supervisor:
   replicas: 2
@@ -14,19 +14,8 @@ egressProxy:
   replicas: 2
   allowedHosts:
     - mock-llm.aviary-e2e
-    - mock-llm-other.aviary-e2e
-  # The model servers of the tests are in the cluster.
+  # The model server of the tests is in the cluster.
   extraEgress:
     - to:
         - namespaceSelector:
             matchLabels: {kubernetes.io/metadata.name: aviary-e2e}
-runtime:
-  harnesses:
-    # Less than a harness asks for by default, so that the turns of the tests
-    # that run at once fit on a small cluster.
-    opencode:
-      resources:
-        requests: {cpu: 100m, memory: 384Mi}
-    codex:
-      resources:
-        requests: {cpu: 100m, memory: 192Mi}

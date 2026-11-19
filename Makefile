@@ -354,14 +354,20 @@ e2e: e2e-up
 	$(MAKE) e2e-run
 	$(MAKE) e2e-down
 
+# The chart is given what make deploy gives it of the cluster: where the
+# templates are kept, and the harness images as make images put them into the
+# registry. CLUSTER is that of the e2e here, for the names of those images.
+e2e-up: CLUSTER := $(E2E_CLUSTER)
 e2e-up:
 	$(MAKE) cluster-down cluster-up secret-store $(if $(IDENTITY),identity-provider) images secrets CLUSTER=$(E2E_CLUSTER)
 	$(E2E_KUBECTL) apply --filename test/e2e/mock-llm.yaml --filename test/e2e/api.yaml
 	helm --kube-context kind-$(E2E_CLUSTER) upgrade --install aviary deploy/charts/aviary \
 		--namespace aviary-system --values test/e2e/values.yaml \
+		--set sandboxes.templateStore=s3://sandboxes/publish \
+		--set runtime.harnesses.opencode.image=$(call IN_REGISTRY,$(OPENCODE_IMAGE)) \
+		--set runtime.harnesses.codex.image=$(call IN_REGISTRY,$(CODEX_IMAGE)) \
 		$(if $(IDENTITY),--values hack/kind/aviary-keycloak-values.yaml) --wait
 	$(E2E_KUBECTL) --namespace aviary-e2e rollout status deployment/mock-llm --timeout 120s
-	$(E2E_KUBECTL) --namespace aviary-e2e rollout status deployment/mock-llm-other --timeout 120s
 
 # The tests reach the cluster over the network of its nodes, and the API of
 # Aviary at the port of a node that test/e2e/api.yaml opens. In a cluster
@@ -375,11 +381,11 @@ e2e-run:
 		--env AVIARY_E2E_IDENTITY=$(IDENTITY) \
 		--env AVIARY_E2E_HARNESSES="$(E2E_HARNESSES)") test -count=1 -timeout 20m -v ./e2e/... $(TESTS); \
 		status=$$?; [ $$status = 0 ] || { \
-			for part in supervisor egress-proxy; do \
-				$(E2E_KUBECTL) --namespace aviary-system logs --selector app.kubernetes.io/component=$$part \
-					--prefix --tail -1 > $(E2E_OUT)/$$part.log 2>&1; \
-			done; \
-			$(E2E_KUBECTL) get pods,jobs --all-namespaces --output wide > $(E2E_OUT)/pods.txt 2>&1; \
+			$(E2E_KUBECTL) --namespace aviary-system logs --selector app.kubernetes.io/component=supervisor \
+				--prefix --tail -1 > $(E2E_OUT)/supervisor.log 2>&1; \
+			$(E2E_KUBECTL) --namespace opensandbox-dataplane logs --selector fast-sandbox.io/pool=default \
+				--all-containers --prefix --tail -1 > $(E2E_OUT)/sandbox-pool.log 2>&1; \
+			$(E2E_KUBECTL) get pods,sandboxpools,sandboxes --all-namespaces --output wide > $(E2E_OUT)/pods.txt 2>&1; \
 			$(E2E_KUBECTL) get events --all-namespaces --sort-by .lastTimestamp > $(E2E_OUT)/events.txt 2>&1; \
 			echo "The e2e failed. The cluster $(E2E_CLUSTER) is left as it is, and what it tells is in $(E2E_OUT)."; \
 		}; exit $$status
