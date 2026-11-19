@@ -16,6 +16,9 @@
 //!   sleep <ms>         does nothing for so long
 //!   deaf               does not stop from here on when it is told to
 //!   fail <text>        answers the message with an error
+//!   env <name>         says what the variable of its environment holds
+//!   die                ends, without an answer to the message
+//!   leave              ends once it has answered the message
 //!
 //! Several of them are separated by " ; ".
 //!
@@ -56,8 +59,9 @@ fn main() {
         cancels: 0,
         deaf: false,
         calls: 0,
+        leaving: false,
     };
-    // The runner closes the input when the turn is over.
+    // The runner closes the input when it has no more use for the harness.
     while let Ok(message) = harness.incoming.recv() {
         harness.handle(message);
     }
@@ -70,6 +74,8 @@ struct Harness {
     deaf: bool,
     /// How many tools it has called.
     calls: u32,
+    /// Whether it ends once it has answered the message.
+    leaving: bool,
 }
 
 /// How a turn ended: with a stop reason, or with an error.
@@ -155,6 +161,9 @@ impl Harness {
                     ),
                     Ending::Failed(message) => refuse(id, &message),
                 }
+                if self.leaving {
+                    process::exit(0);
+                }
             }
             Some("session/cancel") => self.cancels += 1,
             Some(_) if !id.is_null() => send(json!({
@@ -206,6 +215,8 @@ impl Harness {
         let before = fs::read_to_string(session_file(session)).unwrap_or_default();
         let _ = fs::write(session_file(session), format!("{before}{text}\n"));
         self.deaf = false;
+        // What it was told to stop was the turn before this one.
+        self.cancels = 0;
         for instruction in text.split(" ; ") {
             let (word, rest) = instruction
                 .trim()
@@ -341,6 +352,9 @@ impl Harness {
                 }
                 "deaf" => self.deaf = true,
                 "fail" => return Ending::Failed(rest.to_owned()),
+                "env" => self.say(session, &env::var(rest).unwrap_or_else(|_| "not set".to_owned())),
+                "die" => process::exit(1),
+                "leave" => self.leaving = true,
                 _ => self.say(session, "fake"),
             }
             if self.stopping() {

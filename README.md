@@ -569,7 +569,7 @@ event log or a secret store that it has no plugin for, see
 ```sh
 make lint          # the formatters, the linters and the generated code
 make test          # each part by itself, without a cluster
-make test-harness  # the harness images, in containers set up as the pods of turns
+make test-harness  # the harness images, in containers with the runner of a session
 make e2e           # the parts together, in a kind cluster of its own
 ```
 

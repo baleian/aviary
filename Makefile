@@ -26,7 +26,6 @@ HARNESS_BASE_IMAGE := aviary-harness-base:dev
 OPENCODE_IMAGE := aviary-harness-opencode:dev
 CODEX_IMAGE := aviary-harness-codex:dev
 MOCK_LLM_IMAGE := aviary-mock-llm:dev
-FAKE_SUPERVISOR_IMAGE := aviary-fake-supervisor:dev
 # The harness images that make test-harness tests. Another one is tested with
 # make test-harness HARNESS_IMAGES=<image>
 HARNESS_IMAGES ?= $(OPENCODE_IMAGE) $(CODEX_IMAGE)
@@ -292,7 +291,6 @@ build:
 	docker build --tag $(OPENCODE_IMAGE) images/harness-opencode
 	docker build --tag $(CODEX_IMAGE) images/harness-codex
 	docker build --file images/mock-llm/Dockerfile --tag $(MOCK_LLM_IMAGE) .
-	docker build --file images/fake-supervisor/Dockerfile --tag $(FAKE_SUPERVISOR_IMAGE) .
 
 # The images of the harnesses go into the registry of the cluster too, from a
 # node: it has them from kind. A node does not know the names of the cluster,

@@ -3,7 +3,6 @@ ENV RUSTUP_AUTO_INSTALL=0
 WORKDIR /src
 COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
 COPY runner runner
-COPY proto proto
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked --package aviary-runner && \

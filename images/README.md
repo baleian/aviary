@@ -61,8 +61,9 @@ allows the action once, by itself.
    `AVIARY_LLM_API_KEY` and `AVIARY_LLM_MODEL`, and sends the key as a bearer
    token (`Authorization: Bearer ...`). The Egress Proxy looks for the key
    there.
-5. **It supports `session/resume`.** A later turn of a session continues the
-   harness session that the first turn started, in a new process.
+5. **It supports `session/resume`.** The harness is started for the first
+   turn of a session and stays for the turns after it. One that has ended is
+   started again for the next turn, and continues the harness session there.
 6. **The file that the harness reads its instructions from**, in the
    environment variable `AVIARY_INSTRUCTIONS_FILE`. Before it starts the
    harness, the runner writes there what the agent is to be told in every
@@ -79,7 +80,8 @@ allows the action once, by itself.
    asked.
 
 Environment variables that begin with `AVIARY_` are reserved for Aviary. The
-harness also sees the ones that the runner uses, such as `AVIARY_GATEWAY_URL`.
+harness also sees the ones that the runner uses, such as
+`AVIARY_MAX_TOOL_OUTPUT_BYTES`.
 
 A harness may report the token usage of a turn in its answer to
 `session/prompt`, as `usage`. Aviary records it with the turn as the harness
@@ -87,14 +89,21 @@ gives it. ACP marks this field as unstable.
 
 ## What to look out for
 
-A harness is usually written to be started once and to stay up. Aviary starts
-it again for every turn, with a home that was empty when the session began.
-The images here ran into these cases:
+A harness is usually written for one person at one machine, who starts it and
+is there to see what it does. Aviary starts it for the first turn of a
+session, with a home that was empty when the session began, and nobody is
+there. The images here ran into these cases:
 
 - **Work that the harness repeats for every new home.** Codex downloaded its
   plugin catalog, about 90 MB, into each new session home. The image turns
   the feature off. OpenCode fetches a list of models at startup, which the
   image also turns off.
+- **What the harness does on its own while it stays.** The ACP adapter of
+  Codex has a model of its own choosing make a title for a new session, when
+  the first turn has ended. It asks the provider that the configuration
+  names for whoever names none, which for a configuration without one is
+  OpenAI. The image names a provider there that reaches nobody, and names
+  the provider of the agent's model for each session.
 - **Configuration that the harness writes next to its state.** OpenCode
   installs packages into its configuration directory, so the image keeps the
   configuration in the image, at `/etc/xdg`, and not in the session home.
@@ -120,10 +129,10 @@ The images here ran into these cases:
   Codex with `cancelled`. Aviary records the turn as the harness ends it.
 - **How long "always" lasts.** An option of the kind `allow_always` holds for
   as long as the harness remembers it. OpenCode forgets it with its process,
-  which is at the end of the turn. Codex writes a rule into its directory in
-  the session home, which the later turns of the session read.
-- **Time to start.** The harness starts on every turn, so its startup time
-  is part of every answer.
+  so when the harness is started again. Codex writes a rule into its
+  directory in the session home, which it reads when it is started again.
+- **Time to start.** The harness starts with the first turn of a session, so
+  its startup time is part of the first answer.
 
 ## The images in this repository
 
@@ -143,8 +152,8 @@ The images here ran into these cases:
    make test-harness HARNESS_IMAGES=registry.example.com/aviary-harness-myharness:1.0
    ```
 
-   The tests run turns of sessions in containers of the image, set up as
-   the pods of turns are, and need no cluster. They use a mock model server
+   The tests run sessions in containers of the image, each with the runner
+   in it and the tests sending it the turns, and need no cluster. They use a mock model server
    that speaks the Chat Completions API and the Responses API, and they have
    the agent run shell commands, so they need the harness to offer the model
    a tool with a `command` or a `cmd` parameter. A harness that fetches

@@ -6,35 +6,20 @@ publish = false
 
 [dependencies]
 agent-client-protocol = { version = "5.2.0", features = ["process", "unstable_end_turn_token_usage"] }
-fastrand = "2.5.0"
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
 futures = { version = "0.3.34", default-features = false, features = ["async-await", "std"] }
-prost = "0.14.6"
-prost-types = "0.14.6"
-serde = "1.0.229"
+serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "signal", "time"] }
-tonic = { version = "0.14.9", default-features = false, features = ["channel", "codegen"] }
-tonic-prost = "0.14.9"
-uuid = { version = "1.29.2", features = ["v4"] }
+tokio = { version = "1.54.1", features = ["macros", "net", "process", "rt-multi-thread", "sync"] }
+tokio-util = { version = "0.7.20", features = ["compat"] }
 
 [dev-dependencies]
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "stream"] }
 tempfile = "3.27.0"
-tokio = { version = "1.54.1", features = ["io-util", "net", "process"] }
-tokio-stream = { version = "0.1.19", features = ["net"] }
-tonic = { version = "0.14.9", default-features = false, features = ["router", "server"] }
-
-[build-dependencies]
-protox = "0.10.0"
-tonic-prost-build = "0.14.9"
+tokio = { version = "1.54.1", features = ["io-util", "time"] }
 
 # The harness that the tests run the runner with. cargo builds the examples
 # of a package before it runs the tests.
 [[example]]
 name = "fake-harness"
 path = "tests/support/fake_harness.rs"
-
-# The Supervisor of the tests as a program, for the tests that run the runner
-# in a container.
-[[example]]
-name = "fake-supervisor"
-path = "tests/support/fake_supervisor.rs"
