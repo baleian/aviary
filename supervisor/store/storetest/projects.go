@@ -567,6 +567,91 @@ func (suite suite) testKeyInASecretStore(t *testing.T) {
 	}
 }
 
+// The turn that runs in a sandbox is found by the sandbox, with where it
+// comes from: what it belongs to, who sent its message, and the provider of
+// its agent as the provider is then, with the secret store of its key.
+func (suite suite) testTurnOfASandbox(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	project, err := st.CreateProject(ctx, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := st.CreateProvider(ctx, store.Provider{
+		ID: uuid.New(), ProjectID: project.ID, Name: "a provider", URL: "https://api.example.com/v1", APIKey: []byte("a sealed key"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: &store.Model{Provider: provider.ID, Name: "a-model"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender, err := st.UserOf(ctx, "subject-of-ann", "ann", "Ann")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := st.CreateSession(ctx, agent.ID, sender.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notFound := func(sandbox, what string) {
+		t.Helper()
+		if _, err := st.another().SandboxTurn(ctx, sandbox); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("%s: %v", what, err)
+		}
+	}
+
+	turn, _, err := st.CreateTurn(ctx, session.ID, sender.ID, "hello", 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept, err := st.SetSandbox(ctx, session.ID, "", "sandbox-1"); err != nil || !kept {
+		t.Fatalf("the session was not given its sandbox: %v", err)
+	}
+	notFound("sandbox-1", "the sandbox of a session whose turn waits to run")
+	st.dispatch()
+	if _, err := st.FollowTurn(ctx, turn.ID); err != nil {
+		t.Fatal(err)
+	}
+	origin, err := st.another().SandboxTurn(ctx, "sandbox-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if origin.TurnID != turn.ID || origin.SessionID != session.ID || origin.AgentID != agent.ID || origin.ProjectID != project.ID ||
+		origin.UserID != sender.ID || origin.Subject != "subject-of-ann" || origin.Provider == nil || origin.Provider.ID != provider.ID ||
+		origin.Provider.URL != provider.URL || string(origin.Provider.APIKey) != "a sealed key" || origin.Provider.APIKeyAt != nil || origin.SecretStore != nil {
+		t.Errorf("the turn of the sandbox comes from %+v, with the provider %+v", origin, origin.Provider)
+	}
+	notFound("sandbox-2", "a sandbox that no session has")
+	notFound("", "no sandbox")
+
+	// The key of the provider is put in a secret store while the turn runs.
+	secrets, err := st.CreateSecretStore(ctx, store.SecretStore{
+		ID: uuid.New(), ProjectID: project.ID, Name: "a store", Kind: "a kind", Settings: json.RawMessage(`{"where": "there"}`), Credential: []byte("sealed"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := &store.SecretReference{Store: secrets.ID, Path: "llm/a-provider", Key: "api_key"}
+	if _, err := st.ReplaceProvider(ctx, store.Provider{ID: provider.ID, Name: "a provider", URL: "https://api.example.com/v2", APIKeyAt: at}); err != nil {
+		t.Fatal(err)
+	}
+	origin, err = st.another().SandboxTurn(ctx, "sandbox-1")
+	if err != nil || origin.Provider == nil || origin.Provider.URL != "https://api.example.com/v2" || origin.Provider.APIKey != nil ||
+		!reflect.DeepEqual(origin.Provider.APIKeyAt, at) {
+		t.Errorf("after its provider was replaced, the turn of the sandbox has the provider %+v: %v", origin.Provider, err)
+	}
+	if in := origin.SecretStore; in == nil || in.ID != secrets.ID || in.ProjectID != project.ID || in.Kind != "a kind" ||
+		!keeps(t, in.Settings, `{"where": "there"}`) || string(in.Credential) != "sealed" || !in.UpdatedAt.Equal(secrets.UpdatedAt) {
+		t.Errorf("the key of the provider is in the secret store %+v", in)
+	}
+
+	// Once the turn has ended, nothing runs in the sandbox.
+	st.end(turn.ID, true, store.Failure{})
+	notFound("sandbox-1", "the sandbox of a session whose turn has ended")
+}
+
 // second returns the error of an operation.
 func second[T any](_ T, err error) error {
 	return err

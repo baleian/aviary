@@ -1072,6 +1072,27 @@ func (s *Store) RunningTurn(ctx context.Context, token string) (store.Origin, er
 	if !found || turn.State != store.TurnRunning {
 		return store.Origin{}, store.ErrNotFound
 	}
+	return s.originOf(turn), nil
+}
+
+func (s *Store) SandboxTurn(ctx context.Context, sandbox string) (store.Origin, error) {
+	if err := s.begin(ctx); err != nil {
+		return store.Origin{}, err
+	}
+	defer s.mu.Unlock()
+	if sandbox == "" {
+		return store.Origin{}, store.ErrNotFound
+	}
+	for _, turn := range s.dispatched {
+		if turn.State == store.TurnRunning && s.sessions[turn.SessionID].Sandbox == sandbox {
+			return s.originOf(turn), nil
+		}
+	}
+	return store.Origin{}, store.ErrNotFound
+}
+
+// originOf is where the running turn comes from. The store is held.
+func (s *Store) originOf(turn *turn) store.Origin {
 	agent := s.agents[s.sessions[turn.SessionID].AgentID]
 	origin := store.Origin{TurnID: turn.ID, SessionID: turn.SessionID, AgentID: agent.ID, ProjectID: agent.ProjectID, UserID: turn.CreatedBy}
 	for _, user := range s.users {
@@ -1091,7 +1112,7 @@ func (s *Store) RunningTurn(ctx context.Context, token string) (store.Origin, er
 			origin.SecretStore = &secrets
 		}
 	}
-	return origin, nil
+	return origin
 }
 
 func (s *Store) StartTurn(ctx context.Context, turnID uuid.UUID, harnessSessionID string) (time.Duration, bool, error) {

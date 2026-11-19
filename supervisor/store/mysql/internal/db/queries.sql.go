@@ -1800,6 +1800,73 @@ func (q *Queries) RunningTurn(ctx context.Context, tokenHash []byte) (RunningTur
 	return i, err
 }
 
+const sandboxTurn = `-- name: SandboxTurn :one
+select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
+       coalesce(users.subject, '') as subject,
+       agents.provider_id, coalesce(providers.url, '') as provider_url, providers.api_key as provider_api_key,
+       providers.api_key_store_id, coalesce(providers.api_key_path, '') as api_key_path,
+       coalesce(providers.api_key_name, '') as api_key_name,
+       coalesce(secret_stores.name, '') as store_name, coalesce(secret_stores.kind, '') as store_kind,
+       secret_stores.settings as store_settings, secret_stores.credential as store_credential,
+       secret_stores.created_at as store_created_at, secret_stores.updated_at as store_updated_at
+from turns
+join sessions on sessions.id = turns.session_id
+join agents on agents.id = sessions.agent_id
+left join users on users.id = turns.created_by
+left join providers on providers.id = agents.provider_id
+left join secret_stores on secret_stores.id = providers.api_key_store_id
+where sessions.sandbox = ? and turns.state = 'running'
+`
+
+type SandboxTurnRow struct {
+	TurnID          key.ID
+	SessionID       key.ID
+	AgentID         key.ID
+	ProjectID       key.ID
+	CreatedBy       *key.ID
+	Subject         string
+	ProviderID      *key.ID
+	ProviderUrl     string
+	ProviderApiKey  []byte
+	ApiKeyStoreID   *key.ID
+	ApiKeyPath      string
+	ApiKeyName      string
+	StoreName       string
+	StoreKind       string
+	StoreSettings   *json.RawMessage
+	StoreCredential []byte
+	StoreCreatedAt  *time.Time
+	StoreUpdatedAt  *time.Time
+}
+
+// The running turn of the session whose sandbox it is, with what RunningTurn
+// tells of a turn.
+func (q *Queries) SandboxTurn(ctx context.Context, sandbox *string) (SandboxTurnRow, error) {
+	row := q.db.QueryRowContext(ctx, sandboxTurn, sandbox)
+	var i SandboxTurnRow
+	err := row.Scan(
+		&i.TurnID,
+		&i.SessionID,
+		&i.AgentID,
+		&i.ProjectID,
+		&i.CreatedBy,
+		&i.Subject,
+		&i.ProviderID,
+		&i.ProviderUrl,
+		&i.ProviderApiKey,
+		&i.ApiKeyStoreID,
+		&i.ApiKeyPath,
+		&i.ApiKeyName,
+		&i.StoreName,
+		&i.StoreKind,
+		&i.StoreSettings,
+		&i.StoreCredential,
+		&i.StoreCreatedAt,
+		&i.StoreUpdatedAt,
+	)
+	return i, err
+}
+
 const sessionOfTurn = `-- name: SessionOfTurn :one
 select sessions.harness_session_id, agents.harness, agents.instructions
 from sessions

@@ -257,6 +257,25 @@ left join providers on providers.id = agents.provider_id
 left join secret_stores on secret_stores.id = providers.api_key_store_id
 where turns.token_hash = @token_hash and turns.state = 'running';
 
+-- name: SandboxTurn :one
+-- The running turn of the session whose sandbox it is, with what RunningTurn
+-- tells of a turn.
+select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
+       coalesce(users.subject, '')::text as subject,
+       agents.provider_id, coalesce(providers.url, '')::text as provider_url, providers.api_key as provider_api_key,
+       providers.api_key_store_id, coalesce(providers.api_key_path, '')::text as api_key_path,
+       coalesce(providers.api_key_name, '')::text as api_key_name,
+       coalesce(secret_stores.name, '')::text as store_name, coalesce(secret_stores.kind, '')::text as store_kind,
+       secret_stores.settings as store_settings, secret_stores.credential as store_credential,
+       secret_stores.created_at as store_created_at, secret_stores.updated_at as store_updated_at
+from turns
+join sessions on sessions.id = turns.session_id
+join agents on agents.id = sessions.agent_id
+left join users on users.id = turns.created_by
+left join providers on providers.id = agents.provider_id
+left join secret_stores on secret_stores.id = providers.api_key_store_id
+where sessions.sandbox = @sandbox and turns.state = 'running';
+
 -- name: SetFinished :exec
 update turns set stop_reason = @stop_reason::text, total_tokens = @total_tokens, input_tokens = @input_tokens,
        output_tokens = @output_tokens, thought_tokens = @thought_tokens,

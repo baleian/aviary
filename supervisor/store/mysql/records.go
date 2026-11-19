@@ -961,6 +961,22 @@ func (s *records) RunningTurn(ctx context.Context, token string) (store.Origin, 
 	if err != nil {
 		return store.Origin{}, found(err)
 	}
+	return originOf(row), nil
+}
+
+func (s *records) SandboxTurn(ctx context.Context, sandbox string) (store.Origin, error) {
+	if sandbox == "" {
+		return store.Origin{}, store.ErrNotFound
+	}
+	row, err := s.queries.SandboxTurn(ctx, &sandbox)
+	if err != nil {
+		return store.Origin{}, found(err)
+	}
+	return originOf(db.RunningTurnRow(row)), nil
+}
+
+// originOf is where a running turn comes from, as a row tells it.
+func originOf(row db.RunningTurnRow) store.Origin {
 	origin := store.Origin{
 		TurnID: uuid.UUID(row.TurnID), SessionID: uuid.UUID(row.SessionID), AgentID: uuid.UUID(row.AgentID), ProjectID: uuid.UUID(row.ProjectID),
 		Subject: row.Subject,
@@ -983,7 +999,7 @@ func (s *records) RunningTurn(ctx context.Context, token string) (store.Origin, 
 			CreatedAt: *row.StoreCreatedAt, UpdatedAt: *row.StoreUpdatedAt,
 		}
 	}
-	return origin, nil
+	return origin
 }
 
 func (s *records) StartTurn(ctx context.Context, turnID uuid.UUID, harnessSessionID string) (time.Duration, bool, error) {

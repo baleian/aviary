@@ -218,6 +218,25 @@ left join providers on providers.id = agents.provider_id
 left join secret_stores on secret_stores.id = providers.api_key_store_id
 where turns.token_hash = ? and turns.state = 'running';
 
+-- name: SandboxTurn :one
+-- The running turn of the session whose sandbox it is, with what RunningTurn
+-- tells of a turn.
+select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
+       coalesce(users.subject, '') as subject,
+       agents.provider_id, coalesce(providers.url, '') as provider_url, providers.api_key as provider_api_key,
+       providers.api_key_store_id, coalesce(providers.api_key_path, '') as api_key_path,
+       coalesce(providers.api_key_name, '') as api_key_name,
+       coalesce(secret_stores.name, '') as store_name, coalesce(secret_stores.kind, '') as store_kind,
+       secret_stores.settings as store_settings, secret_stores.credential as store_credential,
+       secret_stores.created_at as store_created_at, secret_stores.updated_at as store_updated_at
+from turns
+join sessions on sessions.id = turns.session_id
+join agents on agents.id = sessions.agent_id
+left join users on users.id = turns.created_by
+left join providers on providers.id = agents.provider_id
+left join secret_stores on secret_stores.id = providers.api_key_store_id
+where sessions.sandbox = ? and turns.state = 'running';
+
 -- name: StartTurn :exec
 update turns set started_at = now(6) where id = ?;
 

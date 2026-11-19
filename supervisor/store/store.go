@@ -654,6 +654,11 @@ type Store interface {
 	// token.
 	RunningTurn(ctx context.Context, token string) (Origin, error)
 
+	// SandboxTurn returns the turn that runs in the sandbox, and what the turn
+	// belongs to, as RunningTurn does: the turn that runs of the session whose
+	// sandbox it is. It returns ErrNotFound if no turn runs in the sandbox.
+	SandboxTurn(ctx context.Context, sandbox string) (Origin, error)
+
 	// StartTurn records that the harness of the turn has been given the message,
 	// and the harness session that the turn runs in, for the next turn of the
 	// session to continue. It returns how long the turn took to start, from its
