@@ -478,6 +478,13 @@ func (d *Driver) read(ctx, following context.Context, r *run, runner *sandbox.Ru
 		wait := d.again()
 		if asleep = gone == nil && (seen.Status.State == sandbox.Paused || seen.Status.State == "Pausing"); asleep {
 			wait = d.config.Sweep
+			// A sandbox sleeps when its runner says that the session is not
+			// at work. Of a turn that waits for no person, the runner has
+			// then told more than was read: the end of the turn, or that
+			// its harness asks. The sandbox is woken for it to be read.
+			if !r.waiting() && d.rouse(following, r) {
+				asleep, wait = false, 0
+			}
 		}
 		select {
 		case <-time.After(wait):
@@ -732,6 +739,13 @@ func (r *run) stop() *sandbox.Runner {
 	}
 	poke(r.asked)
 	return r.runner
+}
+
+// waiting reports whether the turn waits for a person.
+func (r *run) waiting() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.asking > 0
 }
 
 func (r *run) stopped() bool {

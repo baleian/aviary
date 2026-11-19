@@ -727,6 +727,30 @@ func TestASandboxThatItsSessionDoesNotHaveIsDeleted(t *testing.T) {
 	}
 }
 
+func TestATurnThatEndedWhileNobodyReadItIsReadFromItsSleepingSandbox(t *testing.T) {
+	i := install(t)
+	driver, _ := i.supervisor()
+	turn := i.send(driver, i.session(store.Agent{}), "hello")
+	given := i.service.Turn(t)
+	given.Tell("started", started)
+	i.eventually("the turn has started", func() bool { return i.turn(turn.ID).StartedAt != nil })
+
+	// The reading is cut off, the runner ends the turn, and the sandbox is
+	// put to sleep before anyone reads that: the session is not at work.
+	i.service.Sleep(given.Sandbox)
+	given.Tell("message.delta", map[string]string{"text": "done"})
+	given.Tell("finished", finished)
+	if ended := i.ended(turn.ID); ended.State != store.TurnCompleted {
+		t.Errorf("the turn ended as %+v", ended)
+	}
+	if woken := i.service.Woken(given.Sandbox); woken != 1 {
+		t.Errorf("the sandbox was woken %d times", woken)
+	}
+	if told := i.told(turn.ID); !slices.Equal(told, []string{events.TurnStarted, "message.delta", events.TurnCompleted}) {
+		t.Errorf("the clients of the turn read %v", told)
+	}
+}
+
 func TestATurnWaitsToRunWhileThereIsNoRoomForItsSandbox(t *testing.T) {
 	i := install(t, func(config *Config) { config.MaxQueueWait = time.Hour })
 	driver, _ := i.supervisor()
