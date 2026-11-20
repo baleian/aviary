@@ -20,7 +20,6 @@ import (
 type run struct {
 	turn       store.FollowedTurn
 	told       *orders
-	leave      context.CancelFunc
 	dispatched time.Time
 	// changed is signaled when the deadline moves, and asked when the turn
 	// is cancelled.
@@ -84,7 +83,6 @@ func (d *Driver) run(ctx context.Context, turnID uuid.UUID, told *orders) {
 	// ctx, so that it still happens then.
 	following, leave := context.WithCancel(ctx)
 	defer leave()
-	r.leave = leave
 	go d.watch(following, leave, r)
 
 	if runner := d.reach(ctx, following, r, given); runner != nil {

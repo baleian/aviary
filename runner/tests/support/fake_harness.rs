@@ -184,18 +184,14 @@ impl Harness {
         );
     }
 
-    /// Handles incoming messages for `duration`. Returns early with the
-    /// response to request `answer_to`, if it arrives.
-    fn wait(&mut self, duration: Duration, answer_to: Option<&str>) -> Option<Value> {
+    /// Handles incoming messages for `duration`.
+    fn wait(&mut self, duration: Duration) {
         let until = Instant::now() + duration;
         loop {
             let left = until.saturating_duration_since(Instant::now());
             match self.incoming.recv_timeout(left) {
-                Ok(message) if answer_to.is_some() && message["id"].as_str() == answer_to => {
-                    return Some(message);
-                }
                 Ok(message) => self.handle(message),
-                Err(RecvTimeoutError::Timeout) => return None,
+                Err(RecvTimeoutError::Timeout) => return,
                 Err(RecvTimeoutError::Disconnected) => process::exit(0),
             }
         }
@@ -203,7 +199,7 @@ impl Harness {
 
     /// Handles pending messages and reports whether the turn should stop.
     fn stopping(&mut self) -> bool {
-        self.wait(Duration::ZERO, None);
+        self.wait(Duration::ZERO);
         self.cancels > 0 && !self.deaf
     }
 
@@ -227,7 +223,7 @@ impl Harness {
                 "drawl" => {
                     for piece in rest.split_inclusive(' ') {
                         self.say(session, piece);
-                        self.wait(Duration::from_millis(100), None);
+                        self.wait(Duration::from_millis(100));
                         if self.stopping() {
                             break;
                         }
@@ -343,7 +339,7 @@ impl Harness {
                 "sleep" => {
                     let until = Instant::now() + Duration::from_millis(rest.parse().unwrap_or(0));
                     while Instant::now() < until && !self.stopping() {
-                        self.wait(Duration::from_millis(20), None);
+                        self.wait(Duration::from_millis(20));
                     }
                 }
                 "deaf" => self.deaf = true,
@@ -355,7 +351,7 @@ impl Harness {
             }
             if self.stopping() {
                 // Stops slowly, counting any further cancellations.
-                self.wait(pause("FAKE_HARNESS_STOP_MS"), None);
+                self.wait(pause("FAKE_HARNESS_STOP_MS"));
                 self.say(session, &format!("[told to stop {} times]", self.cancels));
                 return Ending::Stopped("cancelled");
             }

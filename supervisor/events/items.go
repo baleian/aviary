@@ -30,8 +30,6 @@ const (
 	itemApproval = "approval"
 )
 
-const itemsBatch = 1000
-
 // Items assembles the items of the turn from its events, in the order in
 // which each item began. An item is a JSON object with a type:
 //
