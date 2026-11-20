@@ -297,4 +297,29 @@ func TestReadFromAStore(t *testing.T) {
 	if read, err := stores.Read(ctx, registered, secretID, own+"/model", "api_key"); err != nil || read != "sk-the-first" {
 		t.Errorf("cached Read = %q, %v", read, err)
 	}
+	// Once its own session is revoked too, Stores logs in again to read a
+	// value that it has not cached.
+	revokeTokens(t, own)
+	put(own+"/model two", map[string]any{"api_key": "sk-after-the-revocation"})
+	if read, err := stores.Read(ctx, registered, secretID, own+"/model two", "api_key"); err != nil || read != "sk-after-the-revocation" {
+		t.Errorf("Read after the session was revoked = %q, %v; want sk-after-the-revocation", read, err)
+	}
+}
+
+// revokeTokens revokes every token issued to the AppRole role. A token that
+// another test revokes meanwhile is skipped.
+func revokeTokens(t *testing.T, role string) {
+	t.Helper()
+	accessors, _ := owner(t, "LIST", "/v1/auth/token/accessors", nil)["keys"].([]any)
+	revoked := 0
+	for _, accessor := range accessors {
+		token := owner(t, "POST", "/v1/auth/token/lookup-accessor", map[string]any{"accessor": accessor}, http.StatusBadRequest)
+		if meta, _ := token["meta"].(map[string]any); meta["role_name"] == role {
+			owner(t, "POST", "/v1/auth/token/revoke-accessor", map[string]any{"accessor": accessor}, http.StatusBadRequest)
+			revoked++
+		}
+	}
+	if revoked == 0 {
+		t.Fatalf("no token of the role %s to revoke", role)
+	}
 }
