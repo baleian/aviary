@@ -54,7 +54,8 @@ identity provider, Keycloak, and Aviary asks it who sends a request: the
 tests then send their requests with tokens of its users, and one more test
 checks what each of them may do. Clusters under different names do not touch
 each other, so the e2e can run in several at once, each made in its own way.
-Two of them at once take about 11 GiB of memory at the most.
+Each has a kubeconfig of its own, and none of them writes to that of the
+user. Two of them at once take about 11 GiB of memory at the most.
 
 ```sh
 make e2e & make e2e E2E_CLUSTER=aviary-e2e-mysql DATABASE=mysql IDENTITY=keycloak & wait
@@ -63,8 +64,14 @@ make e2e & make e2e E2E_CLUSTER=aviary-e2e-mysql DATABASE=mysql IDENTITY=keycloa
 When a test fails the cluster stays, and the logs of the Supervisors, of the
 Egress Proxies and of agent-sandbox, the pods, the sandboxes and the volumes,
 and the events of the cluster are written to `.out/e2e`, in a directory by
-the name of the cluster. `make e2e-run` then runs the tests in it again,
-or some of them:
+the name of the cluster. The kubeconfig of the cluster is there too, until
+`make e2e-down` removes the cluster:
+
+```sh
+KUBECONFIG=.out/e2e/aviary-e2e/host.kubeconfig kubectl get pods --all-namespaces
+```
+
+`make e2e-run` runs the tests in the cluster again, or some of them:
 
 ```sh
 make e2e-run TESTS='-run "TestAviary/(the_installation|turns)/a_turn_is_cancelled"'

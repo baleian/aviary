@@ -34,6 +34,10 @@ endif
 # each made with what it is to have.
 E2E_CLUSTER ?= aviary-e2e
 E2E_OUT := .out/e2e/$(E2E_CLUSTER)
+# The kubeconfig of the cluster, which kind writes and only the e2e reads.
+# kind locks the kubeconfig that it writes, and runs of the e2e at once that
+# shared one could find it locked. It goes with the cluster.
+E2E_KUBECONFIG := $(CURDIR)/$(E2E_OUT)/host.kubeconfig
 E2E_KUBECTL := kubectl --context kind-$(E2E_CLUSTER)
 E2E_HARNESSES ?= opencode codex
 # The identity provider that make e2e-up gives the cluster of the e2e and has
@@ -265,12 +269,15 @@ deploy: secrets
 # Runs the e2e in a cluster of its own, which it makes anew, so that nothing
 # of an earlier run or of the cluster that make cluster-up makes plays a part.
 # The cluster is removed when the tests have passed. After a failure it
-# stays, and what its pods logged is in .out/e2e: make e2e-run runs the tests
-# in it again, and make e2e-down removes it. E2E_CLUSTER names the cluster
-# for each of them, and make e2e-up makes it with what it is given, for
-# example with MySQL in the place of PostgreSQL, and with an identity
-# provider that Aviary asks who sends a request:
+# stays, and what its pods logged is in .out/e2e, with its kubeconfig:
+# KUBECONFIG=.out/e2e/aviary-e2e/host.kubeconfig kubectl get pods --all-namespaces
+# make e2e-run runs the tests in it again, and make e2e-down removes it.
+# E2E_CLUSTER names the cluster for each of them, and make e2e-up makes it
+# with what it is given, for example with MySQL in the place of PostgreSQL,
+# and with an identity provider that Aviary asks who sends a request:
 # make e2e E2E_CLUSTER=aviary-e2e-mysql DATABASE=mysql IDENTITY=keycloak
+e2e e2e-up e2e-run e2e-down: export KUBECONFIG := $(E2E_KUBECONFIG)
+
 e2e: e2e-up
 	$(MAKE) e2e-run
 	$(MAKE) e2e-down
@@ -309,3 +316,4 @@ e2e-run:
 
 e2e-down:
 	$(MAKE) cluster-down CLUSTER=$(E2E_CLUSTER)
+	rm -f $(E2E_KUBECONFIG) $(E2E_OUT)/kubeconfig
