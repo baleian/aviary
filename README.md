@@ -2,10 +2,11 @@
 
 Aviary runs AI agent harnesses, such as OpenCode and Codex, on Kubernetes.
 Every message that a user sends is a turn, and every session runs its turns
-in a sandbox of its own, which keeps the harness and the files of the
-session from one turn to the next. A session that is not at work is put to
-sleep, sandbox and all, and goes on from where it was when it is woken. The
-sandboxes are those of [OpenSandbox](https://github.com/alibaba/OpenSandbox).
+in a sandbox of its own: a pod of its harness, with a volume that keeps the
+conversation and the files of the session from one turn to the next. A
+session that is not at work is put to sleep: its pod goes, its volume stays,
+and its next turn goes on from there in a new pod. The sandboxes are those
+of [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox).
 
 Aviary is meant as a reference for organizations that want to run agents for
 many users on their own cluster: an agent reaches only the hosts that the
@@ -17,11 +18,10 @@ turns that run at once is a setting.
 > **Status.** Aviary is at an early stage. A message sent to the API runs as
 > a turn in the sandbox of its session, sessions continue across turns,
 > turns beyond a limit wait their turn, and what was said can be read back.
-> A sandbox reaches only the hosts that are allowed, and its requests are
-> recorded. Every agent names its model, at an endpoint that its project
-> registers with a key that no sandbox holds. An agent can be made to ask a
-> person before it acts, and its session sleeps while it waits. Supervisors
-> can be replaced while turns run.
+> A sandbox reaches the outside only through a proxy that keeps a record.
+> Every agent names its model, at an endpoint that its project registers
+> with a key that no sandbox holds. An agent can be made to ask a person
+> before it acts. Supervisors can be replaced while turns run.
 > With an identity provider, it knows its callers and holds each to what
 > they may do in a project. It has only run on a local cluster. See
 > [What is missing](#what-is-missing).
@@ -29,18 +29,20 @@ turns that run at once is a setting.
 ## How it works
 
 ```
-            messages, events                  makes, wakes and deletes
-  client ───────────────────▶ Supervisor ─────────────────────────▶ OpenSandbox
+            messages, events              makes, wakes, puts to sleep, deletes
+  client ───────────────────▶ Supervisor ─────────────────────────▶ agent-sandbox
                                │  ▲   ▲                                  │
                     database   │  │   │ HTTP: the turn down,             ▼
                     event log  │  │   └─ what the agent does up ──── sandbox of the session
                                   │                                ┌─────────────────┐
                                   │                                │ runner          │
                                   │                                │   │ ACP         │
-                                  │                                │ harness, /home  │
+                                  │                                │ harness         │
+                                  │                                │   /home: volume │
                                   │                                └────────┬────────┘
-                                  │ asks about each request:                │ what it sends out
-                                  └─ record it, give the model's key ─── egress ──▶ allowed hosts
+                                  │ asks about each request:                │ all it sends out
+                                  └─ its turn, the model's key ────── Egress Proxy ──▶ model endpoint,
+                                                                                       allowed hosts
 ```
 
 1. A client creates a project, in it a model provider and an agent that
@@ -50,68 +52,69 @@ turns that run at once is a setting.
    running than the limit allows, a Supervisor takes the turn and follows it
    until it has ended. Otherwise the turn waits, and turns run in the order
    in which they were sent.
-3. The Supervisor has OpenSandbox make the **sandbox** of the session from
-   the template of the agent's harness, or wake it if it sleeps, and gives
-   the turn to the **runner** in it. The runner starts the **harness** for
-   the first turn and talks to it with the
+3. The Supervisor has [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)
+   make the **sandbox** of the session, a pod of the agent's harness with a
+   volume of the session, or wake it if it sleeps, and gives the turn to the
+   **runner** in it. The runner starts the **harness** for the first turn and
+   talks to it with the
    [Agent Client Protocol](https://agentclientprotocol.com), so it does not
    know which harness it is.
-4. The harness works on the message in the sandbox, with its home at
-   `/home`. The runner tells what it does, the Supervisor records that, and
-   the client reads it as a stream of events. If the Supervisor goes,
-   another follows the turn on from what was recorded.
+4. The harness works on the message in the sandbox, with the volume as its
+   home at `/home`. The runner tells what it does, the Supervisor records
+   that, and the client reads it as a stream of events. If the Supervisor
+   goes, another follows the turn on from what was recorded.
 5. When the runner tells that the turn has ended, the Supervisor ends the
    turn and keeps what the agent said and did in it. The harness and the
-   files stay in the sandbox for the next turn. A session that runs no
-   turn, or whose turn waits for a person, is put to sleep after a while,
-   and woken for its next message or for the answer.
-6. What the sandbox sends out passes its **egress**, which lets it reach the
-   hosts that the installation allows and no others. The egress asks the
-   Supervisors about the requests: they record each with its turn, and give
-   a request to the model endpoint of the agent its key.
+   files stay in the sandbox for the next turn. A session that runs no turn
+   is put to sleep after a while: its pod goes, and its volume stays, with
+   what the harness remembers of the conversation. Its next message wakes it
+   in a new pod, whose harness goes on from there.
+6. What the sandbox sends out goes through the **Egress Proxy**. The sandbox
+   holds no key of the model endpoint, only the token of its session: the
+   proxy asks the Supervisor which turn runs in the session of the token,
+   and for a model request the Supervisor answers with the endpoint of the
+   agent's provider and its key. The proxy puts the key in the token's
+   place, passes the request on to that endpoint and records it. Whatever
+   else the agent fetches, the proxy lets through to the hosts that the
+   installation allows, and records it with its turn. A request of a session
+   in which no turn runs is refused. A network policy keeps the sandbox from
+   connecting to anything but the proxy, and it has no DNS.
 
 The Supervisor keeps its records in a database and the events of running
 turns in an event log, and reaches each through a plugin. It has plugins for
 PostgreSQL, for MySQL and for Valkey and only needs their addresses, so both
 can be managed services. [Plugins](PLUGINS.md) lists the products and
 versions that it is tested with, and tells how to connect it to another
-product. A model provider is a URL and a key, so it can be the API of a
-provider, an AI gateway or a model server of your own.
+product. The Egress Proxy is [Envoy](https://www.envoyproxy.io), which the
+chart installs. A model provider is a URL and a key, so it can be the API
+of a provider, an AI gateway or a model server of your own.
 
-A sandbox may send requests to the hosts of `sandboxes.allowedHosts` and to
-no others, and the installation of OpenSandbox is to keep the sandboxes out
-of the cluster. Every request over HTTPS to a host that is named there, or
-to the model endpoint of the agent, is recorded by the Supervisors, and only
-a request to the model endpoint gets its key. A request of a sandbox in
-which no turn runs is refused.
-
-The record of a request is a line of JSON on the standard output of a
-Supervisor, with the `msg` `request`, or `request refused` and the reason
-as `why`. It names the `sandbox`, the `turn`, and the `session`, the `agent`
-and the `project` of the turn, so it tells by itself where a request came
+The record of the Egress Proxy is a line of JSON for every request, on its
+standard output. A line names the turn and the session, the agent and the
+project that the turn belongs to, so it tells by itself where a request came
 from. In an installation with an identity provider it also names who sent
 the message of the turn: the `user`, by the ID that `GET /v1/me` answers
-that user, and the `subject` that the identity provider knows the user by.
-A request to the model endpoint names its `provider`. Then come the
-`method`, the `scheme`, the `host`, the `port` and the `path` of the
-request, without its query. How long the lines are kept is up to what
-collects the logs of the cluster.
+that user, and the `subject` that the identity provider knows the user by,
+which tells who it was without the records of Aviary. The line of a model
+request also names the provider that it went to. It also has the time, the
+host, the path if the request was not for an HTTPS URL, the status of the
+answer, the bytes in both directions and how long the request took. How
+long the lines are kept is up to what collects the logs of the cluster.
 
 ## Try it locally
 
 You need Docker, [kind](https://kind.sigs.k8s.io), kubectl, Helm, jq, make,
-curl and bash, and a host with KVM (`/dev/kvm`), which the sandboxes of the
-cluster run on. The commands were tested with kind 0.33, Helm 4.3 and
+curl and bash. The commands were tested with kind 0.33, Helm 4.3 and
 Docker 29 on Linux.
 
 ```sh
-make cluster-up   # a kind cluster with PostgreSQL, Valkey, an object store
-                  # and OpenSandbox
+make cluster-up   # a kind cluster with agent-sandbox, PostgreSQL and Valkey
 make images       # builds the images and loads them into the cluster
 make deploy       # installs Aviary with its Helm chart
 ```
 
-`make cluster-down` deletes the cluster. `make cluster-up DATABASE=mysql`
+`make cluster-down` deletes the cluster, and with it the volumes of the
+sessions, which are folders on its nodes. `make cluster-up DATABASE=mysql`
 makes it with MySQL in the place of PostgreSQL.
 
 ### Sending a message yourself
@@ -119,9 +122,10 @@ makes it with MySQL in the place of PostgreSQL.
 The API listens inside the cluster. Forward a port to it, tell the project
 where its model is, and send a message. A model provider is the base URL of
 a model endpoint and its key. The endpoint must be reachable from the
-cluster, so `localhost` will not do, and a request to it gets the key only
-over HTTPS on port 443. OpenCode needs a server with the Chat Completions
-API of OpenAI, Codex one with the Responses API.
+cluster, so `localhost` will not do, and an endpoint at a private address
+needs an entry in `egressProxy.extraEgress`: see
+[Configuration](#configuration). OpenCode needs a server with the Chat
+Completions API of OpenAI, Codex one with the Responses API.
 
 ```sh
 kubectl --context kind-aviary --namespace aviary-system \
@@ -164,7 +168,7 @@ identity provider asks nobody, and every caller is an administrator.
 | `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"harness": "...", "model": {"provider": "...", "name": "..."}, "instructions": "...", "approval": "ask"}`. The harness is one of the configured harnesses. The model is a provider of the project, by its ID, and the name of a model as that provider knows it. The instructions are what the agent is told before every turn, and may be left out. With `"approval": "ask"`, the agent asks a person before it acts: see [Approval](#approval). Left out, it asks nobody. |
 | `POST /v1/agents/{id}/sessions` | Creates a session. The session is that of the caller: it has the ID of that user as `created_by`, if the installation asks its callers who they are. |
 | `POST /v1/sessions/{id}/messages` | Sends a message. Body: `{"text": "..."}`. The turn has the ID of the caller as `created_by`, as a session has. Answers 202 with the turn, 409 if a turn of the session has not ended or the session has, or 429 with `Retry-After` if too many turns wait to run. |
-| `DELETE /v1/sessions/{id}` | Ends a session: 200 with the session, which then has `ended_at`. Its sandbox is deleted, with all that the agent had in it. What was said in the session stays to be read, and the session takes no more messages. Answers 409 if a turn of the session has not ended. |
+| `DELETE /v1/sessions/{id}` | Ends a session: 200 with the session, which then has `ended_at`. Its sandbox is deleted with its volume, and with them all that the agent had in it, unless the storage keeps what was on a volume: see `runtime.volume` in [Configuration](#configuration). What was said in the session stays to be read, and the session takes no more messages. Answers 409 if a turn of the session has not ended. |
 | `POST /v1/turns/{id}/cancel` | Cancels a turn. A turn that waits to run ends at once: 200 with the turn. A turn that runs is told to stop and ends when its harness has stopped: 202 with the turn. Answers 409 if the turn has ended in another way. |
 | `POST /v1/turns/{id}/approvals/{request}` | Answers a request for approval of the turn. Body: `{"option_id": "..."}`, the `id` of one of the options of the request. Answers 202 when the answer is on its way to the harness, 400 if the request has no such option, and 409 if the request has its answer or the turn has ended. |
 | `GET /v1/turns/{id}/events` | The events of the turn, as server-sent events. A client that reconnects sends `Last-Event-ID` and gets the events after it. |
@@ -343,18 +347,16 @@ agent names, for the model that the agent names.
 - **Or the key stays in a secret store of the project.** Aviary then stores
   where the key is and not the key, and reads it from the store when a model
   request comes: see [Secret stores](#secret-stores).
-- **The key goes to its endpoint and nowhere else.** The egress of a
-  sandbox puts it into a request of a turn that uses the provider only if
-  the request goes over HTTPS to the host and the port of the provider's
-  URL, below the path of the URL. What else a sandbox sends out carries no
-  key. The egress looks into requests over HTTPS on port 443 only, so an
-  endpoint on another port gets none.
+- **The key goes to its endpoint and nowhere else.** The Egress Proxy puts
+  it into the model requests of the turns that use the provider, which it
+  passes on to the host of the provider's URL, below the path of the URL.
+  What else a sandbox sends out carries no key. The sandbox cannot say where
+  its model requests go.
 - **A provider can be replaced while turns use it.** Their next model
-  request gets the key as it is then, if it goes to the endpoint as it is
-  then.
+  request goes to the endpoint as it is then, with the key as it is then.
 - **The host of a provider is a host like any other.** If the installation
-  lists the hosts that a sandbox may reach, `sandboxes.allowedHosts`, the
-  list has to allow it.
+  lists the hosts that the Egress Proxy lets requests through to, the list
+  has to allow it.
 
 ### Secret stores
 
@@ -392,8 +394,8 @@ provider=$(curl -s -X POST localhost:8080/v1/projects/$project/providers \
   values, 16 MiB of them, and the logins to at most 1,000 stores, and
   forgets what it used longest ago. A value of more than 8 KiB is not taken
   for a secret.
-- **A request whose key cannot be read is refused.** Its record tells why,
-  and the turns of other providers go on.
+- **A request whose key cannot be read is refused.** The model request ends
+  with 503 and the reason, and the turns of other providers go on.
 - **The credential is stored sealed**, as the key of a provider is. A store
   is read with `"credential": {"stored": true}`.
 - **Give the role no more than Aviary is to read.** Whoever can create a
@@ -434,8 +436,9 @@ comes later finds what there is to answer.
   the stop reason `cancelled`.
 - **It is not what keeps an agent in.** The harness that asks runs in the
   sandbox, beside the tools of the agent and as the same user. Approval keeps an
-  agent that means well from acting on a mistake. What an agent can reach is
-  bounded by `sandboxes.allowedHosts`, whatever was approved.
+  agent that means well from acting on a mistake. What a sandbox can reach
+  is bounded by the network policy and the Egress Proxy, whatever was
+  approved.
 
 An agent without `approval` asks nobody. If its harness asks for permission
 all the same, the runner allows the action once.
@@ -467,22 +470,22 @@ a turn has `started_at` once its harness has been given the message.
 | `completed` | `end_turn`, `max_tokens`, `max_turn_requests` or `refusal` | The harness ended the turn. |
 | `completed` | `cancelled` | The harness ended the turn because a person refused what it asked approval for. Codex does. |
 | `cancelled` | `cancelled` | The turn was cancelled, and the harness stopped when it was asked to. |
-| `cancelled` | none | The turn was cancelled before its harness was given the message, if it has no `started_at`. Otherwise its harness did not stop in time, and its sandbox was deleted. |
+| `cancelled` | none | The turn was cancelled before its harness was given the message, if it has no `started_at`. Otherwise its harness did not stop in time, and its sandbox was put to sleep. |
 | `failed` | none | The turn failed, for the reason in `failure`. |
 | `expired` | none | The turn waited to run for longer than it may. |
 
 The items are what the user saw. What the harness remembers of a turn that
-did not complete is up to the harness, and it can be less. A turn whose
-sandbox was deleted, as one that ran for too long, leaves the agent nothing:
-the next turn of the session has a new sandbox.
+did not complete is up to the harness, and it can be less: a turn whose
+sandbox was put to sleep before it ended, as one that ran for too long,
+stopped with its pod, and its harness did not get to write down what it was
+saying. The next turn wakes the sandbox with the volume as it was.
 
 `usage` holds `total_tokens`, `input_tokens` and `output_tokens`, and
 `thought_tokens`, `cached_read_tokens` and `cached_write_tokens` if the
 harness gives them. A turn that has ended has it too. It is what the harness
 says, not a measurement, and harnesses count differently: Codex reports the
 sum of the model requests of a turn, OpenCode only the last one. What the
-Supervisors record can be relied on: every model request over HTTPS, with
-its turn.
+Egress Proxy logs can be relied on: every model request, with its turn.
 
 ## Metrics
 
@@ -509,6 +512,21 @@ moment, because no Supervisor holds them. The length of the queue is
 measured whenever a turn is accepted instead. The metrics of the Go runtime
 and of the process are served as well.
 
+An Egress Proxy serves the metrics of Envoy on the same port and path. Among
+them:
+
+| Metric | |
+| --- | --- |
+| `envoy_http_downstream_rq_total`, `envoy_http_downstream_rq_xx` | The requests and the classes of their response codes. The label `envoy_http_conn_manager_prefix` is `llm` for the requests to the model endpoint, where the probes of Kubernetes count as well, and `forward` for all others. |
+| `envoy_http_downstream_rq_time` | How long the requests took, in milliseconds. |
+| `envoy_http_ext_authz_ok`, `envoy_http_ext_authz_denied`, `envoy_http_ext_authz_error` | What the Supervisor answered when it was asked for the turn of a request. |
+| `envoy_http_rbac_denied` | The requests to hosts that `egressProxy.allowedHosts` does not allow. It is there only if the list names hosts. |
+
+Of the interface that Envoy has for its operator, the metrics are all that
+can be reached. A sandbox can read them too, if it asks the forward proxy
+for the proxy's own address and `egressProxy.allowedHosts` allows that
+address, which the default does.
+
 ## Configuration
 
 Aviary is installed with the Helm chart in `deploy/charts/aviary`. The chart
@@ -517,8 +535,8 @@ installs it in the local cluster with a file of values of your own.
 
 | Value | |
 | --- | --- |
-| `supervisor.replicas` | How many Supervisors run. Each of them serves any request. Default 1. |
-| `supervisor.resources` | What the pod of a Supervisor asks for and may use at most. |
+| `supervisor.replicas`, `egressProxy.replicas` | How many Supervisors and Egress Proxies run. Each of them serves any request. Default 1. |
+| `supervisor.resources`, `egressProxy.resources` | What the pod of a Supervisor and of an Egress Proxy asks for and may use at most. |
 | `supervisor.database.secretName`, `.secretKey` | A secret with the URL of the database. Its scheme names the kind of the database: `postgresql://…` is PostgreSQL, and `mysql://…` is MySQL. |
 | `supervisor.events.secretName`, `.secretKey` | A secret with the URL of the event log. Its scheme names the kind of the log: `valkey://…` is Valkey, and `valkeys://…` is Valkey with TLS. |
 | `supervisor.secretStores.allowedHosts` | The hosts at which the projects may have secret stores: `*` for every host, a host name for the host on the ports of HTTPS and HTTP, or a host name with a port. The default allows none. |
@@ -526,39 +544,35 @@ installs it in the local cluster with a file of values of your own.
 | `supervisor.auth.provider` | The identity provider whose tokens tell who sends a request to the API: its `kind`, and the `settings` of a provider of that kind. The default is none, and the API then asks nobody. See [Callers](#callers). |
 | `supervisor.auth.admins`, `.users` | The groups of the identity provider whose members are the administrators of the installation, and the groups whose members may use the API. The default of both is none: nobody is an administrator, and everyone whom the provider knows may use the API. |
 | `supervisor.encryption.secretName`, `.key` | A secret with the keys that the Supervisor seals secrets with before it stores them, and the entry of it that seals. An entry is 32 random bytes in base64. To replace the key, add an entry and name it, and keep the entries from before. |
-| `sandboxes.url` | Where the lifecycle API of OpenSandbox is, which runs the sandboxes of the sessions. Default `http://opensandbox-server.opensandbox-system`. |
-| `sandboxes.apiKey.secretName`, `.secretKey` | A secret with the key of that API. |
-| `sandboxes.allowedHosts` | The hosts that a sandbox may send requests to, those of the model endpoints among them: names, `*.domain`s, or `*` for every host, which is the default. Every request over HTTPS to a host that is named, or to the model endpoint of the agent, is recorded with its turn and the user who sent the message, and only a request to the model endpoint gets its key. A model endpoint over HTTP, or on another port than 443, gets no key. The installation of OpenSandbox keeps the sandboxes out of the cluster. A change holds for the sandboxes that are made after it. |
-| `supervisor.resolver.secretName` | A secret with the certificate and the key (`tls.crt`, `tls.key`) with which the Supervisors answer the egress of OpenSandbox, for `aviary-supervisor.<namespace>.svc.cluster.local`. The egress has to trust the certificate. Default `aviary-resolver-tls`. |
+| `egressProxy.allowedHosts` | The hosts that the Egress Proxy lets requests through to, those of the model providers among them. The default, `*`, is every host. |
+| `egressProxy.insideCIDRs`, `.extraEgress` | A network policy keeps the Egress Proxy itself out of these address ranges, so that it is no way into the cluster. `extraEgress` names what it may still reach there, as egress rules of a network policy: the endpoint of a model provider that is a service in the cluster or at a private address needs one. |
 | `sandboxes.idleSeconds` | After how many seconds a session that is not at work is put to sleep: one whose last turn has ended. The Supervisors look for such sessions once a minute. A session that sleeps has no pod and keeps its volume, and its next turn wakes it in a new pod. Default 300, and 0 is never. |
-| `sandboxes.retentionSeconds` | For how many seconds the sandbox of a session is kept after a turn of the session was last given to it. A session that is not used for longer has ended: its sandbox is deleted, and what was said in it stays. Default 0, which is until the session is ended. |
-| `sandboxes.templateStore` | Where OpenSandbox keeps the templates that the sandboxes are made from, in its object store. Default `s3://sandbox-images/publish`. |
+| `sandboxes.retentionSeconds` | For how many seconds the sandbox of a session is kept after a turn of the session was last given to it. A session that is not used for longer has ended: its sandbox is deleted with its volume, and what was said in it stays. Default 0, which is until the session is ended. |
 | `runtime.maxConcurrentTurns` | The most turns that run at once. Default 50. |
 | `runtime.maxQueuedTurns` | The most turns that may wait to run. A message beyond it is answered with 429. Default 500, and 0 is no limit. |
 | `runtime.maxQueueWaitSeconds` | How long a turn may wait to run before it ends as expired. Default 120, and 0 is no limit. |
-| `runtime.maxStartupSeconds` | How long a turn may take until its harness has the message, which for the first turn of a session is after its sandbox was made. A turn that takes longer fails. Its sandbox is deleted if the runner in it had the turn, and stays for the next turn if it was still being made or woken. Default 120, and 0 is no limit. |
-| `runtime.maxTurnSeconds` | How long a turn may run before it fails and its sandbox is deleted, the time that it waits for a person included. Default 1800. |
+| `runtime.maxStartupSeconds` | How long a turn may take until its harness has the message, which for the first turn of a session is after its sandbox was made. A turn that takes longer fails. Its sandbox is put to sleep if the runner in it had the turn, and stays for the next turn if it was still being made or woken. Default 120, and 0 is no limit. |
+| `runtime.maxTurnSeconds` | How long a turn may run before it fails and its sandbox is put to sleep, the time that it waits for a person included. Default 1800. |
 | `runtime.maxToolOutputBytes` | The longest text of a tool call that the events carry as it is. A longer text is cut. Default 65536, and 0 is no limit. |
-| `runtime.harnesses` | The harnesses that agents can use, each with its image. `sandbox` is the size of the sandbox of a session: its `cpu`, `memory` and `disk`. A release has OpenSandbox build a template for each harness, from the image and that size, when it is installed and when either has changed. OpenSandbox takes the image from its registry without credentials. |
+| `runtime.harnesses` | The harnesses that agents can use, each with its image and the `resources` of the pod of a sandbox, as those of a container are written for Kubernetes. A change holds for a sandbox from when it is next woken. |
+| `runtime.volume.size`, `.storageClass` | The volume of a session, mounted at `/home` in its sandbox: what its harness remembers and what its agent works on, and what the agent installs with npm or pip. Default 10Gi, of the default storage class of the cluster. A volume is deleted with its sandbox, when its session is ended or expires. Whether the storage then deletes what was on it is up to the storage class: the default class of the local cluster does, a class with `reclaimPolicy: Retain` does not, and some drivers of file storage keep it unless they are told not to. |
 
-The chart does not install OpenSandbox either. Aviary runs on OpenSandbox
-1.2.1 with its Fast Sandbox runtime, whose sandboxes need nodes with KVM,
-and `hack/kind` shows what it takes besides: a pool of sandboxes, an object store for the
-templates and for the sandboxes that sleep, the idle pause of the server
-with the gateway telling it of the activity of the sandboxes, and an egress
-that looks into HTTPS. The egress has to trust the certificate of the
-Supervisors and to wait for their answer
-(`OPENSANDBOX_EGRESS_CREDENTIAL_RESOLVER_TIMEOUT`), which can take as long
-as a secret store takes to give a key. The local cluster runs Kubernetes
-1.37.
+The chart does not install agent-sandbox either. Aviary runs on
+agent-sandbox v1.0.11, which `make cluster-up` installs from its release.
+The cluster's network plugin must enforce network policies: they are what
+cuts the sandboxes off. The namespace of the sandboxes, `aviary-runtime`,
+enforces the restricted level of the Pod Security Standards. The local
+cluster runs Kubernetes 1.37.
 
-The size of a sandbox is that of its harness in `runtime.harnesses`, and a
-change of it holds for the sandboxes that are made after it. Aviary sets no
-bound on how many sandboxes there are: the pool of OpenSandbox does.
+The pods of the sandboxes are those of the turns that run and of the
+sessions that were at work in the last `sandboxes.idleSeconds`. The volumes
+are those of the sessions that have not ended. Aviary sets no other bound
+on them: a ResourceQuota on `aviary-runtime` does.
 
-A Supervisor that is to stop, as when its deployment is scaled in or rolled
-out, does not wait for the turns that it follows. Another Supervisor
-follows them on, from what was recorded.
+Neither a Supervisor nor an Egress Proxy that is to stop, as when its
+deployment is scaled in or rolled out, waits for the turns that use it.
+Another Supervisor follows the turns on, from what was recorded, and the
+requests that the proxy was passing on break.
 
 To run a harness that is not in this repository, see
 [Harness images](images/README.md). To connect Aviary to a database, an
@@ -585,23 +599,22 @@ checks, how to run some of the tests and where a new one goes.
 
 | Path | |
 | --- | --- |
-| `supervisor/` | The Supervisor, in Go: the API, the queue, the sandboxes of the sessions and the runners in them, the event streams. Its plugins are in `store/`, `events/` and `secret/`, and `plugins.go` lists those of the build. |
+| `supervisor/` | The Supervisor, in Go: the API, the queue, the sandboxes of the sessions and the runners in them, the event streams, and the answers to the Egress Proxy. Its plugins are in `store/`, `events/` and `secret/`, and `plugins.go` lists those of the build. |
 | `runner/` | The runner, in Rust. |
 | `images/` | The images of the Supervisor, the runner and the harnesses. |
 | `deploy/charts/aviary/` | The Helm chart. |
 | `hack/kind/` | The local cluster. |
-| `test/` | The tests of the chart and of the parts together, the mock model server, and a build of the Supervisor with plugins of its own. The tests of the Supervisor and of the runner are with their code. |
+| `test/` | The tests of the chart, of the Egress Proxy and of the parts together, the mock model server, and a build of the Supervisor with plugins of its own. The tests of the Supervisor and of the runner are with their code. |
 
 ## What is missing
 
-- **Looking into what an agent sends.** The record of a request tells where
-  it went, and not what it sent.
+- **Looking into what an agent sends.** The Egress Proxy records which host
+  a turn connects to. It does not read what is sent over HTTPS.
 - **Measured token usage.** The usage of a turn is what its harness reports.
-  Aviary does not count tokens.
-- **A model endpoint that moves.** The egress of a sandbox is told which
-  hosts to ask about when the first turn of the session runs in it. A
-  provider whose URL is given a host that `sandboxes.allowedHosts` does not
-  name gets no key from the sandboxes that its sessions have already.
+  The Egress Proxy does not count tokens.
+- **Keeping the files of a session that has ended.** Its volume is deleted
+  with its sandbox. Aviary keeps no copy, and only a storage class that
+  keeps what a deleted volume held does.
 - **Anything but a local cluster.** Aviary has not run on a cloud provider's
   Kubernetes or under load.
 

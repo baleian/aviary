@@ -188,7 +188,11 @@ runtime:
         limits: {memory: 4Gi}
   # The volume of a session, mounted at /home in its sandbox: what its
   # harness remembers of the conversation and what its agent works on. A
-  # volume is mounted by one pod at a time. It is deleted with the sandbox.
+  # volume is mounted by one pod at a time. It is deleted with the sandbox,
+  # when its session is ended or expires. Whether the storage then deletes
+  # what was on it is up to the storage class: the default class of the
+  # local cluster does, a class with reclaimPolicy Retain does not, and some
+  # drivers of file storage keep it unless they are told not to.
   volume:
     size: 10Gi
     # The storage class that the volumes are made with. Empty is the default
