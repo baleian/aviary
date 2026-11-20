@@ -21,8 +21,8 @@ type Database interface {
 	// The store is closed when the test ends.
 	Open(t *testing.T) store.Store
 	// Age makes the turns so much older: as if all that the database has
-	// recorded of when something happened to them had happened that long
-	// before it did.
+	// recorded of when something happened to them, and to their requests for
+	// approval, had happened that long before it did.
 	Age(t *testing.T, by time.Duration, turns ...uuid.UUID)
 }
 
@@ -101,12 +101,16 @@ func Run(t *testing.T, create func(t *testing.T) Database) {
 		"Agents":                           suite.testAgents,
 		"AgentsOfAProject":                 suite.testAgentsOfAProject,
 		"SessionsOfAnAgent":                suite.testSessionsOfAnAgent,
+		"SandboxOfASession":                suite.testSandboxOfASession,
+		"TurnOfASession":                   suite.testTurnOfASession,
+		"EndSession":                       suite.testEndSession,
 		"Providers":                        suite.testProviders,
 		"SecretStores":                     suite.testSecretStores,
 		"KeyInASecretStore":                suite.testKeyInASecretStore,
 		"ModelOfAnAgent":                   suite.testModelOfAnAgent,
 		"CreateTurn":                       suite.testCreateTurn,
 		"CreateTurnTakesOneOfTheMessagesSentAtOnce":         suite.testCreateTurnTakesOneOfTheMessagesSentAtOnce,
+		"SupervisorsEndASessionWhileMessagesCome":           suite.testSupervisorsEndASessionWhileMessagesCome,
 		"CreateTurnKeepsToTheMostThatMayWait":               suite.testCreateTurnKeepsToTheMostThatMayWait,
 		"SupervisorsKeepToTheMostThatMayWaitTogether":       suite.testSupervisorsKeepToTheMostThatMayWaitTogether,
 		"CreateTurnLetsThoseInThatHaveRoomToRun":            suite.testCreateTurnLetsThoseInThatHaveRoomToRun,
@@ -114,23 +118,22 @@ func Run(t *testing.T, create func(t *testing.T) Database) {
 		"SupervisorsDispatchWithinTheLimitTogether":         suite.testSupervisorsDispatchWithinTheLimitTogether,
 		"SupervisorsDispatchWithinTheLimitWhileTurnsCome":   suite.testSupervisorsDispatchWithinTheLimitWhileTurnsCome,
 		"DispatchTurnsLeavesATurnThatWasCancelledMeanwhile": suite.testDispatchTurnsLeavesATurnThatWasCancelledMeanwhile,
-		"AnnounceQueue":          suite.testAnnounceQueue,
-		"TakeTurn":               suite.testTakeTurn,
-		"TakeTurnThatIsNotToRun": suite.testTakeTurnThatIsNotToRun,
-		"TakeTurnGivesTheTurnToOneOfTheRunnersThatAskAtOnce": suite.testTakeTurnGivesTheTurnToOneOfTheRunnersThatAskAtOnce,
-		"SupervisorsEndATurnOnceTogether":                    suite.testSupervisorsEndATurnOnceTogether,
-		"AnswerApprovalKeepsOneOfTheAnswersGivenAtOnce":      suite.testAnswerApprovalKeepsOneOfTheAnswersGivenAtOnce,
-		"CallerThatWaitsNoLonger":                            suite.testCallerThatWaitsNoLonger,
-		"StartTurn":                                          suite.testStartTurn,
-		"CancelTurn":                                         suite.testCancelTurn,
-		"ExpireTurns":                                        suite.testExpireTurns,
-		"EndTurn":                                            suite.testEndTurn,
-		"EndTurnKeepsWhatTheTurnSaid":                        suite.testEndTurnKeepsWhatTheTurnSaid,
-		"SetFinished":                                        suite.testSetFinished,
-		"Turns":                                              suite.testTurns,
-		"DispatchedTurns":                                    suite.testDispatchedTurns,
-		"NotFound":                                           suite.testNotFound,
-		"Approvals":                                          suite.testApprovals,
+		"DispatchTurnsCountsATurnThatWaitsForAPerson":       suite.testDispatchTurnsCountsATurnThatWaitsForAPerson,
+		"AnnounceQueue":                   suite.testAnnounceQueue,
+		"FollowTurn":                      suite.testFollowTurn,
+		"SupervisorsEndATurnOnceTogether": suite.testSupervisorsEndATurnOnceTogether,
+		"AnswerApprovalKeepsOneOfTheAnswersGivenAtOnce": suite.testAnswerApprovalKeepsOneOfTheAnswersGivenAtOnce,
+		"CallerThatWaitsNoLonger":                       suite.testCallerThatWaitsNoLonger,
+		"StartTurn":                                     suite.testStartTurn,
+		"CancelTurn":                                    suite.testCancelTurn,
+		"ExpireTurns":                                   suite.testExpireTurns,
+		"EndTurn":                                       suite.testEndTurn,
+		"EndTurnKeepsWhatTheTurnSaid":                   suite.testEndTurnKeepsWhatTheTurnSaid,
+		"SetFinished":                                   suite.testSetFinished,
+		"Turns":                                         suite.testTurns,
+		"DispatchedTurns":                               suite.testDispatchedTurns,
+		"NotFound":                                      suite.testNotFound,
+		"Approvals":                                     suite.testApprovals,
 	} {
 		t.Run(name, test)
 	}

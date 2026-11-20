@@ -157,13 +157,13 @@ func (suite suite) testSessionOfAUser(t *testing.T) {
 		t.Fatalf("the turns were dispatched as %+v, with the error %v", dispatches, err)
 	}
 	for _, dispatch := range dispatches {
-		runner := uuid.New()
-		if _, err := st.TakeTurn(ctx, dispatch.Token, &runner); err != nil {
+		followed, err := st.FollowTurn(ctx, dispatch.TurnID)
+		if err != nil {
 			t.Fatal(err)
 		}
 		sender, sent := senders[dispatch.TurnID]
 		subject := map[uuid.UUID]string{user.ID: "subject-a", other.ID: "subject-b"}[sender]
-		if origin, err := st.RunningTurn(ctx, dispatch.Token); err != nil || !sent || origin.UserID != sender || origin.Subject != subject {
+		if origin, err := st.SessionTurn(ctx, followed.SessionID); err != nil || !sent || origin.UserID != sender || origin.Subject != subject {
 			t.Errorf("a request of the running turn that %s, the subject %q, sent comes from %+v, with the error %v", sender, subject, origin, err)
 		}
 	}

@@ -18,7 +18,7 @@ import (
 func (suite suite) testAnswerApprovalKeepsOneOfTheAnswersGivenAtOnce(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
-	dispatch, _ := st.running(st.session())
+	dispatch := st.running(st.session())
 	if err := st.AddApproval(ctx, dispatch.TurnID, "1", []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func (suite suite) testAnswerApprovalKeepsOneOfTheAnswersGivenAtOnce(t *testing.
 func (suite suite) testApprovals(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
-	dispatch, _ := st.running(st.session())
+	dispatch := st.running(st.session())
 	turn := dispatch.TurnID
 	waiting := func() []json.RawMessage {
 		t.Helper()
@@ -117,7 +117,7 @@ func (suite suite) testApprovals(t *testing.T) {
 	if waiting := waiting(); !keepsAll(t, waiting, second) {
 		t.Errorf("the requests that wait after an answer are %s", waiting)
 	}
-	other, _ := st.running(st.session())
+	other := st.running(st.session())
 	on := []store.Answer{{TurnID: turn, ID: "1", OptionID: "once"}}
 	if all, mine, others := answers(nil), answers(&dispatch), answers(&other); !slices.Equal(all, on) || !slices.Equal(mine, on) || len(others) != 0 {
 		t.Errorf("the answers on their way are %v, those of the turn %v and those of another %v", all, mine, others)
@@ -159,7 +159,7 @@ func (suite suite) testApprovals(t *testing.T) {
 	if answered, err := st.AnswerApproval(ctx, other.TurnID, "1", "once", uuid.Nil); err != nil || !answered {
 		t.Fatalf("the request of the other turn was answered %t: %v", answered, err)
 	}
-	st.end(other.TurnID, false, store.Failure{Reason: store.FailurePodLost})
+	st.end(other.TurnID, false, store.Failure{Reason: store.FailureSandboxLost})
 	if answered, err := st.AnswerApproval(ctx, other.TurnID, "2", "once", uuid.Nil); err != nil || answered {
 		t.Errorf("a request of a turn that has ended was answered %t: %v", answered, err)
 	}

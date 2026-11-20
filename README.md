@@ -1,23 +1,27 @@
 # Aviary
 
 Aviary runs AI agent harnesses, such as OpenCode and Codex, on Kubernetes.
-Every message that a user sends is a turn, and every turn runs in a pod of
-its own that is gone when the turn ends. What the session has to keep, its
-conversation and its files, lives on a volume, so the pod of the next turn
-continues where the last one stopped.
+Every message that a user sends is a turn, and every session runs its turns
+in a sandbox of its own: a pod of its harness, with a volume that keeps the
+conversation and the files of the session from one turn to the next. A
+session that is not at work is put to sleep: its pod goes, its volume stays,
+and its next turn goes on from there in a new pod. The sandboxes are those
+of [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox).
 
 Aviary is meant as a reference for organizations that want to run agents for
-many users on their own cluster: the agent has no long-lived process to
-attack or to leak into, a session costs nothing while nobody talks to it,
-and the number of turns that run at once is a setting.
+many users on their own cluster: an agent reaches only the hosts that the
+installation allows and never holds the key of its model, every request that
+leaves a sandbox is recorded with the turn and the user that it came from, a
+session costs no CPU or memory while nobody talks to it, and the number of
+turns that run at once is a setting.
 
 > **Status.** Aviary is at an early stage. A message sent to the API runs as
-> a turn, sessions continue across turns, turns beyond a limit wait their
-> turn, and what was said can be read back. The pod of a turn reaches the
-> outside only through a proxy that keeps a record. Every agent names its
-> model, at an endpoint that its project registers with a key that no pod
-> holds. An agent can be made to ask a person before it acts. Supervisors
-> can be replaced while turns run.
+> a turn in the sandbox of its session, sessions continue across turns,
+> turns beyond a limit wait their turn, and what was said can be read back.
+> A sandbox reaches the outside only through a proxy that keeps a record.
+> Every agent names its model, at an endpoint that its project registers
+> with a key that no sandbox holds. An agent can be made to ask a person
+> before it acts. Supervisors can be replaced while turns run.
 > With an identity provider, it knows its callers and holds each to what
 > they may do in a project. It has only run on a local cluster. See
 > [What is missing](#what-is-missing).
@@ -25,46 +29,56 @@ and the number of turns that run at once is a setting.
 ## How it works
 
 ```
-            messages, events                     one Job per turn
-  client ───────────────────▶ Supervisor ─────────────────────────▶ turn pod
-                               │      ▲                             ┌─────────────────┐
-                    database   │      │ gRPC: the message down,     │ runner          │
-                    event log  │      └─ what the agent does up ────│   │ ACP         │
-                                                                    │ harness         │
-                                                                    │   /home ── session volume
-                                                                    └────────┬────────┘
-                                       model requests, with the turn's token │
-              model endpoint ◀─────────────── Egress Proxy ◀─────────────────┘
-                              with the API key
+            messages, events              makes, wakes, puts to sleep, deletes
+  client ───────────────────▶ Supervisor ─────────────────────────▶ agent-sandbox
+                               │  ▲   ▲                                  │
+                    database   │  │   │ HTTP: the turn down,             ▼
+                    event log  │  │   └─ what the agent does up ──── sandbox of the session
+                                  │                                ┌─────────────────┐
+                                  │                                │ runner          │
+                                  │                                │   │ ACP         │
+                                  │                                │ harness         │
+                                  │                                │   /home: volume │
+                                  │                                └────────┬────────┘
+                                  │ asks about each request:                │ all it sends out
+                                  └─ its turn, the model's key ────── Egress Proxy ──▶ model endpoint,
+                                                                                       allowed hosts
 ```
 
 1. A client creates a project, in it a model provider and an agent that
    uses a model of that provider, and a session of the agent, and sends the
    session a message.
 2. The **Supervisor** records the message as a turn. If fewer turns are
-   running than the limit allows, it creates a Job for the turn. Otherwise
-   the turn waits, and turns run in the order in which they were sent.
-3. In the pod, the **runner** connects to the Supervisor, takes the message
-   and starts the **harness**. It talks to the harness with the
+   running than the limit allows, a Supervisor takes the turn and follows it
+   until it has ended. Otherwise the turn waits, and turns run in the order
+   in which they were sent.
+3. The Supervisor has [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)
+   make the **sandbox** of the session, a pod of the agent's harness with a
+   volume of the session, or wake it if it sleeps, and gives the turn to the
+   **runner** in it. The runner starts the **harness** for the first turn and
+   talks to it with the
    [Agent Client Protocol](https://agentclientprotocol.com), so it does not
    know which harness it is.
-4. The harness works on the message with the session's home mounted at
-   `/home`. The runner reports what it does, and the client reads that as a
-   stream of events. A runner that loses its Supervisor goes on with
-   another. The harness reaches the model through the **Egress
-   Proxy**. The pod holds no key of the model endpoint, only the token of
-   its turn: the proxy asks the Supervisor which turn the token belongs to,
-   and the Supervisor answers with the endpoint of the agent's provider and
-   its key. The proxy puts the key in the token's place, passes the request
-   on to that endpoint and records it. Whatever else the
-   agent fetches goes through the same proxy, which lets a request through
-   to the hosts that the installation allows and records it with its turn.
-   A network policy keeps the pod from connecting to anything but the
-   Supervisor and the proxy, and it has no DNS.
-5. When Kubernetes reports that the pod has stopped, the Supervisor ends the
-   turn, keeps what the agent said and did in it, and deletes the Job. Only
-   then does the session take its next message, so two pods never work on
-   the same session home.
+4. The harness works on the message in the sandbox, with the volume as its
+   home at `/home`. The runner tells what it does, the Supervisor records
+   that, and the client reads it as a stream of events. If the Supervisor
+   goes, another follows the turn on from what was recorded.
+5. When the runner tells that the turn has ended, the Supervisor ends the
+   turn and keeps what the agent said and did in it. The harness and the
+   files stay in the sandbox for the next turn. A session that runs no turn
+   is put to sleep after a while: its pod goes, and its volume stays, with
+   what the harness remembers of the conversation. Its next message wakes it
+   in a new pod, whose harness goes on from there.
+6. What the sandbox sends out goes through the **Egress Proxy**. The sandbox
+   holds no key of the model endpoint, only the token of its session: the
+   proxy asks the Supervisor which turn runs in the session of the token,
+   and for a model request the Supervisor answers with the endpoint of the
+   agent's provider and its key. The proxy puts the key in the token's
+   place, passes the request on to that endpoint and records it. Whatever
+   else the agent fetches, the proxy lets through to the hosts that the
+   installation allows, and records it with its turn. A request of a session
+   in which no turn runs is refused. A network policy keeps the sandbox from
+   connecting to anything but the proxy, and it has no DNS.
 
 The Supervisor keeps its records in a database and the events of running
 turns in an event log, and reaches each through a plugin. It has plugins for
@@ -82,11 +96,10 @@ from. In an installation with an identity provider it also names who sent
 the message of the turn: the `user`, by the ID that `GET /v1/me` answers
 that user, and the `subject` that the identity provider knows the user by,
 which tells who it was without the records of Aviary. The line of a model
-request also names the provider that it went to.
-It also has the time, the host, the path if the request was not for an
-HTTPS URL, the status of the answer, the bytes in both directions and how
-long the request took. How long the lines are kept is up to what collects
-the logs of the cluster.
+request also names the provider that it went to. It also has the time, the
+host, the path if the request was not for an HTTPS URL, the status of the
+answer, the bytes in both directions and how long the request took. How
+long the lines are kept is up to what collects the logs of the cluster.
 
 ## Try it locally
 
@@ -95,12 +108,13 @@ curl and bash. The commands were tested with kind 0.33, Helm 4.3 and
 Docker 29 on Linux.
 
 ```sh
-make cluster-up   # a kind cluster with an NFS volume, PostgreSQL and Valkey
+make cluster-up   # a kind cluster with agent-sandbox, PostgreSQL and Valkey
 make images       # builds the images and loads them into the cluster
 make deploy       # installs Aviary with its Helm chart
 ```
 
-`make cluster-down` deletes the cluster. `make cluster-up DATABASE=mysql`
+`make cluster-down` deletes the cluster, and with it the volumes of the
+sessions, which are folders on its nodes. `make cluster-up DATABASE=mysql`
 makes it with MySQL in the place of PostgreSQL.
 
 ### Sending a message yourself
@@ -119,7 +133,7 @@ kubectl --context kind-aviary --namespace aviary-system \
 
 project=$(curl -s -X POST localhost:8080/v1/projects -d '{"name": "demo"}' | jq -r .id)
 provider=$(curl -s -X POST localhost:8080/v1/projects/$project/providers \
-  -d '{"name": "a model server", "url": "http://model-server.example.com/v1", "api_key": {"value": "..."}}' | jq -r .id)
+  -d '{"name": "a model server", "url": "https://model-server.example.com/v1", "api_key": {"value": "..."}}' | jq -r .id)
 agent=$(curl -s -X POST localhost:8080/v1/projects/$project/agents \
   -d '{"harness": "opencode", "model": {"provider": "'$provider'", "name": "..."}}' | jq -r .id)
 session=$(curl -s -X POST localhost:8080/v1/agents/$agent/sessions | jq -r .id)
@@ -151,10 +165,11 @@ identity provider asks nobody, and every caller is an administrator.
 | `PUT /v1/providers/{id}` | Replaces the name, the URL and the key of a provider, all three at once: a provider that is given no key has none from then on. |
 | `POST /v1/projects/{id}/secret-stores` | Registers a secret store of the project. Body: `{"name": "...", "kind": "...", "settings": {...}, "credential": {"value": "..."}}`. See [Secret stores](#secret-stores). |
 | `PUT /v1/secret-stores/{id}` | Replaces the name, the kind, the settings and the credential of a secret store, all at once. |
-| `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"harness": "...", "model": {"provider": "...", "name": "..."}, "instructions": "...", "resources": {...}, "approval": "ask"}`. The harness is one of the configured harnesses. The model is a provider of the project, by its ID, and the name of a model as that provider knows it. The instructions are what the agent is told before every turn, and may be left out. The resources are what the pod of each turn asks for and may use at most, as they are written for Kubernetes: `{"requests": {"cpu": "250m", "memory": "1Gi"}, "limits": {"memory": "4Gi"}}`. Given, they are taken as they are. Left out or empty, the agent has none of its own, and each of its turns gets the default of the harness as it then is. With `"approval": "ask"`, the agent asks a person before it acts: see [Approval](#approval). Left out, it asks nobody. |
+| `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"harness": "...", "model": {"provider": "...", "name": "..."}, "instructions": "...", "approval": "ask"}`. The harness is one of the configured harnesses. The model is a provider of the project, by its ID, and the name of a model as that provider knows it. The instructions are what the agent is told before every turn, and may be left out. With `"approval": "ask"`, the agent asks a person before it acts: see [Approval](#approval). Left out, it asks nobody. |
 | `POST /v1/agents/{id}/sessions` | Creates a session. The session is that of the caller: it has the ID of that user as `created_by`, if the installation asks its callers who they are. |
-| `POST /v1/sessions/{id}/messages` | Sends a message. Body: `{"text": "..."}`. The turn has the ID of the caller as `created_by`, as a session has. Answers 202 with the turn, 409 if a turn of the session has not ended, or 429 with `Retry-After` if too many turns wait to run. |
-| `POST /v1/turns/{id}/cancel` | Cancels a turn. A turn that waits to run ends at once: 200 with the turn. A turn that runs is told to stop and ends when its pod has stopped: 202 with the turn. Answers 409 if the turn has ended in another way. |
+| `POST /v1/sessions/{id}/messages` | Sends a message. Body: `{"text": "..."}`. The turn has the ID of the caller as `created_by`, as a session has. Answers 202 with the turn, 409 if a turn of the session has not ended or the session has, or 429 with `Retry-After` if too many turns wait to run. |
+| `DELETE /v1/sessions/{id}` | Ends a session: 200 with the session, which then has `ended_at`. Its sandbox is deleted with its volume, and with them all that the agent had in it, unless the storage keeps what was on a volume: see `runtime.volume` in [Configuration](#configuration). What was said in the session stays to be read, and the session takes no more messages. Answers 409 if a turn of the session has not ended. |
+| `POST /v1/turns/{id}/cancel` | Cancels a turn. A turn that waits to run ends at once: 200 with the turn. A turn that runs is told to stop and ends when its harness has stopped: 202 with the turn. Answers 409 if the turn has ended in another way. |
 | `POST /v1/turns/{id}/approvals/{request}` | Answers a request for approval of the turn. Body: `{"option_id": "..."}`, the `id` of one of the options of the request. Answers 202 when the answer is on its way to the harness, 400 if the request has no such option, and 409 if the request has its answer or the turn has ended. |
 | `GET /v1/turns/{id}/events` | The events of the turn, as server-sent events. A client that reconnects sends `Last-Event-ID` and gets the events after it. |
 | `GET /v1/sessions/{id}/turns` | The turns of the session, newest first: `{"turns": [...]}`. `?limit=` is how many, 20 if it is not given and at most 100. `?before=` is the `seq` of a turn, and the answer then holds the turns before that one: that is how to read on from the last turn of an answer. The first turn of a session has `seq` 1. |
@@ -187,8 +202,8 @@ The events of a turn:
 | `turn.cancelled` | The turn was cancelled. The last event of the turn. |
 | `turn.expired` | The turn waited to run for longer than it may. The last event of the turn. |
 
-The fields of the events that come from the agent are defined in
-[`proto/aviary/runner/v1/runner.proto`](proto/aviary/runner/v1/runner.proto).
+The events that come from the agent are as the runner tells them:
+[`runner/src/main.rs`](runner/src/main.rs).
 
 The reasons for a failed turn:
 
@@ -196,11 +211,10 @@ The reasons for a failed turn:
 | --- | --- |
 | `harness_error` | The harness could not be started or answered with an error. That is also how a harness reports that the model endpoint refused it. |
 | `resume_failed` | The harness could not continue the session: what it had kept of the conversation is gone or cannot be read. The next turn of the session tries again, so a session whose harness cannot recover fails every turn. |
-| `startup_timed_out` | The pod of the turn did not start in time, for example because an image could not be pulled. |
+| `startup_timed_out` | The harness did not get the message in time, for example because the sandbox of the session could not be made. The message says what the turn waited for. A sandbox that was still being made or woken stays, with what the agent had in it, and the next turn of the session goes to it. |
 | `timed_out` | The turn ran for longer than a turn may. |
-| `out_of_memory` | The pod used more memory than it may. |
-| `pod_lost` | The pod was stopped from outside, or is gone. |
-| `supervisor_lost` | The runner lost its Supervisor and reached none again in time. |
+| `sandbox_lost` | The sandbox of the session is gone, and what the agent had in it. The next turn of the session gets a new one. |
+| `session_expired` | The session was not used for longer than `sandboxes.retentionSeconds`. Its sandbox is gone, and the session has ended. |
 | `runner_error` | The runner failed in another way. |
 
 A turn that has ended has its reason too, as `failure`. What makes a turn
@@ -242,9 +256,9 @@ what the roles may do. Everything else takes a permission in the project:
 | `project.view` | See the project and what it is made of: its agents, its model providers and its secret stores, without their secrets. Every role has it. |
 | `agents.manage` | Create the agents of the project. |
 | `connections.manage` | Register and replace the model providers and the secret stores of the project. |
-| `sessions.run` | Create sessions, and in one's own send messages, stop the turns, answer their requests for approval and read what was said. |
+| `sessions.run` | Create sessions, and in one's own send messages, stop the turns, answer their requests for approval, read what was said and end it. |
 | `sessions.view_all` | Read the sessions of the other members. |
-| `sessions.control_all` | Stop the turns of the other members and answer their requests for approval. A role with it has `sessions.view_all` too. |
+| `sessions.control_all` | Stop the turns of the other members, answer their requests for approval and end their sessions. A role with it has `sessions.view_all` too. |
 
 An administrator gives a project its members. A member is a user, by the
 username, or a group of the identity provider, which is everyone whom the
@@ -258,10 +272,10 @@ hang on the username after that. If the provider gives the username to
 someone else, the member stays the user that it was, and the other is none.
 
 A session is that of the caller who created it, and only that caller sends
-messages to it. To read a session of one's own, to stop its turns and to
-answer their requests for approval takes `sessions.run`. With a session of
-another member the same takes `sessions.view_all` to read and
-`sessions.control_all` to stop and to answer.
+messages to it. To read a session of one's own, to stop its turns, to
+answer their requests for approval and to end it takes `sessions.run`. With
+a session of another member the same takes `sessions.view_all` to read and
+`sessions.control_all` to stop, to answer and to end.
 
 An installation has five roles, and no others. An administrator changes
 what a role may do, with `PUT /v1/roles/{name}`, and that holds from then on
@@ -336,8 +350,8 @@ agent names, for the model that the agent names.
 - **The key goes to its endpoint and nowhere else.** The Egress Proxy puts
   it into the model requests of the turns that use the provider, which it
   passes on to the host of the provider's URL, below the path of the URL.
-  What else a pod sends out carries no key. The pod cannot say where its
-  model requests go.
+  What else a sandbox sends out carries no key. The sandbox cannot say where
+  its model requests go.
 - **A provider can be replaced while turns use it.** Their next model
   request goes to the endpoint as it is then, with the key as it is then.
 - **The host of a provider is a host like any other.** If the installation
@@ -410,19 +424,21 @@ comes later finds what there is to answer.
   here, OpenCode asks before it runs a command or changes a file, and Codex
   before a command runs outside its sandbox:
   [`images/README.md`](images/README.md) tells more.
-- **A request waits for as long as its turn runs.** It has no time limit of
-  its own. A turn that waits for a person is a running turn: it keeps its
-  pod, and it is stopped when it has run for `runtime.maxTurnSeconds`. The
-  request then ends as `cancelled` and the turn fails as `timed_out`.
-  Cancelling the turn ends its requests in the same way.
+- **A request waits for as long as its turn may run.** The time that a turn
+  waits for a person is of its `runtime.maxTurnSeconds` too, because its
+  sandbox runs while it waits, and the turn takes its place among the turns
+  that run. A turn whose time ends while it waits fails as `timed_out`, and
+  the next message of the session goes on with what was said. Cancelling the
+  turn ends its requests as `cancelled`.
 - **What an option does is up to the harness too.** How long an
   `allow_always` holds differs: in OpenCode until the turn ends, in Codex
   for the rest of the session. After a refusal both end the turn, Codex with
   the stop reason `cancelled`.
 - **It is not what keeps an agent in.** The harness that asks runs in the
-  pod, beside the tools of the agent and as the same user. Approval keeps an
-  agent that means well from acting on a mistake. What a pod can reach is
-  bounded by the network policy and the Egress Proxy, whatever was approved.
+  sandbox, beside the tools of the agent and as the same user. Approval keeps an
+  agent that means well from acting on a mistake. What a sandbox can reach
+  is bounded by the network policy and the Egress Proxy, whatever was
+  approved.
 
 An agent without `approval` asks nobody. If its harness asks for permission
 all the same, the runner allows the action once.
@@ -454,13 +470,15 @@ a turn has `started_at` once its harness has been given the message.
 | `completed` | `end_turn`, `max_tokens`, `max_turn_requests` or `refusal` | The harness ended the turn. |
 | `completed` | `cancelled` | The harness ended the turn because a person refused what it asked approval for. Codex does. |
 | `cancelled` | `cancelled` | The turn was cancelled, and the harness stopped when it was asked to. |
-| `cancelled` | none | The turn was cancelled before its harness was given the message, if it has no `started_at`. Otherwise its harness did not stop in time and its pod was stopped. |
-| `failed` | none or `cancelled` | The turn failed, for the reason in `failure`. A harness whose pod is about to be stopped, as for `timed_out` and `pod_lost`, is asked to end the turn first. `cancelled` says that it did. |
+| `cancelled` | none | The turn was cancelled before its harness was given the message, if it has no `started_at`. Otherwise its harness did not stop in time, and its sandbox was put to sleep. |
+| `failed` | none | The turn failed, for the reason in `failure`. |
 | `expired` | none | The turn waited to run for longer than it may. |
 
 The items are what the user saw. What the harness remembers of a turn that
-did not complete is up to the harness, and it can be less: a harness whose
-pod was stopped did not get to write down what it was saying.
+did not complete is up to the harness, and it can be less: a turn whose
+sandbox was put to sleep before it ended, as one that ran for too long,
+stopped with its pod, and its harness did not get to write down what it was
+saying. The next turn wakes the sandbox with the volume as it was.
 
 `usage` holds `total_tokens`, `input_tokens` and `output_tokens`, and
 `thought_tokens`, `cached_read_tokens` and `cached_write_tokens` if the
@@ -477,10 +495,10 @@ port is not part of its service: the metrics are read from each pod.
 | Metric | |
 | --- | --- |
 | `aviary_turn_queue_length` | How many turns waited to run when a turn was accepted, that turn among them. It is zero for a turn that did not have to wait. |
-| `aviary_turns_running` | The turns that run and whose runners are connected to this Supervisor, by `harness`. |
+| `aviary_turns_running` | The turns that run and that this Supervisor follows, by `harness`. |
 | `aviary_turns_ended_total` | The turns that have ended, by `harness`, `state` and, for a failed turn, `reason`. |
-| `aviary_turn_queue_duration_seconds` | How long a turn waited to run, from its message to its pod being asked for, by `harness`. |
-| `aviary_turn_startup_duration_seconds` | How long a turn took to start, from its pod being asked for to its harness having the message, by `harness`. |
+| `aviary_turn_queue_duration_seconds` | How long a turn waited to run, from its message to its leaving the queue, by `harness`. |
+| `aviary_turn_startup_duration_seconds` | How long a turn took to start, from its leaving the queue to its harness having the message, by `harness`. |
 | `aviary_turn_run_duration_seconds` | How long a turn ran, from its harness having the message to the turn having ended, by `harness` and `state`. |
 | `aviary_turn_tokens_total` | The token usage that the harnesses reported, by `harness` and `kind`. It is not a measurement, as said above. |
 | `aviary_approval_wait_seconds` | How long a request for approval waited, from the harness asking to the harness having its answer, by `harness` and `outcome`: the kind of the option that was picked, or `cancelled` for a request whose turn was stopped first. |
@@ -505,7 +523,7 @@ them:
 | `envoy_http_rbac_denied` | The requests to hosts that `egressProxy.allowedHosts` does not allow. It is there only if the list names hosts. |
 
 Of the interface that Envoy has for its operator, the metrics are all that
-can be reached. A turn pod can read them too, if it asks the forward proxy
+can be reached. A sandbox can read them too, if it asks the forward proxy
 for the proxy's own address and `egressProxy.allowedHosts` allows that
 address, which the default does.
 
@@ -528,34 +546,33 @@ installs it in the local cluster with a file of values of your own.
 | `supervisor.encryption.secretName`, `.key` | A secret with the keys that the Supervisor seals secrets with before it stores them, and the entry of it that seals. An entry is 32 random bytes in base64. To replace the key, add an entry and name it, and keep the entries from before. |
 | `egressProxy.allowedHosts` | The hosts that the Egress Proxy lets requests through to, those of the model providers among them. The default, `*`, is every host. |
 | `egressProxy.insideCIDRs`, `.extraEgress` | A network policy keeps the Egress Proxy itself out of these address ranges, so that it is no way into the cluster. `extraEgress` names what it may still reach there, as egress rules of a network policy: the endpoint of a model provider that is a service in the cluster or at a private address needs one. |
+| `sandboxes.idleSeconds` | After how many seconds a session that is not at work is put to sleep: one whose last turn has ended. The Supervisors look for such sessions once a minute. A session that sleeps has no pod and keeps its volume, and its next turn wakes it in a new pod. Default 300, and 0 is never. |
+| `sandboxes.retentionSeconds` | For how many seconds the sandbox of a session is kept after a turn of the session was last given to it. A session that is not used for longer has ended: its sandbox is deleted with its volume, and what was said in it stays. Default 0, which is until the session is ended. |
 | `runtime.maxConcurrentTurns` | The most turns that run at once. Default 50. |
 | `runtime.maxQueuedTurns` | The most turns that may wait to run. A message beyond it is answered with 429. Default 500, and 0 is no limit. |
 | `runtime.maxQueueWaitSeconds` | How long a turn may wait to run before it ends as expired. Default 120, and 0 is no limit. |
-| `runtime.maxStartupSeconds` | How long the pod of a turn may take to start before the turn fails. Default 90, and 0 is no limit. |
-| `runtime.maxTurnSeconds` | How long a turn may run before it is stopped and fails. Default 1800. |
-| `runtime.maxReconnectSeconds` | How long the runner of a turn goes on without a Supervisor before the turn fails. Default 60, and 0 is no limit. |
+| `runtime.maxStartupSeconds` | How long a turn may take until its harness has the message, which for the first turn of a session is after its sandbox was made. A turn that takes longer fails. Its sandbox is put to sleep if the runner in it had the turn, and stays for the next turn if it was still being made or woken. Default 120, and 0 is no limit. |
+| `runtime.maxTurnSeconds` | How long a turn may run before it fails and its sandbox is put to sleep, the time that it waits for a person included. Default 1800. |
 | `runtime.maxToolOutputBytes` | The longest text of a tool call that the events carry as it is. A longer text is cut. Default 65536, and 0 is no limit. |
-| `runtime.harnesses` | The harnesses that agents can use, each with its image and with the resources for the turns of the agents that have none of their own. |
-| `runtime.store.storageClassName`, `.size` | The volume for the session homes. Its storage class must offer ReadWriteMany. |
+| `runtime.harnesses` | The harnesses that agents can use, each with its image and the `resources` of the pod of a sandbox, as those of a container are written for Kubernetes. A change holds for a sandbox from when it is next woken. |
+| `runtime.volume.size`, `.storageClass` | The volume of a session, mounted at `/home` in its sandbox: what its harness remembers and what its agent works on, and what the agent installs with npm or pip. Default 10Gi, of the default storage class of the cluster. A volume is deleted with its sandbox, when its session is ended or expires. Whether the storage then deletes what was on it is up to the storage class: the default class of the local cluster does, a class with `reclaimPolicy: Retain` does not, and some drivers of file storage keep it unless they are told not to. |
 
-The turn pods mount the runner as an image volume, so the cluster's
-Kubernetes and container runtime must support image volumes, and its
-network plugin must enforce network policies: they are what cuts the turn
-pods off. The namespace of the turn pods enforces the restricted level of
-the Pod Security Standards. The local cluster runs Kubernetes 1.37.
+The chart does not install agent-sandbox either. Aviary runs on
+agent-sandbox v1.0.11, which `make cluster-up` installs from its release.
+The cluster's network plugin must enforce network policies: they are what
+cuts the sandboxes off. The namespace of the sandboxes, `aviary-runtime`,
+enforces the restricted level of the Pod Security Standards. The local
+cluster runs Kubernetes 1.37.
 
-An agent that was created with resources keeps them, and the pods of its
-turns get exactly those. An agent without follows the default of its
-harness: when `runtime.harnesses` changes, its next turn gets the new
-resources. Aviary sets no bound on what an agent may be given.
-A LimitRange or a ResourceQuota on the namespace of the turn pods,
-`aviary-runtime`, does that: Kubernetes then refuses the pod of a turn that
-asks for more, and the turn fails as `startup_timed_out`.
+The pods of the sandboxes are those of the turns that run and of the
+sessions that were at work in the last `sandboxes.idleSeconds`. The volumes
+are those of the sessions that have not ended. Aviary sets no other bound
+on them: a ResourceQuota on `aviary-runtime` does.
 
 Neither a Supervisor nor an Egress Proxy that is to stop, as when its
-deployment is scaled in or rolled out, waits for the turns that use it. The
-runners of the Supervisor go on with another, and the requests that the
-proxy was passing on break.
+deployment is scaled in or rolled out, waits for the turns that use it.
+Another Supervisor follows the turns on, from what was recorded, and the
+requests that the proxy was passing on break.
 
 To run a harness that is not in this repository, see
 [Harness images](images/README.md). To connect Aviary to a database, an
@@ -567,7 +584,7 @@ event log or a secret store that it has no plugin for, see
 ```sh
 make lint          # the formatters, the linters and the generated code
 make test          # each part by itself, without a cluster
-make test-harness  # the harness images, in containers set up as the pods of turns
+make test-harness  # the harness images, in containers with the runner of a session
 make e2e           # the parts together, in a kind cluster of its own
 ```
 
@@ -582,9 +599,8 @@ checks, how to run some of the tests and where a new one goes.
 
 | Path | |
 | --- | --- |
-| `supervisor/` | The Supervisor, in Go: the API, the queue, the Jobs, the connection to the runners, the event streams. Its plugins are in `store/`, `events/` and `secret/`, and `plugins.go` lists those of the build. |
+| `supervisor/` | The Supervisor, in Go: the API, the queue, the sandboxes of the sessions and the runners in them, the event streams, and the answers to the Egress Proxy. Its plugins are in `store/`, `events/` and `secret/`, and `plugins.go` lists those of the build. |
 | `runner/` | The runner, in Rust. |
-| `proto/` | The protocol between the runner and the Supervisor. |
 | `images/` | The images of the Supervisor, the runner and the harnesses. |
 | `deploy/charts/aviary/` | The Helm chart. |
 | `hack/kind/` | The local cluster. |
@@ -596,9 +612,9 @@ checks, how to run some of the tests and where a new one goes.
   a turn connects to. It does not read what is sent over HTTPS.
 - **Measured token usage.** The usage of a turn is what its harness reports.
   The Egress Proxy does not count tokens.
-- **Approval that outlasts the turn.** A request for approval waits in a
-  running pod, for as long as a turn may run. It cannot be left open for
-  days and answered then.
+- **Keeping the files of a session that has ended.** Its volume is deleted
+  with its sandbox. Aviary keeps no copy, and only a storage class that
+  keeps what a deleted volume held does.
 - **Anything but a local cluster.** Aviary has not run on a cloud provider's
   Kubernetes or under load.
 

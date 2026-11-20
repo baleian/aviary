@@ -1,4 +1,16 @@
-model_provider = "aviary"
+# The provider of whatever asks for none. The adapter does: when the first
+# turn of a session has ended, it has a model of its own choosing make a title
+# for the session. That is not the agent's model, and nobody is asked for it:
+# the provider has no address that answers. The session itself is given the
+# provider aviary below, by codex-acp-aviary.
+model_provider = "nobody"
+
+[model_providers.nobody]
+name = "Nobody"
+base_url = "http://127.0.0.1:9/v1"
+wire_api = "responses"
+request_max_retries = 0
+stream_max_retries = 0
 
 [model_providers.aviary]
 name = "Aviary"

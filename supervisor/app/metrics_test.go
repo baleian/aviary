@@ -5,11 +5,8 @@ import (
 	"testing"
 	"time"
 
-	batchv1 "k8s.io/api/batch/v1"
-	corev1 "k8s.io/api/core/v1"
-
 	"aviary/supervisor/internal/driver"
-	runnerv1 "aviary/supervisor/internal/gen/aviary/runner/v1"
+	"aviary/supervisor/store"
 )
 
 // Each Supervisor reports what it did itself, so the numbers of all of them
@@ -31,10 +28,9 @@ func TestMetrics(t *testing.T) {
 
 	// A turn that completes, and reports its usage.
 	completed := one.send(one.session(), "one")
-	job := aviary.job(completed.ID)
-	runner := other.take(job)
+	runner := aviary.given(completed.ID)
 	if running := total("aviary_turns_running"); running != 1 {
-		t.Errorf("with a runner connected, the Supervisors report %v running turns", running)
+		t.Errorf("with a turn that one of them follows, the Supervisors report %v running turns", running)
 	}
 	thought := int64(3)
 	runner.report(started("harness-session"))
@@ -47,14 +43,10 @@ func TestMetrics(t *testing.T) {
 	}
 	runner.answer()
 	runner.report(answered("1", "selected", "never"))
-	// An answer that the runner reports again is not another answer.
-	if _, err := runner.send(runner.seq, answered("1", "selected", "never")); err != nil {
-		t.Fatal(err)
-	}
+	// An answer that the runner tells again is not another answer.
+	runner.report(answered("1", "selected", "never"))
 	runner.report(answered("2", "made up", ""))
-	runner.report(finished("end_turn", &runnerv1.Usage{TotalTokens: 18, InputTokens: 11, OutputTokens: 7, ThoughtTokens: &thought}))
-	runner.leave()
-	aviary.end(job, batchv1.JobComplete, nil)
+	runner.report(finished("end_turn", &store.Usage{TotalTokens: 18, InputTokens: 11, OutputTokens: 7, ThoughtTokens: &thought}))
 	if state := ended(one, completed.ID); state != "turn.completed" {
 		t.Fatalf("the first turn ended with %s", state)
 	}
@@ -63,14 +55,10 @@ func TestMetrics(t *testing.T) {
 	// messages that are refused.
 	session := other.session()
 	cancelled := other.send(session, "two")
-	job = aviary.job(cancelled.ID)
-	runner = one.take(job)
+	runner = aviary.given(cancelled.ID)
 	runner.report(started("harness-session"))
-	runner.report(asks("1", "rm -r build"))
-	// A start that the runner reports again is not another start.
-	if _, err := runner.send(1, started("harness-session")); err != nil {
-		t.Fatal(err)
-	}
+	// A start that the runner tells again is not another start.
+	runner.report(started("harness-session"))
 	expired := one.send(one.session(), "three")
 	if status, _ := one.request("POST", "/v1/sessions/"+session+"/messages", `{"text": "again"}`, nil); status != http.StatusConflict {
 		t.Fatalf("a message to a session with a running turn was answered with %d", status)
@@ -82,28 +70,25 @@ func TestMetrics(t *testing.T) {
 		t.Fatalf("the turn that waited ended with %s", state)
 	}
 
-	// The turn that runs is cancelled.
+	// The turn that runs asks, and is cancelled.
+	runner.report(asks("1", "rm -r build"))
 	if status, _ := other.request("POST", "/v1/turns/"+cancelled.ID+"/cancel", "", nil); status != http.StatusAccepted {
 		t.Fatalf("cancelling the running turn was answered with %d", status)
 	}
 	runner.cancelled()
 	runner.report(answered("1", "cancelled", ""))
 	runner.report(finished("cancelled", nil))
-	runner.leave()
-	aviary.end(job, batchv1.JobComplete, nil)
 	if state := ended(one, cancelled.ID); state != "turn.cancelled" {
 		t.Fatalf("the cancelled turn ended with %s", state)
 	}
 
 	// A turn that fails.
-	failed := other.send(other.session(), "five")
-	job = aviary.job(failed.ID)
-	runner = one.take(job)
+	lost := other.send(other.session(), "five")
+	runner = aviary.given(lost.ID)
 	runner.report(started("harness-session"))
-	runner.call.hang()
-	aviary.end(job, batchv1.JobFailed, stopped(corev1.ContainerStateTerminated{ExitCode: 137, Reason: "OOMKilled"}))
-	if state := ended(other, failed.ID); state != "turn.failed" {
-		t.Fatalf("the turn that took too much memory ended with %s", state)
+	runner.lose()
+	if state := ended(other, lost.ID); state != "turn.failed" {
+		t.Fatalf("the turn that lost its sandbox ended with %s", state)
 	}
 
 	expected := map[string]float64{
@@ -118,19 +103,19 @@ func TestMetrics(t *testing.T) {
 		`aviary_messages_refused_total{reason="session_busy"}`: 1,
 		`aviary_messages_refused_total{reason="queue_full"}`:   1,
 		// Three turns were dispatched and started, and ran to an end.
-		"aviary_turn_queue_duration_seconds_count":                                           3,
-		"aviary_turn_startup_duration_seconds_count":                                         3,
-		"aviary_turn_run_duration_seconds_count":                                             3,
-		`aviary_turns_ended_total{harness="opencode",reason="",state="completed"}`:           1,
-		`aviary_turns_ended_total{harness="opencode",reason="",state="cancelled"}`:           1,
-		`aviary_turns_ended_total{harness="opencode",reason="",state="expired"}`:             1,
-		`aviary_turns_ended_total{harness="opencode",reason="out_of_memory",state="failed"}`: 1,
-		"aviary_turns_ended_total":                                                           4,
-		`aviary_turn_tokens_total{harness="opencode",kind="input"}`:                          11,
-		`aviary_turn_tokens_total{harness="opencode",kind="output"}`:                         7,
-		`aviary_turn_tokens_total{harness="opencode",kind="thought"}`:                        3,
-		"aviary_turn_tokens_total":                                                           21,
-		"aviary_turns_running":                                                               0,
+		"aviary_turn_queue_duration_seconds_count":                                          3,
+		"aviary_turn_startup_duration_seconds_count":                                        3,
+		"aviary_turn_run_duration_seconds_count":                                            3,
+		`aviary_turns_ended_total{harness="opencode",reason="",state="completed"}`:          1,
+		`aviary_turns_ended_total{harness="opencode",reason="",state="cancelled"}`:          1,
+		`aviary_turns_ended_total{harness="opencode",reason="",state="expired"}`:            1,
+		`aviary_turns_ended_total{harness="opencode",reason="sandbox_lost",state="failed"}`: 1,
+		"aviary_turns_ended_total":                                                          4,
+		`aviary_turn_tokens_total{harness="opencode",kind="input"}`:                         11,
+		`aviary_turn_tokens_total{harness="opencode",kind="output"}`:                        7,
+		`aviary_turn_tokens_total{harness="opencode",kind="thought"}`:                       3,
+		"aviary_turn_tokens_total":                                                          21,
+		"aviary_turns_running":                                                              0,
 	}
 	// A Supervisor counts a turn a moment after the turn's last event.
 	differing := func() map[string]float64 {

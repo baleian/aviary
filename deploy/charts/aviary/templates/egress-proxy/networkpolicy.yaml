@@ -7,7 +7,7 @@
 {{- $inside4 = append $inside4 . }}
 {{- end }}
 {{- end }}
-# What the Egress Proxy itself can connect to. The turn pods reach the
+# What the Egress Proxy itself can connect to. The sandboxes reach the
 # outside through it, so it must not be a way into the cluster: to the
 # database, to other pods, to the node. Inside, it reaches only what the
 # rules below name.

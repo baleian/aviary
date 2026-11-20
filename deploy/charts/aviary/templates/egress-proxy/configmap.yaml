@@ -5,11 +5,11 @@
 {{- fail (printf "egressProxy.allowedHosts takes \"*\" and host names, with a port if it is neither 443 nor 80, and %q is neither" .) }}
 {{- end }}
 {{- end }}
-# The configuration of the Egress Proxy, which is Envoy. Whatever a turn pod
-# sends out goes through it, on one of two listeners. On both, the pod sends
-# its turn token, Envoy asks the Supervisor which turn the token belongs to,
-# and writes a record of the request with that turn. It reads no request or
-# response body.
+# The configuration of the Egress Proxy, which is Envoy. Whatever a sandbox
+# sends out goes through it, on one of two listeners. On both, the pod of the
+# sandbox sends the token of its session, Envoy asks the Supervisor which
+# turn runs in that session, and writes a record of the request with that
+# turn. It reads no request or response body.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -32,10 +32,10 @@ data:
         pipe: {path: "@aviary-egress-proxy-admin"}
     static_resources:
       listeners:
-        # The model requests. The pod sends its turn token in place of an
-        # API key. The Supervisor answers with the model endpoint of the
-        # turn, that of the provider that the turn's agent names, and with
-        # its key. Envoy puts the key in the token's place and passes the
+        # The model requests. The pod sends the token of its session in
+        # place of an API key. The Supervisor answers with the model endpoint
+        # of the turn, that of the provider that the turn's agent names, and
+        # with its key. Envoy puts the key in the token's place and passes the
         # request on to that endpoint.
         - name: llm
           address:
@@ -146,11 +146,12 @@ data:
                           dns_cache_config: {name: model, dns_lookup_family: V4_PREFERRED}
                       {{- include "aviary.egress-proxy.router" . | nindent 22 }}
         # Everything else, as a forward proxy. The pod has it in its proxy
-        # variables, with its turn token as the password. Envoy lets a
-        # request through only to the hosts that egressProxy.allowedHosts
-        # allows. A request for an HTTPS URL arrives as CONNECT: Envoy sees
-        # the host and the port and passes the rest on as it is. Where Envoy
-        # itself can connect to is set by its network policy.
+        # variables, with the token of its session as the password. Envoy
+        # lets a request through only to the hosts that
+        # egressProxy.allowedHosts allows. A request for an HTTPS URL arrives
+        # as CONNECT: Envoy sees the host and the port and passes the rest on
+        # as it is. Where Envoy itself can connect to is set by its network
+        # policy.
         - name: forward
           address:
             socket_address: {address: 0.0.0.0, port_value: 3128}

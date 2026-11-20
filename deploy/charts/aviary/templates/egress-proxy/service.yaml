@@ -10,11 +10,11 @@ spec:
     app.kubernetes.io/name: aviary
     app.kubernetes.io/component: egress-proxy
   ports:
-    # The harnesses in the turn pods send their model requests to this port.
+    # The harnesses in the sandboxes send their model requests to this port.
     - name: llm
       port: 8080
       targetPort: llm
-    # The proxy for everything else that a turn pod sends out.
+    # The proxy for everything else that a sandbox sends out.
     - name: forward
       port: 3128
       targetPort: forward

@@ -6,8 +6,6 @@ package store
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,22 +18,17 @@ import (
 )
 
 var (
-	ErrNotFound    = errors.New("not found")
-	ErrSessionBusy = errors.New("session has an unfinished turn")
-	ErrQueueFull   = errors.New("too many turns wait to run")
+	ErrNotFound     = errors.New("not found")
+	ErrSessionBusy  = errors.New("session has an unfinished turn")
+	ErrSessionEnded = errors.New("session has ended")
+	ErrQueueFull    = errors.New("too many turns wait to run")
 	// ErrMemberExists is the error for a member that a project has already.
 	ErrMemberExists = errors.New("the project has this member already")
-	// ErrTurnTaken is returned to a runner that asks for a turn that another
-	// runner took.
-	ErrTurnTaken = errors.New("turn was taken by another runner")
-	// ErrTurnCancelled is returned for a turn that was cancelled or given up
-	// before its runner took it.
-	ErrTurnCancelled = errors.New("turn was cancelled")
-	ErrTurnEnded     = errors.New("turn has ended")
+	ErrTurnEnded    = errors.New("turn has ended")
 )
 
 // The states of a turn. A queued turn waits to run, a dispatching one waits
-// for its runner, and a running one has been taken by its runner. A turn ends
+// for a Supervisor to follow it, and a running one is followed. A turn ends
 // as completed, failed or cancelled, or as expired if it waited too long.
 const (
 	TurnQueued      = "queued"
@@ -74,11 +67,6 @@ type Agent struct {
 	CreatedAt time.Time `json:"created_at"`
 	// Instructions are what the agent is told before every turn, if anything.
 	Instructions string `json:"instructions,omitempty"`
-	// Resources is what the pod of each of the agent's turns asks for and
-	// may use at most, as the resources of a container are written for
-	// Kubernetes. An agent without resources of its own has none: its turns
-	// get the default of its harness, as that is when each turn starts.
-	Resources json.RawMessage `json:"resources,omitempty"`
 	// Approval is "ask" if a person answers what the harness asks before it
 	// acts. Nothing is asked of an agent without it.
 	Approval string `json:"approval,omitempty"`
@@ -136,6 +124,13 @@ type Session struct {
 	// they are.
 	CreatedBy uuid.UUID `json:"created_by,omitzero"`
 	CreatedAt time.Time `json:"created_at"`
+	// EndedAt is when the session was ended, if it was. A session that has
+	// ended takes no message.
+	EndedAt *time.Time `json:"ended_at,omitempty"`
+	// Sandbox is the sandbox that the session runs in, as the sandbox
+	// service names it. It is empty for a session that has none: one that
+	// has run no turn yet, or whose sandbox is gone.
+	Sandbox string `json:"-"`
 }
 
 // Provider is a model provider of a project: a model endpoint and the key
@@ -218,7 +213,8 @@ type Turn struct {
 	// Usage is the token usage of the turn, if the harness reported it.
 	Usage *Usage `json:"usage,omitempty"`
 	// CancelRequestedAt is when the turn was asked to stop, if it was. A
-	// turn that had been dispatched by then ends once its pod has stopped.
+	// turn that had been dispatched by then ends once its harness has
+	// stopped.
 	CancelRequestedAt *time.Time `json:"cancel_requested_at,omitempty"`
 	// Failure is why the turn failed, if it did.
 	Failure *Failure `json:"failure,omitempty"`
@@ -239,8 +235,8 @@ const (
 	// error. That is also how a harness reports that the model endpoint
 	// refused it.
 	FailureHarness = "harness_error"
-	// FailureStartup: the pod of the turn did not start in time, for example
-	// because an image could not be pulled.
+	// FailureStartup: the harness did not get the message in time, for
+	// example because the sandbox of the session could not be made.
 	FailureStartup = "startup_timed_out"
 	// FailureResume: the harness could not continue its session, because
 	// what it had kept of the conversation is gone or cannot be read. The
@@ -248,13 +244,13 @@ const (
 	FailureResume = "resume_failed"
 	// FailureTimedOut: the turn ran for longer than a turn may.
 	FailureTimedOut = "timed_out"
-	// FailureOutOfMemory: the pod used more memory than it may.
-	FailureOutOfMemory = "out_of_memory"
-	// FailurePodLost: the pod was stopped from outside, or is gone.
-	FailurePodLost = "pod_lost"
-	// FailureSupervisorLost: the runner lost its Supervisor and reached
-	// none again in time, or the Supervisor refused it.
-	FailureSupervisorLost = "supervisor_lost"
+	// FailureSandboxLost: the sandbox of the session is gone, and what the
+	// agent had in it.
+	FailureSandboxLost = "sandbox_lost"
+	// FailureSessionExpired: the session was not used for longer than the
+	// installation keeps the sandbox of one. The sandbox is gone with what
+	// the agent had in it, and the session has ended.
+	FailureSessionExpired = "session_expired"
 	// FailureRunner: the runner failed in another way.
 	FailureRunner = "runner_error"
 )
@@ -274,53 +270,42 @@ type Usage struct {
 // DispatchedTurn is a turn that was dispatched and has not ended.
 type DispatchedTurn struct {
 	ID uuid.UUID
-	// Taken tells whether the runner of the turn has connected and taken
-	// the turn.
-	Taken bool
-	// Age is how long ago the turn was dispatched.
-	Age time.Duration
 	// Cancelling is how long ago the turn was asked to stop, or zero if it
 	// was not.
 	Cancelling time.Duration
 }
 
-// TakenTurn is a turn as its runner gets it.
-type TakenTurn struct {
+// FollowedTurn is a turn as the Supervisor that follows it gets it, with
+// what it takes to run the turn.
+type FollowedTurn struct {
 	Turn
-	// HarnessSessionID is the harness session to continue. It is nil in the
-	// first turn of a session, which starts the harness session.
-	HarnessSessionID *string
-	// Harness and Instructions are the harness and the instructions of the
-	// session's agent.
-	Harness      string
-	Instructions string
-	// Again is set for a turn that its runner had taken before.
-	Again bool
-}
-
-// Dispatch is what it takes to run a turn.
-type Dispatch struct {
-	TurnID    uuid.UUID
-	SessionID uuid.UUID
 	AgentID   uuid.UUID
 	ProjectID uuid.UUID
-	Harness   string
-	// Resources are the resources of the agent, if it has any of its own.
-	Resources json.RawMessage
-	// Approval is the approval of the agent, if it has any.
-	Approval string
+	// Harness, Instructions and Approval are those of the session's agent.
+	Harness      string
+	Instructions string
+	Approval     string
 	// ProviderURL is the URL of the agent's provider and Model the name of
 	// the agent's model, if the agent names its model.
 	ProviderURL string
 	Model       string
-	// Token is what the runner takes the turn with. Only its hash is stored.
-	Token string
+	// Sandbox is the sandbox of the session, if it has one.
+	Sandbox string
+	// Dispatched is how long ago the turn was dispatched.
+	Dispatched time.Duration
+}
+
+// Dispatch is a turn that was dispatched.
+type Dispatch struct {
+	TurnID uuid.UUID
+	// Harness is the harness of the turn's agent.
+	Harness string
 	// Waited is how long the turn waited to run.
 	Waited time.Duration
 }
 
-// Origin is where a request from a turn pod comes from: the turn, and the
-// session, the agent and the project that the turn belongs to.
+// Origin is where a request of a sandbox comes from: the turn that runs in
+// it, and the session, the agent and the project that the turn belongs to.
 type Origin struct {
 	TurnID    uuid.UUID
 	SessionID uuid.UUID
@@ -455,9 +440,9 @@ type Store interface {
 	SetRole(ctx context.Context, name string, permissions []string, by uuid.UUID) (Role, error)
 
 	// CreateAgent creates an agent with what the given one has of its own: its
-	// harness, instructions, resources, approval and model. It returns
-	// ErrNotFound if the project does not exist, and creates no agent that
-	// names a provider that there is not.
+	// harness, instructions, approval and model. It returns ErrNotFound if the
+	// project does not exist, and creates no agent that names a provider that
+	// there is not.
 	CreateAgent(ctx context.Context, projectID uuid.UUID, agent Agent) (Agent, error)
 
 	// Agent returns the agent with the ID.
@@ -474,6 +459,22 @@ type Store interface {
 
 	// Session returns the session with the ID.
 	Session(ctx context.Context, id uuid.UUID) (Session, error)
+
+	// SetSandbox records that the session runs in the sandbox to from now
+	// on, where it ran in from before. Either is "" for none: a session is
+	// given its first sandbox from "", and loses its sandbox to "". It
+	// reports false, and records nothing, for a session that does not have
+	// the sandbox from: another Supervisor has given it one meanwhile, or
+	// taken that one away. It returns ErrNotFound if there is no such
+	// session.
+	SetSandbox(ctx context.Context, sessionID uuid.UUID, from, to string) (bool, error)
+
+	// EndSession ends the session: from then on it takes no message. It
+	// returns the session as it then is, with the sandbox that it has. A
+	// session that had ended before is returned as it is. It returns
+	// ErrNotFound if there is no such session, and ErrSessionBusy if a turn
+	// of the session has not ended.
+	EndSession(ctx context.Context, id uuid.UUID) (Session, error)
 
 	// Sessions returns the sessions of the agent whose IDs are below the ID
 	// before, newest first and at most limit of them: those of the user by,
@@ -513,13 +514,13 @@ type Store interface {
 	ReplaceSecretStore(ctx context.Context, secrets SecretStore) (SecretStore, error)
 
 	// CreateTurn queues a message as the session's next turn. It returns
-	// ErrNotFound if the session does not exist, ErrSessionBusy if the session
-	// has a turn that has not finished, and ErrQueueFull if more than maxWaiting
-	// turns would then wait to run. Zero is no such limit. A queued turn waits
-	// only if the turns that run leave it no room among maxRunning. The second
-	// result is how many turns then wait to run, the new one among them: zero if
-	// it need not wait. The turn is of the user who sent the message, by, or
-	// of nobody if by is uuid.Nil.
+	// ErrNotFound if the session does not exist, ErrSessionEnded if the
+	// session has ended, ErrSessionBusy if the session has a turn that has
+	// not finished, and ErrQueueFull if more than maxWaiting turns would then
+	// wait to run. Zero is no such limit. A queued turn waits only if the
+	// turns that run leave it no room among maxRunning. The second result is how many turns then wait to run, the new one among
+	// them: zero if it need not wait. The turn is of the user who sent the
+	// message, by, or of nobody if by is uuid.Nil.
 	CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, maxWaiting, maxRunning int) (Turn, int, error)
 
 	// AnnounceQueue calls announce with the turns that wait to run, in the order
@@ -544,14 +545,14 @@ type Store interface {
 	// agent said or did anything in it.
 	TurnItems(ctx context.Context, turnIDs []uuid.UUID) (map[uuid.UUID][]json.RawMessage, error)
 
-	// DispatchTurns makes queued turns wait for their runners, oldest first, for
-	// as long as fewer than limit turns are running or about to. It returns what
-	// it takes to run each of them.
+	// DispatchTurns dispatches queued turns, oldest first, for as long as
+	// fewer than limit turns are running or about to. It returns the turns
+	// that it dispatched.
 	DispatchTurns(ctx context.Context, limit int) ([]Dispatch, error)
 
 	// CancelTurn cancels a turn that has not ended. A turn that waits to run
 	// ends as cancelled at once. A turn that was dispatched is marked: it ends
-	// when its pod has stopped. CancelTurn returns the turn as it then is, and
+	// when its harness has stopped. CancelTurn returns the turn as it then is, and
 	// whether the turn had not ended before.
 	CancelTurn(ctx context.Context, id uuid.UUID) (Turn, bool, error)
 
@@ -562,26 +563,25 @@ type Store interface {
 	// DispatchedTurns returns the turns that were dispatched and have not ended.
 	DispatchedTurns(ctx context.Context) ([]DispatchedTurn, error)
 
-	// TakeTurn gives the turn that the token opens to the runner that asks for
-	// it, which names itself with runner. A turn is given to one runner only,
-	// because a runner that took it may already have acted on it: a second pod
-	// of the turn would run the turn again. The runner that took a turn is given
-	// it again for as long as the turn runs, unless it has no name.
+	// FollowTurn returns a turn that was dispatched and has not ended as the
+	// Supervisor that follows it gets it: the one that has the turn run and
+	// records what comes of it. A turn that is followed runs. Which of the
+	// Supervisors follows a turn, they settle in the event log.
 	//
-	// It returns ErrNotFound if the token opens no turn, ErrTurnTaken if another
-	// runner took the turn and ErrTurnEnded if the turn has ended.
-	TakeTurn(ctx context.Context, token string, runner *uuid.UUID) (TakenTurn, error)
+	// It returns ErrNotFound if there is no such turn or the turn still
+	// waits to run, and ErrTurnEnded if the turn has ended.
+	FollowTurn(ctx context.Context, turnID uuid.UUID) (FollowedTurn, error)
 
-	// RunningTurn returns the turn that the token belongs to, while that turn
-	// runs, and what the turn belongs to. It returns ErrNotFound for any other
-	// token.
-	RunningTurn(ctx context.Context, token string) (Origin, error)
+	// SessionTurn returns the turn that runs in the session, and what the
+	// turn belongs to. It returns ErrNotFound if no turn runs in the
+	// session.
+	SessionTurn(ctx context.Context, sessionID uuid.UUID) (Origin, error)
 
-	// StartTurn records that the harness of the turn has been given the message,
-	// and the harness session that the turn runs in, for the next turn of the
-	// session to continue. It returns how long the turn took to start, from its
-	// dispatch, and reports false for a turn that had started before.
-	StartTurn(ctx context.Context, turnID uuid.UUID, harnessSessionID string) (time.Duration, bool, error)
+	// StartTurn records that the harness of the turn has been given the
+	// message. It returns how long the turn took to start, from its dispatch,
+	// and reports false, and records nothing, for a turn that had started
+	// before.
+	StartTurn(ctx context.Context, turnID uuid.UUID) (time.Duration, bool, error)
 
 	// TurnHarness returns the harness of the agent that the turn belongs to,
 	// or ErrNotFound if there is no such turn.
@@ -591,15 +591,9 @@ type Store interface {
 	// if the harness reported it, the token usage of the turn.
 	SetFinished(ctx context.Context, turnID uuid.UUID, stopReason string, usage *Usage) error
 
-	// GiveUpTurn records why a turn whose runner has not taken it is given up.
-	// From then on the runner is not given the turn, and the turn fails for
-	// that reason once its pod is gone. It reports whether the turn was still
-	// waiting for its runner.
-	GiveUpTurn(ctx context.Context, turnID uuid.UUID, failure Failure) (bool, error)
-
-	// EndTurn records that the pod of the turn has ended. The turn is completed
-	// if the pod succeeded and the runner reported why the harness stopped, and
-	// failed otherwise, for the reason that failure gives. A turn that was asked
+	// EndTurn records that the turn has ended. The turn is completed if it
+	// succeeded and the runner reported why the harness stopped, and failed
+	// otherwise, for the reason that failure gives. A turn that was asked
 	// to stop is cancelled, unless the harness had ended it by itself. From then
 	// on the session accepts its next message. The second result is false if the
 	// turn had ended before, or does not exist.
@@ -705,17 +699,4 @@ func MigrateTo(ctx context.Context, address string, version int64, plugins ...Pl
 		return err
 	}
 	return plugin.MigrateTo(ctx, address, version)
-}
-
-// NewToken returns the token of a turn that is dispatched, which its runner
-// takes the turn with.
-func NewToken() string {
-	return rand.Text()
-}
-
-// HashToken returns what a store keeps of a turn token. The token is random,
-// so a plain hash is enough to keep it from being read back.
-func HashToken(token string) []byte {
-	hash := sha256.Sum256([]byte(token))
-	return hash[:]
 }

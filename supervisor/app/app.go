@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -19,19 +20,19 @@ import (
 	"time"
 
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
+	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/klog/v2"
+	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/client-go/rest"
 
 	"aviary/supervisor/events"
 	"aviary/supervisor/identity"
 	"aviary/supervisor/internal/api"
 	"aviary/supervisor/internal/authz"
 	"aviary/supervisor/internal/driver"
-	"aviary/supervisor/internal/gateway"
-	runnerv1 "aviary/supervisor/internal/gen/aviary/runner/v1"
 	"aviary/supervisor/internal/metrics"
+	"aviary/supervisor/internal/sandbox"
 	"aviary/supervisor/secret"
 	"aviary/supervisor/store"
 )
@@ -39,10 +40,6 @@ import (
 const (
 	databaseURL        = "AVIARY_DATABASE_URL"
 	eventsURL          = "AVIARY_EVENTS_URL"
-	gatewayURL         = "AVIARY_GATEWAY_URL"
-	runnerImage        = "AVIARY_RUNNER_IMAGE"
-	llmBaseURL         = "AVIARY_LLM_BASE_URL"
-	proxyURL           = "AVIARY_PROXY_URL"
 	encryptionKeys     = "AVIARY_ENCRYPTION_KEYS"
 	encryptionKey      = "AVIARY_ENCRYPTION_KEY"
 	secretStoreHosts   = "AVIARY_SECRET_STORE_HOSTS"
@@ -54,12 +51,17 @@ const (
 	maxConcurrentTurns = "AVIARY_MAX_CONCURRENT_TURNS"
 	maxQueuedTurns     = "AVIARY_MAX_QUEUED_TURNS"
 	maxQueueWait       = "AVIARY_MAX_QUEUE_WAIT_SECONDS"
-	maxReconnect       = "AVIARY_MAX_RECONNECT_SECONDS"
 	maxStartup         = "AVIARY_MAX_STARTUP_SECONDS"
 	maxToolOutput      = "AVIARY_MAX_TOOL_OUTPUT_BYTES"
 	maxTurn            = "AVIARY_MAX_TURN_SECONDS"
+	sandboxNamespace   = "AVIARY_SANDBOX_NAMESPACE"
+	sandboxVolume      = "AVIARY_SANDBOX_VOLUME_SIZE"
+	sandboxClass       = "AVIARY_SANDBOX_STORAGE_CLASS"
+	sandboxIdle        = "AVIARY_SANDBOX_IDLE_SECONDS"
+	sandboxRetention   = "AVIARY_SANDBOX_RETENTION_SECONDS"
+	modelsURL          = "AVIARY_LLM_BASE_URL"
+	proxyURL           = "AVIARY_PROXY_URL"
 	apiAddr            = ":8080"
-	gatewayAddr        = ":9090"
 	authzAddr          = ":9091"
 	metricsAddr        = ":9092"
 	// shutdownTimeout is how long the requests to the API get to finish.
@@ -69,7 +71,7 @@ const (
 	identityPatience = 30 * time.Second
 	// keepaliveInterval is how often the Supervisor asks the other end of an
 	// idle connection whether it is still there, and how long it waits for
-	// the answer. The runners and the Egress Proxy ask the same of it.
+	// the answer. The Egress Proxy asks the same of it.
 	keepaliveInterval = 30 * time.Second
 )
 
@@ -80,7 +82,7 @@ var handover = 5 * time.Second
 
 // ports are what a Supervisor listens on.
 type ports struct {
-	api, gateway, authz, metrics net.Listener
+	api, authz, metrics net.Listener
 }
 
 // Plugins are the plugins of a build: what connects its Supervisor to the
@@ -106,8 +108,6 @@ type Plugins struct {
 func Main(plugins Plugins) {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
-	// The Kubernetes client logs through klog.
-	klog.SetSlogLogger(logger)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	if err := Run(ctx, os.Args[1:], plugins); err != nil {
@@ -139,6 +139,50 @@ func Run(ctx context.Context, args []string, plugins Plugins) error {
 		return store.MigrateTo(ctx, database, version, plugins.Databases...)
 	}
 	return errors.New("usage: aviary-supervisor [migrate [<version>]]")
+}
+
+// sandboxSettings reads where the sandboxes of the sessions are made, in
+// the cluster that the Supervisor runs in, and what they are made with.
+func sandboxSettings() (sandbox.Settings, error) {
+	var settings sandbox.Settings
+	var err error
+	if settings.Namespace, err = env(sandboxNamespace); err != nil {
+		return settings, err
+	}
+	size, err := env(sandboxVolume)
+	if err != nil {
+		return settings, err
+	}
+	if settings.Volume, err = resource.ParseQuantity(size); err != nil || settings.Volume.Sign() <= 0 {
+		return settings, fmt.Errorf("%s must be a size such as 10Gi", sandboxVolume)
+	}
+	// Without a class, the volumes are of the default class of the cluster.
+	settings.StorageClass = os.Getenv(sandboxClass)
+	output, err := env(maxToolOutput)
+	if err != nil {
+		return settings, err
+	}
+	if settings.MaxToolOutputBytes, err = strconv.Atoi(output); err != nil || settings.MaxToolOutputBytes < 0 {
+		return settings, fmt.Errorf("%s must be a number of bytes, or zero for no limit", maxToolOutput)
+	}
+	if settings.Proxy, err = address(proxyURL); err != nil {
+		return settings, err
+	}
+	settings.Models, err = address(modelsURL)
+	return settings, err
+}
+
+// address reads the URL of the Egress Proxy that the variable names.
+func address(name string) (*url.URL, error) {
+	value, err := env(name)
+	if err != nil {
+		return nil, err
+	}
+	at, err := url.Parse(value)
+	if err != nil || at.Scheme != "http" || at.Hostname() == "" {
+		return nil, fmt.Errorf("%s must be a URL such as http://aviary-egress-proxy.aviary-system:8080", name)
+	}
+	return at, nil
 }
 
 func serve(ctx context.Context, database string, plugins Plugins) error {
@@ -175,7 +219,15 @@ func serve(ctx context.Context, database string, plugins Plugins) error {
 	if err != nil {
 		return err
 	}
-	client, err := driver.InCluster()
+	settings, err := sandboxSettings()
+	if err != nil {
+		return err
+	}
+	cluster, err := rest.InClusterConfig()
+	if err != nil {
+		return err
+	}
+	client, err := sandbox.New(cluster, settings)
 	if err != nil {
 		return err
 	}
@@ -184,86 +236,68 @@ func serve(ctx context.Context, database string, plugins Plugins) error {
 	if on.api, err = net.Listen("tcp", apiAddr); err != nil {
 		return err
 	}
-	if on.gateway, err = net.Listen("tcp", gatewayAddr); err != nil {
-		return err
-	}
 	if on.authz, err = net.Listen("tcp", authzAddr); err != nil {
 		return err
 	}
 	if on.metrics, err = net.Listen("tcp", metricsAddr); err != nil {
 		return err
 	}
-	return serveOn(ctx, on, st, ev, client, config, keys, stores, callers, gateway.Sweep)
+	return serveOn(ctx, on, st, ev, client, config, keys, stores, callers)
 }
 
 // serveOn serves on the ports until ctx is done, with the turns in the
-// database of the store and their pods in the cluster of the client. It
-// seals the secrets that it stores with the keys, and reads the others from
-// the stores. The callers are who may use the API. Every sweep it looks for
-// what the runners are to be told and no Supervisor announced.
-func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, client kubernetes.Interface, config driver.Config, keys *secret.Keys, stores *secret.Stores, callers api.Callers, sweep time.Duration) error {
+// database of the store and their sandboxes kept by sandboxes. It seals the
+// secrets that it stores and the tokens of the sessions with the keys, and
+// reads the other secrets from the stores. The callers are who may use the
+// API.
+func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, sandboxes driver.Sandboxes, config driver.Config, keys *secret.Keys, stores *secret.Stores, callers api.Callers) error {
 	m := metrics.New()
 	stores.Asked = m.SecretRead
-	dr, err := driver.New(config, client, st, ev, m)
-	if err != nil {
-		return err
-	}
-	runners := gateway.New(st, ev, m, sweep)
+	config.Token = func(session uuid.UUID) (string, error) { return authz.Token(keys, session) }
+	dr := driver.New(config, sandboxes, st, ev, m)
 	apiServer := &http.Server{
 		Handler:           api.New(st, ev, dr, keys, stores, callers, ctx.Done()),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	// A machine that is gone closes no connection. Both ends of a connection
-	// find that out by asking, and close it.
-	alive := []grpc.ServerOption{
+	// The Egress Proxy asks on a port of its own, so that the sandboxes can
+	// be kept from it. A machine that is gone closes no connection: both ends
+	// of a connection find that out by asking, and close it.
+	authzServer := grpc.NewServer(
 		grpc.KeepaliveParams(keepalive.ServerParameters{Time: keepaliveInterval, Timeout: keepaliveInterval}),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             keepaliveInterval / 2,
 			PermitWithoutStream: true,
 		}),
-	}
-	gatewayServer := grpc.NewServer(alive...)
-	runnerv1.RegisterRunnerServiceServer(gatewayServer, runners)
-	// The Egress Proxy asks on a port of its own, so that the turn pods can
-	// be kept from it.
-	authzServer := grpc.NewServer(alive...)
+	)
 	authv3.RegisterAuthorizationServer(authzServer, authz.New(st, keys, stores))
 	// The metrics are on a port of their own, which the clients of the API
-	// and the turn pods have no way to. They are served until the Supervisor
-	// has stopped.
+	// and the sandboxes have no way to. They are served until the
+	// Supervisor has stopped.
 	metricsMux := http.NewServeMux()
 	metricsMux.Handle("GET /metrics", m.Handler())
 	metricsServer := &http.Server{Handler: metricsMux, ReadHeaderTimeout: 10 * time.Second}
 	defer metricsServer.Close()
-	failed := make(chan error, 4)
+	failed := make(chan error, 3)
 	go func() { failed <- apiServer.Serve(on.api) }()
-	go func() { failed <- gatewayServer.Serve(on.gateway) }()
 	go func() { failed <- authzServer.Serve(on.authz) }()
 	go func() { failed <- metricsServer.Serve(on.metrics) }()
 	go dr.Run(ctx)
-	// The runners are served for a while after the Supervisor was told to
-	// stop.
-	serving, served := context.WithCancel(context.Background())
-	defer served()
-	go runners.Run(serving)
-	slog.Info("listening", "api", on.api.Addr().String(), "gateway", on.gateway.Addr().String(),
-		"authz", on.authz.Addr().String(), "metrics", on.metrics.Addr().String())
+	slog.Info("listening", "api", on.api.Addr().String(), "authz", on.authz.Addr().String(),
+		"metrics", on.metrics.Addr().String())
 
 	select {
 	case err := <-failed:
 		return err
 	case <-ctx.Done():
 	}
-	// A Supervisor that is told to stop takes on no more turns, and the other
-	// Supervisors go on.
+	// A Supervisor that is told to stop takes on no more turns and follows
+	// none. The other Supervisors go on, and take up the turns that it
+	// followed.
 	slog.Info("stopping")
 	time.Sleep(handover)
 	stopping, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	err = apiServer.Shutdown(stopping)
-	// The runners call another Supervisor. GracefulStop would wait for
-	// their turns to end.
-	gatewayServer.Stop()
+	err := apiServer.Shutdown(stopping)
 	authzServer.GracefulStop()
 	return err
 }
@@ -345,30 +379,44 @@ func callersOf(ctx context.Context, plugins []identity.Plugin) (api.Callers, err
 	return callers, err
 }
 
-// driverConfig reads how turns are run. The harnesses are a JSON object such
-// as {"opencode": {"image": "..."}}.
+// driverConfig reads how turns are run.
 func driverConfig() (driver.Config, error) {
 	var config driver.Config
-	var err error
-	if config.GatewayURL, err = env(gatewayURL); err != nil {
-		return config, err
-	}
-	if config.RunnerImage, err = env(runnerImage); err != nil {
-		return config, err
-	}
-	if config.LLMBaseURL, err = env(llmBaseURL); err != nil {
-		return config, err
-	}
-	if config.ProxyURL, err = env(proxyURL); err != nil {
-		return config, err
-	}
+	// The harnesses are a JSON object such as {"opencode": {"image":
+	// "registry.example.com/harness-opencode:1.0", "resources": {"requests":
+	// {"cpu": "250m", "memory": "1Gi"}, "limits": {"memory": "4Gi"}}}}.
 	encoded, err := env(harnesses)
 	if err != nil {
+		return config, err
+	}
+	if config.Models, err = address(modelsURL); err != nil {
 		return config, err
 	}
 	if err := json.Unmarshal([]byte(encoded), &config.Harnesses); err != nil {
 		return config, fmt.Errorf("%s: %w", harnesses, err)
 	}
+	for name, harness := range config.Harnesses {
+		if harness.Image == "" {
+			return config, fmt.Errorf("%s: the harness %s has no image", harnesses, name)
+		}
+	}
+	idle, err := env(sandboxIdle)
+	if err != nil {
+		return config, err
+	}
+	seconds, err := strconv.Atoi(idle)
+	if err != nil || seconds < 0 {
+		return config, fmt.Errorf("%s must be a number of seconds, or zero for never", sandboxIdle)
+	}
+	config.Idle = time.Duration(seconds) * time.Second
+	retention, err := env(sandboxRetention)
+	if err != nil {
+		return config, err
+	}
+	if seconds, err = strconv.Atoi(retention); err != nil || seconds < 0 {
+		return config, fmt.Errorf("%s must be a number of seconds, or zero for until the session is ended", sandboxRetention)
+	}
+	config.Retention = time.Duration(seconds) * time.Second
 	limit, err := env(maxConcurrentTurns)
 	if err != nil {
 		return config, err
@@ -387,18 +435,10 @@ func driverConfig() (driver.Config, error) {
 	if err != nil {
 		return config, err
 	}
-	seconds, err := strconv.Atoi(wait)
-	if err != nil || seconds < 0 {
+	if seconds, err = strconv.Atoi(wait); err != nil || seconds < 0 {
 		return config, fmt.Errorf("%s must be a number of seconds, or zero for no limit", maxQueueWait)
 	}
 	config.MaxQueueWait = time.Duration(seconds) * time.Second
-	output, err := env(maxToolOutput)
-	if err != nil {
-		return config, err
-	}
-	if config.MaxToolOutputBytes, err = strconv.Atoi(output); err != nil || config.MaxToolOutputBytes < 0 {
-		return config, fmt.Errorf("%s must be a number of bytes, or zero for no limit", maxToolOutput)
-	}
 	startup, err := env(maxStartup)
 	if err != nil {
 		return config, err
@@ -415,14 +455,6 @@ func driverConfig() (driver.Config, error) {
 		return config, fmt.Errorf("%s must be a number of seconds above zero", maxTurn)
 	}
 	config.MaxTurn = time.Duration(seconds) * time.Second
-	reconnect, err := env(maxReconnect)
-	if err != nil {
-		return config, err
-	}
-	if seconds, err = strconv.Atoi(reconnect); err != nil || seconds < 0 {
-		return config, fmt.Errorf("%s must be a number of seconds, or zero for no limit", maxReconnect)
-	}
-	config.MaxReconnect = time.Duration(seconds) * time.Second
 	return config, nil
 }
 

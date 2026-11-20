@@ -28,15 +28,20 @@ egressProxy:
     - to:
         - namespaceSelector:
             matchLabels: {kubernetes.io/metadata.name: llm-gateway}
+sandboxes:
+  idleSeconds: 0
+  retentionSeconds: 604800
 runtime:
   maxConcurrentTurns: 7
   maxQueuedTurns: 11
   maxQueueWaitSeconds: 13
   maxStartupSeconds: 17
   maxTurnSeconds: 7200
-  maxReconnectSeconds: 19
   maxToolOutputBytes: 23
   harnesses:
     opencode:
       resources:
-        requests: {memory: 333Mi}
+        limits: {memory: 8Gi}
+  volume:
+    size: 50Gi
+    storageClass: fast

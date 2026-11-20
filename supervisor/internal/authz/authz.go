@@ -1,6 +1,7 @@
 // Package authz answers the Egress Proxy. Before the proxy passes a request
-// from a turn pod on, it asks which turn the request comes from. The proxy is
-// Envoy, and it asks through its external authorization API.
+// from a sandbox on, it asks which turn the request comes from: the turn
+// that runs in the session of the token that the request carries. The proxy
+// is Envoy, and it asks through its external authorization API.
 package authz
 
 import (
@@ -33,10 +34,25 @@ const (
 	upstreamTLSHeader = "x-aviary-upstream-tls"
 )
 
+// place is what the token of a session is sealed for.
+const place = "the token of a session"
+
+// Token returns the token of the session, which the pod of its sandbox sends
+// with every request that leaves it: the ID of the session, sealed with the
+// keys of the installation. Nothing but Aviary makes one or opens it.
+func Token(keys *secret.Keys, session uuid.UUID) (string, error) {
+	sealed, err := keys.Seal(session.String(), place)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(sealed), nil
+}
+
 type authorizer struct {
 	authv3.UnimplementedAuthorizationServer
 	store store.Store
-	// keys open the API keys of the providers that are stored.
+	// keys open the tokens of the sessions, and the API keys of the
+	// providers that are stored.
 	keys *secret.Keys
 	// stores are read for the API keys that are in the secret stores of the
 	// projects.
@@ -47,15 +63,15 @@ func New(st store.Store, keys *secret.Keys, stores *secret.Stores) authv3.Author
 	return &authorizer{store: st, keys: keys, stores: stores}
 }
 
-// Check allows a request that carries the token of a running turn. The
-// proxy gets back, as metadata, the ID of the turn and those of the session,
-// the agent and the project that the turn belongs to, and for a model
-// request that of the provider that it goes to. If the installation asks who
-// its callers are, it also gets back the user who sent the message of the
-// turn: the ID of the user, and the subject that the identity provider knows
-// the user by, which tells who it was without the records of Aviary. The
-// proxy writes them to its access log, so that a line of the log tells by
-// itself where a request came from.
+// Check allows a request that carries the token of a session in which a
+// turn runs. The proxy gets back, as metadata, the ID of the turn and those
+// of the session, the agent and the project that the turn belongs to, and
+// for a model request that of the provider that it goes to. If the
+// installation asks who its callers are, it also gets back the user who sent
+// the message of the turn: the ID of the user, and the subject that the
+// identity provider knows the user by, which tells who it was without the
+// records of Aviary. The proxy writes them to its access log, so that a line
+// of the log tells by itself where a request came from.
 //
 // A request to the model endpoint carries the token as its bearer token, in
 // place of the API key. A request to the forward proxy carries it as the
@@ -74,10 +90,11 @@ func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*
 	if forward {
 		token = proxyPassword(headers["proxy-authorization"])
 	}
-	if token == "" {
+	session, known := a.session(token)
+	if !known {
 		return denied(forward), nil
 	}
-	origin, err := a.store.RunningTurn(ctx, token)
+	origin, err := a.store.SessionTurn(ctx, session)
 	if errors.Is(err, store.ErrNotFound) {
 		return denied(forward), nil
 	}
@@ -86,7 +103,7 @@ func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*
 		if ctx.Err() != nil {
 			return nil, status.FromContextError(ctx.Err()).Err()
 		}
-		slog.ErrorContext(ctx, "look up the turn of a token", "error", err)
+		slog.ErrorContext(ctx, "look up the turn of a session", "session", session, "error", err)
 		return nil, status.Error(codes.Internal, "internal error")
 	}
 	from := map[string]any{
@@ -126,9 +143,10 @@ func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*
 
 // endpoint returns what the proxy is to make of a model request of a turn
 // for the path: pass it on to the endpoint of the turn's provider, with the
-// key of the provider where the pod sent its turn token. An endpoint that
-// takes no key does not get the token either. A request for a path beside
-// that of the endpoint is refused, and so is one whose key cannot be read.
+// key of the provider where the pod sent the token of its session. An
+// endpoint that takes no key does not get the token either. A request for a
+// path beside that of the endpoint is refused, and so is one whose key
+// cannot be read.
 func (a *authorizer) endpoint(ctx context.Context, origin store.Origin, path string) (*authv3.OkHttpResponse, *authv3.CheckResponse) {
 	provider := origin.Provider
 	address, err := url.Parse(provider.URL)
@@ -203,6 +221,21 @@ func refused(status typev3.StatusCode, why string) *authv3.CheckResponse {
 	}
 }
 
+// session returns the session whose token it is, or false for what is no
+// token of a session.
+func (a *authorizer) session(token string) (uuid.UUID, bool) {
+	sealed, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || token == "" {
+		return uuid.Nil, false
+	}
+	opened, err := a.keys.Open(sealed, place)
+	if err != nil {
+		return uuid.Nil, false
+	}
+	session, err := uuid.Parse(opened)
+	return session, err == nil
+}
+
 // bearerToken reads the token from an Authorization header.
 func bearerToken(header string) string {
 	token, found := strings.CutPrefix(header, "Bearer ")
@@ -232,7 +265,7 @@ func proxyPassword(header string) string {
 func denied(forward bool) *authv3.CheckResponse {
 	response := &authv3.DeniedHttpResponse{
 		Status: &typev3.HttpStatus{Code: typev3.StatusCode_Unauthorized},
-		Body:   "the token belongs to no running turn\n",
+		Body:   "no turn runs in the session of the token\n",
 	}
 	if forward {
 		response.Status.Code = typev3.StatusCode_ProxyAuthenticationRequired

@@ -5,8 +5,8 @@ insert into projects (id, name) values (sqlc.arg(id), sqlc.arg(name));
 select * from projects where id = ?;
 
 -- name: CreateAgent :execrows
-insert into agents (id, project_id, harness, instructions, resources, approval, provider_id, model)
-select sqlc.arg(id), projects.id, sqlc.arg(harness), sqlc.arg(instructions), sqlc.narg(resources), sqlc.arg(approval),
+insert into agents (id, project_id, harness, instructions, approval, provider_id, model)
+select sqlc.arg(id), projects.id, sqlc.arg(harness), sqlc.arg(instructions), sqlc.arg(approval),
        sqlc.narg(provider_id), sqlc.arg(model)
 from projects where projects.id = sqlc.arg(project_id);
 
@@ -23,6 +23,9 @@ select sqlc.arg(id), agents.id, sqlc.narg(created_by) from agents where agents.i
 -- name: GetSession :one
 select * from sessions where id = ?;
 
+-- name: SetSandbox :exec
+update sessions set sandbox = sqlc.narg(sandbox) where id = sqlc.arg(id);
+
 -- name: ListSessions :many
 -- The sessions of an agent whose IDs are below the one that is given, newest
 -- first: the ID of a session rises with the time at which it was created.
@@ -36,8 +39,16 @@ order by id desc limit ?;
 
 -- name: LockSession :one
 -- Holds the session until the transaction ends: the messages that reach a
--- session at once are taken one after another.
-select id from sessions where id = ? for update;
+-- session at once are taken one after another, and none of them while the
+-- session is being ended.
+select * from sessions where id = ? for update;
+
+-- name: IsSessionBusy :one
+-- Whether a turn of the session has not ended.
+select exists (select 1 from turns where session_id = ? and ended_at is null);
+
+-- name: EndSession :exec
+update sessions set ended_at = now(6) where id = ?;
 
 -- name: CreateProvider :execrows
 insert into providers (id, project_id, name, url, api_key, api_key_store_id, api_key_path, api_key_name)
@@ -92,9 +103,6 @@ select * from turns where id = ?;
 -- is done one after another.
 select * from turns where id = ? for update;
 
--- name: LockTurnOfToken :one
-select * from turns where token_hash = ? for update;
-
 -- name: ListTurns :many
 -- The turns of a session that came before the one with the sequence number,
 -- newest first.
@@ -110,7 +118,9 @@ where turns.id = ?;
 -- name: CountQueuedTurns :one
 select count(*) from turns where state = 'queued';
 
--- name: CountDispatchedTurns :one
+-- name: CountRunningTurns :one
+-- The turns that take the room of a turn that runs: those that were
+-- dispatched and have not ended.
 select count(*) from turns where state in ('dispatching', 'running');
 
 -- name: QueuedTurns :many
@@ -120,45 +130,42 @@ select id from turns where state = 'queued' order by created_at, id;
 select id from turns where ended_at is null and cancel_requested_at is not null;
 
 -- name: NextTurns :many
--- The queued turns, oldest first, and what it takes to run each. A turn of
--- an agent that names its model has the URL of the agent's provider and the
--- name of the model.
-select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, agents.harness,
-       agents.resources, agents.approval, coalesce(providers.url, '') as provider_url, agents.model,
-       cast(timestampdiff(microsecond, turns.created_at, now(6)) as signed) as waited
+-- The queued turns, oldest first.
+select turns.id as turn_id, agents.harness, cast(timestampdiff(microsecond, turns.created_at, now(6)) as signed) as waited
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
-left join providers on providers.id = agents.provider_id
 where turns.state = 'queued'
 order by turns.created_at, turns.id
 limit ?;
 
 -- name: DispatchTurn :execrows
 -- A turn that was cancelled since it was read is left as it is.
-update turns set state = 'dispatching', token_hash = sqlc.arg(token_hash), dispatched_at = now(6)
-where id = sqlc.arg(id) and state = 'queued';
+update turns set state = 'dispatching', dispatched_at = now(6) where id = ? and state = 'queued';
 
 -- name: DispatchedTurns :many
-select id, state,
-       cast(timestampdiff(microsecond, coalesce(dispatched_at, created_at), now(6)) as signed) as age,
-       cast(coalesce(timestampdiff(microsecond, cancel_requested_at, now(6)), 0) as signed) as cancelling
+select id, cast(coalesce(timestampdiff(microsecond, cancel_requested_at, now(6)), 0) as signed) as cancelling
 from turns where state in ('dispatching', 'running');
 
--- name: TakeTurn :exec
-update turns set state = 'running', runner_id = sqlc.narg(runner_id) where id = sqlc.arg(id);
+-- name: FollowTurn :exec
+-- A turn that was dispatched and has not ended runs once it is followed.
+update turns set state = 'running' where id = ? and state in ('dispatching', 'running');
 
--- name: SessionOfTurn :one
--- What a runner is given of the session of its turn.
-select sessions.harness_session_id, agents.harness, agents.instructions
-from sessions
+-- name: FollowedTurn :one
+-- The turn as the Supervisor that follows it gets it.
+select sqlc.embed(turns), agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
+       agents.approval, coalesce(providers.url, '') as provider_url, agents.model, sessions.sandbox,
+       cast(timestampdiff(microsecond, coalesce(turns.dispatched_at, turns.created_at), now(6)) as signed) as dispatched
+from turns
+join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
-where sessions.id = ?;
+left join providers on providers.id = agents.provider_id
+where turns.id = ?;
 
--- name: RunningTurn :one
--- The running turn that the token belongs to, what the turn belongs to, who
--- sent its message, and the provider of its agent as it is now, if the agent
--- names its model. A provider whose key is in a secret store comes with that
+-- name: SessionTurn :one
+-- The running turn of the session, what the turn belongs to, who sent its
+-- message, and the provider of its agent as it is now, if the agent names
+-- its model. A provider whose key is in a secret store comes with that
 -- store, as it is now.
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
        coalesce(users.subject, '') as subject,
@@ -174,13 +181,10 @@ join agents on agents.id = sessions.agent_id
 left join users on users.id = turns.created_by
 left join providers on providers.id = agents.provider_id
 left join secret_stores on secret_stores.id = providers.api_key_store_id
-where turns.token_hash = ? and turns.state = 'running';
+where turns.session_id = ? and turns.state = 'running';
 
 -- name: StartTurn :exec
 update turns set started_at = now(6) where id = ?;
-
--- name: SetHarnessSession :exec
-update sessions set harness_session_id = sqlc.arg(harness_session_id) where id = sqlc.arg(id);
 
 -- name: Startup :one
 -- How long the turn took to start, in microseconds.
@@ -210,10 +214,6 @@ for update;
 
 -- name: ExpireTurn :exec
 update turns set state = 'expired', ended_at = now(6) where id = ?;
-
--- name: GiveUpTurn :execrows
-update turns set failure_reason = sqlc.arg(reason), failure_message = nullif(sqlc.arg(message), '')
-where id = sqlc.arg(id) and state = 'dispatching' and failure_reason is null and cancel_requested_at is null;
 
 -- name: EndTurn :exec
 update turns set ended_at = now(6), state = sqlc.arg(state), failure_reason = sqlc.narg(failure_reason),

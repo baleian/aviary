@@ -4,7 +4,7 @@
 set -eu
 CODEX_CONFIG=$(jq --null-input --compact-output \
   --arg model "$AVIARY_LLM_MODEL" --arg base_url "$AVIARY_LLM_BASE_URL" \
-  '{model: $model, model_providers: {aviary: {base_url: $base_url}}}')
+  '{model: $model, model_provider: "aviary", model_providers: {aviary: {base_url: $base_url}}}')
 export CODEX_CONFIG
 # An agent that is to ask runs Codex in the mode in which it changes nothing
 # and fetches nothing unasked. Codex keeps the commands of that mode in its

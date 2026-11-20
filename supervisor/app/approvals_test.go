@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	batchv1 "k8s.io/api/batch/v1"
 
 	"aviary/supervisor/internal/api"
+	"aviary/supervisor/internal/driver"
 )
 
 // waiting returns the IDs of the requests for approval that the turn shows
@@ -43,14 +43,16 @@ func (s *supervisor) approve(turn, request, body string) (int, map[string]string
 func TestApproval(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
-	connected, asked := aviary.supervisor(), aviary.supervisor()
-	session := asked.session(`{"harness": "opencode", "approval": "ask"}`)
-	accepted := asked.send(session, "hello")
-	job := aviary.job(accepted.ID)
-	if approval := told(job, "AVIARY_APPROVAL"); approval != "ask" {
-		t.Errorf("the pod of a turn of an agent with approval is told %q", approval)
+	following := aviary.supervisor()
+	session := following.session(`{"harness": "opencode", "approval": "ask"}`)
+	accepted := following.send(session, "hello")
+	runner := aviary.given(accepted.ID)
+	if runner.Approval != "ask" || runner.Environment["AVIARY_APPROVAL"] != "ask" {
+		t.Errorf("the runner of a turn of an agent with approval is given %+v", runner.Turn)
 	}
-	runner := connected.take(job)
+	// The Supervisor that is asked starts after the turn was dispatched, so
+	// the other one follows the turn.
+	asked := aviary.supervisor()
 	runner.report(started("harness-session"))
 	watching := asked.watch(accepted.ID)
 	if waiting := asked.waiting(accepted.ID); len(waiting) != 0 {
@@ -59,16 +61,12 @@ func TestApproval(t *testing.T) {
 
 	runner.report(asks("1", "rm -r build"))
 	runner.report(asks("2", "git push"))
-	// A runner that lost its Supervisor reports a request again.
-	if received, err := runner.send(runner.seq, asks("2", "git push")); err != nil || received != runner.seq {
-		t.Fatalf("a request that was reported again was answered with %d: %v", received, err)
-	}
 	if waiting := asked.waiting(accepted.ID); !slices.Equal(waiting, []string{"1", "2"}) {
 		t.Errorf("the turn shows the requests %v as waiting", waiting)
 	}
 
 	// The answer of a person reaches the runner through the Supervisor that
-	// the runner is connected to, at once.
+	// follows the turn, at once.
 	status, reply := asked.approve(accepted.ID, "2", `{"option_id": "once"}`)
 	if status != http.StatusAccepted || reply["id"] != "2" || reply["option_id"] != "once" {
 		t.Errorf("the answer to a request was answered with %d %v", status, reply)
@@ -77,33 +75,13 @@ func TestApproval(t *testing.T) {
 		t.Errorf("the runner was given the answer %q to the request %q", option, id)
 	}
 	// The request waits for a person no longer, and the first answer stands.
-	if waiting := connected.waiting(accepted.ID); !slices.Equal(waiting, []string{"1"}) {
+	if waiting := following.waiting(accepted.ID); !slices.Equal(waiting, []string{"1"}) {
 		t.Errorf("after an answer the turn shows the requests %v as waiting", waiting)
 	}
-	if status, reply := connected.approve(accepted.ID, "2", `{"option_id": "never"}`); status != http.StatusConflict || reply["code"] != "approval_answered" {
+	if status, reply := following.approve(accepted.ID, "2", `{"option_id": "never"}`); status != http.StatusConflict || reply["code"] != "approval_answered" {
 		t.Errorf("a second answer to a request was answered with %d %v", status, reply)
 	}
-
-	// A runner that loses its Supervisor before the harness has the answer
-	// is given it again by the one that it calls.
-	runner.call.hang()
-	if _, err := runner.attach(asked); err != nil {
-		t.Fatal(err)
-	}
-	if id, option := runner.answer(); id != "2" || option != "once" {
-		t.Errorf("the runner that came back was given the answer %q to the request %q", option, id)
-	}
 	runner.report(answered("2", "selected", "once"))
-	// An answer that the harness has is not passed on again.
-	runner.call.hang()
-	if _, err := runner.attach(connected); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case again := <-runner.call.answers:
-		t.Errorf("the runner was given the answer %v that its harness has", again)
-	case <-time.After(300 * time.Millisecond):
-	}
 
 	// The other request is still open when the turn is told to stop.
 	runner.report(answered("1", "cancelled", ""))
@@ -111,8 +89,6 @@ func TestApproval(t *testing.T) {
 		t.Errorf("an answer to a request that the harness waits for no longer was answered with %d %v", status, reply)
 	}
 	runner.report(finished("end_turn", nil))
-	runner.leave()
-	aviary.end(job, batchv1.JobComplete, nil)
 
 	events := watching()
 	expected := []string{
@@ -165,8 +141,7 @@ func TestApprovalRefusals(t *testing.T) {
 	s := aviary.supervisor()
 	session := s.session()
 	accepted := s.send(session, "hello")
-	job := aviary.job(accepted.ID)
-	runner := s.take(job)
+	runner := aviary.given(accepted.ID)
 	runner.report(started("harness-session"))
 	runner.report(asks("1", "rm -r build"))
 
@@ -193,8 +168,7 @@ func TestApprovalRefusals(t *testing.T) {
 	}
 
 	// A turn that has ended takes no answer to what its harness asked.
-	runner.call.hang()
-	aviary.end(job, batchv1.JobFailed, nil)
+	runner.lose()
 	s.follow(accepted.ID)
 	if status, reply := s.approve(accepted.ID, "1", `{"option_id": "once"}`); status != http.StatusConflict || reply["code"] != "turn_ended" {
 		t.Errorf("an answer to a request of a turn that has ended was answered with %d %v", status, reply)
@@ -205,14 +179,13 @@ func TestApprovalRefusals(t *testing.T) {
 }
 
 // An answer whose announcement is lost is found a little later by the
-// Supervisor that the runner is connected to.
+// Supervisor that follows the turn.
 func TestApprovalWithoutAnnouncement(t *testing.T) {
 	t.Parallel()
-	aviary := install(t)
-	aviary.sweep = 100 * time.Millisecond
+	aviary := install(t, func(config *driver.Config) { config.Sweep = 100 * time.Millisecond })
 	s := aviary.supervisor()
 	accepted := s.send(s.session(), "hello")
-	runner := s.take(aviary.job(accepted.ID))
+	runner := aviary.given(accepted.ID)
 	runner.report(started("harness-session"))
 	runner.report(asks("1", "rm -r build"))
 	// The answer is recorded as the API records it, and nothing is announced.
@@ -222,6 +195,11 @@ func TestApprovalWithoutAnnouncement(t *testing.T) {
 	}
 	if id, option := runner.answer(); id != "1" || option != "never" {
 		t.Errorf("the runner was given the answer %q to the request %q", option, id)
+	}
+	// Until the runner tells that its harness has the answer, the Supervisor
+	// gives it the answer again when it sweeps.
+	if id, option := runner.answer(); id != "1" || option != "never" {
+		t.Errorf("the runner was given again the answer %q to the request %q", option, id)
 	}
 }
 
@@ -250,7 +228,7 @@ func TestApprovalIsAnsweredBySomeone(t *testing.T) {
 	s.request(http.MethodGet, "/v1/me", "", &carol)
 	s.token = "token-of-alice"
 	accepted := s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello")
-	runner := s.take(aviary.job(accepted.ID))
+	runner := aviary.given(accepted.ID)
 	runner.report(started("harness-session"))
 	watching := s.watch(accepted.ID)
 	runner.report(asks("1", "rm -r build"))
@@ -270,8 +248,6 @@ func TestApprovalIsAnsweredBySomeone(t *testing.T) {
 	runner.report(answered("1", "selected", "once"))
 	runner.report(answered("2", "cancelled", ""))
 	runner.report(finished("end_turn", nil))
-	runner.leave()
-	aviary.end(aviary.job(accepted.ID), batchv1.JobComplete, nil)
 
 	var resolved []map[string]string
 	for _, event := range watching() {

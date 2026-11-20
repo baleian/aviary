@@ -1,8 +1,8 @@
-// Package proxy checks what the Egress Proxy does with the requests of turn
-// pods. The proxy is Envoy with the configuration that the chart makes, and
-// `make test-proxy` starts it. The tests are everything around it: the pod
-// that sends a request, the Supervisor that the proxy asks whose request it
-// is, the model endpoint and the hosts outside.
+// Package proxy checks what the Egress Proxy does with the requests of the
+// sandboxes. The proxy is Envoy with the configuration that the chart makes,
+// and `make test-proxy` starts it. The tests are everything around it: the
+// pod that sends a request, the Supervisor that the proxy asks whose request
+// it is, the model endpoint and the hosts outside.
 package proxy
 
 import (
@@ -32,10 +32,10 @@ import (
 )
 
 const (
-	// token is the token of a turn that runs, broken one that the
-	// Supervisor fails to look up, and nameless that of a turn for which the
-	// Supervisor names no model endpoint.
-	token    = "the-turn-token"
+	// token is the token of a session in which a turn runs, broken one that
+	// the Supervisor fails to look up, and nameless that of a turn for which
+	// the Supervisor names no model endpoint.
+	token    = "the-session-token"
 	broken   = "a-token-that-cannot-be-looked-up"
 	nameless = "a-turn-without-an-endpoint"
 	// key is the API key of the model endpoint of the turn with the token,
@@ -143,7 +143,7 @@ func (s *supervisor) Check(_ context.Context, request *authv3.CheckRequest) (*au
 	}
 	denied := &authv3.DeniedHttpResponse{
 		Status: &typev3.HttpStatus{Code: typev3.StatusCode_Unauthorized},
-		Body:   "the token belongs to no running turn\n",
+		Body:   "no turn runs in the session of the token\n",
 	}
 	if forward {
 		denied.Status.Code = typev3.StatusCode_ProxyAuthenticationRequired
@@ -321,7 +321,7 @@ func ask(t *testing.T, proxy, path, credential string, headers ...string) answer
 func through(proxy, password string) *http.Client {
 	address := &url.URL{Scheme: "http", Host: proxy + ":3128"}
 	if password != "" {
-		address.User = url.UserPassword("turn", password)
+		address.User = url.UserPassword("session", password)
 	}
 	return &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(address)}}
 }
@@ -336,9 +336,9 @@ func fetch(t *testing.T, proxy, password, address string) answer {
 	return send(t, through(proxy, password), request)
 }
 
-// A model request carries the token of its turn where the API key belongs.
-// The proxy puts the key of the turn's model endpoint there and passes the
-// request on to that endpoint as it is.
+// A model request carries the token of its session where the API key
+// belongs. The proxy puts the key of the turn's model endpoint there and
+// passes the request on to that endpoint as it is.
 func TestModelRequest(t *testing.T) {
 	t.Parallel()
 	began := time.Now()
@@ -397,11 +397,11 @@ func TestModelRequestThatIsRefused(t *testing.T) {
 		"without a token":       "",
 		"with a token of none":  "Bearer another-token",
 		"with the key itself":   "Bearer " + key,
-		"with a proxy password": "Basic " + base64.StdEncoding.EncodeToString([]byte("turn:"+token)),
+		"with a proxy password": "Basic " + base64.StdEncoding.EncodeToString([]byte("session:"+token)),
 	} {
 		path := "/v1/refused/" + strings.ReplaceAll(name, " ", "-")
 		refused := ask(t, listed, path, credential)
-		if refused.status != http.StatusUnauthorized || refused.body != "the token belongs to no running turn\n" {
+		if refused.status != http.StatusUnauthorized || refused.body != "no turn runs in the session of the token\n" {
 			t.Errorf("a model request %s was answered with %d %q", name, refused.status, refused.body)
 		}
 		if model.got(path) != nil {
@@ -622,7 +622,7 @@ func tunnel(t *testing.T, proxy, password, address string) (int, net.Conn, *bufi
 	}
 	t.Cleanup(func() { connection.Close() })
 	connection.SetDeadline(time.Now().Add(patience))
-	credentials := base64.StdEncoding.EncodeToString([]byte("turn:" + password))
+	credentials := base64.StdEncoding.EncodeToString([]byte("session:" + password))
 	fmt.Fprintf(connection, "CONNECT %s HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: Basic %s\r\n\r\n", address, address, credentials)
 	reader := bufio.NewReader(connection)
 	response, err := http.ReadResponse(reader, &http.Request{Method: "CONNECT"})

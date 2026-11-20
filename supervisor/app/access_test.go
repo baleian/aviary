@@ -107,6 +107,9 @@ func TestWhoMayDoWhat(t *testing.T) {
 		// The turn has no such request: who may answer one is told so.
 		{"POST", "/v1/turns/" + turn + "/approvals/none", `{"option_id": "allow"}`, "hhfhfffhfh"},
 		{"POST", "/v1/turns/" + turn + "/cancel", ``, "ppfpfffpfh"},
+		// The session has a turn that has not ended: who may end it is told
+		// so.
+		{"DELETE", "/v1/sessions/" + session, ``, "ppfpfffpfh"},
 	} {
 		for i, caller := range callers {
 			status := s.answered(caller, row.method, row.path, row.body)

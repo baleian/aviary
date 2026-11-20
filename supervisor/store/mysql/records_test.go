@@ -38,6 +38,9 @@ func (f fixture) Age(t *testing.T, by time.Duration, turns ...uuid.UUID) {
 			dispatched_at = dispatched_at - interval ? microsecond, started_at = started_at - interval ? microsecond,
 			cancel_requested_at = cancel_requested_at - interval ? microsecond, ended_at = ended_at - interval ? microsecond
 			where id = ?`, by.Microseconds(), by.Microseconds(), by.Microseconds(), by.Microseconds(), by.Microseconds(), key.ID(turn))
+		exec(t, string(f), `update approvals set requested_at = requested_at - interval ? microsecond,
+			answered_at = answered_at - interval ? microsecond, resolved_at = resolved_at - interval ? microsecond
+			where turn_id = ?`, by.Microseconds(), by.Microseconds(), by.Microseconds(), key.ID(turn))
 	}
 }
 

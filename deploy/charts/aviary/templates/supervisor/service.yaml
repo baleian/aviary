@@ -13,10 +13,6 @@ spec:
     - name: http
       port: 80
       targetPort: http
-    # The runners in the turn pods connect to this port.
-    - name: grpc
-      port: 9090
-      targetPort: grpc
     # The Egress Proxy asks on this port which turn a request comes from.
     - name: authz
       port: 9091

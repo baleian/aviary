@@ -6,7 +6,8 @@ metadata:
     app.kubernetes.io/name: aviary
     app.kubernetes.io/component: supervisor
 ---
-# The Supervisor runs each turn as a Job in the runtime namespace. It has no
+# The Supervisor has the sandboxes of the sessions made in the runtime
+# namespace, puts them to sleep, wakes them and deletes them. It has no
 # access to anything else in the cluster.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -17,13 +18,9 @@ metadata:
     app.kubernetes.io/name: aviary
     app.kubernetes.io/component: supervisor
 rules:
-  - apiGroups: ["batch"]
-    resources: ["jobs"]
-    verbs: ["create", "delete", "list", "watch"]
-  # A turn whose Job is gone is not ended while its pod is still there.
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["list"]
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["create", "get", "list", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

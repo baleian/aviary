@@ -76,6 +76,10 @@ supervisor:
     # With none, everyone whom the provider knows may.
     users: []
 
+# The Egress Proxy, which everything that a sandbox sends out goes through:
+# the model requests, which it passes on to the model endpoint of the turn
+# with the endpoint's key, and the rest. It keeps a record of every request,
+# with the turn that it comes from.
 egressProxy:
   image: envoyproxy/envoy:distroless-v1.40.2@sha256:09ca6f2140a61ad8df11779a4a30d52b48433d444466328494f9188c9c35eded
   replicas: 1
@@ -90,11 +94,11 @@ egressProxy:
   #   host       the host, for HTTPS and HTTP on their usual ports. A
   #              subdomain is a host of its own.
   #   host:port  the host on another port.
-  # The default allows everything. To restrict the pods, list the hosts
+  # The default allows everything. To restrict the sandboxes, list the hosts
   # instead. A model provider needs "*" or the host of its URL in the list:
   # without it the proxy refuses the model requests, and the turns fail.
   allowedHosts: ["*"]
-  # The turn pods reach the outside through the proxy, so the proxy must not
+  # The sandboxes reach the outside through the proxy, so the proxy must not
   # be a way into the cluster. A network policy keeps the proxy itself from
   # connecting to the addresses in these ranges. It still reaches the
   # Supervisor and the cluster's DNS.
@@ -117,6 +121,22 @@ egressProxy:
   #       - ipBlock: {cidr: 192.168.1.20/32}
   extraEgress: []
 
+# The sandboxes of the sessions: each session runs in a sandbox of its own, a
+# pod of the harness of its agent with a volume of the session, in the
+# namespace aviary-runtime. agent-sandbox keeps them, and has to be installed
+# in the cluster.
+sandboxes:
+  # After how many seconds a session that is not at work is put to sleep: no
+  # turn of it runs. The Supervisors look for such sessions once a minute. A
+  # session that sleeps has no pod, and keeps its volume, with what its
+  # harness remembers. Its next turn wakes it, in a new pod. Zero is never.
+  idleSeconds: 300
+  # For how many seconds the sandbox of a session is kept after a turn of the
+  # session was last given to it. A session that is not used for longer has
+  # ended: its sandbox is deleted with its volume, and what was said in it
+  # stays. Zero is to keep it until the session is ended.
+  retentionSeconds: 0
+
 runtime:
   # The most turns that run at once. The turns beyond it wait in the order in
   # which they were accepted.
@@ -127,35 +147,34 @@ runtime:
   # How long a turn may wait in that order. A turn that waits longer ends as
   # expired, and its client is told so. Zero is no limit.
   maxQueueWaitSeconds: 120
-  # How long the pod of a turn may take to start: to be scheduled, to pull
-  # its images and for its runner to connect. A turn whose pod takes longer
-  # fails, for example one whose image does not exist. The default assumes
-  # that the nodes hold the images already. Zero is no limit.
-  maxStartupSeconds: 90
-  # How long a turn may run, from the start of its pod. A turn is everything
-  # that an agent does for one message, which can be many requests to the
-  # model. A turn that runs longer is stopped and fails.
+  # How long a turn may take until its harness has the message. The first
+  # turn of a session waits for the sandbox of the session to be made, which
+  # takes longer on a node that does not have the image of the harness yet,
+  # and a turn of a session that sleeps waits for it to wake. A turn that
+  # takes longer fails. Its sandbox is put to sleep if the runner in it had
+  # the turn. One that was still being made or woken stays, for the next
+  # turn. Zero is no limit.
+  maxStartupSeconds: 120
+  # How long a turn may run, from when it left the queue, the time that it
+  # waits for a person included. A turn is everything that an agent does for
+  # one message, which can be many requests to the model. A turn that runs
+  # longer fails, and its sandbox is put to sleep: what ran in it stops, and
+  # the volume of the session stays.
   maxTurnSeconds: 1800
-  # How long the runner of a turn goes on when it has lost its Supervisor,
-  # while it tries to reach one again. A turn whose runner reaches none in
-  # that time fails. Zero is no limit.
-  maxReconnectSeconds: 60
   # The longest text of a tool call, in what the tool was called with or
   # returned, that is reported in the events of a turn as it is. A longer
   # text, such as the output of a command, is cut to this many bytes. The
   # agent itself still has all of it. Zero is no limit.
   maxToolOutputBytes: 65536
-  # The image that holds the runner. Every turn pod mounts it.
-  runnerImage: aviary-runner:dev
   # The harnesses that agents can use, by the name that an agent is created
-  # with. The resources are what the pod of a turn asks for and may use at
-  # most, of cpu and of memory, as the resources of a container are written
-  # for Kubernetes. They are for the agents that have no resources of their
-  # own, and a change here holds from the next turn of each of them. The
-  # requests are a little above what the harness takes before the agent does
-  # anything. A turn that goes over its limit of memory fails and says so.
-  # There is no limit of cpu: it would slow a turn down also when the node
-  # has cpu to spare.
+  # with. The image holds the harness and the runner. The resources are what
+  # the pod of the sandbox of a session asks for and may use at most, of cpu
+  # and of memory, as the resources of a container are written for
+  # Kubernetes. A change here holds for a sandbox from when it is next woken.
+  # The requests are a little above what the harness takes before the agent
+  # does anything. A turn that goes over its limit of memory fails. There is
+  # no limit of cpu: it would slow a turn down also when the node has cpu to
+  # spare.
   harnesses:
     opencode:
       image: aviary-harness-opencode:dev
@@ -167,8 +186,15 @@ runtime:
       resources:
         requests: {cpu: 250m, memory: 256Mi}
         limits: {memory: 4Gi}
-  # The volume that holds the sessions of the default tenant. Turn pods on
-  # any node mount it, so the storage class must offer ReadWriteMany.
-  store:
-    storageClassName: nfs
+  # The volume of a session, mounted at /home in its sandbox: what its
+  # harness remembers of the conversation and what its agent works on. A
+  # volume is mounted by one pod at a time. It is deleted with the sandbox,
+  # when its session is ended or expires. Whether the storage then deletes
+  # what was on it is up to the storage class: the default class of the
+  # local cluster does, a class with reclaimPolicy Retain does not, and some
+  # drivers of file storage keep it unless they are told not to.
+  volume:
     size: 10Gi
+    # The storage class that the volumes are made with. Empty is the default
+    # class of the cluster.
+    storageClass: ""

@@ -61,17 +61,24 @@ spec:
               value: {{ .Values.supervisor.auth.admins | toJson | quote }}
             - name: AVIARY_USER_GROUPS
               value: {{ .Values.supervisor.auth.users | toJson | quote }}
-            # Where the runners in the turn pods reach this Supervisor.
-            - name: AVIARY_GATEWAY_URL
-              value: http://aviary-supervisor.{{ .Release.Namespace }}:9090
-            - name: AVIARY_RUNNER_IMAGE
-              value: {{ .Values.runtime.runnerImage }}
-            # Where the harnesses in the turn pods reach their models: the
+            # Where the sandboxes of the sessions are made, and the volume of
+            # a session.
+            - name: AVIARY_SANDBOX_NAMESPACE
+              value: aviary-runtime
+            - name: AVIARY_SANDBOX_VOLUME_SIZE
+              value: {{ .Values.runtime.volume.size | quote }}
+            - name: AVIARY_SANDBOX_STORAGE_CLASS
+              value: {{ .Values.runtime.volume.storageClass | quote }}
+            - name: AVIARY_SANDBOX_IDLE_SECONDS
+              value: {{ .Values.sandboxes.idleSeconds | quote }}
+            - name: AVIARY_SANDBOX_RETENTION_SECONDS
+              value: {{ .Values.sandboxes.retentionSeconds | quote }}
+            # Where the harnesses in the sandboxes reach their models: the
             # Egress Proxy, which passes a request on to the model endpoint
             # of its turn.
             - name: AVIARY_LLM_BASE_URL
               value: http://aviary-egress-proxy.{{ .Release.Namespace }}:8080
-            # The proxy that the turn pods use for everything else.
+            # The proxy that the sandboxes use for everything else.
             - name: AVIARY_PROXY_URL
               value: http://aviary-egress-proxy.{{ .Release.Namespace }}:3128
             - name: AVIARY_HARNESSES
@@ -88,13 +95,9 @@ spec:
               value: {{ .Values.runtime.maxStartupSeconds | quote }}
             - name: AVIARY_MAX_TURN_SECONDS
               value: {{ .Values.runtime.maxTurnSeconds | quote }}
-            - name: AVIARY_MAX_RECONNECT_SECONDS
-              value: {{ .Values.runtime.maxReconnectSeconds | quote }}
           ports:
             - name: http
               containerPort: 8080
-            - name: grpc
-              containerPort: 9090
             - name: authz
               containerPort: 9091
             - name: metrics

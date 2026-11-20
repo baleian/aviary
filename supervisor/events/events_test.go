@@ -46,10 +46,10 @@ func TestLast(t *testing.T) {
 			name: "failed",
 			turn: store.Turn{
 				State:   store.TurnFailed,
-				Failure: &store.Failure{Reason: store.FailurePodLost, Message: "the pod was stopped"},
+				Failure: &store.Failure{Reason: store.FailureSandboxLost, Message: "the sandbox of the session is gone"},
 			},
 			eventType: TurnFailed,
-			data:      `{"reason":"pod_lost","message":"the pod was stopped"}`,
+			data:      `{"reason":"sandbox_lost","message":"the sandbox of the session is gone"}`,
 		},
 	}
 	for _, test := range tests {

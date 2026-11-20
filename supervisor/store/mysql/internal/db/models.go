@@ -16,7 +16,6 @@ type Agent struct {
 	ProjectID    key.ID
 	Harness      string
 	Instructions string
-	Resources    *json.RawMessage
 	Approval     string
 	ProviderID   *key.ID
 	Model        string
@@ -30,9 +29,9 @@ type Approval struct {
 	RequestedAt time.Time
 	OptionID    *string
 	AnsweredAt  *time.Time
+	AnsweredBy  *key.ID
 	Outcome     *string
 	ResolvedAt  *time.Time
-	AnsweredBy  *key.ID
 }
 
 type Project struct {
@@ -73,17 +72,19 @@ type SecretStore struct {
 }
 
 type Session struct {
-	ID               key.ID
-	AgentID          key.ID
-	HarnessSessionID *string
-	CreatedAt        time.Time
-	CreatedBy        *key.ID
+	ID        key.ID
+	AgentID   key.ID
+	CreatedBy *key.ID
+	Sandbox   *string
+	CreatedAt time.Time
+	EndedAt   *time.Time
 }
 
 type Turn struct {
 	ID                key.ID
 	SessionID         key.ID
 	Seq               int32
+	CreatedBy         *key.ID
 	State             string
 	Text              string
 	CreatedAt         time.Time
@@ -91,8 +92,6 @@ type Turn struct {
 	StartedAt         *time.Time
 	CancelRequestedAt *time.Time
 	EndedAt           *time.Time
-	TokenHash         []byte
-	RunnerID          *key.ID
 	StopReason        *string
 	FailureReason     *string
 	FailureMessage    *string
@@ -102,7 +101,6 @@ type Turn struct {
 	ThoughtTokens     *int64
 	CachedReadTokens  *int64
 	CachedWriteTokens *int64
-	CreatedBy         *key.ID
 }
 
 type User struct {

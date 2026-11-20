@@ -1,617 +1,623 @@
-//! The runner takes a turn from its Supervisor, runs it on the harness and
-//! reports what the agent does.
+//! The runner takes the turns of a session over HTTP, runs each on the
+//! harness and keeps what the agent does as the events of the turn.
 
 mod support;
 
 use std::fs;
 use std::time::Duration;
 
-use tokio::process::Command;
+use reqwest::StatusCode;
+use serde_json::json;
 use tokio::time;
-use tonic::Code;
 
-use support::proto::run_turn_request::Message as Report;
-use support::{Home, Supervisor, TOKEN, asking, run, runner, start};
+use support::{Home, Session, ending, names, runner, said, start};
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_turn_is_reported_as_it_goes() {
+async fn a_turn_is_told_as_it_goes() {
     let home = Home::new();
-    let supervisor =
-        Supervisor::start("think so ; say Hello there ; tool ls -a ; plan answer ; say . Done")
-            .await;
-    let ended = run(&supervisor, &home).await;
-    assert!(ended.status.success(), "{}", ended.stderr);
+    let runner = start(runner(&home)).await;
+    let events = runner
+        .run(
+            "t1",
+            "think so ; say Hello there ; tool ls -a ; plan answer ; say . Done",
+        )
+        .await;
 
-    supervisor.state(|state| {
-        assert_eq!(
-            state.kinds(),
-            [
-                "started",
-                "thought",
-                "message",
-                "message",
-                "tool call",
-                "tool update",
-                "plan",
-                "message",
-                "message",
-                "finished"
-            ]
-        );
-        assert_eq!(state.said(), "Hello there. Done");
-        assert_eq!(state.last, 10);
-        for report in &state.reports {
-            match report {
-                Report::Started(started) => {
-                    assert!(started.harness_session_id.starts_with("session-"));
-                }
-                Report::ToolCall(call) => {
-                    assert_eq!(
-                        (call.title.as_str(), call.status.as_str()),
-                        ("ls -a", "in_progress")
-                    );
-                }
-                Report::ToolUpdate(update) => {
-                    assert_eq!(update.status.as_deref(), Some("completed"));
-                    assert!(update.output.is_some());
-                }
-                Report::Finished(finished) => {
-                    assert_eq!(finished.stop_reason, "end_turn");
-                    let usage = finished.usage.as_ref().expect("the usage of the turn");
-                    assert_eq!(
-                        (usage.total_tokens, usage.input_tokens, usage.output_tokens),
-                        (18, 11, 7)
-                    );
-                    assert_eq!(usage.thought_tokens, None);
-                }
-                _ => {}
-            }
-        }
-        // The runner says whose turn it wants and who it is, and ends the
-        // call when it has done.
-        assert_eq!(state.calls.len(), 1);
-        let (authorization, name) = &state.calls[0];
-        assert_eq!(authorization, &format!("Bearer {TOKEN}"));
-        assert_eq!(name.len(), 36, "the runner calls itself {name}");
-        assert!(state.left);
-    });
+    assert_eq!(
+        names(&events),
+        [
+            "started",
+            "thought.delta",
+            "message.delta",
+            "message.delta",
+            "tool.call",
+            "tool.update",
+            "plan.update",
+            "message.delta",
+            "message.delta",
+            "finished"
+        ]
+    );
+    // The events are numbered from 1, without a gap.
+    let numbers: Vec<u64> = events.iter().map(|event| event.seq).collect();
+    assert_eq!(numbers, (1..=10).collect::<Vec<u64>>());
+    assert_eq!(said(&events), "Hello there. Done");
+    let session = events[0].data["harness_session_id"].as_str().unwrap();
+    assert!(session.starts_with("session-"), "{session}");
+    assert_eq!(events[1].data, json!({"text": "so"}));
+    assert_eq!(
+        events[4].data,
+        json!({
+            "id": "call-1", "title": "ls -a", "kind": "execute", "status": "in_progress",
+            "input": {"command": "ls -a"},
+        })
+    );
+    assert_eq!(
+        events[5].data,
+        json!({"id": "call-1", "status": "completed", "output": {"output": "ran ls -a"}})
+    );
+    assert_eq!(
+        events[6].data,
+        json!({"entries": [{"content": "answer", "priority": "medium", "status": "pending"}]})
+    );
+    assert_eq!(
+        ending(&events).data,
+        json!({
+            "stop_reason": "end_turn",
+            "usage": {"total_tokens": 18, "input_tokens": 11, "output_tokens": 7},
+        })
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_later_turn_continues_the_session_of_the_harness() {
+async fn the_harness_stays_for_the_turns_of_a_session() {
     let home = Home::new();
-    let first = Supervisor::start("say one").await;
-    assert!(run(&first, &home).await.status.success());
-    let session = first.state(|state| match &state.reports[0] {
-        Report::Started(started) => started.harness_session_id.clone(),
-        other => panic!("the first report is {other:?}"),
-    });
+    let runner = start(runner(&home)).await;
+    let first = runner.run("t1", "say one").await;
+    let second = runner.run("t2", "recall").await;
+    let third = runner.run("t3", "recall").await;
 
-    let second = Supervisor::start("recall").await;
-    second.state(|state| state.harness_session = Some(session.clone()));
-    assert!(run(&second, &home).await.status.success());
-    second.state(|state| {
-        assert_eq!(state.said(), "say one");
-        match &state.reports[0] {
-            Report::Started(started) => assert_eq!(started.harness_session_id, session),
-            other => panic!("the first report is {other:?}"),
-        }
-    });
+    assert_eq!(said(&second), "say one");
+    assert_eq!(said(&third), "say one\nrecall");
+    // It is one session of the harness, in one process: a harness that was
+    // started again would have another name for its first tool call.
+    for later in [&second, &third] {
+        assert_eq!(
+            later[0].data["harness_session_id"],
+            first[0].data["harness_session_id"]
+        );
+    }
+    let calls = runner.run("t4", "tool a").await;
+    let more = runner.run("t5", "tool b").await;
+    assert_eq!(calls[1].data["id"], "call-1");
+    assert_eq!(more[1].data["id"], "call-2");
+}
 
-    // In another home the harness does not know the session. The turn fails
-    // for that reason, before the harness is given the message.
-    let elsewhere = Supervisor::start("recall").await;
-    elsewhere.state(|state| state.harness_session = Some(session.clone()));
-    let ended = run(&elsewhere, &Home::new()).await;
-    assert!(
-        ended.failed("resume_failed", "the session is not known"),
-        "{}",
-        ended.stderr
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_is_started_once_however_often_it_is_sent() {
+    let home = Home::new();
+    let runner = start(runner(&home)).await;
+    assert_eq!(
+        runner.turn("t1", "say once ; sleep 300").await,
+        StatusCode::NO_CONTENT
     );
-    assert!(elsewhere.state(|state| state.reports.is_empty()));
+    assert_eq!(
+        runner.turn("t1", "say once ; sleep 300").await,
+        StatusCode::NO_CONTENT
+    );
+    // The runner runs one turn at a time.
+    assert_eq!(runner.turn("t2", "say two").await, StatusCode::CONFLICT);
+    let events = runner.events("t1").await;
+    assert_eq!(names(&events), ["started", "message.delta", "finished"]);
+    // A turn that has ended is not run again either.
+    assert_eq!(runner.turn("t1", "say once").await, StatusCode::NO_CONTENT);
+    assert_eq!(runner.events("t1").await, events);
+
+    assert_eq!(
+        said(&runner.run("t2", "recall").await),
+        "say once ; sleep 300"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_that_the_runner_does_not_have_is_not_found() {
+    let home = Home::new();
+    let runner = start(runner(&home)).await;
+    assert_eq!(runner.follow("t1", 0).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(runner.cancel("t1").await, StatusCode::NOT_FOUND);
+    assert_eq!(
+        runner.answer("t1", "1", "once").await,
+        StatusCode::NOT_FOUND
+    );
+
+    runner.run("t1", "say one").await;
+    runner.run("t2", "say two").await;
+    // The runner keeps the events of a turn until it has the next one.
+    assert_eq!(runner.follow("t1", 0).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(runner.cancel("t1").await, StatusCode::NOT_FOUND);
+    // A turn that has ended is told to stop too late, which is no error.
+    assert_eq!(runner.cancel("t2").await, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_events_of_a_turn_are_read_again_from_where_a_reader_left() {
+    let home = Home::new();
+    let runner = start(runner(&home)).await;
+    assert_eq!(
+        runner.turn("t1", "say a b ; sleep 300 ; say c d").await,
+        StatusCode::NO_CONTENT
+    );
+
+    // A reader is cut off in the middle of the turn.
+    let mut reader = runner.follow("t1", 0).await;
+    let mut read = Vec::new();
+    for _ in 0..3 {
+        read.push(reader.next().await.unwrap());
+    }
+    drop(reader);
+    assert_eq!(names(&read), ["started", "message.delta", "message.delta"]);
+
+    // Another reads on from there, while a third reads all of it.
+    let mut rest = runner.follow("t1", 3).await;
+    let mut all = runner.follow("t1", 0).await;
+    while let Some(event) = rest.next().await {
+        read.push(event);
+    }
+    let mut whole = Vec::new();
+    while let Some(event) = all.next().await {
+        whole.push(event);
+    }
+    assert_eq!(read, whole);
+    assert_eq!(said(&read), "a bc d");
+    assert_eq!(ending(&read).name, "finished");
+    assert_eq!(ending(&read).seq, 6);
+
+    // The turn has ended. Its events are there until the next turn, and a
+    // reader that has them all is sent nothing more.
+    assert_eq!(runner.events("t1").await, whole);
+    assert!(runner.follow("t1", 6).await.next().await.is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_turn_that_the_harness_fails_says_why() {
     let home = Home::new();
-    let supervisor = Supervisor::start("say Hello ; fail the model is out of order").await;
-    let ended = run(&supervisor, &home).await;
-    assert!(
-        ended.failed("harness_error", "the model is out of order"),
-        "{}",
-        ended.stderr
+    let runner = start(runner(&home)).await;
+    let events = runner
+        .run("t1", "say I try ; fail the model is out of order")
+        .await;
+    assert_eq!(
+        names(&events),
+        ["started", "message.delta", "message.delta", "failed"]
     );
-    // What the agent did before that is reported all the same.
-    supervisor.state(|state| {
-        assert_eq!(state.kinds(), ["started", "message"]);
-        assert!(state.left);
-    });
+    assert_eq!(
+        ending(&events).data,
+        json!({"reason": "harness_error", "message": "the model is out of order"})
+    );
+
+    // The next turn has a harness again, which continues the session.
+    let next = runner.run("t2", "recall").await;
+    assert_eq!(said(&next), "say I try ; fail the model is out of order");
+    assert_eq!(
+        next[0].data["harness_session_id"],
+        events[0].data["harness_session_id"]
+    );
+    assert_eq!(ending(&next).name, "finished");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_harness_that_is_gone_is_started_again() {
+    let home = Home::new();
+    let runner = start(runner(&home)).await;
+
+    // The harness ends in the middle of a turn.
+    let died = runner.run("t1", "say going ; die").await;
+    assert_eq!(ending(&died).name, "failed");
+    assert_eq!(ending(&died).data["reason"], "harness_error");
+    let next = runner.run("t2", "recall").await;
+    assert_eq!(said(&next), "say going ; die");
+    assert_eq!(ending(&next).name, "finished");
+
+    // The harness ends between two turns.
+    let left = runner.run("t3", "say bye ; leave").await;
+    assert_eq!(ending(&left).name, "finished");
+    time::sleep(Duration::from_millis(300)).await;
+    let back = runner.run("t4", "say back").await;
+    assert_eq!(said(&back), "back", "{back:?}");
+    assert_eq!(ending(&back).name, "finished");
+    assert_eq!(
+        back[0].data["harness_session_id"],
+        died[0].data["harness_session_id"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_that_the_harness_has_lost_fails_its_turns() {
+    let home = Home::new();
+    let runner = start(runner(&home)).await;
+    runner.run("t1", "say one ; die").await;
+    // What the harness kept of the conversation is gone.
+    fs::remove_dir_all(home.path().join("workspace/.fake-harness")).unwrap();
+    for turn in ["t2", "t3"] {
+        let events = runner.run(turn, "say two").await;
+        assert_eq!(names(&events), ["failed"]);
+        assert_eq!(ending(&events).data["reason"], "resume_failed");
+        let message = ending(&events).data["message"].as_str().unwrap();
+        assert!(message.contains("the session is not known"), "{message}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_runner_of_another_pod_continues_the_session() {
+    let home = Home::new();
+    let first = start(runner(&home)).await;
+    let before = first.run("t1", "say one").await;
+    // The pod goes, as that of a sandbox that is put to sleep does, and the
+    // home of the session stays for the next pod.
+    drop(first);
+    let runner = start(runner(&home)).await;
+    let after = runner.run("t2", "recall").await;
+    assert_eq!(said(&after), "say one");
+    assert_eq!(
+        after[0].data["harness_session_id"],
+        before[0].data["harness_session_id"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runner_that_is_told_to_end_ends_with_its_turn() {
+    let home = Home::new();
+    let mut runner = start(runner(&home)).await;
+    runner.turn("t1", "say on ; sleep 60000").await;
+    let mut events = runner.follow("t1", 0).await;
+    assert_eq!(events.next().await.unwrap().name, "started");
+    // As the pod of a sandbox that is put to sleep is told.
+    let pid = runner.child.id().unwrap().to_string();
+    let told = std::process::Command::new("kill")
+        .args(["-TERM", &pid])
+        .status()
+        .unwrap();
+    assert!(told.success());
+    let ended = time::timeout(Duration::from_secs(5), runner.child.wait())
+        .await
+        .expect("the runner did not end")
+        .unwrap();
+    assert!(ended.success(), "{ended}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runner_that_others_reach_takes_nothing_from_its_own_pod() {
+    let home = Home::new();
+    let mut command = runner(&home);
+    command.env("AVIARY_RUNNER_ADDRESS", "0.0.0.0:0");
+    let runner = start(command).await;
+    let port = runner.url.rsplit(':').next().unwrap().to_owned();
+    // What comes from the machine of the runner, at the loopback address or
+    // at the address of the machine, is refused: in a sandbox, it is the
+    // agent that sends it.
+    for address in ["127.0.0.1".to_owned(), own_address()] {
+        let ours = Session::at(format!("http://{address}:{port}"));
+        assert_eq!(
+            ours.turn("t1", "say hello").await,
+            StatusCode::FORBIDDEN,
+            "{address}"
+        );
+        assert_eq!(ours.cancel("t1").await, StatusCode::FORBIDDEN, "{address}");
+    }
+}
+
+/// The address of this machine that it sends from to others.
+fn own_address() -> String {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    socket
+        .connect("10.255.255.255:9")
+        .expect("the machine reaches other machines");
+    let address = socket.local_addr().unwrap().ip();
+    assert!(!address.is_loopback(), "{address}");
+    address.to_string()
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runner_that_is_not_set_up_says_so() {
-    let supervisor = Supervisor::start("say Hello").await;
     let home = Home::new();
-    for (variable, value, reason, message) in [
-        (
-            "AVIARY_HARNESS_COMMAND",
-            None,
-            "runner_error",
-            "AVIARY_HARNESS_COMMAND is not set",
-        ),
-        (
-            "AVIARY_HARNESS_COMMAND",
-            Some("/no/such/harness"),
-            "harness_error",
-            "",
-        ),
-        (
-            "AVIARY_TURN_TOKEN",
-            None,
-            "runner_error",
-            "AVIARY_TURN_TOKEN is not set",
-        ),
-        (
-            "AVIARY_GATEWAY_URL",
-            None,
-            "runner_error",
-            "AVIARY_GATEWAY_URL is not set",
-        ),
-    ] {
-        let mut command = runner(&supervisor, &home);
-        match value {
-            Some(value) => command.env(variable, value),
-            None => command.env_remove(variable),
-        };
-        let ended = start(command).end().await;
-        assert!(
-            ended.failed(reason, message),
-            "with {variable} as {value:?}: {}",
-            ended.stderr
-        );
-    }
-    assert!(supervisor.state(|state| state.reports.is_empty()));
+    let mut command = runner(&home);
+    command.env_remove("AVIARY_HARNESS_COMMAND");
+    let runner = start(command).await;
+    let events = runner.run("t1", "say Hello").await;
+    assert_eq!(names(&events), ["failed"]);
+    assert_eq!(
+        ending(&events).data,
+        json!({"reason": "runner_error", "message": "AVIARY_HARNESS_COMMAND is not set"})
+    );
+
+    let mut command = support::runner(&home);
+    command.env("AVIARY_HARNESS_COMMAND", "/nowhere/harness");
+    let runner = start(command).await;
+    let events = runner.run("t1", "say Hello").await;
+    assert_eq!(names(&events), ["failed"]);
+    assert_eq!(ending(&events).data["reason"], "harness_error");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_instructions_are_where_the_harness_reads_them() {
     let home = Home::new();
-    let told = Supervisor::start("instructions").await;
-    told.state(|state| state.instructions = "Be brief.".to_owned());
-    let mut command = runner(&told, &home);
+    let mut command = runner(&home);
     command.env("AVIARY_INSTRUCTIONS_FILE", home.instructions());
-    assert!(start(command).end().await.status.success());
-    assert_eq!(told.state(|state| state.said()), "Be brief.");
-
-    // The file may be in the home of the session, where it would still say
-    // what an earlier turn was told.
-    let untold = Supervisor::start("instructions").await;
-    let mut command = runner(&untold, &home);
-    command.env("AVIARY_INSTRUCTIONS_FILE", home.instructions());
-    assert!(start(command).end().await.status.success());
-    assert_eq!(untold.state(|state| state.said()), "no instructions");
-
-    // A harness image that names no file runs agents without instructions,
-    // and no others.
-    let plain = Supervisor::start("say Hello").await;
-    assert!(run(&plain, &home).await.status.success());
-    let nowhere = Supervisor::start("say Hello").await;
-    nowhere.state(|state| state.instructions = "Be brief.".to_owned());
-    let ended = run(&nowhere, &home).await;
-    assert!(
-        ended.failed("runner_error", "AVIARY_INSTRUCTIONS_FILE"),
-        "{}",
-        ended.stderr
+    let runner = start(command).await;
+    assert_eq!(
+        runner
+            .turn_with(
+                "t1",
+                json!({"text": "instructions", "instructions": "Answer in French."})
+            )
+            .await,
+        StatusCode::NO_CONTENT
     );
-    assert!(nowhere.state(|state| state.reports.is_empty()));
+    assert_eq!(said(&runner.events("t1").await), "Answer in French.");
+    // An agent without instructions has a file too, which is empty.
+    assert_eq!(
+        said(&runner.run("t2", "instructions").await),
+        "no instructions"
+    );
+
+    // The image of a harness that takes no instructions names no file.
+    let other = Home::new();
+    let runner = start(support::runner(&other)).await;
+    assert_eq!(said(&runner.run("t1", "instructions").await), "no file");
+    let runner = start(support::runner(&other)).await;
+    runner
+        .turn_with(
+            "t1",
+            json!({"text": "instructions", "instructions": "Answer in French."}),
+        )
+        .await;
+    let events = runner.events("t1").await;
+    assert_eq!(names(&events), ["failed"]);
+    assert_eq!(ending(&events).data["reason"], "runner_error");
+    let message = ending(&events).data["message"].as_str().unwrap();
+    assert!(message.contains("AVIARY_INSTRUCTIONS_FILE"), "{message}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_harness_is_started_with_what_the_first_turn_tells() {
+    let home = Home::new();
+    let mut command = runner(&home);
+    command.env("FROM_THE_IMAGE", "image");
+    let runner = start(command).await;
+    runner
+        .turn_with(
+            "t1",
+            json!({
+                "text": "env AVIARY_LLM_MODEL ; say , ; env FROM_THE_IMAGE",
+                "environment": {"AVIARY_LLM_MODEL": "a-model"},
+            }),
+        )
+        .await;
+    assert_eq!(said(&runner.events("t1").await), "a-model,image");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_long_texts_of_a_tool_call_are_cut_as_the_installation_says() {
     let home = Home::new();
-    let output = |state: &support::State| -> String {
-        let update = state.reports.iter().find_map(|report| match report {
-            Report::ToolUpdate(update) => update.output.clone(),
-            _ => None,
-        });
-        format!("{:?}", update.expect("the update of the tool call"))
-    };
-
-    let cut = Supervisor::start("big 5000").await;
-    let mut command = runner(&cut, &home);
+    let mut command = runner(&home);
     command.env("AVIARY_MAX_TOOL_OUTPUT_BYTES", "100");
-    assert!(start(command).end().await.status.success());
-    let reported = cut.state(|state| output(state));
-    assert!(
-        reported.contains("... [4900 more bytes cut]") && reported.len() < 400,
-        "{reported}"
+    let runner = start(command).await;
+    let events = runner.run("t1", "big 1000").await;
+    let output = events[2].data["output"]["output"].as_str().unwrap();
+    assert_eq!(
+        output,
+        format!("{}... [900 more bytes cut]", "x".repeat(100))
     );
 
-    // Zero is no limit, and so is no setting.
-    for limit in [Some("0"), None] {
-        let whole = Supervisor::start("big 5000").await;
-        let mut command = runner(&whole, &home);
-        if let Some(limit) = limit {
-            command.env("AVIARY_MAX_TOOL_OUTPUT_BYTES", limit);
-        }
-        assert!(start(command).end().await.status.success());
-        let reported = whole.state(|state| output(state));
-        assert!(
-            reported.contains(&"x".repeat(5000)),
-            "with the limit {limit:?}"
-        );
-    }
+    // Without the setting they are told as they are.
+    let runner = start(support::runner(&home)).await;
+    let events = runner.run("t1", "big 100000").await;
+    let output = events[2].data["output"]["output"].as_str().unwrap();
+    assert_eq!(output.len(), 100_000);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_harness_that_asks_is_allowed_once() {
     let home = Home::new();
-    let supervisor = Supervisor::start("ask").await;
-    assert!(run(&supervisor, &home).await.status.success());
-    // Nobody is asked for a harness that is not set up to ask a person.
-    supervisor.state(|state| {
-        assert_eq!(state.said(), "once");
-        assert!(state.asked().is_empty() && state.resolved().is_empty());
-    });
-}
-
-/// How the requests of the turn were answered to the harness.
-fn resolved(state: &support::State) -> Vec<(&str, &str, Option<&str>)> {
-    state
-        .resolved()
-        .into_iter()
-        .map(|resolved| {
-            (
-                resolved.id.as_str(),
-                resolved.outcome.as_str(),
-                resolved.option_id.as_deref(),
-            )
-        })
-        .collect()
+    let runner = start(runner(&home)).await;
+    let events = runner.run("t1", "ask").await;
+    // Nobody is asked.
+    assert_eq!(names(&events), ["started", "message.delta", "finished"]);
+    assert_eq!(said(&events), "once");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_harness_that_asks_is_answered_by_a_person() {
     let home = Home::new();
-    let supervisor = Supervisor::start("ask ; say . ; ask").await;
-    let running = start(asking(&supervisor, &home));
-    supervisor
-        .until("the harness has not asked", |state| {
-            state.asked().len() == 1
-        })
+    let runner = start(runner(&home)).await;
+    runner
+        .turn_with("t1", json!({"text": "ask ; ask", "approval": "ask"}))
         .await;
-    supervisor.state(|state| {
-        let asked = state.asked()[0];
-        let call = asked.tool_call.as_ref().expect("the tool call");
-        assert_eq!(
-            (
-                asked.id.as_str(),
-                call.id.as_str(),
-                call.title.as_deref(),
-                call.kind.as_deref()
-            ),
-            ("1", "call-0", Some("ask"), Some("execute")),
-        );
-        assert!(
-            format!("{:?}", call.input).contains("command"),
-            "{:?}",
-            call.input
-        );
-        let options: Vec<_> = asked
-            .options
-            .iter()
-            .map(|option| {
-                (
-                    option.id.as_str(),
-                    option.kind.as_str(),
-                    option.name.as_str(),
-                )
-            })
-            .collect();
-        assert_eq!(
-            options,
-            [
-                ("always", "allow_always", "Always"),
-                ("once", "allow_once", "Once"),
-                ("never", "reject_once", "Never"),
+    let mut events = runner.follow("t1", 0).await;
+    assert_eq!(events.next().await.unwrap().name, "started");
+    let asked = events.next().await.unwrap();
+    assert_eq!(asked.name, "approval.requested");
+    assert_eq!(
+        asked.data,
+        json!({
+            "id": "1",
+            "tool_call": {
+                "id": "call-0", "title": "ask", "kind": "execute", "input": {"command": "ask"},
+            },
+            "options": [
+                {"id": "always", "kind": "allow_always", "name": "Always"},
+                {"id": "once", "kind": "allow_once", "name": "Once"},
+                {"id": "never", "kind": "reject_once", "name": "Never"},
             ],
-        );
-    });
-    // The harness waits: nobody has answered.
-    time::sleep(Duration::from_millis(300)).await;
-    supervisor.state(|state| assert!(state.said().is_empty() && state.resolved().is_empty()));
-
-    // What is no answer to the request is dropped: an option that the
-    // harness does not take, and a request that there is not.
-    supervisor.approve("1", "sometimes");
-    supervisor.approve("2", "once");
-    supervisor.approve("1", "never");
-    // An answer that comes again finds nothing to answer.
-    supervisor.approve("1", "always");
-    supervisor
-        .until("the harness has not asked again", |state| {
-            state.asked().len() == 2
         })
-        .await;
-    supervisor.approve("2", "always");
+    );
 
-    let ended = running.end().await;
-    assert!(ended.status.success(), "{}", ended.stderr);
-    supervisor.state(|state| {
-        assert_eq!(state.said(), "never.always");
-        assert_eq!(
-            resolved(state),
-            [
-                ("1", "selected", Some("never")),
-                ("2", "selected", Some("always"))
-            ],
-        );
-        assert_eq!(state.stop_reason(), Some("end_turn"));
-    });
+    // An answer that the harness does not take, and one to a request that
+    // does not wait, are dropped.
+    assert_eq!(
+        runner.answer("t1", "1", "perhaps").await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        runner.answer("t1", "7", "once").await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        runner.answer("t1", "1", "never").await,
+        StatusCode::NO_CONTENT
+    );
+    // An answer that comes twice is given once.
+    assert_eq!(
+        runner.answer("t1", "1", "always").await,
+        StatusCode::NO_CONTENT
+    );
+    let resolved = events.next().await.unwrap();
+    assert_eq!(resolved.name, "approval.resolved");
+    assert_eq!(
+        resolved.data,
+        json!({"id": "1", "outcome": "selected", "option_id": "never"})
+    );
+    assert_eq!(events.next().await.unwrap().data, json!({"text": "never"}));
+
+    // The requests of a turn are numbered as they come.
+    let again = events.next().await.unwrap();
+    assert_eq!(
+        (again.name.as_str(), &again.data["id"]),
+        ("approval.requested", &json!("2"))
+    );
+    runner.answer("t1", "2", "always").await;
+    assert_eq!(
+        events.next().await.unwrap().data,
+        json!({"id": "2", "outcome": "selected", "option_id": "always"})
+    );
+    assert_eq!(events.next().await.unwrap().data, json!({"text": "always"}));
+    assert_eq!(events.next().await.unwrap().name, "finished");
+    assert!(events.next().await.is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn requests_that_wait_at_once_are_each_given_their_own_answer() {
     let home = Home::new();
-    let supervisor = Supervisor::start("ask 2").await;
-    let running = start(asking(&supervisor, &home));
-    supervisor
-        .until("the harness has not asked twice", |state| {
-            state.asked().len() == 2
-        })
+    let runner = start(runner(&home)).await;
+    runner
+        .turn_with("t1", json!({"text": "ask 3", "approval": "ask"}))
         .await;
-    // The later request is answered first.
-    supervisor.approve("2", "once");
-    supervisor.approve("1", "never");
-
-    let ended = running.end().await;
-    assert!(ended.status.success(), "{}", ended.stderr);
-    supervisor.state(|state| {
-        assert_eq!(state.said(), "never once");
-        assert_eq!(
-            resolved(state),
-            [
-                ("2", "selected", Some("once")),
-                ("1", "selected", Some("never"))
-            ],
-        );
-    });
+    let mut events = runner.follow("t1", 0).await;
+    assert_eq!(events.next().await.unwrap().name, "started");
+    for request in ["1", "2", "3"] {
+        let asked = events.next().await.unwrap();
+        assert_eq!(asked.name, "approval.requested");
+        assert_eq!(asked.data["id"], request);
+    }
+    // They are answered in another order than they were asked in.
+    runner.answer("t1", "2", "never").await;
+    runner.answer("t1", "3", "once").await;
+    runner.answer("t1", "1", "always").await;
+    let mut rest = Vec::new();
+    while let Some(event) = events.next().await {
+        rest.push(event);
+    }
+    assert_eq!(said(&rest), "always never once");
+    assert_eq!(ending(&rest).name, "finished");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_turn_that_is_cancelled_while_its_harness_asks_is_stopped() {
     let home = Home::new();
-    let supervisor = Supervisor::start("ask 2 ; say and more").await;
-    let running = start(asking(&supervisor, &home));
-    supervisor
-        .until("the harness has not asked twice", |state| {
-            state.asked().len() == 2
-        })
+    let runner = start(runner(&home)).await;
+    runner
+        .turn_with("t1", json!({"text": "ask 2 ; say on", "approval": "ask"}))
         .await;
-    supervisor.cancel();
-    // An answer that comes after that is too late.
-    supervisor.approve("1", "once");
-
-    let ended = running.end().await;
-    assert!(ended.status.success(), "{}", ended.stderr);
-    supervisor.state(|state| {
-        // The harness is told that the turn was cancelled, to both requests,
-        // and to stop.
-        assert_eq!(state.said(), "cancelled cancelled[told to stop 1 times]");
-        assert_eq!(
-            resolved(state),
-            [("1", "cancelled", None), ("2", "cancelled", None)]
-        );
-        assert_eq!(state.stop_reason(), Some("cancelled"));
-    });
+    let mut events = runner.follow("t1", 0).await;
+    for name in ["started", "approval.requested", "approval.requested"] {
+        assert_eq!(events.next().await.unwrap().name, name);
+    }
+    assert_eq!(runner.cancel("t1").await, StatusCode::NO_CONTENT);
+    let mut rest = Vec::new();
+    while let Some(event) = events.next().await {
+        rest.push(event);
+    }
+    // The harness is given the answer that the turn was cancelled to each
+    // request, and nobody can answer them any more.
+    assert_eq!(rest[0].data, json!({"id": "1", "outcome": "cancelled"}));
+    assert_eq!(rest[1].data, json!({"id": "2", "outcome": "cancelled"}));
+    assert!(said(&rest).starts_with("cancelled cancelled"), "{rest:?}");
+    assert_eq!(ending(&rest).data["stop_reason"], "cancelled");
+    assert_eq!(
+        runner.answer("t1", "1", "once").await,
+        StatusCode::NO_CONTENT
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_turn_that_is_cancelled_is_stopped_by_the_harness() {
     let home = Home::new();
-    let supervisor =
-        Supervisor::start("drawl one two three four five six seven eight nine ten").await;
-    let running = start(runner(&supervisor, &home));
-    supervisor
-        .until("the agent has not begun its answer", |state| {
-            state.said().contains("two")
-        })
+    let mut command = runner(&home);
+    command.env("FAKE_HARNESS_STOP_MS", "300");
+    let runner = start(command).await;
+    runner
+        .turn(
+            "t1",
+            "drawl one two three four five six seven eight nine ten",
+        )
         .await;
-    supervisor.cancel();
-    // The harness is told once, however often the runner is.
-    supervisor.cancel();
-    let ended = running.end().await;
-    assert!(ended.status.success(), "{}", ended.stderr);
-    supervisor.state(|state| {
-        assert_eq!(state.stop_reason(), Some("cancelled"));
-        let said = state.said();
-        assert!(
-            said.starts_with("one two ") && !said.contains("ten"),
-            "{said}"
-        );
-        assert!(said.ends_with("[told to stop 1 times]"), "{said}");
-    });
+    let mut events = runner.follow("t1", 0).await;
+    for _ in 0..3 {
+        events.next().await.unwrap();
+    }
+    // The harness is told once, however often the turn is.
+    for _ in 0..3 {
+        assert_eq!(runner.cancel("t1").await, StatusCode::NO_CONTENT);
+    }
+    let mut rest = Vec::new();
+    while let Some(event) = events.next().await {
+        rest.push(event);
+    }
+    let text = said(&rest);
+    assert!(text.ends_with("[told to stop 1 times]"), "{text}");
+    assert!(!text.contains("ten"), "{text}");
+    assert_eq!(ending(&rest).data["stop_reason"], "cancelled");
+
+    // The next turn is not stopped by what the one before was told.
+    let next = runner.run("t2", "sleep 100 ; say on").await;
+    assert_eq!(said(&next), "on");
+    assert_eq!(ending(&next).data["stop_reason"], "end_turn");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_turn_that_is_cancelled_before_the_harness_is_ready_is_not_given_to_it() {
     let home = Home::new();
-    let supervisor = Supervisor::start("say Hello").await;
-    let mut command = runner(&supervisor, &home);
+    let mut command = runner(&home);
     command.env("FAKE_HARNESS_START_MS", "500");
-    let running = start(command);
-    supervisor
-        .until("the runner has not called", |state| !state.calls.is_empty())
-        .await;
-    supervisor.cancel();
-    let ended = running.end().await;
-    assert!(ended.status.success(), "{}", ended.stderr);
-    supervisor.state(|state| {
-        assert!(state.reports.is_empty(), "{:?}", state.kinds());
-        assert!(state.left);
-    });
+    let runner = start(command).await;
+    runner.turn("t1", "say Hello").await;
+    assert_eq!(runner.cancel("t1").await, StatusCode::NO_CONTENT);
+    let events = runner.events("t1").await;
+    assert_eq!(names(&events), ["started", "finished"]);
+    assert_eq!(ending(&events).data, json!({"stop_reason": "cancelled"}));
+    // The harness never had the message.
+    assert_eq!(said(&runner.run("t2", "recall").await), "nothing");
 }
 
-/// Kubernetes tells a pod to stop before it kills it. The runner has the
-/// harness end the turn in that time, and its exit code tells that the turn
-/// did not complete.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_request_waits_until_its_pod_is_told_to_stop() {
-    // The pod of a turn is stopped when the turn has run for as long as a
-    // turn may, and that is how long a request waits for its answer.
-    let home = Home::new();
-    let supervisor = Supervisor::start("ask").await;
-    let running = start(asking(&supervisor, &home));
-    supervisor
-        .until("the harness has not asked", |state| {
-            state.asked().len() == 1
-        })
-        .await;
-    running.terminate().await;
-    let ended = running.end().await;
-    assert_eq!(ended.status.code(), Some(143), "{}", ended.stderr);
-    supervisor.state(|state| {
-        assert_eq!(state.said(), "cancelled[told to stop 1 times]");
-        assert_eq!(resolved(state), [("1", "cancelled", None)]);
-        assert_eq!(state.stop_reason(), Some("cancelled"));
-    });
-
-    // A harness that asks when it has been told to stop is not answered by a
-    // person: nobody is asked.
-    let deaf = Supervisor::start("deaf ; sleep 400 ; ask ; say .").await;
-    let running = start(asking(&deaf, &home));
-    deaf.until("the turn has not started", |state| {
-        state.kinds().contains(&"started")
-    })
-    .await;
-    deaf.cancel();
-    let ended = running.end().await;
-    assert!(ended.status.success(), "{}", ended.stderr);
-    deaf.state(|state| {
-        assert_eq!(state.said(), "cancelled.");
-        assert!(state.asked().is_empty());
-    });
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_runner_that_is_told_to_stop_has_the_harness_end_the_turn() {
-    let home = Home::new();
-    let supervisor = Supervisor::start("tool sleep 30 ; sleep 30000").await;
-    let running = start(runner(&supervisor, &home));
-    supervisor
-        .until("the agent has not called its tool", |state| {
-            state.kinds().contains(&"tool update")
-        })
-        .await;
-    running.terminate().await;
-    let ended = running.end().await;
-    assert_eq!(ended.status.code(), Some(143), "{}", ended.stderr);
-    supervisor.state(|state| {
-        assert_eq!(state.stop_reason(), Some("cancelled"));
-        assert!(state.left);
-    });
-
-    // A turn that the harness completes all the same has completed.
-    let deaf = Supervisor::start("deaf ; drawl one two three four five").await;
-    let running = start(runner(&deaf, &home));
-    deaf.until("the agent has not begun its answer", |state| {
-        state.said().contains("one")
-    })
-    .await;
-    running.terminate().await;
-    let ended = running.end().await;
-    assert!(ended.status.success(), "{}", ended.stderr);
-    deaf.state(|state| {
-        assert_eq!(state.stop_reason(), Some("end_turn"));
-        assert_eq!(state.said(), "one two three four five");
-    });
-}
-
-/// A turn is mostly waiting: for the model, for a tool. The runner must not
-/// keep a CPU busy with it.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runner_that_waits_takes_no_cpu() {
     let home = Home::new();
-    let supervisor = Supervisor::start("say Hello ; sleep 2000").await;
-    let running = start(runner(&supervisor, &home));
-    supervisor
-        .until("the agent has not begun", |state| !state.said().is_empty())
-        .await;
-    let before = running.cpu();
-    time::sleep(Duration::from_millis(1500)).await;
-    let taken = running.cpu() - before;
-    assert!(
-        taken < Duration::from_millis(300),
-        "the runner took {taken:?} of a CPU in a second and a half of waiting"
-    );
-    assert!(running.end().await.status.success());
+    let runner = start(runner(&home)).await;
+    runner.run("t1", "say Hello").await;
+    // The harness is there and nobody sends a turn, as in a session that
+    // rests. Then a turn waits for its harness.
+    let before = cpu(runner.child.id().unwrap());
+    time::sleep(Duration::from_secs(1)).await;
+    runner.turn("t2", "sleep 1000").await;
+    runner.events("t2").await;
+    let used = cpu(runner.child.id().unwrap()) - before;
+    assert!(used < 0.2, "the runner used {used} seconds of CPU in two");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_supervisor_that_refuses_the_runner_ends_its_turn() {
-    let home = Home::new();
-    for code in [Code::Unauthenticated, Code::FailedPrecondition] {
-        let supervisor = Supervisor::start("say Hello").await;
-        supervisor.state(|state| state.refusal = Some((code, "the turn is not yours")));
-        let ended = run(&supervisor, &home).await;
-        assert!(
-            ended.failed("supervisor_lost", "the turn is not yours"),
-            "{}",
-            ended.stderr
-        );
-        // The runner does not ask again.
-        assert_eq!(supervisor.state(|state| state.calls.len()), 1);
-    }
-}
-
-#[tokio::test]
-async fn the_runner_makes_the_home_of_a_session() {
-    let store = tempfile::tempdir().unwrap();
-    let home = store.path().join("projects/p/agents/a/sessions/s/home");
-    let made = Command::new(env!("CARGO_BIN_EXE_aviary-runner"))
-        .arg("init-home")
-        .arg(&home)
-        .status()
-        .await
-        .unwrap();
-    assert!(made.success());
-    assert!(fs::metadata(home.join("workspace")).unwrap().is_dir());
-
-    // Every turn of the session makes it, and so finds it there but for the
-    // first.
-    fs::write(home.join("workspace/kept"), "").unwrap();
-    let again = Command::new(env!("CARGO_BIN_EXE_aviary-runner"))
-        .arg("init-home")
-        .arg(&home)
-        .status()
-        .await
-        .unwrap();
-    assert!(again.success());
-    assert!(home.join("workspace/kept").exists());
-
-    // A home that cannot be made fails the pod before the agent starts, and
-    // the runner leaves the reason as it does for a turn.
-    fs::write(store.path().join("file"), "").unwrap();
-    let under_a_file = Command::new(env!("CARGO_BIN_EXE_aviary-runner"))
-        .arg("init-home")
-        .arg(store.path().join("file/home"))
-        .output()
-        .await
-        .unwrap();
-    let said = String::from_utf8_lossy(&under_a_file.stderr);
-    assert!(!under_a_file.status.success());
-    assert!(
-        said.contains("reason: \"runner_error\"")
-            && said.contains("the home of the session could not be made")
-            && said.contains("file/home: Not a directory"),
-        "{said}"
-    );
-
-    let wrong = Command::new(env!("CARGO_BIN_EXE_aviary-runner"))
-        .arg("init")
-        .output()
-        .await
-        .unwrap();
-    assert!(!wrong.status.success());
-    assert!(String::from_utf8_lossy(&wrong.stderr).contains("usage: aviary-runner"));
+/// The seconds of CPU that the process has used.
+fn cpu(process: u32) -> f64 {
+    let stat = fs::read_to_string(format!("/proc/{process}/stat")).unwrap();
+    // The fields after the name of the program, which may have spaces.
+    let fields: Vec<&str> = stat[stat.rfind(')').unwrap() + 2..].split(' ').collect();
+    let ticks: f64 = fields[11].parse::<f64>().unwrap() + fields[12].parse::<f64>().unwrap();
+    ticks / 100.0
 }

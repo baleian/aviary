@@ -56,6 +56,7 @@ func (e *apiError) Error() string { return e.Message }
 var (
 	errNotFound    = &apiError{status: http.StatusNotFound, Code: "not_found", Message: "no such resource"}
 	errSessionBusy = &apiError{status: http.StatusConflict, Code: "session_busy", Message: "the session has a turn that has not finished"}
+	errSessionOver = &apiError{status: http.StatusConflict, Code: "session_ended", Message: "the session has ended"}
 	errTurnEnded   = &apiError{status: http.StatusConflict, Code: "turn_ended", Message: "the turn has ended"}
 	errAnswered    = &apiError{status: http.StatusConflict, Code: "approval_answered", Message: "the request for approval has its answer"}
 	errNoModel     = &apiError{status: http.StatusConflict, Code: "agent_without_model", Message: "the agent of the session names no model: create an agent that names one"}
@@ -94,6 +95,7 @@ func New(st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Key
 	// The sessions of the agent that the caller may read.
 	mux.Handle("GET /v1/agents/{aid}/sessions", handler(a.listSessions))
 	mux.Handle("GET /v1/sessions/{sid}", a.withSession(reads, a.getSession))
+	mux.Handle("DELETE /v1/sessions/{sid}", a.withSession(ends, a.endSession))
 	mux.Handle("POST /v1/sessions/{sid}/messages", a.withSession(sends, a.createMessage))
 	mux.Handle("GET /v1/sessions/{sid}/turns", a.withSession(reads, a.listTurns))
 	mux.Handle("GET /v1/turns/{tid}", a.withTurn(reads, a.getTurn))
@@ -167,10 +169,9 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	var request struct {
-		Harness      string          `json:"harness"`
-		Instructions string          `json:"instructions"`
-		Resources    json.RawMessage `json:"resources"`
-		Approval     string          `json:"approval"`
+		Harness      string `json:"harness"`
+		Instructions string `json:"instructions"`
+		Approval     string `json:"approval"`
 		Model        *struct {
 			Provider string `json:"provider"`
 			Name     string `json:"name"`
@@ -181,10 +182,6 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 	}
 	if !a.driver.HasHarness(request.Harness) {
 		return invalid("harness is not one of the configured harnesses")
-	}
-	resources, err := driver.AgentResources(request.Resources)
-	if err != nil {
-		return invalid(err.Error())
 	}
 	if request.Approval != "" && request.Approval != driver.Ask {
 		return invalid(`approval is not "ask"`)
@@ -207,7 +204,7 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 		return invalid("model.name is required")
 	}
 	agent, err := a.store.CreateAgent(r.Context(), projectID, store.Agent{
-		Harness: request.Harness, Instructions: request.Instructions, Resources: resources, Approval: request.Approval,
+		Harness: request.Harness, Instructions: request.Instructions, Approval: request.Approval,
 		Model: &store.Model{Provider: providerID, Name: request.Model.Name},
 	})
 	if err != nil {
@@ -310,6 +307,21 @@ func (a *api) getSession(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	session, err := a.store.Session(r.Context(), id)
+	if err != nil {
+		return err
+	}
+	respond(w, http.StatusOK, session)
+	return nil
+}
+
+// endSession ends the session, and has its sandbox deleted with all that
+// the agent had in it. What was said in the session stays.
+func (a *api) endSession(w http.ResponseWriter, r *http.Request) error {
+	id, err := pathID(r, "sid")
+	if err != nil {
+		return err
+	}
+	session, err := a.driver.EndSession(r.Context(), id)
 	if err != nil {
 		return err
 	}
@@ -511,8 +523,8 @@ func (a *api) answerApproval(w http.ResponseWriter, r *http.Request) error {
 }
 
 // cancelTurn cancels a turn. A turn that waits to run ends at once, and the
-// reply is 200. A turn that runs is told to stop and ends when its pod has
-// stopped, so the reply is 202 with the turn to follow. Cancelling a turn
+// reply is 200. A turn that runs is told to stop and ends when its harness
+// has stopped, so the reply is 202 with the turn to follow. Cancelling a turn
 // that was cancelled before changes nothing and succeeds.
 func (a *api) cancelTurn(w http.ResponseWriter, r *http.Request) error {
 	id, err := pathID(r, "tid")
@@ -557,6 +569,8 @@ func (h handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		failure = errNotFound
 	case errors.Is(err, store.ErrSessionBusy):
 		failure = errSessionBusy
+	case errors.Is(err, store.ErrSessionEnded):
+		failure = errSessionOver
 	case errors.Is(err, store.ErrQueueFull):
 		failure = errQueueFull
 	case errors.Is(err, store.ErrMemberExists):

@@ -46,9 +46,7 @@ func (s supervisor) session() uuid.UUID {
 	if err != nil {
 		s.t.Fatal(err)
 	}
-	agent, err := s.CreateAgent(ctx, project.ID, store.Agent{
-		Harness: "opencode", Instructions: "Be brief.", Resources: json.RawMessage(`{"limits": {"memory": "2Gi"}}`), Approval: "ask",
-	})
+	agent, err := s.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Instructions: "Be brief.", Approval: "ask"})
 	if err != nil {
 		s.t.Fatal(err)
 	}
@@ -83,16 +81,16 @@ func (s supervisor) dispatch() store.Dispatch {
 	return dispatches[0]
 }
 
-// running queues a message to the session and has a runner take its turn.
-// It returns the turn's dispatch and the runner.
-func (s supervisor) running(session uuid.UUID) (store.Dispatch, uuid.UUID) {
+// running queues a message to the session and has a Supervisor follow its
+// turn, which then runs. It returns the turn's dispatch.
+func (s supervisor) running(session uuid.UUID) store.Dispatch {
 	s.t.Helper()
 	s.queue(session)
-	dispatch, runner := s.dispatch(), uuid.New()
-	if _, err := s.TakeTurn(ctx, dispatch.Token, &runner); err != nil {
+	dispatch := s.dispatch()
+	if _, err := s.FollowTurn(ctx, dispatch.TurnID); err != nil {
 		s.t.Fatal(err)
 	}
-	return dispatch, runner
+	return dispatch
 }
 
 func (s supervisor) turn(id uuid.UUID) store.Turn {
@@ -104,7 +102,7 @@ func (s supervisor) turn(id uuid.UUID) store.Turn {
 	return turn
 }
 
-// end ends the turn as the turn of a pod that succeeded or failed, and
+// end ends the turn as one that succeeded or failed, and
 // returns it.
 func (s supervisor) end(id uuid.UUID, succeeded bool, failure store.Failure) store.Turn {
 	s.t.Helper()
@@ -216,7 +214,7 @@ func (suite suite) testCreateTurnKeepsToTheMostThatMayWait(t *testing.T) {
 	if _, err := send(refused); !errors.Is(err, store.ErrQueueFull) {
 		t.Errorf("a message beyond the most that may wait was accepted: %v", err)
 	}
-	st.end(dispatches[0].TurnID, false, store.Failure{Reason: store.FailurePodLost})
+	st.end(dispatches[0].TurnID, false, store.Failure{Reason: store.FailureSandboxLost})
 	if waiting, err := send(refused); err != nil || waiting != 2 {
 		t.Errorf("after a turn ended, %d turns wait: %v", waiting, err)
 	}
@@ -278,32 +276,15 @@ func (suite suite) testDispatchTurns(t *testing.T) {
 		t.Fatalf("the turns %v were dispatched, not the two oldest of %v", dispatches, queued)
 	}
 	first := dispatches[0]
-	session, err := st.Session(ctx, queued[0].SessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	agent, err := st.Agent(ctx, session.AgentID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var resources struct{ Limits map[string]string }
-	if err := json.Unmarshal(first.Resources, &resources); err != nil {
-		t.Errorf("the resources of the agent are %s: %v", first.Resources, err)
-	}
-	if first.SessionID != session.ID || first.AgentID != agent.ID || first.ProjectID != agent.ProjectID ||
-		first.Harness != "opencode" || resources.Limits["memory"] != "2Gi" || first.Approval != "ask" {
+	if first.Harness != "opencode" {
 		t.Errorf("the dispatch is %+v", first)
-	}
-	if first.Token == "" || first.Token == dispatches[1].Token {
-		t.Errorf("the tokens of two turns are %q and %q", first.Token, dispatches[1].Token)
 	}
 	if state := st.turn(first.TurnID).State; state != store.TurnDispatching {
 		t.Errorf("a dispatched turn is %s", state)
 	}
 
 	// A turn counts against the limit from its dispatch to its end.
-	runner := uuid.New()
-	if _, err := st.TakeTurn(ctx, first.Token, &runner); err != nil {
+	if _, err := st.FollowTurn(ctx, first.TurnID); err != nil {
 		t.Fatal(err)
 	}
 	if more, err := st.DispatchTurns(ctx, 2); err != nil || len(more) != 0 {
@@ -390,7 +371,7 @@ func (suite suite) testSupervisorsDispatchWithinTheLimitWhileTurnsCome(t *testin
 			}
 		}
 		for _, turn := range dispatched {
-			st.end(turn.ID, false, store.Failure{Reason: store.FailurePodLost})
+			st.end(turn.ID, false, store.Failure{Reason: store.FailureSandboxLost})
 		}
 	}
 }
@@ -432,6 +413,36 @@ func (suite suite) testDispatchTurnsLeavesATurnThatWasCancelledMeanwhile(t *test
 	}
 }
 
+// A turn that waits for a person takes its place among the turns that run,
+// as any other: its sandbox runs while it waits.
+func (suite suite) testDispatchTurnsCountsATurnThatWaitsForAPerson(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	// One turn has room to run.
+	send := func() (uuid.UUID, int) {
+		t.Helper()
+		turn, waiting, err := st.CreateTurn(ctx, st.session(), uuid.Nil, "hello", 0, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return turn.ID, waiting
+	}
+	first, _ := send()
+	dispatches, err := st.DispatchTurns(ctx, 1)
+	if err != nil || len(dispatches) != 1 || dispatches[0].TurnID != first {
+		t.Fatalf("the turns %+v were dispatched, not the one that waited: %v", dispatches, err)
+	}
+	if err := st.AddApproval(ctx, first, "1", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, waiting := send(); waiting != 1 {
+		t.Errorf("%d turns wait while the only turn that runs waits for a person", waiting)
+	}
+	if dispatches, err := st.DispatchTurns(ctx, 1); err != nil || len(dispatches) != 0 {
+		t.Errorf("the turns %+v were dispatched beyond the limit, while the turn that runs waits for a person: %v", dispatches, err)
+	}
+}
+
 func (suite suite) testAnnounceQueue(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -461,140 +472,73 @@ func (suite suite) testAnnounceQueue(t *testing.T) {
 	})
 }
 
-func (suite suite) testTakeTurn(t *testing.T) {
+// A Supervisor that follows a turn is given what it takes to run the turn,
+// as it is now.
+func (suite suite) testFollowTurn(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	session := st.session()
-	st.queue(session)
-	dispatch := st.dispatch()
-	if _, err := st.RunningTurn(ctx, dispatch.Token); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("the token of a turn that no runner has taken counts as that of a running turn: %v", err)
-	}
-
-	runner, other := uuid.New(), uuid.New()
-	taken, err := st.TakeTurn(ctx, dispatch.Token, &runner)
+	kept, err := st.Session(ctx, session)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if taken.ID != dispatch.TurnID || taken.Text != "hello" || taken.Harness != "opencode" ||
-		taken.Instructions != "Be brief." || taken.HarnessSessionID != nil || taken.Again {
-		t.Errorf("the runner was given %+v", taken)
-	}
-	if state := st.turn(taken.ID).State; state != store.TurnRunning {
-		t.Errorf("a turn that its runner took is %s", state)
-	}
-	origin, err := st.RunningTurn(ctx, dispatch.Token)
-	if err != nil || origin.TurnID != dispatch.TurnID || origin.SessionID != session ||
-		origin.AgentID != dispatch.AgentID || origin.ProjectID != dispatch.ProjectID || origin.UserID != uuid.Nil || origin.Subject != "" {
-		t.Errorf("the token of the running turn belongs to %+v: %v", origin, err)
-	}
-
-	// The runner that took the turn is given it again, by any Supervisor.
-	if again, err := st.another().TakeTurn(ctx, dispatch.Token, &runner); err != nil || !again.Again || again.ID != taken.ID {
-		t.Errorf("the runner that came back was given %+v: %v", again, err)
-	}
-	if _, err := st.TakeTurn(ctx, dispatch.Token, &other); !errors.Is(err, store.ErrTurnTaken) {
-		t.Errorf("another runner was given the turn: %v", err)
-	}
-	// A runner of an older release has no name, and is not told apart from
-	// another.
-	if _, err := st.TakeTurn(ctx, dispatch.Token, nil); !errors.Is(err, store.ErrTurnTaken) {
-		t.Errorf("a runner without a name was given the turn: %v", err)
-	}
-	if _, err := st.TakeTurn(ctx, "another token", &runner); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("a token that opens no turn was taken: %v", err)
-	}
-
-	if _, _, err := st.StartTurn(ctx, taken.ID, "harness-session-1"); err != nil {
+	agent, err := st.Agent(ctx, kept.AgentID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	st.end(taken.ID, true, store.Failure{})
-	if _, err := st.TakeTurn(ctx, dispatch.Token, &runner); !errors.Is(err, store.ErrTurnEnded) {
-		t.Errorf("the runner was given a turn that has ended: %v", err)
+	queued := st.queue(session)
+	if _, err := st.FollowTurn(ctx, queued.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("a turn that waits to run was followed: %v", err)
 	}
-	if _, err := st.RunningTurn(ctx, dispatch.Token); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("the token of a turn that has ended counts as that of a running turn: %v", err)
+	if _, err := st.FollowTurn(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("a turn that there is not was followed: %v", err)
 	}
 
-	// The next turn of the session continues the harness session.
-	st.queue(session)
-	next, err := st.TakeTurn(ctx, st.dispatch().Token, &other)
-	if err != nil || next.HarnessSessionID == nil || *next.HarnessSessionID != "harness-session-1" || next.Seq != 2 {
-		t.Errorf("the runner of the next turn was given %+v: %v", next, err)
-	}
-}
-
-// A turn is given to one runner only, also when several ask for it at once
-// through several Supervisors.
-func (suite suite) testTakeTurnGivesTheTurnToOneOfTheRunnersThatAskAtOnce(t *testing.T) {
-	t.Parallel()
-	st := suite.open(t)
-	st.queue(st.session())
-	dispatch, supervisors := st.dispatch(), st.supervisors(8)
-	var given, refused atomic.Int32
-	atOnce(len(supervisors), func(i int) {
-		runner := uuid.New()
-		_, err := supervisors[i].TakeTurn(ctx, dispatch.Token, &runner)
-		switch {
-		case err == nil:
-			given.Add(1)
-		case errors.Is(err, store.ErrTurnTaken):
-			refused.Add(1)
-		default:
-			t.Error(err)
-		}
-	})
-	if given.Load() != 1 || refused.Load() != 7 {
-		t.Errorf("of eight runners that asked for a turn at once, %d were given it and %d were refused", given.Load(), refused.Load())
-	}
-}
-
-func (suite suite) testTakeTurnThatIsNotToRun(t *testing.T) {
-	t.Parallel()
-	st := suite.open(t)
-	runner := uuid.New()
-
-	st.queue(st.session())
-	cancelled := st.dispatch()
-	if _, _, err := st.CancelTurn(ctx, cancelled.TurnID); err != nil {
+	dispatch := st.dispatch()
+	followed, err := st.FollowTurn(ctx, dispatch.TurnID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.TakeTurn(ctx, cancelled.Token, &runner); !errors.Is(err, store.ErrTurnCancelled) {
-		t.Errorf("a turn that was cancelled before its runner came was taken: %v", err)
+	if followed.ID != dispatch.TurnID || followed.SessionID != session || followed.Seq != 1 || followed.Text != "hello" ||
+		followed.State != store.TurnRunning || followed.CancelRequestedAt != nil ||
+		followed.AgentID != agent.ID || followed.ProjectID != agent.ProjectID ||
+		followed.Harness != "opencode" || followed.Instructions != "Be brief." || followed.Approval != "ask" ||
+		followed.ProviderURL != "" || followed.Model != "" || followed.Sandbox != "" ||
+		followed.Dispatched < 0 || followed.Dispatched > time.Minute {
+		t.Errorf("the Supervisor was given %+v", followed)
+	}
+	if state := st.turn(followed.ID).State; state != store.TurnRunning {
+		t.Errorf("a turn that a Supervisor follows is %s", state)
 	}
 
-	st.queue(st.session())
-	givenUp := st.dispatch()
-	failure := store.Failure{Reason: store.FailureStartup, Message: "ErrImagePull"}
-	if changed, err := st.GiveUpTurn(ctx, givenUp.TurnID, failure); err != nil || !changed {
-		t.Fatalf("the turn was not given up: %v", err)
+	// The sandbox that the session has got meanwhile, and that the turn was
+	// asked to stop, are told to who follows it then: the same Supervisor,
+	// or the one that follows the turn after it.
+	if set, err := st.SetSandbox(ctx, session, "", "sandbox-1"); err != nil || !set {
+		t.Fatalf("the session was not given its sandbox: %v", err)
 	}
-	if _, err := st.TakeTurn(ctx, givenUp.Token, &runner); !errors.Is(err, store.ErrTurnCancelled) {
-		t.Errorf("a turn that was given up before its runner came was taken: %v", err)
+	if _, _, err := st.CancelTurn(ctx, dispatch.TurnID); err != nil {
+		t.Fatal(err)
 	}
-	// A turn is given up for one reason, and only before its runner has it.
-	if changed, err := st.GiveUpTurn(ctx, givenUp.TurnID, store.Failure{Reason: store.FailureRunner}); err != nil || changed {
-		t.Errorf("the turn was given up again: %v", err)
+	again, err := st.another().FollowTurn(ctx, dispatch.TurnID)
+	if err != nil || again.ID != followed.ID || again.Sandbox != "sandbox-1" || again.CancelRequestedAt == nil {
+		t.Errorf("the Supervisor that follows the turn then was given %+v: %v", again, err)
 	}
-	dispatch, _ := st.running(st.session())
-	if changed, err := st.GiveUpTurn(ctx, dispatch.TurnID, failure); err != nil || changed {
-		t.Errorf("a turn that its runner had taken was given up: %v", err)
-	}
-	ended := st.end(givenUp.TurnID, false, store.Failure{Reason: store.FailurePodLost, Message: "the pod is gone"})
-	if ended.State != store.TurnFailed || ended.Failure == nil || *ended.Failure != failure {
-		t.Errorf("the turn that was given up ended as %s, for %+v", ended.State, ended.Failure)
+
+	st.end(dispatch.TurnID, false, store.Failure{Reason: store.FailureRunner})
+	if _, err := st.FollowTurn(ctx, dispatch.TurnID); !errors.Is(err, store.ErrTurnEnded) {
+		t.Errorf("a turn that has ended was followed: %v", err)
 	}
 }
 
 func (suite suite) testStartTurn(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
-	session := st.session()
-	dispatch, _ := st.running(session)
+	dispatch := st.running(st.session())
 	if started := st.turn(dispatch.TurnID).StartedAt; started != nil {
 		t.Fatalf("a turn whose harness has no message yet started at %v", started)
 	}
-	startup, first, err := st.StartTurn(ctx, dispatch.TurnID, "harness-session-1")
+	startup, first, err := st.StartTurn(ctx, dispatch.TurnID)
 	if err != nil || !first || startup < 0 || startup > time.Minute {
 		t.Fatalf("the turn started after %s, for the first time %t: %v", startup, first, err)
 	}
@@ -603,18 +547,12 @@ func (suite suite) testStartTurn(t *testing.T) {
 		t.Fatal("the turn has not started")
 	}
 
-	// A runner that lost its Supervisor reports the start again.
-	if _, first, err := st.StartTurn(ctx, dispatch.TurnID, "harness-session-2"); err != nil || first {
+	// Another Supervisor that follows the turn reads the start again.
+	if _, first, err := st.StartTurn(ctx, dispatch.TurnID); err != nil || first {
 		t.Errorf("the turn started a second time: %v", err)
 	}
 	if again := st.turn(dispatch.TurnID).StartedAt; !again.Equal(*started) {
 		t.Errorf("the turn started at %v and then at %v", started, again)
-	}
-	st.end(dispatch.TurnID, true, store.Failure{})
-	st.queue(session)
-	next, err := st.TakeTurn(ctx, st.dispatch().Token, nil)
-	if err != nil || next.HarnessSessionID == nil || *next.HarnessSessionID != "harness-session-1" {
-		t.Errorf("the next turn continues the harness session %v: %v", next.HarnessSessionID, err)
 	}
 }
 
@@ -636,8 +574,8 @@ func (suite suite) testCancelTurn(t *testing.T) {
 		t.Errorf("a cancelled turn was dispatched: %v, %v", dispatches, err)
 	}
 
-	// A turn that was dispatched is asked to stop, and ends with its pod.
-	dispatch, _ := st.running(session)
+	// A turn that was dispatched is asked to stop, and ends when its harness has stopped.
+	dispatch := st.running(session)
 	asked, unended, err := st.CancelTurn(ctx, dispatch.TurnID)
 	if err != nil || !unended || asked.State != store.TurnRunning || asked.CancelRequestedAt == nil || asked.EndedAt != nil {
 		t.Fatalf("a running turn that was cancelled is %+v, had not ended %t: %v", asked, unended, err)
@@ -649,13 +587,13 @@ func (suite suite) testCancelTurn(t *testing.T) {
 	if cancelling, err := st.CancellingTurns(ctx); err != nil || !slices.Equal(cancelling, []uuid.UUID{dispatch.TurnID}) {
 		t.Errorf("the turns that were asked to stop are %v: %v", cancelling, err)
 	}
-	st.end(dispatch.TurnID, false, store.Failure{Reason: store.FailurePodLost})
+	st.end(dispatch.TurnID, false, store.Failure{Reason: store.FailureSandboxLost})
 	if cancelling, err := st.CancellingTurns(ctx); err != nil || len(cancelling) != 0 {
 		t.Errorf("the turns that were asked to stop are %v: %v", cancelling, err)
 	}
 
 	// A turn that has ended stays as it ended.
-	completed, _ := st.running(session)
+	completed := st.running(session)
 	if err := st.SetFinished(ctx, completed.TurnID, "end_turn", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -672,7 +610,7 @@ func (suite suite) testCancelTurn(t *testing.T) {
 func (suite suite) testExpireTurns(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
-	dispatched, _ := st.running(st.session())
+	dispatched := st.running(st.session())
 	old, fresh := st.queue(st.session()), st.queue(st.session())
 	st.database.Age(t, time.Minute, old.ID, dispatched.TurnID)
 
@@ -694,10 +632,10 @@ func (suite suite) testExpireTurns(t *testing.T) {
 func (suite suite) testEndTurn(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
-	lost := store.Failure{Reason: store.FailurePodLost, Message: "the pod was stopped"}
+	lost := store.Failure{Reason: store.FailureSandboxLost, Message: "the sandbox of the session is gone"}
 	tests := []struct {
 		name string
-		// What the turn went through before its pod ended: whether it was
+		// What the turn went through before it ended: whether it was
 		// asked to stop, and why the harness said that it stopped, if it did.
 		cancelled  bool
 		stopReason string
@@ -705,17 +643,17 @@ func (suite suite) testEndTurn(t *testing.T) {
 		state      string
 		failure    *store.Failure
 	}{
-		{name: "the pod succeeded", stopReason: "end_turn", succeeded: true, state: store.TurnCompleted},
-		{name: "the pod succeeded and the runner reported no end", succeeded: true, state: store.TurnFailed, failure: &lost},
-		{name: "the pod failed", state: store.TurnFailed, failure: &lost},
-		{name: "the pod failed after the harness had ended the turn", stopReason: "end_turn", state: store.TurnFailed, failure: &lost},
-		{name: "the turn was cancelled and its pod failed", cancelled: true, state: store.TurnCancelled},
+		{name: "the turn succeeded", stopReason: "end_turn", succeeded: true, state: store.TurnCompleted},
+		{name: "the turn succeeded and the runner reported no end", succeeded: true, state: store.TurnFailed, failure: &lost},
+		{name: "the turn failed", state: store.TurnFailed, failure: &lost},
+		{name: "the turn failed after the harness had ended it", stopReason: "end_turn", state: store.TurnFailed, failure: &lost},
+		{name: "the turn was cancelled and failed", cancelled: true, state: store.TurnCancelled},
 		{
 			name:      "the turn was cancelled and the harness stopped it",
 			cancelled: true, stopReason: "cancelled", succeeded: true, state: store.TurnCancelled,
 		},
 		{
-			name:      "the turn was cancelled and its pod succeeded without an end from the runner",
+			name:      "the turn was cancelled and succeeded without an end from the runner",
 			cancelled: true, succeeded: true, state: store.TurnCancelled,
 		},
 		{
@@ -726,7 +664,7 @@ func (suite suite) testEndTurn(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			session := st.session()
-			dispatch, _ := st.running(session)
+			dispatch := st.running(session)
 			if test.cancelled {
 				if _, _, err := st.CancelTurn(ctx, dispatch.TurnID); err != nil {
 					t.Fatal(err)
@@ -780,11 +718,11 @@ func (suite suite) testEndTurn(t *testing.T) {
 func (suite suite) testSupervisorsEndATurnOnceTogether(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
-	dispatch, _ := st.running(st.session())
+	dispatch := st.running(st.session())
 	supervisors := st.supervisors(8)
 	var ended, read atomic.Int32
 	atOnce(len(supervisors), func(i int) {
-		_, changed, err := supervisors[i].EndTurn(ctx, dispatch.TurnID, i%2 == 0, store.Failure{Reason: store.FailurePodLost},
+		_, changed, err := supervisors[i].EndTurn(ctx, dispatch.TurnID, i%2 == 0, store.Failure{Reason: store.FailureSandboxLost},
 			func(context.Context) ([]json.RawMessage, error) {
 				read.Add(1)
 				return []json.RawMessage{json.RawMessage(`{"type":"message","text":"one"}`)}, nil
@@ -817,7 +755,7 @@ func (suite suite) testEndTurnKeepsWhatTheTurnSaid(t *testing.T) {
 	}
 
 	// A turn whose items cannot be read has not ended, and is ended later.
-	dispatch, _ := st.running(session)
+	dispatch := st.running(session)
 	_, _, err := st.EndTurn(ctx, dispatch.TurnID, true, store.Failure{}, func(context.Context) ([]json.RawMessage, error) {
 		return nil, errors.New("the events cannot be read")
 	})
@@ -833,7 +771,7 @@ func (suite suite) testEndTurnKeepsWhatTheTurnSaid(t *testing.T) {
 		t.Fatalf("the turn was not ended: %v", err)
 	}
 
-	silent, _ := st.running(st.session())
+	silent := st.running(st.session())
 	st.end(silent.TurnID, true, store.Failure{})
 	items, err := st.TurnItems(ctx, []uuid.UUID{silent.TurnID, dispatch.TurnID, uuid.New()})
 	if err != nil {
@@ -855,7 +793,7 @@ func (suite suite) testSetFinished(t *testing.T) {
 	thought := int64(3)
 	usage := &store.Usage{TotalTokens: 18, InputTokens: 11, OutputTokens: 7, ThoughtTokens: &thought}
 
-	dispatch, _ := st.running(st.session())
+	dispatch := st.running(st.session())
 	if err := st.SetFinished(ctx, dispatch.TurnID, "end_turn", usage); err != nil {
 		t.Fatal(err)
 	}
@@ -866,7 +804,7 @@ func (suite suite) testSetFinished(t *testing.T) {
 		t.Errorf("the turn ended with the stop reason %v and the usage %+v", ended.StopReason, ended.Usage)
 	}
 
-	silent, _ := st.running(st.session())
+	silent := st.running(st.session())
 	if err := st.SetFinished(ctx, silent.TurnID, "max_tokens", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -880,8 +818,8 @@ func (suite suite) testTurns(t *testing.T) {
 	st := suite.open(t)
 	session := st.session()
 	for range 3 {
-		dispatch, _ := st.running(session)
-		st.end(dispatch.TurnID, false, store.Failure{Reason: store.FailurePodLost})
+		dispatch := st.running(session)
+		st.end(dispatch.TurnID, false, store.Failure{Reason: store.FailureSandboxLost})
 	}
 	st.queue(st.session())
 	for _, test := range []struct {
@@ -913,8 +851,8 @@ func (suite suite) testDispatchedTurns(t *testing.T) {
 	st := suite.open(t)
 	st.queue(st.session())
 	waiting := st.dispatch()
-	running, _ := st.running(st.session())
-	ended, _ := st.running(st.session())
+	running := st.running(st.session())
+	ended := st.running(st.session())
 	st.end(ended.TurnID, true, store.Failure{})
 	if _, _, err := st.CancelTurn(ctx, running.TurnID); err != nil {
 		t.Fatal(err)
@@ -931,11 +869,11 @@ func (suite suite) testDispatchedTurns(t *testing.T) {
 	for _, turn := range dispatched {
 		switch turn.ID {
 		case waiting.TurnID:
-			if turn.Taken || turn.Age < 0 || turn.Age > time.Minute || turn.Cancelling != 0 {
-				t.Errorf("the turn that waits for its runner is %+v", turn)
+			if turn.Cancelling != 0 {
+				t.Errorf("the turn that waits to be followed is %+v", turn)
 			}
 		case running.TurnID:
-			if !turn.Taken || turn.Age < 2*time.Minute || turn.Cancelling < time.Minute {
+			if turn.Cancelling < time.Minute {
 				t.Errorf("the turn that runs and was asked to stop is %+v", turn)
 			}
 		default:

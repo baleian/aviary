@@ -32,13 +32,23 @@ import (
 )
 
 const (
-	// system is the namespace of Aviary, and runtime that of the turn pods.
+	// system is the namespace of Aviary, runtime that of the sandboxes, and
+	// data that of the identity provider and of the secret store of the
+	// cluster.
 	system  = "aviary-system"
 	runtime = "aviary-runtime"
-	// patience is how long a test waits for a turn to end.
-	patience = 2 * time.Minute
+	data    = "aviary-data"
+	// patience is how long a test waits for a turn to end. The first turn of
+	// a session waits for its sandbox, and the longest answer of the tests
+	// takes a minute.
+	patience = 3 * time.Minute
 	// soon is how long it waits for what follows on something at once.
 	soon = 30 * time.Second
+	// idle is how long a session may be idle before it is put to sleep, as
+	// the values of the e2e set it, and look how often the Supervisors look
+	// for such sessions.
+	idle = 30 * time.Second
+	look = time.Minute
 )
 
 var (
@@ -212,11 +222,14 @@ func create(t *testing.T, path, body string) string {
 	return created.ID
 }
 
-// The model server of the tests, which answers only the requests that carry
-// its key.
+// The model server of the tests. It answers only the requests that carry its
+// key, which a sandbox does not hold: the Egress Proxy puts the key into a
+// model request. It also serves a Python package for pip, at probeURL.
 const (
-	mockURL = "http://mock-llm.aviary-e2e/v1"
-	mockKey = "mock-llm-key"
+	mockHost = "mock-llm.aviary-e2e"
+	mockURL  = "http://" + mockHost + "/v1"
+	mockKey  = "mock-llm-key"
+	probeURL = "http://" + mockHost + "/packages/aviary_probe-1.0-py3-none-any.whl"
 )
 
 // provider creates a provider of the project: the model server of the
@@ -226,17 +239,12 @@ func provider(t *testing.T, project, key string) string {
 	return create(t, "/v1/projects/"+project+"/providers", fmt.Sprintf(`{"name": "mock", "url": %q, "api_key": {"value": %q}}`, mockURL, key))
 }
 
-// The other model server of the tests, which has a key of its own, and the
-// secret store of the cluster, where the tests keep that key.
+// The secret store of the cluster, and for how long a Supervisor of the
+// installation uses what it read from a secret store, as the values of the
+// e2e set it.
 const (
-	otherURL     = "http://mock-llm-other.aviary-e2e/v1"
-	otherHost    = "mock-llm-other.aviary-e2e"
-	otherKey     = "other-mock-llm-key"
 	storeAddress = "http://openbao.aviary-data:8200"
-	data         = "aviary-data"
-	// remembered is for how long a Supervisor of the installation uses what
-	// it read from a secret store, as the values of the e2e set it.
-	remembered = 5 * time.Second
+	remembered   = 5 * time.Second
 )
 
 // rootToken is the token of the secret store's owner, which `make
@@ -280,7 +288,7 @@ func owner(t *testing.T, method, path string, body any, statuses ...int) map[str
 }
 
 // agent is an agent of a project.
-type agent struct{ id, project string }
+type agent struct{ id string }
 
 // agentOf creates an agent of the project as the body says, whose model is
 // one of the provider.
@@ -295,7 +303,7 @@ func agentOf(t *testing.T, project, provider, body string) agent {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return agent{create(t, "/v1/projects/"+project+"/agents", string(with)), project}
+	return agent{create(t, "/v1/projects/"+project+"/agents", string(with))}
 }
 
 // newAgent creates an agent as the body says, in a project of its own. Its
@@ -306,10 +314,33 @@ func newAgent(t *testing.T, body string) agent {
 	return agentOf(t, project, provider(t, project, mockKey), body)
 }
 
-// session creates a session of the agent.
+// session creates a session of the agent, and ends it when the test is
+// done.
 func (a agent) session(t *testing.T) string {
 	t.Helper()
-	return create(t, "/v1/agents/"+a.id+"/sessions", "")
+	id := create(t, "/v1/agents/"+a.id+"/sessions", "")
+	t.Cleanup(func() { end(t, id) })
+	return id
+}
+
+// end ends the session, and its sandbox goes with it. A session that a test
+// left would keep its sandbox, and the cluster has room for only so many.
+func end(t *testing.T, session string) {
+	t.Helper()
+	path := "/v1/sessions/" + session
+	if request(t, "DELETE", path, "", nil) == http.StatusOK {
+		return
+	}
+	// A test that failed may have left a turn of the session running, and a
+	// session is not ended before its turn has.
+	var list struct{ Turns []turn }
+	request(t, "GET", path+"/turns?limit=1", "", &list)
+	for _, left := range list.Turns {
+		request(t, "POST", "/v1/turns/"+left.ID+"/cancel", "", nil)
+	}
+	eventually(t, patience, "the session "+session+" is not ended, and its sandbox is left", func() bool {
+		return request(t, "DELETE", path, "", nil) == http.StatusOK
+	})
 }
 
 // turn is a turn as the API returns it.
@@ -510,24 +541,6 @@ func pods(t *testing.T, namespace, selector string) []corev1.Pod {
 	return pods.Items
 }
 
-// left tells what the cluster still holds of a turn: its Job and its pod.
-func left(t *testing.T, id string) []string {
-	t.Helper()
-	selector := metav1.ListOptions{LabelSelector: "aviary.io/turn=" + id}
-	jobs, err := cluster.BatchV1().Jobs(runtime).List(ctx, selector)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var left []string
-	for _, job := range jobs.Items {
-		left = append(left, "job/"+job.Name)
-	}
-	for _, pod := range pods(t, runtime, selector.LabelSelector) {
-		left = append(left, "pod/"+pod.Name)
-	}
-	return left
-}
-
 // running returns the pods of a part of Aviary that are not on their way
 // out.
 func running(t *testing.T, component string) []corev1.Pod {
@@ -555,21 +568,6 @@ func metrics(t *testing.T, component string) string {
 		metrics.Write(read)
 	}
 	return metrics.String()
-}
-
-// total adds up the series whose names and labels begin as given, over the
-// pods whose metrics these are.
-func total(metrics, series string) float64 {
-	var sum float64
-	for _, line := range strings.Split(metrics, "\n") {
-		name, value, _ := strings.Cut(line, " ")
-		if strings.HasPrefix(name, series) {
-			var number float64
-			fmt.Sscan(value, &number)
-			sum += number
-		}
-	}
-	return sum
 }
 
 // recorded returns the requests of a turn that the Egress Proxies have
@@ -600,7 +598,7 @@ func recorded(t *testing.T, id string) []map[string]any {
 func logged(t *testing.T, id, route, host string, status float64) map[string]any {
 	t.Helper()
 	var found map[string]any
-	eventually(t, soon, fmt.Sprintf("no Egress Proxy has recorded a %s request of the turn to %s that ended with %v", route, host, status), func() bool {
+	eventually(t, soon, fmt.Sprintf("no Egress Proxy has recorded a %s request of the turn %s to %s that ended with %v", route, id, host, status), func() bool {
 		for _, line := range recorded(t, id) {
 			if line["route"] == route && line["host"] == host && line["status"] == status {
 				found = line
@@ -609,6 +607,89 @@ func logged(t *testing.T, id, route, host string, status float64) map[string]any
 		return found != nil
 	})
 	return found
+}
+
+// sandbox is the sandbox of a session as agent-sandbox keeps it.
+type sandbox struct {
+	Metadata struct{ Name, UID string }
+	Spec     struct{ OperatingMode string }
+	Status   struct {
+		Conditions []struct{ Type, Status string }
+	}
+}
+
+// sandboxAPI is the path of the sandboxes in the API of the cluster.
+const sandboxAPI = "/apis/agents.x-k8s.io/v1beta1/namespaces/" + runtime + "/sandboxes"
+
+// sandboxesOf returns the sandboxes of the session, or those of every
+// session if no session is named.
+func sandboxesOf(t *testing.T, session string) []sandbox {
+	t.Helper()
+	selector := "aviary.io/session"
+	if session != "" {
+		selector += "=" + session
+	}
+	raw, err := cluster.CoreV1().RESTClient().Get().AbsPath(sandboxAPI).Param("labelSelector", selector).DoRaw(ctx)
+	if err != nil {
+		t.Fatalf("the sandboxes: %v: %s", err, raw)
+	}
+	var listed struct{ Items []sandbox }
+	if err := json.Unmarshal(raw, &listed); err != nil {
+		t.Fatal(err)
+	}
+	return listed.Items
+}
+
+// sandboxes returns the names of the sandboxes of the session, or of those
+// of every session if no session is named.
+func sandboxes(t *testing.T, session string) []string {
+	t.Helper()
+	var names []string
+	for _, found := range sandboxesOf(t, session) {
+		names = append(names, found.Metadata.Name)
+	}
+	return names
+}
+
+// asleep waits for the Supervisors to have put the sandbox of the session to
+// sleep, which they do with a session that is not at work, and for its pod
+// to be gone.
+func asleep(t *testing.T, session string) {
+	t.Helper()
+	eventually(t, patience, "the sandbox of the session "+session+" does not sleep", func() bool {
+		found := sandboxesOf(t, session)
+		if len(found) != 1 || found[0].Spec.OperatingMode != "Suspended" {
+			return false
+		}
+		for _, condition := range found[0].Status.Conditions {
+			if condition.Type == "Suspended" {
+				return condition.Status == "True"
+			}
+		}
+		return false
+	})
+}
+
+// sessionPods returns the pods of the sandbox of the session: one while it
+// runs.
+func sessionPods(t *testing.T, session string) []corev1.Pod {
+	t.Helper()
+	return pods(t, runtime, "aviary.io/session="+session)
+}
+
+// total adds up the series whose names and labels begin as given, over the
+// pods whose metrics these are.
+func total(metrics, series string) float64 {
+	var sum float64
+	for _, line := range strings.Split(metrics, "\n") {
+		name, value, _ := strings.Cut(line, " ")
+		if strings.HasPrefix(name, series) {
+			var number float64
+			fmt.Sscan(value, &number)
+			sum += number
+		}
+	}
+	return sum
 }
 
 // words returns so many words, w1 and on, and the message that has the

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -251,6 +252,85 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 
 	// A request to cancel a turn reaches one Supervisor, and the runner of
 	// the turn is connected to another.
+	t.Run("a turn is followed by one Supervisor at a time", func(t *testing.T) {
+		t.Parallel()
+		log, turn := open(t), uuid.New()
+		one, other := uuid.New(), uuid.New()
+		follows := func(log events.Log, follower uuid.UUID, lease time.Duration) bool {
+			t.Helper()
+			given, err := log.Follow(ctx, turn, follower, lease)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return given
+		}
+		if !follows(log, one, time.Minute) {
+			t.Fatal("a turn that nobody follows was not given to the Supervisor that asked")
+		}
+		// It is given again to the Supervisor that has it, through any
+		// connection, and to no other.
+		if !follows(open(t), one, time.Minute) {
+			t.Error("the Supervisor that follows the turn was not given it again")
+		}
+		if follows(open(t), other, time.Minute) {
+			t.Error("another Supervisor was given a turn that is followed")
+		}
+		// Another turn is nothing to this one.
+		if given, err := log.Follow(ctx, uuid.New(), other, time.Minute); err != nil || !given {
+			t.Errorf("another turn was not given to the Supervisor that asked: %v", err)
+		}
+
+		// A Supervisor whose lease is over is taken to be gone.
+		if !follows(log, one, 20*time.Millisecond) {
+			t.Fatal("the Supervisor that follows the turn was not given it again")
+		}
+		time.Sleep(100 * time.Millisecond)
+		if !follows(open(t), other, time.Minute) {
+			t.Error("the turn of a Supervisor that is gone was not given to the next")
+		}
+		if follows(log, one, time.Minute) {
+			t.Error("the Supervisor that was gone was given the turn again")
+		}
+
+		// A Supervisor that leaves the turn gives it to the next at once.
+		// One that does not follow the turn leaves nothing.
+		if err := open(t).Leave(ctx, turn, one); err != nil {
+			t.Fatal(err)
+		}
+		if follows(log, one, time.Minute) {
+			t.Error("a Supervisor that did not follow the turn took it from the one that does by leaving it")
+		}
+		if err := log.Leave(ctx, turn, other); err != nil {
+			t.Fatal(err)
+		}
+		if !follows(open(t), one, time.Minute) {
+			t.Error("the turn that its Supervisor left was not given to the next")
+		}
+	})
+
+	t.Run("a turn that several Supervisors ask for at once is given to one", func(t *testing.T) {
+		t.Parallel()
+		turn := uuid.New()
+		var given atomic.Int32
+		var asked sync.WaitGroup
+		for range 8 {
+			log := open(t)
+			asked.Go(func() {
+				mine, err := log.Follow(ctx, turn, uuid.New(), time.Minute)
+				if err != nil {
+					t.Error(err)
+				}
+				if mine {
+					given.Add(1)
+				}
+			})
+		}
+		asked.Wait()
+		if given.Load() != 1 {
+			t.Errorf("of eight Supervisors that asked for a turn at once, %d were given it", given.Load())
+		}
+	})
+
 	t.Run("what one Supervisor announces, the others are told", func(t *testing.T) {
 		t.Parallel()
 		asked, connected := open(t), open(t)

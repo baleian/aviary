@@ -22,8 +22,16 @@ const batch = 100
 type Log struct {
 	mu    sync.Mutex
 	turns map[uuid.UUID]*turn
+	// followed are the turns that Supervisors follow.
+	followed map[uuid.UUID]lease
 	// watchers are those who watch a channel.
 	watchers map[string]map[*func(uuid.UUID)]struct{}
+}
+
+// lease is the Supervisor that follows a turn, and until when.
+type lease struct {
+	follower uuid.UUID
+	until    time.Time
 }
 
 // turn is what the log holds of a turn.
@@ -37,7 +45,10 @@ type turn struct {
 }
 
 func New() *Log {
-	return &Log{turns: map[uuid.UUID]*turn{}, watchers: map[string]map[*func(uuid.UUID)]struct{}{}}
+	return &Log{
+		turns: map[uuid.UUID]*turn{}, followed: map[uuid.UUID]lease{},
+		watchers: map[string]map[*func(uuid.UUID)]struct{}{},
+	}
 }
 
 // Close does nothing: the Supervisors of a test share the log.
@@ -148,6 +159,26 @@ func (l *Log) Expire(_ context.Context, turnID uuid.UUID, after time.Duration) e
 			delete(l.turns, turnID)
 		}
 	})
+	return nil
+}
+
+func (l *Log) Follow(_ context.Context, turnID, follower uuid.UUID, length time.Duration) (bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	if held, found := l.followed[turnID]; found && held.follower != follower && held.until.After(now) {
+		return false, nil
+	}
+	l.followed[turnID] = lease{follower: follower, until: now.Add(length)}
+	return true, nil
+}
+
+func (l *Log) Leave(_ context.Context, turnID, follower uuid.UUID) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.followed[turnID].follower == follower {
+		delete(l.followed, turnID)
+	}
 	return nil
 }
 

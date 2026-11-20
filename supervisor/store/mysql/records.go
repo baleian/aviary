@@ -399,8 +399,7 @@ func (s *records) CreateAgent(ctx context.Context, projectID uuid.UUID, agent st
 		return store.Agent{}, err
 	}
 	params := db.CreateAgentParams{
-		ID: key.ID(id), ProjectID: key.ID(projectID), Harness: agent.Harness, Instructions: agent.Instructions,
-		Resources: &agent.Resources, Approval: agent.Approval,
+		ID: key.ID(id), ProjectID: key.ID(projectID), Harness: agent.Harness, Instructions: agent.Instructions, Approval: agent.Approval,
 	}
 	if agent.Model != nil {
 		params.ProviderID, params.Model = (*key.ID)(&agent.Model.Provider), agent.Model.Name
@@ -435,7 +434,7 @@ func (s *records) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agen
 func agentFrom(row db.Agent) store.Agent {
 	agent := store.Agent{
 		ID: uuid.UUID(row.ID), ProjectID: uuid.UUID(row.ProjectID), Harness: row.Harness, CreatedAt: row.CreatedAt,
-		Instructions: row.Instructions, Resources: document(row.Resources), Approval: row.Approval,
+		Instructions: row.Instructions, Approval: row.Approval,
 	}
 	if row.ProviderID != nil {
 		agent.Model = &store.Model{Provider: uuid.UUID(*row.ProviderID), Name: row.Model}
@@ -463,6 +462,63 @@ func (s *records) Session(ctx context.Context, id uuid.UUID) (store.Session, err
 	return sessionFrom(row), found(err)
 }
 
+func (s *records) SetSandbox(ctx context.Context, sessionID uuid.UUID, from, to string) (bool, error) {
+	set := false
+	err := s.within(ctx, func(queries *db.Queries) error {
+		if _, err := queries.LockSession(ctx, key.ID(sessionID)); err != nil {
+			return found(err)
+		}
+		row, err := queries.GetSession(ctx, key.ID(sessionID))
+		if err != nil {
+			return err
+		}
+		if has := sessionFrom(row).Sandbox; has != from {
+			return nil
+		}
+		set = true
+		params := db.SetSandboxParams{ID: key.ID(sessionID)}
+		if to != "" {
+			params.Sandbox = &to
+		}
+		return queries.SetSandbox(ctx, params)
+	})
+	return set && err == nil, err
+}
+
+func (s *records) EndSession(ctx context.Context, id uuid.UUID) (store.Session, error) {
+	var session store.Session
+	err := s.within(ctx, func(queries *db.Queries) error {
+		// The session is held first, and its turns are looked at then: a
+		// message that is taken at the same moment is a turn by then, or
+		// finds the session ended.
+		row, err := queries.LockSession(ctx, key.ID(id))
+		if err != nil {
+			return found(err)
+		}
+		if row.EndedAt == nil {
+			busy, err := queries.IsSessionBusy(ctx, key.ID(id))
+			if err != nil {
+				return err
+			}
+			if busy {
+				return store.ErrSessionBusy
+			}
+			if err := queries.EndSession(ctx, key.ID(id)); err != nil {
+				return err
+			}
+			if row, err = queries.GetSession(ctx, key.ID(id)); err != nil {
+				return err
+			}
+		}
+		session = sessionFrom(row)
+		return nil
+	})
+	if err != nil {
+		return store.Session{}, err
+	}
+	return session, nil
+}
+
 func (s *records) Sessions(ctx context.Context, agentID, by, before uuid.UUID, limit int) ([]store.Session, error) {
 	var rows []db.Session
 	var err error
@@ -485,9 +541,12 @@ func (s *records) Sessions(ctx context.Context, agentID, by, before uuid.UUID, l
 
 // sessionFrom returns a row of the sessions table as a Session.
 func sessionFrom(row db.Session) store.Session {
-	session := store.Session{ID: uuid.UUID(row.ID), AgentID: uuid.UUID(row.AgentID), CreatedAt: row.CreatedAt}
+	session := store.Session{ID: uuid.UUID(row.ID), AgentID: uuid.UUID(row.AgentID), CreatedAt: row.CreatedAt, EndedAt: row.EndedAt}
 	if row.CreatedBy != nil {
 		session.CreatedBy = uuid.UUID(*row.CreatedBy)
+	}
+	if row.Sandbox != nil {
+		session.Sandbox = *row.Sandbox
 	}
 	return session
 }
@@ -580,8 +639,12 @@ func (s *records) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text 
 			}
 		}
 		// So are the messages to one session, of which one is accepted.
-		if _, err := queries.LockSession(ctx, key.ID(sessionID)); err != nil {
+		session, err := queries.LockSession(ctx, key.ID(sessionID))
+		if err != nil {
 			return found(err)
+		}
+		if session.EndedAt != nil {
+			return store.ErrSessionEnded
 		}
 		seq, err := queries.NextSeq(ctx, key.ID(sessionID))
 		if err != nil {
@@ -602,12 +665,12 @@ func (s *records) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text 
 		if err != nil {
 			return err
 		}
-		dispatched, err := queries.CountDispatchedTurns(ctx)
+		running, err := queries.CountRunningTurns(ctx)
 		if err != nil {
 			return err
 		}
 		// A queued turn waits only if the turns that run leave it no room.
-		waiting = queued - max(0, int64(maxRunning)-dispatched)
+		waiting = queued - max(0, int64(maxRunning)-running)
 		if maxWaiting > 0 && waiting > int64(maxWaiting) {
 			return store.ErrQueueFull
 		}
@@ -690,11 +753,11 @@ func (s *records) DispatchTurns(ctx context.Context, limit int) ([]store.Dispatc
 		if _, err := queries.Lock(ctx, dispatchLock); err != nil {
 			return err
 		}
-		dispatched, err := queries.CountDispatchedTurns(ctx)
+		running, err := queries.CountRunningTurns(ctx)
 		if err != nil {
 			return err
 		}
-		room := int64(limit) - dispatched
+		room := int64(limit) - running
 		if room <= 0 {
 			return nil
 		}
@@ -703,26 +766,12 @@ func (s *records) DispatchTurns(ctx context.Context, limit int) ([]store.Dispatc
 			return err
 		}
 		for _, row := range rows {
-			dispatch := store.Dispatch{
-				TurnID:    uuid.UUID(row.TurnID),
-				SessionID: uuid.UUID(row.SessionID),
-				AgentID:   uuid.UUID(row.AgentID),
-				ProjectID: uuid.UUID(row.ProjectID),
-				Harness:   row.Harness,
-				Resources: document(row.Resources),
-				Approval:  row.Approval,
-				// The agent's provider and model, if it names its model.
-				ProviderURL: row.ProviderUrl,
-				Model:       row.Model,
-				Token:       store.NewToken(),
-				Waited:      since(row.Waited),
-			}
-			taken, err := queries.DispatchTurn(ctx, db.DispatchTurnParams{ID: row.TurnID, TokenHash: store.HashToken(dispatch.Token)})
+			taken, err := queries.DispatchTurn(ctx, row.TurnID)
 			if err != nil {
 				return err
 			}
 			if taken == 1 {
-				dispatches = append(dispatches, dispatch)
+				dispatches = append(dispatches, store.Dispatch{TurnID: uuid.UUID(row.TurnID), Harness: row.Harness, Waited: since(row.Waited)})
 			}
 		}
 		return nil
@@ -787,59 +836,54 @@ func (s *records) DispatchedTurns(ctx context.Context) ([]store.DispatchedTurn, 
 	}
 	turns := make([]store.DispatchedTurn, len(rows))
 	for i, row := range rows {
-		turns[i] = store.DispatchedTurn{
-			ID: uuid.UUID(row.ID), Taken: row.State == store.TurnRunning, Age: since(row.Age), Cancelling: since(row.Cancelling),
-		}
+		turns[i] = store.DispatchedTurn{ID: uuid.UUID(row.ID), Cancelling: since(row.Cancelling)}
 	}
 	return turns, nil
 }
 
-func (s *records) TakeTurn(ctx context.Context, token string, runner *uuid.UUID) (store.TakenTurn, error) {
-	var taken store.TakenTurn
-	err := s.within(ctx, func(queries *db.Queries) error {
-		row, err := queries.LockTurnOfToken(ctx, store.HashToken(token))
-		if err != nil {
-			return found(err)
-		}
-		switch {
-		// A turn that waits for its runner is given to the runner that asks.
-		case row.State == store.TurnDispatching && row.CancelRequestedAt == nil && row.FailureReason == nil:
-		// A turn that runs is given again to the runner that took it.
-		case row.State == store.TurnRunning && runner != nil && row.RunnerID != nil && uuid.UUID(*row.RunnerID) == *runner:
-		case row.State == store.TurnDispatching:
-			// The turn was not taken, so it was cancelled or given up before
-			// its runner came for it.
-			return store.ErrTurnCancelled
-		case row.State == store.TurnRunning:
-			return store.ErrTurnTaken
-		default:
-			return store.ErrTurnEnded
-		}
-		of, err := queries.SessionOfTurn(ctx, row.SessionID)
-		if err != nil {
-			return err
-		}
-		taken = store.TakenTurn{
-			Turn: store.Turn{
-				ID: uuid.UUID(row.ID), SessionID: uuid.UUID(row.SessionID), Seq: int(row.Seq), State: store.TurnRunning,
-				Text: row.Text, CreatedAt: row.CreatedAt,
-			},
-			HarnessSessionID: of.HarnessSessionID, Harness: of.Harness, Instructions: of.Instructions,
-			Again: row.State == store.TurnRunning,
-		}
-		return queries.TakeTurn(ctx, db.TakeTurnParams{ID: row.ID, RunnerID: (*key.ID)(runner)})
-	})
-	if err != nil {
-		return store.TakenTurn{}, err
+func (s *records) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.FollowedTurn, error) {
+	if err := s.queries.FollowTurn(ctx, key.ID(turnID)); err != nil {
+		return store.FollowedTurn{}, err
 	}
-	return taken, nil
+	row, err := s.queries.FollowedTurn(ctx, key.ID(turnID))
+	if err != nil {
+		return store.FollowedTurn{}, found(err)
+	}
+	turn := turnFrom(row.Turn)
+	switch turn.State {
+	case store.TurnRunning:
+	case store.TurnQueued:
+		return store.FollowedTurn{}, store.ErrNotFound
+	default:
+		return store.FollowedTurn{}, store.ErrTurnEnded
+	}
+	followed := store.FollowedTurn{
+		Turn:         turn,
+		AgentID:      uuid.UUID(row.AgentID),
+		ProjectID:    uuid.UUID(row.ProjectID),
+		Harness:      row.Harness,
+		Instructions: row.Instructions,
+		Approval:     row.Approval,
+		ProviderURL:  row.ProviderUrl,
+		Model:        row.Model,
+		Dispatched:   since(row.Dispatched),
+	}
+	if row.Sandbox != nil {
+		followed.Sandbox = *row.Sandbox
+	}
+	return followed, nil
 }
 
-func (s *records) RunningTurn(ctx context.Context, token string) (store.Origin, error) {
-	row, err := s.queries.RunningTurn(ctx, store.HashToken(token))
+func (s *records) SessionTurn(ctx context.Context, sessionID uuid.UUID) (store.Origin, error) {
+	row, err := s.queries.SessionTurn(ctx, key.ID(sessionID))
 	if err != nil {
 		return store.Origin{}, found(err)
 	}
+	return originOf(row), nil
+}
+
+// originOf is where a running turn comes from, as a row tells it.
+func originOf(row db.SessionTurnRow) store.Origin {
 	origin := store.Origin{
 		TurnID: uuid.UUID(row.TurnID), SessionID: uuid.UUID(row.SessionID), AgentID: uuid.UUID(row.AgentID), ProjectID: uuid.UUID(row.ProjectID),
 		Subject: row.Subject,
@@ -862,10 +906,10 @@ func (s *records) RunningTurn(ctx context.Context, token string) (store.Origin, 
 			CreatedAt: *row.StoreCreatedAt, UpdatedAt: *row.StoreUpdatedAt,
 		}
 	}
-	return origin, nil
+	return origin
 }
 
-func (s *records) StartTurn(ctx context.Context, turnID uuid.UUID, harnessSessionID string) (time.Duration, bool, error) {
+func (s *records) StartTurn(ctx context.Context, turnID uuid.UUID) (time.Duration, bool, error) {
 	var startup time.Duration
 	var first bool
 	err := s.within(ctx, func(queries *db.Queries) error {
@@ -878,11 +922,6 @@ func (s *records) StartTurn(ctx context.Context, turnID uuid.UUID, harnessSessio
 			return err
 		}
 		if err := queries.StartTurn(ctx, row.ID); err != nil {
-			return err
-		}
-		// The session keeps the harness session, for its next turn to
-		// continue.
-		if err := queries.SetHarnessSession(ctx, db.SetHarnessSessionParams{ID: row.SessionID, HarnessSessionID: &harnessSessionID}); err != nil {
 			return err
 		}
 		took, err := queries.Startup(ctx, row.ID)
@@ -913,11 +952,6 @@ func (s *records) SetFinished(ctx context.Context, turnID uuid.UUID, stopReason 
 	return s.queries.SetFinished(ctx, finished)
 }
 
-func (s *records) GiveUpTurn(ctx context.Context, turnID uuid.UUID, failure store.Failure) (bool, error) {
-	changed, err := s.queries.GiveUpTurn(ctx, db.GiveUpTurnParams{ID: key.ID(turnID), Reason: &failure.Reason, Message: failure.Message})
-	return changed == 1, err
-}
-
 func (s *records) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool, failure store.Failure,
 	items func(context.Context) ([]json.RawMessage, error)) (store.Turn, bool, error) {
 	var turn store.Turn
@@ -940,8 +974,7 @@ func (s *records) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool,
 		// A turn that was asked to stop is cancelled, unless the harness had
 		// ended it by itself. Otherwise it is completed if its pod succeeded
 		// and the runner reported why the harness stopped, and failed if
-		// not. A failed turn keeps the reason that it was given up for, if
-		// it was.
+		// not.
 		end := db.EndTurnParams{ID: row.ID, State: store.TurnFailed}
 		finished := succeeded && row.StopReason != nil
 		switch {
@@ -949,8 +982,6 @@ func (s *records) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool,
 			end.State = store.TurnCancelled
 		case finished:
 			end.State = store.TurnCompleted
-		case row.FailureReason != nil:
-			end.FailureReason, end.FailureMessage = row.FailureReason, row.FailureMessage
 		default:
 			end.FailureReason, end.FailureMessage = &failure.Reason, failure.Message
 		}

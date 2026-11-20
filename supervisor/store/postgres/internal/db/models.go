@@ -14,12 +14,11 @@ type Agent struct {
 	ID           uuid.UUID
 	ProjectID    uuid.UUID
 	Harness      string
-	CreatedAt    time.Time
 	Instructions string
-	Resources    []byte
 	Approval     string
 	ProviderID   *uuid.UUID
 	Model        string
+	CreatedAt    time.Time
 }
 
 type Approval struct {
@@ -29,9 +28,9 @@ type Approval struct {
 	RequestedAt time.Time
 	OptionID    *string
 	AnsweredAt  *time.Time
+	AnsweredBy  *uuid.UUID
 	Outcome     *string
 	ResolvedAt  *time.Time
-	AnsweredBy  *uuid.UUID
 }
 
 type Project struct {
@@ -46,11 +45,11 @@ type Provider struct {
 	Name          string
 	Url           string
 	ApiKey        []byte
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
 	ApiKeyStoreID *uuid.UUID
 	ApiKeyPath    string
 	ApiKeyName    string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 type Role struct {
@@ -72,36 +71,35 @@ type SecretStore struct {
 }
 
 type Session struct {
-	ID               uuid.UUID
-	AgentID          uuid.UUID
-	CreatedAt        time.Time
-	HarnessSessionID *string
-	CreatedBy        *uuid.UUID
+	ID        uuid.UUID
+	AgentID   uuid.UUID
+	CreatedBy *uuid.UUID
+	Sandbox   *string
+	CreatedAt time.Time
+	EndedAt   *time.Time
 }
 
 type Turn struct {
 	ID                uuid.UUID
 	SessionID         uuid.UUID
 	Seq               int32
+	CreatedBy         *uuid.UUID
 	State             string
 	Text              string
 	CreatedAt         time.Time
-	EndedAt           *time.Time
-	TokenHash         []byte
-	StopReason        *string
 	DispatchedAt      *time.Time
+	StartedAt         *time.Time
+	CancelRequestedAt *time.Time
+	EndedAt           *time.Time
+	StopReason        *string
+	FailureReason     *string
+	FailureMessage    *string
 	TotalTokens       *int64
 	InputTokens       *int64
 	OutputTokens      *int64
 	ThoughtTokens     *int64
 	CachedReadTokens  *int64
 	CachedWriteTokens *int64
-	CancelRequestedAt *time.Time
-	FailureReason     *string
-	FailureMessage    *string
-	StartedAt         *time.Time
-	RunnerID          *uuid.UUID
-	CreatedBy         *uuid.UUID
 }
 
 type User struct {

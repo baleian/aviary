@@ -1,10 +1,13 @@
 CLUSTER := aviary
 NODE_IMAGE := kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
-NFS_PROVISIONER_CHART := 1.8.0
 CNPG_CHART := 0.29.1
 VALKEY_CHART := 1.0.0
+# agent-sandbox runs the sandboxes of the sessions. A release of it is one
+# manifest, which has to be what it was when the release was chosen.
+AGENT_SANDBOX := v1.0.11
+AGENT_SANDBOX_SHA256 := 4c54dc1284e9d34e9a00b88de2cb0f098f2dbce4ade814616fd49d44cfd5d1c2
+AGENT_SANDBOX_MANIFEST := .out/agent-sandbox-$(AGENT_SANDBOX).yaml
 GO_IMAGE := golang:1.27.4-trixie@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9
-BUF := 1.75.0
 SQLC_IMAGE := sqlc/sqlc:1.31.1@sha256:70f53171d27b2424e9358869975455a6e955a5aa8e58a998a270a6e34e525537
 
 SUPERVISOR_IMAGE := aviary-supervisor:dev
@@ -13,7 +16,6 @@ HARNESS_BASE_IMAGE := aviary-harness-base:dev
 OPENCODE_IMAGE := aviary-harness-opencode:dev
 CODEX_IMAGE := aviary-harness-codex:dev
 MOCK_LLM_IMAGE := aviary-mock-llm:dev
-FAKE_SUPERVISOR_IMAGE := aviary-fake-supervisor:dev
 # The harness images that make test-harness tests. Another one is tested with
 # make test-harness HARNESS_IMAGES=<image>
 HARNESS_IMAGES ?= $(OPENCODE_IMAGE) $(CODEX_IMAGE)
@@ -32,6 +34,10 @@ endif
 # each made with what it is to have.
 E2E_CLUSTER ?= aviary-e2e
 E2E_OUT := .out/e2e/$(E2E_CLUSTER)
+# The kubeconfig of the cluster, which kind writes and only the e2e reads.
+# kind locks the kubeconfig that it writes, and runs of the e2e at once that
+# shared one could find it locked. It goes with the cluster.
+E2E_KUBECONFIG := $(CURDIR)/$(E2E_OUT)/host.kubeconfig
 E2E_KUBECTL := kubectl --context kind-$(E2E_CLUSTER)
 E2E_HARNESSES ?= opencode codex
 # The identity provider that make e2e-up gives the cluster of the e2e and has
@@ -47,8 +53,7 @@ IN_GO = docker run --rm --user $$(id -u):$$(id -g) --env HOME=/tmp --env GOCACHE
 	--volume aviary-go:/go --volume $(CURDIR):/src --workdir /src/$(1) $(2) $(GO_IMAGE)
 GO = $(call IN_GO,$(1),$(2)) go
 GO_TEST := test -race -shuffle=on -count=1 -timeout 2m
-# The generators of the Go code in supervisor/internal/gen.
-BUF_GENERATE = $(call GO) run github.com/bufbuild/buf/cmd/buf@v$(BUF) generate
+# The generator of the Go code for the queries of the Supervisor.
 SQLC_RUN := docker run --rm --user $$(id -u):$$(id -g) \
 	--volume $(CURDIR)/supervisor:/src --workdir /src $(SQLC_IMAGE)
 # What the tests make of the chart, and the image of Envoy that the chart
@@ -71,12 +76,7 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 	--env AVIARY_TEST_REDIS_URL=redis://default:test@events-redis:6379 \
 	--env AVIARY_TEST_SECRET_STORE_URL=http://secret-store:8200
 
-.PHONY: proto sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down secret-store identity-provider build images secrets deploy e2e e2e-up e2e-run e2e-down
-
-# Writes the Go code for proto/ to supervisor/internal/gen. Run it after
-# changing a .proto file.
-proto:
-	$(BUF_GENERATE)
+.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down secret-store identity-provider build images secrets deploy e2e e2e-up e2e-run e2e-down
 
 # Writes the Go code for the queries of the Supervisor's PostgreSQL plugin,
 # which are in supervisor/store/postgres/queries.sql, to internal/db beside
@@ -85,16 +85,13 @@ sqlc:
 	$(SQLC_RUN) generate
 
 # What the formatters and the linters make of the code, and whether the
-# generated code is what the generators make of its sources now.
+# generated code is what its generator makes of the queries now.
 lint:
 	@files=$$($(call IN_GO) gofmt -l supervisor test) || exit 1; \
 		[ -z "$$files" ] || { echo "gofmt would change these files:"; echo "$$files"; exit 1; }
 	for module in supervisor test test/mock-llm test/plugin; do $(call GO,$$module) vet ./... || exit 1; done
 	cargo fmt --all --check
 	cargo clippy --locked --all-targets -- --deny warnings
-	rm -rf .out/gen
-	$(BUF_GENERATE) --output .out/gen
-	diff --recursive .out/gen/supervisor/internal/gen/aviary supervisor/internal/gen/aviary
 	$(SQLC_RUN) diff
 
 # The tests that need no cluster, all at once. Each of them is a target of
@@ -164,15 +161,17 @@ test-harness: build
 	AVIARY_HARNESS_IMAGES="$(HARNESS_IMAGES)" cargo test --locked --package aviary-runner --test harness -- \
 		--ignored --test-threads 3 $(TESTS)
 
-cluster-up:
+$(AGENT_SANDBOX_MANIFEST):
+	mkdir -p $(@D)
+	curl --fail --silent --show-error --location --output $@.new \
+		https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$(AGENT_SANDBOX)/sandbox.yaml
+	echo "$(AGENT_SANDBOX_SHA256)  $@.new" | sha256sum --check --quiet
+	mv $@.new $@
+
+cluster-up: $(AGENT_SANDBOX_MANIFEST)
 	kind get clusters 2>/dev/null | grep -qx $(CLUSTER) || \
 		kind create cluster --name $(CLUSTER) --image $(NODE_IMAGE) --config hack/kind/cluster.yaml
-	$(HELM) upgrade --install nfs-server-provisioner nfs-server-provisioner \
-		--repo https://kubernetes-sigs.github.io/nfs-ganesha-server-and-external-provisioner \
-		--version $(NFS_PROVISIONER_CHART) \
-		--namespace nfs --create-namespace \
-		--values hack/kind/nfs-server-provisioner-values.yaml \
-		--wait
+	$(KUBECTL) apply --server-side --filename $(AGENT_SANDBOX_MANIFEST)
 	$(KUBECTL) create namespace aviary-data --dry-run=client --output yaml | $(KUBECTL) apply -f -
 ifeq ($(DATABASE),mysql)
 	$(KUBECTL) get secret mysql-users --namespace aviary-data >/dev/null 2>&1 || \
@@ -196,6 +195,7 @@ endif
 		--namespace aviary-data \
 		--values hack/kind/valkey-values.yaml \
 		--wait
+	$(KUBECTL) --namespace agent-sandbox-system rollout status deployment/agent-sandbox-controller --timeout 300s
 ifeq ($(DATABASE),mysql)
 	$(KUBECTL) --namespace aviary-data rollout status statefulset/mysql --timeout 300s
 else
@@ -225,14 +225,13 @@ identity-provider:
 build:
 	docker build --file images/supervisor/Dockerfile --tag $(SUPERVISOR_IMAGE) .
 	docker build --file images/runner/Dockerfile --tag $(RUNNER_IMAGE) .
-	docker build --tag $(HARNESS_BASE_IMAGE) images/harness-base
+	docker build --build-arg RUNNER_IMAGE=$(RUNNER_IMAGE) --tag $(HARNESS_BASE_IMAGE) images/harness-base
 	docker build --tag $(OPENCODE_IMAGE) images/harness-opencode
 	docker build --tag $(CODEX_IMAGE) images/harness-codex
 	docker build --file images/mock-llm/Dockerfile --tag $(MOCK_LLM_IMAGE) .
-	docker build --file images/fake-supervisor/Dockerfile --tag $(FAKE_SUPERVISOR_IMAGE) .
 
 images: build
-	kind load docker-image --name $(CLUSTER) $(SUPERVISOR_IMAGE) $(RUNNER_IMAGE) $(OPENCODE_IMAGE) $(CODEX_IMAGE) $(MOCK_LLM_IMAGE)
+	kind load docker-image --name $(CLUSTER) $(SUPERVISOR_IMAGE) $(OPENCODE_IMAGE) $(CODEX_IMAGE) $(MOCK_LLM_IMAGE)
 
 # CloudNativePG writes the database's connection secret next to the database.
 # A pod can only read secrets in its own namespace, so the secret is copied to
@@ -270,12 +269,15 @@ deploy: secrets
 # Runs the e2e in a cluster of its own, which it makes anew, so that nothing
 # of an earlier run or of the cluster that make cluster-up makes plays a part.
 # The cluster is removed when the tests have passed. After a failure it
-# stays, and what its pods logged is in .out/e2e: make e2e-run runs the tests
-# in it again, and make e2e-down removes it. E2E_CLUSTER names the cluster
-# for each of them, and make e2e-up makes it with what it is given, for
-# example with MySQL in the place of PostgreSQL, and with an identity
-# provider that Aviary asks who sends a request:
+# stays, and what its pods logged is in .out/e2e, with its kubeconfig:
+# KUBECONFIG=.out/e2e/aviary-e2e/host.kubeconfig kubectl get pods --all-namespaces
+# make e2e-run runs the tests in it again, and make e2e-down removes it.
+# E2E_CLUSTER names the cluster for each of them, and make e2e-up makes it
+# with what it is given, for example with MySQL in the place of PostgreSQL,
+# and with an identity provider that Aviary asks who sends a request:
 # make e2e E2E_CLUSTER=aviary-e2e-mysql DATABASE=mysql IDENTITY=keycloak
+e2e e2e-up e2e-run e2e-down: export KUBECONFIG := $(E2E_KUBECONFIG)
+
 e2e: e2e-up
 	$(MAKE) e2e-run
 	$(MAKE) e2e-down
@@ -287,7 +289,6 @@ e2e-up:
 		--namespace aviary-system --values test/e2e/values.yaml \
 		$(if $(IDENTITY),--values hack/kind/aviary-keycloak-values.yaml) --wait
 	$(E2E_KUBECTL) --namespace aviary-e2e rollout status deployment/mock-llm --timeout 120s
-	$(E2E_KUBECTL) --namespace aviary-e2e rollout status deployment/mock-llm-other --timeout 120s
 
 # The tests reach the cluster over the network of its nodes, and the API of
 # Aviary at the port of a node that test/e2e/api.yaml opens. In a cluster
@@ -305,10 +306,14 @@ e2e-run:
 				$(E2E_KUBECTL) --namespace aviary-system logs --selector app.kubernetes.io/component=$$part \
 					--prefix --tail -1 > $(E2E_OUT)/$$part.log 2>&1; \
 			done; \
-			$(E2E_KUBECTL) get pods,jobs --all-namespaces --output wide > $(E2E_OUT)/pods.txt 2>&1; \
+			$(E2E_KUBECTL) --namespace agent-sandbox-system logs deployment/agent-sandbox-controller \
+				--tail -1 > $(E2E_OUT)/agent-sandbox.log 2>&1; \
+			$(E2E_KUBECTL) get pods,sandboxes.agents.x-k8s.io,persistentvolumeclaims --all-namespaces --output wide \
+				> $(E2E_OUT)/pods.txt 2>&1; \
 			$(E2E_KUBECTL) get events --all-namespaces --sort-by .lastTimestamp > $(E2E_OUT)/events.txt 2>&1; \
 			echo "The e2e failed. The cluster $(E2E_CLUSTER) is left as it is, and what it tells is in $(E2E_OUT)."; \
 		}; exit $$status
 
 e2e-down:
 	$(MAKE) cluster-down CLUSTER=$(E2E_CLUSTER)
+	rm -f $(E2E_KUBECONFIG) $(E2E_OUT)/kubeconfig

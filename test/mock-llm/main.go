@@ -33,12 +33,20 @@
 // mock-llm is also the forward proxy of the tests that run a harness without
 // a cluster. As a proxy it passes nothing on: it refuses the request and logs
 // the host that was asked for, which tells a test what went out.
+//
+// And it serves a small Python package, aviary-probe, for a test to install
+// with pip: GET /packages/aviary_probe-1.0-py3-none-any.whl.
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -89,6 +97,11 @@ func newMock(apiKey string) http.Handler {
 	mux.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
 	mux.HandleFunc("POST /v1/chat/completions", withKey(apiKey, m.chatCompletions))
 	mux.HandleFunc("POST /v1/responses", withKey(apiKey, m.responses))
+	probe := wheel()
+	mux.HandleFunc("GET /packages/"+probeWheel, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		w.Write(probe)
+	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// A request for another host takes mock-llm for a forward proxy.
 		if r.Method == http.MethodConnect || r.URL.Host != "" {
@@ -98,6 +111,41 @@ func newMock(apiKey string) http.Handler {
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+// probeWheel is the file of the Python package, a wheel, which pip installs.
+const probeWheel = "aviary_probe-1.0-py3-none-any.whl"
+
+// wheel makes the wheel of the package. Its module has nothing but its name.
+func wheel() []byte {
+	var made bytes.Buffer
+	archive := zip.NewWriter(&made)
+	add := func(name, content string) {
+		file, err := archive.Create(name)
+		if err == nil {
+			_, err = io.WriteString(file, content)
+		}
+		if err != nil {
+			// What is written to memory does not fail.
+			panic(err)
+		}
+	}
+	var record strings.Builder
+	for _, file := range [][2]string{
+		{"aviary_probe/__init__.py", "name = \"aviary-probe\"\n"},
+		{"aviary_probe-1.0.dist-info/METADATA", "Metadata-Version: 2.1\nName: aviary-probe\nVersion: 1.0\n"},
+		{"aviary_probe-1.0.dist-info/WHEEL", "Wheel-Version: 1.0\nGenerator: mock-llm\nRoot-Is-Purelib: true\nTag: py3-none-any\n"},
+	} {
+		add(file[0], file[1])
+		sum := sha256.Sum256([]byte(file[1]))
+		fmt.Fprintf(&record, "%s,sha256=%s,%d\n", file[0], base64.RawURLEncoding.EncodeToString(sum[:]), len(file[1]))
+	}
+	record.WriteString("aviary_probe-1.0.dist-info/RECORD,,\n")
+	add("aviary_probe-1.0.dist-info/RECORD", record.String())
+	if err := archive.Close(); err != nil {
+		panic(err)
+	}
+	return made.Bytes()
 }
 
 // next is what the model does next in the conversation.
