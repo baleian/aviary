@@ -2,18 +2,11 @@ CLUSTER := aviary
 NODE_IMAGE := kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
 CNPG_CHART := 0.29.1
 VALKEY_CHART := 1.0.0
-# OpenSandbox publishes its charts in its repository only, so they are taken
-# from the commit of the release. The images of the release are named in
-# hack/kind too: in opensandbox-server-values.yaml and sandbox-pool.yaml.
-OPENSANDBOX := 1.2.1
-OPENSANDBOX_COMMIT := db708c218771a8d311356f0e96552c15df6e097a
-OPENSANDBOX_CHARTS := .out/opensandbox-$(OPENSANDBOX)
-# The registry of the local cluster, as an image in it is named, and its
-# certificate. The certificate is made once and every local cluster has the
-# same one, because the builder of templates trusts it by being built with it.
-REGISTRY := registry.aviary-data.svc.cluster.local
-REGISTRY_CERTIFICATE := .out/registry/trusted/registry.crt
-REGISTRY_KEY := .out/registry/tls.key
+# agent-sandbox runs the sandboxes of the sessions. A release of it is one
+# manifest, which has to be what it was when the release was chosen.
+AGENT_SANDBOX := v1.0.11
+AGENT_SANDBOX_SHA256 := 4c54dc1284e9d34e9a00b88de2cb0f098f2dbce4ade814616fd49d44cfd5d1c2
+AGENT_SANDBOX_MANIFEST := .out/agent-sandbox-$(AGENT_SANDBOX).yaml
 # What the egress of the sandboxes reaches over TLS in a local cluster has a
 # certificate of this CA, which the egress trusts: the Supervisors, which it
 # asks about every request of a sandbox, and the model server of the e2e.
@@ -24,7 +17,6 @@ RESOLVER := aviary-supervisor.aviary-system.svc.cluster.local
 RESOLVER_CERTIFICATE := .out/resolver/tls.crt
 MOCK_LLM := mock-llm.aviary-e2e.svc.cluster.local
 MOCK_LLM_CERTIFICATE := .out/mock-llm/tls.crt
-SANDBOXTEMPLATE_BUILDER_IMAGE := aviary-sandboxtemplate-builder:dev
 GO_IMAGE := golang:1.27.4-trixie@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9
 SQLC_IMAGE := sqlc/sqlc:1.31.1@sha256:70f53171d27b2424e9358869975455a6e955a5aa8e58a998a270a6e34e525537
 
@@ -142,19 +134,12 @@ test-harness: build
 	AVIARY_HARNESS_IMAGES="$(HARNESS_IMAGES)" cargo test --locked --package aviary-runner --test harness -- \
 		--ignored --test-threads 3 $(TESTS)
 
-$(OPENSANDBOX_CHARTS):
-	mkdir -p $@.new
-	curl --fail --silent --show-error --location \
-		https://github.com/opensandbox-group/OpenSandbox/archive/$(OPENSANDBOX_COMMIT).tar.gz | \
-		tar --extract --gzip --directory $@.new --strip-components 3 \
-			OpenSandbox-$(OPENSANDBOX_COMMIT)/manifests/charts
-	mv $@.new $@
-
-$(REGISTRY_CERTIFICATE):
+$(AGENT_SANDBOX_MANIFEST):
 	mkdir -p $(@D)
-	openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-		-subj "/CN=registry of a local cluster" -addext "subjectAltName=DNS:$(REGISTRY)" \
-		-keyout $(REGISTRY_KEY) -out $@
+	curl --fail --silent --show-error --location --output $@.new \
+		https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$(AGENT_SANDBOX)/sandbox.yaml
+	echo "$(AGENT_SANDBOX_SHA256)  $@.new" | sha256sum --check --quiet
+	mv $@.new $@
 
 $(CA):
 	mkdir -p $(@D)
@@ -173,12 +158,10 @@ $(RESOLVER_CERTIFICATE): $(CA)
 $(MOCK_LLM_CERTIFICATE): $(CA)
 	$(call CERTIFY,$(MOCK_LLM))
 
-cluster-up: $(OPENSANDBOX_CHARTS) $(REGISTRY_CERTIFICATE) $(CA)
-	@test -e /dev/kvm || { echo "the sandboxes of the cluster need KVM, and this host has no /dev/kvm"; exit 1; }
+cluster-up: $(AGENT_SANDBOX_MANIFEST)
 	kind get clusters 2>/dev/null | grep -qx $(CLUSTER) || \
 		kind create cluster --name $(CLUSTER) --image $(NODE_IMAGE) --config hack/kind/cluster.yaml
-	kind get nodes --name $(CLUSTER) | xargs --max-procs 0 -I {} \
-		sh -c 'docker exec --interactive {} bash -s < hack/kind/sandbox-node.sh'
+	$(KUBECTL) apply --server-side --filename $(AGENT_SANDBOX_MANIFEST)
 	$(KUBECTL) create namespace aviary-data --dry-run=client --output yaml | $(KUBECTL) apply -f -
 ifeq ($(DATABASE),mysql)
 	$(KUBECTL) get secret mysql-users --namespace aviary-data >/dev/null 2>&1 || \
@@ -202,47 +185,7 @@ endif
 		--namespace aviary-data \
 		--values hack/kind/valkey-values.yaml \
 		--wait
-	$(KUBECTL) get secret rustfs-keys --namespace aviary-data >/dev/null 2>&1 || \
-		$(KUBECTL) create secret generic rustfs-keys --namespace aviary-data \
-			--from-literal=access=$$(openssl rand -hex 12) --from-literal=secret=$$(openssl rand -hex 24)
-	$(KUBECTL) apply -f hack/kind/rustfs.yaml
-	$(KUBECTL) --namespace aviary-data rollout status statefulset/rustfs --timeout 300s
-	$(KUBECTL) --namespace aviary-data wait --for=condition=complete job/rustfs-bucket --timeout 300s
-	$(KUBECTL) create secret tls registry-tls --namespace aviary-data \
-		--cert $(REGISTRY_CERTIFICATE) --key $(REGISTRY_KEY) --dry-run=client --output yaml | \
-		$(KUBECTL) apply -f -
-	$(KUBECTL) apply -f hack/kind/registry.yaml
-	$(KUBECTL) --namespace aviary-data rollout status deployment/registry --timeout 300s
-	docker build --file hack/kind/sandboxtemplate-builder.Dockerfile \
-		--build-arg BASE=opensandbox/fsb-sandboxtemplate-builder:release-$(OPENSANDBOX) \
-		--tag $(SANDBOXTEMPLATE_BUILDER_IMAGE) $(dir $(REGISTRY_CERTIFICATE))
-	kind load docker-image --name $(CLUSTER) $(SANDBOXTEMPLATE_BUILDER_IMAGE)
-	$(HELM) upgrade --install opensandbox-base $(OPENSANDBOX_CHARTS)/base --wait
-	bash hack/kind/opensandbox-keys.sh $(KUBECTL)
-	$(HELM) upgrade --install fast-sandbox $(OPENSANDBOX_CHARTS)/fast-sandbox \
-		--namespace opensandbox-system \
-		--set artifactStore.store=s3://sandboxes/publish \
-		--set artifactStore.endpoint=http://rustfs.aviary-data.svc.cluster.local:9000 \
-		--set controller.sandboxtemplateBuilderImage=$(SANDBOXTEMPLATE_BUILDER_IMAGE) \
-		--wait --timeout 10m
-	$(KUBECTL) apply -f hack/kind/opensandbox-server-records.yaml
-	$(HELM) upgrade --install opensandbox-valkey valkey \
-		--repo https://valkey.io/valkey-helm/ \
-		--version $(VALKEY_CHART) \
-		--namespace opensandbox-system \
-		--wait
-	$(HELM) upgrade --install opensandbox-server $(OPENSANDBOX_CHARTS)/server \
-		--namespace opensandbox-system \
-		--values hack/kind/opensandbox-server-values.yaml \
-		--wait
-	$(HELM) upgrade --install opensandbox-ingress-gateway $(OPENSANDBOX_CHARTS)/ingress-gateway \
-		--namespace opensandbox-system \
-		--values hack/kind/opensandbox-gateway-values.yaml \
-		--wait
-	$(KUBECTL) create configmap local-ca --namespace opensandbox-dataplane \
-		--from-file=ca.crt=$(CA) --dry-run=client --output yaml | $(KUBECTL) apply -f -
-	$(KUBECTL) apply -f hack/kind/sandbox-pool.yaml
-	$(KUBECTL) wait --namespace opensandbox-dataplane sandboxpool/default --for=condition=RuntimeReady --timeout=5m
+	$(KUBECTL) --namespace agent-sandbox-system rollout status deployment/agent-sandbox-controller --timeout 300s
 ifeq ($(DATABASE),mysql)
 	$(KUBECTL) --namespace aviary-data rollout status statefulset/mysql --timeout 300s
 else
@@ -277,19 +220,8 @@ build:
 	docker build --tag $(CODEX_IMAGE) images/harness-codex
 	docker build --file images/mock-llm/Dockerfile --tag $(MOCK_LLM_IMAGE) .
 
-# The images of the harnesses go into the registry of the cluster too, from a
-# node: it has them from kind. A node does not know the names of the cluster,
-# so it reaches the registry by its address, which the certificate does not
-# name.
 images: build
 	kind load docker-image --name $(CLUSTER) $(SUPERVISOR_IMAGE) $(OPENCODE_IMAGE) $(CODEX_IMAGE) $(MOCK_LLM_IMAGE)
-	registry=$$($(KUBECTL) --namespace aviary-data get service registry --output jsonpath='{.spec.clusterIP}') && \
-	for image in $(OPENCODE_IMAGE) $(CODEX_IMAGE); do \
-		docker exec $(CLUSTER)-control-plane ctr --namespace k8s.io images tag --force \
-			docker.io/library/$$image $$registry/$$image >/dev/null && \
-		docker exec $(CLUSTER)-control-plane ctr --namespace k8s.io images push --local --skip-verify \
-			$$registry/$$image >/dev/null || exit 1; \
-	done
 
 # CloudNativePG writes the database's connection secret next to the database.
 # A pod can only read secrets in its own namespace, so the secret is copied to
@@ -310,9 +242,6 @@ secrets: $(RESOLVER_CERTIFICATE)
 	$(KUBECTL) get secret valkey-users --namespace aviary-data --output json | \
 		jq '{apiVersion, kind, type, metadata: {name: "aviary-events"}, stringData: {uri: ("valkey://default:" + (.data.default | @base64d) + "@valkey.aviary-data:6379")}}' | \
 		$(KUBECTL) apply --namespace aviary-system -f -
-	$(KUBECTL) get secret opensandbox-api-key --namespace opensandbox-system --output json | \
-		jq '{apiVersion, kind, type, data, metadata: {name: "aviary-sandboxes"}}' | \
-		$(KUBECTL) apply --namespace aviary-system -f -
 	$(KUBECTL) get secret aviary-encryption --namespace aviary-system >/dev/null 2>&1 || \
 		$(KUBECTL) create secret generic aviary-encryption --namespace aviary-system \
 			--from-literal=k1=$$(openssl rand -base64 32)
@@ -323,19 +252,10 @@ secrets: $(RESOLVER_CERTIFICATE)
 # The image ID makes the pod restart when the image changes. VALUES names a
 # file of values of your own for the chart, for example
 # make deploy VALUES=my-values.yaml
-# The image of a harness as it is named in the registry of the cluster, by
-# the digest that `make images` put there: an image that was built again has
-# another name, and the release has its template built again.
-IN_REGISTRY = $(REGISTRY)/$(firstword $(subst :, ,$(1)))@$$(docker exec $(CLUSTER)-control-plane \
-	ctr --namespace k8s.io images ls name==docker.io/library/$(1) | awk 'NR == 2 {print $$3}')
-
 deploy: secrets
 	$(HELM) upgrade --install aviary deploy/charts/aviary \
 		--namespace aviary-system \
 		--set-string 'supervisor.podAnnotations.aviary\.io/image-id='$$(docker image inspect --format '{{.Id}}' $(SUPERVISOR_IMAGE)) \
-		--set sandboxes.templateStore=s3://sandboxes/publish \
-		--set runtime.harnesses.opencode.image=$(call IN_REGISTRY,$(OPENCODE_IMAGE)) \
-		--set runtime.harnesses.codex.image=$(call IN_REGISTRY,$(CODEX_IMAGE)) \
 		$(if $(VALUES),--values $(VALUES)) \
 		--wait
 
@@ -352,12 +272,8 @@ e2e: e2e-up
 	$(MAKE) e2e-run
 	$(MAKE) e2e-down
 
-# The chart is given what make deploy gives it of the cluster: where the
-# templates are kept, and the harness images as make images put them into the
-# registry. CLUSTER is that of the e2e here, for the names of those images.
 # The model server of the e2e answers over HTTPS with its certificate, which
 # is in a secret beside it.
-e2e-up: CLUSTER := $(E2E_CLUSTER)
 e2e-up: $(MOCK_LLM_CERTIFICATE)
 	$(MAKE) cluster-down cluster-up secret-store $(if $(IDENTITY),identity-provider) images secrets CLUSTER=$(E2E_CLUSTER)
 	$(E2E_KUBECTL) create namespace aviary-e2e --dry-run=client --output yaml | $(E2E_KUBECTL) apply -f -
@@ -367,9 +283,6 @@ e2e-up: $(MOCK_LLM_CERTIFICATE)
 	$(E2E_KUBECTL) apply --filename test/e2e/mock-llm.yaml --filename test/e2e/api.yaml
 	helm --kube-context kind-$(E2E_CLUSTER) upgrade --install aviary deploy/charts/aviary \
 		--namespace aviary-system --values test/e2e/values.yaml \
-		--set sandboxes.templateStore=s3://sandboxes/publish \
-		--set runtime.harnesses.opencode.image=$(call IN_REGISTRY,$(OPENCODE_IMAGE)) \
-		--set runtime.harnesses.codex.image=$(call IN_REGISTRY,$(CODEX_IMAGE)) \
 		$(if $(IDENTITY),--values hack/kind/aviary-keycloak-values.yaml) --wait
 	$(E2E_KUBECTL) --namespace aviary-e2e rollout status deployment/mock-llm --timeout 120s
 
@@ -390,11 +303,10 @@ e2e-run:
 		status=$$?; [ $$status = 0 ] || { \
 			$(E2E_KUBECTL) --namespace aviary-system logs --selector app.kubernetes.io/component=supervisor \
 				--prefix --tail -1 > $(E2E_OUT)/supervisor.log 2>&1; \
-			$(E2E_KUBECTL) --namespace opensandbox-system logs deployment/opensandbox-server \
-				--tail -1 > $(E2E_OUT)/opensandbox-server.log 2>&1; \
-			$(E2E_KUBECTL) --namespace opensandbox-dataplane logs --selector fast-sandbox.io/pool=default \
-				--all-containers --prefix --tail -1 > $(E2E_OUT)/sandbox-pool.log 2>&1; \
-			$(E2E_KUBECTL) get pods,sandboxpools,sandboxes --all-namespaces --output wide > $(E2E_OUT)/pods.txt 2>&1; \
+			$(E2E_KUBECTL) --namespace agent-sandbox-system logs deployment/agent-sandbox-controller \
+				--tail -1 > $(E2E_OUT)/agent-sandbox.log 2>&1; \
+			$(E2E_KUBECTL) get pods,sandboxes.agents.x-k8s.io,persistentvolumeclaims --all-namespaces --output wide \
+				> $(E2E_OUT)/pods.txt 2>&1; \
 			$(E2E_KUBECTL) get events --all-namespaces --sort-by .lastTimestamp > $(E2E_OUT)/events.txt 2>&1; \
 			echo "The e2e failed. The cluster $(E2E_CLUSTER) is left as it is, and what it tells is in $(E2E_OUT)."; \
 		}; exit $$status
