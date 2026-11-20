@@ -129,6 +129,9 @@ make deploy       # install Aviary with its Helm chart
 `make cluster-down` deletes the cluster, including the session volumes,
 which are directories on its nodes.
 
+`make headlamp` installs [Headlamp](https://headlamp.dev), a web UI for the
+resources, logs and events of the cluster, at http://localhost:4466.
+
 ### Send a message
 
 The API listens inside the cluster. Forward a port to it, register a model

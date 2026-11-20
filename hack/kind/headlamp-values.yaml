@@ -1,0 +1,8 @@
+# The node port that hack/kind/cluster.yaml maps to localhost:4466.
+service:
+  type: NodePort
+  nodePort: 30466
+# Signs everyone in as the service account of Headlamp, which is
+# cluster-admin. Fine for the local cluster, which only this machine reaches.
+config:
+  unsafeUseServiceAccountToken: true

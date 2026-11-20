@@ -2,5 +2,8 @@ kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
   - role: control-plane
+    # Headlamp, which make headlamp installs, at localhost:4466.
+    extraPortMappings:
+      - {containerPort: 30466, hostPort: 4466, listenAddress: 127.0.0.1}
   - role: worker
   - role: worker

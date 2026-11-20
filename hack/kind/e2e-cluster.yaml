@@ -1,0 +1,7 @@
+# Binds no port on the host, so that clusters of the e2e can run at once.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker

@@ -2,6 +2,7 @@ CLUSTER := aviary
 NODE_IMAGE := kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
 CNPG_CHART := 0.29.1
 VALKEY_CHART := 1.0.0
+HEADLAMP_CHART := 0.46.0
 # The agent-sandbox release manifest, verified against its checksum.
 AGENT_SANDBOX := v1.0.11
 AGENT_SANDBOX_SHA256 := 4c54dc1284e9d34e9a00b88de2cb0f098f2dbce4ade814616fd49d44cfd5d1c2
@@ -23,6 +24,9 @@ KUBECTL := kubectl --context kind-$(CLUSTER)
 HELM := helm --kube-context kind-$(CLUSTER)
 # Database of the cluster: postgres or mysql.
 DATABASE ?= postgres
+# The kind configuration of the cluster. The clusters of the e2e use one that
+# binds no port on the host.
+KIND_CONFIG ?= hack/kind/cluster.yaml
 ifeq ($(filter $(DATABASE),postgres mysql),)
 $(error DATABASE must be postgres or mysql, not "$(DATABASE)")
 endif
@@ -68,7 +72,7 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 	--env AVIARY_TEST_REDIS_URL=redis://default:test@events-redis:6379 \
 	--env AVIARY_TEST_SECRET_STORE_URL=http://secret-store:8200
 
-.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down secret-store identity-provider build images secrets deploy e2e e2e-up e2e-run e2e-down
+.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down secret-store identity-provider headlamp build images secrets deploy e2e e2e-up e2e-run e2e-down
 
 # Generates the Go code of the SQL queries. Run it after changing a query or
 # a migration.
@@ -158,7 +162,7 @@ $(AGENT_SANDBOX_MANIFEST):
 
 cluster-up: $(AGENT_SANDBOX_MANIFEST)
 	kind get clusters 2>/dev/null | grep -qx $(CLUSTER) || \
-		kind create cluster --name $(CLUSTER) --image $(NODE_IMAGE) --config hack/kind/cluster.yaml
+		kind create cluster --name $(CLUSTER) --image $(NODE_IMAGE) --config $(KIND_CONFIG)
 	$(KUBECTL) apply --server-side --filename $(AGENT_SANDBOX_MANIFEST)
 	$(KUBECTL) create namespace aviary-data --dry-run=client --output yaml | $(KUBECTL) apply -f -
 ifeq ($(DATABASE),mysql)
@@ -208,6 +212,17 @@ secret-store:
 identity-provider:
 	$(KUBECTL) apply -f hack/kind/keycloak.yaml
 	$(KUBECTL) --namespace aviary-data rollout status deployment/keycloak --timeout 300s
+
+# Installs Headlamp in the local cluster, a web UI for its resources, logs
+# and events, at http://localhost:4466.
+headlamp:
+	$(HELM) upgrade --install headlamp headlamp \
+		--repo https://kubernetes-sigs.github.io/headlamp/ \
+		--version $(HEADLAMP_CHART) \
+		--namespace headlamp --create-namespace \
+		--values hack/kind/headlamp-values.yaml \
+		--wait
+	@echo "Headlamp is at http://localhost:4466"
 
 build:
 	docker build --file images/supervisor/Dockerfile --tag $(SUPERVISOR_IMAGE) .
@@ -265,7 +280,8 @@ e2e: e2e-up
 	$(MAKE) e2e-down
 
 e2e-up:
-	$(MAKE) cluster-down cluster-up secret-store $(if $(IDENTITY),identity-provider) images secrets CLUSTER=$(E2E_CLUSTER)
+	$(MAKE) cluster-down cluster-up secret-store $(if $(IDENTITY),identity-provider) images secrets CLUSTER=$(E2E_CLUSTER) \
+		KIND_CONFIG=hack/kind/e2e-cluster.yaml
 	$(E2E_KUBECTL) apply --filename test/e2e/mock-llm.yaml --filename test/e2e/api.yaml
 	helm --kube-context kind-$(E2E_CLUSTER) upgrade --install aviary deploy/charts/aviary \
 		--namespace aviary-system --values test/e2e/values.yaml \
