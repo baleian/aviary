@@ -55,11 +55,30 @@ func TestSettings(t *testing.T) {
 		of(address, "", "a-role"),
 		of(address, "/secret", "a-role"),
 		of(address, "secret/", "a-role"),
+		of(address, "team//secrets", "a-role"),
+		of(address, "secret/./kv", "a-role"),
+		of(address, "a/../../sys", "a-role"),
 		of(address, "secret", ""),
 	} {
 		if got, err := (Plugin{}).Address(bad); err == nil {
 			t.Errorf("Address(%s) = %q, want an error", bad, got)
 		}
+	}
+}
+
+// The mount, like the path, is escaped into the URL of a read.
+func TestReadEscapesMount(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.EscapedPath() != "/v1/kv%3Fx/data/team/model" || r.URL.RawQuery != "" {
+			t.Errorf("read request for %s?%s, want /v1/kv%%3Fx/data/team/model", r.URL.EscapedPath(), r.URL.RawQuery)
+		}
+		io.WriteString(w, `{"data": {"data": {"api_key": "the-value"}}}`)
+	}))
+	t.Cleanup(server.Close)
+	value, err := (Plugin{}).Read(context.Background(), http.DefaultClient, of(server.URL, "kv?x", "a-role"), "a-token", "team/model", "api_key")
+	if err != nil || value != "the-value" {
+		t.Errorf("Read = %q, %v; want the-value", value, err)
 	}
 }
 

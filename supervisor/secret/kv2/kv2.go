@@ -58,13 +58,29 @@ func read(raw json.RawMessage) (settings, error) {
 		return store, errors.New("address must not contain a user name or password")
 	case strings.Trim(address.Path, "/") != "" || address.RawQuery != "" || address.ForceQuery || address.Fragment != "":
 		return store, errors.New("address must not have a path, query or fragment")
-	case store.Mount == "" || strings.Trim(store.Mount, "/") != store.Mount:
-		return store, errors.New("mount is required and must not start or end with a slash")
 	case store.RoleID == "":
 		return store, errors.New("role_id is required")
 	}
+	mount, ok := escaped(store.Mount)
+	if !ok {
+		return store, errors.New("mount is required: a path such as secret, without empty or dot segments")
+	}
+	store.Mount = mount
 	store.Address = strings.TrimSuffix(store.Address, "/")
 	return store, nil
+}
+
+// escaped returns path with its segments escaped for a URL. It reports false
+// if a segment is empty or a dot segment.
+func escaped(path string) (string, bool) {
+	steps := strings.Split(path, "/")
+	for i, step := range steps {
+		if step == "" || step == "." || step == ".." {
+			return "", false
+		}
+		steps[i] = url.PathEscape(step)
+	}
+	return strings.Join(steps, "/"), true
 }
 
 func (Plugin) Address(raw json.RawMessage) (string, error) {
@@ -120,17 +136,14 @@ func (Plugin) Read(ctx context.Context, client *http.Client, raw json.RawMessage
 		return "", err
 	}
 	token, _ := session.(string)
-	steps := strings.Split(path, "/")
-	for i, step := range steps {
-		if step == "" || step == "." || step == ".." {
-			return "", errors.New("path must be a secret path below the mount, such as team/model, without empty or dot segments")
-		}
-		steps[i] = url.PathEscape(step)
+	steps, ok := escaped(path)
+	if !ok {
+		return "", errors.New("path must be a secret path below the mount, such as team/model, without empty or dot segments")
 	}
 	if key == "" {
 		return "", errors.New("key is required")
 	}
-	response, err := get(ctx, client, store.Address+"/v1/"+store.Mount+"/data/"+strings.Join(steps, "/"), token)
+	response, err := get(ctx, client, store.Address+"/v1/"+store.Mount+"/data/"+steps, token)
 	if err != nil {
 		return "", err
 	}
