@@ -1,58 +1,59 @@
 # Plugins
 
-The core of Aviary is the Supervisor and the runner. What an installation
-keeps its data in is not part of the core: the Supervisor knows a database,
-an event log, a secret store and an identity provider only by an interface,
-and a plugin connects it to one kind of each. An installation picks among
-the plugins that its Supervisor was built with.
+Aviary's core does not depend on a particular database, event log, secret
+store or identity provider. The Supervisor uses each of them through an
+interface, and a plugin implements the interface for one kind of product.
+An installation chooses among the plugins that its Supervisor was built
+with.
 
-| What | Interface | How an installation picks | Plugins in this repository |
+| Component | Interface | Selected by | Plugins in this repository |
 | --- | --- | --- | --- |
-| The database that holds the records | `store.Plugin` in `supervisor/store` | The scheme of the URL in the secret that `supervisor.database` names | `store/postgres`: PostgreSQL, at `postgres://` or `postgresql://`. `store/mysql`: MySQL, at `mysql://` |
-| The log of the events of the turns | `events.Plugin` in `supervisor/events` | The scheme of the URL in the secret that `supervisor.events` names | `events/resp`: a server with the stream and publish commands of RESP, at `valkey://`, `valkeys://`, `redis://` or `rediss://` |
-| The secret stores of the projects | `secret.Plugin` in `supervisor/secret` | The `kind` that a project gives when it registers a store | `secret/kv2`: KV version 2 with the AppRole login, as the kind `kv-v2` |
-| The identity provider that tells who sends a request | `identity.Plugin` in `supervisor/identity` | The `kind` of `supervisor.auth.provider` | `identity/oidc`: an OpenID Connect issuer, as the kind `oidc` |
+| Database for the Supervisor's records | `store.Plugin` in `supervisor/store` | The scheme of the URL in the secret that `supervisor.database` names | `store/postgres`: PostgreSQL, at `postgres://` or `postgresql://`. `store/mysql`: MySQL, at `mysql://` |
+| Event log for the events of turns | `events.Plugin` in `supervisor/events` | The scheme of the URL in the secret that `supervisor.events` names | `events/resp`: a RESP server with stream and publish commands, at `valkey://`, `valkeys://`, `redis://` or `rediss://` |
+| Secret stores of projects | `secret.Plugin` in `supervisor/secret` | The `kind` that a project gives when it registers a store | `secret/kv2`: KV version 2 with AppRole login, as the kind `kv-v2` |
+| Identity provider that authenticates API requests | `identity.Plugin` in `supervisor/identity` | The `kind` of `supervisor.auth.provider` | `identity/oidc`: an OpenID Connect issuer, as the kind `oidc` |
 
-A Supervisor that is given a URL with a scheme that it has no plugin for
-does not start, and says which schemes it has.
+A Supervisor that is given a URL whose scheme no plugin supports does not
+start, and lists the schemes that it supports.
 
-## What the plugins are tested with
+## Tested products
 
-Aviary is supported on these products, in these versions. The table says
-what tests each: the tests of a plugin run against the product in a
-container, and the e2e runs Aviary on it in a cluster.
+Aviary supports these products in these versions. The tests of a plugin run
+against the product in a container, and the e2e runs Aviary on it in a
+cluster.
 
 | Product | Version | Plugin | Tested by |
 | --- | --- | --- | --- |
-| PostgreSQL | 18 | `store/postgres` | The tests of the plugin, and the e2e |
-| MySQL | 8.4 | `store/mysql` | The tests of the plugin, and the e2e in a cluster made with `DATABASE=mysql` |
-| Valkey | 9.1 | `events/resp` | The tests of the plugin, and the e2e |
-| Redis | 7.2 | `events/resp` | The tests of the plugin |
-| OpenBao | 2.7 | `secret/kv2` | The tests of the plugin, and the e2e |
-| Keycloak | 26.8 | `identity/oidc` | The e2e in a cluster made with `IDENTITY=keycloak`. The tests of the plugin run against an issuer of their own. |
+| PostgreSQL | 18 | `store/postgres` | Plugin tests and the e2e |
+| MySQL | 8.4 | `store/mysql` | Plugin tests, and the e2e in a cluster created with `DATABASE=mysql` |
+| Valkey | 9.1 | `events/resp` | Plugin tests and the e2e |
+| Redis | 7.2 | `events/resp` | Plugin tests |
+| OpenBao | 2.7 | `secret/kv2` | Plugin tests and the e2e |
+| Keycloak | 26.8 | `identity/oidc` | The e2e in a cluster created with `IDENTITY=keycloak`. The plugin tests use an issuer of their own. |
 
-Another version, or another product that speaks the same protocol, may work
-and is not tested. Redis 7.2 is the last Redis under the BSD licence, and
-the later ones are not tested. Nor is MariaDB, which is another product
-than MySQL. Another OpenID Connect issuer than Keycloak is told where its
-tokens name the caller and the groups, with the claims in the settings of
-the plugin.
+Other versions, and other products that speak the same protocol, may work
+but are not tested. Redis 7.2 is the last Redis release under the BSD
+license, and later releases are not tested. MariaDB, a separate product
+from MySQL, is not tested either. For an OpenID Connect issuer other than
+Keycloak, the `claims` in the plugin's settings say where its tokens name
+the caller and the groups.
 
 ## Writing a plugin
 
 A plugin is a Go package that implements one of the interfaces. To connect
 Aviary to a product that it has no plugin for, write one.
 
-1. **Implement the interface.** Its comments say what every operation
-   promises, also when several Supervisors ask at once. The interface is at
-   the level of operations, such as "dispatch the oldest queued turns within
-   the limit", and not of SQL or commands, so a plugin does each in the way
-   that suits its product. A plugin for a database brings its schema too:
-   `Migrate` and `MigrateTo`. The implementations in memory, `store/memory`
-   and `events/memory`, are the shortest ones to read.
-2. **Pass the suite.** `store/storetest` and `events/eventstest` test what
-   holds of every store and every log. A plugin's own tests run the suite
-   against the product:
+1. **Implement the interface.** Its doc comments state what each operation
+   guarantees, including when several Supervisors call it at once. The
+   interface works at the level of operations, such as "dispatch the oldest
+   queued turns within the limit", not of SQL statements or commands, so a
+   plugin implements each one in the way that suits its product. A database
+   plugin also manages its schema, with `Migrate` and `MigrateTo`. The
+   in-memory implementations, `store/memory` and `events/memory`, are the
+   shortest to read.
+2. **Pass the test suite.** `store/storetest` and `events/eventstest` test
+   the behavior that every store and every event log must have. A plugin's
+   own tests run the suite against the product:
 
    ```go
    func TestStore(t *testing.T) {
@@ -60,67 +61,72 @@ Aviary to a product that it has no plugin for, write one.
    }
    ```
 
-   `storetest.Database` is what the suite needs of a test's database: a way
+   `storetest.Database` is what the suite needs from a test database: a way
    to open one more store on it, and a way to make turns older. The tests of
    `store/postgres`, `store/mysql` and `events/resp` show both suites in
-   use. The two databases do the same in different ways: in places
-   PostgreSQL does in one statement what MySQL does by locking a row and
-   then deciding. There is no suite for secret stores or for identity
-   providers yet: the tests of `secret/kv2` and of `identity/oidc` show what
-   to test.
-3. **Keep it where you like.** A plugin may be a package of this repository
-   or of a module of your own that depends on `aviary/supervisor`. That
-   module path cannot be downloaded, so the other module names a checkout
-   with `replace` in its `go.mod`, as `test/plugin/go.mod` does.
+   use. The two databases implement the same operations differently: in
+   places, PostgreSQL does in one statement what MySQL does by locking a row
+   and then deciding. There is no suite for secret stores or identity
+   providers: the tests of `secret/kv2` and `identity/oidc` show what to
+   test.
+3. **Keep it where you like.** A plugin can be a package in this repository
+   or in a module of your own that depends on `aviary/supervisor`. That
+   module path cannot be downloaded, so your module points to a checkout
+   with a `replace` directive in its `go.mod`, as `test/plugin/go.mod` does.
 
 ## Installing a plugin
 
-Go links a plugin into the program, so a plugin is installed by building a
-Supervisor that lists it. There are two ways.
+Go links plugins into the binary, so a plugin is installed by building a
+Supervisor that includes it. There are two ways:
 
 - **In a checkout of this repository.** Add the plugin to
-  `supervisor/plugins.go`, which is the one place that lists the plugins of
-  the build, and build the image with `make build`.
+  `supervisor/plugins.go`, the one place that lists the plugins of the
+  build, and build the image with `make build`.
 - **In a module of your own.** Write a main package that calls `app.Main`
-  with the plugins that you want, those of this repository among them, and
+  with the plugins that you want, including those of this repository, and
   build an image of it as `images/supervisor/Dockerfile` does. `test/plugin`
   is such a build, and `make test-plugin` keeps it working.
 
-## Using a plugin
+## Configuring a plugin
 
-- **A database or an event log.** Put its URL, with the scheme of the
-  plugin, into the secret that the chart value `supervisor.database` or
-  `supervisor.events` names. Nothing else is set.
-- **A secret store.** A project registers a store with the kind of the
-  plugin and the settings that the plugin asks for. The installation allows
-  the host of the store in `supervisor.secretStores.allowedHosts`.
-- **An identity provider.** Put the kind of the plugin and the settings that
-  the plugin asks for into the chart value `supervisor.auth.provider`.
+- **Database or event log.** Put its URL, with the scheme of the plugin,
+  into the secret that `supervisor.database` or `supervisor.events` names.
+  Nothing else needs to be set.
+- **Secret store.** A project registers a store with the kind of the plugin
+  and the settings that the plugin expects. The installation allows the
+  store's host in `supervisor.secretStores.allowedHosts`.
+- **Identity provider.** Set the kind of the plugin and its settings in
+  `supervisor.auth.provider`.
 
 ## Testing a plugin in a cluster
 
-The e2e runs against whatever the Supervisor of its cluster is connected to,
+The e2e runs against whatever the Supervisor in its cluster is connected to,
 so it tests a build with your plugin as it tests any other.
 
-```bash
-make e2e-up
-```
+1. Create a cluster with the images of your checkout, your plugin included.
+   Aviary runs in it on the PostgreSQL and the Valkey of the local stack.
 
-makes a cluster with the images of your checkout, your plugin among them,
-and installs Aviary in it on the PostgreSQL and the Valkey of the local
-stack. Install your product in that cluster, put its URL into a secret in
-the namespace `aviary-system` under the key `uri`, and point the Supervisor
-at the secret, keeping the values that `make e2e-up` gave the chart:
+   ```bash
+   make e2e-up
+   ```
 
-```bash
-helm --kube-context kind-aviary-e2e upgrade aviary deploy/charts/aviary --namespace aviary-system --reuse-values --set supervisor.database.secretName=<your secret> --wait
-```
+2. Install your product in the cluster, put its URL into a secret in the
+   namespace `aviary-system` under the key `uri`, and point the Supervisor
+   at the secret, keeping the values that `make e2e-up` gave the chart. The
+   kubeconfig of the cluster is `.out/e2e/aviary-e2e/host.kubeconfig`.
 
-That migrates the database with your plugin and starts the Supervisors on
-it. For an event log the value is `supervisor.events.secretName`. Then
+   ```bash
+   KUBECONFIG=.out/e2e/aviary-e2e/host.kubeconfig helm upgrade aviary deploy/charts/aviary --namespace aviary-system --reuse-values --set supervisor.database.secretName=<your secret> --wait
+   ```
 
-```bash
-make e2e-run
-```
+   The upgrade migrates the database with your plugin and starts the
+   Supervisors on it. For an event log, set `supervisor.events.secretName`
+   instead.
 
-runs the tests. `make e2e-down` removes the cluster.
+3. Run the tests:
+
+   ```bash
+   make e2e-run
+   ```
+
+`make e2e-down` deletes the cluster.

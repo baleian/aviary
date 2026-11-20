@@ -1,179 +1,175 @@
 # Harness images
 
-A harness is the agent program that Aviary runs for the turns of a session,
-such as OpenCode or Codex. A harness image packages one harness. This page describes what
-Aviary does with a harness image and what the image must provide, so that you
-can build an image for a harness that this repository does not ship.
+A harness is the agent program, such as OpenCode or Codex, that runs the
+turns of a session. A harness image packages one harness. This page describes
+how Aviary uses a harness image and what the image must provide, so that you
+can build one for a harness that this repository does not ship.
 
 ## How a session uses the image
 
-A session runs in a sandbox that is made from the harness image. The sandbox
-runs `aviary-session`, which starts the runner, `aviary-runner`. Both are in
-`aviary-harness-base`. The runner takes the turns of the session, starts the
-harness for the first of them, and passes on what the harness does.
+Each session runs in a sandbox made from the harness image. The sandbox runs
+`aviary-session`, which starts the runner, `aviary-runner`. Both come from
+`aviary-harness-base`. The runner takes the session's turns, starts the
+harness for the first one, and reports what the harness does.
 
-The harness runs like this:
+The harness runs in this environment:
 
 | | |
 | --- | --- |
-| User | `agent`, with UID 10000 and GID 10000, who cannot become root: the pod has no capability and is held to what a restricted namespace allows. What the agent installs with npm or pip goes to the home, under `/home/.local`, whose programs are in the path. |
-| Home | `/home`, with `HOME` set to it. |
+| User | `agent`, with UID 10000 and GID 10000, which cannot become root: the pod has no capabilities and meets the restricted Pod Security Standard. npm and pip install into the home, under `/home/.local`, whose programs are on the `PATH`. |
+| Home | `/home`, also in `HOME`. |
 | Working directory | `/home/workspace` |
-| Model endpoint | `AVIARY_LLM_BASE_URL`, `AVIARY_LLM_API_KEY` and `AVIARY_LLM_MODEL`. The endpoint is the Egress Proxy, and the key is the token of the session. |
-| Approval | `AVIARY_APPROVAL=ask` for an agent that is to ask a person before it acts. Other agents do not have the variable. |
-| What lasts | The home, which is the volume of the session: also when the session was put to sleep, and its next turn runs in a new pod. The harness stays when a turn has ended, for as long as its pod is there. The rest of the file system is the image's, anew in every pod. |
-| Outside | The hosts that the installation allows, through the Egress Proxy, which the pod has in `HTTP_PROXY`, `HTTPS_PROXY` and the like, with the token of the session as the password. The pod reaches nothing else, and has no DNS. |
+| Model endpoint | `AVIARY_LLM_BASE_URL`, `AVIARY_LLM_API_KEY` and `AVIARY_LLM_MODEL`. The URL points to the Egress Proxy, and the key is the session token. |
+| Approval | `AVIARY_APPROVAL=ask` if the agent must ask a person before it acts. Otherwise the variable is not set. |
+| Persistence | The home is the session volume. It is kept while the session sleeps, and the next turn finds it in a new pod. The rest of the file system comes from the image, fresh in every pod. The harness keeps running between turns for as long as its pod does. |
+| Network | The hosts that the installation allows, through the Egress Proxy, which `HTTP_PROXY`, `HTTPS_PROXY` and their lowercase forms point to, with the session token as the password. The pod reaches nothing else and has no DNS. |
 
 The runner talks to the harness over its standard input and output with the
-[Agent Client Protocol](https://agentclientprotocol.com) (ACP). When it
-starts the harness it sends `initialize` and then `session/new`, or
-`session/resume` when the session has a harness session already, in this
-pod or in an earlier one: the runner keeps its ID in the home. For a turn
-it sends `session/prompt` with the message as text. From the harness's
-`session/update` notifications it passes on the agent's message and thought
-text, tool calls and their updates, and plans. When the prompt returns, the
-turn is over, and the harness stays for the next one. To stop a turn before
-that, because it was cancelled, the runner sends `session/cancel`, and a
-harness that ends the turn then answers the prompt with the stop reason
-`cancelled`. A turn that is stopped before the prompt was sent gets none.
+[Agent Client Protocol](https://agentclientprotocol.com) (ACP):
 
-What the runner does with `session/request_permission` depends on the agent.
-For an agent that is to ask, it passes the request on with the options that
-the harness gave, and answers with the option that a person picked. The
-harness waits for that as long as the turn runs. A request that is open when
-the turn is cancelled is answered as cancelled. For any other agent the runner
-allows the action once, by itself.
+- **Start.** The runner sends `initialize`, then `session/new`, or
+  `session/resume` if the session already has a harness session, from this
+  pod or an earlier one. The runner keeps the harness session ID in the home.
+- **Turns.** For each turn, the runner sends `session/prompt` with the
+  message as text. The turn ends when the prompt returns, and the harness
+  stays for the next turn.
+- **Events.** From `session/update` notifications, the runner reports the
+  agent's message and thought text, tool calls and their updates, and plans.
+- **Cancellation.** To cancel a turn, the runner sends `session/cancel`. A
+  harness that then ends the turn answers the prompt with the stop reason
+  `cancelled`. A turn cancelled before its prompt is sent never reaches the
+  harness.
+- **Approval.** For an agent that asks, the runner passes each
+  `session/request_permission` on with the options that the harness gave, and
+  answers with the option that a person picks. The harness waits for as long
+  as the turn runs. A request that is still open when the turn is cancelled
+  is answered as cancelled. For any other agent, the runner allows the action
+  once by itself.
 
 ## What the image must provide
 
-1. **The command that starts the harness as an ACP agent**, in the
-   environment variable `AVIARY_HARNESS_COMMAND`. The runner runs it and
-   speaks ACP on its standard input and output.
-2. **It has what the sandbox runs.** That is `aviary-session` and
-   `aviary-runner`, and the user `agent` with UID 10000 and GID 10000. An
-   image that builds on `images/harness-base` has them. Everything the
-   harness needs to read or execute must be usable by that user, and it
-   needs no more than the home to write to.
-3. **Its record of the conversation is in the home.** A harness that is
-   started again, in the same pod or in a new pod of the session, continues
-   its session from there.
-4. **It takes the model endpoint from the environment.** The image
-   configures the harness so that it reads `AVIARY_LLM_BASE_URL`,
-   `AVIARY_LLM_API_KEY` and `AVIARY_LLM_MODEL`, and sends the key as a bearer
-   token (`Authorization: Bearer ...`). The Egress Proxy puts the key of the
-   endpoint there.
-5. **It supports `session/resume`.** The harness is started for the first
-   turn of a session and stays for the turns after it. One that has ended,
-   or that is started in a new pod of the session, continues the harness
-   session there.
-6. **The file that the harness reads its instructions from**, in the
-   environment variable `AVIARY_INSTRUCTIONS_FILE`. Before it starts the
-   harness, the runner writes there what the agent is to be told in every
-   turn, or nothing for an agent without instructions. The user of the
-   harness must be able to write the file. Most harnesses have such a file
-   for instructions that hold in every session, often named `AGENTS.md`. An
-   image that names none runs only agents without instructions.
-
-7. **It asks before it acts if `AVIARY_APPROVAL` is `ask`.** The image
+1. **The command that starts the harness as an ACP agent**, in
+   `AVIARY_HARNESS_COMMAND`. The runner runs it and speaks ACP on its
+   standard input and output.
+2. **What the sandbox runs:** `aviary-session`, `aviary-runner`, and the user
+   `agent` with UID 10000 and GID 10000. An image built on
+   `images/harness-base` has them. Everything the harness reads or executes
+   must be usable by that user, and the harness must not need to write
+   anywhere but the home.
+3. **The harness's record of the conversation, in the home.** A harness that
+   is started again, in the same pod or in a new pod of the session,
+   continues its session from there.
+4. **The model endpoint from the environment.** The image configures the
+   harness to read `AVIARY_LLM_BASE_URL`, `AVIARY_LLM_API_KEY` and
+   `AVIARY_LLM_MODEL`, and to send the key as a bearer token
+   (`Authorization: Bearer ...`), which the Egress Proxy replaces with the
+   provider's key.
+5. **Support for `session/resume`.** The harness is started for the first
+   turn of a session and stays for the turns after it. A harness that has
+   exited, or that starts in a new pod of the session, resumes the harness
+   session.
+6. **The instructions file**, in `AVIARY_INSTRUCTIONS_FILE`: the file from
+   which the harness reads instructions for every session, often named
+   `AGENTS.md`. Before every turn, the runner writes the agent's instructions
+   there, or empties the file if the agent has none, so the harness's user
+   must be able to write it. An image that names no file runs only agents
+   without instructions.
+7. **Asking before acting if `AVIARY_APPROVAL` is `ask`.** The image then
    starts the harness so that it sends `session/request_permission` before
-   it does what a person should agree to first. What that covers is for the
-   image to decide, with the settings of its harness. An image that does not
-   read the variable runs an agent that is to ask like any other: nobody is
-   asked.
+   actions that a person should approve first. Which actions is up to the
+   image and the settings of its harness. An image that ignores the variable
+   runs such an agent like any other: nobody is asked.
 
-Environment variables that begin with `AVIARY_` are reserved for Aviary. The
+Environment variables that start with `AVIARY_` are reserved for Aviary. The
 harness also sees the ones that the runner uses, such as
 `AVIARY_MAX_TOOL_OUTPUT_BYTES`.
 
-A harness may report the token usage of a turn in its answer to
-`session/prompt`, as `usage`. Aviary records it with the turn as the harness
-gives it. ACP marks this field as unstable.
+A harness may report the token usage of a turn as `usage` in its response to
+`session/prompt`. Aviary records it with the turn as given. ACP marks this
+field as unstable.
 
-## What to look out for
+## What to watch for
 
-A harness is usually written for one person at one machine, who starts it and
-is there to see what it does. Aviary starts it for the first turn of a
-session, with a home that was empty when the session began, and nobody is
-there. The images here ran into these cases:
+A harness is usually written for one person at one machine, who starts it
+and watches what it does. Aviary starts it for the first turn of a session,
+in a home that was empty when the session began, with nobody watching. The
+images in this repository handle these cases:
 
-- **Work that the harness repeats for every new home.** Codex downloaded its
-  plugin catalog, about 90 MB, into each new session home. The image turns
-  the feature off. OpenCode fetches a list of models at startup, which the
-  image also turns off.
-- **What the harness does on its own while it stays.** The ACP adapter of
-  Codex has a model of its own choosing make a title for a new session, when
-  the first turn has ended. It asks the provider that the configuration
-  names for whoever names none, which for a configuration without one is
-  OpenAI. The image names a provider there that reaches nobody, and names
-  the provider of the agent's model for each session.
-- **Configuration that the harness writes next to its state.** OpenCode
-  installs packages into its configuration directory, so the image keeps the
-  configuration in the image, at `/etc/xdg`, and not in the session home.
+- **Work repeated for every new home.** With plugins on, Codex downloads its
+  plugin catalog into each new session home, so the image turns plugins off.
+  OpenCode fetches a list of models at startup, which the image also turns
+  off.
+- **Background work.** After the first turn of a session, the Codex ACP
+  adapter has a model of its own choosing write a title for the session. It
+  uses the default provider of the configuration, which is OpenAI if none is
+  set. The image sets a default provider that reaches nothing, and gives each
+  session the provider of the agent's model.
+- **Configuration written next to state.** OpenCode installs packages into
+  its configuration directory, so the image keeps the configuration in the
+  image, at `/etc/xdg`, not in the session home.
 - **The harness's own sandbox.** Codex's sandbox creates namespaces, which a
-  pod does not allow. The pod is the sandbox, so the image starts Codex with
+  pod does not allow. The pod is the sandbox, so the image runs Codex with
   full access.
-- **Settings that the harness does not read from the environment.** Codex
-  takes the model and the server address from its configuration. The image
-  starts it through a small script that puts the variables there.
-- **A sandbox that is the only thing that asks.** Codex asks a person only
-  when a command is to leave its sandbox, and the sandbox does not start in
-  a pod. For an agent that is to ask, the image starts Codex in its
-  read-only mode all the same: a command that the model tries inside the
-  sandbox fails, and it runs when the model has asked for it to run outside
-  and a person has allowed that. The failed try costs one more request to
-  the model.
-- **What the harness makes of a refusal.** Both harnesses here end the turn
-  when a person refuses an action: OpenCode with the stop reason `end_turn`,
-  Codex with `cancelled`. Aviary records the turn as the harness ends it.
-- **How long "always" lasts.** An option of the kind `allow_always` holds for
-  as long as the harness remembers it. OpenCode forgets it with its process,
-  so when the harness is started again. Codex writes a rule into its
-  directory in the session home, which it reads when it is started again.
-- **Time to start.** The harness starts with the first turn of a session,
-  and again with the first turn after the session slept, so its startup
-  time is part of those answers.
+- **Settings not read from the environment.** Codex takes the model and the
+  server URL from its configuration, so the image starts it through a small
+  script that puts the variables there.
+- **Approval tied to the harness's sandbox.** Codex asks a person only when a
+  command needs to leave its sandbox, and the sandbox cannot start in a pod.
+  For an agent that asks, the image still runs Codex in read-only mode: a
+  command that the model tries in the sandbox fails, and runs once the model
+  asks to run it outside and a person allows that. The failed attempt costs
+  one more model request.
+- **Refusals.** Both harnesses here end the turn when a person refuses an
+  action: OpenCode with the stop reason `end_turn`, Codex with `cancelled`.
+  Aviary records the turn as the harness ends it.
+- **How long "always" lasts.** An `allow_always` answer lasts as long as the
+  harness remembers it. OpenCode forgets it when its process exits. Codex
+  writes a rule into its directory in the session home, and reads it again
+  when it is started again.
+- **Startup time.** The harness starts with the first turn of a session, and
+  again with the first turn after the session sleeps, so its startup time
+  adds to those turns.
 
 ## The images in this repository
 
 | Image | Contents |
 | --- | --- |
-| `harness-base` | Node.js, git, Python with pip and venv, the user with UID 10000, and what the sandbox runs. The base of the two below. |
-| `harness-opencode` | [OpenCode](https://opencode.ai), started with `opencode acp`. It talks to the model server with the Chat Completions API. Told to ask, it asks before it runs a command or changes a file. |
-| `harness-codex` | [Codex](https://github.com/openai/codex) behind its ACP adapter, `codex-acp`. It talks to the model server with the Responses API. Told to ask, it runs in Codex's read-only mode and asks before a command runs outside its sandbox. |
+| `harness-base` | Node.js, git, Python with pip and venv, the `agent` user, and what the sandbox runs. The base of the other two. |
+| `harness-opencode` | [OpenCode](https://opencode.ai), run as `opencode acp`. It uses the Chat Completions API. For an agent that asks, it asks before it runs a command or changes a file. |
+| `harness-codex` | [Codex](https://github.com/openai/codex) through its ACP adapter, `codex-acp`. It uses the Responses API. For an agent that asks, it runs in read-only mode and asks before a command runs outside its sandbox. |
 
 ## Adding a harness
 
-1. Write a Dockerfile that meets the seven points above. Building on
-   `aviary-harness-base` gives you the second.
+1. Write a Dockerfile that meets the seven requirements above. Building on
+   `aviary-harness-base` covers the second.
 2. Build the image and test it:
 
    ```sh
    make test-harness HARNESS_IMAGES=registry.example.com/aviary-harness-myharness:1.0
    ```
 
-   The tests run sessions in containers of the image, set up as the pods of
-   the sandboxes are: as the user of the agent, without capabilities, with a
-   volume as the home. The runner is in them, the tests send it the turns,
-   and they need no cluster. They use a mock model server
-   that speaks the Chat Completions API and the Responses API, and they have
-   the agent run shell commands, so they need the harness to offer the model
-   a tool with a `command` or a `cmd` parameter. A harness that fetches
-   something for itself when it starts fails them, and so does one that runs
-   a command of an agent that is to ask without asking. The containers reach
-   nothing but the model server, which is also their proxy in the usual
-   variables, so the tests see what a harness fetches. git, npm, pip and curl
-   use the variables, and Node's `fetch` does with `NODE_USE_ENV_PROXY=1`, which
+   The tests need no cluster. They run sessions in containers of the image,
+   set up like the sandbox pods: as the agent's user, without capabilities,
+   with a volume as the home. They send turns to the runner in the container
+   and use a mock model server that speaks the Chat Completions and Responses
+   APIs. The tests have the agent run shell commands, so the harness must
+   offer the model a tool with a `command` or `cmd` parameter. They fail a
+   harness that fetches anything for itself at startup, or that runs a
+   command of an agent that asks without asking. The containers reach nothing
+   but the mock server, which is also their proxy in the standard variables,
+   so the tests see what a harness fetches. git, npm, pip and curl use those
+   variables, and Node's `fetch` does with `NODE_USE_ENV_PROXY=1`, which
    `images/harness-base` sets.
-3. Make the image available to the cluster. For the local cluster that is
+3. Make the image available to the cluster. For the local cluster, run
    `kind load docker-image --name aviary <image>`.
-4. Add the harness to the chart's values under a name of your choice:
+4. Add the harness to the chart values under a name of your choice:
 
    ```yaml
    runtime:
      harnesses:
        myharness:
          image: registry.example.com/aviary-harness-myharness:1.0
-         # What the pod of the sandbox of a session asks for and may use.
+         # Requests and limits of the harness container.
          resources:
            requests: {cpu: 250m, memory: 512Mi}
            limits: {memory: 4Gi}
