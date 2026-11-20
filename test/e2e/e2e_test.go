@@ -224,11 +224,12 @@ func create(t *testing.T, path, body string) string {
 
 // The model server of the tests. It answers only the requests that carry its
 // key, which a sandbox does not hold: the Egress Proxy puts the key into a
-// model request.
+// model request. It also serves a Python package for pip, at probeURL.
 const (
 	mockHost = "mock-llm.aviary-e2e"
 	mockURL  = "http://" + mockHost + "/v1"
 	mockKey  = "mock-llm-key"
+	probeURL = "http://" + mockHost + "/packages/aviary_probe-1.0-py3-none-any.whl"
 )
 
 // provider creates a provider of the project: the model server of the

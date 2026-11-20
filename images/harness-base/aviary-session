@@ -8,7 +8,10 @@ set -eu
 mkdir -p /home/workspace
 cd /home/workspace
 export HOME=/home
-# What the agent installs with npm for itself goes to its home, which
-# outlives the pod, and the programs of it are found there.
-export NPM_CONFIG_PREFIX=/home/.local PATH="/home/.local/bin:$PATH"
+# What the agent installs with npm or pip for itself goes to its home, which
+# outlives the pod, and the programs of it are found there. npm is told so.
+# pip goes there by itself, since it cannot write to the Python of the
+# image: it only has to be allowed to install outside a virtual environment,
+# which the Python of Debian forbids by default.
+export NPM_CONFIG_PREFIX=/home/.local PATH="/home/.local/bin:$PATH" PIP_BREAK_SYSTEM_PACKAGES=1
 exec aviary-runner

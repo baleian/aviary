@@ -16,7 +16,7 @@ The harness runs like this:
 
 | | |
 | --- | --- |
-| User | `agent`, with UID 10000 and GID 10000, who cannot become root: the pod has no capability and is held to what a restricted namespace allows. What the agent installs with npm goes to the home, under `/home/.local`, whose programs are in the path. |
+| User | `agent`, with UID 10000 and GID 10000, who cannot become root: the pod has no capability and is held to what a restricted namespace allows. What the agent installs with npm or pip goes to the home, under `/home/.local`, whose programs are in the path. |
 | Home | `/home`, with `HOME` set to it. |
 | Working directory | `/home/workspace` |
 | Model endpoint | `AVIARY_LLM_BASE_URL`, `AVIARY_LLM_API_KEY` and `AVIARY_LLM_MODEL`. The endpoint is the Egress Proxy, and the key is the token of the session. |
@@ -137,7 +137,7 @@ there. The images here ran into these cases:
 
 | Image | Contents |
 | --- | --- |
-| `harness-base` | Node.js, git, the user with UID 10000, and what the sandbox runs. The base of the two below. |
+| `harness-base` | Node.js, git, Python with pip and venv, the user with UID 10000, and what the sandbox runs. The base of the two below. |
 | `harness-opencode` | [OpenCode](https://opencode.ai), started with `opencode acp`. It talks to the model server with the Chat Completions API. Told to ask, it asks before it runs a command or changes a file. |
 | `harness-codex` | [Codex](https://github.com/openai/codex) behind its ACP adapter, `codex-acp`. It talks to the model server with the Responses API. Told to ask, it runs in Codex's read-only mode and asks before a command runs outside its sandbox. |
 
@@ -161,8 +161,8 @@ there. The images here ran into these cases:
    something for itself when it starts fails them, and so does one that runs
    a command of an agent that is to ask without asking. The containers reach
    nothing but the model server, which is also their proxy in the usual
-   variables, so the tests see what a harness fetches. git, npm and curl use
-   the variables, and Node's `fetch` does with `NODE_USE_ENV_PROXY=1`, which
+   variables, so the tests see what a harness fetches. git, npm, pip and curl
+   use the variables, and Node's `fetch` does with `NODE_USE_ENV_PROXY=1`, which
    `images/harness-base` sets.
 3. Make the image available to the cluster. For the local cluster that is
    `kind load docker-image --name aviary <image>`.

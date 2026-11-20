@@ -244,12 +244,18 @@ func approval(t *testing.T, name string) {
 
 // A session that is not at work sleeps: the pod of its sandbox goes, and the
 // volume of its home stays. Its next message wakes it in a new pod, where
-// the agent goes on with what was said and with its files.
+// the agent goes on with what was said, with its files and with what it
+// installed.
 func sleeps(t *testing.T, name string) {
 	session := newAgent(t, harness(name)).session(t)
 	content, file := unique("content"), unique("note")+".txt"
 	write := fmt.Sprintf("run printf %s > %s", content, file)
 	run(t, session, write)
+	// pip fetches the package through the Egress Proxy. The model says what
+	// the command printed, which not every harness keeps in its tool call.
+	if installed := run(t, session, "run pip install "+probeURL); !strings.Contains(installed.said(), "Successfully installed aviary-probe-1.0") {
+		t.Fatalf("the agent did not install the package: it said %q", installed.said())
+	}
 	before, awake := sandboxesOf(t, session), sessionPods(t, session)
 	if len(before) != 1 || len(awake) != 1 {
 		t.Fatalf("the session that has run a turn has %d sandboxes and %d pods", len(before), len(awake))
@@ -264,6 +270,9 @@ func sleeps(t *testing.T, name string) {
 	}
 	if read := run(t, session, "run cat "+file); !strings.Contains(read.tools(), content) {
 		t.Errorf("after the session slept, the agent did not read its file: its tools %s", read.tools())
+	}
+	if shown := run(t, session, "run pip show aviary-probe"); !strings.Contains(shown.said(), "Location: /home/.local/lib/python3") {
+		t.Errorf("after the session slept, the package that the agent installed is gone: it said %q", shown.said())
 	}
 	after, woken := sandboxesOf(t, session), sessionPods(t, session)
 	if len(after) != 1 || after[0].Metadata.UID != before[0].Metadata.UID {

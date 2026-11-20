@@ -674,8 +674,8 @@ async fn a_session_goes_on_in_another_pod_with_its_home() {
 }
 
 /// The agent is a user who cannot become root, as in a restricted namespace.
-/// What it installs for itself with npm goes to its home, which outlives the
-/// pod.
+/// What it installs for itself with npm or pip goes to its home, which
+/// outlives the pod.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
 async fn an_agent_is_a_user_who_installs_into_its_home() {
@@ -690,6 +690,17 @@ async fn an_agent_is_a_user_who_installs_into_its_home() {
             told.contains("I am agent in /home/workspace with the home /home, and npm installs into /home/.local"),
             "{}: {told}",
             who.image
+        );
+        // The model server serves a package to install.
+        let installed = session
+            .say("run pip install http://model:8080/packages/aviary_probe-1.0-py3-none-any.whl && pip show aviary-probe")
+            .await;
+        installed.completed();
+        let told = tools(&installed.events);
+        assert!(
+            told.contains("Location: /home/.local/lib/python3"),
+            "{}: {told}",
+            installed.image
         );
         let root = session
             .say("run sudo -n true || echo nobody becomes root here")

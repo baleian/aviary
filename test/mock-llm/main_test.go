@@ -1,13 +1,16 @@
 package main
 
 import (
+	"archive/zip"
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -344,5 +347,33 @@ func TestProxy(t *testing.T) {
 	// A request over TLS asks the proxy for a tunnel first.
 	if response, err := through.Get("https://example.com/"); err == nil || !strings.Contains(err.Error(), "Forbidden") {
 		t.Errorf("a tunnel through the proxy was answered with %v: %v", response, err)
+	}
+}
+
+// mock-llm serves the wheel of a Python package, without a key.
+func TestPackage(t *testing.T) {
+	t.Parallel()
+	model := httptest.NewServer(newMock(apiKey))
+	defer model.Close()
+	response, err := http.Get(model.URL + "/packages/" + probeWheel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	served, err := io.ReadAll(response.Body)
+	if err != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("the package was answered with %d: %v", response.StatusCode, err)
+	}
+	archive, err := zip.NewReader(bytes.NewReader(served), int64(len(served)))
+	if err != nil {
+		t.Fatalf("the package is no wheel: %v", err)
+	}
+	var names []string
+	for _, file := range archive.File {
+		names = append(names, file.Name)
+	}
+	if !slices.Equal(names, []string{"aviary_probe/__init__.py", "aviary_probe-1.0.dist-info/METADATA",
+		"aviary_probe-1.0.dist-info/WHEEL", "aviary_probe-1.0.dist-info/RECORD"}) {
+		t.Errorf("the wheel holds %v", names)
 	}
 }
