@@ -121,6 +121,11 @@ func str(value any) string {
 	return text
 }
 
+func num(value any) float64 {
+	number, _ := value.(float64)
+	return number
+}
+
 // called parses the arguments of a tool call into the command, under either
 // parameter name, and the others.
 func (r *reply) called(arguments string) {
@@ -158,8 +163,8 @@ func chat(t *testing.T, url string, conversation sent) reply {
 		arguments += str(at(call, "arguments"))
 		if usage, reported := chunk["usage"].(map[string]any); reported {
 			answer.usage = map[string]float64{
-				"input": usage["prompt_tokens"].(float64), "output": usage["completion_tokens"].(float64),
-				"total": usage["total_tokens"].(float64),
+				"input": num(usage["prompt_tokens"]), "output": num(usage["completion_tokens"]),
+				"total": num(usage["total_tokens"]),
 			}
 		}
 	}
@@ -196,10 +201,10 @@ func respond(t *testing.T, url string, conversation sent) reply {
 			answer.tool = str(event["name"])
 			answer.called(str(event["arguments"]))
 		case "response.completed":
-			usage := at(event, "response", "usage").(map[string]any)
+			usage, _ := at(event, "response", "usage").(map[string]any)
 			answer.usage = map[string]float64{
-				"input": usage["input_tokens"].(float64), "output": usage["output_tokens"].(float64),
-				"total": usage["total_tokens"].(float64),
+				"input": num(usage["input_tokens"]), "output": num(usage["output_tokens"]),
+				"total": num(usage["total_tokens"]),
 			}
 		}
 	}
@@ -278,6 +283,9 @@ func TestScript(t *testing.T) {
 			refused := ask(t, model.URL, sent{said: []string{"fail the model is out of order"}})
 			if refused.status != http.StatusUnauthorized || refused.refusal != "the model is out of order" {
 				t.Errorf("fail: got %+v, want 401 with the text as the error", refused)
+			}
+			if bare := ask(t, model.URL, sent{said: []string{"fail"}}); bare.status != http.StatusUnauthorized {
+				t.Errorf("fail without text: got %+v, want 401", bare)
 			}
 
 			busy := sent{said: []string{"flaky later " + api}}

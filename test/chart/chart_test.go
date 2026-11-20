@@ -54,6 +54,15 @@ func env(workload map[string]any) map[string]string {
 	return env
 }
 
+// count returns the length of a list, or -1 if value is not a list.
+func count(value any) int {
+	list, ok := value.([]any)
+	if !ok {
+		return -1
+	}
+	return len(list)
+}
+
 func TestEgressProxy(t *testing.T) {
 	for _, values := range []string{"default", "set", "closed"} {
 		_, envoy := chart(t, values)
@@ -342,18 +351,18 @@ func TestSandboxesAreCutOff(t *testing.T) {
 	objects, _ := chart(t, "default")
 	policy := at(find(objects, "NetworkPolicy", "aviary-sandboxes"), "spec")
 	if at(find(objects, "NetworkPolicy", "aviary-sandboxes"), "metadata", "namespace") != "aviary-runtime" ||
-		len(at(policy, "podSelector").(map[string]any)) != 0 || !reflect.DeepEqual(at(policy, "policyTypes"), []any{"Ingress", "Egress"}) {
+		!reflect.DeepEqual(at(policy, "podSelector"), map[string]any{}) || !reflect.DeepEqual(at(policy, "policyTypes"), []any{"Ingress", "Egress"}) {
 		t.Errorf("sandbox NetworkPolicy spec = %v", policy)
 	}
 	rules, _ := at(policy, "ingress").([]any)
-	if len(rules) != 1 || len(at(rules[0], "from").([]any)) != 1 ||
+	if len(rules) != 1 || count(at(rules[0], "from")) != 1 ||
 		at(rules[0], "from", 0, "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name") != "aviary-system" ||
 		at(rules[0], "from", 0, "podSelector", "matchLabels", "app.kubernetes.io/component") != "supervisor" ||
 		!reflect.DeepEqual(at(rules[0], "ports"), []any{map[string]any{"protocol": "TCP", "port": 8700}}) {
 		t.Errorf("sandbox ingress rules = %v, want only the Supervisors on port 8700", rules)
 	}
 	out, _ := at(policy, "egress").([]any)
-	if len(out) != 1 || len(at(out[0], "to").([]any)) != 1 ||
+	if len(out) != 1 || count(at(out[0], "to")) != 1 ||
 		at(out[0], "to", 0, "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name") != "aviary-system" ||
 		at(out[0], "to", 0, "podSelector", "matchLabels", "app.kubernetes.io/component") != "egress-proxy" ||
 		!reflect.DeepEqual(at(out[0], "ports"), []any{map[string]any{"protocol": "TCP", "port": 8080}, map[string]any{"protocol": "TCP", "port": 3128}}) {

@@ -107,7 +107,7 @@ func TestTheSandboxOfASessionIsMadeWithItsVolume(t *testing.T) {
 		t.Errorf("host aliases = %v, DNS config = %+v", aliases, pod.DNSConfig)
 	}
 	claims := made.Spec.VolumeClaimTemplates
-	if len(claims) != 1 || claims[0].Name != "home" || *claims[0].Spec.StorageClassName != "fast" ||
+	if len(claims) != 1 || claims[0].Name != "home" || claims[0].Spec.StorageClassName == nil || *claims[0].Spec.StorageClassName != "fast" ||
 		!claims[0].Spec.Resources.Requests.Storage().Equal(resource.MustParse("10Gi")) {
 		t.Errorf("volume claim templates = %+v", claims)
 	}
@@ -128,7 +128,8 @@ func TestTheSandboxOfASessionIsMadeWithItsVolume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if until := made.Spec.ShutdownTime; until == nil || time.Until(until.Time) < 59*time.Minute || *made.Spec.ShutdownPolicy != agents.ShutdownPolicyDelete {
+	if until, policy := made.Spec.ShutdownTime, made.Spec.ShutdownPolicy; until == nil || time.Until(until.Time) < 59*time.Minute ||
+		policy == nil || *policy != agents.ShutdownPolicyDelete {
 		t.Errorf("shutdown time = %v, shutdown policy = %v", until, made.Spec.ShutdownPolicy)
 	}
 	// Without a storage class, the volume uses the default class.
@@ -136,8 +137,12 @@ func TestTheSandboxOfASessionIsMadeWithItsVolume(t *testing.T) {
 	if err := c.Create(ctx, Request{Session: session, Pod: opencode}); err != nil {
 		t.Fatal(err)
 	}
-	if made, err := sandboxes.Get(ctx, Name(session), metav1.GetOptions{}); err != nil || made.Spec.VolumeClaimTemplates[0].Spec.StorageClassName != nil {
-		t.Errorf("storage class = %v, err = %v", made.Spec.VolumeClaimTemplates[0].Spec.StorageClassName, err)
+	made, err = sandboxes.Get(ctx, Name(session), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims := made.Spec.VolumeClaimTemplates; len(claims) != 1 || claims[0].Spec.StorageClassName != nil {
+		t.Errorf("volume claim templates = %+v, want one without a storage class", claims)
 	}
 }
 

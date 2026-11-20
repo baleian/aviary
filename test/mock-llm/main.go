@@ -199,7 +199,7 @@ func (s shellTool) arguments(a answer) string {
 
 // answer is the model's next move: a call of the shell tool with command,
 // outside the sandbox if outside is set, or else text, with pause after each
-// word. If failure is set, the request is refused with failure and status
+// word. If status is set, the request is refused with status and failure
 // instead. A flaky answer is given only after it was refused once.
 type answer struct {
 	text    string
@@ -419,7 +419,7 @@ func (m *mock) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	c.shell = findShell(tools)
 	next := m.next(c)
 	slog.Info("answered", "api", "chat completions", "said", len(c.said), "command", next.command, "text", next.text, "failure", next.failure)
-	if next.failure != "" {
+	if next.status != 0 {
 		refuse(w, next.status, next.failure)
 		return
 	}
@@ -507,7 +507,7 @@ func (m *mock) responses(w http.ResponseWriter, r *http.Request) {
 	c.shell = findShell(request.Tools)
 	next := m.next(c)
 	slog.Info("answered", "api", "responses", "said", len(c.said), "command", next.command, "text", next.text, "failure", next.failure)
-	if next.failure != "" {
+	if next.status != 0 {
 		refuse(w, next.status, next.failure)
 		return
 	}
