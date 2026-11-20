@@ -8,21 +8,18 @@ import (
 	"aviary/supervisor/internal/driver"
 )
 
-// A turn that fails says why: with what its runner tells of the failure, or
-// with what the Supervisor that follows it finds.
+// A failed turn reports a reason and a message, from its runner or from the
+// Supervisor that follows it.
 func TestFailures(t *testing.T) {
 	t.Parallel()
 	tool := message{"tool.call", map[string]string{"id": "t1", "title": "sleep 30", "status": "in_progress"}}
 	for _, test := range []struct {
 		name string
-		// limits sets how long a turn may take lower, for a turn that is to
-		// take too long, and the sweep with it: the next turn wakes the
-		// sandbox, which a Supervisor looks at again after a tenth of a
-		// sweep.
-		limits func(*driver.Config)
-		// reports are what the runner tells of the turn.
+		// limits shortens a timeout for the cases that exceed it. It shortens
+		// the sweep too, which paces how fast the next turn wakes the sandbox.
+		limits  func(*driver.Config)
 		reports []message
-		// lost is whether the turn then loses its sandbox.
+		// lost has the sandbox deleted after the reports.
 		lost            bool
 		reason, message string
 		items           int
@@ -44,7 +41,7 @@ func TestFailures(t *testing.T) {
 			items: 1,
 		},
 		{
-			// Only a Supervisor tells that a turn took too long.
+			// timed_out is reserved for the Supervisor.
 			name:    "the runner told a reason that is not a runner's to tell",
 			reports: []message{started("harness-session"), failed("timed_out", "the turn took too long")},
 			reason:  "runner_error", message: "the turn took too long",
@@ -102,7 +99,7 @@ func TestFailures(t *testing.T) {
 				t.Errorf("the record of the turn is %+v", record)
 			}
 
-			// The session goes on.
+			// The session still takes messages.
 			next := s.send(session, "again")
 			s.run(next.ID, "done")
 			if events := s.follow(next.ID); events[len(events)-1].Type != "turn.completed" {

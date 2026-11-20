@@ -21,8 +21,7 @@ import (
 
 const maxBodyBytes = 1 << 20
 
-// defaultListed is how many sessions or turns a list holds if the request
-// does not say, and maxListed is the most that it may ask for.
+// Default and maximum page sizes of the list endpoints.
 const (
 	defaultListed = 20
 	maxListed     = 100
@@ -32,12 +31,11 @@ type api struct {
 	store  store.Store
 	events *events.Streams
 	driver *driver.Driver
-	// keys seal the secrets that the API is given, before they are stored.
+	// keys encrypt secrets before they are stored.
 	keys *secret.Keys
-	// stores are tried when a project registers one, and read when a
-	// project says that a secret is in one.
-	stores *secret.Stores
-	// callers are who may use the API.
+	// stores checks the secret stores that projects register, and the keys
+	// that providers reference in them.
+	stores  *secret.Stores
 	callers Callers
 	closing <-chan struct{}
 }
@@ -46,8 +44,8 @@ type apiError struct {
 	status  int
 	Code    string `json:"code"`
 	Message string `json:"message"`
-	// retryAfter is how many seconds a client should wait before it sends
-	// the request again, if it helps to send it again.
+	// retryAfter, if positive, is sent as the Retry-After header, in
+	// seconds.
 	retryAfter int
 }
 
@@ -64,15 +62,13 @@ var (
 	errInternal    = &apiError{status: http.StatusInternalServerError, Code: "internal", Message: "internal error"}
 )
 
-// New returns the handler of the API, for the callers that may use it. An
-// event stream stays open for as long as its client does, so the streams end
-// when closing is closed.
+// New returns the API handler. Event streams stay open until their clients
+// disconnect or closing is closed.
 func New(st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Keys, stores *secret.Stores, callers Callers, closing <-chan struct{}) http.Handler {
 	a := &api{store: st, events: ev, driver: dr, keys: keys, stores: stores, callers: callers, closing: closing}
 	mux := http.NewServeMux()
-	// What a caller needs for each request. An administrator may do
-	// everything. Another caller may do in a project what its members that
-	// are the caller, or one of the groups of the caller, may do.
+	// Admins may do everything. Other callers have, in a project, the
+	// permissions of the members that are them or one of their groups.
 	mux.Handle("GET /v1/roles", handler(a.listRoles))
 	mux.Handle("PUT /v1/roles/{name}", a.administrator(a.setRole))
 	mux.Handle("POST /v1/projects", a.administrator(a.createProject))
@@ -92,7 +88,8 @@ func New(st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Key
 	mux.Handle("GET /v1/projects/{pid}/agents", a.inProject(projectView, a.listAgents))
 	mux.Handle("GET /v1/agents/{aid}", a.ofProject(projectView, "aid", a.ofAgent, a.getAgent))
 	mux.Handle("POST /v1/agents/{aid}/sessions", a.ofProject(sessionsRun, "aid", a.ofAgent, a.createSession))
-	// The sessions of the agent that the caller may read.
+	// listSessions does its own access check, since what it lists depends on
+	// the caller.
 	mux.Handle("GET /v1/agents/{aid}/sessions", handler(a.listSessions))
 	mux.Handle("GET /v1/sessions/{sid}", a.withSession(reads, a.getSession))
 	mux.Handle("DELETE /v1/sessions/{sid}", a.withSession(ends, a.endSession))
@@ -102,7 +99,7 @@ func New(st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Key
 	mux.Handle("POST /v1/turns/{tid}/cancel", a.withTurn(controls, a.cancelTurn))
 	mux.Handle("POST /v1/turns/{tid}/approvals/{rid}", a.withTurn(controls, a.answerApproval))
 	mux.Handle("GET /v1/turns/{tid}/events", a.withTurn(reads, a.streamEvents))
-	// Kubernetes asks whether the Supervisor is up without saying who it is.
+	// Health checks are not authenticated.
 	all := http.NewServeMux()
 	all.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
 	all.Handle("GET /v1/me", a.identified(handler(a.me)))
@@ -128,9 +125,8 @@ func (a *api) createProject(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// listProjects answers the projects of the caller: those of which the
-// caller, or one of the groups of the caller, is a member. An administrator
-// has them all.
+// listProjects lists the projects of which the caller or one of its groups
+// is a member, or all projects for an admin.
 func (a *api) listProjects(w http.ResponseWriter, r *http.Request) error {
 	who := callerOf(r)
 	list := a.store.Projects
@@ -189,7 +185,7 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 	if request.Model == nil {
 		return invalid("model is required")
 	}
-	// The provider is one of the agent's own project.
+	// The provider must belong to the agent's project.
 	providerID, err := uuid.Parse(request.Model.Provider)
 	if err != nil {
 		return invalid("model.provider is not a provider of the project")
@@ -258,9 +254,9 @@ func (a *api) createSession(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// listSessions lists the sessions of an agent that the caller may read:
-// the caller's own with the permission to run sessions, and those of
-// everyone with the one to view them all, or as an administrator.
+// listSessions lists the sessions of the agent that the caller may read: its
+// own with sessions.run, and everyone's with sessions.view_all or as an
+// admin.
 func (a *api) listSessions(w http.ResponseWriter, r *http.Request) error {
 	agentID, err := pathID(r, "aid")
 	if err != nil {
@@ -278,7 +274,6 @@ func (a *api) listSessions(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	// The caller reads the sessions of everyone, or their own, or none.
 	by, readable := uuid.Nil, true
 	if who := callerOf(r); !who.admin {
 		held, err := a.held(r, agent.ProjectID)
@@ -314,8 +309,8 @@ func (a *api) getSession(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// endSession ends the session, and has its sandbox deleted with all that
-// the agent had in it. What was said in the session stays.
+// endSession ends the session and deletes its sandbox. The conversation is
+// kept.
 func (a *api) endSession(w http.ResponseWriter, r *http.Request) error {
 	id, err := pathID(r, "sid")
 	if err != nil {
@@ -329,8 +324,8 @@ func (a *api) endSession(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// createMessage accepts a message as the session's next turn. The turn runs
-// later, so the reply is 202 with the turn to follow.
+// createMessage queues a message as the session's next turn, and responds
+// 202 with the turn.
 func (a *api) createMessage(w http.ResponseWriter, r *http.Request) error {
 	sessionID, err := pathID(r, "sid")
 	if err != nil {
@@ -345,8 +340,7 @@ func (a *api) createMessage(w http.ResponseWriter, r *http.Request) error {
 	if request.Text == "" {
 		return invalid("text is required")
 	}
-	// An agent from before agents named their models has none, and its
-	// turns would have no model to ask.
+	// An agent without a model cannot run turns.
 	session, err := a.store.Session(r.Context(), sessionID)
 	if err != nil {
 		return err
@@ -360,9 +354,9 @@ func (a *api) createMessage(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	// The turn is accepted once it is stored. The event only reports that, so
-	// failing to publish it does not fail the request. A turn that was
-	// dispatched in the meantime has no position to be told.
+	// The turn is accepted once stored, so failing to publish its position
+	// does not fail the request. A turn dispatched in the meantime has no
+	// position.
 	err = a.store.AnnounceQueue(r.Context(), func(queued []uuid.UUID) error {
 		if position := slices.Index(queued, turn.ID); position >= 0 {
 			return a.events.AppendQueued(r.Context(), turn.ID, position+1)
@@ -394,11 +388,9 @@ func (a *api) getTurn(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// listTurns returns the turns of a session, newest first. The query
-// parameter limit is how many, and before is the sequence number of a turn:
-// the list then holds the turns that came before it. That is how a client
-// reads on from the last turn of a list. The first turn of a session has the
-// sequence number 1.
+// listTurns lists the turns of a session, newest first. The query parameter
+// limit caps their number, and before, a sequence number, lists only the
+// turns before it, for paging. Sequence numbers start at 1.
 func (a *api) listTurns(w http.ResponseWriter, r *http.Request) error {
 	sessionID, err := pathID(r, "sid")
 	if err != nil {
@@ -429,10 +421,9 @@ func (a *api) listTurns(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// turnRecord is a turn with what the agent said and did in it. The items
-// are kept when the turn ends: until then a client follows the turn's events.
-// A turn that has not ended has the requests of its harness for approval
-// that wait for a person, as the approval.requested events told them.
+// turnRecord is a turn with its items, which are stored when the turn ends;
+// until then clients follow the turn's events. Approvals holds the pending
+// approval requests of a turn that has not ended.
 type turnRecord struct {
 	store.Turn
 	Items     []json.RawMessage `json:"items"`
@@ -450,7 +441,7 @@ func (a *api) records(ctx context.Context, turns []store.Turn) ([]turnRecord, er
 	}
 	records := make([]turnRecord, len(turns))
 	for i, turn := range turns {
-		// A turn without items has an empty list of them.
+		// Items is [], not null, for a turn without items.
 		records[i] = turnRecord{Turn: turn, Items: append([]json.RawMessage{}, items[turn.ID]...)}
 		if turn.EndedAt == nil {
 			if records[i].Approvals, err = a.store.WaitingApprovals(ctx, turn.ID); err != nil {
@@ -461,11 +452,10 @@ func (a *api) records(ctx context.Context, turns []store.Turn) ([]turnRecord, er
 	return records, nil
 }
 
-// answerApproval takes the answer of a person to a request of a turn's
-// harness for approval: one of the options that the harness gave with the
-// request. The answer is passed on to the runner of the turn, and the
-// approval.resolved event tells when the harness has it. The first answer to
-// a request stands.
+// answerApproval records a person's answer to an approval request, which
+// must be one of the request's options, and passes it on to the runner. The
+// approval.resolved event reports when the harness has it. The first answer
+// wins.
 func (a *api) answerApproval(w http.ResponseWriter, r *http.Request) error {
 	turnID, err := pathID(r, "tid")
 	if err != nil {
@@ -513,8 +503,8 @@ func (a *api) answerApproval(w http.ResponseWriter, r *http.Request) error {
 		}
 		return errAnswered
 	}
-	// The answer is recorded. If it cannot be announced, the Supervisor that
-	// the runner is connected to finds it a little later.
+	// If the announcement fails, the Supervisor that follows the turn finds
+	// the answer later.
 	if err := a.events.AnnounceAnswer(r.Context(), turnID); err != nil {
 		slog.ErrorContext(r.Context(), "announce the answer to a request for approval", "turn", turnID, "error", err)
 	}
@@ -522,10 +512,9 @@ func (a *api) answerApproval(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// cancelTurn cancels a turn. A turn that waits to run ends at once, and the
-// reply is 200. A turn that runs is told to stop and ends when its harness
-// has stopped, so the reply is 202 with the turn to follow. Cancelling a turn
-// that was cancelled before changes nothing and succeeds.
+// cancelTurn cancels a turn. A queued turn ends at once, with 200. A running
+// turn ends when its harness has stopped, so the response is 202. Cancelling
+// a cancelled turn succeeds.
 func (a *api) cancelTurn(w http.ResponseWriter, r *http.Request) error {
 	id, err := pathID(r, "tid")
 	if err != nil {
@@ -542,8 +531,8 @@ func (a *api) cancelTurn(w http.ResponseWriter, r *http.Request) error {
 		a.driver.Ended(r.Context(), turn)
 		a.driver.QueueMoved()
 	default:
-		// The request is recorded. If it cannot be announced, the Supervisor
-		// that the runner is connected to finds it a little later.
+		// If the announcement fails, the Supervisor that follows the turn
+		// finds the cancellation later.
 		if err := a.events.AnnounceCancel(r.Context(), turn.ID); err != nil {
 			slog.ErrorContext(r.Context(), "announce the cancelled turn", "turn", turn.ID, "error", err)
 		}
@@ -554,7 +543,8 @@ func (a *api) cancelTurn(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// handler turns the error a handler returns into the error response.
+// handler is an http.Handler that writes the error it returns as an error
+// response.
 type handler func(w http.ResponseWriter, r *http.Request) error
 
 func (h handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -588,8 +578,8 @@ func (h handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	respond(w, failure.status, failure)
 }
 
-// pathID reads an ID from the request path. An ID that is not a UUID cannot
-// name anything, so it is reported as not found.
+// pathID returns the named path value as a UUID. A malformed ID is reported
+// as not found.
 func pathID(r *http.Request, name string) (uuid.UUID, error) {
 	id, err := uuid.Parse(r.PathValue(name))
 	if err != nil {
@@ -598,8 +588,8 @@ func pathID(r *http.Request, name string) (uuid.UUID, error) {
 	return id, nil
 }
 
-// queryNumber reads a query parameter that is a number from 1 to most. A
-// request without it gets the number absent.
+// queryNumber returns the named query parameter, which must be a number from
+// 1 to most, or absent if it is not set.
 func queryNumber(r *http.Request, name string, absent, most int) (int, error) {
 	value := r.URL.Query().Get(name)
 	if value == "" {
@@ -612,8 +602,8 @@ func queryNumber(r *http.Request, name string, absent, most int) (int, error) {
 	return number, nil
 }
 
-// queryID reads a query parameter that is an ID. A request without it gets
-// the ID absent.
+// queryID returns the named query parameter as a UUID, or absent if it is
+// not set.
 func queryID(r *http.Request, name string, absent uuid.UUID) (uuid.UUID, error) {
 	value := r.URL.Query().Get(name)
 	if value == "" {

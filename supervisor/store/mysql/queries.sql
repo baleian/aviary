@@ -27,24 +27,23 @@ select * from sessions where id = ?;
 update sessions set sandbox = sqlc.narg(sandbox) where id = sqlc.arg(id);
 
 -- name: ListSessions :many
--- The sessions of an agent whose IDs are below the one that is given, newest
--- first: the ID of a session rises with the time at which it was created.
+-- Lists the agent's sessions with IDs below before, newest first: IDs
+-- increase with creation time.
 select * from sessions where agent_id = sqlc.arg(agent_id) and id < sqlc.arg(before) order by id desc limit ?;
 
 -- name: ListSessionsOf :many
--- Those of them that one user created.
+-- Like ListSessions, for the sessions that one user created.
 select * from sessions
 where agent_id = sqlc.arg(agent_id) and created_by = sqlc.arg(created_by) and id < sqlc.arg(before)
 order by id desc limit ?;
 
 -- name: LockSession :one
--- Holds the session until the transaction ends: the messages that reach a
--- session at once are taken one after another, and none of them while the
--- session is being ended.
+-- Locks the session until the transaction ends, which serializes accepting
+-- its messages and ending it.
 select * from sessions where id = ? for update;
 
 -- name: IsSessionBusy :one
--- Whether a turn of the session has not ended.
+-- Reports whether the session has an unfinished turn.
 select exists (select 1 from turns where session_id = ? and ended_at is null);
 
 -- name: EndSession :exec
@@ -60,8 +59,6 @@ from projects where projects.id = sqlc.arg(project_id);
 select * from providers where id = ?;
 
 -- name: ReplaceProvider :execrows
--- The provider gets the name, the URL and the key that are given, in place
--- of all that it had. The key is stored, or in a secret store, or none.
 update providers set name = sqlc.arg(name), url = sqlc.arg(url), api_key = sqlc.narg(api_key),
        api_key_store_id = sqlc.narg(api_key_store_id), api_key_path = sqlc.arg(api_key_path),
        api_key_name = sqlc.arg(api_key_name), updated_at = now(6)
@@ -76,16 +73,13 @@ from projects where projects.id = sqlc.arg(project_id);
 select * from secret_stores where id = ?;
 
 -- name: ReplaceSecretStore :execrows
--- The store gets the name, the kind, the settings and the credential that
--- are given, in place of all that it had.
 update secret_stores
 set name = sqlc.arg(name), kind = sqlc.arg(kind), settings = sqlc.arg(settings), credential = sqlc.arg(credential),
     updated_at = now(6)
 where id = sqlc.arg(id);
 
 -- name: Lock :one
--- Waits for the row of what only one Supervisor does at a time, and holds it
--- until the transaction ends.
+-- Waits for the lock with the name and holds it until the transaction ends.
 select name from locks where name = ? for update;
 
 -- name: NextSeq :one
@@ -99,13 +93,10 @@ values (sqlc.arg(id), sqlc.arg(session_id), sqlc.arg(seq), 'queued', sqlc.arg(te
 select * from turns where id = ?;
 
 -- name: LockTurn :one
--- Holds the turn until the transaction ends: what is done to a turn at once
--- is done one after another.
+-- Locks the turn until the transaction ends, which serializes changes to it.
 select * from turns where id = ? for update;
 
 -- name: ListTurns :many
--- The turns of a session that came before the one with the sequence number,
--- newest first.
 select * from turns where session_id = sqlc.arg(session_id) and seq < sqlc.arg(before) order by seq desc limit ?;
 
 -- name: GetTurnHarness :one
@@ -119,8 +110,7 @@ where turns.id = ?;
 select count(*) from turns where state = 'queued';
 
 -- name: CountRunningTurns :one
--- The turns that take the room of a turn that runs: those that were
--- dispatched and have not ended.
+-- Counts the dispatching and running turns, which both take room to run.
 select count(*) from turns where state in ('dispatching', 'running');
 
 -- name: QueuedTurns :many
@@ -130,7 +120,6 @@ select id from turns where state = 'queued' order by created_at, id;
 select id from turns where ended_at is null and cancel_requested_at is not null;
 
 -- name: NextTurns :many
--- The queued turns, oldest first.
 select turns.id as turn_id, agents.harness, cast(timestampdiff(microsecond, turns.created_at, now(6)) as signed) as waited
 from turns
 join sessions on sessions.id = turns.session_id
@@ -140,7 +129,8 @@ order by turns.created_at, turns.id
 limit ?;
 
 -- name: DispatchTurn :execrows
--- A turn that was cancelled since it was read is left as it is.
+-- Dispatches the turn if it is still queued: it may have been cancelled since
+-- it was read.
 update turns set state = 'dispatching', dispatched_at = now(6) where id = ? and state = 'queued';
 
 -- name: DispatchedTurns :many
@@ -148,11 +138,9 @@ select id, cast(coalesce(timestampdiff(microsecond, cancel_requested_at, now(6))
 from turns where state in ('dispatching', 'running');
 
 -- name: FollowTurn :exec
--- A turn that was dispatched and has not ended runs once it is followed.
 update turns set state = 'running' where id = ? and state in ('dispatching', 'running');
 
 -- name: FollowedTurn :one
--- The turn as the Supervisor that follows it gets it.
 select sqlc.embed(turns), agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
        agents.approval, coalesce(providers.url, '') as provider_url, agents.model, sessions.sandbox,
        cast(timestampdiff(microsecond, coalesce(turns.dispatched_at, turns.created_at), now(6)) as signed) as dispatched
@@ -163,10 +151,8 @@ left join providers on providers.id = agents.provider_id
 where turns.id = ?;
 
 -- name: SessionTurn :one
--- The running turn of the session, what the turn belongs to, who sent its
--- message, and the provider of its agent as it is now, if the agent names
--- its model. A provider whose key is in a secret store comes with that
--- store, as it is now.
+-- Returns the origin of the session's running turn, with the current
+-- provider of its agent and the secret store of the provider's key.
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
        coalesce(users.subject, '') as subject,
        agents.provider_id, coalesce(providers.url, '') as provider_url, providers.api_key as provider_api_key,
@@ -187,7 +173,7 @@ where turns.session_id = ? and turns.state = 'running';
 update turns set started_at = now(6) where id = ?;
 
 -- name: Startup :one
--- How long the turn took to start, in microseconds.
+-- Returns the microseconds from the turn's dispatch to its start.
 select cast(coalesce(timestampdiff(microsecond, dispatched_at, started_at), 0) as signed) as startup from turns where id = ?;
 
 -- name: SetFinished :exec
@@ -198,12 +184,10 @@ update turns set stop_reason = sqlc.arg(stop_reason), total_tokens = sqlc.narg(t
 where id = sqlc.arg(id);
 
 -- name: CancelQueuedTurn :exec
--- A queued turn ends at once.
 update turns set state = 'cancelled', ended_at = now(6), cancel_requested_at = coalesce(cancel_requested_at, now(6))
 where id = ?;
 
 -- name: AskTurnToStop :exec
--- A dispatched turn is only marked.
 update turns set cancel_requested_at = coalesce(cancel_requested_at, now(6)) where id = ?;
 
 -- name: LockTurnsToExpire :many
@@ -227,7 +211,8 @@ insert into turn_items (turn_id, seq, item) values (?, ?, ?);
 select turn_id, item from turn_items where turn_id in (sqlc.slice('turn_ids')) order by turn_id, seq;
 
 -- name: AddApproval :exec
--- A request that its runner reports again is there already.
+-- Does nothing if the request exists, since a runner may report a request
+-- again.
 insert into approvals (turn_id, id, request) values (?, ?, ?)
 on duplicate key update turn_id = turn_id;
 
@@ -235,28 +220,27 @@ on duplicate key update turn_id = turn_id;
 select * from approvals where turn_id = ? and id = ?;
 
 -- name: ResolveApproval :execrows
--- The harness has its answer. A request that was resolved before is left as
--- it is.
+-- Records that the harness has received its answer, unless the request was
+-- already resolved.
 update approvals set outcome = sqlc.arg(outcome), resolved_at = now(6)
 where turn_id = sqlc.arg(turn_id) and id = sqlc.arg(id) and resolved_at is null;
 
 -- name: AnswerApproval :execrows
--- Keeps the option that a person chose, for a request that has no answer
--- yet and whose turn has not ended.
+-- Records the chosen option, unless the request has an answer already or is
+-- resolved, or its turn has ended.
 update approvals set option_id = sqlc.arg(option_id), answered_at = now(6), answered_by = sqlc.narg(answered_by)
 where approvals.turn_id = sqlc.arg(turn_id) and approvals.id = sqlc.arg(id)
   and approvals.answered_at is null and approvals.resolved_at is null
   and exists (select 1 from turns where turns.id = approvals.turn_id and turns.ended_at is null);
 
 -- name: WaitingApprovals :many
--- The requests of a turn that wait for a person, oldest first.
 select request from approvals
 where turn_id = ? and answered_at is null and resolved_at is null
 order by requested_at, id;
 
 -- name: Answers :many
--- The answers that the harnesses of turns that run have not got yet: those
--- of one turn, or of all.
+-- Lists the answers not yet delivered to the harnesses of unfinished turns:
+-- those of the turn, or of all turns if turn_id is null.
 select approvals.turn_id, approvals.id, coalesce(approvals.option_id, '') as option_id
 from approvals
 join turns on turns.id = approvals.turn_id
@@ -267,14 +251,15 @@ where approvals.answered_at is not null and approvals.resolved_at is null and tu
 select * from users where subject = ?;
 
 -- name: FreeUsername :exec
--- The username is that of the user whom the provider gives it to now.
+-- Takes the username from any other user, since the provider has given it to
+-- the user with the subject.
 update users set username = null where username = sqlc.arg(username) and subject <> sqlc.arg(subject);
 
 -- name: CreateUser :exec
 insert into users (id, subject, username, display_name) values (?, ?, ?, ?);
 
 -- name: UpdateUser :exec
--- A user that is given no username keeps the one that it has.
+-- Updates the user with the subject. A null username keeps the current one.
 update users set username = coalesce(sqlc.narg(username), username), display_name = sqlc.arg(display_name)
 where subject = sqlc.arg(subject);
 
@@ -289,7 +274,7 @@ update roles set permissions = sqlc.arg(permissions), updated_at = now(6), updat
 where name = sqlc.arg(name);
 
 -- name: IsMember :one
--- Whether the user with the username is a member of the project.
+-- Reports whether the user who has the username is a member of the project.
 select exists (
     select 1 from project_members
     join users on users.id = project_members.user_id
@@ -303,14 +288,14 @@ select sqlc.arg(id), projects.id, sqlc.narg(username), sqlc.narg(group_name),
 from projects where projects.id = sqlc.arg(project_id);
 
 -- name: DropMembersBeforeClaim :exec
--- A user who is a member of a project, and is given a username under which
--- the project was given a member since, is the member that was given last.
+-- Deletes the membership of the user who has the username in each project
+-- that awaits a member under it, so that the awaited member takes its place.
 delete member from project_members as member
 join project_members as awaited on awaited.project_id = member.project_id and awaited.username = sqlc.arg(username)
 join users on users.id = member.user_id and users.username = sqlc.arg(username);
 
 -- name: ClaimMembers :exec
--- The members that were awaited under the username are the user that has it.
+-- Gives the members awaited under the username to the user who has it.
 update project_members
 join users on users.username = project_members.username
 set project_members.user_id = users.id, project_members.username = null
@@ -339,7 +324,6 @@ order by project_members.created_at, project_members.id;
 select * from projects order by created_at, id;
 
 -- name: ListProjectsOfMember :many
--- The projects of which the user, or one of the groups, is a member.
 select projects.* from projects
 where exists (
     select 1 from project_members
@@ -349,8 +333,8 @@ where exists (
 order by projects.created_at, projects.id;
 
 -- name: ListPermissions :many
--- What the members of the project that are the user or one of the groups may
--- do: of each, the permissions of its own, or those that its role has now.
+-- Returns, for each member of the project that is the user or one of the
+-- groups, its own permissions or those of its role.
 select cast(coalesce(project_members.permissions, roles.permissions) as json) as permissions
 from project_members left join roles on roles.name = project_members.role
 where project_members.project_id = sqlc.arg(project_id)

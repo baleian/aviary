@@ -20,7 +20,7 @@ import (
 
 var ctx = context.Background()
 
-// said is the data of the event with which an agent says the text.
+// said returns the data of a message.delta event.
 func said(text string) any {
 	return map[string]string{"text": text}
 }
@@ -43,7 +43,7 @@ func all(t *testing.T, streams *events.Streams, turn uuid.UUID) []events.Event {
 	}
 }
 
-// texts returns what the events say, each as its type and its data.
+// texts returns the type and the data of each event.
 func texts(batch []events.Event) []string {
 	texts := []string{}
 	for _, event := range batch {
@@ -52,7 +52,7 @@ func texts(batch []events.Event) []string {
 	return texts
 }
 
-// words returns so many words, from w1 on, each with a space after it.
+// words returns "w<i> " for each i from from to to.
 func words(from, to int) []string {
 	var words []string
 	for i := from; i <= to; i++ {
@@ -61,8 +61,7 @@ func words(from, to int) []string {
 	return words
 }
 
-// The events of a turn are kept as JSON, in the order in which the runner
-// sent them.
+// Events are stored as JSON, in the order of their sequence numbers.
 func TestReceive(t *testing.T) {
 	t.Parallel()
 	streams, turn := events.New(memory.New()), uuid.New()
@@ -104,7 +103,7 @@ func TestReceive(t *testing.T) {
 	if streams.IsID("not an ID") {
 		t.Error("anything is the ID of an event")
 	}
-	// What cannot be written as JSON is no event.
+	// Data that cannot be encoded as JSON is refused.
 	if err := streams.Receive(ctx, turn, 4, "message.delta", func() {}); err == nil {
 		t.Error("an event whose data is no JSON was received")
 	}
@@ -114,7 +113,7 @@ func TestItems(t *testing.T) {
 	t.Parallel()
 	log := memory.New()
 	streams, turn := events.New(log), uuid.New()
-	// More events than are read at once, with a tool call among them.
+	// More events than one read returns, with a tool call in between.
 	before, after := words(1, 1200), words(1201, 2500)
 	seq := uint64(0)
 	receive := func(eventType string, data any) {
@@ -127,7 +126,7 @@ func TestItems(t *testing.T) {
 		receive("message.delta", said(word))
 	}
 	receive("tool.call", map[string]string{"id": "t1", "title": "ls"})
-	// An event that cannot be read. The turn has its items all the same.
+	// An event that cannot be decoded, which Items skips.
 	if err := log.Append(ctx, turn, "message.delta", `{"text": `); err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +161,7 @@ func TestItems(t *testing.T) {
 	}
 }
 
-// expiring is a log that tells for how long it was told to keep a turn.
+// expiring is a log that records the durations passed to Expire.
 type expiring struct {
 	events.Log
 	mu   sync.Mutex
@@ -201,8 +200,7 @@ func TestAppendLast(t *testing.T) {
 	if recorded := texts(all(t, streams, waited.ID)); !slices.Equal(recorded, []string{`turn.expired {}`}) {
 		t.Errorf("the events of the turn that never ran are %q", recorded)
 	}
-	// What the log holds of a turn goes when its readers have had their
-	// time.
+	// The turn's data expires after a grace period for its readers.
 	for _, turn := range []uuid.UUID{ran.ID, waited.ID} {
 		if kept := log.kept[turn]; kept <= 0 || kept > time.Hour {
 			t.Errorf("the log is to keep the turn for %s after its end", kept)
@@ -210,9 +208,8 @@ func TestAppendLast(t *testing.T) {
 	}
 }
 
-// A request to cancel a turn reaches one Supervisor, and the runner of the
-// turn is connected to another. So it is with the answer to a request for
-// approval. Each is told on a channel of its own.
+// Cancels and answers are announced to the other Supervisors on separate
+// channels.
 func TestAnnounce(t *testing.T) {
 	t.Parallel()
 	log := memory.New()
@@ -223,7 +220,7 @@ func TestAnnounce(t *testing.T) {
 	go connected.WatchCancels(watching, func(turn uuid.UUID) { cancelled <- turn })
 	go connected.WatchAnswers(watching, func(turn uuid.UUID) { answered <- turn })
 
-	// What is announced before the other Supervisor watches is lost, so a
+	// Announcements made before the watcher subscribes are lost, so the
 	// turn is announced until it is heard.
 	heard := func(announce func(context.Context, uuid.UUID) error, on, other chan uuid.UUID) {
 		t.Helper()
@@ -251,7 +248,7 @@ func TestAnnounce(t *testing.T) {
 	heard(asked.AnnounceAnswer, answered, cancelled)
 }
 
-// kind is a plugin of the tests, which connects to logs in memory.
+// kind is a plugin that opens logs in memory.
 type kind struct {
 	schemes []string
 	opened  *[]string
@@ -267,7 +264,7 @@ func (k kind) Open(address string) (events.Log, error) {
 	return memory.New(), nil
 }
 
-// The address of the log says which plugin connects to it.
+// Open selects the plugin by the URL scheme.
 func TestOpen(t *testing.T) {
 	t.Parallel()
 	var opened []string
@@ -286,8 +283,7 @@ func TestOpen(t *testing.T) {
 		t.Errorf("the plugins connected to %q, not to %q", opened, expected)
 	}
 
-	// A Supervisor that cannot connect to its log does not start, and says
-	// why without the password.
+	// Errors say why without revealing the password.
 	for address, why := range map[string]string{
 		"third://default:secret@host:6379":        "first, firsts, second",
 		"host:6379":                               "first, firsts, second",

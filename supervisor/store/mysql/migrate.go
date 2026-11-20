@@ -14,14 +14,11 @@ import (
 	"github.com/pressly/goose/v3/lock"
 )
 
-// The schema is changed by Migrate, which a release runs once before it
-// starts its Supervisors. A Supervisor does not change the schema. It only
-// checks that the schema is not older than it needs, so that Supervisors of
-// two releases can run on one database: while a release is rolled out, after
-// it is rolled back, or side by side.
+// Only Migrate changes the schema. Open only checks it, so that Supervisors of
+// two releases can share a database.
 //
-// MySQL does not undo a change of the schema that failed halfway, so a
-// migration changes one thing.
+// MySQL cannot roll back a schema change that fails halfway, so each
+// migration makes a single change.
 
 //go:embed migrations/*.sql
 var migrations embed.FS
@@ -29,7 +26,7 @@ var migrations embed.FS
 // undefinedTable is the MySQL error number for a table that does not exist.
 const undefinedTable = 1146
 
-// Migrate brings the schema of the database at the address up to date.
+// Migrate brings the schema of the database at address up to date.
 func (p Plugin) Migrate(ctx context.Context, address string) error {
 	latest, err := latestMigration()
 	if err != nil {
@@ -38,10 +35,9 @@ func (p Plugin) Migrate(ctx context.Context, address string) error {
 	return p.MigrateTo(ctx, address, latest)
 }
 
-// MigrateTo brings the schema of the database at the address to the given
-// version, forward or back. Going back is for the rare case that a schema
-// change itself has to be undone: it drops what the newer migrations added,
-// with the data in it. Going back to an earlier release does not need it.
+// MigrateTo migrates the schema of the database at address to version, forward
+// or back. Migrating back drops what the newer migrations added, with its
+// data; rolling back a release does not need it.
 func (Plugin) MigrateTo(ctx context.Context, address string, version int64) error {
 	latest, err := latestMigration()
 	if err != nil {
@@ -59,8 +55,8 @@ func (Plugin) MigrateTo(ctx context.Context, address string, version int64) erro
 	if err != nil {
 		return err
 	}
-	// The lock is held in a table rather than on the connection, so that it
-	// also holds behind a connection pooler.
+	// A lock in a table, unlike one on the connection, also works behind a
+	// connection pooler.
 	locker, err := lock.NewMySQLTableLocker()
 	if err != nil {
 		return err
@@ -89,11 +85,9 @@ func (Plugin) MigrateTo(ctx context.Context, address string, version int64) erro
 	return nil
 }
 
-// checkSchema reports an error if this build and the schema do not go
-// together: if the schema is older than the build needs, or if it has since
-// dropped something that the build uses. A newer schema is accepted
-// otherwise, because migrations only add to the schema until they raise the
-// floor.
+// checkSchema returns an error if the schema is older than this build needs,
+// or if its floor excludes this build. A newer schema is accepted otherwise,
+// since migrations only add to it until they raise the floor.
 func checkSchema(ctx context.Context, db *sql.DB) error {
 	needed, err := latestMigration()
 	if err != nil {

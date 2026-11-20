@@ -16,8 +16,7 @@ import (
 	"aviary/supervisor/store"
 )
 
-// An agent is kept with all that it is created with, and a session with the
-// agent that it is of.
+// Agents and sessions are stored as they are created.
 func (suite suite) testAgents(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -45,7 +44,7 @@ func (suite suite) testAgents(t *testing.T) {
 			t.Errorf("the agent is %s as %+v, with the model %+v", how, agent, agent.Model)
 		}
 	}
-	// An agent with nothing of its own but its harness.
+	// An agent with only a harness.
 	plain, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "codex"})
 	if err != nil {
 		t.Fatal(err)
@@ -65,8 +64,8 @@ func (suite suite) testAgents(t *testing.T) {
 	}
 }
 
-// The agents of a project are listed in the order in which they were
-// created, each as it is read by itself.
+// Agents lists the agents of a project in creation order, as Agent reads
+// them.
 func (suite suite) testAgentsOfAProject(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -126,9 +125,8 @@ func (suite suite) testAgentsOfAProject(t *testing.T) {
 	}
 }
 
-// A session keeps the sandbox that it runs in. It is given one, or loses
-// it, only if it has the one that whoever asks says it has: of several
-// Supervisors that give a session a sandbox at once, one does.
+// SetSandbox is a compare-and-swap: of several Supervisors that set a
+// session's sandbox at once, one succeeds.
 func (suite suite) testSandboxOfASession(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -146,9 +144,9 @@ func (suite suite) testSandboxOfASession(t *testing.T) {
 		then     string
 	}{
 		{from: "", to: "sandbox-1", set: true, then: "sandbox-1"},
-		// Another Supervisor made a sandbox for the session too.
+		// Another Supervisor created a sandbox for the session too.
 		{from: "", to: "sandbox-2", then: "sandbox-1"},
-		// The sandbox is gone, and then the session is given the next.
+		// The sandbox is deleted, and the session gets the next one.
 		{from: "sandbox-2", to: "", then: "sandbox-1"},
 		{from: "sandbox-1", to: "", set: true, then: ""},
 		{from: "sandbox-1", to: "", then: ""},
@@ -164,7 +162,7 @@ func (suite suite) testSandboxOfASession(t *testing.T) {
 	if _, err := st.SetSandbox(ctx, uuid.New(), "", "sandbox-1"); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("a session that there is not was given a sandbox: %v", err)
 	}
-	// The sessions of an agent are told with their sandboxes too.
+	// Sessions returns the sandboxes too.
 	session, err := st.Session(ctx, id)
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +172,6 @@ func (suite suite) testSandboxOfASession(t *testing.T) {
 		t.Errorf("the sessions of the agent are %+v: %v", sessions, err)
 	}
 
-	// Several Supervisors give a new session its sandbox at once.
 	fresh, supervisors := st.session(), st.supervisors(8)
 	var given atomic.Int32
 	atOnce(len(supervisors), func(i int) {
@@ -191,8 +188,8 @@ func (suite suite) testSandboxOfASession(t *testing.T) {
 	}
 }
 
-// The sessions of an agent are listed newest first, a few at a time, and
-// those of one user by themselves.
+// Sessions pages through the sessions of an agent newest first, all of them
+// or those of one user.
 func (suite suite) testSessionsOfAnAgent(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -213,7 +210,7 @@ func (suite suite) testSessionsOfAnAgent(t *testing.T) {
 	if sessions, err := st.Sessions(ctx, uuid.New(), uuid.Nil, uuid.Max, 10); err != nil || sessions == nil || len(sessions) != 0 {
 		t.Errorf("an agent that there is not has the sessions %+v, with the error %v", sessions, err)
 	}
-	// The sessions of the agent, oldest first: nobody's, and those of two
+	// The sessions of the agent, oldest first, created by nobody and by two
 	// users.
 	created := []store.Session{first}
 	for _, by := range []uuid.UUID{alice, bob, alice, uuid.Nil, alice} {
@@ -236,7 +233,7 @@ func (suite suite) testSessionsOfAnAgent(t *testing.T) {
 		by     uuid.UUID
 		before uuid.UUID
 		limit  int
-		// sessions are the sessions of the answer, by when they were created.
+		// sessions are indexes into created.
 		sessions []int
 	}{
 		{"all", uuid.Nil, uuid.Max, 10, []int{5, 4, 3, 2, 1, 0}},
@@ -270,8 +267,8 @@ func (suite suite) testSessionsOfAnAgent(t *testing.T) {
 	}
 }
 
-// A session is ended when none of its turns waits or runs, and once. From
-// then on it takes no message, and what was said in it stays.
+// A session can be ended once it has no unfinished turn. It then accepts no
+// messages and keeps its turns.
 func (suite suite) testEndSession(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -280,7 +277,7 @@ func (suite suite) testEndSession(t *testing.T) {
 		t.Fatalf("the session was not given its sandbox: %v", err)
 	}
 
-	// A session with a turn that has not ended is not ended.
+	// A session with an unfinished turn cannot be ended.
 	st.queue(id)
 	busy := func(turn string) {
 		t.Helper()
@@ -307,12 +304,12 @@ func (suite suite) testEndSession(t *testing.T) {
 	if ended.ID != id || ended.EndedAt == nil || ended.EndedAt.Before(ended.CreatedAt) || ended.Sandbox != "sandbox-1" {
 		t.Fatalf("the session was ended as %+v, at %v", ended, ended.EndedAt)
 	}
-	// Who ends it again is given it as it ended.
+	// Ending it again returns it as it ended.
 	again, err := st.another().EndSession(ctx, id)
 	if err != nil || again.EndedAt == nil || !again.EndedAt.Equal(*ended.EndedAt) || again.Sandbox != "sandbox-1" {
 		t.Errorf("the session that was ended again is %+v, ended at %v and not at %v: %v", again, again.EndedAt, ended.EndedAt, err)
 	}
-	// So it is read, by itself and among the sessions of its agent.
+	// Session and Sessions return it ended too.
 	read, err := st.another().Session(ctx, id)
 	if err != nil {
 		t.Fatal(err)
@@ -327,8 +324,7 @@ func (suite suite) testEndSession(t *testing.T) {
 		}
 	}
 
-	// It takes no message, and is told so before anything else: also when
-	// too many turns wait for a message to be taken.
+	// It refuses messages with ErrSessionEnded, even when the queue is full.
 	if _, _, err := st.CreateTurn(ctx, id, uuid.Nil, "again", 0, 50); !errors.Is(err, store.ErrSessionEnded) {
 		t.Errorf("a session that has ended took a message: %v", err)
 	}
@@ -340,8 +336,7 @@ func (suite suite) testEndSession(t *testing.T) {
 		t.Errorf("the turns of the session that has ended are %+v: %v", turns, err)
 	}
 
-	// A session that never took a message is ended too, and one that there
-	// is not is not.
+	// A session without turns can be ended; a missing one cannot.
 	if fresh, err := st.EndSession(ctx, st.session()); err != nil || fresh.EndedAt == nil || fresh.Sandbox != "" {
 		t.Errorf("a session without turns was ended as %+v, at %v: %v", fresh, fresh.EndedAt, err)
 	}
@@ -350,9 +345,8 @@ func (suite suite) testEndSession(t *testing.T) {
 	}
 }
 
-// A session is ended or takes a message, also when several Supervisors do
-// the one and the other at once: a session that has ended has no turn that
-// has not.
+// Concurrent ends and messages never leave an ended session with an
+// unfinished turn.
 func (suite suite) testSupervisorsEndASessionWhileMessagesCome(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -385,8 +379,8 @@ func (suite suite) testSupervisorsEndASessionWhileMessagesCome(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// Either all who ended the session did and no message was taken, or
-		// one message was and nobody ended the session.
+		// Either every end succeeded and no message was accepted, or one
+		// message was accepted and no end succeeded.
 		all := int32(len(supervisors) / 2)
 		if session.EndedAt != nil && (len(turns) != 0 || accepted.Load() != 0 || ended.Load() != all) ||
 			session.EndedAt == nil && (len(turns) != 1 || accepted.Load() != 1 || ended.Load() != 0) {
@@ -396,8 +390,7 @@ func (suite suite) testSupervisorsEndASessionWhileMessagesCome(t *testing.T) {
 	}
 }
 
-// A project has model providers. A provider is created with the ID that it
-// is given, and replaced whole.
+// A provider is created with the ID that it is given, and replaced whole.
 func (suite suite) testProviders(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -423,8 +416,7 @@ func (suite suite) testProviders(t *testing.T) {
 		t.Errorf("the provider is read as %+v, not as %+v: %v", read, created, err)
 	}
 
-	// All that is replaced is given: a provider that is given no key has
-	// none from then on.
+	// A provider given no key has none afterwards.
 	replaced, err := st.ReplaceProvider(ctx, store.Provider{ID: given.ID, Name: "renamed", URL: "http://model.example.com:8000", APIKey: []byte("another")})
 	if err != nil {
 		t.Fatal(err)
@@ -440,11 +432,11 @@ func (suite suite) testProviders(t *testing.T) {
 	if read, err := st.Provider(ctx, given.ID); err != nil || !same(read, keyless) {
 		t.Errorf("the replaced provider is read as %+v, not as %+v: %v", read, keyless, err)
 	}
-	// A project has a provider once.
+	// A provider cannot be created twice.
 	if _, err := st.CreateProvider(ctx, given); err == nil {
 		t.Error("a provider was created a second time")
 	}
-	// A provider without a key has none, which is not an empty key.
+	// A provider without a key has a nil key, not an empty one.
 	local, err := st.CreateProvider(ctx, store.Provider{ID: uuid.New(), ProjectID: project.ID, Name: "local", URL: "http://10.0.0.5:8000/v1"})
 	if err != nil || local.APIKey != nil {
 		t.Errorf("the provider without a key was created as %+v: %v", local, err)
@@ -465,7 +457,7 @@ func (suite suite) testProviders(t *testing.T) {
 	}
 }
 
-// same tells whether two providers are the same in all that is kept of one.
+// same reports whether two providers have equal stored fields.
 func same(one, other store.Provider) bool {
 	return one.ID == other.ID && one.ProjectID == other.ProjectID && one.Name == other.Name && one.URL == other.URL &&
 		bytes.Equal(one.APIKey, other.APIKey) && (one.APIKey == nil) == (other.APIKey == nil) &&
@@ -473,8 +465,7 @@ func same(one, other store.Provider) bool {
 		one.CreatedAt.Equal(other.CreatedAt) && one.UpdatedAt.Equal(other.UpdatedAt)
 }
 
-// A provider keeps its key in a secret store of the project, in place of a
-// key that is stored: it has the one, the other or none.
+// The key of a provider can be in a secret store instead of stored.
 func (suite suite) testKeyInASecretStore(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -500,8 +491,7 @@ func (suite suite) testKeyInASecretStore(t *testing.T) {
 		t.Errorf("the provider is read as %+v, not as %+v: %v", read, created, err)
 	}
 
-	// All that is replaced is given: the key that is stored takes the place
-	// of the one in the secret store, and the other way around.
+	// Replacing switches between a stored key and one in a secret store.
 	replacement := store.Provider{ID: created.ID, Name: "a provider", URL: "https://api.example.com/v1", APIKey: []byte("a sealed key")}
 	if stored, err := st.ReplaceProvider(ctx, replacement); err != nil || stored.APIKeyAt != nil || string(stored.APIKey) != "a sealed key" {
 		t.Errorf("the provider that was given a key to store is %+v, with its key at %+v: %v", stored, stored.APIKeyAt, err)
@@ -515,7 +505,7 @@ func (suite suite) testKeyInASecretStore(t *testing.T) {
 		t.Errorf("the replaced provider is read as %+v, with its key at %+v: %v", read, read.APIKeyAt, err)
 	}
 
-	// The key of a provider is in a secret store that there is.
+	// The secret store of the key must exist.
 	nowhere := &store.SecretReference{Store: uuid.New(), Path: "llm/a-provider", Key: "api_key"}
 	if _, err := st.CreateProvider(ctx, store.Provider{ID: uuid.New(), ProjectID: project.ID, Name: "another", URL: "https://api.example.com/v1", APIKeyAt: nowhere}); err == nil {
 		t.Error("a provider was created whose key is in a secret store that there is not")
@@ -528,8 +518,8 @@ func (suite suite) testKeyInASecretStore(t *testing.T) {
 		t.Errorf("after that, the provider has its key at %+v: %v", read.APIKeyAt, err)
 	}
 
-	// The turn that runs in a session tells of the provider with where its
-	// key is, and of the secret store as it is then.
+	// The origin of a running turn has the location of the provider's key,
+	// and the secret store as it is then.
 	agent, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: &store.Model{Provider: created.ID, Name: "a-model"}})
 	if err != nil {
 		t.Fatal(err)
@@ -563,9 +553,8 @@ func (suite suite) testKeyInASecretStore(t *testing.T) {
 	}
 }
 
-// The turn that runs in a session is found by the session, with where it
-// comes from: what it belongs to, who sent its message, and the provider of
-// its agent as the provider is then, with the secret store of its key.
+// SessionTurn returns the origin of the turn that runs in a session, with the
+// current provider of its agent and the secret store of the provider's key.
 func (suite suite) testTurnOfASession(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -619,7 +608,7 @@ func (suite suite) testTurnOfASession(t *testing.T) {
 	}
 	notFound(uuid.New(), "a session that there is not")
 
-	// The key of the provider is put in a secret store while the turn runs.
+	// The key of the provider moves to a secret store while the turn runs.
 	secrets, err := st.CreateSecretStore(ctx, store.SecretStore{
 		ID: uuid.New(), ProjectID: project.ID, Name: "a store", Kind: "a kind", Settings: json.RawMessage(`{"where": "there"}`), Credential: []byte("sealed"),
 	})
@@ -640,17 +629,18 @@ func (suite suite) testTurnOfASession(t *testing.T) {
 		t.Errorf("the key of the provider is in the secret store %+v", in)
 	}
 
-	// Once the turn has ended, nothing runs in the session.
+	// Once the turn has ended, no turn runs in the session.
 	st.end(turn.ID, true, store.Failure{})
 	notFound(session.ID, "a session whose turn has ended")
 }
 
-// second returns the error of an operation.
+// second returns the error of a call that returns a value and an error.
 func second[T any](_ T, err error) error {
 	return err
 }
 
-// A project has secret stores, which are kept as providers are.
+// A secret store is created with the ID that it is given, and replaced whole,
+// as a provider is.
 func (suite suite) testSecretStores(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -690,10 +680,8 @@ func (suite suite) testSecretStores(t *testing.T) {
 	}
 }
 
-// An agent names its model: a provider of its project and a model of that
-// provider. A turn of the agent is followed with the provider's URL and the
-// model, and while it runs, its session tells where it comes from and which
-// provider its agent uses, as the provider is then.
+// A followed turn has the provider URL and the model of its agent, and the
+// origin of a running turn has the current provider.
 func (suite suite) testModelOfAnAgent(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -707,8 +695,8 @@ func (suite suite) testModelOfAnAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// session creates a session of an agent with the model, and has a
-	// Supervisor follow its turn.
+	// session creates an agent with the model and a session of it, and
+	// follows a turn of the session.
 	session := func(model *store.Model) (store.Agent, store.Session, store.FollowedTurn) {
 		t.Helper()
 		agent, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: model})
@@ -744,11 +732,11 @@ func (suite suite) testModelOfAnAgent(t *testing.T) {
 		origin.Provider.APIKeyAt != nil || origin.SecretStore != nil {
 		t.Errorf("the turn of the session comes from %+v, with the provider %+v", origin, origin.Provider)
 	}
-	// An agent names a provider that there is.
+	// The provider of the model must exist.
 	if _, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: &store.Model{Provider: uuid.New(), Name: "a-model"}}); err == nil {
 		t.Error("an agent was created that names a provider that there is not")
 	}
-	// A provider that is replaced while a turn uses it.
+	// The provider is replaced while a turn uses it.
 	if _, err := st.ReplaceProvider(ctx, store.Provider{ID: provider.ID, Name: "a provider", URL: "http://model.example.com:8000"}); err != nil {
 		t.Fatal(err)
 	}
@@ -757,7 +745,7 @@ func (suite suite) testModelOfAnAgent(t *testing.T) {
 		t.Errorf("after its provider was replaced, the turn of the session comes from %+v, with the provider %+v: %v", origin, origin.Provider, err)
 	}
 
-	// An agent from before agents named their models has none.
+	// An agent that names no model.
 	_, other, plain := session(nil)
 	if plain.ProviderURL != "" || plain.Model != "" {
 		t.Errorf("the turn of an agent that names no model is followed as %+v", plain)
@@ -766,7 +754,7 @@ func (suite suite) testModelOfAnAgent(t *testing.T) {
 		t.Errorf("the turn of the session of an agent that names no model comes from %+v: %v", origin, err)
 	}
 
-	// A session tells of a turn only while the turn runs.
+	// SessionTurn finds a turn only while it runs.
 	st.end(followed.ID, true, store.Failure{})
 	if _, err := st.SessionTurn(ctx, held.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("the session of a turn that has ended: %v", err)

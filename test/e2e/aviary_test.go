@@ -16,9 +16,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// The tests run in this order. Those in the middle run at once, each with
-// sessions of its own. The last two take the Supervisors away, which breaks
-// what the others would have open.
+// The tests under "turns" run in parallel, each with its own sessions. The
+// last two take the Supervisors down, which would break the others' open
+// requests, so they run last.
 func TestAviary(t *testing.T) {
 	if !t.Run("the installation runs turns", installation) {
 		t.Fatal("the installation runs no turns, so nothing else was tried")
@@ -68,7 +68,7 @@ func TestAviary(t *testing.T) {
 	t.Run("a turn waits for a Supervisor", waits)
 }
 
-// unique returns a word that nothing else in the cluster has.
+// unique returns prefix with a random suffix.
 func unique(prefix string) string {
 	return prefix + "-" + strings.ToLower(rand.Text())[:8]
 }
@@ -77,7 +77,8 @@ func harness(name string) string {
 	return fmt.Sprintf(`{"harness": %q}`, name)
 }
 
-// ready tells whether so many pods of a part of Aviary run and are ready.
+// ready reports whether count pods of the component are running, all of them
+// ready.
 func ready(t *testing.T, component string, count int) bool {
 	t.Helper()
 	pods := running(t, component)
@@ -93,17 +94,16 @@ func ready(t *testing.T, component string, count int) bool {
 	return len(pods) == count
 }
 
-// The cluster is new, and the first sandbox of a harness may take longer to
-// start than a turn waits for it. The first turns are tried until one of
-// each harness completes.
+// In a new cluster, the first sandbox of a harness may take longer to start
+// than a turn waits for it, so the first turns are retried until one of each
+// harness completes.
 func installation(t *testing.T) {
 	for _, component := range []string{"supervisor", "egress-proxy"} {
 		if !ready(t, component, 2) {
 			t.Fatalf("the installation does not run two of %s: run `make e2e`, which installs it", component)
 		}
 	}
-	// The sandboxes of the last sessions of an earlier run may still be on
-	// their way out.
+	// The sandboxes of an earlier run may still be terminating.
 	eventually(t, soon, "the cluster holds sandboxes that are not of these tests: run `make e2e`, which makes a new cluster", func() bool {
 		return len(sandboxes(t, "")) == 0
 	})
@@ -124,16 +124,16 @@ func installation(t *testing.T) {
 	}
 }
 
-// A session keeps its conversation and its files from one turn to the next,
-// in a sandbox of its own, and no other session sees them.
+// A session keeps its conversation and its files across turns in its own
+// sandbox, and other sessions do not see them.
 func session(t *testing.T, name string) {
 	word, content, file := unique("plum"), unique("content"), unique("note")+".txt"
 	agent := newAgent(t, fmt.Sprintf(`{"harness": %q, "instructions": "The word of the day is %s."}`, name, word))
 	session := agent.session(t)
 	write := fmt.Sprintf("run printf %s > %s", content, file)
 	first := run(t, session, write)
-	// The harness reports the usage of one answer of the model or of all of
-	// them, and every answer of mock-llm takes 11 tokens in and 7 out.
+	// A harness reports the usage of one model response or of all of them,
+	// and every mock-llm response reports 11 input and 7 output tokens.
 	answers := first.Usage["total_tokens"] / 18
 	if answers < 1 || first.Usage["input_tokens"] != 11*answers || first.Usage["output_tokens"] != 7*answers {
 		t.Errorf("the first turn records the usage %v", first.Usage)
@@ -148,7 +148,7 @@ func session(t *testing.T, name string) {
 		if !strings.Contains(third.said(), content) || !strings.Contains(third.tools(), content) {
 			t.Errorf("the third turn did not read the file of the first: it said %q and its tools %s", third.said(), third.tools())
 		}
-		// The agent is told its instructions in every turn.
+		// The agent's instructions are sent in every turn.
 		if fourth := run(t, session, "find "+word); !strings.Contains(fourth.said(), "present") {
 			t.Errorf("the model was not sent the instructions of the agent: %q", fourth.said())
 		}
@@ -174,13 +174,12 @@ func session(t *testing.T, name string) {
 	})
 }
 
-// An agent that is to ask runs a command when a person has allowed it and
-// not when a person has refused it. Its turn waits for the answer, which
-// the API takes.
+// An agent with approval "ask" runs a command only if a person allows it. The
+// turn waits for the answer, which is given through the API.
 func approval(t *testing.T, name string) {
 	session := newAgent(t, fmt.Sprintf(`{"harness": %q, "approval": "ask"}`, name)).session(t)
-	// answered sends the message and has a person answer what the harness
-	// asks with the option of the kind. It returns the turn as it ended.
+	// answered sends text, answers the approval request with the option of
+	// kind, and returns the ended turn.
 	answered := func(text, kind string) turn {
 		t.Helper()
 		accepted := send(t, session, text)
@@ -189,8 +188,8 @@ func approval(t *testing.T, name string) {
 		events.until(t, "asked for approval", func(next event) bool {
 			return next.Type == "approval.requested" && json.Unmarshal([]byte(next.Data), &asked) == nil
 		})
-		// The request tells the command. The turn runs while it waits, and
-		// shows the request to whoever reads the turn.
+		// The request names the command. While it waits, the turn is running
+		// and lists the request.
 		command := strings.TrimPrefix(text, "escalate ")
 		waiting := record(t, accepted.ID)
 		if !strings.Contains(string(asked.ToolCall.Input), command) || waiting.State != "running" ||
@@ -207,8 +206,8 @@ func approval(t *testing.T, name string) {
 		if status := request(t, "POST", "/v1/turns/"+accepted.ID+"/approvals/"+asked.ID, answer, nil); status != http.StatusAccepted {
 			t.Fatalf("the answer %s to the request %+v was answered with %d", answer, asked, status)
 		}
-		// How a harness ends a turn after a refusal is up to it, but the
-		// turn does not fail.
+		// A harness ends a turn after a refusal in its own way, but the turn
+		// does not fail.
 		if last := events.end(t); last.Type != "turn.completed" {
 			t.Fatalf("the turn of the message %q ended with %s %s", text, last.Type, last.Data)
 		}
@@ -242,17 +241,17 @@ func approval(t *testing.T, name string) {
 	}
 }
 
-// A session that is not at work sleeps: the pod of its sandbox goes, and the
-// volume of its home stays. Its next message wakes it in a new pod, where
-// the agent goes on with what was said, with its files and with what it
-// installed.
+// An idle session sleeps: its pod is deleted and its home volume is kept. The
+// next message wakes it in a new pod, where the agent still has the
+// conversation, its files and the packages that it installed.
 func sleeps(t *testing.T, name string) {
 	session := newAgent(t, harness(name)).session(t)
 	content, file := unique("content"), unique("note")+".txt"
 	write := fmt.Sprintf("run printf %s > %s", content, file)
 	run(t, session, write)
-	// pip fetches the package through the Egress Proxy. The model says what
-	// the command printed, which not every harness keeps in its tool call.
+	// pip fetches the package through the Egress Proxy. The check reads what
+	// the model said, since not every harness keeps the command output in
+	// its tool call.
 	if installed := run(t, session, "run pip install "+probeURL); !strings.Contains(installed.said(), "Successfully installed aviary-probe-1.0") {
 		t.Fatalf("the agent did not install the package: it said %q", installed.said())
 	}
@@ -283,9 +282,8 @@ func sleeps(t *testing.T, name string) {
 	}
 }
 
-// A turn that waits for a person keeps its session at work. Its sandbox does
-// not sleep for as long as the turn waits, and the turn goes on in it when
-// it is answered.
+// A turn that waits for approval keeps its sandbox from sleeping, and goes on
+// when it is answered.
 func keepsAwake(t *testing.T, name string) {
 	session := newAgent(t, fmt.Sprintf(`{"harness": %q, "approval": "ask"}`, name)).session(t)
 	accepted := send(t, session, "escalate touch "+unique("awake"))
@@ -294,8 +292,8 @@ func keepsAwake(t *testing.T, name string) {
 		return next.Type == "approval.requested" && json.Unmarshal([]byte(next.Data), &asked) == nil
 	})
 	waiting := sessionPods(t, session)
-	// Longer than a session may be idle, and then long enough for every
-	// Supervisor to have looked at it.
+	// Past the idle time, and long enough for every Supervisor to have looked
+	// for idle sessions since.
 	time.Sleep(idle + look + 5*time.Second)
 	found, still := sandboxesOf(t, session), sessionPods(t, session)
 	if len(found) != 1 || found[0].Spec.OperatingMode == "Suspended" || len(waiting) != 1 || len(still) != 1 || still[0].UID != waiting[0].UID {
@@ -312,16 +310,16 @@ func keepsAwake(t *testing.T, name string) {
 	if status := request(t, "POST", "/v1/turns/"+accepted.ID+"/approvals/"+asked.ID, answer, nil); status != http.StatusAccepted {
 		t.Fatalf("the answer %s to the request %+v was answered with %d", answer, asked, status)
 	}
-	// The turn has as long to end from the answer as any turn has.
+	// A new reader gives the turn the full patience from the answer.
 	if last := read(t, accepted.ID).end(t); last.Type != "turn.completed" {
 		t.Fatalf("the turn that was answered after a long wait ended with %s %s", last.Type, last.Data)
 	}
 }
 
-// Commands for the agent to run in its sandbox. fetch gets a URL the way the
-// sandbox is set up to, which is through the Egress Proxy, and prints the
-// status of the answer. connect opens a connection to port 80 of an address,
-// without the proxy, and prints whether the address answered.
+// Instructions that have the agent run a command in its sandbox. fetch gets a
+// URL through the Egress Proxy, as the sandbox is configured to, and prints
+// the response status. connect opens a TCP connection to port 80 of an
+// address, bypassing the proxy, and prints whether it connected.
 const (
 	fetch   = `run node -e "fetch(process.argv[1]).then(r => console.log('status', r.status), () => console.log('failed'))" `
 	connect = `run node -e "const s = require('net').connect({host: process.argv[1], port: 80, timeout: 3000}); ` +
@@ -329,10 +327,9 @@ const (
 		`s.on('timeout', () => { console.log('no answer'); s.destroy() }); s.on('error', () => console.log('no answer'))" `
 )
 
-// A sandbox holds no key of the model endpoint and reaches nothing by
-// itself. What it sends out goes through the Egress Proxy, which lets a
-// request through to an allowed host and refuses any other, and records
-// both with the turn.
+// A sandbox holds no model API key and reaches the outside only through the
+// Egress Proxy, which allows only the listed hosts and logs every request
+// with its turn.
 func egress(t *testing.T) {
 	project := create(t, "/v1/projects", `{"name": "e2e"}`)
 	keyed := provider(t, project, mockKey)
@@ -350,15 +347,15 @@ func egress(t *testing.T) {
 			if strings.Contains(seen, mockKey) {
 				t.Error("the sandbox holds the key of the model endpoint")
 			}
-			// mock-llm answers only requests with its key, so the proxy put
-			// it there. Its record says whose request it was.
+			// mock-llm accepts only its own key, so the proxy added it. The
+			// access log line identifies the origin of the request.
 			line := logged(t, environment.ID, "llm", mockHost, 200)
 			for field, value := range map[string]string{"session": session, "agent": agent.id, "project": project, "provider": keyed} {
 				if line[field] != value {
 					t.Errorf("the model request of the turn is recorded with the %s %v, not %s: %v", field, line[field], value, line)
 				}
 			}
-			// And who sent the message, if the installation asks who does.
+			// With authentication, the line also identifies the caller.
 			_, user := line["user"].(string)
 			if _, subject := line["subject"].(string); user != identity || subject != identity {
 				t.Errorf("the model request of the turn is recorded as that of the user %v, the subject %v", line["user"], line["subject"])
@@ -382,7 +379,7 @@ func egress(t *testing.T) {
 		})
 		t.Run("without the proxy", func(t *testing.T) {
 			t.Parallel()
-			// Not even the address of the host that the proxy lets it reach.
+			// Not even to the address of a host that the proxy allows.
 			model, err := cluster.CoreV1().Services("aviary-e2e").Get(ctx, "mock-llm", metav1.GetOptions{})
 			if err != nil {
 				t.Fatal(err)
@@ -394,9 +391,8 @@ func egress(t *testing.T) {
 		})
 	})
 
-	// The metrics of the proxies tell of these requests: those that were
-	// let through on both ways, the one that was refused, and how long the
-	// requests to the model took.
+	// The proxies' metrics count these requests: those allowed on both
+	// listeners, the refused one, and the durations of the model requests.
 	for _, series := range []string{
 		`envoy_http_ext_authz_ok{envoy_http_conn_manager_prefix="llm"`,
 		`envoy_http_ext_authz_ok{envoy_http_conn_manager_prefix="forward"`,
@@ -409,13 +405,12 @@ func egress(t *testing.T) {
 	}
 }
 
-// The model requests of a turn go to the endpoint of the provider that the
-// turn's agent names, with the key of that provider and of no other. A key
-// that is replaced holds from the next request.
+// A turn's model requests go to the provider of its agent, with that
+// provider's key. A replaced key applies from the next request.
 func providers(t *testing.T) {
 	project := create(t, "/v1/projects", `{"name": "e2e"}`)
-	// Two providers of the same model server, which answers only the
-	// requests that carry its key.
+	// Two providers of the same model server, one with a key that it does
+	// not accept.
 	right, wrong := provider(t, project, mockKey), provider(t, project, "a-key-that-the-model-does-not-know")
 	able := agentOf(t, project, right, harness(harnesses[0]))
 	unable := agentOf(t, project, wrong, harness(harnesses[0]))
@@ -443,15 +438,14 @@ func providers(t *testing.T) {
 	}
 }
 
-// The key of a provider may be in a secret store of the project. A
-// Supervisor reads it from there when the Egress Proxy asks about a model
-// request, and goes on with what it read for as long as the installation
-// says, and no longer: after that time the model requests carry the key that
-// the store has then.
+// A provider's key may be kept in a secret store of the project. A Supervisor
+// reads it when the Egress Proxy asks about a model request, and caches it
+// for the configured time, after which model requests carry the store's
+// current key.
 func secretStore(t *testing.T) {
 	project := create(t, "/v1/projects", `{"name": "e2e"}`)
-	// The owner of the store gives Aviary a role, which may read the secrets
-	// below a path of its own.
+	// The store's owner gives Aviary an AppRole that may read the secrets
+	// under a path of its own.
 	name := unique("e2e")
 	owner(t, "POST", "/v1/sys/auth/approle", map[string]string{"type": "approle"}, http.StatusBadRequest)
 	owner(t, "PUT", "/v1/sys/policies/acl/"+name, map[string]string{
@@ -463,12 +457,11 @@ func secretStore(t *testing.T) {
 	if roleID == "" || secretID == "" {
 		t.Fatal("the secret store gave the role no IDs")
 	}
-	// keep keeps a key in the store, where the provider says that its key is.
+	// keep writes key where the provider's key reference points.
 	keep := func(key string) {
 		t.Helper()
 		owner(t, "POST", "/v1/secret/data/"+name+"/model", map[string]any{"data": map[string]string{"api_key": key}})
 	}
-	// The store holds a key that the model server does not take.
 	keep("a-key-that-the-model-does-not-know")
 	registered := fmt.Sprintf(`{"name": "e2e", "kind": "kv-v2", "settings": {"address": %q, "mount": "secret", "role_id": %q}, "credential": {"value": %q}}`,
 		storeAddress, roleID, secretID)
@@ -496,9 +489,10 @@ func secretStore(t *testing.T) {
 	}
 }
 
-// A turn that fails says why, and its session goes on.
+// A failed turn reports its reason, and its session goes on.
 func failures(t *testing.T) {
-	// fails sends the message and waits for its turn to fail for the reason.
+	// fails sends text, checks that its turn fails for reason, and that the
+	// session goes on.
 	fails := func(t *testing.T, session, text, reason string) turn {
 		t.Helper()
 		accepted := send(t, session, text)
@@ -514,16 +508,15 @@ func failures(t *testing.T) {
 		return failed
 	}
 
-	// The runner tells the reason, as its harness gave it. The Egress Proxy
-	// let the request through, and it is the model that refused it.
+	// The model, not the Egress Proxy, refuses the request, and the runner
+	// reports the harness's error.
 	t.Run("the model refuses", func(t *testing.T) {
 		t.Parallel()
 		refused := fails(t, newAgent(t, harness(harnesses[0])).session(t), "fail the model is out of order", "harness_error")
 		logged(t, refused.ID, "llm", mockHost, 401)
 	})
-	// A sandbox that is deleted while its agent works takes the turn with it.
-	// The record keeps what the agent did until then, and the next turn of
-	// the session gets a new sandbox.
+	// Deleting the sandbox fails the running turn. The turn keeps what the
+	// agent did until then, and the next turn gets a new sandbox.
 	t.Run("the sandbox is lost", func(t *testing.T) {
 		t.Parallel()
 		session := newAgent(t, harness(harnesses[0])).session(t)
@@ -551,8 +544,8 @@ func failures(t *testing.T) {
 	})
 }
 
-// said reads on until the agent has said the text, and returns what it has
-// said by then.
+// said reads events until the agent has said text, and returns what it said
+// so far.
 func said(t *testing.T, events *reader, text string) string {
 	t.Helper()
 	var said strings.Builder
@@ -566,8 +559,8 @@ func said(t *testing.T, events *reader, text string) string {
 	return said.String()
 }
 
-// A turn that runs is stopped when it is cancelled. Its record keeps the
-// answer as far as it got, and its session goes on.
+// Cancelling a running turn stops it. The turn keeps the answer as far as it
+// got, and the session goes on.
 func cancel(t *testing.T) {
 	session := newAgent(t, harness(harnesses[0])).session(t)
 	_, slow := words(40)
@@ -592,9 +585,8 @@ func cancel(t *testing.T) {
 	}
 }
 
-// A session is ended: its sandbox goes with the volume that the agent had
-// its home on, what was said stays, and the session takes no more messages.
-// It is not ended while a turn of it runs.
+// Ending a session deletes its sandbox and home volume, keeps its turns, and
+// refuses further messages. A session with a running turn cannot be ended.
 func ended(t *testing.T) {
 	session := newAgent(t, harness(harnesses[0])).session(t)
 	path := "/v1/sessions/" + session
@@ -613,7 +605,7 @@ func ended(t *testing.T) {
 	if len(kept) != 1 {
 		t.Fatalf("the session that was not ended has the sandboxes %v", kept)
 	}
-	// agent-sandbox names the volume after its template and the sandbox.
+	// agent-sandbox names a volume claim <template>-<sandbox>.
 	volume := "home-" + kept[0]
 	if _, err := cluster.CoreV1().PersistentVolumeClaims(runtime).Get(ctx, volume, metav1.GetOptions{}); err != nil {
 		t.Fatalf("the volume of the session that was not ended: %v", err)
@@ -642,8 +634,8 @@ func ended(t *testing.T) {
 	}
 }
 
-// Each Supervisor reports what it did itself, and the metrics of all of
-// them together tell of the turns.
+// Each Supervisor reports only its own work, so the metrics are summed over
+// all of them.
 func supervisorMetrics(t *testing.T) {
 	run(t, newAgent(t, harness(harnesses[0])).session(t), "say done")
 	for _, series := range []string{
@@ -658,10 +650,9 @@ func supervisorMetrics(t *testing.T) {
 	}
 }
 
-// An installation with an identity provider takes a request only with a
-// token of the provider, tells its administrators and its users by the
-// groups that the provider gives them, and holds a member of a project to
-// what the member may do there.
+// With an identity provider, the API accepts only the provider's tokens, tells
+// admins and users apart by their groups, and limits project members to what
+// their role allows.
 func callers(t *testing.T) {
 	type me struct {
 		ID          string   `json:"id"`
@@ -690,8 +681,7 @@ func callers(t *testing.T) {
 		t.Errorf("the user that is in no group is %+v", dave)
 	}
 
-	// The administrator makes two projects, and of one of them a user and a
-	// group the members.
+	// The member and the team are members of the first of two projects.
 	theirs, other := create(t, "/v1/projects", `{"name": "theirs"}`), create(t, "/v1/projects", `{"name": "other"}`)
 	agent := agentOf(t, theirs, provider(t, theirs, mockKey), harness(harnesses[0]))
 	create(t, "/v1/projects/"+theirs+"/members", fmt.Sprintf(`{"user": %q, "role": "user"}`, member))
@@ -709,7 +699,6 @@ func callers(t *testing.T) {
 		t.Errorf("the member of the project %s, and not of %s, is listed the projects %v", theirs, other, seen)
 	}
 
-	// The member runs a turn of a session of its own.
 	var session struct {
 		ID        string `json:"id"`
 		CreatedBy string `json:"created_by"`
@@ -731,8 +720,8 @@ func callers(t *testing.T) {
 	if status := requestAs(t, member, "GET", "/v1/turns/"+accepted.ID, "", &sent); status != http.StatusOK || sent.CreatedBy != bob.ID {
 		t.Errorf("the turn of the member %s was answered with %d, as sent by %q", bob.ID, status, sent.CreatedBy)
 	}
-	// The record of a request of the turn says whose turn it is: the user,
-	// and the subject that the identity provider knows the user by.
+	// The access log line names the user, and the subject that the identity
+	// provider knows the user by.
 	if line := logged(t, accepted.ID, "llm", mockHost, 200); line["user"] != bob.ID || line["subject"] != bob.Subject {
 		t.Errorf("the model request of the turn of the member %s, the subject %s, is recorded as %v", bob.ID, bob.Subject, line)
 	}
@@ -755,7 +744,7 @@ func callers(t *testing.T) {
 			t.Errorf("%s %s of %q was answered with %d, not %d", try.method, try.path, try.user, status, try.status)
 		}
 	}
-	// What is no token of the provider is as good as none.
+	// An invalid token counts as none.
 	refused, err := call(ctx, "", "GET", "/v1/me", "", "Authorization", "Bearer not-a-token")
 	if err != nil {
 		t.Fatal(err)
@@ -766,18 +755,17 @@ func callers(t *testing.T) {
 	}
 }
 
-// whole tells whether the record of a turn has the words once and in order.
-// A harness may say something of its own before them.
+// whole reports whether the turn said words once and in order. A harness may
+// say something of its own first.
 func whole(record turn, words string) bool {
 	_, answer, found := strings.Cut(record.said(), "w1 ")
 	return found && "w1 "+answer == words
 }
 
-// A turn outlasts its Supervisors: all of them are replaced while the answer
-// comes in. The one that followed the turn is not heard of any more, and
-// after a while one that came after takes the turn up. The answer takes
-// longer than that, so it reads the rest from the runner as it comes, from
-// where the other stopped: the answer is recorded whole and once.
+// All Supervisors are replaced while the answer streams in, which takes longer
+// than a new Supervisor needs to take the turn up. The new one reads the rest
+// of the answer from the runner where the old one stopped, so the answer is
+// recorded whole and once.
 func outlasts(t *testing.T) {
 	session := newAgent(t, harness(harnesses[0])).session(t)
 	answer, slow := words(120)
@@ -813,9 +801,9 @@ func outlasts(t *testing.T) {
 	}
 }
 
-// For a while there is no Supervisor at all, and the turn ends in its
-// sandbox with nobody to tell. The runner keeps what it has told nobody: a
-// Supervisor that comes after reads it, and records the turn as it ended.
+// While no Supervisor runs, the turn ends in its sandbox. The runner keeps
+// the events that nobody has read, and a Supervisor that starts later reads
+// them and records the turn as it ended.
 func waits(t *testing.T) {
 	session := newAgent(t, harness(harnesses[0])).session(t)
 	const count = 40
@@ -836,13 +824,13 @@ func waits(t *testing.T) {
 		}
 	}
 	scale(0)
-	// The installation is left as it was however the test ends.
+	// Restore the Supervisors however the test ends.
 	t.Cleanup(func() { scale(2) })
 	eventually(t, patience, "the Supervisors did not stop", func() bool {
 		return len(pods(t, system, "app.kubernetes.io/component=supervisor")) == 0
 	})
-	// The model says a word every half second, so by then it has said them
-	// all.
+	// The model says a word every half second, so by then it has said all
+	// of them.
 	time.Sleep(time.Until(saying.Add(count*time.Second/2 + 5*time.Second)))
 	scale(2)
 	eventually(t, patience, "the Supervisors did not come back", func() bool { return ready(t, "supervisor", 2) })

@@ -26,36 +26,36 @@ returning *;
 select * from sessions where id = @id;
 
 -- name: SetSandbox :execrows
--- The session is given the sandbox if it has the one that it is said to.
+-- Changes the session's sandbox only if it is still @was. An empty string
+-- means none.
 update sessions set sandbox = nullif(sqlc.arg(sandbox)::text, '')
 where id = @id and coalesce(sandbox, '') = sqlc.arg(was)::text;
 
 -- name: HoldSession :one
--- Keeps the session from being ended until the transaction ends. A message
--- holds it no more than the turn that it adds does, so that the start of a
--- turn, which writes to the session, does not wait for a message that waits
--- for it.
+-- Keeps the session from being ended until the transaction ends. It takes
+-- only the key share lock that adding the turn takes anyway: a stronger lock
+-- would block updates of the session, which could deadlock.
 select id from sessions where id = @id for key share;
 
 -- name: LockSession :one
--- Holds the session until the transaction ends: no message to it is taken
--- meanwhile, and of those who end it at once, one does.
+-- Locks the session until the transaction ends, so that no message is
+-- accepted and no other transaction ends it meanwhile.
 select * from sessions where id = @id for update;
 
 -- name: EndSession :one
--- A session with a turn that has not ended is left as it is.
+-- Ends the session unless it has an unfinished turn.
 update sessions set ended_at = now()
 where sessions.id = @id
   and not exists (select 1 from turns where turns.session_id = sessions.id and turns.ended_at is null)
 returning *;
 
 -- name: ListSessions :many
--- The sessions of an agent whose IDs are below @before, newest first: the ID
--- of a session rises with the time at which it was created.
+-- Lists the agent's sessions with IDs below @before, newest first: IDs
+-- increase with creation time.
 select * from sessions where agent_id = @agent_id and id < @before order by id desc limit @count;
 
 -- name: ListSessionsOf :many
--- Those of them that one user created.
+-- Like ListSessions, for the sessions that one user created.
 select * from sessions where agent_id = @agent_id and created_by = @created_by::uuid and id < @before
 order by id desc limit @count;
 
@@ -70,8 +70,6 @@ returning *;
 select * from providers where id = @id;
 
 -- name: ReplaceProvider :one
--- The provider gets the name, the URL and the key that are given, in place
--- of all that it had. The key is stored, or in a secret store, or none.
 update providers set name = @name, url = @url, api_key = sqlc.narg(api_key),
        api_key_store_id = sqlc.narg(api_key_store_id), api_key_path = @api_key_path, api_key_name = @api_key_name,
        updated_at = now()
@@ -88,27 +86,25 @@ returning *;
 select * from secret_stores where id = @id;
 
 -- name: ReplaceSecretStore :one
--- The store gets the name, the kind, the settings and the credential that
--- are given, in place of all that it had.
 update secret_stores
 set name = @name, kind = @kind, settings = @settings, credential = @credential, updated_at = now()
 where id = @id
 returning *;
 
 -- name: StartTurn :one
--- The harness of the turn has been given the message. The answer is how long
--- the turn took to start. There is none for a turn that had started before.
+-- Records that the harness has received the message, and returns the seconds
+-- since dispatch. It returns no row if the turn had already started.
 update turns set started_at = now()
 where id = @turn_id and started_at is null
 returning coalesce(extract(epoch from now() - dispatched_at), 0)::float8 as startup;
 
 -- name: Lock :exec
--- Waits for the advisory lock of the key and holds it until the transaction
--- ends.
+-- Waits for the advisory lock with the key and holds it until the
+-- transaction ends.
 select pg_advisory_xact_lock(@key);
 
 -- name: CreateTurn :one
--- A session that has ended takes no message.
+-- Returns no row if the session does not exist or has ended.
 insert into turns (id, session_id, seq, state, text, created_by)
 select @id::uuid, sessions.id,
        (select coalesce(max(seq), 0) + 1 from turns where session_id = sessions.id),
@@ -120,8 +116,6 @@ returning *;
 select * from turns where id = @id;
 
 -- name: ListTurns :many
--- The turns of a session that came before the one with the sequence number
--- @before, newest first.
 select * from turns where session_id = @session_id and seq < @before order by seq desc limit @count;
 
 -- name: GetTurnHarness :one
@@ -132,7 +126,8 @@ join agents on agents.id = sessions.agent_id
 where turns.id = @id;
 
 -- name: CountWaitingTurns :one
--- A queued turn waits only if the turns that run leave it no room.
+-- Counts the queued turns that have no room to run among @max_running. The
+-- count is negative if room is left.
 select ((select count(*) from turns where state = 'queued')
         - greatest(0, sqlc.arg(max_running)::bigint
                       - (select count(*) from turns where state in ('dispatching', 'running'))))::bigint as waiting;
@@ -144,7 +139,7 @@ select id from turns where state = 'queued' order by created_at, id;
 select id from turns where ended_at is null and cancel_requested_at is not null;
 
 -- name: NextTurns :many
--- The queued turns that there is room to run, oldest first.
+-- Lists the oldest queued turns that have room to run among @max_running.
 select turns.id as turn_id, agents.harness, extract(epoch from now() - turns.created_at)::float8 as waited
 from turns
 join sessions on sessions.id = turns.session_id
@@ -155,7 +150,8 @@ limit greatest(sqlc.arg(max_running)::bigint
                - (select count(*) from turns as running where running.state in ('dispatching', 'running')), 0);
 
 -- name: DispatchTurn :execrows
--- A turn that was cancelled since it was read is left as it is.
+-- Dispatches the turn if it is still queued: it may have been cancelled since
+-- it was read.
 update turns set state = 'dispatching', dispatched_at = now()
 where id = @id and state = 'queued';
 
@@ -164,11 +160,9 @@ select id, coalesce(extract(epoch from now() - cancel_requested_at), 0)::float8 
 from turns where state in ('dispatching', 'running');
 
 -- name: FollowTurn :execrows
--- A turn that was dispatched and has not ended runs once it is followed.
 update turns set state = 'running' where id = @id and state in ('dispatching', 'running');
 
 -- name: FollowedTurn :one
--- The turn as the Supervisor that follows it gets it.
 select sqlc.embed(turns), agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
        agents.approval, coalesce(providers.url, '')::text as provider_url, agents.model, sessions.sandbox,
        extract(epoch from now() - coalesce(turns.dispatched_at, turns.created_at))::float8 as dispatched
@@ -179,10 +173,8 @@ left join providers on providers.id = agents.provider_id
 where turns.id = @id;
 
 -- name: SessionTurn :one
--- The running turn of the session, what the turn belongs to, who sent its
--- message, and the provider of its agent as it is now, if the agent names
--- its model. A provider whose key is in a secret store comes with that
--- store, as it is now.
+-- Returns the origin of the session's running turn, with the current
+-- provider of its agent and the secret store of the provider's key.
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
        coalesce(users.subject, '')::text as subject,
        agents.provider_id, coalesce(providers.url, '')::text as provider_url, providers.api_key as provider_api_key,
@@ -206,7 +198,8 @@ update turns set stop_reason = @stop_reason::text, total_tokens = @total_tokens,
 where id = @id;
 
 -- name: CancelTurn :one
--- A queued turn ends at once. A dispatched one is only marked.
+-- Ends a queued turn at once, and only requests cancellation of a dispatched
+-- one.
 update turns set
        state = case when state = 'queued' then 'cancelled' else state end,
        ended_at = case when state = 'queued' then now() end,
@@ -220,9 +213,8 @@ where state = 'queued' and created_at < now() - make_interval(secs => @seconds::
 returning *;
 
 -- name: EndTurn :one
--- A turn that was asked to stop is cancelled, unless the harness had ended
--- it by itself. Otherwise it is completed if its pod succeeded and the runner
--- reported why the harness stopped, and failed if not.
+-- Ends the turn as cancelled, completed or failed, as store.Store.EndTurn
+-- describes.
 with ending as (
     select case
                when cancel_requested_at is not null
@@ -246,13 +238,15 @@ insert into turn_items (turn_id, seq, item) values (@turn_id, @seq, @item);
 select turn_id, item from turn_items where turn_id = any(@turn_ids::uuid[]) order by turn_id, seq;
 
 -- name: AddApproval :exec
--- A request that its runner reports again is there already.
+-- Does nothing if the request exists, since a runner may report a request
+-- again.
 insert into approvals (turn_id, id, request) values (@turn_id, @id, @request)
 on conflict (turn_id, id) do nothing;
 
 -- name: ResolveApproval :one
--- The harness has its answer. The answer here is the request and how long it
--- waited. There is none for a request that was resolved before.
+-- Records that the harness has received its answer, and returns the request
+-- and the seconds it waited. It returns no row if the request was already
+-- resolved.
 update approvals set outcome = @outcome, resolved_at = now()
 where turn_id = @turn_id and id = @id and resolved_at is null
 returning request, extract(epoch from now() - requested_at)::float8 as waited;
@@ -261,8 +255,8 @@ returning request, extract(epoch from now() - requested_at)::float8 as waited;
 select * from approvals where turn_id = @turn_id and id = @id;
 
 -- name: AnswerApproval :execrows
--- Keeps the option that a person chose, for a request that has no answer
--- yet and whose turn has not ended.
+-- Records the chosen option, unless the request has an answer already or is
+-- resolved, or its turn has ended.
 update approvals set option_id = @option_id::text, answered_at = now(), answered_by = sqlc.narg(answered_by)
 from turns
 where approvals.turn_id = @turn_id and approvals.id = @id
@@ -270,14 +264,13 @@ where approvals.turn_id = @turn_id and approvals.id = @id
   and turns.id = approvals.turn_id and turns.ended_at is null;
 
 -- name: WaitingApprovals :many
--- The requests of a turn that wait for a person, oldest first.
 select request from approvals
 where turn_id = @turn_id and answered_at is null and resolved_at is null
 order by requested_at, id;
 
 -- name: Answers :many
--- The answers that the harnesses of turns that run have not got yet: those
--- of one turn, or of all.
+-- Lists the answers not yet delivered to the harnesses of unfinished turns:
+-- those of the turn, or of all turns if turn_id is null.
 select approvals.turn_id, approvals.id, approvals.option_id::text as option_id
 from approvals
 join turns on turns.id = approvals.turn_id
@@ -288,12 +281,13 @@ where approvals.answered_at is not null and approvals.resolved_at is null and tu
 select * from users where subject = @subject;
 
 -- name: FreeUsername :exec
--- The username is that of the user whom the provider gives it to now.
+-- Takes the username from any other user, since the provider has given it to
+-- the user with the subject.
 update users set username = null where username = @username::text and subject <> @subject::text;
 
 -- name: SeeUser :one
--- Supervisors may see a user for the first time at once: one of them makes
--- the user. A user that is given no username keeps the one that it has.
+-- Creates the user with the subject, or updates it if it exists. A null
+-- username keeps the current one.
 insert into users (id, subject, username, display_name)
 values (@id, @subject, sqlc.narg(username), @display_name)
 on conflict (subject) do update
@@ -309,7 +303,7 @@ where name = @name
 returning *;
 
 -- name: IsMember :one
--- Whether the user with the username is a member of the project.
+-- Reports whether the user who has the username is a member of the project.
 select exists (
     select 1 from project_members
     join users on users.id = project_members.user_id
@@ -324,15 +318,15 @@ from projects where projects.id = @project_id
 returning id;
 
 -- name: DropMembersBeforeClaim :exec
--- A user who is a member of a project, and is given a username under which
--- the project was given a member since, is the member that was given last.
+-- Deletes the membership of the user who has the username in each project
+-- that awaits a member under it, so that the awaited member takes its place.
 delete from project_members as member
 using project_members as awaited, users
 where awaited.project_id = member.project_id and awaited.username = @username::text
   and users.id = member.user_id and users.username = @username::text;
 
 -- name: ClaimMembers :exec
--- The members that were awaited under the username are the user that has it.
+-- Gives the members awaited under the username to the user who has it.
 update project_members set user_id = users.id, username = null
 from users
 where project_members.username = @username::text and users.username = @username::text;
@@ -360,7 +354,6 @@ order by project_members.created_at, project_members.id;
 select * from projects order by created_at, id;
 
 -- name: ListProjectsOfMember :many
--- The projects of which the user, or one of the groups, is a member.
 select projects.* from projects
 where exists (
     select 1 from project_members
@@ -370,8 +363,8 @@ where exists (
 order by projects.created_at, projects.id;
 
 -- name: ListPermissions :many
--- What the members of the project that are the user or one of the groups may
--- do: of each, the permissions of its own, or those that its role has now.
+-- Returns, for each member of the project that is the user or one of the
+-- groups, its own permissions or those of its role.
 select coalesce(project_members.permissions, roles.permissions)::text[] as permissions
 from project_members left join roles on roles.name = project_members.role
 where project_members.project_id = @project_id

@@ -1,7 +1,7 @@
-# Brings the database schema up to date before the Supervisors of this
-# release start. It runs once for every install and upgrade, and the release
-# does not go on if it fails. The Supervisors themselves do not change the
-# schema, so the ones of the release before keep running on it meanwhile.
+# Migrates the database schema before the Supervisors of a release start. A
+# failure stops the install or upgrade. The Supervisors never change the
+# schema themselves, so those of the previous release keep running
+# meanwhile.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -11,7 +11,7 @@ metadata:
     app.kubernetes.io/component: migrate
   annotations:
     helm.sh/hook: pre-install,pre-upgrade
-    # A failed Job is kept until the next run, so that its log can be read.
+    # Keeps a failed Job, and its log, until the next run.
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
 spec:
   backoffLimit: 0

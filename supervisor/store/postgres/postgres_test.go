@@ -33,8 +33,7 @@ func emptyDatabase(t *testing.T) string {
 	return address.String()
 }
 
-// newDatabase creates a database with the schema of this build for the test
-// and returns its URL.
+// newDatabase is like emptyDatabase, with the schema of this build.
 func newDatabase(t *testing.T) string {
 	t.Helper()
 	database := emptyDatabase(t)
@@ -44,8 +43,8 @@ func newDatabase(t *testing.T) string {
 	return database
 }
 
-// open returns a store on the database, as one Supervisor has it. Several
-// Supervisors are several stores on one database.
+// open opens a Store on the database. Each call stands for one more
+// Supervisor.
 func open(t *testing.T, database string) store.Store {
 	t.Helper()
 	st, err := postgres.Plugin{}.Open(context.Background(), database)
@@ -56,9 +55,8 @@ func open(t *testing.T, database string) store.Store {
 	return st
 }
 
-// exec runs a statement on the database, for what a test has to arrange
-// that a store has no way to: time that has passed, or a schema that another
-// release left.
+// exec runs a statement on the database, to arrange what a Store cannot, such
+// as the passing of time or the schema of another release.
 func exec(t *testing.T, database, statement string, arguments ...any) {
 	t.Helper()
 	ctx := context.Background()
@@ -72,7 +70,7 @@ func exec(t *testing.T, database, statement string, arguments ...any) {
 	}
 }
 
-// fixture is the database of a test of the suite, by its URL.
+// fixture is a storetest.Database, given by its URL.
 type fixture string
 
 func (f fixture) Open(t *testing.T) store.Store {
@@ -87,7 +85,6 @@ func (f fixture) Age(t *testing.T, by time.Duration, turns ...uuid.UUID) {
 		resolved_at = resolved_at - $2::interval where turn_id = any($1)`, turns, by)
 }
 
-// The store on PostgreSQL does what every store is to do.
 func TestStore(t *testing.T) {
 	storetest.Run(t, func(t *testing.T) storetest.Database { return fixture(newDatabase(t)) })
 }

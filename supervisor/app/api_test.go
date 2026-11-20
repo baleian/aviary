@@ -11,8 +11,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// What the API cannot take, it answers with a status and a code that tell
-// the client why.
+// Invalid requests and unknown resources are answered with a JSON error that
+// has a code and a message.
 func TestRefusals(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
@@ -23,7 +23,7 @@ func TestRefusals(t *testing.T) {
 	providers := "/v1/projects/" + project + "/providers"
 	provided := s.create(providers, `{"name": "a provider", "url": "https://api.example.com/v1"}`)
 	provider := "/v1/providers/" + provided
-	// model is the model of an agent that is otherwise as it should be.
+	// model is a valid model field of an agent.
 	model := `"model": {"provider": "` + provided + `", "name": "a-model"}`
 	none := uuid.NewString()
 	long, err := json.Marshal(map[string]string{"text": strings.Repeat("a", 1<<20)})
@@ -99,7 +99,6 @@ func TestResources(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
 	s := aviary.supervisor()
-	// get returns a resource as the API has it.
 	get := func(path string) map[string]any {
 		t.Helper()
 		var resource map[string]any
@@ -114,8 +113,7 @@ func TestResources(t *testing.T) {
 		t.Errorf("the project is %v", created)
 	}
 
-	// An agent has what it was created with. What was not given is not
-	// filled in.
+	// Optional fields that were not given are omitted, not defaulted.
 	full := get("/v1/agents/" + s.agent(project, `{"harness": "codex", "instructions": "Be brief.", "approval": "ask"}`))
 	if full["project_id"] != project || full["harness"] != "codex" || full["instructions"] != "Be brief." || full["approval"] != "ask" {
 		t.Errorf("the agent is %v", full)
@@ -133,8 +131,7 @@ func TestResources(t *testing.T) {
 	}
 }
 
-// The conversation of a session can be read back, newest turn first and a
-// few turns at a time.
+// Turns are listed newest first, with pagination.
 func TestTurnsOfASession(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
@@ -146,8 +143,6 @@ func TestTurnsOfASession(t *testing.T) {
 		s.follow(accepted.ID)
 	}
 	s.send(other, "another")
-	// listed returns the turns that a request for the turns of the session
-	// is answered with.
 	listed := func(session, query string) []turn {
 		t.Helper()
 		var list struct{ Turns []turn }
@@ -170,7 +165,7 @@ func TestTurnsOfASession(t *testing.T) {
 		texts := []string{}
 		for _, turn := range listed(session, query) {
 			texts = append(texts, turn.Text)
-			// A turn is listed with what the agent said in it.
+			// Listed turns include their items.
 			if said := items(t, turn); turn.State != "completed" || len(said) != 1 || said[0]["text"] != "answer to "+turn.Text {
 				t.Errorf("the turn %q is listed as %s with the items %v", turn.Text, turn.State, said)
 			}
@@ -179,15 +174,15 @@ func TestTurnsOfASession(t *testing.T) {
 			t.Errorf("the turns of the session, asked for with %q, are %v, not %v", query, texts, expected)
 		}
 	}
-	// A turn that has not ended has no items yet, which is an empty list.
+	// A running turn has an empty list of items, not null.
 	if running := listed(other, ""); len(running) != 1 || running[0].Items == nil || len(running[0].Items) != 0 {
 		t.Errorf("the turns of the other session are %+v", running)
 	}
 }
 
-// A client reads the events of a turn as they come, and reads on after the
-// last one that it has when its connection broke. The event log keeps the
-// events only for a while. The record of the turn does not need them.
+// A client resumes the event stream with Last-Event-ID. Once the event log
+// has expired the events, the stream still reports how the turn ended, and
+// the turn keeps its items.
 func TestEventsAreReadOn(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
@@ -224,8 +219,6 @@ func TestEventsAreReadOn(t *testing.T) {
 		t.Errorf("the client that read on read the events %v to the end of the turn", rest)
 	}
 
-	// The events are gone. A client still learns how the turn ended, and the
-	// record has what the agent said.
 	if err := aviary.log.Expire(context.Background(), uuid.MustParse(accepted.ID), 0); err != nil {
 		t.Fatal(err)
 	}

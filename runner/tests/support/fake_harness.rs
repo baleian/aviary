@@ -1,32 +1,29 @@
-//! A harness for the tests of the runner. It speaks the Agent Client Protocol
-//! on its standard input and output as a harness does, with no model behind
-//! it: the message of a turn tells it what to do.
+//! A fake ACP harness for the runner's tests. It has no model: each prompt is
+//! a script of commands, separated by " ; ".
 //!
 //!   say <text>         says the text, a word at a time
-//!   drawl <text>       says it slowly, which leaves time to stop the turn
-//!   think <text>       thinks the text
-//!   tool <command>     calls a tool, and updates the call when it has returned
-//!   big <bytes>        calls a tool that returns so many bytes
-//!   flood <n> <bytes>  says n pieces of so many bytes each
-//!   plan <entry>       makes a plan with the entry
-//!   ask [<n>]          asks for permission, n times at once if a number is given, and
-//!                      says which option it was given each time
-//!   instructions       says what its file of instructions holds
-//!   recall             says the messages of the turns before this one
-//!   sleep <ms>         does nothing for so long
-//!   deaf               does not stop from here on when it is told to
-//!   fail <text>        answers the message with an error
-//!   env <name>         says what the variable of its environment holds
-//!   die                ends, without an answer to the message
-//!   leave              ends once it has answered the message
+//!   drawl <text>       says the text slowly, leaving time to cancel the turn
+//!   think <text>       sends the text as a thought
+//!   tool <command>     calls a tool, then reports the call completed
+//!   big <bytes>        calls a tool that returns that many bytes
+//!   flood <n> <bytes>  says n chunks of that many bytes each
+//!   plan <entry>       sends a plan with the entry
+//!   ask [<n>]          sends n permission requests at once (default 1), then
+//!                      says the option or outcome that each one got
+//!   instructions       says the contents of AVIARY_INSTRUCTIONS_FILE
+//!   recall             says the prompts of the earlier turns of the session
+//!   sleep <ms>         waits, unless the turn is cancelled
+//!   deaf               ignores cancellation for the rest of the turn
+//!   fail <text>        fails the prompt with the text as the error
+//!   env <name>         says the value of the environment variable
+//!   die                exits without answering the prompt
+//!   leave              exits after answering the prompt
 //!
-//! Several of them are separated by " ; ".
+//! Sessions are stored in .fake-harness in the working directory, so a
+//! session can only be resumed in the same home.
 //!
-//! Its sessions are files in .fake-harness in its working directory, so a
-//! session can be continued where its home is, and nowhere else.
-//!
-//! FAKE_HARNESS_START_MS makes it slow to start, and FAKE_HARNESS_STOP_MS slow
-//! to stop when it is told to.
+//! FAKE_HARNESS_START_MS delays its start, and FAKE_HARNESS_STOP_MS its stop
+//! after a cancellation.
 
 use std::env;
 use std::fs;
@@ -61,7 +58,7 @@ fn main() {
         calls: 0,
         leaving: false,
     };
-    // The runner closes the input when it has no more use for the harness.
+    // Ends when the runner closes standard input.
     while let Ok(message) = harness.incoming.recv() {
         harness.handle(message);
     }
@@ -69,16 +66,15 @@ fn main() {
 
 struct Harness {
     incoming: Receiver<Value>,
-    /// How many times it was told to stop the turn.
+    /// The session/cancel notifications received during the current turn.
     cancels: u32,
     deaf: bool,
-    /// How many tools it has called.
+    /// Tool calls made by this process, for numbering them.
     calls: u32,
-    /// Whether it ends once it has answered the message.
+    /// Exits after answering the current prompt.
     leaving: bool,
 }
 
-/// How a turn ended: with a stop reason, or with an error.
 enum Ending {
     Stopped(&'static str),
     Failed(String),
@@ -86,7 +82,7 @@ enum Ending {
 
 fn send(message: Value) {
     let mut output = io::stdout().lock();
-    // A runner that is gone reads nothing more.
+    // The runner has exited.
     if writeln!(output, "{message}").is_err() || output.flush().is_err() {
         process::exit(0);
     }
@@ -188,8 +184,8 @@ impl Harness {
         );
     }
 
-    /// Waits for so long, and takes in what the runner sends meanwhile. It
-    /// returns the answer to the request with the ID, if that comes.
+    /// Handles incoming messages for `duration`. Returns early with the
+    /// response to request `answer_to`, if it arrives.
     fn wait(&mut self, duration: Duration, answer_to: Option<&str>) -> Option<Value> {
         let until = Instant::now() + duration;
         loop {
@@ -205,7 +201,7 @@ impl Harness {
         }
     }
 
-    /// Whether the turn is to stop.
+    /// Handles pending messages and reports whether the turn should stop.
     fn stopping(&mut self) -> bool {
         self.wait(Duration::ZERO, None);
         self.cancels > 0 && !self.deaf
@@ -215,7 +211,7 @@ impl Harness {
         let before = fs::read_to_string(session_file(session)).unwrap_or_default();
         let _ = fs::write(session_file(session), format!("{before}{text}\n"));
         self.deaf = false;
-        // What it was told to stop was the turn before this one.
+        // Cancellations of an earlier turn do not apply.
         self.cancels = 0;
         for instruction in text.split(" ; ") {
             let (word, rest) = instruction
@@ -298,7 +294,7 @@ impl Harness {
                             },
                         }));
                     }
-                    // The answers come in any order.
+                    // Answers may arrive in any order.
                     let mut given = vec![String::from("nothing"); requests.len()];
                     let until = Instant::now() + Duration::from_secs(5);
                     let mut left = requests.len();
@@ -358,8 +354,7 @@ impl Harness {
                 _ => self.say(session, "fake"),
             }
             if self.stopping() {
-                // A harness takes a moment to stop. Whatever it is told
-                // meanwhile, it tells.
+                // Stops slowly, counting any further cancellations.
                 self.wait(pause("FAKE_HARNESS_STOP_MS"), None);
                 self.say(session, &format!("[told to stop {} times]", self.cancels));
                 return Ending::Stopped("cancelled");

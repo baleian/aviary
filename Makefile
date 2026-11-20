@@ -2,8 +2,7 @@ CLUSTER := aviary
 NODE_IMAGE := kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
 CNPG_CHART := 0.29.1
 VALKEY_CHART := 1.0.0
-# agent-sandbox runs the sandboxes of the sessions. A release of it is one
-# manifest, which has to be what it was when the release was chosen.
+# The agent-sandbox release manifest, verified against its checksum.
 AGENT_SANDBOX := v1.0.11
 AGENT_SANDBOX_SHA256 := 4c54dc1284e9d34e9a00b88de2cb0f098f2dbce4ade814616fd49d44cfd5d1c2
 AGENT_SANDBOX_MANIFEST := .out/agent-sandbox-$(AGENT_SANDBOX).yaml
@@ -16,58 +15,51 @@ HARNESS_BASE_IMAGE := aviary-harness-base:dev
 OPENCODE_IMAGE := aviary-harness-opencode:dev
 CODEX_IMAGE := aviary-harness-codex:dev
 MOCK_LLM_IMAGE := aviary-mock-llm:dev
-# The harness images that make test-harness tests. Another one is tested with
+# Images that test-harness tests, for example
 # make test-harness HARNESS_IMAGES=<image>
 HARNESS_IMAGES ?= $(OPENCODE_IMAGE) $(CODEX_IMAGE)
 
 KUBECTL := kubectl --context kind-$(CLUSTER)
 HELM := helm --kube-context kind-$(CLUSTER)
-# The database that make cluster-up gives the cluster: postgres or mysql.
+# Database of the cluster: postgres or mysql.
 DATABASE ?= postgres
 ifeq ($(filter $(DATABASE),postgres mysql),)
 $(error DATABASE is postgres or mysql, not "$(DATABASE)")
 endif
-# The cluster that the e2e makes for itself and runs in, where it leaves what
-# the cluster tells after a failure, and the harnesses that it runs turns of.
-# The first of them runs what does not depend on the harness. A cluster under
-# another name is another cluster, so the e2e can run in several at once,
-# each made with what it is to have.
+# The e2e runs in a cluster of its own. Clusters with different names can run
+# the e2e at the same time.
 E2E_CLUSTER ?= aviary-e2e
 E2E_OUT := .out/e2e/$(E2E_CLUSTER)
-# The kubeconfig of the cluster, which kind writes and only the e2e reads.
-# kind locks the kubeconfig that it writes, and runs of the e2e at once that
-# shared one could find it locked. It goes with the cluster.
+# kind locks the kubeconfig that it writes, so every e2e cluster gets its own.
+# This also leaves the kubeconfig of the user untouched.
 E2E_KUBECONFIG := $(CURDIR)/$(E2E_OUT)/host.kubeconfig
 E2E_KUBECTL := kubectl --context kind-$(E2E_CLUSTER)
+# The harnesses to test. The first also runs the tests that do not depend on
+# a harness.
 E2E_HARNESSES ?= opencode codex
-# The identity provider that make e2e-up gives the cluster of the e2e and has
-# Aviary ask who sends a request: keycloak, or none.
+# Identity provider of the e2e cluster: keycloak, or empty for none.
 IDENTITY ?=
 ifneq ($(filter-out keycloak,$(IDENTITY)),)
 $(error IDENTITY is keycloak or nothing, not "$(IDENTITY)")
 endif
-# Runs go in the image that builds the Supervisor, so the host needs no Go.
-# It is called with the directory of a module, and with options for docker if
-# there are any. The volume keeps what go downloads and builds.
+# Runs Go in a container, so the host needs no Go toolchain. The arguments
+# are the module directory and extra docker options. The aviary-go volume
+# caches modules and builds.
 IN_GO = docker run --rm --user $$(id -u):$$(id -g) --env HOME=/tmp --env GOCACHE=/go/cache \
 	--volume aviary-go:/go --volume $(CURDIR):/src --workdir /src/$(1) $(2) $(GO_IMAGE)
 GO = $(call IN_GO,$(1),$(2)) go
 GO_TEST := test -race -shuffle=on -count=1 -timeout 2m
-# The generator of the Go code for the queries of the Supervisor.
 SQLC_RUN := docker run --rm --user $$(id -u):$$(id -g) \
 	--volume $(CURDIR)/supervisor:/src --workdir /src $(SQLC_IMAGE)
-# What the tests make of the chart, and the image of Envoy that the chart
-# runs as the Egress Proxy.
 RENDER := helm template aviary deploy/charts/aviary --namespace aviary-system
 ENVOY_IMAGE = $(shell sed --quiet 's/^  image: \(envoyproxy.*\)/\1/p' deploy/charts/aviary/values.yaml)
-# The Egress Proxies that the tests of the proxy run against, and the names
-# under which those proxies find the tests.
+# The proxy tests stand in for the Supervisor and for the upstream hosts of
+# the proxies, under these network aliases.
 PROXIES = ENVOY_IMAGE=$(ENVOY_IMAGE) docker compose --file test/proxy/compose.yaml --project-name aviary-test-proxy
 AMONG_PROXIES := --network aviary-test-proxy_default --env AVIARY_TEST_PROXY=1 \
 	--network-alias aviary-supervisor.aviary-system --network-alias model.test \
 	--network-alias allowed.test --network-alias other.test \
 	--network-alias tls.test --network-alias unnamed.test
-# What the tests of the Supervisor run against, and how the tests reach it.
 SERVICES := docker compose --file test/compose.yaml --project-name aviary-test-supervisor
 IN_SERVICES := --network aviary-test-supervisor_default \
 	--env AVIARY_TEST_POSTGRES_URL=postgres://postgres:test@database-postgres:5432/postgres \
@@ -78,14 +70,13 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 
 .PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down secret-store identity-provider build images secrets deploy e2e e2e-up e2e-run e2e-down
 
-# Writes the Go code for the queries of the Supervisor's PostgreSQL plugin,
-# which are in supervisor/store/postgres/queries.sql, to internal/db beside
-# them. Run it after changing a query or adding a migration.
+# Generates the Go code of the SQL queries. Run it after changing a query or
+# a migration.
 sqlc:
 	$(SQLC_RUN) generate
 
-# What the formatters and the linters make of the code, and whether the
-# generated code is what its generator makes of the queries now.
+# Checks formatting, runs the linters, and checks that the generated code is
+# up to date.
 lint:
 	@files=$$($(call IN_GO) gofmt -l supervisor test) || exit 1; \
 		[ -z "$$files" ] || { echo "gofmt would change these files:"; echo "$$files"; exit 1; }
@@ -94,22 +85,20 @@ lint:
 	cargo clippy --locked --all-targets -- --deny warnings
 	$(SQLC_RUN) diff
 
-# The tests that need no cluster, all at once. Each of them is a target of
-# its own, and TESTS narrows a run of one to some of its tests, for example
+# Runs the tests that need no cluster, in parallel. TESTS narrows a single
+# target, for example
 # make test-supervisor TESTS='-run TestStore/EndTurn ./store/postgres'
 # make test-runner TESTS=cut
 test:
 	$(MAKE) --jobs --output-sync=target test-supervisor test-plugin test-runner test-mock-llm test-chart test-proxy
 
-# The services are started anew for every run and removed after it, also
-# when a test fails.
 test-supervisor: TESTS ?= ./...
 test-supervisor:
 	$(SERVICES) up --detach --wait --force-recreate
 	$(call GO,supervisor,$(IN_SERVICES)) $(GO_TEST) $(TESTS); \
 		status=$$?; $(SERVICES) down --volumes; exit $$status
 
-# A build of the Supervisor outside its module, with plugins of its own.
+# Builds the Supervisor from another module, with plugins of its own.
 test-plugin: TESTS ?= ./...
 test-plugin:
 	$(call GO,test/plugin) $(GO_TEST) $(TESTS)
@@ -121,9 +110,9 @@ test-mock-llm: TESTS ?= ./...
 test-mock-llm:
 	$(call GO,test/mock-llm) $(GO_TEST) $(TESTS)
 
-# Renders the chart with its own values and with those in test/chart, checks
-# what it makes of them and that it refuses what it can make nothing of, and
-# has Envoy check the configuration that it is given.
+# Renders the chart with its default values and with those in test/chart,
+# checks the output and that invalid values are refused, and has Envoy
+# validate its configuration.
 test-chart: TESTS ?= ./chart/...
 test-chart:
 	helm lint --strict --quiet deploy/charts/aviary
@@ -139,9 +128,8 @@ test-chart:
 			$(ENVOY_IMAGE) --mode validate --log-level error --config-path /etc/envoy/envoy.yaml || exit 1; \
 	done
 
-# Runs the Egress Proxy with what the chart makes of each file of values in
-# test/proxy, and sends it requests. The tests are the Supervisor and the
-# hosts of the proxy, so the proxy finds them under those names.
+# Runs the Egress Proxy with the configuration rendered from each values file
+# in test/proxy, and sends it requests.
 test-proxy: TESTS ?= ./proxy/...
 test-proxy:
 	mkdir -p .out/proxy
@@ -155,8 +143,8 @@ test-proxy:
 		status=$$?; [ $$status = 0 ] || $(PROXIES) logs --no-color --tail 40; \
 		$(PROXIES) down --volumes; exit $$status
 
-# Tests the harness images as the pods of turns run them, in containers and
-# without a cluster. A few at a time: a harness takes some memory.
+# Tests the harness images in containers, without a cluster. Few run at a
+# time, since every harness needs memory.
 test-harness: build
 	AVIARY_HARNESS_IMAGES="$(HARNESS_IMAGES)" cargo test --locked --package aviary-runner --test harness -- \
 		--ignored --test-threads 3 $(TESTS)
@@ -205,9 +193,8 @@ endif
 cluster-down:
 	kind delete cluster --name $(CLUSTER)
 
-# Installs a secret store in the local cluster, for trying the secret stores
-# of the projects. Aviary needs none: it is for a project that keeps its
-# secrets in one. Its root token is made once and kept in a secret.
+# Installs OpenBao in the local cluster, for trying the secret stores of
+# projects. Aviary itself does not need one.
 secret-store:
 	$(KUBECTL) get secret openbao-root --namespace aviary-data >/dev/null 2>&1 || \
 		$(KUBECTL) create secret generic openbao-root --namespace aviary-data \
@@ -215,9 +202,9 @@ secret-store:
 	$(KUBECTL) apply -f hack/kind/openbao.yaml
 	$(KUBECTL) --namespace aviary-data rollout status deployment/openbao --timeout 180s
 
-# Installs an identity provider in the local cluster, for trying Aviary with
-# callers that it knows. Aviary needs none, and asks this one when it is
-# installed with make deploy VALUES=hack/kind/aviary-keycloak-values.yaml
+# Installs Keycloak in the local cluster, for trying Aviary with
+# authentication. Aviary uses it when installed with
+# make deploy VALUES=hack/kind/aviary-keycloak-values.yaml
 identity-provider:
 	$(KUBECTL) apply -f hack/kind/keycloak.yaml
 	$(KUBECTL) --namespace aviary-data rollout status deployment/keycloak --timeout 300s
@@ -233,13 +220,11 @@ build:
 images: build
 	kind load docker-image --name $(CLUSTER) $(SUPERVISOR_IMAGE) $(OPENCODE_IMAGE) $(CODEX_IMAGE) $(MOCK_LLM_IMAGE)
 
-# CloudNativePG writes the database's connection secret next to the database.
-# A pod can only read secrets in its own namespace, so the secret is copied to
-# the Supervisor's. MySQL and the event log, which is Valkey here, have no
-# such secret, so their URLs are put together from their passwords. The
-# database is the one that the cluster was made with. The key that the
-# Supervisor seals secrets with is made once: what was sealed with it does
-# not open with another.
+# Creates the Secrets that the chart reads. CloudNativePG writes its
+# connection Secret next to the database, so it is copied to the namespace of
+# the Supervisor. The URLs of MySQL and Valkey are built from their
+# passwords. The encryption key is created once: secrets encrypted with it
+# cannot be decrypted with another.
 secrets:
 	$(KUBECTL) create namespace aviary-system --dry-run=client --output yaml | $(KUBECTL) apply -f -
 	if $(KUBECTL) get secret mysql-users --namespace aviary-data >/dev/null 2>&1; then \
@@ -256,8 +241,8 @@ secrets:
 		$(KUBECTL) create secret generic aviary-encryption --namespace aviary-system \
 			--from-literal=k1=$$(openssl rand -base64 32)
 
-# The image ID makes the pod restart when the image changes. VALUES names a
-# file of values of your own for the chart, for example
+# The image ID restarts the Supervisors when the image changes. VALUES adds a
+# values file, for example
 # make deploy VALUES=my-values.yaml
 deploy: secrets
 	$(HELM) upgrade --install aviary deploy/charts/aviary \
@@ -266,15 +251,12 @@ deploy: secrets
 		$(if $(VALUES),--values $(VALUES)) \
 		--wait
 
-# Runs the e2e in a cluster of its own, which it makes anew, so that nothing
-# of an earlier run or of the cluster that make cluster-up makes plays a part.
-# The cluster is removed when the tests have passed. After a failure it
-# stays, and what its pods logged is in .out/e2e, with its kubeconfig:
+# Runs the e2e in a new cluster of its own, which is deleted if the tests
+# pass. After a failure the cluster stays, with its logs and kubeconfig in
+# .out/e2e/<cluster>:
 # KUBECONFIG=.out/e2e/aviary-e2e/host.kubeconfig kubectl get pods --all-namespaces
-# make e2e-run runs the tests in it again, and make e2e-down removes it.
-# E2E_CLUSTER names the cluster for each of them, and make e2e-up makes it
-# with what it is given, for example with MySQL in the place of PostgreSQL,
-# and with an identity provider that Aviary asks who sends a request:
+# make e2e-run reruns the tests, and make e2e-down deletes the cluster. For
+# example, with MySQL and Keycloak:
 # make e2e E2E_CLUSTER=aviary-e2e-mysql DATABASE=mysql IDENTITY=keycloak
 e2e e2e-up e2e-run e2e-down: export KUBECONFIG := $(E2E_KUBECONFIG)
 
@@ -290,9 +272,8 @@ e2e-up:
 		$(if $(IDENTITY),--values hack/kind/aviary-keycloak-values.yaml) --wait
 	$(E2E_KUBECTL) --namespace aviary-e2e rollout status deployment/mock-llm --timeout 120s
 
-# The tests reach the cluster over the network of its nodes, and the API of
-# Aviary at the port of a node that test/e2e/api.yaml opens. In a cluster
-# that was made with an identity provider, they are run with it too:
+# The tests run on the kind network and reach the API at the node port that
+# test/e2e/api.yaml opens. Pass the IDENTITY that the cluster was made with:
 # make e2e-run E2E_CLUSTER=aviary-e2e-mysql IDENTITY=keycloak
 e2e-run:
 	mkdir -p $(E2E_OUT)

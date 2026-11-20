@@ -1,6 +1,6 @@
 #!/bin/sh
-# An agent that is to ask has OpenCode ask before it runs a command or
-# changes a file. Otherwise OpenCode asks for neither.
+# For an agent that asks, OpenCode asks before it runs a command or edits a
+# file. Otherwise it asks for neither.
 set -eu
 if [ "${AVIARY_APPROVAL:-}" = ask ]; then
   export OPENCODE_PERMISSION='{"bash": "ask", "edit": "ask"}'

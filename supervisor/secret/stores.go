@@ -21,16 +21,14 @@ import (
 	"aviary/supervisor/store"
 )
 
-// timeout is how long a store gets to answer. The Egress Proxy waits a
-// little longer for the Supervisor, which may ask a store before it answers.
+// timeout bounds each request to a store. It must stay below the Egress
+// Proxy's authz timeout, since an authz check may wait for a store.
 const timeout = 3 * time.Second
 
-// What a Supervisor remembers of the secret stores is no more than this,
-// however many stores and values it is asked for. A value is no longer than
-// maxValue bytes. No more than maxValues of them are remembered, which
-// together with their places are no more than maxBytes, and of no more than
-// maxStores stores the session of a login. Beyond that the Supervisor
-// forgets what it used longest ago.
+// Cache limits. A value is at most maxValue bytes. At most maxValues values
+// are cached, taking at most maxBytes with their paths and keys, and the login
+// sessions of at most maxStores stores. Beyond that, the least recently used
+// entries are evicted.
 const (
 	maxValue  = 8 << 10
 	maxValues = 10000
@@ -38,72 +36,61 @@ const (
 	maxStores = 1000
 )
 
-// ErrSessionEnded is what a plugin answers a read with when the store no
-// longer takes the session that it logged in for. The store is then logged
-// in to again.
+// ErrSessionEnded is returned by Plugin.Read when the store no longer accepts
+// the session. Stores then logs in again.
 var ErrSessionEnded = errors.New("the store no longer takes the session")
 
-// host is the form of a host that an installation allows: a host name, with
-// a port or without.
+// host matches an allowed host: a host name, with or without a port.
 var host = regexp.MustCompile(`^[^/@ *]+$`)
 
-// Plugin asks the secret stores of one kind. A kind is a way in which a
-// store is asked, whatever product the store is. The Supervisor knows the
-// kinds that it was built with: a store of another kind is served by
-// writing a plugin for it and adding the plugin to the build. A plugin
-// keeps nothing of a store. It is told the settings of the store with every
-// request.
+// Plugin reads from the secret stores of one kind. A kind is an API, which
+// more than one product may serve. To support another kind, add its plugin to
+// the build. A plugin keeps no state: every call gets the store's settings.
 type Plugin interface {
-	// Kind is the name of the kind, which a project gives with a store.
+	// Kind returns the name of the kind, which projects give when they
+	// register a store.
 	Kind() string
-	// Address reads the settings of a store, as a project gave them, and
-	// returns where the store is. It tells what is wrong with the settings,
-	// if anything is. Nothing in the settings is secret: what a store is
-	// logged in to with is its credential.
+	// Address validates the settings of a store and returns its URL. The
+	// error says what is wrong with the settings. Settings are not treated
+	// as secret; the credential is passed to Login separately.
 	Address(settings json.RawMessage) (string, error)
-	// Login logs in to a store with its credential. It returns what the
-	// store is read with from then on, into which only the plugin looks,
-	// and how long that is good. The plugin sends its requests through the
-	// client. A session that is good for no known time is good until the
-	// store says that it has ended.
+	// Login logs in to a store with its credential, sending its requests
+	// through client. It returns a session, which only the plugin looks
+	// into, and how long the session is valid. If good is not positive, the
+	// session is used until Read returns ErrSessionEnded.
 	Login(ctx context.Context, client *http.Client, settings json.RawMessage, credential string) (session any, good time.Duration, err error)
-	// Read reads from a store, with the session of a login, the value that
-	// the secret at the path holds under the key. It returns ErrSessionEnded
-	// if the store no longer takes the session. A plugin only reads: Aviary
-	// writes nothing to the store of a project.
+	// Read returns the value under key of the secret at path, using a
+	// session from Login. It returns ErrSessionEnded if the store no longer
+	// accepts the session. Plugins only read: Aviary never writes to the
+	// store of a project.
 	Read(ctx context.Context, client *http.Client, settings json.RawMessage, session any, path, key string) (string, error)
 }
 
-// Stores are the secret stores of the projects: where a project keeps the
-// secrets that it does not give to Aviary to store. An installation says at
-// which hosts a store may be, since the Supervisor itself connects to it.
+// Stores reads from the secret stores in which projects keep secrets outside
+// Aviary. Since the Supervisor connects to the stores itself, it connects only
+// to hosts that the installation allows.
 type Stores struct {
 	hosts   []string
 	plugins map[string]Plugin
 	client  *http.Client
-	// Asked, if it is set, is told of every time that a store was asked for
-	// a value: the kind of the store, how long the store took, and what went
-	// wrong, if anything did. It is set before the stores are read.
+	// Asked, if not nil, is called after every read from a store with the
+	// store's kind, the duration and the error. Set it before the first
+	// Read.
 	Asked func(kind string, took time.Duration, err error)
 
-	// lasts is for how long a value is remembered.
-	lasts time.Duration
-	// values are the values that were read, each until it is to be read
-	// again, and sessions the sessions of the logins, each until it ends.
-	// Neither holds more than it may: it forgets what was used longest ago.
+	// lasts is how long values are cached.
+	lasts    time.Duration
 	values   *ttlcache.Cache[placed, string]
 	sessions *ttlcache.Cache[registration, any]
-	// reading and logging hold what is under way, so that many requests at
-	// once for the same value, or for a login to the same store, are one.
+	// reading and logging deduplicate concurrent reads of a value and
+	// concurrent logins to a store.
 	reading, logging singleflight.Group
-	// closed is closed when the stores are, and closing sees to it once.
-	closed  chan struct{}
-	closing sync.Once
+	closed           chan struct{}
+	closing          sync.Once
 }
 
-// registration tells a secret store as it was registered at a time from
-// other stores, and from itself as it was before: what is remembered of a
-// store is of the store as it was registered last.
+// registration identifies a store as of its last update, so that replacing a
+// store invalidates what is cached for it.
 type registration struct {
 	id uuid.UUID
 	at int64
@@ -113,36 +100,34 @@ func registered(from store.SecretStore) registration {
 	return registration{id: from.ID, at: from.UpdatedAt.UnixNano()}
 }
 
-// placed is the place of a value in a store.
+// placed identifies a value in a store.
 type placed struct {
 	registration
 	path, key string
 }
 
-// NewStores returns the stores of an installation that allows them at the
-// hosts and asks them with the plugins. A host is written as for the Egress
-// Proxy: "*" is every host, a name the host on the ports of HTTPS and HTTP,
-// and a name with a port the host on that port. A value that is read from a
-// store is remembered for so long, and not at all with zero: the store is
-// then read every time. The stores are closed when they are of no more use.
+// NewStores returns Stores that allow the given hosts and serve the kinds of
+// plugins. A host is "*" for any host, a host name for the default HTTPS and
+// HTTP ports, or a host name with a port. Values read from a store are cached
+// for remembered; 0 disables the cache. Call Close when the Stores are no
+// longer needed.
 func NewStores(hosts []string, remembered time.Duration, plugins ...Plugin) (*Stores, error) {
 	for _, allowed := range hosts {
 		if allowed != "*" && !host.MatchString(allowed) {
 			return nil, fmt.Errorf(`a secret store may be at "*" or at a host name, with a port if it is neither 443 nor 80, and %q is neither`, allowed)
 		}
 	}
-	// The Supervisor reaches a store itself, and not through a proxy of its
-	// environment.
+	// Connect directly, never through a proxy from the environment.
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 	stores := &Stores{hosts: hosts, plugins: map[string]Plugin{}, lasts: remembered, closed: make(chan struct{}), client: &http.Client{
 		Timeout:   timeout,
 		Transport: transport,
-		// A store that sends the Supervisor elsewhere is not followed: where
-		// it leads may be a host that the installation does not allow.
+		// Redirects are not followed, since they could lead to a host that
+		// is not allowed.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
-	// A value that is read again does not stay for longer.
+	// Reads do not extend the lifetime of a cached value.
 	stores.values = ttlcache.New(
 		ttlcache.WithDisableTouchOnHit[placed, string](),
 		ttlcache.WithCapacity[placed, string](maxValues),
@@ -161,8 +146,8 @@ func NewStores(hosts []string, remembered time.Duration, plugins ...Plugin) (*St
 	return stores, nil
 }
 
-// forget takes what is no longer used out of the memory, until the stores
-// are closed: a value is not kept for longer than it is used.
+// forget deletes expired entries periodically until the Stores are closed, so
+// that expired values do not stay in memory.
 func (s *Stores) forget() {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
@@ -177,16 +162,15 @@ func (s *Stores) forget() {
 	}
 }
 
-// Close ends what the stores do by themselves. They are not read after it.
+// Close stops the background cleanup. The Stores must not be used after
+// Close.
 func (s *Stores) Close() {
 	s.closing.Do(func() { close(s.closed) })
 }
 
-// Check tells what is wrong with a store that a project gives, if anything
-// is. Its kind is to be one that the installation knows, its settings as
-// the kind has them and its host one that the installation allows. The
-// store is then tried, so that what does not work is found now and not in a
-// turn: the Supervisor logs in to it with the credential.
+// Check validates a store that a project registers: its kind must be known,
+// its settings valid and its host allowed. It then logs in with credential,
+// so that a store that does not work is reported now rather than in a turn.
 func (s *Stores) Check(ctx context.Context, kind string, settings json.RawMessage, credential string) error {
 	plugin, known := s.plugins[kind]
 	if !known {
@@ -206,15 +190,12 @@ func (s *Stores) Check(ctx context.Context, kind string, settings json.RawMessag
 	return nil
 }
 
-// Read returns the value that the secret at the path holds under the key, in
-// a secret store of a project. The credential is what the store is logged
-// in to with, opened.
+// Read returns the value under key of the secret at path in the store from.
+// credential is the opened credential of the store, which Read logs in with.
 //
-// The Supervisor remembers a value for as long as the installation says,
-// and for that long it does not ask the store again. It uses no value for
-// longer than that, also when the store cannot be asked: a value that the
-// project took out of its store is gone from Aviary by then. What it
-// remembers is of the store as it was last registered.
+// A value is cached for the configured duration and never used after it, not
+// even when the store is unreachable, so that a value removed from a store
+// stops being used. The cache is keyed by the last update of the store.
 func (s *Stores) Read(ctx context.Context, from store.SecretStore, credential, path, key string) (string, error) {
 	plugin, found := s.plugins[from.Kind]
 	if !found {
@@ -232,11 +213,11 @@ func (s *Stores) Read(ctx context.Context, from store.SecretStore, credential, p
 	if kept := s.values.Get(at); kept != nil {
 		return kept.Value(), nil
 	}
-	// The store is asked for as long as it may take, also if the request
-	// that asks first is gone by then: others may wait for the same.
+	// The shared read is not canceled with the first caller, since other
+	// callers may be waiting for it.
 	asking := context.WithoutCancel(ctx)
 	asked := s.reading.DoChan(fmt.Sprintf("%s %d %q %q", at.id, at.at, path, key), func() (any, error) {
-		// Another request may have asked the store for the value by now.
+		// Another caller may have cached the value meanwhile.
 		if kept := s.values.Get(at); kept != nil {
 			return kept.Value(), nil
 		}
@@ -267,8 +248,8 @@ func (s *Stores) Read(ctx context.Context, from store.SecretStore, credential, p
 	}
 }
 
-// ask reads a value from a store, with the session of a login to it. A
-// store that takes the session no longer is logged in to once more.
+// ask reads a value with the cached session, and logs in again once if the
+// store has ended the session.
 func (s *Stores) ask(ctx context.Context, plugin Plugin, from store.SecretStore, credential, path, key string) (string, error) {
 	for again := false; ; again = true {
 		session, err := s.session(ctx, plugin, from, credential)
@@ -287,10 +268,9 @@ func (s *Stores) ask(ctx context.Context, plugin Plugin, from store.SecretStore,
 	}
 }
 
-// session returns the session of a login to a store. The Supervisor logs in
-// if it holds none that is still good, once for all that ask at that
-// moment, and holds the session for as long as the store says that it is
-// good.
+// session returns the cached login session of the store. Without one, it
+// logs in, once for all concurrent callers, and caches the session for as
+// long as the store says that it is valid.
 func (s *Stores) session(ctx context.Context, plugin Plugin, from store.SecretStore, credential string) (any, error) {
 	as := registered(from)
 	if kept := s.sessions.Get(as); kept != nil {
@@ -313,7 +293,7 @@ func (s *Stores) session(ctx context.Context, plugin Plugin, from store.SecretSt
 	return session, err
 }
 
-// allows tells whether the installation allows a store at the address.
+// allows reports whether a store at address is on an allowed host.
 func (s *Stores) allows(address string) bool {
 	parsed, err := url.Parse(address)
 	if err != nil {

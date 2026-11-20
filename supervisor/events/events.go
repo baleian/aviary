@@ -1,6 +1,7 @@
-// Package events keeps the events of each turn where any Supervisor can read
-// them to a client, and lets the Supervisors tell each other what happens to
-// a turn. Both go through a log, which a plugin connects to.
+// Package events keeps the events of running turns in a log that all
+// Supervisors share, so that any of them can stream a turn's events to a
+// client. The Supervisors also send each other announcements through the log,
+// which a plugin connects to.
 package events
 
 import (
@@ -18,12 +19,11 @@ import (
 	"aviary/supervisor/store"
 )
 
-// The events that the Supervisor writes itself. The others come from the
-// runner of the turn.
+// Events that the Supervisor writes. All other events come from the runner.
 const (
-	// TurnQueued reports that the turn was accepted and waits to run.
+	// TurnQueued reports the position of a queued turn.
 	TurnQueued = "turn.queued"
-	// TurnStarted reports that the harness has been given the message.
+	// TurnStarted reports that the harness has received the message.
 	TurnStarted = "turn.started"
 	// TurnCompleted, TurnFailed, TurnCancelled and TurnExpired report how
 	// the turn ended. One of them is the last event of every turn.
@@ -33,35 +33,30 @@ const (
 	TurnExpired   = "turn.expired"
 )
 
-// cancelChannel is the channel on which a Supervisor tells the others that
-// a turn was asked to stop.
+// cancelChannel carries the announcements of cancel requests.
 const cancelChannel = "turns:cancel"
 
-// answerChannel is the one on which it tells them that a request of a turn
-// for approval was answered.
+// answerChannel carries the announcements of answers to approval requests.
 const answerChannel = "turns:answer"
 
-// keptFor is how long the events of a turn are kept after its last event,
-// for the clients that still read them. What the turn said is by then in the
-// database.
+// keptFor is how long the events of a turn are kept after it ends, for
+// clients that are still reading. By then its items are in the database.
 const keptFor = time.Hour
 
-// Streams are the events of the turns, in the log of the installation.
+// Streams are the event streams of the turns in a Log.
 type Streams struct {
 	log Log
 }
 
-// New returns the streams of the turns in the log.
 func New(log Log) *Streams {
 	return &Streams{log: log}
 }
 
-// Open connects to the log at address, a URL, with the plugin that connects
-// to logs with the scheme of the address.
+// Open connects to the log at address with the plugin for the URL's scheme.
 func Open(address string, plugins ...Plugin) (*Streams, error) {
 	parsed, err := url.Parse(address)
 	if err != nil {
-		// A URL that cannot be parsed is quoted in the error, password included.
+		// url.Error quotes the URL, password included.
 		var quoting *url.Error
 		if errors.As(err, &quoting) {
 			err = quoting.Err
@@ -87,8 +82,7 @@ func (s *Streams) Close() {
 	s.log.Close()
 }
 
-// Append adds an event to the end of the turn's stream. The data is stored as
-// JSON.
+// Append appends an event to the turn's stream, with data encoded as JSON.
 func (s *Streams) Append(ctx context.Context, turnID uuid.UUID, eventType string, data any) error {
 	encoded, err := json.Marshal(data)
 	if err != nil {
@@ -97,10 +91,10 @@ func (s *Streams) Append(ctx context.Context, turnID uuid.UUID, eventType string
 	return s.log.Append(ctx, turnID, eventType, string(encoded))
 }
 
-// Receive records the message with the number seq of the turn's runner, and
-// adds its event to the end of the turn's stream. A message without an event
-// has no eventType. A message that is recorded already is left out, and one
-// that does not follow the last recorded one gets ErrGap.
+// Receive records message seq of the turn's runner and, if eventType is not
+// empty, appends its event to the turn's stream. A message that is already
+// recorded is ignored, and one that does not follow the last recorded one
+// returns ErrGap.
 func (s *Streams) Receive(ctx context.Context, turnID uuid.UUID, seq uint64, eventType string, data any) error {
 	var encoded []byte
 	if eventType != "" {
@@ -112,67 +106,65 @@ func (s *Streams) Receive(ctx context.Context, turnID uuid.UUID, seq uint64, eve
 	return s.log.Receive(ctx, turnID, seq, eventType, string(encoded))
 }
 
-// Received returns the number of the last message of the turn's runner that
-// is recorded, which is 0 if none is.
+// Received returns the sequence number of the last recorded message of the
+// turn's runner, or 0 if there is none.
 func (s *Streams) Received(ctx context.Context, turnID uuid.UUID) (uint64, error) {
 	return s.log.Received(ctx, turnID)
 }
 
-// Follow says that the Supervisor follows the turn: it has the turn run and
-// records what comes of it. It reports whether the turn is that Supervisor's
-// for the time of the lease. A Supervisor that follows a turn says so again
-// before the lease is over. One that does not is taken to be gone, and the
-// turn is the next Supervisor's that asks.
+// Follow acquires or renews follower's lease on the turn, and reports whether
+// follower holds it. The follower drives the turn and records its outcome,
+// and renews the lease before it expires; otherwise it is taken to be gone,
+// and the next Supervisor that asks takes the turn over.
 //
-// It keeps the Supervisors from doing the same work, and no more than that:
-// a log that has lost what it held gives a turn that is followed to another.
-// What the Supervisors record of a turn, they record once however many of
-// them do.
+// The lease avoids duplicate work but does not guarantee exclusivity: a log
+// that loses its data can give a followed turn to another Supervisor. What
+// the Supervisors record of a turn is recorded once, however many of them
+// record it.
 func (s *Streams) Follow(ctx context.Context, turnID, follower uuid.UUID, lease time.Duration) (bool, error) {
 	return s.log.Follow(ctx, turnID, follower, lease)
 }
 
-// Leave says that the Supervisor follows the turn no longer: it has done
-// with the turn, or it stops. The next Supervisor that asks follows the
-// turn, without waiting for the lease to be over.
+// Leave releases follower's lease on the turn when it is done with the turn
+// or stops, so that the next Supervisor that asks can follow it at once.
 func (s *Streams) Leave(ctx context.Context, turnID, follower uuid.UUID) error {
 	return s.log.Leave(ctx, turnID, follower)
 }
 
-// AppendQueued tells a turn that waits to run its position in the queue,
-// which is 1 for the turn that runs next.
+// AppendQueued appends a TurnQueued event with the turn's position in the
+// queue, which is 1 for the next turn to run.
 func (s *Streams) AppendQueued(ctx context.Context, turnID uuid.UUID, position int) error {
 	return s.Append(ctx, turnID, TurnQueued, struct {
 		Position int `json:"position"`
 	}{position})
 }
 
-// AnnounceCancel tells every Supervisor that the turn was asked to stop. The
-// runner of the turn is connected to one of them.
+// AnnounceCancel tells every Supervisor that the turn was asked to stop,
+// since the turn's runner may be connected to any of them.
 func (s *Streams) AnnounceCancel(ctx context.Context, turnID uuid.UUID) error {
 	return s.log.Announce(ctx, cancelChannel, turnID)
 }
 
-// WatchCancels calls cancel for every turn that a Supervisor announces as
-// asked to stop, until ctx is done. It misses what is announced while the
-// log cannot be reached.
+// WatchCancels calls cancel for every turn announced by AnnounceCancel, until
+// ctx is done. It misses announcements while the log is unreachable.
 func (s *Streams) WatchCancels(ctx context.Context, cancel func(turnID uuid.UUID)) {
 	s.log.Watch(ctx, cancelChannel, cancel)
 }
 
-// AnnounceAnswer tells every Supervisor that a request of the turn for
-// approval was answered.
+// AnnounceAnswer tells every Supervisor that an approval request of the turn
+// was answered.
 func (s *Streams) AnnounceAnswer(ctx context.Context, turnID uuid.UUID) error {
 	return s.log.Announce(ctx, answerChannel, turnID)
 }
 
-// WatchAnswers calls answered for every turn that a Supervisor announces an
-// answer for, until ctx is done. It misses what WatchCancels misses.
+// WatchAnswers calls answered for every turn announced by AnnounceAnswer,
+// until ctx is done. Like WatchCancels, it misses announcements while the log
+// is unreachable.
 func (s *Streams) WatchAnswers(ctx context.Context, answered func(turnID uuid.UUID)) {
 	s.log.Watch(ctx, answerChannel, answered)
 }
 
-// Last returns the last event of a turn that has ended.
+// Last returns the last event of an ended turn.
 func Last(turn store.Turn) (eventType string, data any) {
 	switch turn.State {
 	case store.TurnCompleted:
@@ -204,8 +196,8 @@ func IsLast(eventType string) bool {
 	return false
 }
 
-// AppendLast adds the last event of the turn to its stream and has what the
-// log holds of the turn deleted once it has been kept long enough.
+// AppendLast appends the last event of the turn, and schedules the deletion
+// of the turn's data in the log.
 func (s *Streams) AppendLast(ctx context.Context, turn store.Turn) error {
 	eventType, data := Last(turn)
 	if err := s.Append(ctx, turn.ID, eventType, data); err != nil {
@@ -214,9 +206,9 @@ func (s *Streams) AppendLast(ctx context.Context, turn store.Turn) error {
 	return s.log.Expire(ctx, turn.ID, keptFor)
 }
 
-// Read returns the turn's events that follow the position after, oldest
-// first. If there are none, it waits for the next for as long as wait and
-// then returns nothing.
+// Read returns the turn's events after the position after, oldest first. If
+// there are none, it waits up to wait for one, and returns none if nothing
+// arrives.
 func (s *Streams) Read(ctx context.Context, turnID uuid.UUID, after string, wait time.Duration) ([]Event, error) {
 	return s.log.Read(ctx, turnID, after, wait)
 }

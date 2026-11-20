@@ -1,6 +1,6 @@
-// Package secret seals the secrets that the Supervisor stores, such as the
-// API key of a model provider, and opens them when they are used. What is
-// stored is of no use without the keys, which the database does not hold.
+// Package secret seals the secrets that the Supervisor stores, such as model
+// provider API keys, with keys that are kept outside the database. It also
+// reads the secrets that projects keep in their own secret stores.
 package secret
 
 import (
@@ -17,25 +17,25 @@ import (
 	"sync"
 )
 
-// keySize is the size of a key, which is one of AES-256.
+// keySize is the size of an AES-256 key in bytes.
 const keySize = 32
 
-// ErrSealed is returned for what does not open: it was sealed for another
-// place or with another key, or it was changed since.
+// ErrSealed is returned when a secret does not open: it was sealed for
+// another place or with another key, or it was modified.
 var ErrSealed = errors.New("the secret does not open")
 
-// Keys are the keys of an installation. Secrets are sealed with one of them.
-// The others still open what was sealed with them, so the key of an
-// installation is replaced by adding one and sealing with it from then on.
+// Keys are the encryption keys of an installation. New secrets are sealed
+// with the current key, and the other keys still open what they sealed, so a
+// key is rotated by adding a new one and making it current.
 type Keys struct {
 	dir, current string
 	mu           sync.RWMutex
 	ciphers      map[string]cipher.AEAD
 }
 
-// Load reads the keys from a directory, in which each file is a key under
-// its name: 32 random bytes in base64. Secrets are sealed with the key that
-// is named.
+// Load reads the keys from dir, in which each file holds a key of 32 random
+// bytes in base64, named by the file name. current names the key that new
+// secrets are sealed with.
 func Load(dir, current string) (*Keys, error) {
 	k := &Keys{dir: dir, current: current}
 	if err := k.read(); err != nil {
@@ -47,7 +47,7 @@ func Load(dir, current string) (*Keys, error) {
 	return k, nil
 }
 
-// read reads the keys that the directory holds now.
+// read reloads the keys from the directory.
 func (k *Keys) read() error {
 	entries, err := os.ReadDir(k.dir)
 	if err != nil {
@@ -55,8 +55,8 @@ func (k *Keys) read() error {
 	}
 	ciphers := map[string]cipher.AEAD{}
 	for _, entry := range entries {
-		// Kubernetes keeps what it mounts of a secret in entries of its own,
-		// whose names begin with dots.
+		// Skip the entries that Kubernetes adds to a mounted secret, such as
+		// ..data.
 		if strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
@@ -82,9 +82,9 @@ func (k *Keys) read() error {
 	return nil
 }
 
-// cipher returns the cipher of the key with the name. A key that was added
-// since the keys were read is found by reading them again: a Supervisor of
-// the release before opens what one of the next sealed with a new key.
+// cipher returns the cipher of the named key. It reloads the keys if the name
+// is unknown, so that during a rotation a Supervisor that started before the
+// new key was added can open secrets sealed with it.
 func (k *Keys) cipher(name string) (cipher.AEAD, error) {
 	k.mu.RLock()
 	found, known := k.ciphers[name]
@@ -103,15 +103,16 @@ func (k *Keys) cipher(name string) (cipher.AEAD, error) {
 	return found, nil
 }
 
-// Seal returns the secret as it is stored. It opens only for the same place:
-// what was sealed as the key of one provider is not the key of another.
+// Seal encrypts value with the current key. The result opens only for the
+// same place, so that, for example, the sealed API key of one provider does
+// not open as that of another.
 func (k *Keys) Seal(value, place string) ([]byte, error) {
 	sealing, err := k.cipher(k.current)
 	if err != nil {
 		return nil, err
 	}
-	// The name of the key, a colon, the nonce and what the cipher makes of
-	// the value. The name of an entry of a Kubernetes secret has no colon.
+	// The key name, a colon, the nonce and the ciphertext. Key names have no
+	// colon, since Kubernetes secret keys cannot contain one.
 	sealed := append([]byte(k.current+":"), make([]byte, sealing.NonceSize())...)
 	nonce := sealed[len(sealed)-sealing.NonceSize():]
 	if _, err := rand.Read(nonce); err != nil {
@@ -120,7 +121,8 @@ func (k *Keys) Seal(value, place string) ([]byte, error) {
 	return sealing.Seal(sealed, nonce, []byte(value), []byte(place)), nil
 }
 
-// Open returns the secret that was sealed for the place.
+// Open returns the secret that was sealed for place. If it does not open, the
+// error matches ErrSealed.
 func (k *Keys) Open(sealed []byte, place string) (string, error) {
 	name, rest, found := bytes.Cut(sealed, []byte(":"))
 	if !found {

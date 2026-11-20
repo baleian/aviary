@@ -1,7 +1,7 @@
-// Package app is the Supervisor as a program: it reads its settings from the
-// environment, connects to the database, the event log and the secret
-// stores with the plugins of the build, and serves. A build of the
-// Supervisor is a main package that calls Main with its plugins.
+// Package app runs the Supervisor. It reads its settings from the
+// environment and connects to the database, the event log, the secret stores
+// and the identity provider through the plugins of the build. A build is a
+// main package that calls Main with its plugins.
 package app
 
 import (
@@ -64,47 +64,36 @@ const (
 	apiAddr            = ":8080"
 	authzAddr          = ":9091"
 	metricsAddr        = ":9092"
-	// shutdownTimeout is how long the requests to the API get to finish.
+	// shutdownTimeout is how long in-flight API requests get to finish.
 	shutdownTimeout = 10 * time.Second
-	// identityPatience is how long the identity provider may take to answer
-	// when the Supervisor starts.
+	// identityPatience bounds connecting to the identity provider at startup.
 	identityPatience = 30 * time.Second
-	// keepaliveInterval is how often the Supervisor asks the other end of an
-	// idle connection whether it is still there, and how long it waits for
-	// the answer. The Egress Proxy asks the same of it.
+	// keepaliveInterval is the interval and the timeout of the keepalive
+	// pings of the authz server.
 	keepaliveInterval = 30 * time.Second
 )
 
-// handover is how long a Supervisor that was told to stop goes on serving.
-// For that long the cluster may still send it new requests. The tests set it
-// lower.
+// handover is how long a stopping Supervisor keeps serving, since the cluster
+// may still send it new requests. It is a variable for tests.
 var handover = 5 * time.Second
 
-// ports are what a Supervisor listens on.
 type ports struct {
 	api, authz, metrics net.Listener
 }
 
-// Plugins are the plugins of a build: what connects its Supervisor to the
-// data that an installation keeps outside it. An installation says which of
-// them it uses with the addresses that it gives the Supervisor, and its
-// projects with the kinds of their secret stores.
+// Plugins connect the Supervisor to the database, the event log, secret
+// stores and identity providers. An installation selects among them by the
+// scheme of each URL and by the kind of each secret store and identity
+// provider.
 type Plugins struct {
-	// Databases connect to the database that holds the records. The scheme
-	// of the database's URL says which of them does.
-	Databases []store.Plugin
-	// EventLogs connect to the log of the turns' events, likewise.
-	EventLogs []events.Plugin
-	// SecretStores ask the secret stores of the projects, each those of its
-	// kind.
-	SecretStores []secret.Plugin
-	// IdentityProviders ask the identity provider of the installation who
-	// sends a request. The kind of the provider says which of them does.
+	Databases         []store.Plugin
+	EventLogs         []events.Plugin
+	SecretStores      []secret.Plugin
 	IdentityProviders []identity.Plugin
 }
 
-// Main runs the Supervisor with the arguments of the program until the
-// program is told to stop, and ends the program.
+// Main runs the Supervisor with the command-line arguments until SIGINT or
+// SIGTERM, and exits with status 1 if it fails.
 func Main(plugins Plugins) {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
@@ -117,10 +106,10 @@ func Main(plugins Plugins) {
 	}
 }
 
-// Run serves until ctx is done, or with the argument "migrate" brings the
-// database schema up to date. A release migrates once, before it starts its
-// Supervisors. With a version after it, "migrate" moves the schema to that
-// version instead, forward or back.
+// Run serves until ctx is done. With the arguments "migrate [<version>]", it
+// instead migrates the database schema to the latest or the given version,
+// up or down. Serving does not migrate: a release runs "migrate" once, before
+// it starts the Supervisors.
 func Run(ctx context.Context, args []string, plugins Plugins) error {
 	database, err := env(databaseURL)
 	if err != nil {
@@ -141,8 +130,6 @@ func Run(ctx context.Context, args []string, plugins Plugins) error {
 	return errors.New("usage: aviary-supervisor [migrate [<version>]]")
 }
 
-// sandboxSettings reads where the sandboxes of the sessions are made, in
-// the cluster that the Supervisor runs in, and what they are made with.
 func sandboxSettings() (sandbox.Settings, error) {
 	var settings sandbox.Settings
 	var err error
@@ -156,7 +143,7 @@ func sandboxSettings() (sandbox.Settings, error) {
 	if settings.Volume, err = resource.ParseQuantity(size); err != nil || settings.Volume.Sign() <= 0 {
 		return settings, fmt.Errorf("%s must be a size such as 10Gi", sandboxVolume)
 	}
-	// Without a class, the volumes are of the default class of the cluster.
+	// Optional: empty selects the default storage class of the cluster.
 	settings.StorageClass = os.Getenv(sandboxClass)
 	output, err := env(maxToolOutput)
 	if err != nil {
@@ -172,7 +159,7 @@ func sandboxSettings() (sandbox.Settings, error) {
 	return settings, err
 }
 
-// address reads the URL of the Egress Proxy that the variable names.
+// address reads an Egress Proxy URL from the named variable.
 func address(name string) (*url.URL, error) {
 	value, err := env(name)
 	if err != nil {
@@ -245,11 +232,9 @@ func serve(ctx context.Context, database string, plugins Plugins) error {
 	return serveOn(ctx, on, st, ev, client, config, keys, stores, callers)
 }
 
-// serveOn serves on the ports until ctx is done, with the turns in the
-// database of the store and their sandboxes kept by sandboxes. It seals the
-// secrets that it stores and the tokens of the sessions with the keys, and
-// reads the other secrets from the stores. The callers are who may use the
-// API.
+// serveOn serves on the listeners until ctx is done. keys seal the stored
+// secrets and the session tokens, stores read the secrets kept in secret
+// stores, and callers says who may use the API.
 func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, sandboxes driver.Sandboxes, config driver.Config, keys *secret.Keys, stores *secret.Stores, callers api.Callers) error {
 	m := metrics.New()
 	stores.Asked = m.SecretRead
@@ -259,9 +244,10 @@ func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, 
 		Handler:           api.New(st, ev, dr, keys, stores, callers, ctx.Done()),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	// The Egress Proxy asks on a port of its own, so that the sandboxes can
-	// be kept from it. A machine that is gone closes no connection: both ends
-	// of a connection find that out by asking, and close it.
+	// Authz checks have a port of their own, which can be closed to the
+	// sandboxes. A peer that disappears does not close its connections, so
+	// both ends send keepalive pings: the server sends its own and permits
+	// those of the Egress Proxy.
 	authzServer := grpc.NewServer(
 		grpc.KeepaliveParams(keepalive.ServerParameters{Time: keepaliveInterval, Timeout: keepaliveInterval}),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
@@ -270,9 +256,8 @@ func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, 
 		}),
 	)
 	authv3.RegisterAuthorizationServer(authzServer, authz.New(st, keys, stores))
-	// The metrics are on a port of their own, which the clients of the API
-	// and the sandboxes have no way to. They are served until the
-	// Supervisor has stopped.
+	// Metrics have a port of their own, so that they are not exposed with the
+	// API. They are served until serveOn returns.
 	metricsMux := http.NewServeMux()
 	metricsMux.Handle("GET /metrics", m.Handler())
 	metricsServer := &http.Server{Handler: metricsMux, ReadHeaderTimeout: 10 * time.Second}
@@ -290,9 +275,8 @@ func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, 
 		return err
 	case <-ctx.Done():
 	}
-	// A Supervisor that is told to stop takes on no more turns and follows
-	// none. The other Supervisors go on, and take up the turns that it
-	// followed.
+	// The driver stops with ctx, and the other Supervisors take over its
+	// turns. The API keeps serving for the handover, then drains.
 	slog.Info("stopping")
 	time.Sleep(handover)
 	stopping, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
@@ -302,8 +286,8 @@ func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, 
 	return err
 }
 
-// encryption reads the keys that secrets are sealed with: the directory
-// that holds them, and the name of the one that seals.
+// encryption loads the keys from the directory in AVIARY_ENCRYPTION_KEYS.
+// AVIARY_ENCRYPTION_KEY names the key that new secrets are sealed with.
 func encryption() (*secret.Keys, error) {
 	dir, err := env(encryptionKeys)
 	if err != nil {
@@ -316,11 +300,9 @@ func encryption() (*secret.Keys, error) {
 	return secret.Load(dir, current)
 }
 
-// allowedSecretStores reads the hosts at which the installation allows the
-// secret stores of the projects, a JSON list such as
-// ["secrets.example.com:8200"], and for how many seconds a value that was
-// read from a store is used before it is read again. The stores are asked
-// with the plugins.
+// allowedSecretStores reads the hosts at which secret stores are allowed, a
+// JSON list such as ["secrets.example.com:8200"], and the number of seconds
+// that values read from a store are cached.
 func allowedSecretStores(plugins []secret.Plugin) (*secret.Stores, error) {
 	encoded, err := env(secretStoreHosts)
 	if err != nil {
@@ -341,13 +323,11 @@ func allowedSecretStores(plugins []secret.Plugin) (*secret.Stores, error) {
 	return secret.NewStores(hosts, time.Duration(seconds)*time.Second, plugins...)
 }
 
-// callersOf reads who may use the API. The identity provider of the
-// installation is a JSON object such as {"kind": "oidc", "settings": {...}},
-// and is connected to with the plugin for its kind. The groups of the
-// provider whose members are administrators, and those whose members may use
-// the API, are JSON lists such as ["platform-team"]. An installation that
-// names no kind has no provider: nobody who sends a request is asked who
-// they are, and the groups mean nothing.
+// callersOf reads who may use the API. The identity provider is a JSON object
+// such as {"kind": "oidc", "settings": {...}}, opened with the plugin for its
+// kind. The admin and user groups are JSON lists such as ["platform-team"].
+// If the kind is empty, requests are not authenticated and the groups are
+// ignored.
 func callersOf(ctx context.Context, plugins []identity.Plugin) (api.Callers, error) {
 	var callers api.Callers
 	encoded, err := env(identityProvider)
@@ -379,7 +359,6 @@ func callersOf(ctx context.Context, plugins []identity.Plugin) (api.Callers, err
 	return callers, err
 }
 
-// driverConfig reads how turns are run.
 func driverConfig() (driver.Config, error) {
 	var config driver.Config
 	// The harnesses are a JSON object such as {"opencode": {"image":

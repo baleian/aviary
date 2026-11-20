@@ -1,5 +1,4 @@
-//! The runner takes the turns of a session over HTTP, runs each on the
-//! harness and keeps what the agent does as the events of the turn.
+//! Tests of the runner's HTTP API, with the fake harness.
 
 mod support;
 
@@ -38,7 +37,6 @@ async fn a_turn_is_told_as_it_goes() {
             "finished"
         ]
     );
-    // The events are numbered from 1, without a gap.
     let numbers: Vec<u64> = events.iter().map(|event| event.seq).collect();
     assert_eq!(numbers, (1..=10).collect::<Vec<u64>>());
     assert_eq!(said(&events), "Hello there. Done");
@@ -79,8 +77,8 @@ async fn the_harness_stays_for_the_turns_of_a_session() {
 
     assert_eq!(said(&second), "say one");
     assert_eq!(said(&third), "say one\nrecall");
-    // It is one session of the harness, in one process: a harness that was
-    // started again would have another name for its first tool call.
+    // The same harness session, in the same process: the fake harness numbers
+    // tool calls per process.
     for later in [&second, &third] {
         assert_eq!(
             later[0].data["harness_session_id"],
@@ -105,11 +103,9 @@ async fn a_turn_is_started_once_however_often_it_is_sent() {
         runner.turn("t1", "say once ; sleep 300").await,
         StatusCode::NO_CONTENT
     );
-    // The runner runs one turn at a time.
     assert_eq!(runner.turn("t2", "say two").await, StatusCode::CONFLICT);
     let events = runner.events("t1").await;
     assert_eq!(names(&events), ["started", "message.delta", "finished"]);
-    // A turn that has ended is not run again either.
     assert_eq!(runner.turn("t1", "say once").await, StatusCode::NO_CONTENT);
     assert_eq!(runner.events("t1").await, events);
 
@@ -132,10 +128,10 @@ async fn a_turn_that_the_runner_does_not_have_is_not_found() {
 
     runner.run("t1", "say one").await;
     runner.run("t2", "say two").await;
-    // The runner keeps the events of a turn until it has the next one.
+    // Only the latest turn is kept.
     assert_eq!(runner.follow("t1", 0).await.status, StatusCode::NOT_FOUND);
     assert_eq!(runner.cancel("t1").await, StatusCode::NOT_FOUND);
-    // A turn that has ended is told to stop too late, which is no error.
+    // Cancelling a turn that has ended is not an error.
     assert_eq!(runner.cancel("t2").await, StatusCode::NO_CONTENT);
 }
 
@@ -148,7 +144,6 @@ async fn the_events_of_a_turn_are_read_again_from_where_a_reader_left() {
         StatusCode::NO_CONTENT
     );
 
-    // A reader is cut off in the middle of the turn.
     let mut reader = runner.follow("t1", 0).await;
     let mut read = Vec::new();
     for _ in 0..3 {
@@ -157,7 +152,6 @@ async fn the_events_of_a_turn_are_read_again_from_where_a_reader_left() {
     drop(reader);
     assert_eq!(names(&read), ["started", "message.delta", "message.delta"]);
 
-    // Another reads on from there, while a third reads all of it.
     let mut rest = runner.follow("t1", 3).await;
     let mut all = runner.follow("t1", 0).await;
     while let Some(event) = rest.next().await {
@@ -172,8 +166,6 @@ async fn the_events_of_a_turn_are_read_again_from_where_a_reader_left() {
     assert_eq!(ending(&read).name, "finished");
     assert_eq!(ending(&read).seq, 6);
 
-    // The turn has ended. Its events are there until the next turn, and a
-    // reader that has them all is sent nothing more.
     assert_eq!(runner.events("t1").await, whole);
     assert!(runner.follow("t1", 6).await.next().await.is_none());
 }
@@ -194,7 +186,6 @@ async fn a_turn_that_the_harness_fails_says_why() {
         json!({"reason": "harness_error", "message": "the model is out of order"})
     );
 
-    // The next turn has a harness again, which continues the session.
     let next = runner.run("t2", "recall").await;
     assert_eq!(said(&next), "say I try ; fail the model is out of order");
     assert_eq!(
@@ -209,7 +200,7 @@ async fn a_harness_that_is_gone_is_started_again() {
     let home = Home::new();
     let runner = start(runner(&home)).await;
 
-    // The harness ends in the middle of a turn.
+    // The harness exits mid-turn.
     let died = runner.run("t1", "say going ; die").await;
     assert_eq!(ending(&died).name, "failed");
     assert_eq!(ending(&died).data["reason"], "harness_error");
@@ -217,7 +208,7 @@ async fn a_harness_that_is_gone_is_started_again() {
     assert_eq!(said(&next), "say going ; die");
     assert_eq!(ending(&next).name, "finished");
 
-    // The harness ends between two turns.
+    // The harness exits between turns.
     let left = runner.run("t3", "say bye ; leave").await;
     assert_eq!(ending(&left).name, "finished");
     time::sleep(Duration::from_millis(300)).await;
@@ -235,7 +226,7 @@ async fn a_session_that_the_harness_has_lost_fails_its_turns() {
     let home = Home::new();
     let runner = start(runner(&home)).await;
     runner.run("t1", "say one ; die").await;
-    // What the harness kept of the conversation is gone.
+    // Deletes the sessions that the fake harness stored.
     fs::remove_dir_all(home.path().join("workspace/.fake-harness")).unwrap();
     for turn in ["t2", "t3"] {
         let events = runner.run(turn, "say two").await;
@@ -251,8 +242,7 @@ async fn the_runner_of_another_pod_continues_the_session() {
     let home = Home::new();
     let first = start(runner(&home)).await;
     let before = first.run("t1", "say one").await;
-    // The pod goes, as that of a sandbox that is put to sleep does, and the
-    // home of the session stays for the next pod.
+    // As when a sandbox sleeps: the runner stops and the home is kept.
     drop(first);
     let runner = start(runner(&home)).await;
     let after = runner.run("t2", "recall").await;
@@ -270,7 +260,7 @@ async fn a_runner_that_is_told_to_end_ends_with_its_turn() {
     runner.turn("t1", "say on ; sleep 60000").await;
     let mut events = runner.follow("t1", 0).await;
     assert_eq!(events.next().await.unwrap().name, "started");
-    // As the pod of a sandbox that is put to sleep is told.
+    // As when a sandbox is put to sleep and its pod is deleted.
     let pid = runner.child.id().unwrap().to_string();
     let told = std::process::Command::new("kill")
         .args(["-TERM", &pid])
@@ -291,9 +281,6 @@ async fn a_runner_that_others_reach_takes_nothing_from_its_own_pod() {
     command.env("AVIARY_RUNNER_ADDRESS", "0.0.0.0:0");
     let runner = start(command).await;
     let port = runner.url.rsplit(':').next().unwrap().to_owned();
-    // What comes from the machine of the runner, at the loopback address or
-    // at the address of the machine, is refused: in a sandbox, it is the
-    // agent that sends it.
     for address in ["127.0.0.1".to_owned(), own_address()] {
         let ours = Session::at(format!("http://{address}:{port}"));
         assert_eq!(
@@ -305,7 +292,7 @@ async fn a_runner_that_others_reach_takes_nothing_from_its_own_pod() {
     }
 }
 
-/// The address of this machine that it sends from to others.
+/// Returns the address that this machine sends from to other hosts.
 fn own_address() -> String {
     let socket = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
     socket
@@ -353,13 +340,13 @@ async fn the_instructions_are_where_the_harness_reads_them() {
         StatusCode::NO_CONTENT
     );
     assert_eq!(said(&runner.events("t1").await), "Answer in French.");
-    // An agent without instructions has a file too, which is empty.
+    // Without instructions, the file is emptied.
     assert_eq!(
         said(&runner.run("t2", "instructions").await),
         "no instructions"
     );
 
-    // The image of a harness that takes no instructions names no file.
+    // Without AVIARY_INSTRUCTIONS_FILE, only agents without instructions run.
     let other = Home::new();
     let runner = start(support::runner(&other)).await;
     assert_eq!(said(&runner.run("t1", "instructions").await), "no file");
@@ -408,7 +395,7 @@ async fn the_long_texts_of_a_tool_call_are_cut_as_the_installation_says() {
         format!("{}... [900 more bytes cut]", "x".repeat(100))
     );
 
-    // Without the setting they are told as they are.
+    // Unset means no limit.
     let runner = start(support::runner(&home)).await;
     let events = runner.run("t1", "big 100000").await;
     let output = events[2].data["output"]["output"].as_str().unwrap();
@@ -420,7 +407,6 @@ async fn a_harness_that_asks_is_allowed_once() {
     let home = Home::new();
     let runner = start(runner(&home)).await;
     let events = runner.run("t1", "ask").await;
-    // Nobody is asked.
     assert_eq!(names(&events), ["started", "message.delta", "finished"]);
     assert_eq!(said(&events), "once");
 }
@@ -451,8 +437,7 @@ async fn a_harness_that_asks_is_answered_by_a_person() {
         })
     );
 
-    // An answer that the harness does not take, and one to a request that
-    // does not wait, are dropped.
+    // Answers with an unknown option or request are accepted and ignored.
     assert_eq!(
         runner.answer("t1", "1", "perhaps").await,
         StatusCode::NO_CONTENT
@@ -465,7 +450,7 @@ async fn a_harness_that_asks_is_answered_by_a_person() {
         runner.answer("t1", "1", "never").await,
         StatusCode::NO_CONTENT
     );
-    // An answer that comes twice is given once.
+    // Only the first valid answer counts.
     assert_eq!(
         runner.answer("t1", "1", "always").await,
         StatusCode::NO_CONTENT
@@ -478,7 +463,6 @@ async fn a_harness_that_asks_is_answered_by_a_person() {
     );
     assert_eq!(events.next().await.unwrap().data, json!({"text": "never"}));
 
-    // The requests of a turn are numbered as they come.
     let again = events.next().await.unwrap();
     assert_eq!(
         (again.name.as_str(), &again.data["id"]),
@@ -508,7 +492,6 @@ async fn requests_that_wait_at_once_are_each_given_their_own_answer() {
         assert_eq!(asked.name, "approval.requested");
         assert_eq!(asked.data["id"], request);
     }
-    // They are answered in another order than they were asked in.
     runner.answer("t1", "2", "never").await;
     runner.answer("t1", "3", "once").await;
     runner.answer("t1", "1", "always").await;
@@ -536,8 +519,6 @@ async fn a_turn_that_is_cancelled_while_its_harness_asks_is_stopped() {
     while let Some(event) = events.next().await {
         rest.push(event);
     }
-    // The harness is given the answer that the turn was cancelled to each
-    // request, and nobody can answer them any more.
     assert_eq!(rest[0].data, json!({"id": "1", "outcome": "cancelled"}));
     assert_eq!(rest[1].data, json!({"id": "2", "outcome": "cancelled"}));
     assert!(said(&rest).starts_with("cancelled cancelled"), "{rest:?}");
@@ -564,7 +545,7 @@ async fn a_turn_that_is_cancelled_is_stopped_by_the_harness() {
     for _ in 0..3 {
         events.next().await.unwrap();
     }
-    // The harness is told once, however often the turn is.
+    // Repeated cancellations reach the harness once.
     for _ in 0..3 {
         assert_eq!(runner.cancel("t1").await, StatusCode::NO_CONTENT);
     }
@@ -577,7 +558,7 @@ async fn a_turn_that_is_cancelled_is_stopped_by_the_harness() {
     assert!(!text.contains("ten"), "{text}");
     assert_eq!(ending(&rest).data["stop_reason"], "cancelled");
 
-    // The next turn is not stopped by what the one before was told.
+    // The cancellation does not carry over to the next turn.
     let next = runner.run("t2", "sleep 100 ; say on").await;
     assert_eq!(said(&next), "on");
     assert_eq!(ending(&next).data["stop_reason"], "end_turn");
@@ -594,7 +575,6 @@ async fn a_turn_that_is_cancelled_before_the_harness_is_ready_is_not_given_to_it
     let events = runner.events("t1").await;
     assert_eq!(names(&events), ["started", "finished"]);
     assert_eq!(ending(&events).data, json!({"stop_reason": "cancelled"}));
-    // The harness never had the message.
     assert_eq!(said(&runner.run("t2", "recall").await), "nothing");
 }
 
@@ -603,8 +583,8 @@ async fn a_runner_that_waits_takes_no_cpu() {
     let home = Home::new();
     let runner = start(runner(&home)).await;
     runner.run("t1", "say Hello").await;
-    // The harness is there and nobody sends a turn, as in a session that
-    // rests. Then a turn waits for its harness.
+    // Measures an idle second with the harness running, then a turn that
+    // waits on the harness.
     let before = cpu(runner.child.id().unwrap());
     time::sleep(Duration::from_secs(1)).await;
     runner.turn("t2", "sleep 1000").await;
@@ -613,10 +593,10 @@ async fn a_runner_that_waits_takes_no_cpu() {
     assert!(used < 0.2, "the runner used {used} seconds of CPU in two");
 }
 
-/// The seconds of CPU that the process has used.
+/// Returns the CPU seconds, user and system, that the process has used.
 fn cpu(process: u32) -> f64 {
     let stat = fs::read_to_string(format!("/proc/{process}/stat")).unwrap();
-    // The fields after the name of the program, which may have spaces.
+    // Skips the command name, which may contain spaces.
     let fields: Vec<&str> = stat[stat.rfind(')').unwrap() + 2..].split(' ').collect();
     let ticks: f64 = fields[11].parse::<f64>().unwrap() + fields[12].parse::<f64>().unwrap();
     ticks / 100.0

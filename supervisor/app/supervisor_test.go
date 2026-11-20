@@ -36,16 +36,13 @@ import (
 	memorystore "aviary/supervisor/store/memory"
 )
 
-// The tests of this package run whole Supervisors, as serveOn serves them,
-// on records and an event log that are in memory. Their sandboxes are ones
-// in which nothing runs, so a test plays the part of the runner for the
-// turns that it sends: it is given the turn, and tells what comes of it. It
-// also plays the Egress Proxy, which asks a Supervisor about the requests
-// of the sandboxes.
+// The tests of this package run whole Supervisors through serveOn, with an
+// in-memory store and event log and fake sandboxes in which nothing runs. A
+// test plays the runner of each turn and the Egress Proxy.
 
-// patience is how long a test waits for what the Supervisor is to do, and
-// soon how long for what it is to do at once: a Supervisor that does it only
-// when it next looks, seconds later, is too late.
+// patience bounds waits for the Supervisor. soon bounds waits for what it
+// must do immediately: it is shorter than the sweep interval, so that work
+// left to the next sweep fails the test.
 const (
 	patience = 10 * time.Second
 	soon     = 2 * time.Second
@@ -56,35 +53,26 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// installation is what the Supervisors of a test share: their records, an
-// event log, the sandboxes of the sessions, and the keys that secrets are
-// sealed with.
+// installation is the state that the Supervisors of a test share.
 type installation struct {
-	t *testing.T
-	// records are the records of the installation, as its database holds
-	// them.
+	t       *testing.T
 	records *memorystore.Store
-	// service has the sandboxes of the installation, as its cluster keeps
-	// them.
+	// service fakes the sandboxes of the cluster.
 	service *sandboxtest.Service
 	config  driver.Config
 	keys    *secret.Keys
-	// storeHosts are the hosts at which the installation allows the secret
-	// stores of its projects, and secrets is what those stores hold. They
-	// are of the kind that the tests have a plugin for.
+	// storeHosts are the hosts at which secret stores are allowed, and
+	// secrets holds the contents of those stores.
 	storeHosts []string
 	secrets    *shelves
-	// log is the event log of the installation, which its Supervisors share.
-	log *memorylog.Log
-	// callers are who may use the API of the installation. Most
-	// installations of the tests have no identity provider.
+	log        *memorylog.Log
+	// callers has no identity provider unless a test sets one.
 	callers api.Callers
 }
 
-// install returns an installation without Supervisors. The functions change
-// how its turns are run from what a chart with default values sets. A test
-// that waits for what the Supervisors do only when they sweep sets the sweep
-// lower.
+// install returns an installation without Supervisors. changes modify the
+// default driver config; a test that waits for a sweep should shorten the
+// sweep interval.
 func install(t *testing.T, changes ...func(*driver.Config)) *installation {
 	t.Helper()
 	config := driver.Config{
@@ -108,8 +96,7 @@ func install(t *testing.T, changes ...func(*driver.Config)) *installation {
 	}
 }
 
-// token returns the token of the session of the sandbox, which its pod was
-// made with.
+// token returns the session token that the sandbox's pod was created with.
 func (i *installation) token(sandbox string) string {
 	i.t.Helper()
 	made, found := i.service.Made()[sandbox]
@@ -119,9 +106,8 @@ func (i *installation) token(sandbox string) string {
 	return made.Pod.Token
 }
 
-// stores returns the secret stores of the installation as one of its
-// Supervisors has them: it asks them with the plugin of the tests, and
-// remembers by itself what it read.
+// stores returns the secret store client of one Supervisor, with a cache of
+// its own.
 func (i *installation) stores() *secret.Stores {
 	i.t.Helper()
 	stores, err := secret.NewStores(i.storeHosts, time.Minute, scripted{i.secrets})
@@ -132,18 +118,16 @@ func (i *installation) stores() *secret.Stores {
 	return stores
 }
 
-// supervisor is a Supervisor that serves.
+// supervisor is a running Supervisor and its clients.
 type supervisor struct {
 	*installation
 	api, metrics string
-	// proxies is how the Egress Proxy asks the Supervisor about the requests
-	// of the sandboxes.
+	// proxies calls the authz server as the Egress Proxy does.
 	proxies authv3.AuthorizationClient
-	// stop tells the Supervisor to stop, as Kubernetes does, and returns
-	// when it has.
+	// stop cancels the Supervisor's context, as SIGTERM does, and waits for
+	// it to return.
 	stop func()
-	// token is what the requests of the test tell who they are with, if
-	// they tell it.
+	// token, if not empty, is sent as the bearer token of API requests.
 	token string
 }
 
@@ -190,7 +174,8 @@ func (i *installation) supervisor() *supervisor {
 	return s
 }
 
-// eventually waits for the condition to hold, for as long as is given.
+// eventually polls holds until it returns true, and fails the test with what
+// if that takes longer than within.
 func eventually(t *testing.T, within time.Duration, what string, holds func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(within)
@@ -202,7 +187,7 @@ func eventually(t *testing.T, within time.Duration, what string, holds func() bo
 	}
 }
 
-// The API, as its clients see it.
+// API client.
 
 // turn is a turn as the API returns it.
 type turn struct {
@@ -221,8 +206,8 @@ type turn struct {
 	Approvals         []json.RawMessage `json:"approvals"`
 }
 
-// request sends a request to the API. It returns the status of the answer
-// and decodes the body of the answer into the last argument, if there is one.
+// request sends an API request and returns the response status and header.
+// If into is not nil, it decodes the response body into it.
 func (s *supervisor) request(method, path, body string, into any) (int, http.Header) {
 	s.t.Helper()
 	request, err := http.NewRequest(method, s.api+path, strings.NewReader(body))
@@ -259,8 +244,8 @@ func (s *supervisor) create(path, body string) string {
 	return created.ID
 }
 
-// session creates a session of a new agent of a new project. The agent is
-// as the body says, or one of OpenCode without one.
+// session creates a session of a new agent in a new project. agent is the
+// JSON body of the agent, which defaults to an OpenCode agent.
 func (s *supervisor) session(agent ...string) string {
 	s.t.Helper()
 	body := `{"harness": "opencode"}`
@@ -270,8 +255,8 @@ func (s *supervisor) session(agent ...string) string {
 	return s.create("/v1/agents/"+s.agent(s.create("/v1/projects", `{"name": "test"}`), body)+"/sessions", "")
 }
 
-// agent creates an agent of the project as the body says. Its model is one
-// of a new provider of the project.
+// agent creates an agent from body, with a model of a new provider of the
+// project.
 func (s *supervisor) agent(project, body string) string {
 	s.t.Helper()
 	var settings map[string]any
@@ -302,7 +287,7 @@ func (s *supervisor) send(session, text string) turn {
 	return accepted
 }
 
-// turn returns the record of a turn.
+// turn returns a turn by ID.
 func (s *supervisor) turn(id string) turn {
 	s.t.Helper()
 	var record turn
@@ -312,24 +297,23 @@ func (s *supervisor) turn(id string) turn {
 	return record
 }
 
-// event is an event of a turn as a client of the API reads it.
+// event is a server-sent event of a turn.
 type event struct {
 	ID, Type, Data string
 }
 
-// reader is a client that reads the events of a turn as they come.
+// reader streams the events of a turn.
 type reader struct {
-	t *testing.T
-	// token is what the reader tells who it is with, if it tells it.
+	t           *testing.T
 	turn, token string
 	events      chan event
-	// ended holds how the stream ended, once it has: without an error if the
-	// Supervisor ended it.
+	// ended receives nil when the Supervisor ends the stream, or the error
+	// that broke it.
 	ended chan error
 }
 
-// read begins to read the events of the turn after the one with the ID, or
-// all of them without one.
+// read starts streaming the events of the turn that follow the event ID
+// after, or all of them if after is empty.
 func (s *supervisor) read(turn, after string) *reader {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.t.Cleanup(cancel)
@@ -379,7 +363,7 @@ func (r *reader) stream(ctx context.Context, api, after string) error {
 	return lines.Err()
 }
 
-// next waits for the next event that tells what the turn does.
+// next waits for the next event, skipping turn.queued events.
 func (r *reader) next() event {
 	r.t.Helper()
 	for {
@@ -394,8 +378,8 @@ func (r *reader) next() event {
 	}
 }
 
-// rest waits for the Supervisor to end the stream, for as long as is given,
-// and returns the events that came since the reader last took one.
+// rest waits up to within for the Supervisor to end the stream, and returns
+// the events that have not been taken yet.
 func (r *reader) rest(within time.Duration) []event {
 	r.t.Helper()
 	select {
@@ -417,16 +401,16 @@ func (r *reader) rest(within time.Duration) []event {
 	}
 }
 
-// follow reads the events of a turn to its end, at which the Supervisor
-// ends the stream.
+// follow returns all events of the turn once the Supervisor ends the stream
+// at the end of the turn.
 func (s *supervisor) follow(turn string) []event {
 	s.t.Helper()
 	return s.read(turn, "").rest(patience)
 }
 
-// watch reads along with the events of the turn from now on, as a client
-// does while a turn runs. The function that it returns is called when the
-// turn has ended: the client is to have the last event by then.
+// watch starts streaming the events of the turn, as a client does while the
+// turn runs. Call the returned function after the turn has ended; it expects
+// the stream to end soon after.
 func (s *supervisor) watch(turn string) func() []event {
 	reader := s.read(turn, "")
 	return func() []event {
@@ -435,9 +419,8 @@ func (s *supervisor) watch(turn string) func() []event {
 	}
 }
 
-// types returns the types of the events, without the ones that tell a turn
-// its place in the queue: whether a turn that need not wait is told one
-// depends on how fast it is dispatched.
+// types returns the event types without turn.queued, which a turn that does
+// not have to wait may or may not get, depending on how fast it is dispatched.
 func types(events []event) []string {
 	types := []string{}
 	for _, event := range events {
@@ -448,31 +431,32 @@ func types(events []event) []string {
 	return types
 }
 
-// The runners in the sandboxes, which the test plays.
+// Fake runner.
 
-// runner is the runner of a session, with a turn that it was given.
+// runner is the runner of a session and the turn that it was given.
 type runner struct {
 	*runnertest.Turn
 	installation *installation
-	// seq is the number of the last event that it told of the turn.
+	// seq is the sequence number of the last reported event.
 	seq uint64
 }
 
-// given waits for a runner to be given the turn, and returns it. A turn
-// that has room to run is dispatched at once.
+// given waits for the turn to be dispatched to a runner, and returns the
+// runner. A turn with a free slot is dispatched immediately.
 func (i *installation) given(turn string) *runner {
 	i.t.Helper()
 	return &runner{Turn: i.service.TurnWith(i.t, turn), installation: i}
 }
 
-// message is what a runner tells of its turn: an event.
+// message is an event that a runner reports.
 type message struct {
 	name string
 	data any
 }
 
-// report tells the next event of the turn, and waits for a Supervisor to
-// record it. After the last event of a turn, it waits for the turn to end.
+// report sends the next event of the turn and waits until a Supervisor has
+// recorded it. After a finished or failed event, it also waits for the turn
+// to end.
 func (r *runner) report(told message) {
 	i := r.installation
 	i.t.Helper()
@@ -491,12 +475,12 @@ func (r *runner) report(told message) {
 	}
 }
 
-// lose takes the sandbox of the runner away, with its volume.
+// lose deletes the runner's sandbox and its volume, as if it had expired.
 func (r *runner) lose() {
 	r.installation.service.Lose(r.Sandbox)
 }
 
-// The events of a runner.
+// Runner events.
 
 func started(harnessSession string) message {
 	return message{"started", map[string]string{"harness_session_id": harnessSession}}
@@ -506,8 +490,7 @@ func said(text string) message {
 	return message{"message.delta", map[string]string{"text": text}}
 }
 
-// finished is the event that the harness ended the turn, with the token
-// usage that it reported, if it reported any.
+// finished is the event that ends a turn, with usage if it is not nil.
 func finished(stopReason string, usage *store.Usage) message {
 	data := map[string]any{"stop_reason": stopReason}
 	if usage != nil {
@@ -516,12 +499,13 @@ func finished(stopReason string, usage *store.Usage) message {
 	return message{"finished", data}
 }
 
-// failed is the event that the runner could not finish the turn.
+// failed is the event of a turn that the runner could not finish.
 func failed(reason, text string) message {
 	return message{"failed", map[string]string{"reason": reason, "message": text}}
 }
 
-// run has the runner go through a turn in which the agent says the text.
+// run plays the runner through a turn that completes after the agent says
+// text.
 func (s *supervisor) run(turn, text string) {
 	s.t.Helper()
 	r := s.given(turn)
@@ -530,14 +514,14 @@ func (s *supervisor) run(turn, text string) {
 	r.report(finished("end_turn", nil))
 }
 
-// cancelled waits for the Supervisor to tell the runner to stop its turn.
+// cancelled waits for the Supervisor to cancel the runner's turn.
 func (r *runner) cancelled() {
 	r.installation.t.Helper()
 	r.Stopped(r.installation.t)
 }
 
-// asks is the event that the harness asks for approval before it runs the
-// command, with the options that the fake harness of the runner's tests has.
+// asks is the event of an approval request to run command, with an option to
+// allow and one to reject.
 func asks(id, command string) message {
 	return message{"approval.requested", map[string]any{
 		"id":        id,
@@ -549,7 +533,7 @@ func asks(id, command string) message {
 	}}
 }
 
-// answered is the event that the harness has its answer to the request.
+// answered is the event that resolves the approval request id.
 func answered(id, outcome, option string) message {
 	data := map[string]string{"id": id, "outcome": outcome}
 	if option != "" {
@@ -558,18 +542,18 @@ func answered(id, outcome, option string) message {
 	return message{"approval.resolved", data}
 }
 
-// answer waits for the Supervisor to give the runner the answer of a person
-// to a request for approval, and returns the request and the option.
+// answer waits for the Supervisor to deliver a user's answer to an approval
+// request, and returns the request ID and the option.
 func (r *runner) answer() (id, option string) {
 	r.installation.t.Helper()
 	return r.Answered(r.installation.t)
 }
 
-// The Egress Proxy, which asks whose request a token belongs to.
+// Fake Egress Proxy.
 
-// check asks the Supervisor about a request as the proxy does: a model
-// request for the path, which carries the token as its bearer token, or one
-// through the forward proxy, which carries it as the password.
+// check sends an authz check as the Egress Proxy does: for a model request to
+// path with token as the bearer token or, if forward, for a forward proxy
+// request with token as the password.
 func (s *supervisor) check(token string, forward bool, path string) *authv3.CheckResponse {
 	s.t.Helper()
 	headers, extensions := map[string]string{"authorization": "Bearer " + token}, map[string]string{"listener": "llm"}
@@ -587,8 +571,8 @@ func (s *supervisor) check(token string, forward bool, path string) *authv3.Chec
 	return answer
 }
 
-// origin returns where the Supervisor says a request with the token comes
-// from, or nothing if it refuses the request.
+// origin returns the metadata that the Supervisor attaches to a request with
+// token, or nil if it denies the request.
 func (s *supervisor) origin(token string, forward bool) map[string]string {
 	s.t.Helper()
 	answer := s.check(token, forward, "/v1/chat/completions")
@@ -602,10 +586,10 @@ func (s *supervisor) origin(token string, forward bool) map[string]string {
 	return origin
 }
 
-// The metrics, as Prometheus reads them.
+// Metrics.
 
-// metric adds up the series of the Supervisor whose names and labels begin
-// as given.
+// metric returns the sum of the Supervisor's series whose name and labels
+// start with series.
 func (s *supervisor) metric(series string) float64 {
 	s.t.Helper()
 	response, err := http.Get(s.metrics + "/metrics")

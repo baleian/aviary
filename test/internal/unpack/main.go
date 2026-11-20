@@ -1,5 +1,5 @@
-// Command unpack writes the configuration of the Egress Proxy that a rendered
-// chart holds into a directory, as the files that the proxy's pod mounts.
+// Command unpack writes the Egress Proxy configuration of a rendered chart to
+// a directory, as the files that the proxy's pod mounts.
 //
 //	unpack <rendered chart> <directory>
 package main

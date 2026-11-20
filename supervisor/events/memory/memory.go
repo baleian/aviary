@@ -1,7 +1,6 @@
-// Package memory keeps the events of the turns in the memory of the process.
-// It is for tests: the Supervisors of a test share one log as the
-// Supervisors of an installation share theirs, and nothing outlasts the
-// test.
+// Package memory implements an events.Log in the memory of the process, for
+// tests. The Supervisors of a test share one Log, as those of an installation
+// share theirs.
 package memory
 
 import (
@@ -15,32 +14,31 @@ import (
 	"aviary/supervisor/events"
 )
 
-// batch is the most events that one read returns.
+// batch is the maximum number of events that Read returns.
 const batch = 100
 
-// Log is a log in memory. Its zero value is not one: New makes it.
+// Log is an event log in memory. Create it with New; the zero value is not
+// usable.
 type Log struct {
-	mu    sync.Mutex
-	turns map[uuid.UUID]*turn
-	// followed are the turns that Supervisors follow.
+	mu       sync.Mutex
+	turns    map[uuid.UUID]*turn
 	followed map[uuid.UUID]lease
-	// watchers are those who watch a channel.
+	// watchers holds the callbacks of each channel.
 	watchers map[string]map[*func(uuid.UUID)]struct{}
 }
 
-// lease is the Supervisor that follows a turn, and until when.
 type lease struct {
 	follower uuid.UUID
 	until    time.Time
 }
 
-// turn is what the log holds of a turn.
 type turn struct {
 	events   []events.Event
 	received uint64
-	// added is closed when an event is added, and then made anew.
+	// added is closed and replaced when an event is added, to wake waiting
+	// readers.
 	added chan struct{}
-	// expiry deletes the turn when its time has passed.
+	// expiry deletes the turn when it expires.
 	expiry *time.Timer
 }
 
@@ -51,11 +49,11 @@ func New() *Log {
 	}
 }
 
-// Close does nothing: the Supervisors of a test share the log.
+// Close does nothing, since the Supervisors of a test share the log.
 func (*Log) Close() {}
 
-// of returns what the log holds of the turn, which is nothing yet for a turn
-// that it has not heard of. The caller holds the lock.
+// of returns the data of the turn, and creates it if needed. The caller must
+// hold l.mu.
 func (l *Log) of(turnID uuid.UUID) *turn {
 	held, found := l.turns[turnID]
 	if !found {
@@ -65,7 +63,8 @@ func (l *Log) of(turnID uuid.UUID) *turn {
 	return held
 }
 
-// add adds an event to the turn. The caller holds the lock.
+// add appends an event and wakes waiting readers. The caller must hold the
+// lock of the log.
 func (t *turn) add(eventType, data string) {
 	t.events = append(t.events, events.Event{ID: strconv.Itoa(len(t.events) + 1), Type: eventType, Data: data})
 	close(t.added)
@@ -106,7 +105,7 @@ func (l *Log) Received(_ context.Context, turnID uuid.UUID) (uint64, error) {
 }
 
 func (l *Log) Read(ctx context.Context, turnID uuid.UUID, after string, wait time.Duration) ([]events.Event, error) {
-	// The ID of an event is its number among the events of its turn.
+	// An event ID is the event's 1-based position among the turn's events.
 	read, _ := strconv.Atoi(after)
 	deadline := time.NewTimer(wait)
 	defer deadline.Stop()

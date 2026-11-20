@@ -12,7 +12,7 @@ import (
 	"aviary/supervisor/store/postgres"
 )
 
-// rows returns the rows that the query finds in the database, each as text.
+// rows returns the rows of the query, each formatted as text.
 func rows(t *testing.T, database, query string) []string {
 	t.Helper()
 	ctx := context.Background()
@@ -39,8 +39,7 @@ func rows(t *testing.T, database, query string) []string {
 	return texts
 }
 
-// schema describes what the migrations have made of the database: the
-// columns, the constraints and the indexes.
+// schema describes the columns, constraints and indexes of the database.
 func schema(t *testing.T, database string) []string {
 	t.Helper()
 	return slices.Concat(
@@ -76,7 +75,7 @@ func TestMigrate(t *testing.T) {
 		t.Fatalf("migrate a database that is up to date: %v", err)
 	}
 
-	// Every migration can be undone by itself.
+	// Each migration can be undone on its own.
 	versions := rows(t, database, `select version_id from goose_db_version where version_id > 0 order by 1 desc`)
 	for i := range versions {
 		if err := (postgres.Plugin{}).MigrateTo(ctx, database, int64(len(versions)-i-1)); err != nil {
@@ -105,12 +104,12 @@ func TestOpenChecksTheSchema(t *testing.T) {
 	t.Parallel()
 	database := newDatabase(t)
 
-	// A newer release has added to the schema. This one runs on it.
+	// A schema that a newer release added to is accepted.
 	exec(t, database, `insert into goose_db_version (version_id, is_applied)
 		select max(version_id) + 1, true from goose_db_version`)
 	open(t, database)
 
-	// A newer release has dropped what this one uses.
+	// One that dropped what this build uses is not.
 	exec(t, database, `update schema_floor set version = (select max(version_id) from goose_db_version)`)
 	if st, err := (postgres.Plugin{}).Open(context.Background(), database); err == nil {
 		st.Close()

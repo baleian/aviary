@@ -18,22 +18,21 @@ import (
 
 const apiKey = "the-key"
 
-// sent is what a harness sends the model: what it tells the model of itself,
-// the messages of the user so far and, if the model called the tool last,
-// what the tool returned.
+// sent is what a harness sends the model: its instructions, the user messages
+// so far and, if the model last called the tool, the tool output.
 type sent struct {
 	system     string
 	said       []string
 	toolOutput string
 	// noTool is set for a harness that offers the model no tool.
 	noTool bool
-	// sandboxed is set for a harness whose tool keeps a command in a sandbox
-	// unless the model asks otherwise, as the tool of Codex does.
+	// sandboxed is set for a harness whose tool runs commands in a sandbox
+	// unless the model asks otherwise, as Codex's does.
 	sandboxed bool
 }
 
-// parameters returns the parameters of the tool of the harness, of which
-// command is the one that takes the command.
+// parameters returns the parameters of the harness's tool, with command as
+// the name of the one that takes the command.
 func (s sent) parameters(command string) map[string]any {
 	properties := map[string]any{command: map[string]any{}}
 	if s.sandboxed {
@@ -42,21 +41,21 @@ func (s sent) parameters(command string) map[string]any {
 	return map[string]any{"properties": properties}
 }
 
-// reply is what the model answered with: a text, or the call of a tool with
-// a command, or a refusal.
+// reply is the model's answer: text, a tool call with a command, or a
+// refusal.
 type reply struct {
 	status  int
 	refusal string
 	text    string
 	tool    string
 	command string
-	// others holds what else the call asks of the tool.
+	// others holds the other arguments of the tool call.
 	others map[string]string
 	usage  map[string]float64
 }
 
-// events sends a request to the model and returns the status of the answer
-// and the events of its stream, or the refusal.
+// events sends a request to the model and returns the response status with
+// either the events of the stream or the refusal message.
 func events(t *testing.T, url, key string, request any) (int, []map[string]any, string) {
 	t.Helper()
 	body, err := json.Marshal(request)
@@ -98,8 +97,8 @@ func events(t *testing.T, url, key string, request any) (int, []map[string]any, 
 	return response.StatusCode, stream, ""
 }
 
-// at returns what is at the path in the JSON value: the names of fields and
-// the indexes of list items.
+// at returns the value at path in a JSON value, given as field names and
+// list indexes, or nil.
 func at(value any, path ...any) any {
 	for _, step := range path {
 		switch step := step.(type) {
@@ -122,8 +121,8 @@ func str(value any) string {
 	return text
 }
 
-// called takes in the arguments of a tool call: the command, whichever name
-// the tool gives it, and the others.
+// called parses the arguments of a tool call into the command, under either
+// parameter name, and the others.
 func (r *reply) called(arguments string) {
 	json.Unmarshal([]byte(arguments), &r.others)
 	for _, name := range []string{"command", "cmd"} {
@@ -207,7 +206,7 @@ func respond(t *testing.T, url string, conversation sent) reply {
 	return answer
 }
 
-// The script is the same for the harnesses that speak either API.
+// The script works the same on both APIs.
 func TestScript(t *testing.T) {
 	for api, ask := range map[string]func(*testing.T, string, sent) reply{"chat completions": chat, "responses": respond} {
 		t.Run(api, func(t *testing.T) {
@@ -217,8 +216,8 @@ func TestScript(t *testing.T) {
 			for _, test := range []struct {
 				name string
 				sent sent
-				// The answer is the text, or the call of the tool with the
-				// command, which may ask to run it outside the sandbox.
+				// The expected text, or the command of the tool call and
+				// whether it asks to run outside the sandbox.
 				text, command string
 				outside       bool
 			}{
@@ -230,8 +229,8 @@ func TestScript(t *testing.T) {
 					text: "mock: the harness offers no tool that runs a command",
 				},
 				{name: "what the tool returned", sent: sent{said: []string{"run ls -a"}, toolOutput: ". .. notes.txt"}, text: ". .. notes.txt"},
-				// Only a tool that keeps commands in a sandbox is asked to
-				// run one outside it, and only when the script says so.
+				// Only a sandboxed tool is asked to run a command outside its
+				// sandbox, and only by escalate.
 				{name: "escalate", sent: sent{said: []string{"escalate ls -a"}, sandboxed: true}, command: "ls -a", outside: true},
 				{name: "escalate without a sandbox", sent: sent{said: []string{"escalate ls -a"}}, command: "ls -a"},
 				{name: "run in a sandbox", sent: sent{said: []string{"run ls -a"}, sandboxed: true}, command: "ls -a"},
@@ -245,8 +244,7 @@ func TestScript(t *testing.T) {
 				},
 				{name: "recall at first", sent: sent{said: []string{"recall"}}, text: "nothing"},
 				{
-					// What a harness adds to the conversation is no message
-					// of the user.
+					// Messages that the harness adds are not instructions.
 					name: "recall", sent: sent{said: []string{"say one", "<context>today</context>", "run ls", "escalate ls", "recall"}},
 					text: "say one\nrun ls\nescalate ls",
 				},
@@ -272,7 +270,6 @@ func TestScript(t *testing.T) {
 					(test.command != "") != (answer.tool != "") || !maps.Equal(answer.others, others) {
 					t.Errorf("%s: the model answered with %+v", test.name, answer)
 				}
-				// Every answer reports the same usage.
 				if answer.usage["input"] != 11 || answer.usage["output"] != 7 || answer.usage["total"] != 18 {
 					t.Errorf("%s: the model reported the usage %v", test.name, answer.usage)
 				}
@@ -283,7 +280,6 @@ func TestScript(t *testing.T) {
 				t.Errorf("fail: the model answered with %+v", refused)
 			}
 
-			// A request is refused once, and answered when it comes again.
 			busy := sent{said: []string{"flaky later " + api}}
 			if first := ask(t, model.URL, busy); first.status != http.StatusServiceUnavailable {
 				t.Errorf("flaky: the model answered at first with %+v", first)
@@ -314,8 +310,8 @@ func TestRequests(t *testing.T) {
 	defer model.Close()
 	messages := []map[string]any{{"role": "user", "content": "say hello"}}
 	for _, path := range []string{"/v1/chat/completions", "/v1/responses"} {
-		// The model answers the Egress Proxy, which holds its key, and not a
-		// sandbox, which holds the token of its session.
+		// Only the Egress Proxy holds the key. A sandbox has only its session
+		// token.
 		for _, key := range []string{"", "a-session-token"} {
 			status, _, _ := events(t, model.URL+path, key, map[string]any{"stream": true, "messages": messages})
 			if status != http.StatusUnauthorized {
@@ -331,7 +327,7 @@ func TestRequests(t *testing.T) {
 	}
 }
 
-// As a forward proxy mock-llm lets nothing through.
+// As a forward proxy, mock-llm refuses every request.
 func TestProxy(t *testing.T) {
 	t.Parallel()
 	model := httptest.NewServer(newMock(apiKey))
@@ -344,13 +340,13 @@ func TestProxy(t *testing.T) {
 	if response, err := through.Get("http://example.com/v1/chat/completions"); err != nil || response.StatusCode != http.StatusForbidden {
 		t.Errorf("a request through the proxy was answered with %v: %v", response, err)
 	}
-	// A request over TLS asks the proxy for a tunnel first.
+	// An HTTPS request asks for a tunnel first, whose refusal is an error.
 	if response, err := through.Get("https://example.com/"); err == nil || !strings.Contains(err.Error(), "Forbidden") {
 		t.Errorf("a tunnel through the proxy was answered with %v: %v", response, err)
 	}
 }
 
-// mock-llm serves the wheel of a Python package, without a key.
+// The wheel is served without the API key.
 func TestPackage(t *testing.T) {
 	t.Parallel()
 	model := httptest.NewServer(newMock(apiKey))

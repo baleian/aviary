@@ -63,19 +63,20 @@ func TestSettings(t *testing.T) {
 	}
 }
 
-// field returns a string of a JSON object.
+// field returns a string field of a JSON object.
 func field(object json.RawMessage, name string) string {
 	var fields map[string]string
 	json.Unmarshal(object, &fields)
 	return fields[name]
 }
 
-// What the plugin asks a store to log in, and what it makes of the answers.
+// Login sends the role ID and the secret ID, and reports a refusal by its
+// status only.
 func TestLoginIsAsked(t *testing.T) {
 	t.Parallel()
 	const roleID, secretID = "the-role-id", "the-secret-id"
 	// answering returns the settings of a store that answers a login with
-	// the status and the body.
+	// status and body.
 	answering := func(status int, body string) json.RawMessage {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var sent map[string]string
@@ -95,7 +96,7 @@ func TestLoginIsAsked(t *testing.T) {
 	if err != nil || session != "the-token" || good != time.Hour {
 		t.Errorf("the login gave %v, good for %s: %v", session, good, err)
 	}
-	// What a store says beside its status is not passed on.
+	// Errors do not include the response body.
 	for _, refusing := range []struct {
 		store json.RawMessage
 		why   string
@@ -114,12 +115,12 @@ func TestLoginIsAsked(t *testing.T) {
 	}
 }
 
-// rootToken is what the secret store of the tests is set up with, as its
-// owner sets it up.
+// rootToken is the root token of the test secret store.
 const rootToken = "test"
 
-// owner sends the secret store of the tests a request as its owner does and
-// returns the data of the answer.
+// owner sends a request to the test secret store with the root token and
+// returns the data of the response. statuses are accepted besides 200 and
+// 204.
 func owner(t *testing.T, method, path string, body any, statuses ...int) map[string]any {
 	t.Helper()
 	encoded, err := json.Marshal(body)
@@ -149,13 +150,11 @@ func owner(t *testing.T, method, path string, body any, statuses ...int) map[str
 	return nil
 }
 
-// role gives the secret store of the tests a role of the test's own, as the
-// owner of a store does for Aviary: one that may read the secrets below a
-// path of its own. It returns the IDs that the role logs in with and that
-// path.
+// role creates an AppRole in the test secret store that may read the secrets
+// below a path of its own. It returns the role ID, a secret ID and the path.
 func role(t *testing.T) (roleID, secretID, path string) {
 	t.Helper()
-	// Several tests ask for the login, and one of them is the first.
+	// Enable AppRole. Another test may have done so already, hence the 400.
 	owner(t, "POST", "/v1/sys/auth/approle", map[string]string{"type": "approle"}, http.StatusBadRequest)
 	name := "test-" + strings.ToLower(rand.Text())
 	owner(t, "PUT", "/v1/sys/policies/acl/"+name, map[string]string{
@@ -170,8 +169,7 @@ func role(t *testing.T) (roleID, secretID, path string) {
 	return roleID, secretID, name
 }
 
-// A store that serves the API takes the login of the plugin, as the
-// Supervisor asks it: with the stores of an installation.
+// A real store takes the login of a role only with the role's own secret ID.
 func TestLoginToAStore(t *testing.T) {
 	t.Parallel()
 	address := testenv.SecretStoreURL(t)
@@ -207,9 +205,7 @@ func TestLoginToAStore(t *testing.T) {
 	}
 }
 
-// A store that serves the API is read as the Supervisor reads it, with the
-// stores of an installation: the value under a key of a secret that the
-// role of the store may read.
+// A real store is read through Stores, as the Supervisor reads it.
 func TestReadFromAStore(t *testing.T) {
 	t.Parallel()
 	address := testenv.SecretStoreURL(t)
@@ -225,7 +221,7 @@ func TestReadFromAStore(t *testing.T) {
 	roleID, secretID, own := role(t)
 	_, _, theirs := role(t)
 	ctx := context.Background()
-	// put keeps values at a path of the store, as its owner does.
+	// put writes values at path with the root token.
 	put := func(path string, values map[string]any) {
 		t.Helper()
 		owner(t, "POST", "/v1/secret/data/"+path, map[string]any{"data": values})
@@ -240,8 +236,7 @@ func TestReadFromAStore(t *testing.T) {
 			t.Errorf("the value at %s was read as %q: %v", path, read, err)
 		}
 	}
-	// What the store does not give, and why. No reason holds what the store
-	// said beside its status.
+	// Errors say why, and do not reveal values.
 	for name, refused := range map[string]struct{ path, key, why string }{
 		"a path without a secret":           {own + "/nothing", "api_key", "the store has no secret at the path"},
 		"a path that the role may not read": {theirs + "/model", "api_key", "the store does not let the role read the secret at the path"},
@@ -257,15 +252,14 @@ func TestReadFromAStore(t *testing.T) {
 			t.Errorf("%s was read as %q: %v", name, read, err)
 		}
 	}
-	// A store that does not take the login gives nothing.
+	// A wrong secret ID fails the login.
 	wrong := registered
 	wrong.ID = uuid.New()
 	if read, err := stores.Read(ctx, wrong, "not-the-secret-id", own+"/model", "api_key"); err == nil || read != "" || !strings.Contains(err.Error(), "does not take the login") {
 		t.Errorf("a store that was logged in to with another secret ID was read as %q: %v", read, err)
 	}
 
-	// The plugin reads what the store has now: the Supervisor asks it again
-	// when it no longer remembers.
+	// The plugin itself does not cache.
 	session, _, err := (Plugin{}).Login(ctx, http.DefaultClient, registered.Settings, secretID)
 	if err != nil {
 		t.Fatal(err)
@@ -274,13 +268,13 @@ func TestReadFromAStore(t *testing.T) {
 	if read, err := (Plugin{}).Read(ctx, http.DefaultClient, registered.Settings, session, own+"/model", "api_key"); err != nil || read != "sk-the-second" {
 		t.Errorf("after the value changed, it was read as %q: %v", read, err)
 	}
-	// A session that the store has ended is told apart from a path that the
-	// role may not read.
+	// A revoked token gives ErrSessionEnded, not a permission error.
 	owner(t, "POST", "/v1/auth/token/revoke", map[string]any{"token": session})
 	if read, err := (Plugin{}).Read(ctx, http.DefaultClient, registered.Settings, session, own+"/model", "api_key"); !errors.Is(err, secret.ErrSessionEnded) || read != "" {
 		t.Errorf("with a session that has ended, the value was read as %q: %v", read, err)
 	}
-	// The Supervisor, which remembers its own session, logs in again.
+	// Stores still serves its cached value: the revoked token was not its
+	// own session.
 	if read, err := stores.Read(ctx, registered, secretID, own+"/model", "api_key"); err != nil || read != "sk-the-first" {
 		t.Errorf("the value that the Supervisor remembers was read as %q: %v", read, err)
 	}

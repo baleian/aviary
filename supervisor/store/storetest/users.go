@@ -11,7 +11,7 @@ import (
 func (suite suite) testUsers(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
-	// see is what the identity provider tells of a user with a request.
+	// see calls UserOf as an authenticated request does, and checks the user.
 	see := func(subject, username, displayName string) store.User {
 		t.Helper()
 		user, err := st.UserOf(ctx, subject, username, displayName)
@@ -31,16 +31,15 @@ func (suite suite) testUsers(t *testing.T) {
 	if again := see("subject-a", "alice@example.com", "Alice"); again != alice {
 		t.Errorf("a user that was seen again is %+v, not %+v", again, alice)
 	}
-	// What the provider tells of a user changes, one thing at a time, and
-	// the user is the same.
+	// The user stays the same while its details change, one at a time.
 	if shown := see("subject-a", "alice@example.com", "Alice Kim"); shown.ID != alice.ID || shown.Username != "alice@example.com" {
 		t.Errorf("a user that is shown as something else is %+v, and was %+v", shown, alice)
 	}
 	if renamed := see("subject-a", "alice.kim@example.com", "Alice Kim"); renamed.ID != alice.ID || renamed.Username != "alice.kim@example.com" || !renamed.CreatedAt.Equal(alice.CreatedAt) {
 		t.Errorf("a user that the provider renamed is %+v, and was %+v", renamed, alice)
 	}
-	// A user that is given no username keeps the one that it has, also when
-	// something else of the user changes.
+	// A user given no username keeps its own, also when its display name
+	// changes.
 	if kept := see("subject-a", "", "Alice Kim"); kept.ID != alice.ID || kept.Username != "alice.kim@example.com" {
 		t.Errorf("a user that is given no username is %+v", kept)
 	}
@@ -48,8 +47,8 @@ func (suite suite) testUsers(t *testing.T) {
 		t.Errorf("a user that is given no username and is shown as something else is %+v", kept)
 	}
 
-	// A user without a username, and one with a name that differs only in
-	// its case: usernames are compared as they are written.
+	// A user without a username, and one whose subject and username differ
+	// only in case: both are case-sensitive.
 	nameless := see("subject-b", "", "")
 	if nameless.ID == alice.ID || nameless.Username != "" {
 		t.Errorf("a user without a username is %+v", nameless)
@@ -61,8 +60,7 @@ func (suite suite) testUsers(t *testing.T) {
 		t.Errorf("after another user was seen, the user is %+v", still)
 	}
 
-	// The provider gives the username of one user to another: the other
-	// has it from then on, and is not the user that had it.
+	// A username that the provider gives to another user moves to that user.
 	taker := see("subject-c", "alice.kim@example.com", "A new Alice")
 	if taker.ID == alice.ID || taker.Username != "alice.kim@example.com" {
 		t.Errorf("a user that was given the username of another is %+v", taker)
@@ -70,7 +68,7 @@ func (suite suite) testUsers(t *testing.T) {
 	if left := see("subject-a", "", "Alice Kim"); left.ID != alice.ID || left.Username != "" {
 		t.Errorf("the user whose username was given to another is %+v", left)
 	}
-	// And gives it back.
+	// And back to the first user.
 	if back := see("subject-a", "alice.kim@example.com", "Alice Kim"); back.ID != alice.ID || back.Username != "alice.kim@example.com" {
 		t.Errorf("the user that was given its username back is %+v", back)
 	}
@@ -79,7 +77,7 @@ func (suite suite) testUsers(t *testing.T) {
 	}
 }
 
-// Supervisors see a user for the first time at once: there is one user.
+// Concurrent first sightings of a user create one user.
 func (suite suite) testSupervisorsSeeAUserFirstTogether(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -99,10 +97,8 @@ func (suite suite) testSupervisorsSeeAUserFirstTogether(t *testing.T) {
 	}
 }
 
-// A session is that of the user who created it, and a turn that of the user
-// who sent its message, or they are nobody's. A request of a running turn
-// comes from the one who sent the message of the turn, whom the identity
-// provider knows by a subject.
+// Sessions and turns record the user who created them, or uuid.Nil, and the
+// origin of a running turn names the user who sent its message.
 func (suite suite) testSessionOfAUser(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -126,8 +122,7 @@ func (suite suite) testSessionOfAUser(t *testing.T) {
 		t.Errorf("the session of the user %s was created as %+v and is read as %+v", user.ID, created, read)
 	}
 
-	// The store keeps who sent a message, whoever's session it is sent to:
-	// another user, the user and nobody.
+	// A turn records its sender, whoever owns the session.
 	other, err := st.UserOf(ctx, "subject-b", "", "")
 	if err != nil {
 		t.Fatal(err)

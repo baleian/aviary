@@ -20,9 +20,6 @@ import (
 	memorystore "aviary/supervisor/store/memory"
 )
 
-// The tests of this file run drivers on records in memory and sandboxes
-// whose runners the test plays.
-
 var ctx = context.Background()
 
 type installation struct {
@@ -33,7 +30,7 @@ type installation struct {
 	config  Config
 }
 
-// install sets an installation up with a harness, opencode.
+// install returns an in-memory installation with the harness opencode.
 func install(t *testing.T, changes ...func(*Config)) *installation {
 	t.Helper()
 	i := &installation{t: t, store: memorystore.New(), events: events.New(memorylog.New()), service: sandboxtest.New(t)}
@@ -54,9 +51,8 @@ func install(t *testing.T, changes ...func(*Config)) *installation {
 	return i
 }
 
-// supervisor starts a driver of the installation, and returns it with what
-// stops it: from then on it dispatches no turn and sweeps no more. It stops
-// with the test at the latest.
+// supervisor starts a driver and returns it with a function that stops it.
+// The driver stops at the end of the test at the latest.
 func (i *installation) supervisor() (*Driver, func()) {
 	running, stop := context.WithCancel(ctx)
 	i.t.Cleanup(stop)
@@ -72,7 +68,7 @@ func (i *installation) supervisor() (*Driver, func()) {
 	}
 }
 
-// session makes a session of a new agent.
+// session creates a session of a new agent in a new project.
 func (i *installation) session(agent store.Agent) store.Session {
 	i.t.Helper()
 	project, err := i.store.CreateProject(ctx, "test")
@@ -98,7 +94,6 @@ func (i *installation) session(agent store.Agent) store.Session {
 	return session
 }
 
-// sessionOf returns the session with the ID.
 func (i *installation) sessionOf(id uuid.UUID) store.Session {
 	i.t.Helper()
 	session, err := i.store.Session(ctx, id)
@@ -108,7 +103,7 @@ func (i *installation) sessionOf(id uuid.UUID) store.Session {
 	return session
 }
 
-// send accepts a message to the session as its next turn.
+// send accepts the message as the session's next turn and wakes the driver.
 func (i *installation) send(driver *Driver, session store.Session, text string) store.Turn {
 	i.t.Helper()
 	turn, err := driver.Accept(ctx, session.ID, uuid.Nil, text)
@@ -128,7 +123,7 @@ func (i *installation) turn(id uuid.UUID) store.Turn {
 	return turn
 }
 
-// sandbox returns the sandbox that the session has, or nothing.
+// sandbox returns the name of the session's sandbox, or "" if it has none.
 func (i *installation) sandbox(session store.Session) string {
 	i.t.Helper()
 	session, err := i.store.Session(ctx, session.ID)
@@ -138,7 +133,7 @@ func (i *installation) sandbox(session store.Session) string {
 	return session.Sandbox
 }
 
-// told returns the types of the events that the clients of the turn read.
+// told returns the types of the turn's events, as clients read them.
 func (i *installation) told(turn uuid.UUID) []string {
 	i.t.Helper()
 	var types []string
@@ -158,7 +153,7 @@ func (i *installation) told(turn uuid.UUID) []string {
 	}
 }
 
-// ended waits for the turn to end, and returns it.
+// ended waits for the turn to end and returns it.
 func (i *installation) ended(id uuid.UUID) store.Turn {
 	i.t.Helper()
 	for end := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
@@ -171,7 +166,7 @@ func (i *installation) ended(id uuid.UUID) store.Turn {
 	}
 }
 
-// eventually waits for what holds to hold.
+// eventually waits until holds returns true.
 func (i *installation) eventually(what string, holds func() bool) {
 	i.t.Helper()
 	for end := time.Now().Add(5 * time.Second); !holds(); time.Sleep(5 * time.Millisecond) {
@@ -200,8 +195,7 @@ func TestATurnRunsInTheSandboxOfItsSession(t *testing.T) {
 	if given.ID != turn.ID.String() || given.Text != "hello" || given.Instructions != "be kind" || given.Approval != Ask {
 		t.Errorf("the runner was given %+v", given)
 	}
-	// The harness reaches its model at the Egress Proxy, under the path of
-	// the provider.
+	// The model URL is the Egress Proxy's, with the provider's path.
 	want := map[string]string{
 		"AVIARY_LLM_BASE_URL": "http://egress-proxy.example.com:8080/v1",
 		"AVIARY_LLM_MODEL":    "a-model",
@@ -215,8 +209,6 @@ func TestATurnRunsInTheSandboxOfItsSession(t *testing.T) {
 	if len(given.Environment) != len(want) {
 		t.Errorf("the harness is started with %v", given.Environment)
 	}
-	// The sandbox is that of the session, says whose it is, and has the
-	// token of the session.
 	agent, _ := i.store.Agent(ctx, session.AgentID)
 	made := i.service.Made()[given.Sandbox]
 	if i.sandbox(session) != given.Sandbox || made.Session != session.ID || made.Pod.Harness.Image != "registry.example.com/opencode:1.0" ||
@@ -237,8 +229,6 @@ func TestATurnRunsInTheSandboxOfItsSession(t *testing.T) {
 		t.Errorf("the clients of the turn read %v", told)
 	}
 
-	// The next turn of the session runs in the same sandbox, and an agent
-	// that names no model and asks nobody is started with nothing.
 	next := i.send(driver, session, "and then")
 	again := i.service.Turn(t)
 	if again.Sandbox != given.Sandbox || again.ID != next.ID.String() || len(i.service.Made()) != 1 {
@@ -248,6 +238,7 @@ func TestATurnRunsInTheSandboxOfItsSession(t *testing.T) {
 	again.Tell("finished", finished)
 	i.ended(next.ID)
 
+	// An agent without a model or approval gets an empty environment.
 	plain := i.session(store.Agent{})
 	i.send(driver, plain, "hello")
 	if other := i.service.Turn(t); other.Sandbox == given.Sandbox || len(other.Environment) != 0 || other.Approval != "" {
@@ -265,7 +256,7 @@ func TestASessionWhoseSandboxIsGoneGetsANewOne(t *testing.T) {
 	given.Tell("finished", finished)
 	i.ended(first.ID)
 
-	// The new one has the name of the session too.
+	// The new sandbox gets the same name.
 	i.service.Lose(given.Sandbox)
 	second := i.send(driver, session, "are you there")
 	again := i.service.Turn(t)
@@ -320,7 +311,7 @@ func TestAReadingThatIsCutOffGoesOn(t *testing.T) {
 }
 
 func TestATurnThatDoesNotStartInTimeIsGivenUp(t *testing.T) {
-	// The installation has no more the harness of the agent.
+	// The agent's harness is not configured.
 	i := install(t, func(config *Config) {
 		config.MaxStartup = 300 * time.Millisecond
 		config.Harnesses = nil
@@ -336,8 +327,8 @@ func TestATurnThatDoesNotStartInTimeIsGivenUp(t *testing.T) {
 		t.Errorf("the sandboxes are %v", i.service.Made())
 	}
 
-	// A harness that does not take the message: its sandbox is put to sleep
-	// with the turn, and the next turn of the session wakes it.
+	// A harness that never starts the turn: its sandbox is put to sleep, and
+	// the next turn wakes it.
 	i = install(t, func(config *Config) { config.MaxStartup = 300 * time.Millisecond })
 	driver, _ = i.supervisor()
 	session = i.session(store.Agent{})
@@ -367,8 +358,7 @@ func TestATurnThatRunsForTooLongIsGivenUp(t *testing.T) {
 	if !failed(ended, store.FailureTimedOut) || !strings.Contains(ended.Failure.Message, "300ms") {
 		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
 	}
-	// Its sandbox is put to sleep, which stops what runs in it, and the
-	// session keeps it.
+	// The sandbox is put to sleep, and the session keeps it.
 	if i.service.State(given.Sandbox) != sandbox.Asleep || i.sandbox(session) != given.Sandbox {
 		t.Errorf("the sandbox is %s, and the session has %q", i.service.State(given.Sandbox), i.sandbox(session))
 	}
@@ -389,7 +379,7 @@ func TestATurnThatWaitsForAPersonHasNoMoreTimeThanAnyOther(t *testing.T) {
 	}
 }
 
-// cancel asks the turn to stop, as the API does.
+// cancel cancels the turn as the API does, with or without announcing it.
 func (i *installation) cancel(turn uuid.UUID, announce bool) {
 	i.t.Helper()
 	if _, _, err := i.store.CancelTurn(ctx, turn); err != nil {
@@ -403,7 +393,7 @@ func (i *installation) cancel(turn uuid.UUID, announce bool) {
 }
 
 func TestATurnIsToldToStop(t *testing.T) {
-	// The Supervisor that follows the turn hears of it, or finds it.
+	// The cancellation is announced, or found by a sweep.
 	for _, announce := range []bool{true, false} {
 		i := install(t)
 		driver, _ := i.supervisor()
@@ -440,7 +430,7 @@ func TestATurnThatDoesNotStopIsStopped(t *testing.T) {
 }
 
 func TestATurnThatIsAskedToStopBeforeItsRunnerHasItIsNotRun(t *testing.T) {
-	// The turn waits for its sandbox, which does not run yet.
+	// The sandbox stays starting.
 	i := install(t)
 	i.service.Slow(true)
 	driver, _ := i.supervisor()
@@ -462,13 +452,12 @@ func TestAnotherSupervisorTakesUpATurn(t *testing.T) {
 	given.Tell("message.delta", map[string]string{"text": "one"})
 	i.eventually("the events are recorded", func() bool { return len(i.told(turn.ID)) == 2 })
 
-	// The Supervisor that follows the turn goes. While nobody follows the
-	// turn, the runner tells more of it, and the turn is asked to stop.
+	// While no Supervisor follows the turn, the runner sends another event
+	// and the turn is cancelled.
 	leave()
 	given.Tell("message.delta", map[string]string{"text": "two"})
 	i.cancel(turn.ID, false)
-	// Another Supervisor takes the turn up: it records what was told, and
-	// passes on what was asked.
+	// The next Supervisor records the event and passes the cancellation on.
 	second, _ := i.supervisor()
 	i.eventually("the other supervisor records the turn", func() bool { return len(i.told(turn.ID)) == 3 })
 	given.Stopped(t)
@@ -480,7 +469,7 @@ func TestAnotherSupervisorTakesUpATurn(t *testing.T) {
 	if told := i.told(turn.ID); !slices.Equal(told, want) {
 		t.Errorf("the clients of the turn read %v", told)
 	}
-	// The runner was given the turn once, and the session has one sandbox.
+	// The turn was given once, and the session has one sandbox.
 	if len(i.service.Made()) != 1 {
 		t.Errorf("the sandboxes are %v", i.service.Made())
 	}
@@ -500,14 +489,14 @@ func TestATurnThatItsRunnerHasLostIsNotRunAgain(t *testing.T) {
 	i.eventually("the turn has started", func() bool { return i.turn(turn.ID).StartedAt != nil })
 	leave()
 
-	// While no Supervisor follows the turn, its runner is started again.
+	// The runner restarts while no Supervisor follows the turn.
 	i.service.Restart(given.Sandbox)
 	i.supervisor()
 	ended := i.ended(turn.ID)
 	if !failed(ended, store.FailureRunner) || !strings.Contains(ended.Failure.Message, "does not have the turn") {
 		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
 	}
-	// The sandbox stays, with what the agent has in it.
+	// The sandbox is kept, with its volume.
 	if i.sandbox(session) != given.Sandbox || len(i.service.Made()) != 1 {
 		t.Errorf("the session has the sandbox %q, of %v", i.sandbox(session), i.service.Made())
 	}
@@ -523,7 +512,7 @@ func TestARunnerThatRunsAnotherTurnIsStoppedWithItsPod(t *testing.T) {
 	given.Tell("finished", finished)
 	i.ended(first.ID)
 
-	// A turn that the installation knows nothing of runs in the sandbox.
+	// The runner runs a turn that the store does not know.
 	seen, err := i.service.Sandbox(ctx, given.Sandbox)
 	if err != nil {
 		t.Fatal(err)
@@ -536,7 +525,7 @@ func TestARunnerThatRunsAnotherTurnIsStoppedWithItsPod(t *testing.T) {
 	if ended := i.ended(next.ID); !failed(ended, store.FailureRunner) || !strings.Contains(ended.Failure.Message, "runs another turn") {
 		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
 	}
-	// The sandbox is put to sleep, which stops the other turn with the pod.
+	// Putting the sandbox to sleep stops the other turn with the pod.
 	if i.service.State(given.Sandbox) != sandbox.Asleep || i.sandbox(session) != given.Sandbox {
 		t.Errorf("the sandbox is %s, and the session has %q", i.service.State(given.Sandbox), i.sandbox(session))
 	}
@@ -554,7 +543,7 @@ func TestTwoSupervisorsMakeOneSandboxForASession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Both find the session without a sandbox, and each makes one.
+	// Both find the session without a sandbox and create one.
 	var made [2]string
 	for n := range made {
 		if made[n], err = driver.provide(ctx, &run{turn: followed}); err != nil {
@@ -576,7 +565,7 @@ func TestWhatARunnerTellsIsNotTakenAtItsWord(t *testing.T) {
 	turn := i.send(driver, session, "hello")
 	given := i.service.Turn(t)
 	given.Tell("started", started)
-	// An event that only the Supervisor tells, and one that nobody knows.
+	// An event that only the Supervisor may send, and an unknown one.
 	given.Tell(events.TurnCompleted, map[string]string{"stop_reason": "end_turn"})
 	given.Tell("something.new", map[string]string{})
 	given.Tell("message.delta", map[string]string{"text": "hi"})
@@ -584,7 +573,7 @@ func TestWhatARunnerTellsIsNotTakenAtItsWord(t *testing.T) {
 	if state := i.turn(turn.ID).State; state != store.TurnRunning {
 		t.Errorf("the turn is %s", state)
 	}
-	// A failure that is none of a runner's.
+	// A failure reason that a runner may not report.
 	given.Tell("failed", map[string]string{"reason": "timed_out", "message": "no"})
 	ended := i.ended(turn.ID)
 	if !failed(ended, store.FailureRunner) || ended.Failure.Message != "no" {
@@ -608,8 +597,8 @@ func TestASessionThatSleepsIsWokenForItsNextTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The installation is upgraded while the session sleeps. Its sandbox
-	// wakes with the harness as the installation has it now.
+	// The harness is upgraded while the session sleeps, and the sandbox
+	// wakes with the new image.
 	stop()
 	i.config.Harnesses = map[string]sandbox.Harness{"opencode": {Image: "registry.example.com/opencode:2.0"}}
 	driver, _ = i.supervisor()
@@ -638,9 +627,8 @@ func TestASandboxThatIsNotWokenInTimeStaysWithItsSession(t *testing.T) {
 	given.Tell("finished", finished)
 	i.ended(first.ID)
 
-	// The sandbox wakes as slowly as on a node that does not have its image
-	// yet. The turn did not reach it, and it stays with what the agent had in
-	// it.
+	// The sandbox wakes slowly, as on a node without the image. The turn
+	// never reaches it, so it is kept.
 	if err := i.service.Suspend(ctx, given.Sandbox, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -663,14 +651,14 @@ func TestASandboxThatIsNotWokenInTimeStaysWithItsSession(t *testing.T) {
 func TestASessionThatIsNotAtWorkIsPutToSleep(t *testing.T) {
 	i := install(t, func(config *Config) {
 		config.Idle = 300 * time.Millisecond
-		// The sandboxes are looked at every six sweeps.
+		// Sandboxes are looked at only every few sweeps.
 		config.Sweep = 20 * time.Millisecond
 	})
 	driver, _ := i.supervisor()
 	session := i.session(store.Agent{})
 	first := i.send(driver, session, "hello")
 	given := i.service.Turn(t)
-	// A session whose turn runs is at work, for however long the turn runs.
+	// A session with a running turn is not idle, however long the turn runs.
 	given.Tell("started", started)
 	time.Sleep(3 * i.config.Idle)
 	if state := i.service.State(given.Sandbox); state != sandbox.Running {
@@ -702,9 +690,9 @@ func TestATurnThatComesAsItsSessionIsPutToSleepWakesIt(t *testing.T) {
 	given.Tell("finished", finished)
 	i.ended(first.ID)
 
-	// Another Supervisor found the session not at work, and puts the
-	// sandbox to sleep after the next turn has looked at it, before the turn
-	// is given to it. The turn wakes it and runs.
+	// Another Supervisor puts the idle sandbox to sleep after the next turn
+	// read it, but before the turn is given to it. The turn wakes it and
+	// runs.
 	i.service.SleepBeforeKeep(given.Sandbox)
 	next := i.send(driver, session, "and then")
 	again := i.service.Turn(t)
@@ -718,11 +706,11 @@ func TestATurnThatComesAsItsSessionIsPutToSleepWakesIt(t *testing.T) {
 	}
 }
 
-// asks is the event of a harness that asks a person before it goes on.
+// asks is the data of an approval.requested event.
 var asks = map[string]any{"id": "1", "options": []map[string]string{{"id": "once", "kind": "allow_once", "name": "Once"}}}
 
 func TestATurnThatWaitsForAPersonGoesOnWhenItIsToldSomething(t *testing.T) {
-	// The turn is answered, or told to stop.
+	// The request is answered, or the turn is cancelled.
 	for _, answered := range []bool{true, false} {
 		i := install(t)
 		driver, _ := i.supervisor()
@@ -774,8 +762,8 @@ func TestASandboxThatItsSessionDoesNotHaveIsDeleted(t *testing.T) {
 	given.Tell("finished", finished)
 	i.ended(turn.ID)
 
-	// stray makes the sandbox of a session as a Supervisor does that then
-	// goes, before it has told the session.
+	// stray creates a session's sandbox as a Supervisor that stops before
+	// recording it would.
 	stray := func(session uuid.UUID) string {
 		if err := i.service.Create(ctx, sandbox.Request{Session: session}); err != nil {
 			t.Fatal(err)
@@ -783,7 +771,7 @@ func TestASandboxThatItsSessionDoesNotHaveIsDeleted(t *testing.T) {
 		return sandbox.Name(session)
 	}
 	left, young := stray(i.session(store.Agent{}).ID), stray(i.session(store.Agent{}).ID)
-	// The sandbox of a session that these records do not know.
+	// The sandbox of a session that the store does not know.
 	foreign := stray(uuid.New())
 	for _, name := range []string{given.Sandbox, left, foreign} {
 		i.service.Age(name, time.Hour)
@@ -809,7 +797,6 @@ func TestATurnWhoseSandboxIsPutToSleepFails(t *testing.T) {
 	given.Tell("started", started)
 	i.eventually("the turn has started", func() bool { return i.turn(turn.ID).StartedAt != nil })
 
-	// What ran in the sandbox stops with its pod.
 	if err := i.service.Suspend(ctx, given.Sandbox, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -817,7 +804,7 @@ func TestATurnWhoseSandboxIsPutToSleepFails(t *testing.T) {
 	if !failed(ended, store.FailureRunner) || !strings.Contains(ended.Failure.Message, "put to sleep") {
 		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
 	}
-	// The session goes on in its sandbox, with its volume.
+	// The session continues in the same sandbox.
 	next := i.send(driver, session, "and then")
 	if again := i.service.Turn(t); again.ID != next.ID.String() || again.Sandbox != given.Sandbox {
 		t.Errorf("the next turn was given as %+v", again)
@@ -830,7 +817,7 @@ func TestASessionThatIsNotUsedForLongerThanItsSandboxIsKeptHasEnded(t *testing.T
 	session := i.session(store.Agent{})
 	first := i.send(driver, session, "hello")
 	given := i.service.Turn(t)
-	// The sandbox is kept for that long from when a turn is given to it.
+	// The sandbox expires Retention after a turn is given to it.
 	if left := time.Until(i.service.Expires(given.Sandbox)); left < 59*time.Minute || left > time.Hour {
 		t.Errorf("the sandbox of the session is kept for %s", left)
 	}
@@ -838,8 +825,7 @@ func TestASessionThatIsNotUsedForLongerThanItsSandboxIsKeptHasEnded(t *testing.T
 	given.Tell("finished", finished)
 	i.ended(first.ID)
 
-	// A sandbox that is lost sooner is another matter: the session goes on
-	// in a new one.
+	// If the sandbox is lost sooner, the session continues in a new one.
 	i.service.Lose(given.Sandbox)
 	second := i.send(driver, session, "are you there")
 	again := i.service.Turn(t)

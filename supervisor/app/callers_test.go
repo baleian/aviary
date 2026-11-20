@@ -15,7 +15,7 @@ import (
 	"aviary/supervisor/internal/api"
 )
 
-// tokens is an identity provider that knows the callers of some tokens.
+// tokens is an identity provider that maps tokens to callers.
 type tokens map[string]identity.Caller
 
 func (t tokens) Caller(_ context.Context, token string) (identity.Caller, error) {
@@ -26,7 +26,7 @@ func (t tokens) Caller(_ context.Context, token string) (identity.Caller, error)
 	return caller, nil
 }
 
-// me is what the API answers of the caller of a request.
+// me is the response of GET /v1/me.
 type me struct {
 	ID          string   `json:"id"`
 	Subject     string   `json:"subject"`
@@ -36,15 +36,14 @@ type me struct {
 	Admin       bool     `json:"admin"`
 }
 
-// An installation with an identity provider takes a request only with a
-// token of the provider, and tells the caller what it read from the token.
+// With an identity provider, a request needs a bearer token of the provider,
+// and /v1/me returns the caller that the token names.
 func TestCallersAreAskedWhoTheyAre(t *testing.T) {
 	installation := install(t)
 	alice := identity.Caller{Subject: "subject-1", Username: "alice@example.com", DisplayName: "Alice Kim", Groups: []string{"team-a"}}
 	installation.callers = api.Callers{Provider: tokens{"token-of-alice": alice}}
 	s := installation.supervisor()
 
-	// send sends a request with the header that tells who sends it.
 	send := func(method, path, authorization string) *http.Response {
 		t.Helper()
 		request, err := http.NewRequest(method, s.api+path, strings.NewReader(`{"name": "a project"}`))
@@ -72,7 +71,7 @@ func TestCallersAreAskedWhoTheyAre(t *testing.T) {
 			}
 		}
 	}
-	// Kubernetes is not asked who it is.
+	// Health checks need no token.
 	if response := send(http.MethodGet, "/healthz", ""); response.StatusCode != http.StatusOK {
 		t.Errorf("a Supervisor is asked whether it is up, and answers %d", response.StatusCode)
 	}
@@ -90,9 +89,9 @@ func TestCallersAreAskedWhoTheyAre(t *testing.T) {
 	}
 }
 
-// A caller is a user of the installation from the first request on: the
-// same one with every request and through every Supervisor, and another
-// than every other caller.
+// A caller becomes a user on the first request. The user ID is the same for
+// every token of the subject and through every Supervisor, and differs from
+// that of every other subject.
 func TestCallersAreUsers(t *testing.T) {
 	installation := install(t)
 	installation.callers = api.Callers{Provider: tokens{
@@ -114,7 +113,7 @@ func TestCallersAreUsers(t *testing.T) {
 	if again := ask(other, "token-of-alice"); again.ID != alice.ID {
 		t.Errorf("a caller is the user %s to one Supervisor and %s to another", alice.ID, again.ID)
 	}
-	// A token that tells something else of the same caller.
+	// Another token of the same subject updates the display name.
 	if renamed := ask(one, "another-of-alice"); renamed.ID != alice.ID || renamed.DisplayName != "Alice Kim" {
 		t.Errorf("the caller is told %+v with another of its tokens, and was the user %s", renamed, alice.ID)
 	}
@@ -127,9 +126,8 @@ func TestCallersAreUsers(t *testing.T) {
 	}
 }
 
-// The groups that the identity provider gives a caller say whether the
-// caller is an administrator of the installation, and whether the caller
-// may use the API at all.
+// The admin groups make a caller an admin, and the user groups, if any,
+// limit who may use the API.
 func TestGroupsOfAdministratorsAndOfUsers(t *testing.T) {
 	provider := tokens{
 		"an-administrator": {Subject: "1", Groups: []string{"others", "platform"}},
@@ -139,8 +137,8 @@ func TestGroupsOfAdministratorsAndOfUsers(t *testing.T) {
 	}
 	for name, test := range map[string]struct {
 		callers api.Callers
-		// admins and refused are the tokens of the callers that are
-		// administrators and of those that may not use the API.
+		// admins and refused are the tokens of the admins and of the callers
+		// that may not use the API.
 		admins, refused []string
 	}{
 		"groups of administrators and of users": {
@@ -162,8 +160,7 @@ func TestGroupsOfAdministratorsAndOfUsers(t *testing.T) {
 			s := installation.supervisor()
 			for token, caller := range provider {
 				s.token = token
-				// Every caller is told who the installation takes them for,
-				// also one that may do nothing else.
+				// Even a caller that may not use the API can read /v1/me.
 				var told me
 				if status, _ := s.request(http.MethodGet, "/v1/me", "", &told); status != http.StatusOK ||
 					told.Subject != caller.Subject || told.Admin != contains(test.admins, token) {
@@ -192,12 +189,11 @@ func contains(all []string, one string) bool {
 	return false
 }
 
-// An installation without an identity provider asks nobody: a request needs
-// no token, what it brings is not looked at, and its caller is an
-// administrator.
+// Without an identity provider, tokens are ignored and every caller is an
+// admin.
 func TestNobodyIsAskedWithoutAnIdentityProvider(t *testing.T) {
 	installation := install(t)
-	// Groups mean nothing without a provider that gives them.
+	// Groups are ignored without a provider.
 	installation.callers = api.Callers{Admins: []string{"platform"}, Users: []string{"team-a"}}
 	s := installation.supervisor()
 	for _, token := range []string{"", "any-token"} {
@@ -212,8 +208,8 @@ func TestNobodyIsAskedWithoutAnIdentityProvider(t *testing.T) {
 	}
 }
 
-// providers is a plugin for the identity providers of the kind "tokens",
-// whose settings are the callers of the tokens.
+// providers is an identity provider plugin of the kind "tokens", whose
+// settings map tokens to callers.
 type providers struct{}
 
 func (providers) Kind() string { return "tokens" }
@@ -226,10 +222,9 @@ func (providers) Open(_ context.Context, settings json.RawMessage) (identity.Pro
 	return known, nil
 }
 
-// Who may use the API is what the settings of the installation say: the
-// identity provider that they name, opened by the plugin for its kind, and
-// the groups of administrators and of users. An installation that names no
-// provider has none, and no groups.
+// callersOf opens the identity provider with the plugin for its kind, and
+// reads the admin and user groups. Without a provider, it returns no groups
+// either.
 func TestCallerSettings(t *testing.T) {
 	ctx := context.Background()
 	plugins := []identity.Plugin{providers{}}
@@ -269,9 +264,8 @@ func TestCallerSettings(t *testing.T) {
 	}
 }
 
-// A session is that of the caller who created it, and a turn that of the
-// caller who sent its message. In an installation that asks nobody who they
-// are, they are nobody's.
+// Sessions and turns record the user who created them, and no user without
+// an identity provider.
 func TestASessionIsOfItsCreator(t *testing.T) {
 	installation := install(t)
 	installation.callers = api.Callers{
@@ -283,9 +277,8 @@ func TestASessionIsOfItsCreator(t *testing.T) {
 		Admins: []string{"platform"},
 	}
 	s := installation.supervisor()
-	// session creates a session of the agent with the token, and returns
-	// who the caller is and whose the session is: as it was created and as
-	// it is read.
+	// session creates a session of the agent as the caller with token, and
+	// returns the caller, the created session and the session as read back.
 	session := func(token, agent string) (caller me, created, read map[string]any) {
 		t.Helper()
 		s.token = token
@@ -339,9 +332,8 @@ func TestASessionIsOfItsCreator(t *testing.T) {
 	}
 }
 
-// The Egress Proxy is told who sent the message of the turn that a request
-// comes from, for its record: the user, and the subject that the identity
-// provider knows the user by.
+// For its access log, the Egress Proxy gets the user ID and the subject of
+// whoever sent the message of the turn that a request comes from.
 func TestProxyIsToldWhoSentTheMessageOfATurn(t *testing.T) {
 	aviary := install(t)
 	aviary.callers = api.Callers{

@@ -1,7 +1,6 @@
-// Package memory keeps the Supervisor's records in the memory of the
-// process. It is for tests: the Supervisors of a test share one store as the
-// Supervisors of an installation share a database, and nothing outlasts the
-// test.
+// Package memory implements store.Store in memory, for tests. The
+// Supervisors of a test share one Store as those of an installation share a
+// database.
 package memory
 
 import (
@@ -21,62 +20,53 @@ import (
 	"aviary/supervisor/store"
 )
 
-// Store is a store in memory. Its zero value is not one: New makes it.
+// Store is a store.Store in memory. Use New to create one.
 type Store struct {
-	// mu guards all that the store holds. An operation holds it from its
-	// beginning to its end, as a database runs it in a transaction.
+	// mu guards the records and last. Every operation holds it from start to
+	// end, as a database transaction would.
 	mu sync.Mutex
-	// announcing is held while the turns that wait are told their positions.
+	// announcing serializes AnnounceQueue.
 	announcing sync.Mutex
-	// last is the time that the clock gave last.
+	// last is the time that now returned last.
 	last time.Time
 
 	projects map[uuid.UUID]store.Project
-	// members are the members of the projects in the order in which they
-	// were added.
+	// members are in the order in which they were added.
 	members []*member
-	// roles are the roles by their names.
-	roles map[string]*store.Role
-	// users are the users by their subjects.
+	// roles are keyed by name, and users by subject.
+	roles        map[string]*store.Role
 	users        map[string]*store.User
 	agents       map[uuid.UUID]store.Agent
 	sessions     map[uuid.UUID]*session
 	providers    map[uuid.UUID]store.Provider
 	secretStores map[uuid.UUID]store.SecretStore
 	turns        map[uuid.UUID]*turn
-	// created are the turns in the order in which they were created.
+	// created holds the turns in creation order.
 	created []*turn
 }
 
-// session is what the store holds of a session.
 type session struct {
 	store.Session
-	// turns are the turns of the session, in their order.
+	// turns are in sequence order.
 	turns []*turn
 }
 
-// turn is what the store holds of a turn.
 type turn struct {
 	store.Turn
 	dispatchedAt *time.Time
-	// items are what the agent said and did in the turn.
-	items []json.RawMessage
-	// approvals are the requests of the turn for approval, oldest first.
+	items        []json.RawMessage
+	// approvals are oldest first.
 	approvals []*approval
 }
 
-// approval is a request of a turn's harness for approval.
 type approval struct {
-	id          string
-	request     json.RawMessage
-	requestedAt time.Time
-	// optionID is the option that a person chose, if answered, and
-	// answeredBy the user who chose it.
+	id                 string
+	request            json.RawMessage
+	requestedAt        time.Time
 	optionID           string
 	answeredBy         uuid.UUID
 	answered, resolved bool
-	// resolvedAt is when the harness got its answer, if resolved.
-	resolvedAt time.Time
+	resolvedAt         time.Time
 }
 
 func New() *Store {
@@ -102,12 +92,11 @@ func New() *Store {
 	}
 }
 
-// Close does nothing: the Supervisors of a test share the store.
+// Close does nothing, since the Supervisors of a test share the Store.
 func (*Store) Close() {}
 
-// Age makes the turns so much older: all that the store has recorded of when
-// something happened to them, and to their requests for approval, is that
-// long before. It is how a test lets time pass.
+// Age moves all recorded times of the turns and of their approval requests
+// back by the given duration, so that tests can let time pass.
 func (s *Store) Age(by time.Duration, turns ...uuid.UUID) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -130,8 +119,7 @@ func (s *Store) Age(by time.Duration, turns ...uuid.UUID) {
 	}
 }
 
-// begin begins an operation, which ends when the caller gives the lock back.
-// An operation whose caller waits for it no longer does not begin.
+// begin locks mu for an operation, unless ctx is done. The caller unlocks it.
 func (s *Store) begin(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -140,9 +128,8 @@ func (s *Store) begin(ctx context.Context) error {
 	return nil
 }
 
-// now returns the time, which is later every time that it is asked: of two
-// things that the store records, one happened first. The caller holds the
-// lock.
+// now returns the current time, strictly later than any time that it returned
+// before, so that no two recorded events happen at once. The caller holds mu.
 func (s *Store) now() time.Time {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	if !now.After(s.last) {
@@ -152,7 +139,6 @@ func (s *Store) now() time.Time {
 	return now
 }
 
-// clone returns a copy of what the pointer points to, if anything.
 func clone[T any](value *T) *T {
 	if value == nil {
 		return nil
@@ -161,7 +147,7 @@ func clone[T any](value *T) *T {
 	return &copied
 }
 
-// valid tells whether JSON that the store is given is JSON.
+// valid rejects invalid JSON, as a database does.
 func valid(what string, given json.RawMessage) error {
 	if !json.Valid(given) {
 		return fmt.Errorf("%s is not JSON: %.100s", what, given)
@@ -169,8 +155,8 @@ func valid(what string, given json.RawMessage) error {
 	return nil
 }
 
-// The store gives out copies of what it holds, and holds copies of what it
-// is given: nothing that a caller changes afterwards changes a record.
+// The Store copies records on the way in and out, so that callers cannot
+// change them in place.
 
 func agentOf(agent store.Agent) store.Agent {
 	agent.Model = clone(agent.Model)
@@ -196,14 +182,12 @@ func usageOf(usage *store.Usage) *store.Usage {
 	return usage
 }
 
-// record returns the session as its record is read.
 func (s *session) record() store.Session {
 	session := s.Session
 	session.EndedAt = clone(s.EndedAt)
 	return session
 }
 
-// record returns the turn as its record is read.
 func (t *turn) record() store.Turn {
 	turn := t.Turn
 	turn.StartedAt, turn.StopReason, turn.EndedAt = clone(t.StartedAt), clone(t.StopReason), clone(t.EndedAt)
@@ -262,15 +246,14 @@ func (s *Store) CreateAgent(ctx context.Context, projectID uuid.UUID, agent stor
 	return agentOf(created), nil
 }
 
-// member is a member of a project. If it is a user, that is the user whose
-// subject it has, or else someone awaited under the username that it has.
+// member refers to its user by subject or, while the user is awaited, by
+// username.
 type member struct {
 	store.Member
 	subject, username string
 }
 
-// record returns the member as the store gives it out: with its user as
-// the user is now.
+// record returns a copy of the member with its user as the user is now.
 func (s *Store) record(of *member) store.Member {
 	record := of.Member
 	record.Permissions = slices.Clone(of.Permissions)
@@ -284,8 +267,8 @@ func (s *Store) record(of *member) store.Member {
 	return record
 }
 
-// claim makes the user with the username the member that projects await
-// under it.
+// claim gives the members awaited under username to the user who has it. In a
+// project where that user is a member already, the awaited member replaces it.
 func (s *Store) claim(username string) {
 	var user *store.User
 	for _, known := range s.users {
@@ -406,8 +389,7 @@ func (s *Store) ProjectsOf(ctx context.Context, userID uuid.UUID, groups []strin
 	})
 }
 
-// projectsThat returns the projects that the function picks, in the order
-// in which they were created.
+// projectsThat returns the projects that pick accepts, in creation order.
 func (s *Store) projectsThat(ctx context.Context, pick func(uuid.UUID) bool) ([]store.Project, error) {
 	if err := s.begin(ctx); err != nil {
 		return nil, err
@@ -628,8 +610,8 @@ func (s *Store) CreateProvider(ctx context.Context, provider store.Provider) (st
 	return providerOf(created), nil
 }
 
-// keyStore tells what is wrong with a provider whose key is in a secret
-// store that there is not. The caller holds the lock.
+// keyStore returns an error if the provider's key is in a secret store that
+// does not exist. The caller holds mu.
 func (s *Store) keyStore(provider store.Provider) error {
 	if at := provider.APIKeyAt; at != nil {
 		if _, found := s.secretStores[at.Store]; !found {
@@ -722,8 +704,7 @@ func (s *Store) ReplaceSecretStore(ctx context.Context, secrets store.SecretStor
 	return secretStoreOf(replaced), nil
 }
 
-// queued returns the turns that wait to run, in the order in which they will
-// run: oldest first. The caller holds the lock.
+// queued returns the queued turns, oldest first. The caller holds mu.
 func (s *Store) queued() []*turn {
 	var queued []*turn
 	for _, turn := range s.created {
@@ -740,8 +721,7 @@ func (s *Store) queued() []*turn {
 	return queued
 }
 
-// running returns how many turns run or are about to: those that were
-// dispatched and have not ended. The caller holds the lock.
+// running counts the dispatching and running turns. The caller holds mu.
 func (s *Store) running() int {
 	running := 0
 	for _, turn := range s.created {
@@ -771,7 +751,7 @@ func (s *Store) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text st
 	if turns := len(session.turns); turns > 0 && session.turns[turns-1].EndedAt == nil {
 		return store.Turn{}, 0, store.ErrSessionBusy
 	}
-	// A queued turn waits only if the turns that run leave it no room.
+	// Queued turns that have room to run do not wait.
 	waiting := len(s.queued()) + 1 - max(0, maxRunning-s.running())
 	if maxWaiting > 0 && waiting > maxWaiting {
 		return store.Turn{}, 0, store.ErrQueueFull
@@ -853,7 +833,6 @@ func (s *Store) TurnItems(ctx context.Context, turnIDs []uuid.UUID) (map[uuid.UU
 	return items, nil
 }
 
-// cloned returns copies of the JSON values.
 func cloned(values []json.RawMessage) []json.RawMessage {
 	cloned := make([]json.RawMessage, len(values))
 	for i, value := range values {
@@ -891,7 +870,6 @@ func (s *Store) CancelTurn(ctx context.Context, id uuid.UUID) (store.Turn, bool,
 		return turn.record(), false, nil
 	}
 	now := s.now()
-	// A queued turn ends at once. A dispatched one is only marked.
 	if turn.State == store.TurnQueued {
 		turn.State, turn.EndedAt = store.TurnCancelled, clone(&now)
 	}
@@ -979,7 +957,7 @@ func (s *Store) SessionTurn(ctx context.Context, sessionID uuid.UUID) (store.Ori
 	return store.Origin{}, store.ErrNotFound
 }
 
-// originOf is where the running turn comes from. The store is held.
+// originOf returns the origin of the running turn. The caller holds mu.
 func (s *Store) originOf(turn *turn) store.Origin {
 	agent := s.agents[s.sessions[turn.SessionID].AgentID]
 	origin := store.Origin{TurnID: turn.ID, SessionID: turn.SessionID, AgentID: agent.ID, ProjectID: agent.ProjectID, UserID: turn.CreatedBy}
@@ -994,7 +972,6 @@ func (s *Store) originOf(turn *turn) store.Origin {
 			ID: provider.ID, ProjectID: agent.ProjectID, URL: provider.URL, APIKey: bytes.Clone(provider.APIKey),
 			APIKeyAt: clone(provider.APIKeyAt),
 		}
-		// The key of the provider is in a secret store, which comes with it.
 		if provider.APIKeyAt != nil {
 			secrets := secretStoreOf(s.secretStores[provider.APIKeyAt.Store])
 			origin.SecretStore = &secrets
@@ -1043,9 +1020,8 @@ func (s *Store) SetFinished(ctx context.Context, turnID uuid.UUID, stopReason st
 	return nil
 }
 
-// EndTurn holds the store while it reads what the turn said, as the
-// transaction of a database holds the turn: what else is asked of the store
-// waits until the turn has ended or not.
+// EndTurn calls items with mu held, as the database stores call it with the
+// turn locked.
 func (s *Store) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool, failure store.Failure,
 	items func(context.Context) ([]json.RawMessage, error)) (store.Turn, bool, error) {
 	if err := s.begin(ctx); err != nil {
@@ -1067,9 +1043,6 @@ func (s *Store) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool, f
 	}
 	now := s.now()
 	turn.EndedAt, turn.items = &now, cloned(said)
-	// A turn that was asked to stop is cancelled, unless the harness had
-	// ended it by itself. Otherwise it is completed if its pod succeeded and
-	// the runner reported why the harness stopped, and failed if not.
 	ended := succeeded && turn.StopReason != nil
 	switch {
 	case turn.CancelRequestedAt != nil && !(ended && *turn.StopReason != "cancelled"):
@@ -1082,8 +1055,8 @@ func (s *Store) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool, f
 	return turn.record(), true, nil
 }
 
-// asked returns the request of the turn for approval with the ID, and the
-// turn, if there are such. The caller holds the lock.
+// asked returns the turn's approval request with the given ID and the turn,
+// each nil if it does not exist. The caller holds mu.
 func (s *Store) asked(turnID uuid.UUID, id string) (*approval, *turn) {
 	turn, found := s.turns[turnID]
 	if !found {
@@ -1109,14 +1082,14 @@ func (s *Store) AddApproval(ctx context.Context, turnID uuid.UUID, id string, re
 	if err := valid("the request for approval", request); err != nil {
 		return err
 	}
-	// A request that its runner reports again is there already.
+	// A runner may report a request again.
 	if kept == nil {
 		turn.approvals = append(turn.approvals, &approval{id: id, request: bytes.Clone(request), requestedAt: s.now()})
 	}
 	return nil
 }
 
-// ResolveApproval keeps no outcome: no operation of a store returns it.
+// ResolveApproval does not keep the outcome, which no Store method returns.
 func (s *Store) ResolveApproval(ctx context.Context, turnID uuid.UUID, id, _ string) (store.Approval, time.Duration, bool, error) {
 	if err := s.begin(ctx); err != nil {
 		return store.Approval{}, 0, false, err

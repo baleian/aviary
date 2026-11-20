@@ -9,8 +9,7 @@ import (
 	"aviary/supervisor/identity"
 )
 
-// plugin is a plugin for the providers of a kind, which says what it was
-// opened with.
+// plugin records the settings that it was opened with.
 type plugin struct {
 	kind   string
 	opened *string
@@ -23,8 +22,8 @@ func (p plugin) Open(_ context.Context, settings json.RawMessage) (identity.Prov
 	return nil, nil
 }
 
-// A provider is opened by the plugin for its kind, and a kind that the
-// build has no plugin for is refused with the kinds that it has.
+// Open uses the plugin for the kind, and refuses an unknown kind with an
+// error that lists the known kinds.
 func TestOpen(t *testing.T) {
 	var opened string
 	plugins := []identity.Plugin{plugin{"one", &opened}, plugin{"other", &opened}}

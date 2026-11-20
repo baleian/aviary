@@ -1,5 +1,5 @@
-// Package sandboxtest has the sandboxes of the sessions for tests, as the
-// cluster keeps them, in memory, with a runner in each that the test plays.
+// Package sandboxtest provides an in-memory fake of the session sandboxes,
+// with a fake runner in each.
 package sandboxtest
 
 import (
@@ -18,15 +18,15 @@ import (
 	"aviary/supervisor/internal/sandbox/runnertest"
 )
 
-// Service is the sandboxes, as the driver asks for them.
+// Service implements driver.Sandboxes in memory.
 type Service struct {
 	*runnertest.Runners
-	// server serves the runners: the runner of a sandbox under its name.
+	// server serves the runner of each sandbox under /{name}/.
 	server *httptest.Server
 
 	mu        sync.Mutex
 	sandboxes map[string]*made
-	// slow is whether a sandbox that is made or woken stays starting.
+	// slow keeps created and woken sandboxes starting.
 	slow bool
 }
 
@@ -34,18 +34,17 @@ type made struct {
 	request sandbox.Request
 	state   sandbox.State
 	created time.Time
-	// version counts the changes of the sandbox.
+	// version is incremented by every change, like a resourceVersion.
 	version int
-	// expires is when the sandbox is deleted, as it was told, and woken how
-	// often it was woken.
+	// expires is the requested shutdown time, and woken counts the resumes.
 	expires time.Time
 	woken   int
-	// sleepy is whether it is put to sleep just before it is next kept.
+	// sleepy puts the sandbox to sleep right before the next Keep.
 	sleepy bool
 	runner *runnertest.Runner
 }
 
-// New returns the sandboxes of a test, of which there are none yet.
+// New returns a Service without sandboxes.
 func New(t testing.TB) *Service {
 	s := &Service{Runners: runnertest.New(t), sandboxes: map[string]*made{}}
 	mux := http.NewServeMux()
@@ -90,7 +89,7 @@ func (s *Service) Sandbox(_ context.Context, name string) (sandbox.Sandbox, erro
 	if m == nil {
 		return sandbox.Sandbox{}, fmt.Errorf("the sandbox %s: %w", name, sandbox.ErrNotFound)
 	}
-	// A sandbox takes a moment to run: until it is looked at.
+	// A starting sandbox becomes ready when it is read, unless slow is set.
 	if m.state == sandbox.Starting && !s.slow {
 		m.state = sandbox.Running
 		m.version++
@@ -116,7 +115,7 @@ func (s *Service) seen(name string, m *made) sandbox.Sandbox {
 	return seen
 }
 
-// Delete deletes the sandbox. Its runner is gone with its pod.
+// Delete deletes the sandbox, and its runner with it.
 func (s *Service) Delete(_ context.Context, name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -127,9 +126,8 @@ func (s *Service) Delete(_ context.Context, name string) error {
 	return nil
 }
 
-// Suspend puts the sandbox to sleep, if it is of the version, or of any
-// without one. Its runner is gone with its pod, and those who read the
-// events of its turn are cut off.
+// Suspend puts the sandbox to sleep if version is empty or current. Its
+// runner goes with the pod, which cuts off the event streams of its turn.
 func (s *Service) Suspend(_ context.Context, name, version string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -151,7 +149,7 @@ func (s *Service) suspend(name string, m *made) {
 	m.runner = s.Runner(name)
 }
 
-// Resume wakes the sandbox, of the pod, with a runner that has no turn.
+// Resume wakes the sandbox with the pod and a runner that has no turn.
 func (s *Service) Resume(_ context.Context, name string, pod sandbox.Pod) error {
 	return s.change(name, func(m *made) {
 		m.request.Pod = pod
@@ -187,8 +185,8 @@ func (s *Service) change(name string, change func(*made)) error {
 	return nil
 }
 
-// Made returns the sandboxes that there are: what each was made for, by its
-// name, with the pod that it was last woken with.
+// Made returns the request of each sandbox by name, with the pod that it
+// last woke with.
 func (s *Service) Made() map[string]sandbox.Request {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -199,29 +197,27 @@ func (s *Service) Made() map[string]sandbox.Request {
 	return requests
 }
 
-// Slow has the sandboxes that are made or woken stay starting, as they do on
-// a node that does not have their image yet, or run once they are looked at
-// again.
+// Slow keeps created and woken sandboxes starting, as on a node that is
+// still pulling the image. Slow(false) lets them run when they are next read.
 func (s *Service) Slow(slow bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.slow = slow
 }
 
-// SleepBeforeKeep has the sandbox put to sleep just before it is next kept
-// for a turn, as by a Supervisor that found its session not at work just
-// before the turn came.
+// SleepBeforeKeep puts the sandbox to sleep right before its next Keep, as
+// another Supervisor that finds the session idle would.
 func (s *Service) SleepBeforeKeep(name string) {
 	_ = s.change(name, func(m *made) { m.sleepy = true })
 }
 
-// Age makes the sandbox so much older.
+// Age makes the sandbox older by the duration.
 func (s *Service) Age(name string, by time.Duration) {
 	_ = s.change(name, func(m *made) { m.created = m.created.Add(-by) })
 }
 
-// Restart has the runner of the sandbox started again, as the pod of one
-// that was gone: it has no turn.
+// Restart replaces the sandbox's runner with one that has no turn, as a
+// recreated pod would.
 func (s *Service) Restart(name string) {
 	_ = s.change(name, func(m *made) {
 		m.runner.Gone()
@@ -229,12 +225,12 @@ func (s *Service) Restart(name string) {
 	})
 }
 
-// Lose loses the sandbox, with its volume, as if it had expired.
+// Lose deletes the sandbox, as if it had expired.
 func (s *Service) Lose(name string) {
 	_ = s.Delete(context.Background(), name)
 }
 
-// Expires returns when the sandbox is deleted, as it was told.
+// Expires returns the requested shutdown time of the sandbox.
 func (s *Service) Expires(name string) time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -254,8 +250,8 @@ func (s *Service) Woken(name string) int {
 	return 0
 }
 
-// State returns what the sandbox does, as the test sees it: it is not
-// looked at for that.
+// State returns the state of the sandbox without reading it, so that a
+// starting sandbox stays starting.
 func (s *Service) State(name string) sandbox.State {
 	s.mu.Lock()
 	defer s.mu.Unlock()

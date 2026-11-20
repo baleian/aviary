@@ -23,9 +23,10 @@ import (
 	memorystore "aviary/supervisor/store/memory"
 )
 
-// build is a build of the tests. Its plugins connect to databases at
-// records:// and to event logs at log://, which are in memory, and ask
-// secret stores of the kind "recorded". It tells what was asked of them.
+// build is a fake build whose plugins record in asked the calls made to them.
+// Its database and event log plugins serve the schemes records and log from
+// memory, its secret store kind is "recorded" and its identity provider kind
+// is "callers".
 type build struct {
 	asked []string
 }
@@ -65,7 +66,7 @@ func (d database) MigrateTo(_ context.Context, address string, version int64) er
 	return nil
 }
 
-// opened is a store that tells when it is closed.
+// opened is a store that records when it is closed.
 type opened struct {
 	store.Store
 	*build
@@ -82,7 +83,7 @@ func (l eventLog) Open(address string) (events.Log, error) {
 	return openedLog{Log: memorylog.New(), build: l.build}, nil
 }
 
-// openedLog is an event log that tells when it is closed.
+// openedLog is an event log that records when it is closed.
 type openedLog struct {
 	events.Log
 	*build
@@ -109,9 +110,8 @@ func (secretStores) Read(context.Context, *http.Client, json.RawMessage, any, st
 	return "", errors.New("there is no such store")
 }
 
-// With the argument "migrate" a Supervisor brings the schema of its database
-// up to date, or moves it to a version, with the plugin that the address of
-// the database names.
+// "migrate" and "migrate <version>" call the database plugin selected by the
+// URL scheme.
 func TestRunMigrates(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv(databaseURL, "records://db.example/aviary")
@@ -133,7 +133,7 @@ func TestRunMigrates(t *testing.T) {
 			t.Errorf("with the arguments %q, the plugin was asked %q: %v", wrong, build.asked, err)
 		}
 	}
-	// A database of a kind that the build has no plugin for.
+	// A database scheme without a plugin.
 	t.Setenv(databaseURL, "postgres://user:secret@db.example/aviary")
 	if err := Run(ctx, []string{"migrate"}, (&build{}).plugins()); err == nil || !strings.Contains(err.Error(), "records") {
 		t.Errorf("a database that the build has no plugin for was migrated with: %v", err)
@@ -144,15 +144,14 @@ func TestRunMigrates(t *testing.T) {
 	}
 }
 
-// A Supervisor that serves connects to its database and to its event log
-// with the plugins that their addresses name, and lets go of both when it
-// stops. The secret stores of its projects are those of the kinds that its
-// build has plugins for.
+// Serving opens the database and the event log with the plugins selected by
+// their URL schemes, uses the secret store and identity provider plugins of
+// the build, and closes the database and the event log when it returns.
 func TestRunConnectsWithThePluginsOfTheBuild(t *testing.T) {
 	t.Setenv(databaseURL, "records://db.example/aviary")
 	t.Setenv(eventsURL, "log://events.example:6379")
-	// The Supervisor of this test gets no further than the keys that it
-	// seals secrets with, which it is not given.
+	// Without encryption keys, startup fails after the database and the
+	// event log are opened.
 	t.Setenv(encryptionKeys, "")
 	build := &build{}
 	err := Run(context.Background(), nil, build.plugins())
@@ -164,8 +163,7 @@ func TestRunConnectsWithThePluginsOfTheBuild(t *testing.T) {
 		t.Errorf("the plugins were asked %q, not %q", build.asked, expected)
 	}
 
-	// With its keys, the Supervisor gets as far as how it is to run turns,
-	// which it is not told.
+	// With the keys, startup fails at the harness settings.
 	key := make([]byte, 32)
 	rand.Read(key)
 	keys := t.TempDir()
@@ -193,7 +191,7 @@ func TestRunConnectsWithThePluginsOfTheBuild(t *testing.T) {
 		t.Errorf("the plugins were asked %q, not %q", build.asked, expected)
 	}
 
-	// An event log of a kind that the build has no plugin for.
+	// An event log scheme without a plugin.
 	t.Setenv(eventsURL, "amqp://user:secret@events.example")
 	build.asked = nil
 	err = Run(context.Background(), nil, build.plugins())

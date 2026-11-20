@@ -1,25 +1,24 @@
-// Package oidc tells who the tokens of an OpenID Connect issuer belong to.
-// More than one product is such an issuer.
+// Package oidc authenticates the tokens of an OpenID Connect issuer. More
+// than one product can be such an issuer.
 //
 // A provider of this kind has these settings:
 //
 //	{"issuer": "https://login.example.com/realms/main", "audience": "aviary",
 //	 "claims": {"subject": "sub", "username": "email", "displayName": "name", "groups": "groups"}}
 //
-// The issuer is the URL below which the provider publishes its configuration
-// and the keys that it signs with. The audience is whom a token must be meant
-// for. A token is a JWT that the issuer signed for that audience and that has
-// not expired, be it an ID token or an access token.
+// The issuer is the URL below which the provider publishes its discovery
+// document and signing keys. A token must be a JWT, either an ID token or an
+// access token, that the issuer signed for the audience and that has not
+// expired.
 //
-// The claims say where a token tells of its caller, and all of them may be
-// left out. The subject is "sub" unless the settings say otherwise, the
-// display name is "name" and the groups are "groups". A caller has a username
-// only if the settings name its claim. A claim is named as it is in the
-// token, or by its path with dots if it is inside another, such as
-// "realm_access.roles". The groups are a list of names, or one name.
+// The claims name the token claims that hold the caller's fields, and are all
+// optional. The subject defaults to "sub", the display name to "name" and the
+// groups to "groups"; a caller has a username only if its claim is set. A
+// claim is named as in the token, or by its dotted path if it is nested, such
+// as "realm_access.roles". The groups claim is a list of names or one name.
 //
-// An email address is a username only if the issuer says that it has seen
-// its owner use it, with the claim "email_verified".
+// If the username claim is "email", the address is used only if the
+// email_verified claim is true.
 package oidc
 
 import (
@@ -35,22 +34,21 @@ import (
 	"aviary/supervisor/identity"
 )
 
-// Kind is the name of the kind of provider that this package asks.
+// Kind is the identity provider kind that this package serves.
 const Kind = "oidc"
 
-// Plugin connects to the providers of the kind.
+// Plugin is the identity.Plugin for providers of this kind.
 type Plugin struct{}
 
 func (Plugin) Kind() string { return Kind }
 
-// settings are the settings of a provider.
 type settings struct {
 	Issuer   string `json:"issuer"`
 	Audience string `json:"audience"`
 	Claims   claims `json:"claims"`
 }
 
-// claims are the names of the claims that tell of a caller.
+// claims names the token claims that hold the caller's fields.
 type claims struct {
 	Subject     string `json:"subject"`
 	Username    string `json:"username"`
@@ -58,9 +56,9 @@ type claims struct {
 	Groups      string `json:"groups"`
 }
 
-// Open reads the configuration that the issuer publishes. The keys of the
-// issuer are fetched when a token needs them, and again when a token is
-// signed with one that is not among them.
+// Open fetches the discovery document of the issuer. The signing keys are
+// fetched when a token first needs them, and again when a token is signed
+// with an unknown key.
 func (Plugin) Open(ctx context.Context, written json.RawMessage) (identity.Provider, error) {
 	set := settings{Claims: claims{Subject: "sub", DisplayName: "name", Groups: "groups"}}
 	decoder := json.NewDecoder(bytes.NewReader(written))
@@ -96,16 +94,15 @@ func (p *provider) Caller(ctx context.Context, token string) (identity.Caller, e
 	if caller.Subject = text(told, p.claims.Subject); caller.Subject == "" {
 		return identity.Caller{}, fmt.Errorf("the token names no caller in the claim %q", p.claims.Subject)
 	}
-	// An address that the issuer has not seen its owner use could be
-	// anybody's.
+	// An unverified email address could belong to anyone.
 	if seen, _ := find(told, "email_verified").(bool); seen || p.claims.Username != "email" {
 		caller.Username = text(told, p.claims.Username)
 	}
 	return caller, nil
 }
 
-// find returns the claim with the name: the claim that is called so, or
-// else the one at the end of the name as a path with dots.
+// find returns the claim called name or, if there is none, the nested claim
+// at the dotted path name.
 func find(told map[string]any, name string) any {
 	if name == "" {
 		return nil
@@ -121,14 +118,13 @@ func find(told map[string]any, name string) any {
 	return value
 }
 
-// text returns the claim with the name if it is a text.
+// text returns the named claim if it is a string.
 func text(told map[string]any, name string) string {
 	value, _ := find(told, name).(string)
 	return value
 }
 
-// texts returns the texts of the claim with the name, which is a list of
-// them or one.
+// texts returns the strings of the named claim, which is a string or a list.
 func texts(told map[string]any, name string) []string {
 	var all []string
 	switch value := find(told, name).(type) {

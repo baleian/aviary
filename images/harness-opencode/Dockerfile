@@ -7,11 +7,10 @@ RUN --mount=type=cache,target=/root/.npm \
 COPY opencode.json /etc/xdg/opencode/opencode.json
 COPY --chmod=755 opencode-acp-aviary /usr/local/bin/opencode-acp-aviary
 # OpenCode reads instructions for every session from this file. The runner
-# writes it, so the file belongs to the user of the harness. The directory
-# does not: see below.
+# writes it, so the agent's user owns the file, though not the directory.
 RUN install --owner 10000 --group 10000 --mode 644 /dev/null /etc/xdg/opencode/AGENTS.md
-# OpenCode installs packages into a config directory it can write to, so its
-# configuration lives in the image instead of the session home.
+# OpenCode installs packages into its configuration directory if it can write
+# to it, so the configuration is kept in the image, not in the session home.
 ENV XDG_CONFIG_HOME=/etc/xdg \
     OPENCODE_DISABLE_MODELS_FETCH=1 \
     AVIARY_HARNESS_COMMAND=opencode-acp-aviary \

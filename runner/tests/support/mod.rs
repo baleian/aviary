@@ -1,6 +1,5 @@
-//! What the tests run the runner with. The runner is the program as it is
-//! built, the tests are who sends it the turns, and its harness is the fake
-//! harness, which does what the message of a turn tells it.
+//! Test helpers: running the runner binary with the fake harness, and a client
+//! for its HTTP API.
 
 #![allow(dead_code)]
 
@@ -16,10 +15,10 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::time;
 
-/// How long a test waits for what is to happen.
+/// How long a test waits for the runner.
 pub const PATIENCE: Duration = Duration::from_secs(20);
 
-/// The home of a session, as the sandbox of the session has it.
+/// A temporary session home, laid out as in a sandbox.
 pub struct Home(TempDir);
 
 impl Home {
@@ -33,14 +32,14 @@ impl Home {
         self.0.path()
     }
 
-    /// The file that the harness reads its instructions from.
+    /// A path for `AVIARY_INSTRUCTIONS_FILE`.
     pub fn instructions(&self) -> PathBuf {
         self.path().join("AGENTS.md")
     }
 }
 
-/// The runner of a session, set up as it is in the sandbox of the session,
-/// on a port that it chooses.
+/// Returns a command that runs the runner with the fake harness in `home`,
+/// on a free loopback port.
 pub fn runner(home: &Home) -> Command {
     let runner = Path::new(env!("CARGO_BIN_EXE_aviary-runner"));
     let harness = runner.with_file_name("examples").join("fake-harness");
@@ -63,7 +62,7 @@ pub fn runner(home: &Home) -> Command {
     command
 }
 
-/// A runner that the test started.
+/// A runner process started by a test.
 pub struct Running {
     pub child: Child,
     session: Session,
@@ -77,9 +76,9 @@ impl std::ops::Deref for Running {
     }
 }
 
-/// A runner as whoever sends it the turns of its session has it.
+/// A client of a runner's HTTP API.
 pub struct Session {
-    /// Where the runner listens.
+    /// The runner's base URL.
     pub url: String,
     client: reqwest::Client,
 }
@@ -109,7 +108,7 @@ pub async fn start(mut command: Command) -> Running {
     }
 }
 
-/// An event of a turn as the runner sent it.
+/// A turn event, as read from the event stream.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Event {
     pub seq: u64,
@@ -118,12 +117,12 @@ pub struct Event {
 }
 
 impl Session {
-    /// Starts the turn with the message, and with nothing else.
+    /// Starts a turn with only a message.
     pub async fn turn(&self, id: &str, text: &str) -> StatusCode {
         self.turn_with(id, json!({"text": text})).await
     }
 
-    /// Starts the turn with what the JSON says.
+    /// Starts a turn with the given request body.
     pub async fn turn_with(&self, id: &str, start: Value) -> StatusCode {
         self.sent(
             self.client
@@ -138,7 +137,6 @@ impl Session {
             .await
     }
 
-    /// Answers the request of the turn for approval with the option.
     pub async fn answer(&self, id: &str, request: &str, option: &str) -> StatusCode {
         self.sent(
             self.client
@@ -156,7 +154,8 @@ impl Session {
             .status()
     }
 
-    /// Reads the events of the turn that come after the one with the number.
+    /// Opens the turn's event stream after event number `after`, or from the
+    /// start if it is 0.
     pub async fn follow(&self, id: &str, after: u64) -> Following {
         let mut request = self.client.get(format!("{}/turns/{id}/events", self.url));
         if after > 0 {
@@ -177,7 +176,7 @@ impl Session {
         }
     }
 
-    /// The events of the turn, all of them: it waits for the turn to end.
+    /// Returns all events of the turn, once it has ended.
     pub async fn events(&self, id: &str) -> Vec<Event> {
         let mut following = self.follow(id, 0).await;
         assert_eq!(following.status, StatusCode::OK, "the events of {id}");
@@ -188,14 +187,14 @@ impl Session {
         events
     }
 
-    /// Runs the turn to its end and returns its events.
+    /// Runs a turn to its end and returns its events.
     pub async fn run(&self, id: &str, text: &str) -> Vec<Event> {
         assert_eq!(self.turn(id, text).await, StatusCode::NO_CONTENT);
         self.events(id).await
     }
 }
 
-/// The events of a turn as they come.
+/// An open event stream of a turn.
 pub struct Following {
     pub status: StatusCode,
     bytes: std::pin::Pin<Box<dyn futures::Stream<Item = reqwest::Result<Vec<u8>>> + Send>>,
@@ -203,11 +202,11 @@ pub struct Following {
 }
 
 impl Following {
-    /// The next event, or none when the runner has ended its answer.
+    /// Returns the next event, or `None` when the stream ends.
     pub async fn next(&mut self) -> Option<Event> {
         loop {
-            // An event ends with an empty line. What starts with a colon is
-            // there to keep the connection, and tells nothing.
+            // An event ends with a blank line. Keep-alive comments, which
+            // start with a colon, have no fields and are skipped.
             while let Some(end) = self.read.find("\n\n") {
                 let block: String = self.read.drain(..end + 2).collect();
                 let field = |name: &str| {
@@ -235,7 +234,7 @@ impl Following {
     }
 }
 
-/// What the agent said in the events, as one text.
+/// Returns the agent's message: the text of the message.delta events.
 pub fn said(events: &[Event]) -> String {
     events
         .iter()
@@ -244,12 +243,11 @@ pub fn said(events: &[Event]) -> String {
         .collect()
 }
 
-/// The names of the events, in their order.
 pub fn names(events: &[Event]) -> Vec<&str> {
     events.iter().map(|event| event.name.as_str()).collect()
 }
 
-/// The event with which the turn ended.
+/// Returns the last event, which ends the turn.
 pub fn ending(events: &[Event]) -> &Event {
     events.last().expect("the turn has no events")
 }

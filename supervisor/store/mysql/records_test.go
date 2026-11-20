@@ -16,11 +16,9 @@ import (
 	"aviary/supervisor/store/storetest"
 )
 
-// fixture is the database of a test of the suite, by its URL.
+// fixture is a storetest.Database, given by its URL.
 type fixture string
 
-// Open returns a store on the database, as one Supervisor has it. Several
-// Supervisors are several stores on one database.
 func (f fixture) Open(t *testing.T) store.Store {
 	t.Helper()
 	st, err := Plugin{}.Open(context.Background(), string(f))
@@ -44,13 +42,12 @@ func (f fixture) Age(t *testing.T, by time.Duration, turns ...uuid.UUID) {
 	}
 }
 
-// The store on MySQL does what every store is to do.
 func TestStore(t *testing.T) {
 	storetest.Run(t, func(t *testing.T) storetest.Database { return fixture(newDatabase(t)) })
 }
 
-// A transaction that MySQL undoes because it and another waited for each
-// other is run again.
+// TestDeadlock checks that within retries a transaction that MySQL rolled
+// back to break a deadlock.
 func TestDeadlock(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -58,7 +55,7 @@ func TestDeadlock(t *testing.T) {
 	var attempts atomic.Int32
 	var holding sync.WaitGroup
 	holding.Add(2)
-	// Each holds one row and then asks for the row that the other holds.
+	// Each transaction locks one row and then the other's, which deadlocks.
 	orders := [][2]string{{dispatchLock, queueLock}, {queueLock, dispatchLock}}
 	var both sync.WaitGroup
 	for _, order := range orders {
@@ -84,7 +81,7 @@ func TestDeadlock(t *testing.T) {
 		t.Errorf("two transactions that waited for each other ran %d times", attempts.Load())
 	}
 
-	// One that is undone every time is given up.
+	// A transaction that deadlocks every time is given up.
 	attempts.Store(0)
 	err := st.within(ctx, func(*db.Queries) error {
 		attempts.Add(1)
@@ -93,7 +90,7 @@ func TestDeadlock(t *testing.T) {
 	if !failed(err, deadlock) || attempts.Load() != 5 {
 		t.Errorf("a transaction that is undone every time ran %d times: %v", attempts.Load(), err)
 	}
-	// And one that fails with something else is not run again.
+	// Other errors are not retried.
 	attempts.Store(0)
 	if err := st.within(ctx, func(*db.Queries) error {
 		attempts.Add(1)

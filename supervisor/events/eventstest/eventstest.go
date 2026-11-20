@@ -1,6 +1,5 @@
-// Package eventstest tests a log of the events of the turns: what holds of
-// every log, whatever plugin connects to it. The tests of a plugin run it
-// against a log of the plugin's kind.
+// Package eventstest is a conformance test suite for implementations of
+// events.Log. The tests of a plugin run it against a log of their kind.
 package eventstest
 
 import (
@@ -38,7 +37,7 @@ func all(t *testing.T, log events.Log, turn uuid.UUID) []events.Event {
 	}
 }
 
-// texts returns what the events say, each as its type and its data.
+// texts returns the type and the data of each event.
 func texts(batch []events.Event) []string {
 	texts := []string{}
 	for _, event := range batch {
@@ -47,7 +46,7 @@ func texts(batch []events.Event) []string {
 	return texts
 }
 
-// words returns so many words, from w1 on, each as the data of an event.
+// words returns the event data {"text":"w<i> "} for each i from from to to.
 func words(from, to int) []string {
 	var words []string
 	for i := from; i <= to; i++ {
@@ -56,10 +55,10 @@ func words(from, to int) []string {
 	return words
 }
 
-// Run tests the log that open connects to. Every call of open is one more
-// connection to the same log, as every Supervisor of an installation has
-// one. The log may hold what other tests keep in it: a test keeps to turns
-// of its own.
+// Run tests the log that open connects to. Each call of open returns a
+// connection to the same log, as each Supervisor of an installation has its
+// own. The log may be shared with other tests, so each test uses turns of its
+// own.
 func Run(t *testing.T, open func(t *testing.T) events.Log) {
 	t.Run("a message of a runner is recorded once and in its order", func(t *testing.T) {
 		t.Parallel()
@@ -74,8 +73,7 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 			received uint64
 		}{
 			{seq: 1, text: "one", received: 1},
-			// A runner sends a message again that it did not hear was
-			// recorded.
+			// A runner resends a message whose recording it did not hear of.
 			{seq: 1, text: "one", received: 1},
 			// A message without an event, such as the one that ends the
 			// turn.
@@ -113,8 +111,8 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 		}
 	})
 
-	// A runner that lost its Supervisor sends again what it did not hear was
-	// recorded, while the Supervisor that it lost may still be recording it.
+	// A runner that loses its Supervisor resends the messages whose recording
+	// it did not hear of, while that Supervisor may still be recording them.
 	t.Run("a message that several Supervisors get at once is recorded once", func(t *testing.T) {
 		t.Parallel()
 		turn, answer := uuid.New(), words(1, 300)
@@ -148,8 +146,8 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 				t.Fatal(err)
 			}
 		}
-		// A reader gets the events in order, some at a time, whether it
-		// waits for more or not.
+		// Reading in batches returns all events in order, with or without
+		// waiting.
 		for _, wait := range []time.Duration{0, time.Millisecond} {
 			var read []string
 			after := events.Start
@@ -172,8 +170,8 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 		}
 		last := all(t, log, turn)[len(said)-1].ID
 
-		// A reader that waits gets the next event when it comes, which may
-		// be from another Supervisor.
+		// A waiting reader gets the next event as soon as it is appended,
+		// also through another connection.
 		go func() {
 			time.Sleep(50 * time.Millisecond)
 			if err := open(t).Append(ctx, turn, "turn.completed", "{}"); err != nil {
@@ -186,8 +184,8 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 			t.Errorf("a reader that waited got %v after %s: %v", batch, time.Since(began), err)
 		}
 
-		// A reader of a turn without events waits for as long as it said,
-		// and one that does not wait is answered at once.
+		// Without events, Read waits for the full duration, or returns at
+		// once if wait is 0.
 		began = time.Now()
 		if batch, err := log.Read(ctx, uuid.New(), events.Start, 100*time.Millisecond); err != nil || len(batch) != 0 ||
 			time.Since(began) < 100*time.Millisecond {
@@ -202,7 +200,7 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 	t.Run("what the log holds of a turn goes when its time has passed", func(t *testing.T) {
 		t.Parallel()
 		log := open(t)
-		// held tells whether the log holds anything of the turn.
+		// held reports whether the log holds anything of the turn.
 		held := func(turn uuid.UUID) bool {
 			t.Helper()
 			received, err := log.Received(ctx, turn)
@@ -244,14 +242,12 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 		if !held(kept) {
 			t.Error("the log does not hold a turn whose time has not passed")
 		}
-		// A turn of which nothing is held has nothing to delete.
+		// Expiring a turn that the log does not hold is not an error.
 		if err := log.Expire(ctx, uuid.New(), time.Hour); err != nil {
 			t.Errorf("a turn without events: %v", err)
 		}
 	})
 
-	// A request to cancel a turn reaches one Supervisor, and the runner of
-	// the turn is connected to another.
 	t.Run("a turn is followed by one Supervisor at a time", func(t *testing.T) {
 		t.Parallel()
 		log, turn := open(t), uuid.New()
@@ -267,20 +263,20 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 		if !follows(log, one, time.Minute) {
 			t.Fatal("a turn that nobody follows was not given to the Supervisor that asked")
 		}
-		// It is given again to the Supervisor that has it, through any
-		// connection, and to no other.
+		// The holder renews the lease through any connection, and others are
+		// refused.
 		if !follows(open(t), one, time.Minute) {
 			t.Error("the Supervisor that follows the turn was not given it again")
 		}
 		if follows(open(t), other, time.Minute) {
 			t.Error("another Supervisor was given a turn that is followed")
 		}
-		// Another turn is nothing to this one.
+		// Leases are per turn.
 		if given, err := log.Follow(ctx, uuid.New(), other, time.Minute); err != nil || !given {
 			t.Errorf("another turn was not given to the Supervisor that asked: %v", err)
 		}
 
-		// A Supervisor whose lease is over is taken to be gone.
+		// Once a lease expires, another Supervisor gets the turn.
 		if !follows(log, one, 20*time.Millisecond) {
 			t.Fatal("the Supervisor that follows the turn was not given it again")
 		}
@@ -292,8 +288,8 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 			t.Error("the Supervisor that was gone was given the turn again")
 		}
 
-		// A Supervisor that leaves the turn gives it to the next at once.
-		// One that does not follow the turn leaves nothing.
+		// Leave by a Supervisor that does not hold the lease does nothing.
+		// Leave by the holder releases it at once.
 		if err := open(t).Leave(ctx, turn, one); err != nil {
 			t.Fatal(err)
 		}
@@ -343,8 +339,8 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 			connected.Watch(watching, channel, func(turn uuid.UUID) { told <- turn })
 		}()
 
-		// What is announced before the other Supervisor listens is lost, so
-		// a turn is announced until it is heard.
+		// Announcements made before the watcher subscribes are lost, so each
+		// turn is announced until it is heard.
 		for range 2 {
 			turn, heard := uuid.New(), false
 			deadline := time.After(10 * time.Second)
@@ -361,7 +357,7 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 				}
 			}
 		}
-		// What is announced on another channel is not for this watcher.
+		// Announcements on another channel are not delivered.
 		stranger := uuid.New()
 		if err := asked.Announce(ctx, other, stranger); err != nil {
 			t.Fatal(err)

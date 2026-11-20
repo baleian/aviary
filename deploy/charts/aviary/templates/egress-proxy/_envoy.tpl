@@ -1,10 +1,10 @@
 {{/*
-The parts of Envoy's configuration that its two listeners share.
+Envoy configuration shared by the llm and forward listeners.
 */}}
 
 {{/*
-The record of a request, a line of JSON on standard output. The argument is
-the name of the listener.
+Access log: a JSON line per request on standard output. The argument is the
+name of the listener.
 */}}
 {{- define "aviary.egress-proxy.access-log" -}}
 access_log:
@@ -21,9 +21,8 @@ access_log:
           session: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:session)%"
           agent: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:agent)%"
           project: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:project)%"
-          # The user who sent the message of the turn, and what the
-          # identity provider knows that user by, or nothing in an
-          # installation that asks nobody who they are.
+          # Who sent the message of the turn: the Aviary user ID and the
+          # subject at the identity provider. Empty without a provider.
           user: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:user)%"
           subject: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:subject)%"
           {{- if eq . "llm" }}
@@ -40,9 +39,9 @@ access_log:
 {{- end }}
 
 {{/*
-The filter that asks the Supervisor which turn a request comes from, and
-refuses the request if the Supervisor names none. The argument tells
-whether the answer of the Supervisor also says where the request goes.
+ext_authz filter that asks the Supervisor which turn a request belongs to,
+and refuses the request if there is none. The argument is true if the answer
+also routes the request.
 */}}
 {{- define "aviary.egress-proxy.ext-authz" -}}
 - name: envoy.filters.http.ext_authz
@@ -52,18 +51,15 @@ whether the answer of the Supervisor also says where the request goes.
     grpc_service:
       envoy_grpc: {cluster_name: supervisor}
       timeout: 5s
-    # Without it, a request that the proxy could not ask a Supervisor about
-    # is answered as forbidden, as if its token were wrong.
+    # Otherwise a failed check is answered 403, as if the token were wrong.
     status_on_error: {code: ServiceUnavailable}
     {{- if . }}
-    # The route of the request is chosen again, with what the Supervisor
-    # answered.
+    # Routes the request again with the headers that the Supervisor set.
     clear_route_cache: true
     {{- else }}
-    # The answer tells whose request it is and nothing more. What the
-    # Supervisor adds to a model request, the key of a model endpoint, is
-    # never to go to another host: Envoy takes no change of the request from
-    # the answer, and refuses a request whose answer holds one.
+    # The answer only identifies the turn. Refusing header changes keeps the
+    # key of a model provider from ever being added to a request to another
+    # host.
     decoder_header_mutation_rules:
       disallow_all: true
       disallow_is_error: true
@@ -71,9 +67,8 @@ whether the answer of the Supervisor also says where the request goes.
 {{- end }}
 
 {{/*
-The rules that match a request to one of the listed hosts. The arguments are
-the list and the header that holds the host of a request. A host name stands
-for the host on the ports of HTTPS and HTTP.
+RBAC permissions that match the listed hosts in the given header. A host
+without a port matches ports 443 and 80.
 */}}
 {{- define "aviary.egress-proxy.hosts" -}}
 {{- $header := .header }}
@@ -87,8 +82,7 @@ for the host on the ports of HTTPS and HTTP.
 {{- end }}
 
 {{/*
-The last filter, which passes the request on. Envoy adds no headers of its
-own to it, nor to the answer.
+Router filter. Envoy adds no headers of its own to requests or responses.
 */}}
 {{- define "aviary.egress-proxy.router" -}}
 - name: envoy.filters.http.router

@@ -21,8 +21,7 @@ import (
 
 var ctx = context.Background()
 
-// connect connects to the log of the tests whose addresses begin with the
-// scheme.
+// connect connects to the test server for scheme.
 func connect(t *testing.T, scheme string) events.Log {
 	t.Helper()
 	log, err := resp.Plugin{}.Open(testenv.EventsURL(t, scheme))
@@ -33,14 +32,13 @@ func connect(t *testing.T, scheme string) events.Log {
 	return log
 }
 
-// open connects to the log that the tests of the plugin itself run against.
+// open connects to the default test server.
 func open(t *testing.T) events.Log {
 	t.Helper()
 	return connect(t, "valkey")
 }
 
-// The plugin does what every log is to do, on each of the servers that it is
-// tested with.
+// The plugin passes the conformance tests on each server it is tested with.
 func TestLog(t *testing.T) {
 	for _, server := range []string{"valkey", "redis"} {
 		t.Run(server, func(t *testing.T) {
@@ -79,7 +77,7 @@ func TestOpenKeepsThePasswordToItself(t *testing.T) {
 	}
 }
 
-// Something else on a channel than a turn is passed over.
+// Messages that are not turn IDs are ignored.
 func TestWatchPassesOverWhatIsNoTurn(t *testing.T) {
 	t.Parallel()
 	log, channel := open(t), "tests:"+uuid.NewString()
@@ -98,8 +96,8 @@ func TestWatchPassesOverWhatIsNoTurn(t *testing.T) {
 	t.Cleanup(stop)
 	told := make(chan uuid.UUID, 100)
 	go log.Watch(watching, channel, func(turn uuid.UUID) { told <- turn })
-	// What is announced before the watcher listens is lost, so a turn is
-	// announced until it is heard.
+	// Announcements made before the watcher subscribes are lost, so the turn
+	// is announced until it is heard.
 	heard := func() {
 		t.Helper()
 		turn := uuid.New()
@@ -120,23 +118,22 @@ func TestWatchPassesOverWhatIsNoTurn(t *testing.T) {
 		}
 	}
 	heard()
-	// The watcher listens now, and goes on after what is no turn.
+	// The watcher keeps working after a message that is not a turn ID.
 	if err := client.Do(ctx, client.B().Publish().Channel(channel).Message("not a turn").Build()).Error(); err != nil {
 		t.Fatal(err)
 	}
 	heard()
 }
 
-// Without an answer from the server a read fails. A read that was tried
-// again until the server is back would leave the reader of a turn's events
-// waiting, with no word of what is wrong.
+// Without the server, Read fails instead of retrying, which would leave the
+// reader of a turn's events waiting without an error.
 func TestReadFailsWithoutTheServer(t *testing.T) {
 	t.Parallel()
 	address, err := url.Parse(testenv.EventsURL(t, "valkey"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The connections go through a relay that the test can break.
+	// The connections go through a relay that the test can cut.
 	relay, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

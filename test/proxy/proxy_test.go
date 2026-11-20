@@ -1,8 +1,7 @@
-// Package proxy checks what the Egress Proxy does with the requests of the
-// sandboxes. The proxy is Envoy with the configuration that the chart makes,
-// and `make test-proxy` starts it. The tests are everything around it: the
-// pod that sends a request, the Supervisor that the proxy asks whose request
-// it is, the model endpoint and the hosts outside.
+// Package proxy tests the Egress Proxy: Envoy with the configuration that the
+// chart renders, which `make test-proxy` starts. The tests play everything
+// around it: the pods that send requests, the Supervisor that authorizes
+// them, the model endpoint and the outside hosts.
 package proxy
 
 import (
@@ -32,44 +31,42 @@ import (
 )
 
 const (
-	// token is the token of a session in which a turn runs, broken one that
-	// the Supervisor fails to look up, and nameless that of a turn for which
-	// the Supervisor names no model endpoint.
+	// token is the session token of a running turn, broken one that the
+	// Supervisor fails to look up, and nameless one for which the Supervisor
+	// names no model endpoint.
 	token    = "the-session-token"
 	broken   = "a-token-that-cannot-be-looked-up"
 	nameless = "a-turn-without-an-endpoint"
-	// key is the API key of the model endpoint of the turn with the token,
-	// which the Supervisor gives the proxy.
+	// key is the API key that the Supervisor returns for token.
 	key = "the-real-key"
 	// patience is how long a test waits for the proxy.
 	patience = 30 * time.Second
 )
 
-// The proxies, by the files of values that they are set up with.
+// The proxies, named after their values files.
 const (
 	listed = "listed"
 	open   = "open"
 	closed = "closed"
 )
 
-// endpoint is a model endpoint that the Supervisor names in its answer: its
-// host, whether it is reached with TLS, and its key if it takes one.
+// endpoint is a model endpoint that the Supervisor returns for a turn: its
+// host, whether it uses TLS, and its key, if any.
 type endpoint struct {
 	host   string
 	secure bool
 	key    string
-	// mistaken is set for an endpoint that the Supervisor names by mistake
-	// also for what is no model request: a request through the forward
-	// proxy.
+	// mistaken makes the Supervisor return the endpoint for forward proxy
+	// requests too, as if by mistake.
 	mistaken bool
 }
 
-// mistaken is the token of a turn about which the Supervisor answers the
-// forward proxy as it answers about a model request.
+// mistaken is the token of a turn for which the Supervisor wrongly returns a
+// model endpoint to the forward proxy.
 const mistaken = "a-turn-that-the-supervisor-errs-about"
 
-// endpoints are the model endpoints that the Supervisor names, by the tokens
-// of the turns that it names them for. The hosts are the tests themselves.
+// endpoints are the model endpoints that the Supervisor returns, by token.
+// Every host resolves to the tests.
 var endpoints = map[string]endpoint{
 	token:                                {host: "model.test:8081", key: key},
 	"a-turn-of-a-provider":               {host: "allowed.test", key: "the-key-of-a-provider"},
@@ -81,8 +78,8 @@ var endpoints = map[string]endpoint{
 	mistaken:                             {host: "other.test", key: "the-key-of-a-provider", mistaken: true},
 }
 
-// named returns the token of the turn that the Supervisor names the endpoint
-// at the host for.
+// named returns a token for which the Supervisor returns an endpoint at host,
+// with a key if key is true.
 func named(host string, key bool) string {
 	for turn, endpoint := range endpoints {
 		if endpoint.host == host && (endpoint.key != "") == key && !endpoint.mistaken && turn != token {
@@ -92,8 +89,8 @@ func named(host string, key bool) string {
 	panic("the Supervisor names no endpoint at " + host)
 }
 
-// supervisor answers the proxy as a Supervisor does, and keeps what the
-// proxy asked.
+// supervisor plays the Supervisors' authorization service, and records the
+// checks that it gets.
 type supervisor struct {
 	authv3.UnimplementedAuthorizationServer
 	mu    sync.Mutex
@@ -119,8 +116,8 @@ func (s *supervisor) Check(_ context.Context, request *authv3.CheckRequest) (*au
 	case sent == nameless, provided && forward && !endpoint.mistaken:
 		return allowed, nil
 	case provided:
-		// The endpoint of the turn's provider, and its key in place of the
-		// token. A provider without a key gets no token either.
+		// The endpoint of the turn's provider, with its key in place of the
+		// token. A provider without a key gets no Authorization header.
 		set := func(name, value string) *corev3.HeaderValueOption {
 			return &corev3.HeaderValueOption{
 				Header:       &corev3.HeaderValue{Key: name, Value: value},
@@ -157,7 +154,7 @@ func (s *supervisor) Check(_ context.Context, request *authv3.CheckRequest) (*au
 	}, nil
 }
 
-// questions returns what the proxy asked about the requests with the path.
+// questions returns the checks of the requests with the path.
 func (s *supervisor) questions(path string) []*authv3.CheckRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -170,9 +167,8 @@ func (s *supervisor) questions(path string) []*authv3.CheckRequest {
 	return asked
 }
 
-// host is a server that the proxy passes requests on to: the model endpoint
-// or a host outside. It answers with what it was asked, and keeps the
-// requests.
+// host is an upstream of the proxy: the model endpoint or an outside host. It
+// echoes each request and records it.
 type host struct {
 	mu       sync.Mutex
 	requests []*http.Request
@@ -183,13 +179,13 @@ func (h *host) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.requests = append(h.requests, r)
 	h.mu.Unlock()
 	body, _ := io.ReadAll(r.Body)
-	// A host refuses the request if the request says so.
+	// ?status= makes the host refuse the request with that status.
 	if status, err := strconv.Atoi(r.URL.Query().Get("status")); err == nil {
 		http.Error(w, "refused by the host", status)
 		return
 	}
-	// The answer comes in two pieces with a pause between them, as the
-	// answer of a model does.
+	// The response is streamed in two parts, ?pause= apart, as a model
+	// streams its answer.
 	fmt.Fprintf(w, "%s %s %s\n", r.Method, r.URL.Path, body)
 	http.NewResponseController(w).Flush()
 	if pause, err := time.ParseDuration(r.URL.Query().Get("pause")); err == nil {
@@ -198,7 +194,7 @@ func (h *host) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "done")
 }
 
-// got returns the request with the path that the server got, or nothing.
+// got returns the request with the path, or nil.
 func (h *host) got(path string) *http.Request {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -210,8 +206,8 @@ func (h *host) got(path string) *http.Request {
 	return nil
 }
 
-// The servers that the tests are: the Supervisor, the model endpoint of the
-// installation, the hosts outside, and a host that is reached with TLS.
+// The servers that the tests play: the Supervisor, the model endpoint, the
+// outside hosts, and a host served over TLS.
 var (
 	asked   = &supervisor{}
 	model   = &host{}
@@ -221,7 +217,6 @@ var (
 
 func TestMain(m *testing.M) {
 	if os.Getenv("AVIARY_TEST_PROXY") == "" {
-		// Tests that were skipped here would look like tests that passed.
 		fmt.Fprintln(os.Stderr, "AVIARY_TEST_PROXY is not set: run the tests with `make test-proxy`")
 		os.Exit(1)
 	}
@@ -238,10 +233,10 @@ func TestMain(m *testing.M) {
 	go checks.Serve(listen(":9091"))
 	go http.Serve(listen(":8081"), model)
 	go http.Serve(listen(":80"), outside)
-	// With the certificate that `make test-proxy` made for tls.test, which
-	// is the only authority that the proxies trust.
+	// The proxies trust only this certificate, which `make test-proxy` made
+	// for tls.test.
 	go http.ServeTLS(listen(":8443"), secured, "../../.out/proxy/tls/cert.pem", "../../.out/proxy/tls/key.pem")
-	// What a pod sends through a tunnel comes back as it is.
+	// Echoes what a pod sends through a tunnel.
 	tunnels := listen(":443")
 	go func() {
 		for {
@@ -255,7 +250,8 @@ func TestMain(m *testing.M) {
 			}()
 		}
 	}()
-	// A proxy looks the Supervisor up every few seconds until it finds it.
+	// Envoy resolves the Supervisor's address periodically, so wait until
+	// every proxy reaches it.
 	deadline := time.Now().Add(patience)
 	for _, proxy := range []string{listed, open, closed} {
 		for {
@@ -276,14 +272,13 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// answer is what a pod gets back for a request.
+// answer is the response that a pod gets.
 type answer struct {
 	status int
 	header http.Header
 	body   string
 }
 
-// send sends the request of a pod and returns the answer.
 func send(t *testing.T, client *http.Client, request *http.Request) answer {
 	t.Helper()
 	response, err := client.Do(request)
@@ -298,9 +293,9 @@ func send(t *testing.T, client *http.Client, request *http.Request) answer {
 	return answer{response.StatusCode, response.Header, string(body)}
 }
 
-// ask sends a request to the model endpoint as a harness does: to the proxy,
-// with what the pod holds in place of the API key. The headers are more
-// that the pod sends, as names and values in turn.
+// ask sends a model request as a harness does, to the proxy's model listener
+// with credential as the Authorization header. headers are more header names
+// and values, alternating.
 func ask(t *testing.T, proxy, path, credential string, headers ...string) answer {
 	t.Helper()
 	request, err := http.NewRequest("POST", "http://"+proxy+":8080"+path, strings.NewReader("a question"))
@@ -316,8 +311,8 @@ func ask(t *testing.T, proxy, path, credential string, headers ...string) answer
 	return send(t, http.DefaultClient, request)
 }
 
-// through returns a client that sends its requests through the forward
-// proxy, as the programs in a pod do, with the password.
+// through returns a client that uses the forward proxy with password, as the
+// programs in a pod do.
 func through(proxy, password string) *http.Client {
 	address := &url.URL{Scheme: "http", Host: proxy + ":3128"}
 	if password != "" {
@@ -336,9 +331,9 @@ func fetch(t *testing.T, proxy, password, address string) answer {
 	return send(t, through(proxy, password), request)
 }
 
-// A model request carries the token of its session where the API key
-// belongs. The proxy puts the key of the turn's model endpoint there and
-// passes the request on to that endpoint as it is.
+// A model request carries the session token in place of the API key. The
+// proxy replaces it with the key of the turn's model endpoint, and otherwise
+// forwards the request as it is.
 func TestModelRequest(t *testing.T) {
 	t.Parallel()
 	began := time.Now()
@@ -352,8 +347,7 @@ func TestModelRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
-	// The answer of a model comes piece by piece, and the proxy does not
-	// hold a piece back until the answer is whole.
+	// The proxy streams the response instead of buffering it.
 	lines := bufio.NewReader(response.Body)
 	first, err := lines.ReadString('\n')
 	if err != nil || first != "POST /v1/chat/completions a question\n" || time.Since(began) > 900*time.Millisecond {
@@ -362,7 +356,7 @@ func TestModelRequest(t *testing.T) {
 	if rest, err := io.ReadAll(lines); err != nil || string(rest) != "done\n" || response.StatusCode != http.StatusOK {
 		t.Errorf("the answer ended with %q and the status %d: %v", rest, response.StatusCode, err)
 	}
-	// The proxy adds no header of its own to the answer either.
+	// The proxy adds no headers of its own to the response.
 	for name := range response.Header {
 		if strings.HasPrefix(strings.ToLower(name), "x-envoy") {
 			t.Errorf("the answer of the model came with the header %s: %s", name, response.Header.Get(name))
@@ -376,14 +370,13 @@ func TestModelRequest(t *testing.T) {
 	if got.Header.Get("Authorization") != "Bearer "+key || got.Host != "model.test:8081" {
 		t.Errorf("the model endpoint got the request for %s with the authorization %q", got.Host, got.Header.Get("Authorization"))
 	}
-	// The endpoint learns nothing of the pod or of the proxy.
+	// The endpoint learns nothing of the pod or the proxy.
 	for name := range got.Header {
 		if lower := strings.ToLower(name); strings.HasPrefix(lower, "x-forwarded") || strings.HasPrefix(lower, "x-envoy") || lower == "x-request-id" {
 			t.Errorf("the model endpoint got the header %s: %s", name, got.Header.Get(name))
 		}
 	}
-	// The Supervisor was asked with the token, and not as for the forward
-	// proxy.
+	// The Supervisor is asked with the token, as for a model request.
 	questions := asked.questions("/v1/chat/completions?pause=1s")
 	if len(questions) != 1 || questions[0].GetAttributes().GetRequest().GetHttp().GetHeaders()["authorization"] != "Bearer "+token ||
 		questions[0].GetAttributes().GetContextExtensions()["listener"] == "forward" {
@@ -409,15 +402,15 @@ func TestModelRequestThatIsRefused(t *testing.T) {
 		}
 	}
 
-	// A request that the proxy cannot ask a Supervisor about is not one
-	// with a wrong token: the harness is to send it again.
+	// If no Supervisor can be asked, the answer is 503 and not 401, so that
+	// the harness retries.
 	if unknown := ask(t, listed, "/v1/unknown", "Bearer "+broken); unknown.status != http.StatusServiceUnavailable {
 		t.Errorf("a model request that no Supervisor could be asked about was answered with %d %q", unknown.status, unknown.body)
 	}
 
-	// A request goes where the Supervisor says. One for which it names no
-	// endpoint goes nowhere, whether the hosts are listed or not, and not
-	// where its pod says either.
+	// A request for which the Supervisor names no endpoint is not forwarded,
+	// whether hosts are listed or not, even to an upstream that the pod
+	// names.
 	for _, proxy := range []string{open, listed} {
 		path := "/v1/nameless/" + proxy
 		unnamed := ask(t, proxy, path, "Bearer "+nameless, "x-aviary-upstream", "allowed.test", "x-aviary-upstream-tls", "false")
@@ -432,21 +425,20 @@ func TestModelRequestThatIsRefused(t *testing.T) {
 		t.Errorf("the proxy answered whether it is up with %d", health.status)
 	}
 
-	// A model endpoint that the list does not allow is not reached.
+	// A model endpoint that is not on the list is refused.
 	notAllowed := ask(t, closed, "/v1/chat/completions", "Bearer "+token)
 	if notAllowed.status != http.StatusForbidden || !strings.Contains(notAllowed.body, "egressProxy.allowedHosts") {
 		t.Errorf("a model request to an endpoint that is not allowed was answered with %d %q", notAllowed.status, notAllowed.body)
 	}
 }
 
-// A model request goes to the endpoint that the Supervisor names for its
-// turn, that of the provider that the turn's agent uses, with the key that
-// the Supervisor gives.
+// A model request goes to the endpoint of the provider of the turn's agent,
+// as the Supervisor names it, with the key that the Supervisor returns.
 func TestModelRequestToANamedEndpoint(t *testing.T) {
 	t.Parallel()
 	const providerKey = "Bearer the-key-of-a-provider"
-	// reached checks that the host got the request with the path as the
-	// endpoint at the address is to get it.
+	// reached checks that at got the request for path, addressed to address
+	// and with credential, and returns it.
 	reached := func(what string, at *host, path, address, credential string) *http.Request {
 		t.Helper()
 		got := at.got(path)
@@ -457,7 +449,6 @@ func TestModelRequestToANamedEndpoint(t *testing.T) {
 		if got.Host != address || got.Header.Get("Authorization") != credential {
 			t.Errorf("%s reached %s with the authorization %q, not %s with %q", what, got.Host, got.Header.Get("Authorization"), address, credential)
 		}
-		// The endpoint learns nothing of the pod or of the proxy.
 		for name := range got.Header {
 			if lower := strings.ToLower(name); strings.HasPrefix(lower, "x-aviary") || strings.HasPrefix(lower, "x-forwarded") || strings.HasPrefix(lower, "x-envoy") {
 				t.Errorf("%s: the endpoint got the header %s: %s", what, name, got.Header.Get(name))
@@ -472,22 +463,21 @@ func TestModelRequestToANamedEndpoint(t *testing.T) {
 	}
 	reached("a model request to a named endpoint", outside, "/api/named/plain", "allowed.test", providerKey)
 
-	// An endpoint without a key gets none, and not the token of the turn.
+	// An endpoint without a key gets none, and not the token either.
 	ask(t, open, "/api/named/keyless", "Bearer "+named("allowed.test", false))
 	reached("a model request to an endpoint without a key", outside, "/api/named/keyless", "allowed.test", "")
 
-	// An endpoint on a port of its own.
 	ask(t, open, "/v1/named/port", "Bearer "+named("model.test:8081", true))
 	reached("a model request to an endpoint on a port", model, "/v1/named/port", "model.test:8081", providerKey)
 
-	// With TLS, and with HTTP/2 since the endpoint offers it.
+	// Over TLS, with HTTP/2 since the endpoint offers it.
 	if encrypted := ask(t, open, "/api/named/tls", "Bearer "+named("tls.test:8443", true)); encrypted.status != http.StatusOK {
 		t.Errorf("a model request to an endpoint with TLS was answered with %d %q", encrypted.status, encrypted.body)
 	}
 	if got := reached("a model request to an endpoint with TLS", secured, "/api/named/tls", "tls.test:8443", providerKey); got != nil && (got.TLS == nil || got.ProtoMajor != 2) {
 		t.Errorf("the endpoint with TLS got the request with %s and the TLS state %v", got.Proto, got.TLS)
 	}
-	// The certificate of an endpoint has to be for its host name.
+	// The endpoint's certificate must match its host name.
 	if another := ask(t, open, "/api/named/unnamed", "Bearer "+named("unnamed.test:8443", true)); another.status != http.StatusServiceUnavailable {
 		t.Errorf("a model request to an endpoint with the certificate of another host was answered with %d %q", another.status, another.body)
 	}
@@ -495,7 +485,7 @@ func TestModelRequestToANamedEndpoint(t *testing.T) {
 		t.Error("a model request reached an endpoint with the certificate of another host")
 	}
 
-	// Where a request goes is for the Supervisor to say, not for the pod.
+	// The Supervisor chooses the upstream, not the pod.
 	chosen := []string{"x-aviary-upstream", "other.test", "x-aviary-upstream-tls", "false"}
 	ask(t, open, "/v1/named/chosen", "Bearer "+token, chosen...)
 	reached("a model request of a pod that named an endpoint itself", model, "/v1/named/chosen", "model.test:8081", "Bearer "+key)
@@ -505,7 +495,7 @@ func TestModelRequestToANamedEndpoint(t *testing.T) {
 		t.Error("a model request reached the endpoint that its pod named")
 	}
 
-	// A named endpoint is a host like any other: the list has to allow it.
+	// The list must allow a named endpoint like any other host.
 	for _, proxy := range []string{listed, closed} {
 		path := "/api/named/" + proxy
 		if on := ask(t, proxy, path, "Bearer "+named("allowed.test", true)); on.status != http.StatusOK {
@@ -517,13 +507,12 @@ func TestModelRequestToANamedEndpoint(t *testing.T) {
 			t.Errorf("%s: a model request to a named endpoint that is not on the list was answered with %d %q", proxy, off.status, off.body)
 		}
 	}
-	// What an endpoint itself refuses reaches the pod as the endpoint said
-	// it, and not as a refusal of the proxy.
+	// An endpoint's own refusal reaches the pod unchanged.
 	own := ask(t, listed, "/api/named/refused?status=403", "Bearer "+named("allowed.test", true))
 	if own.status != http.StatusForbidden || own.body != "refused by the host\n" {
 		t.Errorf("the refusal of an endpoint was passed on as %d %q", own.status, own.body)
 	}
-	// On the list with its port, an endpoint is allowed on that port.
+	// A listed host with a port allows that port.
 	ask(t, listed, "/v1/named/listed-port", "Bearer "+named("model.test:8081", true))
 	reached("a model request to a listed endpoint on a port", model, "/v1/named/listed-port", "model.test:8081", providerKey)
 	if off := ask(t, closed, "/v1/named/closed-port", "Bearer "+named("model.test:8081", true)); off.status != http.StatusForbidden {
@@ -531,9 +520,8 @@ func TestModelRequestToANamedEndpoint(t *testing.T) {
 	}
 }
 
-// What else a pod sends out goes through the forward proxy, with the token
-// of the turn as the password. The proxy lets it through to the hosts that
-// the installation allows.
+// The other requests of a pod go through the forward proxy, with the session
+// token as the password, and reach only the allowed hosts.
 func TestForward(t *testing.T) {
 	t.Parallel()
 	let := fetch(t, listed, token, "http://allowed.test/let/through")
@@ -568,8 +556,7 @@ func TestForward(t *testing.T) {
 		t.Error("a request to a host that is not allowed reached the host")
 	}
 
-	// A client that sends its password only when it is asked for it has to
-	// be asked. git is one.
+	// Some clients, such as git, send the password only when challenged.
 	for name, password := range map[string]string{"without a password": "", "with a password of no turn": "another-token"} {
 		refused := fetch(t, listed, password, "http://allowed.test/refused")
 		if refused.status != http.StatusProxyAuthRequired || refused.header.Get("Proxy-Authenticate") != `Basic realm="aviary"` {
@@ -580,7 +567,7 @@ func TestForward(t *testing.T) {
 		t.Errorf("a request that no Supervisor could be asked about was answered with %d", unknown.status)
 	}
 
-	// The chart's own values allow every host.
+	// The default values allow every host.
 	if anywhere := fetch(t, open, token, "http://other.test/anywhere"); anywhere.status != http.StatusOK {
 		t.Errorf("with every host allowed, a request was answered with %d", anywhere.status)
 	}
@@ -589,11 +576,9 @@ func TestForward(t *testing.T) {
 	}
 }
 
-// About a request through the forward proxy, the Supervisor answers whose
-// it is. If it answered with more, as it does about a model request, the
-// key of a model endpoint would go to whatever host the pod asked for. The
-// proxy takes nothing from the answer that changes the request, and refuses
-// a request whose answer would.
+// For a forward proxy request, the Supervisor only identifies the turn. If it
+// returned headers as for a model request, the model key would go to whatever
+// host the pod asked for, so the proxy refuses the request instead.
 func TestForwardTakesNoKey(t *testing.T) {
 	t.Parallel()
 	for _, proxy := range []string{open, listed} {
@@ -611,9 +596,9 @@ func TestForwardTakesNoKey(t *testing.T) {
 	}
 }
 
-// tunnel asks the forward proxy for a tunnel to the address, as a client
-// does for an HTTPS URL. It returns the status of the answer and the
-// connection, which is the tunnel if the status says so.
+// tunnel asks the forward proxy for a tunnel to address, as a client does for
+// an HTTPS URL. It returns the response status and the connection, which is
+// the tunnel if the status is 200.
 func tunnel(t *testing.T, proxy, password, address string) (int, net.Conn, *bufio.Reader) {
 	t.Helper()
 	connection, err := net.DialTimeout("tcp", proxy+":3128", patience)
@@ -632,8 +617,8 @@ func tunnel(t *testing.T, proxy, password, address string) (int, net.Conn, *bufi
 	return response.StatusCode, connection, reader
 }
 
-// A request for an HTTPS URL is a tunnel through the proxy. The proxy sees
-// the host and the port, and passes on the rest unread.
+// Of a tunnel, the proxy sees only the host and port, and passes the rest
+// through unread.
 func TestTunnel(t *testing.T) {
 	t.Parallel()
 	status, connection, reader := tunnel(t, listed, token, "allowed.test:443")
@@ -659,13 +644,14 @@ func TestTunnel(t *testing.T) {
 	}
 }
 
-// The proxy tells Prometheus of the requests, and nothing else of itself.
+// The metrics port serves the request metrics and nothing else of Envoy's
+// admin interface.
 func TestMetrics(t *testing.T) {
 	t.Parallel()
 	ask(t, listed, "/v1/counted", "Bearer "+token)
 	fetch(t, listed, token, "http://allowed.test/counted")
 	fetch(t, listed, token, "http://other.test/counted")
-	// series adds up the series whose names and labels begin as given.
+	// series sums the samples whose name and labels start with prefix.
 	series := func(prefix string) float64 {
 		response, err := http.Get("http://" + listed + ":9092/metrics")
 		if err != nil || response.StatusCode != http.StatusOK {
@@ -687,10 +673,9 @@ func TestMetrics(t *testing.T) {
 		`envoy_http_ext_authz_ok{envoy_http_conn_manager_prefix="llm"`,
 		`envoy_http_ext_authz_ok{envoy_http_conn_manager_prefix="forward"`,
 		`envoy_http_rbac_denied`,
-		// How long the requests to the model took.
 		`envoy_http_downstream_rq_time_count{envoy_http_conn_manager_prefix="llm"`,
 	} {
-		// Envoy counts the time of a request a few seconds after it.
+		// Envoy flushes histograms periodically.
 		deadline := time.Now().Add(patience)
 		for series(counted) < 1 {
 			if time.Now().After(deadline) {
@@ -701,7 +686,6 @@ func TestMetrics(t *testing.T) {
 		}
 	}
 
-	// Envoy's own interface can stop Envoy and show its configuration.
 	for _, path := range []string{"/", "/stats", "/stats/prometheus", "/config_dump", "/quitquitquit", "/metrics/../config_dump", "/metricsx"} {
 		response, err := http.Post("http://"+listed+":9092"+path, "", nil)
 		if err != nil {

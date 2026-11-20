@@ -10,8 +10,8 @@ import (
 	"aviary/supervisor/store"
 )
 
-// secretStore is a secret store as the API answers it. What the store is
-// logged in to with is not in the answer: only that it is stored.
+// secretStore is the API representation of a secret store. Its credential is
+// shown only as stored.
 type secretStore struct {
 	ID         uuid.UUID       `json:"id"`
 	ProjectID  uuid.UUID       `json:"project_id"`
@@ -30,10 +30,9 @@ func answeredStore(from store.SecretStore) secretStore {
 	}
 }
 
-// readSecretStore reads what a secret store is created with or replaced
-// with: all that makes the store with the ID. Its kind says how the store is
-// asked, and its settings are what that kind needs to know of it. The store
-// is tried before it is taken, and its credential is sealed for that store.
+// readSecretStore decodes and validates a request to create or replace the
+// secret store with the ID. The store is checked before it is accepted, and
+// its credential is encrypted for that store.
 func (a *api) readSecretStore(w http.ResponseWriter, r *http.Request, id uuid.UUID) (store.SecretStore, error) {
 	var request struct {
 		Name       string          `json:"name"`
@@ -98,9 +97,9 @@ func (a *api) getSecretStore(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// replaceSecretStore gives a secret store another name, kind and settings,
-// all at once and with its credential: nobody can have a credential that is
-// stored sent to another address.
+// replaceSecretStore replaces the name, kind, settings and credential of a
+// secret store together, so that a stored credential cannot be redirected to
+// another address.
 func (a *api) replaceSecretStore(w http.ResponseWriter, r *http.Request) error {
 	id, err := pathID(r, "store")
 	if err != nil {

@@ -40,29 +40,20 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.supervisor.events.secretName }}
                   key: {{ .Values.supervisor.events.secretKey }}
-            # The keys that secrets are sealed with, and the one that seals.
             - name: AVIARY_ENCRYPTION_KEYS
               value: /etc/aviary/encryption
             - name: AVIARY_ENCRYPTION_KEY
               value: {{ .Values.supervisor.encryption.key | quote }}
-            # The hosts at which a project may register a secret store.
             - name: AVIARY_SECRET_STORE_HOSTS
               value: {{ .Values.supervisor.secretStores.allowedHosts | toJson | quote }}
-            # For how long a value that was read from a secret store is used.
             - name: AVIARY_SECRET_CACHE_SECONDS
               value: {{ .Values.supervisor.secretStores.cacheSeconds | quote }}
-            # The identity provider that tells who sends a request to the
-            # API, if the installation has one.
             - name: AVIARY_IDENTITY_PROVIDER
               value: {{ .Values.supervisor.auth.provider | toJson | quote }}
-            # The groups of the provider whose members are administrators,
-            # and those whose members may use the API.
             - name: AVIARY_ADMIN_GROUPS
               value: {{ .Values.supervisor.auth.admins | toJson | quote }}
             - name: AVIARY_USER_GROUPS
               value: {{ .Values.supervisor.auth.users | toJson | quote }}
-            # Where the sandboxes of the sessions are made, and the volume of
-            # a session.
             - name: AVIARY_SANDBOX_NAMESPACE
               value: aviary-runtime
             - name: AVIARY_SANDBOX_VOLUME_SIZE
@@ -73,12 +64,8 @@ spec:
               value: {{ .Values.sandboxes.idleSeconds | quote }}
             - name: AVIARY_SANDBOX_RETENTION_SECONDS
               value: {{ .Values.sandboxes.retentionSeconds | quote }}
-            # Where the harnesses in the sandboxes reach their models: the
-            # Egress Proxy, which passes a request on to the model endpoint
-            # of its turn.
             - name: AVIARY_LLM_BASE_URL
               value: http://aviary-egress-proxy.{{ .Release.Namespace }}:8080
-            # The proxy that the sandboxes use for everything else.
             - name: AVIARY_PROXY_URL
               value: http://aviary-egress-proxy.{{ .Release.Namespace }}:3128
             - name: AVIARY_HARNESSES

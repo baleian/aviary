@@ -1,4 +1,5 @@
-// Package mysql keeps the Supervisor's records in MySQL.
+// Package mysql implements store.Store on MySQL. The queries are in
+// queries.sql, from which `make sqlc` generates internal/db.
 package mysql
 
 import (
@@ -15,24 +16,23 @@ import (
 	"github.com/go-sql-driver/mysql"
 )
 
-// Plugin connects the Supervisor to MySQL databases, whose addresses begin
-// with mysql://:
+// Plugin is the store.Plugin for MySQL, whose URLs have the form
 //
 //	mysql://user:password@host:3306/name
 //
-// With ?tls=true the connection is encrypted and the certificate of the
-// server is checked. tls=skip-verify encrypts without the check, and
-// tls=preferred encrypts if the server can.
+// The only query parameter is tls. With tls=true the connection is encrypted
+// and the server certificate is verified, tls=skip-verify encrypts without
+// verifying, and tls=preferred encrypts if the server supports it.
 type Plugin struct{}
 
 func (Plugin) Schemes() []string { return []string{"mysql"} }
 
-// connect returns the connections to the database at the address. None is
-// made before it is used.
+// connect returns a connection pool for the database at address. It does not
+// connect yet.
 func connect(address string) (*sql.DB, error) {
 	parsed, err := url.Parse(address)
 	if err != nil {
-		// A URL that cannot be parsed is quoted in the error, password included.
+		// A url.Error quotes the URL, password included.
 		var quoting *url.Error
 		if errors.As(err, &quoting) {
 			err = quoting.Err
@@ -47,18 +47,17 @@ func connect(address string) (*sql.DB, error) {
 	config.User = parsed.User.Username()
 	config.Passwd, _ = parsed.User.Password()
 	config.DBName = strings.TrimPrefix(parsed.Path, "/")
-	// The times are kept and read as UTC, whatever the time zone of the
-	// server is.
+	// Times are stored and read as UTC, whatever the server's time zone.
 	config.ParseTime, config.Loc = true, time.UTC
-	// An update counts the rows that it found, also those that it left as
-	// they were: a row that is there is not taken for one that is not.
+	// Updates report the rows that they matched, unchanged ones included, so
+	// that an unchanged row is not taken for a missing one.
 	config.ClientFoundRows = true
-	// A statement sees what is committed when it runs, and what waits for a
-	// row looks at the row again when it has it. That is not the default of
-	// MySQL, and it is what the operations are written for.
+	// The operations are written for READ COMMITTED, in which each statement
+	// sees the latest committed rows, and a statement that waited for a row
+	// lock reads the row again. MySQL defaults to REPEATABLE READ.
 	config.Params = map[string]string{"time_zone": "'+00:00'", "transaction_isolation": "'READ-COMMITTED'"}
-	// What does not fit its column is refused, not cut to fit, whatever the
-	// mode of the server is. This is the mode that MySQL has by default.
+	// Use MySQL's default mode whatever the server's setting, so that a value
+	// that does not fit its column is rejected rather than truncated.
 	config.Params["sql_mode"] = "'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE," +
 		"ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'"
 	for name, values := range parsed.Query() {
@@ -75,8 +74,7 @@ func connect(address string) (*sql.DB, error) {
 		return nil, fmt.Errorf("the URL of the database: %w", err)
 	}
 	db := sql.OpenDB(connector)
-	// A connection is closed here before the server, or what is between,
-	// closes it.
+	// Close connections before the server, or a proxy in between, does.
 	db.SetConnMaxLifetime(4 * time.Minute)
 	connections := max(4, runtime.NumCPU())
 	db.SetMaxOpenConns(connections)

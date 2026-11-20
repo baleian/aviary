@@ -18,14 +18,14 @@ import (
 	"aviary/supervisor/identity"
 )
 
-// issuer is an OpenID Connect issuer for a test: it publishes its
-// configuration and its keys, and signs the tokens that the test asks for.
+// issuer is a fake OpenID Connect issuer that serves its discovery document
+// and keys, and signs tokens.
 type issuer struct {
 	t      *testing.T
 	server *httptest.Server
 	mu     sync.Mutex
 	keys   []jose.JSONWebKey
-	// fetched is how many times the keys were asked for.
+	// fetched counts the requests for the keys.
 	fetched int
 }
 
@@ -58,7 +58,7 @@ func newIssuer(t *testing.T) *issuer {
 	return i
 }
 
-// rotate gives the issuer a new key, which it signs with from then on.
+// rotate replaces the issuer's key with a new one.
 func (i *issuer) rotate() {
 	i.t.Helper()
 	i.mu.Lock()
@@ -75,8 +75,8 @@ func newKey(t *testing.T, number int) jose.JSONWebKey {
 	return jose.JSONWebKey{Key: key, KeyID: "key-" + string(rune('a'+number)), Algorithm: "RS256", Use: "sig"}
 }
 
-// token returns a token of the issuer for the audience "aviary" that is
-// good for a minute, with the claims that are given on top of those.
+// token returns a token for the audience "aviary" that is valid for a
+// minute, with claims added or overridden.
 func (i *issuer) token(claims map[string]any) string {
 	i.t.Helper()
 	i.mu.Lock()
@@ -115,8 +115,8 @@ func sign(t *testing.T, key jose.JSONWebKey, claims map[string]any) string {
 	return token
 }
 
-// open connects to the issuer with the claims that are written as JSON, or
-// with no claims in the settings if there are none.
+// open opens a provider for the issuer with claims, in JSON, as its claims
+// setting, or without one if claims is empty.
 func open(t *testing.T, i *issuer, claims string) identity.Provider {
 	t.Helper()
 	settings := map[string]any{"issuer": i.server.URL, "audience": "aviary"}
@@ -134,8 +134,7 @@ func open(t *testing.T, i *issuer, claims string) identity.Provider {
 	return provider
 }
 
-// A token of the issuer tells who its caller is, in the claims that the
-// settings name.
+// The fields of the caller are read from the claims that the settings name.
 func TestCaller(t *testing.T) {
 	i := newIssuer(t)
 	told := map[string]any{
@@ -205,8 +204,6 @@ func TestCaller(t *testing.T) {
 	}
 }
 
-// A token that the issuer did not sign for this audience, or that is not
-// good now, tells of no caller.
 func TestTokensThatAreRefused(t *testing.T) {
 	i := newIssuer(t)
 	provider := open(t, i, "")
@@ -234,8 +231,8 @@ func TestTokensThatAreRefused(t *testing.T) {
 	}
 }
 
-// An issuer changes the key that it signs with. Its tokens are good from
-// then on too, and the keys are not fetched for every token.
+// Tokens signed with a rotated key are accepted, and the keys are not
+// fetched for every token.
 func TestIssuerChangesItsKey(t *testing.T) {
 	i := newIssuer(t)
 	provider := open(t, i, "")
@@ -255,8 +252,8 @@ func TestIssuerChangesItsKey(t *testing.T) {
 	if _, err := provider.Caller(context.Background(), i.token(nil)); err != nil {
 		t.Errorf("a token that was signed with the new key is refused: %v", err)
 	}
-	// The key that the issuer has no more is forgotten a moment after the
-	// new ones were fetched, not at once.
+	// The old key is dropped some time after the new keys are fetched, not
+	// at once.
 	for forgotten := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
 		if _, err := provider.Caller(context.Background(), before); err != nil {
 			break
@@ -267,7 +264,7 @@ func TestIssuerChangesItsKey(t *testing.T) {
 	}
 }
 
-// Settings that a provider cannot be opened with say what is wrong.
+// Invalid settings are refused with an error that says what is wrong.
 func TestSettings(t *testing.T) {
 	i := newIssuer(t)
 	other := httptest.NewServer(http.NotFoundHandler())
@@ -279,7 +276,7 @@ func TestSettings(t *testing.T) {
 		`{"issuer": "` + i.server.URL + `", "audience": "a", "claims": {"display_name": "name"}}`: "display_name",
 		`{"issuer": "` + i.server.URL + `", "audience": "a", "client_secret": "s"}`:               "client_secret",
 		`{"issuer": "` + other.URL + `", "audience": "a"}`:                                        other.URL,
-		// The issuer says that it is another than the one that was asked.
+		// The discovery document names a different issuer.
 		`{"issuer": "` + i.server.URL + `/", "audience": "a"}`: "issuer",
 		`not JSON`: "settings",
 	} {

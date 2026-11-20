@@ -14,7 +14,8 @@ import (
 	"aviary/supervisor/store"
 )
 
-// settings are the variables of a Supervisor as the chart sets them.
+// settings is a valid environment of a Supervisor, in the form that the chart
+// sets.
 var settings = map[string]string{
 	sandboxNamespace: "aviary-runtime",
 	sandboxVolume:    "10Gi",
@@ -32,7 +33,7 @@ var settings = map[string]string{
 	maxTurn:            "1800",
 }
 
-// set sets the variables, with some of them changed.
+// set sets the environment to settings, overridden by changed.
 func set(t *testing.T, changed map[string]string) {
 	for name, value := range settings {
 		t.Setenv(name, value)
@@ -89,8 +90,7 @@ func TestDriverConfig(t *testing.T) {
 	} {
 		t.Run(wrong.name+"="+wrong.value, func(t *testing.T) {
 			set(t, map[string]string{wrong.name: wrong.value})
-			// A Supervisor with a setting that it cannot use does not start,
-			// and says which setting it is.
+			// The error names the invalid setting.
 			if config, err := driverConfig(); err == nil || !strings.Contains(err.Error(), wrong.name) {
 				t.Errorf("the turns are run with %+v: %v", config, err)
 			}
@@ -108,7 +108,7 @@ func TestSandboxSettings(t *testing.T) {
 		made.Proxy.String() != settings[proxyURL] || made.Models.String() != settings[modelsURL] {
 		t.Errorf("the sandboxes are made with %+v", made)
 	}
-	// Without a class, the volumes are of the default class of the cluster.
+	// The storage class is optional, and 0 is a valid tool output limit.
 	set(t, map[string]string{sandboxClass: "", maxToolOutput: "0"})
 	if made, err := sandboxSettings(); err != nil || made.StorageClass != "" || made.MaxToolOutputBytes != 0 {
 		t.Errorf("the sandboxes are made with %+v: %v", made, err)
@@ -127,9 +127,8 @@ func TestSandboxSettings(t *testing.T) {
 	}
 }
 
-// The Supervisor is told at which hosts the projects may have secret stores
-// and for how long it is to use what it read from one, and asks the stores
-// of the kinds that it was built with.
+// allowedSecretStores reads the allowed hosts and the cache duration, and
+// serves the kinds of the given plugins.
 func TestSecretStoreSettings(t *testing.T) {
 	t.Setenv(secretStoreHosts, `["secrets.example.com:8200"]`)
 	t.Setenv(secretCacheSeconds, "60")
@@ -139,7 +138,7 @@ func TestSecretStoreSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stores.Close()
-	// A store of a kind that the build knows is held against the list.
+	// A store of a known kind is checked against the allowed hosts.
 	at := func(address string) json.RawMessage {
 		return json.RawMessage(`{"address": "` + address + `", "takes": "a-credential"}`)
 	}
@@ -154,8 +153,7 @@ func TestSecretStoreSettings(t *testing.T) {
 		t.Errorf("a store of a kind that the build does not know is checked as: %v", err)
 	}
 
-	// A value that was read from a store is used for as long as the
-	// installation says, and with zero the store is read every time.
+	// Values are cached for the configured seconds, and 0 disables the cache.
 	const address = "https://secrets.example.com:8200"
 	holding := &shelves{}
 	registered := store.SecretStore{ID: uuid.New(), Kind: "scripted", Settings: at(address), UpdatedAt: time.Now()}
@@ -176,7 +174,7 @@ func TestSecretStoreSettings(t *testing.T) {
 		}
 	}
 
-	// A Supervisor with a setting that it cannot use does not start.
+	// Invalid settings are refused.
 	for _, wrong := range []string{"", "-1", "soon", "1.5"} {
 		t.Setenv(secretCacheSeconds, wrong)
 		if stores, err := allowedSecretStores(plugins); err == nil || !strings.Contains(err.Error(), secretCacheSeconds) {

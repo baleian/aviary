@@ -1,12 +1,10 @@
-// A build of the Supervisor that is made outside the Supervisor's module,
-// with plugins of its own. It is what someone has who connects the
-// Supervisor to a database or an event log that Aviary has no plugin for: a
-// module that depends on the Supervisor's, plugins that keep to its
-// interfaces, and a main package that lists them. PLUGINS.md tells how to
-// make one, and the tests of this module keep what it tells true.
+// Command plugin is a build of the Supervisor outside its module, with
+// plugins of its own, as for a database or an event log that Aviary has no
+// plugin for. PLUGINS.md describes such a build, and the tests of this module
+// keep it accurate.
 //
-// The plugins here keep everything in the memory of the process, which
-// stands for the product that a plugin connects to.
+// The plugins keep everything in memory, in place of the product that a real
+// plugin connects to.
 package main
 
 import (
@@ -22,8 +20,8 @@ import (
 	memorystore "aviary/supervisor/store/memory"
 )
 
-// The plugins of this build. It brings its own for the database and for
-// the event log, and takes the one for secret stores that Aviary has.
+// The build has its own plugins for the database and the event log, and
+// Aviary's for secret stores.
 var plugins = app.Plugins{
 	Databases:    []store.Plugin{&databases{}},
 	EventLogs:    []events.Plugin{&logs{}},
@@ -34,8 +32,9 @@ func main() {
 	app.Main(plugins)
 }
 
-// databases connects to the databases at memory://. Those who open the same
-// address have the same database, as the Supervisors of an installation do.
+// databases opens in-memory databases at memory:// addresses. The same
+// address opens the same database, as the Supervisors of an installation
+// share one.
 type databases struct {
 	mu sync.Mutex
 	at map[string]*memorystore.Store
@@ -47,7 +46,6 @@ func (d *databases) Open(_ context.Context, address string) (store.Store, error)
 	return d.database(address), nil
 }
 
-// database returns the database at the address.
 func (d *databases) database(address string) *memorystore.Store {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -60,12 +58,12 @@ func (d *databases) database(address string) *memorystore.Store {
 	return d.at[address]
 }
 
-// Migrate has nothing to do: a database in memory has no schema.
+// Migrate is a no-op: an in-memory database has no schema.
 func (*databases) Migrate(context.Context, string) error { return nil }
 
 func (*databases) MigrateTo(context.Context, string, int64) error { return nil }
 
-// logs connects to the event logs at memory://, likewise.
+// logs opens in-memory event logs at memory:// addresses, likewise.
 type logs struct {
 	mu sync.Mutex
 	at map[string]*memorylog.Log

@@ -1,40 +1,37 @@
-// Command mock-llm stands in for a model server in tests. It speaks the two
-// protocols that the harnesses use, the Chat Completions API and the
-// Responses API of OpenAI, both as streams. Instead of a model, a script
-// answers: the last message of the user is an instruction.
+// Command mock-llm is a model server for tests. It serves the two OpenAI
+// APIs that the harnesses use, Chat Completions and Responses, both
+// streaming. Instead of a model, a script answers: the user's last message is
+// an instruction.
 //
 //	say <text>     replies with the text
 //	drawl <text>   replies with the text slowly, a word every half second,
 //	               which leaves time to stop the turn in the middle of it
 //	run <command>  runs the command with the harness's shell tool, then
-//	               replies with what the tool returned
+//	               replies with the tool's output
 //	escalate <command>
-//	               does what run does, and asks for the command to be run
-//	               outside the sandbox of the harness, if its shell tool
-//	               takes such a request. A harness that asks a person
-//	               before it acts asks then
-//	recall         replies with the instructions that the user gave before,
-//	               one per line, or "nothing" if there are none
+//	               like run, and asks for the command to run outside the
+//	               harness's sandbox if its shell tool supports that. A
+//	               harness that asks for approval before it acts asks then
+//	recall         replies with the user's earlier instructions, one per
+//	               line, or "nothing" if there are none
 //	find <text>    replies "present" if the harness sent the text along with
-//	               the conversation, as it does with the instructions of an
-//	               agent, and "absent" if it did not
-//	fail <text>    refuses the request with the text as the error, the way
-//	               a model server refuses a caller that it does not know
-//	flaky <text>   refuses the request once, the way a model server does that
-//	               cannot take it right now, and replies with the text when
-//	               the harness asks again
+//	               the conversation, as it does with an agent's
+//	               instructions, and "absent" if not
+//	fail <text>    refuses the request with the text as the error, as a
+//	               model server refuses an unknown caller
+//	flaky <text>   refuses the request once, as an overloaded model server
+//	               does, and replies with the text when the harness retries
 //
-// A message that is not an instruction gets the reply "mock".
+// Any other message gets the reply "mock".
 //
-// A request must carry the API key that mock-llm was started with, which is
-// in the variable MOCK_LLM_API_KEY. Every answer reports the same token
-// usage, 11 tokens in and 7 out.
+// Requests must carry the API key given in MOCK_LLM_API_KEY. Every response
+// reports the same token usage, 11 input and 7 output tokens.
 //
-// mock-llm is also the forward proxy of the tests that run a harness without
-// a cluster. As a proxy it passes nothing on: it refuses the request and logs
-// the host that was asked for, which tells a test what went out.
+// mock-llm is also the forward proxy of the harness tests that run without a
+// cluster. As a proxy it forwards nothing: it refuses each request and logs
+// the requested host, so that a test can see what went out.
 //
-// And it serves a small Python package, aviary-probe, for a test to install
+// It also serves a small Python package, aviary-probe, for tests to install
 // with pip: GET /packages/aviary_probe-1.0-py3-none-any.whl.
 package main
 
@@ -56,13 +53,12 @@ import (
 	"time"
 )
 
-// The token usage that every answer reports.
 const (
 	inputTokens  = 11
 	outputTokens = 7
 )
 
-// drawlPause is how long a slow answer waits after each of its pieces.
+// drawlPause is the pause after each word of a drawl answer.
 const drawlPause = 500 * time.Millisecond
 
 func main() {
@@ -80,17 +76,15 @@ func main() {
 	}
 }
 
-// mock is the model server. It keeps nothing of a conversation: a harness
-// sends all of it with every request.
+// mock is the model server. It keeps no conversation state: a harness sends
+// the whole conversation with every request.
 type mock struct {
 	mu sync.Mutex
-	// refused holds the texts of the flaky instructions that were refused
-	// once.
+	// refused holds the texts of flaky instructions that were refused once.
 	refused map[string]bool
 }
 
-// newMock returns the model server, which answers the requests that carry
-// the API key.
+// newMock returns the model server, which requires apiKey on model requests.
 func newMock(apiKey string) http.Handler {
 	m := &mock{refused: map[string]bool{}}
 	mux := http.NewServeMux()
@@ -103,7 +97,7 @@ func newMock(apiKey string) http.Handler {
 		w.Write(probe)
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// A request for another host takes mock-llm for a forward proxy.
+		// A request for another host is a forward proxy request.
 		if r.Method == http.MethodConnect || r.URL.Host != "" {
 			slog.Info("asked for", "host", r.URL.Hostname())
 			refuse(w, http.StatusForbidden, "mock-llm passes nothing on")
@@ -113,10 +107,10 @@ func newMock(apiKey string) http.Handler {
 	})
 }
 
-// probeWheel is the file of the Python package, a wheel, which pip installs.
+// probeWheel is the file name of the aviary-probe wheel.
 const probeWheel = "aviary_probe-1.0-py3-none-any.whl"
 
-// wheel makes the wheel of the package. Its module has nothing but its name.
+// wheel builds the aviary-probe wheel. Its module defines only its name.
 func wheel() []byte {
 	var made bytes.Buffer
 	archive := zip.NewWriter(&made)
@@ -126,7 +120,7 @@ func wheel() []byte {
 			_, err = io.WriteString(file, content)
 		}
 		if err != nil {
-			// What is written to memory does not fail.
+			// Writing to memory does not fail.
 			panic(err)
 		}
 	}
@@ -148,7 +142,8 @@ func wheel() []byte {
 	return made.Bytes()
 }
 
-// next is what the model does next in the conversation.
+// next returns the model's answer to the conversation. A flaky instruction is
+// refused the first time.
 func (m *mock) next(c conversation) answer {
 	next := c.next()
 	if !next.flaky {
@@ -163,16 +158,16 @@ func (m *mock) next(c conversation) answer {
 	return answer{failure: "the model cannot take the request right now", status: http.StatusServiceUnavailable}
 }
 
-// conversation is what a harness sends, in the terms of the script.
+// conversation is a model request as the script sees it.
 type conversation struct {
-	// said holds the messages of the user, oldest first.
+	// said holds the user messages, oldest first.
 	said []string
-	// sent holds what else the harness sent of its own: what it tells the
-	// model before the conversation, and what it adds to the conversation.
+	// sent holds the text that the harness added itself: its instructions to
+	// the model, and the messages that it added to the conversation.
 	sent []string
-	// toolOutput is what the tool returned, if the conversation ends with it.
+	// toolOutput is the tool output that ends the conversation, if any.
 	toolOutput *string
-	// shell is the harness's tool that runs a command, if it offers one.
+	// shell is the harness's shell tool, if it offers one.
 	shell *shellTool
 }
 
@@ -180,20 +175,19 @@ type shellTool struct {
 	name string
 	// argument is the name of the parameter that takes the command.
 	argument string
-	// sandboxed is set for a tool that keeps a command in a sandbox unless
-	// the model asks otherwise.
+	// sandboxed is set for a tool that runs commands in a sandbox unless the
+	// model asks otherwise.
 	sandboxed bool
 }
 
-// outside is what the model asks a sandboxed tool with to run a command
-// outside its sandbox. These are the parameters of Codex's tool.
+// outside holds the arguments that ask a sandboxed tool to run a command
+// outside its sandbox, as Codex's shell tool takes them.
 var outside = map[string]string{
 	"sandbox_permissions": "require_escalated",
 	"justification":       "the script says so",
 }
 
-// arguments returns the arguments of the call that has the tool do what the
-// answer says.
+// arguments returns the JSON arguments of the tool call for a.
 func (s shellTool) arguments(a answer) string {
 	arguments := map[string]string{s.argument: a.command}
 	if a.outside && s.sandboxed {
@@ -203,11 +197,10 @@ func (s shellTool) arguments(a answer) string {
 	return string(encoded)
 }
 
-// answer is what the model does next: it calls the shell tool with command,
-// which it asks to be run outside the sandbox if outside is set, or else it
-// says text, with a pause after each piece. If failure is set there is no
-// answer: the request is refused with it and with the status. An answer
-// that is flaky is given only when it was refused once.
+// answer is the model's next move: a call of the shell tool with command,
+// outside the sandbox if outside is set, or else text, with pause after each
+// word. If failure is set, the request is refused with failure and status
+// instead. A flaky answer is given only after it was refused once.
 type answer struct {
 	text    string
 	pause   time.Duration
@@ -218,8 +211,8 @@ type answer struct {
 	flaky   bool
 }
 
-// wait pauses after a piece of the answer. It reports false if the harness
-// has gone meanwhile.
+// wait pauses after a word of the answer. It reports false if the request was
+// cancelled meanwhile.
 func (a answer) wait(r *http.Request) bool {
 	select {
 	case <-time.After(a.pause):
@@ -229,8 +222,8 @@ func (a answer) wait(r *http.Request) bool {
 	}
 }
 
-// hear takes in a message with the role of the user. A harness adds such
-// messages of its own, which are no instructions to the script.
+// hear adds a user message. A message that is not an instruction is taken to
+// be added by the harness, and also goes to sent.
 func (c *conversation) hear(message string) {
 	c.said = append(c.said, message)
 	if _, _, found := instruction(message); !found {
@@ -254,9 +247,9 @@ func (c conversation) next() answer {
 	case word == "drawl":
 		return answer{text: rest, pause: drawlPause}
 	case word == "fail":
-		// Both harnesses give up at once on this status and report it as an
-		// error. An error of another kind one of them repeats for a while,
-		// and one ends the turn with the error as its answer.
+		// Both harnesses report this status as an error at once. On other
+		// statuses, one of them retries for a while and the other ends the
+		// turn with the error as its answer.
 		return answer{failure: rest, status: http.StatusUnauthorized}
 	case word == "flaky":
 		return answer{text: rest, flaky: true}
@@ -281,9 +274,8 @@ func (c conversation) next() answer {
 	return answer{text: strings.Join(before, "\n")}
 }
 
-// instruction splits a message of the user into the word of the script that
-// it begins with and the rest. Harnesses add messages of their own to a
-// conversation, which begin with no such word.
+// instruction splits a user message into its script word and the rest. found
+// is false for other messages, such as those that harnesses add.
 func instruction(message string) (word, rest string, found bool) {
 	word, rest, _ = strings.Cut(strings.TrimSpace(message), " ")
 	switch word {
@@ -293,7 +285,6 @@ func instruction(message string) (word, rest string, found bool) {
 	return "", "", false
 }
 
-// tool is a tool that a harness offers the model.
 type tool struct {
 	Name       string `json:"name"`
 	Parameters struct {
@@ -301,7 +292,7 @@ type tool struct {
 	} `json:"parameters"`
 }
 
-// findShell picks the tool that runs a command: the first that takes one.
+// findShell returns the first tool that takes a command, or nil.
 func findShell(tools []tool) *shellTool {
 	for _, tool := range tools {
 		for _, argument := range []string{"command", "cmd"} {
@@ -314,7 +305,7 @@ func findShell(tools []tool) *shellTool {
 	return nil
 }
 
-// text reads content that is either a string or a list of parts with text.
+// text returns content that is either a string or a list of text parts.
 func text(content json.RawMessage) string {
 	var whole string
 	if json.Unmarshal(content, &whole) == nil {
@@ -331,7 +322,7 @@ func text(content json.RawMessage) string {
 	return joined.String()
 }
 
-// pieces cuts a text into the pieces in which it is streamed.
+// pieces splits text into the words in which it is streamed.
 func pieces(text string) []string {
 	return strings.SplitAfter(text, " ")
 }
@@ -374,7 +365,7 @@ func refuse(w http.ResponseWriter, status int, message string) {
 	})
 }
 
-// withKey passes on the requests that carry the API key as a bearer token.
+// withKey passes on only the requests that carry apiKey as a bearer token.
 func withKey(apiKey string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+apiKey {
@@ -490,8 +481,8 @@ func (m *mock) responses(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusBadRequest, "mock-llm only streams; set stream to true")
 		return
 	}
-	// The input is a text or a list of items: messages, tool calls and their
-	// outputs.
+	// The input is a string or a list of items: messages, tool calls and
+	// their outputs.
 	var items []struct {
 		Type    string          `json:"type"`
 		Role    string          `json:"role"`

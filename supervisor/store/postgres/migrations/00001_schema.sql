@@ -5,29 +5,23 @@ create table projects (
     created_at timestamptz not null default now()
 );
 
--- The users of the installation: those whom its identity provider told of
--- when they sent a request.
+-- Users as authenticated by the identity provider.
 create table users (
     id uuid primary key,
-    -- What the provider knows the user by. It never changes.
+    -- The provider's stable identifier for the user.
     subject text not null unique,
-    -- A name of the user that a person can read and that no other user has
-    -- at the provider, if the provider gave one.
+    -- A human-readable name, if the provider gives one.
     username text unique,
-    -- What the user is shown as.
     display_name text not null,
     created_at timestamptz not null default now()
 );
 
--- The roles: what a member of a project may do, as a set of permissions
--- under a name. The roles are those that are put in here. An administrator
--- changes the permissions of one, and that holds for every member that has
--- the role.
+-- The predefined roles. Administrators can change the permissions of a role,
+-- which then apply to every member that has it.
 create table roles (
     name text primary key,
     permissions text[] not null,
     updated_at timestamptz not null default now(),
-    -- The user who changed the role last, if somebody has.
     updated_by uuid references users (id)
 );
 insert into roles (name, permissions) values
@@ -37,24 +31,19 @@ insert into roles (name, permissions) values
     ('viewer', '{project.view}'),
     ('auditor', '{project.view,sessions.view_all}');
 
--- The members of a project: who may do something in it, and what.
 create table project_members (
     id uuid primary key,
     project_id uuid not null references projects (id),
-    -- Who the member is, one of three: a user, someone who has not been seen
-    -- yet, by the username that they will have, or everyone whom the
-    -- identity provider says to be in a group.
+    -- One of: a user, the username of an awaited user who is not known yet,
+    -- or a group of the identity provider.
     user_id uuid references users (id),
     username text,
     group_name text,
-    -- What the member may do, one of two: what a role may, or these
-    -- permissions.
+    -- One of: a role, or permissions of the member's own.
     role text references roles (name),
     permissions text[],
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now(),
-    -- The user who gave the member what it may do, if somebody did who was
-    -- asked who they are.
     updated_by uuid references users (id),
     check (num_nonnulls(user_id, username, group_name) = 1),
     check (num_nonnulls(role, permissions) = 1),
@@ -63,46 +52,38 @@ create table project_members (
     unique (project_id, group_name)
 );
 
--- The secret stores of a project: where the project keeps secrets that it
--- does not give to Aviary to store. A secret of the project, such as the API
--- key of a provider, may be a place in one of them.
+-- External secret stores in which projects keep secrets, such as provider
+-- API keys, outside Aviary.
 create table secret_stores (
     id uuid primary key,
     project_id uuid not null references projects (id),
     name text not null,
-    -- The kind of the store, which says how it is asked. The Supervisor has
-    -- a plugin for each kind that it knows.
+    -- Selects the Supervisor's secret store plugin for the store.
     kind text not null,
-    -- How the store is reached, as its kind has it, without what is secret.
+    -- The settings of the store, without secrets.
     settings jsonb not null,
-    -- What the Supervisor logs in to the store with, sealed with a key that
-    -- the database does not hold.
+    -- Encrypted with a key that the database does not hold.
     credential bytea not null,
     created_at timestamptz not null default now(),
-    -- When the store was last given how it is reached.
     updated_at timestamptz not null default now()
 );
 
--- The model providers of a project: where the model endpoint of each is,
--- and the key to it. An agent of the project names the one that its turns
--- use.
+-- Model providers: the model endpoints of a project and their API keys.
 create table providers (
     id uuid primary key,
     project_id uuid not null references projects (id),
     name text not null,
-    -- The base URL of the endpoint.
+    -- The base URL of the model endpoint.
     url text not null,
-    -- The API key of the endpoint, sealed with a key that the database does
-    -- not hold. An endpoint that takes no key has none, and neither has a
-    -- provider whose key is in a secret store of the project: that one has
-    -- the store, the path of the secret in it, and the name of the value
-    -- among those that the secret holds.
+    -- The API key, encrypted with a key that the database does not hold. It
+    -- is null if the endpoint takes no key, or if the key is in a secret
+    -- store: then the key is located by the store, the path of a secret in
+    -- it, and the name of the value within the secret.
     api_key bytea,
     api_key_store_id uuid references secret_stores (id),
     api_key_path text not null default '',
     api_key_name text not null default '',
     created_at timestamptz not null default now(),
-    -- When the URL and the key were last given.
     updated_at timestamptz not null default now()
 );
 
@@ -110,15 +91,13 @@ create table agents (
     id uuid primary key,
     project_id uuid not null references projects (id),
     harness text not null,
-    -- What the agent is told before every turn, in the words of whoever set
-    -- the agent up. An agent need not have any.
+    -- Given to the agent before every turn, if not empty.
     instructions text not null default '',
-    -- Who answers when the harness of the agent asks before it acts. 'ask'
-    -- is a person, and nothing is asked of an agent without it.
+    -- 'ask' if the harness asks a person for approval before it acts, empty
+    -- if it does not ask.
     approval text not null default '',
-    -- The model that the turns of the agent use: a provider of the agent's
-    -- project, and the name of a model as that provider knows it. An agent
-    -- that was created without a model has none.
+    -- The agent's model: a provider of the project and the provider's name
+    -- for the model. Null and empty if the agent names no model.
     provider_id uuid references providers (id),
     model text not null default '',
     created_at timestamptz not null default now()
@@ -127,13 +106,11 @@ create table agents (
 create table sessions (
     id uuid primary key,
     agent_id uuid not null references agents (id),
-    -- The user who created the session, whose session it is. A session of an
-    -- installation that asks nobody who they are is nobody's.
+    -- The owner of the session. Null if the request was not authenticated.
     created_by uuid references users (id),
-    -- The sandbox that the session runs in.
+    -- The name of the session's sandbox, if it has one.
     sandbox text,
     created_at timestamptz not null default now(),
-    -- When the session was ended. A session that has ended takes no message.
     ended_at timestamptz
 );
 
@@ -141,28 +118,23 @@ create table turns (
     id uuid primary key,
     session_id uuid not null references sessions (id),
     seq integer not null,
-    -- The user who sent the message of the turn. A turn of an installation
-    -- that asks nobody who they are has none.
+    -- The sender of the message. Null if the request was not authenticated.
     created_by uuid references users (id),
     state text not null,
     text text not null,
     created_at timestamptz not null default now(),
-    -- When the turn was dispatched, when its harness was given the message,
-    -- when it was asked to stop, and when it ended. A turn that ended
-    -- without a start never reached its harness.
+    -- started_at is when the harness received the message. A turn that
+    -- ended without it never reached its harness.
     dispatched_at timestamptz,
     started_at timestamptz,
     cancel_requested_at timestamptz,
     ended_at timestamptz,
     -- Why the harness ended the turn, as the runner reported it.
     stop_reason text,
-    -- Why the turn failed: a word for the kind of failure and what is known
-    -- of it.
     failure_reason text,
     failure_message text,
-    -- The token usage of the turn as its harness reported it. A harness need
-    -- not report it, and harnesses differ in what they count, so it is not a
-    -- measurement.
+    -- The token usage as the harness reported it, if it did. Harnesses differ
+    -- in what they count.
     total_tokens bigint,
     input_tokens bigint,
     output_tokens bigint,
@@ -173,10 +145,10 @@ create table turns (
 );
 
 -- What the agent said and did in a turn, in the order in which each item
--- began. It is put together from the events of the turn when the turn ends,
--- because the events are kept only for a while. An item is an object with a
--- type: a message or a thought with its whole text, a tool call as it last
--- stood, or the plan as it last stood.
+-- began. The items are assembled from the turn's events when it ends, since
+-- the events are kept only for a while. An item is an object with a type: a
+-- message or a thought with its full text, or the final state of a tool call
+-- or of the plan.
 create table turn_items (
     turn_id uuid not null references turns (id),
     seq integer not null,
@@ -184,50 +156,45 @@ create table turn_items (
     primary key (turn_id, seq)
 );
 
--- What the harness of a turn asked a person before it went on, and the
--- answer. A request waits for as long as its turn runs. It is resolved when
--- the harness has its answer: the option that a person chose or, for a turn
--- that was told to stop first, none.
+-- Approval requests of a turn's harness and their answers. A request waits
+-- while its turn runs. It is resolved when the harness has its answer: the
+-- option that a person chose or, if the turn was cancelled first, none.
 create table approvals (
     turn_id uuid not null references turns (id),
-    -- The name that the runner gave the request among those of its turn.
+    -- The ID that the runner gave the request within its turn.
     id text not null,
-    -- The request as the runner reported it: the tool call that the harness
-    -- asks about and the options that it takes as an answer.
+    -- The tool call that the harness asks about and the options it accepts.
     request jsonb not null,
     requested_at timestamptz not null default now(),
-    -- The option that a person chose, when, and who did. An answer of an
-    -- installation that asks nobody who they are is nobody's.
+    -- answered_by is null if the request was not authenticated.
     option_id text,
     answered_at timestamptz,
     answered_by uuid references users (id),
-    -- How the harness got its answer, selected or cancelled, and when.
+    -- How the request was resolved: 'selected' or 'cancelled'.
     outcome text,
     resolved_at timestamptz,
     primary key (turn_id, id)
 );
 
--- The oldest Supervisor that still works on this schema, given as the schema
--- version that it was built for. A Supervisor built for an older version
--- does not start. A migration that takes away something that older
--- Supervisors use raises the value.
+-- The oldest schema version that a Supervisor may be built for. Older
+-- Supervisors do not start. A migration that removes something that they use
+-- raises it.
 create table schema_floor (
-    -- The table holds one row.
+    -- Restricts the table to one row.
     singleton boolean primary key default true check (singleton),
     version bigint not null
 );
 insert into schema_floor (version) values (0);
 
--- The agents of a project and the sessions of an agent are listed: the
--- sessions newest first, in the order of their IDs.
+-- For listing the agents of a project, and the sessions of an agent by ID.
 create index agents_project on agents (project_id);
 create index sessions_agent on sessions (agent_id, id);
--- A session runs one turn at a time.
+-- A session has at most one unfinished turn.
 create unique index turns_unfinished_per_session on turns (session_id) where ended_at is null;
--- The queued turns in the order in which they are dispatched.
+-- The queue, in dispatch order.
 create index turns_queued on turns (created_at, id) where state = 'queued';
--- The answers that are on their way to their harnesses, which every
--- Supervisor looks for again and again.
+-- The answers not yet delivered to their harnesses, which every Supervisor
+-- polls.
 create index approvals_answered on approvals (turn_id) where answered_at is not null and resolved_at is null;
 
 -- +goose Down

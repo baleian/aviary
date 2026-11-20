@@ -9,8 +9,8 @@ import (
 	"aviary/supervisor/internal/api"
 )
 
-// The agents of a project are listed to its members, and the sessions of an
-// agent to those who may read them: one's own, or those of everyone.
+// Agents are listed to every member of the project, and sessions to those
+// who may read them: their own, or everyone's.
 func TestLists(t *testing.T) {
 	installation := install(t)
 	provider := tokens{"admin": {Subject: "admin", Groups: []string{"platform"}}}
@@ -19,7 +19,7 @@ func TestLists(t *testing.T) {
 	}
 	installation.callers = api.Callers{Provider: provider, Admins: []string{"platform"}}
 	s := installation.supervisor()
-	// as sends what follows as the caller.
+	// as sets the caller of the following requests.
 	as := func(caller string) *supervisor {
 		s.token = caller
 		return s
@@ -58,8 +58,7 @@ func TestLists(t *testing.T) {
 		t.Errorf("the agents of a project without any are answered with %d, as %+v", status, empty.Agents)
 	}
 
-	// The sessions of the first agent, oldest first: three of one user, with
-	// two of another between them.
+	// Five sessions of the first agent, alternately created by ann and ben.
 	var created []string
 	for _, caller := range []string{"ann", "ben", "ann", "ben", "ann"} {
 		created = append(created, as(caller).create("/v1/agents/"+first+"/sessions", ""))
@@ -82,7 +81,7 @@ func TestLists(t *testing.T) {
 		{"ann", second, "", []string{apart}},
 		{"ben", first, "", []string{ben[1], ben[0]}},
 		{"ben", second, "", []string{}},
-		// Who may read no session is listed none.
+		// A caller who may read no session gets an empty list.
 		{"viewer", first, "", []string{}},
 		{"auditor", first, "", []string{created[4], created[3], created[2], created[1], created[0]}},
 		{"auditor", first, "?limit=2", []string{created[4], created[3]}},
@@ -106,7 +105,7 @@ func TestLists(t *testing.T) {
 		}
 	}
 
-	// A member who may run sessions no longer is listed none, not their own.
+	// A member who may no longer run sessions does not see their own either.
 	var demoted struct{ Sessions []session }
 	if status, _ := as("admin").request("PUT", "/v1/members/"+members["ben"], `{"role": "viewer"}`, nil); status != http.StatusOK {
 		t.Fatalf("a member is given another role with %d", status)
@@ -136,7 +135,7 @@ func TestLists(t *testing.T) {
 	}
 }
 
-// An installation that asks nobody lists every session to every caller.
+// Without an identity provider, every session is listed to every caller.
 func TestListsOfAnInstallationThatAsksNobody(t *testing.T) {
 	s := install(t).supervisor()
 	agent := s.agent(s.create("/v1/projects", `{"name": "test"}`), `{"harness": "opencode"}`)

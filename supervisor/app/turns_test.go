@@ -12,8 +12,7 @@ import (
 	"aviary/supervisor/store"
 )
 
-// items returns the items of a turn's record, each as the fields of its
-// object.
+// items decodes the items of a turn.
 func items(t *testing.T, record turn) []map[string]any {
 	t.Helper()
 	items := []map[string]any{}
@@ -27,9 +26,9 @@ func items(t *testing.T, record turn) []map[string]any {
 	return items
 }
 
-// A message runs as a turn: the Supervisor has the sandbox of the session
-// made, gives the turn to the runner in it, passes on and keeps what the
-// runner tells, and ends the turn when the runner tells its end.
+// A message runs as a turn: the Supervisor creates the session's sandbox,
+// dispatches the turn to its runner, streams and records the runner's
+// events, and ends the turn when the runner reports its end.
 func TestTurn(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
@@ -51,21 +50,20 @@ func TestTurn(t *testing.T) {
 	if state := s.turn(accepted.ID).State; state != "running" {
 		t.Errorf("a turn that its runner has is %s", state)
 	}
-	// The token of the session is good for the model endpoint and the
-	// forward proxy while a turn of the session runs, and the requests are
-	// recorded with the turn.
+	// While a turn runs, the session token is accepted for model and forward
+	// proxy requests, which are attributed to the turn.
 	token := aviary.token(runner.Sandbox)
 	for _, forward := range []bool{false, true} {
 		origin := s.origin(token, forward)
 		if origin["turn"] != accepted.ID || origin["session"] != session || origin["agent"] == "" || origin["project"] == "" {
 			t.Errorf("the token of the session whose turn runs is that of %v", origin)
 		}
-		// The installation asks nobody who they are: nobody sent the message.
+		// Without an identity provider, the message has no sender.
 		_, user := origin["user"]
 		if _, subject := origin["subject"]; user || subject {
 			t.Errorf("the proxy is told that someone sent the message of the turn: %v", origin)
 		}
-		// A model request goes to a provider, which the proxy is told too.
+		// Only model requests name a provider.
 		if _, provider := origin["provider"]; provider == forward {
 			t.Errorf("of a request that is through the forward proxy %t, the proxy is told the provider %q", forward, origin["provider"])
 		}
@@ -79,7 +77,7 @@ func TestTurn(t *testing.T) {
 	runner.report(said("there"))
 	runner.report(message{"tool.call", map[string]string{"id": "t1", "title": "ls", "kind": "execute", "status": "pending"}})
 	runner.report(message{"tool.update", map[string]string{"id": "t1", "status": "completed", "output": "a.txt"}})
-	// The session takes no message before its turn has ended.
+	// The session takes no message while its turn runs.
 	var refusal struct{ Code string }
 	if status, _ := s.request("POST", "/v1/sessions/"+session+"/messages", `{"text": "again"}`, &refusal); status != http.StatusConflict || refusal.Code != "session_busy" {
 		t.Errorf("a message to a session whose turn has not ended was answered with %d %s", status, refusal.Code)
@@ -117,8 +115,8 @@ func TestTurn(t *testing.T) {
 		t.Errorf("the token of a session whose turn has ended is that of %v", origin)
 	}
 
-	// The next turn of the session runs in the same sandbox, in which the
-	// harness has its session.
+	// The next turn runs in the same sandbox, where the harness keeps its
+	// session.
 	next := s.send(session, "and again")
 	if next.Seq != 2 {
 		t.Errorf("the second turn of the session has the number %d", next.Seq)
@@ -129,7 +127,7 @@ func TestTurn(t *testing.T) {
 	}
 }
 
-// positions returns the places in the queue that the events told a turn.
+// positions returns the queue positions of the turn.queued events.
 func positions(t *testing.T, events []event) []int {
 	t.Helper()
 	positions := []int{}
@@ -146,13 +144,13 @@ func positions(t *testing.T, events []event) []int {
 	return positions
 }
 
-// Turns beyond the limit wait in the order in which they were sent, and are
-// told their places as the queue moves.
+// Turns beyond the concurrency limit are queued in order, and are told their
+// position whenever it changes.
 func TestQueue(t *testing.T) {
 	t.Parallel()
 	aviary := install(t, func(config *driver.Config) { config.MaxConcurrentTurns = 1 })
 	s := aviary.supervisor()
-	// told returns the places that the turn was told, each once.
+	// told returns the distinct positions that a turn was told.
 	told := func(events []event) []int { return slices.Compact(positions(t, events)) }
 	ending := func(events []event) string { return events[len(events)-1].Type }
 
@@ -167,7 +165,7 @@ func TestQueue(t *testing.T) {
 		}
 	}
 
-	// A turn that waits is cancelled at once, and never runs.
+	// A queued turn is cancelled at once and never runs.
 	var cancelled turn
 	if status, _ := s.request("POST", "/v1/turns/"+second.ID+"/cancel", "", &cancelled); status != http.StatusOK || cancelled.State != "cancelled" {
 		t.Errorf("cancelling a turn that waits was answered with %d and the turn %+v", status, cancelled)
@@ -179,7 +177,7 @@ func TestQueue(t *testing.T) {
 		t.Errorf("the record of the turn that never ran is %+v", record)
 	}
 
-	// The turn that runs loses its sandbox. It fails, and the next one runs.
+	// The running turn loses its sandbox and fails, and the next one runs.
 	running.lose()
 	if events := s.follow(first.ID); ending(events) != "turn.failed" {
 		t.Errorf("the turn that lost its sandbox ended with %s", ending(events))
@@ -190,8 +188,8 @@ func TestQueue(t *testing.T) {
 	s.run(third.ID, "done")
 	s.run(fourth.ID, "done")
 
-	// The third turn was behind one turn and the fourth behind two, until
-	// the turn before them left the queue and then the one that ran ended.
+	// The positions went down when the cancelled turn left the queue and
+	// when the running turn ended.
 	for _, waited := range []struct {
 		turn   turn
 		places []int
@@ -203,7 +201,7 @@ func TestQueue(t *testing.T) {
 		}
 	}
 
-	// The session of the turn that failed goes on, in a new sandbox.
+	// The session of the failed turn continues in a new sandbox.
 	next := s.send(lost, "again")
 	s.run(next.ID, "done")
 	if events := s.follow(next.ID); ending(events) != "turn.completed" || next.Seq != 2 {
@@ -211,7 +209,7 @@ func TestQueue(t *testing.T) {
 	}
 }
 
-// No more turns wait than may, and none waits for longer than it may.
+// The queue is limited in length and in waiting time.
 func TestQueueLimits(t *testing.T) {
 	t.Parallel()
 	aviary := install(t, func(config *driver.Config) {

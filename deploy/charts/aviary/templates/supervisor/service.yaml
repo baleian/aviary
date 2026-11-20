@@ -13,7 +13,7 @@ spec:
     - name: http
       port: 80
       targetPort: http
-    # The Egress Proxy asks on this port which turn a request comes from.
+    # ext_authz of the Egress Proxy.
     - name: authz
       port: 9091
       targetPort: authz

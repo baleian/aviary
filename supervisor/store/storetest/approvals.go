@@ -13,8 +13,6 @@ import (
 	"aviary/supervisor/store"
 )
 
-// Of the answers that are given to a request at once, through several
-// Supervisors, one stands.
 func (suite suite) testAnswerApprovalKeepsOneOfTheAnswersGivenAtOnce(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -66,8 +64,8 @@ func (suite suite) testApprovals(t *testing.T) {
 		return answers
 	}
 
-	// The character U+0000, which a database may be unable to keep, may be
-	// in what a tool is called with.
+	// The input of a tool call may contain U+0000, which a database may be
+	// unable to store.
 	const first, second = `{"id": "1", "note": "a\u0000b"}`, `{"id": "2"}`
 	if err := st.AddApproval(ctx, turn, "1", []byte(first)); err != nil {
 		t.Fatal(err)
@@ -75,7 +73,7 @@ func (suite suite) testApprovals(t *testing.T) {
 	if err := st.AddApproval(ctx, turn, "2", []byte(second)); err != nil {
 		t.Fatal(err)
 	}
-	// A runner that lost its Supervisor reports a request again.
+	// A runner reports a request again after it lost its Supervisor.
 	if err := st.AddApproval(ctx, turn, "1", []byte(`{"id": "another"}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -92,8 +90,7 @@ func (suite suite) testApprovals(t *testing.T) {
 		t.Error("a request of a turn that there is not was kept")
 	}
 
-	// The first answer stands.
-	// An answer is that of the user who gave it, and the first one stands.
+	// The first answer stands, and records the user who gave it.
 	user, err := st.UserOf(ctx, "subject-a", "alice@example.com", "Alice")
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +110,7 @@ func (suite suite) testApprovals(t *testing.T) {
 	if asked, err := st.Approval(ctx, turn, "1"); err != nil || !asked.Answered || asked.Resolved || asked.AnsweredBy != user.ID {
 		t.Errorf("the request that the user %s answered is %+v: %v", user.ID, asked, err)
 	}
-	// It waits for a person no longer, and its answer is on its way.
+	// An answered request no longer waits, and its answer is pending delivery.
 	if waiting := waiting(); !keepsAll(t, waiting, second) {
 		t.Errorf("the requests that wait after an answer are %s", waiting)
 	}
@@ -123,7 +120,7 @@ func (suite suite) testApprovals(t *testing.T) {
 		t.Errorf("the answers on their way are %v, those of the turn %v and those of another %v", all, mine, others)
 	}
 
-	// The harness has its answer. A report that comes again changes nothing.
+	// The harness receives the answer. Resolving again changes nothing.
 	resolved, waited, once, err := st.ResolveApproval(ctx, turn, "1", "selected")
 	if err != nil || !once || waited < 0 || waited > time.Minute || !keeps(t, resolved.Request, first) {
 		t.Fatalf("the request %s was resolved after %s, for the first time %t: %v", resolved.Request, waited, once, err)
@@ -140,7 +137,7 @@ func (suite suite) testApprovals(t *testing.T) {
 	if answers := answers(nil); len(answers) != 0 {
 		t.Errorf("an answer that the harness has is still on its way: %v", answers)
 	}
-	// A request that the harness waits for no longer takes no answer.
+	// A resolved request takes no answer.
 	if _, _, _, err := st.ResolveApproval(ctx, turn, "2", "cancelled"); err != nil {
 		t.Fatal(err)
 	}
@@ -148,8 +145,8 @@ func (suite suite) testApprovals(t *testing.T) {
 		t.Errorf("a request that was resolved was answered %t: %v", answered, err)
 	}
 
-	// Nor does one of a turn that has ended, and what was answered to it is
-	// passed on no more.
+	// Nor does a request of an ended turn, and the turn's undelivered answers
+	// are no longer listed.
 	if err := st.AddApproval(ctx, other.TurnID, "1", []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}

@@ -18,14 +18,13 @@ import (
 	"aviary/supervisor/store/mysql/internal/key"
 )
 
-// The MySQL error numbers for a broken unique constraint, and for a
-// transaction that was undone because it and another waited for each other.
+// MySQL error numbers.
 const (
 	duplicateEntry = 1062
 	deadlock       = 1213
 )
 
-// The rows of the locks table: what only one Supervisor does at a time.
+// Rows of the locks table.
 const (
 	dispatchLock = "dispatch"
 	queueLock    = "queue"
@@ -36,8 +35,8 @@ type records struct {
 	queries *db.Queries
 }
 
-// Open connects to the database at the address. Its schema must be at least
-// as new as this build needs; Migrate brings it there.
+// Open connects to the database at address and checks that its schema suits
+// this build.
 func (Plugin) Open(ctx context.Context, address string) (store.Store, error) {
 	pool, err := connect(address)
 	if err != nil {
@@ -54,9 +53,8 @@ func (s *records) Close() {
 	s.pool.Close()
 }
 
-// within runs the function in a transaction, which is committed if the
-// function fails with nothing. MySQL undoes a transaction that waits for
-// another that waits for it: such a one is run again.
+// within runs run in a transaction, and commits it if run succeeds. It retries
+// a transaction that MySQL rolled back to break a deadlock.
 func (s *records) within(ctx context.Context, run func(queries *db.Queries) error) error {
 	for attempt := 1; ; attempt++ {
 		err := s.once(ctx, run)
@@ -79,14 +77,13 @@ func (s *records) once(ctx context.Context, run func(queries *db.Queries) error)
 	return tx.Commit()
 }
 
-// failed tells whether the error is the MySQL error with the number.
+// failed reports whether err is the MySQL error with the number.
 func failed(err error, number uint16) bool {
 	var failure *mysql.MySQLError
 	return errors.As(err, &failure) && failure.Number == number
 }
 
-// found returns the error of reading one row, which is ErrNotFound if there
-// is no such row.
+// found maps sql.ErrNoRows to store.ErrNotFound.
 func found(err error) error {
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.ErrNotFound
@@ -94,8 +91,8 @@ func found(err error) error {
 	return err
 }
 
-// created returns the error of creating a row of something that is to be
-// there: ErrNotFound if no row was created, because it is not.
+// created returns store.ErrNotFound if a statement affected no rows, as when
+// the record that it depends on does not exist.
 func created(rows int64, err error) error {
 	if err == nil && rows == 0 {
 		return store.ErrNotFound
@@ -103,7 +100,7 @@ func created(rows int64, err error) error {
 	return err
 }
 
-// document returns the JSON of a column that may hold none.
+// document dereferences a nullable JSON column.
 func document(column *json.RawMessage) json.RawMessage {
 	if column == nil {
 		return nil
@@ -111,7 +108,6 @@ func document(column *json.RawMessage) json.RawMessage {
 	return *column
 }
 
-// since returns the time that so many microseconds are.
 func since(microseconds int64) time.Duration {
 	return time.Duration(microseconds) * time.Microsecond
 }
@@ -172,7 +168,7 @@ func (s *records) Roles(ctx context.Context) ([]store.Role, error) {
 }
 
 func (s *records) SetRole(ctx context.Context, name string, permissions []string, by uuid.UUID) (store.Role, error) {
-	// An empty list and not none: a role may have no permissions.
+	// An empty array, not null: a role may have no permissions.
 	encoded, err := json.Marshal(append([]string{}, permissions...))
 	if err != nil {
 		return store.Role{}, err
@@ -191,7 +187,6 @@ func (s *records) SetRole(ctx context.Context, name string, permissions []string
 	return roleFrom(row)
 }
 
-// roleFrom returns a row of the roles table as a Role.
 func roleFrom(row db.Role) (store.Role, error) {
 	role := store.Role{Name: row.Name, UpdatedAt: row.UpdatedAt}
 	if row.UpdatedBy != nil {
@@ -201,7 +196,7 @@ func roleFrom(row db.Role) (store.Role, error) {
 }
 
 func (s *records) UserOf(ctx context.Context, subject, username, displayName string) (store.User, error) {
-	// Most requests come from a user of whom nothing has changed.
+	// Most requests come from a user whose details have not changed.
 	row, err := s.queries.GetUserBySubject(ctx, subject)
 	if err == nil && row.DisplayName == displayName && (username == "" || (row.Username != nil && *row.Username == username)) {
 		return userFrom(row), nil
@@ -220,8 +215,7 @@ func (s *records) UserOf(ctx context.Context, subject, username, displayName str
 		}
 		given = &username
 	}
-	// Of the Supervisors that see a user first at once, one makes the user,
-	// and the others find the user made.
+	// The user may exist, or another Supervisor may create it concurrently.
 	err = s.queries.CreateUser(ctx, db.CreateUserParams{ID: key.ID(id), Subject: subject, Username: given, DisplayName: displayName})
 	if failed(err, duplicateEntry) {
 		err = s.queries.UpdateUser(ctx, db.UpdateUserParams{Username: given, DisplayName: displayName, Subject: subject})
@@ -236,8 +230,7 @@ func (s *records) UserOf(ctx context.Context, subject, username, displayName str
 	return userFrom(row), err
 }
 
-// claim makes the user with the username the member that projects await
-// under it.
+// claim gives the members awaited under username to the user who has it.
 func (s *records) claim(ctx context.Context, username string) error {
 	if err := s.queries.DropMembersBeforeClaim(ctx, db.DropMembersBeforeClaimParams{Username: &username}); err != nil {
 		return err
@@ -283,7 +276,7 @@ func (s *records) AddMember(ctx context.Context, member store.Member, by uuid.UU
 	return s.member(ctx, id)
 }
 
-// encoded returns the permissions as the JSON that a row keeps them as.
+// encoded returns the permissions as a JSON array, never null.
 func encoded(permissions []string) (*json.RawMessage, error) {
 	list, err := json.Marshal(append([]string{}, permissions...))
 	return (*json.RawMessage)(&list), err
@@ -356,8 +349,6 @@ func (s *records) member(ctx context.Context, id uuid.UUID) (store.Member, error
 	return memberFrom(row)
 }
 
-// memberFrom returns a row of the members of a project, with the user of
-// the member if it has one, as a Member.
 func memberFrom(row db.GetMemberRow) (store.Member, error) {
 	member := store.Member{ID: uuid.UUID(row.ID), ProjectID: uuid.UUID(row.ProjectID), CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
 	if row.GroupName != nil {
@@ -384,7 +375,6 @@ func memberFrom(row db.GetMemberRow) (store.Member, error) {
 	return member, json.Unmarshal(*row.Permissions, &member.Permissions)
 }
 
-// userFrom returns a row of the users table as a User.
 func userFrom(row db.User) store.User {
 	user := store.User{ID: uuid.UUID(row.ID), Subject: row.Subject, DisplayName: row.DisplayName, CreatedAt: row.CreatedAt}
 	if row.Username != nil {
@@ -430,7 +420,6 @@ func (s *records) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agen
 	return agents, nil
 }
 
-// agentFrom returns a row of the agents table as an Agent.
 func agentFrom(row db.Agent) store.Agent {
 	agent := store.Agent{
 		ID: uuid.UUID(row.ID), ProjectID: uuid.UUID(row.ProjectID), Harness: row.Harness, CreatedAt: row.CreatedAt,
@@ -488,9 +477,8 @@ func (s *records) SetSandbox(ctx context.Context, sessionID uuid.UUID, from, to 
 func (s *records) EndSession(ctx context.Context, id uuid.UUID) (store.Session, error) {
 	var session store.Session
 	err := s.within(ctx, func(queries *db.Queries) error {
-		// The session is held first, and its turns are looked at then: a
-		// message that is taken at the same moment is a turn by then, or
-		// finds the session ended.
+		// Lock the session before checking its turns, so that a concurrent
+		// message either has added its turn or finds the session ended.
 		row, err := queries.LockSession(ctx, key.ID(id))
 		if err != nil {
 			return found(err)
@@ -539,7 +527,6 @@ func (s *records) Sessions(ctx context.Context, agentID, by, before uuid.UUID, l
 	return sessions, nil
 }
 
-// sessionFrom returns a row of the sessions table as a Session.
 func sessionFrom(row db.Session) store.Session {
 	session := store.Session{ID: uuid.UUID(row.ID), AgentID: uuid.UUID(row.AgentID), CreatedAt: row.CreatedAt, EndedAt: row.EndedAt}
 	if row.CreatedBy != nil {
@@ -551,7 +538,7 @@ func sessionFrom(row db.Session) store.Session {
 	return session
 }
 
-// keyAt returns where the key of a provider is as the queries take it.
+// keyAt returns the secret store columns of the provider's key.
 func keyAt(provider store.Provider) (storeID *key.ID, path, name string) {
 	if at := provider.APIKeyAt; at != nil {
 		return (*key.ID)(&at.Store), at.Path, at.Key
@@ -632,13 +619,13 @@ func (s *records) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text 
 	var waiting int64
 	err = s.within(ctx, func(queries *db.Queries) error {
 		if maxWaiting > 0 {
-			// Messages are accepted one at a time, so that the count holds
-			// also when they reach several Supervisors at once.
+			// Accept messages one at a time across Supervisors, so that the
+			// queue limit holds.
 			if _, err := queries.Lock(ctx, queueLock); err != nil {
 				return err
 			}
 		}
-		// So are the messages to one session, of which one is accepted.
+		// Lock the session, which serializes the messages to it.
 		session, err := queries.LockSession(ctx, key.ID(sessionID))
 		if err != nil {
 			return found(err)
@@ -669,7 +656,7 @@ func (s *records) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text 
 		if err != nil {
 			return err
 		}
-		// A queued turn waits only if the turns that run leave it no room.
+		// Queued turns that have room to run do not wait.
 		waiting = queued - max(0, int64(maxRunning)-running)
 		if maxWaiting > 0 && waiting > int64(maxWaiting) {
 			return store.ErrQueueFull
@@ -697,7 +684,6 @@ func (s *records) AnnounceQueue(ctx context.Context, announce func(queued []uuid
 	})
 }
 
-// ids returns the IDs as UUIDs.
 func ids(rows []key.ID) []uuid.UUID {
 	ids := make([]uuid.UUID, len(rows))
 	for i, row := range rows {
@@ -748,8 +734,8 @@ func (s *records) DispatchTurns(ctx context.Context, limit int) ([]store.Dispatc
 	var dispatches []store.Dispatch
 	err := s.within(ctx, func(queries *db.Queries) error {
 		dispatches = []store.Dispatch{}
-		// One Supervisor at a time counts the running turns and picks the
-		// next, so that several Supervisors together stay within the limit.
+		// Dispatch on one Supervisor at a time, so that together they keep to
+		// the limit.
 		if _, err := queries.Lock(ctx, dispatchLock); err != nil {
 			return err
 		}
@@ -788,7 +774,6 @@ func (s *records) CancelTurn(ctx context.Context, id uuid.UUID) (store.Turn, boo
 			return found(err)
 		}
 		if unended = row.EndedAt == nil; unended {
-			// A queued turn ends at once. A dispatched one is only marked.
 			cancel := queries.AskTurnToStop
 			if row.State == store.TurnQueued {
 				cancel = queries.CancelQueuedTurn
@@ -882,7 +867,6 @@ func (s *records) SessionTurn(ctx context.Context, sessionID uuid.UUID) (store.O
 	return originOf(row), nil
 }
 
-// originOf is where a running turn comes from, as a row tells it.
 func originOf(row db.SessionTurnRow) store.Origin {
 	origin := store.Origin{
 		TurnID: uuid.UUID(row.TurnID), SessionID: uuid.UUID(row.SessionID), AgentID: uuid.UUID(row.AgentID), ProjectID: uuid.UUID(row.ProjectID),
@@ -896,7 +880,6 @@ func originOf(row db.SessionTurnRow) store.Origin {
 			ID: uuid.UUID(*row.ProviderID), ProjectID: origin.ProjectID, URL: row.ProviderUrl, APIKey: row.ProviderApiKey,
 		}
 	}
-	// The key of the provider is in a secret store, which comes with it.
 	if row.ApiKeyStoreID != nil && row.StoreCreatedAt != nil && row.StoreUpdatedAt != nil {
 		in := uuid.UUID(*row.ApiKeyStoreID)
 		origin.Provider.APIKeyAt = &store.SecretReference{Store: in, Path: row.ApiKeyPath, Key: row.ApiKeyName}
@@ -958,8 +941,8 @@ func (s *records) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool,
 	var ended bool
 	err := s.within(ctx, func(queries *db.Queries) error {
 		ended = false
-		// Of several Supervisors that end the turn at once, one holds it,
-		// and the others find it ended when they have it.
+		// Of concurrent calls, the first to lock the turn ends it, and the
+		// others then find it ended.
 		row, err := queries.LockTurn(ctx, key.ID(turnID))
 		if errors.Is(err, sql.ErrNoRows) || (err == nil && row.EndedAt != nil) {
 			return nil
@@ -971,10 +954,6 @@ func (s *records) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool,
 		if err != nil {
 			return fmt.Errorf("read what the turn said: %w", err)
 		}
-		// A turn that was asked to stop is cancelled, unless the harness had
-		// ended it by itself. Otherwise it is completed if its pod succeeded
-		// and the runner reported why the harness stopped, and failed if
-		// not.
 		end := db.EndTurnParams{ID: row.ID, State: store.TurnFailed}
 		finished := succeeded && row.StopReason != nil
 		switch {
@@ -1060,7 +1039,6 @@ func (s *records) Answers(ctx context.Context, turnID *uuid.UUID) ([]store.Answe
 	return answers, nil
 }
 
-// turnFrom returns a row of the turns table as a Turn.
 func turnFrom(row db.Turn) store.Turn {
 	turn := store.Turn{
 		ID:                uuid.UUID(row.ID),

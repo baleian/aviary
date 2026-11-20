@@ -13,21 +13,21 @@ import (
 	"aviary/supervisor/store"
 )
 
-// custom is what a member without a role is said to have for one.
+// custom is the role reported for a member with its own permissions.
 const custom = "custom"
 
 var errMemberExists = &apiError{status: http.StatusConflict, Code: "member_exists", Message: "the project has this member already"}
 
-// memberRecord is a member of a project as the API returns it.
+// memberRecord is the API representation of a project member.
 type memberRecord struct {
 	ID        uuid.UUID `json:"id"`
 	ProjectID uuid.UUID `json:"project_id"`
-	// User is the member, if the member is one person. Of someone who has
-	// not been seen yet it has only the username.
+	// User is set if the member is a user. It has only the username of a
+	// user who has not sent a request yet.
 	User  *memberUser `json:"user,omitempty"`
 	Group string      `json:"group,omitempty"`
-	// Role is the role of the member, or "custom" for a member with
-	// permissions of its own, which are then given.
+	// Role is the member's role, or "custom" for a member with its own
+	// Permissions.
 	Role        string    `json:"role"`
 	Permissions []string  `json:"permissions,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
@@ -55,15 +55,14 @@ func recordOf(member store.Member) memberRecord {
 	return record
 }
 
-// grant is what a request gives a member: a role, or permissions of its
-// own.
+// grant is a role, or a set of permissions, given to a member.
 type grant struct {
 	Role        string    `json:"role"`
 	Permissions *[]string `json:"permissions"`
 }
 
-// read returns the role of the grant, or the set of permissions that it
-// comes to if it names none.
+// read validates the grant and returns its role, or its permission set if it
+// names no role.
 func (a *api) read(r *http.Request, given grant) (role string, set []string, err error) {
 	if given.Role == "" || given.Role == custom {
 		if given.Permissions == nil {
@@ -111,8 +110,8 @@ func (a *api) listMembers(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// addMember makes a member of a project of a user, by the username, or of a
-// group of the identity provider. The user need not have been seen yet.
+// addMember adds a user, by username, or an identity provider group to a
+// project. The user does not need to have sent a request yet.
 func (a *api) addMember(w http.ResponseWriter, r *http.Request) error {
 	who := callerOf(r)
 	projectID, err := pathID(r, "pid")
@@ -147,7 +146,7 @@ func (a *api) addMember(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// setMember gives a member another role, or other permissions of its own.
+// setMember replaces a member's role or permissions.
 func (a *api) setMember(w http.ResponseWriter, r *http.Request) error {
 	who := callerOf(r)
 	id, err := pathID(r, "mid")

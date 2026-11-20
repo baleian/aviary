@@ -1,18 +1,14 @@
-# An identity provider for the local cluster, for trying Aviary with callers
-# that it knows. It is Keycloak in its dev mode: it keeps what it is given in
-# its pod, and starts again with the realm below when the pod has stopped.
-# `make identity-provider` installs it, and Aviary asks it when it is
-# installed with the values in aviary-keycloak-values.yaml.
+# Keycloak in dev mode, as the identity provider of the local cluster. It
+# keeps its data in the pod and imports the realm below on every start.
 #
-# The realm is for a local cluster only: the password of each of its users is
-# the name of the user. alice is in the group of the administrators, bob and
-# carol are in that of the users, carol is in team-a too, and dave is in no
-# group. Their IDs are set, so that a user is the same one to Aviary after
-# the provider has started again. A token is asked for with
+# For local use only: every password is the username. alice is an admin, bob
+# and carol are users, carol is also in team-a, and dave is in no group. The
+# user IDs are fixed, so that Aviary sees the same users after a restart. Get
+# a token with
 #   curl <keycloak>/realms/aviary/protocol/openid-connect/token \
 #     -d grant_type=password -d client_id=aviary -d username=alice -d password=alice
-# and lasts an hour. It has the groups of its user as the claim "groups" and
-# is meant for the audience "aviary".
+# Tokens last an hour, have the audience "aviary", and carry the groups of
+# the user in the claim "groups".
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -89,17 +85,16 @@ spec:
           image: quay.io/keycloak/keycloak:26.8.2@sha256:c68e286cacd87b942ac1939a0a1481461109d6acd3a57dc496969a319a76bbf0
           args: ["start-dev", "--import-realm"]
           env:
-            # The issuer of every token is this address, the one at which
-            # Aviary finds the provider, whichever way the token was asked for.
+            # Issues every token for the address at which Aviary reaches
+            # Keycloak, however the token was requested.
             - name: KC_HOSTNAME
               value: http://keycloak.aviary-data:8080
-            # Otherwise the JVM takes its share of the memory of the node.
+            # Otherwise the JVM sizes its heap from the memory of the node.
             - name: JAVA_OPTS_KC_HEAP
               value: -Xms64m -Xmx512m
           ports:
             - name: http
               containerPort: 8080
-          # Ready when it has the realm.
           readinessProbe:
             httpGet:
               path: /realms/aviary/.well-known/openid-configuration

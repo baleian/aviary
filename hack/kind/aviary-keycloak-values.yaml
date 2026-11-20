@@ -1,5 +1,4 @@
-# Values of the chart of Aviary that have it ask the identity provider of the
-# local cluster, which `make identity-provider` installs, who sends a request:
+# Authenticates API requests with the Keycloak of `make identity-provider`:
 # make deploy VALUES=hack/kind/aviary-keycloak-values.yaml
 supervisor:
   auth:

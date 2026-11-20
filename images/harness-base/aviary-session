@@ -1,17 +1,13 @@
 #!/bin/sh
-# What the sandbox of a session runs, which is the runner. A sandbox starts
-# it as the user of the agent, in /. The runner and the harness run in the
-# workspace of the session.
+# Entrypoint of a session sandbox, started as the agent's user in /. Runs the
+# runner in the session workspace.
 set -eu
-# The home is the volume of the session, which has no workspace yet when the
-# session is new.
+# The session volume has no workspace yet when the session is new.
 mkdir -p /home/workspace
 cd /home/workspace
 export HOME=/home
-# What the agent installs with npm or pip for itself goes to its home, which
-# outlives the pod, and the programs of it are found there. npm is told so.
-# pip goes there by itself, since it cannot write to the Python of the
-# image: it only has to be allowed to install outside a virtual environment,
-# which the Python of Debian forbids by default.
+# npm and pip install into the home, which outlives the pod. pip does so by
+# itself, since it cannot write to the system Python, but Debian allows it to
+# install outside a virtual environment only with PIP_BREAK_SYSTEM_PACKAGES.
 export NPM_CONFIG_PREFIX=/home/.local PATH="/home/.local/bin:$PATH" PIP_BREAK_SYSTEM_PACKAGES=1
 exec aviary-runner

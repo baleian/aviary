@@ -9,37 +9,33 @@ import (
 	"aviary/supervisor/store"
 )
 
-// act is what a caller does with a session, or with a turn of one.
+// act is an action on a session or one of its turns. Acting on one's own
+// sessions and turns needs sessions.run.
 type act int
 
 const (
-	// reads is to read what was said: one's own sessions with the
-	// permission to run sessions, and those of others with the one to view
-	// them all.
+	// reads reads a session and its turns. Other users' sessions need
+	// sessions.view_all.
 	reads act = iota
-	// sends is to send a message, which only the one whose session it is
-	// does.
+	// sends sends a message. Only the user who created the session may.
 	sends
-	// controls is to stop a turn or to answer its request for approval: of
-	// a turn that one sent oneself with the permission to run sessions, and
-	// of another's with the one to control them all.
+	// controls cancels a turn or answers its approval requests. Turns that
+	// other users sent need sessions.control_all.
 	controls
-	// ends is to end a session: one's own with the permission to run
-	// sessions, and another's with the one to control them all.
+	// ends ends a session. Other users' sessions need sessions.control_all.
 	ends
 )
 
 var errNotTheirs = &apiError{status: http.StatusForbidden, Code: "forbidden", Message: "only the one whose session it is sends messages to it"}
 
-// lacks is the error for a member of a project who may not do there what
-// the permission is for.
+// lacks returns the error for a caller without the permission in the
+// project.
 func lacks(permission string) error {
 	return &apiError{status: http.StatusForbidden, Code: "forbidden", Message: "the caller lacks the permission " + permission + " in the project"}
 }
 
-// held returns what the caller of the request may do in the project. A
-// caller who is no member of the project is answered as if there were no
-// such project: errNotFound.
+// held returns the caller's permissions in the project. A caller that is not
+// a member gets errNotFound, as if the project did not exist.
 func (a *api) held(r *http.Request, projectID uuid.UUID) ([]string, error) {
 	who := callerOf(r)
 	held, err := a.store.Permissions(r.Context(), projectID, who.id, who.Groups)
@@ -49,8 +45,8 @@ func (a *api) held(r *http.Request, projectID uuid.UUID) ([]string, error) {
 	return held, err
 }
 
-// may tells whether the caller of the request may do in the project what
-// the permission is for. An administrator may do everything everywhere.
+// may returns an error unless the caller has the permission in the project
+// or is an admin.
 func (a *api) may(r *http.Request, projectID uuid.UUID, permission string) error {
 	if callerOf(r).admin {
 		return nil
@@ -62,8 +58,8 @@ func (a *api) may(r *http.Request, projectID uuid.UUID, permission string) error
 	return err
 }
 
-// mayWith tells whether the caller of the request may do the act with the
-// session, or with the turn of it whose message the sender sent.
+// mayWith returns an error unless the caller may do the act on the session,
+// or on its turn that sender sent.
 func (a *api) mayWith(r *http.Request, session store.Session, sender uuid.UUID, do act) error {
 	who := callerOf(r)
 	if who.admin {
@@ -94,8 +90,7 @@ func (a *api) mayWith(r *http.Request, session store.Session, sender uuid.UUID, 
 	return nil
 }
 
-// administrator serves the requests of the administrators of the
-// installation.
+// administrator passes on the requests of admins only.
 func (a *api) administrator(next handler) http.Handler {
 	return handler(func(w http.ResponseWriter, r *http.Request) error {
 		if !callerOf(r).admin {
@@ -105,8 +100,8 @@ func (a *api) administrator(next handler) http.Handler {
 	})
 }
 
-// inProject serves the requests of the callers that have the permission in
-// the project of the request.
+// inProject passes on the requests of callers that have the permission in
+// the project named by the path value pid.
 func (a *api) inProject(permission string, next handler) http.Handler {
 	return handler(func(w http.ResponseWriter, r *http.Request) error {
 		id, err := pathID(r, "pid")
@@ -120,9 +115,8 @@ func (a *api) inProject(permission string, next handler) http.Handler {
 	})
 }
 
-// ofProject serves the requests of the callers that have the permission in
-// the project of what the request names: the function returns that project,
-// of what has the ID in the path under the name.
+// ofProject is like inProject for a resource whose ID is the path value
+// name. project returns the ID of the resource's project.
 func (a *api) ofProject(permission, name string, project func(*http.Request, uuid.UUID) (uuid.UUID, error), next handler) http.Handler {
 	return handler(func(w http.ResponseWriter, r *http.Request) error {
 		id, err := pathID(r, name)
@@ -155,8 +149,8 @@ func (a *api) ofSecretStore(r *http.Request, id uuid.UUID) (uuid.UUID, error) {
 	return secrets.ProjectID, err
 }
 
-// withSession serves the requests of the callers that may do the act with
-// the session of the request.
+// withSession passes on the requests of callers that may do the act on the
+// session named by the path value sid.
 func (a *api) withSession(do act, next handler) http.Handler {
 	return handler(func(w http.ResponseWriter, r *http.Request) error {
 		id, err := pathID(r, "sid")
@@ -174,8 +168,8 @@ func (a *api) withSession(do act, next handler) http.Handler {
 	})
 }
 
-// withTurn serves the requests of the callers that may do the act with the
-// turn of the request.
+// withTurn passes on the requests of callers that may do the act on the turn
+// named by the path value tid.
 func (a *api) withTurn(do act, next handler) http.Handler {
 	return handler(func(w http.ResponseWriter, r *http.Request) error {
 		id, err := pathID(r, "tid")

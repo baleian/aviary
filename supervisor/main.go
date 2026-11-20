@@ -1,4 +1,5 @@
-// The Supervisor of Aviary, with the plugins that plugins.go lists.
+// Command aviary-supervisor runs the Supervisor with the plugins listed in
+// plugins.go.
 package main
 
 import "aviary/supervisor/app"

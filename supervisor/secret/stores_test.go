@@ -12,9 +12,8 @@ import (
 	"time"
 )
 
-// asking is a plugin of the tests. A store of its kind has an address, and
-// is logged in to by asking for that address: the store takes the login if
-// it answers so.
+// asking is a plugin whose Login posts the credential to the store's address
+// and succeeds on 200 OK.
 type asking struct{}
 
 func (asking) Kind() string { return "asking" }
@@ -82,7 +81,7 @@ func TestHostsOfStores(t *testing.T) {
 		{[]string{"secrets.example.com:8200"}, "https://secrets.example.com", false},
 		{[]string{"secrets.example.com:8200"}, "https://other.example.com:8200", false},
 		{[]string{"secrets.example.com:8200"}, "https://sub.secrets.example.com:8200", false},
-		// A name without a port is the host on the ports of HTTPS and HTTP.
+		// A host without a port allows the default HTTPS and HTTP ports.
 		{[]string{"secrets.example.com"}, "https://secrets.example.com", true},
 		{[]string{"secrets.example.com"}, "https://secrets.example.com:443", true},
 		{[]string{"secrets.example.com"}, "http://secrets.example.com:80", true},
@@ -101,8 +100,7 @@ func TestHostsOfStores(t *testing.T) {
 	}
 }
 
-// A store that a project gives is checked: its kind, its settings, its host,
-// and that it takes the login.
+// Check validates the kind, the settings and the host, and logs in.
 func TestStoreIsChecked(t *testing.T) {
 	t.Parallel()
 	var asked atomic.Int32
@@ -140,18 +138,18 @@ func TestStoreIsChecked(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), test.why) {
 			t.Errorf("a store of the kind %q with the settings %s, with %v allowed, is checked as: %v", test.kind, test.settings, test.hosts, err)
 		}
-		// A store that is not allowed is not asked.
+		// A store at a host that is not allowed is never contacted.
 		if strings.Contains(test.why, "allowedHosts") && asked.Load() != before {
 			t.Errorf("a store at a host that is not allowed was asked")
 		}
 	}
 }
 
-// How the Supervisor asks a store, whatever its kind.
+// The client for the stores does not follow redirects, times out, and
+// ignores the proxy settings of the environment.
 func TestStoreIsAskedWithCare(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	// A store that sends the Supervisor elsewhere is not followed there.
 	var followed atomic.Bool
 	elsewhere := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { followed.Store(true) }))
 	t.Cleanup(elsewhere.Close)
@@ -161,7 +159,6 @@ func TestStoreIsAskedWithCare(t *testing.T) {
 		t.Errorf("a store that sends the login elsewhere is taken, and followed: %v, %v", err, followed.Load())
 	}
 
-	// Nor is a store waited for long.
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
@@ -175,8 +172,8 @@ func TestStoreIsAskedWithCare(t *testing.T) {
 	if err := hurried.Check(ctx, "asking", at(slow.URL), "a credential"); err == nil || time.Since(began) > 2*time.Second {
 		t.Errorf("a store that does not answer was waited for %s: %v", time.Since(began), err)
 	}
-	// By itself it waits less than the Egress Proxy waits for the Supervisor,
-	// and it asks a store itself, through no proxy of its environment.
+	// The default client times out before the Egress Proxy's authz check
+	// does, and uses no proxy.
 	client := stores(t, "*").client
 	if transport, ok := client.Transport.(*http.Transport); client.Timeout != timeout || timeout > 4*time.Second || !ok || transport.Proxy != nil {
 		t.Errorf("a store is asked with the client %+v, which waits %s", client.Transport, client.Timeout)

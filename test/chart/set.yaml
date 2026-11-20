@@ -1,4 +1,4 @@
-# Values that differ from the chart's own, to see that the chart follows them.
+# Values that differ from the defaults, to check that the chart applies them.
 supervisor:
   replicas: 3
   encryption:

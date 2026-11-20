@@ -15,7 +15,7 @@ type role struct {
 	UpdatedBy   string   `json:"updated_by"`
 }
 
-// roles asks the API for the roles, and returns them by their names.
+// roles returns the roles by name.
 func (s *supervisor) roles() map[string]role {
 	s.t.Helper()
 	var listed struct{ Roles []role }
@@ -32,8 +32,7 @@ func (s *supervisor) roles() map[string]role {
 	return roles
 }
 
-// An installation has five roles, and an administrator changes what a role
-// may do.
+// There are five built-in roles, whose permissions an admin can change.
 func TestRoles(t *testing.T) {
 	s := install(t).supervisor()
 	roles := s.roles()
@@ -52,9 +51,8 @@ func TestRoles(t *testing.T) {
 		t.Errorf("the roles are %+v", roles)
 	}
 
-	// Every set has the permission to see the project, a set with the
-	// permission to control the sessions of others has the one to read
-	// them, and a set is written in the order of the permissions.
+	// A permission set always includes project.view, sessions.control_all
+	// implies sessions.view_all, and the permissions are in a fixed order.
 	for _, given := range []struct {
 		asked string
 		set   []string
@@ -97,8 +95,7 @@ func TestRoles(t *testing.T) {
 	}
 }
 
-// Everyone who may use the API reads the roles, and only an administrator
-// changes one.
+// Every caller can read the roles, but only admins can change them.
 func TestRolesAreChangedByAdministrators(t *testing.T) {
 	installation := install(t)
 	installation.callers = api.Callers{

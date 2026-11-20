@@ -1,7 +1,6 @@
-// Command selfsigned writes a certificate for a host name and its key into a
-// directory, as cert.pem and key.pem. The certificate is signed with its own
-// key, so a server that presents it is trusted only by what is given the
-// certificate as an authority.
+// Command selfsigned writes a self-signed certificate for a host name and its
+// key to a directory, as cert.pem and key.pem. A server that presents the
+// certificate is trusted only by clients that have it as a CA.
 //
 //	selfsigned <host name> <directory>
 package main
@@ -58,7 +57,7 @@ func write(name, directory string) error {
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return err
 	}
-	// What is given the certificate may run as another user.
+	// Readable by others: the processes that trust it may run as another user.
 	err = os.WriteFile(filepath.Join(directory, "cert.pem"), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate}), 0o644)
 	if err != nil {
 		return err

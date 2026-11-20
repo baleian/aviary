@@ -17,20 +17,18 @@ import (
 	"aviary/supervisor/store"
 )
 
-// scripted is a plugin of the tests, for secret stores of a kind that needs
-// no store to be there. The settings of such a store say where it is and
-// which credential it takes, and the test says what the stores hold.
+// scripted is a secret store plugin backed by shelves instead of a server.
+// The settings of a store give its address and the credential that it takes.
 type scripted struct{ holding *shelves }
 
-// shelves are what the secret stores of the tests' kind hold: values by the
-// address of their store, the path and the key.
+// shelves holds the values of scripted stores by address, path and key.
 type shelves struct {
 	mu     sync.Mutex
 	values map[string]string
 }
 
-// put has the store at the address hold the value at the path and under the
-// key, or no value there if it is empty.
+// put sets the value at address, path and key, or deletes it if value is
+// empty.
 func (s *shelves) put(address, path, key, value string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -44,7 +42,7 @@ func (s *shelves) put(address, path, key, value string) {
 	s.values[address+" "+path+" "+key] = value
 }
 
-// storeHost is where the installations of the tests allow secret stores.
+// storeHost is the host at which test installations allow secret stores.
 const storeHost = "store.test:8200"
 
 func (scripted) Kind() string { return "scripted" }
@@ -92,7 +90,7 @@ func (s scripted) Read(_ context.Context, _ *http.Client, settings json.RawMessa
 	return value, nil
 }
 
-// secretStore is a secret store as the API answers it.
+// secretStore is a secret store as the API returns it.
 type secretStore struct {
 	ID         string            `json:"id"`
 	ProjectID  string            `json:"project_id"`
@@ -104,26 +102,23 @@ type secretStore struct {
 	UpdatedAt  time.Time         `json:"updated_at"`
 }
 
-// scriptedStore returns the body of a request that gives a secret store of
-// the tests' kind: one at the address that takes a credential, and the
-// credential that the Supervisor is given for it.
+// scriptedStore returns the body of a scripted store at address. The store
+// takes only the credential takes, and is registered with credential.
 func scriptedStore(name, address, takes, credential string) string {
 	return fmt.Sprintf(`{"name": %q, "kind": "scripted", "settings": {"address": %q, "takes": %q}, "credential": {"value": %q}}`,
 		name, address, takes, credential)
 }
 
-// A project registers the secret stores that it keeps secrets in. A store
-// has a kind, which says how it is asked, and the settings of that kind.
-// The Supervisor logs in to a store before it takes it, and keeps what it
-// logs in with sealed.
+// A project registers its secret stores. The Supervisor logs in to a store
+// before it accepts it, and keeps the credential sealed.
 func TestSecretStores(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
 	s := aviary.supervisor()
 	records := aviary.records
 	const address, first, second = "https://" + storeHost, "the-first-credential", "the-second-credential"
-	// answer sends a request about a store and returns the store that the
-	// API answers with. No answer holds what a store is logged in to with.
+	// answer sends a request and returns the store in the response. It fails
+	// the test if the response reveals the credential.
 	answer := func(method, path, body string, status int) secretStore {
 		t.Helper()
 		var raw json.RawMessage
@@ -143,8 +138,7 @@ func TestSecretStores(t *testing.T) {
 		}
 		return decoded
 	}
-	// kept returns what the database holds of the store to log in with, and
-	// what it opens to for that store.
+	// kept returns the store's credential as stored and as opened.
 	kept := func(id string) ([]byte, string) {
 		t.Helper()
 		record, err := records.SecretStore(context.Background(), uuid.MustParse(id))
@@ -160,8 +154,7 @@ func TestSecretStores(t *testing.T) {
 
 	project := s.create("/v1/projects", `{"name": "test"}`)
 	stores := "/v1/projects/" + project + "/secret-stores"
-	// The settings name the credential that the store takes, which is for
-	// the tests and no secret of the store.
+	// The "takes" setting belongs to the fake and is not a secret.
 	created := answer("POST", stores, scriptedStore("a store", address, first, first), http.StatusCreated)
 	if created.ProjectID != project || created.Name != "a store" || created.Kind != "scripted" ||
 		created.Settings["address"] != address || created.CreatedAt.IsZero() || !created.UpdatedAt.Equal(created.CreatedAt) {
@@ -176,7 +169,7 @@ func TestSecretStores(t *testing.T) {
 		t.Errorf("the database holds the credential as %q, which opens to %q", sealed, opened)
 	}
 
-	// A store is replaced whole, and tried again.
+	// PUT replaces the whole store and logs in again.
 	replaced := answer("PUT", path, scriptedStore("renamed", address+"/moved", second, second), http.StatusOK)
 	if replaced.ID != created.ID || replaced.ProjectID != project || replaced.Name != "renamed" || replaced.Settings["address"] != address+"/moved" ||
 		!replaced.CreatedAt.Equal(created.CreatedAt) || !replaced.UpdatedAt.After(created.UpdatedAt) {
@@ -186,8 +179,8 @@ func TestSecretStores(t *testing.T) {
 		t.Errorf("the credential of the replaced store opens to %q", opened)
 	}
 
-	// A store that does not take the login is not taken, and what it was to
-	// replace stays. The reason holds no credential.
+	// A store that refuses the login is refused and leaves the existing store
+	// unchanged. The reason does not reveal the credential.
 	for method, target := range map[string]string{"POST": stores, "PUT": path} {
 		var refused struct{ Code, Message string }
 		status, _ := s.request(method, target, scriptedStore("a store", address, first, "another-credential"), &refused)
@@ -202,9 +195,9 @@ func TestSecretStores(t *testing.T) {
 	}
 }
 
-// What is no secret store, the API does not take. The Supervisor itself
-// connects to a store, so a store is to be at a host that the installation
-// allows: without one, nobody registers a store.
+// Invalid secret stores are refused. Since the Supervisor connects to a store
+// itself, the store must be at an allowed host; if no host is allowed, no
+// store can be registered.
 func TestSecretStoresThatAreRefused(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
@@ -218,8 +211,8 @@ func TestSecretStoresThatAreRefused(t *testing.T) {
 	existing := "/v1/secret-stores/" + s.create(stores, scriptedStore("a store", address, credential, credential))
 	elsewhere := "/v1/projects/" + unlisted.create("/v1/projects", `{"name": "test"}`) + "/secret-stores"
 	none := uuid.NewString()
-	// with returns the body of a store that is as it should be but for its
-	// kind, its settings or its credential.
+	// with returns the body of a store with the kind, settings and
+	// credential.
 	with := func(kind, settings, credential string) string {
 		return fmt.Sprintf(`{"name": "a store", "kind": %q, "settings": %s, "credential": %s}`, kind, settings, credential)
 	}
@@ -243,11 +236,11 @@ func TestSecretStoresThatAreRefused(t *testing.T) {
 		{s, "POST", stores, with("scripted", settings, `{}`), http.StatusBadRequest, invalid, "credential.value"},
 		{s, "POST", stores, with("scripted", settings, `"`+credential+`"`), http.StatusBadRequest, invalid, ""},
 		{s, "POST", stores, with("scripted", settings, `{"value": "`+credential+`", "stored": true}`), http.StatusBadRequest, invalid, ""},
-		// The host of a store.
+		// Hosts that are not allowed.
 		{s, "POST", stores, scriptedStore("a store", "https://other.test:8200", credential, credential), http.StatusBadRequest, invalid, "supervisor.secretStores.allowedHosts"},
 		{s, "POST", stores, scriptedStore("a store", "https://store.test", credential, credential), http.StatusBadRequest, invalid, "supervisor.secretStores.allowedHosts"},
 		{unlisted, "POST", elsewhere, scriptedStore("a store", address, credential, credential), http.StatusBadRequest, invalid, "supervisor.secretStores.allowedHosts"},
-		// What is not there.
+		// IDs that do not exist, and a PUT without a credential.
 		{s, "POST", "/v1/projects/" + none + "/secret-stores", scriptedStore("a store", address, credential, credential), http.StatusNotFound, notFound, ""},
 		{s, "GET", "/v1/secret-stores/" + none, ``, http.StatusNotFound, notFound, ""},
 		{s, "GET", "/v1/secret-stores/not-an-id", ``, http.StatusNotFound, notFound, ""},

@@ -1,6 +1,6 @@
-// Package chart checks what the chart makes of its values. `make test-chart`
-// renders the chart with its own values and with those of the files in this
-// directory, and tells the tests where the results are.
+// Package chart tests the objects that the chart renders. `make test-chart`
+// renders the chart with its default values and with each values file in
+// this directory, and sets AVIARY_TEST_RENDERED to where the results are.
 package chart
 
 import (
@@ -15,13 +15,12 @@ import (
 	"aviary/test/internal/rendered"
 )
 
-// chart returns the objects that the chart makes of the values with the
-// name, and the configuration of the Egress Proxy among them.
+// chart returns the objects rendered from the named values, and the Egress
+// Proxy's Envoy configuration among them.
 func chart(t *testing.T, values string) (objects []map[string]any, envoy map[string]any) {
 	t.Helper()
 	directory := os.Getenv("AVIARY_TEST_RENDERED")
 	if directory == "" {
-		// A test that was skipped here would look like one that passed.
 		t.Fatal("AVIARY_TEST_RENDERED is not set: run the tests with `make test-chart`")
 	}
 	objects, err := rendered.Read(filepath.Join(directory, values+".yaml"))
@@ -37,14 +36,14 @@ func chart(t *testing.T, values string) (objects []map[string]any, envoy map[str
 
 var at, named, find = rendered.At, rendered.Named, rendered.Find
 
-// listener returns the settings of the HTTP connection manager of the
-// proxy's listener with the name.
+// listener returns the HTTP connection manager settings of the named Envoy
+// listener.
 func listener(envoy map[string]any, name string) any {
 	listener := named(at(envoy, "static_resources", "listeners"), name)
 	return at(listener, "filter_chains", 0, "filters", 0, "typed_config")
 }
 
-// env returns the variables of the first container of a workload.
+// env returns the environment variables of a workload's first container.
 func env(workload map[string]any) map[string]string {
 	env := map[string]string{}
 	variables, _ := at(workload, "spec", "template", "spec", "containers", 0, "env").([]any)
@@ -59,15 +58,14 @@ func TestEgressProxy(t *testing.T) {
 	for _, values := range []string{"default", "set", "closed"} {
 		_, envoy := chart(t, values)
 		for _, name := range []string{"llm", "forward"} {
-			// Without it, a request that the proxy could not ask a
-			// Supervisor about is answered as forbidden, and a harness takes
-			// that for an answer and does not ask again.
+			// Otherwise Envoy answers 403 when no Supervisor can be asked,
+			// and a harness does not retry that.
 			check := named(at(listener(envoy, name), "http_filters"), "envoy.filters.http.ext_authz")
 			if code := at(check, "typed_config", "status_on_error", "code"); code != "ServiceUnavailable" {
 				t.Errorf("%s: a request on %s that no Supervisor can be asked about is answered with %v", values, name, code)
 			}
 		}
-		// Envoy's own interface can stop Envoy and show its configuration.
+		// Envoy's admin interface can stop Envoy and dump its configuration.
 		if socket := at(envoy, "admin", "address", "socket_address"); socket != nil {
 			t.Errorf("%s: Envoy's own interface listens on %v, where the forward proxy can be asked to connect", values, socket)
 		}
@@ -78,8 +76,8 @@ func TestEgressProxy(t *testing.T) {
 	}
 }
 
-// A line of the proxy's record tells by itself where a request came from,
-// and of a model request which provider it went to.
+// Each access log line identifies the origin of its request on its own, and
+// for a model request the provider.
 func TestEgressProxyRecordsWhereARequestCameFrom(t *testing.T) {
 	_, envoy := chart(t, "default")
 	told := func(field string) string { return "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:" + field + ")%" }
@@ -96,8 +94,8 @@ func TestEgressProxyRecordsWhereARequestCameFrom(t *testing.T) {
 	}
 }
 
-// A turn may run for as long as the installation says, and a request of it
-// may be silent for that long: a model that thinks, a download.
+// A request may be silent for as long as a turn may run, for example while a
+// model thinks or during a download.
 func TestEgressProxyKeepsARequestForAsLongAsATurn(t *testing.T) {
 	for values, longest := range map[string]string{"default": "1800s", "set": "7200s"} {
 		objects, envoy := chart(t, values)
@@ -106,7 +104,7 @@ func TestEgressProxyKeepsARequestForAsLongAsATurn(t *testing.T) {
 				t.Errorf("%s: a silent request on %s is ended after %v, not after %s", values, name, idle, longest)
 			}
 		}
-		// The deadline of the turn ends a model request, not Envoy.
+		// The turn's deadline ends a model request, not Envoy.
 		routes, _ := at(listener(envoy, "llm"), "route_config", "virtual_hosts", 0, "routes").([]any)
 		passed := 0
 		for _, route := range routes {
@@ -121,7 +119,7 @@ func TestEgressProxyKeepsARequestForAsLongAsATurn(t *testing.T) {
 		if passed != 2 {
 			t.Errorf("%s: %d routes pass model requests on, not the two for endpoints with TLS and without", values, passed)
 		}
-		// A pod that is to stop does not wait for the turns that use it.
+		// A terminating pod is not given extra time for the turns that use it.
 		for _, name := range []string{"aviary-egress-proxy", "aviary-supervisor"} {
 			pod := at(find(objects, "Deployment", name), "spec", "template", "spec")
 			if grace := at(pod, "terminationGracePeriodSeconds"); grace != nil {
@@ -131,9 +129,8 @@ func TestEgressProxyKeepsARequestForAsLongAsATurn(t *testing.T) {
 	}
 }
 
-// A model request goes where the Supervisor says, with the key that the
-// Supervisor gives. The chart itself knows no model endpoint and holds no
-// key.
+// A model request goes to the endpoint, and with the key, that the Supervisor
+// returns. The chart itself configures no model endpoint and holds no key.
 func TestModelRequestsGoWhereTheSupervisorSays(t *testing.T) {
 	for _, values := range []string{"default", "set", "closed"} {
 		objects, envoy := chart(t, values)
@@ -151,11 +148,11 @@ func TestModelRequestsGoWhereTheSupervisorSays(t *testing.T) {
 				t.Errorf("%s: the proxy has no cluster %s", values, cluster)
 			}
 		}
-		// Without an endpoint from the Supervisor a request goes nowhere.
+		// Without an endpoint from the Supervisor, a request is not forwarded.
 		if last := routes[2]; at(last, "match", "headers") != nil || at(last, "direct_response", "status") != 503 {
 			t.Errorf("%s: a model request without an endpoint is answered by the route %v", values, last)
 		}
-		// The proxy has no key to put into a request, and nothing to read
+		// The proxy has no key of its own to add, and mounts nothing to read
 		// one from.
 		whole, err := json.Marshal(envoy)
 		if err != nil {
@@ -175,11 +172,10 @@ func TestAllowedHosts(t *testing.T) {
 	rules := func(envoy map[string]any, name string) any {
 		return at(named(at(listener(envoy, name), "http_filters"), "envoy.filters.http.rbac"), "typed_config", "rules")
 	}
-	// A request through the forward proxy names its host itself. The host
-	// of a model request is the one that the Supervisor named.
+	// The forward proxy checks the host that a request names, and the model
+	// listener the host that the Supervisor named.
 	for name, header := range map[string]string{"forward": ":authority", "llm": "x-aviary-upstream"} {
-		// The default lets every host through: there is no list to hold a
-		// request against.
+		// With every host allowed, which is the default, there are no rules.
 		if _, open := chart(t, "default"); rules(open, name) != nil {
 			t.Errorf("with every host allowed, the proxy holds requests on %s against %v", name, rules(open, name))
 		}
@@ -197,8 +193,8 @@ func TestAllowedHosts(t *testing.T) {
 				t.Errorf("on %s, the host %s is allowed by %v", name, host, permission)
 			}
 		}
-		// A host stands for itself on the ports of HTTPS and HTTP, and a
-		// host with a port for that port alone.
+		// A host matches on the default HTTPS and HTTP ports, and a host with
+		// a port only on that port.
 		expected := []string{
 			"llm.example.com", "llm.example.com:443", "llm.example.com:80",
 			"packages.example.com", "packages.example.com:443", "packages.example.com:80",
@@ -208,7 +204,7 @@ func TestAllowedHosts(t *testing.T) {
 			t.Errorf("on %s, the proxy lets requests through to %v, not to %v", name, hosts, expected)
 		}
 
-		// An empty list lets nothing through.
+		// An empty list allows nothing.
 		_, closed := chart(t, "closed")
 		permissions, _ = at(rules(closed, name), "policies", "listed-hosts", "permissions").([]any)
 		for _, permission := range permissions {
@@ -222,7 +218,6 @@ func TestAllowedHosts(t *testing.T) {
 	}
 }
 
-// What the Supervisor is told of how to run turns.
 func TestSupervisorSettings(t *testing.T) {
 	objects, _ := chart(t, "default")
 	settings := env(find(objects, "Deployment", "aviary-supervisor"))
@@ -252,7 +247,7 @@ func TestSupervisorSettings(t *testing.T) {
 		}
 	}
 
-	// The model of a turn is that of its agent, and no setting.
+	// The model is set per agent, not per installation.
 	if model, told := settings["AVIARY_LLM_MODEL"]; told {
 		t.Errorf("the Supervisor is told the model %q", model)
 	}
@@ -286,8 +281,8 @@ func TestSupervisorSettings(t *testing.T) {
 		t.Errorf("the chart runs %v Supervisors, not 3", replicas)
 	}
 
-	// A value that is set for one harness leaves the rest of the harnesses
-	// as they are.
+	// A value set for one harness leaves its other values and the other
+	// harnesses as they are.
 	type resources map[string]map[string]string
 	var harnesses map[string]struct {
 		Image     string
@@ -304,8 +299,8 @@ func TestSupervisorSettings(t *testing.T) {
 	}
 }
 
-// The Egress Proxy asks the Supervisors on a port of their own, which the
-// sandboxes do not reach.
+// The Egress Proxy asks the Supervisors on a dedicated port, which the
+// sandboxes cannot reach.
 func TestSupervisorAnswersTheEgressProxy(t *testing.T) {
 	objects, envoy := chart(t, "default")
 	port := named(at(find(objects, "Service", "aviary-supervisor"), "spec", "ports"), "authz")
@@ -320,8 +315,8 @@ func TestSupervisorAnswersTheEgressProxy(t *testing.T) {
 	}
 }
 
-// The Supervisor finds the keys that it seals secrets with where it is told
-// that they are: the entries of the secret that the values name.
+// The encryption keys are mounted from the secret that the values name, at
+// the path in AVIARY_ENCRYPTION_KEYS.
 func TestSupervisorEncryptionKeys(t *testing.T) {
 	for values, secret := range map[string]string{"default": "aviary-encryption", "set": "other-keys"} {
 		objects, _ := chart(t, values)
@@ -338,10 +333,11 @@ func TestSupervisorEncryptionKeys(t *testing.T) {
 	}
 }
 
-// A sandbox connects to the Egress Proxy and to nothing else: not even to
-// the cluster's DNS, which can carry data out. Only the Supervisors connect
-// to it, at its runner. Its namespace is restricted, and stays when the
-// chart is uninstalled, with the sessions in it.
+// A sandbox can connect only to the Egress Proxy, not even to the cluster
+// DNS, since lookups can carry data out. Only the Supervisors can connect to
+// it, on the runner port. Its namespace enforces the restricted Pod Security
+// Standard, and is kept with the sessions in it when the chart is
+// uninstalled.
 func TestSandboxesAreCutOff(t *testing.T) {
 	objects, _ := chart(t, "default")
 	policy := at(find(objects, "NetworkPolicy", "aviary-sandboxes"), "spec")
@@ -363,7 +359,6 @@ func TestSandboxesAreCutOff(t *testing.T) {
 		!reflect.DeepEqual(at(out[0], "ports"), []any{map[string]any{"protocol": "TCP", "port": 8080}, map[string]any{"protocol": "TCP", "port": 3128}}) {
 		t.Errorf("a sandbox may connect to %v", out)
 	}
-	// Kubernetes holds the sandboxes to what a restricted namespace allows.
 	namespace := find(objects, "Namespace", "aviary-runtime")
 	if at(namespace, "metadata", "annotations", "helm.sh/resource-policy") != "keep" ||
 		at(namespace, "metadata", "labels", "pod-security.kubernetes.io/enforce") != "restricted" {
@@ -371,11 +366,10 @@ func TestSandboxesAreCutOff(t *testing.T) {
 	}
 }
 
-// The sandboxes reach the outside through the proxy, so the proxy must not
-// be a way into the cluster.
+// The proxy must not give the sandboxes a way into the cluster.
 func TestEgressProxyIsKeptFromTheInside(t *testing.T) {
-	// outside returns the rules of the proxy's policy without the ones for
-	// the Supervisor and for DNS, which are the first two.
+	// outside returns the egress rules of the proxy's policy after the first
+	// two, which allow the Supervisor and DNS.
 	outside := func(values string) []any {
 		objects, _ := chart(t, values)
 		rules, _ := at(find(objects, "NetworkPolicy", "aviary-egress-proxy"), "spec", "egress").([]any)
@@ -393,15 +387,15 @@ func TestEgressProxyIsKeptFromTheInside(t *testing.T) {
 		t.Errorf("the proxy may connect to %v", anywhere)
 	}
 
-	// What an installation names besides is added.
+	// The rules of extraEgress are added.
 	if set := outside("set"); len(set) != 2 ||
 		at(set[1], "to", 0, "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name") != "llm-gateway" {
 		t.Errorf("with a namespace named besides, the proxy may connect to %v", set)
 	}
 }
 
-// The Supervisor may do in the cluster what it takes to keep the sandboxes
-// of the sessions, and no more.
+// The Supervisor may manage the Sandboxes of the sessions, and nothing else
+// in the cluster.
 func TestSupervisorPermissions(t *testing.T) {
 	objects, _ := chart(t, "default")
 	role := find(objects, "Role", "aviary-supervisor")
@@ -421,8 +415,7 @@ func TestSupervisorPermissions(t *testing.T) {
 			t.Errorf("the chart makes the %v %v", kind, at(object, "metadata", "name"))
 		}
 	}
-	// The schema is brought up to date once, before the Supervisors of a
-	// release start.
+	// The schema is migrated once per release, before the Supervisors start.
 	migrate := find(objects, "Job", "aviary-migrate")
 	if at(migrate, "metadata", "annotations", "helm.sh/hook") != "pre-install,pre-upgrade" ||
 		!reflect.DeepEqual(at(migrate, "spec", "template", "spec", "containers", 0, "args"), []any{"migrate"}) {

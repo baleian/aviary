@@ -12,9 +12,8 @@ import (
 	"aviary/supervisor/internal/testenv"
 )
 
-// exec runs a statement on the database, for what a test has to arrange
-// that a store has no way to: time that has passed, or a schema that another
-// release left.
+// exec runs a statement on the database, to arrange what a Store cannot, such
+// as the passing of time or the schema of another release.
 func exec(t *testing.T, database, statement string, arguments ...any) {
 	t.Helper()
 	db, err := connect(database)
@@ -43,8 +42,7 @@ func emptyDatabase(t *testing.T) string {
 	return address.String()
 }
 
-// newDatabase creates a database with the schema of this build for the test
-// and returns its URL.
+// newDatabase is like emptyDatabase, with the schema of this build.
 func newDatabase(t *testing.T) string {
 	t.Helper()
 	database := emptyDatabase(t)
@@ -54,7 +52,7 @@ func newDatabase(t *testing.T) string {
 	return database
 }
 
-// rows returns the rows that the query finds in the database, each as text.
+// rows returns the rows of the query, each formatted as text.
 func rows(t *testing.T, database, query string) []string {
 	t.Helper()
 	db, err := connect(database)
@@ -96,8 +94,7 @@ func rows(t *testing.T, database, query string) []string {
 	return texts
 }
 
-// schema describes what the migrations have made of the database: the
-// columns, the indexes and the constraints.
+// schema describes the columns, indexes and constraints of the database.
 func schema(t *testing.T, database string) []string {
 	t.Helper()
 	return slices.Concat(
@@ -141,7 +138,7 @@ func TestMigrate(t *testing.T) {
 		t.Fatalf("migrate a database that is up to date: %v", err)
 	}
 
-	// Every migration can be undone by itself.
+	// Each migration can be undone on its own.
 	versions := rows(t, database, `select version_id from goose_db_version where version_id > 0 order by 1 desc`)
 	for i := range versions {
 		if err := (Plugin{}).MigrateTo(ctx, database, int64(len(versions)-i-1)); err != nil {
@@ -176,24 +173,23 @@ func TestCheckSchema(t *testing.T) {
 	}
 	defer db.Close()
 
-	// A newer release has added to the schema. This one runs on it.
+	// A schema that a newer release added to is accepted.
 	exec(t, database, `insert into goose_db_version (version_id, is_applied)
 		select max(version_id) + 1, true from goose_db_version`)
 	if err := checkSchema(ctx, db); err != nil {
 		t.Errorf("of a schema that is newer than it needs, a Supervisor is told: %v", err)
 	}
 
-	// A newer release has dropped what this one uses.
+	// One that dropped what this build uses is not.
 	exec(t, database, `update schema_floor set version = (select max(version_id) from goose_db_version)`)
 	if err := checkSchema(ctx, db); err == nil {
 		t.Error("a database that no longer supports this build is taken")
 	}
 }
 
-// The address of a database is a URL, as that of any other. A Supervisor
-// that cannot use it says why without the password.
 func TestConnect(t *testing.T) {
 	t.Parallel()
+	// An unusable URL fails with an error that does not reveal the password.
 	for address, why := range map[string]string{
 		"mysql://user:secret@host:port/name":             "parse the URL",
 		"mysql://user:secret@host:3306/name?timeout=5s":  `the parameter "timeout"`,
@@ -207,7 +203,7 @@ func TestConnect(t *testing.T) {
 			t.Errorf("the database at %s was connected to with: %v", address, err)
 		}
 	}
-	// What can be a database is not connected to before it is asked.
+	// A valid URL is accepted without connecting.
 	for _, address := range []string{"mysql://user:secret@host/name", "mysql://user@host:3307/name?tls=true", "mysql://host/name"} {
 		db, err := connect(address)
 		if err != nil {
@@ -216,7 +212,7 @@ func TestConnect(t *testing.T) {
 		}
 		db.Close()
 	}
-	// The one of the tests answers.
+	// Connections to the test server have the session settings of connect.
 	db, err := connect(emptyDatabase(t))
 	if err != nil {
 		t.Fatal(err)
@@ -227,21 +223,21 @@ func TestConnect(t *testing.T) {
 		zone != "+00:00" || isolation != "READ-COMMITTED" {
 		t.Errorf("a connection has the time zone %s and reads as %s: %v", zone, isolation, err)
 	}
-	// It reads the times as UTC, whatever the time zone of the Supervisor is.
+	// Times are read as UTC, whatever the local time zone.
 	var at time.Time
 	if err := db.QueryRow(`select cast('2026-01-02 03:04:05.678901' as datetime(6))`).Scan(&at); err != nil ||
 		at.Location() != time.UTC || !at.Equal(time.Date(2026, 1, 2, 3, 4, 5, 678901000, time.UTC)) {
 		t.Errorf("a time of the database is read as %v: %v", at, err)
 	}
-	// It refuses what does not fit a column, which the server of the tests
-	// is set up to cut to fit.
+	// A value too long for its column is rejected, although the test server
+	// is configured to truncate it.
 	if _, err := db.Exec(`create table short (name varchar(4))`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`insert into short (name) values ('longer')`); !failed(err, 1406) {
 		t.Errorf("a value that is too long for its column was taken: %v", err)
 	}
-	// And it counts a row that an update found and left as it was.
+	// An update counts the rows that it matched, unchanged ones included.
 	if _, err := db.Exec(`insert into short (name) values ('same')`); err != nil {
 		t.Fatal(err)
 	}

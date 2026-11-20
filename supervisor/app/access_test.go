@@ -10,8 +10,8 @@ import (
 	"aviary/supervisor/internal/api"
 )
 
-// answered sends a request with the token and returns the status of its
-// answer. It does not read the answer: a stream of events does not end.
+// answered sends a request with token and returns the response status. It
+// does not read the body, since an event stream does not end.
 func (s *supervisor) answered(token, method, path, body string) int {
 	s.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), patience)
@@ -31,12 +31,10 @@ func (s *supervisor) answered(token, method, path, body string) int {
 	return response.StatusCode
 }
 
-// What each caller may do with a project: an administrator, its members by
-// their roles, and someone who is no member. The session and the turn are
-// those of the member with the role user.
+// The session and the turn belong to the member with the user role.
 func TestWhoMayDoWhat(t *testing.T) {
 	installation := install(t)
-	// The callers, in the order in which the table below tells of them.
+	// In the order of the columns of the table below.
 	callers := []string{"admin", "owner", "editor", "user", "viewer", "auditor", "mate", "custom", "builder", "stranger"}
 	provider := tokens{"admin": {Subject: "admin", Groups: []string{"platform"}}, "mate": {Subject: "mate", Groups: []string{"team-a", "others"}}}
 	for _, caller := range callers[1:] {
@@ -64,8 +62,7 @@ func TestWhoMayDoWhat(t *testing.T) {
 	turn := s.send(session, "hello").ID
 	none := "00000000-0000-0000-0000-000000000000"
 
-	// p: the request passes, and is answered with something else than 403
-	// and 404. f: it is forbidden, 403. h: what it names is hidden, 404.
+	// p: passes, with neither 403 nor 404. f: 403 Forbidden. h: 404 Not Found.
 	const (
 		everyMember = "ppppppppph"
 		onlyAdmin   = "pfffffffff"
@@ -84,7 +81,7 @@ func TestWhoMayDoWhat(t *testing.T) {
 		{"GET", members, ``, everyMember},
 		{"POST", members, `{}`, onlyAdmin},
 		{"PUT", "/v1/members/" + member, `{}`, onlyAdmin},
-		// There is no such member: an administrator is told so.
+		// The member does not exist, so an admin gets 404.
 		{"DELETE", "/v1/members/" + none, ``, "hfffffffff"},
 		{"POST", "/v1/projects/" + project + "/agents", `{}`, "pppfffffph"},
 		{"GET", "/v1/projects/" + project + "/agents", ``, everyMember},
@@ -96,19 +93,18 @@ func TestWhoMayDoWhat(t *testing.T) {
 		{"GET", "/v1/secret-stores/" + secrets, ``, everyMember},
 		{"PUT", "/v1/secret-stores/" + secrets, `{}`, connections},
 		{"POST", "/v1/agents/" + agent + "/sessions", ``, "ppppffpffh"},
-		// Every member is listed the sessions that they may read, if any.
+		// Every member gets the sessions that they may read, possibly none.
 		{"GET", "/v1/agents/" + agent + "/sessions", ``, everyMember},
 		{"GET", "/v1/sessions/" + session, ``, reading},
 		{"GET", "/v1/sessions/" + session + "/turns", ``, reading},
 		{"GET", "/v1/turns/" + turn, ``, reading},
 		{"GET", "/v1/turns/" + turn + "/events", ``, reading},
-		// Only the one whose session it is sends a message to it.
+		// Besides admins, only the creator of the session may send messages.
 		{"POST", "/v1/sessions/" + session + "/messages", `{}`, "pffpfffffh"},
-		// The turn has no such request: who may answer one is told so.
+		// The request does not exist, so those who may answer get 404.
 		{"POST", "/v1/turns/" + turn + "/approvals/none", `{"option_id": "allow"}`, "hhfhfffhfh"},
 		{"POST", "/v1/turns/" + turn + "/cancel", ``, "ppfpfffpfh"},
-		// The session has a turn that has not ended: who may end it is told
-		// so.
+		// The turn is still running, so those who may end the session get 409.
 		{"DELETE", "/v1/sessions/" + session, ``, "ppfpfffpfh"},
 	} {
 		for i, caller := range callers {
@@ -125,14 +121,14 @@ func TestWhoMayDoWhat(t *testing.T) {
 		}
 	}
 
-	// A role is given another permission: its members have it at once.
+	// A change to a role applies to its members at once.
 	if status := s.answered("admin", "PUT", "/v1/roles/viewer", `{"permissions": ["sessions.view_all"]}`); status != http.StatusOK {
 		t.Fatalf("a role is changed with %d", status)
 	}
 	if status := s.answered("viewer", "GET", "/v1/sessions/"+session, ``); status != http.StatusOK {
 		t.Errorf("a member whose role may read every session now reads one with %d", status)
 	}
-	// A group is no member any more: who was a member through it is none.
+	// Removing a group removes the membership of its members.
 	if status := s.answered("admin", "DELETE", "/v1/members/"+member, ``); status != http.StatusNoContent {
 		t.Fatalf("a member is removed with %d", status)
 	}

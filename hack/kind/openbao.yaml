@@ -1,7 +1,5 @@
-# A secret store for the local cluster, for trying the secret stores of the
-# projects. It is OpenBao in its dev mode: it keeps what it is given in
-# memory, and has forgotten it when its pod has stopped. `make secret-store`
-# installs it, with its root token in the secret openbao-root.
+# OpenBao in dev mode, as a secret store for the local cluster. It keeps its
+# data in memory only. The root token is in the Secret openbao-root.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

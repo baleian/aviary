@@ -1,9 +1,6 @@
-# What connects to a sandbox, and what a sandbox connects to. The agent in a
-# sandbox may do other things than it was asked to, so the sandbox reaches
-# the Egress Proxy and nothing else: no other pod, no address outside and no
-# DNS. What it sends out goes through the proxy, which decides and keeps a
-# record. The Supervisors connect to its runner, and nothing else connects
-# to it.
+# An agent may do more than it was asked to, so a sandbox can reach only the
+# Egress Proxy: no other pod, no outside address and no DNS. Only the
+# Supervisors can connect to it, at the runner.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

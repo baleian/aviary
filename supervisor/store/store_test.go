@@ -10,7 +10,7 @@ import (
 	"aviary/supervisor/store"
 )
 
-// kind is a plugin of the tests, which tells what it was asked.
+// kind is a fake plugin that records the calls it gets.
 type kind struct {
 	schemes []string
 	asked   *[]string
@@ -33,7 +33,6 @@ func (k kind) MigrateTo(_ context.Context, address string, version int64) error 
 	return nil
 }
 
-// The address of the database says which plugin connects to it.
 func TestPluginIsChosenByTheScheme(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -53,8 +52,8 @@ func TestPluginIsChosenByTheScheme(t *testing.T) {
 		t.Errorf("the plugins were asked %q, not %q", asked, expected)
 	}
 
-	// A Supervisor that has no plugin for its database does not start, and
-	// says why without the password.
+	// An address that no plugin handles, or that cannot be parsed, fails with
+	// an error that does not reveal the password.
 	for address, why := range map[string]string{
 		"third://user:secret@host/records": "first, firstly, second",
 		"host=records user=secret":         "first, firstly, second",

@@ -1,65 +1,53 @@
 supervisor:
   image: aviary-supervisor:dev
-  # Supervisors are equals: a request can go to any of them.
+  # Any replica can serve any request.
   replicas: 1
   podAnnotations: {}
-  # What the pod of a Supervisor asks for and may use at most. At rest a
-  # Supervisor takes 50 MiB of memory and with thirty turns at once twice
-  # that, and for a turn it takes a few hundredths of a second of cpu. The
-  # limit leaves room for the output of long turns, which a Supervisor holds
-  # while it puts it into the database.
   resources:
     requests: {cpu: 100m, memory: 128Mi}
+    # Leaves room for the output of long turns, which is held in memory
+    # until it is stored.
     limits: {memory: 1Gi}
   database:
-    # A secret in the release namespace with the URL of the database, which
-    # holds the Supervisor's records. The scheme of the URL names the kind of
-    # the database, for example
+    # Secret in the release namespace that holds the database URL. The URL
+    # scheme selects the plugin, for example
     # postgresql://user:password@host:5432/dbname?sslmode=verify-full
     # or mysql://user:password@host:3306/dbname?tls=true
     secretName: aviary-database
     secretKey: uri
   events:
-    # A secret in the release namespace with the URL of the event log, where
-    # the Supervisors keep the events of the turns that run and tell each
-    # other of them. The scheme of the URL names the kind of the log, for
-    # example valkeys://user:password@host:6379 (valkeys is with TLS)
+    # Secret in the release namespace that holds the URL of the event log,
+    # which carries the events of running turns between Supervisors. For
+    # example valkeys://user:password@host:6379 (valkeys uses TLS).
     secretName: aviary-events
     secretKey: uri
-  # What the Supervisor seals secrets with before it stores them, such as the
-  # API key of a model provider. The database holds them sealed, and is of no
-  # use without the keys.
+  # Keys that encrypt secrets, such as model provider API keys, before they
+  # are stored in the database.
   encryption:
-    # A secret in the release namespace with the keys. Each entry is a key
-    # under a name of your choosing: 32 random bytes in base64, as
-    # `openssl rand -base64 32` prints them.
+    # Secret in the release namespace. Each entry is a key under a name of
+    # your choice: 32 random bytes in base64, as `openssl rand -base64 32`
+    # prints them.
     secretName: aviary-encryption
-    # The entry that secrets are sealed with. To replace the key, add an
-    # entry and name it here. Keep the entries from before: what was sealed
-    # with one does not open without it.
+    # The entry that new secrets are encrypted with. To rotate, add an entry
+    # and name it here. Keep the old entries: secrets encrypted with them
+    # cannot be decrypted without them.
     key: k1
-  # The secret stores of the projects: where a project keeps secrets that it
-  # does not give to Aviary to store. The Supervisor itself connects to a
-  # store, so a store must not be a way into the cluster: a project can
-  # register one only at a host that is listed here.
+  # Secret stores in which projects keep secrets outside Aviary.
   secretStores:
-    #   "*"        every host.
-    #   host       the host on the ports of HTTPS and HTTP.
+    # Hosts at which a store may be registered. The Supervisor connects to
+    # the stores itself, so list only hosts that it should reach.
+    #   "*"        any host
+    #   host       the host on the default HTTPS and HTTP ports
     #   host:port  the host on another port, for example
     #              secrets.example.com:8200
-    # The default allows none: no project registers a secret store.
+    # Empty disables secret stores.
     allowedHosts: []
-    # For how many seconds a Supervisor uses a value that it read from a
-    # store before it reads the value again. A value that changes in a store
-    # is used within that time, and for that long a store is not asked for
-    # it again. With 0 a store is read for every model request.
+    # Seconds a value read from a store is cached. 0 reads the store for
+    # every model request.
     cacheSeconds: 60
-  # Who sends a request to the API.
   auth:
-    # The identity provider of the installation: its kind, and the settings
-    # of a provider of that kind. With a provider, the API takes a request
-    # only with a token of it, which tells who sends the request. Without a
-    # kind there is none, and the API asks nobody. The kind "oidc" is an
+    # The identity provider that authenticates API requests. If kind is
+    # empty, requests are not authenticated. "oidc" accepts the tokens of an
     # OpenID Connect issuer:
     #   kind: oidc
     #   settings:
@@ -69,39 +57,32 @@ supervisor:
     provider:
       kind: ""
       settings: {}
-    # The groups of the provider whose members are the administrators of the
-    # installation, by the names that the provider gives them in a token.
+    # Groups, as named in tokens, whose members administer the installation.
     admins: []
-    # The groups whose members may use the API, as the administrators may.
-    # With none, everyone whom the provider knows may.
+    # Groups whose members may use the API, besides the admins. If empty,
+    # every authenticated user may.
     users: []
 
-# The Egress Proxy, which everything that a sandbox sends out goes through:
-# the model requests, which it passes on to the model endpoint of the turn
-# with the endpoint's key, and the rest. It keeps a record of every request,
-# with the turn that it comes from.
+# The Egress Proxy, which all outbound traffic of the sandboxes goes through.
+# It forwards model requests to the model provider of the turn with the
+# provider's API key, and logs every request with its turn.
 egressProxy:
   image: envoyproxy/envoy:distroless-v1.40.2@sha256:09ca6f2140a61ad8df11779a4a30d52b48433d444466328494f9188c9c35eded
   replicas: 1
-  # What the pod of an Egress Proxy asks for and may use at most. The proxy
-  # reads no bodies, so it takes little: about 20 MiB of memory.
   resources:
     requests: {cpu: 100m, memory: 64Mi}
     limits: {memory: 512Mi}
-  # The hosts that the proxy lets requests through to, those of the model
-  # providers among them.
-  #   "*"        every host.
-  #   host       the host, for HTTPS and HTTP on their usual ports. A
-  #              subdomain is a host of its own.
-  #   host:port  the host on another port.
-  # The default allows everything. To restrict the sandboxes, list the hosts
-  # instead. A model provider needs "*" or the host of its URL in the list:
-  # without it the proxy refuses the model requests, and the turns fail.
+  # Hosts that the sandboxes may reach, including those of model providers.
+  #   "*"        any host
+  #   host       the host on the default HTTPS and HTTP ports. Subdomains
+  #              are separate hosts.
+  #   host:port  the host on another port
+  # Model requests to a host that is not allowed are refused, and their
+  # turns fail.
   allowedHosts: ["*"]
-  # The sandboxes reach the outside through the proxy, so the proxy must not
-  # be a way into the cluster. A network policy keeps the proxy itself from
-  # connecting to the addresses in these ranges. It still reaches the
-  # Supervisor and the cluster's DNS.
+  # Address ranges that a NetworkPolicy blocks the proxy from connecting to,
+  # so that the sandboxes cannot use it to reach into the cluster. The
+  # Supervisor and the cluster DNS stay reachable.
   insideCIDRs:
     - 10.0.0.0/8
     - 172.16.0.0/12
@@ -110,10 +91,9 @@ egressProxy:
     - 169.254.0.0/16
     - fc00::/7
     - fe80::/10
-  # More that the proxy may connect to inside, as egress rules of a
-  # NetworkPolicy. The endpoint of a model provider or an allowed host needs
-  # one if it is a service in the cluster or at a private address, for
-  # example
+  # Additional NetworkPolicy egress rules for the proxy. A model provider or
+  # an allowed host that is in the cluster or at a private address needs
+  # one, for example
   #   - to:
   #       - namespaceSelector:
   #           matchLabels: {kubernetes.io/metadata.name: llm-gateway}
@@ -121,60 +101,45 @@ egressProxy:
   #       - ipBlock: {cidr: 192.168.1.20/32}
   extraEgress: []
 
-# The sandboxes of the sessions: each session runs in a sandbox of its own, a
-# pod of the harness of its agent with a volume of the session, in the
-# namespace aviary-runtime. agent-sandbox keeps them, and has to be installed
-# in the cluster.
+# Each session runs in its own sandbox in the aviary-runtime namespace: a pod
+# that runs the harness of its agent, with a volume for the session. The
+# sandboxes are managed by agent-sandbox, which must be installed in the
+# cluster.
 sandboxes:
-  # After how many seconds a session that is not at work is put to sleep: no
-  # turn of it runs. The Supervisors look for such sessions once a minute. A
-  # session that sleeps has no pod, and keeps its volume, with what its
-  # harness remembers. Its next turn wakes it, in a new pod. Zero is never.
+  # Seconds without a running turn after which a session is put to sleep:
+  # its pod is deleted and its volume is kept. The next turn wakes it in a
+  # new pod. 0 disables sleeping.
   idleSeconds: 300
-  # For how many seconds the sandbox of a session is kept after a turn of the
-  # session was last given to it. A session that is not used for longer has
-  # ended: its sandbox is deleted with its volume, and what was said in it
-  # stays. Zero is to keep it until the session is ended.
+  # Seconds after its last turn after which a session ends: its sandbox is
+  # deleted with its volume, and its conversation stays in the database. 0
+  # keeps the sandbox until the session is ended.
   retentionSeconds: 0
 
 runtime:
-  # The most turns that run at once. The turns beyond it wait in the order in
-  # which they were accepted.
+  # Maximum number of turns that run at once. Further turns are queued in
+  # the order in which they arrive.
   maxConcurrentTurns: 50
-  # The most turns that may wait. A message that would make one more is
-  # refused, and its client is told to try again later. Zero is no limit.
+  # Maximum number of queued turns. Beyond it, new messages are refused and
+  # the client is told to retry later. 0 means no limit.
   maxQueuedTurns: 500
-  # How long a turn may wait in that order. A turn that waits longer ends as
-  # expired, and its client is told so. Zero is no limit.
+  # Seconds a turn may stay queued before it expires. 0 means no limit.
   maxQueueWaitSeconds: 120
-  # How long a turn may take until its harness has the message. The first
-  # turn of a session waits for the sandbox of the session to be made, which
-  # takes longer on a node that does not have the image of the harness yet,
-  # and a turn of a session that sleeps waits for it to wake. A turn that
-  # takes longer fails. Its sandbox is put to sleep if the runner in it had
-  # the turn. One that was still being made or woken stays, for the next
-  # turn. Zero is no limit.
+  # Seconds a turn may take to reach its harness, which includes creating or
+  # waking the sandbox and pulling the harness image onto a new node. A turn
+  # that takes longer fails. 0 means no limit.
   maxStartupSeconds: 120
-  # How long a turn may run, from when it left the queue, the time that it
-  # waits for a person included. A turn is everything that an agent does for
-  # one message, which can be many requests to the model. A turn that runs
-  # longer fails, and its sandbox is put to sleep: what ran in it stops, and
-  # the volume of the session stays.
+  # Seconds a turn may run after it leaves the queue, including the time it
+  # waits for approval. A turn that runs longer fails, and its sandbox is
+  # put to sleep.
   maxTurnSeconds: 1800
-  # The longest text of a tool call, in what the tool was called with or
-  # returned, that is reported in the events of a turn as it is. A longer
-  # text, such as the output of a command, is cut to this many bytes. The
-  # agent itself still has all of it. Zero is no limit.
+  # Maximum bytes of the input or output of a tool call that turn events
+  # report. Longer text is truncated in the events; the agent itself gets all
+  # of it. 0 means no limit.
   maxToolOutputBytes: 65536
-  # The harnesses that agents can use, by the name that an agent is created
-  # with. The image holds the harness and the runner. The resources are what
-  # the pod of the sandbox of a session asks for and may use at most, of cpu
-  # and of memory, as the resources of a container are written for
-  # Kubernetes. A change here holds for a sandbox from when it is next woken.
-  # The requests are a little above what the harness takes before the agent
-  # does anything. A turn that goes over its limit of memory fails. There is
-  # no limit of cpu: it would slow a turn down also when the node has cpu to
-  # spare.
+  # Harnesses that agents can use, by name. The image contains the harness
+  # and the runner, and the resources apply to the harness container. A
+  # change applies to a sandbox the next time it wakes. No CPU limit is set,
+  # so that a turn can use the spare CPU of its node.
   harnesses:
     opencode:
       image: aviary-harness-opencode:dev
@@ -186,15 +151,10 @@ runtime:
       resources:
         requests: {cpu: 250m, memory: 256Mi}
         limits: {memory: 4Gi}
-  # The volume of a session, mounted at /home in its sandbox: what its
-  # harness remembers of the conversation and what its agent works on. A
-  # volume is mounted by one pod at a time. It is deleted with the sandbox,
-  # when its session is ended or expires. Whether the storage then deletes
-  # what was on it is up to the storage class: the default class of the
-  # local cluster does, a class with reclaimPolicy Retain does not, and some
-  # drivers of file storage keep it unless they are told not to.
+  # The session volume, mounted at /home. It holds the state of the harness
+  # and the files of the agent, and is deleted with the sandbox. Whether its
+  # data is deleted too depends on the storage class.
   volume:
     size: 10Gi
-    # The storage class that the volumes are made with. Empty is the default
-    # class of the cluster.
+    # Empty uses the default storage class of the cluster.
     storageClass: ""

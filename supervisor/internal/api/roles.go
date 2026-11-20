@@ -10,40 +10,35 @@ import (
 	"aviary/supervisor/store"
 )
 
-// The permissions: what a member of a project may do there. A role is a set
-// of them.
+// Permissions of project members. A role is a set of them.
 const (
-	// projectView is to see the project and what it is made of: its agents,
-	// its model providers and its secret stores, without their secrets.
-	// Every member may.
+	// projectView allows reading the project and its agents, model providers
+	// and secret stores, without secrets. Every member has it.
 	projectView = "project.view"
-	// agentsManage is to create the agents of the project.
+	// agentsManage allows creating agents.
 	agentsManage = "agents.manage"
-	// connectionsManage is to register and to replace the model providers
-	// and the secret stores of the project.
+	// connectionsManage allows registering and replacing model providers and
+	// secret stores.
 	connectionsManage = "connections.manage"
-	// sessionsRun is to create sessions, and in one's own to send messages,
-	// to stop the turns, to answer their requests for approval, to read
-	// what was said and to end it.
+	// sessionsRun allows creating sessions, and in one's own sessions
+	// sending messages, cancelling turns, answering approval requests,
+	// reading and ending them.
 	sessionsRun = "sessions.run"
-	// sessionsViewAll is to read the sessions of the other members.
+	// sessionsViewAll allows reading the sessions of other members.
 	sessionsViewAll = "sessions.view_all"
-	// sessionsControlAll is to stop the turns of the other members, to
-	// answer their requests for approval and to end their sessions. Who may
-	// do that may read them.
+	// sessionsControlAll allows cancelling the turns of other members,
+	// answering their approval requests and ending their sessions. It
+	// implies sessionsViewAll.
 	sessionsControlAll = "sessions.control_all"
 )
 
-// permissions are the permissions in the order in which a set of them is
-// written.
+// permissions lists all permissions in their canonical order.
 var permissions = []string{projectView, agentsManage, connectionsManage, sessionsRun, sessionsViewAll, sessionsControlAll}
 
 var errAdminOnly = &apiError{status: http.StatusForbidden, Code: "forbidden", Message: "only an administrator of the installation may do this"}
 
-// granted returns the set of permissions that those that are asked for come
-// to: every set has the permission to see the project, and one with the
-// permission to control the sessions of others has the one to read them. It
-// tells of a name that is no permission.
+// granted validates the requested permissions, and returns the set that they
+// grant, implied permissions included, in canonical order.
 func granted(asked []string) ([]string, error) {
 	for _, permission := range asked {
 		if !slices.Contains(permissions, permission) {
@@ -71,8 +66,8 @@ func (a *api) listRoles(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// setRole gives a role its permissions. The members that have the role have
-// them from their next request on.
+// setRole replaces the permissions of a role. They apply to its members from
+// their next request.
 func (a *api) setRole(w http.ResponseWriter, r *http.Request) error {
 	who := callerOf(r)
 	var request struct {

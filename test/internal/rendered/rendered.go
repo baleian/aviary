@@ -1,4 +1,4 @@
-// Package rendered reads what `helm template` makes of the chart.
+// Package rendered reads the output of `helm template`.
 package rendered
 
 import (
@@ -9,7 +9,7 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// Read returns the objects of the rendered chart in the file.
+// Read returns the objects of the rendered chart at path.
 func Read(path string) ([]map[string]any, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -33,8 +33,7 @@ func Read(path string) ([]map[string]any, error) {
 	}
 }
 
-// Find returns the object of the kind with the name, or nothing if the chart
-// made none.
+// Find returns the object with the kind and name, or nil.
 func Find(objects []map[string]any, kind, name string) map[string]any {
 	for _, object := range objects {
 		if object["kind"] == kind && At(object, "metadata", "name") == name {
@@ -44,8 +43,8 @@ func Find(objects []map[string]any, kind, name string) map[string]any {
 	return nil
 }
 
-// At returns what a value holds at the path, which is made of the names of
-// fields and the indexes of list items, or nothing if it holds nothing there.
+// At returns the value at path, which is made of field names and list
+// indexes, or nil if there is none.
 func At(value any, path ...any) any {
 	for _, step := range path {
 		switch step := step.(type) {
@@ -63,8 +62,7 @@ func At(value any, path ...any) any {
 	return value
 }
 
-// Named returns the item of the list whose name is the one given, or
-// nothing.
+// Named returns the item of list whose name field is name, or nil.
 func Named(list any, name string) any {
 	items, _ := list.([]any)
 	for _, item := range items {
@@ -75,8 +73,8 @@ func Named(list any, name string) any {
 	return nil
 }
 
-// Envoy returns the configuration of the Egress Proxy that the chart made,
-// and the files that hold it by their names.
+// Envoy returns the Egress Proxy's Envoy configuration, and the files of its
+// ConfigMap by name.
 func Envoy(objects []map[string]any) (map[string]any, map[string]string, error) {
 	files := map[string]string{}
 	data, _ := At(Find(objects, "ConfigMap", "aviary-egress-proxy"), "data").(map[string]any)

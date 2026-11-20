@@ -1,5 +1,4 @@
-// Package metrics holds what the Supervisor reports of the turns, in the form
-// that Prometheus reads.
+// Package metrics defines the Supervisor's Prometheus metrics.
 package metrics
 
 import (
@@ -13,23 +12,21 @@ import (
 	"aviary/supervisor/store"
 )
 
-// Metrics counts and times the turns. Of several Supervisors, each reports
-// what it did and what it holds itself, so the numbers of all of them add
-// up. None of them reports what is only in the database, such as the number
-// of turns that wait: every Supervisor would report the same number.
+// Metrics counts and times the turns. Each Supervisor reports only its own
+// work, so that the metrics of all replicas add up. State that exists only in
+// the database, such as the queue length, is not reported, since every
+// replica would report the same value.
 type Metrics struct {
-	registry *prometheus.Registry
-	queue    prometheus.Histogram
-	running  *prometheus.GaugeVec
-	ended    *prometheus.CounterVec
-	waited   *prometheus.HistogramVec
-	startup  *prometheus.HistogramVec
-	ran      *prometheus.HistogramVec
-	tokens   *prometheus.CounterVec
-	refused  *prometheus.CounterVec
-	approved *prometheus.HistogramVec
-	// secretRead is how long the secret stores of the projects took to give
-	// their values.
+	registry   *prometheus.Registry
+	queue      prometheus.Histogram
+	running    *prometheus.GaugeVec
+	ended      *prometheus.CounterVec
+	waited     *prometheus.HistogramVec
+	startup    *prometheus.HistogramVec
+	ran        *prometheus.HistogramVec
+	tokens     *prometheus.CounterVec
+	refused    *prometheus.CounterVec
+	approved   *prometheus.HistogramVec
 	secretRead *prometheus.HistogramVec
 }
 
@@ -96,28 +93,27 @@ func (m *Metrics) Handler() http.Handler {
 	return promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{})
 }
 
-// Accepted records that a message was accepted as a turn when so many turns
-// waited to run, the new one among them.
+// Accepted records an accepted turn and the number of queued turns, including
+// it.
 func (m *Metrics) Accepted(waiting int) {
 	m.queue.Observe(float64(waiting))
 }
 
-// Following records that this Supervisor follows a turn of the harness. The
-// function that it returns records that it does so no longer.
+// Following counts a turn that this Supervisor follows, until the returned
+// function is called.
 func (m *Metrics) Following(harness string) (left func()) {
 	running := m.running.WithLabelValues(harness)
 	running.Inc()
 	return running.Dec
 }
 
-// Dispatched records that a turn of the harness left the queue after it had
-// waited for so long.
+// Dispatched records how long a dispatched turn was queued.
 func (m *Metrics) Dispatched(harness string, waited time.Duration) {
 	m.waited.WithLabelValues(harness).Observe(waited.Seconds())
 }
 
-// Started records that the harness got the message of a turn so long after
-// the turn left the queue.
+// Started records how long a turn took from dispatch until its harness had
+// the message.
 func (m *Metrics) Started(harness string, startup time.Duration) {
 	m.startup.WithLabelValues(harness).Observe(startup.Seconds())
 }
@@ -145,10 +141,10 @@ func (m *Metrics) Ended(harness string, turn store.Turn) {
 	}
 }
 
-// Approved records that a harness got its answer to a request for approval
-// after it had waited for so long. The outcome is the kind of the option that
-// it was given, or cancelled. The kinds are those of the Agent Client
-// Protocol: a runner is not trusted to make up more of them.
+// Approved records how long an approval request waited for its answer. The
+// outcome is the kind of the chosen option, or "cancelled". Kinds other than
+// those of the Agent Client Protocol are recorded as "other", since the
+// runner is not trusted.
 func (m *Metrics) Approved(harness, outcome string, waited time.Duration) {
 	switch outcome {
 	case "allow_once", "allow_always", "reject_once", "reject_always", "cancelled":
@@ -158,8 +154,8 @@ func (m *Metrics) Approved(harness, outcome string, waited time.Duration) {
 	m.approved.WithLabelValues(harness, outcome).Observe(waited.Seconds())
 }
 
-// SecretRead records that a secret store of the kind was asked for a value
-// and took so long, and whether it gave the value.
+// SecretRead records the duration and outcome of a read from a secret store
+// of the kind.
 func (m *Metrics) SecretRead(kind string, took time.Duration, err error) {
 	outcome := "read"
 	if err != nil {

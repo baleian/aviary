@@ -17,7 +17,7 @@ spec:
         app.kubernetes.io/name: aviary
         app.kubernetes.io/component: egress-proxy
       annotations:
-        # Envoy reads its configuration when it starts.
+        # Envoy reads its configuration only at startup.
         checksum/config: {{ include (print $.Template.BasePath "/egress-proxy/configmap.yaml") . | sha256sum }}
     spec:
       automountServiceAccountToken: false
@@ -29,8 +29,8 @@ spec:
         - name: envoy
           image: {{ .Values.egressProxy.image }}
           args: ["--config-path", "/etc/envoy/envoy.yaml", "--disable-hot-restart"]
-          # Without the wait, the cluster would still send new connections
-          # to a proxy that has stopped.
+          # Gives the endpoints time to stop sending new connections here
+          # before Envoy stops.
           lifecycle:
             preStop:
               sleep:

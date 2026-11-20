@@ -10,19 +10,18 @@ import (
 	"github.com/google/uuid"
 )
 
-// The events of a runner that tell what the agent says and does.
+// Runner events that make up the items of a turn.
 const (
-	messageDelta = "message.delta"
-	thoughtDelta = "thought.delta"
-	toolCall     = "tool.call"
-	toolUpdate   = "tool.update"
-	planUpdate   = "plan.update"
-	// The harness asked before it went on, and how that was answered to it.
+	messageDelta      = "message.delta"
+	thoughtDelta      = "thought.delta"
+	toolCall          = "tool.call"
+	toolUpdate        = "tool.update"
+	planUpdate        = "plan.update"
 	approvalRequested = "approval.requested"
 	approvalResolved  = "approval.resolved"
 )
 
-// The types of an item.
+// Item types.
 const (
 	itemMessage  = "message"
 	itemThought  = "thought"
@@ -31,20 +30,17 @@ const (
 	itemApproval = "approval"
 )
 
-// itemsBatch is the most events that Items reads at once.
 const itemsBatch = 1000
 
-// Items returns what the agent said and did in the turn, put together from
-// the turn's events, in the order in which each item began. An item is a JSON
-// object with a type:
+// Items assembles the items of the turn from its events, in the order in
+// which each item began. An item is a JSON object with a type:
 //
-//   - message and thought have the text of the pieces that followed one
-//     another.
-//   - tool_call has the fields of the tool.call event, as the updates of the
-//     call left them.
-//   - plan has the entries of the plan as it last stood.
-//   - approval has the fields of the approval.requested event and, once the
-//     harness had its answer, those of approval.resolved.
+//   - message and thought hold the text of consecutive deltas.
+//   - tool_call holds the fields of the tool.call event, as updated by
+//     tool.update events.
+//   - plan holds the entries of the last plan.update.
+//   - approval holds the fields of approval.requested and, once the harness
+//     has the answer, those of approval.resolved.
 func (s *Streams) Items(ctx context.Context, turnID uuid.UUID) ([]json.RawMessage, error) {
 	turn := newRecord()
 	after := Start
@@ -57,8 +53,8 @@ func (s *Streams) Items(ctx context.Context, turnID uuid.UUID) ([]json.RawMessag
 			return turn.encode()
 		}
 		for _, event := range batch {
-			// An event that cannot be read is left out: a turn must end also
-			// then.
+			// Skip events that cannot be decoded, so that the turn can still
+			// end.
 			if err := turn.add(event.Type, event.Data); err != nil {
 				slog.WarnContext(ctx, "read turn event", "turn", turnID, "event", event.ID, "error", err)
 			}
@@ -67,11 +63,10 @@ func (s *Streams) Items(ctx context.Context, turnID uuid.UUID) ([]json.RawMessag
 	}
 }
 
-// record puts the events of a turn together into its items.
+// record assembles the items of a turn from its events.
 type record struct {
 	items []*item
-	// tools holds the tool calls by their IDs, approvals the requests for
-	// approval by theirs, and plan is the plan.
+	// tools and approvals index their items by ID.
 	tools     map[string]*item
 	approvals map[string]*item
 	plan      *item
@@ -83,15 +78,15 @@ func newRecord() *record {
 
 type item struct {
 	kind string
-	// A message or a thought has the ID of its pieces and their text.
+	// messageID and text are set for messages and thoughts.
 	messageID string
 	text      strings.Builder
-	// A tool call or a plan has the fields of its events.
+	// fields is set for tool calls, plans and approvals.
 	fields map[string]json.RawMessage
 }
 
-// add takes in the next event of the turn. Events that tell nothing of what
-// the agent said or did are passed over.
+// add adds the next event of the turn. Events that do not make up items are
+// ignored.
 func (r *record) add(eventType, data string) error {
 	var kind string
 	switch eventType {
@@ -114,7 +109,7 @@ func (r *record) add(eventType, data string) error {
 	}
 	switch kind {
 	case itemToolCall:
-		// An update sets only what changed of its call.
+		// An update holds only the fields that changed.
 		id := string(fields["id"])
 		call, found := r.tools[id]
 		if !found {
@@ -129,7 +124,7 @@ func (r *record) add(eventType, data string) error {
 		}
 		r.plan.fields = fields
 	case itemApproval:
-		// The answer is told where the request was.
+		// The resolution is merged into the item of the request.
 		id := string(fields["id"])
 		asked, found := r.approvals[id]
 		if !found {
@@ -144,9 +139,8 @@ func (r *record) add(eventType, data string) error {
 	return nil
 }
 
-// say adds a piece of a message or of a thought. The piece continues the
-// last item if it is of the same message or thought, and begins an item if
-// something else came in between.
+// say adds a message or thought delta. It extends the last item if that is
+// the same message or thought, and starts a new item otherwise.
 func (r *record) say(kind string, fields map[string]json.RawMessage) error {
 	var text string
 	if piece, found := fields["text"]; found {

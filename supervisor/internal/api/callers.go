@@ -12,33 +12,28 @@ import (
 	"aviary/supervisor/identity"
 )
 
-// Callers is who may use the API of an installation.
+// Callers configures who may use the API.
 type Callers struct {
-	// Provider tells who sends a request. An installation without an
-	// identity provider has none: nobody is asked, and every request is an
-	// administrator's.
+	// Provider authenticates requests. If it is nil, requests are not
+	// authenticated and every caller is an admin.
 	Provider identity.Provider
-	// Admins are the groups of the provider whose members are the
-	// administrators of the installation.
+	// Admins are the groups whose members are admins.
 	Admins []string
-	// Users are the groups whose members may use the API, as the
-	// administrators may. If there are none, everyone whom the provider
-	// knows may.
+	// Users are the groups whose members, besides the admins, may use the
+	// API. If empty, every authenticated caller may.
 	Users []string
 }
 
-// caller is who sends a request, and what the installation makes of them.
+// caller is the sender of a request.
 type caller struct {
 	identity.Caller
-	// id is the ID of the caller as a user of the installation. A caller
-	// that is not asked who they are is no user, and has none.
-	id uuid.UUID
-	// admin says that the caller is an administrator of the installation.
+	// id is the caller's user ID, or uuid.Nil if requests are not
+	// authenticated.
+	id    uuid.UUID
 	admin bool
 }
 
-// callerKey is the key of the caller of a request in the context of the
-// request.
+// callerKey is the context key of the request's caller.
 type callerKey struct{}
 
 func callerOf(r *http.Request) caller {
@@ -51,11 +46,10 @@ var (
 	errNotAllowed = &apiError{status: http.StatusForbidden, Code: "forbidden", Message: "the caller is in none of the groups that may use this installation"}
 )
 
-// identified passes on the requests whose caller the identity provider
-// knows, each with its caller. A request tells who sends it with a token of
-// the provider, in the header "Authorization: Bearer <token>", and is a user
-// of the installation from the first request on. An installation without a
-// provider asks nobody.
+// identified authenticates the bearer token of a request with the identity
+// provider, and passes the request on with its caller in the context. A
+// caller's user record is created on its first request. Without a provider,
+// every request is passed on as an admin's.
 func (a *api) identified(next http.Handler) http.Handler {
 	return handler(func(w http.ResponseWriter, r *http.Request) error {
 		who := caller{admin: true}
@@ -80,9 +74,8 @@ func (a *api) identified(next http.Handler) http.Handler {
 	})
 }
 
-// allowed passes on the requests of the callers that may use the API: the
-// administrators and the members of the groups of users, or everyone if the
-// installation names no such group.
+// allowed passes on the requests of admins and members of the Users groups,
+// or of everyone if Users is empty.
 func (a *api) allowed(next http.Handler) http.Handler {
 	return handler(func(w http.ResponseWriter, r *http.Request) error {
 		if who := callerOf(r); !who.admin && len(a.callers.Users) > 0 && !among(who.Groups, a.callers.Users) {
@@ -93,16 +86,14 @@ func (a *api) allowed(next http.Handler) http.Handler {
 	})
 }
 
-// among says whether one of the groups is among those that are named.
+// among reports whether any of groups is in named.
 func among(groups, named []string) bool {
 	return slices.ContainsFunc(groups, func(group string) bool { return slices.Contains(named, group) })
 }
 
-// me answers who sends the request: the ID of the caller as a user of the
-// installation, what the identity provider tells of the caller, and whether
-// the installation takes the caller for an administrator. It is how to see
-// what the installation reads from a token, also for a caller that may not
-// use the rest of the API.
+// me returns the caller's user ID, identity and admin status. It is open to
+// callers that may not use the rest of the API, so that they can see how
+// their token is read.
 func (a *api) me(w http.ResponseWriter, r *http.Request) error {
 	who := callerOf(r)
 	var id string

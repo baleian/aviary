@@ -21,7 +21,7 @@ func TestTheTokenOfASessionOpensToTheSession(t *testing.T) {
 	if opened, known := a.session(token); !known || opened != session {
 		t.Errorf("the token of the session %s opens to %s, %t", session, opened, known)
 	}
-	// What is sealed for another place, and what is sealed for none.
+	// A value sealed for another place, and values that are not sealed.
 	other, err := keys.Seal(session.String(), "the key of a provider")
 	if err != nil {
 		t.Fatal(err)
@@ -73,8 +73,6 @@ func TestDenied(t *testing.T) {
 		t.Errorf("a model request is refused with %v", llm)
 	}
 
-	// Without the header, a client that sends its password only when asked
-	// takes the refusal as final. git is one.
 	forward := denied(true).GetDeniedResponse()
 	if forward.GetStatus().GetCode() != typev3.StatusCode_ProxyAuthenticationRequired {
 		t.Errorf("a request to the forward proxy is refused with the status %v", forward.GetStatus().GetCode())

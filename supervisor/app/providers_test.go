@@ -17,7 +17,7 @@ import (
 	"aviary/supervisor/store"
 )
 
-// provider is a model provider as the API answers it.
+// provider is a model provider as the API returns it.
 type provider struct {
 	ID        string          `json:"id"`
 	ProjectID string          `json:"project_id"`
@@ -28,8 +28,7 @@ type provider struct {
 	UpdatedAt time.Time       `json:"updated_at"`
 }
 
-// A project has model providers: model endpoints and the keys to them. A key
-// goes in and does not come out: the API never answers with it, and the
+// The API key of a provider is write-only: no response contains it, and the
 // database holds it sealed.
 func TestProviders(t *testing.T) {
 	t.Parallel()
@@ -37,8 +36,8 @@ func TestProviders(t *testing.T) {
 	s := aviary.supervisor()
 	records := aviary.records
 	const first, second = "sk-the-first-key", "sk-the-second-key"
-	// answer sends a request about a provider and returns the provider that
-	// the API answers with. No answer holds a key.
+	// answer sends a request and returns the provider in the response. It
+	// fails the test if the response reveals a key.
 	answer := func(method, path, body string, status int) provider {
 		t.Helper()
 		var raw json.RawMessage
@@ -48,7 +47,7 @@ func TestProviders(t *testing.T) {
 		if strings.Contains(string(raw), first) || strings.Contains(string(raw), second) {
 			t.Errorf("%s %s was answered with a key: %s", method, path, raw)
 		}
-		// Nor does it hold anything else of the key, such as what is stored.
+		// Nor does it hold anything else of the key, such as the sealed key.
 		var fields map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &fields); err != nil {
 			t.Fatal(err)
@@ -65,8 +64,7 @@ func TestProviders(t *testing.T) {
 		}
 		return decoded
 	}
-	// kept returns the key of a provider as the database holds it, and what
-	// it opens to for that provider.
+	// kept returns the provider's key as stored and as opened.
 	kept := func(id string) ([]byte, string) {
 		t.Helper()
 		record, err := records.Provider(context.Background(), uuid.MustParse(id))
@@ -100,8 +98,8 @@ func TestProviders(t *testing.T) {
 		t.Errorf("the database holds the key as %q, which opens to %q", sealed, opened)
 	}
 
-	// The key is sealed for its provider: that of another provider is not
-	// read in its place, even if it is the same key.
+	// A key is sealed for its provider: the stored key of another provider
+	// does not open for this one, even if the value is the same.
 	other := answer("POST", providers,
 		`{"name": "another", "url": "http://model.example.com:8000", "api_key": {"value": "`+first+`"}}`, http.StatusCreated)
 	moved, _ := kept(other.ID)
@@ -109,7 +107,7 @@ func TestProviders(t *testing.T) {
 		t.Errorf("the key of another provider opened for this one as %q, %v", opened, err)
 	}
 
-	// A provider is replaced whole: its name, its URL and its key.
+	// PUT replaces the name, the URL and the key.
 	replaced := answer("PUT", path,
 		`{"name": "renamed", "url": "https://other.example.com", "api_key": {"value": "`+second+`"}}`, http.StatusOK)
 	if replaced.ID != created.ID || replaced.ProjectID != project || replaced.Name != "renamed" || replaced.URL != "https://other.example.com" ||
@@ -122,13 +120,13 @@ func TestProviders(t *testing.T) {
 	if _, opened := kept(created.ID); opened != second {
 		t.Errorf("the key of the replaced provider opens to %q", opened)
 	}
-	// What cannot replace it leaves it as it is.
+	// A refused PUT leaves the provider unchanged.
 	answer("PUT", path, `{"name": "renamed", "url": "other.example.com", "api_key": {"value": "`+first+`"}}`, http.StatusBadRequest)
 	if _, opened := kept(created.ID); opened != second {
 		t.Errorf("after a request that was refused, the key of the provider opens to %q", opened)
 	}
 
-	// A provider that is given no key has none, also if it had one.
+	// A PUT without a key removes the stored key.
 	if keyless := answer("PUT", path, `{"name": "renamed", "url": "https://other.example.com"}`, http.StatusOK); keyless.APIKey != nil {
 		t.Errorf("the provider that was given no key is %+v", keyless)
 	}

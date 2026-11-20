@@ -14,8 +14,7 @@ import (
 	"aviary/supervisor/internal/driver"
 )
 
-// waiting returns the IDs of the requests for approval that the turn shows
-// as waiting for a person.
+// waiting returns the IDs of the pending approval requests of the turn.
 func (s *supervisor) waiting(turn string) []string {
 	s.t.Helper()
 	ids := []string{}
@@ -29,8 +28,8 @@ func (s *supervisor) waiting(turn string) []string {
 	return ids
 }
 
-// approve sends the answer of a person to a request for approval. It
-// returns the status of the reply and its body.
+// approve answers an approval request and returns the response status and
+// body.
 func (s *supervisor) approve(turn, request, body string) (int, map[string]string) {
 	s.t.Helper()
 	var reply map[string]string
@@ -38,8 +37,7 @@ func (s *supervisor) approve(turn, request, body string) (int, map[string]string
 	return status, reply
 }
 
-// A harness that asks before it acts is answered by a person, through any
-// Supervisor. The turn waits for the answer.
+// An approval request can be answered through any Supervisor.
 func TestApproval(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
@@ -50,8 +48,8 @@ func TestApproval(t *testing.T) {
 	if runner.Approval != "ask" || runner.Environment["AVIARY_APPROVAL"] != "ask" {
 		t.Errorf("the runner of a turn of an agent with approval is given %+v", runner.Turn)
 	}
-	// The Supervisor that is asked starts after the turn was dispatched, so
-	// the other one follows the turn.
+	// Started after the dispatch, so that the other Supervisor follows the
+	// turn.
 	asked := aviary.supervisor()
 	runner.report(started("harness-session"))
 	watching := asked.watch(accepted.ID)
@@ -65,8 +63,8 @@ func TestApproval(t *testing.T) {
 		t.Errorf("the turn shows the requests %v as waiting", waiting)
 	}
 
-	// The answer of a person reaches the runner through the Supervisor that
-	// follows the turn, at once.
+	// The answer reaches the runner through the Supervisor that follows the
+	// turn.
 	status, reply := asked.approve(accepted.ID, "2", `{"option_id": "once"}`)
 	if status != http.StatusAccepted || reply["id"] != "2" || reply["option_id"] != "once" {
 		t.Errorf("the answer to a request was answered with %d %v", status, reply)
@@ -74,7 +72,7 @@ func TestApproval(t *testing.T) {
 	if id, option := runner.answer(); id != "2" || option != "once" {
 		t.Errorf("the runner was given the answer %q to the request %q", option, id)
 	}
-	// The request waits for a person no longer, and the first answer stands.
+	// The request is no longer pending, and a second answer is refused.
 	if waiting := following.waiting(accepted.ID); !slices.Equal(waiting, []string{"1"}) {
 		t.Errorf("after an answer the turn shows the requests %v as waiting", waiting)
 	}
@@ -83,7 +81,7 @@ func TestApproval(t *testing.T) {
 	}
 	runner.report(answered("2", "selected", "once"))
 
-	// The other request is still open when the turn is told to stop.
+	// The harness cancels the other request, as when the turn is stopped.
 	runner.report(answered("1", "cancelled", ""))
 	if status, reply := asked.approve(accepted.ID, "1", `{"option_id": "once"}`); status != http.StatusConflict || reply["code"] != "approval_answered" {
 		t.Errorf("an answer to a request that the harness waits for no longer was answered with %d %v", status, reply)
@@ -119,14 +117,14 @@ func TestApproval(t *testing.T) {
 	}
 	var resolved map[string]string
 	selected := of("approval.resolved")[0].Data
-	// Nobody is asked who they are here, so nobody is said to have answered.
+	// Without an identity provider, the answer has no answered_by.
 	if err := json.Unmarshal([]byte(selected), &resolved); err != nil || len(resolved) != 3 ||
 		resolved["id"] != "2" || resolved["outcome"] != "selected" || resolved["option_id"] != "once" {
 		t.Errorf("the answer to a request is told as %s: %v", selected, err)
 	}
 
-	// The record keeps what was asked and how it was answered. A turn that
-	// has ended shows no requests as waiting, and takes no answers.
+	// The record keeps each request with its outcome, and an ended turn has
+	// no pending requests.
 	record := asked.turn(accepted.ID)
 	kept := items(t, record)
 	if len(kept) != 2 || kept[0]["type"] != "approval" || kept[0]["id"] != "1" || kept[0]["outcome"] != "cancelled" ||
@@ -162,12 +160,12 @@ func TestApprovalRefusals(t *testing.T) {
 			t.Errorf("%s: answered with %d %v, not %d %s", name, status, reply, test.status, test.code)
 		}
 	}
-	// None of them was taken for an answer.
+	// None of them was accepted.
 	if waiting := s.waiting(accepted.ID); !slices.Equal(waiting, []string{"1"}) {
 		t.Errorf("the turn shows the requests %v as waiting", waiting)
 	}
 
-	// A turn that has ended takes no answer to what its harness asked.
+	// An ended turn takes no answers.
 	runner.lose()
 	s.follow(accepted.ID)
 	if status, reply := s.approve(accepted.ID, "1", `{"option_id": "once"}`); status != http.StatusConflict || reply["code"] != "turn_ended" {
@@ -178,8 +176,8 @@ func TestApprovalRefusals(t *testing.T) {
 	}
 }
 
-// An answer whose announcement is lost is found a little later by the
-// Supervisor that follows the turn.
+// If the announcement of an answer is lost, the Supervisor that follows the
+// turn finds the answer when it sweeps.
 func TestApprovalWithoutAnnouncement(t *testing.T) {
 	t.Parallel()
 	aviary := install(t, func(config *driver.Config) { config.Sweep = 100 * time.Millisecond })
@@ -188,7 +186,7 @@ func TestApprovalWithoutAnnouncement(t *testing.T) {
 	runner := aviary.given(accepted.ID)
 	runner.report(started("harness-session"))
 	runner.report(asks("1", "rm -r build"))
-	// The answer is recorded as the API records it, and nothing is announced.
+	// Record the answer as the API does, without announcing it.
 	answered, err := aviary.records.AnswerApproval(context.Background(), uuid.MustParse(accepted.ID), "1", "never", uuid.Nil)
 	if err != nil || !answered {
 		t.Fatalf("the request was answered %t: %v", answered, err)
@@ -196,15 +194,15 @@ func TestApprovalWithoutAnnouncement(t *testing.T) {
 	if id, option := runner.answer(); id != "1" || option != "never" {
 		t.Errorf("the runner was given the answer %q to the request %q", option, id)
 	}
-	// Until the runner tells that its harness has the answer, the Supervisor
-	// gives it the answer again when it sweeps.
+	// The answer is delivered again on every sweep until the runner reports
+	// it resolved.
 	if id, option := runner.answer(); id != "1" || option != "never" {
 		t.Errorf("the runner was given again the answer %q to the request %q", option, id)
 	}
 }
 
-// The answer to a request for approval is that of the caller who gave it:
-// the event and the record of the answer say who that was.
+// The approval.resolved event and the turn's record name the user who
+// answered.
 func TestApprovalIsAnsweredBySomeone(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
@@ -234,10 +232,9 @@ func TestApprovalIsAnsweredBySomeone(t *testing.T) {
 	runner.report(asks("1", "rm -r build"))
 	runner.report(asks("2", "git push"))
 
-	// Another member, who may answer for the turns of others, answers both
-	// requests. The harness gets the answer to the one, and the turn is
-	// told to stop before it gets the other: that one was answered by
-	// nobody.
+	// Carol, an owner, answers both requests. The harness resolves the first
+	// with Carol's answer and cancels the second, which then has no
+	// answered_by.
 	s.token = "token-of-carol"
 	for _, request := range []string{"1", "2"} {
 		if status, reply := s.approve(accepted.ID, request, `{"option_id": "once"}`); status != http.StatusAccepted {

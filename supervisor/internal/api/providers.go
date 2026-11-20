@@ -10,15 +10,14 @@ import (
 	"aviary/supervisor/store"
 )
 
-// secretValue is a secret as a request gives it. The API takes a secret and
-// never gives one back.
+// secretValue is a secret in a request. The API never returns secrets.
 type secretValue struct {
 	Value string `json:"value"`
 }
 
-// secretField is a secret that a request gives as its value, which is then
-// stored sealed, or as where it is in a secret store of the project, which
-// is all that is then stored of it.
+// secretField is a secret in a request: either its value, which is stored
+// encrypted, or its location in one of the project's secret stores, which
+// is stored in place of the value.
 type secretField struct {
 	Value string `json:"value"`
 	Store string `json:"store"`
@@ -26,14 +25,13 @@ type secretField struct {
 	Key   string `json:"key"`
 }
 
-// stored stands for a secret in what the API answers: it tells that the
-// secret is stored and not what it is.
+// stored stands in for a secret in responses.
 type stored struct {
 	Stored bool `json:"stored"`
 }
 
-// provider is a model provider as the API answers it. Of a key that is
-// stored it tells only that, and of a key in a secret store where it is.
+// provider is the API representation of a model provider. A stored key is
+// shown only as stored, and a key in a secret store by its location.
 type provider struct {
 	store.Provider
 	APIKey any `json:"api_key,omitempty"`
@@ -50,10 +48,10 @@ func answered(from store.Provider) provider {
 	return answer
 }
 
-// readProvider reads what a provider of the project is created with or
-// replaced with: all that makes the provider with the ID. A key that is
-// given as its value is sealed for that provider. A key in a secret store
-// is read once, so that what cannot be read is found now and not in a turn.
+// readProvider decodes and validates a request to create or replace the
+// provider with the ID. A key given by value is encrypted for that provider.
+// A key in a secret store is read once, so that an unreadable key is
+// reported at once rather than during a turn.
 func (a *api) readProvider(w http.ResponseWriter, r *http.Request, id, projectID uuid.UUID) (store.Provider, error) {
 	var request struct {
 		Name   string       `json:"name"`
@@ -91,9 +89,8 @@ func (a *api) readProvider(w http.ResponseWriter, r *http.Request, id, projectID
 	return read, nil
 }
 
-// keyInStore checks where a request says that a key is: in a secret store
-// of the project, at a path and under a key that the store gives a value
-// for now.
+// keyInStore checks that the key is in a secret store of the project and
+// can be read.
 func (a *api) keyInStore(r *http.Request, projectID uuid.UUID, key secretField) (store.SecretReference, error) {
 	id, err := uuid.Parse(key.Store)
 	if err != nil {
@@ -116,7 +113,7 @@ func (a *api) keyInStore(r *http.Request, projectID uuid.UUID, key secretField) 
 	return store.SecretReference{Store: id, Path: key.Path, Key: key.Key}, nil
 }
 
-// endpoint checks the base URL of a model endpoint.
+// endpoint validates the base URL of a model provider.
 func endpoint(address string) error {
 	parsed, err := url.Parse(address)
 	switch {
@@ -168,9 +165,8 @@ func (a *api) getProvider(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// replaceProvider gives a provider another name, URL and key, all three at
-// once. A request cannot change the URL and leave the key: nobody can have a
-// key that is stored sent to another address.
+// replaceProvider replaces the name, URL and key of a provider together, so
+// that a stored key cannot be redirected to another URL.
 func (a *api) replaceProvider(w http.ResponseWriter, r *http.Request) error {
 	id, err := pathID(r, "provider")
 	if err != nil {

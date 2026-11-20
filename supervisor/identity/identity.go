@@ -1,9 +1,8 @@
-// Package identity tells who sends a request to the API. The Supervisor does
-// not keep the users of an installation and logs nobody in: an identity
-// provider does, and a caller brings a token of the provider with every
-// request. A plugin connects the Supervisor to the providers of one kind. A
-// kind is a way in which a token is checked, whatever product the provider
-// is.
+// Package identity authenticates API requests with the tokens of an identity
+// provider. The Supervisor does not manage users or log anyone in: a caller
+// sends a token of the provider with every request. Plugins implement the
+// kinds of providers; a kind is a way of checking tokens, whatever product
+// the provider is.
 package identity
 
 import (
@@ -13,47 +12,43 @@ import (
 	"strings"
 )
 
-// Caller is who sent a request, as the identity provider tells it.
+// Caller is the sender of a request, as the identity provider reports it.
 type Caller struct {
-	// Subject is what the provider knows the caller by. It is no other
-	// caller's and it never changes, and it is not made for a person to
-	// read.
+	// Subject identifies the caller at the provider. It is unique and never
+	// changes, and it is not meant to be read by people.
 	Subject string
-	// Username is a name of the caller that a person can read and that no
-	// other caller has at the provider, such as an email address. It is
-	// empty if the provider gave none that can be relied on.
+	// Username is a human-readable name that is unique at the provider,
+	// such as an email address. It is empty if the provider gave none that
+	// can be relied on.
 	Username string
-	// DisplayName is what the caller is shown as. It tells nothing of who
-	// the caller is.
+	// DisplayName is the name to show for the caller. It does not identify
+	// the caller.
 	DisplayName string
-	// Groups are the names that the provider gave the caller, whether the
-	// provider calls them groups or roles.
+	// Groups are the caller's group or role names at the provider.
 	Groups []string
 }
 
-// Provider tells who the tokens of an identity provider belong to.
+// Provider authenticates the tokens of an identity provider.
 type Provider interface {
-	// Caller returns who the token was issued to. It returns an error for a
-	// token that is not the provider's, is not meant for this installation
-	// or has expired, and for one that it cannot check.
+	// Caller returns the caller to whom token was issued. It returns an
+	// error if the token was not issued by the provider for this
+	// installation, has expired, or cannot be checked.
 	Caller(ctx context.Context, token string) (Caller, error)
 }
 
-// Plugin connects to the identity providers of one kind. The Supervisor
-// knows the kinds that it was built with: a provider of another kind is
-// served by writing a plugin for it and adding the plugin to the build.
+// Plugin connects to the identity providers of one kind. To support another
+// kind, add its plugin to the build.
 type Plugin interface {
-	// Kind is the name of the kind, which an installation gives with its
-	// provider.
+	// Kind returns the name of the kind, which the installation gives with
+	// its provider.
 	Kind() string
-	// Open reads the settings of a provider, as the installation gave them,
-	// and connects to the provider. It tells what is wrong with the
-	// settings, if anything is. Nothing in the settings is secret.
+	// Open validates the settings of a provider and connects to it. The
+	// error says what is wrong with the settings. Settings are not treated
+	// as secret.
 	Open(ctx context.Context, settings json.RawMessage) (Provider, error)
 }
 
-// Open connects to an identity provider of the kind, with the plugin for
-// that kind.
+// Open connects to an identity provider with the plugin for kind.
 func Open(ctx context.Context, kind string, settings json.RawMessage, plugins ...Plugin) (Provider, error) {
 	kinds := make([]string, 0, len(plugins))
 	for _, plugin := range plugins {

@@ -23,7 +23,7 @@ type member struct {
 	UpdatedBy   string   `json:"updated_by"`
 }
 
-// members asks the API for the members of the project.
+// members lists the members of the project.
 func (s *supervisor) members(project string) []member {
 	s.t.Helper()
 	var listed struct{ Members []member }
@@ -33,8 +33,8 @@ func (s *supervisor) members(project string) []member {
 	return listed.Members
 }
 
-// A project is given members: users, by their usernames, and groups of the
-// identity provider, each with a role or with permissions of its own.
+// A member is a user, by username, or a group of the identity provider, with
+// a role or with custom permissions.
 func TestMembers(t *testing.T) {
 	s := install(t).supervisor()
 	project := s.create("/v1/projects", `{"name": "test"}`)
@@ -47,7 +47,7 @@ func TestMembers(t *testing.T) {
 		team.Group != "team-a" || team.User != nil || team.Role != "editor" || team.Permissions != nil || team.ProjectID != project || team.ID == "" {
 		t.Errorf("a group is added with %d as %+v", status, team)
 	}
-	// The permissions of a member are a set, as those of a role are.
+	// Custom permissions are completed and ordered as those of a role.
 	if status, _ := s.request(http.MethodPost, "/v1/projects/"+project+"/members", `{"user": "alice@example.com", "permissions": ["sessions.control_all"]}`, &alice); status != http.StatusCreated ||
 		alice.User == nil || alice.User.Username != "alice@example.com" || alice.User.ID != "" || alice.Group != "" || alice.Role != "custom" ||
 		!slices.Equal(alice.Permissions, []string{"project.view", "sessions.view_all", "sessions.control_all"}) {
@@ -57,8 +57,7 @@ func TestMembers(t *testing.T) {
 		t.Errorf("the members are %+v", members)
 	}
 
-	// A member is given a role in place of its permissions, and the other
-	// way round.
+	// A member can switch between a role and custom permissions.
 	var changed member
 	if status, _ := s.request(http.MethodPut, "/v1/members/"+alice.ID, `{"role": "viewer"}`, &changed); status != http.StatusOK ||
 		changed.ID != alice.ID || changed.Role != "viewer" || changed.Permissions != nil || changed.User == nil || changed.User.Username != "alice@example.com" {
@@ -111,8 +110,8 @@ func TestMembers(t *testing.T) {
 	}
 }
 
-// Only an administrator gives a project its members. A user who is made a
-// member before they were seen is the member from their first request on.
+// Only admins manage members. A user who is added by username before their
+// first request is linked to the membership on that request.
 func TestMembersAreGivenByAdministrators(t *testing.T) {
 	installation := install(t)
 	installation.callers = api.Callers{
@@ -133,7 +132,7 @@ func TestMembersAreGivenByAdministrators(t *testing.T) {
 		t.Fatalf("an administrator, the user %s, adds a member with %d as %+v", admin.ID, status, added)
 	}
 
-	// The user who was awaited is seen.
+	// Alice's first request links the membership to Alice's user.
 	s.token = "token-of-alice"
 	var alice me
 	s.request(http.MethodGet, "/v1/me", "", &alice)
@@ -158,8 +157,8 @@ func TestMembersAreGivenByAdministrators(t *testing.T) {
 	}
 }
 
-// A caller is listed the projects of which the caller, or one of its groups,
-// is a member, and an administrator all of them.
+// A caller sees the projects of which the caller or one of its groups is a
+// member, and an admin sees all of them.
 func TestProjectsOfACaller(t *testing.T) {
 	installation := install(t)
 	installation.callers = api.Callers{
@@ -171,7 +170,8 @@ func TestProjectsOfACaller(t *testing.T) {
 		Admins: []string{"platform"},
 	}
 	s := installation.supervisor()
-	// projects returns the IDs of the projects that the caller is listed.
+	// projects returns the IDs of the projects listed to the caller with
+	// token.
 	projects := func(token string) []string {
 		t.Helper()
 		s.token = token
@@ -201,7 +201,7 @@ func TestProjectsOfACaller(t *testing.T) {
 		}
 	}
 
-	// Without an identity provider every caller is an administrator.
+	// Without an identity provider, every caller is an admin.
 	nobody := install(t).supervisor()
 	first, second := nobody.create("/v1/projects", `{"name": "one"}`), nobody.create("/v1/projects", `{"name": "two"}`)
 	s = nobody

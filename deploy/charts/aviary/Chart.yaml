@@ -1,5 +1,5 @@
 apiVersion: v2
 name: aviary
-description: Aviary runs AI agent harnesses in a pod per turn on Kubernetes.
+description: Aviary runs AI agent harnesses on Kubernetes, each session in a sandbox of its own.
 type: application
 version: 0.1.0

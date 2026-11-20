@@ -24,9 +24,8 @@ import (
 
 var ctx = context.Background()
 
-// cluster returns a client of sandboxes in a cluster of a test, and the
-// sandboxes of the cluster as they are kept there. The Egress Proxy of the
-// cluster is on this machine.
+// cluster returns a Client backed by a fake clientset, and the fake's
+// Sandboxes. The Egress Proxy is at localhost.
 func cluster(t *testing.T, settings Settings) (*Client, typed.SandboxInterface) {
 	t.Helper()
 	settings.Namespace = "sessions"
@@ -66,7 +65,7 @@ func TestTheSandboxOfASessionIsMadeWithItsVolume(t *testing.T) {
 	if *pod.AutomountServiceAccountToken || *pod.EnableServiceLinks {
 		t.Errorf("the pod is %+v", pod)
 	}
-	// The agent is not root and cannot become root.
+	// The agent does not run as root and cannot become root.
 	if who := pod.SecurityContext; !*who.RunAsNonRoot || *who.RunAsUser != agentUser || *who.RunAsGroup != agentUser ||
 		*who.FSGroup != agentUser || *who.FSGroupChangePolicy != corev1.FSGroupChangeOnRootMismatch ||
 		who.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
@@ -82,8 +81,8 @@ func TestTheSandboxOfASessionIsMadeWithItsVolume(t *testing.T) {
 		len(harness.VolumeMounts) != 1 || harness.VolumeMounts[0].Name != "home" || harness.VolumeMounts[0].MountPath != "/home" {
 		t.Errorf("the harness runs as %+v", harness)
 	}
-	// What the pod sends out goes through the Egress Proxy, with the token
-	// of the session, and the harness has the token in place of a key.
+	// Outbound traffic goes through the Egress Proxy with the session token,
+	// which the harness also uses as its API key.
 	env := map[string]string{}
 	for _, variable := range harness.Env {
 		env[variable.Name] = variable.Value
@@ -102,7 +101,7 @@ func TestTheSandboxOfASessionIsMadeWithItsVolume(t *testing.T) {
 	if len(env) != 8 {
 		t.Errorf("the harness is started with %v", env)
 	}
-	// It has no DNS, and finds the proxy in its hosts file.
+	// The pod finds the proxy in its hosts file, and other lookups fail fast.
 	if aliases := pod.HostAliases; len(aliases) != 1 || !slices.Equal(aliases[0].Hostnames, []string{"localhost"}) ||
 		!net.ParseIP(aliases[0].IP).IsLoopback() || pod.DNSConfig == nil || len(pod.DNSConfig.Options) != 3 {
 		t.Errorf("the pod finds the hosts %v, with %+v", aliases, pod.DNSConfig)
@@ -116,11 +115,11 @@ func TestTheSandboxOfASessionIsMadeWithItsVolume(t *testing.T) {
 		t.Errorf("the sandbox is %+v", made.Spec)
 	}
 
-	// A session has one sandbox.
+	// Creating it again is not an error.
 	if err := c.Create(ctx, request); err != nil {
 		t.Errorf("the sandbox of a session that has one was made again: %v", err)
 	}
-	// One that is kept for a time is deleted then, with its volume.
+	// A sandbox with a lifetime is deleted with its volume when it expires.
 	kept := uuid.New()
 	if err := c.Create(ctx, Request{Session: kept, Pod: opencode, Kept: time.Hour}); err != nil {
 		t.Fatal(err)
@@ -132,7 +131,7 @@ func TestTheSandboxOfASessionIsMadeWithItsVolume(t *testing.T) {
 	if until := made.Spec.ShutdownTime; until == nil || time.Until(until.Time) < 59*time.Minute || *made.Spec.ShutdownPolicy != agents.ShutdownPolicyDelete {
 		t.Errorf("a sandbox that is kept for an hour expires at %v, after which it is %v", until, made.Spec.ShutdownPolicy)
 	}
-	// Without a class, the volume is of the default class of the cluster.
+	// Without a storage class, the volume uses the default class.
 	c, sandboxes = cluster(t, Settings{Volume: resource.MustParse("1Gi")})
 	if err := c.Create(ctx, Request{Session: session, Pod: opencode}); err != nil {
 		t.Fatal(err)
@@ -143,7 +142,7 @@ func TestTheSandboxOfASessionIsMadeWithItsVolume(t *testing.T) {
 }
 
 func TestWhatASandboxDoesIsSeenInItsStatus(t *testing.T) {
-	// condition is a condition of the status, of the third spec.
+	// condition returns a condition observed at generation 3.
 	condition := func(kind agents.ConditionType, status metav1.ConditionStatus, reason, message string) metav1.Condition {
 		return metav1.Condition{Type: string(kind), Status: status, Reason: reason, Message: message, ObservedGeneration: 3}
 	}
@@ -238,13 +237,12 @@ func TestASandboxSleepsWakesIsKeptAndIsDeleted(t *testing.T) {
 	if err := c.Suspend(ctx, name, ""); err != nil || spec().OperatingMode != agents.SandboxOperatingModeSuspended {
 		t.Errorf("the sandbox that is put to sleep is %s: %v", spec().OperatingMode, err)
 	}
-	// A turn that comes for it now waits for it to wake.
+	// Keeping a sleeping sandbox reports it as asleep.
 	turn := uuid.New()
 	if kept, err := c.Keep(ctx, name, turn, time.Time{}); err != nil || kept.State != Asleep {
 		t.Errorf("the sandbox that sleeps is kept as %+v: %v", kept, err)
 	}
-	// It wakes with the harness as the installation has it now, of which
-	// the pod has all and only what it has.
+	// Resume replaces the whole pod spec.
 	if err := c.Resume(ctx, name, Pod{Harness: Harness{Image: "harness-opencode:2"}}); err != nil || spec().OperatingMode != agents.SandboxOperatingModeRunning {
 		t.Errorf("the sandbox that is woken is %s: %v", spec().OperatingMode, err)
 	}
@@ -258,7 +256,7 @@ func TestASandboxSleepsWakesIsKeptAndIsDeleted(t *testing.T) {
 	if _, err := c.Keep(ctx, name, turn, time.Time{}); err != nil || spec().ShutdownTime != nil {
 		t.Errorf("the sandbox that is kept until it is deleted expires at %v: %v", spec().ShutdownTime, err)
 	}
-	// It is marked with the turn that it was kept for.
+	// Keep annotates the sandbox with the turn.
 	if made, err := sandboxes.Get(ctx, name, metav1.GetOptions{}); err != nil || made.Annotations["aviary.io/turn"] != turn.String() {
 		t.Errorf("the sandbox that was kept for the turn %s has the annotations %v: %v", turn, made.Annotations, err)
 	}
@@ -266,7 +264,7 @@ func TestASandboxSleepsWakesIsKeptAndIsDeleted(t *testing.T) {
 	if all, err := c.Sandboxes(ctx); err != nil || len(all) != 1 || all[0].Name != name || all[0].Session != session.String() {
 		t.Errorf("the sandboxes are %+v: %v", all, err)
 	}
-	// What is not the sandbox of a session is none of the sandboxes.
+	// Sandboxes without a session label are not listed.
 	if _, err := sandboxes.Create(ctx, &agents.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "another"}}, metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +278,8 @@ func TestASandboxSleepsWakesIsKeptAndIsDeleted(t *testing.T) {
 	if _, err := c.Sandbox(ctx, name); !errors.Is(err, ErrNotFound) {
 		t.Errorf("the sandbox that was deleted: %v", err)
 	}
-	// One that is gone can be deleted, and not put to sleep, woken or kept.
+	// Deleting a missing sandbox succeeds. The other changes return
+	// ErrNotFound.
 	if err := c.Delete(ctx, name); err != nil {
 		t.Errorf("a sandbox that was deleted could not be deleted: %v", err)
 	}
@@ -306,8 +305,8 @@ func TestASandboxIsPutToSleepOnlyAsItWasSeen(t *testing.T) {
 	if err := c.Create(ctx, Request{Session: session, Pod: opencode}); err != nil {
 		t.Fatal(err)
 	}
-	// The cluster of the test knows no versions, so it answers here as a
-	// cluster does to a change of a version that a sandbox no longer has.
+	// The fake clientset ignores resourceVersion, so return the conflict
+	// that the API server would.
 	var asked []string
 	clients.PrependReactor("patch", "sandboxes", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		patch := action.(k8stesting.PatchAction)

@@ -11,14 +11,14 @@ import (
 	"testing"
 )
 
-// add writes a new key under the name to the directory.
+// add writes a new random key named name to dir.
 func add(t *testing.T, dir, name string) {
 	t.Helper()
 	key := make([]byte, keySize)
 	if _, err := rand.Read(key); err != nil {
 		t.Fatal(err)
 	}
-	// A key that was written by hand ends with a line break.
+	// A key written by hand ends with a newline.
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(base64.StdEncoding.EncodeToString(key)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -82,8 +82,8 @@ func TestKeyIsReplaced(t *testing.T) {
 	before := load(t, dir, "k1")
 	old := seal(t, before, "old", "place")
 
-	// The key is replaced by adding one and naming it. A Supervisor that
-	// started before still runs.
+	// Rotate by adding a key and making it current, while a Supervisor that
+	// loaded the keys before keeps running.
 	add(t, dir, "k2")
 	after := load(t, dir, "k2")
 	if opened, err := after.Open(old, "place"); err != nil || opened != "old" {
@@ -97,7 +97,7 @@ func TestKeyIsReplaced(t *testing.T) {
 		t.Errorf("the Supervisor that started before opened it as %q, %v", opened, err)
 	}
 
-	// Without the key that it was sealed with, a secret does not open.
+	// A secret does not open without its key.
 	if err := os.Remove(filepath.Join(dir, "k1")); err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestKeysThatCannotBeUsed(t *testing.T) {
 		}
 	}
 
-	// What Kubernetes keeps beside the entries of a secret is no key.
+	// The entries that Kubernetes adds to a mounted secret are skipped.
 	mounted := t.TempDir()
 	add(t, mounted, "k1")
 	if err := os.Mkdir(filepath.Join(mounted, "..data"), 0o700); err != nil {

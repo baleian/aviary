@@ -11,9 +11,9 @@ import (
 	"aviary/supervisor/events"
 )
 
-// keepalive is how long an event stream stays silent before a comment line
-// is sent. The line keeps proxies from closing the connection as idle, and
-// writing it is how a client that went away is noticed.
+// keepalive is how long an event stream may stay silent before a comment is
+// sent. The comment keeps proxies from closing the connection as idle, and
+// detects clients that went away.
 const keepalive = 15 * time.Second
 
 // streamEvents sends the turn's events as server-sent events, up to the one
@@ -50,8 +50,8 @@ func (a *api) streamEvents(w http.ResponseWriter, r *http.Request) error {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
 	response := http.NewResponseController(w)
-	// From here the status is sent, so a failure can only end the stream. The
-	// client reconnects and continues after the last event it received.
+	// The status is sent, so errors only end the stream. The client
+	// reconnects and continues after the last event it received.
 	for {
 		if err := response.Flush(); err != nil {
 			return nil
@@ -82,9 +82,9 @@ func (a *api) streamEvents(w http.ResponseWriter, r *http.Request) error {
 		if len(batch) > 0 {
 			continue
 		}
-		// The stream is silent. If the turn has ended, its last event is not
-		// in the stream: it was not written, or the events are no longer
-		// kept. The event is then made from the turn's record.
+		// If the turn has ended, its last event is missing from the stream:
+		// it was not written, or it has expired. It is then made from the
+		// turn's record.
 		if turn, err = a.store.Turn(ctx, turnID); err != nil {
 			slog.ErrorContext(ctx, "read turn", "turn", turnID, "error", err)
 			return nil

@@ -1,6 +1,5 @@
-// Package storetest tests a store of the Supervisor's records: what holds of
-// every store, whatever plugin connects to its database. The tests of a
-// plugin run it against databases of the plugin's kind.
+// Package storetest is the test suite that every store.Store must pass. The
+// tests of each plugin run it against their kind of database.
 package storetest
 
 import (
@@ -15,20 +14,18 @@ import (
 	"aviary/supervisor/store"
 )
 
-// Database is the database of one test, which begins with no records.
+// Database is an empty database for one test.
 type Database interface {
-	// Open returns a store on the database, as one more Supervisor has it.
-	// The store is closed when the test ends.
+	// Open returns a new Store on the database, as one more Supervisor opens
+	// it. The Store is closed when the test ends.
 	Open(t *testing.T) store.Store
-	// Age makes the turns so much older: as if all that the database has
-	// recorded of when something happened to them, and to their requests for
-	// approval, had happened that long before it did.
+	// Age moves all recorded times of the turns and of their approval
+	// requests back by the given duration.
 	Age(t *testing.T, by time.Duration, turns ...uuid.UUID)
 }
 
-// keeps tells whether what a store has kept is the JSON that it was given.
-// It need not be the same text, and the character U+FFFD may be in the place
-// of the character U+0000, which a database may be unable to keep.
+// keeps reports whether kept is the same JSON value as given, allowing U+FFFD
+// in place of U+0000, which a database may be unable to store.
 func keeps(t *testing.T, kept json.RawMessage, given string) bool {
 	t.Helper()
 	read := func(text string) any {
@@ -42,8 +39,7 @@ func keeps(t *testing.T, kept json.RawMessage, given string) bool {
 	return reflect.DeepEqual(has, was) || reflect.DeepEqual(has, withoutNull(was))
 }
 
-// withoutNull returns the JSON value with U+FFFD in the place of every
-// character U+0000.
+// withoutNull returns the JSON value with every U+0000 replaced by U+FFFD.
 func withoutNull(value any) any {
 	switch value := value.(type) {
 	case string:
@@ -64,8 +60,7 @@ func withoutNull(value any) any {
 	return value
 }
 
-// keepsAll tells whether a store has kept each of the JSON texts that it was
-// given, in their order.
+// keepsAll reports whether kept matches given, value by value, as keeps does.
 func keepsAll(t *testing.T, kept []json.RawMessage, given ...string) bool {
 	t.Helper()
 	if len(kept) != len(given) {
@@ -79,14 +74,12 @@ func keepsAll(t *testing.T, kept []json.RawMessage, given ...string) bool {
 	return true
 }
 
-// suite is the tests of the stores of one kind.
 type suite struct {
-	// create makes a database for a test.
 	create func(t *testing.T) Database
 }
 
-// Run tests the stores on the databases that create makes. Every test has a
-// database of its own, since it counts the turns that it holds.
+// Run runs the suite, with a database from create for every test, since the
+// tests count the turns in their database.
 func Run(t *testing.T, create func(t *testing.T) Database) {
 	suite := suite{create: create}
 	for name, test := range map[string]func(*testing.T){

@@ -15,16 +15,16 @@ import (
 	"aviary/supervisor/store"
 )
 
-// endpoint is what the Supervisor tells the proxy to make of a model
-// request: the headers that it sets, and whether it takes the one with the
-// token of the session away.
+// endpoint is how the Supervisor has the proxy route a model request: the
+// headers that it sets, and whether it removes the Authorization header that
+// carries the session token.
 type endpoint struct {
 	host, secure, authorization string
 	keyless                     bool
 }
 
-// named returns the endpoint that the answer names, or nothing if it names
-// none: the proxy then passes the request on as it always did.
+// named returns the endpoint of an allowed check, or nil if the check leaves
+// the request unchanged.
 func named(t *testing.T, answer *authv3.CheckResponse) *endpoint {
 	t.Helper()
 	if code := codes.Code(answer.GetStatus().GetCode()); code != codes.OK {
@@ -50,17 +50,15 @@ func named(t *testing.T, answer *authv3.CheckResponse) *endpoint {
 	return found
 }
 
-// refusal returns the status and the reason with which the Supervisor has
-// the proxy refuse a request.
+// refusal returns the status and the body of a denied check.
 func refusal(answer *authv3.CheckResponse) (int, string) {
 	denied := answer.GetDeniedResponse()
 	return int(denied.GetStatus().GetCode()), denied.GetBody()
 }
 
-// An agent names the model that its turns use: a provider of its project and
-// a model of that provider. The harness of a turn is told the model and
-// reaches it at the Egress Proxy. The proxy is told the endpoint of the
-// provider and its key, and only for a model request.
+// An agent's model is a provider of its project and a model name. The
+// harness reaches the model through the Egress Proxy, which gets the
+// provider's endpoint and key for model requests only.
 func TestAgentNamesItsModel(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
@@ -77,8 +75,8 @@ func TestAgentNamesItsModel(t *testing.T) {
 	}
 
 	runner := aviary.given(s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID)
-	// The harness reaches the proxy, under the path of the provider's URL.
-	// It holds no key: its pod has the token of its session in place of one.
+	// The base URL is the proxy with the path of the provider's URL. The
+	// harness gets no API key; its pod sends the session token instead.
 	expected := map[string]string{
 		"AVIARY_LLM_BASE_URL": "http://127.0.0.2:8080/custom/v2",
 		"AVIARY_LLM_MODEL":    "a-model-of-the-provider",
@@ -88,28 +86,27 @@ func TestAgentNamesItsModel(t *testing.T) {
 	}
 	token := aviary.token(runner.Sandbox)
 
-	// Any Supervisor answers the proxy.
+	// Any Supervisor can answer the proxy.
 	for _, supervisor := range []*supervisor{s, aviary.supervisor()} {
 		got := named(t, supervisor.check(token, false, "/custom/v2/chat/completions?stream=true"))
 		if got == nil || *got != (endpoint{host: "api.example.com", secure: "true", authorization: "Bearer sk-the-first-key"}) {
 			t.Errorf("the proxy is told to pass a model request on to %+v", got)
 		}
 	}
-	// What a sandbox sends through the forward proxy goes where the sandbox
-	// says: the proxy is told whose request it is, and nothing of the
-	// provider.
+	// A forward proxy request is not rerouted. The metadata names its turn
+	// but no provider.
 	forward := s.check(token, true, "/custom/v2/chat/completions")
 	if got := named(t, forward); got != nil || forward.GetDynamicMetadata().GetFields()["turn"].GetStringValue() != runner.ID ||
 		forward.GetDynamicMetadata().GetFields()["provider"] != nil {
 		t.Errorf("about a request through the forward proxy, the proxy is told %+v and %v", got, forward.GetDynamicMetadata())
 	}
-	// The record of the proxy tells which provider a model request went to.
+	// For the proxy's access log, a model request names its provider.
 	model := s.check(token, false, "/custom/v2/chat/completions")
 	if told := model.GetDynamicMetadata().GetFields()["provider"].GetStringValue(); told != provider {
 		t.Errorf("of a model request, the proxy is told the provider %q, not %q", told, provider)
 	}
 
-	// The endpoint is the URL of the provider and what is below it.
+	// Only the path of the provider's URL and paths below it are allowed.
 	for path, status := range map[string]int{
 		"/custom/v2":                http.StatusOK,
 		"/custom/v2/":               http.StatusOK,
@@ -139,8 +136,7 @@ func TestAgentNamesItsModel(t *testing.T) {
 		}
 	}
 
-	// A provider is replaced while turns use it: the next request of a turn
-	// goes to the endpoint as it is then, with the key as it is then.
+	// A replaced provider applies from the next request of a running turn.
 	replace := func(body string) {
 		t.Helper()
 		if status, _ := s.request("PUT", "/v1/providers/"+provider, body, nil); status != http.StatusOK {
@@ -152,16 +148,16 @@ func TestAgentNamesItsModel(t *testing.T) {
 	if got == nil || *got != (endpoint{host: "model.example.com:8000", secure: "false", authorization: "Bearer sk-the-second-key"}) {
 		t.Errorf("after the provider was replaced, the proxy is told to pass a model request on to %+v", got)
 	}
-	// An endpoint that takes no key gets none, and not the token either.
+	// A provider without a key gets no Authorization header, not even the
+	// session token.
 	replace(`{"name": "a provider", "url": "http://model.example.com:8000"}`)
 	got = named(t, s.check(token, false, "/v1/chat/completions"))
 	if got == nil || *got != (endpoint{host: "model.example.com:8000", secure: "false", keyless: true}) {
 		t.Errorf("for a provider without a key, the proxy is told to pass a model request on to %+v", got)
 	}
 
-	// A key that the Supervisor cannot open, as one that is sealed with the
-	// keys of another installation: the request is refused, and the reason
-	// does not say more than that.
+	// A key sealed with the keys of another installation does not open. The
+	// request is denied, and the reason reveals nothing more.
 	kept, err := aviary.records.Provider(context.Background(), uuid.MustParse(provider))
 	if err != nil {
 		t.Fatal(err)
@@ -175,7 +171,7 @@ func TestAgentNamesItsModel(t *testing.T) {
 	if status, why := refusal(s.check(token, false, "/v1/chat/completions")); status != http.StatusServiceUnavailable || why != "the API key of the model provider cannot be read\n" {
 		t.Errorf("a model request whose key cannot be opened is refused with %d %q", status, why)
 	}
-	// A URL that cannot be read, which the API does not take.
+	// A URL that cannot be parsed, which the API would refuse.
 	kept.URL = "http://[::1"
 	if _, err := aviary.records.ReplaceProvider(context.Background(), kept); err != nil {
 		t.Fatal(err)
@@ -185,14 +181,14 @@ func TestAgentNamesItsModel(t *testing.T) {
 	}
 }
 
-// An agent from before agents named their models has none. Its sessions
-// take no more messages, and a turn of it that still runs reaches no model.
+// The sessions of an agent without a model take no messages, and a running
+// turn of such an agent is denied model requests.
 func TestAgentFromBeforeModels(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
 	s := aviary.supervisor()
-	// The API creates no such agent and takes no message for one, so the
-	// agent and its turn are recorded as an older release left them.
+	// The API refuses such agents and their messages, so the test writes the
+	// agent and its turn to the store.
 	ctx := context.Background()
 	agent, err := aviary.records.CreateAgent(ctx, uuid.MustParse(s.create("/v1/projects", `{"name": "test"}`)), store.Agent{Harness: "opencode"})
 	if err != nil {
@@ -203,7 +199,7 @@ func TestAgentFromBeforeModels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A Supervisor dispatches the turns that wait when it takes a message.
+	// Accepting a message makes the Supervisor dispatch the queued turns.
 	s.send(s.session(), "hello")
 	runner := aviary.given(queued.ID.String())
 	if told := runner.Environment; len(told) != 0 {
@@ -214,7 +210,7 @@ func TestAgentFromBeforeModels(t *testing.T) {
 	if status, why := refusal(s.check(token, false, "/v1/chat/completions")); status != http.StatusNotFound || why != "the agent of the turn names no model\n" {
 		t.Errorf("a model request of a turn whose agent names no model is refused with %d %q", status, why)
 	}
-	// What else the turn sends out goes on as before.
+	// Forward proxy requests are not affected.
 	if got := named(t, s.check(token, true, "/")); got != nil {
 		t.Errorf("about a request through the forward proxy, the proxy is told %+v", got)
 	}
@@ -225,7 +221,8 @@ func TestAgentFromBeforeModels(t *testing.T) {
 	}
 }
 
-// The model of an agent is a provider of the agent's own project and a name.
+// An agent's model must name a provider of the agent's own project and a
+// model name.
 func TestModelsThatAnAgentCannotName(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)

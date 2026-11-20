@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// A session is ended: its sandbox goes with all that the agent had in it,
-// what was said stays, and the session takes no more messages.
+// Ending a session deletes its sandbox and keeps its turns, and the session
+// takes no more messages.
 func TestSessionEnds(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
@@ -21,8 +21,7 @@ func TestSessionEnds(t *testing.T) {
 
 	first := s.send(session, "hello")
 	runner := aviary.given(first.ID)
-	// A session whose turn has not ended is not ended: the turn is
-	// cancelled first.
+	// A session with a running turn cannot be ended.
 	var refusal struct{ Code string }
 	if status, _ := s.request("DELETE", path, "", &refusal); status != http.StatusConflict || refusal.Code != "session_busy" {
 		t.Errorf("ending a session whose turn runs was answered with %d %s", status, refusal.Code)
@@ -41,7 +40,7 @@ func TestSessionEnds(t *testing.T) {
 	if sandboxes := aviary.service.Made(); len(sandboxes) != 0 {
 		t.Errorf("the session that was ended has left the sandboxes %v", sandboxes)
 	}
-	// Ending it again changes nothing.
+	// Ending is idempotent.
 	var again ended
 	if status, _ := s.request("DELETE", path, "", &again); status != http.StatusOK || again.EndedAt == nil || !again.EndedAt.Equal(*over.EndedAt) {
 		t.Errorf("ending the session again was answered with %d and %+v", status, again)
@@ -59,7 +58,7 @@ func TestSessionEnds(t *testing.T) {
 		t.Errorf("the turns of the session that has ended are read with %d as %+v", status, list.Turns)
 	}
 
-	// A session that has run no turn has no sandbox, and is ended too.
+	// A session without a sandbox can be ended too.
 	fresh := s.session()
 	if status, _ := s.request("DELETE", "/v1/sessions/"+fresh, "", &over); status != http.StatusOK || over.EndedAt == nil {
 		t.Errorf("ending a session that has run no turn was answered with %d and %+v", status, over)

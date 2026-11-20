@@ -1,8 +1,6 @@
-# The Egress Proxy as the chart sets it up, once for each file of values in
-# this directory. `make test-proxy` writes the configuration that the chart
-# makes of the values to .out/proxy and names the image of the chart. The
-# only authority that the proxies trust is the certificate of the tests'
-# server.
+# One Egress Proxy for each values file in this directory, configured as the
+# chart renders it. `make test-proxy` writes the configurations to .out/proxy
+# and sets ENVOY_IMAGE to the chart's Envoy image.
 services:
   listed: &proxy
     image: ${ENVOY_IMAGE}

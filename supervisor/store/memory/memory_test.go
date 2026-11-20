@@ -11,8 +11,7 @@ import (
 	"aviary/supervisor/store/storetest"
 )
 
-// database is a store in memory as the database of a test: its Supervisors
-// share the one store.
+// database is a storetest.Database whose Supervisors share one Store.
 type database struct{ records *memory.Store }
 
 func (d database) Open(*testing.T) store.Store { return d.records }

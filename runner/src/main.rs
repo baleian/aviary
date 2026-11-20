@@ -1,24 +1,19 @@
-//! The runner of a session. It runs in the sandbox of the session, where it
-//! takes the turns of the session over HTTP, one at a time, runs each on the
-//! harness and keeps what the agent does as the numbered events of the turn.
+//! The runner of a session. It runs in the session's sandbox, takes turns
+//! over HTTP one at a time, drives the harness over the Agent Client Protocol
+//! (ACP), and records what the agent does as the numbered events of each turn.
 //!
-//!   PUT  /turns/{turn}                       starts the turn
-//!   GET  /turns/{turn}/events                the events of the turn, as they come
-//!   POST /turns/{turn}/cancel                tells the turn to stop
-//!   PUT  /turns/{turn}/approvals/{request}   answers a request for approval
+//!   PUT  /turns/{turn}                       starts a turn
+//!   GET  /turns/{turn}/events                streams the turn's events
+//!   POST /turns/{turn}/cancel                cancels the turn
+//!   PUT  /turns/{turn}/approvals/{request}   answers an approval request
 //!
-//! A request may come twice: its sender sends it again when it does not know
-//! what came of it. A turn that the runner has is not started again, and a
-//! turn is told once to stop however often it is told. What comes from the
-//! pod of the runner, where the agent is, is refused: the agent could answer
-//! its own requests for approval.
+//! Every request is idempotent, so a caller can retry one whose outcome it
+//! does not know. Requests from the runner's own pod are refused, so that the
+//! agent cannot answer its own approval requests.
 //!
-//! The harness is started for the first turn and stays when a turn has ended,
-//! with what it knows of the conversation.
-//!
-//! A session that is not at work is put to sleep: its pod goes, and its home
-//! stays. The runner keeps the ID of the harness's session in the home, and
-//! the runner of the next pod of the session continues that session.
+//! The harness is started for the first turn and kept for the turns after it.
+//! The runner stores the harness session ID in the home, which outlives the
+//! pod, so the runner in the session's next pod resumes the same session.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -66,21 +61,19 @@ const MAX_TOOL_OUTPUT: &str = "AVIARY_MAX_TOOL_OUTPUT_BYTES";
 const INSTRUCTIONS_FILE: &str = "AVIARY_INSTRUCTIONS_FILE";
 const ADDRESS: &str = "AVIARY_RUNNER_ADDRESS";
 
-/// Where the runner listens when it is not told where.
+/// The listen address if `AVIARY_RUNNER_ADDRESS` is not set.
 const LISTENS: &str = "0.0.0.0:8700";
 
-/// The events with which a turn ends.
+// The events that end a turn.
 const FINISHED: &str = "finished";
 const FAILED: &str = "failed";
-/// The events of a request for approval: that the harness asks, and that it
-/// has its answer.
+
 const REQUESTED: &str = "approval.requested";
 const RESOLVED: &str = "approval.resolved";
 
 fn main() -> Result<(), Box<dyn Error>> {
-    // The runtime has a thread besides this one. On tokio's single-threaded
-    // runtime, the wait for the harness's process polls without a pause, and
-    // the runner keeps a CPU busy for as long as the harness is there.
+    // Not the current-thread runtime: on it, waiting for the harness process
+    // busy-polls and keeps a CPU busy for as long as the harness runs.
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
@@ -88,17 +81,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         .block_on(serve())
 }
 
-/// Listens for the turns and runs them until the runner is ended.
+/// Serves the HTTP API and runs turns until SIGTERM.
 async fn serve() -> Result<(), Box<dyn Error>> {
     let address = env::var(ADDRESS).unwrap_or_else(|_| LISTENS.to_owned());
     let listener = TcpListener::bind(&address).await?;
-    // Whoever started the runner on a port that it was left to choose reads
-    // here which one it is.
+    // Whoever starts the runner on port 0 reads the address from this line.
     let listens = listener.local_addr()?;
     println!("listening on {listens}");
-    // The pod of a sandbox that is put to sleep is told to end. The runner
-    // is the first process of the pod, which is sent no signal that it does
-    // not take, and ends by itself, with its harness.
+    // As PID 1 of its container, the runner must handle SIGTERM itself to
+    // stop when its pod is deleted.
     let mut ended = signal(SignalKind::terminate())?;
     let (orders, ordered) = mpsc::unbounded();
     let runner = Arc::new(Runner {
@@ -112,9 +103,7 @@ async fn serve() -> Result<(), Box<dyn Error>> {
         .route("/turns/{turn}/cancel", post(cancel))
         .route("/turns/{turn}/approvals/{request}", put(answer))
         .with_state(runner.clone());
-    // A runner that listens on the loopback interface alone is reached from
-    // its own machine only, as its tests reach it. In a sandbox it listens on
-    // every interface, for the Supervisor.
+    // On a loopback address, as in the tests, every caller is local.
     if !listens.ip().is_loopback() {
         routes = routes.layer(middleware::from_fn(from_elsewhere));
     }
@@ -127,9 +116,8 @@ async fn serve() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Whether a request comes from the pod of the runner. A program in the pod
-/// reaches the runner from the loopback address, or from the address that it
-/// reaches it at: the address of the pod.
+/// Whether a connection comes from the runner's own pod, that is, from a
+/// loopback address or from the pod's own address.
 #[derive(Clone, Copy)]
 struct Ours(bool);
 
@@ -138,13 +126,13 @@ impl Connected<IncomingStream<'_, TcpListener>> for Ours {
         let remote = stream.remote_addr().ip().to_canonical();
         Ours(match stream.io().local_addr() {
             Ok(local) => remote.is_loopback() || local.ip().to_canonical() == remote,
-            // One whose address the runner does not know may be of the pod.
+            // Fail closed.
             Err(_) => true,
         })
     }
 }
 
-/// Refuses what comes from the pod of the runner.
+/// Refuses requests from the runner's own pod.
 async fn from_elsewhere(
     ConnectInfo(Ours(ours)): ConnectInfo<Ours>,
     request: Request,
@@ -160,75 +148,71 @@ async fn from_elsewhere(
     next.run(request).await
 }
 
-/// What the runner has of the session.
+/// The state shared by the HTTP handlers and the harness loop.
 struct Runner {
-    /// The turn that runs, or the last one that ran.
+    /// The running turn, or the last one.
     turn: Mutex<Option<Turn>>,
-    /// Tells those who read the events of the turn that there is more.
+    /// Notifies event readers that the turn has changed.
     changed: watch::Sender<()>,
-    /// Gives the turns to where the harness is talked to.
+    /// Sends started turns to the harness loop.
     orders: mpsc::UnboundedSender<Order>,
 }
 
 struct Turn {
     id: String,
-    /// The events of the turn. The number of an event is its place, from 1.
+    /// An event's number is its index plus one.
     events: Vec<Event>,
     ended: bool,
-    /// Carries what the turn is told to where the harness is talked to, in
-    /// the order in which it was told.
+    /// Sends cancellations and answers to the harness loop, in order.
     tell: mpsc::UnboundedSender<Told>,
 }
 
 #[derive(Clone)]
 struct Event {
     name: &'static str,
-    /// The JSON of what the event tells.
+    /// Serialized JSON.
     data: String,
 }
 
-/// A turn on its way to the harness.
+/// A started turn, on its way to the harness loop.
 struct Order {
     start: Start,
     told: mpsc::UnboundedReceiver<Told>,
 }
 
-/// What a turn is started with.
+/// The request body that starts a turn.
 #[derive(Deserialize)]
 struct Start {
-    /// The message that the user sent.
+    /// The user's message.
     text: String,
-    /// What the agent is told before every turn, in the words of whoever set
-    /// the agent up.
+    /// The agent's instructions, written to the instructions file before
+    /// every turn.
     #[serde(default)]
     instructions: String,
-    /// "ask" for an agent whose harness is set up to ask before it acts: a
-    /// person answers it. Any other harness is allowed what it asks for,
-    /// once.
+    /// "ask" to pass the harness's approval requests on to a person.
+    /// Otherwise each request is allowed once.
     #[serde(default)]
     approval: String,
-    /// What the harness is started with besides the environment of the
-    /// runner: the model of the agent, for example. The harness is started
-    /// for the first turn of a session, and the turns after it tell the same.
+    /// Variables added to the runner's environment for the harness, such as
+    /// the agent's model. Only the turn that starts the harness uses them.
     #[serde(default)]
     environment: BTreeMap<String, String>,
 }
 
-/// The answer of a person to a request for approval.
+/// The request body that answers an approval request.
 #[derive(Deserialize)]
 struct Answer {
-    /// The ID of one of the options of the request.
     option_id: String,
 }
 
-/// What the turn is told while it runs.
+/// A message from an HTTP handler to the running turn.
 enum Told {
     Stop,
     Answer { request: String, option_id: String },
 }
 
 impl Runner {
-    /// Adds an event to the turn that runs.
+    /// Appends an event to the running turn, if there is one.
     fn emit(&self, name: &'static str, data: &Value) {
         let mut turn = self.turn.lock().expect("the turn");
         if let Some(turn) = turn.as_mut().filter(|turn| !turn.ended) {
@@ -242,16 +226,16 @@ impl Runner {
         self.changed.send_replace(());
     }
 
-    /// Ends the turn that runs, if one does, as failed.
+    /// Ends the running turn, if there is one, with a failed event.
     fn fail(&self, failure: &Failure) {
         self.emit(FAILED, &failure.to_json());
     }
 
-    /// The event of the turn that follows the one with the number.
+    /// Returns the event of turn `id` that follows event number `after`.
     fn next(&self, id: &str, after: usize) -> Next {
         let turn = self.turn.lock().expect("the turn");
         match turn.as_ref().filter(|turn| turn.id == id) {
-            // The runner has another turn by now, and no longer this one.
+            // The runner has moved on to another turn.
             None => Next::Over,
             Some(turn) => match turn.events.get(after) {
                 Some(event) => Next::Event(event.clone()),
@@ -261,14 +245,13 @@ impl Runner {
         }
     }
 
-    /// Tells the turn, if it is the one that runs.
+    /// Sends `told` to turn `id`, or returns 404 if it is not the current turn.
     fn tell(&self, id: &str, told: Told) -> StatusCode {
         let turn = self.turn.lock().expect("the turn");
         match turn.as_ref().filter(|turn| turn.id == id) {
             None => StatusCode::NOT_FOUND,
             Some(turn) => {
-                // A turn that has ended takes nothing more, which is fine:
-                // it was told too late.
+                // Fails only if the turn has ended, which is not an error.
                 let _ = turn.tell.unbounded_send(told);
                 StatusCode::NO_CONTENT
             }
@@ -278,7 +261,7 @@ impl Runner {
 
 enum Next {
     Event(Event),
-    /// The turn has not ended, and has no more events for now.
+    /// No new event yet, and the turn has not ended.
     Later,
     Over,
 }
@@ -305,10 +288,9 @@ async fn start(
     StatusCode::NO_CONTENT
 }
 
-/// The events of a turn as server-sent events: the ID of each is its number.
-/// A reader that was cut off asks again with the last number that it has, in
-/// Last-Event-ID, and is sent the ones after it. The answer ends with the
-/// turn.
+/// Streams the turn's events as server-sent events, with the event number as
+/// the ID. A client that reconnects with Last-Event-ID gets the events after
+/// that number. The stream ends when the turn does.
 async fn events(
     State(runner): State<Arc<Runner>>,
     Named(id): Named<String>,
@@ -334,8 +316,8 @@ async fn events(
         let id = id.clone();
         async move {
             loop {
-                // What changes from here on is seen below, also when it
-                // changes before the wait for it begins.
+                // Marks the current value as seen before reading, so that no
+                // change is missed.
                 changed.borrow_and_update();
                 match runner.next(&id, after) {
                     Next::Event(event) => {
@@ -367,29 +349,29 @@ async fn answer(
     runner.tell(&id, Told::Answer { request, option_id })
 }
 
-/// Why the runner could not finish a turn.
+/// The reason a turn failed, as reported in its failed event.
 #[derive(Debug)]
 struct Failure {
-    /// One of harness_error, resume_failed, runner_error.
+    /// harness_error, resume_failed or runner_error.
     reason: &'static str,
     message: String,
 }
 
 impl Failure {
-    /// The harness could not be started, or it answered with an error. That
-    /// is also how a harness reports that the model endpoint refused it.
+    /// The harness could not be started or returned an error, which includes
+    /// errors of the model provider.
     fn harness(error: impl Display) -> Self {
         Self::new("harness_error", error)
     }
 
-    /// The harness answered with an error. What it says of the error is for
-    /// a person to read. The data that it adds is for a program.
+    /// The harness returned an error. Only the message is kept: the error
+    /// data is meant for programs, not people.
     fn answered(error: agent_client_protocol::Error) -> Self {
         Self::harness(error.message)
     }
 
-    /// The harness could not continue its session: what it had kept of the
-    /// conversation is gone or cannot be read.
+    /// The harness could not resume its session, for example because its
+    /// stored state is gone or unreadable.
     fn forgotten(error: agent_client_protocol::Error) -> Self {
         Self::new(
             "resume_failed",
@@ -400,14 +382,13 @@ impl Failure {
         )
     }
 
-    /// The runner is not set up as it should be.
+    /// An error of the runner itself, such as a missing variable.
     fn runner(error: impl Display) -> Self {
         Self::new("runner_error", error)
     }
 
     fn new(reason: &'static str, error: impl Display) -> Self {
-        // What a harness says of its failure may be long, and is kept with
-        // the turn.
+        // Harness errors can be long, and are stored with the turn.
         let message = error.to_string().chars().take(2000).collect();
         Self { reason, message }
     }
@@ -425,9 +406,9 @@ impl Display for Failure {
 
 impl Error for Failure {}
 
-/// Runs the turns on the harness as they come. A harness that is lost takes
-/// the turn that it ran with it, and the next turn starts another, which
-/// continues the session of the one before.
+/// Runs turns as they arrive. When the harness exits or fails, the turn it
+/// was running fails, and the next turn starts a new harness that resumes the
+/// session.
 async fn run_turns(runner: &Arc<Runner>, mut orders: mpsc::UnboundedReceiver<Order>) {
     let mut session = None;
     while let Some(order) = orders.next().await {
@@ -438,21 +419,20 @@ async fn run_turns(runner: &Arc<Runner>, mut orders: mpsc::UnboundedReceiver<Ord
     }
 }
 
-/// Starts the harness for the turn and runs that turn and the ones after it,
-/// for as long as the harness is there. It returns when the harness is lost
-/// or a turn fails, with why.
+/// Starts a harness and runs turns on it, beginning with `first`, until the
+/// harness exits or a turn fails.
 async fn run_harness(
     runner: &Arc<Runner>,
     first: Order,
     orders: &mut mpsc::UnboundedReceiver<Order>,
     session: &mut Option<SessionId>,
 ) -> Result<(), Failure> {
-    // The session that a runner of an earlier pod of the session left.
+    // The harness session of an earlier pod, if any.
     if session.is_none() {
         *session = remembered()?;
     }
-    // The runner starts the harness itself, to know when it has ended: a
-    // harness may end between two turns, when nothing is asked of it.
+    // Spawned here rather than by AcpAgent, to notice a harness that exits
+    // between turns.
     let command = variable(HARNESS_COMMAND)?;
     let command = AcpAgent::from_str(&command)
         .map_err(Failure::harness)?
@@ -474,18 +454,17 @@ async fn run_harness(
     futures::pin_mut!(ended);
     let gone = || agent_client_protocol::Error::internal_error().data("the harness has ended");
     let cwd = env::current_dir().map_err(Failure::runner)?;
-    // The longest text of a tool call that is reported as it is. Without the
-    // setting, or with zero, all are.
+    // Unset or 0 means no limit.
     let longest = env::var(MAX_TOOL_OUTPUT)
         .ok()
         .and_then(|bytes| bytes.parse::<usize>().ok())
         .filter(|bytes| *bytes > 0);
     let asks = first.start.approval == "ask";
-    // Set when the harness could not continue its session.
+    // Set when session/resume fails.
     let forgotten = Cell::new(false);
-    // Set when the runner could not make a turn ready for the harness.
+    // The runner's own failure, if it ends the connection.
     let unready = Cell::new(None);
-    // The requests of the harness for approval.
+    // Approval requests to pass on to a person.
     let (asked, mut asking) = mpsc::unbounded();
     let mut next = Some(first);
 
@@ -508,7 +487,7 @@ async fn run_harness(
                 if !asks {
                     return responder.respond(RequestPermissionResponse::new(allow_once(&request)));
                 }
-                // The harness waits for the answer, which comes later.
+                // Answered later, by the turn loop.
                 asked.unbounded_send((request, responder)).map_err(|_| {
                     agent_client_protocol::Error::internal_error().data("the harness is lost")
                 })
@@ -562,10 +541,9 @@ async fn run_harness(
                     "started",
                     &json!({"harness_session_id": session_id.to_string()}),
                 );
-                // A turn that was told to stop while the harness was made
-                // ready is not given to the harness. A harness that is told
-                // to stop in the moment in which it gets the message may
-                // fail.
+                // A turn cancelled before its prompt is sent is never sent: a
+                // harness may fail if it is cancelled just as it receives the
+                // prompt.
                 let mut stopping = false;
                 while let Ok(told) = told.try_recv() {
                     stopping |= matches!(told, Told::Stop);
@@ -582,29 +560,25 @@ async fn run_harness(
                     .block_task()
                     .fuse();
                 futures::pin_mut!(prompt);
-                // The requests that wait for their answers. They wait for as
-                // long as the turn runs.
+                // Approval requests wait for an answer for as long as the
+                // turn runs.
                 let mut waiting: Vec<Asked> = Vec::new();
                 let mut requests = 0;
-                // The harness answers the prompt when the turn has ended,
-                // also when it was told to stop.
+                // The prompt returns when the turn ends, also after a
+                // cancellation.
                 let outcome = loop {
                     futures::select! {
-                        // A harness that ends in the middle of the turn
-                        // leaves the prompt without its answer, which is an
-                        // error here too.
+                        // Fails if the harness exits mid-turn.
                         outcome = prompt => break outcome?,
                         told = told.select_next_some() => match told {
                             Told::Stop => {
-                                // The harness is told once: the order may
-                                // come again.
+                                // A turn may be cancelled more than once.
                                 if !stopping {
                                     harness.send_notification(CancelNotification::new(session_id.clone()))?;
                                     stopping = true;
                                 }
-                                // A harness that is told to stop is owed the
-                                // answer that the turn was cancelled to what
-                                // it has asked.
+                                // ACP requires pending permission requests
+                                // to be answered as cancelled.
                                 for asked in waiting.drain(..) {
                                     asked.responder.respond(RequestPermissionResponse::new(
                                         RequestPermissionOutcome::Cancelled,
@@ -612,8 +586,8 @@ async fn run_harness(
                                     runner.emit(RESOLVED, &resolved(&asked.id, "cancelled", None));
                                 }
                             }
-                            // An answer may come twice, or late, or be none
-                            // of the answers that the harness takes.
+                            // Answers that are repeated, late, or not among
+                            // the request's options are ignored.
                             Told::Answer { request, option_id } => {
                                 let answered = waiting.iter().position(|asked| {
                                     asked.id == request && asked.option(&option_id).is_some()
@@ -676,9 +650,8 @@ async fn run_harness(
         })
 }
 
-/// Writes the agent's instructions to the file that the harness reads them
-/// from, which its image names. It is written before every turn, and for an
-/// agent without instructions too.
+/// Writes the agent's instructions, even empty ones, to the file that the
+/// image names in `AVIARY_INSTRUCTIONS_FILE`.
 fn instruct(instructions: &str) -> Result<(), Failure> {
     let Ok(file) = env::var(INSTRUCTIONS_FILE) else {
         if instructions.is_empty() {
@@ -695,14 +668,11 @@ fn instruct(instructions: &str) -> Result<(), Failure> {
     fs::write(file, instructions).map_err(Failure::runner)
 }
 
-/// Where the runner keeps the ID of the harness's session: in the home of
-/// the session, which outlives the pod.
 fn session_file() -> Result<PathBuf, Failure> {
     Ok(Path::new(&variable("HOME")?).join(".aviary/harness-session"))
 }
 
-/// The session of the harness that a runner of the session left, if one
-/// did.
+/// Returns the stored harness session ID, if any.
 fn remembered() -> Result<Option<SessionId>, Failure> {
     match fs::read_to_string(session_file()?) {
         Ok(id) => Ok(Some(SessionId::new(id))),
@@ -711,9 +681,8 @@ fn remembered() -> Result<Option<SessionId>, Failure> {
     }
 }
 
-/// Keeps the ID of the harness's session for the runners of the later pods
-/// of the session. The file is written beside its place and then put there,
-/// so that none is read that was written in part.
+/// Stores the harness session ID atomically, by writing a temporary file and
+/// renaming it.
 fn remember(session: &SessionId) -> Result<(), Failure> {
     let file = session_file()?;
     if let Some(directory) = file.parent() {
@@ -728,7 +697,7 @@ fn variable(name: &str) -> Result<String, Failure> {
     env::var(name).map_err(|_| Failure::runner(format!("{name} is not set")))
 }
 
-/// A JSON object of the fields that have a value.
+/// Builds a JSON object, leaving out the fields whose value is `None`.
 fn object<const N: usize>(fields: [(&str, Option<Value>); N]) -> Value {
     Value::Object(
         fields
@@ -738,12 +707,12 @@ fn object<const N: usize>(fields: [(&str, Option<Value>); N]) -> Value {
     )
 }
 
-/// Turns an update from the harness into an event of the turn: its name and
-/// what it tells. Updates that are not events of a turn are dropped.
+/// Converts a session update of the harness into the name and data of a turn
+/// event. Returns `None` for updates that are not reported.
 fn event(update: SessionUpdate, longest: Option<usize>) -> Option<(&'static str, Value)> {
-    // What a tool was called with and what it returned can be megabytes,
-    // the output of a command for example. The harness keeps all of it for
-    // the model. What is reported is for a person to look at.
+    // Tool input and output can be megabytes, such as a command's output.
+    // The events are for people to read; the harness keeps the full text for
+    // the model.
     let cut = |json| cut(json, longest);
     match update {
         SessionUpdate::AgentMessageChunk(chunk) => Some(("message.delta", delta(chunk)?)),
@@ -781,8 +750,8 @@ fn event(update: SessionUpdate, longest: Option<usize>) -> Option<(&'static str,
     }
 }
 
-/// What the harness says of a tool call that it has told of before, or that
-/// it asks about. Only what it says is there.
+/// Returns the data of a tool call update, which also describes the tool call
+/// of an approval request. Only the fields that the harness sets are included.
 fn tool_update(update: ToolCallUpdate, longest: Option<usize>) -> Value {
     let cut = |json| cut(json, longest);
     object([
@@ -802,16 +771,17 @@ fn tool_update(update: ToolCallUpdate, longest: Option<usize>) -> Value {
     ])
 }
 
-/// A request of the harness for approval that waits for its answer.
+/// An approval request that waits for an answer.
 struct Asked {
-    /// Its name among the requests of the turn.
+    /// Numbered from 1 within the turn.
     id: String,
     request: RequestPermissionRequest,
     responder: Responder<RequestPermissionResponse, V1>,
 }
 
 impl Asked {
-    /// The answer that gives the harness the option, if the harness takes it.
+    /// Returns the outcome that selects option `id`, or `None` if the request
+    /// does not offer it.
     fn option(&self, id: &str) -> Option<RequestPermissionOutcome> {
         let option = self
             .request
@@ -824,7 +794,7 @@ impl Asked {
     }
 }
 
-/// What a harness asks approval for.
+/// Returns the data of an approval.requested event.
 fn requested(id: &str, request: &RequestPermissionRequest, longest: Option<usize>) -> Value {
     json!({
         "id": id,
@@ -841,9 +811,9 @@ fn requested(id: &str, request: &RequestPermissionRequest, longest: Option<usize
     })
 }
 
-/// How a request for approval was answered to the harness. The outcome is
-/// selected when the harness was given the option that a person chose, and
-/// cancelled when the turn was told to stop before anybody answered.
+/// Returns the data of an approval.resolved event. The outcome is "selected",
+/// with the option that a person chose, or "cancelled" if the turn was
+/// cancelled before anyone answered.
 fn resolved(id: &str, outcome: &str, option_id: Option<&str>) -> Value {
     object([
         ("id", Some(json!(id))),
@@ -852,8 +822,8 @@ fn resolved(id: &str, outcome: &str, option_id: Option<&str>) -> Value {
     ])
 }
 
-/// A piece of a message: its text, and the ID of the message if the harness
-/// gives one. Other content, such as images, is not passed on.
+/// Returns the data of a message or thought chunk. Only text is reported:
+/// other content, such as images, returns `None`.
 fn delta(chunk: ContentChunk) -> Option<Value> {
     match chunk.content {
         ContentBlock::Text(content) => Some(object([
@@ -869,7 +839,7 @@ fn delta(chunk: ContentChunk) -> Option<Value> {
     }
 }
 
-/// The name that the harness protocol gives a value, such as "in_progress".
+/// Returns the ACP name of a value, such as "in_progress".
 fn name(value: &impl Serialize) -> String {
     match serde_json::to_value(value) {
         Ok(Value::String(name)) => name,
@@ -877,8 +847,8 @@ fn name(value: &impl Serialize) -> String {
     }
 }
 
-/// Cuts the texts in a value that are longer than longest bytes, and says
-/// in each how much is missing.
+/// Truncates the strings in `json` that are longer than `longest` bytes, and
+/// appends to each how many bytes were cut. `None` means no limit.
 fn cut(json: Value, longest: Option<usize>) -> Value {
     let Some(longest) = longest else {
         return json;
@@ -924,7 +894,6 @@ fn allow_once(request: &RequestPermissionRequest) -> RequestPermissionOutcome {
 mod tests {
     use super::*;
 
-    /// The update that a harness sends as the JSON.
     fn update(json: Value) -> SessionUpdate {
         serde_json::from_value(json).expect("an update of a session")
     }
@@ -937,7 +906,7 @@ mod tests {
         );
         assert_eq!(cut(json!("0123"), Some(4)), json!("0123"));
         assert_eq!(cut(json!("0123456789"), None), json!("0123456789"));
-        // A text is cut between two characters, not within one.
+        // At a character boundary.
         assert_eq!(
             cut(json!("가나다"), Some(4)),
             json!("가... [6 more bytes cut]")
@@ -1026,7 +995,6 @@ mod tests {
             "status": "completed",
             "rawOutput": {"output": output, "exit_code": 0},
         }));
-        // An update tells only what has changed.
         assert_eq!(
             event(update, Some(15)),
             Some((
@@ -1075,7 +1043,6 @@ mod tests {
             ],
         }))
         .expect("a request for permission");
-        // What the tool is called with is cut as in the events of the turn.
         let note = format!("{}... [100 more bytes cut]", "x".repeat(100));
         assert_eq!(
             requested("3", &request, Some(100)),
@@ -1123,7 +1090,7 @@ mod tests {
             }
             other => panic!("the request was answered with {other:?}"),
         }
-        // A harness that does not offer to allow it once is not allowed more.
+        // Never allows more than once.
         let not_offered = ask(json!([
             {"optionId": "always", "name": "Always", "kind": "allow_always"},
         ]));

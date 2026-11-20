@@ -1,7 +1,6 @@
-# The API of Aviary at a port of every node of the cluster. The e2e reaches
-# it there, as a client of Aviary does, and not through the API server of the
-# cluster: the API server keeps the Authorization header of a request to
-# itself, so a caller could not tell Aviary who they are.
+# Exposes the Aviary API on a node port, where the e2e reaches it as a client
+# would. The API server proxy does not pass on the Authorization header, so
+# the tests could not authenticate through it.
 apiVersion: v1
 kind: Service
 metadata:

@@ -6,9 +6,7 @@ metadata:
     app.kubernetes.io/name: aviary
     app.kubernetes.io/component: supervisor
 ---
-# The Supervisor has the sandboxes of the sessions made in the runtime
-# namespace, puts them to sleep, wakes them and deletes them. It has no
-# access to anything else in the cluster.
+# The Supervisor manages the Sandboxes of the sessions, and nothing else.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

@@ -13,9 +13,8 @@ import (
 	"aviary/supervisor/secret"
 )
 
-// This build connects to the kinds of database, of event log, of secret
-// store and of identity provider that its plugins are for, and tells of them
-// when it is given another.
+// An unsupported scheme or kind is refused with an error that lists the
+// supported ones and does not reveal credentials.
 func TestPluginsOfThisBuild(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv("AVIARY_DATABASE_URL", "another://user:secret@host/records")
@@ -27,7 +26,7 @@ func TestPluginsOfThisBuild(t *testing.T) {
 		!strings.Contains(err.Error(), "valkey, valkeys, redis, rediss") || strings.Contains(err.Error(), "secret") {
 		t.Errorf("an event log that the build has no plugin for was opened with: %v", err)
 	}
-	// An address that the plugin of its scheme cannot use.
+	// A supported scheme with a URL that the plugin cannot parse.
 	if _, err := events.Open("valkey://user:secret@host:port", plugins.EventLogs...); err == nil || strings.Contains(err.Error(), "secret") {
 		t.Errorf("an event log with a port that is none was opened with: %v", err)
 	}

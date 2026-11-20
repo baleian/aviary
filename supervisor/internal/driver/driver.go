@@ -1,5 +1,5 @@
-// Package driver has each turn run in the sandbox of its session, and
-// records what the runner in the sandbox tells of the turn.
+// Package driver dispatches queued turns, runs each in the sandbox of its
+// session and records the events that the sandbox's runner reports.
 package driver
 
 import (
@@ -24,28 +24,25 @@ import (
 )
 
 const (
-	// recheck is how often the driver looks for queued turns without being
-	// woken, which retries a dispatch that failed.
+	// recheck is how often queued turns are dispatched without a Wake, which
+	// retries a failed dispatch.
 	recheck = 5 * time.Second
-	// Sweep is how often a Supervisor looks at the turns that run: it says
-	// again that it follows its own, takes up those that no Supervisor
-	// follows any more, and looks for what the runners are to be told and
-	// no Supervisor announced.
+	// Sweep is the default interval between sweeps.
 	Sweep = 10 * time.Second
-	// CancelGrace is how long a turn that was asked to stop is given to end
-	// by itself before its sandbox is put to sleep.
+	// CancelGrace is the default time that a cancelled turn has to stop by
+	// itself before its sandbox is put to sleep.
 	CancelGrace = 30 * time.Second
 )
 
-// The labels that a sandbox is made with, besides that of its session, for
-// one who looks at the sandboxes to know whose each is.
+// Labels that identify the agent and project of a sandbox, besides its
+// session label.
 const (
 	labelAgent   = "aviary.io/agent"
 	labelProject = "aviary.io/project"
 )
 
-// Sandboxes are where the sessions run: each in a sandbox of its own, which
-// has the volume of the session.
+// Sandboxes manages the sandbox of each session. It is implemented by
+// *sandbox.Client.
 type Sandboxes interface {
 	Create(ctx context.Context, request sandbox.Request) error
 	Sandbox(ctx context.Context, name string) (sandbox.Sandbox, error)
@@ -59,72 +56,65 @@ type Sandboxes interface {
 type Config struct {
 	// Harnesses are the harnesses that agents can use, by name.
 	Harnesses map[string]sandbox.Harness
-	// Models is where the harnesses reach their models: the Egress Proxy,
-	// which passes a request on to the model endpoint of its turn. Its path
-	// is not used: a harness reaches the endpoint of its turn under the path
-	// of the endpoint's own URL.
+	// Models is the Egress Proxy's endpoint for model requests. Its path is
+	// ignored: each turn uses the path of its provider's URL.
 	Models *url.URL
-	// Token returns the token of a session, which the pod of its sandbox
-	// sends with what leaves it.
+	// Token returns the token that identifies a session to the Egress Proxy.
 	Token func(session uuid.UUID) (string, error)
-	// Idle is how long the sandbox of a session may be idle before it is
-	// put to sleep: no turn of the session runs. It is woken for the next
-	// turn. Zero is never to put it to sleep.
+	// Idle is how long a session may go without a running turn before its
+	// sandbox is put to sleep. Zero disables sleeping.
 	Idle time.Duration
-	// Retention is for how long the sandbox of a session is kept after a
-	// turn of the session was last given to it. A session that is not used
-	// for longer has ended: its sandbox is deleted, with what the agent
-	// had in it. Zero is to keep it until the session is ended.
+	// Retention is how long a sandbox is kept after a turn was last given to
+	// it. After that it is deleted with its volume, and the session ends.
+	// Zero keeps it until the session is ended.
 	Retention time.Duration
-	// MaxStartup is how long a turn may take until its harness has the
-	// message: the sandbox of its session may have to be made first. A turn
-	// that takes longer fails. Zero is no limit.
+	// MaxStartup limits the time from dispatch until the harness has the
+	// message, which includes creating or waking the sandbox. Zero means no
+	// limit.
 	MaxStartup time.Duration
-	// MaxTurn is how long a turn may run.
+	// MaxTurn limits the time a turn runs after it is dispatched.
 	MaxTurn time.Duration
-	// MaxQueueWait is how long a turn may wait to run. A turn that waits
-	// longer ends as expired. Zero is no limit.
+	// MaxQueueWait limits the time a turn may be queued before it expires.
+	// Zero means no limit.
 	MaxQueueWait time.Duration
-	// MaxQueuedTurns is the most turns that may wait to run. A message that
-	// would make one more is refused. Zero is no limit.
+	// MaxQueuedTurns limits the number of queued turns. Further messages are
+	// refused. Zero means no limit.
 	MaxQueuedTurns int
-	// MaxConcurrentTurns is the most turns that run at once. The turns
-	// beyond it wait in the order in which they were accepted.
+	// MaxConcurrentTurns limits the number of running turns. Further turns
+	// are queued in the order in which they are accepted.
 	MaxConcurrentTurns int
-	// Sweep is how often the turns that run are looked at, and CancelGrace
-	// how long a turn may take to stop. Zero is Sweep and CancelGrace.
+	// Sweep and CancelGrace default to the constants of the same name.
 	Sweep       time.Duration
 	CancelGrace time.Duration
 }
 
 type Driver struct {
 	config Config
-	// id names this Supervisor among those that follow turns.
+	// id identifies this Supervisor in the leases of the turns it follows.
 	id        uuid.UUID
 	sandboxes Sandboxes
 	store     store.Store
 	events    *events.Streams
 	metrics   *metrics.Metrics
 	wake      chan struct{}
-	// moved is set when a turn left the queue without being dispatched.
-	moved atomic.Bool
-	// sweeps counts the sweeps, of which only some look at the sandboxes.
+	// moved is set when a turn leaves the queue without being dispatched.
+	moved  atomic.Bool
 	sweeps int
-	// following are the turns that this Supervisor follows.
+
 	mu        sync.Mutex
 	following map[uuid.UUID]*orders
 }
 
-// orders are what the one who follows a turn is told.
+// orders signal the goroutine that follows a turn.
 type orders struct {
-	// leave ends the following: another Supervisor follows the turn.
+	// leave stops following the turn.
 	leave context.CancelFunc
-	// stop is filled when the turn was asked to stop, and answers when one
-	// of its requests for approval may have an answer.
+	// stop is signaled when the turn is cancelled, and answers when one of
+	// its approval requests may have been answered.
 	stop, answers chan struct{}
 }
 
-// New returns a driver that has the turns run in the sandboxes.
+// New returns a Driver that runs turns in sandboxes.
 func New(config Config, sandboxes Sandboxes, st store.Store, ev *events.Streams, m *metrics.Metrics) *Driver {
 	if config.Sweep == 0 {
 		config.Sweep = Sweep
@@ -138,29 +128,28 @@ func New(config Config, sandboxes Sandboxes, st store.Store, ev *events.Streams,
 	}
 }
 
-// Ask is the approval of an agent whose harness asks a person before it
+// Ask is the approval mode in which the harness asks a person before it
 // acts.
 const Ask = "ask"
 
-// HasHarness reports whether turns can run on the harness of that name.
+// HasHarness reports whether the named harness is configured.
 func (d *Driver) HasHarness(name string) bool {
 	_, found := d.config.Harnesses[name]
 	return found
 }
 
-// Wake makes the driver look for queued turns to run. It is called when a
-// turn was queued or a running one ended.
+// Wake has the driver dispatch queued turns soon. It does not block.
 func (d *Driver) Wake() {
 	select {
 	case d.wake <- struct{}{}:
 	default:
-		// The driver has not yet acted on an earlier call, which covers this one.
+		// A pending wake-up covers this one.
 	}
 }
 
-// Accept queues a message as the session's next turn, if the queue has
-// room. The turn is of the user who sent the message, by, or of nobody. It
-// returns the errors of store.CreateTurn.
+// Accept queues the message as the session's next turn. by is the user who
+// sent it, or uuid.Nil if requests are not authenticated. It returns the
+// errors of store.CreateTurn.
 func (d *Driver) Accept(ctx context.Context, sessionID, by uuid.UUID, text string) (store.Turn, error) {
 	turn, waiting, err := d.store.CreateTurn(ctx, sessionID, by, text, d.config.MaxQueuedTurns, d.config.MaxConcurrentTurns)
 	switch {
@@ -174,10 +163,10 @@ func (d *Driver) Accept(ctx context.Context, sessionID, by uuid.UUID, text strin
 	return turn, err
 }
 
-// EndSession ends the session and has its sandbox deleted, with all that
-// the agent had in it. It returns the errors of store.EndSession. A session
-// whose sandbox could not be deleted is ended all the same, and the error
-// says so: ending it again deletes the sandbox.
+// EndSession ends the session and deletes its sandbox with its volume. It
+// returns the errors of store.EndSession. If the sandbox cannot be deleted,
+// the session still ends and the error is returned; ending the session again
+// retries the deletion.
 func (d *Driver) EndSession(ctx context.Context, id uuid.UUID) (store.Session, error) {
 	session, err := d.store.EndSession(ctx, id)
 	if err != nil || session.Sandbox == "" {
@@ -193,16 +182,16 @@ func (d *Driver) EndSession(ctx context.Context, id uuid.UUID) (store.Session, e
 	return session, nil
 }
 
-// QueueMoved tells the driver that a turn left the queue without running,
-// so that it tells the turns behind it their new positions.
+// QueueMoved tells the driver that a turn left the queue without being
+// dispatched, so that the turns behind it are told their new positions.
 func (d *Driver) QueueMoved() {
 	d.moved.Store(true)
 	d.Wake()
 }
 
-// Run has the queued turns run and follows them, until ctx is done. It also
-// sees the turns that were queued while no Supervisor was running, and
-// those whose Supervisor is gone.
+// Run dispatches queued turns and follows them until ctx is done, including
+// turns queued while no Supervisor ran. It also takes over turns whose
+// Supervisor is gone.
 func (d *Driver) Run(ctx context.Context) {
 	go d.events.WatchCancels(ctx, func(turnID uuid.UUID) {
 		d.tell(turnID, func(told *orders) chan struct{} { return told.stop })
@@ -227,7 +216,6 @@ func (d *Driver) Run(ctx context.Context) {
 	}
 }
 
-// dispatch has the queued turns run that fit under the limit, oldest first.
 func (d *Driver) dispatch(ctx context.Context) {
 	expired := d.expire(ctx)
 	dispatches, err := d.store.DispatchTurns(ctx, d.config.MaxConcurrentTurns)
@@ -237,7 +225,7 @@ func (d *Driver) dispatch(ctx context.Context) {
 	}
 	for _, dispatch := range dispatches {
 		d.metrics.Dispatched(dispatch.Harness, dispatch.Waited)
-		// A turn that is not followed now is taken up by a sweep.
+		// If following fails here, a sweep takes the turn over.
 		d.follow(ctx, dispatch.TurnID)
 	}
 	if d.moved.Swap(false) || expired || len(dispatches) > 0 {
@@ -245,8 +233,8 @@ func (d *Driver) dispatch(ctx context.Context) {
 	}
 }
 
-// expire ends the turns that have waited to run for too long. It reports
-// whether there were any.
+// expire ends the turns that have been queued for longer than MaxQueueWait,
+// and reports whether there were any.
 func (d *Driver) expire(ctx context.Context) bool {
 	if d.config.MaxQueueWait == 0 {
 		return false
@@ -262,8 +250,6 @@ func (d *Driver) expire(ctx context.Context) bool {
 	return len(turns) > 0
 }
 
-// announcePositions tells the turns that still wait their new positions in
-// the queue, after the turns ahead of them were dispatched.
 func (d *Driver) announcePositions(ctx context.Context) {
 	err := d.store.AnnounceQueue(ctx, func(queued []uuid.UUID) error {
 		for i, turnID := range queued {
@@ -278,18 +264,19 @@ func (d *Driver) announcePositions(ctx context.Context) {
 	}
 }
 
-// lookEvery is how many sweeps pass between two looks at the sandboxes.
+// lookEvery is the number of sweeps per look at the sandboxes.
 const lookEvery = 6
 
-// orphaned is how old a sandbox is before it is taken to be one that no
-// session will have: until then it may be on its way to its session.
+// orphaned is the age after which a sandbox that its session does not
+// reference is deleted. A younger one may not be recorded for its session
+// yet.
 func (d *Driver) orphaned() time.Duration {
 	return 30 * d.config.Sweep
 }
 
-// look looks at the sandboxes of the sessions. It deletes those that their
-// sessions do not have, and puts to sleep those of sessions that are not at
-// work. A sandbox of a session that the records do not know is left alone.
+// look deletes the sandboxes that their sessions do not reference, and puts
+// idle sessions to sleep. Sandboxes of sessions that the store does not know
+// are left alone.
 func (d *Driver) look(ctx context.Context) {
 	sandboxes, err := d.sandboxes.Sandboxes(ctx)
 	if err != nil {
@@ -315,9 +302,8 @@ func (d *Driver) look(ctx context.Context) {
 	}
 }
 
-// reap deletes a sandbox that its session does not have: a Supervisor made
-// it and was gone before it had told the session, or it could not be
-// deleted when the session had done with it.
+// reap deletes a sandbox that its session does not reference: a Supervisor
+// stopped between creating it and recording it, or deleting it failed.
 func (d *Driver) reap(ctx context.Context, sessionID uuid.UUID, made sandbox.Sandbox) {
 	if time.Since(made.Created) < d.orphaned() {
 		return
@@ -328,10 +314,10 @@ func (d *Driver) reap(ctx context.Context, sessionID uuid.UUID, made sandbox.San
 	}
 }
 
-// lull puts the sandbox of the session to sleep if the session is not at
-// work: its last turn has ended, and longer ago than a sandbox may be idle.
-// The sandbox is put to sleep only as it was seen. A turn that is given to
-// it has changed it, and finds it asleep if it came too late for that.
+// lull puts the session's sandbox to sleep if the session's last turn ended
+// more than Idle ago. Only the version that was read is suspended: a turn
+// changes the version with Keep before it is given to the sandbox, so it
+// either prevents the suspension or finds the sandbox asleep and wakes it.
 func (d *Driver) lull(ctx context.Context, sessionID uuid.UUID, made sandbox.Sandbox) {
 	last, err := d.store.Turns(ctx, sessionID, math.MaxInt32, 1)
 	if err != nil {
@@ -349,15 +335,16 @@ func (d *Driver) lull(ctx context.Context, sessionID uuid.UUID, made sandbox.San
 	}
 }
 
-// lease is for how long a turn is this Supervisor's once it has said that
-// it follows the turn. It says so again with every sweep.
+// lease is how long a turn stays this Supervisor's after it claims the turn.
+// Every sweep renews the claim.
 func (d *Driver) lease() time.Duration {
 	return 3 * d.config.Sweep
 }
 
-// sweep looks at the turns that run, and now and then at the sandboxes.
-// What it does for the turns is not needed while every Supervisor stays and
-// every announcement arrives.
+// sweep renews the leases of the turns that this Supervisor follows. It also
+// recovers from Supervisors that are gone and from missed announcements: it
+// takes over dispatched turns that nobody follows, and signals cancellations
+// and answers again.
 func (d *Driver) sweep(ctx context.Context) {
 	if d.sweeps++; d.sweeps%lookEvery == 0 {
 		d.look(ctx)
@@ -373,8 +360,9 @@ func (d *Driver) sweep(ctx context.Context) {
 		if err != nil {
 			slog.ErrorContext(ctx, "say that the turn is followed", "turn", turnID, "error", err)
 		} else if !still {
-			// This Supervisor was taken to be gone. Two that follow a turn
-			// record it once, and one is enough.
+			// The lease lapsed and another Supervisor took the turn over.
+			// Events are recorded once even while both follow it, so leaving
+			// is enough.
 			slog.WarnContext(ctx, "another supervisor follows the turn", "turn", turnID)
 			told.leave()
 		}
@@ -400,7 +388,8 @@ func (d *Driver) sweep(ctx context.Context) {
 	}
 }
 
-// tell passes on what a turn is told, if this Supervisor follows the turn.
+// tell signals the channel that what selects, if this Supervisor follows the
+// turn.
 func (d *Driver) tell(turnID uuid.UUID, what func(*orders) chan struct{}) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -408,13 +397,13 @@ func (d *Driver) tell(turnID uuid.UUID, what func(*orders) chan struct{}) {
 		select {
 		case what(told) <- struct{}{}:
 		default:
-			// The one who follows the turn has not yet acted on an earlier call.
+			// A pending signal covers this one.
 		}
 	}
 }
 
-// follow has this Supervisor follow the turn, unless it does already or
-// another Supervisor does.
+// follow starts following the turn, unless this or another Supervisor
+// already does.
 func (d *Driver) follow(ctx context.Context, turnID uuid.UUID) {
 	d.mu.Lock()
 	_, mine := d.following[turnID]
@@ -441,8 +430,8 @@ func (d *Driver) follow(ctx context.Context, turnID uuid.UUID) {
 			d.mu.Lock()
 			delete(d.following, turnID)
 			d.mu.Unlock()
-			// Whatever is left of the turn is the next Supervisor's that
-			// asks, also when this one was told to stop.
+			// Release the lease even if ctx is done, so that another
+			// Supervisor can take the turn over at once.
 			leaving, done := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			defer done()
 			if err := d.events.Leave(leaving, turnID, d.id); err != nil {
@@ -453,7 +442,8 @@ func (d *Driver) follow(ctx context.Context, turnID uuid.UUID) {
 	}()
 }
 
-// end ends a turn and reports whether the turn is now ended.
+// end ends the turn and reports whether it has ended, by this call or an
+// earlier one.
 func (d *Driver) end(ctx context.Context, turnID uuid.UUID, succeeded bool, failure store.Failure) bool {
 	turn, changed, err := d.store.EndTurn(ctx, turnID, succeeded, failure, func(ctx context.Context) ([]json.RawMessage, error) {
 		return d.events.Items(ctx, turnID)
@@ -464,17 +454,17 @@ func (d *Driver) end(ctx context.Context, turnID uuid.UUID, succeeded bool, fail
 	}
 	if changed {
 		d.Ended(ctx, turn)
-		// The turn no longer counts against the limit.
+		// The ended turn frees a slot under MaxConcurrentTurns.
 		d.Wake()
 	}
 	return true
 }
 
-// Ended tells of a turn that has ended: its clients, with the last event of
-// the turn, and the metrics.
+// Ended publishes the last event of a turn that has ended, and records the
+// turn in the metrics.
 func (d *Driver) Ended(ctx context.Context, turn store.Turn) {
 	slog.InfoContext(ctx, "turn ended", "turn", turn.ID, "state", turn.State)
-	// A client that misses this event gets it from the turn's record.
+	// If this fails, clients get the event from the turn's record.
 	if err := d.events.AppendLast(ctx, turn); err != nil {
 		slog.ErrorContext(ctx, "publish turn event", "turn", turn.ID, "error", err)
 	}
@@ -486,14 +476,12 @@ func (d *Driver) Ended(ctx context.Context, turn store.Turn) {
 	d.metrics.Ended(harness, turn)
 }
 
-// environment is what the harness of the turn's session is started with.
+// environment returns the environment variables of the turn's harness.
 func (d *Driver) environment(turn store.FollowedTurn) map[string]string {
 	told := map[string]string{}
 	if turn.ProviderURL != "" {
-		// The harness reaches its model at the Egress Proxy, which passes a
-		// request on to the endpoint of the provider that the turn's agent
-		// names. The proxy serves the endpoint under the path of the
-		// provider's URL, which was checked when the provider was given it.
+		// The Egress Proxy serves the provider's endpoint under the path of
+		// the provider's URL, which the API validated.
 		models := *d.config.Models
 		if endpoint, err := url.Parse(turn.ProviderURL); err == nil {
 			models.Path = strings.TrimSuffix(endpoint.Path, "/")
@@ -501,8 +489,6 @@ func (d *Driver) environment(turn store.FollowedTurn) map[string]string {
 		told["AVIARY_LLM_BASE_URL"] = models.String()
 		told["AVIARY_LLM_MODEL"] = turn.Model
 	}
-	// The image of the harness reads this, and starts its harness so that
-	// it asks.
 	if turn.Approval != "" {
 		told["AVIARY_APPROVAL"] = turn.Approval
 	}

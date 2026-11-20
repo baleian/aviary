@@ -1,5 +1,4 @@
-# An Egress Proxy that lets requests through to the hosts of a list. The
-# hosts are the tests themselves.
+# Allows a list of hosts, all of which the tests serve.
 egressProxy:
   allowedHosts:
     - model.test:8081

@@ -13,10 +13,8 @@ import (
 	"aviary/supervisor/store/postgres"
 )
 
-// The plugins of this build: what connects the Supervisor to the database
-// that holds its records, to the log of the turns' events, to the secret
-// stores of the projects and to the identity provider that tells who sends a
-// request. A build for another kind of one of them adds its plugin here.
+// The plugins of this build. To support another database, event log, secret
+// store or identity provider, add its plugin here.
 var plugins = app.Plugins{
 	Databases:    []store.Plugin{postgres.Plugin{}, mysql.Plugin{}},
 	EventLogs:    []events.Plugin{resp.Plugin{}},

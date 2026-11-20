@@ -1,18 +1,16 @@
-// Package kv2 asks the secret stores that keep their secrets as key-value
-// pairs in versions and that a program logs in to as a role: those that
-// serve the HTTP API known as KV version 2, with the login known as AppRole.
-// More than one product serves it.
+// Package kv2 reads secrets from stores that serve the KV version 2 HTTP API
+// with AppRole login. More than one product serves this API.
 //
 // A store of this kind has these settings:
 //
 //	{"address": "https://store.example.com:8200", "mount": "secret", "role_id": "..."}
 //
-// The address is that of the store, the mount is the path at which the store
-// has its secrets, and the role ID is that of the role to log in as. The
+// The address is the URL of the store, the mount is the path at which the
+// store keeps the secrets, and role_id is the role to log in as. The
 // credential of the store is the secret ID of the role.
 //
-// A secret of such a store is at a path below the mount, such as team/model,
-// and holds values under keys.
+// A secret is at a path below the mount, such as team/model, and holds
+// values under keys.
 package kv2
 
 import (
@@ -30,23 +28,21 @@ import (
 	"aviary/supervisor/secret"
 )
 
-// Kind is the name of the kind of store that this package asks.
+// Kind is the secret store kind that this package serves.
 const Kind = "kv-v2"
 
-// Plugin asks the stores of the kind.
+// Plugin is the secret.Plugin for stores of this kind.
 type Plugin struct{}
 
 func (Plugin) Kind() string { return Kind }
 
-// settings are the settings of a store.
 type settings struct {
 	Address string `json:"address"`
 	Mount   string `json:"mount"`
 	RoleID  string `json:"role_id"`
 }
 
-// read reads the settings of a store and tells what is wrong with them, if
-// anything is.
+// read parses and validates the settings of a store.
 func read(raw json.RawMessage) (settings, error) {
 	var store settings
 	decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -76,9 +72,8 @@ func (Plugin) Address(raw json.RawMessage) (string, error) {
 	return store.Address, err
 }
 
-// Login logs in to the store as the role, with the secret ID of the role. A
-// store answers with a token, which is what it is read with, and with how
-// long the token is good.
+// Login logs in as the role with its secret ID, and returns the client token
+// and its lease duration.
 func (Plugin) Login(ctx context.Context, client *http.Client, raw json.RawMessage, secretID string) (any, time.Duration, error) {
 	store, err := read(raw)
 	if err != nil {
@@ -97,8 +92,8 @@ func (Plugin) Login(ctx context.Context, client *http.Client, raw json.RawMessag
 		return nil, 0, fmt.Errorf("the store was not reached: %w", err)
 	}
 	defer response.Body.Close()
-	// What the store says beside its status is not passed on: it is of a
-	// host that the project named.
+	// Errors report only the status, since the body comes from a host that
+	// the project chose.
 	if response.StatusCode != http.StatusOK {
 		return nil, 0, fmt.Errorf("the store answered the login with the status %d", response.StatusCode)
 	}
@@ -114,11 +109,11 @@ func (Plugin) Login(ctx context.Context, client *http.Client, raw json.RawMessag
 	return answer.Auth.ClientToken, time.Duration(answer.Auth.LeaseDuration) * time.Second, nil
 }
 
-// tokenHeader is the header that a request carries the token of a login in.
+// tokenHeader carries the client token.
 const tokenHeader = "X-Vault-Token"
 
-// Read reads the secret at the path of the store's mount, with the token of
-// a login, and returns the value that it holds under the key.
+// Read reads the secret at path below the mount, and returns its value under
+// key.
 func (Plugin) Read(ctx context.Context, client *http.Client, raw json.RawMessage, session any, path, key string) (string, error) {
 	store, err := read(raw)
 	if err != nil {
@@ -140,16 +135,15 @@ func (Plugin) Read(ctx context.Context, client *http.Client, raw json.RawMessage
 		return "", err
 	}
 	defer response.Body.Close()
-	// What the store says beside its status is not passed on, as with the
-	// login.
+	// As in Login, errors report only the status.
 	switch response.StatusCode {
 	case http.StatusOK:
 	case http.StatusNotFound:
 		return "", errors.New("the store has no secret at the path")
 	case http.StatusForbidden:
-		// A store refuses a token that has ended as it refuses a path that
-		// the role may not read. It tells which of the two when the token is
-		// asked about itself.
+		// The store answers 403 both for a token that is no longer valid and
+		// for a path that the role may not read. A token lookup tells them
+		// apart.
 		asked, err := get(ctx, client, store.Address+"/v1/auth/token/lookup-self", token)
 		if err != nil {
 			return "", err
@@ -181,7 +175,7 @@ func (Plugin) Read(ctx context.Context, client *http.Client, raw json.RawMessage
 	return text, nil
 }
 
-// get asks a store with the token of a login.
+// get sends a GET request with the client token.
 func get(ctx context.Context, client *http.Client, address, token string) (*http.Response, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
 	if err != nil {

@@ -18,28 +18,28 @@ import (
 
 var ctx = context.Background()
 
-// supervisor is the store of a Supervisor in a test. Its methods fail the
-// test if the store does not do what they ask of it.
+// supervisor is the Store of one Supervisor in a test, with helpers that fail
+// the test on errors.
 type supervisor struct {
 	store.Store
 	t        *testing.T
 	database Database
 }
 
-// open returns a Supervisor's store on a database of its own.
+// open returns the Store of a Supervisor on a new database.
 func (suite suite) open(t *testing.T) supervisor {
 	t.Helper()
 	database := suite.create(t)
 	return supervisor{Store: database.Open(t), t: t, database: database}
 }
 
-// another returns the store of another Supervisor on the same database.
+// another returns the Store of another Supervisor on the same database.
 func (s supervisor) another() supervisor {
 	s.t.Helper()
 	return supervisor{Store: s.database.Open(s.t), t: s.t, database: s.database}
 }
 
-// session creates a session of an agent of its own.
+// session creates a session of a new agent in a new project.
 func (s supervisor) session() uuid.UUID {
 	s.t.Helper()
 	project, err := s.CreateProject(ctx, "test")
@@ -57,8 +57,7 @@ func (s supervisor) session() uuid.UUID {
 	return session.ID
 }
 
-// queue accepts a message to the session as a turn, with no limit on the
-// turns that wait.
+// queue queues a message to the session, with no queue limit.
 func (s supervisor) queue(session uuid.UUID) store.Turn {
 	s.t.Helper()
 	turn, _, err := s.CreateTurn(ctx, session, uuid.Nil, "hello", 0, 50)
@@ -68,7 +67,7 @@ func (s supervisor) queue(session uuid.UUID) store.Turn {
 	return turn
 }
 
-// dispatch dispatches the one turn that waits, and returns what runs it.
+// dispatch dispatches the only queued turn.
 func (s supervisor) dispatch() store.Dispatch {
 	s.t.Helper()
 	dispatches, err := s.DispatchTurns(ctx, 50)
@@ -81,8 +80,8 @@ func (s supervisor) dispatch() store.Dispatch {
 	return dispatches[0]
 }
 
-// running queues a message to the session and has a Supervisor follow its
-// turn, which then runs. It returns the turn's dispatch.
+// running queues a message to the session, and dispatches and follows its
+// turn, which then runs.
 func (s supervisor) running(session uuid.UUID) store.Dispatch {
 	s.t.Helper()
 	s.queue(session)
@@ -102,8 +101,7 @@ func (s supervisor) turn(id uuid.UUID) store.Turn {
 	return turn
 }
 
-// end ends the turn as one that succeeded or failed, and
-// returns it.
+// end ends the turn and returns it.
 func (s supervisor) end(id uuid.UUID, succeeded bool, failure store.Failure) store.Turn {
 	s.t.Helper()
 	turn, changed, err := s.EndTurn(ctx, id, succeeded, failure, nothing)
@@ -113,7 +111,7 @@ func (s supervisor) end(id uuid.UUID, succeeded bool, failure store.Failure) sto
 	return turn
 }
 
-// nothing is what a turn said in which the agent said nothing.
+// nothing returns the items of a turn without any.
 func nothing(context.Context) ([]json.RawMessage, error) { return nil, nil }
 
 func (suite suite) testCreateTurn(t *testing.T) {
@@ -138,8 +136,8 @@ func (suite suite) testCreateTurn(t *testing.T) {
 	}
 }
 
-// atOnce calls the function so many times at once, each time with another
-// number from 0, and returns when all the calls have.
+// atOnce calls call concurrently with i from 0 to times-1, and waits for the
+// calls to return.
 func atOnce(times int, call func(i int)) {
 	start := make(chan struct{})
 	var calls sync.WaitGroup
@@ -153,7 +151,7 @@ func atOnce(times int, call func(i int)) {
 	calls.Wait()
 }
 
-// supervisors returns the Stores of so many Supervisors on the database.
+// supervisors returns the Stores of count other Supervisors on the database.
 func (s supervisor) supervisors(count int) []supervisor {
 	s.t.Helper()
 	supervisors := make([]supervisor, count)
@@ -206,7 +204,7 @@ func (suite suite) testCreateTurnKeepsToTheMostThatMayWait(t *testing.T) {
 		t.Errorf("the refused message left a turn behind: %v, %v", turns, err)
 	}
 
-	// The two that run make no room in the queue until one of them ends.
+	// Dispatched turns make no room in the queue until one of them ends.
 	dispatches, err := st.DispatchTurns(ctx, maxRunning)
 	if err != nil || len(dispatches) != maxRunning {
 		t.Fatalf("%d turns were dispatched: %v", len(dispatches), err)
@@ -245,8 +243,7 @@ func (suite suite) testSupervisorsKeepToTheMostThatMayWaitTogether(t *testing.T)
 	}
 }
 
-// Messages that come in together are turns that wait only until they are
-// dispatched. With room for all of them to run, none counts as waiting.
+// Concurrent messages that all have room to run do not count as waiting.
 func (suite suite) testCreateTurnLetsThoseInThatHaveRoomToRun(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -322,9 +319,8 @@ func (suite suite) testSupervisorsDispatchWithinTheLimitTogether(t *testing.T) {
 	}
 }
 
-// The limit holds also while messages come. A Supervisor that counts the
-// turns that run and then picks the next may find other turns to pick than
-// another that counted at the same time.
+// The limit also holds while messages arrive, when Supervisors that count the
+// running turns at the same time could pick different turns.
 func (suite suite) testSupervisorsDispatchWithinTheLimitWhileTurnsCome(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -364,7 +360,7 @@ func (suite suite) testSupervisorsDispatchWithinTheLimitWhileTurnsCome(t *testin
 		if len(dispatched) > 1 {
 			t.Fatalf("four Supervisors with a limit of 1 dispatched %d turns", len(dispatched))
 		}
-		// The turns end, for the next to come to a session with none.
+		// End the turns so that each session can take the next message.
 		for _, turn := range turns {
 			if _, _, err := st.CancelTurn(ctx, turn); err != nil {
 				t.Fatal(err)
@@ -376,8 +372,8 @@ func (suite suite) testSupervisorsDispatchWithinTheLimitWhileTurnsCome(t *testin
 	}
 }
 
-// A turn that is cancelled while the turns are dispatched has ended and is
-// not dispatched, or is dispatched and asked to stop: never both.
+// A turn cancelled during a dispatch either ends without being dispatched, or
+// is dispatched with its cancellation requested, never both.
 func (suite suite) testDispatchTurnsLeavesATurnThatWasCancelledMeanwhile(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -413,8 +409,8 @@ func (suite suite) testDispatchTurnsLeavesATurnThatWasCancelledMeanwhile(t *test
 	}
 }
 
-// A turn that waits for a person takes its place among the turns that run,
-// as any other: its sandbox runs while it waits.
+// A turn that waits for approval counts against the limit, since its sandbox
+// keeps running.
 func (suite suite) testDispatchTurnsCountsATurnThatWaitsForAPerson(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -450,8 +446,8 @@ func (suite suite) testAnnounceQueue(t *testing.T) {
 	if _, _, err := st.CancelTurn(ctx, gone.ID); err != nil {
 		t.Fatal(err)
 	}
-	// One announcement at a time, also from several Supervisors. Two at once
-	// could tell a turn an older position after a newer one.
+	// Announcements are serialized across Supervisors. Concurrent ones could
+	// announce an older position after a newer one.
 	supervisors := st.supervisors(4)
 	var announcing atomic.Int32
 	atOnce(len(supervisors), func(i int) {
@@ -472,8 +468,7 @@ func (suite suite) testAnnounceQueue(t *testing.T) {
 	})
 }
 
-// A Supervisor that follows a turn is given what it takes to run the turn,
-// as it is now.
+// FollowTurn returns what it takes to run the turn, as it is now.
 func (suite suite) testFollowTurn(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -511,9 +506,8 @@ func (suite suite) testFollowTurn(t *testing.T) {
 		t.Errorf("a turn that a Supervisor follows is %s", state)
 	}
 
-	// The sandbox that the session has got meanwhile, and that the turn was
-	// asked to stop, are told to who follows it then: the same Supervisor,
-	// or the one that follows the turn after it.
+	// A later FollowTurn, by the same or another Supervisor, returns the
+	// session's new sandbox and the cancellation request.
 	if set, err := st.SetSandbox(ctx, session, "", "sandbox-1"); err != nil || !set {
 		t.Fatalf("the session was not given its sandbox: %v", err)
 	}
@@ -547,7 +541,8 @@ func (suite suite) testStartTurn(t *testing.T) {
 		t.Fatal("the turn has not started")
 	}
 
-	// Another Supervisor that follows the turn reads the start again.
+	// Starting the turn again, as another Supervisor that follows it does,
+	// changes nothing.
 	if _, first, err := st.StartTurn(ctx, dispatch.TurnID); err != nil || first {
 		t.Errorf("the turn started a second time: %v", err)
 	}
@@ -560,7 +555,7 @@ func (suite suite) testCancelTurn(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 
-	// A turn that waits ends at once.
+	// A queued turn ends at once.
 	session := st.session()
 	queued := st.queue(session)
 	cancelled, unended, err := st.CancelTurn(ctx, queued.ID)
@@ -574,7 +569,7 @@ func (suite suite) testCancelTurn(t *testing.T) {
 		t.Errorf("a cancelled turn was dispatched: %v, %v", dispatches, err)
 	}
 
-	// A turn that was dispatched is asked to stop, and ends when its harness has stopped.
+	// A dispatched turn is only marked, and ends when its harness has stopped.
 	dispatch := st.running(session)
 	asked, unended, err := st.CancelTurn(ctx, dispatch.TurnID)
 	if err != nil || !unended || asked.State != store.TurnRunning || asked.CancelRequestedAt == nil || asked.EndedAt != nil {
@@ -592,7 +587,7 @@ func (suite suite) testCancelTurn(t *testing.T) {
 		t.Errorf("the turns that were asked to stop are %v: %v", cancelling, err)
 	}
 
-	// A turn that has ended stays as it ended.
+	// Cancelling a turn that has ended changes nothing.
 	completed := st.running(session)
 	if err := st.SetFinished(ctx, completed.TurnID, "end_turn", nil); err != nil {
 		t.Fatal(err)
@@ -635,8 +630,8 @@ func (suite suite) testEndTurn(t *testing.T) {
 	lost := store.Failure{Reason: store.FailureSandboxLost, Message: "the sandbox of the session is gone"}
 	tests := []struct {
 		name string
-		// What the turn went through before it ended: whether it was
-		// asked to stop, and why the harness said that it stopped, if it did.
+		// Whether cancellation was requested, and the stop reason, if any,
+		// before the turn ends.
 		cancelled  bool
 		stopReason string
 		succeeded  bool
@@ -686,7 +681,7 @@ func (suite suite) testEndTurn(t *testing.T) {
 				t.Errorf("the turn is kept as %s", kept.State)
 			}
 
-			// A turn ends once. The Supervisors that come later change nothing.
+			// A turn ends once. Later calls change nothing.
 			again, changed, err := st.another().EndTurn(ctx, dispatch.TurnID, !test.succeeded, store.Failure{Reason: store.FailureRunner},
 				func(context.Context) ([]json.RawMessage, error) {
 					t.Error("what the turn said was read for a turn that had ended")
@@ -698,7 +693,7 @@ func (suite suite) testEndTurn(t *testing.T) {
 			if kept := st.turn(dispatch.TurnID); kept.State != ended.State {
 				t.Errorf("the turn is %s after it was ended a second time", kept.State)
 			}
-			// The session takes its next message.
+			// The session accepts its next message.
 			next := st.queue(session)
 			if next.Seq != 2 {
 				t.Errorf("the next turn of the session has the number %d", next.Seq)
@@ -713,8 +708,7 @@ func (suite suite) testEndTurn(t *testing.T) {
 	}
 }
 
-// A turn ends once, also when several Supervisors end it at once: one of
-// them reads what the turn said and keeps it.
+// Of concurrent EndTurn calls for a turn, one ends it and stores its items.
 func (suite suite) testSupervisorsEndATurnOnceTogether(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -746,15 +740,15 @@ func (suite suite) testEndTurnKeepsWhatTheTurnSaid(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	session := st.session()
-	// What a tool gave may have the character U+0000 in it, which a database
-	// may be unable to keep.
+	// The output of a tool call may contain U+0000, which a database may be
+	// unable to store.
 	said := []json.RawMessage{
 		json.RawMessage(`{"type":"message","text":"one"}`),
 		json.RawMessage(`{"type":"tool_call","output":"a\u0000b \\u0000"}`),
 		json.RawMessage(`{"type":"message","text":"two"}`),
 	}
 
-	// A turn whose items cannot be read has not ended, and is ended later.
+	// If items fails, the turn does not end, and can be ended later.
 	dispatch := st.running(session)
 	_, _, err := st.EndTurn(ctx, dispatch.TurnID, true, store.Failure{}, func(context.Context) ([]json.RawMessage, error) {
 		return nil, errors.New("the events cannot be read")
@@ -882,7 +876,7 @@ func (suite suite) testDispatchedTurns(t *testing.T) {
 	}
 }
 
-// An operation whose caller waits for it no longer fails.
+// An operation whose context is done fails without effect.
 func (suite suite) testCallerThatWaitsNoLonger(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)

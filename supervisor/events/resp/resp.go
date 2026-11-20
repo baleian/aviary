@@ -1,9 +1,9 @@
-// Package resp keeps the events of the turns in a server that has streams,
-// scripts and channels and is spoken to in RESP. More than one product
-// serves it.
+// Package resp implements an events.Log on a server that speaks RESP and
+// supports streams, Lua scripts and pub/sub. More than one product serves
+// this protocol.
 //
-// The address of such a log is a URL with the scheme valkey or redis, or
-// valkeys or rediss for a connection with TLS:
+// The URL of such a log has the scheme valkey or redis, or valkeys or rediss
+// for TLS:
 //
 //	valkey://user:password@host:6379
 package resp
@@ -27,18 +27,18 @@ import (
 // start is the position before the first entry of a stream.
 const start = "0-0"
 
-// The most events that one read returns: that many when a reader waits for
-// the next, and more when it reads what is there.
+// The maximum number of events that one read returns: waitBatch when it
+// waits for new events, and readBatch when it reads existing ones.
 const (
 	waitBatch = 100
 	readBatch = 1000
 )
 
-// receive records the runner's message with the number ARGV[1] and adds its
-// event, of type ARGV[2] and with the data ARGV[3], to the turn's stream. It
-// leaves out a message that is recorded. Without it, a message that a runner
-// sends again could be added twice: the Supervisor that the runner lost may
-// still be recording it.
+// receive records message ARGV[1] of the turn's runner and, if ARGV[2] is not
+// empty, appends the event of type ARGV[2] with data ARGV[3] to the stream,
+// atomically. It ignores a message that is already recorded, since a runner
+// may resend a message that the Supervisor it lost is still recording. It
+// returns -1 for a message that does not follow the last recorded one.
 var receive = valkey.NewLuaScript(`
 local last = tonumber(redis.call('GET', KEYS[2]) or '0')
 local seq = tonumber(ARGV[1])
@@ -49,8 +49,8 @@ redis.call('SET', KEYS[2], ARGV[1])
 return 1
 `)
 
-// follow gives the turn to the Supervisor ARGV[1] for ARGV[2] milliseconds,
-// unless another has it.
+// follow grants the lease on the turn to ARGV[1] for ARGV[2] milliseconds,
+// unless another follower holds it.
 var follow = valkey.NewLuaScript(`
 local follower = redis.call('GET', KEYS[1])
 if follower and follower ~= ARGV[1] then return 0 end
@@ -58,13 +58,13 @@ redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
 return 1
 `)
 
-// leave gives the turn up, if the Supervisor ARGV[1] has it.
+// leave releases the lease if ARGV[1] holds it.
 var leave = valkey.NewLuaScript(`
 if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('DEL', KEYS[1]) end
 return 1
 `)
 
-// Plugin connects the Supervisor to the logs of this kind.
+// Plugin is the events.Plugin for logs of this kind.
 type Plugin struct{}
 
 func (Plugin) Schemes() []string { return []string{"valkey", "valkeys", "redis", "rediss"} }
@@ -72,18 +72,18 @@ func (Plugin) Schemes() []string { return []string{"valkey", "valkeys", "redis",
 func (Plugin) Open(address string) (events.Log, error) {
 	options, err := valkey.ParseURL(address)
 	if err != nil {
-		// A URL that cannot be parsed is quoted in the error, password included.
+		// url.Error quotes the URL, password included.
 		var quoting *url.Error
 		if errors.As(err, &quoting) {
 			err = quoting.Err
 		}
 		return nil, fmt.Errorf("parse the URL: %w", err)
 	}
-	// The Supervisor does not cache on the client side, and not every
-	// managed server supports it.
+	// Client-side caching is not used, and not every managed server
+	// supports it.
 	options.DisableCache = true
-	// The client would repeat a read for as long as the server is
-	// unreachable. A read that fails at once lets the caller report it.
+	// Fail at once instead of retrying while the server is unreachable, so
+	// that the caller can report the error.
 	options.DisableRetry = true
 	client, err := valkey.NewClient(options)
 	if err != nil {
@@ -138,7 +138,7 @@ func (l *log) Read(ctx context.Context, turnID uuid.UUID, after string, wait tim
 		}
 		entries = streams[key(turnID)]
 	} else {
-		// A read that blocks for no time would block for good.
+		// XREAD with BLOCK 0 would block indefinitely.
 		var err error
 		entries, err = l.client.Do(ctx, l.client.B().Xrange().Key(key(turnID)).Start("("+after).End("+").
 			Count(readBatch).Build()).AsXRange()
@@ -153,7 +153,7 @@ func (l *log) Read(ctx context.Context, turnID uuid.UUID, after string, wait tim
 	return batch, nil
 }
 
-// IsID reports whether id has the form of the ID of a stream entry.
+// IsID reports whether id has the form of a stream entry ID.
 func (*log) IsID(id string) bool {
 	millis, sequence, found := strings.Cut(id, "-")
 	if !found {
@@ -174,7 +174,7 @@ func (l *log) Expire(ctx context.Context, turnID uuid.UUID, after time.Duration)
 }
 
 func (l *log) Follow(ctx context.Context, turnID, follower uuid.UUID, lease time.Duration) (bool, error) {
-	// A key cannot be kept for less than a millisecond.
+	// PX requires a positive number of milliseconds.
 	milliseconds := max(lease.Milliseconds(), 1)
 	given, err := follow.Exec(ctx, l.client, []string{followerKey(turnID)},
 		[]string{follower.String(), strconv.FormatInt(milliseconds, 10)}).AsInt64()
@@ -208,20 +208,20 @@ func (l *log) Watch(ctx context.Context, channel string, announced func(turnID u
 	}
 }
 
-// key names the turn's stream.
+// key returns the key of the turn's stream.
 func key(turnID uuid.UUID) string {
 	return "turn:" + turnID.String()
 }
 
-// receivedKey names where the number of the last recorded message of the
-// turn's runner is kept. Without the braces, a cluster could keep it apart
-// from the turn's stream, and no script could use both.
+// receivedKey returns the key of the sequence number of the last recorded
+// message. Its hash tag puts it in the cluster slot of the turn's stream, so
+// that one script can use both.
 func receivedKey(turnID uuid.UUID) string {
 	return "{turn:" + turnID.String() + "}:received"
 }
 
-// followerKey names where the Supervisor that follows the turn is kept, for
-// as long as its lease.
+// followerKey returns the key that holds the turn's follower for the
+// duration of its lease.
 func followerKey(turnID uuid.UUID) string {
 	return "{turn:" + turnID.String() + "}:follower"
 }

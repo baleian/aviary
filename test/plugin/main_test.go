@@ -15,7 +15,7 @@ import (
 	"aviary/supervisor/store/storetest"
 )
 
-// database is the database of a test, by its address.
+// database is a test's database, by its address.
 type database string
 
 func (d database) Open(t *testing.T) store.Store {
@@ -31,12 +31,12 @@ func (d database) Age(_ *testing.T, by time.Duration, turns ...uuid.UUID) {
 	plugins.Databases[0].(*databases).database(string(d)).Age(by, turns...)
 }
 
-// A plugin for a database passes what holds of every store.
+// The database plugin passes the store suite.
 func TestStore(t *testing.T) {
 	storetest.Run(t, func(t *testing.T) storetest.Database { return database("memory://" + t.Name()) })
 }
 
-// A plugin for an event log passes what holds of every log.
+// The event log plugin passes the event log suite.
 func TestLog(t *testing.T) {
 	eventstest.Run(t, func(t *testing.T) events.Log {
 		log, err := plugins.EventLogs[0].Open("memory://events")
@@ -48,8 +48,7 @@ func TestLog(t *testing.T) {
 	})
 }
 
-// The build is a Supervisor with the plugins that it lists, and with no
-// others.
+// The build has exactly the plugins that it lists.
 func TestBuild(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv("AVIARY_DATABASE_URL", "memory://records")
@@ -60,7 +59,7 @@ func TestBuild(t *testing.T) {
 	if err := app.Run(ctx, []string{"migrate"}, plugins); err == nil || !strings.Contains(err.Error(), "memory") {
 		t.Errorf("the build migrated a database that it has no plugin for with: %v", err)
 	}
-	// So it is with its event log.
+	// Likewise for the event log.
 	log, err := events.Open("memory://events", plugins.EventLogs...)
 	if err != nil {
 		t.Fatalf("the build opened its event log with: %v", err)

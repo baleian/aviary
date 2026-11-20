@@ -15,7 +15,7 @@ import (
 	"aviary/supervisor/internal/sandbox/runnertest"
 )
 
-// running starts a runner, and returns it with the runners of the test.
+// running starts a fake runner and returns its controls and a client of it.
 func running(t *testing.T) (*runnertest.Runners, *Runner) {
 	t.Helper()
 	runners := runnertest.New(t)
@@ -24,8 +24,8 @@ func running(t *testing.T) (*runnertest.Runners, *Runner) {
 	return runners, &Runner{address: server.URL, http: server.Client(), quiet: time.Minute}
 }
 
-// read reads the events of the turn that follow the one with the number,
-// and returns them as "number name data".
+// read returns the events of the turn after the one numbered after, each as
+// "seq name data".
 func read(runner *Runner, turn uuid.UUID, after uint64) ([]string, error) {
 	var events []string
 	err := runner.Events(context.Background(), turn, after, func(event Event) error {
@@ -39,7 +39,7 @@ func same(got []string, want ...string) bool {
 	return strings.Join(got, "\n") == strings.Join(want, "\n")
 }
 
-// outcome waits for what is done to end, and returns how it ended.
+// outcome waits for a result on done.
 func outcome(t *testing.T, done <-chan error) error {
 	t.Helper()
 	select {
@@ -61,8 +61,7 @@ func TestARunnerIsGivenATurn(t *testing.T) {
 		Approval:     "ask",
 		Environment:  map[string]string{"AVIARY_LLM_MODEL": "a-model"},
 	}
-	// Giving it again is no error: the one who gave it may not have heard
-	// the answer.
+	// Start is idempotent, since the caller may have missed the response.
 	for range 2 {
 		if err := runner.Start(ctx, first, start); err != nil {
 			t.Fatal(err)
@@ -73,7 +72,7 @@ func TestARunnerIsGivenATurn(t *testing.T) {
 		turn.Approval != "ask" || turn.Environment["AVIARY_LLM_MODEL"] != "a-model" {
 		t.Errorf("the runner was given %+v", turn)
 	}
-	// It runs one turn at a time.
+	// The runner runs one turn at a time.
 	second := uuid.New()
 	if err := runner.Start(ctx, second, Turn{Text: "and then"}); !errors.Is(err, ErrBusy) {
 		t.Fatalf("a turn while another runs: %v", err)
@@ -104,7 +103,7 @@ func TestTheEventsOfATurnAreReadInTheirOrderUntilItEnds(t *testing.T) {
 			return nil
 		})
 	}()
-	// What is told while it is read comes as it is told.
+	// Events arrive as they are sent.
 	if event := <-heard; event.Seq != 1 || event.Name != "started" || string(event.Data) != `{"harness_session_id":"s-1"}` {
 		t.Fatalf("the first event is %+v", event)
 	}
@@ -120,7 +119,7 @@ func TestTheEventsOfATurnAreReadInTheirOrderUntilItEnds(t *testing.T) {
 	if event := <-heard; event.Seq != 3 || event.Name != "finished" || len(heard) != 0 {
 		t.Fatalf("the last event is %+v, with %d after it", event, len(heard))
 	}
-	// One who has some of them reads the ones after.
+	// Reading can start after any event.
 	events, err := read(runner, id, 1)
 	if err != nil || !same(events, `2 message.delta {"text":"hi"}`, `3 finished {"stop_reason":"end_turn"}`) {
 		t.Errorf("after the first event come %q: %v", events, err)
@@ -128,7 +127,7 @@ func TestTheEventsOfATurnAreReadInTheirOrderUntilItEnds(t *testing.T) {
 	if events, err := read(runner, id, 3); err != nil || len(events) != 0 {
 		t.Errorf("after the last event come %q: %v", events, err)
 	}
-	// The one who reads may stop.
+	// each can stop the reading.
 	enough := errors.New("enough")
 	err = runner.Events(ctx, id, 0, func(Event) error { return enough })
 	if !errors.Is(err, enough) {
@@ -187,8 +186,8 @@ func TestWhatATurnIsToldReachesItsRunner(t *testing.T) {
 	}
 	turn.Stopped(t)
 
-	// A turn that the runner does not have: it has another by now, or it
-	// was started again.
+	// A turn that the runner does not have, because it has moved on to
+	// another or restarted.
 	other := uuid.New()
 	if err := runner.Cancel(ctx, other); !errors.Is(err, ErrNotFound) {
 		t.Errorf("stopping a turn that the runner does not have: %v", err)
@@ -201,8 +200,8 @@ func TestWhatATurnIsToldReachesItsRunner(t *testing.T) {
 	}
 }
 
-// saying is a runner that answers one who reads the events of a turn with
-// what say writes.
+// saying returns a client of a server that answers event stream requests
+// with what say writes.
 func saying(t *testing.T, say func(w http.ResponseWriter, r *http.Request)) *Runner {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -247,7 +246,7 @@ func TestWhatARunnerTellsWrongIsNotTaken(t *testing.T) {
 }
 
 func TestARunnerThatSaysNothingIsGivenUp(t *testing.T) {
-	// One that says that it is there, and then tells the end of the turn.
+	// A runner that sends keepalives and then ends the turn.
 	patient := saying(t, func(w http.ResponseWriter, _ *http.Request) {
 		for range 10 {
 			time.Sleep(20 * time.Millisecond)
@@ -260,7 +259,7 @@ func TestARunnerThatSaysNothingIsGivenUp(t *testing.T) {
 	if events, err := read(patient, uuid.New(), 0); err != nil || !same(events, "1 finished {}") {
 		t.Errorf("the events of a runner that is there are %q: %v", events, err)
 	}
-	// One that says nothing, and one that does not answer at all.
+	// A runner that sends nothing, and one that does not respond at all.
 	silent := saying(t, func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
 	silent.quiet = 50 * time.Millisecond
 	if _, err := read(silent, uuid.New(), 0); !errors.Is(err, errSilent) {
@@ -272,7 +271,7 @@ func TestARunnerThatSaysNothingIsGivenUp(t *testing.T) {
 	if _, err := read(deaf, uuid.New(), 0); !errors.Is(err, errSilent) {
 		t.Errorf("the reading of a runner that does not answer ended with %v", err)
 	}
-	// The one who reads stops, which is not the runner saying nothing.
+	// Cancelling ctx is not reported as silence.
 	ctx, stop := context.WithCancel(context.Background())
 	time.AfterFunc(20*time.Millisecond, stop)
 	silent.quiet = time.Minute

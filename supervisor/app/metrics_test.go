@@ -9,8 +9,8 @@ import (
 	"aviary/supervisor/store"
 )
 
-// Each Supervisor reports what it did itself, so the numbers of all of them
-// add up to what happened.
+// Each Supervisor counts only its own work, so that the sums over all
+// Supervisors match what happened.
 func TestMetrics(t *testing.T) {
 	t.Parallel()
 	aviary := install(t, func(config *driver.Config) {
@@ -26,7 +26,6 @@ func TestMetrics(t *testing.T) {
 		return events[len(events)-1].Type
 	}
 
-	// A turn that completes, and reports its usage.
 	completed := one.send(one.session(), "one")
 	runner := aviary.given(completed.ID)
 	if running := total("aviary_turns_running"); running != 1 {
@@ -34,8 +33,8 @@ func TestMetrics(t *testing.T) {
 	}
 	thought := int64(3)
 	runner.report(started("harness-session"))
-	// Its harness asks twice. One request is answered by a person, and the
-	// runner makes up an outcome for the other.
+	// A user answers one request; the other resolves with an outcome that
+	// the Supervisor does not know.
 	runner.report(asks("1", "rm -r build"))
 	runner.report(asks("2", "git push"))
 	if status, _ := one.approve(completed.ID, "1", `{"option_id": "never"}`); status != http.StatusAccepted {
@@ -43,7 +42,7 @@ func TestMetrics(t *testing.T) {
 	}
 	runner.answer()
 	runner.report(answered("1", "selected", "never"))
-	// An answer that the runner tells again is not another answer.
+	// A repeated resolution is counted once.
 	runner.report(answered("1", "selected", "never"))
 	runner.report(answered("2", "made up", ""))
 	runner.report(finished("end_turn", &store.Usage{TotalTokens: 18, InputTokens: 11, OutputTokens: 7, ThoughtTokens: &thought}))
@@ -51,13 +50,12 @@ func TestMetrics(t *testing.T) {
 		t.Fatalf("the first turn ended with %s", state)
 	}
 
-	// A turn that runs, one that waits behind it until it expires, and two
-	// messages that are refused.
+	// A running turn, a queued turn that expires, and two refused messages.
 	session := other.session()
 	cancelled := other.send(session, "two")
 	runner = aviary.given(cancelled.ID)
 	runner.report(started("harness-session"))
-	// A start that the runner tells again is not another start.
+	// A repeated start is counted once.
 	runner.report(started("harness-session"))
 	expired := one.send(one.session(), "three")
 	if status, _ := one.request("POST", "/v1/sessions/"+session+"/messages", `{"text": "again"}`, nil); status != http.StatusConflict {
@@ -70,7 +68,6 @@ func TestMetrics(t *testing.T) {
 		t.Fatalf("the turn that waited ended with %s", state)
 	}
 
-	// The turn that runs asks, and is cancelled.
 	runner.report(asks("1", "rm -r build"))
 	if status, _ := other.request("POST", "/v1/turns/"+cancelled.ID+"/cancel", "", nil); status != http.StatusAccepted {
 		t.Fatalf("cancelling the running turn was answered with %d", status)
@@ -82,7 +79,6 @@ func TestMetrics(t *testing.T) {
 		t.Fatalf("the cancelled turn ended with %s", state)
 	}
 
-	// A turn that fails.
 	lost := other.send(other.session(), "five")
 	runner = aviary.given(lost.ID)
 	runner.report(started("harness-session"))
@@ -92,17 +88,17 @@ func TestMetrics(t *testing.T) {
 	}
 
 	expected := map[string]float64{
-		// Three requests for approval have their answers.
+		// Three approval requests were resolved.
 		`aviary_approval_wait_seconds_count{harness="opencode",outcome="reject_once"}`: 1,
 		`aviary_approval_wait_seconds_count{harness="opencode",outcome="cancelled"}`:   1,
 		`aviary_approval_wait_seconds_count{harness="opencode",outcome="other"}`:       1,
 		"aviary_approval_wait_seconds_count":                                           3,
-		// Four messages were accepted, one of them when it had to wait.
+		// Four messages were accepted, one of which had to wait.
 		"aviary_turn_queue_length_count":                       4,
 		"aviary_turn_queue_length_sum":                         1,
 		`aviary_messages_refused_total{reason="session_busy"}`: 1,
 		`aviary_messages_refused_total{reason="queue_full"}`:   1,
-		// Three turns were dispatched and started, and ran to an end.
+		// Three turns were dispatched, started and ended.
 		"aviary_turn_queue_duration_seconds_count":                                          3,
 		"aviary_turn_startup_duration_seconds_count":                                        3,
 		"aviary_turn_run_duration_seconds_count":                                            3,
@@ -117,7 +113,7 @@ func TestMetrics(t *testing.T) {
 		"aviary_turn_tokens_total":                                                          21,
 		"aviary_turns_running":                                                              0,
 	}
-	// A Supervisor counts a turn a moment after the turn's last event.
+	// A turn is counted shortly after its last event.
 	differing := func() map[string]float64 {
 		differing := map[string]float64{}
 		for series, value := range expected {

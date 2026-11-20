@@ -1,6 +1,5 @@
-// Package runnertest has runners for tests, which the test plays: a runner
-// takes the turns of a session over HTTP, as the runner in a sandbox does,
-// and the test tells what happens in each.
+// Package runnertest provides fake runners that serve the runner's HTTP API,
+// with turns that the test drives.
 package runnertest
 
 import (
@@ -13,34 +12,34 @@ import (
 	"time"
 )
 
-// patience is how long a test waits for what a runner is to be told.
+// patience is how long the wait helpers wait before they fail the test.
 const patience = 5 * time.Second
 
-// Runners are the runners of a test, and the turns that they were given.
+// Runners is a set of fake runners. It records the turns given to them.
 type Runners struct {
 	closed chan struct{}
 
 	mu sync.Mutex
-	// given are the turns that the runners were given, in their order, and
-	// taken how many of them Turn has returned.
+	// given holds the turns in the order in which they were given, and taken
+	// counts those that Turn has returned.
 	given []*Turn
 	taken int
 }
 
-// New returns the runners of the test. Those who read the events of a turn
-// are let go when the test ends.
+// New returns an empty set of runners. Open event streams end when the test
+// ends.
 func New(t testing.TB) *Runners {
 	rs := &Runners{closed: make(chan struct{})}
 	t.Cleanup(func() { close(rs.closed) })
 	return rs
 }
 
-// Runner returns a runner of the sandbox, which has no turn yet.
+// Runner returns a new runner for the named sandbox.
 func (rs *Runners) Runner(sandbox string) *Runner {
 	return &Runner{runners: rs, sandbox: sandbox}
 }
 
-// Turn waits for the next turn that a runner is given.
+// Turn waits for the next turn given to any of the runners and returns it.
 func (rs *Runners) Turn(t testing.TB) *Turn {
 	t.Helper()
 	for end := time.Now().Add(patience); ; time.Sleep(5 * time.Millisecond) {
@@ -58,8 +57,8 @@ func (rs *Runners) Turn(t testing.TB) *Turn {
 	}
 }
 
-// TurnWith waits for a runner to be given the turn with the ID, and
-// returns it.
+// TurnWith waits until a runner is given the turn with the ID and returns
+// it.
 func (rs *Runners) TurnWith(t testing.TB, id string) *Turn {
 	t.Helper()
 	for end := time.Now().Add(patience); ; time.Sleep(5 * time.Millisecond) {
@@ -77,8 +76,7 @@ func (rs *Runners) TurnWith(t testing.TB, id string) *Turn {
 	}
 }
 
-// Given returns the IDs of the turns that the runners were given, in their
-// order.
+// Given returns the IDs of the turns given to the runners, in order.
 func (rs *Runners) Given() []string {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
@@ -89,17 +87,17 @@ func (rs *Runners) Given() []string {
 	return ids
 }
 
-// Runner is the runner of a sandbox.
+// Runner is a fake runner, an http.Handler that serves the runner's API.
 type Runner struct {
 	runners *Runners
 	sandbox string
 	mu      sync.Mutex
-	// turn is the turn that the runner has: the last that it was given.
+	// turn is the last turn given to the runner.
 	turn *Turn
 }
 
-// Gone has the runner go, as with the pod that it runs in: those who read
-// the events of its turn are cut off.
+// Gone simulates the loss of the runner's pod: the event streams of its turn
+// are cut off.
 func (rn *Runner) Gone() {
 	rn.mu.Lock()
 	turn := rn.turn
@@ -109,12 +107,12 @@ func (rn *Runner) Gone() {
 	}
 }
 
-// Turn is a turn that a runner was given, which the test runs.
+// Turn is a turn given to a fake runner, which the test drives.
 type Turn struct {
-	// Sandbox is the sandbox of the runner.
+	// Sandbox is the name of the runner's sandbox.
 	Sandbox string `json:"-"`
 	ID      string `json:"-"`
-	// What the turn was started with.
+	// The request that started the turn.
 	Text         string            `json:"text"`
 	Instructions string            `json:"instructions"`
 	Approval     string            `json:"approval"`
@@ -125,13 +123,13 @@ type Turn struct {
 	mu     sync.Mutex
 	events []event
 	ended  bool
-	// stops is how often the turn was told to stop, and answers are the
-	// answers that it was given: the request and the option of each. The
-	// test has seen so many of them.
+	// stops counts the cancellations, and answers holds the request and the
+	// option of each answer. seenStops and seenAnswers count those that the
+	// test has waited for.
 	stops, seenStops int
 	answers          [][2]string
 	seenAnswers      int
-	// cuts counts how often those who read the events were cut off.
+	// cuts counts the times the event streams were cut off.
 	cuts int
 	// changed is closed when there is more to read.
 	changed chan struct{}
@@ -170,7 +168,8 @@ func (rn *Runner) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mux.ServeHTTP(w, r)
 }
 
-// has returns the turn that the request is about, if the runner has it.
+// has returns the turn named in the request path, or nil if the runner does
+// not have it.
 func (rn *Runner) has(r *http.Request) *Turn {
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
@@ -217,8 +216,7 @@ func (rn *Runner) tell(w http.ResponseWriter, r *http.Request, tell func(*Turn))
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// events sends the events of the turn as server-sent events, from the one
-// after Last-Event-ID, until the turn ends.
+// events streams the turn's events after Last-Event-ID until the turn ends.
 func (rn *Runner) events(w http.ResponseWriter, r *http.Request) {
 	turn := rn.has(r)
 	if turn == nil {
@@ -237,7 +235,7 @@ func (rn *Runner) events(w http.ResponseWriter, r *http.Request) {
 		ended, changed, cut := turn.ended, turn.changed, turn.cuts != cuts
 		turn.mu.Unlock()
 		if cut {
-			// The connection is dropped, and the answer has no end.
+			// Abort the response, as a lost pod would.
 			panic(http.ErrAbortHandler)
 		}
 		for _, event := range events {
@@ -264,14 +262,14 @@ func (t *Turn) over() bool {
 	return t.ended
 }
 
-// change lets those who read the events of the turn look again.
+// change wakes the event streams of the turn. t.mu must be held.
 func (t *Turn) change() {
 	close(t.changed)
 	t.changed = make(chan struct{})
 }
 
-// Tell adds an event to the turn. The events finished and failed end it:
-// what is told after them is not heard.
+// Tell adds an event to the turn. A finished or failed event ends the turn,
+// and later events are dropped.
 func (t *Turn) Tell(name string, data any) {
 	encoded, err := json.Marshal(data)
 	if err != nil {
@@ -287,7 +285,7 @@ func (t *Turn) Tell(name string, data any) {
 	t.change()
 }
 
-// Cut cuts off those who read the events of the turn.
+// Cut breaks the open event streams of the turn.
 func (t *Turn) Cut() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -295,7 +293,7 @@ func (t *Turn) Cut() {
 	t.change()
 }
 
-// Stopped waits until the turn was told to stop once more.
+// Stopped waits for the next cancellation of the turn.
 func (t *Turn) Stopped(tb testing.TB) {
 	tb.Helper()
 	for end := time.Now().Add(patience); ; time.Sleep(5 * time.Millisecond) {
@@ -312,8 +310,8 @@ func (t *Turn) Stopped(tb testing.TB) {
 	}
 }
 
-// Answered waits until a request of the turn was answered once more, and
-// returns the request and the option that was chosen.
+// Answered waits for the next answer to an approval request of the turn, and
+// returns the request and the chosen option.
 func (t *Turn) Answered(tb testing.TB) (request, option string) {
 	tb.Helper()
 	for end := time.Now().Add(patience); ; time.Sleep(5 * time.Millisecond) {

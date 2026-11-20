@@ -10,8 +10,7 @@ import (
 	"aviary/supervisor/store"
 )
 
-// defaults are the roles that a database has from the start, in the order
-// of their names.
+// defaults are the predefined roles, sorted by name.
 var defaults = []store.Role{
 	{Name: "auditor", Permissions: []string{"project.view", "sessions.view_all"}},
 	{Name: "editor", Permissions: []string{"project.view", "agents.manage", "connections.manage", "sessions.run"}},
@@ -23,8 +22,8 @@ var defaults = []store.Role{
 func (suite suite) testRoles(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
-	// roles returns the roles as a Supervisor reads them, and holds them
-	// against those that are expected.
+	// roles returns the roles that st reads, after checking them against
+	// expected.
 	roles := func(st supervisor, expected []store.Role) []store.Role {
 		t.Helper()
 		roles, err := st.Roles(ctx)
@@ -48,7 +47,7 @@ func (suite suite) testRoles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The permissions are kept in the order in which they are given.
+	// Permissions keep the order in which they are given.
 	editor := store.Role{Name: "editor", Permissions: []string{"sessions.run", "project.view"}, UpdatedBy: user.ID}
 	set, err := st.SetRole(ctx, editor.Name, editor.Permissions, user.ID)
 	if err != nil {
@@ -57,7 +56,8 @@ func (suite suite) testRoles(t *testing.T) {
 	if set.Name != editor.Name || !slices.Equal(set.Permissions, editor.Permissions) || set.UpdatedBy != user.ID || set.UpdatedAt.Before(first[1].UpdatedAt) {
 		t.Errorf("the role was set to %+v, not %+v", set, editor)
 	}
-	// A role may have no permissions, and may be changed by nobody.
+	// A role may have no permissions, and may be changed by an unauthenticated
+	// request.
 	viewer := store.Role{Name: "viewer"}
 	if set, err := st.SetRole(ctx, viewer.Name, nil, uuid.Nil); err != nil || len(set.Permissions) != 0 || set.UpdatedBy != uuid.Nil {
 		t.Errorf("the role was set to %+v, with the error %v", set, err)

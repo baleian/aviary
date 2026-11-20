@@ -1,8 +1,7 @@
-# The provider of whatever asks for none. The adapter does: when the first
-# turn of a session has ended, it has a model of its own choosing make a title
-# for the session. That is not the agent's model, and nobody is asked for it:
-# the provider has no address that answers. The session itself is given the
-# provider aviary below, by codex-acp-aviary.
+# The default provider, for requests that name none, such as the session title
+# that the ACP adapter has a model of its choosing write after the first turn.
+# It points nowhere, so such requests fail. codex-acp-aviary gives sessions
+# the aviary provider.
 model_provider = "nobody"
 
 [model_providers.nobody]
@@ -18,6 +17,6 @@ wire_api = "responses"
 env_key = "AVIARY_LLM_API_KEY"
 
 # With plugins on, Codex downloads its plugin catalog into every new session
-# home when it starts, about 90 MB.
+# home when it starts.
 [features]
 plugins = false

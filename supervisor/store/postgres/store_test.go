@@ -12,7 +12,7 @@ func TestStorable(t *testing.T) {
 		"a\x00b",
 		"\x00\x00",
 		`a backslash \ and a quote "`,
-		// Text that only looks like the escaped character.
+		// Text that only looks like an escaped U+0000.
 		`\u0000`,
 		`\\u0000`,
 		"\\\x00",

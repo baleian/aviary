@@ -7,10 +7,8 @@
 {{- $inside4 = append $inside4 . }}
 {{- end }}
 {{- end }}
-# What the Egress Proxy itself can connect to. The sandboxes reach the
-# outside through it, so it must not be a way into the cluster: to the
-# database, to other pods, to the node. Inside, it reaches only what the
-# rules below name.
+# The sandboxes reach the outside through the Egress Proxy, so inside the
+# cluster the proxy itself may reach only what these rules allow.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -25,7 +23,7 @@ spec:
       app.kubernetes.io/component: egress-proxy
   policyTypes: ["Egress"]
   egress:
-    # The Supervisor, which it asks for the turn of a request.
+    # The Supervisor, for ext_authz.
     - to:
         - podSelector:
             matchLabels:
@@ -44,7 +42,7 @@ spec:
       ports:
         - {protocol: UDP, port: 53}
         - {protocol: TCP, port: 53}
-    # Everything outside.
+    # Anything outside egressProxy.insideCIDRs.
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0

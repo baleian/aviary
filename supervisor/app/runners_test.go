@@ -9,8 +9,8 @@ import (
 	"aviary/supervisor/internal/driver"
 )
 
-// A request to cancel a turn reaches any Supervisor, and the runner of the
-// turn is told by the one that follows the turn.
+// A cancel request can go to any Supervisor. The one that follows the turn
+// tells the runner.
 func TestCancel(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
@@ -18,8 +18,8 @@ func TestCancel(t *testing.T) {
 	session := following.session()
 	accepted := following.send(session, "hello")
 	runner := aviary.given(accepted.ID)
-	// The Supervisor that is asked starts after the turn was dispatched, so
-	// the other one follows the turn.
+	// Started after the dispatch, so that the other Supervisor follows the
+	// turn.
 	asked := aviary.supervisor()
 	runner.report(started("harness-session"))
 	runner.report(said("one "))
@@ -39,14 +39,13 @@ func TestCancel(t *testing.T) {
 	if status, again := cancel(following); status != http.StatusAccepted || !again.CancelRequestedAt.Equal(*cancelling.CancelRequestedAt) {
 		t.Errorf("cancelling the turn again was answered with %d and the turn %+v", status, again)
 	}
-	// The harness ends the turn, which its runner tells.
 	runner.report(finished("cancelled", nil))
 
 	expected := []string{"turn.started", "message.delta", "turn.cancelled"}
 	if events := watching(); !slices.Equal(types(events), expected) {
 		t.Errorf("the events of the cancelled turn are %v, not %v", types(events), expected)
 	}
-	// The record keeps what the agent said until it was stopped.
+	// The record keeps what the agent said before it was stopped.
 	record := asked.turn(accepted.ID)
 	if said := items(t, record); record.State != "cancelled" || record.StopReason != "cancelled" || record.Failure != nil ||
 		len(said) != 1 || said[0]["text"] != "one " {
@@ -60,11 +59,11 @@ func TestCancel(t *testing.T) {
 	}
 }
 
-// A turn that is cancelled between its dispatch and the moment at which a
-// runner has it is not given to a runner.
+// A turn that is cancelled after its dispatch, but before a runner has it, is
+// never given to a runner.
 func TestCancelBeforeTheRunnerHasTheTurn(t *testing.T) {
 	t.Parallel()
-	// The turn waits for its sandbox, which does not run yet.
+	// The sandbox stays starting, so that the turn waits for it.
 	aviary := install(t)
 	aviary.service.Slow(true)
 	s := aviary.supervisor()
@@ -85,8 +84,8 @@ func TestCancelBeforeTheRunnerHasTheTurn(t *testing.T) {
 	}
 }
 
-// A Supervisor that is told to stop does not wait for its turns. It follows
-// them no longer, and another Supervisor takes them up.
+// A stopping Supervisor does not wait for its turns: it leaves them, and
+// another Supervisor takes them over.
 func TestStop(t *testing.T) {
 	t.Parallel()
 	// The other Supervisor finds the turn when it sweeps.
@@ -98,8 +97,8 @@ func TestStop(t *testing.T) {
 	runner.report(said("one "))
 	client := stopping.read(accepted.ID, "")
 	read := []event{client.next(), client.next()}
-	// The other Supervisor starts after the turn was dispatched, so the one
-	// that is told to stop follows the turn.
+	// Started after the dispatch, so that the stopping Supervisor follows
+	// the turn.
 	other := aviary.supervisor()
 
 	stopped := make(chan struct{})
@@ -112,7 +111,8 @@ func TestStop(t *testing.T) {
 	case <-time.After(soon):
 		t.Fatal("the Supervisor did not stop while a turn ran")
 	}
-	// A client that read along is let go, and reads on from another.
+	// The stopping Supervisor ends the event stream, and the client resumes
+	// it from another.
 	if more := client.rest(soon); !slices.Equal(types(read), []string{"turn.started", "message.delta"}) || len(more) != 0 {
 		t.Errorf("the client of the Supervisor that stopped read the events %v and then %v", read, more)
 	}
@@ -120,7 +120,7 @@ func TestStop(t *testing.T) {
 		t.Errorf("the turn of the Supervisor that stopped is %s", state)
 	}
 
-	// The other Supervisor goes on from what is recorded of the turn.
+	// The other Supervisor continues from the recorded events.
 	runner.report(said("two"))
 	runner.report(finished("end_turn", nil))
 	rest := other.read(accepted.ID, read[len(read)-1].ID).rest(patience)

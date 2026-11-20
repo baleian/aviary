@@ -1,6 +1,5 @@
-// Package postgres keeps the Supervisor's records in PostgreSQL. Its queries
-// are in queries.sql, and `make sqlc` writes the Go code for them to
-// internal/db.
+// Package postgres implements store.Store on PostgreSQL. The queries are in
+// queries.sql, from which `make sqlc` generates internal/db.
 package postgres
 
 import (
@@ -22,15 +21,15 @@ import (
 	"aviary/supervisor/store/postgres/internal/db"
 )
 
-// uniqueViolation is the PostgreSQL error code for a broken unique constraint.
+// uniqueViolation is the PostgreSQL error code for a unique constraint
+// violation.
 const uniqueViolation = "23505"
 
-// dispatchLock is the key of the advisory lock that is held while turns are
-// dispatched.
+// dispatchLock is the key of the advisory lock that serializes dispatching.
 const dispatchLock int64 = 0x617669617279 // "aviary"
 
-// queueLock is the key of the advisory lock that is held while turns that
-// wait are told their positions.
+// queueLock is the key of the advisory lock that serializes counting the
+// queue and announcing it.
 const queueLock int64 = dispatchLock + 1
 
 type records struct {
@@ -38,14 +37,14 @@ type records struct {
 	queries *db.Queries
 }
 
-// Plugin connects the Supervisor to PostgreSQL databases, whose addresses
-// begin with postgres:// or postgresql://.
+// Plugin is the store.Plugin for PostgreSQL, whose URLs begin with
+// postgres:// or postgresql://.
 type Plugin struct{}
 
 func (Plugin) Schemes() []string { return []string{"postgres", "postgresql"} }
 
-// Open connects to the database at the address. Its schema must be at least
-// as new as this build needs; Migrate brings it there.
+// Open connects to the database at address and checks that its schema suits
+// this build.
 func (Plugin) Open(ctx context.Context, address string) (store.Store, error) {
 	pool, err := pgxpool.New(ctx, address)
 	if err != nil {
@@ -85,7 +84,7 @@ func (s *records) Projects(ctx context.Context) ([]store.Project, error) {
 }
 
 func (s *records) ProjectsOf(ctx context.Context, userID uuid.UUID, groups []string) ([]store.Project, error) {
-	// A list and not none: no group is asked for, and not every group.
+	// An empty array, not NULL, for no groups.
 	params := db.ListProjectsOfMemberParams{Groups: append([]string{}, groups...)}
 	if userID != uuid.Nil {
 		params.UserID = &userID
@@ -112,7 +111,7 @@ func (s *records) Roles(ctx context.Context) ([]store.Role, error) {
 }
 
 func (s *records) SetRole(ctx context.Context, name string, permissions []string, by uuid.UUID) (store.Role, error) {
-	// An empty list and not none: a role may have no permissions.
+	// An empty array, not NULL: a role may have no permissions.
 	params := db.SetRoleParams{Name: name, Permissions: append([]string{}, permissions...)}
 	if by != uuid.Nil {
 		params.UpdatedBy = &by
@@ -124,7 +123,6 @@ func (s *records) SetRole(ctx context.Context, name string, permissions []string
 	return roleFrom(row), err
 }
 
-// roleFrom returns a row of the roles table as a Role.
 func roleFrom(row db.Role) store.Role {
 	role := store.Role{Name: row.Name, Permissions: row.Permissions, UpdatedAt: row.UpdatedAt}
 	if row.UpdatedBy != nil {
@@ -134,7 +132,7 @@ func roleFrom(row db.Role) store.Role {
 }
 
 func (s *records) UserOf(ctx context.Context, subject, username, displayName string) (store.User, error) {
-	// Most requests come from a user of whom nothing has changed.
+	// Most requests come from a user whose details have not changed.
 	row, err := s.queries.GetUserBySubject(ctx, subject)
 	if err == nil && row.DisplayName == displayName && (username == "" || (row.Username != nil && *row.Username == username)) {
 		return userFrom(row), nil
@@ -150,8 +148,8 @@ func (s *records) UserOf(ctx context.Context, subject, username, displayName str
 	if username != "" {
 		seen.Username = &username
 	}
-	// A Supervisor that sees the user first at the same moment may have
-	// made the user with the username meanwhile: then the user is there.
+	// Another Supervisor that sees the user for the first time concurrently
+	// can make the insert fail on the unique username. A retry finds the user.
 	for attempt := 1; ; attempt++ {
 		if username != "" {
 			if err := s.queries.FreeUsername(ctx, db.FreeUsernameParams{Username: username, Subject: subject}); err != nil {
@@ -170,8 +168,7 @@ func (s *records) UserOf(ctx context.Context, subject, username, displayName str
 	}
 }
 
-// claim makes the user with the username the member that projects await
-// under it.
+// claim gives the members awaited under username to the user who has it.
 func (s *records) claim(ctx context.Context, username string) error {
 	if err := s.queries.DropMembersBeforeClaim(ctx, username); err != nil {
 		return err
@@ -250,7 +247,7 @@ func (s *records) Members(ctx context.Context, projectID uuid.UUID) ([]store.Mem
 }
 
 func (s *records) Permissions(ctx context.Context, projectID, userID uuid.UUID, groups []string) ([]string, error) {
-	// A list and not none: no group is asked for, and not every group.
+	// An empty array, not NULL, for no groups.
 	params := db.ListPermissionsParams{ProjectID: projectID, Groups: append([]string{}, groups...)}
 	if userID != uuid.Nil {
 		params.UserID = &userID
@@ -269,8 +266,6 @@ func (s *records) member(ctx context.Context, id uuid.UUID) (store.Member, error
 	return memberFrom(row), err
 }
 
-// memberFrom returns a row of the members of a project, with the user of
-// the member if it has one, as a Member.
 func memberFrom(row db.GetMemberRow) store.Member {
 	member := store.Member{ID: row.ID, ProjectID: row.ProjectID, Permissions: row.Permissions, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
 	if row.GroupName != nil {
@@ -294,7 +289,6 @@ func memberFrom(row db.GetMemberRow) store.Member {
 	return member
 }
 
-// userFrom returns a row of the users table as a User.
 func userFrom(row db.User) store.User {
 	user := store.User{ID: row.ID, Subject: row.Subject, DisplayName: row.DisplayName, CreatedAt: row.CreatedAt}
 	if row.Username != nil {
@@ -370,7 +364,7 @@ func (s *records) SetSandbox(ctx context.Context, sessionID uuid.UUID, from, to 
 	if err != nil || set == 1 {
 		return err == nil, err
 	}
-	// The session is not there, or has another sandbox than it was said to.
+	// The session does not exist, or its sandbox is not from.
 	if _, err := s.queries.GetSession(ctx, sessionID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, store.ErrNotFound
@@ -387,9 +381,8 @@ func (s *records) EndSession(ctx context.Context, id uuid.UUID) (store.Session, 
 	}
 	defer tx.Rollback(ctx)
 	queries := s.queries.WithTx(tx)
-	// The session is held first, and its turns are looked at then: a message
-	// that is taken at the same moment is a turn by then, or finds the
-	// session ended.
+	// Lock the session before checking its turns, so that a concurrent
+	// message either has added its turn or finds the session ended.
 	row, err := queries.LockSession(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.Session{}, store.ErrNotFound
@@ -503,14 +496,12 @@ func (s *records) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text 
 	defer tx.Rollback(ctx)
 	queries := s.queries.WithTx(tx)
 	if maxWaiting > 0 {
-		// Messages are accepted one at a time, so that the count holds also
-		// when they reach several Supervisors at once.
+		// Accept messages one at a time across Supervisors, so that the
+		// queue limit holds.
 		if err := queries.Lock(ctx, queueLock); err != nil {
 			return store.Turn{}, 0, err
 		}
 	}
-	// The session is held before it is looked at, so that it is not ended
-	// while the message is taken.
 	if _, err := queries.HoldSession(ctx, sessionID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return store.Turn{}, 0, store.ErrNotFound
@@ -604,8 +595,8 @@ func (s *records) DispatchTurns(ctx context.Context, limit int) ([]store.Dispatc
 	}
 	defer tx.Rollback(ctx)
 	queries := s.queries.WithTx(tx)
-	// One Supervisor at a time counts the running turns and picks the next,
-	// so that several Supervisors together stay within the limit.
+	// Dispatch on one Supervisor at a time, so that together they keep to the
+	// limit.
 	if err := queries.Lock(ctx, dispatchLock); err != nil {
 		return nil, err
 	}
@@ -679,7 +670,6 @@ func (s *records) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.Follo
 	case turn.State == store.TurnQueued:
 		return store.FollowedTurn{}, store.ErrNotFound
 	default:
-		// The turn ended since it was looked for.
 		return store.FollowedTurn{}, store.ErrTurnEnded
 	}
 	followed := store.FollowedTurn{
@@ -707,7 +697,6 @@ func (s *records) SessionTurn(ctx context.Context, sessionID uuid.UUID) (store.O
 	return originOf(row), err
 }
 
-// originOf is where a running turn comes from, as a row tells it.
 func originOf(row db.SessionTurnRow) store.Origin {
 	origin := store.Origin{TurnID: row.TurnID, SessionID: row.SessionID, AgentID: row.AgentID, ProjectID: row.ProjectID, Subject: row.Subject}
 	if row.CreatedBy != nil {
@@ -718,7 +707,6 @@ func originOf(row db.SessionTurnRow) store.Origin {
 			ID: *row.ProviderID, ProjectID: row.ProjectID, URL: row.ProviderUrl, APIKey: row.ProviderApiKey,
 		}
 	}
-	// The key of the provider is in a secret store, which comes with it.
 	if row.ApiKeyStoreID != nil && row.StoreCreatedAt != nil && row.StoreUpdatedAt != nil {
 		origin.Provider.APIKeyAt = &store.SecretReference{Store: *row.ApiKeyStoreID, Path: row.ApiKeyPath, Key: row.ApiKeyName}
 		origin.SecretStore = &store.SecretStore{
@@ -780,8 +768,8 @@ func (s *records) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool,
 		return store.Turn{}, false, err
 	}
 	turn := turnFrom(row)
-	// Of several Supervisors that end the turn at once, only the one that
-	// gets here keeps the items.
+	// Only the Supervisor whose update ended the turn gets here, so items is
+	// called once.
 	said, err := items(ctx)
 	if err != nil {
 		return store.Turn{}, false, fmt.Errorf("read what the turn said: %w", err)
@@ -856,8 +844,8 @@ func (s *records) Answers(ctx context.Context, turnID *uuid.UUID) ([]store.Answe
 	return answers, nil
 }
 
-// storable returns an item as PostgreSQL can keep it. It cannot keep the
-// character U+0000 in jsonb, so the replacement character takes its place.
+// storable replaces every escaped U+0000 in item with U+FFFD, since jsonb
+// cannot store U+0000.
 func storable(item json.RawMessage) []byte {
 	if !bytes.Contains(item, []byte(`\u0000`)) {
 		return item
@@ -871,7 +859,8 @@ func storable(item json.RawMessage) []byte {
 			kept = append(kept, `\ufffd`...)
 			i += 5
 		default:
-			// Another escaped character, which may be a backslash.
+			// Copy any other escape whole, so that what follows an escaped
+			// backslash is not taken for an escape.
 			kept = append(kept, item[i], item[i+1])
 			i++
 		}
@@ -879,7 +868,6 @@ func storable(item json.RawMessage) []byte {
 	return kept
 }
 
-// agentFrom returns a row of the agents table as an Agent.
 func agentFrom(row db.Agent) store.Agent {
 	agent := store.Agent{
 		ID:           row.ID,
@@ -895,7 +883,6 @@ func agentFrom(row db.Agent) store.Agent {
 	return agent
 }
 
-// secretStoreFrom returns a row of the secret_stores table as a SecretStore.
 func secretStoreFrom(row db.SecretStore) store.SecretStore {
 	return store.SecretStore{
 		ID:         row.ID,
@@ -909,7 +896,6 @@ func secretStoreFrom(row db.SecretStore) store.SecretStore {
 	}
 }
 
-// providerFrom returns a row of the providers table as a Provider.
 func providerFrom(row db.Provider) store.Provider {
 	provider := store.Provider{
 		ID:        row.ID,
@@ -926,7 +912,6 @@ func providerFrom(row db.Provider) store.Provider {
 	return provider
 }
 
-// sessionFrom returns a row of the sessions table as a Session.
 func sessionFrom(row db.Session) store.Session {
 	session := store.Session{ID: row.ID, AgentID: row.AgentID, CreatedAt: row.CreatedAt, EndedAt: row.EndedAt}
 	if row.CreatedBy != nil {
@@ -938,7 +923,6 @@ func sessionFrom(row db.Session) store.Session {
 	return session
 }
 
-// turnFrom returns a row of the turns table as a Turn.
 func turnFrom(row db.Turn) store.Turn {
 	turn := store.Turn{
 		ID:                row.ID,

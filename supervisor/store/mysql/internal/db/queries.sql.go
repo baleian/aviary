@@ -26,7 +26,8 @@ type AddApprovalParams struct {
 	Request json.RawMessage
 }
 
-// A request that its runner reports again is there already.
+// Does nothing if the request exists, since a runner may report a request
+// again.
 func (q *Queries) AddApproval(ctx context.Context, arg AddApprovalParams) error {
 	_, err := q.db.ExecContext(ctx, addApproval, arg.TurnID, arg.ID, arg.Request)
 	return err
@@ -94,8 +95,8 @@ type AnswerApprovalParams struct {
 	ID         string
 }
 
-// Keeps the option that a person chose, for a request that has no answer
-// yet and whose turn has not ended.
+// Records the chosen option, unless the request has an answer already or is
+// resolved, or its turn has ended.
 func (q *Queries) AnswerApproval(ctx context.Context, arg AnswerApprovalParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, answerApproval,
 		arg.OptionID,
@@ -127,8 +128,8 @@ type AnswersRow struct {
 	OptionID string
 }
 
-// The answers that the harnesses of turns that run have not got yet: those
-// of one turn, or of all.
+// Lists the answers not yet delivered to the harnesses of unfinished turns:
+// those of the turn, or of all turns if turn_id is null.
 func (q *Queries) Answers(ctx context.Context, arg AnswersParams) ([]AnswersRow, error) {
 	rows, err := q.db.QueryContext(ctx, answers, arg.TurnID, arg.TurnID)
 	if err != nil {
@@ -156,7 +157,6 @@ const askTurnToStop = `-- name: AskTurnToStop :exec
 update turns set cancel_requested_at = coalesce(cancel_requested_at, now(6)) where id = ?
 `
 
-// A dispatched turn is only marked.
 func (q *Queries) AskTurnToStop(ctx context.Context, id key.ID) error {
 	_, err := q.db.ExecContext(ctx, askTurnToStop, id)
 	return err
@@ -167,7 +167,6 @@ update turns set state = 'cancelled', ended_at = now(6), cancel_requested_at = c
 where id = ?
 `
 
-// A queued turn ends at once.
 func (q *Queries) CancelQueuedTurn(ctx context.Context, id key.ID) error {
 	_, err := q.db.ExecContext(ctx, cancelQueuedTurn, id)
 	return err
@@ -207,7 +206,7 @@ set project_members.user_id = users.id, project_members.username = null
 where project_members.username = ?
 `
 
-// The members that were awaited under the username are the user that has it.
+// Gives the members awaited under the username to the user who has it.
 func (q *Queries) ClaimMembers(ctx context.Context, username *string) error {
 	_, err := q.db.ExecContext(ctx, claimMembers, username)
 	return err
@@ -228,8 +227,7 @@ const countRunningTurns = `-- name: CountRunningTurns :one
 select count(*) from turns where state in ('dispatching', 'running')
 `
 
-// The turns that take the room of a turn that runs: those that were
-// dispatched and have not ended.
+// Counts the dispatching and running turns, which both take room to run.
 func (q *Queries) CountRunningTurns(ctx context.Context) (int64, error) {
 	row := q.db.QueryRowContext(ctx, countRunningTurns)
 	var count int64
@@ -417,7 +415,8 @@ const dispatchTurn = `-- name: DispatchTurn :execrows
 update turns set state = 'dispatching', dispatched_at = now(6) where id = ? and state = 'queued'
 `
 
-// A turn that was cancelled since it was read is left as it is.
+// Dispatches the turn if it is still queued: it may have been cancelled since
+// it was read.
 func (q *Queries) DispatchTurn(ctx context.Context, id key.ID) (int64, error) {
 	result, err := q.db.ExecContext(ctx, dispatchTurn, id)
 	if err != nil {
@@ -469,8 +468,8 @@ type DropMembersBeforeClaimParams struct {
 	Username *string
 }
 
-// A user who is a member of a project, and is given a username under which
-// the project was given a member since, is the member that was given last.
+// Deletes the membership of the user who has the username in each project
+// that awaits a member under it, so that the awaited member takes its place.
 func (q *Queries) DropMembersBeforeClaim(ctx context.Context, arg DropMembersBeforeClaimParams) error {
 	_, err := q.db.ExecContext(ctx, dropMembersBeforeClaim, arg.Username, arg.Username)
 	return err
@@ -521,7 +520,6 @@ const followTurn = `-- name: FollowTurn :exec
 update turns set state = 'running' where id = ? and state in ('dispatching', 'running')
 `
 
-// A turn that was dispatched and has not ended runs once it is followed.
 func (q *Queries) FollowTurn(ctx context.Context, id key.ID) error {
 	_, err := q.db.ExecContext(ctx, followTurn, id)
 	return err
@@ -551,7 +549,6 @@ type FollowedTurnRow struct {
 	Dispatched   int64
 }
 
-// The turn as the Supervisor that follows it gets it.
 func (q *Queries) FollowedTurn(ctx context.Context, id key.ID) (FollowedTurnRow, error) {
 	row := q.db.QueryRowContext(ctx, followedTurn, id)
 	var i FollowedTurnRow
@@ -598,7 +595,8 @@ type FreeUsernameParams struct {
 	Subject  string
 }
 
-// The username is that of the user whom the provider gives it to now.
+// Takes the username from any other user, since the provider has given it to
+// the user with the subject.
 func (q *Queries) FreeUsername(ctx context.Context, arg FreeUsernameParams) error {
 	_, err := q.db.ExecContext(ctx, freeUsername, arg.Username, arg.Subject)
 	return err
@@ -859,7 +857,7 @@ type IsMemberParams struct {
 	Username  *string
 }
 
-// Whether the user with the username is a member of the project.
+// Reports whether the user who has the username is a member of the project.
 func (q *Queries) IsMember(ctx context.Context, arg IsMemberParams) (bool, error) {
 	row := q.db.QueryRowContext(ctx, isMember, arg.ProjectID, arg.Username)
 	var exists bool
@@ -871,7 +869,7 @@ const isSessionBusy = `-- name: IsSessionBusy :one
 select exists (select 1 from turns where session_id = ? and ended_at is null)
 `
 
-// Whether a turn of the session has not ended.
+// Reports whether the session has an unfinished turn.
 func (q *Queries) IsSessionBusy(ctx context.Context, sessionID key.ID) (bool, error) {
 	row := q.db.QueryRowContext(ctx, isSessionBusy, sessionID)
 	var exists bool
@@ -990,8 +988,8 @@ type ListPermissionsParams struct {
 	GroupNames []*string
 }
 
-// What the members of the project that are the user or one of the groups may
-// do: of each, the permissions of its own, or those that its role has now.
+// Returns, for each member of the project that is the user or one of the
+// groups, its own permissions or those of its role.
 func (q *Queries) ListPermissions(ctx context.Context, arg ListPermissionsParams) ([]json.RawMessage, error) {
 	query := listPermissions
 	var queryParams []interface{}
@@ -1069,7 +1067,6 @@ type ListProjectsOfMemberParams struct {
 	GroupNames []*string
 }
 
-// The projects of which the user, or one of the groups, is a member.
 func (q *Queries) ListProjectsOfMember(ctx context.Context, arg ListProjectsOfMemberParams) ([]Project, error) {
 	query := listProjectsOfMember
 	var queryParams []interface{}
@@ -1146,8 +1143,8 @@ type ListSessionsParams struct {
 	Limit   int32
 }
 
-// The sessions of an agent whose IDs are below the one that is given, newest
-// first: the ID of a session rises with the time at which it was created.
+// Lists the agent's sessions with IDs below before, newest first: IDs
+// increase with creation time.
 func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]Session, error) {
 	rows, err := q.db.QueryContext(ctx, listSessions, arg.AgentID, arg.Before, arg.Limit)
 	if err != nil {
@@ -1191,7 +1188,7 @@ type ListSessionsOfParams struct {
 	Limit     int32
 }
 
-// Those of them that one user created.
+// Like ListSessions, for the sessions that one user created.
 func (q *Queries) ListSessionsOf(ctx context.Context, arg ListSessionsOfParams) ([]Session, error) {
 	rows, err := q.db.QueryContext(ctx, listSessionsOf,
 		arg.AgentID,
@@ -1279,8 +1276,6 @@ type ListTurnsParams struct {
 	Limit     int32
 }
 
-// The turns of a session that came before the one with the sequence number,
-// newest first.
 func (q *Queries) ListTurns(ctx context.Context, arg ListTurnsParams) ([]Turn, error) {
 	rows, err := q.db.QueryContext(ctx, listTurns, arg.SessionID, arg.Before, arg.Limit)
 	if err != nil {
@@ -1329,8 +1324,7 @@ const lock = `-- name: Lock :one
 select name from locks where name = ? for update
 `
 
-// Waits for the row of what only one Supervisor does at a time, and holds it
-// until the transaction ends.
+// Waits for the lock with the name and holds it until the transaction ends.
 func (q *Queries) Lock(ctx context.Context, name string) (string, error) {
 	row := q.db.QueryRowContext(ctx, lock, name)
 	var name_2 string
@@ -1342,9 +1336,8 @@ const lockSession = `-- name: LockSession :one
 select id, agent_id, created_by, sandbox, created_at, ended_at from sessions where id = ? for update
 `
 
-// Holds the session until the transaction ends: the messages that reach a
-// session at once are taken one after another, and none of them while the
-// session is being ended.
+// Locks the session until the transaction ends, which serializes accepting
+// its messages and ending it.
 func (q *Queries) LockSession(ctx context.Context, id key.ID) (Session, error) {
 	row := q.db.QueryRowContext(ctx, lockSession, id)
 	var i Session
@@ -1363,8 +1356,7 @@ const lockTurn = `-- name: LockTurn :one
 select id, session_id, seq, created_by, state, text, created_at, dispatched_at, started_at, cancel_requested_at, ended_at, stop_reason, failure_reason, failure_message, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens from turns where id = ? for update
 `
 
-// Holds the turn until the transaction ends: what is done to a turn at once
-// is done one after another.
+// Locks the turn until the transaction ends, which serializes changes to it.
 func (q *Queries) LockTurn(ctx context.Context, id key.ID) (Turn, error) {
 	row := q.db.QueryRowContext(ctx, lockTurn, id)
 	var i Turn
@@ -1450,7 +1442,6 @@ type NextTurnsRow struct {
 	Waited  int64
 }
 
-// The queued turns, oldest first.
 func (q *Queries) NextTurns(ctx context.Context, limit int32) ([]NextTurnsRow, error) {
 	rows, err := q.db.QueryContext(ctx, nextTurns, limit)
 	if err != nil {
@@ -1530,8 +1521,6 @@ type ReplaceProviderParams struct {
 	ID            key.ID
 }
 
-// The provider gets the name, the URL and the key that are given, in place
-// of all that it had. The key is stored, or in a secret store, or none.
 func (q *Queries) ReplaceProvider(ctx context.Context, arg ReplaceProviderParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, replaceProvider,
 		arg.Name,
@@ -1563,8 +1552,6 @@ type ReplaceSecretStoreParams struct {
 	ID         key.ID
 }
 
-// The store gets the name, the kind, the settings and the credential that
-// are given, in place of all that it had.
 func (q *Queries) ReplaceSecretStore(ctx context.Context, arg ReplaceSecretStoreParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, replaceSecretStore,
 		arg.Name,
@@ -1590,8 +1577,8 @@ type ResolveApprovalParams struct {
 	ID      string
 }
 
-// The harness has its answer. A request that was resolved before is left as
-// it is.
+// Records that the harness has received its answer, unless the request was
+// already resolved.
 func (q *Queries) ResolveApproval(ctx context.Context, arg ResolveApprovalParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, resolveApproval, arg.Outcome, arg.TurnID, arg.ID)
 	if err != nil {
@@ -1639,10 +1626,8 @@ type SessionTurnRow struct {
 	StoreUpdatedAt  *time.Time
 }
 
-// The running turn of the session, what the turn belongs to, who sent its
-// message, and the provider of its agent as it is now, if the agent names
-// its model. A provider whose key is in a secret store comes with that
-// store, as it is now.
+// Returns the origin of the session's running turn, with the current
+// provider of its agent and the secret store of the provider's key.
 func (q *Queries) SessionTurn(ctx context.Context, sessionID key.ID) (SessionTurnRow, error) {
 	row := q.db.QueryRowContext(ctx, sessionTurn, sessionID)
 	var i SessionTurnRow
@@ -1768,7 +1753,7 @@ const startup = `-- name: Startup :one
 select cast(coalesce(timestampdiff(microsecond, dispatched_at, started_at), 0) as signed) as startup from turns where id = ?
 `
 
-// How long the turn took to start, in microseconds.
+// Returns the microseconds from the turn's dispatch to its start.
 func (q *Queries) Startup(ctx context.Context, id key.ID) (int64, error) {
 	row := q.db.QueryRowContext(ctx, startup, id)
 	var startup int64
@@ -1787,7 +1772,7 @@ type UpdateUserParams struct {
 	Subject     string
 }
 
-// A user that is given no username keeps the one that it has.
+// Updates the user with the subject. A null username keeps the current one.
 func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) error {
 	_, err := q.db.ExecContext(ctx, updateUser, arg.Username, arg.DisplayName, arg.Subject)
 	return err
@@ -1799,7 +1784,6 @@ where turn_id = ? and answered_at is null and resolved_at is null
 order by requested_at, id
 `
 
-// The requests of a turn that wait for a person, oldest first.
 func (q *Queries) WaitingApprovals(ctx context.Context, turnID key.ID) ([]json.RawMessage, error) {
 	rows, err := q.db.QueryContext(ctx, waitingApprovals, turnID)
 	if err != nil {

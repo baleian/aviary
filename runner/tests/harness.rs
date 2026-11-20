@@ -1,11 +1,11 @@
-//! Each harness image keeps what images/README.md asks of it. A test runs
-//! the turns of a session the way the sandbox of the session runs them: a
-//! container of the harness image runs what the sandbox runs, which starts
-//! the runner, and the test sends it the turns. The model is mock-llm, in a
-//! container beside it. The network of the containers leads nowhere else,
-//! and mock-llm is also their forward proxy, which lets nothing through.
+//! Tests that the harness images meet the contract in images/README.md.
 //!
-//! The tests need the images, so they run with `make test-harness`.
+//! A session runs in a container of the image, started the way a sandbox
+//! starts its pod, and the test sends turns to its runner. The containers are
+//! on an internal network with mock-llm, which is both their model and their
+//! forward proxy. As a proxy, it refuses every request.
+//!
+//! The tests need the images: run them with `make test-harness`.
 
 mod support;
 
@@ -21,30 +21,29 @@ use tokio::time;
 
 use support::{Event, Following, Session, said};
 
-/// How long a test waits for a turn.
+/// How long a test waits for a container to start or for the next event of a
+/// turn.
 const PATIENCE: Duration = Duration::from_secs(120);
 
-/// The key that the model asks for: nothing stands between the harness and
-/// the model here.
+/// mock-llm's API key. With no Egress Proxy in between, the harness is given
+/// the real key.
 const KEY: &str = "the-key-of-the-model";
 
-/// The forward proxy of the containers, which is the model server.
 const PROXY: &str = "http://turn:the-key-of-the-model@model:8080";
 
 const MODEL_IMAGE: &str = "aviary-mock-llm:dev";
-/// Carries what the test sends to the runner into the network of the
-/// containers, which has no port on the host.
+/// Forwards a port of the host to the runner, since the internal network
+/// publishes no ports.
 const FORWARDER_IMAGE: &str =
     "alpine/socat:1.8.1.3@sha256:71131702f671a88b3808a70b7330f9679cd9b9933adcafadc191508edfe55bba";
 
-/// The harness images to test.
 fn images() -> Vec<String> {
     let images = std::env::var("AVIARY_HARNESS_IMAGES")
         .expect("AVIARY_HARNESS_IMAGES names no harness images: run `make test-harness`");
     images.split_whitespace().map(str::to_owned).collect()
 }
 
-/// Runs docker and returns what it printed.
+/// Runs docker and returns its trimmed standard output. Panics if it fails.
 async fn docker(arguments: &[&str]) -> String {
     let ran = Command::new("docker")
         .args(arguments)
@@ -59,7 +58,7 @@ async fn docker(arguments: &[&str]) -> String {
     String::from_utf8_lossy(&ran.stdout).trim().to_owned()
 }
 
-/// A word that no other test uses.
+/// Returns a unique word that starts with `prefix`.
 fn word(prefix: &str) -> String {
     static MADE: AtomicU32 = AtomicU32::new(0);
     let since = SystemTime::now()
@@ -72,22 +71,22 @@ fn word(prefix: &str) -> String {
     )
 }
 
-/// Where a harness image is tested: a network of its own with a model
-/// server on it.
+/// The test environment of a harness image: a network of its own, with
+/// mock-llm on it.
 struct Bench {
     image: String,
-    /// A name that nothing else on the machine has.
+    /// Unique on the machine. It names and labels the Docker objects of the
+    /// bench.
     name: String,
     made: AtomicU32,
 }
 
-/// A message of a session.
+/// A turn's message, with the agent's instructions and approval mode.
 #[derive(Default)]
 struct Message<'a> {
     text: &'a str,
-    /// The instructions of the session's agent.
     instructions: &'a str,
-    /// The approval of the session's agent: "ask", or nothing.
+    /// "ask", or empty.
     approval: &'a str,
 }
 
@@ -99,7 +98,7 @@ impl Bench {
             made: AtomicU32::new(0),
         });
         let label = bench.label();
-        // No way out, as from a sandbox.
+        // No route out, as from a sandbox.
         docker(&[
             "network",
             "create",
@@ -146,8 +145,8 @@ impl Bench {
         )
     }
 
-    /// The hosts that the proxy was asked for: what the harness and the
-    /// tools of the agent tried to reach outside.
+    /// Returns the hosts that the harness and the agent's tools asked the
+    /// proxy for.
     async fn asked(&self) -> Vec<String> {
         let log = docker(&["logs", &format!("{}-model", self.name)]).await;
         let mut hosts: Vec<String> = log
@@ -161,24 +160,22 @@ impl Bench {
         hosts
     }
 
-    /// Starts a session: a container of the harness image that runs what
-    /// the sandbox of a session runs, as the sandbox does: as the user of the
-    /// agent, who cannot become root, in /, with a volume of its own as its
-    /// home.
+    /// Starts a new session, with a new volume as its home.
     async fn session(&self) -> Sitting {
         let home = self.next("home");
         docker(&["volume", "create", "--label", &self.label(), &home]).await;
         self.sitting(home).await
     }
 
-    /// Has the session go on in another container, as a session that slept
-    /// goes on in another pod of its sandbox: with the home of the session.
+    /// Moves the session to a new container with the same home, as when a
+    /// sandbox wakes in a new pod.
     async fn again(&self, sitting: Sitting) -> Sitting {
         docker(&["rm", "--force", &sitting.harness]).await;
         self.sitting(sitting.home).await
     }
 
-    /// Starts a container of the session whose home is the volume.
+    /// Starts a session container on the `home` volume, run as a sandbox runs
+    /// its pod: as the agent's user, who cannot become root, in /.
     async fn sitting(&self, home: String) -> Sitting {
         let label = self.label();
         let harness = self.next("harness");
@@ -207,9 +204,9 @@ impl Bench {
             "aviary-session",
         ])
         .await;
-        // The forwarder has a port on the host and a place in the network.
-        // It is started with the port and joins the network then: Docker
-        // sometimes gave the port to nobody when it started with both.
+        // The forwarder starts with its published port and joins the network
+        // afterwards: Docker sometimes leaves the port unconnected when a
+        // container starts with both.
         let forwarder = self.next("forwarder");
         docker(&[
             "run",
@@ -281,8 +278,8 @@ impl Drop for Bench {
     }
 }
 
-/// A session that is there: its container, with the runner in it, and the
-/// volume that is its home.
+/// A running session: its container, which runs the runner, and its home
+/// volume.
 struct Sitting {
     image: String,
     harness: String,
@@ -292,9 +289,8 @@ struct Sitting {
 }
 
 impl Sitting {
-    /// Whether the runner answers. A request that gets no answer is given
-    /// up: the way to a container that has just started may lead nowhere
-    /// for a moment.
+    /// Reports whether the runner responds. The request times out, since a
+    /// connection to a container that has just started can hang.
     async fn listens(&self) -> bool {
         let client = reqwest::Client::new();
         let asking = client
@@ -304,7 +300,8 @@ impl Sitting {
         matches!(asked, Ok(Ok(answer)) if answer.status() == StatusCode::NOT_FOUND)
     }
 
-    /// What the runner and the harness wrote for a person to read.
+    /// Returns the container's log, which holds the output of the runner and
+    /// the harness.
     fn log(&self) -> String {
         let logged = std::process::Command::new("docker")
             .args(["logs", &self.harness])
@@ -324,11 +321,11 @@ impl Sitting {
             "AVIARY_LLM_BASE_URL": "http://model:8080/v1",
             "AVIARY_LLM_API_KEY": KEY,
             "AVIARY_LLM_MODEL": "mock",
-            // Everything else goes to the proxy.
+            // Everything else goes through the proxy.
             "HTTP_PROXY": PROXY, "HTTPS_PROXY": PROXY, "NO_PROXY": "localhost,127.0.0.1,::1,model",
             "http_proxy": PROXY, "https_proxy": PROXY, "no_proxy": "localhost,127.0.0.1,::1,model",
         });
-        // Only the harness of an agent that is to ask has the variable.
+        // Set only for an agent that asks, as the Supervisor does.
         if !message.approval.is_empty() {
             environment["AVIARY_APPROVAL"] = json!(message.approval);
         }
@@ -360,7 +357,7 @@ impl Sitting {
         self.start(message).await.end().await
     }
 
-    /// Runs a turn with the message and nothing else.
+    /// Runs a turn with only a message.
     async fn say(&self, text: &str) -> Ended {
         let text = Message {
             text,
@@ -369,12 +366,12 @@ impl Sitting {
         self.run(text).await
     }
 
-    /// The names of the files in the workspace of the session.
+    /// Lists the files in the session's workspace.
     async fn files(&self) -> String {
         docker(&["exec", &self.harness, "ls", "/home/workspace"]).await
     }
 
-    /// How many megabytes the home of the session holds.
+    /// Returns the size of the session's home in megabytes.
     async fn megabytes(&self) -> u64 {
         let used = docker(&[
             "exec",
@@ -388,9 +385,8 @@ impl Sitting {
         used.split_whitespace().next().unwrap().parse().unwrap()
     }
 
-    /// Ends the harness, as a harness that fails between two turns ends. The
-    /// runner is the first process of the container, and the harness is the
-    /// one that it started.
+    /// Kills the harness between turns, as if it had crashed: every child of
+    /// the runner, which is PID 1.
     async fn end_harness(&self) {
         let ended = "for stat in /proc/[0-9]*/stat; do read -r pid name state parent rest < $stat; \
                      [ \"$parent\" != 1 ] || kill \"$pid\"; done";
@@ -398,7 +394,7 @@ impl Sitting {
         time::sleep(Duration::from_millis(500)).await;
     }
 
-    /// How many seconds of a CPU the container has taken so far.
+    /// Returns the CPU seconds that the container has used.
     async fn cpu(&self) -> f64 {
         let stat = docker(&["exec", &self.harness, "cat", "/sys/fs/cgroup/cpu.stat"]).await;
         let used = stat
@@ -409,24 +405,24 @@ impl Sitting {
     }
 }
 
-/// A turn that runs.
+/// A running turn.
 struct Turn<'a> {
     sitting: &'a Sitting,
     id: String,
     following: Following,
-    /// The events of the turn that were read so far.
+    /// The events read so far.
     events: Vec<Event>,
 }
 
-/// How a turn ended.
+/// A turn that has ended.
 struct Ended {
     image: String,
     events: Vec<Event>,
-    /// What the runner and the harness wrote for a person to read.
+    /// The container's log, for failure messages.
     log: String,
 }
 
-/// What the events tell of the tools that the agent called.
+/// Returns the data of the tool events, concatenated.
 fn tools(events: &[Event]) -> String {
     events
         .iter()
@@ -440,7 +436,8 @@ fn find<'a>(events: &'a [Event], name: &str) -> Option<&'a Event> {
 }
 
 impl Turn<'_> {
-    /// Reads the events of the turn until they tell what the condition asks.
+    /// Reads events until `holds` is true of them. Panics with `what` if the
+    /// turn ends or times out first.
     async fn until(&mut self, what: &str, holds: impl Fn(&[Event]) -> bool) {
         while !holds(&self.events) {
             let read = time::timeout(PATIENCE, self.following.next()).await;
@@ -461,8 +458,7 @@ impl Turn<'_> {
         assert_eq!(told, StatusCode::NO_CONTENT);
     }
 
-    /// Answers what the harness has asked approval for, as a person does who
-    /// chooses the option of the kind.
+    /// Answers the approval request with the option of the given kind.
     async fn answer(&mut self, kind: &str) {
         let asked = find(&self.events, "approval.requested").expect("a request for approval");
         let options = asked.data["options"].as_array().unwrap();
@@ -506,13 +502,13 @@ impl Turn<'_> {
 }
 
 impl Ended {
-    /// The stop reason with which the harness ended the turn, if it did.
+    /// Returns the stop reason if the turn finished.
     fn stopped(&self) -> Option<&str> {
         let last = self.events.last().filter(|last| last.name == "finished")?;
         last.data["stop_reason"].as_str()
     }
 
-    /// Checks that the turn completed.
+    /// Asserts that the turn finished with end_turn.
     fn completed(&self) -> &Self {
         assert!(
             self.stopped() == Some("end_turn"),
@@ -524,7 +520,7 @@ impl Ended {
         self
     }
 
-    /// Checks that the turn failed for the reason.
+    /// Asserts that the turn failed for `reason`, with a message.
     fn failed(&self, reason: &str) -> &Self {
         let last = self.events.last().expect("the events of the turn");
         assert!(
@@ -540,7 +536,7 @@ impl Ended {
         self
     }
 
-    /// Checks that the agent said the text. A harness may say more.
+    /// Asserts that the agent's message contains `text`.
     fn says(&self, text: &str) -> &Self {
         let said = said(&self.events);
         assert!(
@@ -551,7 +547,7 @@ impl Ended {
         self
     }
 
-    /// The harness session that the turn ran in.
+    /// Returns the harness session ID of the turn.
     fn session(&self) -> String {
         let started = find(&self.events, "started").expect("the start of the turn");
         started.data["harness_session_id"]
@@ -560,13 +556,14 @@ impl Ended {
             .to_owned()
     }
 
-    /// How the request for approval of the turn was answered to the harness.
+    /// Returns the outcome of the turn's approval request.
     fn resolved(&self) -> Option<&str> {
         find(&self.events, "approval.resolved")?.data["outcome"].as_str()
     }
 }
 
-/// Runs the check for every harness image, all of them at once.
+/// Runs `check` for every harness image concurrently, each on a bench of its
+/// own.
 async fn each<Check, Checking>(check: Check)
 where
     Check: Fn(Arc<Bench>) -> Checking,
@@ -595,15 +592,15 @@ async fn a_session_goes_on_in_its_home_and_nowhere_else() {
         let write = format!("run printf {content} > note.txt");
         let first = session.say(&write).await;
         first.completed();
-        // A harness tells the command with the call or with an update of it.
+        // The command may be in the tool call or in an update of it.
         assert!(
             tools(&first.events).contains(&content),
             "{}: the agent called no tool with the command: {:?}",
             first.image,
             first.events
         );
-        // A harness reports the usage of one answer of the model or of all
-        // of them, and every answer of mock-llm takes 11 tokens in and 7 out.
+        // A harness reports the usage of its last model response or of all of
+        // them, and mock-llm reports the same usage for every response.
         let usage = &first.events.last().unwrap().data["usage"];
         let answers = usage["total_tokens"].as_i64().unwrap_or(0) / 18;
         assert!(
@@ -614,13 +611,10 @@ async fn a_session_goes_on_in_its_home_and_nowhere_else() {
             first.image
         );
 
-        // The harness stays for the next turn, with the conversation.
         let second = session.say("recall").await;
         second.completed().says(&write);
         assert_eq!(second.session(), first.session(), "{}", second.image);
 
-        // A harness that is started again finds its conversation and the
-        // files of the agent in the home.
         session.end_harness().await;
         let third = session.say("recall").await;
         third.completed().says(&write);
@@ -631,7 +625,7 @@ async fn a_session_goes_on_in_its_home_and_nowhere_else() {
             .completed()
             .says(&content);
 
-        // Whatever a harness keeps for itself, it keeps little of it.
+        // Catches a harness that downloads large data into every new home.
         let megabytes = session.megabytes().await;
         assert!(
             megabytes < 50,
@@ -639,17 +633,12 @@ async fn a_session_goes_on_in_its_home_and_nowhere_else() {
             bench.image
         );
 
-        // Another session has another home, and starts without that
-        // conversation.
         let elsewhere = bench.session().await;
         elsewhere.say("recall").await.completed().says("nothing");
     })
     .await;
 }
 
-/// A session that is not at work is put to sleep: its pod goes, and its
-/// home stays. Its next turn is in another pod, whose harness continues the
-/// conversation and finds what the agent made.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
 async fn a_session_goes_on_in_another_pod_with_its_home() {
@@ -673,9 +662,7 @@ async fn a_session_goes_on_in_another_pod_with_its_home() {
     .await;
 }
 
-/// The agent is a user who cannot become root, as in a restricted namespace.
-/// What it installs for itself with npm or pip goes to its home, which
-/// outlives the pod.
+/// The agent cannot become root, and npm and pip install into its home.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
 async fn an_agent_is_a_user_who_installs_into_its_home() {
@@ -691,7 +678,7 @@ async fn an_agent_is_a_user_who_installs_into_its_home() {
             "{}: {told}",
             who.image
         );
-        // The model server serves a package to install.
+        // mock-llm serves a package to install.
         let installed = session
             .say("run pip install http://model:8080/packages/aviary_probe-1.0-py3-none-any.whl && pip show aviary-probe")
             .await;
@@ -734,7 +721,6 @@ async fn the_instructions_of_an_agent_reach_the_model_in_every_turn() {
             };
             session.run(told).await.completed().says("present");
         }
-        // Also when the harness was started again.
         session.end_harness().await;
         let told = Message {
             text: &find,
@@ -743,16 +729,13 @@ async fn the_instructions_of_an_agent_reach_the_model_in_every_turn() {
         };
         session.run(told).await.completed().says("present");
 
-        // An agent without instructions sends the model none.
         let plain = bench.session().await;
         plain.say(&find).await.completed().says("absent");
     })
     .await;
 }
 
-/// An agent that is to ask runs a command when a person has allowed it, and
-/// not one that a person has refused. How the turn ends after a refusal is
-/// up to the harness. The session goes on either way.
+/// How a turn ends after a refusal depends on the harness.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
 async fn an_agent_that_is_to_ask_runs_what_a_person_allows() {
@@ -769,8 +752,6 @@ async fn an_agent_that_is_to_ask_runs_what_a_person_allows() {
         let allow = format!("escalate touch {allowed}");
         let mut turn = session.start(ask(&allow)).await;
         turn.until("the harness asked for no approval", asked).await;
-        // The request tells a person the command, and can be allowed and
-        // refused. The command waits for the answer.
         let request = find(&turn.events, "approval.requested")
             .unwrap()
             .data
@@ -818,8 +799,6 @@ async fn an_agent_that_is_to_ask_runs_what_a_person_allows() {
             second.log
         );
 
-        // A turn that is cancelled while its harness asks ends as one that
-        // was cancelled, with nothing run.
         let drop = format!("escalate touch {dropped}");
         let mut turn = session.start(ask(&drop)).await;
         turn.until("the harness asked for no approval", asked).await;
@@ -849,13 +828,13 @@ async fn a_turn_that_the_model_refuses_fails() {
             .say("fail the model is out of order")
             .await
             .failed("harness_error");
-        // The session goes on.
         session.say("say hello").await.completed().says("hello");
     })
     .await;
 }
 
-/// A model endpoint that cannot take a request right now answers 503.
+/// mock-llm refuses the first request with 503, as a busy model provider
+/// does.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
 async fn a_request_that_the_model_cannot_take_right_now_is_sent_again() {
@@ -893,14 +872,12 @@ async fn a_turn_that_is_cancelled_is_ended_by_the_harness() {
             ended.events.last(),
             ended.log
         );
-        // The answer is told as far as it got.
         let said = said(&ended.events);
         assert!(
             said.contains("w1 w2 ") && !said.contains("w40"),
             "{}: {said:?}",
             ended.image
         );
-        // The next turn of the session is not stopped by it.
         session.say("say hello").await.completed().says("hello");
     })
     .await;
@@ -918,9 +895,9 @@ async fn a_long_answer_is_told_whole() {
     .await;
 }
 
-/// A tool may return any byte, and the character U+0000 is the one that not
-/// everything after the harness can keep. The runner tells it as it is, with
-/// the tool call or with what the agent says of it.
+/// A tool can return any byte. U+0000 is the character that some storage
+/// downstream cannot hold, and the runner reports it unchanged, in the tool
+/// call or in the agent's message.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
 async fn the_character_that_a_tool_returns_is_told_as_it_is() {
@@ -943,8 +920,6 @@ async fn the_character_that_a_tool_returns_is_told_as_it_is() {
     .await;
 }
 
-/// A session is mostly waiting: for the model, for a tool, for its next
-/// turn. Neither the runner nor the harness is to keep a CPU busy with it.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
 async fn a_session_that_waits_takes_little_cpu() {
@@ -970,7 +945,6 @@ async fn a_session_that_waits_takes_little_cpu() {
         );
         turn.end().await.completed();
 
-        // The turn has ended, and the harness stays.
         time::sleep(Duration::from_secs(1)).await;
         let before = session.cpu().await;
         time::sleep(Duration::from_secs(4)).await;
@@ -984,8 +958,6 @@ async fn a_session_that_waits_takes_little_cpu() {
     .await;
 }
 
-/// What a program of the session fetches goes to the proxy, which lets
-/// through what the installation allows.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
 async fn what_the_tools_of_an_agent_fetch_goes_to_the_proxy() {
@@ -1003,8 +975,8 @@ async fn what_the_tools_of_an_agent_fetch_goes_to_the_proxy() {
     .await;
 }
 
-/// A harness is started in a home that was empty when the session began.
-/// What it fetches for itself when it starts, it fetches for every session.
+/// Whatever a harness fetches at startup, it fetches again for every new
+/// session home.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
 async fn a_harness_fetches_nothing_for_itself() {

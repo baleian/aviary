@@ -1,5 +1,4 @@
-// Package key is the IDs of the records as MySQL keeps them: in sixteen
-// bytes.
+// Package key stores the IDs of records in MySQL as 16 bytes.
 package key
 
 import (
@@ -8,8 +7,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// ID is the ID of a record. It is a UUID that is written to the database as
-// its bytes, and not as the text that a UUID writes itself as.
+// ID is the ID of a record. Unlike a uuid.UUID, which is written as text, it
+// is written to the database as its bytes.
 type ID uuid.UUID
 
 func (id ID) Value() (driver.Value, error) {

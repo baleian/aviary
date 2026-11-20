@@ -14,20 +14,19 @@ import (
 	"aviary/supervisor/store"
 )
 
-// in returns the api_key of a provider whose key is in a secret store.
+// in returns an api_key that refers to a value in a secret store.
 func in(store, path, key string) string {
 	return fmt.Sprintf(`{"store": %q, "path": %q, "key": %q}`, store, path, key)
 }
 
-// keyed returns the body of a request that gives a provider with the
-// api_key.
+// keyed returns the body of a provider with apiKey as its api_key.
 func keyed(apiKey string) string {
 	return `{"name": "a provider", "url": "https://api.example.com/v1", "api_key": ` + apiKey + `}`
 }
 
-// A provider keeps its key in a secret store of its project. Aviary stores
-// where the key is and not the key, and takes a place only if the store
-// gives a value for it.
+// A provider's key can be a reference to a secret store of its project.
+// Aviary stores the reference, not the key, and accepts it only if the store
+// returns a value for it.
 func TestProviderWithItsKeyInASecretStore(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
@@ -38,7 +37,7 @@ func TestProviderWithItsKeyInASecretStore(t *testing.T) {
 	kept := s.create("/v1/projects/"+project+"/secret-stores", scriptedStore("a store", address, "a-credential", "a-credential"))
 	theirs := s.create("/v1/projects/"+other+"/secret-stores", scriptedStore("theirs", address, "a-credential", "a-credential"))
 	aviary.secrets.put(address, "llm/model", "api_key", value)
-	// record returns the provider as the database holds it.
+	// record returns the provider as stored.
 	record := func(id string) store.Provider {
 		t.Helper()
 		record, err := aviary.records.Provider(context.Background(), uuid.MustParse(id))
@@ -47,8 +46,9 @@ func TestProviderWithItsKeyInASecretStore(t *testing.T) {
 		}
 		return record
 	}
-	// answer sends a request about a provider and returns the provider that
-	// the API answers with. No answer holds the key.
+	// answer sends a request and returns the provider, the status and the
+	// error message of the response. It fails the test if the response
+	// reveals the key.
 	answer := func(method, path, body string) (provider, int, string) {
 		t.Helper()
 		var raw json.RawMessage
@@ -77,8 +77,8 @@ func TestProviderWithItsKeyInASecretStore(t *testing.T) {
 		t.Errorf("the database holds the provider with the key %q, at %+v", held.APIKey, held.APIKeyAt)
 	}
 
-	// What is no place of a key in a secret store of the project. A refusal
-	// tells why, and leaves the provider as it is.
+	// Invalid references are refused with a reason, and leave the provider
+	// unchanged.
 	for name, refused := range map[string]struct{ apiKey, why string }{
 		"a store of another project": {in(theirs, "llm/model", "api_key"), "api_key.store must be the ID of a secret store of the project"},
 		"a store that is not there":  {in(uuid.NewString(), "llm/model", "api_key"), "api_key.store must be the ID of a secret store of the project"},
@@ -100,8 +100,8 @@ func TestProviderWithItsKeyInASecretStore(t *testing.T) {
 		t.Errorf("after the requests that were refused, the provider is %+v with the key %s", read, read.APIKey)
 	}
 
-	// A provider is replaced whole: a key that is stored takes the place of
-	// the one in the store, and the other way around.
+	// PUT replaces the key: a stored key replaces a reference, and the other
+	// way around.
 	if replaced, status, _ := answer("PUT", path, keyed(`{"value": "sk-a-key-to-store"}`)); status != http.StatusOK || string(replaced.APIKey) != `{"stored":true}` {
 		t.Errorf("the provider that was given a key to store was answered with %d, with the key %s", status, replaced.APIKey)
 	}
@@ -118,9 +118,9 @@ func TestProviderWithItsKeyInASecretStore(t *testing.T) {
 	}
 }
 
-// The key of a provider that is in a secret store is read from the store
-// when a model request comes. Each Supervisor remembers it for a while, and
-// a request whose key cannot be read is refused with the reason.
+// A key in a secret store is read when a model request needs it, and each
+// Supervisor caches it. If the key cannot be read, the request is denied with
+// the reason.
 func TestModelRequestWithAKeyFromASecretStore(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
@@ -132,8 +132,8 @@ func TestModelRequestWithAKeyFromASecretStore(t *testing.T) {
 	provider := s.create("/v1/projects/"+project+"/providers", keyed(in(kept, "llm/model", "api_key")))
 	agent := s.create("/v1/projects/"+project+"/agents", `{"harness": "opencode", "model": {"provider": "`+provider+`", "name": "a-model"}}`)
 	token := aviary.token(aviary.given(s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID).Sandbox)
-	// told returns the key that a Supervisor tells the proxy to send a model
-	// request of the turn with.
+	// told returns the Authorization header that a Supervisor sets on a
+	// model request of the turn.
 	told := func(s *supervisor) string {
 		t.Helper()
 		got := named(t, s.check(token, false, "/v1/chat/completions"))
@@ -142,14 +142,14 @@ func TestModelRequestWithAKeyFromASecretStore(t *testing.T) {
 		}
 		return got.authorization
 	}
-	// refused returns the status with which a Supervisor has the proxy refuse
-	// a model request of the turn, and why.
+	// refused returns the status and the reason with which a Supervisor
+	// denies a model request of the turn.
 	refused := func(s *supervisor) (int, string) {
 		t.Helper()
 		return refusal(s.check(token, false, "/v1/chat/completions"))
 	}
-	// elsewhere tells whether a request of the turn through the forward
-	// proxy goes on as it is, without a key.
+	// elsewhere reports whether a forward proxy request of the turn passes
+	// unchanged, without a key.
 	elsewhere := func(s *supervisor) bool {
 		t.Helper()
 		return named(t, s.check(token, true, "/")) == nil
@@ -159,23 +159,23 @@ func TestModelRequestWithAKeyFromASecretStore(t *testing.T) {
 	if key := told(s); key != "Bearer sk-the-first" {
 		t.Errorf("the proxy is told to send the model request with %q", key)
 	}
-	// The key of a provider is for its endpoint alone.
+	// The key is added to model requests only.
 	if !elsewhere(s) {
 		t.Error("a request through the forward proxy is not sent as it is")
 	}
-	// The Supervisor read the key once, when the provider was made, and
-	// remembers it: also when the store has another by now.
+	// The key was read once, when the provider was created, and stays cached
+	// after the store changes.
 	aviary.secrets.put(address, "llm/model", "api_key", "sk-the-second")
 	if key := told(s); key != "Bearer sk-the-first" || s.metric(reads) != 1 {
 		t.Errorf("the proxy is told to send the model request with %q, after %v reads of the store", key, s.metric(reads))
 	}
-	// A Supervisor that does not remember it reads what the store has now.
+	// A Supervisor without the cached key reads the current one.
 	if another := aviary.supervisor(); told(another) != "Bearer sk-the-second" || another.metric(reads) != 1 {
 		t.Errorf("another Supervisor read the store %v times", another.metric(reads))
 	}
 
-	// A key that the store does not give: the request is refused with the
-	// reason, and the other requests of the turn go on.
+	// If the store has no value, model requests are denied with the reason,
+	// and the other requests of the turn pass.
 	aviary.secrets.put(address, "llm/model", "api_key", "")
 	third := aviary.supervisor()
 	if status, why := refused(third); status != http.StatusServiceUnavailable ||
@@ -189,8 +189,7 @@ func TestModelRequestWithAKeyFromASecretStore(t *testing.T) {
 		t.Error("while the key cannot be read, a request through the forward proxy is not sent as it is")
 	}
 
-	// A store that is registered anew is read anew: what a Supervisor
-	// remembers is of the store as it was.
+	// Replacing the store invalidates the cache.
 	aviary.secrets.put(address, "llm/model", "api_key", "sk-the-third")
 	if status, _ := s.request("PUT", "/v1/secret-stores/"+kept, scriptedStore("a store", address, "another-credential", "another-credential"), nil); status != http.StatusOK {
 		t.Fatalf("the secret store was replaced with %d", status)
@@ -199,9 +198,9 @@ func TestModelRequestWithAKeyFromASecretStore(t *testing.T) {
 		t.Errorf("after the secret store was replaced, the proxy is told to send the model request with %q", key)
 	}
 
-	// An installation that allows no store at that host any more reads none
-	// there, and a Supervisor cannot log in to a store whose credential it
-	// cannot open, as one that is sealed with keys of another installation.
+	// A store at a host that is not allowed is not read. Nor is a store whose
+	// credential was sealed with the keys of another installation, since the
+	// credential does not open.
 	closed := *aviary
 	closed.storeHosts = nil
 	if status, why := refused(closed.supervisor()); status != http.StatusServiceUnavailable ||

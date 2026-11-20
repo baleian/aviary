@@ -1,6 +1,5 @@
-# MySQL for the local cluster, which `make cluster-up DATABASE=mysql` installs
-# in the place of PostgreSQL. The passwords of its users are in the secret
-# mysql-users, and the user aviary owns the database aviary.
+# MySQL for the local cluster, installed by `make cluster-up DATABASE=mysql`.
+# The passwords are in the Secret mysql-users.
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -39,8 +38,8 @@ spec:
           ports:
             - name: mysql
               containerPort: 3306
-          # While the image sets the server up, MySQL answers on its socket
-          # only, and is then started again.
+          # During initialization the server listens only on its Unix
+          # socket, and then restarts.
           readinessProbe:
             tcpSocket:
               port: mysql
