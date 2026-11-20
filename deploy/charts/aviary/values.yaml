@@ -136,8 +136,9 @@ runtime:
   # How long a turn may take until its harness has the message. The first
   # turn of a session waits for the sandbox of the session to be made, which
   # takes longer on a node that has not run the template of the harness
-  # before. A turn that takes longer fails, and its sandbox is deleted. Zero
-  # is no limit.
+  # before. A turn that takes longer fails. Its sandbox is deleted if the
+  # runner in it had the turn. One that was still being made or woken stays
+  # with what the agent had in it, for the next turn. Zero is no limit.
   maxStartupSeconds: 120
   # How long a turn may run, from when it left the queue. A turn is
   # everything that an agent does for one message, which can be many

@@ -616,6 +616,39 @@ func TestASessionThatSleepsIsWokenForItsNextTurn(t *testing.T) {
 	}
 }
 
+func TestASandboxThatIsNotWokenInTimeStaysWithItsSession(t *testing.T) {
+	i := install(t, func(config *Config) {
+		config.Idle = 5 * time.Minute
+		config.MaxStartup = time.Second
+	})
+	driver, _ := i.supervisor()
+	session := i.session(store.Agent{})
+	first := i.send(driver, session, "hello")
+	given := i.service.Turn(t)
+	given.Tell("started", started)
+	given.Tell("finished", finished)
+	i.ended(first.ID)
+
+	// The sandbox wakes as slowly as on a node that does not have its
+	// template yet. The turn did not reach it, and it stays with what the
+	// agent had in it.
+	i.service.Sleep(given.Sandbox)
+	i.service.Slow(true)
+	late := i.send(driver, session, "and then")
+	if ended := i.ended(late.ID); !failed(ended, store.FailureStartup) {
+		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
+	}
+	if i.sandbox(session) != given.Sandbox || len(i.service.Sandboxes()) != 1 {
+		t.Errorf("the service has the sandboxes %v, and the session %q", i.service.Sandboxes(), i.sandbox(session))
+	}
+
+	i.service.Slow(false)
+	next := i.send(driver, session, "again")
+	if again := i.service.Turn(t); again.ID != next.ID.String() || again.Sandbox != given.Sandbox {
+		t.Errorf("the next turn was given as %+v", again)
+	}
+}
+
 // asks is the event of a harness that asks a person before it goes on.
 var asks = map[string]any{"id": "1", "options": []map[string]string{{"id": "once", "kind": "allow_once", "name": "Once"}}}
 

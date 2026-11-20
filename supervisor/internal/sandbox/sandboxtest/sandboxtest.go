@@ -47,6 +47,8 @@ type Service struct {
 	// holds is whether a template stays unbuilt until Ends tells how its
 	// building ended.
 	holds bool
+	// slow is whether a sandbox that is made or woken stays pending.
+	slow bool
 	// room is for how many sandboxes that do not sleep the pool has room,
 	// if it is set.
 	room int
@@ -131,6 +133,15 @@ func (s *Service) HoldTemplates() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.holds = true
+}
+
+// Slow has the sandboxes that are made or woken stay pending, as they do on
+// a node that does not have their template yet, or run once they are looked
+// at again.
+func (s *Service) Slow(slow bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.slow = slow
 }
 
 // RefuseTemplates has the service answer the status to those who ask it for
@@ -377,7 +388,7 @@ func (s *Service) getSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A sandbox takes a moment to run: until it is looked at.
-	if sandbox.state == "Pending" {
+	if sandbox.state == "Pending" && !s.slow {
 		sandbox.state = "Running"
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{

@@ -34,8 +34,11 @@ type run struct {
 	mu sync.Mutex
 	// sandbox is the sandbox of the session, once it has one.
 	sandbox string
-	// runner is the runner in the sandbox, once it has the turn.
+	// runner is the runner in the sandbox, once it has the turn, and given
+	// whether the runner may have it: the turn was given to it, here or by a
+	// Supervisor before.
 	runner *sandbox.Runner
+	given  bool
 	// started is whether the harness has the message.
 	started bool
 	// asking is how many requests of the turn wait for a person, and
@@ -82,10 +85,14 @@ func (d *Driver) run(ctx context.Context, turnID uuid.UUID, told *orders) {
 	slog.InfoContext(ctx, "following turn", "turn", turnID, "received", received)
 	defer d.metrics.Following(turn.Harness)()
 
+	// A turn of which something is recorded was given to its runner, by a
+	// Supervisor that is gone. It is not given again: a runner that does
+	// not have it any more would run it a second time.
+	given := received > 0 || turn.StartedAt != nil
 	r := &run{
 		turn: turn, told: told, dispatched: time.Now().Add(-turn.Dispatched),
 		changed: make(chan struct{}, 1), asked: make(chan struct{}, 1), woken: make(chan struct{}, 1),
-		sandbox: turn.Sandbox, started: turn.StartedAt != nil,
+		sandbox: turn.Sandbox, given: given, started: turn.StartedAt != nil,
 	}
 	if turn.CancelRequestedAt != nil {
 		r.stopping = *turn.CancelRequestedAt
@@ -103,10 +110,6 @@ func (d *Driver) run(ctx context.Context, turnID uuid.UUID, told *orders) {
 	r.leave = leave
 	go d.watch(following, leave, r)
 
-	// A turn of which something is recorded was given to its runner, by a
-	// Supervisor that is gone. It is not given again: a runner that does
-	// not have it any more would run it a second time.
-	given := received > 0 || turn.StartedAt != nil
 	if runner := d.reach(ctx, following, r, given); runner != nil {
 		d.read(ctx, following, r, runner, received)
 	}
@@ -254,15 +257,8 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 			r.giveUp(store.Failure{Reason: store.FailureSandboxLost, Message: "the sandbox of the session is gone"})
 			return nil, nil
 		}
-		if d.expired(ctx, turn) {
-			r.giveUp(store.Failure{
-				Reason:  store.FailureSessionExpired,
-				Message: fmt.Sprintf("the session was not used for longer than %s, and has ended", d.config.Retention),
-			})
-			return nil, nil
-		}
 		// The sandbox was lost after the last turn of the session, or
-		// could not be made: the session gets a new one.
+		// could not be made.
 		gone := "the sandbox of the session is gone"
 		if err == nil {
 			gone = fmt.Sprintf("the sandbox of the session is %s %s", seen.Status.State, seen.Status.Message)
@@ -270,6 +266,14 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 		slog.WarnContext(ctx, gone, "session", turn.SessionID, "sandbox", id)
 		d.forget(ctx, turn.SessionID, id)
 		r.keep("")
+		if d.expired(ctx, turn) {
+			r.giveUp(store.Failure{
+				Reason:  store.FailureSessionExpired,
+				Message: fmt.Sprintf("the session was not used for longer than %s, and has ended", d.config.Retention),
+			})
+			return nil, nil
+		}
+		// The session gets a new one.
 		return nil, errors.New(gone + ", and a new one is made")
 	case err != nil:
 		return nil, fmt.Errorf("look at the sandbox of the session: %w", err)
@@ -300,6 +304,8 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 			return nil, fmt.Errorf("have the sandbox of the session kept: %w", err)
 		}
 	}
+	// The runner may have the turn even when no answer comes.
+	r.give()
 	err = runner.Start(following, turn.ID, sandbox.Turn{
 		Text: turn.Text, Instructions: turn.Instructions, Approval: turn.Approval, Environment: environment(turn),
 	})
@@ -442,12 +448,14 @@ func (d *Driver) forget(ctx context.Context, sessionID uuid.UUID, id string) {
 	}
 }
 
-// giveUp ends a turn that cannot go on as failed. Its sandbox goes with it:
-// what runs in it is stopped for sure, and the next turn of the session
-// gets a new one.
+// giveUp ends a turn that cannot go on as failed. A sandbox whose runner may
+// have the turn goes with it: what runs in it is stopped for sure, and the
+// next turn of the session gets a new one. A sandbox that the turn did not
+// reach, such as one that was still being made or woken, stays with what the
+// agent had in it, for the next turn.
 func (d *Driver) giveUp(ctx context.Context, r *run, failure store.Failure) {
 	slog.WarnContext(ctx, "turn is given up", "turn", r.turn.ID, "reason", failure.Reason, "message", failure.Message)
-	if id := r.sandboxID(); id != "" {
+	if id := r.sandboxID(); id != "" && r.wasGiven() {
 		// A turn whose sandbox cannot be deleted is given up again, by the
 		// next sweep.
 		if err := d.sandboxes.DeleteSandbox(ctx, id); err != nil {
@@ -729,6 +737,20 @@ func (r *run) reached() *sandbox.Runner {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.runner
+}
+
+// give notes that the turn is given to the runner, and wasGiven whether it
+// was.
+func (r *run) give() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.given = true
+}
+
+func (r *run) wasGiven() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.given
 }
 
 // start notes that the harness has the message.
