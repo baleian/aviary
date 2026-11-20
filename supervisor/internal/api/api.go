@@ -523,8 +523,8 @@ func (a *api) answerApproval(w http.ResponseWriter, r *http.Request) error {
 }
 
 // cancelTurn cancels a turn. A turn that waits to run ends at once, and the
-// reply is 200. A turn that runs is told to stop and ends when its pod has
-// stopped, so the reply is 202 with the turn to follow. Cancelling a turn
+// reply is 200. A turn that runs is told to stop and ends when its harness
+// has stopped, so the reply is 202 with the turn to follow. Cancelling a turn
 // that was cancelled before changes nothing and succeeds.
 func (a *api) cancelTurn(w http.ResponseWriter, r *http.Request) error {
 	id, err := pathID(r, "tid")

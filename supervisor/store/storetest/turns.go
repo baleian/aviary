@@ -102,7 +102,7 @@ func (s supervisor) turn(id uuid.UUID) store.Turn {
 	return turn
 }
 
-// end ends the turn as the turn of a pod that succeeded or failed, and
+// end ends the turn as one that succeeded or failed, and
 // returns it.
 func (s supervisor) end(id uuid.UUID, succeeded bool, failure store.Failure) store.Turn {
 	s.t.Helper()
@@ -742,7 +742,7 @@ func (suite suite) testCancelTurn(t *testing.T) {
 		t.Errorf("a cancelled turn was dispatched: %v, %v", dispatches, err)
 	}
 
-	// A turn that was dispatched is asked to stop, and ends with its pod.
+	// A turn that was dispatched is asked to stop, and ends when its harness has stopped.
 	dispatch := st.running(session)
 	asked, unended, err := st.CancelTurn(ctx, dispatch.TurnID)
 	if err != nil || !unended || asked.State != store.TurnRunning || asked.CancelRequestedAt == nil || asked.EndedAt != nil {
@@ -803,7 +803,7 @@ func (suite suite) testEndTurn(t *testing.T) {
 	lost := store.Failure{Reason: store.FailureSandboxLost, Message: "the sandbox of the session is gone"}
 	tests := []struct {
 		name string
-		// What the turn went through before its pod ended: whether it was
+		// What the turn went through before it ended: whether it was
 		// asked to stop, and why the harness said that it stopped, if it did.
 		cancelled  bool
 		stopReason string
@@ -811,17 +811,17 @@ func (suite suite) testEndTurn(t *testing.T) {
 		state      string
 		failure    *store.Failure
 	}{
-		{name: "the pod succeeded", stopReason: "end_turn", succeeded: true, state: store.TurnCompleted},
-		{name: "the pod succeeded and the runner reported no end", succeeded: true, state: store.TurnFailed, failure: &lost},
-		{name: "the pod failed", state: store.TurnFailed, failure: &lost},
-		{name: "the pod failed after the harness had ended the turn", stopReason: "end_turn", state: store.TurnFailed, failure: &lost},
-		{name: "the turn was cancelled and its pod failed", cancelled: true, state: store.TurnCancelled},
+		{name: "the turn succeeded", stopReason: "end_turn", succeeded: true, state: store.TurnCompleted},
+		{name: "the turn succeeded and the runner reported no end", succeeded: true, state: store.TurnFailed, failure: &lost},
+		{name: "the turn failed", state: store.TurnFailed, failure: &lost},
+		{name: "the turn failed after the harness had ended it", stopReason: "end_turn", state: store.TurnFailed, failure: &lost},
+		{name: "the turn was cancelled and failed", cancelled: true, state: store.TurnCancelled},
 		{
 			name:      "the turn was cancelled and the harness stopped it",
 			cancelled: true, stopReason: "cancelled", succeeded: true, state: store.TurnCancelled,
 		},
 		{
-			name:      "the turn was cancelled and its pod succeeded without an end from the runner",
+			name:      "the turn was cancelled and succeeded without an end from the runner",
 			cancelled: true, succeeded: true, state: store.TurnCancelled,
 		},
 		{

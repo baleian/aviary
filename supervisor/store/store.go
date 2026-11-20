@@ -213,7 +213,8 @@ type Turn struct {
 	// Usage is the token usage of the turn, if the harness reported it.
 	Usage *Usage `json:"usage,omitempty"`
 	// CancelRequestedAt is when the turn was asked to stop, if it was. A
-	// turn that had been dispatched by then ends once its pod has stopped.
+	// turn that had been dispatched by then ends once its harness has
+	// stopped.
 	CancelRequestedAt *time.Time `json:"cancel_requested_at,omitempty"`
 	// Failure is why the turn failed, if it did.
 	Failure *Failure `json:"failure,omitempty"`
@@ -234,8 +235,8 @@ const (
 	// error. That is also how a harness reports that the model endpoint
 	// refused it.
 	FailureHarness = "harness_error"
-	// FailureStartup: the pod of the turn did not start in time, for example
-	// because an image could not be pulled.
+	// FailureStartup: the harness did not get the message in time, for
+	// example because the sandbox of the session could not be made.
 	FailureStartup = "startup_timed_out"
 	// FailureResume: the harness could not continue its session, because
 	// what it had kept of the conversation is gone or cannot be read. The
@@ -567,7 +568,7 @@ type Store interface {
 
 	// CancelTurn cancels a turn that has not ended. A turn that waits to run
 	// ends as cancelled at once. A turn that was dispatched is marked: it ends
-	// when its pod has stopped. CancelTurn returns the turn as it then is, and
+	// when its harness has stopped. CancelTurn returns the turn as it then is, and
 	// whether the turn had not ended before.
 	CancelTurn(ctx context.Context, id uuid.UUID) (Turn, bool, error)
 
@@ -606,9 +607,9 @@ type Store interface {
 	// if the harness reported it, the token usage of the turn.
 	SetFinished(ctx context.Context, turnID uuid.UUID, stopReason string, usage *Usage) error
 
-	// EndTurn records that the pod of the turn has ended. The turn is completed
-	// if the pod succeeded and the runner reported why the harness stopped, and
-	// failed otherwise, for the reason that failure gives. A turn that was asked
+	// EndTurn records that the turn has ended. The turn is completed if it
+	// succeeded and the runner reported why the harness stopped, and failed
+	// otherwise, for the reason that failure gives. A turn that was asked
 	// to stop is cancelled, unless the harness had ended it by itself. From then
 	// on the session accepts its next message. The second result is false if the
 	// turn had ended before, or does not exist.
