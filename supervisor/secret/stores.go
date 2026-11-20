@@ -168,14 +168,18 @@ func (s *Stores) Close() {
 	s.closing.Do(func() { close(s.closed) })
 }
 
+// Kinds returns the kinds of stores that the Stores serve, sorted.
+func (s *Stores) Kinds() []string {
+	return slices.Sorted(maps.Keys(s.plugins))
+}
+
 // Check validates a store that a project registers: its kind must be known,
 // its settings valid and its host allowed. It then logs in with credential,
 // so that a store that does not work is reported now rather than in a turn.
 func (s *Stores) Check(ctx context.Context, kind string, settings json.RawMessage, credential string) error {
 	plugin, known := s.plugins[kind]
 	if !known {
-		kinds := slices.Sorted(maps.Keys(s.plugins))
-		return fmt.Errorf("kind must be one of: %s", strings.Join(kinds, ", "))
+		return fmt.Errorf("kind must be one of: %s", strings.Join(s.Kinds(), ", "))
 	}
 	address, err := plugin.Address(settings)
 	if err != nil {

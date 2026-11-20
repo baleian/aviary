@@ -156,9 +156,9 @@ func (d *Driver) Accept(ctx context.Context, sessionID, by uuid.UUID, text strin
 	case err == nil:
 		d.metrics.Accepted(waiting)
 	case errors.Is(err, store.ErrQueueFull):
-		d.metrics.Refused("queue_full")
+		d.metrics.Refused(metrics.QueueFull)
 	case errors.Is(err, store.ErrSessionBusy):
-		d.metrics.Refused("session_busy")
+		d.metrics.Refused(metrics.SessionBusy)
 	}
 	return turn, err
 }

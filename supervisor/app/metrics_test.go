@@ -9,6 +9,33 @@ import (
 	"aviary/supervisor/store"
 )
 
+// A Supervisor starts with every series at zero, so that rate() and increase()
+// count the first event of each.
+func TestMetricsStartAtZero(t *testing.T) {
+	t.Parallel()
+	s := install(t).supervisor()
+	for _, series := range []string{
+		`aviary_turns_running{harness="codex"} 0`,
+		`aviary_turns_ended_total{harness="opencode",reason="",state="completed"} 0`,
+		`aviary_turns_ended_total{harness="opencode",reason="",state="cancelled"} 0`,
+		`aviary_turns_ended_total{harness="opencode",reason="",state="expired"} 0`,
+		`aviary_turns_ended_total{harness="codex",reason="sandbox_lost",state="failed"} 0`,
+		`aviary_turns_ended_total{harness="codex",reason="runner_error",state="failed"} 0`,
+		`aviary_turn_queue_duration_seconds_count{harness="opencode"} 0`,
+		`aviary_turn_startup_duration_seconds_count{harness="opencode"} 0`,
+		`aviary_turn_run_duration_seconds_count{harness="opencode",state="cancelled"} 0`,
+		`aviary_turn_tokens_total{harness="codex",kind="cached_write"} 0`,
+		`aviary_approval_wait_seconds_count{harness="codex",outcome="reject_always"} 0`,
+		`aviary_messages_refused_total{reason="queue_full"} 0`,
+		`aviary_messages_refused_total{reason="session_busy"} 0`,
+		`aviary_secret_read_seconds_count{kind="scripted",outcome="failed"} 0`,
+	} {
+		if !s.exposes(series) {
+			t.Errorf("metrics lack %s", series)
+		}
+	}
+}
+
 // Each Supervisor counts only its own work, so that the sums over all
 // Supervisors match what happened.
 func TestMetrics(t *testing.T) {

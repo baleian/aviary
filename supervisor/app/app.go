@@ -10,11 +10,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"syscall"
 	"time"
@@ -236,7 +238,7 @@ func serve(ctx context.Context, database string, plugins Plugins) error {
 // secrets and the session tokens, stores read the secrets kept in secret
 // stores, and callers says who may use the API.
 func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, sandboxes driver.Sandboxes, config driver.Config, keys *secret.Keys, stores *secret.Stores, callers api.Callers) error {
-	m := metrics.New()
+	m := metrics.New(slices.Sorted(maps.Keys(config.Harnesses)), stores.Kinds())
 	stores.Asked = m.SecretRead
 	config.Token = func(session uuid.UUID) (string, error) { return authz.Token(keys, session) }
 	dr := driver.New(config, sandboxes, st, ev, m)

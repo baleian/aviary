@@ -3,9 +3,6 @@ server:
     scrape_interval: 15s
   extraFlags:
     - web.enable-lifecycle
-    # Adds a zero at the start time of each new counter and histogram of the
-    # Supervisors, so that rate() and increase() count its first event.
-    - enable-feature=created-timestamp-zero-ingestion
   persistentVolume:
     enabled: false
 alertmanager:

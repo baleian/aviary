@@ -56,7 +56,7 @@ func install(t *testing.T, changes ...func(*Config)) *installation {
 func (i *installation) supervisor() (*Driver, func()) {
 	running, stop := context.WithCancel(ctx)
 	i.t.Cleanup(stop)
-	driver := New(i.config, i.service, i.store, i.events, metrics.New())
+	driver := New(i.config, i.service, i.store, i.events, metrics.New(nil, nil))
 	stopped := make(chan struct{})
 	go func() {
 		driver.Run(running)
@@ -532,7 +532,7 @@ func TestARunnerThatRunsAnotherTurnIsStoppedWithItsPod(t *testing.T) {
 
 func TestTwoSupervisorsMakeOneSandboxForASession(t *testing.T) {
 	i := install(t)
-	driver := New(i.config, i.service, i.store, i.events, metrics.New())
+	driver := New(i.config, i.service, i.store, i.events, metrics.New(nil, nil))
 	session := i.session(store.Agent{})
 	turn := i.send(driver, session, "hello")
 	if _, err := i.store.DispatchTurns(ctx, 1); err != nil {
@@ -854,7 +854,7 @@ func TestASessionThatIsNotUsedForLongerThanItsSandboxIsKeptHasEnded(t *testing.T
 
 func TestAHarnessThatAnInstallationHas(t *testing.T) {
 	i := install(t)
-	driver := New(i.config, i.service, i.store, i.events, metrics.New())
+	driver := New(i.config, i.service, i.store, i.events, metrics.New(nil, nil))
 	if !driver.HasHarness("opencode") || driver.HasHarness("codex") {
 		t.Error("HasHarness does not match the configured harnesses")
 	}

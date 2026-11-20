@@ -577,8 +577,9 @@ Each Supervisor reports its own work and state, so the metrics of all
 Supervisors add up: the sum of `aviary_turns_running` is the number of
 running turns. No metric reports the current length of the queue, because
 no Supervisor holds the queue: `aviary_turn_queue_length` measures it
-whenever a turn is accepted. Go runtime and process metrics are served as
-well.
+whenever a turn is accepted. Every series of the configured harnesses and
+secret store kinds starts at zero, so that `rate()` and `increase()` count
+its first event. Go runtime and process metrics are served as well.
 
 An Egress Proxy serves the metrics of Envoy on the same port and path, among
 them:

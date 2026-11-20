@@ -3,6 +3,7 @@ package metrics
 
 import (
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -30,7 +31,31 @@ type Metrics struct {
 	secretRead *prometheus.HistogramVec
 }
 
-func New() *Metrics {
+// Reasons for Refused.
+const (
+	QueueFull   = "queue_full"
+	SessionBusy = "session_busy"
+)
+
+var (
+	refusals = []string{QueueFull, SessionBusy}
+	// The states in which a turn that ran can end.
+	ranStates = []string{store.TurnCompleted, store.TurnFailed, store.TurnCancelled}
+	failures  = []string{
+		store.FailureHarness, store.FailureStartup, store.FailureResume, store.FailureTimedOut,
+		store.FailureSandboxLost, store.FailureSessionExpired, store.FailureRunner,
+	}
+	tokenKinds = []string{"input", "output", "thought", "cached_read", "cached_write"}
+	// The kinds of the options of the Agent Client Protocol, and the outcomes
+	// recorded besides them.
+	approvalOutcomes = []string{"allow_once", "allow_always", "reject_once", "reject_always", "cancelled", "other"}
+	readOutcomes     = []string{"read", "failed"}
+)
+
+// New returns the metrics with every series of the harnesses and the secret
+// store kinds at zero. A series that appears with its first event would not
+// count that event in rate() or increase().
+func New(harnesses, secretStoreKinds []string) *Metrics {
 	m := &Metrics{
 		registry: prometheus.NewRegistry(),
 		queue: prometheus.NewHistogram(prometheus.HistogramOpts{
@@ -85,6 +110,34 @@ func New() *Metrics {
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
+	for _, reason := range refusals {
+		m.refused.WithLabelValues(reason)
+	}
+	for _, harness := range harnesses {
+		m.running.WithLabelValues(harness)
+		m.waited.WithLabelValues(harness)
+		m.startup.WithLabelValues(harness)
+		for _, state := range []string{store.TurnCompleted, store.TurnCancelled, store.TurnExpired} {
+			m.ended.WithLabelValues(harness, state, "")
+		}
+		for _, reason := range failures {
+			m.ended.WithLabelValues(harness, store.TurnFailed, reason)
+		}
+		for _, state := range ranStates {
+			m.ran.WithLabelValues(harness, state)
+		}
+		for _, kind := range tokenKinds {
+			m.tokens.WithLabelValues(harness, kind)
+		}
+		for _, outcome := range approvalOutcomes {
+			m.approved.WithLabelValues(harness, outcome)
+		}
+	}
+	for _, kind := range secretStoreKinds {
+		for _, outcome := range readOutcomes {
+			m.secretRead.WithLabelValues(kind, outcome)
+		}
+	}
 	return m
 }
 
@@ -146,9 +199,7 @@ func (m *Metrics) Ended(harness string, turn store.Turn) {
 // those of the Agent Client Protocol are recorded as "other", since the
 // runner is not trusted.
 func (m *Metrics) Approved(harness, outcome string, waited time.Duration) {
-	switch outcome {
-	case "allow_once", "allow_always", "reject_once", "reject_always", "cancelled":
-	default:
+	if !slices.Contains(approvalOutcomes, outcome) {
 		outcome = "other"
 	}
 	m.approved.WithLabelValues(harness, outcome).Observe(waited.Seconds())

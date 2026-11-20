@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -614,4 +615,19 @@ func (s *supervisor) metric(series string) float64 {
 		s.t.Fatal(err)
 	}
 	return sum
+}
+
+// exposes reports whether the Supervisor's metrics have the line.
+func (s *supervisor) exposes(line string) bool {
+	s.t.Helper()
+	response, err := http.Get(s.metrics + "/metrics")
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	return slices.Contains(strings.Split(string(body), "\n"), line)
 }
