@@ -238,7 +238,7 @@ type CreateAgentParams struct {
 	Harness      string
 	Instructions string
 	Approval     string
-	ProviderID   *uuid.UUID
+	ProviderID   uuid.UUID
 	Model        string
 	ProjectID    uuid.UUID
 }
@@ -646,12 +646,12 @@ func (q *Queries) FollowTurn(ctx context.Context, id uuid.UUID) (int64, error) {
 
 const followedTurn = `-- name: FollowedTurn :one
 select turns.id, turns.session_id, turns.seq, turns.created_by, turns.state, turns.text, turns.created_at, turns.dispatched_at, turns.started_at, turns.cancel_requested_at, turns.ended_at, turns.stop_reason, turns.failure_reason, turns.failure_message, turns.total_tokens, turns.input_tokens, turns.output_tokens, turns.thought_tokens, turns.cached_read_tokens, turns.cached_write_tokens, agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
-       agents.approval, coalesce(providers.url, '')::text as provider_url, agents.model, sessions.sandbox,
+       agents.approval, providers.url as provider_url, agents.model, sessions.sandbox,
        extract(epoch from now() - coalesce(turns.dispatched_at, turns.created_at))::float8 as dispatched
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
-left join providers on providers.id = agents.provider_id
+join providers on providers.id = agents.provider_id
 where turns.id = $1
 `
 
@@ -1612,17 +1612,16 @@ func (q *Queries) SeeUser(ctx context.Context, arg SeeUserParams) (User, error) 
 const sessionTurn = `-- name: SessionTurn :one
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
        coalesce(users.subject, '')::text as subject,
-       agents.provider_id, coalesce(providers.url, '')::text as provider_url, providers.api_key as provider_api_key,
-       providers.api_key_store_id, coalesce(providers.api_key_path, '')::text as api_key_path,
-       coalesce(providers.api_key_name, '')::text as api_key_name,
+       agents.provider_id, providers.url as provider_url, providers.api_key as provider_api_key,
+       providers.api_key_store_id, providers.api_key_path, providers.api_key_name,
        coalesce(secret_stores.name, '')::text as store_name, coalesce(secret_stores.kind, '')::text as store_kind,
        secret_stores.settings as store_settings, secret_stores.credential as store_credential,
        secret_stores.created_at as store_created_at, secret_stores.updated_at as store_updated_at
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
+join providers on providers.id = agents.provider_id
 left join users on users.id = turns.created_by
-left join providers on providers.id = agents.provider_id
 left join secret_stores on secret_stores.id = providers.api_key_store_id
 where turns.session_id = $1 and turns.state = 'running'
 `
@@ -1634,7 +1633,7 @@ type SessionTurnRow struct {
 	ProjectID       uuid.UUID
 	CreatedBy       *uuid.UUID
 	Subject         string
-	ProviderID      *uuid.UUID
+	ProviderID      uuid.UUID
 	ProviderUrl     string
 	ProviderApiKey  []byte
 	ApiKeyStoreID   *uuid.UUID

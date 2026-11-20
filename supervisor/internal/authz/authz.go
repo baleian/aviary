@@ -106,7 +106,7 @@ func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*
 	if origin.UserID != uuid.Nil {
 		from["user"], from["subject"] = origin.UserID.String(), origin.Subject
 	}
-	if !forward && origin.Provider != nil {
+	if !forward {
 		from["provider"] = origin.Provider.ID.String()
 	}
 	metadata, err := structpb.NewStruct(from)
@@ -119,9 +119,6 @@ func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*
 	}
 	if forward {
 		return allowed, nil
-	}
-	if origin.Provider == nil {
-		return refused(typev3.StatusCode_NotFound, "the turn's agent has no model\n"), nil
 	}
 	endpoint, refusal := a.endpoint(ctx, origin, request.GetAttributes().GetRequest().GetHttp().GetPath())
 	if refusal != nil {

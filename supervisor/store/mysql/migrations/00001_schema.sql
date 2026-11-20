@@ -108,9 +108,9 @@ create table agents (
     -- if it does not ask.
     approval varchar(64) not null default '',
     -- The agent's model: a provider of the project and the provider's name
-    -- for the model. Null and empty if the agent names no model.
-    provider_id binary(16),
-    model mediumtext not null default (''),
+    -- for the model.
+    provider_id binary(16) not null,
+    model mediumtext not null,
     created_at datetime(6) not null default (now(6)),
     foreign key (project_id) references projects (id),
     foreign key (provider_id) references providers (id)

@@ -181,46 +181,6 @@ func TestAgentNamesItsModel(t *testing.T) {
 	}
 }
 
-// The sessions of an agent without a model take no messages, and a running
-// turn of such an agent is denied model requests.
-func TestAgentFromBeforeModels(t *testing.T) {
-	t.Parallel()
-	aviary := install(t)
-	s := aviary.supervisor()
-	// The API refuses such agents and their messages, so the test writes the
-	// agent and its turn to the store.
-	ctx := context.Background()
-	agent, err := aviary.records.CreateAgent(ctx, uuid.MustParse(s.create("/v1/projects", `{"name": "test"}`)), store.Agent{Harness: "opencode"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	session := s.create("/v1/agents/"+agent.ID.String()+"/sessions", "")
-	queued, _, err := aviary.records.CreateTurn(ctx, uuid.MustParse(session), uuid.Nil, "hello", 0, 50)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Accepting a message makes the Supervisor dispatch the queued turns.
-	s.send(s.session(), "hello")
-	runner := aviary.given(queued.ID.String())
-	if told := runner.Environment; len(told) != 0 {
-		t.Errorf("harness environment without a model = %v, want none", told)
-	}
-
-	token := aviary.token(runner.Sandbox)
-	if status, why := refusal(s.check(token, false, "/v1/chat/completions")); status != http.StatusNotFound || why != "the turn's agent has no model\n" {
-		t.Errorf("model request without a model: denied with %d %q", status, why)
-	}
-	// Forward proxy requests are not affected.
-	if got := named(t, s.check(token, true, "/")); got != nil {
-		t.Errorf("forward proxy request: endpoint %+v, want nil", got)
-	}
-	var refused struct{ Code, Message string }
-	status, _ := s.request("POST", "/v1/sessions/"+session+"/messages", `{"text": "hello again"}`, &refused)
-	if status != http.StatusConflict || refused.Code != "agent_without_model" || refused.Message == "" {
-		t.Errorf("send without a model = %d %s %q, want 409 agent_without_model", status, refused.Code, refused.Message)
-	}
-}
-
 // An agent's model must name a provider of the agent's own project and a
 // model name.
 func TestModelsThatAnAgentCannotName(t *testing.T) {

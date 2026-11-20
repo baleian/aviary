@@ -7,7 +7,7 @@ select * from projects where id = @id;
 -- name: CreateAgent :one
 insert into agents (id, project_id, harness, instructions, approval, provider_id, model)
 select @id::uuid, projects.id, @harness::text, @instructions::text, @approval::text,
-       sqlc.narg(provider_id)::uuid, @model::text
+       @provider_id::uuid, @model::text
 from projects where projects.id = @project_id
 returning *;
 
@@ -164,12 +164,12 @@ update turns set state = 'running' where id = @id and state in ('dispatching', '
 
 -- name: FollowedTurn :one
 select sqlc.embed(turns), agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
-       agents.approval, coalesce(providers.url, '')::text as provider_url, agents.model, sessions.sandbox,
+       agents.approval, providers.url as provider_url, agents.model, sessions.sandbox,
        extract(epoch from now() - coalesce(turns.dispatched_at, turns.created_at))::float8 as dispatched
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
-left join providers on providers.id = agents.provider_id
+join providers on providers.id = agents.provider_id
 where turns.id = @id;
 
 -- name: SessionTurn :one
@@ -177,17 +177,16 @@ where turns.id = @id;
 -- provider of its agent and the secret store of the provider's key.
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
        coalesce(users.subject, '')::text as subject,
-       agents.provider_id, coalesce(providers.url, '')::text as provider_url, providers.api_key as provider_api_key,
-       providers.api_key_store_id, coalesce(providers.api_key_path, '')::text as api_key_path,
-       coalesce(providers.api_key_name, '')::text as api_key_name,
+       agents.provider_id, providers.url as provider_url, providers.api_key as provider_api_key,
+       providers.api_key_store_id, providers.api_key_path, providers.api_key_name,
        coalesce(secret_stores.name, '')::text as store_name, coalesce(secret_stores.kind, '')::text as store_kind,
        secret_stores.settings as store_settings, secret_stores.credential as store_credential,
        secret_stores.created_at as store_created_at, secret_stores.updated_at as store_updated_at
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
+join providers on providers.id = agents.provider_id
 left join users on users.id = turns.created_by
-left join providers on providers.id = agents.provider_id
 left join secret_stores on secret_stores.id = providers.api_key_store_id
 where turns.session_id = @session_id and turns.state = 'running';
 

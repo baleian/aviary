@@ -17,7 +17,7 @@ type Agent struct {
 	Harness      string
 	Instructions string
 	Approval     string
-	ProviderID   *key.ID
+	ProviderID   key.ID
 	Model        string
 	CreatedAt    time.Time
 }

@@ -390,9 +390,7 @@ func (s *records) CreateAgent(ctx context.Context, projectID uuid.UUID, agent st
 	}
 	params := db.CreateAgentParams{
 		ID: key.ID(id), ProjectID: key.ID(projectID), Harness: agent.Harness, Instructions: agent.Instructions, Approval: agent.Approval,
-	}
-	if agent.Model != nil {
-		params.ProviderID, params.Model = (*key.ID)(&agent.Model.Provider), agent.Model.Name
+		ProviderID: key.ID(agent.Model.Provider), Model: agent.Model.Name,
 	}
 	if err := created(s.queries.CreateAgent(ctx, params)); err != nil {
 		return store.Agent{}, err
@@ -421,14 +419,11 @@ func (s *records) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agen
 }
 
 func agentFrom(row db.Agent) store.Agent {
-	agent := store.Agent{
+	return store.Agent{
 		ID: uuid.UUID(row.ID), ProjectID: uuid.UUID(row.ProjectID), Harness: row.Harness, CreatedAt: row.CreatedAt,
 		Instructions: row.Instructions, Approval: row.Approval,
+		Model: store.Model{Provider: uuid.UUID(row.ProviderID), Name: row.Model},
 	}
-	if row.ProviderID != nil {
-		agent.Model = &store.Model{Provider: uuid.UUID(*row.ProviderID), Name: row.Model}
-	}
-	return agent
 }
 
 func (s *records) CreateSession(ctx context.Context, agentID, by uuid.UUID) (store.Session, error) {
@@ -871,14 +866,12 @@ func originOf(row db.SessionTurnRow) store.Origin {
 	origin := store.Origin{
 		TurnID: uuid.UUID(row.TurnID), SessionID: uuid.UUID(row.SessionID), AgentID: uuid.UUID(row.AgentID), ProjectID: uuid.UUID(row.ProjectID),
 		Subject: row.Subject,
+		Provider: store.Provider{
+			ID: uuid.UUID(row.ProviderID), ProjectID: uuid.UUID(row.ProjectID), URL: row.ProviderUrl, APIKey: row.ProviderApiKey,
+		},
 	}
 	if row.CreatedBy != nil {
 		origin.UserID = uuid.UUID(*row.CreatedBy)
-	}
-	if row.ProviderID != nil {
-		origin.Provider = &store.Provider{
-			ID: uuid.UUID(*row.ProviderID), ProjectID: origin.ProjectID, URL: row.ProviderUrl, APIKey: row.ProviderApiKey,
-		}
 	}
 	if row.ApiKeyStoreID != nil && row.StoreCreatedAt != nil && row.StoreUpdatedAt != nil {
 		in := uuid.UUID(*row.ApiKeyStoreID)

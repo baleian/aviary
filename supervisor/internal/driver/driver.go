@@ -478,16 +478,15 @@ func (d *Driver) Ended(ctx context.Context, turn store.Turn) {
 
 // environment returns the environment variables of the turn's harness.
 func (d *Driver) environment(turn store.FollowedTurn) map[string]string {
-	told := map[string]string{}
-	if turn.ProviderURL != "" {
-		// The Egress Proxy serves the provider's endpoint under the path of
-		// the provider's URL, which the API validated.
-		models := *d.config.Models
-		if endpoint, err := url.Parse(turn.ProviderURL); err == nil {
-			models.Path = strings.TrimSuffix(endpoint.Path, "/")
-		}
-		told["AVIARY_LLM_BASE_URL"] = models.String()
-		told["AVIARY_LLM_MODEL"] = turn.Model
+	// The Egress Proxy serves the provider's endpoint under the path of the
+	// provider's URL, which the API validated.
+	models := *d.config.Models
+	if endpoint, err := url.Parse(turn.ProviderURL); err == nil {
+		models.Path = strings.TrimSuffix(endpoint.Path, "/")
+	}
+	told := map[string]string{
+		"AVIARY_LLM_BASE_URL": models.String(),
+		"AVIARY_LLM_MODEL":    turn.Model,
 	}
 	if turn.Approval != "" {
 		told["AVIARY_APPROVAL"] = turn.Approval

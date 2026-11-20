@@ -57,7 +57,6 @@ var (
 	errSessionOver = &apiError{status: http.StatusConflict, Code: "session_ended", Message: "the session has ended"}
 	errTurnEnded   = &apiError{status: http.StatusConflict, Code: "turn_ended", Message: "the turn has ended"}
 	errAnswered    = &apiError{status: http.StatusConflict, Code: "approval_answered", Message: "the approval request already has an answer"}
-	errNoModel     = &apiError{status: http.StatusConflict, Code: "agent_without_model", Message: "the session's agent has no model; create an agent with a model"}
 	errQueueFull   = &apiError{status: http.StatusTooManyRequests, Code: "queue_full", Message: "too many turns are queued; retry later", retryAfter: 5}
 	errInternal    = &apiError{status: http.StatusInternalServerError, Code: "internal", Message: "internal error"}
 )
@@ -201,7 +200,7 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 	}
 	agent, err := a.store.CreateAgent(r.Context(), projectID, store.Agent{
 		Harness: request.Harness, Instructions: request.Instructions, Approval: request.Approval,
-		Model: &store.Model{Provider: providerID, Name: request.Model.Name},
+		Model: store.Model{Provider: providerID, Name: request.Model.Name},
 	})
 	if err != nil {
 		return err
@@ -339,16 +338,6 @@ func (a *api) createMessage(w http.ResponseWriter, r *http.Request) error {
 	}
 	if request.Text == "" {
 		return invalid("text is required")
-	}
-	// An agent without a model cannot run turns.
-	session, err := a.store.Session(r.Context(), sessionID)
-	if err != nil {
-		return err
-	}
-	if agent, err := a.store.Agent(r.Context(), session.AgentID); err != nil {
-		return err
-	} else if agent.Model == nil {
-		return errNoModel
 	}
 	turn, err := a.driver.Accept(r.Context(), sessionID, callerOf(r).id, request.Text)
 	if err != nil {

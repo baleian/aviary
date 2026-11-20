@@ -97,9 +97,9 @@ create table agents (
     -- if it does not ask.
     approval text not null default '',
     -- The agent's model: a provider of the project and the provider's name
-    -- for the model. Null and empty if the agent names no model.
-    provider_id uuid references providers (id),
-    model text not null default '',
+    -- for the model.
+    provider_id uuid not null references providers (id),
+    model text not null,
     created_at timestamptz not null default now()
 );
 

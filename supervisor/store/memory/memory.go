@@ -158,11 +158,6 @@ func valid(what string, given json.RawMessage) error {
 // The Store copies records on the way in and out, so that callers cannot
 // change them in place.
 
-func agentOf(agent store.Agent) store.Agent {
-	agent.Model = clone(agent.Model)
-	return agent
-}
-
 func providerOf(provider store.Provider) store.Provider {
 	provider.APIKey, provider.APIKeyAt = bytes.Clone(provider.APIKey), clone(provider.APIKeyAt)
 	return provider
@@ -233,17 +228,15 @@ func (s *Store) CreateAgent(ctx context.Context, projectID uuid.UUID, agent stor
 	if _, found := s.projects[projectID]; !found {
 		return store.Agent{}, store.ErrNotFound
 	}
-	if agent.Model != nil {
-		if _, found := s.providers[agent.Model.Provider]; !found {
-			return store.Agent{}, fmt.Errorf("provider %s does not exist", agent.Model.Provider)
-		}
+	if _, found := s.providers[agent.Model.Provider]; !found {
+		return store.Agent{}, fmt.Errorf("provider %s does not exist", agent.Model.Provider)
 	}
-	created := agentOf(store.Agent{
+	created := store.Agent{
 		ID: id, ProjectID: projectID, Harness: agent.Harness, CreatedAt: s.now(), Instructions: agent.Instructions,
 		Approval: agent.Approval, Model: agent.Model,
-	})
+	}
 	s.agents[id] = created
-	return agentOf(created), nil
+	return created, nil
 }
 
 // member refers to its user by subject or, while the user is awaited, by
@@ -490,7 +483,7 @@ func (s *Store) Agent(ctx context.Context, id uuid.UUID) (store.Agent, error) {
 	if !found {
 		return store.Agent{}, store.ErrNotFound
 	}
-	return agentOf(agent), nil
+	return agent, nil
 }
 
 func (s *Store) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agent, error) {
@@ -501,7 +494,7 @@ func (s *Store) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agent,
 	agents := []store.Agent{}
 	for _, agent := range s.agents {
 		if agent.ProjectID == projectID {
-			agents = append(agents, agentOf(agent))
+			agents = append(agents, agent)
 		}
 	}
 	slices.SortFunc(agents, func(one, other store.Agent) int {
@@ -932,14 +925,11 @@ func (s *Store) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.Followe
 	followed := store.FollowedTurn{
 		Turn: turn.Turn, AgentID: agent.ID, ProjectID: agent.ProjectID,
 		Harness: agent.Harness, Instructions: agent.Instructions, Approval: agent.Approval,
+		ProviderURL: s.providers[agent.Model.Provider].URL, Model: agent.Model.Name,
 		Sandbox: session.Sandbox, Dispatched: now.Sub(turn.CreatedAt),
 	}
 	if turn.dispatchedAt != nil {
 		followed.Dispatched = now.Sub(*turn.dispatchedAt)
-	}
-	if agent.Model != nil {
-		followed.Model = agent.Model.Name
-		followed.ProviderURL = s.providers[agent.Model.Provider].URL
 	}
 	return followed, nil
 }
@@ -966,16 +956,14 @@ func (s *Store) originOf(turn *turn) store.Origin {
 			origin.Subject = user.Subject
 		}
 	}
-	if agent.Model != nil {
-		provider := s.providers[agent.Model.Provider]
-		origin.Provider = &store.Provider{
-			ID: provider.ID, ProjectID: agent.ProjectID, URL: provider.URL, APIKey: bytes.Clone(provider.APIKey),
-			APIKeyAt: clone(provider.APIKeyAt),
-		}
-		if provider.APIKeyAt != nil {
-			secrets := secretStoreOf(s.secretStores[provider.APIKeyAt.Store])
-			origin.SecretStore = &secrets
-		}
+	provider := s.providers[agent.Model.Provider]
+	origin.Provider = store.Provider{
+		ID: provider.ID, ProjectID: agent.ProjectID, URL: provider.URL, APIKey: bytes.Clone(provider.APIKey),
+		APIKeyAt: clone(provider.APIKeyAt),
+	}
+	if provider.APIKeyAt != nil {
+		secrets := secretStoreOf(s.secretStores[provider.APIKeyAt.Store])
+		origin.SecretStore = &secrets
 	}
 	return origin
 }

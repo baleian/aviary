@@ -304,9 +304,7 @@ func (s *records) CreateAgent(ctx context.Context, projectID uuid.UUID, agent st
 	}
 	params := db.CreateAgentParams{
 		ID: id, ProjectID: projectID, Harness: agent.Harness, Instructions: agent.Instructions, Approval: agent.Approval,
-	}
-	if agent.Model != nil {
-		params.ProviderID, params.Model = &agent.Model.Provider, agent.Model.Name
+		ProviderID: agent.Model.Provider, Model: agent.Model.Name,
 	}
 	row, err := s.queries.CreateAgent(ctx, params)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -698,14 +696,12 @@ func (s *records) SessionTurn(ctx context.Context, sessionID uuid.UUID) (store.O
 }
 
 func originOf(row db.SessionTurnRow) store.Origin {
-	origin := store.Origin{TurnID: row.TurnID, SessionID: row.SessionID, AgentID: row.AgentID, ProjectID: row.ProjectID, Subject: row.Subject}
+	origin := store.Origin{
+		TurnID: row.TurnID, SessionID: row.SessionID, AgentID: row.AgentID, ProjectID: row.ProjectID, Subject: row.Subject,
+		Provider: store.Provider{ID: row.ProviderID, ProjectID: row.ProjectID, URL: row.ProviderUrl, APIKey: row.ProviderApiKey},
+	}
 	if row.CreatedBy != nil {
 		origin.UserID = *row.CreatedBy
-	}
-	if row.ProviderID != nil {
-		origin.Provider = &store.Provider{
-			ID: *row.ProviderID, ProjectID: row.ProjectID, URL: row.ProviderUrl, APIKey: row.ProviderApiKey,
-		}
 	}
 	if row.ApiKeyStoreID != nil && row.StoreCreatedAt != nil && row.StoreUpdatedAt != nil {
 		origin.Provider.APIKeyAt = &store.SecretReference{Store: *row.ApiKeyStoreID, Path: row.ApiKeyPath, Key: row.ApiKeyName}
@@ -869,18 +865,15 @@ func storable(item json.RawMessage) []byte {
 }
 
 func agentFrom(row db.Agent) store.Agent {
-	agent := store.Agent{
+	return store.Agent{
 		ID:           row.ID,
 		ProjectID:    row.ProjectID,
 		Harness:      row.Harness,
 		CreatedAt:    row.CreatedAt,
 		Instructions: row.Instructions,
 		Approval:     row.Approval,
+		Model:        store.Model{Provider: row.ProviderID, Name: row.Model},
 	}
-	if row.ProviderID != nil {
-		agent.Model = &store.Model{Provider: *row.ProviderID, Name: row.Model}
-	}
-	return agent
 }
 
 func secretStoreFrom(row db.SecretStore) store.SecretStore {

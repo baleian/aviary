@@ -7,7 +7,7 @@ select * from projects where id = ?;
 -- name: CreateAgent :execrows
 insert into agents (id, project_id, harness, instructions, approval, provider_id, model)
 select sqlc.arg(id), projects.id, sqlc.arg(harness), sqlc.arg(instructions), sqlc.arg(approval),
-       sqlc.narg(provider_id), sqlc.arg(model)
+       sqlc.arg(provider_id), sqlc.arg(model)
 from projects where projects.id = sqlc.arg(project_id);
 
 -- name: GetAgent :one
@@ -142,12 +142,12 @@ update turns set state = 'running' where id = ? and state in ('dispatching', 'ru
 
 -- name: FollowedTurn :one
 select sqlc.embed(turns), agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
-       agents.approval, coalesce(providers.url, '') as provider_url, agents.model, sessions.sandbox,
+       agents.approval, providers.url as provider_url, agents.model, sessions.sandbox,
        cast(timestampdiff(microsecond, coalesce(turns.dispatched_at, turns.created_at), now(6)) as signed) as dispatched
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
-left join providers on providers.id = agents.provider_id
+join providers on providers.id = agents.provider_id
 where turns.id = ?;
 
 -- name: SessionTurn :one
@@ -155,17 +155,16 @@ where turns.id = ?;
 -- provider of its agent and the secret store of the provider's key.
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
        coalesce(users.subject, '') as subject,
-       agents.provider_id, coalesce(providers.url, '') as provider_url, providers.api_key as provider_api_key,
-       providers.api_key_store_id, coalesce(providers.api_key_path, '') as api_key_path,
-       coalesce(providers.api_key_name, '') as api_key_name,
+       agents.provider_id, providers.url as provider_url, providers.api_key as provider_api_key,
+       providers.api_key_store_id, providers.api_key_path, providers.api_key_name,
        coalesce(secret_stores.name, '') as store_name, coalesce(secret_stores.kind, '') as store_kind,
        secret_stores.settings as store_settings, secret_stores.credential as store_credential,
        secret_stores.created_at as store_created_at, secret_stores.updated_at as store_updated_at
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
+join providers on providers.id = agents.provider_id
 left join users on users.id = turns.created_by
-left join providers on providers.id = agents.provider_id
 left join secret_stores on secret_stores.id = providers.api_key_store_id
 where turns.session_id = ? and turns.state = 'running';
 

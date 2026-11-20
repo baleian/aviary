@@ -28,7 +28,7 @@ func (suite suite) testAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	given := store.Agent{Harness: "opencode", Instructions: "Be brief.", Approval: "ask", Model: &store.Model{Provider: provider.ID, Name: "a-model"}}
+	given := store.Agent{Harness: "opencode", Instructions: "Be brief.", Approval: "ask", Model: store.Model{Provider: provider.ID, Name: "a-model"}}
 	created, err := st.CreateAgent(ctx, project.ID, given)
 	if err != nil {
 		t.Fatal(err)
@@ -40,18 +40,18 @@ func (suite suite) testAgents(t *testing.T) {
 	for how, agent := range map[string]store.Agent{"created": created, "read": read} {
 		if agent.ID == uuid.Nil || agent.ID != created.ID || agent.ProjectID != project.ID || agent.Harness != "opencode" ||
 			agent.Instructions != "Be brief." || agent.Approval != "ask" ||
-			!reflect.DeepEqual(agent.Model, given.Model) || agent.CreatedAt.IsZero() || !agent.CreatedAt.Equal(created.CreatedAt) {
+			agent.Model != given.Model || agent.CreatedAt.IsZero() || !agent.CreatedAt.Equal(created.CreatedAt) {
 			t.Errorf("%s agent = %+v, model %+v", how, agent, agent.Model)
 		}
 	}
-	// An agent with only a harness.
-	plain, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "codex"})
+	// An agent with only a harness and a model.
+	plain, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "codex", Model: given.Model})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if read, err := st.Agent(ctx, plain.ID); err != nil || read.Harness != "codex" || read.Instructions != "" ||
-		read.Approval != "" || read.Model != nil {
-		t.Errorf("agent with only a harness = %+v: %v", read, err)
+		read.Approval != "" || read.Model != given.Model {
+		t.Errorf("agent with only a harness and a model = %+v: %v", read, err)
 	}
 
 	session, err := st.CreateSession(ctx, created.ID, uuid.Nil)
@@ -84,15 +84,20 @@ func (suite suite) testListAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	theirs, err := st.CreateProvider(ctx, store.Provider{ID: uuid.New(), ProjectID: other.ID, Name: "a provider", URL: "https://api.example.com/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := store.Model{Provider: provider.ID, Name: "a-model"}
 	var created []store.Agent
 	for _, given := range []struct {
 		project uuid.UUID
 		agent   store.Agent
 	}{
-		{project.ID, store.Agent{Harness: "opencode", Instructions: "Be brief.", Approval: "ask"}},
-		{other.ID, store.Agent{Harness: "opencode"}},
-		{project.ID, store.Agent{Harness: "codex", Model: &store.Model{Provider: provider.ID, Name: "a-model"}}},
-		{project.ID, store.Agent{Harness: "opencode"}},
+		{project.ID, store.Agent{Harness: "opencode", Instructions: "Be brief.", Approval: "ask", Model: model}},
+		{other.ID, store.Agent{Harness: "opencode", Model: store.Model{Provider: theirs.ID, Name: "a-model"}}},
+		{project.ID, store.Agent{Harness: "codex", Model: store.Model{Provider: provider.ID, Name: "another-model"}}},
+		{project.ID, store.Agent{Harness: "opencode", Model: model}},
 	} {
 		agent, err := st.CreateAgent(ctx, given.project, given.agent)
 		if err != nil {
@@ -118,7 +123,7 @@ func (suite suite) testListAgents(t *testing.T) {
 				t.Fatal(err)
 			}
 			if agent.ID != read.ID || agent.ProjectID != listed.project || agent.Harness != read.Harness || agent.Instructions != read.Instructions ||
-				agent.Approval != read.Approval || !reflect.DeepEqual(agent.Model, read.Model) || !agent.CreatedAt.Equal(read.CreatedAt) {
+				agent.Approval != read.Approval || agent.Model != read.Model || !agent.CreatedAt.Equal(read.CreatedAt) {
 				t.Errorf("agent %d: listed %+v, read %+v", i, agent, read)
 			}
 		}
@@ -520,7 +525,7 @@ func (suite suite) testProviderKeyInSecretStore(t *testing.T) {
 
 	// The origin of a running turn has the location of the provider's key,
 	// and the secret store as it is then.
-	agent, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: &store.Model{Provider: created.ID, Name: "a-model"}})
+	agent, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: store.Model{Provider: created.ID, Name: "a-model"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -533,7 +538,7 @@ func (suite suite) testProviderKeyInSecretStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if origin.Provider == nil || origin.Provider.APIKey != nil || !reflect.DeepEqual(origin.Provider.APIKeyAt, elsewhere) {
+	if origin.Provider.APIKey != nil || !reflect.DeepEqual(origin.Provider.APIKeyAt, elsewhere) {
 		t.Errorf("SessionTurn provider = %+v", origin.Provider)
 	}
 	if in := origin.SecretStore; in == nil || in.ID != secrets.ID || in.ProjectID != project.ID || in.Name != "a store" || in.Kind != "a kind" ||
@@ -568,7 +573,7 @@ func (suite suite) testSessionTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: &store.Model{Provider: provider.ID, Name: "a-model"}})
+	agent, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: store.Model{Provider: provider.ID, Name: "a-model"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -602,7 +607,7 @@ func (suite suite) testSessionTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	if origin.TurnID != turn.ID || origin.SessionID != session.ID || origin.AgentID != agent.ID || origin.ProjectID != project.ID ||
-		origin.UserID != sender.ID || origin.Subject != "subject-of-ann" || origin.Provider == nil || origin.Provider.ID != provider.ID ||
+		origin.UserID != sender.ID || origin.Subject != "subject-of-ann" || origin.Provider.ID != provider.ID ||
 		origin.Provider.URL != provider.URL || string(origin.Provider.APIKey) != "a sealed key" || origin.Provider.APIKeyAt != nil || origin.SecretStore != nil {
 		t.Errorf("SessionTurn = %+v, provider %+v", origin, origin.Provider)
 	}
@@ -620,7 +625,7 @@ func (suite suite) testSessionTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	origin, err = st.another().SessionTurn(ctx, session.ID)
-	if err != nil || origin.Provider == nil || origin.Provider.URL != "https://api.example.com/v2" || origin.Provider.APIKey != nil ||
+	if err != nil || origin.Provider.URL != "https://api.example.com/v2" || origin.Provider.APIKey != nil ||
 		!reflect.DeepEqual(origin.Provider.APIKeyAt, at) {
 		t.Errorf("SessionTurn provider after ReplaceProvider = %+v: %v", origin.Provider, err)
 	}
@@ -695,68 +700,52 @@ func (suite suite) testAgentModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// session creates an agent with the model and a session of it, and
-	// follows a turn of the session.
-	session := func(model *store.Model) (store.Agent, store.Session, store.FollowedTurn) {
-		t.Helper()
-		agent, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: model})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if read, err := st.Agent(ctx, agent.ID); err != nil || read.ID != agent.ID || read.ProjectID != project.ID ||
-			!reflect.DeepEqual(read.Model, model) || !reflect.DeepEqual(agent.Model, model) {
-			t.Errorf("agent with model %+v: created %+v, read %+v: %v", model, agent, read, err)
-		}
-		session, err := st.CreateSession(ctx, agent.ID, uuid.Nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		st.queue(session.ID)
-		followed, err := st.FollowTurn(ctx, st.dispatch().TurnID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return agent, session, followed
-	}
-
-	agent, held, followed := session(&store.Model{Provider: provider.ID, Name: "a-model"})
-	if followed.ProviderURL != provider.URL || followed.Model != "a-model" || followed.AgentID != agent.ID || followed.ProjectID != project.ID {
-		t.Errorf("FollowTurn for an agent with a model = %+v", followed)
-	}
-	origin, err := st.SessionTurn(ctx, held.ID)
+	model := store.Model{Provider: provider.ID, Name: "a-model"}
+	agent, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: model})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if origin.TurnID != followed.ID || origin.SessionID != held.ID || origin.AgentID != agent.ID || origin.ProjectID != project.ID ||
-		origin.Provider == nil || origin.Provider.ID != provider.ID || origin.Provider.URL != provider.URL || string(origin.Provider.APIKey) != "a sealed key" ||
+	if read, err := st.Agent(ctx, agent.ID); err != nil || read.ID != agent.ID || read.ProjectID != project.ID ||
+		read.Model != model || agent.Model != model {
+		t.Errorf("agent with model %+v: created %+v, read %+v: %v", model, agent, read, err)
+	}
+	session, err := st.CreateSession(ctx, agent.ID, uuid.Nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.queue(session.ID)
+	followed, err := st.FollowTurn(ctx, st.dispatch().TurnID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if followed.ProviderURL != provider.URL || followed.Model != "a-model" || followed.AgentID != agent.ID || followed.ProjectID != project.ID {
+		t.Errorf("FollowTurn = %+v", followed)
+	}
+	origin, err := st.SessionTurn(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if origin.TurnID != followed.ID || origin.SessionID != session.ID || origin.AgentID != agent.ID || origin.ProjectID != project.ID ||
+		origin.Provider.ID != provider.ID || origin.Provider.URL != provider.URL || string(origin.Provider.APIKey) != "a sealed key" ||
 		origin.Provider.APIKeyAt != nil || origin.SecretStore != nil {
 		t.Errorf("SessionTurn = %+v, provider %+v", origin, origin.Provider)
 	}
 	// The provider of the model must exist.
-	if _, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: &store.Model{Provider: uuid.New(), Name: "a-model"}}); err == nil {
+	if _, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: store.Model{Provider: uuid.New(), Name: "a-model"}}); err == nil {
 		t.Error("CreateAgent succeeded with a nonexistent provider")
 	}
 	// The provider is replaced while a turn uses it.
 	if _, err := st.ReplaceProvider(ctx, store.Provider{ID: provider.ID, Name: "a provider", URL: "http://model.example.com:8000"}); err != nil {
 		t.Fatal(err)
 	}
-	origin, err = st.another().SessionTurn(ctx, held.ID)
-	if err != nil || origin.Provider == nil || origin.Provider.URL != "http://model.example.com:8000" || origin.Provider.APIKey != nil {
+	origin, err = st.another().SessionTurn(ctx, session.ID)
+	if err != nil || origin.Provider.URL != "http://model.example.com:8000" || origin.Provider.APIKey != nil {
 		t.Errorf("SessionTurn after ReplaceProvider = %+v, provider %+v: %v", origin, origin.Provider, err)
-	}
-
-	// An agent that names no model.
-	_, other, plain := session(nil)
-	if plain.ProviderURL != "" || plain.Model != "" {
-		t.Errorf("FollowTurn for an agent without a model = %+v", plain)
-	}
-	if origin, err := st.SessionTurn(ctx, other.ID); err != nil || origin.TurnID != plain.ID || origin.Provider != nil {
-		t.Errorf("SessionTurn for an agent without a model = %+v: %v", origin, err)
 	}
 
 	// SessionTurn finds a turn only while it runs.
 	st.end(followed.ID, true, store.Failure{})
-	if _, err := st.SessionTurn(ctx, held.ID); !errors.Is(err, store.ErrNotFound) {
+	if _, err := st.SessionTurn(ctx, session.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("SessionTurn after the turn ended = %v, want ErrNotFound", err)
 	}
 }

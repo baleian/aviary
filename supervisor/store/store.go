@@ -67,8 +67,7 @@ type Agent struct {
 	// Approval is "ask" if the harness asks a person for approval before it
 	// acts. If empty, the harness does not ask.
 	Approval string `json:"approval,omitempty"`
-	// Model is nil if the agent names no model.
-	Model *Model `json:"model,omitempty"`
+	Model    Model  `json:"model"`
 }
 
 // Model names a model of a provider.
@@ -264,9 +263,8 @@ type FollowedTurn struct {
 	Harness      string
 	Instructions string
 	Approval     string
-	// ProviderURL and Model are empty if the agent names no model.
-	ProviderURL string
-	Model       string
+	ProviderURL  string
+	Model        string
 	// Sandbox is empty if the session has no sandbox.
 	Sandbox string
 	// Dispatched is how long ago the turn was dispatched.
@@ -292,9 +290,9 @@ type Origin struct {
 	// are zero if the request was not authenticated.
 	UserID  uuid.UUID
 	Subject string
-	// Provider is the current provider of the agent's model, or nil if the
-	// agent names no model. Its name and times are not set.
-	Provider *Provider
+	// Provider is the current provider of the agent's model. Its name and
+	// times are not set.
+	Provider Provider
 	// SecretStore is the current secret store of the provider's API key, if
 	// the key is kept in one.
 	SecretStore *SecretStore

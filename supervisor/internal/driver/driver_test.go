@@ -68,21 +68,19 @@ func (i *installation) supervisor() (*Driver, func()) {
 	}
 }
 
-// session creates a session of a new agent in a new project.
+// session creates a session of a new agent in a new project. The agent's
+// model is a-model of a new provider.
 func (i *installation) session(agent store.Agent) store.Session {
 	i.t.Helper()
 	project, err := i.store.CreateProject(ctx, "test")
 	if err != nil {
 		i.t.Fatal(err)
 	}
-	agent.Harness = "opencode"
-	if agent.Model != nil {
-		provider, err := i.store.CreateProvider(ctx, store.Provider{ProjectID: project.ID, Name: "models", URL: "https://models.example.com/v1/"})
-		if err != nil {
-			i.t.Fatal(err)
-		}
-		agent.Model.Provider = provider.ID
+	provider, err := i.store.CreateProvider(ctx, store.Provider{ID: uuid.New(), ProjectID: project.ID, Name: "models", URL: "https://models.example.com/v1/"})
+	if err != nil {
+		i.t.Fatal(err)
 	}
+	agent.Harness, agent.Model = "opencode", store.Model{Provider: provider.ID, Name: "a-model"}
 	made, err := i.store.CreateAgent(ctx, project.ID, agent)
 	if err != nil {
 		i.t.Fatal(err)
@@ -188,7 +186,7 @@ var (
 func TestATurnRunsInTheSandboxOfItsSession(t *testing.T) {
 	i := install(t)
 	driver, _ := i.supervisor()
-	session := i.session(store.Agent{Instructions: "be kind", Approval: Ask, Model: &store.Model{Name: "a-model"}})
+	session := i.session(store.Agent{Instructions: "be kind", Approval: Ask})
 	turn := i.send(driver, session, "hello")
 
 	given := i.service.Turn(t)
@@ -238,10 +236,11 @@ func TestATurnRunsInTheSandboxOfItsSession(t *testing.T) {
 	again.Tell("finished", finished)
 	i.ended(next.ID)
 
-	// An agent without a model or approval gets an empty environment.
+	// An agent without approval gets no AVIARY_APPROVAL.
 	plain := i.session(store.Agent{})
 	i.send(driver, plain, "hello")
-	if other := i.service.Turn(t); other.Sandbox == given.Sandbox || len(other.Environment) != 0 || other.Approval != "" {
+	other := i.service.Turn(t)
+	if _, asks := other.Environment["AVIARY_APPROVAL"]; asks || other.Sandbox == given.Sandbox || other.Approval != "" {
 		t.Errorf("other session's turn = %+v", other)
 	}
 }
