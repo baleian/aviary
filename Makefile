@@ -15,6 +15,16 @@ OPENSANDBOX_CHARTS := .out/opensandbox-$(OPENSANDBOX)
 REGISTRY := registry.aviary-data.svc.cluster.local
 REGISTRY_CERTIFICATE := .out/registry/trusted/registry.crt
 REGISTRY_KEY := .out/registry/tls.key
+# What the egress of the sandboxes reaches over TLS in a local cluster has a
+# certificate of this CA, which the egress trusts: the Supervisors, which it
+# asks about every request of a sandbox, and the model server of the e2e.
+# The local clusters share them.
+CA := .out/ca/ca.crt
+CA_KEY := .out/ca/ca.key
+RESOLVER := aviary-supervisor.aviary-system.svc.cluster.local
+RESOLVER_CERTIFICATE := .out/resolver/tls.crt
+MOCK_LLM := mock-llm.aviary-e2e.svc.cluster.local
+MOCK_LLM_CERTIFICATE := .out/mock-llm/tls.crt
 SANDBOXTEMPLATE_BUILDER_IMAGE := aviary-sandboxtemplate-builder:dev
 GO_IMAGE := golang:1.27.4-trixie@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9
 SQLC_IMAGE := sqlc/sqlc:1.31.1@sha256:70f53171d27b2424e9358869975455a6e955a5aa8e58a998a270a6e34e525537
@@ -180,7 +190,24 @@ $(REGISTRY_CERTIFICATE):
 		-subj "/CN=registry of a local cluster" -addext "subjectAltName=DNS:$(REGISTRY)" \
 		-keyout $(REGISTRY_KEY) -out $@
 
-cluster-up: $(OPENSANDBOX_CHARTS) $(REGISTRY_CERTIFICATE)
+$(CA):
+	mkdir -p $(@D)
+	openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=CA of the local clusters" \
+		-addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign" \
+		-keyout $(CA_KEY) -out $@
+
+# A certificate of the CA for the name, with its key beside it.
+CERTIFY = mkdir -p $(@D) && openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+	-subj "/CN=$(1)" -addext "subjectAltName=DNS:$(1)" -CA $(CA) -CAkey $(CA_KEY) \
+	-keyout $(@D)/tls.key -out $@
+
+$(RESOLVER_CERTIFICATE): $(CA)
+	$(call CERTIFY,$(RESOLVER))
+
+$(MOCK_LLM_CERTIFICATE): $(CA)
+	$(call CERTIFY,$(MOCK_LLM))
+
+cluster-up: $(OPENSANDBOX_CHARTS) $(REGISTRY_CERTIFICATE) $(CA)
 	@test -e /dev/kvm || { echo "the sandboxes of the cluster need KVM, and this host has no /dev/kvm"; exit 1; }
 	kind get clusters 2>/dev/null | grep -qx $(CLUSTER) || \
 		kind create cluster --name $(CLUSTER) --image $(NODE_IMAGE) --config hack/kind/cluster.yaml
@@ -252,6 +279,8 @@ endif
 		--namespace opensandbox-system \
 		--values hack/kind/opensandbox-gateway-values.yaml \
 		--wait
+	$(KUBECTL) create configmap local-ca --namespace opensandbox-dataplane \
+		--from-file=ca.crt=$(CA) --dry-run=client --output yaml | $(KUBECTL) apply -f -
 	$(KUBECTL) apply -f hack/kind/sandbox-pool.yaml
 	$(KUBECTL) wait --namespace opensandbox-dataplane sandboxpool/default --for=condition=RuntimeReady --timeout=5m
 ifeq ($(DATABASE),mysql)
@@ -309,7 +338,7 @@ images: build
 # database is the one that the cluster was made with. The key that the
 # Supervisor seals secrets with is made once: what was sealed with it does
 # not open with another.
-secrets:
+secrets: $(RESOLVER_CERTIFICATE)
 	$(KUBECTL) create namespace aviary-system --dry-run=client --output yaml | $(KUBECTL) apply -f -
 	if $(KUBECTL) get secret mysql-users --namespace aviary-data >/dev/null 2>&1; then \
 		$(KUBECTL) get secret mysql-users --namespace aviary-data --output json | \
@@ -327,6 +356,9 @@ secrets:
 	$(KUBECTL) get secret aviary-encryption --namespace aviary-system >/dev/null 2>&1 || \
 		$(KUBECTL) create secret generic aviary-encryption --namespace aviary-system \
 			--from-literal=k1=$$(openssl rand -base64 32)
+	$(KUBECTL) create secret tls aviary-resolver-tls --namespace aviary-system \
+		--cert $(RESOLVER_CERTIFICATE) --key $(dir $(RESOLVER_CERTIFICATE))tls.key --dry-run=client --output yaml | \
+		$(KUBECTL) apply -f -
 
 # The image ID makes the pod restart when the image changes. VALUES names a
 # file of values of your own for the chart, for example
