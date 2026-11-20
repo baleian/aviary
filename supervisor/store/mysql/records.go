@@ -779,28 +779,6 @@ func (s *records) DispatchTurns(ctx context.Context, limit int) ([]store.Dispatc
 	return dispatches, err
 }
 
-func (s *records) RequeueTurn(ctx context.Context, turnID uuid.UUID) (bool, error) {
-	var requeued bool
-	err := s.within(ctx, func(queries *db.Queries) error {
-		requeued = false
-		// The turn is held while it is looked at, so that it is not started,
-		// asked to stop or ended before it is put back.
-		row, err := queries.LockTurn(ctx, key.ID(turnID))
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if (row.State != store.TurnDispatching && row.State != store.TurnRunning) || row.StartedAt != nil || row.CancelRequestedAt != nil {
-			return nil
-		}
-		requeued = true
-		return queries.RequeueTurn(ctx, row.ID)
-	})
-	return requeued && err == nil, err
-}
-
 func (s *records) CancelTurn(ctx context.Context, id uuid.UUID) (store.Turn, bool, error) {
 	var turn store.Turn
 	var unended bool
@@ -941,7 +919,7 @@ func (s *records) StartTurn(ctx context.Context, turnID uuid.UUID) (time.Duratio
 	var first bool
 	err := s.within(ctx, func(queries *db.Queries) error {
 		row, err := queries.LockTurn(ctx, key.ID(turnID))
-		if errors.Is(err, sql.ErrNoRows) || (err == nil && (row.StartedAt != nil || row.State == store.TurnQueued)) {
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && row.StartedAt != nil) {
 			first = false
 			return nil
 		}

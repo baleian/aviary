@@ -1591,16 +1591,6 @@ func (q *Queries) ReplaceSecretStore(ctx context.Context, arg ReplaceSecretStore
 	return result.RowsAffected()
 }
 
-const requeueTurn = `-- name: RequeueTurn :exec
-update turns set state = 'queued', dispatched_at = null where id = ?
-`
-
-// The turn waits to run again, with nothing left of its dispatch.
-func (q *Queries) RequeueTurn(ctx context.Context, id key.ID) error {
-	_, err := q.db.ExecContext(ctx, requeueTurn, id)
-	return err
-}
-
 const resolveApproval = `-- name: ResolveApproval :execrows
 update approvals set outcome = ?, resolved_at = now(6)
 where turn_id = ? and id = ? and resolved_at is null

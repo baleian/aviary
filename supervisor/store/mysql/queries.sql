@@ -146,10 +146,6 @@ limit ?;
 -- A turn that was cancelled since it was read is left as it is.
 update turns set state = 'dispatching', dispatched_at = now(6) where id = ? and state = 'queued';
 
--- name: RequeueTurn :exec
--- The turn waits to run again, with nothing left of its dispatch.
-update turns set state = 'queued', dispatched_at = null where id = ?;
-
 -- name: DispatchedTurns :many
 select id, cast(coalesce(timestampdiff(microsecond, cancel_requested_at, now(6)), 0) as signed) as cancelling
 from turns where state in ('dispatching', 'running');

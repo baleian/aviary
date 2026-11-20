@@ -559,13 +559,6 @@ type Store interface {
 	// and has not got its answer. It returns the turns that it dispatched.
 	DispatchTurns(ctx context.Context, limit int) ([]Dispatch, error)
 
-	// RequeueTurn puts a turn that was dispatched back among the turns that
-	// wait to run, in the place that it had: the turns wait in the order in
-	// which they were accepted. It reports false, and changes nothing, for
-	// a turn whose harness has been given the message, that was asked to
-	// stop, that has ended or that there is not.
-	RequeueTurn(ctx context.Context, turnID uuid.UUID) (bool, error)
-
 	// CancelTurn cancels a turn that has not ended. A turn that waits to run
 	// ends as cancelled at once. A turn that was dispatched is marked: it ends
 	// when its harness has stopped. CancelTurn returns the turn as it then is, and
@@ -596,7 +589,7 @@ type Store interface {
 	// StartTurn records that the harness of the turn has been given the
 	// message. It returns how long the turn took to start, from its dispatch,
 	// and reports false, and records nothing, for a turn that had started
-	// before or that waits to run.
+	// before.
 	StartTurn(ctx context.Context, turnID uuid.UUID) (time.Duration, bool, error)
 
 	// TurnHarness returns the harness of the agent that the turn belongs to,

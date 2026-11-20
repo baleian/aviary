@@ -1572,22 +1572,6 @@ func (q *Queries) ReplaceSecretStore(ctx context.Context, arg ReplaceSecretStore
 	return i, err
 }
 
-const requeueTurn = `-- name: RequeueTurn :execrows
-update turns set state = 'queued', dispatched_at = null
-where id = $1 and state in ('dispatching', 'running') and started_at is null and cancel_requested_at is null
-`
-
-// The turn waits to run again, with nothing left of its dispatch. A turn
-// whose harness has been given the message, or that was asked to stop, is
-// left as it is.
-func (q *Queries) RequeueTurn(ctx context.Context, id uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, requeueTurn, id)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const resolveApproval = `-- name: ResolveApproval :one
 update approvals set outcome = $1, resolved_at = now()
 where turn_id = $2 and id = $3 and resolved_at is null
@@ -1822,13 +1806,12 @@ func (q *Queries) SetSandbox(ctx context.Context, arg SetSandboxParams) (int64, 
 
 const startTurn = `-- name: StartTurn :one
 update turns set started_at = now()
-where id = $1 and started_at is null and state <> 'queued'
+where id = $1 and started_at is null
 returning coalesce(extract(epoch from now() - dispatched_at), 0)::float8 as startup
 `
 
 // The harness of the turn has been given the message. The answer is how long
-// the turn took to start. There is none for a turn that had started before,
-// or that waits to run.
+// the turn took to start. There is none for a turn that had started before.
 func (q *Queries) StartTurn(ctx context.Context, turnID uuid.UUID) (float64, error) {
 	row := q.db.QueryRow(ctx, startTurn, turnID)
 	var startup float64

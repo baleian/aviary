@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"net/url"
 	"slices"
 	"sync"
@@ -244,9 +243,6 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 	if id == "" {
 		var err error
 		if id, err = d.provide(ctx, r); err != nil {
-			if full(err) && d.requeue(ctx, r) {
-				return nil, nil
-			}
 			return nil, fmt.Errorf("make the sandbox of the session: %w", err)
 		}
 	}
@@ -280,9 +276,6 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 	case seen.Status.State == sandbox.Paused:
 		// The session was not at work, and its sandbox was put to sleep.
 		if err := d.sandboxes.Resume(following, id); err != nil {
-			if full(err) && !given && d.requeue(ctx, r) {
-				return nil, nil
-			}
 			return nil, fmt.Errorf("wake the sandbox of the session: %w", err)
 		}
 		return nil, errors.New("the sandbox of the session is woken")
@@ -318,33 +311,6 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 		return nil, fmt.Errorf("give the turn to its runner: %w", err)
 	}
 	return runner, nil
-}
-
-// full reports whether the error is that of a sandbox service whose pool
-// has no room for one more sandbox.
-func full(err error) bool {
-	var refusal *sandbox.Refusal
-	return errors.As(err, &refusal) && refusal.Status == http.StatusTooManyRequests
-}
-
-// requeue puts the turn back among those that wait to run, and leaves it:
-// there is no room for the sandbox of its session now. The turn is
-// dispatched again, and waits no longer than a turn may wait to run. It
-// reports whether the turn went back.
-func (d *Driver) requeue(ctx context.Context, r *run) bool {
-	back, err := d.store.RequeueTurn(ctx, r.turn.ID)
-	if err != nil {
-		slog.ErrorContext(ctx, "put the turn back among those that wait", "turn", r.turn.ID, "error", err)
-		return false
-	}
-	if back {
-		slog.InfoContext(ctx, "turn waits for room for the sandbox of its session", "turn", r.turn.ID)
-		// It is told its place among the turns that wait, before it is
-		// dispatched again.
-		d.announcePositions(ctx)
-		r.leave()
-	}
-	return back
 }
 
 // expired reports whether the session of the turn was not used for longer

@@ -97,10 +97,9 @@ returning *;
 
 -- name: StartTurn :one
 -- The harness of the turn has been given the message. The answer is how long
--- the turn took to start. There is none for a turn that had started before,
--- or that waits to run.
+-- the turn took to start. There is none for a turn that had started before.
 update turns set started_at = now()
-where id = @turn_id and started_at is null and state <> 'queued'
+where id = @turn_id and started_at is null
 returning coalesce(extract(epoch from now() - dispatched_at), 0)::float8 as startup;
 
 -- name: Lock :exec
@@ -168,13 +167,6 @@ limit greatest(sqlc.arg(max_running)::bigint
 -- A turn that was cancelled since it was read is left as it is.
 update turns set state = 'dispatching', dispatched_at = now()
 where id = @id and state = 'queued';
-
--- name: RequeueTurn :execrows
--- The turn waits to run again, with nothing left of its dispatch. A turn
--- whose harness has been given the message, or that was asked to stop, is
--- left as it is.
-update turns set state = 'queued', dispatched_at = null
-where id = @id and state in ('dispatching', 'running') and started_at is null and cancel_requested_at is null;
 
 -- name: DispatchedTurns :many
 select id, coalesce(extract(epoch from now() - cancel_requested_at), 0)::float8 as cancelling

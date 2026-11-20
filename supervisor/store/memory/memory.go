@@ -885,20 +885,6 @@ func (s *Store) DispatchTurns(ctx context.Context, limit int) ([]store.Dispatch,
 	return dispatches, nil
 }
 
-func (s *Store) RequeueTurn(ctx context.Context, turnID uuid.UUID) (bool, error) {
-	if err := s.begin(ctx); err != nil {
-		return false, err
-	}
-	defer s.mu.Unlock()
-	turn, found := s.turns[turnID]
-	if !found || (turn.State != store.TurnDispatching && turn.State != store.TurnRunning) ||
-		turn.StartedAt != nil || turn.CancelRequestedAt != nil {
-		return false, nil
-	}
-	turn.State, turn.dispatchedAt = store.TurnQueued, nil
-	return true, nil
-}
-
 func (s *Store) CancelTurn(ctx context.Context, id uuid.UUID) (store.Turn, bool, error) {
 	if err := s.begin(ctx); err != nil {
 		return store.Turn{}, false, err
@@ -1042,7 +1028,7 @@ func (s *Store) StartTurn(ctx context.Context, turnID uuid.UUID) (time.Duration,
 	}
 	defer s.mu.Unlock()
 	turn, found := s.turns[turnID]
-	if !found || turn.StartedAt != nil || turn.State == store.TurnQueued {
+	if !found || turn.StartedAt != nil {
 		return 0, false, nil
 	}
 	now := s.now()

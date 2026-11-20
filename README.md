@@ -553,8 +553,7 @@ as a secret store takes to give a key. The local cluster runs Kubernetes
 
 The size of a sandbox is that of its harness in `runtime.harnesses`, and a
 change of it holds for the sandboxes that are made after it. Aviary sets no
-bound on how many sandboxes there are: the pool of OpenSandbox does. A turn
-that finds the pool full waits among the turns that wait to run.
+bound on how many sandboxes there are: the pool of OpenSandbox does.
 
 A Supervisor that is to stop, as when its deployment is scaled in or rolled
 out, does not wait for the turns that it follows. Another Supervisor
