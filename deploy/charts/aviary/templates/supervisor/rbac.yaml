@@ -1,4 +1,3 @@
-# The Supervisor asks nothing of the cluster that it runs in.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -6,3 +5,36 @@ metadata:
   labels:
     app.kubernetes.io/name: aviary
     app.kubernetes.io/component: supervisor
+---
+# The Supervisor has the sandboxes of the sessions made in the runtime
+# namespace, puts them to sleep, wakes them and deletes them. It has no
+# access to anything else in the cluster.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aviary-supervisor
+  namespace: aviary-runtime
+  labels:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: supervisor
+rules:
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["create", "get", "list", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aviary-supervisor
+  namespace: aviary-runtime
+  labels:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: supervisor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aviary-supervisor
+subjects:
+  - kind: ServiceAccount
+    name: aviary-supervisor
+    namespace: {{ .Release.Namespace }}

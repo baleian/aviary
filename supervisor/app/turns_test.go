@@ -42,8 +42,8 @@ func TestTurn(t *testing.T) {
 		t.Errorf("the message was accepted as the turn %+v", accepted)
 	}
 	runner := aviary.given(accepted.ID)
-	if harness := aviary.service.TemplateOf(runner.Sandbox)["aviary-harness"]; harness != "codex" {
-		t.Errorf("the sandbox of the session is made from the template of %q, not of the agent's harness", harness)
+	if image := aviary.service.Made()[runner.Sandbox].Harness.Image; image != "registry.example.com/harness-codex:1.0" {
+		t.Errorf("the sandbox of the session runs %s, not the agent's harness", image)
 	}
 	if runner.Text != "hello" || runner.Instructions != "Be brief." || runner.Approval != "" {
 		t.Errorf("the runner was given %+v", runner.Turn)
@@ -122,8 +122,8 @@ func TestTurn(t *testing.T) {
 		t.Errorf("the second turn of the session has the number %d", next.Seq)
 	}
 	again := aviary.given(next.ID)
-	if again.Text != "and again" || again.Sandbox != runner.Sandbox || len(aviary.service.Sandboxes()) != 1 {
-		t.Errorf("the runner of the next turn was given %+v, of the sandboxes %v", again.Turn, aviary.service.Sandboxes())
+	if again.Text != "and again" || again.Sandbox != runner.Sandbox || len(aviary.service.Made()) != 1 {
+		t.Errorf("the runner of the next turn was given %+v, of the sandboxes %v", again.Turn, aviary.service.Made())
 	}
 }
 
@@ -203,9 +203,6 @@ func TestQueue(t *testing.T) {
 
 	// The session of the turn that failed goes on, in a new sandbox.
 	next := s.send(lost, "again")
-	if again := aviary.given(next.ID); again.Sandbox == running.Sandbox {
-		t.Errorf("the session that lost its sandbox runs in %s", again.Sandbox)
-	}
 	s.run(next.ID, "done")
 	if events := s.follow(next.ID); ending(events) != "turn.completed" || next.Seq != 2 {
 		t.Errorf("turn %d of the session whose turn failed ended with %s", next.Seq, ending(events))

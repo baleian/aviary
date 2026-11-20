@@ -645,9 +645,7 @@ func (q *Queries) FollowTurn(ctx context.Context, id uuid.UUID) (int64, error) {
 const followedTurn = `-- name: FollowedTurn :one
 select turns.id, turns.session_id, turns.seq, turns.created_by, turns.state, turns.text, turns.created_at, turns.dispatched_at, turns.started_at, turns.cancel_requested_at, turns.ended_at, turns.stop_reason, turns.failure_reason, turns.failure_message, turns.total_tokens, turns.input_tokens, turns.output_tokens, turns.thought_tokens, turns.cached_read_tokens, turns.cached_write_tokens, agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
        agents.approval, coalesce(providers.url, '')::text as provider_url, agents.model, sessions.sandbox,
-       extract(epoch from now() - coalesce(turns.dispatched_at, turns.created_at))::float8 as dispatched,
-       exists (select 1 from approvals
-               where approvals.turn_id = turns.id and approvals.resolved_at is null)::boolean as waiting
+       extract(epoch from now() - coalesce(turns.dispatched_at, turns.created_at))::float8 as dispatched
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
@@ -666,11 +664,9 @@ type FollowedTurnRow struct {
 	Model        string
 	Sandbox      *string
 	Dispatched   float64
-	Waiting      bool
 }
 
-// The turn as the Supervisor that follows it gets it, with whether it has a
-// request for approval that is not resolved.
+// The turn as the Supervisor that follows it gets it.
 func (q *Queries) FollowedTurn(ctx context.Context, id uuid.UUID) (FollowedTurnRow, error) {
 	row := q.db.QueryRow(ctx, followedTurn, id)
 	var i FollowedTurnRow
@@ -704,7 +700,6 @@ func (q *Queries) FollowedTurn(ctx context.Context, id uuid.UUID) (FollowedTurnR
 		&i.Model,
 		&i.Sandbox,
 		&i.Dispatched,
-		&i.Waiting,
 	)
 	return i, err
 }

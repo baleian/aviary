@@ -123,7 +123,6 @@ func Run(t *testing.T, create func(t *testing.T) Database) {
 		"FollowTurn":                      suite.testFollowTurn,
 		"SupervisorsEndATurnOnceTogether": suite.testSupervisorsEndATurnOnceTogether,
 		"AnswerApprovalKeepsOneOfTheAnswersGivenAtOnce": suite.testAnswerApprovalKeepsOneOfTheAnswersGivenAtOnce,
-		"FollowTurnTellsWhetherTheTurnWaitsForAPerson":  suite.testFollowTurnTellsWhetherTheTurnWaitsForAPerson,
 		"CallerThatWaitsNoLonger":                       suite.testCallerThatWaitsNoLonger,
 		"StartTurn":                                     suite.testStartTurn,
 		"CancelTurn":                                    suite.testCancelTurn,

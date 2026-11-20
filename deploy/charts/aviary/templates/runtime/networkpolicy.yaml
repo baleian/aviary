@@ -1,0 +1,23 @@
+# What connects to a sandbox, and what a sandbox connects to. The agent in a
+# sandbox may do other things than it was asked to, so the sandbox connects
+# to nothing: no other pod, no address outside and no DNS. The Supervisors
+# connect to its runner, and nothing else connects to it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aviary-sandboxes
+  namespace: aviary-runtime
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: aviary
+              app.kubernetes.io/component: supervisor
+      ports:
+        - {protocol: TCP, port: 8700}

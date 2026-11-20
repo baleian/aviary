@@ -16,7 +16,9 @@ func TestFailures(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		// limits sets how long a turn may take lower, for a turn that is to
-		// take too long.
+		// take too long, and the sweep with it: the next turn wakes the
+		// sandbox, which a Supervisor looks at again after a tenth of a
+		// sweep.
 		limits func(*driver.Config)
 		// reports are what the runner tells of the turn.
 		reports []message
@@ -56,12 +58,12 @@ func TestFailures(t *testing.T) {
 		},
 		{
 			name:   "the harness did not take the message in time",
-			limits: func(config *driver.Config) { config.MaxStartup = time.Second },
+			limits: func(config *driver.Config) { config.MaxStartup, config.Sweep = time.Second, 100*time.Millisecond },
 			reason: "startup_timed_out", message: "the harness did not start the turn",
 		},
 		{
 			name:    "the turn ran for longer than a turn may",
-			limits:  func(config *driver.Config) { config.MaxTurn = time.Second },
+			limits:  func(config *driver.Config) { config.MaxTurn, config.Sweep = time.Second, 100*time.Millisecond },
 			reports: []message{started("harness-session"), tool},
 			reason:  "timed_out", message: "the turn ran for longer than 1s",
 			items: 1,

@@ -31,33 +31,35 @@ const (
 	// no Supervisor announced.
 	Sweep = 10 * time.Second
 	// CancelGrace is how long a turn that was asked to stop is given to end
-	// by itself before its sandbox is deleted.
+	// by itself before its sandbox is put to sleep.
 	CancelGrace = 30 * time.Second
 )
 
-// What a sandbox is made with, for one who looks at the sandboxes to know
-// whose each is.
+// The labels that a sandbox is made with, besides that of its session, for
+// one who looks at the sandboxes to know whose each is.
 const (
-	metadataSession = "aviary-session"
-	metadataAgent   = "aviary-agent"
-	metadataProject = "aviary-project"
+	labelAgent   = "aviary.io/agent"
+	labelProject = "aviary.io/project"
 )
 
+// Sandboxes are where the sessions run: each in a sandbox of its own, which
+// has the volume of the session.
+type Sandboxes interface {
+	Create(ctx context.Context, request sandbox.Request) error
+	Sandbox(ctx context.Context, name string) (sandbox.Sandbox, error)
+	Sandboxes(ctx context.Context) ([]sandbox.Sandbox, error)
+	Suspend(ctx context.Context, name string) error
+	Resume(ctx context.Context, name string, harness sandbox.Harness) error
+	Keep(ctx context.Context, name string, until time.Time) error
+	Delete(ctx context.Context, name string) error
+}
+
 type Config struct {
-	// Templates are what the sandboxes are made from: the harnesses that
-	// agents can use, by name, as the release had their templates built.
-	Templates sandbox.Templates
-	// Hosts are the hosts that the sandboxes may send requests to, those of
-	// the model endpoints of the agents among them: names, *.domains, or *
-	// for every host.
-	Hosts []string
-	// Ask returns where the egress of the sandbox is to ask about the
-	// requests of the sandbox. Without it, the egress asks nothing.
-	Ask func(sandbox string) (string, error)
+	// Harnesses are the harnesses that agents can use, by name.
+	Harnesses map[string]sandbox.Harness
 	// Idle is how long the sandbox of a session may be idle before it is
-	// put to sleep: no turn of the session runs, or its turn waits for a
-	// person. It is woken for the next turn, and for the answer. Zero is
-	// never to put it to sleep.
+	// put to sleep: no turn of the session runs. It is woken for the next
+	// turn. Zero is never to put it to sleep.
 	Idle time.Duration
 	// Retention is for how long the sandbox of a session is kept after a
 	// turn of the session was last given to it. A session that is not used
@@ -89,7 +91,7 @@ type Driver struct {
 	config Config
 	// id names this Supervisor among those that follow turns.
 	id        uuid.UUID
-	sandboxes *sandbox.Client
+	sandboxes Sandboxes
 	store     store.Store
 	events    *events.Streams
 	metrics   *metrics.Metrics
@@ -113,9 +115,8 @@ type orders struct {
 	stop, answers chan struct{}
 }
 
-// New returns a driver that has the turns run in the sandboxes of the
-// sandbox service.
-func New(config Config, sandboxes *sandbox.Client, st store.Store, ev *events.Streams, m *metrics.Metrics) *Driver {
+// New returns a driver that has the turns run in the sandboxes.
+func New(config Config, sandboxes Sandboxes, st store.Store, ev *events.Streams, m *metrics.Metrics) *Driver {
 	if config.Sweep == 0 {
 		config.Sweep = Sweep
 	}
@@ -134,7 +135,7 @@ const Ask = "ask"
 
 // HasHarness reports whether turns can run on the harness of that name.
 func (d *Driver) HasHarness(name string) bool {
-	_, found := d.config.Templates.Harnesses[name]
+	_, found := d.config.Harnesses[name]
 	return found
 }
 
@@ -173,7 +174,7 @@ func (d *Driver) EndSession(ctx context.Context, id uuid.UUID) (store.Session, e
 	if err != nil || session.Sandbox == "" {
 		return session, err
 	}
-	if err := d.sandboxes.DeleteSandbox(ctx, session.Sandbox); err != nil {
+	if err := d.sandboxes.Delete(ctx, session.Sandbox); err != nil {
 		return session, fmt.Errorf("delete the sandbox of the session %s: %w", id, err)
 	}
 	if _, err := d.store.SetSandbox(ctx, id, session.Sandbox, ""); err != nil {
@@ -289,20 +290,20 @@ func (d *Driver) reap(ctx context.Context) {
 		return
 	}
 	for _, made := range sandboxes {
-		sessionID, err := uuid.Parse(made.Metadata[metadataSession])
-		if err != nil || time.Since(made.CreatedAt) < d.orphaned() {
+		sessionID, err := uuid.Parse(made.Session)
+		if err != nil || time.Since(made.Created) < d.orphaned() {
 			continue
 		}
 		session, err := d.store.Session(ctx, sessionID)
-		if err != nil || session.Sandbox == made.ID {
+		if err != nil || session.Sandbox == made.Name {
 			if err != nil && !errors.Is(err, store.ErrNotFound) {
-				slog.ErrorContext(ctx, "read the session of a sandbox", "sandbox", made.ID, "error", err)
+				slog.ErrorContext(ctx, "read the session of a sandbox", "sandbox", made.Name, "error", err)
 			}
 			continue
 		}
-		slog.WarnContext(ctx, "delete a sandbox that its session does not have", "session", sessionID, "sandbox", made.ID)
-		if err := d.sandboxes.DeleteSandbox(ctx, made.ID); err != nil {
-			slog.ErrorContext(ctx, "delete a sandbox that its session does not have", "sandbox", made.ID, "error", err)
+		slog.WarnContext(ctx, "delete a sandbox that its session does not have", "session", sessionID, "sandbox", made.Name)
+		if err := d.sandboxes.Delete(ctx, made.Name); err != nil {
+			slog.ErrorContext(ctx, "delete a sandbox that its session does not have", "sandbox", made.Name, "error", err)
 		}
 	}
 }
@@ -459,13 +460,4 @@ func environment(turn store.FollowedTurn) map[string]string {
 		told["AVIARY_APPROVAL"] = turn.Approval
 	}
 	return told
-}
-
-// lost reports whether a sandbox in that state will not run again.
-func lost(state string) bool {
-	switch state {
-	case "Stopping", "Terminated", "Failed":
-		return true
-	}
-	return false
 }

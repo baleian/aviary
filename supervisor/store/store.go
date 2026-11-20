@@ -293,9 +293,6 @@ type FollowedTurn struct {
 	Sandbox string
 	// Dispatched is how long ago the turn was dispatched.
 	Dispatched time.Duration
-	// Waiting tells whether the turn waits for a person: its harness has
-	// asked for approval and has not got its answer.
-	Waiting bool
 }
 
 // Dispatch is a turn that was dispatched.

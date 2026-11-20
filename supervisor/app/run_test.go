@@ -7,9 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -146,62 +144,6 @@ func TestRunMigrates(t *testing.T) {
 	}
 }
 
-// With the argument "templates" a Supervisor has the sandbox service build
-// the templates of the installation's harnesses, and needs no database for
-// it.
-func TestRunBakesTheTemplates(t *testing.T) {
-	ctx := context.Background()
-	var asked []string
-	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("OPEN-SANDBOX-API-KEY") != "the-key" {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		// A template that was asked for is built at once.
-		const template = `{"templateId": "tpl-1", "status": {"phase": "Succeeded"}}`
-		switch {
-		case r.Method == http.MethodPost:
-			body, _ := io.ReadAll(r.Body)
-			asked = append(asked, string(body))
-			fmt.Fprint(w, template)
-		case len(asked) == 0:
-			fmt.Fprint(w, `{"items": []}`)
-		default:
-			fmt.Fprintf(w, `{"items": [%s]}`, template)
-		}
-	}))
-	defer service.Close()
-	settings := map[string]string{
-		sandboxesURL:  service.URL,
-		sandboxesKey:  "the-key",
-		templateStore: "s3://sandboxes/templates",
-		harnesses:     `{"opencode": {"image": "registry.example.com/opencode:1.0", "sandbox": {"cpu": "1", "memory": "2Gi", "disk": "4Gi"}}}`,
-		maxToolOutput: "65536",
-	}
-	for name, value := range settings {
-		t.Setenv(name, value)
-	}
-	err := Run(ctx, []string{"templates"}, (&build{}).plugins())
-	if err != nil || len(asked) != 1 || !strings.Contains(asked[0], `"image":"registry.example.com/opencode:1.0"`) ||
-		!strings.Contains(asked[0], `"resourceLimits":{"cpu":"1","memory":"2Gi","disk":"4Gi"}`) ||
-		!strings.Contains(asked[0], `"publish":"s3://sandboxes/templates"`) {
-		t.Errorf("the service was asked for %q: %v", asked, err)
-	}
-
-	// A setting that is missing, and a harness that is half set up.
-	for name := range settings {
-		t.Setenv(name, "")
-		if err := Run(ctx, []string{"templates"}, (&build{}).plugins()); err == nil || !strings.Contains(err.Error(), name) {
-			t.Errorf("without %s the templates were baked with: %v", name, err)
-		}
-		t.Setenv(name, settings[name])
-	}
-	t.Setenv(harnesses, `{"opencode": {"image": "registry.example.com/opencode:1.0", "sandbox": {"cpu": "1"}}}`)
-	if err := Run(ctx, []string{"templates"}, (&build{}).plugins()); err == nil || !strings.Contains(err.Error(), "the harness opencode needs") {
-		t.Errorf("a harness without the size of its sandboxes was baked with: %v", err)
-	}
-}
-
 // A Supervisor that serves connects to its database and to its event log
 // with the plugins that their addresses name, and lets go of both when it
 // stops. The secret stores of its projects are those of the kinds that its
@@ -237,10 +179,10 @@ func TestRunConnectsWithThePluginsOfTheBuild(t *testing.T) {
 	t.Setenv(identityProvider, `{"kind": "callers", "settings": {"of": "the test"}}`)
 	t.Setenv(adminGroups, `[]`)
 	t.Setenv(userGroups, `[]`)
-	t.Setenv(templateStore, "")
+	t.Setenv(harnesses, "")
 	build.asked = nil
 	err = Run(context.Background(), nil, build.plugins())
-	if err == nil || !strings.Contains(err.Error(), templateStore) {
+	if err == nil || !strings.Contains(err.Error(), harnesses) {
 		t.Errorf("a Supervisor that is not told how to run turns stopped with: %v", err)
 	}
 	expected = []string{

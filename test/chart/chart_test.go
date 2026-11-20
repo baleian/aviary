@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 
 	"aviary/test/internal/rendered"
@@ -64,11 +63,10 @@ func TestSupervisorSettings(t *testing.T) {
 		"AVIARY_IDENTITY_PROVIDER":         `{"kind":"","settings":{}}`,
 		"AVIARY_ADMIN_GROUPS":              "[]",
 		"AVIARY_USER_GROUPS":               "[]",
-		"AVIARY_SANDBOXES_URL":             "http://opensandbox-server.opensandbox-system",
-		"AVIARY_TEMPLATE_STORE":            "s3://sandbox-images/publish",
+		"AVIARY_SANDBOX_NAMESPACE":         "aviary-runtime",
+		"AVIARY_SANDBOX_VOLUME_SIZE":       "10Gi",
+		"AVIARY_SANDBOX_STORAGE_CLASS":     "",
 		"AVIARY_SANDBOX_IDLE_SECONDS":      "300",
-		"AVIARY_SANDBOX_HOSTS":             `["*"]`,
-		"AVIARY_RESOLVER_URL":              "https://aviary-supervisor.aviary-system.svc.cluster.local:9443",
 		"AVIARY_RESOLVER_TLS":              "/etc/aviary/resolver",
 		"AVIARY_SANDBOX_RETENTION_SECONDS": "0",
 		"AVIARY_MAX_CONCURRENT_TURNS":      "50",
@@ -98,10 +96,9 @@ func TestSupervisorSettings(t *testing.T) {
 		"AVIARY_IDENTITY_PROVIDER":         `{"kind":"oidc","settings":{"audience":"aviary","claims":{"username":"email"},"issuer":"https://login.example.com/realms/main"}}`,
 		"AVIARY_ADMIN_GROUPS":              `["platform"]`,
 		"AVIARY_USER_GROUPS":               `["team-a","team-b"]`,
-		"AVIARY_SANDBOXES_URL":             "https://sandboxes.example.com",
-		"AVIARY_TEMPLATE_STORE":            "s3://example/templates",
+		"AVIARY_SANDBOX_VOLUME_SIZE":       "50Gi",
+		"AVIARY_SANDBOX_STORAGE_CLASS":     "fast",
 		"AVIARY_SANDBOX_IDLE_SECONDS":      "0",
-		"AVIARY_SANDBOX_HOSTS":             `["pypi.org","*.example.com"]`,
 		"AVIARY_SANDBOX_RETENTION_SECONDS": "604800",
 		"AVIARY_MAX_CONCURRENT_TURNS":      "7",
 		"AVIARY_MAX_QUEUED_TURNS":          "11",
@@ -120,33 +117,19 @@ func TestSupervisorSettings(t *testing.T) {
 
 	// A value that is set for one harness leaves the rest of the harnesses
 	// as they are.
+	type resources map[string]map[string]string
 	var harnesses map[string]struct {
-		Image   string
-		Sandbox map[string]string
+		Image     string
+		Resources resources
 	}
 	if err := json.Unmarshal([]byte(settings["AVIARY_HARNESSES"]), &harnesses); err != nil {
 		t.Fatalf("the Supervisor is told the harnesses %s: %v", settings["AVIARY_HARNESSES"], err)
 	}
 	opencode, codex := harnesses["opencode"], harnesses["codex"]
 	if len(harnesses) != 2 || opencode.Image != "aviary-harness-opencode:dev" || codex.Image != "aviary-harness-codex:dev" ||
-		opencode.Sandbox["disk"] != "16Gi" || opencode.Sandbox["memory"] != "2Gi" || codex.Sandbox["disk"] != "4Gi" {
+		!reflect.DeepEqual(opencode.Resources, resources{"requests": {"cpu": "250m", "memory": "1Gi"}, "limits": {"memory": "8Gi"}}) ||
+		!reflect.DeepEqual(codex.Resources, resources{"requests": {"cpu": "250m", "memory": "256Mi"}, "limits": {"memory": "4Gi"}}) {
 		t.Errorf("the Supervisor is told the harnesses %s", settings["AVIARY_HARNESSES"])
-	}
-
-	// A Supervisor finds the template of a harness by what the release had
-	// it built from, so both are told the same of it, and the Supervisor
-	// asks the sandbox service with the same key.
-	built := rendered.Find(objects, "Job", "aviary-templates")
-	for _, name := range []string{"AVIARY_SANDBOXES_URL", "AVIARY_TEMPLATE_STORE", "AVIARY_HARNESSES", "AVIARY_MAX_TOOL_OUTPUT_BYTES"} {
-		if settings[name] == "" || settings[name] != env(built)[name] {
-			t.Errorf("the Supervisor is told %s=%q, and the Job that builds the templates %q", name, settings[name], env(built)[name])
-		}
-	}
-	key := func(object map[string]any) any {
-		return at(named(at(object, "spec", "template", "spec", "containers", 0, "env"), "AVIARY_SANDBOXES_API_KEY"), "valueFrom", "secretKeyRef")
-	}
-	if key(supervisor) == nil || !reflect.DeepEqual(key(supervisor), key(built)) {
-		t.Errorf("the Supervisor asks the sandbox service with the key %v, and the Job with %v", key(supervisor), key(built))
 	}
 }
 
@@ -165,9 +148,8 @@ func TestSupervisorAnswersTheEgress(t *testing.T) {
 		if mounted := at(named(at(pod, "volumes"), "resolver"), "secret", "secretName"); mounted != secret {
 			t.Errorf("%s: the certificate is that of the secret %v, not of %s", values, mounted, secret)
 		}
-		port := named(at(rendered.Find(objects, "Service", "aviary-supervisor"), "spec", "ports"), "resolver")
-		if at(port, "port") != 9443 || !strings.HasSuffix(env(supervisor)["AVIARY_RESOLVER_URL"], ":9443") {
-			t.Errorf("%s: the egress reaches the Supervisor at %v, and the Supervisor says %s", values, port, env(supervisor)["AVIARY_RESOLVER_URL"])
+		if port := named(at(rendered.Find(objects, "Service", "aviary-supervisor"), "spec", "ports"), "resolver"); at(port, "port") != 9443 {
+			t.Errorf("%s: the resolver is reached at %v", values, port)
 		}
 	}
 }
@@ -190,13 +172,24 @@ func TestSupervisorEncryptionKeys(t *testing.T) {
 	}
 }
 
-// The Supervisor may do nothing in the cluster: the sessions run in the
-// sandboxes of the sandbox service, which it asks.
+// The Supervisor may do in the cluster what it takes to keep the sandboxes
+// of the sessions, and no more.
 func TestSupervisorPermissions(t *testing.T) {
 	objects := chart(t, "default")
+	role := rendered.Find(objects, "Role", "aviary-supervisor")
+	expected := []any{map[string]any{
+		"apiGroups": []any{"agents.x-k8s.io"}, "resources": []any{"sandboxes"}, "verbs": []any{"create", "get", "list", "patch", "delete"},
+	}}
+	if at(role, "metadata", "namespace") != "aviary-runtime" || !reflect.DeepEqual(at(role, "rules"), expected) {
+		t.Errorf("the Supervisor may %v in the namespace %v", at(role, "rules"), at(role, "metadata", "namespace"))
+	}
+	binding := rendered.Find(objects, "RoleBinding", "aviary-supervisor")
+	if at(binding, "metadata", "namespace") != "aviary-runtime" || at(binding, "roleRef", "name") != "aviary-supervisor" ||
+		at(binding, "subjects", 0, "name") != "aviary-supervisor" || at(binding, "subjects", 0, "namespace") != "aviary-system" {
+		t.Errorf("the role is bound as %v", binding)
+	}
 	for _, object := range objects {
-		switch kind := object["kind"]; kind {
-		case "Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding":
+		if kind := object["kind"]; kind == "ClusterRole" || kind == "ClusterRoleBinding" {
 			t.Errorf("the chart makes the %v %v", kind, at(object, "metadata", "name"))
 		}
 	}
@@ -209,47 +202,26 @@ func TestSupervisorPermissions(t *testing.T) {
 	}
 }
 
-// The templates of the harnesses are built once too, before the Supervisors
-// of a release start, from what the release says of the harnesses.
-func TestTemplatesAreBuiltWithTheRelease(t *testing.T) {
+// A sandbox connects to nothing, and only the Supervisors connect to it, at
+// its runner. Its namespace stays when the chart is uninstalled, with the
+// sessions in it.
+func TestSandboxesAreCutOff(t *testing.T) {
 	objects := chart(t, "default")
-	templates := rendered.Find(objects, "Job", "aviary-templates")
-	if at(templates, "metadata", "annotations", "helm.sh/hook") != "pre-install,pre-upgrade" ||
-		!reflect.DeepEqual(at(templates, "spec", "template", "spec", "containers", 0, "args"), []any{"templates"}) {
-		t.Errorf("the templates are built by %v", templates)
+	policy := at(rendered.Find(objects, "NetworkPolicy", "aviary-sandboxes"), "spec")
+	if at(rendered.Find(objects, "NetworkPolicy", "aviary-sandboxes"), "metadata", "namespace") != "aviary-runtime" ||
+		len(at(policy, "podSelector").(map[string]any)) != 0 ||
+		!reflect.DeepEqual(at(policy, "policyTypes"), []any{"Ingress", "Egress"}) || at(policy, "egress") != nil {
+		t.Errorf("the policy of the sandboxes is %v", policy)
 	}
-	settings := env(templates)
-	for name, value := range map[string]string{
-		"AVIARY_SANDBOXES_URL":         "http://opensandbox-server.opensandbox-system",
-		"AVIARY_TEMPLATE_STORE":        "s3://sandbox-images/publish",
-		"AVIARY_MAX_TOOL_OUTPUT_BYTES": "65536",
-	} {
-		if settings[name] != value {
-			t.Errorf("the Job is told %s=%q, not %q", name, settings[name], value)
-		}
+	rules, _ := at(policy, "ingress").([]any)
+	if len(rules) != 1 || len(at(rules[0], "from").([]any)) != 1 ||
+		at(rules[0], "from", 0, "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name") != "aviary-system" ||
+		at(rules[0], "from", 0, "podSelector", "matchLabels", "app.kubernetes.io/component") != "supervisor" ||
+		!reflect.DeepEqual(at(rules[0], "ports"), []any{map[string]any{"protocol": "TCP", "port": 8700}}) {
+		t.Errorf("a sandbox may be connected to by %v", rules)
 	}
-	var harnesses map[string]struct {
-		Image   string            `json:"image"`
-		Sandbox map[string]string `json:"sandbox"`
-	}
-	if err := json.Unmarshal([]byte(settings["AVIARY_HARNESSES"]), &harnesses); err != nil {
-		t.Fatal(err)
-	}
-	size := map[string]string{"cpu": "1", "memory": "2Gi", "disk": "4Gi"}
-	if opencode := harnesses["opencode"]; opencode.Image != "aviary-harness-opencode:dev" || !reflect.DeepEqual(opencode.Sandbox, size) {
-		t.Errorf("the Job is told of the harness opencode: %v", opencode)
-	}
-	// The key of the sandbox service is in a secret, and not in the Job.
-	key := named(at(templates, "spec", "template", "spec", "containers", 0, "env"), "AVIARY_SANDBOXES_API_KEY")
-	if !reflect.DeepEqual(at(key, "valueFrom", "secretKeyRef"), map[string]any{"name": "aviary-sandboxes", "key": "api-key"}) {
-		t.Errorf("the key of the sandbox service is %v", key)
-	}
-
-	// An installation with its own.
-	objects = chart(t, "set")
-	settings = env(rendered.Find(objects, "Job", "aviary-templates"))
-	if settings["AVIARY_SANDBOXES_URL"] != "https://sandboxes.example.com" || settings["AVIARY_TEMPLATE_STORE"] != "s3://example/templates" ||
-		!strings.Contains(settings["AVIARY_HARNESSES"], `"disk":"16Gi"`) {
-		t.Errorf("the Job of an installation with its own sandbox service is told %v", settings)
+	namespace := rendered.Find(objects, "Namespace", "aviary-runtime")
+	if at(namespace, "metadata", "annotations", "helm.sh/resource-policy") != "keep" {
+		t.Errorf("the namespace of the sandboxes is %v", namespace)
 	}
 }

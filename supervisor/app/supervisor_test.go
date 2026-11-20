@@ -25,6 +25,7 @@ import (
 	"aviary/supervisor/internal/api"
 	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/internal/sandbox"
+	"aviary/supervisor/internal/sandbox/runnertest"
 	"aviary/supervisor/internal/sandbox/sandboxtest"
 	"aviary/supervisor/internal/testenv"
 	"aviary/supervisor/secret"
@@ -51,19 +52,18 @@ func TestMain(m *testing.M) {
 }
 
 // installation is what the Supervisors of a test share: their records, an
-// event log, a sandbox service, the keys that secrets are sealed with, and
-// what they record of the requests of the sandboxes.
+// event log, the sandboxes of the sessions, the keys that secrets are sealed
+// with, and what they record of the requests of the sandboxes.
 type installation struct {
 	t *testing.T
 	// records are the records of the installation, as its database holds
 	// them.
 	records *memorystore.Store
-	// service is the sandbox service of the installation, and sandboxes how
-	// its Supervisors ask it.
-	service   *sandboxtest.Service
-	sandboxes *sandbox.Client
-	config    driver.Config
-	keys      *secret.Keys
+	// service has the sandboxes of the installation, as its cluster keeps
+	// them.
+	service *sandboxtest.Service
+	config  driver.Config
+	keys    *secret.Keys
 	// requests are the records of the requests of the sandboxes, as the
 	// logs of the Supervisors are collected: a line of JSON for each.
 	requests *written
@@ -79,51 +79,31 @@ type installation struct {
 	callers api.Callers
 }
 
-// install returns an installation without Supervisors, whose release has
-// had the templates of its harnesses built. The functions change how its
-// turns are run from what a chart with default values sets. A test that
-// waits for what the Supervisors do only when they sweep sets the sweep
+// install returns an installation without Supervisors. The functions change
+// how its turns are run from what a chart with default values sets. A test
+// that waits for what the Supervisors do only when they sweep sets the sweep
 // lower.
 func install(t *testing.T, changes ...func(*driver.Config)) *installation {
 	t.Helper()
-	service := sandboxtest.New(t)
-	sandboxes, err := sandbox.New(service.URL, sandboxtest.Key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	size := sandbox.Size{CPU: "1", Memory: "2Gi", Disk: "4Gi"}
 	config := driver.Config{
-		Templates: sandbox.Templates{
-			Harnesses: map[string]sandbox.Harness{
-				"opencode": {Image: "opencode", Sandbox: size},
-				"codex":    {Image: "codex", Sandbox: size},
-			},
-			Store:              "s3://sandboxes/templates",
-			MaxToolOutputBytes: 65536,
-			Poll:               5 * time.Millisecond,
+		Harnesses: map[string]sandbox.Harness{
+			"opencode": {Image: "registry.example.com/harness-opencode:1.0"},
+			"codex":    {Image: "registry.example.com/harness-codex:1.0"},
 		},
-		Hosts:              []string{"*"},
 		MaxStartup:         90 * time.Second,
 		MaxTurn:            30 * time.Minute,
 		MaxQueueWait:       2 * time.Minute,
 		MaxQueuedTurns:     500,
 		MaxConcurrentTurns: 50,
 	}
-	if err := sandboxes.Bake(context.Background(), config.Templates); err != nil {
-		t.Fatal(err)
-	}
 	for _, change := range changes {
 		change(&config)
 	}
 	return &installation{
-		t: t, records: memorystore.New(), service: service, sandboxes: sandboxes, config: config, requests: &written{},
+		t: t, records: memorystore.New(), service: sandboxtest.New(t), config: config, requests: &written{},
 		keys: testenv.Keys(t), storeHosts: []string{storeHost}, secrets: &shelves{}, log: memorylog.New(),
 	}
 }
-
-// resolvedAt is where the Supervisors of the tests say that the egress of
-// a sandbox asks about its requests.
-const resolvedAt = "https://resolver.example.com:9443"
 
 // written is what several Supervisors write at once.
 type written struct {
@@ -208,7 +188,7 @@ func (i *installation) supervisor() *supervisor {
 	stopped := make(chan error, 1)
 	records := slog.New(slog.NewJSONHandler(i.requests, nil))
 	go func() {
-		stopped <- serveOn(ctx, on, i.records, ev, i.sandboxes, i.config, i.keys, stores, i.callers, resolvedAt, records)
+		stopped <- serveOn(ctx, on, i.records, ev, i.service, i.config, i.keys, stores, i.callers, records)
 	}()
 	s.stop = sync.OnceFunc(func() {
 		stop()
@@ -487,7 +467,7 @@ func types(events []event) []string {
 
 // runner is the runner of a session, with a turn that it was given.
 type runner struct {
-	*sandboxtest.Turn
+	*runnertest.Turn
 	installation *installation
 	// seq is the number of the last event that it told of the turn.
 	seq uint64
@@ -526,14 +506,9 @@ func (r *runner) report(told message) {
 	}
 }
 
-// lose takes the sandbox of the runner away, as a node that is lost does.
+// lose takes the sandbox of the runner away, with its volume.
 func (r *runner) lose() {
-	i := r.installation
-	i.t.Helper()
-	if err := i.sandboxes.DeleteSandbox(context.Background(), r.Sandbox); err != nil {
-		i.t.Fatal(err)
-	}
-	r.Cut()
+	r.installation.service.Lose(r.Sandbox)
 }
 
 // The events of a runner.

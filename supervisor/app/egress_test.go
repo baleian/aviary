@@ -5,24 +5,19 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
-	"strings"
 	"testing"
+
+	"aviary/supervisor/internal/resolver"
 )
 
 // resolve asks the Supervisor about a request of the sandbox to the URL, as
-// the egress of the sandbox does: where the Supervisor told the egress to
-// ask. It returns the status and the headers of the answer.
+// the egress of the sandbox does: under the path that is sealed for the
+// sandbox. It returns the status and the headers of the answer.
 func (s *supervisor) resolve(sandbox, method, target string) (int, map[string]string) {
 	s.t.Helper()
-	var vault struct {
-		Credentials []struct{ Source struct{ Endpoint string } }
-	}
-	if err := json.Unmarshal(s.service.Vault(sandbox), &vault); err != nil || len(vault.Credentials) != 1 {
-		s.t.Fatalf("the egress of the sandbox %s was given %s: %v", sandbox, s.service.Vault(sandbox), err)
-	}
-	endpoint, err := url.Parse(vault.Credentials[0].Source.Endpoint)
-	if err != nil || !strings.HasPrefix(endpoint.String(), resolvedAt+"/") {
-		s.t.Fatalf("the egress asks at %s", vault.Credentials[0].Source.Endpoint)
+	at, err := resolver.New(s.records, s.keys, nil, nil).Endpoint(s.resolver, sandbox)
+	if err != nil {
+		s.t.Fatal(err)
 	}
 	request, err := url.Parse(target)
 	if err != nil {
@@ -36,7 +31,7 @@ func (s *supervisor) resolve(sandbox, method, target string) (int, map[string]st
 	if err != nil {
 		s.t.Fatal(err)
 	}
-	answer, err := http.Post(s.resolver+endpoint.Path+"/resolve", "application/json", bytes.NewReader(question))
+	answer, err := http.Post(at+"/resolve", "application/json", bytes.NewReader(question))
 	if err != nil {
 		s.t.Fatal(err)
 	}

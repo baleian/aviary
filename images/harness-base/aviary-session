@@ -21,6 +21,9 @@ fi
 # its hosts file.
 name=$(cat /proc/sys/kernel/hostname)
 grep -qw "$name" /etc/hosts || echo "127.0.0.1 $name" >> /etc/hosts || true
+# The home is the volume of the session, which has no workspace yet when the
+# session is new.
+install --owner agent --group agent --directory /home/workspace
 cd /home/workspace
 export HOME=/home
 exec setpriv --reuid agent --regid agent --init-groups aviary-runner

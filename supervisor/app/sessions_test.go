@@ -30,7 +30,7 @@ func TestSessionEnds(t *testing.T) {
 	runner.report(started("harness-session"))
 	runner.report(said("hi"))
 	runner.report(finished("end_turn", nil))
-	if sandboxes := aviary.service.Sandboxes(); len(sandboxes) != 1 {
+	if sandboxes := aviary.service.Made(); len(sandboxes) != 1 {
 		t.Fatalf("the session that was not ended has the sandboxes %v", sandboxes)
 	}
 
@@ -38,7 +38,7 @@ func TestSessionEnds(t *testing.T) {
 	if status, _ := s.request("DELETE", path, "", &over); status != http.StatusOK || over.ID != session || over.EndedAt == nil {
 		t.Fatalf("ending the session was answered with %d and %+v", status, over)
 	}
-	if sandboxes := aviary.service.Sandboxes(); len(sandboxes) != 0 {
+	if sandboxes := aviary.service.Made(); len(sandboxes) != 0 {
 		t.Errorf("the session that was ended has left the sandboxes %v", sandboxes)
 	}
 	// Ending it again changes nothing.

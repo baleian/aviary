@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/internal/testenv"
 	"aviary/supervisor/store"
 )
@@ -150,9 +149,7 @@ func TestAgentNamesItsModel(t *testing.T) {
 // take no more messages, and a turn of it that still runs reaches no model.
 func TestAgentFromBeforeModels(t *testing.T) {
 	t.Parallel()
-	// The egress of a sandbox asks about the requests to a host that the
-	// installation names.
-	aviary := install(t, func(config *driver.Config) { config.Hosts = []string{"api.example.com"} })
+	aviary := install(t)
 	s := aviary.supervisor()
 	// The API creates no such agent and takes no message for one, so the
 	// agent and its turn are recorded as an older release left them.

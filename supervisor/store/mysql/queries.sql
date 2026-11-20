@@ -152,12 +152,10 @@ from turns where state in ('dispatching', 'running');
 update turns set state = 'running' where id = ? and state in ('dispatching', 'running');
 
 -- name: FollowedTurn :one
--- The turn as the Supervisor that follows it gets it, with whether it has a
--- request for approval that is not resolved.
+-- The turn as the Supervisor that follows it gets it.
 select sqlc.embed(turns), agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
        agents.approval, coalesce(providers.url, '') as provider_url, agents.model, sessions.sandbox,
-       cast(timestampdiff(microsecond, coalesce(turns.dispatched_at, turns.created_at), now(6)) as signed) as dispatched,
-       exists (select 1 from approvals where approvals.turn_id = turns.id and approvals.resolved_at is null) as waiting
+       cast(timestampdiff(microsecond, coalesce(turns.dispatched_at, turns.created_at), now(6)) as signed) as dispatched
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id

@@ -1,34 +1,53 @@
-// Package sandbox asks OpenSandbox, on which the sessions of Aviary run, for
-// what a session runs in: the sandbox of the session, which is made from the
-// template of the harness of its agent.
+// Package sandbox has the sessions run in sandboxes of the cluster: a
+// sandbox is a pod that its controller keeps, with a volume of the session
+// that outlives the pod. A session that sleeps has no pod, and its volume.
 package sandbox
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"net"
 	"net/http"
-	"net/url"
-	"slices"
 	"strconv"
-	"strings"
 	"time"
+
+	"github.com/google/uuid"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/rest"
+	agents "sigs.k8s.io/agent-sandbox/api/v1beta1"
+	"sigs.k8s.io/agent-sandbox/clients/k8s/clientset/versioned"
+	typed "sigs.k8s.io/agent-sandbox/clients/k8s/clientset/versioned/typed/api/v1beta1"
 )
 
-// answerLimit is the most of an answer that is read. A list of templates is
-// a few kilobytes.
-const answerLimit = 4 << 20
+const (
+	// RunnerPort is where the runner in a sandbox listens.
+	RunnerPort = 8700
+	// SessionLabel names the session of a sandbox, and of its pod.
+	SessionLabel = "aviary.io/session"
+	// home is the volume of the session, where the harness keeps what it
+	// remembers and the agent its work.
+	home = "home"
+	// agentUser is the user that the agent runs as, which the volume is
+	// given to.
+	agentUser = 10000
+)
+
+// session is what a sandbox runs, which the image of a harness has.
+var session = []string{"aviary-session"}
 
 // ErrNotFound is the error for what is asked for and is not there: a sandbox
-// that is gone, a template that was not built, a turn that a runner does not
-// have.
+// that is gone, a turn that a runner does not have.
 var ErrNotFound = errors.New("not found")
 
-// Refusal is an answer that is no success, of the sandbox service or of a
-// runner.
+// Refusal is an answer of a runner that is no success.
 type Refusal struct {
 	// Who answered, and what it was asked.
 	Who, Asked string
@@ -46,403 +65,260 @@ func (r *Refusal) Is(target error) bool {
 	return target == ErrNotFound && r.Status == http.StatusNotFound
 }
 
-// Client asks the lifecycle API of OpenSandbox.
-type Client struct {
-	address string
-	key     string
-	http    *http.Client
-	// stream is what the runners are asked with: the answer to one who reads
-	// the events of a turn takes as long as the turn.
-	stream *http.Client
-	// quiet is for how long a runner may send nothing to one who reads the
-	// events of a turn.
-	quiet time.Duration
-}
+// State is what a sandbox does.
+type State string
 
-// New returns a client of the lifecycle API at the address, such as
-// http://opensandbox-server.opensandbox-system, which it asks with the API
-// key.
-func New(address, key string) (*Client, error) {
-	parsed, err := url.Parse(address)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return nil, fmt.Errorf("%q is not the address of a sandbox service", address)
-	}
-	return &Client{
-		address: strings.TrimSuffix(address, "/") + "/v1",
-		key:     key,
-		http:    &http.Client{Timeout: 30 * time.Second},
-		stream:  &http.Client{},
-		quiet:   time.Minute,
-	}, nil
-}
-
-// Template is what the sandboxes of a harness are made from: the image of
-// the harness as a machine that was started, with the runner in it, and
-// stopped where it waits for its first turn.
-type Template struct {
-	ID       string            `json:"templateId"`
-	Metadata map[string]string `json:"metadata"`
-	Status   TemplateStatus    `json:"status"`
-}
-
-// TemplateStatus is how far the building of a template is.
-type TemplateStatus struct {
-	// Phase is Pending, Building, Succeeded or Failed.
-	Phase   string `json:"phase"`
-	Message string `json:"message"`
-}
-
-// The phases in which a template is not being built any more.
 const (
-	Succeeded = "Succeeded"
-	Failed    = "Failed"
+	// Running: its runner can be reached.
+	Running State = "Running"
+	// Asleep: it has no pod, and keeps its volume.
+	Asleep State = "Asleep"
+	// Starting: it was made, woken or put to sleep, and is not there yet.
+	Starting State = "Starting"
+	// Lost: it is being deleted, or it has expired.
+	Lost State = "Lost"
 )
 
-// TemplateSpec is what a template is built from.
-type TemplateSpec struct {
-	Image          string            `json:"image"`
-	Entrypoint     []string          `json:"entrypoint"`
-	Env            map[string]string `json:"env,omitempty"`
-	ResourceLimits Size              `json:"resourceLimits"`
-	Metadata       map[string]string `json:"metadata,omitempty"`
-	Readiness      Readiness         `json:"readiness"`
-	// Publish is where the template is kept, in the object store of the
-	// sandbox service.
-	Publish string `json:"publish"`
-	Format  string `json:"format"`
-}
-
-// Size is how large the sandboxes of a template are, each a quantity as
-// Kubernetes writes one: "1", "2Gi".
-type Size struct {
-	CPU    string `json:"cpu"`
-	Memory string `json:"memory"`
-	Disk   string `json:"disk"`
-}
-
-// Readiness tells when the machine of a template has started.
-type Readiness struct {
-	Probe string `json:"probe"`
-}
-
-// CreateTemplate has a template built. Building takes a while: the template
-// that is returned is one that is not built yet.
-func (c *Client) CreateTemplate(ctx context.Context, spec TemplateSpec) (Template, error) {
-	var template Template
-	err := c.ask(ctx, http.MethodPost, "/templates", nil, spec, &template)
-	return template, err
-}
-
-// Templates returns the templates that have the metadata.
-func (c *Client) Templates(ctx context.Context, name, value string) ([]Template, error) {
-	var templates []Template
-	for page := 1; ; page++ {
-		var listed struct {
-			Items      []Template `json:"items"`
-			Pagination struct {
-				HasNextPage bool `json:"hasNextPage"`
-			} `json:"pagination"`
-		}
-		query := url.Values{"metadata": {name + "=" + value}, "page": {strconv.Itoa(page)}}
-		if err := c.ask(ctx, http.MethodGet, "/templates", query, nil, &listed); err != nil {
-			return nil, err
-		}
-		templates = append(templates, listed.Items...)
-		if !listed.Pagination.HasNextPage {
-			return templates, nil
-		}
-	}
-}
-
-// Sandbox is the sandbox of a session: a small virtual machine in which the
-// runner and the harness of the session run.
+// Sandbox is a sandbox as it is seen.
 type Sandbox struct {
-	ID     string        `json:"id"`
-	Status SandboxStatus `json:"status"`
-	// Metadata is what the sandbox was made with, for one who looks at the
-	// sandboxes to know whose each is.
-	Metadata  map[string]string `json:"metadata"`
-	CreatedAt time.Time         `json:"createdAt"`
+	Name string
+	// Session is the session whose sandbox it is, as its label says.
+	Session string
+	State   State
+	// Message tells why it does not run, if it does not.
+	Message string
+	Created time.Time
+	// Address is where its runner is reached, while it runs.
+	Address string
 }
 
-// SandboxStatus is how the sandbox is.
-type SandboxStatus struct {
-	// State is Pending, Running, Pausing, Paused, Stopping, Terminated or
-	// Failed. A sandbox that is being woken is Pending, as one that is
-	// being made.
-	State   string `json:"state"`
-	Reason  string `json:"reason"`
-	Message string `json:"message"`
+// Harness is a harness as the installation sets it up.
+type Harness struct {
+	// Image is the image of the harness, with the runner in it.
+	Image string `json:"image"`
+	// Resources are what the pod of a sandbox of its sessions asks for and
+	// may use at most.
+	Resources corev1.ResourceRequirements `json:"resources"`
 }
 
-// The states of a sandbox that tell what to do with it.
-const (
-	// Running is the state of a sandbox whose runner can be asked.
-	Running = "Running"
-	// Pending is the state of a sandbox that is being made, or woken.
-	Pending = "Pending"
-	// Paused is the state of a sandbox that sleeps: what ran in it is kept
-	// as it was, and goes on when the sandbox is woken.
-	Paused = "Paused"
-)
-
-// forever is for how long a sandbox is kept that is kept until it is
-// deleted: a hundred years. The service wants to be told a time for one
-// that is made from a template.
-const forever = 100 * 365 * 24 * time.Hour
-
-// Request is what a sandbox is made as.
+// Request is a sandbox to make, for a session.
 type Request struct {
-	// Template is the template that it is made from.
-	Template string
-	// Metadata is what it is made with, for one who looks at the sandboxes
-	// to know whose each is.
-	Metadata map[string]string
-	// Idle is for how long the sandbox may be asked nothing before it is
-	// put to sleep, unless the runner in it is at work. Zero is never.
-	Idle time.Duration
-	// Kept is for how long the sandbox is kept: then it is deleted, unless
-	// Keep gave it longer. Zero is until it is deleted.
+	Session uuid.UUID
+	// Labels tell whose the sandbox is, besides its session.
+	Labels  map[string]string
+	Harness Harness
+	// Kept is for how long the sandbox is kept from now, after which it is
+	// deleted with its volume. Zero is until it is deleted.
 	Kept time.Duration
-	// Hosts are the hosts that the sandbox may send requests to, each a name
-	// or a *.domain, or * for every host.
-	Hosts []string
 }
 
-// everyHost stands for every host among the hosts that a sandbox may reach.
-const everyHost = "*"
-
-// networkPolicy is what the requests of a sandbox may reach.
-type networkPolicy struct {
-	DefaultAction string        `json:"defaultAction"`
-	Egress        []networkRule `json:"egress,omitempty"`
+// Settings are what every sandbox of the installation is made with.
+type Settings struct {
+	// Namespace is where the sandboxes are.
+	Namespace string
+	// Volume is the size of the volume of a session, and StorageClass the
+	// class that it is made with: the default class of the cluster if empty.
+	Volume       resource.Quantity
+	StorageClass string
+	// MaxToolOutputBytes is the longest text of a tool call that the runner
+	// tells as it is. Zero is no limit.
+	MaxToolOutputBytes int
 }
 
-type networkRule struct {
-	Action string `json:"action"`
-	Target string `json:"target"`
+// Client has the sandboxes made.
+type Client struct {
+	sandboxes typed.SandboxInterface
+	settings  Settings
 }
 
-// policy is the network policy of a sandbox that may reach the hosts.
-func policy(hosts []string) networkPolicy {
-	if slices.Contains(hosts, everyHost) {
-		return networkPolicy{DefaultAction: "allow"}
-	}
-	allowed := networkPolicy{DefaultAction: "deny"}
-	for _, host := range hosts {
-		allowed.Egress = append(allowed.Egress, networkRule{Action: "allow", Target: host})
-	}
-	return allowed
-}
-
-// activePath is where the runner tells whether its session is at work.
-const activePath = "/active"
-
-// lifecycle is what the service does with a sandbox by itself.
-type lifecycle struct {
-	IdlePolicy idlePolicy `json:"idlePolicy"`
-}
-
-// idlePolicy has the service put a sandbox to sleep that has not been asked
-// anything for so long, unless the runner in it says that it is at work.
-// Nothing that is sent to a sandbox wakes it: the one who needs it does.
-type idlePolicy struct {
-	IdleTimeoutSeconds int         `json:"idleTimeoutSeconds"`
-	OnIdle             string      `json:"onIdle"`
-	WakeOnAccess       bool        `json:"wakeOnAccess"`
-	ActiveProbe        activeProbe `json:"activeProbe"`
-}
-
-type activeProbe struct {
-	Port int    `json:"port"`
-	Path string `json:"path"`
-}
-
-// CreateSandbox has a sandbox made. It is there at once, and takes a moment
-// to run: longer on a node that has not run its template before. A
-// template that is not there, or not built, is ErrNotFound.
-func (c *Client) CreateSandbox(ctx context.Context, request Request) (Sandbox, error) {
-	kept := request.Kept
-	if kept == 0 {
-		kept = forever
-	}
-	spec := struct {
-		TemplateID    string            `json:"templateId"`
-		Timeout       int64             `json:"timeout"`
-		Metadata      map[string]string `json:"metadata,omitempty"`
-		Lifecycle     *lifecycle        `json:"lifecycle,omitempty"`
-		NetworkPolicy networkPolicy     `json:"networkPolicy"`
-	}{
-		TemplateID: request.Template, Timeout: int64(kept.Seconds()), Metadata: request.Metadata,
-		NetworkPolicy: policy(request.Hosts),
-	}
-	if request.Idle > 0 {
-		spec.Lifecycle = &lifecycle{idlePolicy{
-			IdleTimeoutSeconds: int(request.Idle.Seconds()),
-			OnIdle:             "pause",
-			ActiveProbe:        activeProbe{Port: RunnerPort, Path: activePath},
-		}}
-	}
-	var sandbox Sandbox
-	err := c.ask(ctx, http.MethodPost, "/sandboxes", nil, spec, &sandbox)
-	return sandbox, err
-}
-
-// Ask has the egress of the sandbox ask the resolver at the endpoint about
-// every request of the sandbox to the hosts over HTTPS, each host a name or
-// a *.domain, and put into the request the headers that the resolver
-// answers with. A request that the resolver does not answer for is not
-// sent. The egress asks nothing about a request over HTTP: it would refuse
-// it. A sandbox that the egress asks for already is left as it is.
-func (c *Client) Ask(ctx context.Context, id, endpoint string, hosts []string) error {
-	type source struct {
-		Type     string `json:"type"`
-		Endpoint string `json:"endpoint"`
-	}
-	type credential struct {
-		Name   string `json:"name"`
-		Source source `json:"source"`
-	}
-	type match struct {
-		Hosts   []string `json:"hosts"`
-		Schemes []string `json:"schemes"`
-	}
-	type auth struct {
-		Credential string `json:"credential"`
-	}
-	type binding struct {
-		Name  string `json:"name"`
-		Match match  `json:"match"`
-		Auth  auth   `json:"auth"`
-	}
-	vault := struct {
-		Credentials []credential `json:"credentials"`
-		Bindings    []binding    `json:"bindings"`
-	}{
-		Credentials: []credential{{Name: "aviary", Source: source{Type: "exchange", Endpoint: endpoint}}},
-		Bindings: []binding{{
-			Name: "aviary", Match: match{Hosts: hosts, Schemes: []string{"https"}}, Auth: auth{Credential: "aviary"},
-		}},
-	}
-	err := c.ask(ctx, http.MethodPost, "/sandboxes/"+url.PathEscape(id)+"/credential-vault", nil, vault, nil)
-	var refusal *Refusal
-	if errors.As(err, &refusal) && refusal.Status == http.StatusConflict {
-		return nil
-	}
-	return err
-}
-
-// Keep has the sandbox kept until the time, and deleted then.
-func (c *Client) Keep(ctx context.Context, id string, until time.Time) error {
-	body := map[string]string{"expiresAt": until.UTC().Format(time.RFC3339)}
-	return c.ask(ctx, http.MethodPost, "/sandboxes/"+url.PathEscape(id)+"/renew-expiration", nil, body, nil)
-}
-
-// Resume has a sandbox that sleeps woken. It takes a moment to run again.
-func (c *Client) Resume(ctx context.Context, id string) error {
-	return c.ask(ctx, http.MethodPost, "/sandboxes/"+url.PathEscape(id)+"/resume", nil, nil, nil)
-}
-
-// Sandbox returns the sandbox as it is now, or ErrNotFound if it is gone.
-func (c *Client) Sandbox(ctx context.Context, id string) (Sandbox, error) {
-	var sandbox Sandbox
-	err := c.ask(ctx, http.MethodGet, "/sandboxes/"+url.PathEscape(id), nil, nil, &sandbox)
-	return sandbox, err
-}
-
-// Sandboxes returns all the sandboxes that the service has.
-func (c *Client) Sandboxes(ctx context.Context) ([]Sandbox, error) {
-	var sandboxes []Sandbox
-	for page := 1; ; page++ {
-		var listed struct {
-			Items      []Sandbox `json:"items"`
-			Pagination struct {
-				HasNextPage bool `json:"hasNextPage"`
-			} `json:"pagination"`
-		}
-		query := url.Values{"page": {strconv.Itoa(page)}}
-		if err := c.ask(ctx, http.MethodGet, "/sandboxes", query, nil, &listed); err != nil {
-			return nil, err
-		}
-		sandboxes = append(sandboxes, listed.Items...)
-		if !listed.Pagination.HasNextPage {
-			return sandboxes, nil
-		}
-	}
-}
-
-// DeleteSandbox has the sandbox deleted, with all that is in it. A sandbox
-// that is gone already is no error.
-func (c *Client) DeleteSandbox(ctx context.Context, id string) error {
-	err := c.ask(ctx, http.MethodDelete, "/sandboxes/"+url.PathEscape(id), nil, nil, nil)
-	if errors.Is(err, ErrNotFound) {
-		return nil
-	}
-	return err
-}
-
-// Runner returns the runner in the sandbox, as it is reached: through the
-// ingress gateway of the sandbox service, with a route that the service
-// signs. The service gives the route also for a sandbox that is gone.
-func (c *Client) Runner(ctx context.Context, id string) (*Runner, error) {
-	var endpoint struct {
-		Endpoint string            `json:"endpoint"`
-		Headers  map[string]string `json:"headers"`
-	}
-	path := "/sandboxes/" + url.PathEscape(id) + "/endpoints/" + strconv.Itoa(RunnerPort)
-	if err := c.ask(ctx, http.MethodGet, path, nil, nil, &endpoint); err != nil {
+// New returns a client of the sandboxes of the cluster that config reaches.
+func New(config *rest.Config, settings Settings) (*Client, error) {
+	clients, err := versioned.NewForConfig(config)
+	if err != nil {
 		return nil, err
 	}
-	route := endpoint.Headers[routeHeader]
-	if endpoint.Endpoint == "" || route == "" {
-		return nil, fmt.Errorf("the sandbox service gave no way to the sandbox %s", id)
-	}
-	return &Runner{address: "http://" + endpoint.Endpoint, route: route, http: c.stream, quiet: c.quiet}, nil
+	return &Client{sandboxes: clients.AgentsV1beta1().Sandboxes(settings.Namespace), settings: settings}, nil
 }
 
-// ask sends a request and reads the answer into into. An answer that is no
-// success is an error that says what the service said.
-func (c *Client) ask(ctx context.Context, method, path string, query url.Values, body, into any) error {
-	var sent io.Reader
-	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			return err
+// Name is the name of the sandbox of the session. A session has one.
+func Name(session uuid.UUID) string {
+	return "session-" + session.String()
+}
+
+// Create makes the sandbox of the session. A sandbox of the session that
+// there is already is no error.
+func (c *Client) Create(ctx context.Context, request Request) error {
+	labels := map[string]string{SessionLabel: request.Session.String()}
+	for key, value := range request.Labels {
+		labels[key] = value
+	}
+	claim := corev1.PersistentVolumeClaimSpec{
+		AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+		Resources:   corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: c.settings.Volume}},
+	}
+	if c.settings.StorageClass != "" {
+		claim.StorageClassName = &c.settings.StorageClass
+	}
+	made := &agents.Sandbox{
+		ObjectMeta: metav1.ObjectMeta{Name: Name(request.Session), Labels: labels},
+		Spec: agents.SandboxSpec{
+			SandboxBlueprint: agents.SandboxBlueprint{
+				PodTemplate: agents.PodTemplate{
+					ObjectMeta: agents.PodMetadata{Labels: labels},
+					Spec:       c.pod(request.Harness),
+				},
+				VolumeClaimTemplates: []agents.PersistentVolumeClaimTemplate{{
+					EmbeddedObjectMetadata: agents.EmbeddedObjectMetadata{Name: home},
+					Spec:                   claim,
+				}},
+				// A runner that is gone is started again, with the volume.
+				FailedPodPolicy: agents.FailedPodPolicyRecreate,
+			},
+		},
+	}
+	// A sandbox that expires is deleted, with its volume.
+	made.Spec.ShutdownPolicy = new(agents.ShutdownPolicyDelete)
+	if request.Kept > 0 {
+		made.Spec.ShutdownTime = new(metav1.NewTime(time.Now().Add(request.Kept)))
+	}
+	_, err := c.sandboxes.Create(ctx, made, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		return nil
+	}
+	return err
+}
+
+// pod is the pod of a sandbox of the harness.
+func (c *Client) pod(harness Harness) corev1.PodSpec {
+	return corev1.PodSpec{
+		// The pod has nothing to ask the cluster.
+		AutomountServiceAccountToken: new(false),
+		EnableServiceLinks:           new(false),
+		SecurityContext: &corev1.PodSecurityContext{
+			// The agent can write to the volume, which is made for root.
+			FSGroup: new(int64(agentUser)),
+		},
+		Containers: []corev1.Container{{
+			Name:      "harness",
+			Image:     harness.Image,
+			Command:   session,
+			Resources: harness.Resources,
+			Env: []corev1.EnvVar{
+				{Name: "AVIARY_MAX_TOOL_OUTPUT_BYTES", Value: strconv.Itoa(c.settings.MaxToolOutputBytes)},
+			},
+			Ports: []corev1.ContainerPort{{Name: "runner", ContainerPort: RunnerPort}},
+			// The sandbox runs once its runner listens.
+			ReadinessProbe: &corev1.Probe{
+				ProbeHandler:  corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(RunnerPort)}},
+				PeriodSeconds: 1,
+			},
+			VolumeMounts: []corev1.VolumeMount{{Name: home, MountPath: "/home"}},
+		}},
+	}
+}
+
+// Sandbox returns the sandbox with the name, or ErrNotFound.
+func (c *Client) Sandbox(ctx context.Context, name string) (Sandbox, error) {
+	found, err := c.sandboxes.Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return Sandbox{}, fmt.Errorf("the sandbox %s: %w", name, ErrNotFound)
+	}
+	if err != nil {
+		return Sandbox{}, err
+	}
+	return seen(found), nil
+}
+
+// Sandboxes returns the sandboxes of the sessions.
+func (c *Client) Sandboxes(ctx context.Context) ([]Sandbox, error) {
+	found, err := c.sandboxes.List(ctx, metav1.ListOptions{LabelSelector: SessionLabel})
+	if err != nil {
+		return nil, err
+	}
+	all := make([]Sandbox, 0, len(found.Items))
+	for i := range found.Items {
+		all = append(all, seen(&found.Items[i]))
+	}
+	return all, nil
+}
+
+// seen is the sandbox as its object tells of it.
+func seen(found *agents.Sandbox) Sandbox {
+	sandbox := Sandbox{Name: found.Name, Session: found.Labels[SessionLabel], Created: found.CreationTimestamp.Time}
+	ready := meta.FindStatusCondition(found.Status.Conditions, string(agents.SandboxConditionReady))
+	suspended := meta.FindStatusCondition(found.Status.Conditions, string(agents.SandboxConditionSuspended))
+	switch {
+	case found.DeletionTimestamp != nil:
+		sandbox.State, sandbox.Message = Lost, "it is being deleted"
+	case ready != nil && ready.Reason == agents.SandboxReasonExpired:
+		sandbox.State, sandbox.Message = Lost, "it has expired"
+	case found.Spec.OperatingMode == agents.SandboxOperatingModeSuspended:
+		sandbox.State = Starting
+		if suspended != nil && suspended.Status == metav1.ConditionTrue {
+			sandbox.State = Asleep
 		}
-		sent = bytes.NewReader(encoded)
+	case ready != nil && ready.Status == metav1.ConditionTrue && len(found.Status.PodIPs) > 0:
+		sandbox.State = Running
+		sandbox.Address = "http://" + net.JoinHostPort(found.Status.PodIPs[0], strconv.Itoa(RunnerPort))
+	default:
+		sandbox.State = Starting
+		if ready != nil {
+			sandbox.Message = ready.Reason + ": " + ready.Message
+		}
 	}
-	address := c.address + path
-	if len(query) > 0 {
-		address += "?" + query.Encode()
+	return sandbox
+}
+
+// Delete deletes the sandbox, with its volume. A sandbox that is gone is no
+// error.
+func (c *Client) Delete(ctx context.Context, name string) error {
+	err := c.sandboxes.Delete(ctx, name, metav1.DeleteOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
 	}
-	request, err := http.NewRequestWithContext(ctx, method, address, sent)
+	return err
+}
+
+// Suspend puts the sandbox to sleep: its pod is deleted, and its volume
+// kept.
+func (c *Client) Suspend(ctx context.Context, name string) error {
+	return c.merge(ctx, name, map[string]any{"operatingMode": agents.SandboxOperatingModeSuspended})
+}
+
+// Resume wakes the sandbox: a pod is made for it again, with its volume. The
+// pod is of the harness as the installation has it now.
+func (c *Client) Resume(ctx context.Context, name string, harness Harness) error {
+	// The pod is replaced as a whole: what an older pod had and this one
+	// does not have does not stay.
+	return c.patch(ctx, name, types.JSONPatchType, []map[string]any{
+		{"op": "add", "path": "/spec/podTemplate/spec", "value": c.pod(harness)},
+		{"op": "add", "path": "/spec/operatingMode", "value": agents.SandboxOperatingModeRunning},
+	})
+}
+
+// Keep has the sandbox kept until then, and then deleted with its volume.
+// The zero time is until it is deleted.
+func (c *Client) Keep(ctx context.Context, name string, until time.Time) error {
+	var shutdown any
+	if !until.IsZero() {
+		shutdown = until.UTC().Format(time.RFC3339)
+	}
+	return c.merge(ctx, name, map[string]any{"shutdownTime": shutdown})
+}
+
+// merge sets the fields of the spec of the sandbox.
+func (c *Client) merge(ctx context.Context, name string, fields map[string]any) error {
+	return c.patch(ctx, name, types.MergePatchType, map[string]any{"spec": fields})
+}
+
+func (c *Client) patch(ctx context.Context, name string, kind types.PatchType, patch any) error {
+	body, err := json.Marshal(patch)
 	if err != nil {
 		return err
 	}
-	request.Header.Set("OPEN-SANDBOX-API-KEY", c.key)
-	if body != nil {
-		request.Header.Set("Content-Type", "application/json")
+	_, err = c.sandboxes.Patch(ctx, name, kind, body, metav1.PatchOptions{})
+	if apierrors.IsNotFound(err) {
+		return fmt.Errorf("the sandbox %s: %w", name, ErrNotFound)
 	}
-	answer, err := c.http.Do(request)
-	if err != nil {
-		return fmt.Errorf("the sandbox service: %w", err)
-	}
-	defer answer.Body.Close()
-	said, err := io.ReadAll(io.LimitReader(answer.Body, answerLimit))
-	if err != nil {
-		return fmt.Errorf("the sandbox service: %w", err)
-	}
-	if answer.StatusCode < 200 || answer.StatusCode > 299 {
-		return &Refusal{
-			Who: "the sandbox service", Asked: method + " " + path,
-			Status: answer.StatusCode, Said: strings.TrimSpace(string(said)),
-		}
-	}
-	if into == nil {
-		return nil
-	}
-	if err := json.Unmarshal(said, into); err != nil {
-		return fmt.Errorf("the sandbox service answered %s %s with what is no JSON: %w", method, path, err)
-	}
-	return nil
+	return err
 }

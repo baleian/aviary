@@ -64,8 +64,9 @@ func TestCancel(t *testing.T) {
 // runner has it is not given to a runner.
 func TestCancelBeforeTheRunnerHasTheTurn(t *testing.T) {
 	t.Parallel()
-	// The turn waits for a template that no release has had built.
-	aviary := install(t, func(config *driver.Config) { config.Templates.Store = "s3://elsewhere/templates" })
+	// The turn waits for its sandbox, which does not run yet.
+	aviary := install(t)
+	aviary.service.Slow(true)
 	s := aviary.supervisor()
 	accepted := s.send(s.session(), "hello")
 	eventually(t, soon, "the turn is not followed", func() bool { return s.turn(accepted.ID).State == "running" })

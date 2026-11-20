@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
-	"slices"
 	"sync"
 	"time"
 
@@ -26,9 +24,9 @@ type run struct {
 	leave context.CancelFunc
 	// dispatched is when the turn was dispatched.
 	dispatched time.Time
-	// changed is filled when the limit of the turn has changed, asked when
-	// the turn was asked to stop, and woken when its sandbox was woken.
-	changed, asked, woken chan struct{}
+	// changed is filled when the limit of the turn has changed, and asked
+	// when the turn was asked to stop.
+	changed, asked chan struct{}
 
 	mu sync.Mutex
 	// sandbox is the sandbox of the session, once it has one.
@@ -40,8 +38,6 @@ type run struct {
 	given  bool
 	// started is whether the harness has the message.
 	started bool
-	// asking is how many requests of the turn wait for a person.
-	asking int
 	// stopping is when the turn was asked to stop, if it was.
 	stopping time.Time
 	// holdup is why the turn is not with its runner yet.
@@ -75,10 +71,6 @@ func (d *Driver) run(ctx context.Context, turnID uuid.UUID, told *orders) {
 		slog.ErrorContext(ctx, "read what the runner has told", "turn", turnID, "error", err)
 		return
 	}
-	// The turn went back to the queue between the two looks at it.
-	if turn.State == store.TurnQueued {
-		return
-	}
 	slog.InfoContext(ctx, "following turn", "turn", turnID, "received", received)
 	defer d.metrics.Following(turn.Harness)()
 
@@ -88,14 +80,11 @@ func (d *Driver) run(ctx context.Context, turnID uuid.UUID, told *orders) {
 	given := received > 0 || turn.StartedAt != nil
 	r := &run{
 		turn: turn, told: told, dispatched: time.Now().Add(-turn.Dispatched),
-		changed: make(chan struct{}, 1), asked: make(chan struct{}, 1), woken: make(chan struct{}, 1),
+		changed: make(chan struct{}, 1), asked: make(chan struct{}, 1),
 		sandbox: turn.Sandbox, given: given, started: turn.StartedAt != nil,
 	}
 	if turn.CancelRequestedAt != nil {
 		r.stopping = *turn.CancelRequestedAt
-	}
-	if turn.Waiting {
-		r.asking = 1
 	}
 	// What is done for the turn while it is followed ends with the
 	// following. What settles the turn does not.
@@ -123,7 +112,8 @@ func (d *Driver) watch(following context.Context, leave context.CancelFunc, r *r
 			timer.Stop()
 			return
 		case <-timer.C:
-			// The limit moves while the turn waits for a person.
+			// The limit moves when the turn starts, and when it is asked to
+			// stop.
 			if at, failure := r.limit(d.config); !time.Now().Before(at) {
 				r.giveUp(failure)
 				leave()
@@ -131,7 +121,8 @@ func (d *Driver) watch(following context.Context, leave context.CancelFunc, r *r
 			}
 		case <-r.changed:
 		case <-r.told.stop:
-			if runner := r.stop(); runner != nil && d.rouse(following, r) {
+			// What was not told is told again at the next sweep.
+			if runner := r.stop(); runner != nil {
 				err := runner.Cancel(following, r.turn.ID)
 				if err != nil && !errors.Is(err, sandbox.ErrNotFound) {
 					slog.WarnContext(following, "tell the runner to stop the turn", "turn", r.turn.ID, "error", err)
@@ -156,7 +147,7 @@ func (d *Driver) answer(ctx context.Context, r *run) {
 		slog.ErrorContext(ctx, "read the answers to requests for approval", "turn", r.turn.ID, "error", err)
 		return
 	}
-	if len(answers) == 0 || !d.rouse(ctx, r) {
+	if len(answers) == 0 {
 		return
 	}
 	for _, answer := range answers {
@@ -165,36 +156,6 @@ func (d *Driver) answer(ctx context.Context, r *run) {
 			slog.WarnContext(ctx, "give the runner an answer", "turn", r.turn.ID, "error", err)
 		}
 	}
-}
-
-// rouse has the sandbox of the turn run, for what its runner is to be told:
-// a session that waits for a person sleeps. It reports whether the sandbox
-// runs. What was not told is told again at the next sweep.
-func (d *Driver) rouse(ctx context.Context, r *run) bool {
-	for range 10 {
-		seen, err := d.sandboxes.Sandbox(ctx, r.sandboxID())
-		switch {
-		case err != nil:
-			slog.WarnContext(ctx, "look at the sandbox of the session", "turn", r.turn.ID, "error", err)
-			return false
-		case seen.Status.State == sandbox.Running:
-			poke(r.woken)
-			return true
-		case lost(seen.Status.State):
-			return false
-		case seen.Status.State == sandbox.Paused:
-			if err := d.sandboxes.Resume(ctx, r.sandboxID()); err != nil {
-				slog.WarnContext(ctx, "wake the sandbox of the session", "turn", r.turn.ID, "error", err)
-				return false
-			}
-		}
-		select {
-		case <-time.After(d.again()):
-		case <-ctx.Done():
-			return false
-		}
-	}
-	return false
 }
 
 // reach has the sandbox of the turn's session run and gives the runner in
@@ -243,7 +204,7 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 	}
 	seen, err := d.sandboxes.Sandbox(following, id)
 	switch {
-	case errors.Is(err, sandbox.ErrNotFound), err == nil && lost(seen.Status.State):
+	case errors.Is(err, sandbox.ErrNotFound), err == nil && seen.State == sandbox.Lost:
 		if given {
 			r.giveUp(store.Failure{Reason: store.FailureSandboxLost, Message: "the sandbox of the session is gone"})
 			return nil, nil
@@ -252,7 +213,7 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 		// could not be made.
 		gone := "the sandbox of the session is gone"
 		if err == nil {
-			gone = fmt.Sprintf("the sandbox of the session is %s %s", seen.Status.State, seen.Status.Message)
+			gone = "the sandbox of the session is lost: " + seen.Message
 		}
 		slog.WarnContext(ctx, gone, "session", turn.SessionID, "sandbox", id)
 		d.forget(ctx, turn.SessionID, id)
@@ -268,29 +229,38 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 		return nil, errors.New(gone + ", and a new one is made")
 	case err != nil:
 		return nil, fmt.Errorf("look at the sandbox of the session: %w", err)
-	case seen.Status.State == sandbox.Paused:
+	case seen.State == sandbox.Asleep && given:
+		r.giveUp(asleep)
+		return nil, nil
+	case seen.State == sandbox.Asleep:
 		// The session was not at work, and its sandbox was put to sleep.
-		if err := d.sandboxes.Resume(following, id); err != nil {
+		harness, err := d.harness(turn)
+		if err != nil {
+			return nil, err
+		}
+		if err := d.sandboxes.Resume(following, id, harness); err != nil {
 			return nil, fmt.Errorf("wake the sandbox of the session: %w", err)
 		}
 		return nil, errors.New("the sandbox of the session is woken")
-	case seen.Status.State != sandbox.Running:
-		return nil, fmt.Errorf("the sandbox of the session is %s %s", seen.Status.State, seen.Status.Message)
+	case seen.State != sandbox.Running:
+		why := "the sandbox of the session does not run yet"
+		if seen.Message != "" {
+			why += ": " + seen.Message
+		}
+		return nil, errors.New(why)
 	}
-	runner, err := d.sandboxes.Runner(following, id)
-	if err != nil {
-		return nil, fmt.Errorf("find the way to the runner: %w", err)
-	}
+	runner := sandbox.RunnerAt(seen.Address)
 	if given {
 		return runner, nil
 	}
-	if err := d.askAbout(following, turn, id); err != nil {
-		return nil, fmt.Errorf("have the egress of the sandbox ask about its requests: %w", err)
-	}
+	// The sandbox is kept for as long as the installation says now, which
+	// may be until it is deleted.
+	var until time.Time
 	if d.config.Retention > 0 {
-		if err := d.sandboxes.Keep(following, id, time.Now().Add(d.config.Retention)); err != nil {
-			return nil, fmt.Errorf("have the sandbox of the session kept: %w", err)
-		}
+		until = time.Now().Add(d.config.Retention)
+	}
+	if err := d.sandboxes.Keep(following, id, until); err != nil {
+		return nil, fmt.Errorf("have the sandbox of the session kept: %w", err)
 	}
 	// The runner may have the turn even when no answer comes.
 	r.give()
@@ -326,82 +296,45 @@ func (d *Driver) expired(ctx context.Context, turn store.FollowedTurn) bool {
 	return time.Since(last) >= d.config.Retention
 }
 
-// provide makes the sandbox of the turn's session, and returns it: the one
-// that it made or, if another Supervisor made one first, that one.
+// harness is the harness of the turn as the installation has it.
+func (d *Driver) harness(turn store.FollowedTurn) (sandbox.Harness, error) {
+	harness, found := d.config.Harnesses[turn.Harness]
+	if !found {
+		return sandbox.Harness{}, fmt.Errorf("the installation has no harness %s", turn.Harness)
+	}
+	return harness, nil
+}
+
+// provide makes the sandbox of the turn's session, and returns its name.
 func (d *Driver) provide(ctx context.Context, r *run) (string, error) {
 	turn := r.turn
-	template, err := d.sandboxes.Template(ctx, d.config.Templates, turn.Harness)
+	harness, err := d.harness(turn)
 	if err != nil {
 		return "", err
 	}
-	made, err := d.sandboxes.CreateSandbox(ctx, sandbox.Request{
-		Template: template,
-		Metadata: map[string]string{
-			metadataSession: turn.SessionID.String(),
-			metadataAgent:   turn.AgentID.String(),
-			metadataProject: turn.ProjectID.String(),
-		},
-		Idle:  d.config.Idle,
-		Kept:  d.config.Retention,
-		Hosts: d.config.Hosts,
+	err = d.sandboxes.Create(ctx, sandbox.Request{
+		Session: turn.SessionID,
+		Labels:  map[string]string{labelAgent: turn.AgentID.String(), labelProject: turn.ProjectID.String()},
+		Harness: harness,
+		Kept:    d.config.Retention,
 	})
 	if err != nil {
 		return "", err
 	}
-	kept, err := d.store.SetSandbox(ctx, turn.SessionID, "", made.ID)
-	if err == nil && kept {
-		slog.InfoContext(ctx, "made the sandbox of the session", "session", turn.SessionID, "sandbox", made.ID)
-		r.keep(made.ID)
-		return made.ID, nil
-	}
-	// A session has one sandbox, and this one is not it.
-	if gone := d.sandboxes.DeleteSandbox(ctx, made.ID); gone != nil {
-		slog.ErrorContext(ctx, "delete a sandbox that no session has", "sandbox", made.ID, "error", gone)
-	}
-	if err != nil {
+	// The sandbox of a session has its name. Another Supervisor that made it
+	// first made the same.
+	name := sandbox.Name(turn.SessionID)
+	if _, err := d.store.SetSandbox(ctx, turn.SessionID, "", name); err != nil {
 		return "", err
 	}
-	session, err := d.store.Session(ctx, turn.SessionID)
-	if err != nil {
-		return "", err
-	}
-	if session.Sandbox == "" {
-		return "", errors.New("the session has lost its sandbox")
-	}
-	r.keep(session.Sandbox)
-	return session.Sandbox, nil
-}
-
-// askAbout has the egress of the sandbox ask about the requests of the
-// sandbox to the hosts that it may reach by name, and to the model endpoint
-// of the turn's agent: Aviary records each of them, and gives the key of the
-// endpoint to a request to it.
-func (d *Driver) askAbout(ctx context.Context, turn store.FollowedTurn, id string) error {
-	if d.config.Ask == nil {
-		return nil
-	}
-	var hosts []string
-	for _, host := range d.config.Hosts {
-		if host != "*" {
-			hosts = append(hosts, host)
-		}
-	}
-	if endpoint, err := url.Parse(turn.ProviderURL); err == nil && endpoint.Hostname() != "" && !slices.Contains(hosts, endpoint.Hostname()) {
-		hosts = append(hosts, endpoint.Hostname())
-	}
-	if len(hosts) == 0 {
-		return nil
-	}
-	endpoint, err := d.config.Ask(id)
-	if err != nil {
-		return err
-	}
-	return d.sandboxes.Ask(ctx, id, endpoint, hosts)
+	slog.InfoContext(ctx, "made the sandbox of the session", "session", turn.SessionID, "sandbox", name)
+	r.keep(name)
+	return name, nil
 }
 
 // forget has the sandbox deleted, and the session have none.
 func (d *Driver) forget(ctx context.Context, sessionID uuid.UUID, id string) {
-	if err := d.sandboxes.DeleteSandbox(ctx, id); err != nil {
+	if err := d.sandboxes.Delete(ctx, id); err != nil {
 		slog.ErrorContext(ctx, "delete the sandbox of the session", "session", sessionID, "sandbox", id, "error", err)
 	}
 	if _, err := d.store.SetSandbox(ctx, sessionID, id, ""); err != nil {
@@ -410,21 +343,23 @@ func (d *Driver) forget(ctx context.Context, sessionID uuid.UUID, id string) {
 }
 
 // giveUp ends a turn that cannot go on as failed. A sandbox whose runner may
-// have the turn goes with it: what runs in it is stopped for sure, and the
-// next turn of the session gets a new one. A sandbox that the turn did not
-// reach, such as one that was still being made or woken, stays with what the
-// agent had in it, for the next turn.
+// have the turn is put to sleep: what runs in it stops with its pod, and the
+// volume of the session stays for the next turn, which wakes it. A sandbox
+// that the turn did not reach, such as one that was still being made or
+// woken, is left as it is.
 func (d *Driver) giveUp(ctx context.Context, r *run, failure store.Failure) {
 	slog.WarnContext(ctx, "turn is given up", "turn", r.turn.ID, "reason", failure.Reason, "message", failure.Message)
 	if id := r.sandboxID(); id != "" && r.wasGiven() {
-		// A turn whose sandbox cannot be deleted is given up again, by the
-		// next sweep.
-		if err := d.sandboxes.DeleteSandbox(ctx, id); err != nil {
-			slog.ErrorContext(ctx, "delete the sandbox of the session", "session", r.turn.SessionID, "sandbox", id, "error", err)
-			return
+		err := d.sandboxes.Suspend(ctx, id)
+		if errors.Is(err, sandbox.ErrNotFound) {
+			// The sandbox is gone: the next turn of the session gets a new
+			// one.
+			_, err = d.store.SetSandbox(ctx, r.turn.SessionID, id, "")
 		}
-		if _, err := d.store.SetSandbox(ctx, r.turn.SessionID, id, ""); err != nil {
-			slog.ErrorContext(ctx, "forget the sandbox of the session", "session", r.turn.SessionID, "sandbox", id, "error", err)
+		// A turn whose sandbox cannot be put to sleep is given up again, by
+		// the next sweep.
+		if err != nil {
+			slog.ErrorContext(ctx, "put the sandbox of the session to sleep", "session", r.turn.SessionID, "sandbox", id, "error", err)
 			return
 		}
 	}
@@ -439,58 +374,49 @@ func (d *Driver) giveUp(ctx context.Context, r *run, failure store.Failure) {
 // one with the number, until the turn has ended.
 func (d *Driver) read(ctx, following context.Context, r *run, runner *sandbox.Runner, after uint64) {
 	turn := r.turn
-	// asleep is whether the sandbox was last seen to sleep, which it does
-	// while its turn waits for a person. It is left alone then: it is woken
-	// when the turn is told something.
-	asleep := false
 	for following.Err() == nil {
-		if !asleep {
-			var ended *ending
-			err := runner.Events(following, turn.ID, after, func(event sandbox.Event) error {
-				how, err := d.record(following, r, event)
-				if err != nil {
-					return err
-				}
-				if after, ended = event.Seq, how; ended != nil {
-					return errEnded
-				}
-				return nil
-			})
-			switch {
-			case ended != nil:
-				d.end(ctx, turn.ID, ended.succeeded, ended.failure)
-				return
-			case following.Err() != nil:
-				return
-			case errors.Is(err, sandbox.ErrNotFound):
-				d.end(ctx, turn.ID, false, store.Failure{
-					Reason: store.FailureRunner, Message: "the runner of the session does not have the turn any more",
-				})
-				return
-			case err != nil:
-				slog.WarnContext(ctx, "read the events of the turn", "turn", turn.ID, "after", after, "error", err)
+		var ended *ending
+		err := runner.Events(following, turn.ID, after, func(event sandbox.Event) error {
+			how, err := d.record(following, r, event)
+			if err != nil {
+				return err
 			}
+			if after, ended = event.Seq, how; ended != nil {
+				return errEnded
+			}
+			return nil
+		})
+		switch {
+		case ended != nil:
+			d.end(ctx, turn.ID, ended.succeeded, ended.failure)
+			return
+		case following.Err() != nil:
+			return
+		case errors.Is(err, sandbox.ErrNotFound):
+			d.end(ctx, turn.ID, false, store.Failure{
+				Reason: store.FailureRunner, Message: "the runner of the session does not have the turn any more",
+			})
+			return
+		case err != nil:
+			slog.WarnContext(ctx, "read the events of the turn", "turn", turn.ID, "after", after, "error", err)
 		}
 		// The reading was cut off, or the runner cannot be reached.
 		seen, gone := d.sandboxes.Sandbox(following, r.sandboxID())
-		if errors.Is(gone, sandbox.ErrNotFound) || gone == nil && lost(seen.Status.State) {
+		switch {
+		case errors.Is(gone, sandbox.ErrNotFound), gone == nil && seen.State == sandbox.Lost:
 			r.giveUp(store.Failure{Reason: store.FailureSandboxLost, Message: "the sandbox of the session is gone"})
 			return
-		}
-		wait := d.again()
-		if asleep = gone == nil && (seen.Status.State == sandbox.Paused || seen.Status.State == "Pausing"); asleep {
-			wait = d.config.Sweep
-			// A sandbox sleeps when its runner says that the session is not
-			// at work. Of a turn that waits for no person, the runner has
-			// then told more than was read: the end of the turn, or that
-			// its harness asks. The sandbox is woken for it to be read.
-			if !r.waiting() && d.rouse(following, r) {
-				asleep, wait = false, 0
-			}
+		case gone == nil && seen.State == sandbox.Asleep:
+			r.giveUp(asleep)
+			return
+		case gone == nil && seen.State == sandbox.Running && seen.Address != runner.Address():
+			// A pod that is made anew has a runner of its own, which says that
+			// it does not have the turn.
+			runner = sandbox.RunnerAt(seen.Address)
+			r.reach(runner)
 		}
 		select {
-		case <-time.After(wait):
-		case <-r.woken:
+		case <-time.After(d.again()):
 		case <-following.Done():
 		}
 		// Another Supervisor may have recorded more of the turn.
@@ -502,6 +428,10 @@ func (d *Driver) read(ctx, following context.Context, r *run, runner *sandbox.Ru
 
 // errEnded ends the reading of a turn that has ended.
 var errEnded = errors.New("the turn has ended")
+
+// asleep is the failure of a turn whose sandbox was put to sleep while its
+// runner had the turn: the runner stopped with the pod.
+var asleep = store.Failure{Reason: store.FailureRunner, Message: "the sandbox of the session was put to sleep while the turn ran"}
 
 // ending is how a turn ended, as its runner tells it.
 type ending struct {
@@ -577,7 +507,6 @@ func (d *Driver) record(ctx context.Context, r *run, event sandbox.Event) (*endi
 		if err := d.store.AddApproval(ctx, turn.ID, asked.ID, data); err != nil {
 			return nil, err
 		}
-		r.ask()
 	case "approval.resolved":
 		var resolved struct {
 			ID       string `json:"id"`
@@ -609,7 +538,6 @@ func (d *Driver) record(ctx context.Context, r *run, event sandbox.Event) (*endi
 		if first {
 			d.metrics.Approved(turn.Harness, outcome, waited)
 		}
-		r.answer()
 	}
 	if !passed[event.Name] {
 		return nil, d.events.Receive(ctx, turn.ID, event.Seq, "", nil)
@@ -715,20 +643,6 @@ func (r *run) start() {
 	poke(r.changed)
 }
 
-// ask notes that the harness asks a person, and answer that it has its
-// answer to a request.
-func (r *run) ask() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.asking++
-}
-
-func (r *run) answer() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.asking = max(r.asking-1, 0)
-}
-
 // stop notes that the turn was asked to stop, and returns the runner that
 // is to be told, if one has the turn.
 func (r *run) stop() *sandbox.Runner {
@@ -739,13 +653,6 @@ func (r *run) stop() *sandbox.Runner {
 	}
 	poke(r.asked)
 	return r.runner
-}
-
-// waiting reports whether the turn waits for a person.
-func (r *run) waiting() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.asking > 0
 }
 
 func (r *run) stopped() bool {

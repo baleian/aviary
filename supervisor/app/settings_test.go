@@ -3,25 +3,25 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"k8s.io/apimachinery/pkg/api/resource"
 
-	"aviary/supervisor/internal/sandbox"
 	"aviary/supervisor/secret"
 	"aviary/supervisor/store"
 )
 
 // settings are the variables of a Supervisor as the chart sets them.
 var settings = map[string]string{
-	templateStore:      "s3://sandboxes/templates",
-	sandboxIdle:        "300",
-	sandboxHosts:       `["pypi.org", "*.example.com"]`,
-	sandboxRetention:   "0",
-	harnesses:          `{"opencode": {"image": "registry.example/opencode:1", "sandbox": {"cpu": "1", "memory": "2Gi", "disk": "4Gi"}}}`,
+	sandboxNamespace: "aviary-runtime",
+	sandboxVolume:    "10Gi",
+	sandboxIdle:      "300",
+	sandboxRetention: "0",
+	harnesses: `{"opencode": {"image": "registry.example/opencode:1",
+		"resources": {"requests": {"cpu": "250m", "memory": "1Gi"}, "limits": {"memory": "4Gi"}}}}`,
 	maxConcurrentTurns: "50",
 	maxQueuedTurns:     "500",
 	maxQueueWait:       "120",
@@ -30,65 +30,55 @@ var settings = map[string]string{
 	maxTurn:            "1800",
 }
 
-func TestDriverConfig(t *testing.T) {
-	// set sets the variables, with some of them changed.
-	set := func(t *testing.T, changed map[string]string) {
-		for name, value := range settings {
-			t.Setenv(name, value)
-		}
-		for name, value := range changed {
-			t.Setenv(name, value)
-		}
+// set sets the variables, with some of them changed.
+func set(t *testing.T, changed map[string]string) {
+	for name, value := range settings {
+		t.Setenv(name, value)
 	}
+	for name, value := range changed {
+		t.Setenv(name, value)
+	}
+}
 
+func TestDriverConfig(t *testing.T) {
 	t.Run("as the chart sets them", func(t *testing.T) {
 		set(t, nil)
 		config, err := driverConfig()
 		if err != nil {
 			t.Fatal(err)
 		}
-		templates := config.Templates
-		opencode := sandbox.Harness{Image: "registry.example/opencode:1", Sandbox: sandbox.Size{CPU: "1", Memory: "2Gi", Disk: "4Gi"}}
-		if templates.Store != settings[templateStore] || len(templates.Harnesses) != 1 || templates.Harnesses["opencode"] != opencode {
+		opencode := config.Harnesses["opencode"]
+		if len(config.Harnesses) != 1 || opencode.Image != "registry.example/opencode:1" ||
+			!opencode.Resources.Requests.Cpu().Equal(resource.MustParse("250m")) || !opencode.Resources.Limits.Memory().Equal(resource.MustParse("4Gi")) {
 			t.Errorf("the turns are run with %+v", config)
 		}
 		if config.MaxConcurrentTurns != 50 || config.MaxQueuedTurns != 500 || config.MaxQueueWait != 2*time.Minute ||
-			config.MaxStartup != 90*time.Second || templates.MaxToolOutputBytes != 65536 || config.MaxTurn != 30*time.Minute ||
-			config.Idle != 5*time.Minute || config.Retention != 0 || !slices.Equal(config.Hosts, []string{"pypi.org", "*.example.com"}) {
+			config.MaxStartup != 90*time.Second || config.MaxTurn != 30*time.Minute || config.Idle != 5*time.Minute || config.Retention != 0 {
 			t.Errorf("the limits are %+v", config)
 		}
 	})
 
 	t.Run("without the limits that there need not be", func(t *testing.T) {
-		set(t, map[string]string{
-			maxQueuedTurns: "0", maxQueueWait: "0", maxStartup: "0", maxToolOutput: "0", sandboxIdle: "0",
-		})
+		set(t, map[string]string{maxQueuedTurns: "0", maxQueueWait: "0", maxStartup: "0", sandboxIdle: "0", sandboxRetention: "1"})
 		config, err := driverConfig()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if config.MaxQueuedTurns != 0 || config.MaxQueueWait != 0 || config.MaxStartup != 0 || config.Templates.MaxToolOutputBytes != 0 ||
-			config.Idle != 0 {
+		if config.MaxQueuedTurns != 0 || config.MaxQueueWait != 0 || config.MaxStartup != 0 || config.Idle != 0 || config.Retention != time.Second {
 			t.Errorf("the limits are %+v", config)
 		}
 	})
 
 	for _, wrong := range []struct{ name, value string }{
-		{templateStore, ""},
 		{harnesses, ""}, {harnesses, `{"opencode": `},
-		{harnesses, `{"opencode": {"image": "registry.example/opencode:1"}}`},
-		{harnesses, `{"opencode": {"sandbox": {"cpu": "1", "memory": "2Gi", "disk": "4Gi"}}}`},
-		// The sandbox service puts no sandbox to sleep sooner than after
-		// thirty seconds.
-		{sandboxIdle, ""}, {sandboxIdle, "-1"}, {sandboxIdle, "29"}, {sandboxIdle, "5m"},
-		{sandboxHosts, ""}, {sandboxHosts, "pypi.org"},
-		// Nor does it keep one for less than a minute.
-		{sandboxRetention, ""}, {sandboxRetention, "-1"}, {sandboxRetention, "59"},
+		{harnesses, `{"opencode": {"resources": {"requests": {"cpu": "1"}}}}`},
+		{harnesses, `{"opencode": {"image": "registry.example/opencode:1", "resources": {"requests": {"cpu": "lots"}}}}`},
+		{sandboxIdle, ""}, {sandboxIdle, "-1"}, {sandboxIdle, "5m"},
+		{sandboxRetention, ""}, {sandboxRetention, "-1"},
 		{maxConcurrentTurns, ""}, {maxConcurrentTurns, "0"}, {maxConcurrentTurns, "many"},
 		{maxQueuedTurns, ""}, {maxQueuedTurns, "-1"},
 		{maxQueueWait, ""}, {maxQueueWait, "-1"}, {maxQueueWait, "2m"},
 		{maxStartup, ""}, {maxStartup, "-1"},
-		{maxToolOutput, ""}, {maxToolOutput, "-1"},
 		{maxTurn, ""}, {maxTurn, "0"},
 	} {
 		t.Run(wrong.name+"="+wrong.value, func(t *testing.T) {
@@ -99,6 +89,33 @@ func TestDriverConfig(t *testing.T) {
 				t.Errorf("the turns are run with %+v: %v", config, err)
 			}
 		})
+	}
+}
+
+func TestSandboxSettings(t *testing.T) {
+	set(t, map[string]string{sandboxClass: "fast"})
+	made, err := sandboxSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if made.Namespace != "aviary-runtime" || !made.Volume.Equal(resource.MustParse("10Gi")) || made.StorageClass != "fast" || made.MaxToolOutputBytes != 65536 {
+		t.Errorf("the sandboxes are made with %+v", made)
+	}
+	// Without a class, the volumes are of the default class of the cluster.
+	set(t, map[string]string{sandboxClass: "", maxToolOutput: "0"})
+	if made, err := sandboxSettings(); err != nil || made.StorageClass != "" || made.MaxToolOutputBytes != 0 {
+		t.Errorf("the sandboxes are made with %+v: %v", made, err)
+	}
+
+	for _, wrong := range []struct{ name, value string }{
+		{sandboxNamespace, ""},
+		{sandboxVolume, ""}, {sandboxVolume, "large"}, {sandboxVolume, "0"},
+		{maxToolOutput, ""}, {maxToolOutput, "-1"},
+	} {
+		set(t, map[string]string{wrong.name: wrong.value})
+		if made, err := sandboxSettings(); err == nil || !strings.Contains(err.Error(), wrong.name) {
+			t.Errorf("with %s=%q, the sandboxes are made with %+v: %v", wrong.name, wrong.value, made, err)
+		}
 	}
 }
 

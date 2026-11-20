@@ -21,9 +21,6 @@ supervisor:
     admins: [platform]
     users: [team-a, team-b]
 sandboxes:
-  url: https://sandboxes.example.com
-  allowedHosts: [pypi.org, "*.example.com"]
-  templateStore: s3://example/templates
   idleSeconds: 0
   retentionSeconds: 604800
 runtime:
@@ -35,4 +32,8 @@ runtime:
   maxToolOutputBytes: 23
   harnesses:
     opencode:
-      sandbox: {disk: 16Gi}
+      resources:
+        limits: {memory: 8Gi}
+  volume:
+    size: 50Gi
+    storageClass: fast

@@ -3,182 +3,229 @@ package sandbox
 import (
 	"context"
 	"errors"
-	"net/http"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-
-	"aviary/supervisor/internal/sandbox/sandboxtest"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	agents "sigs.k8s.io/agent-sandbox/api/v1beta1"
+	"sigs.k8s.io/agent-sandbox/clients/k8s/clientset/versioned/fake"
+	typed "sigs.k8s.io/agent-sandbox/clients/k8s/clientset/versioned/typed/api/v1beta1"
 )
 
-// installed starts a sandbox service that has the templates of the
-// installation, and returns the template of its harness.
-func installed(t *testing.T) (*sandboxtest.Service, *Client, string) {
+var ctx = context.Background()
+
+// cluster returns a client of sandboxes in a cluster of a test, and the
+// sandboxes of the cluster as they are kept there.
+func cluster(t *testing.T, settings Settings) (*Client, typed.SandboxInterface) {
 	t.Helper()
-	s := sandboxtest.New(t)
-	c := client(t, s)
-	if err := c.Bake(context.Background(), needed()); err != nil {
+	settings.Namespace = "sessions"
+	sandboxes := fake.NewSimpleClientset().AgentsV1beta1().Sandboxes(settings.Namespace)
+	return &Client{sandboxes: sandboxes, settings: settings}, sandboxes
+}
+
+var opencode = Harness{
+	Image: "harness-opencode:1",
+	Resources: corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("250m"), corev1.ResourceMemory: resource.MustParse("1Gi")},
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi")},
+	},
+}
+
+func TestTheSandboxOfASessionIsMadeWithItsVolume(t *testing.T) {
+	c, sandboxes := cluster(t, Settings{Volume: resource.MustParse("10Gi"), StorageClass: "fast", MaxToolOutputBytes: 100})
+	session := uuid.New()
+	request := Request{Session: session, Labels: map[string]string{"aviary.io/agent": "an-agent"}, Harness: opencode}
+	if err := c.Create(ctx, request); err != nil {
 		t.Fatal(err)
 	}
-	template, err := c.Template(context.Background(), needed(), "opencode")
+	made, err := sandboxes.Get(ctx, Name(session), metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return s, c, template
-}
+	if made.Labels[SessionLabel] != session.String() || made.Labels["aviary.io/agent"] != "an-agent" ||
+		made.Spec.PodTemplate.ObjectMeta.Labels[SessionLabel] != session.String() {
+		t.Errorf("the sandbox and its pod are labelled %v and %v", made.Labels, made.Spec.PodTemplate.ObjectMeta.Labels)
+	}
+	pod := made.Spec.PodTemplate.Spec
+	if *pod.AutomountServiceAccountToken || *pod.EnableServiceLinks || *pod.SecurityContext.FSGroup != agentUser {
+		t.Errorf("the pod is %+v, with %+v", pod, pod.SecurityContext)
+	}
+	harness := pod.Containers[0]
+	if harness.Image != opencode.Image || !slices.Equal(harness.Command, []string{"aviary-session"}) ||
+		!harness.Resources.Requests.Cpu().Equal(resource.MustParse("250m")) || !harness.Resources.Limits.Memory().Equal(resource.MustParse("4Gi")) ||
+		harness.ReadinessProbe.TCPSocket.Port.IntValue() != RunnerPort ||
+		len(harness.Env) != 1 || harness.Env[0].Name != "AVIARY_MAX_TOOL_OUTPUT_BYTES" || harness.Env[0].Value != "100" ||
+		len(harness.VolumeMounts) != 1 || harness.VolumeMounts[0].Name != "home" || harness.VolumeMounts[0].MountPath != "/home" {
+		t.Errorf("the harness runs as %+v", harness)
+	}
+	claims := made.Spec.VolumeClaimTemplates
+	if len(claims) != 1 || claims[0].Name != "home" || *claims[0].Spec.StorageClassName != "fast" ||
+		!claims[0].Spec.Resources.Requests.Storage().Equal(resource.MustParse("10Gi")) {
+		t.Errorf("the volume of the session is %+v", claims)
+	}
+	if made.Spec.FailedPodPolicy != agents.FailedPodPolicyRecreate || made.Spec.ShutdownTime != nil {
+		t.Errorf("the sandbox is %+v", made.Spec)
+	}
 
-func TestASandboxIsMadeFromTheTemplateOfItsHarness(t *testing.T) {
-	ctx := context.Background()
-	s, c, template := installed(t)
-	made, err := c.CreateSandbox(ctx, Request{Template: template, Metadata: map[string]string{"aviary-session": "a session"}})
-	if err != nil || made.ID == "" || made.Status.State != Pending {
-		t.Fatalf("the sandbox was made as %+v: %v", made, err)
+	// A session has one sandbox.
+	if err := c.Create(ctx, request); err != nil {
+		t.Errorf("the sandbox of a session that has one was made again: %v", err)
 	}
-	if metadata := s.Sandboxes()[made.ID]; metadata["aviary-session"] != "a session" {
-		t.Errorf("the sandbox was made with %v", metadata)
-	}
-	// It takes a moment to run.
-	seen, err := c.Sandbox(ctx, made.ID)
-	if err != nil || seen.ID != made.ID || seen.Status.State != Running {
-		t.Fatalf("the sandbox is %+v: %v", seen, err)
-	}
-}
-
-func TestAHarnessThatHasChangedHasNoTemplateUntilARelease(t *testing.T) {
-	ctx := context.Background()
-	s, c, _ := installed(t)
-	changed := needed()
-	changed.Harnesses["opencode"] = Harness{Image: "registry.example.com/opencode:1.1", Sandbox: Size{CPU: "1", Memory: "2Gi", Disk: "4Gi"}}
-	if _, err := c.Template(ctx, changed, "opencode"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("the template of a harness that has changed: %v", err)
-	}
-	// A release has it built, which takes a while.
-	s.HoldTemplates()
-	done := bake(c, changed)
-	asked(t, s, 2)
-	if _, err := c.Template(ctx, changed, "opencode"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("the template that is being built: %v", err)
-	}
-	s.Ends("tpl-2", Succeeded, "")
-	if err := outcome(t, done); err != nil {
+	// One that is kept for a time is deleted then, with its volume.
+	kept := uuid.New()
+	if err := c.Create(ctx, Request{Session: kept, Harness: opencode, Kept: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
-	if template, err := c.Template(ctx, changed, "opencode"); err != nil || template != "tpl-2" {
-		t.Fatalf("the template of the harness is %q: %v", template, err)
+	made, err = sandboxes.Get(ctx, Name(kept), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	// A sandbox is not made from one that is not built, or not there.
-	s.Ends("tpl-2", "Building", "")
-	for _, template := range []string{"tpl-2", "tpl-none"} {
-		if _, err := c.CreateSandbox(ctx, Request{Template: template}); !errors.Is(err, ErrNotFound) {
-			t.Errorf("a sandbox of the template %s: %v", template, err)
+	if until := made.Spec.ShutdownTime; until == nil || time.Until(until.Time) < 59*time.Minute || *made.Spec.ShutdownPolicy != agents.ShutdownPolicyDelete {
+		t.Errorf("a sandbox that is kept for an hour expires at %v, after which it is %v", until, made.Spec.ShutdownPolicy)
+	}
+	// Without a class, the volume is of the default class of the cluster.
+	c, sandboxes = cluster(t, Settings{Volume: resource.MustParse("1Gi")})
+	if err := c.Create(ctx, Request{Session: session, Harness: opencode}); err != nil {
+		t.Fatal(err)
+	}
+	if made, err := sandboxes.Get(ctx, Name(session), metav1.GetOptions{}); err != nil || made.Spec.VolumeClaimTemplates[0].Spec.StorageClassName != nil {
+		t.Errorf("the volume of a session is of the class %v: %v", made.Spec.VolumeClaimTemplates[0].Spec.StorageClassName, err)
+	}
+}
+
+func TestWhatASandboxDoesIsSeenInItsStatus(t *testing.T) {
+	condition := func(kind agents.ConditionType, status metav1.ConditionStatus, reason, message string) metav1.Condition {
+		return metav1.Condition{Type: string(kind), Status: status, Reason: reason, Message: message}
+	}
+	now := metav1.Now()
+	for _, test := range []struct {
+		what    string
+		sandbox agents.Sandbox
+		state   State
+		message string
+		address string
+	}{
+		{what: "a sandbox that is made", state: Starting},
+		{
+			what: "a sandbox whose pod is not ready",
+			sandbox: agents.Sandbox{Status: agents.SandboxStatus{Conditions: []metav1.Condition{
+				condition(agents.SandboxConditionReady, metav1.ConditionFalse, "DependenciesNotReady", "the pod is pending"),
+			}}},
+			state: Starting, message: "DependenciesNotReady: the pod is pending",
+		},
+		{
+			what: "a sandbox that runs",
+			sandbox: agents.Sandbox{Status: agents.SandboxStatus{PodIPs: []string{"10.0.0.7"}, Conditions: []metav1.Condition{
+				condition(agents.SandboxConditionReady, metav1.ConditionTrue, "DependenciesReady", ""),
+			}}},
+			state: Running, address: "http://10.0.0.7:8700",
+		},
+		{
+			what: "a sandbox that is put to sleep",
+			sandbox: agents.Sandbox{
+				Spec: agents.SandboxSpec{OperatingMode: agents.SandboxOperatingModeSuspended},
+				Status: agents.SandboxStatus{PodIPs: []string{"10.0.0.7"}, Conditions: []metav1.Condition{
+					condition(agents.SandboxConditionReady, metav1.ConditionTrue, "DependenciesReady", ""),
+					condition(agents.SandboxConditionSuspended, metav1.ConditionFalse, "PodTerminating", ""),
+				}},
+			},
+			state: Starting,
+		},
+		{
+			what: "a sandbox that sleeps",
+			sandbox: agents.Sandbox{
+				Spec: agents.SandboxSpec{OperatingMode: agents.SandboxOperatingModeSuspended},
+				Status: agents.SandboxStatus{Conditions: []metav1.Condition{
+					condition(agents.SandboxConditionSuspended, metav1.ConditionTrue, "PodTerminated", ""),
+				}},
+			},
+			state: Asleep,
+		},
+		{
+			what: "a sandbox that has expired",
+			sandbox: agents.Sandbox{Status: agents.SandboxStatus{Conditions: []metav1.Condition{
+				condition(agents.SandboxConditionReady, metav1.ConditionFalse, agents.SandboxReasonExpired, ""),
+			}}},
+			state: Lost, message: "it has expired",
+		},
+		{
+			what:    "a sandbox that is being deleted",
+			sandbox: agents.Sandbox{ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now}},
+			state:   Lost, message: "it is being deleted",
+		},
+	} {
+		if seen := seen(&test.sandbox); seen.State != test.state || seen.Message != test.message || seen.Address != test.address {
+			t.Errorf("%s is seen as %+v", test.what, seen)
 		}
 	}
 }
 
-func TestASandboxThatIsDeletedIsGone(t *testing.T) {
-	ctx := context.Background()
-	s, c, template := installed(t)
-	made, err := c.CreateSandbox(ctx, Request{Template: template})
-	if err != nil {
+func TestASandboxSleepsWakesIsKeptAndIsDeleted(t *testing.T) {
+	c, sandboxes := cluster(t, Settings{Volume: resource.MustParse("1Gi")})
+	session := uuid.New()
+	name := Name(session)
+	if err := c.Create(ctx, Request{Session: session, Harness: opencode}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Sandbox(ctx, made.ID); err != nil {
-		t.Fatal(err)
-	}
-	runner, err := c.Runner(ctx, made.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Deleting it again is no error: it is gone, which was wanted.
-	for range 2 {
-		if err := c.DeleteSandbox(ctx, made.ID); err != nil {
+	spec := func() agents.SandboxSpec {
+		t.Helper()
+		made, err := sandboxes.Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
 			t.Fatal(err)
 		}
+		return made.Spec
 	}
-	if _, err := c.Sandbox(ctx, made.ID); !errors.Is(err, ErrNotFound) {
+	if err := c.Suspend(ctx, name); err != nil || spec().OperatingMode != agents.SandboxOperatingModeSuspended {
+		t.Errorf("the sandbox that is put to sleep is %s: %v", spec().OperatingMode, err)
+	}
+	// It wakes with the harness as the installation has it now, of which
+	// the pod has all and only what it has.
+	if err := c.Resume(ctx, name, Harness{Image: "harness-opencode:2"}); err != nil || spec().OperatingMode != agents.SandboxOperatingModeRunning {
+		t.Errorf("the sandbox that is woken is %s: %v", spec().OperatingMode, err)
+	}
+	if harness := spec().PodTemplate.Spec.Containers[0]; harness.Image != "harness-opencode:2" || len(harness.Resources.Requests) != 0 {
+		t.Errorf("the sandbox that is woken runs %+v", harness)
+	}
+	until := time.Now().Add(time.Hour).Truncate(time.Second)
+	if err := c.Keep(ctx, name, until); err != nil || !spec().ShutdownTime.Time.Equal(until) {
+		t.Errorf("the sandbox that is kept for an hour expires at %v: %v", spec().ShutdownTime, err)
+	}
+	if err := c.Keep(ctx, name, time.Time{}); err != nil || spec().ShutdownTime != nil {
+		t.Errorf("the sandbox that is kept until it is deleted expires at %v: %v", spec().ShutdownTime, err)
+	}
+
+	if all, err := c.Sandboxes(ctx); err != nil || len(all) != 1 || all[0].Name != name || all[0].Session != session.String() {
+		t.Errorf("the sandboxes are %+v: %v", all, err)
+	}
+	// What is not the sandbox of a session is none of the sandboxes.
+	if _, err := sandboxes.Create(ctx, &agents.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "another"}}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if all, err := c.Sandboxes(ctx); err != nil || len(all) != 1 {
+		t.Errorf("the sandboxes are %+v: %v", all, err)
+	}
+
+	if err := c.Delete(ctx, name); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Sandbox(ctx, name); !errors.Is(err, ErrNotFound) {
 		t.Errorf("the sandbox that was deleted: %v", err)
 	}
-	if len(s.Sandboxes()) != 0 {
-		t.Errorf("the service has the sandboxes %v", s.Sandboxes())
+	// One that is gone can be deleted, and not put to sleep, woken or kept.
+	if err := c.Delete(ctx, name); err != nil {
+		t.Errorf("a sandbox that was deleted could not be deleted: %v", err)
 	}
-	// The way to its runner is still given, and leads nowhere.
-	var refusal *Refusal
-	err = runner.Start(ctx, uuid.New(), Turn{Text: "hello"})
-	if !errors.As(err, &refusal) || refusal.Status != http.StatusServiceUnavailable {
-		t.Errorf("the runner of the sandbox that was deleted: %v", err)
-	}
-	again, err := c.Runner(ctx, made.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := again.Cancel(ctx, uuid.New()); !errors.As(err, &refusal) || refusal.Status != http.StatusServiceUnavailable {
-		t.Errorf("the runner of the sandbox that was deleted: %v", err)
-	}
-}
-
-func TestASandboxThatSleepsIsWoken(t *testing.T) {
-	ctx := context.Background()
-	s, c, template := installed(t)
-	made, err := c.CreateSandbox(ctx, Request{Template: template, Idle: 5 * time.Minute})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if idle := s.Idle(made.ID); idle != 300 {
-		t.Errorf("the sandbox is put to sleep after %d idle seconds", idle)
-	}
-	// One that is never put to sleep is made without a word about it.
-	awake, err := c.CreateSandbox(ctx, Request{Template: template})
-	if err != nil || s.Idle(awake.ID) != 0 {
-		t.Errorf("a sandbox that is not to sleep is put to sleep after %d idle seconds: %v", s.Idle(awake.ID), err)
-	}
-	if _, err := c.Sandbox(ctx, made.ID); err != nil {
-		t.Fatal(err)
-	}
-	runner, err := c.Runner(ctx, made.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	s.Sleep(made.ID)
-	if seen, err := c.Sandbox(ctx, made.ID); err != nil || seen.Status.State != Paused {
-		t.Fatalf("the sandbox that sleeps is %+v: %v", seen, err)
-	}
-	// What is sent to it does not wake it.
-	var refusal *Refusal
-	if err := runner.Cancel(ctx, uuid.New()); !errors.As(err, &refusal) || refusal.Status != http.StatusServiceUnavailable {
-		t.Errorf("the runner of a sandbox that sleeps: %v", err)
-	}
-	if seen, _ := c.Sandbox(ctx, made.ID); seen.Status.State != Paused || s.Woken(made.ID) != 0 {
-		t.Errorf("the sandbox that was sent something is %+v, woken %d times", seen, s.Woken(made.ID))
-	}
-	if err := c.Resume(ctx, made.ID); err != nil {
-		t.Fatal(err)
-	}
-	if seen, err := c.Sandbox(ctx, made.ID); err != nil || seen.Status.State != Running || s.Woken(made.ID) != 1 {
-		t.Errorf("the sandbox that was woken is %+v, woken %d times: %v", seen, s.Woken(made.ID), err)
-	}
-	if err := runner.Cancel(ctx, uuid.New()); !errors.Is(err, ErrNotFound) {
-		t.Errorf("the runner of the sandbox that was woken: %v", err)
-	}
-	// One that does not sleep is not woken.
-	if err := c.Resume(ctx, made.ID); !errors.As(err, &refusal) || refusal.Status != http.StatusConflict {
-		t.Errorf("waking a sandbox that runs: %v", err)
-	}
-}
-
-func TestTheSandboxServiceIsAskedWithItsKey(t *testing.T) {
-	ctx := context.Background()
-	s, _, template := installed(t)
-	stranger, err := New(s.URL, "another-key")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var refusal *Refusal
-	if _, err := stranger.CreateSandbox(ctx, Request{Template: template}); !errors.As(err, &refusal) || refusal.Status != http.StatusUnauthorized {
-		t.Errorf("a sandbox that is asked for with another key: %v", err)
-	}
-	if _, err := stranger.Runner(ctx, "sbx-1"); !errors.As(err, &refusal) || refusal.Status != http.StatusUnauthorized {
-		t.Errorf("a runner that is asked for with another key: %v", err)
+	for what, change := range map[string]func() error{
+		"put to sleep": func() error { return c.Suspend(ctx, name) },
+		"woken":        func() error { return c.Resume(ctx, name, opencode) },
+		"kept":         func() error { return c.Keep(ctx, name, until) },
+	} {
+		if err := change(); !errors.Is(err, ErrNotFound) {
+			t.Errorf("a sandbox that is gone was %s: %v", what, err)
+		}
 	}
 }

@@ -2,7 +2,6 @@ package driver
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -20,44 +19,29 @@ import (
 	memorystore "aviary/supervisor/store/memory"
 )
 
-// The tests of this file run drivers on records in memory and a sandbox
-// service whose runners the test plays.
+// The tests of this file run drivers on records in memory and sandboxes
+// whose runners the test plays.
 
 var ctx = context.Background()
 
 type installation struct {
-	t         *testing.T
-	store     *memorystore.Store
-	events    *events.Streams
-	service   *sandboxtest.Service
-	sandboxes *sandbox.Client
-	config    Config
+	t       *testing.T
+	store   *memorystore.Store
+	events  *events.Streams
+	service *sandboxtest.Service
+	config  Config
 }
 
-// install sets an installation up whose release has built the template of
-// its harness.
+// install sets an installation up with a harness, opencode.
 func install(t *testing.T, changes ...func(*Config)) *installation {
 	t.Helper()
 	i := &installation{t: t, store: memorystore.New(), events: events.New(memorylog.New()), service: sandboxtest.New(t)}
-	var err error
-	if i.sandboxes, err = sandbox.New(i.service.URL, sandboxtest.Key); err != nil {
-		t.Fatal(err)
-	}
 	i.config = Config{
-		Templates: sandbox.Templates{
-			Harnesses: map[string]sandbox.Harness{
-				"opencode": {Image: "registry.example.com/opencode:1.0", Sandbox: sandbox.Size{CPU: "1", Memory: "2Gi", Disk: "4Gi"}},
-			},
-			Store: "s3://sandboxes/templates",
-			Poll:  5 * time.Millisecond,
-		},
+		Harnesses:          map[string]sandbox.Harness{"opencode": {Image: "registry.example.com/opencode:1.0"}},
 		MaxConcurrentTurns: 50,
 		MaxStartup:         time.Minute,
 		MaxTurn:            time.Hour,
 		Sweep:              50 * time.Millisecond,
-	}
-	if err := i.sandboxes.Bake(ctx, i.config.Templates); err != nil {
-		t.Fatal(err)
 	}
 	for _, change := range changes {
 		change(&i.config)
@@ -71,7 +55,7 @@ func install(t *testing.T, changes ...func(*Config)) *installation {
 func (i *installation) supervisor() (*Driver, func()) {
 	running, stop := context.WithCancel(ctx)
 	i.t.Cleanup(stop)
-	driver := New(i.config, i.sandboxes, i.store, i.events, metrics.New())
+	driver := New(i.config, i.service, i.store, i.events, metrics.New())
 	stopped := make(chan struct{})
 	go func() {
 		driver.Run(running)
@@ -227,10 +211,10 @@ func TestATurnRunsInTheSandboxOfItsSession(t *testing.T) {
 	}
 	// The sandbox is that of the session, and says whose it is.
 	agent, _ := i.store.Agent(ctx, session.AgentID)
-	metadata := i.service.Sandboxes()[given.Sandbox]
-	if i.sandbox(session) != given.Sandbox || metadata[metadataSession] != session.ID.String() ||
-		metadata[metadataAgent] != agent.ID.String() || metadata[metadataProject] != agent.ProjectID.String() {
-		t.Errorf("the session has the sandbox %q, and the turn runs in %q of %v", i.sandbox(session), given.Sandbox, metadata)
+	made := i.service.Made()[given.Sandbox]
+	if i.sandbox(session) != given.Sandbox || made.Session != session.ID || made.Harness.Image != "registry.example.com/opencode:1.0" ||
+		made.Labels[labelAgent] != agent.ID.String() || made.Labels[labelProject] != agent.ProjectID.String() {
+		t.Errorf("the session has the sandbox %q, and the turn runs in %q, made for %+v", i.sandbox(session), given.Sandbox, made)
 	}
 
 	given.Tell("started", started)
@@ -249,8 +233,8 @@ func TestATurnRunsInTheSandboxOfItsSession(t *testing.T) {
 	// that names no model and asks nobody is started with nothing.
 	next := i.send(driver, session, "and then")
 	again := i.service.Turn(t)
-	if again.Sandbox != given.Sandbox || again.ID != next.ID.String() || len(i.service.Sandboxes()) != 1 {
-		t.Errorf("the next turn runs in %q, of the sandboxes %v", again.Sandbox, i.service.Sandboxes())
+	if again.Sandbox != given.Sandbox || again.ID != next.ID.String() || len(i.service.Made()) != 1 {
+		t.Errorf("the next turn runs in %q, of the sandboxes %v", again.Sandbox, i.service.Made())
 	}
 	again.Tell("started", started)
 	again.Tell("finished", finished)
@@ -273,13 +257,12 @@ func TestASessionWhoseSandboxIsGoneGetsANewOne(t *testing.T) {
 	given.Tell("finished", finished)
 	i.ended(first.ID)
 
-	if err := i.sandboxes.DeleteSandbox(ctx, given.Sandbox); err != nil {
-		t.Fatal(err)
-	}
+	// The new one has the name of the session too.
+	i.service.Lose(given.Sandbox)
 	second := i.send(driver, session, "are you there")
 	again := i.service.Turn(t)
-	if again.Sandbox == given.Sandbox || i.sandbox(session) != again.Sandbox || len(i.service.Sandboxes()) != 1 {
-		t.Errorf("the turn runs in %q, the session has %q, of the sandboxes %v", again.Sandbox, i.sandbox(session), i.service.Sandboxes())
+	if i.sandbox(session) != again.Sandbox || len(i.service.Made()) != 1 {
+		t.Errorf("the turn runs in %q, the session has %q, of the sandboxes %v", again.Sandbox, i.sandbox(session), i.service.Made())
 	}
 	again.Tell("started", started)
 	again.Tell("finished", finished)
@@ -297,9 +280,7 @@ func TestATurnWhoseSandboxIsLostFails(t *testing.T) {
 	given.Tell("started", started)
 	i.eventually("the turn has started", func() bool { return i.turn(turn.ID).StartedAt != nil })
 
-	if err := i.sandboxes.DeleteSandbox(ctx, given.Sandbox); err != nil {
-		t.Fatal(err)
-	}
+	i.service.Lose(given.Sandbox)
 	given.Cut()
 	if ended := i.ended(turn.ID); !failed(ended, store.FailureSandboxLost) {
 		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
@@ -331,24 +312,24 @@ func TestAReadingThatIsCutOffGoesOn(t *testing.T) {
 }
 
 func TestATurnThatDoesNotStartInTimeIsGivenUp(t *testing.T) {
-	// The harness has changed, and no release has had its template built.
+	// The installation has no more the harness of the agent.
 	i := install(t, func(config *Config) {
 		config.MaxStartup = 300 * time.Millisecond
-		config.Templates.Store = "s3://elsewhere/templates"
+		config.Harnesses = nil
 	})
 	driver, _ := i.supervisor()
 	session := i.session(store.Agent{})
 	turn := i.send(driver, session, "hello")
 	ended := i.ended(turn.ID)
-	if !failed(ended, store.FailureStartup) || !strings.Contains(ended.Failure.Message, "the template of the harness opencode") {
+	if !failed(ended, store.FailureStartup) || !strings.Contains(ended.Failure.Message, "the installation has no harness opencode") {
 		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
 	}
-	if len(i.service.Sandboxes()) != 0 {
-		t.Errorf("the service has the sandboxes %v", i.service.Sandboxes())
+	if len(i.service.Made()) != 0 {
+		t.Errorf("the sandboxes are %v", i.service.Made())
 	}
 
-	// A harness that does not take the message: its sandbox goes with the
-	// turn, and the next turn of the session gets a new one.
+	// A harness that does not take the message: its sandbox is put to sleep
+	// with the turn, and the next turn of the session wakes it.
 	i = install(t, func(config *Config) { config.MaxStartup = 300 * time.Millisecond })
 	driver, _ = i.supervisor()
 	session = i.session(store.Agent{})
@@ -357,13 +338,13 @@ func TestATurnThatDoesNotStartInTimeIsGivenUp(t *testing.T) {
 	if ended := i.ended(turn.ID); !failed(ended, store.FailureStartup) {
 		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
 	}
-	if len(i.service.Sandboxes()) != 0 || i.sandbox(session) != "" {
-		t.Errorf("the service has the sandboxes %v, and the session %q", i.service.Sandboxes(), i.sandbox(session))
+	if i.service.State(given.Sandbox) != sandbox.Asleep || i.sandbox(session) != given.Sandbox {
+		t.Errorf("the sandbox is %s, and the session has %q", i.service.State(given.Sandbox), i.sandbox(session))
 	}
 	next := i.send(driver, session, "again")
 	again := i.service.Turn(t)
-	if again.Sandbox == given.Sandbox || again.ID != next.ID.String() {
-		t.Errorf("the next turn was given as %+v", again)
+	if again.Sandbox != given.Sandbox || again.ID != next.ID.String() || i.service.Woken(given.Sandbox) != 1 {
+		t.Errorf("the next turn was given as %+v, and the sandbox woken %d times", again, i.service.Woken(given.Sandbox))
 	}
 }
 
@@ -378,8 +359,10 @@ func TestATurnThatRunsForTooLongIsGivenUp(t *testing.T) {
 	if !failed(ended, store.FailureTimedOut) || !strings.Contains(ended.Failure.Message, "300ms") {
 		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
 	}
-	if len(i.service.Sandboxes()) != 0 || i.sandbox(session) != "" {
-		t.Errorf("the service has the sandboxes %v, and the session %q", i.service.Sandboxes(), i.sandbox(session))
+	// Its sandbox is put to sleep, which stops what runs in it, and the
+	// session keeps it.
+	if i.service.State(given.Sandbox) != sandbox.Asleep || i.sandbox(session) != given.Sandbox {
+		t.Errorf("the sandbox is %s, and the session has %q", i.service.State(given.Sandbox), i.sandbox(session))
 	}
 	if told := i.told(turn.ID); !slices.Equal(told, []string{events.TurnStarted, events.TurnFailed}) {
 		t.Errorf("the clients of the turn read %v", told)
@@ -425,8 +408,8 @@ func TestATurnIsToldToStop(t *testing.T) {
 		if ended := i.ended(turn.ID); ended.State != store.TurnCancelled {
 			t.Errorf("the turn ended as %+v", ended)
 		}
-		if len(i.service.Sandboxes()) != 1 {
-			t.Errorf("the service has the sandboxes %v", i.service.Sandboxes())
+		if i.service.State(given.Sandbox) != sandbox.Running {
+			t.Errorf("the sandbox of a turn that stopped is %s", i.service.State(given.Sandbox))
 		}
 	}
 }
@@ -443,14 +426,15 @@ func TestATurnThatDoesNotStopIsStopped(t *testing.T) {
 	if ended := i.ended(turn.ID); ended.State != store.TurnCancelled {
 		t.Errorf("the turn ended as %+v", ended)
 	}
-	if len(i.service.Sandboxes()) != 0 || i.sandbox(session) != "" {
-		t.Errorf("the service has the sandboxes %v, and the session %q", i.service.Sandboxes(), i.sandbox(session))
+	if i.service.State(given.Sandbox) != sandbox.Asleep || i.sandbox(session) != given.Sandbox {
+		t.Errorf("the sandbox is %s, and the session has %q", i.service.State(given.Sandbox), i.sandbox(session))
 	}
 }
 
 func TestATurnThatIsAskedToStopBeforeItsRunnerHasItIsNotRun(t *testing.T) {
-	// The turn waits for a template that is not there.
-	i := install(t, func(config *Config) { config.Templates.Store = "s3://elsewhere/templates" })
+	// The turn waits for its sandbox, which does not run yet.
+	i := install(t)
+	i.service.Slow(true)
 	driver, _ := i.supervisor()
 	turn := i.send(driver, i.session(store.Agent{}), "hello")
 	i.eventually("the turn is followed", func() bool { return i.turn(turn.ID).State == store.TurnRunning })
@@ -489,8 +473,8 @@ func TestAnotherSupervisorTakesUpATurn(t *testing.T) {
 		t.Errorf("the clients of the turn read %v", told)
 	}
 	// The runner was given the turn once, and the session has one sandbox.
-	if len(i.service.Sandboxes()) != 1 {
-		t.Errorf("the service has the sandboxes %v", i.service.Sandboxes())
+	if len(i.service.Made()) != 1 {
+		t.Errorf("the sandboxes are %v", i.service.Made())
 	}
 	next := i.send(second, session, "and then")
 	if again := i.service.Turn(t); again.ID != next.ID.String() || again.Sandbox != given.Sandbox {
@@ -516,12 +500,12 @@ func TestATurnThatItsRunnerHasLostIsNotRunAgain(t *testing.T) {
 		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
 	}
 	// The sandbox stays, with what the agent has in it.
-	if i.sandbox(session) != given.Sandbox || len(i.service.Sandboxes()) != 1 {
-		t.Errorf("the session has the sandbox %q, of %v", i.sandbox(session), i.service.Sandboxes())
+	if i.sandbox(session) != given.Sandbox || len(i.service.Made()) != 1 {
+		t.Errorf("the session has the sandbox %q, of %v", i.sandbox(session), i.service.Made())
 	}
 }
 
-func TestARunnerThatRunsAnotherTurnGoesWithItsSandbox(t *testing.T) {
+func TestARunnerThatRunsAnotherTurnIsStoppedWithItsPod(t *testing.T) {
 	i := install(t)
 	driver, _ := i.supervisor()
 	session := i.session(store.Agent{})
@@ -532,11 +516,11 @@ func TestARunnerThatRunsAnotherTurnGoesWithItsSandbox(t *testing.T) {
 	i.ended(first.ID)
 
 	// A turn that the installation knows nothing of runs in the sandbox.
-	runner, err := i.sandboxes.Runner(ctx, given.Sandbox)
+	seen, err := i.service.Sandbox(ctx, given.Sandbox)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := runner.Start(ctx, uuid.New(), sandbox.Turn{Text: "another"}); err != nil {
+	if err := sandbox.RunnerAt(seen.Address).Start(ctx, uuid.New(), sandbox.Turn{Text: "another"}); err != nil {
 		t.Fatal(err)
 	}
 	i.service.Turn(t)
@@ -544,14 +528,15 @@ func TestARunnerThatRunsAnotherTurnGoesWithItsSandbox(t *testing.T) {
 	if ended := i.ended(next.ID); !failed(ended, store.FailureRunner) || !strings.Contains(ended.Failure.Message, "runs another turn") {
 		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
 	}
-	if len(i.service.Sandboxes()) != 0 || i.sandbox(session) != "" {
-		t.Errorf("the service has the sandboxes %v, and the session %q", i.service.Sandboxes(), i.sandbox(session))
+	// The sandbox is put to sleep, which stops the other turn with the pod.
+	if i.service.State(given.Sandbox) != sandbox.Asleep || i.sandbox(session) != given.Sandbox {
+		t.Errorf("the sandbox is %s, and the session has %q", i.service.State(given.Sandbox), i.sandbox(session))
 	}
 }
 
 func TestTwoSupervisorsMakeOneSandboxForASession(t *testing.T) {
 	i := install(t)
-	driver := New(i.config, i.sandboxes, i.store, i.events, metrics.New())
+	driver := New(i.config, i.service, i.store, i.events, metrics.New())
 	session := i.session(store.Agent{})
 	turn := i.send(driver, session, "hello")
 	if _, err := i.store.DispatchTurns(ctx, 1); err != nil {
@@ -571,8 +556,8 @@ func TestTwoSupervisorsMakeOneSandboxForASession(t *testing.T) {
 	if made[0] != made[1] || i.sandbox(session) != made[0] {
 		t.Errorf("the supervisors have the sandboxes %v, and the session %q", made, i.sandbox(session))
 	}
-	if sandboxes := i.service.Sandboxes(); len(sandboxes) != 1 || sandboxes[made[0]] == nil {
-		t.Errorf("the service has the sandboxes %v", sandboxes)
+	if sandboxes := i.service.Made(); len(sandboxes) != 1 || sandboxes[made[0]].Session != session.ID {
+		t.Errorf("the sandboxes are %v", sandboxes)
 	}
 }
 
@@ -603,23 +588,30 @@ func TestWhatARunnerTellsIsNotTakenAtItsWord(t *testing.T) {
 }
 
 func TestASessionThatSleepsIsWokenForItsNextTurn(t *testing.T) {
-	i := install(t, func(config *Config) { config.Idle = 5 * time.Minute })
-	driver, _ := i.supervisor()
+	i := install(t)
+	driver, stop := i.supervisor()
 	session := i.session(store.Agent{})
 	first := i.send(driver, session, "hello")
 	given := i.service.Turn(t)
-	if idle := i.service.Idle(given.Sandbox); idle != 300 {
-		t.Errorf("the sandbox of the session is put to sleep after %d idle seconds", idle)
-	}
 	given.Tell("started", started)
 	given.Tell("finished", finished)
 	i.ended(first.ID)
+	if err := i.service.Suspend(ctx, given.Sandbox); err != nil {
+		t.Fatal(err)
+	}
 
-	i.service.Sleep(given.Sandbox)
+	// The installation is upgraded while the session sleeps. Its sandbox
+	// wakes with the harness as the installation has it now.
+	stop()
+	i.config.Harnesses = map[string]sandbox.Harness{"opencode": {Image: "registry.example.com/opencode:2.0"}}
+	driver, _ = i.supervisor()
 	next := i.send(driver, session, "and then")
 	again := i.service.Turn(t)
 	if again.ID != next.ID.String() || again.Sandbox != given.Sandbox || i.service.Woken(given.Sandbox) != 1 {
 		t.Errorf("the next turn was given as %+v, and the sandbox woken %d times", again, i.service.Woken(given.Sandbox))
+	}
+	if image := i.service.Made()[given.Sandbox].Harness.Image; image != "registry.example.com/opencode:2.0" {
+		t.Errorf("the sandbox was woken with the image %s", image)
 	}
 	again.Tell("started", started)
 	again.Tell("finished", finished)
@@ -629,10 +621,7 @@ func TestASessionThatSleepsIsWokenForItsNextTurn(t *testing.T) {
 }
 
 func TestASandboxThatIsNotWokenInTimeStaysWithItsSession(t *testing.T) {
-	i := install(t, func(config *Config) {
-		config.Idle = 5 * time.Minute
-		config.MaxStartup = time.Second
-	})
+	i := install(t, func(config *Config) { config.MaxStartup = time.Second })
 	driver, _ := i.supervisor()
 	session := i.session(store.Agent{})
 	first := i.send(driver, session, "hello")
@@ -641,17 +630,19 @@ func TestASandboxThatIsNotWokenInTimeStaysWithItsSession(t *testing.T) {
 	given.Tell("finished", finished)
 	i.ended(first.ID)
 
-	// The sandbox wakes as slowly as on a node that does not have its
-	// template yet. The turn did not reach it, and it stays with what the
-	// agent had in it.
-	i.service.Sleep(given.Sandbox)
+	// The sandbox wakes as slowly as on a node that does not have its image
+	// yet. The turn did not reach it, and it stays with what the agent had in
+	// it.
+	if err := i.service.Suspend(ctx, given.Sandbox); err != nil {
+		t.Fatal(err)
+	}
 	i.service.Slow(true)
 	late := i.send(driver, session, "and then")
 	if ended := i.ended(late.ID); !failed(ended, store.FailureStartup) {
 		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
 	}
-	if i.sandbox(session) != given.Sandbox || len(i.service.Sandboxes()) != 1 {
-		t.Errorf("the service has the sandboxes %v, and the session %q", i.service.Sandboxes(), i.sandbox(session))
+	if i.sandbox(session) != given.Sandbox || len(i.service.Made()) != 1 {
+		t.Errorf("the sandboxes are %v, and the session has %q", i.service.Made(), i.sandbox(session))
 	}
 
 	i.service.Slow(false)
@@ -664,7 +655,7 @@ func TestASandboxThatIsNotWokenInTimeStaysWithItsSession(t *testing.T) {
 // asks is the event of a harness that asks a person before it goes on.
 var asks = map[string]any{"id": "1", "options": []map[string]string{{"id": "once", "kind": "allow_once", "name": "Once"}}}
 
-func TestATurnThatWaitsForAPersonSleepsUntilItIsToldSomething(t *testing.T) {
+func TestATurnThatWaitsForAPersonGoesOnWhenItIsToldSomething(t *testing.T) {
 	// The turn is answered, or told to stop.
 	for _, answered := range []bool{true, false} {
 		i := install(t)
@@ -674,17 +665,6 @@ func TestATurnThatWaitsForAPersonSleepsUntilItIsToldSomething(t *testing.T) {
 		given.Tell("started", started)
 		given.Tell("approval.requested", asks)
 		i.eventually("the request is recorded", func() bool { return len(i.told(turn.ID)) == 2 })
-
-		// The session is not at work, and its sandbox is put to sleep. It
-		// is left to sleep for as long as nobody answers.
-		i.service.Sleep(given.Sandbox)
-		time.Sleep(6 * i.config.Sweep)
-		if woken := i.service.Woken(given.Sandbox); woken != 0 {
-			t.Fatalf("the sandbox of a turn that waits for a person was woken %d times", woken)
-		}
-		if state := i.turn(turn.ID).State; state != store.TurnRunning {
-			t.Fatalf("the turn that waits for a person is %s", state)
-		}
 
 		if answered {
 			if kept, err := i.store.AnswerApproval(ctx, turn.ID, "1", "once", uuid.Nil); err != nil || !kept {
@@ -708,9 +688,6 @@ func TestATurnThatWaitsForAPersonSleepsUntilItIsToldSomething(t *testing.T) {
 		if answered != (ended.State == store.TurnCompleted) || !answered != (ended.State == store.TurnCancelled) {
 			t.Errorf("the turn ended as %+v", ended)
 		}
-		if woken := i.service.Woken(given.Sandbox); woken != 1 {
-			t.Errorf("the sandbox was woken %d times", woken)
-		}
 		want := []string{events.TurnStarted, "approval.requested", "approval.resolved", events.TurnCompleted}
 		if !answered {
 			want[3] = events.TurnCancelled
@@ -731,61 +708,53 @@ func TestASandboxThatItsSessionDoesNotHaveIsDeleted(t *testing.T) {
 	given.Tell("finished", finished)
 	i.ended(turn.ID)
 
-	template, err := i.sandboxes.Template(ctx, i.config.Templates, "opencode")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// stray makes a sandbox as a Supervisor does that then goes, before it
-	// has told the session.
-	stray := func(session string) string {
-		made, err := i.sandboxes.CreateSandbox(ctx, sandbox.Request{Template: template, Metadata: map[string]string{metadataSession: session}})
-		if err != nil {
+	// stray makes the sandbox of a session as a Supervisor does that then
+	// goes, before it has told the session.
+	stray := func(session uuid.UUID) string {
+		if err := i.service.Create(ctx, sandbox.Request{Session: session}); err != nil {
 			t.Fatal(err)
 		}
-		return made.ID
+		return sandbox.Name(session)
 	}
-	left, young := stray(session.ID.String()), stray(session.ID.String())
-	// The sandbox of a session that these records do not know, and one
-	// that is no sandbox of a session.
-	foreign, other := stray(uuid.NewString()), stray("")
-	for _, id := range []string{given.Sandbox, left, foreign, other} {
-		i.service.Age(id, time.Hour)
+	left, young := stray(i.session(store.Agent{}).ID), stray(i.session(store.Agent{}).ID)
+	// The sandbox of a session that these records do not know.
+	foreign := stray(uuid.New())
+	for _, name := range []string{given.Sandbox, left, foreign} {
+		i.service.Age(name, time.Hour)
 	}
-	i.eventually("the sandbox that the session does not have is deleted", func() bool {
-		_, there := i.service.Sandboxes()[left]
+	i.eventually("the sandbox that its session does not have is deleted", func() bool {
+		_, there := i.service.Made()[left]
 		return !there
 	})
-	sandboxes := i.service.Sandboxes()
-	for what, id := range map[string]string{
-		"of the session": given.Sandbox, "that is young": young, "of an unknown session": foreign, "of no session": other,
-	} {
-		if _, there := sandboxes[id]; !there {
+	made := i.service.Made()
+	for what, name := range map[string]string{"of the session": given.Sandbox, "that is young": young, "of an unknown session": foreign} {
+		if _, there := made[name]; !there {
 			t.Errorf("the sandbox %s was deleted", what)
 		}
 	}
 }
 
-func TestATurnThatEndedWhileNobodyReadItIsReadFromItsSleepingSandbox(t *testing.T) {
+func TestATurnWhoseSandboxIsPutToSleepFails(t *testing.T) {
 	i := install(t)
 	driver, _ := i.supervisor()
-	turn := i.send(driver, i.session(store.Agent{}), "hello")
+	session := i.session(store.Agent{})
+	turn := i.send(driver, session, "hello")
 	given := i.service.Turn(t)
 	given.Tell("started", started)
 	i.eventually("the turn has started", func() bool { return i.turn(turn.ID).StartedAt != nil })
 
-	// The reading is cut off, the runner ends the turn, and the sandbox is
-	// put to sleep before anyone reads that: the session is not at work.
-	i.service.Sleep(given.Sandbox)
-	given.Tell("message.delta", map[string]string{"text": "done"})
-	given.Tell("finished", finished)
-	if ended := i.ended(turn.ID); ended.State != store.TurnCompleted {
-		t.Errorf("the turn ended as %+v", ended)
+	// What ran in the sandbox stops with its pod.
+	if err := i.service.Suspend(ctx, given.Sandbox); err != nil {
+		t.Fatal(err)
 	}
-	if woken := i.service.Woken(given.Sandbox); woken != 1 {
-		t.Errorf("the sandbox was woken %d times", woken)
+	ended := i.ended(turn.ID)
+	if !failed(ended, store.FailureRunner) || !strings.Contains(ended.Failure.Message, "put to sleep") {
+		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
 	}
-	if told := i.told(turn.ID); !slices.Equal(told, []string{events.TurnStarted, "message.delta", events.TurnCompleted}) {
-		t.Errorf("the clients of the turn read %v", told)
+	// The session goes on in its sandbox, with its volume.
+	next := i.send(driver, session, "and then")
+	if again := i.service.Turn(t); again.ID != next.ID.String() || again.Sandbox != given.Sandbox {
+		t.Errorf("the next turn was given as %+v", again)
 	}
 }
 
@@ -805,23 +774,19 @@ func TestASessionThatIsNotUsedForLongerThanItsSandboxIsKeptHasEnded(t *testing.T
 
 	// A sandbox that is lost sooner is another matter: the session goes on
 	// in a new one.
-	if err := i.sandboxes.DeleteSandbox(ctx, given.Sandbox); err != nil {
-		t.Fatal(err)
-	}
+	i.service.Lose(given.Sandbox)
 	second := i.send(driver, session, "are you there")
 	again := i.service.Turn(t)
-	if again.Sandbox == given.Sandbox || again.ID != second.ID.String() {
+	if again.ID != second.ID.String() {
 		t.Errorf("the turn was given as %+v", again)
 	}
 	again.Tell("started", started)
 	again.Tell("finished", finished)
 	i.ended(second.ID)
 
-	// Two hours later, the service has deleted the sandbox.
+	// Two hours later, the sandbox has expired and is gone.
 	i.store.Age(2*time.Hour, first.ID, second.ID)
-	if err := i.sandboxes.DeleteSandbox(ctx, again.Sandbox); err != nil {
-		t.Fatal(err)
-	}
+	i.service.Lose(again.Sandbox)
 	third := i.send(driver, session, "and now")
 	ended := i.ended(third.ID)
 	if !failed(ended, store.FailureSessionExpired) || !strings.Contains(ended.Failure.Message, "1h0m0s") {
@@ -831,68 +796,14 @@ func TestASessionThatIsNotUsedForLongerThanItsSandboxIsKeptHasEnded(t *testing.T
 	if _, err := driver.Accept(ctx, session.ID, uuid.Nil, "once more"); !errors.Is(err, store.ErrSessionEnded) {
 		t.Errorf("a message to the session that has ended: %v", err)
 	}
-	if len(i.service.Sandboxes()) != 0 || len(i.service.Given()) != 2 {
-		t.Errorf("the service has the sandboxes %v, and the runners were given %v", i.service.Sandboxes(), i.service.Given())
-	}
-}
-
-func TestTheSandboxOfASessionReachesTheHostsOfTheInstallation(t *testing.T) {
-	// ask is where the egress of a sandbox is to ask about its requests.
-	ask := func(sandbox string) (string, error) { return "https://resolver.example.com/for-" + sandbox, nil }
-	for _, test := range []struct {
-		hosts         []string
-		policy, vault string
-	}{
-		{
-			hosts:  []string{"pypi.org", "*.example.com"},
-			policy: `{"defaultAction":"deny","egress":[{"action":"allow","target":"pypi.org"},{"action":"allow","target":"*.example.com"}]}`,
-			vault:  `["pypi.org","*.example.com","models.example.com"]`,
-		},
-		// Of an installation that lets every host be reached, the requests
-		// to the model endpoint are asked about.
-		{hosts: []string{"*"}, policy: `{"defaultAction":"allow"}`, vault: `["models.example.com"]`},
-	} {
-		i := install(t, func(config *Config) {
-			config.Hosts, config.Ask = test.hosts, ask
-		})
-		driver, _ := i.supervisor()
-		session := i.session(store.Agent{Model: &store.Model{Name: "a-model"}})
-		for _, text := range []string{"hello", "and then"} {
-			turn := i.send(driver, session, text)
-			given := i.service.TurnWith(t, turn.ID.String())
-			given.Tell("started", started)
-			given.Tell("finished", finished)
-			i.ended(turn.ID)
-		}
-		sandbox := i.sandbox(session)
-		if policy := string(i.service.Policy(sandbox)); policy != test.policy {
-			t.Errorf("of the hosts %v, the sandbox may reach %s, not %s", test.hosts, policy, test.policy)
-		}
-		var vault struct {
-			Credentials []struct {
-				Name   string
-				Source struct{ Type, Endpoint string }
-			}
-			Bindings []struct {
-				Match struct{ Hosts, Schemes []string }
-				Auth  struct{ Credential string }
-			}
-		}
-		if err := json.Unmarshal(i.service.Vault(sandbox), &vault); err != nil || len(vault.Credentials) != 1 || len(vault.Bindings) != 1 {
-			t.Fatalf("of the hosts %v, the egress of the sandbox was given %s: %v", test.hosts, i.service.Vault(sandbox), err)
-		}
-		credential, binding := vault.Credentials[0], vault.Bindings[0]
-		hosts, _ := json.Marshal(binding.Match.Hosts)
-		if credential.Source.Type != "exchange" || credential.Source.Endpoint != "https://resolver.example.com/for-"+sandbox ||
-			binding.Auth.Credential != credential.Name || string(hosts) != test.vault || !slices.Equal(binding.Match.Schemes, []string{"https"}) {
-			t.Errorf("of the hosts %v, the egress of the sandbox was given %s", test.hosts, i.service.Vault(sandbox))
-		}
+	if len(i.service.Made()) != 0 || len(i.service.Given()) != 2 {
+		t.Errorf("the sandboxes are %v, and the runners were given %v", i.service.Made(), i.service.Given())
 	}
 }
 
 func TestAHarnessThatAnInstallationHas(t *testing.T) {
 	i := install(t)
-	driver := New(i.config, i.sandboxes, i.store, i.events, metrics.New())
+	driver := New(i.config, i.service, i.store, i.events, metrics.New())
 	if !driver.HasHarness("opencode") || driver.HasHarness("codex") {
 		t.Error("the driver has other harnesses than the installation")
 	}

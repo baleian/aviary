@@ -20,6 +20,9 @@ import (
 	"syscall"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/client-go/rest"
+
 	"aviary/supervisor/events"
 	"aviary/supervisor/identity"
 	"aviary/supervisor/internal/api"
@@ -48,12 +51,10 @@ const (
 	maxStartup         = "AVIARY_MAX_STARTUP_SECONDS"
 	maxToolOutput      = "AVIARY_MAX_TOOL_OUTPUT_BYTES"
 	maxTurn            = "AVIARY_MAX_TURN_SECONDS"
-	sandboxesURL       = "AVIARY_SANDBOXES_URL"
-	sandboxesKey       = "AVIARY_SANDBOXES_API_KEY"
-	templateStore      = "AVIARY_TEMPLATE_STORE"
+	sandboxNamespace   = "AVIARY_SANDBOX_NAMESPACE"
+	sandboxVolume      = "AVIARY_SANDBOX_VOLUME_SIZE"
+	sandboxClass       = "AVIARY_SANDBOX_STORAGE_CLASS"
 	sandboxIdle        = "AVIARY_SANDBOX_IDLE_SECONDS"
-	sandboxHosts       = "AVIARY_SANDBOX_HOSTS"
-	resolverURL        = "AVIARY_RESOLVER_URL"
 	resolverTLS        = "AVIARY_RESOLVER_TLS"
 	sandboxRetention   = "AVIARY_SANDBOX_RETENTION_SECONDS"
 	apiAddr            = ":8080"
@@ -114,13 +115,8 @@ func Main(plugins Plugins) {
 // Run serves until ctx is done, or with the argument "migrate" brings the
 // database schema up to date. A release migrates once, before it starts its
 // Supervisors. With a version after it, "migrate" moves the schema to that
-// version instead, forward or back. With the argument "templates" it has
-// the templates built that the sandboxes of the sessions are made from,
-// which a release does once too.
+// version instead, forward or back.
 func Run(ctx context.Context, args []string, plugins Plugins) error {
-	if len(args) == 1 && args[0] == "templates" {
-		return bake(ctx)
-	}
 	database, err := env(databaseURL)
 	if err != nil {
 		return err
@@ -137,69 +133,34 @@ func Run(ctx context.Context, args []string, plugins Plugins) error {
 		}
 		return store.MigrateTo(ctx, database, version, plugins.Databases...)
 	}
-	return errors.New("usage: aviary-supervisor [migrate [<version>] | templates]")
+	return errors.New("usage: aviary-supervisor [migrate [<version>]]")
 }
 
-// bake has the sandbox service build the template of every harness that
-// has none, and waits for them.
-func bake(ctx context.Context) error {
-	client, err := sandboxes()
-	if err != nil {
-		return err
-	}
-	templates, err := templatesOf()
-	if err != nil {
-		return err
-	}
-	return client.Bake(ctx, templates)
-}
-
-// sandboxes reads where the sandbox service is, and the key that it is
-// asked with.
-func sandboxes() (*sandbox.Client, error) {
-	address, err := env(sandboxesURL)
-	if err != nil {
-		return nil, err
-	}
-	key, err := env(sandboxesKey)
-	if err != nil {
-		return nil, err
-	}
-	return sandbox.New(address, key)
-}
-
-// templatesOf reads what the sandboxes of the sessions are made from. The
-// harnesses are a JSON object such as {"opencode": {"image":
-// "registry.example.com/harness-opencode:1.0", "sandbox": {"cpu": "1",
-// "memory": "2Gi", "disk": "4Gi"}}}. A release has the templates built from
-// what its Supervisors then find them by, so both read the same.
-func templatesOf() (sandbox.Templates, error) {
-	templates := sandbox.Templates{}
+// sandboxSettings reads where the sandboxes of the sessions are made, in
+// the cluster that the Supervisor runs in, and what they are made with.
+func sandboxSettings() (sandbox.Settings, error) {
+	var settings sandbox.Settings
 	var err error
-	if templates.Store, err = env(templateStore); err != nil {
-		return templates, err
+	if settings.Namespace, err = env(sandboxNamespace); err != nil {
+		return settings, err
 	}
-	encoded, err := env(harnesses)
+	size, err := env(sandboxVolume)
 	if err != nil {
-		return templates, err
+		return settings, err
 	}
-	if err := json.Unmarshal([]byte(encoded), &templates.Harnesses); err != nil {
-		return templates, fmt.Errorf("%s: %w", harnesses, err)
+	if settings.Volume, err = resource.ParseQuantity(size); err != nil || settings.Volume.Sign() <= 0 {
+		return settings, fmt.Errorf("%s must be a size such as 10Gi", sandboxVolume)
 	}
-	for name, harness := range templates.Harnesses {
-		size := harness.Sandbox
-		if harness.Image == "" || size.CPU == "" || size.Memory == "" || size.Disk == "" {
-			return templates, fmt.Errorf("%s: the harness %s needs an image and the cpu, memory and disk of its sandboxes", harnesses, name)
-		}
-	}
+	// Without a class, the volumes are of the default class of the cluster.
+	settings.StorageClass = os.Getenv(sandboxClass)
 	output, err := env(maxToolOutput)
 	if err != nil {
-		return templates, err
+		return settings, err
 	}
-	if templates.MaxToolOutputBytes, err = strconv.Atoi(output); err != nil || templates.MaxToolOutputBytes < 0 {
-		return templates, fmt.Errorf("%s must be a number of bytes, or zero for no limit", maxToolOutput)
+	if settings.MaxToolOutputBytes, err = strconv.Atoi(output); err != nil || settings.MaxToolOutputBytes < 0 {
+		return settings, fmt.Errorf("%s must be a number of bytes, or zero for no limit", maxToolOutput)
 	}
-	return templates, nil
+	return settings, nil
 }
 
 func serve(ctx context.Context, database string, plugins Plugins) error {
@@ -236,7 +197,15 @@ func serve(ctx context.Context, database string, plugins Plugins) error {
 	if err != nil {
 		return err
 	}
-	client, err := sandboxes()
+	settings, err := sandboxSettings()
+	if err != nil {
+		return err
+	}
+	cluster, err := rest.InClusterConfig()
+	if err != nil {
+		return err
+	}
+	client, err := sandbox.New(cluster, settings)
 	if err != nil {
 		return err
 	}
@@ -248,14 +217,10 @@ func serve(ctx context.Context, database string, plugins Plugins) error {
 	if on.metrics, err = net.Listen("tcp", metricsAddr); err != nil {
 		return err
 	}
-	resolvedAt, err := env(resolverURL)
-	if err != nil {
-		return err
-	}
 	if on.resolver, err = resolverListener(); err != nil {
 		return err
 	}
-	return serveOn(ctx, on, st, ev, client, config, keys, stores, callers, resolvedAt, slog.Default())
+	return serveOn(ctx, on, st, ev, client, config, keys, stores, callers, slog.Default())
 }
 
 // resolverListener listens for the egress of the sandbox service with the
@@ -278,17 +243,15 @@ func resolverListener() (net.Listener, error) {
 }
 
 // serveOn serves on the ports until ctx is done, with the turns in the
-// database of the store and their sandboxes at the sandbox service of the
-// client. It seals the secrets that it stores with the keys, and reads the
-// others from the stores. The callers are who may use the API. The egress of
-// the sandbox service reaches the resolver at the address, which writes the
+// database of the store and their sandboxes kept by sandboxes. It seals the
+// secrets that it stores with the keys, and reads the others from the
+// stores. The callers are who may use the API. The resolver writes the
 // records of the requests of the sandboxes to records.
-func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, client *sandbox.Client, config driver.Config, keys *secret.Keys, stores *secret.Stores, callers api.Callers, resolvedAt string, records *slog.Logger) error {
+func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, sandboxes driver.Sandboxes, config driver.Config, keys *secret.Keys, stores *secret.Stores, callers api.Callers, records *slog.Logger) error {
 	m := metrics.New()
 	stores.Asked = m.SecretRead
 	answers := resolver.New(st, keys, stores, records)
-	config.Ask = func(sandbox string) (string, error) { return answers.Endpoint(resolvedAt, sandbox) }
-	dr := driver.New(config, client, st, ev, m)
+	dr := driver.New(config, sandboxes, st, ev, m)
 	resolverServer := &http.Server{Handler: answers.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	apiServer := &http.Server{
 		Handler:           api.New(st, ev, dr, keys, stores, callers, ctx.Done()),
@@ -403,34 +366,36 @@ func callersOf(ctx context.Context, plugins []identity.Plugin) (api.Callers, err
 // driverConfig reads how turns are run.
 func driverConfig() (driver.Config, error) {
 	var config driver.Config
-	var err error
-	if config.Templates, err = templatesOf(); err != nil {
-		return config, err
-	}
-	hosts, err := env(sandboxHosts)
+	// The harnesses are a JSON object such as {"opencode": {"image":
+	// "registry.example.com/harness-opencode:1.0", "resources": {"requests":
+	// {"cpu": "250m", "memory": "1Gi"}, "limits": {"memory": "4Gi"}}}}.
+	encoded, err := env(harnesses)
 	if err != nil {
 		return config, err
 	}
-	if err := json.Unmarshal([]byte(hosts), &config.Hosts); err != nil {
-		return config, fmt.Errorf("%s: %w", sandboxHosts, err)
+	if err := json.Unmarshal([]byte(encoded), &config.Harnesses); err != nil {
+		return config, fmt.Errorf("%s: %w", harnesses, err)
+	}
+	for name, harness := range config.Harnesses {
+		if harness.Image == "" {
+			return config, fmt.Errorf("%s: the harness %s has no image", harnesses, name)
+		}
 	}
 	idle, err := env(sandboxIdle)
 	if err != nil {
 		return config, err
 	}
-	// The sandbox service puts no sandbox to sleep sooner.
 	seconds, err := strconv.Atoi(idle)
-	if err != nil || seconds < 0 || seconds > 0 && seconds < 30 {
-		return config, fmt.Errorf("%s must be a number of seconds, thirty or more, or zero for never", sandboxIdle)
+	if err != nil || seconds < 0 {
+		return config, fmt.Errorf("%s must be a number of seconds, or zero for never", sandboxIdle)
 	}
 	config.Idle = time.Duration(seconds) * time.Second
 	retention, err := env(sandboxRetention)
 	if err != nil {
 		return config, err
 	}
-	// The sandbox service keeps no sandbox for less than a minute.
-	if seconds, err = strconv.Atoi(retention); err != nil || seconds < 0 || seconds > 0 && seconds < 60 {
-		return config, fmt.Errorf("%s must be a number of seconds, sixty or more, or zero for until the session is ended", sandboxRetention)
+	if seconds, err = strconv.Atoi(retention); err != nil || seconds < 0 {
+		return config, fmt.Errorf("%s must be a number of seconds, or zero for until the session is ended", sandboxRetention)
 	}
 	config.Retention = time.Duration(seconds) * time.Second
 	limit, err := env(maxConcurrentTurns)

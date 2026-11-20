@@ -84,43 +84,20 @@ supervisor:
     # With none, everyone whom the provider knows may.
     users: []
 
-# OpenSandbox, which runs the sessions: each in a sandbox of its own, a small
-# virtual machine that is made from the template of the harness of its agent.
+# The sandboxes of the sessions: each session runs in a sandbox of its own, a
+# pod of the harness of its agent with a volume of the session, in the
+# namespace aviary-runtime. agent-sandbox keeps them, and has to be installed
+# in the cluster.
 sandboxes:
-  # Where its lifecycle API is.
-  url: http://opensandbox-server.opensandbox-system
-  # The hosts that a sandbox may send requests to, those of the model
-  # endpoints among them: names, *.domains, or * for every host. Every
-  # request over HTTPS to a host that is named here, or to the model
-  # endpoint of the agent, is recorded with the turn and the user that it
-  # comes from, and a request to the model endpoint gets its key. A model
-  # endpoint over HTTP gets no key. The sandbox service keeps the sandboxes
-  # from the rest, and the installation of the sandbox service keeps them
-  # out of the cluster.
-  allowedHosts: ["*"]
-  # A secret in the release namespace with the key of that API.
-  apiKey:
-    secretName: aviary-sandboxes
-    secretKey: api-key
-  # Where it keeps the templates, in its object store. Aviary has a template
-  # built for each of the harnesses below when the release is installed, and
-  # again when a harness has changed.
-  templateStore: s3://sandbox-images/publish
   # After how many seconds a session that is not at work is put to sleep: no
-  # turn of it runs, or its turn waits for a person. A session that sleeps
-  # takes no cpu and no memory, and is woken as it was for its next turn and
-  # for the answer. Thirty or more, and no more than the sandbox service
-  # keeps what it knows of the last use of a sandbox, which is 1800 unless
-  # it is set up otherwise. Zero is never: the sandbox service must be set
-  # up to put sandboxes to sleep for any other value to do something.
+  # turn of it runs. A session that sleeps has no pod, and keeps its volume,
+  # with what its harness remembers. Its next turn wakes it, in a new pod.
+  # Zero is never.
   idleSeconds: 300
   # For how many seconds the sandbox of a session is kept after a turn of the
   # session was last given to it. A session that is not used for longer has
-  # ended: its sandbox is deleted with what the agent had in it, also when a
-  # turn of it still waits for a person, and what was said in it stays. A
-  # sandbox that sleeps takes its memory and its disk in the object store
-  # for as long as it is kept. Sixty or more. Zero is to keep it until the
-  # session is ended.
+  # ended: its sandbox is deleted with its volume, and what was said in it
+  # stays. Zero is to keep it until the session is ended.
   retentionSeconds: 0
 
 runtime:
@@ -135,15 +112,17 @@ runtime:
   maxQueueWaitSeconds: 120
   # How long a turn may take until its harness has the message. The first
   # turn of a session waits for the sandbox of the session to be made, which
-  # takes longer on a node that has not run the template of the harness
-  # before. A turn that takes longer fails. Its sandbox is deleted if the
-  # runner in it had the turn. One that was still being made or woken stays
-  # with what the agent had in it, for the next turn. Zero is no limit.
+  # takes longer on a node that does not have the image of the harness yet,
+  # and a turn of a session that sleeps waits for it to wake. A turn that
+  # takes longer fails. Its sandbox is put to sleep if the runner in it had
+  # the turn. One that was still being made or woken stays, for the next
+  # turn. Zero is no limit.
   maxStartupSeconds: 120
   # How long a turn may run, from when it left the queue, the time that it
   # waits for a person included. A turn is everything that an agent does for
   # one message, which can be many requests to the model. A turn that runs
-  # longer fails, and its sandbox is deleted with what the session had in it.
+  # longer fails, and its sandbox is put to sleep: what ran in it stops, and
+  # the volume of the session stays.
   maxTurnSeconds: 1800
   # The longest text of a tool call, in what the tool was called with or
   # returned, that is reported in the events of a turn as it is. A longer
@@ -151,17 +130,30 @@ runtime:
   # agent itself still has all of it. Zero is no limit.
   maxToolOutputBytes: 65536
   # The harnesses that agents can use, by the name that an agent is created
-  # with. The image holds the harness and the runner.
-  #
-  # The sandbox is the size of the sandbox of a session of the harness: its
-  # cpus, its memory and its disk, which holds the image and whatever the
-  # session writes. OpenSandbox takes the image from its registry itself,
-  # without credentials, so the image is named as it is there. A sandbox that
-  # sleeps takes its memory and its disk in the object store.
+  # with. The image holds the harness and the runner. The resources are what
+  # the pod of the sandbox of a session asks for and may use at most, of cpu
+  # and of memory, as the resources of a container are written for
+  # Kubernetes. A change here holds for a sandbox from when it is next woken.
+  # The requests are a little above what the harness takes before the agent
+  # does anything. A turn that goes over its limit of memory fails. There is
+  # no limit of cpu: it would slow a turn down also when the node has cpu to
+  # spare.
   harnesses:
     opencode:
       image: aviary-harness-opencode:dev
-      sandbox: {cpu: "1", memory: 2Gi, disk: 4Gi}
+      resources:
+        requests: {cpu: 250m, memory: 1Gi}
+        limits: {memory: 4Gi}
     codex:
       image: aviary-harness-codex:dev
-      sandbox: {cpu: "1", memory: 2Gi, disk: 4Gi}
+      resources:
+        requests: {cpu: 250m, memory: 256Mi}
+        limits: {memory: 4Gi}
+  # The volume of a session, mounted at /home in its sandbox: what its
+  # harness remembers of the conversation and what its agent works on. A
+  # volume is mounted by one pod at a time. It is deleted with the sandbox.
+  volume:
+    size: 10Gi
+    # The storage class that the volumes are made with. Empty is the default
+    # class of the cluster.
+    storageClass: ""

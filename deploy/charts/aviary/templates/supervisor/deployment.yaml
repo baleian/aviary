@@ -61,26 +61,17 @@ spec:
               value: {{ .Values.supervisor.auth.admins | toJson | quote }}
             - name: AVIARY_USER_GROUPS
               value: {{ .Values.supervisor.auth.users | toJson | quote }}
-            # The sandbox service, in whose sandboxes the sessions run, and
-            # what the release had the templates of the harnesses built
-            # from: a Supervisor finds the template of a harness by it.
-            - name: AVIARY_SANDBOXES_URL
-              value: {{ .Values.sandboxes.url | quote }}
-            - name: AVIARY_SANDBOXES_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.sandboxes.apiKey.secretName }}
-                  key: {{ .Values.sandboxes.apiKey.secretKey }}
-            - name: AVIARY_TEMPLATE_STORE
-              value: {{ .Values.sandboxes.templateStore | quote }}
+            # Where the sandboxes of the sessions are made, and the volume of
+            # a session.
+            - name: AVIARY_SANDBOX_NAMESPACE
+              value: aviary-runtime
+            - name: AVIARY_SANDBOX_VOLUME_SIZE
+              value: {{ .Values.runtime.volume.size | quote }}
+            - name: AVIARY_SANDBOX_STORAGE_CLASS
+              value: {{ .Values.runtime.volume.storageClass | quote }}
             - name: AVIARY_SANDBOX_IDLE_SECONDS
               value: {{ .Values.sandboxes.idleSeconds | quote }}
-            - name: AVIARY_SANDBOX_HOSTS
-              value: {{ .Values.sandboxes.allowedHosts | toJson | quote }}
-            # Where the egress of the sandbox service reaches the
-            # Supervisors, and their certificate.
-            - name: AVIARY_RESOLVER_URL
-              value: https://aviary-supervisor.{{ .Release.Namespace }}.svc.cluster.local:9443
+            # The certificate of the resolver.
             - name: AVIARY_RESOLVER_TLS
               value: /etc/aviary/resolver
             - name: AVIARY_SANDBOX_RETENTION_SECONDS

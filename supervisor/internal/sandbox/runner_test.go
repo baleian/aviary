@@ -12,26 +12,16 @@ import (
 
 	"github.com/google/uuid"
 
-	"aviary/supervisor/internal/sandbox/sandboxtest"
+	"aviary/supervisor/internal/sandbox/runnertest"
 )
 
-// running makes a sandbox that runs, and returns its runner.
-func running(t *testing.T) (*sandboxtest.Service, string, *Runner) {
+// running starts a runner, and returns it with the runners of the test.
+func running(t *testing.T) (*runnertest.Runners, *Runner) {
 	t.Helper()
-	ctx := context.Background()
-	s, c, template := installed(t)
-	made, err := c.CreateSandbox(ctx, Request{Template: template})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if seen, err := c.Sandbox(ctx, made.ID); err != nil || seen.Status.State != Running {
-		t.Fatalf("the sandbox is %+v: %v", seen, err)
-	}
-	runner, err := c.Runner(ctx, made.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s, made.ID, runner
+	runners := runnertest.New(t)
+	server := httptest.NewServer(runners.Runner("a-sandbox"))
+	t.Cleanup(server.Close)
+	return runners, &Runner{address: server.URL, http: server.Client(), quiet: time.Minute}
 }
 
 // read reads the events of the turn that follow the one with the number,
@@ -49,9 +39,21 @@ func same(got []string, want ...string) bool {
 	return strings.Join(got, "\n") == strings.Join(want, "\n")
 }
 
-func TestARunnerIsGivenATurnThroughTheGateway(t *testing.T) {
+// outcome waits for what is done to end, and returns how it ended.
+func outcome(t *testing.T, done <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(5 * time.Second):
+		t.Fatal("it did not end")
+		return nil
+	}
+}
+
+func TestARunnerIsGivenATurn(t *testing.T) {
 	ctx := context.Background()
-	s, sandbox, runner := running(t)
+	s, runner := running(t)
 	first := uuid.New()
 	start := Turn{
 		Text:         "hello",
@@ -67,7 +69,7 @@ func TestARunnerIsGivenATurnThroughTheGateway(t *testing.T) {
 		}
 	}
 	turn := s.Turn(t)
-	if turn.Sandbox != sandbox || turn.ID != first.String() || turn.Text != "hello" || turn.Instructions != "be kind" ||
+	if turn.Sandbox != "a-sandbox" || turn.ID != first.String() || turn.Text != "hello" || turn.Instructions != "be kind" ||
 		turn.Approval != "ask" || turn.Environment["AVIARY_LLM_MODEL"] != "a-model" {
 		t.Errorf("the runner was given %+v", turn)
 	}
@@ -87,7 +89,7 @@ func TestARunnerIsGivenATurnThroughTheGateway(t *testing.T) {
 
 func TestTheEventsOfATurnAreReadInTheirOrderUntilItEnds(t *testing.T) {
 	ctx := context.Background()
-	s, _, runner := running(t)
+	s, runner := running(t)
 	id := uuid.New()
 	if err := runner.Start(ctx, id, Turn{Text: "hello"}); err != nil {
 		t.Fatal(err)
@@ -136,7 +138,7 @@ func TestTheEventsOfATurnAreReadInTheirOrderUntilItEnds(t *testing.T) {
 
 func TestAReadingThatWasCutOffIsReadOnFromWhereItWas(t *testing.T) {
 	ctx := context.Background()
-	s, _, runner := running(t)
+	s, runner := running(t)
 	id := uuid.New()
 	if err := runner.Start(ctx, id, Turn{Text: "hello"}); err != nil {
 		t.Fatal(err)
@@ -168,7 +170,7 @@ func TestAReadingThatWasCutOffIsReadOnFromWhereItWas(t *testing.T) {
 
 func TestWhatATurnIsToldReachesItsRunner(t *testing.T) {
 	ctx := context.Background()
-	s, _, runner := running(t)
+	s, runner := running(t)
 	id := uuid.New()
 	if err := runner.Start(ctx, id, Turn{Text: "hello"}); err != nil {
 		t.Fatal(err)
@@ -199,31 +201,6 @@ func TestWhatATurnIsToldReachesItsRunner(t *testing.T) {
 	}
 }
 
-func TestTheRunnerOfASandboxThatDoesNotRunYetIsNotReached(t *testing.T) {
-	ctx := context.Background()
-	_, c, template := installed(t)
-	made, err := c.CreateSandbox(ctx, Request{Template: template})
-	if err != nil {
-		t.Fatal(err)
-	}
-	runner, err := c.Runner(ctx, made.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var refusal *Refusal
-	if err := runner.Start(ctx, uuid.New(), Turn{Text: "hello"}); !errors.As(err, &refusal) || refusal.Status != http.StatusServiceUnavailable {
-		t.Fatalf("the runner of a sandbox that does not run yet: %v", err)
-	}
-	if _, err := read(runner, uuid.New(), 0); !errors.As(err, &refusal) || refusal.Status != http.StatusServiceUnavailable {
-		t.Fatalf("the events of a sandbox that does not run yet: %v", err)
-	}
-	// A way that the service did not give is not taken.
-	runner.route = "f1.made.up"
-	if err := runner.Start(ctx, uuid.New(), Turn{Text: "hello"}); !errors.As(err, &refusal) || refusal.Status != http.StatusUnauthorized {
-		t.Fatalf("a way that the service did not give: %v", err)
-	}
-}
-
 // saying is a runner that answers one who reads the events of a turn with
 // what say writes.
 func saying(t *testing.T, say func(w http.ResponseWriter, r *http.Request)) *Runner {
@@ -235,7 +212,7 @@ func saying(t *testing.T, say func(w http.ResponseWriter, r *http.Request)) *Run
 		say(w, r)
 	}))
 	t.Cleanup(server.Close)
-	return &Runner{address: server.URL, route: "a route", http: server.Client(), quiet: time.Minute}
+	return &Runner{address: server.URL, http: server.Client(), quiet: time.Minute}
 }
 
 func TestTheLinesBetweenTheEventsOfATurnAreNoEvents(t *testing.T) {
@@ -291,7 +268,7 @@ func TestARunnerThatSaysNothingIsGivenUp(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
 	t.Cleanup(server.Close)
-	deaf := &Runner{address: server.URL, route: "a route", http: server.Client(), quiet: 50 * time.Millisecond}
+	deaf := &Runner{address: server.URL, http: server.Client(), quiet: 50 * time.Millisecond}
 	if _, err := read(deaf, uuid.New(), 0); !errors.Is(err, errSilent) {
 		t.Errorf("the reading of a runner that does not answer ended with %v", err)
 	}

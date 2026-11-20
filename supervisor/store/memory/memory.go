@@ -740,12 +740,6 @@ func (s *Store) queued() []*turn {
 	return queued
 }
 
-// waiting tells whether the turn waits for a person: a request of its
-// harness for approval is not resolved.
-func (t *turn) waiting() bool {
-	return slices.ContainsFunc(t.approvals, func(approval *approval) bool { return !approval.resolved })
-}
-
 // running returns how many turns run or are about to: those that were
 // dispatched and have not ended. The caller holds the lock.
 func (s *Store) running() int {
@@ -960,7 +954,7 @@ func (s *Store) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.Followe
 	followed := store.FollowedTurn{
 		Turn: turn.Turn, AgentID: agent.ID, ProjectID: agent.ProjectID,
 		Harness: agent.Harness, Instructions: agent.Instructions, Approval: agent.Approval,
-		Sandbox: session.Sandbox, Dispatched: now.Sub(turn.CreatedAt), Waiting: turn.waiting(),
+		Sandbox: session.Sandbox, Dispatched: now.Sub(turn.CreatedAt),
 	}
 	if turn.dispatchedAt != nil {
 		followed.Dispatched = now.Sub(*turn.dispatchedAt)

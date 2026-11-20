@@ -18,9 +18,6 @@ import (
 )
 
 const (
-	// routeHeader is the header that tells the gateway which sandbox, and
-	// which port of it, a request is for.
-	routeHeader = "OpenSandbox-Ingress-To"
 	// eventLimit is the longest event that is read.
 	eventLimit = 4 << 20
 	// told is how long a runner may take to answer what it is told.
@@ -31,12 +28,28 @@ const (
 var ErrBusy = errors.New("the runner runs another turn")
 
 // Runner is the runner of a session, in its sandbox, as it is reached. What
-// it says comes from the sandbox, in which the agent is root.
+// it says comes from the sandbox, which is the agent's to do with as it
+// likes.
 type Runner struct {
 	address string
-	route   string
-	http    *http.Client
-	quiet   time.Duration
+	// http is what the runner is asked with: the answer to one who reads the
+	// events of a turn takes as long as the turn. quiet is for how long the
+	// runner may send nothing to one who reads them.
+	http  *http.Client
+	quiet time.Duration
+}
+
+// stream is what the runners are asked with.
+var stream = &http.Client{}
+
+// RunnerAt returns the runner at the address of a sandbox that runs.
+func RunnerAt(address string) *Runner {
+	return &Runner{address: address, http: stream, quiet: time.Minute}
+}
+
+// Address is where the runner is reached.
+func (r *Runner) Address() string {
+	return r.address
 }
 
 // Turn is what a runner is given to run.
@@ -191,7 +204,7 @@ func (r *Runner) tell(ctx context.Context, method, path string, body any) error 
 	return nil
 }
 
-// request is a request to the runner, on its way through the gateway.
+// request is a request to the runner.
 func (r *Runner) request(ctx context.Context, method, path string, body any) (*http.Request, error) {
 	var sent io.Reader
 	if body != nil {
@@ -205,15 +218,13 @@ func (r *Runner) request(ctx context.Context, method, path string, body any) (*h
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set(routeHeader, r.route)
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
 	return request, nil
 }
 
-// refused is the answer of a runner, or of the gateway on the way to it,
-// that is no success.
+// refused is the answer of a runner that is no success.
 func refused(answer *http.Response, asked string) error {
 	said, _ := io.ReadAll(io.LimitReader(answer.Body, 4<<10))
 	return &Refusal{Who: "the runner", Asked: asked, Status: answer.StatusCode, Said: strings.TrimSpace(string(said))}
