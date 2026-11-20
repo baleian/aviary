@@ -20,6 +20,7 @@ supervisor:
     users: [team-a, team-b]
 egressProxy:
   replicas: 2
+  concurrency: 4
   allowedHosts:
     - llm.example.com
     - packages.example.com

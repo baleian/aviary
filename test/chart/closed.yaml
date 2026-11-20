@@ -1,3 +1,4 @@
-# Allows no host.
+# Allows no host, and lets Envoy choose its number of workers.
 egressProxy:
   allowedHosts: []
+  concurrency: 0

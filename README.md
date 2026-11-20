@@ -519,6 +519,7 @@ of your own.
 | --- | --- |
 | `supervisor.replicas`, `egressProxy.replicas` | Number of Supervisor and Egress Proxy replicas. Any replica can serve any request. Default 1. |
 | `supervisor.resources`, `egressProxy.resources` | Resource requests and limits of the Supervisor and Egress Proxy pods. |
+| `egressProxy.concurrency` | Worker threads of each Egress Proxy. Default 2. 0 lets Envoy choose: as many as the CPUs of its node, or of its CPU limit if it has one. |
 | `supervisor.database.secretName`, `.secretKey` | Secret in the release namespace that holds the database URL. The URL scheme selects the plugin: `postgresql://…` for PostgreSQL, `mysql://…` for MySQL. |
 | `supervisor.events.secretName`, `.secretKey` | Secret in the release namespace that holds the event log URL: `valkey://…` for Valkey, `valkeys://…` for Valkey with TLS. |
 | `supervisor.encryption.secretName`, `.key` | Secret with the keys that encrypt secrets, such as model provider API keys, before they are stored, and the entry that encrypts new secrets. Each entry is 32 random bytes in base64. To rotate, add an entry and name it in `key`, and keep the old entries. |

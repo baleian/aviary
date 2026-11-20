@@ -28,7 +28,14 @@ spec:
       containers:
         - name: envoy
           image: {{ .Values.egressProxy.image }}
-          args: ["--config-path", "/etc/envoy/envoy.yaml", "--disable-hot-restart"]
+          args:
+            - --config-path
+            - /etc/envoy/envoy.yaml
+            - --disable-hot-restart
+            {{- with .Values.egressProxy.concurrency }}
+            - --concurrency
+            - {{ . | quote }}
+            {{- end }}
           # Gives the endpoints time to stop sending new connections here
           # before Envoy stops.
           lifecycle:

@@ -69,6 +69,9 @@ supervisor:
 egressProxy:
   image: envoyproxy/envoy:distroless-v1.40.2@sha256:09ca6f2140a61ad8df11779a4a30d52b48433d444466328494f9188c9c35eded
   replicas: 1
+  # Worker threads of each proxy. 0 lets Envoy choose: as many as the CPUs of
+  # its node, or of its CPU limit if it has one.
+  concurrency: 2
   resources:
     requests: {cpu: 100m, memory: 64Mi}
     limits: {memory: 512Mi}

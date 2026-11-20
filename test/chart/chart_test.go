@@ -64,8 +64,13 @@ func count(value any) int {
 }
 
 func TestEgressProxy(t *testing.T) {
-	for _, values := range []string{"default", "set", "closed"} {
-		_, envoy := chart(t, values)
+	for values, workers := range map[string][]any{"default": {"--concurrency", "2"}, "set": {"--concurrency", "4"}, "closed": nil} {
+		objects, envoy := chart(t, values)
+		// Otherwise Envoy starts a worker for every CPU of its node.
+		args := at(find(objects, "Deployment", "aviary-egress-proxy"), "spec", "template", "spec", "containers", 0, "args")
+		if want := append([]any{"--config-path", "/etc/envoy/envoy.yaml", "--disable-hot-restart"}, workers...); !reflect.DeepEqual(args, want) {
+			t.Errorf("%s: Envoy args = %v, want %v", values, args, want)
+		}
 		for _, name := range []string{"llm", "forward"} {
 			// Otherwise Envoy answers 403 when no Supervisor can be asked,
 			// and a harness does not retry that.
