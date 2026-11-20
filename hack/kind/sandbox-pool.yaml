@@ -45,8 +45,10 @@ spec:
               value: /var/egress/local-ca/ca.crt
             - name: SSL_CERT_DIR
               value: /etc/ssl/certs:/var/egress/local-ca
+            # A Supervisor may read the key of a model endpoint from a
+            # secret store, which it waits three seconds for.
             - name: OPENSANDBOX_EGRESS_CREDENTIAL_RESOLVER_TIMEOUT
-              value: "2"
+              value: "5"
           volumeMounts:
             - name: egress-state
               mountPath: /var/lib/opensandbox-egress
