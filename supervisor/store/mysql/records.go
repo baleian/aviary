@@ -456,10 +456,11 @@ func (s *records) SetSandbox(ctx context.Context, sessionID uuid.UUID, from, to 
 		if err != nil {
 			return err
 		}
-		if has := sessionFrom(row).Sandbox; has != from {
+		// Set by every attempt, since an attempt that deadlocked was rolled
+		// back.
+		if set = sessionFrom(row).Sandbox == from; !set {
 			return nil
 		}
-		set = true
 		params := db.SetSandboxParams{ID: key.ID(sessionID)}
 		if to != "" {
 			params.Sandbox = &to
