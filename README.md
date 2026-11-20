@@ -540,9 +540,9 @@ installs it in the local cluster with a file of values of your own.
 | `runtime.maxToolOutputBytes` | The longest text of a tool call that the events carry as it is. A longer text is cut. Default 65536, and 0 is no limit. |
 | `runtime.harnesses` | The harnesses that agents can use, each with its image. `sandbox` is the size of the sandbox of a session: its `cpu`, `memory` and `disk`. A release has OpenSandbox build a template for each harness, from the image and that size, when it is installed and when either has changed. OpenSandbox takes the image from its registry without credentials. |
 
-The chart does not install OpenSandbox either. Aviary runs on its Fast
-Sandbox runtime, whose sandboxes need nodes with KVM, and `hack/kind` shows
-what it takes besides: a pool of sandboxes, an object store for the
+The chart does not install OpenSandbox either. Aviary runs on OpenSandbox
+1.2.1 with its Fast Sandbox runtime, whose sandboxes need nodes with KVM,
+and `hack/kind` shows what it takes besides: a pool of sandboxes, an object store for the
 templates and for the sandboxes that sleep, the idle pause of the server
 with the gateway telling it of the activity of the sandboxes, and an egress
 that looks into HTTPS. The egress has to trust the certificate of the
