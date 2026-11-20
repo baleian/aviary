@@ -132,6 +132,10 @@ which are directories on its nodes.
 `make headlamp` installs [Headlamp](https://headlamp.dev), a web UI for the
 resources, logs and events of the cluster, at http://localhost:4466.
 
+`make grafana` installs [Prometheus](https://prometheus.io), which scrapes
+the Supervisors and the Egress Proxies, and [Grafana](https://grafana.com)
+with the Aviary dashboard, at http://localhost:3000.
+
 ### Send a message
 
 The API listens inside the cluster. Forward a port to it, register a model
@@ -591,6 +595,9 @@ read them too, by requesting the proxy's own address through the forward
 proxy, if `egressProxy.allowedHosts` allows that address, as the default
 does.
 
+The Grafana dashboard in `deploy/grafana/aviary.json` charts these metrics,
+and can be imported into any Grafana with a Prometheus data source.
+
 ## Tests
 
 ```sh
@@ -615,6 +622,7 @@ them checks, how to run some of the tests, and where a new test goes.
 | `runner/` | The runner, in Rust. |
 | `images/` | The images of the Supervisor, the runner and the harnesses. |
 | `deploy/charts/aviary/` | The Helm chart. |
+| `deploy/grafana/` | A Grafana dashboard of the metrics. |
 | `hack/kind/` | The local cluster. |
 | `test/` | The tests of the chart, of the Egress Proxy and of all components together, the mock model server, and a Supervisor build with plugins of its own. The tests of the Supervisor and of the runner are next to their code. |
 

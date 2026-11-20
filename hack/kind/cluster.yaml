@@ -2,8 +2,10 @@ kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
   - role: control-plane
-    # Headlamp, which make headlamp installs, at localhost:4466.
+    # Headlamp and Grafana, which make headlamp and make grafana install, at
+    # localhost:4466 and localhost:3000.
     extraPortMappings:
       - {containerPort: 30466, hostPort: 4466, listenAddress: 127.0.0.1}
+      - {containerPort: 30300, hostPort: 3000, listenAddress: 127.0.0.1}
   - role: worker
   - role: worker

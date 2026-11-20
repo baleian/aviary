@@ -1,0 +1,90 @@
+server:
+  global:
+    scrape_interval: 15s
+  extraFlags:
+    - web.enable-lifecycle
+    # Adds a zero at the start time of each new counter and histogram of the
+    # Supervisors, so that rate() and increase() count its first event.
+    - enable-feature=created-timestamp-zero-ingestion
+  persistentVolume:
+    enabled: false
+alertmanager:
+  enabled: false
+kube-state-metrics:
+  enabled: false
+prometheus-node-exporter:
+  enabled: false
+prometheus-pushgateway:
+  enabled: false
+# Scrapes only the Supervisors and the Egress Proxies, and keeps only the
+# metrics that deploy/grafana/aviary.json charts.
+scrapeConfigs: null
+serverFiles:
+  prometheus.yml:
+    scrape_configs:
+      - job_name: aviary-supervisor
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces: {names: [aviary-system]}
+        relabel_configs:
+          - source_labels:
+              - __meta_kubernetes_pod_label_app_kubernetes_io_name
+              - __meta_kubernetes_pod_label_app_kubernetes_io_component
+              - __meta_kubernetes_pod_container_port_name
+            regex: aviary;supervisor;metrics
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_phase]
+            regex: Pending|Succeeded|Failed
+            action: drop
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            regex: "\
+              aviary_turns_(running|ended_total)|aviary_turn_tokens_total|aviary_messages_refused_total|\
+              aviary_turn_queue_length_(bucket|count)|aviary_turn_(queue|startup|run)_duration_seconds_bucket|\
+              aviary_(approval_wait|secret_read)_seconds_(bucket|count)|\
+              go_goroutines|go_gc_duration_seconds(_count)?|go_memstats_heap_inuse_bytes|\
+              process_(cpu_seconds_total|resident_memory_bytes|open_fds|start_time_seconds)|\
+              process_network_(receive|transmit)_bytes_total"
+            action: keep
+      - job_name: aviary-egress-proxy
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces: {names: [aviary-system]}
+        relabel_configs:
+          - source_labels:
+              - __meta_kubernetes_pod_label_app_kubernetes_io_name
+              - __meta_kubernetes_pod_label_app_kubernetes_io_component
+              - __meta_kubernetes_pod_container_port_name
+            regex: aviary;egress-proxy;metrics
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_phase]
+            regex: Pending|Succeeded|Failed
+            action: drop
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            regex: "\
+              envoy_http_downstream_rq_(total|xx|active|rx_reset|idle_timeout|time_bucket)|\
+              envoy_http_downstream_cx_(active|rx_bytes_total|tx_bytes_total|upgrades_total|upgrades_active)|\
+              envoy_http_ext_authz_(ok|denied|error)|envoy_http_rbac_denied|envoy_http_health_check_request_total|\
+              envoy_cluster_upstream_rq(_rx_reset|_time_bucket)?|envoy_cluster_ssl_connection_error|\
+              envoy_cluster_upstream_cx_(active|connect_fail|connect_timeout|rx_bytes_total|tx_bytes_total)|\
+              envoy_dns_cache_(model|forward)_(num_hosts|dns_query_(success|failure|timeout))|\
+              envoy_server_(uptime|state|concurrency|total_connections|memory_allocated|memory_physical_size)|\
+              envoy_(main_thread|workers)_watchdog_miss"
+            action: keep
+          # Drops the series of the metrics listener and the admin interface,
+          # which count only the scrapes.
+          - source_labels: [envoy_http_conn_manager_prefix]
+            regex: admin|metrics
+            action: drop
+          - source_labels: [envoy_cluster_name]
+            regex: admin
+            action: drop
