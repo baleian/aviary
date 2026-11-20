@@ -1,4 +1,6 @@
-# How the e2e installs Aviary: with more than one of each of its parts.
+# How the e2e installs Aviary: with more than one of each of its parts, and
+# with the model server of the tests as the only host that a sandbox may
+# reach.
 supervisor:
   replicas: 2
   # The secret store of the cluster, which `make secret-store` installs. What
@@ -9,5 +11,7 @@ supervisor:
       - openbao.aviary-data:8200
     cacheSeconds: 5
 sandboxes:
+  allowedHosts:
+    - mock-llm.aviary-e2e.svc.cluster.local
   # So that a test sees a session sleep without waiting five minutes for it.
   idleSeconds: 30

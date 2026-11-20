@@ -362,9 +362,15 @@ e2e: e2e-up
 # The chart is given what make deploy gives it of the cluster: where the
 # templates are kept, and the harness images as make images put them into the
 # registry. CLUSTER is that of the e2e here, for the names of those images.
+# The model server of the e2e answers over HTTPS with its certificate, which
+# is in a secret beside it.
 e2e-up: CLUSTER := $(E2E_CLUSTER)
-e2e-up:
+e2e-up: $(MOCK_LLM_CERTIFICATE)
 	$(MAKE) cluster-down cluster-up secret-store $(if $(IDENTITY),identity-provider) images secrets CLUSTER=$(E2E_CLUSTER)
+	$(E2E_KUBECTL) create namespace aviary-e2e --dry-run=client --output yaml | $(E2E_KUBECTL) apply -f -
+	$(E2E_KUBECTL) create secret tls mock-llm-tls --namespace aviary-e2e \
+		--cert $(MOCK_LLM_CERTIFICATE) --key $(dir $(MOCK_LLM_CERTIFICATE))tls.key --dry-run=client --output yaml | \
+		$(E2E_KUBECTL) apply -f -
 	$(E2E_KUBECTL) apply --filename test/e2e/mock-llm.yaml --filename test/e2e/api.yaml
 	helm --kube-context kind-$(E2E_CLUSTER) upgrade --install aviary deploy/charts/aviary \
 		--namespace aviary-system --values test/e2e/values.yaml \

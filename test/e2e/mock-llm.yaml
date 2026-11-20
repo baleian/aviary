@@ -29,22 +29,37 @@ spec:
         - name: mock-llm
           image: aviary-mock-llm:dev
           env:
-            # What a harness sends as its key: a sandbox holds no key of a
-            # model endpoint.
+            # The tests give the providers of their agents this key.
             - name: MOCK_LLM_API_KEY
-              value: none
+              value: mock-llm-key
+            # Over HTTPS too: only a model request over HTTPS gets its key.
+            # `make e2e-up` makes the secret with the certificate.
+            - name: MOCK_LLM_TLS_CERTIFICATE
+              value: /etc/mock-llm/tls/tls.crt
+            - name: MOCK_LLM_TLS_KEY
+              value: /etc/mock-llm/tls/tls.key
           ports:
             - name: http
               containerPort: 8080
+            - name: https
+              containerPort: 8443
           readinessProbe:
             httpGet:
               path: /healthz
               port: http
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/mock-llm/tls
+              readOnly: true
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+      volumes:
+        - name: tls
+          secret:
+            secretName: mock-llm-tls
 ---
 apiVersion: v1
 kind: Service
@@ -58,3 +73,6 @@ spec:
     - name: http
       port: 80
       targetPort: http
+    - name: https
+      port: 443
+      targetPort: https

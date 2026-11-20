@@ -44,10 +44,13 @@ func TestAviary(t *testing.T) {
 			})
 		}
 		tests := map[string]func(*testing.T){
-			"a turn that fails says why":       failures,
-			"a turn is cancelled":              cancel,
-			"a session is ended":               ended,
-			"the Supervisors report the turns": supervisorMetrics,
+			"a sandbox reaches only the hosts that are allowed": egress,
+			"an agent uses the provider that it names":          providers,
+			"a provider keeps its key in a secret store":        secretStore,
+			"a turn that fails says why":                        failures,
+			"a turn is cancelled":                               cancel,
+			"a session is ended":                                ended,
+			"the Supervisors report the turns":                  supervisorMetrics,
 		}
 		if identity {
 			tests["a caller does what the installation lets them"] = callers
@@ -321,6 +324,162 @@ func waitsAsleep(t *testing.T, name string) {
 	}
 }
 
+// fetch has the agent get a URL with Node, which every harness image has,
+// and print the status of the answer, or the code of the error if there was
+// none.
+const fetch = `run node -e "fetch(process.argv[1]).then(r => console.log('status', r.status), e => console.log('failed', e.cause?.code))" `
+
+// A sandbox reaches the hosts that the installation allows and no others.
+// Each request of a turn over HTTPS to one of them is recorded with the
+// turn, and only a request to the model endpoint of the agent gets the key
+// of its provider, which the sandbox does not hold.
+func egress(t *testing.T) {
+	project := create(t, "/v1/projects", `{"name": "e2e"}`)
+	keyed := provider(t, project, mockKey)
+	agent := agentOf(t, project, keyed, harness(harnesses[0]))
+	session := agent.session(t)
+
+	t.Run("to the model", func(t *testing.T) {
+		environment := run(t, session, "run env")
+		if seen := environment.said() + environment.tools(); strings.Contains(seen, mockKey) {
+			t.Error("the sandbox holds the key of the model endpoint")
+		}
+		// mock-llm answers only the requests that carry its key, so the
+		// egress put it there. The record says whose request it was.
+		line := logged(t, environment.ID, modelPath)[0]
+		had := sandboxes(t, session)
+		if len(had) != 1 {
+			t.Fatalf("the session has the sandboxes %v", had)
+		}
+		for field, value := range map[string]string{
+			"sandbox": had[0], "session": session, "agent": agent.id, "project": project, "provider": keyed,
+			"scheme": "https", "host": mockHost, "port": "443",
+		} {
+			if line[field] != value {
+				t.Errorf("the model request of the turn is recorded with the %s %v, not %s: %v", field, line[field], value, line)
+			}
+		}
+		// And who sent the message, if the installation asks who does.
+		_, user := line["user"].(string)
+		if _, subject := line["subject"].(string); user != identity || subject != identity {
+			t.Errorf("the model request of the turn is recorded as that of the user %v, the subject %v", line["user"], line["subject"])
+		}
+	})
+	t.Run("to an allowed host", func(t *testing.T) {
+		allowed := run(t, session, fetch+"https://"+mockHost+"/healthz")
+		if !strings.Contains(allowed.said(), "status 200") {
+			t.Errorf("the agent did not reach an allowed host: %q", allowed.said())
+		}
+		// The request is not one to the model endpoint, so it got no key.
+		line := logged(t, allowed.ID, "/healthz")[0]
+		if _, given := line["provider"]; given || line["method"] != "GET" || line["host"] != mockHost {
+			t.Errorf("the request of the agent to an allowed host is recorded as %v", line)
+		}
+	})
+	t.Run("to another host", func(t *testing.T) {
+		refused := run(t, session, fetch+"https://example.com/")
+		// The egress of the sandbox does not resolve the name of a host that
+		// is not allowed.
+		if !strings.Contains(refused.said(), "failed ENOTFOUND") {
+			t.Errorf("the name of a host that is not allowed was resolved, or the request failed otherwise: %q", refused.said())
+		}
+		// The request did not leave the sandbox, and nothing is recorded of
+		// it: the records of the turn are those of its model requests.
+		for _, line := range logged(t, refused.ID, "/") {
+			if line["host"] != mockHost {
+				t.Errorf("a request of the turn is recorded as %v", line)
+			}
+		}
+	})
+}
+
+// The model requests of a turn go to the endpoint of the provider that the
+// turn's agent names, with the key of that provider and of no other. A key
+// that is replaced holds from the next request.
+func providers(t *testing.T) {
+	project := create(t, "/v1/projects", `{"name": "e2e"}`)
+	// Two providers of the same model server, which answers only the
+	// requests that carry its key.
+	right, wrong := provider(t, project, mockKey), provider(t, project, "a-key-that-the-model-does-not-know")
+	able := agentOf(t, project, right, harness(harnesses[0]))
+	unable := agentOf(t, project, wrong, harness(harnesses[0]))
+
+	completed := run(t, able.session(t), "say done")
+	if line := logged(t, completed.ID, modelPath)[0]; line["provider"] != right {
+		t.Errorf("the model request of the agent of the provider %s is recorded as %v", right, line)
+	}
+
+	session := unable.session(t)
+	refused := send(t, session, "say done")
+	if last := read(t, refused.ID).end(t); last.Type != "turn.failed" || !strings.Contains(last.Data, "harness_error") {
+		t.Fatalf("the turn of an agent whose provider has a wrong key ended with %s %s", last.Type, last.Data)
+	}
+	if line := logged(t, refused.ID, modelPath)[0]; line["provider"] != wrong {
+		t.Errorf("the model request of the agent of the provider %s is recorded as %v", wrong, line)
+	}
+
+	body := fmt.Sprintf(`{"name": "mock", "url": %q, "api_key": {"value": %q}}`, mockURL, mockKey)
+	if status := request(t, "PUT", "/v1/providers/"+wrong, body, nil); status != http.StatusOK {
+		t.Fatalf("the provider was replaced with %d", status)
+	}
+	if next := run(t, session, "say done"); !strings.Contains(next.said(), "done") {
+		t.Errorf("with the key of its provider replaced, the agent said %q", next.said())
+	}
+}
+
+// The key of a provider may be in a secret store of the project. A
+// Supervisor reads it from there when the egress asks about a model request,
+// and goes on with what it read for as long as the installation says, and
+// no longer: after that time the model requests carry the key that the store
+// has then.
+func secretStore(t *testing.T) {
+	project := create(t, "/v1/projects", `{"name": "e2e"}`)
+	// The owner of the store gives Aviary a role, which may read the secrets
+	// below a path of its own.
+	name := unique("e2e")
+	owner(t, "POST", "/v1/sys/auth/approle", map[string]string{"type": "approle"}, http.StatusBadRequest)
+	owner(t, "PUT", "/v1/sys/policies/acl/"+name, map[string]string{
+		"policy": fmt.Sprintf(`path "secret/data/%s/*" { capabilities = ["read"] }`, name),
+	})
+	owner(t, "POST", "/v1/auth/approle/role/"+name, map[string]string{"token_policies": name})
+	roleID, _ := owner(t, "GET", "/v1/auth/approle/role/"+name+"/role-id", nil)["role_id"].(string)
+	secretID, _ := owner(t, "POST", "/v1/auth/approle/role/"+name+"/secret-id", nil)["secret_id"].(string)
+	if roleID == "" || secretID == "" {
+		t.Fatal("the secret store gave the role no IDs")
+	}
+	// keep keeps a key in the store, where the provider says that its key is.
+	keep := func(key string) {
+		t.Helper()
+		owner(t, "POST", "/v1/secret/data/"+name+"/model", map[string]any{"data": map[string]string{"api_key": key}})
+	}
+	// The store holds a key that the model server does not take.
+	keep("a-key-that-the-model-does-not-know")
+	registered := fmt.Sprintf(`{"name": "e2e", "kind": "kv-v2", "settings": {"address": %q, "mount": "secret", "role_id": %q}, "credential": {"value": %q}}`,
+		storeAddress, roleID, secretID)
+	kept := create(t, "/v1/projects/"+project+"/secret-stores", registered)
+	elsewhere := create(t, "/v1/projects/"+project+"/providers",
+		fmt.Sprintf(`{"name": "mock", "url": %q, "api_key": {"store": %q, "path": %q, "key": "api_key"}}`, mockURL, kept, name+"/model"))
+	session := agentOf(t, project, elsewhere, harness(harnesses[0])).session(t)
+
+	refused := send(t, session, "say done")
+	if last := read(t, refused.ID).end(t); last.Type != "turn.failed" || !strings.Contains(last.Data, "harness_error") {
+		t.Fatalf("the turn of an agent whose secret store holds a key that the model does not take ended with %s %s", last.Type, last.Data)
+	}
+	if line := logged(t, refused.ID, modelPath)[0]; line["provider"] != elsewhere {
+		t.Errorf("the model request of the agent of the provider %s is recorded as %v", elsewhere, line)
+	}
+
+	keep(mockKey)
+	time.Sleep(remembered)
+	next := run(t, session, "say done")
+	if !strings.Contains(next.said(), "done") {
+		t.Errorf("with the key in its secret store changed, the agent said %q", next.said())
+	}
+	if line := logged(t, next.ID, modelPath)[0]; line["provider"] != elsewhere {
+		t.Errorf("the model request of the agent of the provider %s is recorded as %v", elsewhere, line)
+	}
+}
+
 // A turn that fails says why, and its session goes on.
 func failures(t *testing.T) {
 	// fails sends the message and waits for its turn to fail for the reason.
@@ -339,10 +498,12 @@ func failures(t *testing.T) {
 		return failed
 	}
 
-	// The runner tells the reason, as its harness gave it.
+	// The runner tells the reason, as its harness gave it. The egress let
+	// the request through, and it is the model that refused it.
 	t.Run("the model refuses", func(t *testing.T) {
 		t.Parallel()
-		fails(t, newAgent(t, harness(harnesses[0])).session(t), "fail the model is out of order", "harness_error")
+		refused := fails(t, newAgent(t, harness(harnesses[0])).session(t), "fail the model is out of order", "harness_error")
+		logged(t, refused.ID, modelPath)
 	})
 	// A sandbox that goes while its agent works takes the turn with it. The
 	// record keeps what the agent did until then, and the next turn of the
@@ -506,7 +667,7 @@ func callers(t *testing.T) {
 	// The administrator makes two projects, and of one of them a user and a
 	// group the members.
 	theirs, other := create(t, "/v1/projects", `{"name": "theirs"}`), create(t, "/v1/projects", `{"name": "other"}`)
-	agent := agentOf(t, theirs, provider(t, theirs), harness(harnesses[0]))
+	agent := agentOf(t, theirs, provider(t, theirs, mockKey), harness(harnesses[0]))
 	create(t, "/v1/projects/"+theirs+"/members", fmt.Sprintf(`{"user": %q, "role": "user"}`, member))
 	create(t, "/v1/projects/"+theirs+"/members", fmt.Sprintf(`{"group": %q, "role": "viewer"}`, team))
 
@@ -543,6 +704,11 @@ func callers(t *testing.T) {
 	}
 	if status := requestAs(t, member, "GET", "/v1/turns/"+accepted.ID, "", &sent); status != http.StatusOK || sent.CreatedBy != bob.ID {
 		t.Errorf("the turn of the member %s was answered with %d, as sent by %q", bob.ID, status, sent.CreatedBy)
+	}
+	// The record of a request of the turn says whose turn it is: the user,
+	// and the subject that the identity provider knows the user by.
+	if line := logged(t, accepted.ID, modelPath)[0]; line["user"] != bob.ID || line["subject"] != bob.Subject {
+		t.Errorf("the model request of the turn of the member %s, the subject %s, is recorded as %v", bob.ID, bob.Subject, line)
 	}
 
 	for _, try := range []struct {

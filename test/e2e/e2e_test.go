@@ -33,7 +33,7 @@ import (
 
 const (
 	// system is the namespace of Aviary, and data that of the identity
-	// provider of the cluster.
+	// provider and of the secret store of the cluster.
 	system = "aviary-system"
 	data   = "aviary-data"
 	// patience is how long a test waits for a turn to end. The first turn of
@@ -216,16 +216,70 @@ func create(t *testing.T, path, body string) string {
 }
 
 // The model server of the tests, by its whole name: a sandbox is no pod, and
-// does not know the short names of the cluster. A sandbox holds no key of a
-// model endpoint, and the server takes what a harness sends in the place of
-// one.
-const mockURL = "http://mock-llm.aviary-e2e.svc.cluster.local/v1"
+// does not know the short names of the cluster. It answers only the requests
+// that carry its key, which a sandbox does not hold: the egress of the
+// sandbox puts the key into a request over HTTPS to the endpoint. The path of
+// a model request begins with modelPath, below the path of the endpoint.
+const (
+	mockHost  = "mock-llm.aviary-e2e.svc.cluster.local"
+	mockURL   = "https://" + mockHost + "/v1"
+	mockKey   = "mock-llm-key"
+	modelPath = "/v1/"
+)
 
 // provider creates a provider of the project: the model server of the
-// tests.
-func provider(t *testing.T, project string) string {
+// tests, with the key.
+func provider(t *testing.T, project, key string) string {
 	t.Helper()
-	return create(t, "/v1/projects/"+project+"/providers", fmt.Sprintf(`{"name": "mock", "url": %q}`, mockURL))
+	return create(t, "/v1/projects/"+project+"/providers", fmt.Sprintf(`{"name": "mock", "url": %q, "api_key": {"value": %q}}`, mockURL, key))
+}
+
+// The secret store of the cluster, and for how long a Supervisor of the
+// installation uses what it read from a secret store, as the values of the
+// e2e set it.
+const (
+	storeAddress = "http://openbao.aviary-data:8200"
+	remembered   = 5 * time.Second
+)
+
+// rootToken is the token of the secret store's owner, which `make
+// secret-store` keeps in a secret beside the store.
+var rootToken = sync.OnceValues(func() (string, error) {
+	root, err := cluster.CoreV1().Secrets(data).Get(ctx, "openbao-root", metav1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+	return string(root.Data["token"]), nil
+})
+
+// owner sends the secret store of the cluster a request as its owner does,
+// through the API server, and returns the data of the answer. The store may
+// answer with one of the statuses beside those of success.
+func owner(t *testing.T, method, path string, body any, statuses ...int) map[string]any {
+	t.Helper()
+	token, err := rootToken()
+	if err != nil {
+		t.Fatalf("the root token of the secret store: %v: `make e2e` installs the store", err)
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answered := cluster.CoreV1().RESTClient().Verb(method).Namespace(data).
+		Resource("services").Name("openbao:http").SubResource("proxy").Suffix(path).
+		SetHeader("X-Vault-Token", token).Body(encoded).Do(ctx)
+	var status int
+	answered.StatusCode(&status)
+	raw, err := answered.Raw()
+	if status == 0 {
+		t.Fatalf("%s %s of the secret store: %v", method, path, err)
+	}
+	if !slices.Contains(append(statuses, http.StatusOK, http.StatusNoContent), status) {
+		t.Fatalf("the secret store answered %s %s with %d %s", method, path, status, raw)
+	}
+	var answer struct{ Data map[string]any }
+	json.Unmarshal(raw, &answer)
+	return answer.Data
 }
 
 // agent is an agent of a project.
@@ -252,7 +306,7 @@ func agentOf(t *testing.T, project, provider, body string) agent {
 func newAgent(t *testing.T, body string) agent {
 	t.Helper()
 	project := create(t, "/v1/projects", `{"name": "e2e"}`)
-	return agentOf(t, project, provider(t, project), body)
+	return agentOf(t, project, provider(t, project, mockKey), body)
 }
 
 // session creates a session of the agent, and ends it when the test is
@@ -510,6 +564,37 @@ func metrics(t *testing.T, component string) string {
 		metrics.Write(read)
 	}
 	return metrics.String()
+}
+
+// logged waits for the Supervisors to have recorded a request of the turn
+// whose path begins as given, and returns the records of such requests of
+// the turn, each as the fields of its line in the log of a Supervisor.
+func logged(t *testing.T, turn, path string) []map[string]any {
+	t.Helper()
+	var records []map[string]any
+	eventually(t, soon, fmt.Sprintf("no Supervisor has recorded a request of the turn %s to %s", turn, path), func() bool {
+		records = nil
+		for _, pod := range running(t, "supervisor") {
+			log, err := cluster.CoreV1().Pods(system).GetLogs(pod.Name, &corev1.PodLogOptions{}).Stream(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines := bufio.NewScanner(log)
+			lines.Buffer(nil, 1<<20)
+			for lines.Scan() {
+				var line map[string]any
+				if json.Unmarshal(lines.Bytes(), &line) != nil || line["msg"] != "request" || line["turn"] != turn {
+					continue
+				}
+				if at, _ := line["path"].(string); strings.HasPrefix(at, path) {
+					records = append(records, line)
+				}
+			}
+			log.Close()
+		}
+		return len(records) > 0
+	})
+	return records
 }
 
 // sandboxKey is the key of the sandbox service, which `make secrets` keeps
