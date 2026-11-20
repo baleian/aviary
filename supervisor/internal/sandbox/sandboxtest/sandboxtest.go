@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	"aviary/supervisor/internal/sandbox"
 	"aviary/supervisor/internal/sandbox/runnertest"
@@ -31,11 +34,15 @@ type made struct {
 	request sandbox.Request
 	state   sandbox.State
 	created time.Time
+	// version counts the changes of the sandbox.
+	version int
 	// expires is when the sandbox is deleted, as it was told, and woken how
 	// often it was woken.
 	expires time.Time
 	woken   int
-	runner  *runnertest.Runner
+	// sleepy is whether it is put to sleep just before it is next kept.
+	sleepy bool
+	runner *runnertest.Runner
 }
 
 // New returns the sandboxes of a test, of which there are none yet.
@@ -68,7 +75,7 @@ func (s *Service) Create(_ context.Context, request sandbox.Request) error {
 	if s.sandboxes[name] != nil {
 		return nil
 	}
-	m := &made{request: request, state: sandbox.Starting, created: time.Now(), runner: s.Runner(name)}
+	m := &made{request: request, state: sandbox.Starting, created: time.Now(), version: 1, runner: s.Runner(name)}
 	if request.Kept > 0 {
 		m.expires = time.Now().Add(request.Kept)
 	}
@@ -86,6 +93,7 @@ func (s *Service) Sandbox(_ context.Context, name string) (sandbox.Sandbox, erro
 	// A sandbox takes a moment to run: until it is looked at.
 	if m.state == sandbox.Starting && !s.slow {
 		m.state = sandbox.Running
+		m.version++
 	}
 	return s.seen(name, m), nil
 }
@@ -101,7 +109,7 @@ func (s *Service) Sandboxes(context.Context) ([]sandbox.Sandbox, error) {
 }
 
 func (s *Service) seen(name string, m *made) sandbox.Sandbox {
-	seen := sandbox.Sandbox{Name: name, Session: m.request.Session.String(), State: m.state, Created: m.created}
+	seen := sandbox.Sandbox{Name: name, Session: m.request.Session.String(), State: m.state, Created: m.created, Version: strconv.Itoa(m.version)}
 	if m.state == sandbox.Running {
 		seen.Address = s.server.URL + "/" + name
 	}
@@ -119,14 +127,28 @@ func (s *Service) Delete(_ context.Context, name string) error {
 	return nil
 }
 
-// Suspend puts the sandbox to sleep. Its runner is gone with its pod, and
-// those who read the events of its turn are cut off.
-func (s *Service) Suspend(_ context.Context, name string) error {
-	return s.change(name, func(m *made) {
-		m.state = sandbox.Asleep
-		m.runner.Gone()
-		m.runner = s.Runner(name)
-	})
+// Suspend puts the sandbox to sleep, if it is of the version, or of any
+// without one. Its runner is gone with its pod, and those who read the
+// events of its turn are cut off.
+func (s *Service) Suspend(_ context.Context, name, version string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m := s.sandboxes[name]
+	switch {
+	case m == nil:
+		return fmt.Errorf("the sandbox %s: %w", name, sandbox.ErrNotFound)
+	case version != "" && version != strconv.Itoa(m.version):
+		return fmt.Errorf("the sandbox %s: %w", name, sandbox.ErrChanged)
+	}
+	s.suspend(name, m)
+	return nil
+}
+
+func (s *Service) suspend(name string, m *made) {
+	m.state = sandbox.Asleep
+	m.version++
+	m.runner.Gone()
+	m.runner = s.Runner(name)
 }
 
 // Resume wakes the sandbox, of the harness, with a runner that has no turn.
@@ -140,8 +162,17 @@ func (s *Service) Resume(_ context.Context, name string, harness sandbox.Harness
 	})
 }
 
-func (s *Service) Keep(_ context.Context, name string, until time.Time) error {
-	return s.change(name, func(m *made) { m.expires = until })
+func (s *Service) Keep(_ context.Context, name string, _ uuid.UUID, until time.Time) (sandbox.Sandbox, error) {
+	var kept sandbox.Sandbox
+	err := s.change(name, func(m *made) {
+		if m.sleepy {
+			m.sleepy = false
+			s.suspend(name, m)
+		}
+		m.expires = until
+		kept = s.seen(name, m)
+	})
+	return kept, err
 }
 
 func (s *Service) change(name string, change func(*made)) error {
@@ -151,6 +182,7 @@ func (s *Service) change(name string, change func(*made)) error {
 	if m == nil {
 		return fmt.Errorf("the sandbox %s: %w", name, sandbox.ErrNotFound)
 	}
+	m.version++
 	change(m)
 	return nil
 }
@@ -174,6 +206,13 @@ func (s *Service) Slow(slow bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.slow = slow
+}
+
+// SleepBeforeKeep has the sandbox put to sleep just before it is next kept
+// for a turn, as by a Supervisor that found its session not at work just
+// before the turn came.
+func (s *Service) SleepBeforeKeep(name string) {
+	_ = s.change(name, func(m *made) { m.sleepy = true })
 }
 
 // Age makes the sandbox so much older.

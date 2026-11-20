@@ -596,7 +596,7 @@ func TestASessionThatSleepsIsWokenForItsNextTurn(t *testing.T) {
 	given.Tell("started", started)
 	given.Tell("finished", finished)
 	i.ended(first.ID)
-	if err := i.service.Suspend(ctx, given.Sandbox); err != nil {
+	if err := i.service.Suspend(ctx, given.Sandbox, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -633,7 +633,7 @@ func TestASandboxThatIsNotWokenInTimeStaysWithItsSession(t *testing.T) {
 	// The sandbox wakes as slowly as on a node that does not have its image
 	// yet. The turn did not reach it, and it stays with what the agent had in
 	// it.
-	if err := i.service.Suspend(ctx, given.Sandbox); err != nil {
+	if err := i.service.Suspend(ctx, given.Sandbox, ""); err != nil {
 		t.Fatal(err)
 	}
 	i.service.Slow(true)
@@ -649,6 +649,64 @@ func TestASandboxThatIsNotWokenInTimeStaysWithItsSession(t *testing.T) {
 	next := i.send(driver, session, "again")
 	if again := i.service.Turn(t); again.ID != next.ID.String() || again.Sandbox != given.Sandbox {
 		t.Errorf("the next turn was given as %+v", again)
+	}
+}
+
+func TestASessionThatIsNotAtWorkIsPutToSleep(t *testing.T) {
+	i := install(t, func(config *Config) {
+		config.Idle = 300 * time.Millisecond
+		// The sandboxes are looked at every six sweeps.
+		config.Sweep = 20 * time.Millisecond
+	})
+	driver, _ := i.supervisor()
+	session := i.session(store.Agent{})
+	first := i.send(driver, session, "hello")
+	given := i.service.Turn(t)
+	// A session whose turn runs is at work, for however long the turn runs.
+	given.Tell("started", started)
+	time.Sleep(3 * i.config.Idle)
+	if state := i.service.State(given.Sandbox); state != sandbox.Running {
+		t.Fatalf("the sandbox of a session whose turn runs is %s", state)
+	}
+	given.Tell("finished", finished)
+	ended := i.ended(first.ID)
+	i.eventually("the sandbox of the session that is not at work is put to sleep", func() bool {
+		return i.service.State(given.Sandbox) == sandbox.Asleep
+	})
+	if idle := time.Since(*ended.EndedAt); idle < i.config.Idle {
+		t.Errorf("the sandbox was put to sleep after %s", idle)
+	}
+
+	next := i.send(driver, session, "and then")
+	again := i.service.Turn(t)
+	if again.ID != next.ID.String() || again.Sandbox != given.Sandbox || i.service.Woken(given.Sandbox) != 1 {
+		t.Errorf("the next turn was given as %+v, and the sandbox woken %d times", again, i.service.Woken(given.Sandbox))
+	}
+}
+
+func TestATurnThatComesAsItsSessionIsPutToSleepWakesIt(t *testing.T) {
+	i := install(t)
+	driver, _ := i.supervisor()
+	session := i.session(store.Agent{})
+	first := i.send(driver, session, "hello")
+	given := i.service.Turn(t)
+	given.Tell("started", started)
+	given.Tell("finished", finished)
+	i.ended(first.ID)
+
+	// Another Supervisor found the session not at work, and puts the
+	// sandbox to sleep after the next turn has looked at it, before the turn
+	// is given to it. The turn wakes it and runs.
+	i.service.SleepBeforeKeep(given.Sandbox)
+	next := i.send(driver, session, "and then")
+	again := i.service.Turn(t)
+	if again.ID != next.ID.String() || i.service.Woken(given.Sandbox) != 1 {
+		t.Errorf("the turn was given as %+v, and the sandbox woken %d times", again, i.service.Woken(given.Sandbox))
+	}
+	again.Tell("started", started)
+	again.Tell("finished", finished)
+	if ended := i.ended(next.ID); ended.State != store.TurnCompleted {
+		t.Errorf("the turn ended as %+v", ended)
 	}
 }
 
@@ -744,7 +802,7 @@ func TestATurnWhoseSandboxIsPutToSleepFails(t *testing.T) {
 	i.eventually("the turn has started", func() bool { return i.turn(turn.ID).StartedAt != nil })
 
 	// What ran in the sandbox stops with its pod.
-	if err := i.service.Suspend(ctx, given.Sandbox); err != nil {
+	if err := i.service.Suspend(ctx, given.Sandbox, ""); err != nil {
 		t.Fatal(err)
 	}
 	ended := i.ended(turn.ID)

@@ -90,9 +90,9 @@ supervisor:
 # in the cluster.
 sandboxes:
   # After how many seconds a session that is not at work is put to sleep: no
-  # turn of it runs. A session that sleeps has no pod, and keeps its volume,
-  # with what its harness remembers. Its next turn wakes it, in a new pod.
-  # Zero is never.
+  # turn of it runs. The Supervisors look for such sessions once a minute. A
+  # session that sleeps has no pod, and keeps its volume, with what its
+  # harness remembers. Its next turn wakes it, in a new pod. Zero is never.
   idleSeconds: 300
   # For how many seconds the sandbox of a session is kept after a turn of the
   # session was last given to it. A session that is not used for longer has

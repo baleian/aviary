@@ -253,14 +253,21 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 	if given {
 		return runner, nil
 	}
-	// The sandbox is kept for as long as the installation says now, which
-	// may be until it is deleted.
+	// The sandbox is kept for the turn, for as long as the installation says
+	// now, which may be until it is deleted.
 	var until time.Time
 	if d.config.Retention > 0 {
 		until = time.Now().Add(d.config.Retention)
 	}
-	if err := d.sandboxes.Keep(following, id, until); err != nil {
+	kept, err := d.sandboxes.Keep(following, id, turn.ID, until)
+	if err != nil {
 		return nil, fmt.Errorf("have the sandbox of the session kept: %w", err)
+	}
+	// A Supervisor that found the session not at work has put the sandbox
+	// to sleep since it was looked at. What the turn was given now would
+	// stop with the pod.
+	if kept.State == sandbox.Asleep {
+		return nil, errors.New("the sandbox of the session was put to sleep")
 	}
 	// The runner may have the turn even when no answer comes.
 	r.give()
@@ -350,7 +357,7 @@ func (d *Driver) forget(ctx context.Context, sessionID uuid.UUID, id string) {
 func (d *Driver) giveUp(ctx context.Context, r *run, failure store.Failure) {
 	slog.WarnContext(ctx, "turn is given up", "turn", r.turn.ID, "reason", failure.Reason, "message", failure.Message)
 	if id := r.sandboxID(); id != "" && r.wasGiven() {
-		err := d.sandboxes.Suspend(ctx, id)
+		err := d.sandboxes.Suspend(ctx, id, "")
 		if errors.Is(err, sandbox.ErrNotFound) {
 			// The sandbox is gone: the next turn of the session gets a new
 			// one.

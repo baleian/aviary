@@ -9,8 +9,12 @@ import (
 
 	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	k8stesting "k8s.io/client-go/testing"
 	agents "sigs.k8s.io/agent-sandbox/api/v1beta1"
 	"sigs.k8s.io/agent-sandbox/clients/k8s/clientset/versioned/fake"
 	typed "sigs.k8s.io/agent-sandbox/clients/k8s/clientset/versioned/typed/api/v1beta1"
@@ -98,9 +102,11 @@ func TestTheSandboxOfASessionIsMadeWithItsVolume(t *testing.T) {
 }
 
 func TestWhatASandboxDoesIsSeenInItsStatus(t *testing.T) {
+	// condition is a condition of the status, of the third spec.
 	condition := func(kind agents.ConditionType, status metav1.ConditionStatus, reason, message string) metav1.Condition {
-		return metav1.Condition{Type: string(kind), Status: status, Reason: reason, Message: message}
+		return metav1.Condition{Type: string(kind), Status: status, Reason: reason, Message: message, ObservedGeneration: 3}
 	}
+	third := metav1.ObjectMeta{Generation: 3}
 	now := metav1.Now()
 	for _, test := range []struct {
 		what    string
@@ -112,33 +118,42 @@ func TestWhatASandboxDoesIsSeenInItsStatus(t *testing.T) {
 		{what: "a sandbox that is made", state: Starting},
 		{
 			what: "a sandbox whose pod is not ready",
-			sandbox: agents.Sandbox{Status: agents.SandboxStatus{Conditions: []metav1.Condition{
+			sandbox: agents.Sandbox{ObjectMeta: third, Status: agents.SandboxStatus{Conditions: []metav1.Condition{
 				condition(agents.SandboxConditionReady, metav1.ConditionFalse, "DependenciesNotReady", "the pod is pending"),
 			}}},
 			state: Starting, message: "DependenciesNotReady: the pod is pending",
 		},
 		{
 			what: "a sandbox that runs",
-			sandbox: agents.Sandbox{Status: agents.SandboxStatus{PodIPs: []string{"10.0.0.7"}, Conditions: []metav1.Condition{
+			sandbox: agents.Sandbox{ObjectMeta: third, Status: agents.SandboxStatus{PodIPs: []string{"10.0.0.7"}, Conditions: []metav1.Condition{
 				condition(agents.SandboxConditionReady, metav1.ConditionTrue, "DependenciesReady", ""),
 			}}},
 			state: Running, address: "http://10.0.0.7:8700",
 		},
 		{
-			what: "a sandbox that is put to sleep",
+			what: "a sandbox that was woken, of which the status still tells of the pod that went",
+			sandbox: agents.Sandbox{ObjectMeta: metav1.ObjectMeta{Generation: 4}, Status: agents.SandboxStatus{PodIPs: []string{"10.0.0.7"}, Conditions: []metav1.Condition{
+				condition(agents.SandboxConditionReady, metav1.ConditionTrue, "DependenciesReady", ""),
+			}}},
+			state: Starting,
+		},
+		{
+			what: "a sandbox that is put to sleep, whose pod is still going",
 			sandbox: agents.Sandbox{
-				Spec: agents.SandboxSpec{OperatingMode: agents.SandboxOperatingModeSuspended},
+				ObjectMeta: third,
+				Spec:       agents.SandboxSpec{OperatingMode: agents.SandboxOperatingModeSuspended},
 				Status: agents.SandboxStatus{PodIPs: []string{"10.0.0.7"}, Conditions: []metav1.Condition{
 					condition(agents.SandboxConditionReady, metav1.ConditionTrue, "DependenciesReady", ""),
 					condition(agents.SandboxConditionSuspended, metav1.ConditionFalse, "PodTerminating", ""),
 				}},
 			},
-			state: Starting,
+			state: Asleep,
 		},
 		{
 			what: "a sandbox that sleeps",
 			sandbox: agents.Sandbox{
-				Spec: agents.SandboxSpec{OperatingMode: agents.SandboxOperatingModeSuspended},
+				ObjectMeta: third,
+				Spec:       agents.SandboxSpec{OperatingMode: agents.SandboxOperatingModeSuspended},
 				Status: agents.SandboxStatus{Conditions: []metav1.Condition{
 					condition(agents.SandboxConditionSuspended, metav1.ConditionTrue, "PodTerminated", ""),
 				}},
@@ -147,7 +162,7 @@ func TestWhatASandboxDoesIsSeenInItsStatus(t *testing.T) {
 		},
 		{
 			what: "a sandbox that has expired",
-			sandbox: agents.Sandbox{Status: agents.SandboxStatus{Conditions: []metav1.Condition{
+			sandbox: agents.Sandbox{ObjectMeta: third, Status: agents.SandboxStatus{Conditions: []metav1.Condition{
 				condition(agents.SandboxConditionReady, metav1.ConditionFalse, agents.SandboxReasonExpired, ""),
 			}}},
 			state: Lost, message: "it has expired",
@@ -179,8 +194,13 @@ func TestASandboxSleepsWakesIsKeptAndIsDeleted(t *testing.T) {
 		}
 		return made.Spec
 	}
-	if err := c.Suspend(ctx, name); err != nil || spec().OperatingMode != agents.SandboxOperatingModeSuspended {
+	if err := c.Suspend(ctx, name, ""); err != nil || spec().OperatingMode != agents.SandboxOperatingModeSuspended {
 		t.Errorf("the sandbox that is put to sleep is %s: %v", spec().OperatingMode, err)
+	}
+	// A turn that comes for it now waits for it to wake.
+	turn := uuid.New()
+	if kept, err := c.Keep(ctx, name, turn, time.Time{}); err != nil || kept.State != Asleep {
+		t.Errorf("the sandbox that sleeps is kept as %+v: %v", kept, err)
 	}
 	// It wakes with the harness as the installation has it now, of which
 	// the pod has all and only what it has.
@@ -191,11 +211,15 @@ func TestASandboxSleepsWakesIsKeptAndIsDeleted(t *testing.T) {
 		t.Errorf("the sandbox that is woken runs %+v", harness)
 	}
 	until := time.Now().Add(time.Hour).Truncate(time.Second)
-	if err := c.Keep(ctx, name, until); err != nil || !spec().ShutdownTime.Time.Equal(until) {
-		t.Errorf("the sandbox that is kept for an hour expires at %v: %v", spec().ShutdownTime, err)
+	if kept, err := c.Keep(ctx, name, turn, until); err != nil || kept.State == Asleep || !spec().ShutdownTime.Time.Equal(until) {
+		t.Errorf("the sandbox that is kept for an hour is %+v, and expires at %v: %v", kept, spec().ShutdownTime, err)
 	}
-	if err := c.Keep(ctx, name, time.Time{}); err != nil || spec().ShutdownTime != nil {
+	if _, err := c.Keep(ctx, name, turn, time.Time{}); err != nil || spec().ShutdownTime != nil {
 		t.Errorf("the sandbox that is kept until it is deleted expires at %v: %v", spec().ShutdownTime, err)
+	}
+	// It is marked with the turn that it was kept for.
+	if made, err := sandboxes.Get(ctx, name, metav1.GetOptions{}); err != nil || made.Annotations["aviary.io/turn"] != turn.String() {
+		t.Errorf("the sandbox that was kept for the turn %s has the annotations %v: %v", turn, made.Annotations, err)
 	}
 
 	if all, err := c.Sandboxes(ctx); err != nil || len(all) != 1 || all[0].Name != name || all[0].Session != session.String() {
@@ -220,12 +244,38 @@ func TestASandboxSleepsWakesIsKeptAndIsDeleted(t *testing.T) {
 		t.Errorf("a sandbox that was deleted could not be deleted: %v", err)
 	}
 	for what, change := range map[string]func() error{
-		"put to sleep": func() error { return c.Suspend(ctx, name) },
+		"put to sleep": func() error { return c.Suspend(ctx, name, "") },
 		"woken":        func() error { return c.Resume(ctx, name, opencode) },
-		"kept":         func() error { return c.Keep(ctx, name, until) },
+		"kept": func() error {
+			_, err := c.Keep(ctx, name, turn, until)
+			return err
+		},
 	} {
 		if err := change(); !errors.Is(err, ErrNotFound) {
 			t.Errorf("a sandbox that is gone was %s: %v", what, err)
 		}
+	}
+}
+
+func TestASandboxIsPutToSleepOnlyAsItWasSeen(t *testing.T) {
+	clients := fake.NewSimpleClientset()
+	c := &Client{sandboxes: clients.AgentsV1beta1().Sandboxes("sessions"), settings: Settings{Namespace: "sessions", Volume: resource.MustParse("1Gi")}}
+	session := uuid.New()
+	if err := c.Create(ctx, Request{Session: session, Harness: opencode}); err != nil {
+		t.Fatal(err)
+	}
+	// The cluster of the test knows no versions, so it answers here as a
+	// cluster does to a change of a version that a sandbox no longer has.
+	var asked []string
+	clients.PrependReactor("patch", "sandboxes", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		patch := action.(k8stesting.PatchAction)
+		asked = append(asked, string(patch.GetPatch()))
+		return true, nil, apierrors.NewConflict(schema.GroupResource{Group: "agents.x-k8s.io", Resource: "sandboxes"}, patch.GetName(), errors.New("the object has been modified"))
+	})
+	if err := c.Suspend(ctx, Name(session), "7"); !errors.Is(err, ErrChanged) {
+		t.Errorf("a sandbox that has changed since it was seen was put to sleep: %v", err)
+	}
+	if len(asked) != 1 || asked[0] != `{"metadata":{"resourceVersion":"7"},"spec":{"operatingMode":"Suspended"}}` {
+		t.Errorf("the cluster was asked %q", asked)
 	}
 }

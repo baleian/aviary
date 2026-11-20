@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -48,9 +49,9 @@ type Sandboxes interface {
 	Create(ctx context.Context, request sandbox.Request) error
 	Sandbox(ctx context.Context, name string) (sandbox.Sandbox, error)
 	Sandboxes(ctx context.Context) ([]sandbox.Sandbox, error)
-	Suspend(ctx context.Context, name string) error
+	Suspend(ctx context.Context, name, version string) error
 	Resume(ctx context.Context, name string, harness sandbox.Harness) error
-	Keep(ctx context.Context, name string, until time.Time) error
+	Keep(ctx context.Context, name string, turn uuid.UUID, until time.Time) (sandbox.Sandbox, error)
 	Delete(ctx context.Context, name string) error
 }
 
@@ -98,8 +99,7 @@ type Driver struct {
 	wake      chan struct{}
 	// moved is set when a turn left the queue without being dispatched.
 	moved atomic.Bool
-	// sweeps counts the sweeps, of which only some look for sandboxes that
-	// no session has.
+	// sweeps counts the sweeps, of which only some look at the sandboxes.
 	sweeps int
 	// following are the turns that this Supervisor follows.
 	mu        sync.Mutex
@@ -269,9 +269,8 @@ func (d *Driver) announcePositions(ctx context.Context) {
 	}
 }
 
-// reapEvery is how many sweeps pass between two looks for sandboxes that no
-// session has.
-const reapEvery = 6
+// lookEvery is how many sweeps pass between two looks at the sandboxes.
+const lookEvery = 6
 
 // orphaned is how old a sandbox is before it is taken to be one that no
 // session will have: until then it may be on its way to its session.
@@ -279,11 +278,10 @@ func (d *Driver) orphaned() time.Duration {
 	return 30 * d.config.Sweep
 }
 
-// reap deletes the sandboxes of sessions that those sessions do not have: a
-// Supervisor made one and was gone before it had told its session, or a
-// session was ended and its sandbox could not be deleted then. A sandbox of
-// a session that the records do not know is left alone.
-func (d *Driver) reap(ctx context.Context) {
+// look looks at the sandboxes of the sessions. It deletes those that their
+// sessions do not have, and puts to sleep those of sessions that are not at
+// work. A sandbox of a session that the records do not know is left alone.
+func (d *Driver) look(ctx context.Context) {
 	sandboxes, err := d.sandboxes.Sandboxes(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "list the sandboxes", "error", err)
@@ -291,20 +289,54 @@ func (d *Driver) reap(ctx context.Context) {
 	}
 	for _, made := range sandboxes {
 		sessionID, err := uuid.Parse(made.Session)
-		if err != nil || time.Since(made.Created) < d.orphaned() {
+		if err != nil {
 			continue
 		}
 		session, err := d.store.Session(ctx, sessionID)
-		if err != nil || session.Sandbox == made.Name {
-			if err != nil && !errors.Is(err, store.ErrNotFound) {
+		switch {
+		case err != nil:
+			if !errors.Is(err, store.ErrNotFound) {
 				slog.ErrorContext(ctx, "read the session of a sandbox", "sandbox", made.Name, "error", err)
 			}
-			continue
+		case session.Sandbox != made.Name:
+			d.reap(ctx, sessionID, made)
+		case d.config.Idle > 0 && (made.State == sandbox.Running || made.State == sandbox.Starting):
+			d.lull(ctx, sessionID, made)
 		}
-		slog.WarnContext(ctx, "delete a sandbox that its session does not have", "session", sessionID, "sandbox", made.Name)
-		if err := d.sandboxes.Delete(ctx, made.Name); err != nil {
-			slog.ErrorContext(ctx, "delete a sandbox that its session does not have", "sandbox", made.Name, "error", err)
-		}
+	}
+}
+
+// reap deletes a sandbox that its session does not have: a Supervisor made
+// it and was gone before it had told the session, or it could not be
+// deleted when the session had done with it.
+func (d *Driver) reap(ctx context.Context, sessionID uuid.UUID, made sandbox.Sandbox) {
+	if time.Since(made.Created) < d.orphaned() {
+		return
+	}
+	slog.WarnContext(ctx, "delete a sandbox that its session does not have", "session", sessionID, "sandbox", made.Name)
+	if err := d.sandboxes.Delete(ctx, made.Name); err != nil {
+		slog.ErrorContext(ctx, "delete a sandbox that its session does not have", "sandbox", made.Name, "error", err)
+	}
+}
+
+// lull puts the sandbox of the session to sleep if the session is not at
+// work: its last turn has ended, and longer ago than a sandbox may be idle.
+// The sandbox is put to sleep only as it was seen. A turn that is given to
+// it has changed it, and finds it asleep if it came too late for that.
+func (d *Driver) lull(ctx context.Context, sessionID uuid.UUID, made sandbox.Sandbox) {
+	last, err := d.store.Turns(ctx, sessionID, math.MaxInt32, 1)
+	if err != nil {
+		slog.ErrorContext(ctx, "read the last turn of a session", "session", sessionID, "error", err)
+		return
+	}
+	if len(last) > 0 && (last[0].EndedAt == nil || time.Since(*last[0].EndedAt) < d.config.Idle) {
+		return
+	}
+	switch err := d.sandboxes.Suspend(ctx, made.Name, made.Version); {
+	case err == nil:
+		slog.InfoContext(ctx, "put the sandbox of a session that is not at work to sleep", "session", sessionID, "sandbox", made.Name)
+	case !errors.Is(err, sandbox.ErrChanged) && !errors.Is(err, sandbox.ErrNotFound):
+		slog.ErrorContext(ctx, "put the sandbox of a session to sleep", "session", sessionID, "sandbox", made.Name, "error", err)
 	}
 }
 
@@ -314,11 +346,12 @@ func (d *Driver) lease() time.Duration {
 	return 3 * d.config.Sweep
 }
 
-// sweep looks at the turns that run. Nothing of it is needed while every
-// Supervisor stays and every announcement arrives.
+// sweep looks at the turns that run, and now and then at the sandboxes.
+// What it does for the turns is not needed while every Supervisor stays and
+// every announcement arrives.
 func (d *Driver) sweep(ctx context.Context) {
-	if d.sweeps++; d.sweeps%reapEvery == 0 {
-		d.reap(ctx)
+	if d.sweeps++; d.sweeps%lookEvery == 0 {
+		d.look(ctx)
 	}
 	d.mu.Lock()
 	mine := make(map[uuid.UUID]*orders, len(d.following))

@@ -32,6 +32,8 @@ const (
 	RunnerPort = 8700
 	// SessionLabel names the session of a sandbox, and of its pod.
 	SessionLabel = "aviary.io/session"
+	// turnAnnotation names the last turn that a sandbox was kept for.
+	turnAnnotation = "aviary.io/turn"
 	// home is the volume of the session, where the harness keeps what it
 	// remembers and the agent its work.
 	home = "home"
@@ -43,9 +45,14 @@ const (
 // session is what a sandbox runs, which the image of a harness has.
 var session = []string{"aviary-session"}
 
-// ErrNotFound is the error for what is asked for and is not there: a sandbox
-// that is gone, a turn that a runner does not have.
-var ErrNotFound = errors.New("not found")
+var (
+	// ErrNotFound is the error for what is asked for and is not there: a
+	// sandbox that is gone, a turn that a runner does not have.
+	ErrNotFound = errors.New("not found")
+	// ErrChanged is the error for a change to a sandbox as it was seen, which
+	// has changed since.
+	ErrChanged = errors.New("changed since it was seen")
+)
 
 // Refusal is an answer of a runner that is no success.
 type Refusal struct {
@@ -71,9 +78,10 @@ type State string
 const (
 	// Running: its runner can be reached.
 	Running State = "Running"
-	// Asleep: it has no pod, and keeps its volume.
+	// Asleep: it was put to sleep. It has no pod, or its pod is going, and
+	// it keeps its volume.
 	Asleep State = "Asleep"
-	// Starting: it was made, woken or put to sleep, and is not there yet.
+	// Starting: it was made or woken, and does not run yet.
 	Starting State = "Starting"
 	// Lost: it is being deleted, or it has expired.
 	Lost State = "Lost"
@@ -90,6 +98,8 @@ type Sandbox struct {
 	Created time.Time
 	// Address is where its runner is reached, while it runs.
 	Address string
+	// Version is the version of the sandbox as it was seen.
+	Version string
 }
 
 // Harness is a harness as the installation sets it up.
@@ -244,25 +254,27 @@ func (c *Client) Sandboxes(ctx context.Context) ([]Sandbox, error) {
 
 // seen is the sandbox as its object tells of it.
 func seen(found *agents.Sandbox) Sandbox {
-	sandbox := Sandbox{Name: found.Name, Session: found.Labels[SessionLabel], Created: found.CreationTimestamp.Time}
+	sandbox := Sandbox{
+		Name: found.Name, Session: found.Labels[SessionLabel], Created: found.CreationTimestamp.Time, Version: found.ResourceVersion,
+	}
 	ready := meta.FindStatusCondition(found.Status.Conditions, string(agents.SandboxConditionReady))
-	suspended := meta.FindStatusCondition(found.Status.Conditions, string(agents.SandboxConditionSuspended))
+	// A status of an older spec does not tell of this one: of a sandbox that
+	// was woken just now, it can still tell of the pod that went.
+	current := ready != nil && ready.ObservedGeneration == found.Generation
 	switch {
 	case found.DeletionTimestamp != nil:
 		sandbox.State, sandbox.Message = Lost, "it is being deleted"
 	case ready != nil && ready.Reason == agents.SandboxReasonExpired:
 		sandbox.State, sandbox.Message = Lost, "it has expired"
 	case found.Spec.OperatingMode == agents.SandboxOperatingModeSuspended:
-		sandbox.State = Starting
-		if suspended != nil && suspended.Status == metav1.ConditionTrue {
-			sandbox.State = Asleep
-		}
-	case ready != nil && ready.Status == metav1.ConditionTrue && len(found.Status.PodIPs) > 0:
+		// What ran in it stops, also while its pod is still going.
+		sandbox.State = Asleep
+	case current && ready.Status == metav1.ConditionTrue && len(found.Status.PodIPs) > 0:
 		sandbox.State = Running
 		sandbox.Address = "http://" + net.JoinHostPort(found.Status.PodIPs[0], strconv.Itoa(RunnerPort))
 	default:
 		sandbox.State = Starting
-		if ready != nil {
+		if current {
 			sandbox.Message = ready.Reason + ": " + ready.Message
 		}
 	}
@@ -280,9 +292,16 @@ func (c *Client) Delete(ctx context.Context, name string) error {
 }
 
 // Suspend puts the sandbox to sleep: its pod is deleted, and its volume
-// kept.
-func (c *Client) Suspend(ctx context.Context, name string) error {
-	return c.merge(ctx, name, map[string]any{"operatingMode": agents.SandboxOperatingModeSuspended})
+// kept. With the version of the sandbox as it was seen, it does so only if
+// the sandbox has not changed since, and returns ErrChanged if it has.
+func (c *Client) Suspend(ctx context.Context, name, version string) error {
+	patch := map[string]any{"spec": map[string]any{"operatingMode": agents.SandboxOperatingModeSuspended}}
+	if version != "" {
+		// The cluster makes no change to an object of another version.
+		patch["metadata"] = map[string]any{"resourceVersion": version}
+	}
+	_, err := c.patch(ctx, name, types.MergePatchType, patch)
+	return err
 }
 
 // Resume wakes the sandbox: a pod is made for it again, with its volume. The
@@ -290,35 +309,45 @@ func (c *Client) Suspend(ctx context.Context, name string) error {
 func (c *Client) Resume(ctx context.Context, name string, harness Harness) error {
 	// The pod is replaced as a whole: what an older pod had and this one
 	// does not have does not stay.
-	return c.patch(ctx, name, types.JSONPatchType, []map[string]any{
+	_, err := c.patch(ctx, name, types.JSONPatchType, []map[string]any{
 		{"op": "add", "path": "/spec/podTemplate/spec", "value": c.pod(harness)},
 		{"op": "add", "path": "/spec/operatingMode", "value": agents.SandboxOperatingModeRunning},
 	})
+	return err
 }
 
-// Keep has the sandbox kept until then, and then deleted with its volume.
-// The zero time is until it is deleted.
-func (c *Client) Keep(ctx context.Context, name string, until time.Time) error {
+// Keep has the sandbox kept for the turn: it is marked with the turn, and
+// kept until then, after which it is deleted with its volume. The zero time
+// is until it is deleted. It returns the sandbox as it is then. A sandbox
+// that is marked has changed for one who would put it to sleep as it saw it
+// before.
+func (c *Client) Keep(ctx context.Context, name string, turn uuid.UUID, until time.Time) (Sandbox, error) {
 	var shutdown any
 	if !until.IsZero() {
 		shutdown = until.UTC().Format(time.RFC3339)
 	}
-	return c.merge(ctx, name, map[string]any{"shutdownTime": shutdown})
+	kept, err := c.patch(ctx, name, types.MergePatchType, map[string]any{
+		"metadata": map[string]any{"annotations": map[string]string{turnAnnotation: turn.String()}},
+		"spec":     map[string]any{"shutdownTime": shutdown},
+	})
+	if err != nil {
+		return Sandbox{}, err
+	}
+	return seen(kept), nil
 }
 
-// merge sets the fields of the spec of the sandbox.
-func (c *Client) merge(ctx context.Context, name string, fields map[string]any) error {
-	return c.patch(ctx, name, types.MergePatchType, map[string]any{"spec": fields})
-}
-
-func (c *Client) patch(ctx context.Context, name string, kind types.PatchType, patch any) error {
+// patch changes the sandbox, and returns it as it is then.
+func (c *Client) patch(ctx context.Context, name string, kind types.PatchType, patch any) (*agents.Sandbox, error) {
 	body, err := json.Marshal(patch)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	_, err = c.sandboxes.Patch(ctx, name, kind, body, metav1.PatchOptions{})
-	if apierrors.IsNotFound(err) {
-		return fmt.Errorf("the sandbox %s: %w", name, ErrNotFound)
+	patched, err := c.sandboxes.Patch(ctx, name, kind, body, metav1.PatchOptions{})
+	switch {
+	case apierrors.IsNotFound(err):
+		return nil, fmt.Errorf("the sandbox %s: %w", name, ErrNotFound)
+	case apierrors.IsConflict(err):
+		return nil, fmt.Errorf("the sandbox %s: %w", name, ErrChanged)
 	}
-	return err
+	return patched, err
 }
