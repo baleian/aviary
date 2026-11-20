@@ -138,8 +138,8 @@ with the Aviary dashboard, at http://localhost:3000.
 
 ### Send a message
 
-The API listens inside the cluster. Forward a port to it, register a model
-provider for the project, and send a message. A model provider is the base
+`make deploy` serves the API at http://localhost:8080. Register a model
+provider for a project, and send a message. A model provider is the base
 URL of a model endpoint and its API key. The endpoint must be reachable from
 the cluster, so `localhost` does not work, and an endpoint at a private
 address needs an entry in `egressProxy.extraEgress` (see
@@ -147,9 +147,6 @@ address needs an entry in `egressProxy.extraEgress` (see
 Chat Completions API, and Codex one with the Responses API.
 
 ```sh
-kubectl --context kind-aviary --namespace aviary-system \
-  port-forward service/aviary-supervisor 8080:80 &
-
 project=$(curl -s -X POST localhost:8080/v1/projects -d '{"name": "demo"}' | jq -r .id)
 provider=$(curl -s -X POST localhost:8080/v1/projects/$project/providers \
   -d '{"name": "a model server", "url": "https://model-server.example.com/v1", "api_key": {"value": "..."}}' | jq -r .id)

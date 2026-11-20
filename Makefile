@@ -288,6 +288,8 @@ deploy: secrets
 		--set-string 'supervisor.podAnnotations.aviary\.io/image-id='$$(docker image inspect --format '{{.Id}}' $(SUPERVISOR_IMAGE)) \
 		$(if $(VALUES),--values $(VALUES)) \
 		--wait
+	$(KUBECTL) apply --filename hack/kind/api.yaml
+	@echo "The API is at http://localhost:8080"
 
 # Runs the e2e in a new cluster of its own, which is deleted if the tests
 # pass. After a failure the cluster stays, with its logs and kubeconfig in
@@ -305,14 +307,14 @@ e2e: e2e-up
 e2e-up:
 	$(MAKE) cluster-down cluster-up secret-store $(if $(IDENTITY),identity-provider) images secrets CLUSTER=$(E2E_CLUSTER) \
 		KIND_CONFIG=hack/kind/e2e-cluster.yaml
-	$(E2E_KUBECTL) apply --filename test/e2e/mock-llm.yaml --filename test/e2e/api.yaml
+	$(E2E_KUBECTL) apply --filename test/e2e/mock-llm.yaml --filename hack/kind/api.yaml
 	helm --kube-context kind-$(E2E_CLUSTER) upgrade --install aviary deploy/charts/aviary \
 		--namespace aviary-system --values test/e2e/values.yaml \
 		$(if $(IDENTITY),--values hack/kind/aviary-keycloak-values.yaml) --wait
 	$(E2E_KUBECTL) --namespace aviary-e2e rollout status deployment/mock-llm --timeout 120s
 
 # The tests run on the kind network and reach the API at the node port that
-# test/e2e/api.yaml opens. Pass the IDENTITY that the cluster was made with:
+# hack/kind/api.yaml opens. Pass the IDENTITY that the cluster was made with:
 # make e2e-run E2E_CLUSTER=aviary-e2e-mysql IDENTITY=keycloak
 e2e-run:
 	mkdir -p $(E2E_OUT)
