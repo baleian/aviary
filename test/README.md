@@ -52,7 +52,10 @@ it has MySQL in the place of PostgreSQL. With `IDENTITY=keycloak` it has an
 identity provider, Keycloak, and Aviary asks it who sends a request: the
 tests then send their requests with tokens of its users, and one more test
 checks what each of them may do. Clusters under different names do not touch
-each other, so the e2e can run in several at once, each made in its own way:
+each other, so the e2e can run in several at once, each made in its own way,
+on a host with the disk and the memory for all of their sandboxes: every
+node of a cluster takes the templates in, and a sandbox that sleeps is
+written out whole.
 
 ```sh
 make e2e & make e2e E2E_CLUSTER=aviary-e2e-mysql DATABASE=mysql IDENTITY=keycloak & wait

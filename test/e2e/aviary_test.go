@@ -309,7 +309,8 @@ func waitsAsleep(t *testing.T, name string) {
 	if status := request(t, "POST", "/v1/turns/"+accepted.ID+"/approvals/"+asked.ID, answer, nil); status != http.StatusAccepted {
 		t.Fatalf("the answer %s to the request %+v was answered with %d", answer, asked, status)
 	}
-	if last := events.end(t); last.Type != "turn.completed" {
+	// The turn has as long to end from the answer as any turn has.
+	if last := read(t, accepted.ID).end(t); last.Type != "turn.completed" {
 		t.Fatalf("the turn that was answered while its session slept ended with %s %s", last.Type, last.Data)
 	}
 	var given bool

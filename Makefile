@@ -377,16 +377,21 @@ e2e-up: $(MOCK_LLM_CERTIFICATE)
 # Aviary at the port of a node that test/e2e/api.yaml opens. In a cluster
 # that was made with an identity provider, they are run with it too:
 # make e2e-run E2E_CLUSTER=aviary-e2e-mysql IDENTITY=keycloak
+# No more tests run at once than the pool of the local cluster has room for
+# the sandboxes of their sessions. Beyond that, their turns wait for room and
+# expire.
 e2e-run:
 	mkdir -p $(E2E_OUT)
 	kind get kubeconfig --internal --name $(E2E_CLUSTER) > $(E2E_OUT)/kubeconfig
 	$(call GO,test,--network kind --env AVIARY_E2E_KUBECONFIG=/src/$(E2E_OUT)/kubeconfig \
 		--env AVIARY_E2E_API=http://$(E2E_CLUSTER)-control-plane:30080 \
 		--env AVIARY_E2E_IDENTITY=$(IDENTITY) \
-		--env AVIARY_E2E_HARNESSES="$(E2E_HARNESSES)") test -count=1 -timeout 20m -v ./e2e/... $(TESTS); \
+		--env AVIARY_E2E_HARNESSES="$(E2E_HARNESSES)") test -count=1 -parallel 5 -timeout 20m -v ./e2e/... $(TESTS); \
 		status=$$?; [ $$status = 0 ] || { \
 			$(E2E_KUBECTL) --namespace aviary-system logs --selector app.kubernetes.io/component=supervisor \
 				--prefix --tail -1 > $(E2E_OUT)/supervisor.log 2>&1; \
+			$(E2E_KUBECTL) --namespace opensandbox-system logs deployment/opensandbox-server \
+				--tail -1 > $(E2E_OUT)/opensandbox-server.log 2>&1; \
 			$(E2E_KUBECTL) --namespace opensandbox-dataplane logs --selector fast-sandbox.io/pool=default \
 				--all-containers --prefix --tail -1 > $(E2E_OUT)/sandbox-pool.log 2>&1; \
 			$(E2E_KUBECTL) get pods,sandboxpools,sandboxes --all-namespaces --output wide > $(E2E_OUT)/pods.txt 2>&1; \
