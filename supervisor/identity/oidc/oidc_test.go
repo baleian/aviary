@@ -147,40 +147,40 @@ func TestCaller(t *testing.T) {
 		told   map[string]any
 		caller identity.Caller
 	}{
-		"the claims that a provider has unless its settings say otherwise": {
+		"default claims": {
 			caller: identity.Caller{Subject: "subject-1", DisplayName: "Alice Kim", Groups: []string{"team-a", "admins"}},
 		},
-		"the claims that the settings name": {
+		"configured claims": {
 			claims: `{"subject": "oid", "username": "preferred_username", "displayName": "email", "groups": "realm_access.roles"}`,
 			caller: identity.Caller{Subject: "object-1", Username: "alice", DisplayName: "alice@example.com", Groups: []string{"builder"}},
 		},
-		"a claim whose name has dots, and groups that are one name": {
+		"claim name with dots and a single group": {
 			claims: `{"groups": "https://example.com/teams"}`,
 			caller: identity.Caller{Subject: "subject-1", DisplayName: "Alice Kim", Groups: []string{"one-team"}},
 		},
-		"claims that the token does not have, or that are no texts": {
+		"missing or non-string claims": {
 			claims: `{"username": "nickname", "displayName": "department", "groups": "realm_access.groups.names"}`,
 			caller: identity.Caller{Subject: "subject-1"},
 		},
-		"claims that the settings empty": {
+		"claims disabled with empty names": {
 			claims: `{"displayName": "", "groups": ""}`,
 			caller: identity.Caller{Subject: "subject-1"},
 		},
-		"an email address that its owner was seen to use": {
+		"verified email": {
 			claims: `{"username": "email"}`,
 			caller: identity.Caller{Subject: "subject-1", Username: "alice@example.com", DisplayName: "Alice Kim", Groups: []string{"team-a", "admins"}},
 		},
-		"an email address that its owner was not seen to use": {
+		"unverified email": {
 			claims: `{"username": "email"}`,
 			told:   map[string]any{"email_verified": false},
 			caller: identity.Caller{Subject: "subject-1", DisplayName: "Alice Kim", Groups: []string{"team-a", "admins"}},
 		},
-		"an email address of which the issuer says nothing": {
+		"email without email_verified": {
 			claims: `{"username": "email"}`,
 			told:   map[string]any{"email_verified": nil},
 			caller: identity.Caller{Subject: "subject-1", DisplayName: "Alice Kim", Groups: []string{"team-a", "admins"}},
 		},
-		"a token for more than one audience": {
+		"multiple audiences": {
 			told:   map[string]any{"aud": []string{"account", "aviary"}},
 			caller: identity.Caller{Subject: "subject-1", DisplayName: "Alice Kim", Groups: []string{"team-a", "admins"}},
 		},
@@ -198,7 +198,7 @@ func TestCaller(t *testing.T) {
 				t.Fatal(err)
 			}
 			if !reflect.DeepEqual(caller, test.caller) {
-				t.Errorf("the caller is %+v, not %+v", caller, test.caller)
+				t.Errorf("Caller = %+v, want %+v", caller, test.caller)
 			}
 		})
 	}
@@ -212,22 +212,22 @@ func TestTokensThatAreRefused(t *testing.T) {
 	middle := len(changed) - 40
 	changed = changed[:middle] + map[bool]string{true: "B", false: "A"}[changed[middle] == 'A'] + changed[middle+1:]
 	for name, token := range map[string]string{
-		"a token that has expired":                     i.token(map[string]any{"iat": now.Add(-time.Hour).Unix(), "exp": now.Add(-time.Minute).Unix()}),
-		"a token that is not good yet":                 i.token(map[string]any{"nbf": now.Add(time.Hour).Unix()}),
-		"a token for another audience":                 i.token(map[string]any{"aud": "another"}),
-		"a token that names another issuer":            i.token(map[string]any{"iss": "https://another.example.com"}),
-		"a token that was signed with another key":     sign(t, newKey(t, 0), i.claims(nil)),
-		"a token that was changed after it was signed": changed,
-		"a token without a subject":                    i.token(map[string]any{"sub": ""}),
-		"a text that is no token":                      "not-a-token",
-		"no token":                                     "",
+		"expired":                i.token(map[string]any{"iat": now.Add(-time.Hour).Unix(), "exp": now.Add(-time.Minute).Unix()}),
+		"not yet valid":          i.token(map[string]any{"nbf": now.Add(time.Hour).Unix()}),
+		"another audience":       i.token(map[string]any{"aud": "another"}),
+		"another issuer":         i.token(map[string]any{"iss": "https://another.example.com"}),
+		"unknown key":            sign(t, newKey(t, 0), i.claims(nil)),
+		"modified after signing": changed,
+		"no subject":             i.token(map[string]any{"sub": ""}),
+		"not a JWT":              "not-a-token",
+		"empty":                  "",
 	} {
 		if caller, err := provider.Caller(context.Background(), token); err == nil {
-			t.Errorf("%s tells of the caller %+v", name, caller)
+			t.Errorf("%s: Caller = %+v, want an error", name, caller)
 		}
 	}
 	if _, err := provider.Caller(context.Background(), i.token(nil)); err != nil {
-		t.Errorf("a token of the issuer is refused after the others: %v", err)
+		t.Errorf("valid token: %v", err)
 	}
 }
 
@@ -245,12 +245,12 @@ func TestIssuerChangesItsKey(t *testing.T) {
 	fetched := i.fetched
 	i.mu.Unlock()
 	if fetched != 1 {
-		t.Errorf("the keys were fetched %d times for three tokens, not once", fetched)
+		t.Errorf("keys fetched %d times for three tokens, want 1", fetched)
 	}
 	before := i.token(nil)
 	i.rotate()
 	if _, err := provider.Caller(context.Background(), i.token(nil)); err != nil {
-		t.Errorf("a token that was signed with the new key is refused: %v", err)
+		t.Errorf("token signed with the new key: %v", err)
 	}
 	// The old key is dropped some time after the new keys are fetched, not
 	// at once.
@@ -259,7 +259,7 @@ func TestIssuerChangesItsKey(t *testing.T) {
 			break
 		}
 		if time.Now().After(forgotten) {
-			t.Fatal("a token that was signed with a key that the issuer has no more is still taken")
+			t.Fatal("token signed with a removed key is still accepted")
 		}
 	}
 }
@@ -270,9 +270,9 @@ func TestSettings(t *testing.T) {
 	other := httptest.NewServer(http.NotFoundHandler())
 	defer other.Close()
 	for settings, wrong := range map[string]string{
-		`{"audience": "aviary"}`:             "need an issuer",
-		`{"issuer": "` + i.server.URL + `"}`: "need an issuer, an audience",
-		`{"issuer": "` + i.server.URL + `", "audience": "a", "claims": {"subject": ""}}`:          "a claim for the subject",
+		`{"audience": "aviary"}`:             "require issuer",
+		`{"issuer": "` + i.server.URL + `"}`: "require issuer, audience",
+		`{"issuer": "` + i.server.URL + `", "audience": "a", "claims": {"subject": ""}}`:          "claims.subject",
 		`{"issuer": "` + i.server.URL + `", "audience": "a", "claims": {"display_name": "name"}}`: "display_name",
 		`{"issuer": "` + i.server.URL + `", "audience": "a", "client_secret": "s"}`:               "client_secret",
 		`{"issuer": "` + other.URL + `", "audience": "a"}`:                                        other.URL,
@@ -282,7 +282,7 @@ func TestSettings(t *testing.T) {
 	} {
 		_, err := Plugin{}.Open(context.Background(), json.RawMessage(settings))
 		if err == nil || !strings.Contains(err.Error(), wrong) {
-			t.Errorf("the settings %s are refused with %v, which does not say %q", settings, err, wrong)
+			t.Errorf("Open(%s) error = %v, want it to contain %q", settings, err, wrong)
 		}
 	}
 }

@@ -53,12 +53,12 @@ func (e *apiError) Error() string { return e.Message }
 
 var (
 	errNotFound    = &apiError{status: http.StatusNotFound, Code: "not_found", Message: "no such resource"}
-	errSessionBusy = &apiError{status: http.StatusConflict, Code: "session_busy", Message: "the session has a turn that has not finished"}
+	errSessionBusy = &apiError{status: http.StatusConflict, Code: "session_busy", Message: "the session has an unfinished turn"}
 	errSessionOver = &apiError{status: http.StatusConflict, Code: "session_ended", Message: "the session has ended"}
 	errTurnEnded   = &apiError{status: http.StatusConflict, Code: "turn_ended", Message: "the turn has ended"}
-	errAnswered    = &apiError{status: http.StatusConflict, Code: "approval_answered", Message: "the request for approval has its answer"}
-	errNoModel     = &apiError{status: http.StatusConflict, Code: "agent_without_model", Message: "the agent of the session names no model: create an agent that names one"}
-	errQueueFull   = &apiError{status: http.StatusTooManyRequests, Code: "queue_full", Message: "too many turns wait to run", retryAfter: 5}
+	errAnswered    = &apiError{status: http.StatusConflict, Code: "approval_answered", Message: "the approval request already has an answer"}
+	errNoModel     = &apiError{status: http.StatusConflict, Code: "agent_without_model", Message: "the session's agent has no model; create an agent with a model"}
+	errQueueFull   = &apiError{status: http.StatusTooManyRequests, Code: "queue_full", Message: "too many turns are queued; retry later", retryAfter: 5}
 	errInternal    = &apiError{status: http.StatusInternalServerError, Code: "internal", Message: "internal error"}
 )
 
@@ -177,10 +177,10 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if !a.driver.HasHarness(request.Harness) {
-		return invalid("harness is not one of the configured harnesses")
+		return invalid("harness must be one of the configured harnesses")
 	}
 	if request.Approval != "" && request.Approval != driver.Ask {
-		return invalid(`approval is not "ask"`)
+		return invalid(`approval must be "ask" or empty`)
 	}
 	if request.Model == nil {
 		return invalid("model is required")
@@ -188,12 +188,12 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 	// The provider must belong to the agent's project.
 	providerID, err := uuid.Parse(request.Model.Provider)
 	if err != nil {
-		return invalid("model.provider is not a provider of the project")
+		return invalid("model.provider must be the ID of a provider of the project")
 	}
 	provider, err := a.store.Provider(r.Context(), providerID)
 	switch {
 	case errors.Is(err, store.ErrNotFound) || (err == nil && provider.ProjectID != projectID):
-		return invalid("model.provider is not a provider of the project")
+		return invalid("model.provider must be the ID of a provider of the project")
 	case err != nil:
 		return err
 	case request.Model.Name == "":
@@ -489,7 +489,7 @@ func (a *api) answerApproval(w http.ResponseWriter, r *http.Request) error {
 		return option.ID == answer.OptionID
 	})
 	if !offered {
-		return invalid("option_id must be the id of one of the options of the request")
+		return invalid("option_id must be the ID of one of the request's options")
 	}
 	answered, err := a.store.AnswerApproval(r.Context(), turnID, answer.ID, answer.OptionID, callerOf(r).id)
 	if err != nil {
@@ -506,7 +506,7 @@ func (a *api) answerApproval(w http.ResponseWriter, r *http.Request) error {
 	// If the announcement fails, the Supervisor that follows the turn finds
 	// the answer later.
 	if err := a.events.AnnounceAnswer(r.Context(), turnID); err != nil {
-		slog.ErrorContext(r.Context(), "announce the answer to a request for approval", "turn", turnID, "error", err)
+		slog.ErrorContext(r.Context(), "announce approval answer", "turn", turnID, "error", err)
 	}
 	respond(w, http.StatusAccepted, answer)
 	return nil
@@ -534,7 +534,7 @@ func (a *api) cancelTurn(w http.ResponseWriter, r *http.Request) error {
 		// If the announcement fails, the Supervisor that follows the turn
 		// finds the cancellation later.
 		if err := a.events.AnnounceCancel(r.Context(), turn.ID); err != nil {
-			slog.ErrorContext(r.Context(), "announce the cancelled turn", "turn", turn.ID, "error", err)
+			slog.ErrorContext(r.Context(), "announce turn cancellation", "turn", turn.ID, "error", err)
 		}
 		respond(w, http.StatusAccepted, turn)
 		return nil
@@ -624,7 +624,7 @@ func decode(w http.ResponseWriter, r *http.Request, into any) error {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(into); err != nil {
-		return invalid("request body is not the JSON this endpoint expects")
+		return invalid("request body is not valid JSON for this endpoint")
 	}
 	return nil
 }

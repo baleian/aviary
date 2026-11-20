@@ -44,7 +44,7 @@ func set(t *testing.T, changed map[string]string) {
 }
 
 func TestDriverConfig(t *testing.T) {
-	t.Run("as the chart sets them", func(t *testing.T) {
+	t.Run("valid settings", func(t *testing.T) {
 		set(t, nil)
 		config, err := driverConfig()
 		if err != nil {
@@ -53,25 +53,25 @@ func TestDriverConfig(t *testing.T) {
 		opencode := config.Harnesses["opencode"]
 		if len(config.Harnesses) != 1 || opencode.Image != "registry.example/opencode:1" ||
 			!opencode.Resources.Requests.Cpu().Equal(resource.MustParse("250m")) || !opencode.Resources.Limits.Memory().Equal(resource.MustParse("4Gi")) {
-			t.Errorf("the turns are run with %+v", config)
+			t.Errorf("unexpected harnesses in config %+v", config)
 		}
 		if config.MaxConcurrentTurns != 50 || config.MaxQueuedTurns != 500 || config.MaxQueueWait != 2*time.Minute ||
 			config.MaxStartup != 90*time.Second || config.MaxTurn != 30*time.Minute || config.Idle != 5*time.Minute || config.Retention != 0 {
-			t.Errorf("the limits are %+v", config)
+			t.Errorf("unexpected limits in config %+v", config)
 		}
 		if config.Models.String() != settings[modelsURL] {
-			t.Errorf("the harnesses reach their models at %s", config.Models)
+			t.Errorf("Models = %s, want the AVIARY_LLM_BASE_URL setting", config.Models)
 		}
 	})
 
-	t.Run("without the limits that there need not be", func(t *testing.T) {
+	t.Run("optional limits disabled", func(t *testing.T) {
 		set(t, map[string]string{maxQueuedTurns: "0", maxQueueWait: "0", maxStartup: "0", sandboxIdle: "0", sandboxRetention: "1"})
 		config, err := driverConfig()
 		if err != nil {
 			t.Fatal(err)
 		}
 		if config.MaxQueuedTurns != 0 || config.MaxQueueWait != 0 || config.MaxStartup != 0 || config.Idle != 0 || config.Retention != time.Second {
-			t.Errorf("the limits are %+v", config)
+			t.Errorf("unexpected limits in config %+v", config)
 		}
 	})
 
@@ -92,7 +92,7 @@ func TestDriverConfig(t *testing.T) {
 			set(t, map[string]string{wrong.name: wrong.value})
 			// The error names the invalid setting.
 			if config, err := driverConfig(); err == nil || !strings.Contains(err.Error(), wrong.name) {
-				t.Errorf("the turns are run with %+v: %v", config, err)
+				t.Errorf("driverConfig() = %+v, %v; want an error naming the setting", config, err)
 			}
 		})
 	}
@@ -106,12 +106,12 @@ func TestSandboxSettings(t *testing.T) {
 	}
 	if made.Namespace != "aviary-runtime" || !made.Volume.Equal(resource.MustParse("10Gi")) || made.StorageClass != "fast" || made.MaxToolOutputBytes != 65536 ||
 		made.Proxy.String() != settings[proxyURL] || made.Models.String() != settings[modelsURL] {
-		t.Errorf("the sandboxes are made with %+v", made)
+		t.Errorf("unexpected sandbox settings %+v", made)
 	}
 	// The storage class is optional, and 0 is a valid tool output limit.
 	set(t, map[string]string{sandboxClass: "", maxToolOutput: "0"})
 	if made, err := sandboxSettings(); err != nil || made.StorageClass != "" || made.MaxToolOutputBytes != 0 {
-		t.Errorf("the sandboxes are made with %+v: %v", made, err)
+		t.Errorf("sandboxSettings() = %+v, %v; want no storage class and no tool output limit", made, err)
 	}
 
 	for _, wrong := range []struct{ name, value string }{
@@ -122,7 +122,7 @@ func TestSandboxSettings(t *testing.T) {
 	} {
 		set(t, map[string]string{wrong.name: wrong.value})
 		if made, err := sandboxSettings(); err == nil || !strings.Contains(err.Error(), wrong.name) {
-			t.Errorf("with %s=%q, the sandboxes are made with %+v: %v", wrong.name, wrong.value, made, err)
+			t.Errorf("%s=%q: sandboxSettings() = %+v, %v; want an error naming the setting", wrong.name, wrong.value, made, err)
 		}
 	}
 }
@@ -143,14 +143,14 @@ func TestSecretStoreSettings(t *testing.T) {
 		return json.RawMessage(`{"address": "` + address + `", "takes": "a-credential"}`)
 	}
 	if err := stores.Check(context.Background(), "scripted", at("https://secrets.example.com:8200"), "a-credential"); err != nil {
-		t.Errorf("a store at a host that is listed is checked as: %v", err)
+		t.Errorf("Check of a store at an allowed host: %v", err)
 	}
 	err = stores.Check(context.Background(), "scripted", at("https://other.example.com:8200"), "a-credential")
 	if err == nil || !strings.Contains(err.Error(), "supervisor.secretStores.allowedHosts") {
-		t.Errorf("a store at a host that is not listed is checked as: %v", err)
+		t.Errorf("Check of a store at another host = %v, want an error naming the allowed hosts", err)
 	}
 	if err := stores.Check(context.Background(), "another", at("https://secrets.example.com:8200"), "a-credential"); err == nil || !strings.Contains(err.Error(), "scripted") {
-		t.Errorf("a store of a kind that the build does not know is checked as: %v", err)
+		t.Errorf("Check of an unknown kind = %v, want an error listing the known kinds", err)
 	}
 
 	// Values are cached for the configured seconds, and 0 disables the cache.
@@ -170,7 +170,7 @@ func TestSecretStoreSettings(t *testing.T) {
 		}
 		holding.put(address, "a/path", "a-key", "the-second")
 		if read, err := stores.Read(context.Background(), registered, "a-credential", "a/path", "a-key"); err != nil || read != remembered {
-			t.Errorf("with %s seconds, the value that the store has changed was read as %q: %v", seconds, read, err)
+			t.Errorf("cache %s seconds: Read after the value changed = %q, %v", seconds, read, err)
 		}
 	}
 
@@ -178,14 +178,14 @@ func TestSecretStoreSettings(t *testing.T) {
 	for _, wrong := range []string{"", "-1", "soon", "1.5"} {
 		t.Setenv(secretCacheSeconds, wrong)
 		if stores, err := allowedSecretStores(plugins); err == nil || !strings.Contains(err.Error(), secretCacheSeconds) {
-			t.Errorf("with %q seconds, the stores are %+v: %v", wrong, stores, err)
+			t.Errorf("cache seconds %q: allowedSecretStores() = %+v, %v; want an error naming the setting", wrong, stores, err)
 		}
 	}
 	t.Setenv(secretCacheSeconds, "60")
 	for _, wrong := range []string{"", "secrets.example.com", `["https://secrets.example.com"]`} {
 		t.Setenv(secretStoreHosts, wrong)
 		if stores, err := allowedSecretStores(plugins); err == nil {
-			t.Errorf("with the hosts %q, the stores are %+v", wrong, stores)
+			t.Errorf("hosts %q: allowedSecretStores() = %+v, want an error", wrong, stores)
 		}
 	}
 }

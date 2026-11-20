@@ -13,7 +13,7 @@ func TestRecord(t *testing.T) {
 		items  []string
 	}{
 		{
-			name: "the pieces of a message are one item",
+			name: "message deltas are merged",
 			events: []event{
 				{messageDelta, `{"text": "Hel", "message_id": "m1"}`},
 				{messageDelta, `{"text": "lo", "message_id": "m1"}`},
@@ -21,7 +21,7 @@ func TestRecord(t *testing.T) {
 			items: []string{`{"type":"message","text":"Hello"}`},
 		},
 		{
-			name: "another message is another item",
+			name: "new message ID starts a new item",
 			events: []event{
 				{messageDelta, `{"text": "one", "message_id": "m1"}`},
 				{messageDelta, `{"text": "two", "message_id": "m2"}`},
@@ -29,7 +29,7 @@ func TestRecord(t *testing.T) {
 			items: []string{`{"type":"message","text":"one"}`, `{"type":"message","text":"two"}`},
 		},
 		{
-			name: "a thought is not part of a message",
+			name: "thoughts are separate from messages",
 			events: []event{
 				{thoughtDelta, `{"text": "hm"}`},
 				{messageDelta, `{"text": "yes"}`},
@@ -40,7 +40,7 @@ func TestRecord(t *testing.T) {
 			},
 		},
 		{
-			name: "a message that goes on after a tool call is an item after it",
+			name: "message continued after a tool call is a new item",
 			events: []event{
 				{messageDelta, `{"text": "before", "message_id": "m1"}`},
 				{toolCall, `{"id": "t1", "title": "ls"}`},
@@ -53,7 +53,7 @@ func TestRecord(t *testing.T) {
 			},
 		},
 		{
-			name: "a request for approval has its answer where the harness asked",
+			name: "approval resolution is merged into its request",
 			events: []event{
 				{toolCall, `{"id": "t1", "title": "rm -r build", "status": "pending"}`},
 				{approvalRequested, `{"id": "1", "tool_call": {"id": "t1"}, "options": [{"id": "once", "kind": "allow_once", "name": "Once"}]}`},
@@ -70,14 +70,14 @@ func TestRecord(t *testing.T) {
 			},
 		},
 		{
-			name: "a request that the harness got no answer to is kept as it was asked",
+			name: "unresolved approval request",
 			events: []event{
 				{approvalRequested, `{"id": "1", "tool_call": {"id": "t1"}, "options": []}`},
 			},
 			items: []string{`{"id":"1","options":[],"tool_call":{"id":"t1"},"type":"approval"}`},
 		},
 		{
-			name: "an update changes its tool call where the call began",
+			name: "tool update is merged into its call",
 			events: []event{
 				{toolCall, `{"id": "t1", "title": "ls", "status": "pending"}`},
 				{toolCall, `{"id": "t2", "title": "pwd", "status": "pending"}`},
@@ -91,12 +91,12 @@ func TestRecord(t *testing.T) {
 			},
 		},
 		{
-			name:   "an update without its call begins the tool call",
+			name:   "tool update without a call starts one",
 			events: []event{{toolUpdate, `{"id": "t1", "status": "failed"}`}},
 			items:  []string{`{"id":"t1","status":"failed","type":"tool_call"}`},
 		},
 		{
-			name: "the plan is as it last stood, where it began",
+			name: "plan keeps its first position and last entries",
 			events: []event{
 				{planUpdate, `{"entries": [{"content": "a", "status": "pending"}]}`},
 				{messageDelta, `{"text": "working"}`},
@@ -108,7 +108,7 @@ func TestRecord(t *testing.T) {
 			},
 		},
 		{
-			name: "events that tell nothing of the agent are passed over",
+			name: "other events are ignored",
 			events: []event{
 				{TurnQueued, `{"position": 1}`},
 				{TurnStarted, `{}`},
@@ -137,7 +137,7 @@ func TestRecord(t *testing.T) {
 				items = append(items, string(item))
 			}
 			if !slices.Equal(items, test.items) {
-				t.Errorf("the items are\n%q, not\n%q", items, test.items)
+				t.Errorf("items =\n%q\nwant\n%q", items, test.items)
 			}
 		})
 	}
@@ -150,7 +150,7 @@ func TestRecordLeavesOutWhatItCannotRead(t *testing.T) {
 	}
 	for _, data := range []string{`{"text": `, `{"text": 1}`, `[]`} {
 		if err := turn.add(messageDelta, data); err == nil {
-			t.Errorf("add took the event %s", data)
+			t.Errorf("add(%s) succeeded, want an error", data)
 		}
 	}
 	encoded, err := turn.encode()
@@ -158,6 +158,6 @@ func TestRecordLeavesOutWhatItCannotRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(encoded) != 1 || string(encoded[0]) != `{"type":"message","text":"kept"}` {
-		t.Errorf("the items are %q", encoded)
+		t.Errorf("items = %q", encoded)
 	}
 }

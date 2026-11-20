@@ -28,7 +28,7 @@ func (s *supervisor) members(project string) []member {
 	s.t.Helper()
 	var listed struct{ Members []member }
 	if status, _ := s.request(http.MethodGet, "/v1/projects/"+project+"/members", "", &listed); status != http.StatusOK || listed.Members == nil {
-		s.t.Fatalf("the members of the project are answered with %d %+v", status, listed)
+		s.t.Fatalf("list members = %d %+v", status, listed)
 	}
 	return listed.Members
 }
@@ -39,33 +39,33 @@ func TestMembers(t *testing.T) {
 	s := install(t).supervisor()
 	project := s.create("/v1/projects", `{"name": "test"}`)
 	if members := s.members(project); len(members) != 0 {
-		t.Errorf("a new project has the members %+v", members)
+		t.Errorf("members of a new project = %+v, want none", members)
 	}
 
 	var team, alice member
 	if status, _ := s.request(http.MethodPost, "/v1/projects/"+project+"/members", `{"group": "team-a", "role": "editor"}`, &team); status != http.StatusCreated ||
 		team.Group != "team-a" || team.User != nil || team.Role != "editor" || team.Permissions != nil || team.ProjectID != project || team.ID == "" {
-		t.Errorf("a group is added with %d as %+v", status, team)
+		t.Errorf("add group = %d %+v", status, team)
 	}
 	// Custom permissions are completed and ordered as those of a role.
 	if status, _ := s.request(http.MethodPost, "/v1/projects/"+project+"/members", `{"user": "alice@example.com", "permissions": ["sessions.control_all"]}`, &alice); status != http.StatusCreated ||
 		alice.User == nil || alice.User.Username != "alice@example.com" || alice.User.ID != "" || alice.Group != "" || alice.Role != "custom" ||
 		!slices.Equal(alice.Permissions, []string{"project.view", "sessions.view_all", "sessions.control_all"}) {
-		t.Errorf("a user is added with %d as %+v, the user %+v", status, alice, alice.User)
+		t.Errorf("add user = %d %+v, user %+v", status, alice, alice.User)
 	}
 	if members := s.members(project); len(members) != 2 || members[0].ID != team.ID || members[1].ID != alice.ID || members[1].Role != "custom" || members[1].User == nil {
-		t.Errorf("the members are %+v", members)
+		t.Errorf("members = %+v", members)
 	}
 
 	// A member can switch between a role and custom permissions.
 	var changed member
 	if status, _ := s.request(http.MethodPut, "/v1/members/"+alice.ID, `{"role": "viewer"}`, &changed); status != http.StatusOK ||
 		changed.ID != alice.ID || changed.Role != "viewer" || changed.Permissions != nil || changed.User == nil || changed.User.Username != "alice@example.com" {
-		t.Errorf("a member is given a role with %d as %+v", status, changed)
+		t.Errorf("set role = %d %+v", status, changed)
 	}
 	if status, _ := s.request(http.MethodPut, "/v1/members/"+team.ID, `{"role": "custom", "permissions": ["agents.manage"]}`, &changed); status != http.StatusOK ||
 		changed.ID != team.ID || changed.Role != "custom" || !slices.Equal(changed.Permissions, []string{"project.view", "agents.manage"}) || changed.Group != "team-a" {
-		t.Errorf("a member is given permissions with %d as %+v", status, changed)
+		t.Errorf("set permissions = %d %+v", status, changed)
 	}
 
 	none := "00000000-0000-0000-0000-000000000000"
@@ -92,21 +92,21 @@ func TestMembers(t *testing.T) {
 	} {
 		var answer struct{ Code string }
 		if status, _ := s.request(wrong.method, wrong.path, wrong.body, &answer); status != wrong.status || answer.Code != wrong.code {
-			t.Errorf("%s %s %s is answered with %d %q, not %d %q", wrong.method, wrong.path, wrong.body, status, answer.Code, wrong.status, wrong.code)
+			t.Errorf("%s %s %s = %d %q, want %d %q", wrong.method, wrong.path, wrong.body, status, answer.Code, wrong.status, wrong.code)
 		}
 	}
 	if members := s.members(project); len(members) != 2 || members[0].Role != "custom" || members[1].Role != "viewer" {
-		t.Errorf("after requests that were refused, the members are %+v", members)
+		t.Errorf("members after refused requests = %+v", members)
 	}
 
 	if status, _ := s.request(http.MethodDelete, "/v1/members/"+team.ID, "", nil); status != http.StatusNoContent {
-		t.Errorf("a member is removed with %d", status)
+		t.Errorf("DELETE member: status %d, want 204", status)
 	}
 	if status, _ := s.request(http.MethodDelete, "/v1/members/"+team.ID, "", nil); status != http.StatusNotFound {
-		t.Errorf("a member that is none any more is removed with %d", status)
+		t.Errorf("DELETE removed member: status %d, want 404", status)
 	}
 	if members := s.members(project); len(members) != 1 || members[0].ID != alice.ID {
-		t.Errorf("after a member was removed, the members are %+v", members)
+		t.Errorf("members after removal = %+v", members)
 	}
 }
 
@@ -129,7 +129,7 @@ func TestMembersAreGivenByAdministrators(t *testing.T) {
 	var added member
 	if status, _ := s.request(http.MethodPost, "/v1/projects/"+project+"/members", `{"user": "alice@example.com", "role": "user"}`, &added); status != http.StatusCreated ||
 		added.UpdatedBy != admin.ID || admin.ID == "" || added.User == nil || added.User.ID != "" {
-		t.Fatalf("an administrator, the user %s, adds a member with %d as %+v", admin.ID, status, added)
+		t.Fatalf("admin %s: add member = %d %+v", admin.ID, status, added)
 	}
 
 	// Alice's first request links the membership to Alice's user.
@@ -139,7 +139,7 @@ func TestMembersAreGivenByAdministrators(t *testing.T) {
 	members := s.members(project)
 	if len(members) != 1 || members[0].ID != added.ID || members[0].User == nil || members[0].User.ID != alice.ID || alice.ID == "" ||
 		members[0].User.Username != "alice@example.com" || members[0].User.DisplayName != "Alice Kim" || members[0].Role != "user" {
-		t.Errorf("after the user %s was seen, the members are %+v", alice.ID, members)
+		t.Errorf("members after the first request of user %s = %+v", alice.ID, members)
 	}
 
 	for _, request := range [][3]string{
@@ -149,11 +149,11 @@ func TestMembersAreGivenByAdministrators(t *testing.T) {
 	} {
 		var answer struct{ Code string }
 		if status, _ := s.request(request[0], request[1], request[2], &answer); status != http.StatusForbidden || answer.Code != "forbidden" {
-			t.Errorf("a user sends %s %s, and that is answered with %d %q", request[0], request[1], status, answer.Code)
+			t.Errorf("user: %s %s = %d %q, want 403 forbidden", request[0], request[1], status, answer.Code)
 		}
 	}
 	if after := s.members(project); len(after) != 1 || after[0].Role != "user" {
-		t.Errorf("after a user tried to change them, the members are %+v", after)
+		t.Errorf("members after refused changes = %+v", after)
 	}
 }
 
@@ -177,7 +177,7 @@ func TestProjectsOfACaller(t *testing.T) {
 		s.token = token
 		var listed struct{ Projects []struct{ ID, Name string } }
 		if status, _ := s.request(http.MethodGet, "/v1/projects", "", &listed); status != http.StatusOK || listed.Projects == nil {
-			t.Fatalf("the projects of the caller with %s are answered with %d %+v", token, status, listed)
+			t.Fatalf("%s: list projects = %d %+v", token, status, listed)
 		}
 		ids := []string{}
 		for _, project := range listed.Projects {
@@ -186,7 +186,7 @@ func TestProjectsOfACaller(t *testing.T) {
 		return ids
 	}
 	if none := projects("an-administrator"); len(none) != 0 {
-		t.Errorf("an installation without projects lists %v", none)
+		t.Errorf("projects = %v, want none", none)
 	}
 	one, two, three := s.create("/v1/projects", `{"name": "one"}`), s.create("/v1/projects", `{"name": "two"}`), s.create("/v1/projects", `{"name": "three"}`)
 	s.create("/v1/projects/"+one+"/members", `{"user": "alice@example.com", "role": "viewer"}`)
@@ -197,7 +197,7 @@ func TestProjectsOfACaller(t *testing.T) {
 		"token-of-bob":     {},
 	} {
 		if listed := projects(token); !slices.Equal(listed, expected) {
-			t.Errorf("the caller with %s is listed %v, not %v", token, listed, expected)
+			t.Errorf("%s: projects = %v, want %v", token, listed, expected)
 		}
 	}
 
@@ -206,6 +206,6 @@ func TestProjectsOfACaller(t *testing.T) {
 	first, second := nobody.create("/v1/projects", `{"name": "one"}`), nobody.create("/v1/projects", `{"name": "two"}`)
 	s = nobody
 	if listed := projects(""); !slices.Equal(listed, []string{first, second}) {
-		t.Errorf("a caller of an installation that asks nobody is listed %v", listed)
+		t.Errorf("projects without an identity provider = %v, want both", listed)
 	}
 }

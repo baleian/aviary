@@ -141,7 +141,7 @@ async fn from_elsewhere(
     if ours {
         return (
             StatusCode::FORBIDDEN,
-            "the runner takes nothing from its own pod\n",
+            "requests from the runner's own pod are forbidden\n",
         )
             .into_response();
     }
@@ -214,7 +214,7 @@ enum Told {
 impl Runner {
     /// Appends an event to the running turn, if there is one.
     fn emit(&self, name: &'static str, data: &Value) {
-        let mut turn = self.turn.lock().expect("the turn");
+        let mut turn = self.turn.lock().expect("turn lock poisoned");
         if let Some(turn) = turn.as_mut().filter(|turn| !turn.ended) {
             turn.events.push(Event {
                 name,
@@ -233,7 +233,7 @@ impl Runner {
 
     /// Returns the event of turn `id` that follows event number `after`.
     fn next(&self, id: &str, after: usize) -> Next {
-        let turn = self.turn.lock().expect("the turn");
+        let turn = self.turn.lock().expect("turn lock poisoned");
         match turn.as_ref().filter(|turn| turn.id == id) {
             // The runner has moved on to another turn.
             None => Next::Over,
@@ -247,7 +247,7 @@ impl Runner {
 
     /// Sends `told` to turn `id`, or returns 404 if it is not the current turn.
     fn tell(&self, id: &str, told: Told) -> StatusCode {
-        let turn = self.turn.lock().expect("the turn");
+        let turn = self.turn.lock().expect("turn lock poisoned");
         match turn.as_ref().filter(|turn| turn.id == id) {
             None => StatusCode::NOT_FOUND,
             Some(turn) => {
@@ -271,7 +271,7 @@ async fn start(
     Named(id): Named<String>,
     Json(start): Json<Start>,
 ) -> StatusCode {
-    let mut turn = runner.turn.lock().expect("the turn");
+    let mut turn = runner.turn.lock().expect("turn lock poisoned");
     match turn.as_ref() {
         Some(turn) if turn.id == id => return StatusCode::NO_CONTENT,
         Some(turn) if !turn.ended => return StatusCode::CONFLICT,
@@ -304,7 +304,7 @@ async fn events(
     let known = runner
         .turn
         .lock()
-        .expect("the turn")
+        .expect("turn lock poisoned")
         .as_ref()
         .is_some_and(|turn| turn.id == id);
     if !known {
@@ -375,10 +375,7 @@ impl Failure {
     fn forgotten(error: agent_client_protocol::Error) -> Self {
         Self::new(
             "resume_failed",
-            format!(
-                "the harness could not continue its session: {}",
-                error.message
-            ),
+            format!("resume harness session: {}", error.message),
         )
     }
 
@@ -445,14 +442,16 @@ async fn run_harness(
         .stdout(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|error| Failure::harness(format!("{}: {error}", command.command().display())))?;
+        .map_err(|error| {
+            Failure::harness(format!("start {}: {error}", command.command().display()))
+        })?;
     let harness = ByteStreams::new(
-        process.stdin.take().expect("its input").compat_write(),
-        process.stdout.take().expect("its output").compat(),
+        process.stdin.take().expect("no stdin").compat_write(),
+        process.stdout.take().expect("no stdout").compat(),
     );
     let ended = process.wait().fuse();
     futures::pin_mut!(ended);
-    let gone = || agent_client_protocol::Error::internal_error().data("the harness has ended");
+    let gone = || agent_client_protocol::Error::internal_error().data("harness exited");
     let cwd = env::current_dir().map_err(Failure::runner)?;
     // Unset or 0 means no limit.
     let longest = env::var(MAX_TOOL_OUTPUT)
@@ -489,7 +488,7 @@ async fn run_harness(
                 }
                 // Answered later, by the turn loop.
                 asked.unbounded_send((request, responder)).map_err(|_| {
-                    agent_client_protocol::Error::internal_error().data("the harness is lost")
+                    agent_client_protocol::Error::internal_error().data("approval channel closed")
                 })
             },
             agent_client_protocol::on_receive_request!(),
@@ -658,7 +657,7 @@ fn instruct(instructions: &str) -> Result<(), Failure> {
             return Ok(());
         }
         return Err(Failure::runner(format!(
-            "the agent has instructions, and the harness image names no file for them in {INSTRUCTIONS_FILE}"
+            "agent has instructions but the harness image does not set {INSTRUCTIONS_FILE}"
         )));
     };
     let file = Path::new(&file);
@@ -895,11 +894,11 @@ mod tests {
     use super::*;
 
     fn update(json: Value) -> SessionUpdate {
-        serde_json::from_value(json).expect("an update of a session")
+        serde_json::from_value(json).expect("parse session update")
     }
 
     #[test]
-    fn texts_that_are_too_long_are_cut() {
+    fn long_strings_are_cut() {
         assert_eq!(
             cut(json!("0123456789"), Some(4)),
             json!("0123... [6 more bytes cut]")
@@ -924,7 +923,7 @@ mod tests {
     }
 
     #[test]
-    fn what_the_agent_says_and_thinks_is_an_event() {
+    fn message_and_thought_chunks_are_events() {
         let said = update(json!({
             "sessionUpdate": "agent_message_chunk",
             "content": {"type": "text", "text": "Hello"},
@@ -948,7 +947,7 @@ mod tests {
     }
 
     #[test]
-    fn what_is_no_event_of_a_turn_is_dropped() {
+    fn unreported_updates_are_dropped() {
         for dropped in [
             json!({
                 "sessionUpdate": "agent_message_chunk",
@@ -961,7 +960,7 @@ mod tests {
             json!({"sessionUpdate": "available_commands_update", "availableCommands": []}),
         ] {
             let made = event(update(dropped.clone()), None);
-            assert!(made.is_none(), "{dropped} became {made:?}");
+            assert!(made.is_none(), "event({dropped}) = {made:?}, want None");
         }
     }
 
@@ -1029,7 +1028,7 @@ mod tests {
     }
 
     #[test]
-    fn a_request_for_approval_is_told_as_the_harness_made_it() {
+    fn approval_events_report_request_and_outcome() {
         let request: RequestPermissionRequest = serde_json::from_value(json!({
             "sessionId": "s1",
             "toolCall": {
@@ -1042,7 +1041,7 @@ mod tests {
                 {"optionId": "c", "name": "Never", "kind": "reject_always"},
             ],
         }))
-        .expect("a request for permission");
+        .expect("parse permission request");
         let note = format!("{}... [100 more bytes cut]", "x".repeat(100));
         assert_eq!(
             requested("3", &request, Some(100)),
@@ -1070,14 +1069,14 @@ mod tests {
     }
 
     #[test]
-    fn a_permission_is_given_for_once() {
+    fn allow_once_never_allows_always() {
         let ask = |options: Value| -> RequestPermissionRequest {
             serde_json::from_value(json!({
                 "sessionId": "s1",
                 "toolCall": {"toolCallId": "t1"},
                 "options": options,
             }))
-            .expect("a request for permission")
+            .expect("parse permission request")
         };
         let offered = ask(json!([
             {"optionId": "always", "name": "Always", "kind": "allow_always"},
@@ -1088,7 +1087,7 @@ mod tests {
             RequestPermissionOutcome::Selected(selected) => {
                 assert_eq!(selected.option_id.to_string(), "once");
             }
-            other => panic!("the request was answered with {other:?}"),
+            other => panic!("allow_once = {other:?}, want Selected"),
         }
         // Never allows more than once.
         let not_offered = ask(json!([
@@ -1101,7 +1100,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_is_told_as_its_reason_and_what_is_known_of_it() {
+    fn failure_reports_reason_and_truncated_message() {
         assert_eq!(
             Failure::harness("the model is out of order").to_json(),
             json!({"reason": "harness_error", "message": "the model is out of order"})

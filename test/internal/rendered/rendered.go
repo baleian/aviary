@@ -86,7 +86,7 @@ func Envoy(objects []map[string]any) (map[string]any, map[string]string, error) 
 		return nil, nil, err
 	}
 	if config == nil {
-		return nil, nil, errors.New("the chart made no configuration for the Egress Proxy")
+		return nil, nil, errors.New("rendered chart has no Egress Proxy configuration")
 	}
 	return config, files, nil
 }

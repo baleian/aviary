@@ -26,12 +26,12 @@ const (
 	ends
 )
 
-var errNotTheirs = &apiError{status: http.StatusForbidden, Code: "forbidden", Message: "only the one whose session it is sends messages to it"}
+var errNotTheirs = &apiError{status: http.StatusForbidden, Code: "forbidden", Message: "only the session's creator can send messages to it"}
 
 // lacks returns the error for a caller without the permission in the
 // project.
 func lacks(permission string) error {
-	return &apiError{status: http.StatusForbidden, Code: "forbidden", Message: "the caller lacks the permission " + permission + " in the project"}
+	return &apiError{status: http.StatusForbidden, Code: "forbidden", Message: "the caller does not have the " + permission + " permission in the project"}
 }
 
 // held returns the caller's permissions in the project. A caller that is not

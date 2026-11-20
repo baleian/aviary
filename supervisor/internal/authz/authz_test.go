@@ -19,7 +19,7 @@ func TestTheTokenOfASessionOpensToTheSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	if opened, known := a.session(token); !known || opened != session {
-		t.Errorf("the token of the session %s opens to %s, %t", session, opened, known)
+		t.Errorf("session(Token(%s)) = %s, %t", session, opened, known)
 	}
 	// A value sealed for another place, and values that are not sealed.
 	other, err := keys.Seal(session.String(), "the key of a provider")
@@ -28,7 +28,7 @@ func TestTheTokenOfASessionOpensToTheSession(t *testing.T) {
 	}
 	for _, token := range []string{base64.RawURLEncoding.EncodeToString(other), "a-token", ""} {
 		if opened, known := a.session(token); known {
-			t.Errorf("%q is taken for the token of the session %s", token, opened)
+			t.Errorf("session(%q) = %s, true, want false", token, opened)
 		}
 	}
 }
@@ -42,7 +42,7 @@ func TestBearerToken(t *testing.T) {
 		"":             "",
 	} {
 		if got := bearerToken(header); got != token {
-			t.Errorf("bearerToken(%q) is %q, not %q", header, got, token)
+			t.Errorf("bearerToken(%q) = %q, want %q", header, got, token)
 		}
 	}
 }
@@ -62,7 +62,7 @@ func TestProxyPassword(t *testing.T) {
 		"":                      "",
 	} {
 		if got := proxyPassword(header); got != password {
-			t.Errorf("proxyPassword(%q) is %q, not %q", header, got, password)
+			t.Errorf("proxyPassword(%q) = %q, want %q", header, got, password)
 		}
 	}
 }
@@ -70,12 +70,12 @@ func TestProxyPassword(t *testing.T) {
 func TestDenied(t *testing.T) {
 	llm := denied(false).GetDeniedResponse()
 	if llm.GetStatus().GetCode() != typev3.StatusCode_Unauthorized || len(llm.GetHeaders()) != 0 {
-		t.Errorf("a model request is refused with %v", llm)
+		t.Errorf("model request denied with %v, want 401 without headers", llm)
 	}
 
 	forward := denied(true).GetDeniedResponse()
 	if forward.GetStatus().GetCode() != typev3.StatusCode_ProxyAuthenticationRequired {
-		t.Errorf("a request to the forward proxy is refused with the status %v", forward.GetStatus().GetCode())
+		t.Errorf("forward proxy request denied with status %v, want 407", forward.GetStatus().GetCode())
 	}
 	var asks bool
 	for _, header := range forward.GetHeaders() {
@@ -84,6 +84,6 @@ func TestDenied(t *testing.T) {
 		}
 	}
 	if !asks {
-		t.Errorf("the refusal does not ask for the password of the proxy: %v", forward.GetHeaders())
+		t.Errorf("no Proxy-Authenticate header asking for Basic credentials: %v", forward.GetHeaders())
 	}
 }

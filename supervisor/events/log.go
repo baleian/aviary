@@ -12,7 +12,7 @@ import (
 const Start = ""
 
 // ErrGap is returned for a runner message whose predecessor is not recorded.
-var ErrGap = errors.New("the message before this one is not recorded")
+var ErrGap = errors.New("previous message is not recorded")
 
 // Event is an event of a turn. IDs order the events of a turn, and a reader
 // resumes after an ID.

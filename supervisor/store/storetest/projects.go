@@ -41,7 +41,7 @@ func (suite suite) testAgents(t *testing.T) {
 		if agent.ID == uuid.Nil || agent.ID != created.ID || agent.ProjectID != project.ID || agent.Harness != "opencode" ||
 			agent.Instructions != "Be brief." || agent.Approval != "ask" ||
 			!reflect.DeepEqual(agent.Model, given.Model) || agent.CreatedAt.IsZero() || !agent.CreatedAt.Equal(created.CreatedAt) {
-			t.Errorf("the agent is %s as %+v, with the model %+v", how, agent, agent.Model)
+			t.Errorf("%s agent = %+v, model %+v", how, agent, agent.Model)
 		}
 	}
 	// An agent with only a harness.
@@ -51,7 +51,7 @@ func (suite suite) testAgents(t *testing.T) {
 	}
 	if read, err := st.Agent(ctx, plain.ID); err != nil || read.Harness != "codex" || read.Instructions != "" ||
 		read.Approval != "" || read.Model != nil {
-		t.Errorf("the agent with nothing of its own is read as %+v: %v", read, err)
+		t.Errorf("agent with only a harness = %+v: %v", read, err)
 	}
 
 	session, err := st.CreateSession(ctx, created.ID, uuid.Nil)
@@ -60,13 +60,13 @@ func (suite suite) testAgents(t *testing.T) {
 	}
 	if read, err := st.Session(ctx, session.ID); err != nil || read.ID != session.ID || read.AgentID != created.ID ||
 		session.AgentID != created.ID || session.CreatedAt.IsZero() || !read.CreatedAt.Equal(session.CreatedAt) {
-		t.Errorf("the session %+v is read as %+v: %v", session, read, err)
+		t.Errorf("created session %+v, read %+v: %v", session, read, err)
 	}
 }
 
 // Agents lists the agents of a project in creation order, as Agent reads
 // them.
-func (suite suite) testAgentsOfAProject(t *testing.T) {
+func (suite suite) testListAgents(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	project, err := st.CreateProject(ctx, "test")
@@ -78,7 +78,7 @@ func (suite suite) testAgentsOfAProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	if agents, err := st.Agents(ctx, project.ID); err != nil || agents == nil || len(agents) != 0 {
-		t.Errorf("a project without agents has %+v, with the error %v", agents, err)
+		t.Errorf("Agents of a project without agents = %+v, %v, want empty", agents, err)
 	}
 	provider, err := st.CreateProvider(ctx, store.Provider{ID: uuid.New(), ProjectID: project.ID, Name: "a provider", URL: "https://api.example.com/v1"})
 	if err != nil {
@@ -110,7 +110,7 @@ func (suite suite) testAgentsOfAProject(t *testing.T) {
 	} {
 		agents, err := st.Agents(ctx, listed.project)
 		if err != nil || len(agents) != len(listed.agents) {
-			t.Fatalf("the agents of a project with %d are %+v, with the error %v", len(listed.agents), agents, err)
+			t.Fatalf("want %d agents, got %+v: %v", len(listed.agents), agents, err)
 		}
 		for i, agent := range agents {
 			read, err := st.Agent(ctx, listed.agents[i].ID)
@@ -119,7 +119,7 @@ func (suite suite) testAgentsOfAProject(t *testing.T) {
 			}
 			if agent.ID != read.ID || agent.ProjectID != listed.project || agent.Harness != read.Harness || agent.Instructions != read.Instructions ||
 				agent.Approval != read.Approval || !reflect.DeepEqual(agent.Model, read.Model) || !agent.CreatedAt.Equal(read.CreatedAt) {
-				t.Errorf("the agent %d of the project is listed as %+v and read as %+v", i, agent, read)
+				t.Errorf("agent %d: listed %+v, read %+v", i, agent, read)
 			}
 		}
 	}
@@ -127,14 +127,14 @@ func (suite suite) testAgentsOfAProject(t *testing.T) {
 
 // SetSandbox is a compare-and-swap: of several Supervisors that set a
 // session's sandbox at once, one succeeds.
-func (suite suite) testSandboxOfASession(t *testing.T) {
+func (suite suite) testSetSandbox(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	id := st.session()
 	has := func(sandbox string) {
 		t.Helper()
 		if session, err := st.another().Session(ctx, id); err != nil || session.Sandbox != sandbox {
-			t.Errorf("the session has the sandbox %q, not %q: %v", session.Sandbox, sandbox, err)
+			t.Errorf("sandbox = %q, want %q: %v", session.Sandbox, sandbox, err)
 		}
 	}
 	has("")
@@ -155,12 +155,12 @@ func (suite suite) testSandboxOfASession(t *testing.T) {
 	} {
 		set, err := st.SetSandbox(ctx, id, step.from, step.to)
 		if err != nil || set != step.set {
-			t.Errorf("from %q to %q, the session was given the sandbox: %t, %v", step.from, step.to, set, err)
+			t.Errorf("SetSandbox(%q, %q) = %t, %v", step.from, step.to, set, err)
 		}
 		has(step.then)
 	}
 	if _, err := st.SetSandbox(ctx, uuid.New(), "", "sandbox-1"); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("a session that there is not was given a sandbox: %v", err)
+		t.Errorf("SetSandbox of a nonexistent session = %v, want ErrNotFound", err)
 	}
 	// Sessions returns the sandboxes too.
 	session, err := st.Session(ctx, id)
@@ -169,7 +169,7 @@ func (suite suite) testSandboxOfASession(t *testing.T) {
 	}
 	sessions, err := st.Sessions(ctx, session.AgentID, uuid.Nil, uuid.Max, 10)
 	if err != nil || len(sessions) != 1 || sessions[0].Sandbox != "sandbox-3" {
-		t.Errorf("the sessions of the agent are %+v: %v", sessions, err)
+		t.Errorf("Sessions = %+v, want one with sandbox-3: %v", sessions, err)
 	}
 
 	fresh, supervisors := st.session(), st.supervisors(8)
@@ -184,13 +184,13 @@ func (suite suite) testSandboxOfASession(t *testing.T) {
 		}
 	})
 	if given.Load() != 1 {
-		t.Errorf("of eight Supervisors that gave a session its sandbox at once, %d did", given.Load())
+		t.Errorf("%d of 8 concurrent SetSandbox calls succeeded, want 1", given.Load())
 	}
 }
 
 // Sessions pages through the sessions of an agent newest first, all of them
 // or those of one user.
-func (suite suite) testSessionsOfAnAgent(t *testing.T) {
+func (suite suite) testListSessions(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	var users []uuid.UUID
@@ -208,7 +208,7 @@ func (suite suite) testSessionsOfAnAgent(t *testing.T) {
 	}
 	agent := first.AgentID
 	if sessions, err := st.Sessions(ctx, uuid.New(), uuid.Nil, uuid.Max, 10); err != nil || sessions == nil || len(sessions) != 0 {
-		t.Errorf("an agent that there is not has the sessions %+v, with the error %v", sessions, err)
+		t.Errorf("Sessions of a nonexistent agent = %+v, %v, want empty", sessions, err)
 	}
 	// The sessions of the agent, oldest first, created by nobody and by two
 	// users.
@@ -237,32 +237,32 @@ func (suite suite) testSessionsOfAnAgent(t *testing.T) {
 		sessions []int
 	}{
 		{"all", uuid.Nil, uuid.Max, 10, []int{5, 4, 3, 2, 1, 0}},
-		{"as many as there are", uuid.Nil, uuid.Max, 6, []int{5, 4, 3, 2, 1, 0}},
-		{"the newest", uuid.Nil, uuid.Max, 2, []int{5, 4}},
-		{"those before one", uuid.Nil, created[4].ID, 3, []int{3, 2, 1}},
-		{"those before the second", uuid.Nil, created[1].ID, 3, []int{0}},
-		{"those before the first", uuid.Nil, created[0].ID, 3, []int{}},
-		{"those of a user", alice, uuid.Max, 10, []int{5, 3, 1}},
-		{"the newest of a user", alice, uuid.Max, 2, []int{5, 3}},
-		{"those of a user before one of them", alice, created[3].ID, 10, []int{1}},
-		{"those of a user before one of another", alice, created[4].ID, 10, []int{3, 1}},
-		{"those of another user", bob, uuid.Max, 10, []int{2}},
-		{"those of a user who has none", carol, uuid.Max, 10, []int{}},
+		{"limit equal to count", uuid.Nil, uuid.Max, 6, []int{5, 4, 3, 2, 1, 0}},
+		{"newest", uuid.Nil, uuid.Max, 2, []int{5, 4}},
+		{"before a session", uuid.Nil, created[4].ID, 3, []int{3, 2, 1}},
+		{"before the second", uuid.Nil, created[1].ID, 3, []int{0}},
+		{"before the first", uuid.Nil, created[0].ID, 3, []int{}},
+		{"by user", alice, uuid.Max, 10, []int{5, 3, 1}},
+		{"newest by user", alice, uuid.Max, 2, []int{5, 3}},
+		{"by user before own session", alice, created[3].ID, 10, []int{1}},
+		{"by user before another user's session", alice, created[4].ID, 10, []int{3, 1}},
+		{"by another user", bob, uuid.Max, 10, []int{2}},
+		{"by user without sessions", carol, uuid.Max, 10, []int{}},
 	} {
 		sessions, err := st.Sessions(ctx, agent, listed.by, listed.before, listed.limit)
 		if err != nil || sessions == nil {
-			t.Fatalf("%s: the sessions are %+v, with the error %v", listed.what, sessions, err)
+			t.Fatalf("%s: Sessions = %+v, %v", listed.what, sessions, err)
 		}
 		var answer []int
 		for _, session := range sessions {
 			at := slices.IndexFunc(created, func(one store.Session) bool { return one.ID == session.ID })
 			if at < 0 || session.AgentID != agent || session.CreatedBy != created[at].CreatedBy || !session.CreatedAt.Equal(created[at].CreatedAt) {
-				t.Errorf("%s: a session is listed as %+v", listed.what, session)
+				t.Errorf("%s: unexpected session %+v", listed.what, session)
 			}
 			answer = append(answer, at)
 		}
 		if !slices.Equal(answer, listed.sessions) {
-			t.Errorf("%s: the sessions are %v, not %v", listed.what, answer, listed.sessions)
+			t.Errorf("%s: sessions = %v, want %v", listed.what, answer, listed.sessions)
 		}
 	}
 }
@@ -274,7 +274,7 @@ func (suite suite) testEndSession(t *testing.T) {
 	st := suite.open(t)
 	id := st.session()
 	if set, err := st.SetSandbox(ctx, id, "", "sandbox-1"); err != nil || !set {
-		t.Fatalf("the session was not given its sandbox: %v", err)
+		t.Fatalf("SetSandbox did not set the sandbox: %v", err)
 	}
 
 	// A session with an unfinished turn cannot be ended.
@@ -282,19 +282,19 @@ func (suite suite) testEndSession(t *testing.T) {
 	busy := func(turn string) {
 		t.Helper()
 		if _, err := st.EndSession(ctx, id); !errors.Is(err, store.ErrSessionBusy) {
-			t.Errorf("a session with a turn that %s was ended: %v", turn, err)
+			t.Errorf("EndSession with a %s turn = %v, want ErrSessionBusy", turn, err)
 		}
 		if session, err := st.another().Session(ctx, id); err != nil || session.EndedAt != nil {
-			t.Errorf("a session with a turn that %s ended at %v: %v", turn, session.EndedAt, err)
+			t.Errorf("session with a %s turn ended at %v: %v", turn, session.EndedAt, err)
 		}
 	}
-	busy("waits to run")
+	busy("queued")
 	dispatch := st.dispatch()
-	busy("waits to be followed")
+	busy("dispatched")
 	if _, err := st.FollowTurn(ctx, dispatch.TurnID); err != nil {
 		t.Fatal(err)
 	}
-	busy("runs")
+	busy("running")
 	st.end(dispatch.TurnID, true, store.Failure{})
 
 	ended, err := st.EndSession(ctx, id)
@@ -302,12 +302,12 @@ func (suite suite) testEndSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	if ended.ID != id || ended.EndedAt == nil || ended.EndedAt.Before(ended.CreatedAt) || ended.Sandbox != "sandbox-1" {
-		t.Fatalf("the session was ended as %+v, at %v", ended, ended.EndedAt)
+		t.Fatalf("EndSession = %+v, ended at %v", ended, ended.EndedAt)
 	}
 	// Ending it again returns it as it ended.
 	again, err := st.another().EndSession(ctx, id)
 	if err != nil || again.EndedAt == nil || !again.EndedAt.Equal(*ended.EndedAt) || again.Sandbox != "sandbox-1" {
-		t.Errorf("the session that was ended again is %+v, ended at %v and not at %v: %v", again, again.EndedAt, ended.EndedAt, err)
+		t.Errorf("second EndSession = %+v, ended at %v, want %v: %v", again, again.EndedAt, ended.EndedAt, err)
 	}
 	// Session and Sessions return it ended too.
 	read, err := st.another().Session(ctx, id)
@@ -316,38 +316,38 @@ func (suite suite) testEndSession(t *testing.T) {
 	}
 	sessions, err := st.Sessions(ctx, ended.AgentID, uuid.Nil, uuid.Max, 10)
 	if err != nil || len(sessions) != 1 {
-		t.Fatalf("the sessions of the agent are %+v: %v", sessions, err)
+		t.Fatalf("Sessions = %+v, want one: %v", sessions, err)
 	}
 	for how, session := range map[string]store.Session{"read": read, "listed": sessions[0]} {
 		if session.EndedAt == nil || !session.EndedAt.Equal(*ended.EndedAt) {
-			t.Errorf("the session is %s as ended at %v, not at %v", how, session.EndedAt, ended.EndedAt)
+			t.Errorf("%s session ended at %v, want %v", how, session.EndedAt, ended.EndedAt)
 		}
 	}
 
 	// It refuses messages with ErrSessionEnded, even when the queue is full.
 	if _, _, err := st.CreateTurn(ctx, id, uuid.Nil, "again", 0, 50); !errors.Is(err, store.ErrSessionEnded) {
-		t.Errorf("a session that has ended took a message: %v", err)
+		t.Errorf("CreateTurn on an ended session = %v, want ErrSessionEnded", err)
 	}
 	st.queue(st.session())
 	if _, _, err := st.CreateTurn(ctx, id, uuid.Nil, "again", 1, 0); !errors.Is(err, store.ErrSessionEnded) {
-		t.Errorf("a session that has ended took a message when too many turns waited: %v", err)
+		t.Errorf("CreateTurn on an ended session with a full queue = %v, want ErrSessionEnded", err)
 	}
 	if turns, err := st.Turns(ctx, id, math.MaxInt32, 10); err != nil || len(turns) != 1 || turns[0].ID != dispatch.TurnID {
-		t.Errorf("the turns of the session that has ended are %+v: %v", turns, err)
+		t.Errorf("Turns of the ended session = %+v: %v", turns, err)
 	}
 
 	// A session without turns can be ended; a missing one cannot.
 	if fresh, err := st.EndSession(ctx, st.session()); err != nil || fresh.EndedAt == nil || fresh.Sandbox != "" {
-		t.Errorf("a session without turns was ended as %+v, at %v: %v", fresh, fresh.EndedAt, err)
+		t.Errorf("EndSession of a session without turns = %+v, ended at %v: %v", fresh, fresh.EndedAt, err)
 	}
 	if _, err := st.EndSession(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("a session that there is not was ended: %v", err)
+		t.Errorf("EndSession of a nonexistent session = %v, want ErrNotFound", err)
 	}
 }
 
 // Concurrent ends and messages never leave an ended session with an
 // unfinished turn.
-func (suite suite) testSupervisorsEndASessionWhileMessagesCome(t *testing.T) {
+func (suite suite) testConcurrentEndSessionAndCreateTurn(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	supervisors := st.supervisors(8)
@@ -384,7 +384,7 @@ func (suite suite) testSupervisorsEndASessionWhileMessagesCome(t *testing.T) {
 		all := int32(len(supervisors) / 2)
 		if session.EndedAt != nil && (len(turns) != 0 || accepted.Load() != 0 || ended.Load() != all) ||
 			session.EndedAt == nil && (len(turns) != 1 || accepted.Load() != 1 || ended.Load() != 0) {
-			t.Fatalf("a session that four Supervisors ended and four sent a message at once ended at %v with %d turns: %d ended it, and %d messages were taken",
+			t.Fatalf("concurrent EndSession and CreateTurn: session ended at %v with %d turns, %d ends and %d messages succeeded",
 				session.EndedAt, len(turns), ended.Load(), accepted.Load())
 		}
 	}
@@ -400,7 +400,7 @@ func (suite suite) testProviders(t *testing.T) {
 	}
 	if read, err := st.Project(ctx, project.ID); err != nil || read.ID != project.ID || read.Name != "test" || project.Name != "test" ||
 		project.CreatedAt.IsZero() || !read.CreatedAt.Equal(project.CreatedAt) {
-		t.Errorf("the project %+v is read as %+v: %v", project, read, err)
+		t.Errorf("created project %+v, read %+v: %v", project, read, err)
 	}
 
 	given := store.Provider{ID: uuid.New(), ProjectID: project.ID, Name: "a provider", URL: "https://api.example.com/v1", APIKey: []byte("a sealed key")}
@@ -410,10 +410,10 @@ func (suite suite) testProviders(t *testing.T) {
 	}
 	if created.ID != given.ID || created.ProjectID != project.ID || created.Name != given.Name || created.URL != given.URL ||
 		!bytes.Equal(created.APIKey, given.APIKey) || created.CreatedAt.IsZero() || !created.UpdatedAt.Equal(created.CreatedAt) {
-		t.Errorf("the provider was created as %+v", created)
+		t.Errorf("CreateProvider = %+v", created)
 	}
 	if read, err := st.Provider(ctx, given.ID); err != nil || !same(read, created) {
-		t.Errorf("the provider is read as %+v, not as %+v: %v", read, created, err)
+		t.Errorf("Provider = %+v, want %+v: %v", read, created, err)
 	}
 
 	// A provider given no key has none afterwards.
@@ -423,36 +423,36 @@ func (suite suite) testProviders(t *testing.T) {
 	}
 	if replaced.ID != given.ID || replaced.ProjectID != project.ID || replaced.Name != "renamed" || replaced.URL != "http://model.example.com:8000" ||
 		string(replaced.APIKey) != "another" || !replaced.CreatedAt.Equal(created.CreatedAt) || !replaced.UpdatedAt.After(created.UpdatedAt) {
-		t.Errorf("the provider was replaced with %+v, and was %+v", replaced, created)
+		t.Errorf("ReplaceProvider = %+v, was %+v", replaced, created)
 	}
 	keyless, err := st.ReplaceProvider(ctx, store.Provider{ID: given.ID, Name: "renamed", URL: "http://model.example.com:8000"})
 	if err != nil || keyless.APIKey != nil {
-		t.Errorf("the provider that was given no key is %+v: %v", keyless, err)
+		t.Errorf("ReplaceProvider without a key = %+v: %v", keyless, err)
 	}
 	if read, err := st.Provider(ctx, given.ID); err != nil || !same(read, keyless) {
-		t.Errorf("the replaced provider is read as %+v, not as %+v: %v", read, keyless, err)
+		t.Errorf("Provider after ReplaceProvider = %+v, want %+v: %v", read, keyless, err)
 	}
 	// A provider cannot be created twice.
 	if _, err := st.CreateProvider(ctx, given); err == nil {
-		t.Error("a provider was created a second time")
+		t.Error("second CreateProvider with the same ID succeeded")
 	}
 	// A provider without a key has a nil key, not an empty one.
 	local, err := st.CreateProvider(ctx, store.Provider{ID: uuid.New(), ProjectID: project.ID, Name: "local", URL: "http://10.0.0.5:8000/v1"})
 	if err != nil || local.APIKey != nil {
-		t.Errorf("the provider without a key was created as %+v: %v", local, err)
+		t.Errorf("CreateProvider without a key = %+v: %v", local, err)
 	}
 
 	none := uuid.New()
 	for name, err := range map[string]error{
-		"a provider that is not there":           second(st.Provider(ctx, none)),
-		"the replacement of one that is not":     second(st.ReplaceProvider(ctx, store.Provider{ID: none, Name: "a provider", URL: "https://api.example.com"})),
-		"a provider of a project that is not":    second(st.CreateProvider(ctx, store.Provider{ID: uuid.New(), ProjectID: none, Name: "a provider", URL: "https://api.example.com"})),
-		"a secret store that is not there":       second(st.SecretStore(ctx, none)),
-		"the replacement of a store that is not": second(st.ReplaceSecretStore(ctx, store.SecretStore{ID: none, Name: "a store", Kind: "a kind", Settings: json.RawMessage(`{}`), Credential: []byte("sealed")})),
-		"a store of a project that is not":       second(st.CreateSecretStore(ctx, store.SecretStore{ID: uuid.New(), ProjectID: none, Name: "a store", Kind: "a kind", Settings: json.RawMessage(`{}`), Credential: []byte("sealed")})),
+		"Provider":           second(st.Provider(ctx, none)),
+		"ReplaceProvider":    second(st.ReplaceProvider(ctx, store.Provider{ID: none, Name: "a provider", URL: "https://api.example.com"})),
+		"CreateProvider":     second(st.CreateProvider(ctx, store.Provider{ID: uuid.New(), ProjectID: none, Name: "a provider", URL: "https://api.example.com"})),
+		"SecretStore":        second(st.SecretStore(ctx, none)),
+		"ReplaceSecretStore": second(st.ReplaceSecretStore(ctx, store.SecretStore{ID: none, Name: "a store", Kind: "a kind", Settings: json.RawMessage(`{}`), Credential: []byte("sealed")})),
+		"CreateSecretStore":  second(st.CreateSecretStore(ctx, store.SecretStore{ID: uuid.New(), ProjectID: none, Name: "a store", Kind: "a kind", Settings: json.RawMessage(`{}`), Credential: []byte("sealed")})),
 	} {
 		if !errors.Is(err, store.ErrNotFound) {
-			t.Errorf("%s: %v", name, err)
+			t.Errorf("%s = %v, want ErrNotFound", name, err)
 		}
 	}
 }
@@ -466,7 +466,7 @@ func same(one, other store.Provider) bool {
 }
 
 // The key of a provider can be in a secret store instead of stored.
-func (suite suite) testKeyInASecretStore(t *testing.T) {
+func (suite suite) testProviderKeyInSecretStore(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	project, err := st.CreateProject(ctx, "test")
@@ -485,37 +485,37 @@ func (suite suite) testKeyInASecretStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	if created.APIKey != nil || !reflect.DeepEqual(created.APIKeyAt, at) {
-		t.Errorf("the provider whose key is in a secret store was created as %+v, with its key at %+v", created, created.APIKeyAt)
+		t.Errorf("CreateProvider = %+v, key at %+v", created, created.APIKeyAt)
 	}
 	if read, err := st.Provider(ctx, created.ID); err != nil || !same(read, created) {
-		t.Errorf("the provider is read as %+v, not as %+v: %v", read, created, err)
+		t.Errorf("Provider = %+v, want %+v: %v", read, created, err)
 	}
 
 	// Replacing switches between a stored key and one in a secret store.
 	replacement := store.Provider{ID: created.ID, Name: "a provider", URL: "https://api.example.com/v1", APIKey: []byte("a sealed key")}
 	if stored, err := st.ReplaceProvider(ctx, replacement); err != nil || stored.APIKeyAt != nil || string(stored.APIKey) != "a sealed key" {
-		t.Errorf("the provider that was given a key to store is %+v, with its key at %+v: %v", stored, stored.APIKeyAt, err)
+		t.Errorf("ReplaceProvider with a stored key = %+v, key at %+v: %v", stored, stored.APIKeyAt, err)
 	}
 	elsewhere := &store.SecretReference{Store: secrets.ID, Path: "llm/another", Key: "key"}
 	replacement.APIKey, replacement.APIKeyAt = nil, elsewhere
 	if kept, err := st.ReplaceProvider(ctx, replacement); err != nil || kept.APIKey != nil || !reflect.DeepEqual(kept.APIKeyAt, elsewhere) {
-		t.Errorf("the provider that was given a key in a secret store is %+v, with its key at %+v: %v", kept, kept.APIKeyAt, err)
+		t.Errorf("ReplaceProvider with a key in a secret store = %+v, key at %+v: %v", kept, kept.APIKeyAt, err)
 	}
 	if read, err := st.Provider(ctx, created.ID); err != nil || read.APIKey != nil || !reflect.DeepEqual(read.APIKeyAt, elsewhere) {
-		t.Errorf("the replaced provider is read as %+v, with its key at %+v: %v", read, read.APIKeyAt, err)
+		t.Errorf("Provider after ReplaceProvider = %+v, key at %+v: %v", read, read.APIKeyAt, err)
 	}
 
 	// The secret store of the key must exist.
 	nowhere := &store.SecretReference{Store: uuid.New(), Path: "llm/a-provider", Key: "api_key"}
 	if _, err := st.CreateProvider(ctx, store.Provider{ID: uuid.New(), ProjectID: project.ID, Name: "another", URL: "https://api.example.com/v1", APIKeyAt: nowhere}); err == nil {
-		t.Error("a provider was created whose key is in a secret store that there is not")
+		t.Error("CreateProvider succeeded with a key in a nonexistent secret store")
 	}
 	replacement.APIKeyAt = nowhere
 	if _, err := st.ReplaceProvider(ctx, replacement); err == nil {
-		t.Error("a provider was given a key in a secret store that there is not")
+		t.Error("ReplaceProvider succeeded with a key in a nonexistent secret store")
 	}
 	if read, err := st.Provider(ctx, created.ID); err != nil || !reflect.DeepEqual(read.APIKeyAt, elsewhere) {
-		t.Errorf("after that, the provider has its key at %+v: %v", read.APIKeyAt, err)
+		t.Errorf("APIKeyAt after a failed ReplaceProvider = %+v, want unchanged: %v", read.APIKeyAt, err)
 	}
 
 	// The origin of a running turn has the location of the provider's key,
@@ -534,11 +534,11 @@ func (suite suite) testKeyInASecretStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	if origin.Provider == nil || origin.Provider.APIKey != nil || !reflect.DeepEqual(origin.Provider.APIKeyAt, elsewhere) {
-		t.Errorf("the turn of the session has the provider %+v", origin.Provider)
+		t.Errorf("SessionTurn provider = %+v", origin.Provider)
 	}
 	if in := origin.SecretStore; in == nil || in.ID != secrets.ID || in.ProjectID != project.ID || in.Name != "a store" || in.Kind != "a kind" ||
 		!keeps(t, in.Settings, `{"where": "there"}`) || string(in.Credential) != "sealed" || !in.UpdatedAt.Equal(secrets.UpdatedAt) {
-		t.Errorf("the key of the provider is in the secret store %+v", in)
+		t.Errorf("SessionTurn secret store = %+v", in)
 	}
 	moved, err := st.ReplaceSecretStore(ctx, store.SecretStore{
 		ID: secrets.ID, Name: "a store", Kind: "another kind", Settings: json.RawMessage(`{"where": "elsewhere"}`), Credential: []byte("another"),
@@ -549,13 +549,13 @@ func (suite suite) testKeyInASecretStore(t *testing.T) {
 	origin, err = st.another().SessionTurn(ctx, session.ID)
 	if in := origin.SecretStore; err != nil || in == nil || in.Kind != "another kind" || !keeps(t, in.Settings, `{"where": "elsewhere"}`) ||
 		string(in.Credential) != "another" || !in.UpdatedAt.Equal(moved.UpdatedAt) || !in.UpdatedAt.After(secrets.UpdatedAt) {
-		t.Errorf("after the secret store was replaced, the key of the provider is in %+v: %v", in, err)
+		t.Errorf("SessionTurn secret store after ReplaceSecretStore = %+v: %v", in, err)
 	}
 }
 
 // SessionTurn returns the origin of the turn that runs in a session, with the
 // current provider of its agent and the secret store of the provider's key.
-func (suite suite) testTurnOfASession(t *testing.T) {
+func (suite suite) testSessionTurn(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	project, err := st.CreateProject(ctx, "test")
@@ -583,7 +583,7 @@ func (suite suite) testTurnOfASession(t *testing.T) {
 	notFound := func(session uuid.UUID, what string) {
 		t.Helper()
 		if _, err := st.another().SessionTurn(ctx, session); !errors.Is(err, store.ErrNotFound) {
-			t.Errorf("%s: %v", what, err)
+			t.Errorf("%s: SessionTurn = %v, want ErrNotFound", what, err)
 		}
 	}
 
@@ -591,9 +591,9 @@ func (suite suite) testTurnOfASession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	notFound(session.ID, "a session whose turn waits to run")
+	notFound(session.ID, "queued turn")
 	st.dispatch()
-	notFound(session.ID, "a session whose turn no Supervisor follows")
+	notFound(session.ID, "unfollowed dispatched turn")
 	if _, err := st.FollowTurn(ctx, turn.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -604,9 +604,9 @@ func (suite suite) testTurnOfASession(t *testing.T) {
 	if origin.TurnID != turn.ID || origin.SessionID != session.ID || origin.AgentID != agent.ID || origin.ProjectID != project.ID ||
 		origin.UserID != sender.ID || origin.Subject != "subject-of-ann" || origin.Provider == nil || origin.Provider.ID != provider.ID ||
 		origin.Provider.URL != provider.URL || string(origin.Provider.APIKey) != "a sealed key" || origin.Provider.APIKeyAt != nil || origin.SecretStore != nil {
-		t.Errorf("the turn of the session comes from %+v, with the provider %+v", origin, origin.Provider)
+		t.Errorf("SessionTurn = %+v, provider %+v", origin, origin.Provider)
 	}
-	notFound(uuid.New(), "a session that there is not")
+	notFound(uuid.New(), "nonexistent session")
 
 	// The key of the provider moves to a secret store while the turn runs.
 	secrets, err := st.CreateSecretStore(ctx, store.SecretStore{
@@ -622,16 +622,16 @@ func (suite suite) testTurnOfASession(t *testing.T) {
 	origin, err = st.another().SessionTurn(ctx, session.ID)
 	if err != nil || origin.Provider == nil || origin.Provider.URL != "https://api.example.com/v2" || origin.Provider.APIKey != nil ||
 		!reflect.DeepEqual(origin.Provider.APIKeyAt, at) {
-		t.Errorf("after its provider was replaced, the turn of the session has the provider %+v: %v", origin.Provider, err)
+		t.Errorf("SessionTurn provider after ReplaceProvider = %+v: %v", origin.Provider, err)
 	}
 	if in := origin.SecretStore; in == nil || in.ID != secrets.ID || in.ProjectID != project.ID || in.Kind != "a kind" ||
 		!keeps(t, in.Settings, `{"where": "there"}`) || string(in.Credential) != "sealed" || !in.UpdatedAt.Equal(secrets.UpdatedAt) {
-		t.Errorf("the key of the provider is in the secret store %+v", in)
+		t.Errorf("SessionTurn secret store = %+v", in)
 	}
 
 	// Once the turn has ended, no turn runs in the session.
 	st.end(turn.ID, true, store.Failure{})
-	notFound(session.ID, "a session whose turn has ended")
+	notFound(session.ID, "ended turn")
 }
 
 // second returns the error of a call that returns a value and an error.
@@ -659,12 +659,12 @@ func (suite suite) testSecretStores(t *testing.T) {
 	if created.ID != given.ID || created.ProjectID != project.ID || created.Name != given.Name || created.Kind != given.Kind ||
 		!keeps(t, created.Settings, string(given.Settings)) || !bytes.Equal(created.Credential, given.Credential) ||
 		created.CreatedAt.IsZero() || !created.UpdatedAt.Equal(created.CreatedAt) {
-		t.Errorf("the secret store was created as %+v", created)
+		t.Errorf("CreateSecretStore = %+v", created)
 	}
 	read, err := st.SecretStore(ctx, given.ID)
 	if err != nil || read.Name != created.Name || read.Kind != created.Kind || !keeps(t, read.Settings, string(given.Settings)) ||
 		!bytes.Equal(read.Credential, given.Credential) || !read.CreatedAt.Equal(created.CreatedAt) {
-		t.Errorf("the secret store is read as %+v: %v", read, err)
+		t.Errorf("SecretStore = %+v: %v", read, err)
 	}
 
 	replaced, err := st.ReplaceSecretStore(ctx, store.SecretStore{
@@ -676,13 +676,13 @@ func (suite suite) testSecretStores(t *testing.T) {
 	if replaced.ID != given.ID || replaced.ProjectID != project.ID || replaced.Name != "renamed" || replaced.Kind != "another kind" ||
 		!keeps(t, replaced.Settings, `{"region": "here"}`) || string(replaced.Credential) != "another" ||
 		!replaced.CreatedAt.Equal(created.CreatedAt) || !replaced.UpdatedAt.After(created.UpdatedAt) {
-		t.Errorf("the secret store was replaced with %+v, and was %+v", replaced, created)
+		t.Errorf("ReplaceSecretStore = %+v, was %+v", replaced, created)
 	}
 }
 
 // A followed turn has the provider URL and the model of its agent, and the
 // origin of a running turn has the current provider.
-func (suite suite) testModelOfAnAgent(t *testing.T) {
+func (suite suite) testAgentModel(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	project, err := st.CreateProject(ctx, "test")
@@ -705,7 +705,7 @@ func (suite suite) testModelOfAnAgent(t *testing.T) {
 		}
 		if read, err := st.Agent(ctx, agent.ID); err != nil || read.ID != agent.ID || read.ProjectID != project.ID ||
 			!reflect.DeepEqual(read.Model, model) || !reflect.DeepEqual(agent.Model, model) {
-			t.Errorf("the agent with the model %+v is %+v and is read as %+v: %v", model, agent, read, err)
+			t.Errorf("agent with model %+v: created %+v, read %+v: %v", model, agent, read, err)
 		}
 		session, err := st.CreateSession(ctx, agent.ID, uuid.Nil)
 		if err != nil {
@@ -721,7 +721,7 @@ func (suite suite) testModelOfAnAgent(t *testing.T) {
 
 	agent, held, followed := session(&store.Model{Provider: provider.ID, Name: "a-model"})
 	if followed.ProviderURL != provider.URL || followed.Model != "a-model" || followed.AgentID != agent.ID || followed.ProjectID != project.ID {
-		t.Errorf("the turn of an agent that names its model is followed as %+v", followed)
+		t.Errorf("FollowTurn for an agent with a model = %+v", followed)
 	}
 	origin, err := st.SessionTurn(ctx, held.ID)
 	if err != nil {
@@ -730,11 +730,11 @@ func (suite suite) testModelOfAnAgent(t *testing.T) {
 	if origin.TurnID != followed.ID || origin.SessionID != held.ID || origin.AgentID != agent.ID || origin.ProjectID != project.ID ||
 		origin.Provider == nil || origin.Provider.ID != provider.ID || origin.Provider.URL != provider.URL || string(origin.Provider.APIKey) != "a sealed key" ||
 		origin.Provider.APIKeyAt != nil || origin.SecretStore != nil {
-		t.Errorf("the turn of the session comes from %+v, with the provider %+v", origin, origin.Provider)
+		t.Errorf("SessionTurn = %+v, provider %+v", origin, origin.Provider)
 	}
 	// The provider of the model must exist.
 	if _, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: &store.Model{Provider: uuid.New(), Name: "a-model"}}); err == nil {
-		t.Error("an agent was created that names a provider that there is not")
+		t.Error("CreateAgent succeeded with a nonexistent provider")
 	}
 	// The provider is replaced while a turn uses it.
 	if _, err := st.ReplaceProvider(ctx, store.Provider{ID: provider.ID, Name: "a provider", URL: "http://model.example.com:8000"}); err != nil {
@@ -742,21 +742,21 @@ func (suite suite) testModelOfAnAgent(t *testing.T) {
 	}
 	origin, err = st.another().SessionTurn(ctx, held.ID)
 	if err != nil || origin.Provider == nil || origin.Provider.URL != "http://model.example.com:8000" || origin.Provider.APIKey != nil {
-		t.Errorf("after its provider was replaced, the turn of the session comes from %+v, with the provider %+v: %v", origin, origin.Provider, err)
+		t.Errorf("SessionTurn after ReplaceProvider = %+v, provider %+v: %v", origin, origin.Provider, err)
 	}
 
 	// An agent that names no model.
 	_, other, plain := session(nil)
 	if plain.ProviderURL != "" || plain.Model != "" {
-		t.Errorf("the turn of an agent that names no model is followed as %+v", plain)
+		t.Errorf("FollowTurn for an agent without a model = %+v", plain)
 	}
 	if origin, err := st.SessionTurn(ctx, other.ID); err != nil || origin.TurnID != plain.ID || origin.Provider != nil {
-		t.Errorf("the turn of the session of an agent that names no model comes from %+v: %v", origin, err)
+		t.Errorf("SessionTurn for an agent without a model = %+v: %v", origin, err)
 	}
 
 	// SessionTurn finds a turn only while it runs.
 	st.end(followed.ID, true, store.Failure{})
 	if _, err := st.SessionTurn(ctx, held.ID); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("the session of a turn that has ended: %v", err)
+		t.Errorf("SessionTurn after the turn ended = %v, want ErrNotFound", err)
 	}
 }

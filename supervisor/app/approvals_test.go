@@ -46,7 +46,7 @@ func TestApproval(t *testing.T) {
 	accepted := following.send(session, "hello")
 	runner := aviary.given(accepted.ID)
 	if runner.Approval != "ask" || runner.Environment["AVIARY_APPROVAL"] != "ask" {
-		t.Errorf("the runner of a turn of an agent with approval is given %+v", runner.Turn)
+		t.Errorf("runner turn = %+v, want approval ask", runner.Turn)
 	}
 	// Started after the dispatch, so that the other Supervisor follows the
 	// turn.
@@ -54,37 +54,37 @@ func TestApproval(t *testing.T) {
 	runner.report(started("harness-session"))
 	watching := asked.watch(accepted.ID)
 	if waiting := asked.waiting(accepted.ID); len(waiting) != 0 {
-		t.Errorf("a turn whose harness has asked nothing shows the requests %v", waiting)
+		t.Errorf("pending approvals = %v, want none", waiting)
 	}
 
 	runner.report(asks("1", "rm -r build"))
 	runner.report(asks("2", "git push"))
 	if waiting := asked.waiting(accepted.ID); !slices.Equal(waiting, []string{"1", "2"}) {
-		t.Errorf("the turn shows the requests %v as waiting", waiting)
+		t.Errorf("pending approvals = %v, want [1 2]", waiting)
 	}
 
 	// The answer reaches the runner through the Supervisor that follows the
 	// turn.
 	status, reply := asked.approve(accepted.ID, "2", `{"option_id": "once"}`)
 	if status != http.StatusAccepted || reply["id"] != "2" || reply["option_id"] != "once" {
-		t.Errorf("the answer to a request was answered with %d %v", status, reply)
+		t.Errorf("approve = %d %v, want 202", status, reply)
 	}
 	if id, option := runner.answer(); id != "2" || option != "once" {
-		t.Errorf("the runner was given the answer %q to the request %q", option, id)
+		t.Errorf("runner got option %q for request %q", option, id)
 	}
 	// The request is no longer pending, and a second answer is refused.
 	if waiting := following.waiting(accepted.ID); !slices.Equal(waiting, []string{"1"}) {
-		t.Errorf("after an answer the turn shows the requests %v as waiting", waiting)
+		t.Errorf("pending approvals after an answer = %v, want [1]", waiting)
 	}
 	if status, reply := following.approve(accepted.ID, "2", `{"option_id": "never"}`); status != http.StatusConflict || reply["code"] != "approval_answered" {
-		t.Errorf("a second answer to a request was answered with %d %v", status, reply)
+		t.Errorf("second answer = %d %v, want 409 approval_answered", status, reply)
 	}
 	runner.report(answered("2", "selected", "once"))
 
 	// The harness cancels the other request, as when the turn is stopped.
 	runner.report(answered("1", "cancelled", ""))
 	if status, reply := asked.approve(accepted.ID, "1", `{"option_id": "once"}`); status != http.StatusConflict || reply["code"] != "approval_answered" {
-		t.Errorf("an answer to a request that the harness waits for no longer was answered with %d %v", status, reply)
+		t.Errorf("answer to a cancelled request = %d %v, want 409 approval_answered", status, reply)
 	}
 	runner.report(finished("end_turn", nil))
 
@@ -93,7 +93,7 @@ func TestApproval(t *testing.T) {
 		"turn.started", "approval.requested", "approval.requested", "approval.resolved", "approval.resolved", "turn.completed",
 	}
 	if !slices.Equal(types(events), expected) {
-		t.Fatalf("the events of the turn are %v, not %v", types(events), expected)
+		t.Fatalf("event types = %v, want %v", types(events), expected)
 	}
 	of := func(kind string) []event {
 		var of []event
@@ -113,14 +113,14 @@ func TestApproval(t *testing.T) {
 	if err := json.Unmarshal([]byte(first), &request); err != nil || request.ID != "1" ||
 		request.ToolCall.ID != "call-1" || request.ToolCall.Title != "rm -r build" ||
 		len(request.Options) != 2 || request.Options[0].ID != "once" || request.Options[0].Kind != "allow_once" || request.Options[0].Name != "Once" {
-		t.Errorf("the request for approval is told as %s: %v", first, err)
+		t.Errorf("unexpected approval.requested data %s: %v", first, err)
 	}
 	var resolved map[string]string
 	selected := of("approval.resolved")[0].Data
 	// Without an identity provider, the answer has no answered_by.
 	if err := json.Unmarshal([]byte(selected), &resolved); err != nil || len(resolved) != 3 ||
 		resolved["id"] != "2" || resolved["outcome"] != "selected" || resolved["option_id"] != "once" {
-		t.Errorf("the answer to a request is told as %s: %v", selected, err)
+		t.Errorf("unexpected approval.resolved data %s: %v", selected, err)
 	}
 
 	// The record keeps each request with its outcome, and an ended turn has
@@ -129,7 +129,7 @@ func TestApproval(t *testing.T) {
 	kept := items(t, record)
 	if len(kept) != 2 || kept[0]["type"] != "approval" || kept[0]["id"] != "1" || kept[0]["outcome"] != "cancelled" ||
 		kept[1]["id"] != "2" || kept[1]["outcome"] != "selected" || kept[1]["option_id"] != "once" || record.Approvals != nil {
-		t.Errorf("the record of the turn has the items %v and the requests %s", kept, record.Approvals)
+		t.Errorf("turn items = %v, approvals = %s", kept, record.Approvals)
 	}
 }
 
@@ -148,31 +148,31 @@ func TestApprovalRefusals(t *testing.T) {
 		status              int
 		code                string
 	}{
-		"an option that the harness does not take": {accepted.ID, "1", `{"option_id": "always"}`, http.StatusBadRequest, "invalid_request"},
-		"no option":                   {accepted.ID, "1", `{}`, http.StatusBadRequest, "invalid_request"},
-		"a field that there is not":   {accepted.ID, "1", `{"option_id": "once", "id": "2"}`, http.StatusBadRequest, "invalid_request"},
-		"no body":                     {accepted.ID, "1", ``, http.StatusBadRequest, "invalid_request"},
-		"a request that there is not": {accepted.ID, "2", `{"option_id": "once"}`, http.StatusNotFound, "not_found"},
-		"a turn that there is not":    {"01a1e000-0000-7000-8000-000000000000", "1", `{"option_id": "once"}`, http.StatusNotFound, "not_found"},
-		"a turn ID that is none":      {"turn", "1", `{"option_id": "once"}`, http.StatusNotFound, "not_found"},
+		"unknown option":  {accepted.ID, "1", `{"option_id": "always"}`, http.StatusBadRequest, "invalid_request"},
+		"no option":       {accepted.ID, "1", `{}`, http.StatusBadRequest, "invalid_request"},
+		"unknown field":   {accepted.ID, "1", `{"option_id": "once", "id": "2"}`, http.StatusBadRequest, "invalid_request"},
+		"no body":         {accepted.ID, "1", ``, http.StatusBadRequest, "invalid_request"},
+		"unknown request": {accepted.ID, "2", `{"option_id": "once"}`, http.StatusNotFound, "not_found"},
+		"unknown turn":    {"01a1e000-0000-7000-8000-000000000000", "1", `{"option_id": "once"}`, http.StatusNotFound, "not_found"},
+		"invalid turn ID": {"turn", "1", `{"option_id": "once"}`, http.StatusNotFound, "not_found"},
 	} {
 		if status, reply := s.approve(test.turn, test.request, test.body); status != test.status || reply["code"] != test.code {
-			t.Errorf("%s: answered with %d %v, not %d %s", name, status, reply, test.status, test.code)
+			t.Errorf("%s: got %d %v, want %d %s", name, status, reply, test.status, test.code)
 		}
 	}
 	// None of them was accepted.
 	if waiting := s.waiting(accepted.ID); !slices.Equal(waiting, []string{"1"}) {
-		t.Errorf("the turn shows the requests %v as waiting", waiting)
+		t.Errorf("pending approvals = %v, want [1]", waiting)
 	}
 
 	// An ended turn takes no answers.
 	runner.lose()
 	s.follow(accepted.ID)
 	if status, reply := s.approve(accepted.ID, "1", `{"option_id": "once"}`); status != http.StatusConflict || reply["code"] != "turn_ended" {
-		t.Errorf("an answer to a request of a turn that has ended was answered with %d %v", status, reply)
+		t.Errorf("answer after the turn ended = %d %v, want 409 turn_ended", status, reply)
 	}
 	if waiting := s.waiting(accepted.ID); len(waiting) != 0 {
-		t.Errorf("a turn that has ended shows the requests %v as waiting", waiting)
+		t.Errorf("pending approvals of an ended turn = %v, want none", waiting)
 	}
 }
 
@@ -189,15 +189,15 @@ func TestApprovalWithoutAnnouncement(t *testing.T) {
 	// Record the answer as the API does, without announcing it.
 	answered, err := aviary.records.AnswerApproval(context.Background(), uuid.MustParse(accepted.ID), "1", "never", uuid.Nil)
 	if err != nil || !answered {
-		t.Fatalf("the request was answered %t: %v", answered, err)
+		t.Fatalf("AnswerApproval = %t, %v", answered, err)
 	}
 	if id, option := runner.answer(); id != "1" || option != "never" {
-		t.Errorf("the runner was given the answer %q to the request %q", option, id)
+		t.Errorf(`runner got option %q for request %q, want "never" for "1"`, option, id)
 	}
 	// The answer is delivered again on every sweep until the runner reports
 	// it resolved.
 	if id, option := runner.answer(); id != "1" || option != "never" {
-		t.Errorf("the runner was given again the answer %q to the request %q", option, id)
+		t.Errorf(`redelivered option %q for request %q, want "never" for "1"`, option, id)
 	}
 }
 
@@ -238,7 +238,7 @@ func TestApprovalIsAnsweredBySomeone(t *testing.T) {
 	s.token = "token-of-carol"
 	for _, request := range []string{"1", "2"} {
 		if status, reply := s.approve(accepted.ID, request, `{"option_id": "once"}`); status != http.StatusAccepted {
-			t.Fatalf("the answer to a request was answered with %d %v", status, reply)
+			t.Fatalf("approve = %d %v, want 202", status, reply)
 		}
 		runner.answer()
 	}
@@ -258,13 +258,13 @@ func TestApprovalIsAnsweredBySomeone(t *testing.T) {
 	}
 	if len(resolved) != 2 || resolved[0]["id"] != "1" || resolved[0]["outcome"] != "selected" || resolved[0]["option_id"] != "once" ||
 		resolved[0]["answered_by"] != carol.ID || carol.ID == "" {
-		t.Errorf("the answer of the user %s is told as %v", carol.ID, resolved)
+		t.Errorf("answers by user %s: approval.resolved events = %v", carol.ID, resolved)
 	}
 	if by, told := resolved[len(resolved)-1]["answered_by"]; told {
-		t.Errorf("a request that nobody answered is said to be answered by %v", by)
+		t.Errorf("cancelled request has answered_by %v", by)
 	}
 	kept := items(t, s.turn(accepted.ID))
 	if len(kept) != 2 || kept[0]["id"] != "1" || kept[0]["answered_by"] != carol.ID || kept[1]["answered_by"] != nil {
-		t.Errorf("the record of the turn has the items %v", kept)
+		t.Errorf("turn items = %v", kept)
 	}
 }

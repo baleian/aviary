@@ -79,10 +79,10 @@ func TestReceive(t *testing.T) {
 		}
 	}
 	if err := streams.Receive(ctx, turn, 5, "message.delta", said("five")); !errors.Is(err, events.ErrGap) {
-		t.Errorf("a message that does not follow the last was received with: %v", err)
+		t.Errorf("Receive after a gap = %v, want ErrGap", err)
 	}
 	if received, err := streams.Received(ctx, turn); err != nil || received != 3 {
-		t.Errorf("message %d is the last that is recorded: %v", received, err)
+		t.Errorf("Received = %d, %v; want 3", received, err)
 	}
 	if err := streams.Append(ctx, turn, events.TurnStarted, struct{}{}); err != nil {
 		t.Fatal(err)
@@ -93,19 +93,19 @@ func TestReceive(t *testing.T) {
 	recorded := all(t, streams, turn)
 	expected := []string{`message.delta {"text":"one"}`, `tool.call {"id":"t1","title":"ls"}`, `turn.started {}`, `turn.queued {"position":2}`}
 	if !slices.Equal(texts(recorded), expected) {
-		t.Errorf("the events are %q, not %q", texts(recorded), expected)
+		t.Errorf("events = %q, want %q", texts(recorded), expected)
 	}
 	for _, event := range recorded {
 		if !streams.IsID(event.ID) {
-			t.Errorf("the event has the ID %q", event.ID)
+			t.Errorf("IsID(%q) = false", event.ID)
 		}
 	}
 	if streams.IsID("not an ID") {
-		t.Error("anything is the ID of an event")
+		t.Error(`IsID("not an ID") = true`)
 	}
 	// Data that cannot be encoded as JSON is refused.
 	if err := streams.Receive(ctx, turn, 4, "message.delta", func() {}); err == nil {
-		t.Error("an event whose data is no JSON was received")
+		t.Error("Receive of data that cannot be encoded as JSON succeeded")
 	}
 }
 
@@ -139,7 +139,7 @@ func TestItems(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(items) != 3 {
-		t.Fatalf("the turn has %d items, not a message, a tool call and a message", len(items))
+		t.Fatalf("got %d items, want a message, a tool call and a message", len(items))
 	}
 	for i, expected := range []map[string]string{
 		{"type": "message", "text": strings.Join(before, "")},
@@ -152,12 +152,12 @@ func TestItems(t *testing.T) {
 		}
 		if len(item) != len(expected) || item["type"] != expected["type"] || item["text"] != expected["text"] ||
 			item["id"] != expected["id"] || item["title"] != expected["title"] {
-			t.Errorf("item %d is %.200s", i+1, items[i])
+			t.Errorf("unexpected item %d: %.200s", i+1, items[i])
 		}
 	}
 
 	if items, err := streams.Items(ctx, uuid.New()); err != nil || len(items) != 0 {
-		t.Errorf("a turn without events has the items %s: %v", items, err)
+		t.Errorf("Items of a turn without events = %s, %v", items, err)
 	}
 }
 
@@ -190,7 +190,7 @@ func TestAppendLast(t *testing.T) {
 	}
 	expected := []string{`message.delta {"text":"hello"}`, `turn.completed {"stop_reason":"end_turn"}`}
 	if recorded := texts(all(t, streams, ran.ID)); !slices.Equal(recorded, expected) {
-		t.Errorf("the events of the turn that ended are %q, not %q", recorded, expected)
+		t.Errorf("events = %q, want %q", recorded, expected)
 	}
 	// A turn that never ran has only its last event.
 	waited := store.Turn{ID: uuid.New(), State: store.TurnExpired}
@@ -198,12 +198,12 @@ func TestAppendLast(t *testing.T) {
 		t.Fatal(err)
 	}
 	if recorded := texts(all(t, streams, waited.ID)); !slices.Equal(recorded, []string{`turn.expired {}`}) {
-		t.Errorf("the events of the turn that never ran are %q", recorded)
+		t.Errorf("events of a turn that never ran = %q", recorded)
 	}
 	// The turn's data expires after a grace period for its readers.
 	for _, turn := range []uuid.UUID{ran.ID, waited.ID} {
 		if kept := log.kept[turn]; kept <= 0 || kept > time.Hour {
-			t.Errorf("the log is to keep the turn for %s after its end", kept)
+			t.Errorf("Expire after %s, want a positive duration of at most an hour", kept)
 		}
 	}
 }
@@ -233,14 +233,14 @@ func TestAnnounce(t *testing.T) {
 			select {
 			case got := <-on:
 				if got != turn {
-					t.Errorf("the Supervisor was told of the turn %s", got)
+					t.Errorf("unexpected announced turn %s", got)
 				}
 				return
 			case got := <-other:
-				t.Fatalf("the Supervisor was told of the turn %s on the other channel", got)
+				t.Fatalf("turn %s announced on the wrong channel", got)
 			case <-time.After(20 * time.Millisecond):
 			case <-deadline:
-				t.Fatal("the other Supervisor was not told of the turn")
+				t.Fatal("announcement not received")
 			}
 		}
 	}
@@ -275,12 +275,12 @@ func TestOpen(t *testing.T) {
 			t.Fatalf("%s: %v", address, err)
 		}
 		if err := streams.Append(ctx, uuid.New(), events.TurnStarted, struct{}{}); err != nil {
-			t.Errorf("the log at %s: %v", address, err)
+			t.Errorf("Append to %s: %v", address, err)
 		}
 		streams.Close()
 	}
 	if expected := []string{"first first://host:1", "first firsts://host:2", "second second://user:password@host:3"}; !slices.Equal(opened, expected) {
-		t.Errorf("the plugins connected to %q, not to %q", opened, expected)
+		t.Errorf("opened = %q, want %q", opened, expected)
 	}
 
 	// Errors say why without revealing the password.
@@ -292,10 +292,10 @@ func TestOpen(t *testing.T) {
 	} {
 		_, err := events.Open(address, plugins...)
 		if err == nil || !strings.Contains(err.Error(), why) || strings.Contains(err.Error(), "secret") {
-			t.Errorf("the log at %s was opened with: %v", address, err)
+			t.Errorf("Open(%s) error = %v", address, err)
 		}
 	}
 	if _, err := events.Open("first://host:1"); err == nil {
-		t.Error("a Supervisor without plugins connected to a log")
+		t.Error("Open without plugins succeeded")
 	}
 }

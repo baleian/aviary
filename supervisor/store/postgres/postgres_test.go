@@ -24,7 +24,7 @@ func emptyDatabase(t *testing.T) string {
 	server := testenv.DatabaseURL(t, "postgres")
 	address, err := url.Parse(server)
 	if err != nil {
-		t.Fatalf("the URL of the database server of the tests: %v", err)
+		t.Fatalf("parse database server URL: %v", err)
 	}
 	name := "test_" + strings.ToLower(rand.Text())
 	exec(t, server, "create database "+name)
@@ -62,7 +62,7 @@ func exec(t *testing.T, database, statement string, arguments ...any) {
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, database)
 	if err != nil {
-		t.Fatalf("connect to the PostgreSQL of the tests: %v", err)
+		t.Fatalf("connect to PostgreSQL: %v", err)
 	}
 	defer conn.Close(ctx)
 	if _, err := conn.Exec(ctx, statement, arguments...); err != nil {

@@ -38,7 +38,7 @@ const (
 
 // ErrSessionEnded is returned by Plugin.Read when the store no longer accepts
 // the session. Stores then logs in again.
-var ErrSessionEnded = errors.New("the store no longer takes the session")
+var ErrSessionEnded = errors.New("secret store session ended")
 
 // host matches an allowed host: a host name, with or without a port.
 var host = regexp.MustCompile(`^[^/@ *]+$`)
@@ -114,7 +114,7 @@ type placed struct {
 func NewStores(hosts []string, remembered time.Duration, plugins ...Plugin) (*Stores, error) {
 	for _, allowed := range hosts {
 		if allowed != "*" && !host.MatchString(allowed) {
-			return nil, fmt.Errorf(`a secret store may be at "*" or at a host name, with a port if it is neither 443 nor 80, and %q is neither`, allowed)
+			return nil, fmt.Errorf(`allowed secret store host %q is neither "*" nor a host name with an optional port`, allowed)
 		}
 	}
 	// Connect directly, never through a proxy from the environment.
@@ -175,17 +175,17 @@ func (s *Stores) Check(ctx context.Context, kind string, settings json.RawMessag
 	plugin, known := s.plugins[kind]
 	if !known {
 		kinds := slices.Sorted(maps.Keys(s.plugins))
-		return fmt.Errorf("kind is not a kind of secret store that this installation knows, which are: %s", strings.Join(kinds, ", "))
+		return fmt.Errorf("kind must be one of: %s", strings.Join(kinds, ", "))
 	}
 	address, err := plugin.Address(settings)
 	if err != nil {
 		return fmt.Errorf("settings: %w", err)
 	}
 	if !s.allows(address) {
-		return errors.New("settings name a host that the installation allows no secret store at: supervisor.secretStores.allowedHosts lists them")
+		return errors.New("settings: host is not in supervisor.secretStores.allowedHosts")
 	}
 	if _, _, err := plugin.Login(ctx, s.client, settings, credential); err != nil {
-		return fmt.Errorf("the store does not take the login: %w", err)
+		return fmt.Errorf("login failed: %w", err)
 	}
 	return nil
 }
@@ -199,14 +199,14 @@ func (s *Stores) Check(ctx context.Context, kind string, settings json.RawMessag
 func (s *Stores) Read(ctx context.Context, from store.SecretStore, credential, path, key string) (string, error) {
 	plugin, found := s.plugins[from.Kind]
 	if !found {
-		return "", fmt.Errorf("the store is of the kind %q, which this installation does not know", from.Kind)
+		return "", fmt.Errorf("unknown secret store kind %q", from.Kind)
 	}
 	address, err := plugin.Address(from.Settings)
 	if err != nil {
-		return "", fmt.Errorf("the settings of the store: %w", err)
+		return "", fmt.Errorf("store settings: %w", err)
 	}
 	if !s.allows(address) {
-		return "", errors.New("the installation allows no secret store at the host of the store: supervisor.secretStores.allowedHosts lists them")
+		return "", errors.New("store host is not in supervisor.secretStores.allowedHosts")
 	}
 
 	at := placed{registered(from), path, key}
@@ -224,7 +224,7 @@ func (s *Stores) Read(ctx context.Context, from store.SecretStore, credential, p
 		began := time.Now()
 		read, err := s.ask(asking, plugin, from, credential, path, key)
 		if err == nil && len(read) > maxValue {
-			err = fmt.Errorf("the value is longer than a secret may be, which is %d bytes", maxValue)
+			err = fmt.Errorf("value exceeds the maximum size of %d bytes", maxValue)
 		}
 		if s.Asked != nil {
 			s.Asked(from.Kind, time.Since(began), err)
@@ -262,7 +262,7 @@ func (s *Stores) ask(ctx context.Context, plugin Plugin, from store.SecretStore,
 			if !again {
 				continue
 			}
-			return "", errors.New("the store took the login and then refused the session of it")
+			return "", errors.New("store rejected the session of a new login")
 		}
 		return read, err
 	}
@@ -282,7 +282,7 @@ func (s *Stores) session(ctx context.Context, plugin Plugin, from store.SecretSt
 		}
 		session, good, err := plugin.Login(ctx, s.client, from.Settings, credential)
 		if err != nil {
-			return nil, fmt.Errorf("the store does not take the login: %w", err)
+			return nil, fmt.Errorf("login failed: %w", err)
 		}
 		if good <= 0 {
 			good = ttlcache.NoTTL

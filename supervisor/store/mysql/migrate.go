@@ -44,7 +44,7 @@ func (Plugin) MigrateTo(ctx context.Context, address string, version int64) erro
 		return err
 	}
 	if version < 0 || version > latest {
-		return fmt.Errorf("there is no schema version %d; the newest is %d", version, latest)
+		return fmt.Errorf("schema version %d does not exist; latest is %d", version, latest)
 	}
 	db, err := connect(address)
 	if err != nil {
@@ -81,7 +81,7 @@ func (Plugin) MigrateTo(ctx context.Context, address string, version int64) erro
 	if err != nil {
 		return fmt.Errorf("migrate database: %w", err)
 	}
-	slog.InfoContext(ctx, "database schema is at version", "version", version)
+	slog.InfoContext(ctx, "database schema migrated", "version", version)
 	return nil
 }
 
@@ -100,20 +100,20 @@ func checkSchema(ctx context.Context, db *sql.DB) error {
 		applied, err = 0, nil
 	}
 	if err != nil {
-		return fmt.Errorf("read the schema version: %w", err)
+		return fmt.Errorf("read schema version: %w", err)
 	}
 	if applied < needed {
-		return fmt.Errorf("the database schema is at version %d and this Supervisor needs %d: run `aviary-supervisor migrate` first", applied, needed)
+		return fmt.Errorf("database schema is at version %d, but this Supervisor needs version %d: run `aviary-supervisor migrate` first", applied, needed)
 	}
 	var floor int64
 	if err := db.QueryRowContext(ctx, `select version from schema_floor`).Scan(&floor); err != nil {
-		return fmt.Errorf("read the schema floor: %w", err)
+		return fmt.Errorf("read schema floor: %w", err)
 	}
 	if needed < floor {
-		return fmt.Errorf("this Supervisor is built for schema version %d, and the database schema, at version %d, no longer supports Supervisors built for a version before %d", needed, applied, floor)
+		return fmt.Errorf("this Supervisor is built for schema version %d, but database schema version %d requires a build for version %d or later", needed, applied, floor)
 	}
 	if applied > needed {
-		slog.InfoContext(ctx, "the database schema is newer than this Supervisor", "schema", applied, "needed", needed)
+		slog.InfoContext(ctx, "database schema is newer than this Supervisor", "schema", applied, "needed", needed)
 	}
 	return nil
 }

@@ -25,7 +25,7 @@ const (
 )
 
 // ErrBusy is returned by Start when the runner is running another turn.
-var ErrBusy = errors.New("the runner runs another turn")
+var ErrBusy = errors.New("runner is busy with another turn")
 
 // Runner is a client of the runner in a sandbox. Its responses come from the
 // sandbox, which the agent controls, so they are not trusted.
@@ -143,7 +143,7 @@ func (r *Runner) Events(ctx context.Context, turn uuid.UUID, after uint64, each 
 				continue
 			}
 			if whole.Seq != after+1 || !json.Valid(whole.Data) {
-				return fmt.Errorf("the runner told %q as the event %d of the turn %s, after the event %d",
+				return fmt.Errorf("invalid event %q with ID %d for turn %s after event %d",
 					whole.Name, whole.Seq, turn, after)
 			}
 			if err := each(whole); err != nil {
@@ -174,7 +174,7 @@ func (r *Runner) Events(ctx context.Context, turn uuid.UUID, after uint64, each 
 
 // errSilent is the cause of abandoning an event stream that stayed silent
 // for longer than quiet.
-var errSilent = errors.New("the runner said nothing")
+var errSilent = errors.New("runner sent nothing")
 
 // cut returns the error that ended an event stream, reporting silence as
 // errSilent.
@@ -182,7 +182,7 @@ func (r *Runner) cut(ctx context.Context, err error) error {
 	if context.Cause(ctx) == errSilent {
 		return fmt.Errorf("%w for %s", errSilent, r.quiet)
 	}
-	return fmt.Errorf("the runner: %w", err)
+	return fmt.Errorf("runner: %w", err)
 }
 
 // tell sends a request that the runner answers at once, and returns an error
@@ -196,7 +196,7 @@ func (r *Runner) tell(ctx context.Context, method, path string, body any) error 
 	}
 	answer, err := r.http.Do(request)
 	if err != nil {
-		return fmt.Errorf("the runner: %w", err)
+		return fmt.Errorf("runner: %w", err)
 	}
 	defer answer.Body.Close()
 	if answer.StatusCode < 200 || answer.StatusCode > 299 {
@@ -227,5 +227,5 @@ func (r *Runner) request(ctx context.Context, method, path string, body any) (*h
 // refused returns the Refusal for an error response.
 func refused(answer *http.Response, asked string) error {
 	said, _ := io.ReadAll(io.LimitReader(answer.Body, 4<<10))
-	return &Refusal{Who: "the runner", Asked: asked, Status: answer.StatusCode, Said: strings.TrimSpace(string(said))}
+	return &Refusal{Who: "runner", Asked: asked, Status: answer.StatusCode, Said: strings.TrimSpace(string(said))}
 }

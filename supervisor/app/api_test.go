@@ -86,12 +86,12 @@ func TestRefusals(t *testing.T) {
 		var refusal struct{ Code, Message string }
 		status, header := s.request(test.method, test.path, test.body, &refusal)
 		if status != test.status || refusal.Code != test.code || refusal.Message == "" || header.Get("Content-Type") != "application/json" {
-			t.Errorf("%s %s %.60s was answered with %d %s %q, not with %d %s",
+			t.Errorf("%s %s %.60s = %d %s %q, want %d %s",
 				test.method, test.path, test.body, status, refusal.Code, refusal.Message, test.status, test.code)
 		}
 	}
 	if status, _ := s.request("GET", "/healthz", "", nil); status != http.StatusOK {
-		t.Errorf("the Supervisor answered whether it is up with %d", status)
+		t.Errorf("GET /healthz: status %d, want 200", status)
 	}
 }
 
@@ -103,31 +103,31 @@ func TestResources(t *testing.T) {
 		t.Helper()
 		var resource map[string]any
 		if status, _ := s.request("GET", path, "", &resource); status != http.StatusOK {
-			t.Fatalf("GET %s was answered with %d", path, status)
+			t.Fatalf("GET %s: status %d, want 200", path, status)
 		}
 		return resource
 	}
 
 	project := s.create("/v1/projects", `{"name": "a project"}`)
 	if created := get("/v1/projects/" + project); created["id"] != project || created["name"] != "a project" || created["created_at"] == nil {
-		t.Errorf("the project is %v", created)
+		t.Errorf("unexpected project %v", created)
 	}
 
 	// Optional fields that were not given are omitted, not defaulted.
 	full := get("/v1/agents/" + s.agent(project, `{"harness": "codex", "instructions": "Be brief.", "approval": "ask"}`))
 	if full["project_id"] != project || full["harness"] != "codex" || full["instructions"] != "Be brief." || full["approval"] != "ask" {
-		t.Errorf("the agent is %v", full)
+		t.Errorf("unexpected agent %v", full)
 	}
 	for _, body := range []string{`{"harness": "opencode"}`, `{"harness": "opencode", "instructions": "", "approval": ""}`} {
 		plain := get("/v1/agents/" + s.agent(project, body))
 		if plain["instructions"] != nil || plain["approval"] != nil || plain["harness"] != "opencode" {
-			t.Errorf("the agent that was created with %s is %v", body, plain)
+			t.Errorf("agent created with %s = %v", body, plain)
 		}
 	}
 
 	agent := full["id"].(string)
 	if session := get("/v1/sessions/" + s.create("/v1/agents/"+agent+"/sessions", "")); session["agent_id"] != agent {
-		t.Errorf("the session is %v", session)
+		t.Errorf("unexpected session %v", session)
 	}
 }
 
@@ -147,10 +147,10 @@ func TestTurnsOfASession(t *testing.T) {
 		t.Helper()
 		var list struct{ Turns []turn }
 		if status, _ := s.request("GET", "/v1/sessions/"+session+"/turns"+query, "", &list); status != http.StatusOK {
-			t.Fatalf("the turns of the session were answered with %d", status)
+			t.Fatalf("list turns: status %d, want 200", status)
 		}
 		if list.Turns == nil {
-			t.Errorf("the turns of the session, asked for with %q, are no list", query)
+			t.Errorf("list turns %q: turns is null, want a list", query)
 		}
 		return list.Turns
 	}
@@ -167,16 +167,16 @@ func TestTurnsOfASession(t *testing.T) {
 			texts = append(texts, turn.Text)
 			// Listed turns include their items.
 			if said := items(t, turn); turn.State != "completed" || len(said) != 1 || said[0]["text"] != "answer to "+turn.Text {
-				t.Errorf("the turn %q is listed as %s with the items %v", turn.Text, turn.State, said)
+				t.Errorf("turn %q listed as %s with items %v", turn.Text, turn.State, said)
 			}
 		}
 		if !slices.Equal(texts, expected) {
-			t.Errorf("the turns of the session, asked for with %q, are %v, not %v", query, texts, expected)
+			t.Errorf("list turns %q = %v, want %v", query, texts, expected)
 		}
 	}
 	// A running turn has an empty list of items, not null.
 	if running := listed(other, ""); len(running) != 1 || running[0].Items == nil || len(running[0].Items) != 0 {
-		t.Errorf("the turns of the other session are %+v", running)
+		t.Errorf("turns of the other session = %+v, want one with empty items", running)
 	}
 }
 
@@ -195,12 +195,12 @@ func TestEventsAreReadOn(t *testing.T) {
 
 	client := s.read(accepted.ID, "")
 	if first := client.next(); first.Type != "turn.started" || first.ID == "" {
-		t.Errorf("the first event of the turn is %v", first)
+		t.Errorf("first event = %v, want turn.started with an ID", first)
 	}
 	second := client.next()
 	again := s.read(accepted.ID, second.ID)
 	if next := again.next(); next.Type != "message.delta" || !strings.Contains(next.Data, "two ") {
-		t.Errorf("a client that read on after %v got %v", second, next)
+		t.Errorf("event after %v = %v, want the second delta", second, next)
 	}
 	request, err := http.NewRequest("GET", s.api+"/v1/turns/"+accepted.ID+"/events", nil)
 	if err != nil {
@@ -208,15 +208,15 @@ func TestEventsAreReadOn(t *testing.T) {
 	}
 	request.Header.Set("Last-Event-ID", "the last one")
 	if response, err := http.DefaultClient.Do(request); err != nil || response.StatusCode != http.StatusBadRequest {
-		t.Errorf("a client that read on after something that is no event was answered with %v: %v", response, err)
+		t.Errorf("invalid Last-Event-ID: response %v, %v; want 400", response, err)
 	}
 
 	runner.report(finished("end_turn", nil))
 	if rest := client.rest(soon); !slices.Equal(types(rest), []string{"message.delta", "turn.completed"}) {
-		t.Errorf("the client read the events %v to the end of the turn", rest)
+		t.Errorf("remaining events = %v", rest)
 	}
 	if rest := again.rest(soon); !slices.Equal(types(rest), []string{"turn.completed"}) {
-		t.Errorf("the client that read on read the events %v to the end of the turn", rest)
+		t.Errorf("remaining events of the resumed stream = %v", rest)
 	}
 
 	if err := aviary.log.Expire(context.Background(), uuid.MustParse(accepted.ID), 0); err != nil {
@@ -224,9 +224,9 @@ func TestEventsAreReadOn(t *testing.T) {
 	}
 	late := s.follow(accepted.ID)
 	if len(late) != 1 || late[0].Type != "turn.completed" || !strings.Contains(late[0].Data, "end_turn") {
-		t.Errorf("a client that came after the events were gone read %v", late)
+		t.Errorf("events after expiry = %v, want only turn.completed", late)
 	}
 	if said := items(t, s.turn(accepted.ID)); len(said) != 1 || said[0]["text"] != "one two " {
-		t.Errorf("the record of the turn whose events are gone has the items %v", said)
+		t.Errorf("items after expiry = %v", said)
 	}
 }

@@ -56,7 +56,7 @@ func (s *Streams) Items(ctx context.Context, turnID uuid.UUID) ([]json.RawMessag
 			// Skip events that cannot be decoded, so that the turn can still
 			// end.
 			if err := turn.add(event.Type, event.Data); err != nil {
-				slog.WarnContext(ctx, "read turn event", "turn", turnID, "event", event.ID, "error", err)
+				slog.WarnContext(ctx, "skip invalid turn event", "turn", turnID, "event", event.ID, "error", err)
 			}
 		}
 		after = batch[len(batch)-1].ID

@@ -72,13 +72,13 @@ func TestDeadlock(t *testing.T) {
 				return err
 			})
 			if err != nil {
-				t.Errorf("a transaction that waited for one that waited for it: %v", err)
+				t.Errorf("deadlocked transaction: %v", err)
 			}
 		})
 	}
 	both.Wait()
 	if attempts.Load() != 3 {
-		t.Errorf("two transactions that waited for each other ran %d times", attempts.Load())
+		t.Errorf("deadlocked transactions ran %d times, want 3", attempts.Load())
 	}
 
 	// A transaction that deadlocks every time is given up.
@@ -88,7 +88,7 @@ func TestDeadlock(t *testing.T) {
 		return &driver.MySQLError{Number: deadlock}
 	})
 	if !failed(err, deadlock) || attempts.Load() != 5 {
-		t.Errorf("a transaction that is undone every time ran %d times: %v", attempts.Load(), err)
+		t.Errorf("transaction that always deadlocks ran %d times, want 5: %v", attempts.Load(), err)
 	}
 	// Other errors are not retried.
 	attempts.Store(0)
@@ -96,6 +96,6 @@ func TestDeadlock(t *testing.T) {
 		attempts.Add(1)
 		return &driver.MySQLError{Number: duplicateEntry}
 	}); !failed(err, duplicateEntry) || attempts.Load() != 1 {
-		t.Errorf("a transaction that failed ran %d times: %v", attempts.Load(), err)
+		t.Errorf("failed transaction ran %d times, want 1: %v", attempts.Load(), err)
 	}
 }

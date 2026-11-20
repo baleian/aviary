@@ -94,7 +94,7 @@ func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*
 		if ctx.Err() != nil {
 			return nil, status.FromContextError(ctx.Err()).Err()
 		}
-		slog.ErrorContext(ctx, "look up the turn of a session", "session", session, "error", err)
+		slog.ErrorContext(ctx, "look up running turn", "session", session, "error", err)
 		return nil, status.Error(codes.Internal, "internal error")
 	}
 	from := map[string]any{
@@ -121,7 +121,7 @@ func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*
 		return allowed, nil
 	}
 	if origin.Provider == nil {
-		return refused(typev3.StatusCode_NotFound, "the agent of the turn names no model\n"), nil
+		return refused(typev3.StatusCode_NotFound, "the turn's agent has no model\n"), nil
 	}
 	endpoint, refusal := a.endpoint(ctx, origin, request.GetAttributes().GetRequest().GetHttp().GetPath())
 	if refusal != nil {
@@ -140,11 +140,11 @@ func (a *authorizer) endpoint(ctx context.Context, origin store.Origin, path str
 	provider := origin.Provider
 	address, err := url.Parse(provider.URL)
 	if err != nil {
-		slog.ErrorContext(ctx, "read the URL of a provider", "provider", provider.ID, "error", err)
-		return nil, refused(typev3.StatusCode_ServiceUnavailable, "the URL of the model provider cannot be read\n")
+		slog.ErrorContext(ctx, "parse provider URL", "provider", provider.ID, "error", err)
+		return nil, refused(typev3.StatusCode_ServiceUnavailable, "the model provider's URL is invalid\n")
 	}
 	if !under(path, address.Path) {
-		return nil, refused(typev3.StatusCode_NotFound, "the model endpoint of the turn is at the path "+address.Path+"\n")
+		return nil, refused(typev3.StatusCode_NotFound, "model requests must be under the path "+address.Path+"\n")
 	}
 	set := func(name, value string) *corev3.HeaderValueOption {
 		return &corev3.HeaderValueOption{
@@ -161,20 +161,20 @@ func (a *authorizer) endpoint(ctx context.Context, origin store.Origin, path str
 	case provider.APIKeyAt != nil && in != nil:
 		credential, err := a.keys.Open(in.Credential, store.SecretStoreCredentialPlace(in.ID))
 		if err != nil {
-			slog.ErrorContext(ctx, "open the credential of a secret store", "store", in.ID, "error", err)
-			return nil, refused(typev3.StatusCode_ServiceUnavailable, "the credential of the secret store of the model provider cannot be read\n")
+			slog.ErrorContext(ctx, "decrypt secret store credential", "store", in.ID, "error", err)
+			return nil, refused(typev3.StatusCode_ServiceUnavailable, "cannot read the credential of the model provider's secret store\n")
 		}
 		// The pod is told why the project's own store cannot be read. The
 		// error holds nothing of the key.
 		if key, err = a.stores.Read(ctx, *in, credential, provider.APIKeyAt.Path, provider.APIKeyAt.Key); err != nil {
-			slog.WarnContext(ctx, "read the API key of a provider from its secret store", "provider", provider.ID, "store", in.ID, "error", err)
+			slog.WarnContext(ctx, "read provider API key from secret store", "provider", provider.ID, "store", in.ID, "error", err)
 			return nil, refused(typev3.StatusCode_ServiceUnavailable,
-				"the API key of the model provider cannot be read from its secret store: "+err.Error()+"\n")
+				"cannot read the model provider's API key from its secret store: "+err.Error()+"\n")
 		}
 	case provider.APIKey != nil:
 		if key, err = a.keys.Open(provider.APIKey, store.ProviderKeyPlace(provider.ID)); err != nil {
-			slog.ErrorContext(ctx, "open the API key of a provider", "provider", provider.ID, "error", err)
-			return nil, refused(typev3.StatusCode_ServiceUnavailable, "the API key of the model provider cannot be read\n")
+			slog.ErrorContext(ctx, "decrypt provider API key", "provider", provider.ID, "error", err)
+			return nil, refused(typev3.StatusCode_ServiceUnavailable, "cannot read the model provider's API key\n")
 		}
 	default:
 		endpoint.HeadersToRemove = []string{"authorization"}
@@ -253,7 +253,7 @@ func proxyPassword(header string) string {
 func denied(forward bool) *authv3.CheckResponse {
 	response := &authv3.DeniedHttpResponse{
 		Status: &typev3.HttpStatus{Code: typev3.StatusCode_Unauthorized},
-		Body:   "no turn runs in the session of the token\n",
+		Body:   "unknown token, or no turn is running in its session\n",
 	}
 	if forward {
 		response.Status.Code = typev3.StatusCode_ProxyAuthenticationRequired

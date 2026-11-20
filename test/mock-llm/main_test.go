@@ -76,7 +76,7 @@ func events(t *testing.T, url, key string, request any) (int, []map[string]any, 
 		var refusal struct{ Error struct{ Message string } }
 		answer, _ := io.ReadAll(response.Body)
 		if err := json.Unmarshal(answer, &refusal); err != nil {
-			t.Fatalf("the refusal is %s: %v", answer, err)
+			t.Fatalf("decode error response %s: %v", answer, err)
 		}
 		return response.StatusCode, nil, refusal.Error.Message
 	}
@@ -90,7 +90,7 @@ func events(t *testing.T, url, key string, request any) (int, []map[string]any, 
 		}
 		var event map[string]any
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
-			t.Fatalf("the stream has the line %q: %v", lines.Text(), err)
+			t.Fatalf("decode stream line %q: %v", lines.Text(), err)
 		}
 		stream = append(stream, event)
 	}
@@ -228,7 +228,7 @@ func TestScript(t *testing.T) {
 					name: "run without a tool", sent: sent{said: []string{"run ls -a"}, noTool: true},
 					text: "mock: the harness offers no tool that runs a command",
 				},
-				{name: "what the tool returned", sent: sent{said: []string{"run ls -a"}, toolOutput: ". .. notes.txt"}, text: ". .. notes.txt"},
+				{name: "tool output", sent: sent{said: []string{"run ls -a"}, toolOutput: ". .. notes.txt"}, text: ". .. notes.txt"},
 				// Only a sandboxed tool is asked to run a command outside its
 				// sandbox, and only by escalate.
 				{name: "escalate", sent: sent{said: []string{"escalate ls -a"}, sandboxed: true}, command: "ls -a", outside: true},
@@ -239,25 +239,25 @@ func TestScript(t *testing.T) {
 					text: "mock: the harness offers no tool that runs a command",
 				},
 				{
-					name: "what the tool returned outside the sandbox",
+					name: "tool output outside the sandbox",
 					sent: sent{said: []string{"escalate ls -a"}, toolOutput: ". .. notes.txt", sandboxed: true}, text: ". .. notes.txt",
 				},
-				{name: "recall at first", sent: sent{said: []string{"recall"}}, text: "nothing"},
+				{name: "recall with no history", sent: sent{said: []string{"recall"}}, text: "nothing"},
 				{
 					// Messages that the harness adds are not instructions.
 					name: "recall", sent: sent{said: []string{"say one", "<context>today</context>", "run ls", "escalate ls", "recall"}},
 					text: "say one\nrun ls\nescalate ls",
 				},
 				{
-					name: "find what the harness tells the model",
+					name: "find in the instructions",
 					sent: sent{system: "The word of the day is plum.", said: []string{"find plum"}}, text: "present",
 				},
 				{
-					name: "find what the harness adds to the conversation",
+					name: "find in a message added by the harness",
 					sent: sent{said: []string{"<context>plum</context>", "find plum"}}, text: "present",
 				},
 				{
-					name: "find what was not sent",
+					name: "find text that was not sent",
 					sent: sent{system: "The word of the day is plum.", said: []string{"say cherry", "find cherry"}}, text: "absent",
 				},
 			} {
@@ -268,25 +268,25 @@ func TestScript(t *testing.T) {
 				}
 				if answer.status != http.StatusOK || answer.text != test.text || answer.command != test.command ||
 					(test.command != "") != (answer.tool != "") || !maps.Equal(answer.others, others) {
-					t.Errorf("%s: the model answered with %+v", test.name, answer)
+					t.Errorf("%s: got %+v", test.name, answer)
 				}
 				if answer.usage["input"] != 11 || answer.usage["output"] != 7 || answer.usage["total"] != 18 {
-					t.Errorf("%s: the model reported the usage %v", test.name, answer.usage)
+					t.Errorf("%s: usage = %v, want 11 input, 7 output, 18 total", test.name, answer.usage)
 				}
 			}
 
 			refused := ask(t, model.URL, sent{said: []string{"fail the model is out of order"}})
 			if refused.status != http.StatusUnauthorized || refused.refusal != "the model is out of order" {
-				t.Errorf("fail: the model answered with %+v", refused)
+				t.Errorf("fail: got %+v, want 401 with the text as the error", refused)
 			}
 
 			busy := sent{said: []string{"flaky later " + api}}
 			if first := ask(t, model.URL, busy); first.status != http.StatusServiceUnavailable {
-				t.Errorf("flaky: the model answered at first with %+v", first)
+				t.Errorf("flaky: first answer = %+v, want 503", first)
 			}
 			for range 2 {
 				if again := ask(t, model.URL, busy); again.status != http.StatusOK || again.text != "later "+api {
-					t.Errorf("flaky: the model then answered with %+v", again)
+					t.Errorf("flaky: later answer = %+v, want the text", again)
 				}
 			}
 		})
@@ -300,7 +300,7 @@ func TestDrawl(t *testing.T) {
 	began := time.Now()
 	answer := chat(t, model.URL, sent{said: []string{"drawl one two"}})
 	if answer.text != "one two" || time.Since(began) < 2*drawlPause {
-		t.Errorf("the model answered with %q after %s", answer.text, time.Since(began))
+		t.Errorf("drawl: got %q after %s", answer.text, time.Since(began))
 	}
 }
 
@@ -315,15 +315,15 @@ func TestRequests(t *testing.T) {
 		for _, key := range []string{"", "a-session-token"} {
 			status, _, _ := events(t, model.URL+path, key, map[string]any{"stream": true, "messages": messages})
 			if status != http.StatusUnauthorized {
-				t.Errorf("%s with the key %q was answered with %d", path, key, status)
+				t.Errorf("%s with key %q: got status %d, want 401", path, key, status)
 			}
 		}
 		if status, _, _ := events(t, model.URL+path, apiKey, map[string]any{"messages": messages}); status != http.StatusBadRequest {
-			t.Errorf("%s without a stream was answered with %d", path, status)
+			t.Errorf("%s without stream: got status %d, want 400", path, status)
 		}
 	}
 	if response, err := http.Get(model.URL + "/healthz"); err != nil || response.StatusCode != http.StatusOK {
-		t.Errorf("the model answered whether it is up with %v: %v", response, err)
+		t.Errorf("GET /healthz: got %v: %v", response, err)
 	}
 }
 
@@ -338,11 +338,11 @@ func TestProxy(t *testing.T) {
 	}
 	through := http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxy)}}
 	if response, err := through.Get("http://example.com/v1/chat/completions"); err != nil || response.StatusCode != http.StatusForbidden {
-		t.Errorf("a request through the proxy was answered with %v: %v", response, err)
+		t.Errorf("request through the proxy: got %v: %v, want 403", response, err)
 	}
 	// An HTTPS request asks for a tunnel first, whose refusal is an error.
 	if response, err := through.Get("https://example.com/"); err == nil || !strings.Contains(err.Error(), "Forbidden") {
-		t.Errorf("a tunnel through the proxy was answered with %v: %v", response, err)
+		t.Errorf("tunnel through the proxy: got %v: %v, want a Forbidden error", response, err)
 	}
 }
 
@@ -358,11 +358,11 @@ func TestPackage(t *testing.T) {
 	defer response.Body.Close()
 	served, err := io.ReadAll(response.Body)
 	if err != nil || response.StatusCode != http.StatusOK {
-		t.Fatalf("the package was answered with %d: %v", response.StatusCode, err)
+		t.Fatalf("GET package: got status %d: %v", response.StatusCode, err)
 	}
 	archive, err := zip.NewReader(bytes.NewReader(served), int64(len(served)))
 	if err != nil {
-		t.Fatalf("the package is no wheel: %v", err)
+		t.Fatalf("package is not a zip archive: %v", err)
 	}
 	var names []string
 	for _, file := range archive.File {
@@ -370,6 +370,6 @@ func TestPackage(t *testing.T) {
 	}
 	if !slices.Equal(names, []string{"aviary_probe/__init__.py", "aviary_probe-1.0.dist-info/METADATA",
 		"aviary_probe-1.0.dist-info/WHEEL", "aviary_probe-1.0.dist-info/RECORD"}) {
-		t.Errorf("the wheel holds %v", names)
+		t.Errorf("wheel files = %v", names)
 	}
 }

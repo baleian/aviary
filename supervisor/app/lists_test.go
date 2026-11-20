@@ -50,12 +50,12 @@ func TestLists(t *testing.T) {
 		var answer struct{ Agents []agent }
 		if status, _ := as(listed.caller).request("GET", "/v1/projects/"+listed.project+"/agents", "", &answer); status != http.StatusOK ||
 			!slices.Equal(answer.Agents, listed.agents) {
-			t.Errorf("the agents of a project are answered to %s with %d, as %+v and not %+v", listed.caller, status, answer.Agents, listed.agents)
+			t.Errorf("%s: list agents = %d %+v, want %+v", listed.caller, status, answer.Agents, listed.agents)
 		}
 	}
 	var empty struct{ Agents []agent }
 	if status, _ := as("admin").request("GET", "/v1/projects/"+s.create("/v1/projects", `{"name": "new"}`)+"/agents", "", &empty); status != http.StatusOK || empty.Agents == nil {
-		t.Errorf("the agents of a project without any are answered with %d, as %+v", status, empty.Agents)
+		t.Errorf("list agents of an empty project = %d %+v, want an empty list", status, empty.Agents)
 	}
 
 	// Five sessions of the first agent, alternately created by ann and ben.
@@ -96,22 +96,22 @@ func TestLists(t *testing.T) {
 		ids := []string{}
 		for _, session := range answer.Sessions {
 			if session.AgentID != listed.agent || session.CreatedBy == "" {
-				t.Errorf("a session of the agent %s is listed as %+v", listed.agent, session)
+				t.Errorf("session of agent %s listed as %+v", listed.agent, session)
 			}
 			ids = append(ids, session.ID)
 		}
 		if status != http.StatusOK || answer.Sessions == nil || !slices.Equal(ids, listed.sessions) {
-			t.Errorf("the sessions%s of an agent are answered to %s with %d, as %v and not %v", listed.query, listed.caller, status, ids, listed.sessions)
+			t.Errorf("list sessions%s as %s = %d %v, want %v", listed.query, listed.caller, status, ids, listed.sessions)
 		}
 	}
 
 	// A member who may no longer run sessions does not see their own either.
 	var demoted struct{ Sessions []session }
 	if status, _ := as("admin").request("PUT", "/v1/members/"+members["ben"], `{"role": "viewer"}`, nil); status != http.StatusOK {
-		t.Fatalf("a member is given another role with %d", status)
+		t.Fatalf("PUT member: status %d, want 200", status)
 	}
 	if status, _ := as("ben").request("GET", "/v1/agents/"+first+"/sessions", "", &demoted); status != http.StatusOK || demoted.Sessions == nil || len(demoted.Sessions) != 0 {
-		t.Errorf("the sessions of an agent are answered to who may read none any more with %d, as %+v", status, demoted.Sessions)
+		t.Errorf("list sessions after demotion = %d %+v, want an empty list", status, demoted.Sessions)
 	}
 
 	none := "00000000-0000-0000-0000-000000000000"
@@ -130,7 +130,7 @@ func TestLists(t *testing.T) {
 		{"ann", "/v1/agents/" + first + "/sessions?limit=101", http.StatusBadRequest},
 	} {
 		if status, _ := as(refused.caller).request("GET", refused.path, "", nil); status != refused.status {
-			t.Errorf("GET %s of %s is answered with %d, not %d", refused.path, refused.caller, status, refused.status)
+			t.Errorf("GET %s as %s: status %d, want %d", refused.path, refused.caller, status, refused.status)
 		}
 	}
 }
@@ -143,6 +143,6 @@ func TestListsOfAnInstallationThatAsksNobody(t *testing.T) {
 	var answer struct{ Sessions []struct{ ID string } }
 	if status, _ := s.request("GET", "/v1/agents/"+agent+"/sessions", "", &answer); status != http.StatusOK ||
 		len(answer.Sessions) != 2 || answer.Sessions[0].ID != newer || answer.Sessions[1].ID != older {
-		t.Errorf("the sessions %s and %s of an agent are answered with %d, as %+v", older, newer, status, answer.Sessions)
+		t.Errorf("list sessions %s and %s = %d %+v, want newest first", older, newer, status, answer.Sessions)
 	}
 }

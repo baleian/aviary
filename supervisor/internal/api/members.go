@@ -16,7 +16,7 @@ import (
 // custom is the role reported for a member with its own permissions.
 const custom = "custom"
 
-var errMemberExists = &apiError{status: http.StatusConflict, Code: "member_exists", Message: "the project has this member already"}
+var errMemberExists = &apiError{status: http.StatusConflict, Code: "member_exists", Message: "the project already has this member"}
 
 // memberRecord is the API representation of a project member.
 type memberRecord struct {
@@ -66,13 +66,13 @@ type grant struct {
 func (a *api) read(r *http.Request, given grant) (role string, set []string, err error) {
 	if given.Role == "" || given.Role == custom {
 		if given.Permissions == nil {
-			return "", nil, invalid("a member is given a role, or the permissions of its own")
+			return "", nil, invalid("a member needs a role or its own permissions")
 		}
 		set, err = granted(*given.Permissions)
 		return "", set, err
 	}
 	if given.Permissions != nil {
-		return "", nil, invalid("a member with a role has the permissions of the role, and none of its own")
+		return "", nil, invalid("a member with a role cannot have its own permissions")
 	}
 	roles, err := a.store.Roles(r.Context())
 	if err != nil {
@@ -83,7 +83,7 @@ func (a *api) read(r *http.Request, given grant) (role string, set []string, err
 		names[i] = role.Name
 	}
 	if !slices.Contains(names, given.Role) {
-		return "", nil, invalid(fmt.Sprintf("%q is no role: the roles are %s", given.Role, strings.Join(names, ", ")))
+		return "", nil, invalid(fmt.Sprintf("unknown role %q; the roles are %s", given.Role, strings.Join(names, ", ")))
 	}
 	return given.Role, nil, nil
 }
@@ -127,7 +127,7 @@ func (a *api) addMember(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if (request.User == "") == (request.Group == "") {
-		return invalid("a member is a user, by the username, or a group")
+		return invalid("exactly one of user and group is required")
 	}
 	member := store.Member{ProjectID: projectID, Group: request.Group}
 	if request.User != "" {
@@ -140,7 +140,7 @@ func (a *api) addMember(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	slog.InfoContext(r.Context(), "a project was given a member", "project", projectID, "member", added.ID,
+	slog.InfoContext(r.Context(), "member added", "project", projectID, "member", added.ID,
 		"user", request.User, "group", request.Group, "role", added.Role, "permissions", added.Permissions, "by", who.Subject)
 	respond(w, http.StatusCreated, recordOf(added))
 	return nil
@@ -165,7 +165,7 @@ func (a *api) setMember(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	slog.InfoContext(r.Context(), "a member was given what it may do", "project", member.ProjectID, "member", id,
+	slog.InfoContext(r.Context(), "member updated", "project", member.ProjectID, "member", id,
 		"role", role, "permissions", set, "by", who.Subject)
 	respond(w, http.StatusOK, recordOf(member))
 	return nil
@@ -180,7 +180,7 @@ func (a *api) removeMember(w http.ResponseWriter, r *http.Request) error {
 	if err := a.store.RemoveMember(r.Context(), id); err != nil {
 		return err
 	}
-	slog.InfoContext(r.Context(), "a member was removed", "member", id, "by", who.Subject)
+	slog.InfoContext(r.Context(), "member removed", "member", id, "by", who.Subject)
 	w.WriteHeader(http.StatusNoContent)
 	return nil
 }

@@ -29,7 +29,7 @@ func TestStorable(t *testing.T) {
 			continue
 		}
 		if want := strings.ReplaceAll(output, "\x00", "�"); kept["output"] != want {
-			t.Errorf("storable(%s) holds %q, not %q", item, kept["output"], want)
+			t.Errorf("storable(%s) output = %q, want %q", item, kept["output"], want)
 		}
 	}
 }

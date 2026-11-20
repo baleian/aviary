@@ -61,7 +61,7 @@ func TestIsID(t *testing.T) {
 		"$":               false,
 	} {
 		if log.IsID(id) != is {
-			t.Errorf("IsID(%q) is %t", id, !is)
+			t.Errorf("IsID(%q) = %t", id, !is)
 		}
 	}
 }
@@ -70,10 +70,10 @@ func TestOpenKeepsThePasswordToItself(t *testing.T) {
 	t.Parallel()
 	_, err := resp.Plugin{}.Open("valkey://default:secret@events:port")
 	if err == nil {
-		t.Fatal("the plugin took a URL without a port number")
+		t.Fatal("Open with an invalid port succeeded")
 	}
 	if strings.Contains(err.Error(), "secret") {
-		t.Errorf("the error tells the password: %v", err)
+		t.Errorf("error contains the password: %v", err)
 	}
 }
 
@@ -113,7 +113,7 @@ func TestWatchPassesOverWhatIsNoTurn(t *testing.T) {
 				}
 			case <-time.After(20 * time.Millisecond):
 			case <-deadline:
-				t.Fatal("the watcher was not told of the turn")
+				t.Fatal("announcement not received")
 			}
 		}
 	}
@@ -180,7 +180,7 @@ func TestReadFailsWithoutTheServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	if recorded, err := log.Read(ctx, turn, events.Start, 0); err != nil || len(recorded) != 1 {
-		t.Fatalf("%d events were read through the relay: %v", len(recorded), err)
+		t.Fatalf("Read through the relay = %d events, %v; want 1", len(recorded), err)
 	}
 
 	cut()
@@ -193,10 +193,10 @@ func TestReadFailsWithoutTheServer(t *testing.T) {
 		select {
 		case err := <-failed:
 			if err == nil {
-				t.Errorf("a read that waits %s returned no error without the server", wait)
+				t.Errorf("Read with wait %s returned no error without the server", wait)
 			}
 		case <-time.After(10 * time.Second):
-			t.Errorf("a read that waits %s goes on waiting without the server", wait)
+			t.Errorf("Read with wait %s blocks without the server", wait)
 		}
 	}
 }

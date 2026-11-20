@@ -90,12 +90,12 @@ func TestHostsOfStores(t *testing.T) {
 		{[]string{"*"}, "http://[::1", false},
 	} {
 		if allowed := stores(t, test.hosts...).allows(test.address); allowed != test.allowed {
-			t.Errorf("with %v allowed, a store at %s is allowed: %v", test.hosts, test.address, allowed)
+			t.Errorf("hosts %v: allows(%s) = %v", test.hosts, test.address, allowed)
 		}
 	}
 	for _, host := range []string{"https://secrets.example.com", "secrets.example.com/v1", "*.example.com", "a host", "user@secrets.example.com", ""} {
 		if _, err := NewStores([]string{"secrets.example.com", host}, time.Minute); err == nil || !strings.Contains(err.Error(), host) {
-			t.Errorf("stores are allowed at %q: %v", host, err)
+			t.Errorf("NewStores with host %q: %v, want an error naming it", host, err)
 		}
 	}
 }
@@ -117,7 +117,7 @@ func TestStoreIsChecked(t *testing.T) {
 	ctx := context.Background()
 
 	if err := stores(t, host).Check(ctx, "asking", at(taking), "a credential"); err != nil {
-		t.Errorf("a store that takes the login is refused: %v", err)
+		t.Errorf("Check: %v", err)
 	}
 	for _, test := range []struct {
 		hosts    []string
@@ -131,16 +131,16 @@ func TestStoreIsChecked(t *testing.T) {
 		{[]string{"*"}, "asking", nil, "settings: address is required"},
 		{nil, "asking", at(taking), "supervisor.secretStores.allowedHosts"},
 		{[]string{"other.example.com"}, "asking", at(taking), "supervisor.secretStores.allowedHosts"},
-		{[]string{"*"}, "asking", at(refusing), "does not take the login: the store answered with 403"},
+		{[]string{"*"}, "asking", at(refusing), "login failed: the store answered with 403"},
 	} {
 		before := asked.Load()
 		err := stores(t, test.hosts...).Check(ctx, test.kind, test.settings, "a credential")
 		if err == nil || !strings.Contains(err.Error(), test.why) {
-			t.Errorf("a store of the kind %q with the settings %s, with %v allowed, is checked as: %v", test.kind, test.settings, test.hosts, err)
+			t.Errorf("Check(%q, %s) with hosts %v = %v", test.kind, test.settings, test.hosts, err)
 		}
 		// A store at a host that is not allowed is never contacted.
 		if strings.Contains(test.why, "allowedHosts") && asked.Load() != before {
-			t.Errorf("a store at a host that is not allowed was asked")
+			t.Errorf("store at a disallowed host was contacted")
 		}
 	}
 }
@@ -156,7 +156,7 @@ func TestStoreIsAskedWithCare(t *testing.T) {
 	redirecting := httptest.NewServer(http.RedirectHandler(elsewhere.URL, http.StatusTemporaryRedirect))
 	t.Cleanup(redirecting.Close)
 	if err := stores(t, "*").Check(ctx, "asking", at(redirecting.URL), "a credential"); err == nil || !strings.Contains(err.Error(), "307") || followed.Load() {
-		t.Errorf("a store that sends the login elsewhere is taken, and followed: %v, %v", err, followed.Load())
+		t.Errorf("Check with a redirect = %v, followed %v; want a 307 error, not followed", err, followed.Load())
 	}
 
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -170,12 +170,12 @@ func TestStoreIsAskedWithCare(t *testing.T) {
 	hurried.client.Timeout = 100 * time.Millisecond
 	began := time.Now()
 	if err := hurried.Check(ctx, "asking", at(slow.URL), "a credential"); err == nil || time.Since(began) > 2*time.Second {
-		t.Errorf("a store that does not answer was waited for %s: %v", time.Since(began), err)
+		t.Errorf("Check of a slow store took %s: %v", time.Since(began), err)
 	}
 	// The default client times out before the Egress Proxy's authz check
 	// does, and uses no proxy.
 	client := stores(t, "*").client
 	if transport, ok := client.Transport.(*http.Transport); client.Timeout != timeout || timeout > 4*time.Second || !ok || transport.Proxy != nil {
-		t.Errorf("a store is asked with the client %+v, which waits %s", client.Transport, client.Timeout)
+		t.Errorf("client transport = %+v, timeout = %s", client.Transport, client.Timeout)
 	}
 }

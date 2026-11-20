@@ -83,8 +83,8 @@ func (a *api) readProvider(w http.ResponseWriter, r *http.Request, id, projectID
 		}
 		read.APIKeyAt = &at
 	default:
-		return store.Provider{}, invalid(`api_key is {"value": "…"} for a key that Aviary stores, or {"store": "…", "path": "…", "key": "…"} ` +
-			`for a key in a secret store of the project: an endpoint that takes no key has no api_key`)
+		return store.Provider{}, invalid(`api_key must be {"value": "…"} for a key that Aviary stores, or {"store": "…", "path": "…", "key": "…"} ` +
+			`for a key in a secret store of the project; omit it for an endpoint that takes no key`)
 	}
 	return read, nil
 }
@@ -108,7 +108,7 @@ func (a *api) keyInStore(r *http.Request, projectID uuid.UUID, key secretField) 
 		return store.SecretReference{}, err
 	}
 	if _, err := a.stores.Read(r.Context(), in, credential, key.Path, key.Key); err != nil {
-		return store.SecretReference{}, invalid("api_key cannot be read from the secret store: " + err.Error())
+		return store.SecretReference{}, invalid("cannot read api_key from the secret store: " + err.Error())
 	}
 	return store.SecretReference{Store: id, Path: key.Path, Key: key.Key}, nil
 }
@@ -120,9 +120,9 @@ func endpoint(address string) error {
 	case err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "":
 		return invalid("url must be a URL that begins with http:// or https://")
 	case parsed.User != nil:
-		return invalid("url must hold no user name and no password: the key of the endpoint is its api_key")
+		return invalid("url must not contain a user name or password; set the endpoint's key in api_key")
 	case parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "":
-		return invalid("url must end with its path")
+		return invalid("url must not have a query or fragment")
 	}
 	return nil
 }

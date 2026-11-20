@@ -42,8 +42,8 @@ func callerOf(r *http.Request) caller {
 }
 
 var (
-	errNoCaller   = &apiError{status: http.StatusUnauthorized, Code: "unauthenticated", Message: "the request needs a token of the identity provider of this installation"}
-	errNotAllowed = &apiError{status: http.StatusForbidden, Code: "forbidden", Message: "the caller is in none of the groups that may use this installation"}
+	errNoCaller   = &apiError{status: http.StatusUnauthorized, Code: "unauthenticated", Message: "a valid bearer token from this installation's identity provider is required"}
+	errNotAllowed = &apiError{status: http.StatusForbidden, Code: "forbidden", Message: "the caller is not in any group that may use this installation"}
 )
 
 // identified authenticates the bearer token of a request with the identity
@@ -60,7 +60,7 @@ func (a *api) identified(next http.Handler) http.Handler {
 			}
 			told, err := a.callers.Provider.Caller(r.Context(), strings.TrimSpace(token))
 			if err != nil {
-				slog.InfoContext(r.Context(), "a request was refused for its token", "method", r.Method, "path", r.URL.Path, "error", err)
+				slog.InfoContext(r.Context(), "authentication failed", "method", r.Method, "path", r.URL.Path, "error", err)
 				return errNoCaller
 			}
 			user, err := a.store.UserOf(r.Context(), told.Subject, told.Username, told.DisplayName)

@@ -124,23 +124,23 @@ func TestRunMigrates(t *testing.T) {
 	} {
 		build := &build{}
 		if err := Run(ctx, test.args, build.plugins()); err != nil || !slices.Equal(build.asked, []string{test.asked}) {
-			t.Errorf("with the arguments %q, the plugin was asked %q: %v", test.args, build.asked, err)
+			t.Errorf("Run(%q): plugin calls %q, error %v", test.args, build.asked, err)
 		}
 	}
 	for _, wrong := range [][]string{{"migrate", "latest"}, {"migrate", "7", "8"}, {"serve"}} {
 		build := &build{}
 		if err := Run(ctx, wrong, build.plugins()); err == nil || len(build.asked) != 0 {
-			t.Errorf("with the arguments %q, the plugin was asked %q: %v", wrong, build.asked, err)
+			t.Errorf("Run(%q): plugin calls %q, error %v; want an error and no calls", wrong, build.asked, err)
 		}
 	}
 	// A database scheme without a plugin.
 	t.Setenv(databaseURL, "postgres://user:secret@db.example/aviary")
 	if err := Run(ctx, []string{"migrate"}, (&build{}).plugins()); err == nil || !strings.Contains(err.Error(), "records") {
-		t.Errorf("a database that the build has no plugin for was migrated with: %v", err)
+		t.Errorf("migrate with an unknown database scheme: %v, want an error listing the schemes", err)
 	}
 	t.Setenv(databaseURL, "")
 	if err := Run(ctx, []string{"migrate"}, (&build{}).plugins()); err == nil || !strings.Contains(err.Error(), databaseURL) {
-		t.Errorf("a Supervisor without the address of its database migrated with: %v", err)
+		t.Errorf("migrate without a database URL: %v, want an error naming the setting", err)
 	}
 }
 
@@ -156,11 +156,11 @@ func TestRunConnectsWithThePluginsOfTheBuild(t *testing.T) {
 	build := &build{}
 	err := Run(context.Background(), nil, build.plugins())
 	if err == nil || !strings.Contains(err.Error(), encryptionKeys) {
-		t.Errorf("a Supervisor without its keys stopped with: %v", err)
+		t.Errorf("Run without encryption keys: %v, want an error naming the setting", err)
 	}
 	expected := []string{"open records://db.example/aviary", "open log://events.example:6379", "close the event log", "close the database"}
 	if !slices.Equal(build.asked, expected) {
-		t.Errorf("the plugins were asked %q, not %q", build.asked, expected)
+		t.Errorf("plugin calls = %q, want %q", build.asked, expected)
 	}
 
 	// With the keys, startup fails at the harness settings.
@@ -181,14 +181,14 @@ func TestRunConnectsWithThePluginsOfTheBuild(t *testing.T) {
 	build.asked = nil
 	err = Run(context.Background(), nil, build.plugins())
 	if err == nil || !strings.Contains(err.Error(), harnesses) {
-		t.Errorf("a Supervisor that is not told how to run turns stopped with: %v", err)
+		t.Errorf("Run without harnesses: %v, want an error naming the setting", err)
 	}
 	expected = []string{
 		"open records://db.example/aviary", "open log://events.example:6379", "the kind of the secret stores",
 		`open the identity provider {"of": "the test"}`, "close the event log", "close the database",
 	}
 	if !slices.Equal(build.asked, expected) {
-		t.Errorf("the plugins were asked %q, not %q", build.asked, expected)
+		t.Errorf("plugin calls = %q, want %q", build.asked, expected)
 	}
 
 	// An event log scheme without a plugin.
@@ -196,9 +196,9 @@ func TestRunConnectsWithThePluginsOfTheBuild(t *testing.T) {
 	build.asked = nil
 	err = Run(context.Background(), nil, build.plugins())
 	if err == nil || !strings.Contains(err.Error(), "log") || strings.Contains(err.Error(), "secret") {
-		t.Errorf("a Supervisor with an event log that its build has no plugin for stopped with: %v", err)
+		t.Errorf("Run with an unknown event log scheme: %v, want an error listing the schemes without the password", err)
 	}
 	if expected := []string{"open records://db.example/aviary", "close the database"}; !slices.Equal(build.asked, expected) {
-		t.Errorf("the plugins were asked %q, not %q", build.asked, expected)
+		t.Errorf("plugin calls = %q, want %q", build.asked, expected)
 	}
 }

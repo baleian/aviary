@@ -77,7 +77,7 @@ func (Plugin) Open(address string) (events.Log, error) {
 		if errors.As(err, &quoting) {
 			err = quoting.Err
 		}
-		return nil, fmt.Errorf("parse the URL: %w", err)
+		return nil, fmt.Errorf("parse URL: %w", err)
 	}
 	// Client-side caching is not used, and not every managed server
 	// supports it.
@@ -200,7 +200,7 @@ func (l *log) Watch(ctx context.Context, channel string, announced func(turnID u
 		if ctx.Err() != nil {
 			return
 		}
-		slog.WarnContext(ctx, "watch for what the Supervisors announce", "channel", channel, "error", err)
+		slog.WarnContext(ctx, "watch announcements", "channel", channel, "error", err)
 		select {
 		case <-time.After(time.Second):
 		case <-ctx.Done():

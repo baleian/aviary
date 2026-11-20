@@ -123,14 +123,14 @@ func TestSecretStores(t *testing.T) {
 		t.Helper()
 		var raw json.RawMessage
 		if got, _ := s.request(method, path, body, &raw); got != status {
-			t.Fatalf("%s %s was answered with %d %s", method, path, got, raw)
+			t.Fatalf("%s %s: unexpected status %d %s", method, path, got, raw)
 		}
 		var fields map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &fields); err != nil {
 			t.Fatal(err)
 		}
 		if string(fields["credential"]) != `{"stored":true}` || len(fields) != 8 {
-			t.Errorf("%s %s was answered with %s", method, path, raw)
+			t.Errorf("%s %s response = %s, want 8 fields and a stored credential", method, path, raw)
 		}
 		var decoded secretStore
 		if err := json.Unmarshal(raw, &decoded); err != nil {
@@ -147,7 +147,7 @@ func TestSecretStores(t *testing.T) {
 		}
 		opened, err := aviary.keys.Open(record.Credential, store.SecretStoreCredentialPlace(record.ID))
 		if err != nil {
-			t.Fatalf("the credential of the store does not open: %v", err)
+			t.Fatalf("open store credential: %v", err)
 		}
 		return record.Credential, opened
 	}
@@ -158,25 +158,25 @@ func TestSecretStores(t *testing.T) {
 	created := answer("POST", stores, scriptedStore("a store", address, first, first), http.StatusCreated)
 	if created.ProjectID != project || created.Name != "a store" || created.Kind != "scripted" ||
 		created.Settings["address"] != address || created.CreatedAt.IsZero() || !created.UpdatedAt.Equal(created.CreatedAt) {
-		t.Errorf("the store was created as %+v", created)
+		t.Errorf("created store = %+v", created)
 	}
 	path := "/v1/secret-stores/" + created.ID
 	if read := answer("GET", path, "", http.StatusOK); read.ID != created.ID || read.Name != "a store" || read.Kind != "scripted" || read.Settings["address"] != address {
-		t.Errorf("the store is read as %+v", read)
+		t.Errorf("store = %+v", read)
 	}
 	sealed, opened := kept(created.ID)
 	if opened != first || bytes.Contains(sealed, []byte(first)) {
-		t.Errorf("the database holds the credential as %q, which opens to %q", sealed, opened)
+		t.Errorf("stored credential %q opens to %q", sealed, opened)
 	}
 
 	// PUT replaces the whole store and logs in again.
 	replaced := answer("PUT", path, scriptedStore("renamed", address+"/moved", second, second), http.StatusOK)
 	if replaced.ID != created.ID || replaced.ProjectID != project || replaced.Name != "renamed" || replaced.Settings["address"] != address+"/moved" ||
 		!replaced.CreatedAt.Equal(created.CreatedAt) || !replaced.UpdatedAt.After(created.UpdatedAt) {
-		t.Errorf("the store was replaced with %+v, and was %+v", replaced, created)
+		t.Errorf("replaced store = %+v, was %+v", replaced, created)
 	}
 	if _, opened := kept(created.ID); opened != second {
-		t.Errorf("the credential of the replaced store opens to %q", opened)
+		t.Errorf("replaced credential opens to %q", opened)
 	}
 
 	// A store that refuses the login is refused and leaves the existing store
@@ -185,13 +185,13 @@ func TestSecretStores(t *testing.T) {
 		var refused struct{ Code, Message string }
 		status, _ := s.request(method, target, scriptedStore("a store", address, first, "another-credential"), &refused)
 		if status != http.StatusBadRequest || refused.Code != "invalid_request" ||
-			!strings.Contains(refused.Message, "the store does not take the login: the store takes another credential") ||
+			!strings.Contains(refused.Message, "login failed: the store takes another credential") ||
 			strings.Contains(refused.Message, "another-credential") {
-			t.Errorf("%s of a store that does not take the login was answered with %d %s %q", method, status, refused.Code, refused.Message)
+			t.Errorf("%s store with a rejected login = %d %s %q", method, status, refused.Code, refused.Message)
 		}
 	}
 	if _, opened := kept(created.ID); opened != second {
-		t.Errorf("after requests that were refused, the credential of the store opens to %q", opened)
+		t.Errorf("credential after refused requests opens to %q", opened)
 	}
 }
 
@@ -251,7 +251,7 @@ func TestSecretStoresThatAreRefused(t *testing.T) {
 		var got struct{ Code, Message string }
 		status, _ := test.supervisor.request(test.method, test.path, test.body, &got)
 		if status != test.status || got.Code != test.code || got.Message == "" || !strings.Contains(got.Message, test.why) || strings.Contains(got.Message, "a-credential") {
-			t.Errorf("%s %s %.100s was answered with %d %s %q, not with %d %s that tells of %q",
+			t.Errorf("%s %s %.100s = %d %s %q, want %d %s containing %q",
 				test.method, test.path, test.body, status, got.Code, got.Message, test.status, test.code, test.why)
 		}
 	}

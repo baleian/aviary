@@ -59,27 +59,27 @@ func TestTheSandboxOfASessionIsMadeWithItsVolume(t *testing.T) {
 	}
 	if made.Labels[SessionLabel] != session.String() || made.Labels["aviary.io/agent"] != "an-agent" ||
 		made.Spec.PodTemplate.ObjectMeta.Labels[SessionLabel] != session.String() {
-		t.Errorf("the sandbox and its pod are labelled %v and %v", made.Labels, made.Spec.PodTemplate.ObjectMeta.Labels)
+		t.Errorf("sandbox labels = %v, pod labels = %v", made.Labels, made.Spec.PodTemplate.ObjectMeta.Labels)
 	}
 	pod := made.Spec.PodTemplate.Spec
 	if *pod.AutomountServiceAccountToken || *pod.EnableServiceLinks {
-		t.Errorf("the pod is %+v", pod)
+		t.Errorf("pod = %+v", pod)
 	}
 	// The agent does not run as root and cannot become root.
 	if who := pod.SecurityContext; !*who.RunAsNonRoot || *who.RunAsUser != agentUser || *who.RunAsGroup != agentUser ||
 		*who.FSGroup != agentUser || *who.FSGroupChangePolicy != corev1.FSGroupChangeOnRootMismatch ||
 		who.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
-		t.Errorf("the pod runs as %+v", who)
+		t.Errorf("pod security context = %+v", who)
 	}
 	if may := pod.Containers[0].SecurityContext; *may.AllowPrivilegeEscalation || !slices.Equal(may.Capabilities.Drop, []corev1.Capability{"ALL"}) {
-		t.Errorf("the harness may %+v", may)
+		t.Errorf("container security context = %+v", may)
 	}
 	harness := pod.Containers[0]
 	if harness.Image != opencode.Harness.Image || !slices.Equal(harness.Command, []string{"aviary-session"}) ||
 		!harness.Resources.Requests.Cpu().Equal(resource.MustParse("250m")) || !harness.Resources.Limits.Memory().Equal(resource.MustParse("4Gi")) ||
 		harness.ReadinessProbe.TCPSocket.Port.IntValue() != RunnerPort ||
 		len(harness.VolumeMounts) != 1 || harness.VolumeMounts[0].Name != "home" || harness.VolumeMounts[0].MountPath != "/home" {
-		t.Errorf("the harness runs as %+v", harness)
+		t.Errorf("harness container = %+v", harness)
 	}
 	// Outbound traffic goes through the Egress Proxy with the session token,
 	// which the harness also uses as its API key.
@@ -95,29 +95,29 @@ func TestTheSandboxOfASessionIsMadeWithItsVolume(t *testing.T) {
 		"NO_PROXY": "localhost,127.0.0.1,::1,localhost", "no_proxy": "localhost,127.0.0.1,::1,localhost",
 	} {
 		if env[name] != value {
-			t.Errorf("the harness is started with %s=%q, not %q", name, env[name], value)
+			t.Errorf("env %s = %q, want %q", name, env[name], value)
 		}
 	}
 	if len(env) != 8 {
-		t.Errorf("the harness is started with %v", env)
+		t.Errorf("env = %v", env)
 	}
 	// The pod finds the proxy in its hosts file, and other lookups fail fast.
 	if aliases := pod.HostAliases; len(aliases) != 1 || !slices.Equal(aliases[0].Hostnames, []string{"localhost"}) ||
 		!net.ParseIP(aliases[0].IP).IsLoopback() || pod.DNSConfig == nil || len(pod.DNSConfig.Options) != 3 {
-		t.Errorf("the pod finds the hosts %v, with %+v", aliases, pod.DNSConfig)
+		t.Errorf("host aliases = %v, DNS config = %+v", aliases, pod.DNSConfig)
 	}
 	claims := made.Spec.VolumeClaimTemplates
 	if len(claims) != 1 || claims[0].Name != "home" || *claims[0].Spec.StorageClassName != "fast" ||
 		!claims[0].Spec.Resources.Requests.Storage().Equal(resource.MustParse("10Gi")) {
-		t.Errorf("the volume of the session is %+v", claims)
+		t.Errorf("volume claim templates = %+v", claims)
 	}
 	if made.Spec.FailedPodPolicy != agents.FailedPodPolicyRecreate || made.Spec.ShutdownTime != nil {
-		t.Errorf("the sandbox is %+v", made.Spec)
+		t.Errorf("sandbox spec = %+v", made.Spec)
 	}
 
 	// Creating it again is not an error.
 	if err := c.Create(ctx, request); err != nil {
-		t.Errorf("the sandbox of a session that has one was made again: %v", err)
+		t.Errorf("second Create = %v", err)
 	}
 	// A sandbox with a lifetime is deleted with its volume when it expires.
 	kept := uuid.New()
@@ -129,7 +129,7 @@ func TestTheSandboxOfASessionIsMadeWithItsVolume(t *testing.T) {
 		t.Fatal(err)
 	}
 	if until := made.Spec.ShutdownTime; until == nil || time.Until(until.Time) < 59*time.Minute || *made.Spec.ShutdownPolicy != agents.ShutdownPolicyDelete {
-		t.Errorf("a sandbox that is kept for an hour expires at %v, after which it is %v", until, made.Spec.ShutdownPolicy)
+		t.Errorf("shutdown time = %v, shutdown policy = %v", until, made.Spec.ShutdownPolicy)
 	}
 	// Without a storage class, the volume uses the default class.
 	c, sandboxes = cluster(t, Settings{Volume: resource.MustParse("1Gi")})
@@ -137,7 +137,7 @@ func TestTheSandboxOfASessionIsMadeWithItsVolume(t *testing.T) {
 		t.Fatal(err)
 	}
 	if made, err := sandboxes.Get(ctx, Name(session), metav1.GetOptions{}); err != nil || made.Spec.VolumeClaimTemplates[0].Spec.StorageClassName != nil {
-		t.Errorf("the volume of a session is of the class %v: %v", made.Spec.VolumeClaimTemplates[0].Spec.StorageClassName, err)
+		t.Errorf("storage class = %v, err = %v", made.Spec.VolumeClaimTemplates[0].Spec.StorageClassName, err)
 	}
 }
 
@@ -155,30 +155,30 @@ func TestWhatASandboxDoesIsSeenInItsStatus(t *testing.T) {
 		message string
 		address string
 	}{
-		{what: "a sandbox that is made", state: Starting},
+		{what: "created", state: Starting},
 		{
-			what: "a sandbox whose pod is not ready",
+			what: "pod not ready",
 			sandbox: agents.Sandbox{ObjectMeta: third, Status: agents.SandboxStatus{Conditions: []metav1.Condition{
 				condition(agents.SandboxConditionReady, metav1.ConditionFalse, "DependenciesNotReady", "the pod is pending"),
 			}}},
 			state: Starting, message: "DependenciesNotReady: the pod is pending",
 		},
 		{
-			what: "a sandbox that runs",
+			what: "running",
 			sandbox: agents.Sandbox{ObjectMeta: third, Status: agents.SandboxStatus{PodIPs: []string{"10.0.0.7"}, Conditions: []metav1.Condition{
 				condition(agents.SandboxConditionReady, metav1.ConditionTrue, "DependenciesReady", ""),
 			}}},
 			state: Running, address: "http://10.0.0.7:8700",
 		},
 		{
-			what: "a sandbox that was woken, of which the status still tells of the pod that went",
+			what: "resumed with the previous pod's status",
 			sandbox: agents.Sandbox{ObjectMeta: metav1.ObjectMeta{Generation: 4}, Status: agents.SandboxStatus{PodIPs: []string{"10.0.0.7"}, Conditions: []metav1.Condition{
 				condition(agents.SandboxConditionReady, metav1.ConditionTrue, "DependenciesReady", ""),
 			}}},
 			state: Starting,
 		},
 		{
-			what: "a sandbox that is put to sleep, whose pod is still going",
+			what: "suspended with the pod terminating",
 			sandbox: agents.Sandbox{
 				ObjectMeta: third,
 				Spec:       agents.SandboxSpec{OperatingMode: agents.SandboxOperatingModeSuspended},
@@ -190,7 +190,7 @@ func TestWhatASandboxDoesIsSeenInItsStatus(t *testing.T) {
 			state: Asleep,
 		},
 		{
-			what: "a sandbox that sleeps",
+			what: "suspended",
 			sandbox: agents.Sandbox{
 				ObjectMeta: third,
 				Spec:       agents.SandboxSpec{OperatingMode: agents.SandboxOperatingModeSuspended},
@@ -201,20 +201,20 @@ func TestWhatASandboxDoesIsSeenInItsStatus(t *testing.T) {
 			state: Asleep,
 		},
 		{
-			what: "a sandbox that has expired",
+			what: "expired",
 			sandbox: agents.Sandbox{ObjectMeta: third, Status: agents.SandboxStatus{Conditions: []metav1.Condition{
 				condition(agents.SandboxConditionReady, metav1.ConditionFalse, agents.SandboxReasonExpired, ""),
 			}}},
 			state: Lost, message: "it has expired",
 		},
 		{
-			what:    "a sandbox that is being deleted",
+			what:    "being deleted",
 			sandbox: agents.Sandbox{ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now}},
 			state:   Lost, message: "it is being deleted",
 		},
 	} {
 		if seen := seen(&test.sandbox); seen.State != test.state || seen.Message != test.message || seen.Address != test.address {
-			t.Errorf("%s is seen as %+v", test.what, seen)
+			t.Errorf("%s: seen = %+v", test.what, seen)
 		}
 	}
 }
@@ -235,64 +235,64 @@ func TestASandboxSleepsWakesIsKeptAndIsDeleted(t *testing.T) {
 		return made.Spec
 	}
 	if err := c.Suspend(ctx, name, ""); err != nil || spec().OperatingMode != agents.SandboxOperatingModeSuspended {
-		t.Errorf("the sandbox that is put to sleep is %s: %v", spec().OperatingMode, err)
+		t.Errorf("after Suspend: operating mode = %s, err = %v", spec().OperatingMode, err)
 	}
 	// Keeping a sleeping sandbox reports it as asleep.
 	turn := uuid.New()
 	if kept, err := c.Keep(ctx, name, turn, time.Time{}); err != nil || kept.State != Asleep {
-		t.Errorf("the sandbox that sleeps is kept as %+v: %v", kept, err)
+		t.Errorf("Keep of a suspended sandbox = %+v, %v", kept, err)
 	}
 	// Resume replaces the whole pod spec.
 	if err := c.Resume(ctx, name, Pod{Harness: Harness{Image: "harness-opencode:2"}}); err != nil || spec().OperatingMode != agents.SandboxOperatingModeRunning {
-		t.Errorf("the sandbox that is woken is %s: %v", spec().OperatingMode, err)
+		t.Errorf("after Resume: operating mode = %s, err = %v", spec().OperatingMode, err)
 	}
 	if harness := spec().PodTemplate.Spec.Containers[0]; harness.Image != "harness-opencode:2" || len(harness.Resources.Requests) != 0 {
-		t.Errorf("the sandbox that is woken runs %+v", harness)
+		t.Errorf("resumed harness container = %+v", harness)
 	}
 	until := time.Now().Add(time.Hour).Truncate(time.Second)
 	if kept, err := c.Keep(ctx, name, turn, until); err != nil || kept.State == Asleep || !spec().ShutdownTime.Time.Equal(until) {
-		t.Errorf("the sandbox that is kept for an hour is %+v, and expires at %v: %v", kept, spec().ShutdownTime, err)
+		t.Errorf("Keep = %+v, shutdown time = %v, err = %v", kept, spec().ShutdownTime, err)
 	}
 	if _, err := c.Keep(ctx, name, turn, time.Time{}); err != nil || spec().ShutdownTime != nil {
-		t.Errorf("the sandbox that is kept until it is deleted expires at %v: %v", spec().ShutdownTime, err)
+		t.Errorf("Keep without until: shutdown time = %v, err = %v", spec().ShutdownTime, err)
 	}
 	// Keep annotates the sandbox with the turn.
 	if made, err := sandboxes.Get(ctx, name, metav1.GetOptions{}); err != nil || made.Annotations["aviary.io/turn"] != turn.String() {
-		t.Errorf("the sandbox that was kept for the turn %s has the annotations %v: %v", turn, made.Annotations, err)
+		t.Errorf("Keep for turn %s: annotations = %v, err = %v", turn, made.Annotations, err)
 	}
 
 	if all, err := c.Sandboxes(ctx); err != nil || len(all) != 1 || all[0].Name != name || all[0].Session != session.String() {
-		t.Errorf("the sandboxes are %+v: %v", all, err)
+		t.Errorf("Sandboxes = %+v, %v", all, err)
 	}
 	// Sandboxes without a session label are not listed.
 	if _, err := sandboxes.Create(ctx, &agents.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "another"}}, metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if all, err := c.Sandboxes(ctx); err != nil || len(all) != 1 {
-		t.Errorf("the sandboxes are %+v: %v", all, err)
+		t.Errorf("Sandboxes = %+v, %v", all, err)
 	}
 
 	if err := c.Delete(ctx, name); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := c.Sandbox(ctx, name); !errors.Is(err, ErrNotFound) {
-		t.Errorf("the sandbox that was deleted: %v", err)
+		t.Errorf("Sandbox after Delete = %v, want ErrNotFound", err)
 	}
 	// Deleting a missing sandbox succeeds. The other changes return
 	// ErrNotFound.
 	if err := c.Delete(ctx, name); err != nil {
-		t.Errorf("a sandbox that was deleted could not be deleted: %v", err)
+		t.Errorf("second Delete = %v", err)
 	}
 	for what, change := range map[string]func() error{
-		"put to sleep": func() error { return c.Suspend(ctx, name, "") },
-		"woken":        func() error { return c.Resume(ctx, name, opencode) },
-		"kept": func() error {
+		"Suspend": func() error { return c.Suspend(ctx, name, "") },
+		"Resume":  func() error { return c.Resume(ctx, name, opencode) },
+		"Keep": func() error {
 			_, err := c.Keep(ctx, name, turn, until)
 			return err
 		},
 	} {
 		if err := change(); !errors.Is(err, ErrNotFound) {
-			t.Errorf("a sandbox that is gone was %s: %v", what, err)
+			t.Errorf("%s of a deleted sandbox = %v, want ErrNotFound", what, err)
 		}
 	}
 }
@@ -314,9 +314,9 @@ func TestASandboxIsPutToSleepOnlyAsItWasSeen(t *testing.T) {
 		return true, nil, apierrors.NewConflict(schema.GroupResource{Group: "agents.x-k8s.io", Resource: "sandboxes"}, patch.GetName(), errors.New("the object has been modified"))
 	})
 	if err := c.Suspend(ctx, Name(session), "7"); !errors.Is(err, ErrChanged) {
-		t.Errorf("a sandbox that has changed since it was seen was put to sleep: %v", err)
+		t.Errorf("Suspend with a stale version = %v, want ErrChanged", err)
 	}
 	if len(asked) != 1 || asked[0] != `{"metadata":{"resourceVersion":"7"},"spec":{"operatingMode":"Suspended"}}` {
-		t.Errorf("the cluster was asked %q", asked)
+		t.Errorf("patches = %q", asked)
 	}
 }

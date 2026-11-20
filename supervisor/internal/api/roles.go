@@ -35,14 +35,14 @@ const (
 // permissions lists all permissions in their canonical order.
 var permissions = []string{projectView, agentsManage, connectionsManage, sessionsRun, sessionsViewAll, sessionsControlAll}
 
-var errAdminOnly = &apiError{status: http.StatusForbidden, Code: "forbidden", Message: "only an administrator of the installation may do this"}
+var errAdminOnly = &apiError{status: http.StatusForbidden, Code: "forbidden", Message: "only installation administrators can do this"}
 
 // granted validates the requested permissions, and returns the set that they
 // grant, implied permissions included, in canonical order.
 func granted(asked []string) ([]string, error) {
 	for _, permission := range asked {
 		if !slices.Contains(permissions, permission) {
-			return nil, invalid(fmt.Sprintf("%q is no permission: the permissions are %s", permission, strings.Join(permissions, ", ")))
+			return nil, invalid(fmt.Sprintf("unknown permission %q; the permissions are %s", permission, strings.Join(permissions, ", ")))
 		}
 	}
 	var set []string
@@ -87,7 +87,7 @@ func (a *api) setRole(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	slog.InfoContext(r.Context(), "a role was given its permissions", "role", role.Name, "permissions", set, "by", who.Subject)
+	slog.InfoContext(r.Context(), "role updated", "role", role.Name, "permissions", set, "by", who.Subject)
 	respond(w, http.StatusOK, role)
 	return nil
 }

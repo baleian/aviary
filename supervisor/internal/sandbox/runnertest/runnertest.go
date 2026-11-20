@@ -52,7 +52,7 @@ func (rs *Runners) Turn(t testing.TB) *Turn {
 		}
 		rs.mu.Unlock()
 		if time.Now().After(end) {
-			t.Fatal("no runner was given a turn")
+			t.Fatal("timed out waiting for a turn")
 		}
 	}
 }
@@ -71,7 +71,7 @@ func (rs *Runners) TurnWith(t testing.TB, id string) *Turn {
 		}
 		rs.mu.Unlock()
 		if time.Now().After(end) {
-			t.Fatalf("no runner was given the turn %s", id)
+			t.Fatalf("timed out waiting for turn %s", id)
 		}
 	}
 }
@@ -305,7 +305,7 @@ func (t *Turn) Stopped(tb testing.TB) {
 		}
 		t.mu.Unlock()
 		if time.Now().After(end) {
-			tb.Fatalf("the turn %s was not told to stop", t.ID)
+			tb.Fatalf("turn %s was not cancelled", t.ID)
 		}
 	}
 }
@@ -324,7 +324,7 @@ func (t *Turn) Answered(tb testing.TB) (request, option string) {
 		}
 		t.mu.Unlock()
 		if time.Now().After(end) {
-			tb.Fatalf("no request of the turn %s was answered", t.ID)
+			tb.Fatalf("no approval request of turn %s was answered", t.ID)
 		}
 	}
 }

@@ -48,18 +48,18 @@ func read(raw json.RawMessage) (settings, error) {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&store); err != nil {
-		return store, errors.New("the settings of a store of this kind are its address, its mount and its role_id")
+		return store, errors.New("expected an object with address, mount and role_id")
 	}
 	address, err := url.Parse(store.Address)
 	switch {
 	case err != nil || (address.Scheme != "http" && address.Scheme != "https") || address.Hostname() == "":
-		return store, errors.New("address must be a URL that begins with http:// or https://")
+		return store, errors.New("address must be an http:// or https:// URL")
 	case address.User != nil:
-		return store, errors.New("address must hold no user name and no password")
+		return store, errors.New("address must not contain a user name or password")
 	case strings.Trim(address.Path, "/") != "" || address.RawQuery != "" || address.ForceQuery || address.Fragment != "":
-		return store, errors.New("address must end with its host and its port")
+		return store, errors.New("address must not have a path, query or fragment")
 	case store.Mount == "" || strings.Trim(store.Mount, "/") != store.Mount:
-		return store, errors.New("mount is required: the path at which the store has its secrets, without a slash at either end")
+		return store, errors.New("mount is required and must not start or end with a slash")
 	case store.RoleID == "":
 		return store, errors.New("role_id is required")
 	}
@@ -89,13 +89,13 @@ func (Plugin) Login(ctx context.Context, client *http.Client, raw json.RawMessag
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, 0, fmt.Errorf("the store was not reached: %w", err)
+		return nil, 0, fmt.Errorf("connect to the store: %w", err)
 	}
 	defer response.Body.Close()
 	// Errors report only the status, since the body comes from a host that
 	// the project chose.
 	if response.StatusCode != http.StatusOK {
-		return nil, 0, fmt.Errorf("the store answered the login with the status %d", response.StatusCode)
+		return nil, 0, fmt.Errorf("store returned status %d", response.StatusCode)
 	}
 	var answer struct {
 		Auth struct {
@@ -104,7 +104,7 @@ func (Plugin) Login(ctx context.Context, client *http.Client, raw json.RawMessag
 		} `json:"auth"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&answer); err != nil || answer.Auth.ClientToken == "" {
-		return nil, 0, errors.New("the store answered the login with no token")
+		return nil, 0, errors.New("store returned no client token")
 	}
 	return answer.Auth.ClientToken, time.Duration(answer.Auth.LeaseDuration) * time.Second, nil
 }
@@ -123,12 +123,12 @@ func (Plugin) Read(ctx context.Context, client *http.Client, raw json.RawMessage
 	steps := strings.Split(path, "/")
 	for i, step := range steps {
 		if step == "" || step == "." || step == ".." {
-			return "", errors.New("path must be the path of a secret in the mount of the store, such as team/model, without a slash at either end")
+			return "", errors.New("path must be a secret path below the mount, such as team/model, without empty or dot segments")
 		}
 		steps[i] = url.PathEscape(step)
 	}
 	if key == "" {
-		return "", errors.New("key is required: the name of the value among those that the secret holds")
+		return "", errors.New("key is required")
 	}
 	response, err := get(ctx, client, store.Address+"/v1/"+store.Mount+"/data/"+strings.Join(steps, "/"), token)
 	if err != nil {
@@ -139,7 +139,7 @@ func (Plugin) Read(ctx context.Context, client *http.Client, raw json.RawMessage
 	switch response.StatusCode {
 	case http.StatusOK:
 	case http.StatusNotFound:
-		return "", errors.New("the store has no secret at the path")
+		return "", errors.New("secret not found")
 	case http.StatusForbidden:
 		// The store answers 403 both for a token that is no longer valid and
 		// for a path that the role may not read. A token lookup tells them
@@ -152,9 +152,9 @@ func (Plugin) Read(ctx context.Context, client *http.Client, raw json.RawMessage
 		if asked.StatusCode != http.StatusOK {
 			return "", secret.ErrSessionEnded
 		}
-		return "", errors.New("the store does not let the role read the secret at the path")
+		return "", errors.New("role is not allowed to read the secret")
 	default:
-		return "", fmt.Errorf("the store answered the read with the status %d", response.StatusCode)
+		return "", fmt.Errorf("store returned status %d", response.StatusCode)
 	}
 	var answer struct {
 		Data struct {
@@ -162,15 +162,15 @@ func (Plugin) Read(ctx context.Context, client *http.Client, raw json.RawMessage
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&answer); err != nil {
-		return "", errors.New("the store answered the read with no secret")
+		return "", errors.New("store returned no secret")
 	}
 	value, found := answer.Data.Data[key]
 	if !found {
-		return "", errors.New("the secret at the path holds no value under the key")
+		return "", errors.New("secret has no such key")
 	}
 	text, isText := value.(string)
 	if !isText {
-		return "", errors.New("the value under the key is not a text")
+		return "", errors.New("value is not a string")
 	}
 	return text, nil
 }
@@ -184,7 +184,7 @@ func get(ctx context.Context, client *http.Client, address, token string) (*http
 	request.Header.Set(tokenHeader, token)
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("the store was not reached: %w", err)
+		return nil, fmt.Errorf("connect to the store: %w", err)
 	}
 	return response, nil
 }

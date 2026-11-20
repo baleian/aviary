@@ -39,7 +39,7 @@ const FORWARDER_IMAGE: &str =
 
 fn images() -> Vec<String> {
     let images = std::env::var("AVIARY_HARNESS_IMAGES")
-        .expect("AVIARY_HARNESS_IMAGES names no harness images: run `make test-harness`");
+        .expect("AVIARY_HARNESS_IMAGES is not set: run the tests with `make test-harness`");
     images.split_whitespace().map(str::to_owned).collect()
 }
 
@@ -49,7 +49,7 @@ async fn docker(arguments: &[&str]) -> String {
         .args(arguments)
         .output()
         .await
-        .expect("docker");
+        .expect("run docker");
     assert!(
         ran.status.success(),
         "docker {arguments:?} failed: {}",
@@ -127,7 +127,7 @@ impl Bench {
         .await;
         let began = Instant::now();
         while !docker(&["logs", &model]).await.contains("listening") {
-            assert!(began.elapsed() < PATIENCE, "the model server did not start");
+            assert!(began.elapsed() < PATIENCE, "mock-llm did not start");
             time::sleep(Duration::from_millis(50)).await;
         }
         bench
@@ -152,7 +152,7 @@ impl Bench {
         let mut hosts: Vec<String> = log
             .lines()
             .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-            .filter(|line| line["msg"] == "asked for")
+            .filter(|line| line["msg"] == "refused proxy request")
             .filter_map(|line| line["host"].as_str().map(str::to_owned))
             .collect();
         hosts.sort();
@@ -235,7 +235,7 @@ impl Bench {
         while !sitting.listens().await {
             assert!(
                 began.elapsed() < PATIENCE,
-                "{}: the runner does not listen\n{}",
+                "{}: timed out waiting for the runner\n{}",
                 self.image,
                 sitting.log()
             );
@@ -306,7 +306,7 @@ impl Sitting {
         let logged = std::process::Command::new("docker")
             .args(["logs", &self.harness])
             .output()
-            .expect("docker");
+            .expect("run docker");
         format!(
             "{}{}",
             String::from_utf8_lossy(&logged.stdout),
@@ -400,7 +400,7 @@ impl Sitting {
         let used = stat
             .lines()
             .find_map(|line| line.strip_prefix("usage_usec "))
-            .expect("the CPU time of the container");
+            .expect("no usage_usec in cpu.stat");
         used.trim().parse::<f64>().unwrap() / 1e6
     }
 }
@@ -444,7 +444,7 @@ impl Turn<'_> {
             match read {
                 Ok(Some(event)) => self.events.push(event),
                 _ => panic!(
-                    "{}: {what}; the events are {:?}\n{}",
+                    "{}: {what}; events: {:?}\n{}",
                     self.sitting.image,
                     self.events,
                     self.sitting.log()
@@ -460,12 +460,12 @@ impl Turn<'_> {
 
     /// Answers the approval request with the option of the given kind.
     async fn answer(&mut self, kind: &str) {
-        let asked = find(&self.events, "approval.requested").expect("a request for approval");
+        let asked = find(&self.events, "approval.requested").expect("no approval.requested event");
         let options = asked.data["options"].as_array().unwrap();
         let option = options
             .iter()
             .find(|option| option["kind"] == kind)
-            .unwrap_or_else(|| panic!("the harness takes no {kind}: {}", asked.data));
+            .unwrap_or_else(|| panic!("no {kind} option in {}", asked.data));
         let answered = self
             .sitting
             .runner
@@ -486,7 +486,7 @@ impl Turn<'_> {
                 Ok(Some(event)) => self.events.push(event),
                 Ok(None) => break,
                 Err(_) => panic!(
-                    "{}: the turn did not end; its events are {:?}\n{}",
+                    "{}: timed out waiting for the turn to end; events: {:?}\n{}",
                     self.sitting.image,
                     self.events,
                     self.sitting.log()
@@ -512,7 +512,7 @@ impl Ended {
     fn completed(&self) -> &Self {
         assert!(
             self.stopped() == Some("end_turn"),
-            "{}: the turn ended with {:?}\n{}",
+            "{}: last event = {:?}, want finished with end_turn\n{}",
             self.image,
             self.events.last(),
             self.log
@@ -522,14 +522,14 @@ impl Ended {
 
     /// Asserts that the turn failed for `reason`, with a message.
     fn failed(&self, reason: &str) -> &Self {
-        let last = self.events.last().expect("the events of the turn");
+        let last = self.events.last().expect("turn has no events");
         assert!(
             last.name == "failed"
                 && last.data["reason"] == reason
                 && last.data["message"]
                     .as_str()
                     .is_some_and(|message| !message.is_empty()),
-            "{}: the turn ended with {last:?}, not as failed for the reason {reason}\n{}",
+            "{}: last event = {last:?}, want failed with reason {reason}\n{}",
             self.image,
             self.log
         );
@@ -541,7 +541,7 @@ impl Ended {
         let said = said(&self.events);
         assert!(
             said.contains(text),
-            "{}: the agent said {said:?}, not {text:?}",
+            "{}: agent said {said:?}, want it to contain {text:?}",
             self.image
         );
         self
@@ -549,7 +549,7 @@ impl Ended {
 
     /// Returns the harness session ID of the turn.
     fn session(&self) -> String {
-        let started = find(&self.events, "started").expect("the start of the turn");
+        let started = find(&self.events, "started").expect("no started event");
         started.data["harness_session_id"]
             .as_str()
             .unwrap()
@@ -580,12 +580,12 @@ where
             failed.push(image);
         }
     }
-    assert!(failed.is_empty(), "the check failed for {failed:?}");
+    assert!(failed.is_empty(), "failed for images {failed:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
-async fn a_session_goes_on_in_its_home_and_nowhere_else() {
+async fn session_continues_from_its_home() {
     each(|bench| async move {
         let session = bench.session().await;
         let content = word("content");
@@ -595,7 +595,7 @@ async fn a_session_goes_on_in_its_home_and_nowhere_else() {
         // The command may be in the tool call or in an update of it.
         assert!(
             tools(&first.events).contains(&content),
-            "{}: the agent called no tool with the command: {:?}",
+            "{}: no tool event contains the command: {:?}",
             first.image,
             first.events
         );
@@ -607,7 +607,7 @@ async fn a_session_goes_on_in_its_home_and_nowhere_else() {
             answers >= 1
                 && usage["input_tokens"] == 11 * answers
                 && usage["output_tokens"] == 7 * answers,
-            "{}: the harness reported the usage {usage}",
+            "{}: unexpected usage {usage}",
             first.image
         );
 
@@ -629,7 +629,7 @@ async fn a_session_goes_on_in_its_home_and_nowhere_else() {
         let megabytes = session.megabytes().await;
         assert!(
             megabytes < 50,
-            "{}: the home of the session holds {megabytes} MB",
+            "{}: session home uses {megabytes} MB, want < 50",
             bench.image
         );
 
@@ -641,7 +641,7 @@ async fn a_session_goes_on_in_its_home_and_nowhere_else() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
-async fn a_session_goes_on_in_another_pod_with_its_home() {
+async fn session_resumes_in_a_new_pod() {
     each(|bench| async move {
         let session = bench.session().await;
         let content = word("content");
@@ -665,7 +665,7 @@ async fn a_session_goes_on_in_another_pod_with_its_home() {
 /// The agent cannot become root, and npm and pip install into its home.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
-async fn an_agent_is_a_user_who_installs_into_its_home() {
+async fn agent_installs_into_its_home_without_root() {
     each(|bench| async move {
         let session = bench.session().await;
         let who = session
@@ -705,7 +705,7 @@ async fn an_agent_is_a_user_who_installs_into_its_home() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
-async fn the_instructions_of_an_agent_reach_the_model_in_every_turn() {
+async fn instructions_reach_the_model_every_turn() {
     each(|bench| async move {
         let session = bench.session().await;
         let plum = word("plum");
@@ -738,7 +738,7 @@ async fn the_instructions_of_an_agent_reach_the_model_in_every_turn() {
 /// How a turn ends after a refusal depends on the harness.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
-async fn an_agent_that_is_to_ask_runs_what_a_person_allows() {
+async fn approval_mode_runs_only_allowed_commands() {
     each(|bench| async move {
         let session = bench.session().await;
         let asked = |events: &[Event]| find(events, "approval.requested").is_some();
@@ -751,7 +751,7 @@ async fn an_agent_that_is_to_ask_runs_what_a_person_allows() {
 
         let allow = format!("escalate touch {allowed}");
         let mut turn = session.start(ask(&allow)).await;
-        turn.until("the harness asked for no approval", asked).await;
+        turn.until("no approval request", asked).await;
         let request = find(&turn.events, "approval.requested")
             .unwrap()
             .data
@@ -766,12 +766,12 @@ async fn an_agent_that_is_to_ask_runs_what_a_person_allows() {
             request.to_string().contains(&allowed)
                 && kinds.contains(&"allow_once")
                 && kinds.contains(&"reject_once"),
-            "{}: the harness asked {request}",
+            "{}: unexpected approval request {request}",
             bench.image
         );
         assert!(
             !session.files().await.contains(&allowed),
-            "{}: the command ran before a person allowed it",
+            "{}: command ran before it was allowed",
             bench.image
         );
         turn.answer("allow_once").await;
@@ -779,21 +779,21 @@ async fn an_agent_that_is_to_ask_runs_what_a_person_allows() {
         first.completed();
         assert!(
             first.resolved() == Some("selected") && session.files().await.contains(&allowed),
-            "{}: a command that a person allowed did not run: {:?}",
+            "{}: allowed command did not run: {:?}",
             first.image,
             first.events
         );
 
         let refuse = format!("escalate touch {refused}");
         let mut turn = session.start(ask(&refuse)).await;
-        turn.until("the harness asked for no approval", asked).await;
+        turn.until("no approval request", asked).await;
         turn.answer("reject_once").await;
         let second = turn.end().await;
         assert!(
             second.stopped().is_some()
                 && second.resolved() == Some("selected")
                 && !session.files().await.contains(&refused),
-            "{}: after a refusal the turn ended with {:?}\n{}",
+            "{}: unexpected events after a refusal: {:?}\n{}",
             second.image,
             second.events,
             second.log
@@ -801,14 +801,14 @@ async fn an_agent_that_is_to_ask_runs_what_a_person_allows() {
 
         let drop = format!("escalate touch {dropped}");
         let mut turn = session.start(ask(&drop)).await;
-        turn.until("the harness asked for no approval", asked).await;
+        turn.until("no approval request", asked).await;
         turn.cancel().await;
         let third = turn.end().await;
         assert!(
             third.stopped() == Some("cancelled")
                 && third.resolved() == Some("cancelled")
                 && !session.files().await.contains(&dropped),
-            "{}: a turn that was cancelled while its harness asked ended with {:?}\n{}",
+            "{}: unexpected events after cancelling a pending approval: {:?}\n{}",
             third.image,
             third.events,
             third.log
@@ -821,7 +821,7 @@ async fn an_agent_that_is_to_ask_runs_what_a_person_allows() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
-async fn a_turn_that_the_model_refuses_fails() {
+async fn model_error_fails_the_turn() {
     each(|bench| async move {
         let session = bench.session().await;
         session
@@ -837,7 +837,7 @@ async fn a_turn_that_the_model_refuses_fails() {
 /// does.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
-async fn a_request_that_the_model_cannot_take_right_now_is_sent_again() {
+async fn unavailable_model_is_retried() {
     each(|bench| async move {
         let session = bench.session().await;
         let later = word("later");
@@ -849,7 +849,7 @@ async fn a_request_that_the_model_cannot_take_right_now_is_sent_again() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
-async fn a_turn_that_is_cancelled_is_ended_by_the_harness() {
+async fn cancelled_turn_is_ended_by_the_harness() {
     each(|bench| async move {
         let session = bench.session().await;
         let words: Vec<String> = (1..=40).map(|word| format!("w{word}")).collect();
@@ -859,7 +859,7 @@ async fn a_turn_that_is_cancelled_is_ended_by_the_harness() {
             ..Message::default()
         };
         let mut turn = session.start(slow).await;
-        turn.until("the agent has not begun its answer", |events| {
+        turn.until("agent did not start its answer", |events| {
             said(events).contains("w2 ")
         })
         .await;
@@ -867,7 +867,7 @@ async fn a_turn_that_is_cancelled_is_ended_by_the_harness() {
         let ended = turn.end().await;
         assert!(
             ended.stopped() == Some("cancelled"),
-            "{}: the cancelled turn ended with {:?}\n{}",
+            "{}: last event = {:?}, want finished with cancelled\n{}",
             ended.image,
             ended.events.last(),
             ended.log
@@ -885,7 +885,7 @@ async fn a_turn_that_is_cancelled_is_ended_by_the_harness() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
-async fn a_long_answer_is_told_whole() {
+async fn long_answer_is_complete() {
     each(|bench| async move {
         let session = bench.session().await;
         let words: Vec<String> = (1..=1200).map(|word| format!("w{word}")).collect();
@@ -900,7 +900,7 @@ async fn a_long_answer_is_told_whole() {
 /// call or in the agent's message.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
-async fn the_character_that_a_tool_returns_is_told_as_it_is() {
+async fn nul_in_tool_output_is_kept() {
     each(|bench| async move {
         let session = bench.session().await;
         let turn = session.say(r"run printf 'a\0b'").await;
@@ -912,7 +912,7 @@ async fn the_character_that_a_tool_returns_is_told_as_it_is() {
             .collect();
         assert!(
             told.contains(r"a\u0000b"),
-            "{}: no event has what the tool returned: {:?}",
+            "{}: no event contains the tool output: {:?}",
             turn.image,
             turn.events
         );
@@ -922,7 +922,7 @@ async fn the_character_that_a_tool_returns_is_told_as_it_is() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
-async fn a_session_that_waits_takes_little_cpu() {
+async fn waiting_session_uses_little_cpu() {
     each(|bench| async move {
         let session = bench.session().await;
         let wait = Message {
@@ -930,17 +930,15 @@ async fn a_session_that_waits_takes_little_cpu() {
             ..Message::default()
         };
         let mut turn = session.start(wait).await;
-        turn.until("the agent has not called its tool", |events| {
-            find(events, "tool.call").is_some()
-        })
-        .await;
+        turn.until("no tool call", |events| find(events, "tool.call").is_some())
+            .await;
         time::sleep(Duration::from_secs(1)).await;
         let before = session.cpu().await;
         time::sleep(Duration::from_secs(4)).await;
         let taken = session.cpu().await - before;
         assert!(
             taken < 1.0,
-            "{}: the container took {taken:.1} seconds of a CPU in 4 seconds of a turn that waits",
+            "{}: container used {taken:.1} CPU seconds in 4 seconds of a waiting turn, want < 1",
             session.image
         );
         turn.end().await.completed();
@@ -951,7 +949,7 @@ async fn a_session_that_waits_takes_little_cpu() {
         let taken = session.cpu().await - before;
         assert!(
             taken < 1.0,
-            "{}: the container took {taken:.1} seconds of a CPU in 4 seconds between two turns",
+            "{}: container used {taken:.1} CPU seconds in 4 seconds between turns, want < 1",
             session.image
         );
     })
@@ -960,7 +958,7 @@ async fn a_session_that_waits_takes_little_cpu() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
-async fn what_the_tools_of_an_agent_fetch_goes_to_the_proxy() {
+async fn tool_requests_go_through_the_proxy() {
     each(|bench| async move {
         let session = bench.session().await;
         let fetch = r#"run node -e "fetch('http://example.com/').then(r => console.log('status', r.status), () => console.log('failed'))""#;
@@ -968,7 +966,7 @@ async fn what_the_tools_of_an_agent_fetch_goes_to_the_proxy() {
         let asked = bench.asked().await;
         assert!(
             asked.iter().any(|host| host == "example.com"),
-            "{}: the proxy was asked for {asked:?}",
+            "{}: proxy got requests for {asked:?}, want example.com",
             bench.image
         );
     })
@@ -979,14 +977,14 @@ async fn what_the_tools_of_an_agent_fetch_goes_to_the_proxy() {
 /// session home.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
-async fn a_harness_fetches_nothing_for_itself() {
+async fn harness_fetches_nothing_on_its_own() {
     each(|bench| async move {
         let session = bench.session().await;
         session.say("say hello").await.completed().says("hello");
         let asked = bench.asked().await;
         assert!(
             asked.is_empty(),
-            "{}: the harness asked the proxy for {asked:?}",
+            "{}: harness sent requests for {asked:?}, want none",
             bench.image
         );
     })

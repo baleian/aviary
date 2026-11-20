@@ -150,7 +150,7 @@ func clone[T any](value *T) *T {
 // valid rejects invalid JSON, as a database does.
 func valid(what string, given json.RawMessage) error {
 	if !json.Valid(given) {
-		return fmt.Errorf("%s is not JSON: %.100s", what, given)
+		return fmt.Errorf("%s: invalid JSON: %.100s", what, given)
 	}
 	return nil
 }
@@ -235,7 +235,7 @@ func (s *Store) CreateAgent(ctx context.Context, projectID uuid.UUID, agent stor
 	}
 	if agent.Model != nil {
 		if _, found := s.providers[agent.Model.Provider]; !found {
-			return store.Agent{}, fmt.Errorf("the agent names the provider %s, which there is not", agent.Model.Provider)
+			return store.Agent{}, fmt.Errorf("provider %s does not exist", agent.Model.Provider)
 		}
 	}
 	created := agentOf(store.Agent{
@@ -598,7 +598,7 @@ func (s *Store) CreateProvider(ctx context.Context, provider store.Provider) (st
 		return store.Provider{}, store.ErrNotFound
 	}
 	if _, found := s.providers[provider.ID]; found {
-		return store.Provider{}, fmt.Errorf("there is a provider %s already", provider.ID)
+		return store.Provider{}, fmt.Errorf("provider %s already exists", provider.ID)
 	}
 	if err := s.keyStore(provider); err != nil {
 		return store.Provider{}, err
@@ -615,7 +615,7 @@ func (s *Store) CreateProvider(ctx context.Context, provider store.Provider) (st
 func (s *Store) keyStore(provider store.Provider) error {
 	if at := provider.APIKeyAt; at != nil {
 		if _, found := s.secretStores[at.Store]; !found {
-			return fmt.Errorf("the key of the provider is in the secret store %s, which there is not", at.Store)
+			return fmt.Errorf("secret store %s does not exist", at.Store)
 		}
 	}
 	return nil
@@ -661,9 +661,9 @@ func (s *Store) CreateSecretStore(ctx context.Context, secrets store.SecretStore
 		return store.SecretStore{}, store.ErrNotFound
 	}
 	if _, found := s.secretStores[secrets.ID]; found {
-		return store.SecretStore{}, fmt.Errorf("there is a secret store %s already", secrets.ID)
+		return store.SecretStore{}, fmt.Errorf("secret store %s already exists", secrets.ID)
 	}
-	if err := valid("the settings of the secret store", secrets.Settings); err != nil {
+	if err := valid("secret store settings", secrets.Settings); err != nil {
 		return store.SecretStore{}, err
 	}
 	created := secretStoreOf(secrets)
@@ -694,7 +694,7 @@ func (s *Store) ReplaceSecretStore(ctx context.Context, secrets store.SecretStor
 	if !found {
 		return store.SecretStore{}, store.ErrNotFound
 	}
-	if err := valid("the settings of the secret store", secrets.Settings); err != nil {
+	if err := valid("secret store settings", secrets.Settings); err != nil {
 		return store.SecretStore{}, err
 	}
 	replaced.Name, replaced.Kind = secrets.Name, secrets.Kind
@@ -1034,10 +1034,10 @@ func (s *Store) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool, f
 	}
 	said, err := items(ctx)
 	if err != nil {
-		return store.Turn{}, false, fmt.Errorf("read what the turn said: %w", err)
+		return store.Turn{}, false, fmt.Errorf("read turn items: %w", err)
 	}
 	for _, item := range said {
-		if err := valid("an item of the turn", item); err != nil {
+		if err := valid("turn item", item); err != nil {
 			return store.Turn{}, false, err
 		}
 	}
@@ -1077,9 +1077,9 @@ func (s *Store) AddApproval(ctx context.Context, turnID uuid.UUID, id string, re
 	defer s.mu.Unlock()
 	kept, turn := s.asked(turnID, id)
 	if turn == nil {
-		return errors.New("the turn of the request for approval is not there")
+		return errors.New("turn does not exist")
 	}
-	if err := valid("the request for approval", request); err != nil {
+	if err := valid("approval request", request); err != nil {
 		return err
 	}
 	// A runner may report a request again.

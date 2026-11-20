@@ -101,7 +101,7 @@ func (i *installation) token(sandbox string) string {
 	i.t.Helper()
 	made, found := i.service.Made()[sandbox]
 	if !found || made.Pod.Token == "" {
-		i.t.Fatalf("the sandbox %s has no token", sandbox)
+		i.t.Fatalf("sandbox %s has no token", sandbox)
 	}
 	return made.Pod.Token
 }
@@ -164,10 +164,10 @@ func (i *installation) supervisor() *supervisor {
 		select {
 		case err := <-stopped:
 			if err != nil {
-				i.t.Errorf("the Supervisor stopped with: %v", err)
+				i.t.Errorf("serveOn: %v", err)
 			}
 		case <-time.After(patience):
-			i.t.Error("the Supervisor did not stop")
+			i.t.Error("Supervisor did not stop")
 		}
 	})
 	i.t.Cleanup(s.stop)
@@ -181,7 +181,7 @@ func eventually(t *testing.T, within time.Duration, what string, holds func() bo
 	deadline := time.Now().Add(within)
 	for !holds() {
 		if time.Now().After(deadline) {
-			t.Fatalf("after %s, %s", within, what)
+			t.Fatalf("timed out after %s: %s", within, what)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -228,7 +228,7 @@ func (s *supervisor) request(method, path, body string, into any) (int, http.Hea
 	}
 	if into != nil {
 		if err := json.Unmarshal(answer, into); err != nil {
-			s.t.Fatalf("%s %s was answered with %d %s: %v", method, path, response.StatusCode, answer, err)
+			s.t.Fatalf("%s %s: decode response %d %s: %v", method, path, response.StatusCode, answer, err)
 		}
 	}
 	return response.StatusCode, response.Header
@@ -239,7 +239,7 @@ func (s *supervisor) create(path, body string) string {
 	s.t.Helper()
 	var created struct{ ID string }
 	if status, _ := s.request("POST", path, body, &created); status != http.StatusCreated {
-		s.t.Fatalf("POST %s %s was answered with %d", path, body, status)
+		s.t.Fatalf("POST %s %s: status %d, want 201", path, body, status)
 	}
 	return created.ID
 }
@@ -282,7 +282,7 @@ func (s *supervisor) send(session, text string) turn {
 	}
 	var accepted turn
 	if status, _ := s.request("POST", "/v1/sessions/"+session+"/messages", string(message), &accepted); status != http.StatusAccepted {
-		s.t.Fatalf("the message %q was answered with %d", text, status)
+		s.t.Fatalf("send %q: status %d, want 202", text, status)
 	}
 	return accepted
 }
@@ -292,7 +292,7 @@ func (s *supervisor) turn(id string) turn {
 	s.t.Helper()
 	var record turn
 	if status, _ := s.request("GET", "/v1/turns/"+id, "", &record); status != http.StatusOK {
-		s.t.Fatalf("the turn %s was answered with %d", id, status)
+		s.t.Fatalf("GET turn %s: status %d, want 200", id, status)
 	}
 	return record
 }
@@ -339,7 +339,7 @@ func (r *reader) stream(ctx context.Context, api, after string) error {
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("the events of turn %s were answered with %d", r.turn, response.StatusCode)
+		return fmt.Errorf("events of turn %s: status %d", r.turn, response.StatusCode)
 	}
 	var next event
 	lines := bufio.NewScanner(response.Body)
@@ -373,7 +373,7 @@ func (r *reader) next() event {
 				return event
 			}
 		case <-time.After(soon):
-			r.t.Fatalf("the reader of turn %s got no event", r.turn)
+			r.t.Fatalf("no event for turn %s", r.turn)
 		}
 	}
 }
@@ -385,10 +385,10 @@ func (r *reader) rest(within time.Duration) []event {
 	select {
 	case err := <-r.ended:
 		if err != nil {
-			r.t.Fatalf("the events of turn %s broke off: %v", r.turn, err)
+			r.t.Fatalf("event stream of turn %s: %v", r.turn, err)
 		}
 	case <-time.After(within):
-		r.t.Fatalf("after %s, the events of turn %s have not ended", within, r.turn)
+		r.t.Fatalf("timed out after %s: event stream of turn %s has not ended", within, r.turn)
 	}
 	var rest []event
 	for {
@@ -463,12 +463,12 @@ func (r *runner) report(told message) {
 	r.Tell(told.name, told.data)
 	r.seq++
 	id := uuid.MustParse(r.ID)
-	eventually(i.t, soon, fmt.Sprintf("the event %d of the turn %s is not recorded", r.seq, r.ID), func() bool {
+	eventually(i.t, soon, fmt.Sprintf("event %d of turn %s is not recorded", r.seq, r.ID), func() bool {
 		recorded, err := events.New(i.log).Received(context.Background(), id)
 		return err == nil && recorded >= r.seq
 	})
 	if told.name == "finished" || told.name == "failed" {
-		eventually(i.t, soon, "the turn "+r.ID+" has not ended", func() bool {
+		eventually(i.t, soon, "turn "+r.ID+" has not ended", func() bool {
 			turn, err := i.records.Turn(context.Background(), id)
 			return err == nil && turn.EndedAt != nil
 		})
@@ -606,7 +606,7 @@ func (s *supervisor) metric(series string) float64 {
 		}
 		number, err := strconv.ParseFloat(value, 64)
 		if err != nil {
-			s.t.Fatalf("the metrics have the line %q", lines.Text())
+			s.t.Fatalf("invalid metrics line %q", lines.Text())
 		}
 		sum += number
 	}

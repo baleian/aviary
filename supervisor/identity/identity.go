@@ -57,5 +57,5 @@ func Open(ctx context.Context, kind string, settings json.RawMessage, plugins ..
 		}
 		kinds = append(kinds, plugin.Kind())
 	}
-	return nil, fmt.Errorf("no plugin for an identity provider of the kind %q: this build has %s", kind, strings.Join(kinds, ", "))
+	return nil, fmt.Errorf("unsupported identity provider kind %q (supported: %s)", kind, strings.Join(kinds, ", "))
 }

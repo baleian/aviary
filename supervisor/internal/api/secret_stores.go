@@ -47,7 +47,7 @@ func (a *api) readSecretStore(w http.ResponseWriter, r *http.Request, id uuid.UU
 	case request.Name == "":
 		return store.SecretStore{}, invalid("name is required")
 	case request.Credential == nil || request.Credential.Value == "":
-		return store.SecretStore{}, invalid("credential.value is required: what the store is logged in to with")
+		return store.SecretStore{}, invalid("credential.value is required: the store's login credential")
 	}
 	if err := a.stores.Check(r.Context(), request.Kind, request.Settings, request.Credential.Value); err != nil {
 		return store.SecretStore{}, invalid(err.Error())

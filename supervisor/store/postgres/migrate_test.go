@@ -59,9 +59,9 @@ func TestMigrate(t *testing.T) {
 	database := emptyDatabase(t)
 	if st, err := (postgres.Plugin{}).Open(ctx, database); err == nil {
 		st.Close()
-		t.Fatal("a database without the schema was opened")
+		t.Fatal("Open succeeded on a database without the schema")
 	} else if !strings.Contains(err.Error(), "aviary-supervisor migrate") {
-		t.Errorf("the error does not say what to do about a database without the schema: %v", err)
+		t.Errorf("Open error = %v, want a hint to run aviary-supervisor migrate", err)
 	}
 
 	if err := (postgres.Plugin{}).Migrate(ctx, database); err != nil {
@@ -69,10 +69,10 @@ func TestMigrate(t *testing.T) {
 	}
 	newest := schema(t, database)
 	if len(newest) == 0 {
-		t.Fatal("the migrations made nothing")
+		t.Fatal("schema is empty after Migrate")
 	}
 	if err := (postgres.Plugin{}).Migrate(ctx, database); err != nil {
-		t.Fatalf("migrate a database that is up to date: %v", err)
+		t.Fatalf("Migrate on an up-to-date database: %v", err)
 	}
 
 	// Each migration can be undone on its own.
@@ -83,19 +83,19 @@ func TestMigrate(t *testing.T) {
 		}
 	}
 	if left := schema(t, database); len(left) != 0 {
-		t.Errorf("the migrations, undone, leave behind:\n%s", strings.Join(left, "\n"))
+		t.Errorf("schema left after undoing all migrations:\n%s", strings.Join(left, "\n"))
 	}
 	if err := (postgres.Plugin{}).Migrate(ctx, database); err != nil {
 		t.Fatal(err)
 	}
 	if again := schema(t, database); !slices.Equal(again, newest) {
-		t.Errorf("the schema is not the same after the migrations were undone and done again:\n%s\nwas:\n%s",
+		t.Errorf("schema after migrating down and up again:\n%s\nwant:\n%s",
 			strings.Join(again, "\n"), strings.Join(newest, "\n"))
 	}
 
 	for _, version := range []int64{-1, int64(len(versions)) + 1} {
 		if err := (postgres.Plugin{}).MigrateTo(ctx, database, version); err == nil {
-			t.Errorf("the schema was moved to version %d, which there is not", version)
+			t.Errorf("MigrateTo(%d) succeeded, want an error", version)
 		}
 	}
 }
@@ -113,6 +113,6 @@ func TestOpenChecksTheSchema(t *testing.T) {
 	exec(t, database, `update schema_floor set version = (select max(version_id) from goose_db_version)`)
 	if st, err := (postgres.Plugin{}).Open(context.Background(), database); err == nil {
 		st.Close()
-		t.Error("a database that no longer supports this build was opened")
+		t.Error("Open succeeded on a schema whose floor excludes this build")
 	}
 }

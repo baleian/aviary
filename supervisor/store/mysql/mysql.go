@@ -37,7 +37,7 @@ func connect(address string) (*sql.DB, error) {
 		if errors.As(err, &quoting) {
 			err = quoting.Err
 		}
-		return nil, fmt.Errorf("parse the URL of the database: %w", err)
+		return nil, fmt.Errorf("parse database URL: %w", err)
 	}
 	config := mysql.NewConfig()
 	config.Net, config.Addr = "tcp", parsed.Host
@@ -62,16 +62,16 @@ func connect(address string) (*sql.DB, error) {
 		"ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'"
 	for name, values := range parsed.Query() {
 		if name != "tls" {
-			return nil, fmt.Errorf("the URL of the database has the parameter %q, and the only one that it may have is tls", name)
+			return nil, fmt.Errorf("unsupported database URL parameter %q: only tls is supported", name)
 		}
 		if !slices.Contains([]string{"true", "false", "skip-verify", "preferred"}, values[0]) {
-			return nil, errors.New("the URL of the database may have tls=true, tls=false, tls=skip-verify or tls=preferred")
+			return nil, errors.New("invalid tls value in database URL: must be true, false, skip-verify or preferred")
 		}
 		config.TLSConfig = values[0]
 	}
 	connector, err := mysql.NewConnector(config)
 	if err != nil {
-		return nil, fmt.Errorf("the URL of the database: %w", err)
+		return nil, fmt.Errorf("invalid database URL: %w", err)
 	}
 	db := sql.OpenDB(connector)
 	// Close connections before the server, or a proxy in between, does.

@@ -66,26 +66,26 @@ func TestCallersAreAskedWhoTheyAre(t *testing.T) {
 			var answer struct{ Code string }
 			_ = json.NewDecoder(response.Body).Decode(&answer)
 			if response.StatusCode != http.StatusUnauthorized || answer.Code != "unauthenticated" || response.Header.Get("WWW-Authenticate") != "Bearer" {
-				t.Errorf("%s %s with the header %q is answered with %d %q and is asked for %q",
+				t.Errorf("%s %s with Authorization %q = %d %q, WWW-Authenticate %q; want 401 unauthenticated, Bearer",
 					request[0], request[1], authorization, response.StatusCode, answer.Code, response.Header.Get("WWW-Authenticate"))
 			}
 		}
 	}
 	// Health checks need no token.
 	if response := send(http.MethodGet, "/healthz", ""); response.StatusCode != http.StatusOK {
-		t.Errorf("a Supervisor is asked whether it is up, and answers %d", response.StatusCode)
+		t.Errorf("GET /healthz: status %d, want 200", response.StatusCode)
 	}
 
 	for _, authorization := range []string{"Bearer token-of-alice", "bearer token-of-alice"} {
 		if response := send(http.MethodGet, "/v1/projects", authorization); response.StatusCode != http.StatusOK {
-			t.Errorf("the projects are asked for with the header %q, and that is answered with %d", authorization, response.StatusCode)
+			t.Errorf("GET /v1/projects with Authorization %q: status %d, want 200", authorization, response.StatusCode)
 		}
 	}
 	s.token = "token-of-alice"
 	var told me
 	if status, _ := s.request(http.MethodGet, "/v1/me", "", &told); status != http.StatusOK || uuid.Validate(told.ID) != nil ||
 		!reflect.DeepEqual(told, me{ID: told.ID, Subject: "subject-1", Username: "alice@example.com", DisplayName: "Alice Kim", Groups: []string{"team-a"}}) {
-		t.Errorf("the caller is told %d %+v", status, told)
+		t.Errorf("GET /v1/me = %d %+v", status, told)
 	}
 }
 
@@ -105,24 +105,24 @@ func TestCallersAreUsers(t *testing.T) {
 		s.token = token
 		var told me
 		if status, _ := s.request(http.MethodGet, "/v1/me", "", &told); status != http.StatusOK || uuid.Validate(told.ID) != nil {
-			t.Fatalf("the caller with %s is told %d %+v", token, status, told)
+			t.Fatalf("GET /v1/me with %s = %d %+v", token, status, told)
 		}
 		return told
 	}
 	alice := ask(one, "token-of-alice")
 	if again := ask(other, "token-of-alice"); again.ID != alice.ID {
-		t.Errorf("a caller is the user %s to one Supervisor and %s to another", alice.ID, again.ID)
+		t.Errorf("user ID = %s on one Supervisor and %s on another", alice.ID, again.ID)
 	}
 	// Another token of the same subject updates the display name.
 	if renamed := ask(one, "another-of-alice"); renamed.ID != alice.ID || renamed.DisplayName != "Alice Kim" {
-		t.Errorf("the caller is told %+v with another of its tokens, and was the user %s", renamed, alice.ID)
+		t.Errorf("GET /v1/me with another token = %+v, want user %s with the new display name", renamed, alice.ID)
 	}
 	if bob := ask(other, "token-of-bob"); bob.ID == alice.ID {
-		t.Errorf("two callers are the same user, %s", bob.ID)
+		t.Errorf("two subjects share user ID %s", bob.ID)
 	}
 	user, err := installation.records.UserOf(context.Background(), "subject-1", "", "Alice Kim")
 	if err != nil || user.ID.String() != alice.ID || user.Username != "alice@example.com" {
-		t.Errorf("the records have the user %+v, with the error %v", user, err)
+		t.Errorf("UserOf = %+v, %v", user, err)
 	}
 }
 
@@ -141,15 +141,15 @@ func TestGroupsOfAdministratorsAndOfUsers(t *testing.T) {
 		// that may not use the API.
 		admins, refused []string
 	}{
-		"groups of administrators and of users": {
+		"admin and user groups": {
 			callers: api.Callers{Provider: provider, Admins: []string{"platform", "owners"}, Users: []string{"team-a", "team-b"}},
 			admins:  []string{"an-administrator"}, refused: []string{"a-stranger", "without-groups"},
 		},
-		"no groups of users: everyone whom the provider knows may use the API": {
+		"no user groups": {
 			callers: api.Callers{Provider: provider, Admins: []string{"platform"}},
 			admins:  []string{"an-administrator"},
 		},
-		"no groups of administrators: nobody is one": {
+		"no admin groups": {
 			callers: api.Callers{Provider: provider, Users: []string{"team-b"}},
 			refused: []string{"an-administrator", "a-stranger", "without-groups"},
 		},
@@ -164,7 +164,7 @@ func TestGroupsOfAdministratorsAndOfUsers(t *testing.T) {
 				var told me
 				if status, _ := s.request(http.MethodGet, "/v1/me", "", &told); status != http.StatusOK ||
 					told.Subject != caller.Subject || told.Admin != contains(test.admins, token) {
-					t.Errorf("%s is told %d %+v", token, status, told)
+					t.Errorf("%s: GET /v1/me = %d %+v", token, status, told)
 				}
 				status, expected := http.StatusOK, http.StatusOK
 				var answer struct{ Code string }
@@ -173,7 +173,7 @@ func TestGroupsOfAdministratorsAndOfUsers(t *testing.T) {
 				}
 				if status, _ = s.request(http.MethodGet, "/v1/projects", "", &answer); status != expected ||
 					(expected == http.StatusForbidden) != (answer.Code == "forbidden") {
-					t.Errorf("%s asks for its projects, and that is answered with %d %q, not %d", token, status, answer.Code, expected)
+					t.Errorf("%s: GET /v1/projects = %d %q, want %d", token, status, answer.Code, expected)
 				}
 			}
 		})
@@ -200,10 +200,10 @@ func TestNobodyIsAskedWithoutAnIdentityProvider(t *testing.T) {
 		s.token = token
 		var answer map[string]any
 		if status, _ := s.request(http.MethodGet, "/v1/me", "", &answer); status != http.StatusOK || !reflect.DeepEqual(answer, map[string]any{"admin": true}) {
-			t.Errorf("a caller with the token %q is told %d %v", token, status, answer)
+			t.Errorf("token %q: GET /v1/me = %d %v", token, status, answer)
 		}
 		if status, _ := s.request(http.MethodPost, "/v1/projects", `{"name": "a project"}`, nil); status != http.StatusCreated {
-			t.Errorf("a project is created with the token %q, and that is answered with %d", token, status)
+			t.Errorf("token %q: POST /v1/projects status %d, want 201", token, status)
 		}
 	}
 }
@@ -233,7 +233,7 @@ func TestCallerSettings(t *testing.T) {
 	for _, none := range []string{`{}`, `{"kind": "", "settings": {}}`} {
 		t.Setenv(identityProvider, none)
 		if callers, err := callersOf(ctx, plugins); err != nil || !reflect.DeepEqual(callers, api.Callers{}) {
-			t.Errorf("with the provider %s the callers are %+v, with the error %v", none, callers, err)
+			t.Errorf("provider %s: callersOf() = %+v, %v", none, callers, err)
 		}
 	}
 	t.Setenv(identityProvider, `{"kind": "tokens", "settings": {"a-token": {"Subject": "subject-1"}}}`)
@@ -242,10 +242,10 @@ func TestCallerSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	if caller, err := callers.Provider.Caller(ctx, "a-token"); err != nil || caller.Subject != "subject-1" {
-		t.Errorf("the provider tells of the caller %+v, with the error %v", caller, err)
+		t.Errorf("Caller = %+v, %v", caller, err)
 	}
 	if !reflect.DeepEqual(callers.Admins, []string{"platform"}) || !reflect.DeepEqual(callers.Users, []string{"team-a", "team-b"}) {
-		t.Errorf("the administrators are %q and the users %q", callers.Admins, callers.Users)
+		t.Errorf("Admins = %q, Users = %q", callers.Admins, callers.Users)
 	}
 
 	for _, wrong := range []struct{ name, value, says string }{
@@ -258,7 +258,7 @@ func TestCallerSettings(t *testing.T) {
 		t.Run(wrong.name+"="+wrong.value, func(t *testing.T) {
 			t.Setenv(wrong.name, wrong.value)
 			if _, err := callersOf(ctx, plugins); err == nil || !strings.Contains(err.Error(), wrong.says) {
-				t.Errorf("the callers are refused with %v, which does not say %q", err, wrong.says)
+				t.Errorf("callersOf() error = %v, want it to contain %q", err, wrong.says)
 			}
 		})
 	}
@@ -283,13 +283,13 @@ func TestASessionIsOfItsCreator(t *testing.T) {
 		t.Helper()
 		s.token = token
 		if status, _ := s.request(http.MethodGet, "/v1/me", "", &caller); status != http.StatusOK {
-			t.Fatalf("the caller with %s is told %d", token, status)
+			t.Fatalf("GET /v1/me with %s: status %d", token, status)
 		}
 		if status, _ := s.request(http.MethodPost, "/v1/agents/"+agent+"/sessions", "", &created); status != http.StatusCreated {
-			t.Fatalf("the session of the caller with %s is answered with %d", token, status)
+			t.Fatalf("create session with %s: status %d", token, status)
 		}
 		if status, _ := s.request(http.MethodGet, "/v1/sessions/"+created["id"].(string), "", &read); status != http.StatusOK {
-			t.Fatalf("the session of the caller with %s is read with %d", token, status)
+			t.Fatalf("GET session with %s: status %d", token, status)
 		}
 		return caller, created, read
 	}
@@ -300,35 +300,35 @@ func TestASessionIsOfItsCreator(t *testing.T) {
 	s.create("/v1/projects/"+project+"/members", `{"user": "bob@example.com", "role": "user"}`)
 	alice, created, read := session("token-of-alice", agent)
 	if created["created_by"] != alice.ID || read["created_by"] != alice.ID {
-		t.Errorf("the session of the user %s was created as %v and is read as %v", alice.ID, created, read)
+		t.Errorf("session of user %s: created %v, read %v", alice.ID, created, read)
 	}
 	bob, created, read := session("token-of-bob", agent)
 	if bob.ID == alice.ID || created["created_by"] != bob.ID || read["created_by"] != bob.ID {
-		t.Errorf("the session of the user %s was created as %v and is read as %v", bob.ID, created, read)
+		t.Errorf("session of user %s: created %v, read %v", bob.ID, created, read)
 	}
 	var sent, one map[string]any
 	if status, _ := s.request(http.MethodPost, "/v1/sessions/"+created["id"].(string)+"/messages", `{"text": "hello"}`, &sent); status != http.StatusAccepted {
-		t.Fatalf("a message is answered with %d %v", status, sent)
+		t.Fatalf("send = %d %v, want 202", status, sent)
 	}
 	if status, _ := s.request(http.MethodGet, "/v1/turns/"+sent["id"].(string), "", &one); status != http.StatusOK ||
 		sent["created_by"] != bob.ID || one["created_by"] != bob.ID {
-		t.Errorf("the turn of the user %s was created as %v and is read with %d as %v", bob.ID, sent, status, one)
+		t.Errorf("turn of user %s: created %v, read %d %v", bob.ID, sent, status, one)
 	}
 
 	nobody := install(t).supervisor()
 	var nobodys map[string]any
 	if status, _ := nobody.request(http.MethodGet, "/v1/sessions/"+nobody.session(), "", &nobodys); status != http.StatusOK || nobodys["id"] == nil {
-		t.Fatalf("a session is read with %d %v", status, nobodys)
+		t.Fatalf("GET session = %d %v", status, nobodys)
 	}
 	if by, told := nobodys["created_by"]; told {
-		t.Errorf("a session that nobody created is said to be that of %v", by)
+		t.Errorf("session without a creator has created_by %v", by)
 	}
 	var unsigned map[string]any
 	if status, _ := nobody.request(http.MethodPost, "/v1/sessions/"+nobodys["id"].(string)+"/messages", `{"text": "hello"}`, &unsigned); status != http.StatusAccepted || unsigned["id"] == nil {
-		t.Fatalf("a message is answered with %d %v", status, unsigned)
+		t.Fatalf("send = %d %v, want 202", status, unsigned)
 	}
 	if by, told := unsigned["created_by"]; told {
-		t.Errorf("a turn that nobody sent is said to be that of %v", by)
+		t.Errorf("turn without a sender has created_by %v", by)
 	}
 }
 
@@ -357,13 +357,13 @@ func TestProxyIsToldWhoSentTheMessageOfATurn(t *testing.T) {
 		runner := aviary.given(s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID)
 		for _, forward := range []bool{false, true} {
 			if origin := s.origin(aviary.token(runner.Sandbox), forward); who.ID == "" || origin["user"] != who.ID || who.Subject == "" || origin["subject"] != who.Subject {
-				t.Errorf("of a request of the turn that the user %q, the subject %q, sent, through the forward proxy %t, the proxy is told %v",
+				t.Errorf("user %q, subject %q, forward %t: origin = %v",
 					who.ID, who.Subject, forward, origin)
 			}
 		}
 		senders[who.ID] = true
 	}
 	if len(senders) != 2 {
-		t.Errorf("the two who sent messages are %v", senders)
+		t.Errorf("senders = %v, want two users", senders)
 	}
 }

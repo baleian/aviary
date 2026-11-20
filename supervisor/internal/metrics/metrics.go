@@ -35,48 +35,48 @@ func New() *Metrics {
 		registry: prometheus.NewRegistry(),
 		queue: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "aviary_turn_queue_length",
-			Help:    "How many turns waited to run when a turn was accepted, that turn among them. It is zero for a turn that did not have to wait.",
+			Help:    "Number of turns waiting to run when a turn is accepted, including that turn. 0 if the turn did not have to wait.",
 			Buckets: []float64{0, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000},
 		}),
 		running: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "aviary_turns_running",
-			Help: "The turns that run and that this Supervisor follows.",
+			Help: "Number of running turns that this Supervisor follows.",
 		}, []string{"harness"}),
 		ended: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "aviary_turns_ended_total",
-			Help: "The turns that have ended, by how they ended. The reason is set for a failed turn.",
+			Help: "Number of turns that have ended, by state and, for failed turns, reason.",
 		}, []string{"harness", "state", "reason"}),
 		waited: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "aviary_turn_queue_duration_seconds",
-			Help:    "How long a turn waited to run, from its message to its leaving the queue.",
+			Help:    "Time that a turn waited in the queue, from its message until dispatch, in seconds.",
 			Buckets: []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600},
 		}, []string{"harness"}),
 		startup: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "aviary_turn_startup_duration_seconds",
-			Help:    "How long a turn took to start, from its leaving the queue to its harness having the message.",
+			Help:    "Time from a turn's dispatch until its harness had the message, in seconds.",
 			Buckets: []float64{0.5, 1, 2, 3, 5, 10, 20, 30, 60, 90, 120},
 		}, []string{"harness"}),
 		ran: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "aviary_turn_run_duration_seconds",
-			Help:    "How long a turn ran, from its harness having the message to the turn having ended.",
+			Help:    "Time from a turn's harness having the message until the turn ended, in seconds.",
 			Buckets: []float64{1, 2, 5, 10, 30, 60, 120, 300, 600, 1800, 3600, 7200, 14400, 43200, 86400},
 		}, []string{"harness", "state"}),
 		tokens: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "aviary_turn_tokens_total",
-			Help: "The token usage of the turns as their harnesses reported it. It is not a measurement: harnesses differ in what they count.",
+			Help: "Number of tokens used by turns, as reported by their harnesses. Not a measurement: harnesses differ in what they count.",
 		}, []string{"harness", "kind"}),
 		refused: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "aviary_messages_refused_total",
-			Help: "The messages that were not accepted as turns, by the reason.",
+			Help: "Number of messages that were not accepted as turns, by reason.",
 		}, []string{"reason"}),
 		approved: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "aviary_approval_wait_seconds",
-			Help:    "How long a request of a harness for approval waited, from the harness asking to the harness having its answer, by the kind of the option that it was given. cancelled: its turn was told to stop before anybody answered.",
+			Help:    "Time that an approval request waited, from the harness asking until it had the answer, in seconds. outcome is the kind of the selected option, or cancelled if the turn was cancelled before anyone answered.",
 			Buckets: []float64{1, 5, 15, 30, 60, 120, 300, 600, 1200, 1800, 3600},
 		}, []string{"harness", "outcome"}),
 		secretRead: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "aviary_secret_read_seconds",
-			Help:    "How long a secret store of a project took to give a value, by the kind of the store and by whether it gave it. A value that this Supervisor remembers is not read, and is not counted.",
+			Help:    "Time to read a value from a project's secret store, in seconds, by store kind and outcome. Values cached by this Supervisor are not counted.",
 			Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 3},
 		}, []string{"kind", "outcome"}),
 	}

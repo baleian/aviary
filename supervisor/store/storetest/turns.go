@@ -75,7 +75,7 @@ func (s supervisor) dispatch() store.Dispatch {
 		s.t.Fatal(err)
 	}
 	if len(dispatches) != 1 {
-		s.t.Fatalf("%d turns were dispatched, not one", len(dispatches))
+		s.t.Fatalf("dispatched %d turns, want 1", len(dispatches))
 	}
 	return dispatches[0]
 }
@@ -106,7 +106,7 @@ func (s supervisor) end(id uuid.UUID, succeeded bool, failure store.Failure) sto
 	s.t.Helper()
 	turn, changed, err := s.EndTurn(ctx, id, succeeded, failure, nothing)
 	if err != nil || !changed {
-		s.t.Fatalf("the turn was not ended: %v", err)
+		s.t.Fatalf("EndTurn did not end the turn: %v", err)
 	}
 	return turn
 }
@@ -120,19 +120,19 @@ func (suite suite) testCreateTurn(t *testing.T) {
 	session := st.session()
 	first := st.queue(session)
 	if first.Seq != 1 || first.State != store.TurnQueued || first.Text != "hello" {
-		t.Errorf("the first turn of a session is %+v", first)
+		t.Errorf("first turn = %+v", first)
 	}
 	if _, _, err := st.CreateTurn(ctx, session, uuid.Nil, "again", 0, 50); !errors.Is(err, store.ErrSessionBusy) {
-		t.Errorf("a session with a turn that has not ended took a message: %v", err)
+		t.Errorf("CreateTurn with an unfinished turn = %v, want ErrSessionBusy", err)
 	}
 	if _, _, err := st.CancelTurn(ctx, first.ID); err != nil {
 		t.Fatal(err)
 	}
 	if second := st.queue(session); second.Seq != 2 {
-		t.Errorf("the second turn of a session has the number %d", second.Seq)
+		t.Errorf("second turn Seq = %d, want 2", second.Seq)
 	}
 	if _, _, err := st.CreateTurn(ctx, uuid.New(), uuid.Nil, "hello", 0, 50); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("a session that does not exist took a message: %v", err)
+		t.Errorf("CreateTurn on a nonexistent session = %v, want ErrNotFound", err)
 	}
 }
 
@@ -161,7 +161,7 @@ func (s supervisor) supervisors(count int) []supervisor {
 	return supervisors
 }
 
-func (suite suite) testCreateTurnTakesOneOfTheMessagesSentAtOnce(t *testing.T) {
+func (suite suite) testConcurrentCreateTurn(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	session := st.session()
@@ -178,11 +178,11 @@ func (suite suite) testCreateTurnTakesOneOfTheMessagesSentAtOnce(t *testing.T) {
 		}
 	})
 	if accepted.Load() != 1 || busy.Load() != 19 {
-		t.Errorf("of 20 messages sent to a session at once, %d were accepted and %d refused", accepted.Load(), busy.Load())
+		t.Errorf("of 20 concurrent messages, %d accepted and %d busy, want 1 and 19", accepted.Load(), busy.Load())
 	}
 }
 
-func (suite suite) testCreateTurnKeepsToTheMostThatMayWait(t *testing.T) {
+func (suite suite) testCreateTurnQueueLimit(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	const maxWaiting, maxRunning = 2, 2
@@ -193,32 +193,32 @@ func (suite suite) testCreateTurnKeepsToTheMostThatMayWait(t *testing.T) {
 	// The first two have room to run, so they do not wait.
 	for _, expected := range []int{0, 0, 1, 2} {
 		if waiting, err := send(st.session()); err != nil || waiting != expected {
-			t.Fatalf("%d turns wait, not %d: %v", waiting, expected, err)
+			t.Fatalf("waiting = %d, want %d: %v", waiting, expected, err)
 		}
 	}
 	refused := st.session()
 	if _, err := send(refused); !errors.Is(err, store.ErrQueueFull) {
-		t.Fatalf("a message beyond the most that may wait was accepted: %v", err)
+		t.Fatalf("CreateTurn beyond the queue limit = %v, want ErrQueueFull", err)
 	}
 	if turns, err := st.Turns(ctx, refused, math.MaxInt32, 10); err != nil || len(turns) != 0 {
-		t.Errorf("the refused message left a turn behind: %v, %v", turns, err)
+		t.Errorf("refused message left turns %v: %v", turns, err)
 	}
 
 	// Dispatched turns make no room in the queue until one of them ends.
 	dispatches, err := st.DispatchTurns(ctx, maxRunning)
 	if err != nil || len(dispatches) != maxRunning {
-		t.Fatalf("%d turns were dispatched: %v", len(dispatches), err)
+		t.Fatalf("dispatched %d turns: %v", len(dispatches), err)
 	}
 	if _, err := send(refused); !errors.Is(err, store.ErrQueueFull) {
-		t.Errorf("a message beyond the most that may wait was accepted: %v", err)
+		t.Errorf("CreateTurn beyond the queue limit = %v, want ErrQueueFull", err)
 	}
 	st.end(dispatches[0].TurnID, false, store.Failure{Reason: store.FailureSandboxLost})
 	if waiting, err := send(refused); err != nil || waiting != 2 {
-		t.Errorf("after a turn ended, %d turns wait: %v", waiting, err)
+		t.Errorf("waiting after a turn ended = %d, want 2: %v", waiting, err)
 	}
 }
 
-func (suite suite) testSupervisorsKeepToTheMostThatMayWaitTogether(t *testing.T) {
+func (suite suite) testConcurrentCreateTurnQueueLimit(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	supervisors, sessions := st.supervisors(12), make([]uuid.UUID, 12)
@@ -239,12 +239,12 @@ func (suite suite) testSupervisorsKeepToTheMostThatMayWaitTogether(t *testing.T)
 		}
 	})
 	if accepted.Load() != 4 || refused.Load() != 8 {
-		t.Errorf("of 12 messages sent at once, %d were accepted and %d refused", accepted.Load(), refused.Load())
+		t.Errorf("of 12 concurrent messages, %d accepted and %d refused, want 4 and 8", accepted.Load(), refused.Load())
 	}
 }
 
 // Concurrent messages that all have room to run do not count as waiting.
-func (suite suite) testCreateTurnLetsThoseInThatHaveRoomToRun(t *testing.T) {
+func (suite suite) testConcurrentCreateTurnWithRoomToRun(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	sessions := make([]uuid.UUID, 12)
@@ -253,7 +253,7 @@ func (suite suite) testCreateTurnLetsThoseInThatHaveRoomToRun(t *testing.T) {
 	}
 	atOnce(len(sessions), func(i int) {
 		if _, waiting, err := st.CreateTurn(ctx, sessions[i], uuid.Nil, "hello", 2, 50); err != nil || waiting != 0 {
-			t.Errorf("%d turns wait: %v", waiting, err)
+			t.Errorf("waiting = %d, want 0: %v", waiting, err)
 		}
 	})
 }
@@ -270,14 +270,14 @@ func (suite suite) testDispatchTurns(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(dispatches) != 2 || dispatches[0].TurnID != queued[0].ID || dispatches[1].TurnID != queued[1].ID {
-		t.Fatalf("the turns %v were dispatched, not the two oldest of %v", dispatches, queued)
+		t.Fatalf("DispatchTurns = %v, want the two oldest of %v", dispatches, queued)
 	}
 	first := dispatches[0]
 	if first.Harness != "opencode" {
-		t.Errorf("the dispatch is %+v", first)
+		t.Errorf("dispatch = %+v, want harness opencode", first)
 	}
 	if state := st.turn(first.TurnID).State; state != store.TurnDispatching {
-		t.Errorf("a dispatched turn is %s", state)
+		t.Errorf("dispatched turn state = %s, want dispatching", state)
 	}
 
 	// A turn counts against the limit from its dispatch to its end.
@@ -285,15 +285,15 @@ func (suite suite) testDispatchTurns(t *testing.T) {
 		t.Fatal(err)
 	}
 	if more, err := st.DispatchTurns(ctx, 2); err != nil || len(more) != 0 {
-		t.Fatalf("%d turns were dispatched beyond the limit: %v", len(more), err)
+		t.Fatalf("dispatched %d turns beyond the limit: %v", len(more), err)
 	}
 	st.end(first.TurnID, true, store.Failure{})
 	if last := st.dispatch(); last.TurnID != queued[2].ID {
-		t.Errorf("the turn %s was dispatched, not the one that waited", last.TurnID)
+		t.Errorf("dispatched turn %s, want the queued one", last.TurnID)
 	}
 }
 
-func (suite suite) testSupervisorsDispatchWithinTheLimitTogether(t *testing.T) {
+func (suite suite) testConcurrentDispatchTurns(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	for range 20 {
@@ -315,13 +315,13 @@ func (suite suite) testSupervisorsDispatchWithinTheLimitTogether(t *testing.T) {
 	})
 	slices.SortFunc(dispatched, func(a, b uuid.UUID) int { return slices.Compare(a[:], b[:]) })
 	if len(dispatched) != 5 || len(slices.Compact(dispatched)) != 5 {
-		t.Errorf("eight Supervisors with a limit of 5 dispatched the turns %v", dispatched)
+		t.Errorf("8 Supervisors with a limit of 5 dispatched %v", dispatched)
 	}
 }
 
 // The limit also holds while messages arrive, when Supervisors that count the
 // running turns at the same time could pick different turns.
-func (suite suite) testSupervisorsDispatchWithinTheLimitWhileTurnsCome(t *testing.T) {
+func (suite suite) testConcurrentDispatchTurnsAndCreateTurn(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	supervisors := st.supervisors(4)
@@ -358,7 +358,7 @@ func (suite suite) testSupervisorsDispatchWithinTheLimitWhileTurnsCome(t *testin
 			t.Fatal(err)
 		}
 		if len(dispatched) > 1 {
-			t.Fatalf("four Supervisors with a limit of 1 dispatched %d turns", len(dispatched))
+			t.Fatalf("4 Supervisors with a limit of 1 dispatched %d turns", len(dispatched))
 		}
 		// End the turns so that each session can take the next message.
 		for _, turn := range turns {
@@ -374,7 +374,7 @@ func (suite suite) testSupervisorsDispatchWithinTheLimitWhileTurnsCome(t *testin
 
 // A turn cancelled during a dispatch either ends without being dispatched, or
 // is dispatched with its cancellation requested, never both.
-func (suite suite) testDispatchTurnsLeavesATurnThatWasCancelledMeanwhile(t *testing.T) {
+func (suite suite) testConcurrentDispatchTurnsAndCancelTurn(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	dispatcher := st.another()
@@ -404,14 +404,14 @@ func (suite suite) testDispatchTurnsLeavesATurnThatWasCancelledMeanwhile(t *test
 		ended := turn.State == store.TurnCancelled && turn.EndedAt != nil
 		asked := turn.State == store.TurnDispatching && turn.EndedAt == nil && turn.CancelRequestedAt != nil
 		if (dispatched[turn.ID] && !asked) || (!dispatched[turn.ID] && !ended) {
-			t.Errorf("a turn that was cancelled while the turns were dispatched is %+v, dispatched %t", turn, dispatched[turn.ID])
+			t.Errorf("turn cancelled during DispatchTurns = %+v, dispatched %t", turn, dispatched[turn.ID])
 		}
 	}
 }
 
 // A turn that waits for approval counts against the limit, since its sandbox
 // keeps running.
-func (suite suite) testDispatchTurnsCountsATurnThatWaitsForAPerson(t *testing.T) {
+func (suite suite) testDispatchTurnsCountsAwaitingApproval(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	// One turn has room to run.
@@ -426,16 +426,16 @@ func (suite suite) testDispatchTurnsCountsATurnThatWaitsForAPerson(t *testing.T)
 	first, _ := send()
 	dispatches, err := st.DispatchTurns(ctx, 1)
 	if err != nil || len(dispatches) != 1 || dispatches[0].TurnID != first {
-		t.Fatalf("the turns %+v were dispatched, not the one that waited: %v", dispatches, err)
+		t.Fatalf("DispatchTurns = %+v, want the first turn: %v", dispatches, err)
 	}
 	if err := st.AddApproval(ctx, first, "1", []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
 	if _, waiting := send(); waiting != 1 {
-		t.Errorf("%d turns wait while the only turn that runs waits for a person", waiting)
+		t.Errorf("waiting = %d while the running turn awaits approval, want 1", waiting)
 	}
 	if dispatches, err := st.DispatchTurns(ctx, 1); err != nil || len(dispatches) != 0 {
-		t.Errorf("the turns %+v were dispatched beyond the limit, while the turn that runs waits for a person: %v", dispatches, err)
+		t.Errorf("DispatchTurns while the running turn awaits approval = %+v, want none: %v", dispatches, err)
 	}
 }
 
@@ -453,12 +453,12 @@ func (suite suite) testAnnounceQueue(t *testing.T) {
 	atOnce(len(supervisors), func(i int) {
 		err := supervisors[i].AnnounceQueue(ctx, func(queued []uuid.UUID) error {
 			if announcing.Add(1) != 1 {
-				t.Error("two announcements of the queue ran at once")
+				t.Error("concurrent AnnounceQueue calls overlapped")
 			}
 			defer announcing.Add(-1)
 			time.Sleep(20 * time.Millisecond)
 			if !slices.Equal(queued, []uuid.UUID{first.ID, last.ID}) {
-				t.Errorf("the queue is %v, not %v", queued, []uuid.UUID{first.ID, last.ID})
+				t.Errorf("queue = %v, want %v", queued, []uuid.UUID{first.ID, last.ID})
 			}
 			return nil
 		})
@@ -483,10 +483,10 @@ func (suite suite) testFollowTurn(t *testing.T) {
 	}
 	queued := st.queue(session)
 	if _, err := st.FollowTurn(ctx, queued.ID); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("a turn that waits to run was followed: %v", err)
+		t.Errorf("FollowTurn of a queued turn = %v, want ErrNotFound", err)
 	}
 	if _, err := st.FollowTurn(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("a turn that there is not was followed: %v", err)
+		t.Errorf("FollowTurn of a nonexistent turn = %v, want ErrNotFound", err)
 	}
 
 	dispatch := st.dispatch()
@@ -500,28 +500,28 @@ func (suite suite) testFollowTurn(t *testing.T) {
 		followed.Harness != "opencode" || followed.Instructions != "Be brief." || followed.Approval != "ask" ||
 		followed.ProviderURL != "" || followed.Model != "" || followed.Sandbox != "" ||
 		followed.Dispatched < 0 || followed.Dispatched > time.Minute {
-		t.Errorf("the Supervisor was given %+v", followed)
+		t.Errorf("FollowTurn = %+v", followed)
 	}
 	if state := st.turn(followed.ID).State; state != store.TurnRunning {
-		t.Errorf("a turn that a Supervisor follows is %s", state)
+		t.Errorf("followed turn state = %s, want running", state)
 	}
 
 	// A later FollowTurn, by the same or another Supervisor, returns the
 	// session's new sandbox and the cancellation request.
 	if set, err := st.SetSandbox(ctx, session, "", "sandbox-1"); err != nil || !set {
-		t.Fatalf("the session was not given its sandbox: %v", err)
+		t.Fatalf("SetSandbox did not set the sandbox: %v", err)
 	}
 	if _, _, err := st.CancelTurn(ctx, dispatch.TurnID); err != nil {
 		t.Fatal(err)
 	}
 	again, err := st.another().FollowTurn(ctx, dispatch.TurnID)
 	if err != nil || again.ID != followed.ID || again.Sandbox != "sandbox-1" || again.CancelRequestedAt == nil {
-		t.Errorf("the Supervisor that follows the turn then was given %+v: %v", again, err)
+		t.Errorf("second FollowTurn = %+v, want sandbox-1 and a cancellation request: %v", again, err)
 	}
 
 	st.end(dispatch.TurnID, false, store.Failure{Reason: store.FailureRunner})
 	if _, err := st.FollowTurn(ctx, dispatch.TurnID); !errors.Is(err, store.ErrTurnEnded) {
-		t.Errorf("a turn that has ended was followed: %v", err)
+		t.Errorf("FollowTurn of an ended turn = %v, want ErrTurnEnded", err)
 	}
 }
 
@@ -530,24 +530,24 @@ func (suite suite) testStartTurn(t *testing.T) {
 	st := suite.open(t)
 	dispatch := st.running(st.session())
 	if started := st.turn(dispatch.TurnID).StartedAt; started != nil {
-		t.Fatalf("a turn whose harness has no message yet started at %v", started)
+		t.Fatalf("StartedAt = %v before StartTurn, want nil", started)
 	}
 	startup, first, err := st.StartTurn(ctx, dispatch.TurnID)
 	if err != nil || !first || startup < 0 || startup > time.Minute {
-		t.Fatalf("the turn started after %s, for the first time %t: %v", startup, first, err)
+		t.Fatalf("StartTurn = %s, first %t: %v", startup, first, err)
 	}
 	started := st.turn(dispatch.TurnID).StartedAt
 	if started == nil {
-		t.Fatal("the turn has not started")
+		t.Fatal("StartedAt not set after StartTurn")
 	}
 
 	// Starting the turn again, as another Supervisor that follows it does,
 	// changes nothing.
 	if _, first, err := st.StartTurn(ctx, dispatch.TurnID); err != nil || first {
-		t.Errorf("the turn started a second time: %v", err)
+		t.Errorf("second StartTurn: %v, want first = false", err)
 	}
 	if again := st.turn(dispatch.TurnID).StartedAt; !again.Equal(*started) {
-		t.Errorf("the turn started at %v and then at %v", started, again)
+		t.Errorf("StartedAt changed from %v to %v", started, again)
 	}
 }
 
@@ -560,31 +560,31 @@ func (suite suite) testCancelTurn(t *testing.T) {
 	queued := st.queue(session)
 	cancelled, unended, err := st.CancelTurn(ctx, queued.ID)
 	if err != nil || !unended || cancelled.State != store.TurnCancelled || cancelled.EndedAt == nil {
-		t.Errorf("a waiting turn that was cancelled is %+v, had not ended %t: %v", cancelled, unended, err)
+		t.Errorf("CancelTurn of a queued turn = %+v, %t: %v", cancelled, unended, err)
 	}
 	if again, unended, err := st.CancelTurn(ctx, queued.ID); err != nil || unended || again.State != store.TurnCancelled {
-		t.Errorf("a cancelled turn that was cancelled again is %+v, had not ended %t: %v", again, unended, err)
+		t.Errorf("second CancelTurn of a queued turn = %+v, %t: %v", again, unended, err)
 	}
 	if dispatches, err := st.DispatchTurns(ctx, 50); err != nil || len(dispatches) != 0 {
-		t.Errorf("a cancelled turn was dispatched: %v, %v", dispatches, err)
+		t.Errorf("DispatchTurns after CancelTurn = %v, want none: %v", dispatches, err)
 	}
 
 	// A dispatched turn is only marked, and ends when its harness has stopped.
 	dispatch := st.running(session)
 	asked, unended, err := st.CancelTurn(ctx, dispatch.TurnID)
 	if err != nil || !unended || asked.State != store.TurnRunning || asked.CancelRequestedAt == nil || asked.EndedAt != nil {
-		t.Fatalf("a running turn that was cancelled is %+v, had not ended %t: %v", asked, unended, err)
+		t.Fatalf("CancelTurn of a running turn = %+v, %t: %v", asked, unended, err)
 	}
 	if again, unended, err := st.CancelTurn(ctx, dispatch.TurnID); err != nil || !unended ||
 		!again.CancelRequestedAt.Equal(*asked.CancelRequestedAt) {
-		t.Errorf("a turn that was asked to stop again is %+v, had not ended %t: %v", again, unended, err)
+		t.Errorf("second CancelTurn of a running turn = %+v, %t: %v", again, unended, err)
 	}
 	if cancelling, err := st.CancellingTurns(ctx); err != nil || !slices.Equal(cancelling, []uuid.UUID{dispatch.TurnID}) {
-		t.Errorf("the turns that were asked to stop are %v: %v", cancelling, err)
+		t.Errorf("CancellingTurns = %v, want the running turn: %v", cancelling, err)
 	}
 	st.end(dispatch.TurnID, false, store.Failure{Reason: store.FailureSandboxLost})
 	if cancelling, err := st.CancellingTurns(ctx); err != nil || len(cancelling) != 0 {
-		t.Errorf("the turns that were asked to stop are %v: %v", cancelling, err)
+		t.Errorf("CancellingTurns after the turn ended = %v, want none: %v", cancelling, err)
 	}
 
 	// Cancelling a turn that has ended changes nothing.
@@ -595,10 +595,10 @@ func (suite suite) testCancelTurn(t *testing.T) {
 	st.end(completed.TurnID, true, store.Failure{})
 	if late, unended, err := st.CancelTurn(ctx, completed.TurnID); err != nil || unended ||
 		late.State != store.TurnCompleted || late.CancelRequestedAt != nil {
-		t.Errorf("a completed turn that was cancelled is %+v, had not ended %t: %v", late, unended, err)
+		t.Errorf("CancelTurn of a completed turn = %+v, %t: %v", late, unended, err)
 	}
 	if _, _, err := st.CancelTurn(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("a turn that does not exist was cancelled: %v", err)
+		t.Errorf("CancelTurn of a nonexistent turn = %v, want ErrNotFound", err)
 	}
 }
 
@@ -614,20 +614,20 @@ func (suite suite) testExpireTurns(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(expired) != 1 || expired[0].ID != old.ID || expired[0].State != store.TurnExpired || expired[0].EndedAt == nil {
-		t.Errorf("the turns %+v expired, not the one that waited for a minute", expired)
+		t.Errorf("ExpireTurns = %+v, want only the old queued turn", expired)
 	}
 	if state := st.turn(fresh.ID).State; state != store.TurnQueued {
-		t.Errorf("a turn that has just been queued is %s", state)
+		t.Errorf("new queued turn state = %s, want queued", state)
 	}
 	if state := st.turn(dispatched.TurnID).State; state != store.TurnRunning {
-		t.Errorf("a turn that runs is %s after the turns that waited too long expired", state)
+		t.Errorf("running turn state after ExpireTurns = %s, want running", state)
 	}
 }
 
 func (suite suite) testEndTurn(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
-	lost := store.Failure{Reason: store.FailureSandboxLost, Message: "the sandbox of the session is gone"}
+	lost := store.Failure{Reason: store.FailureSandboxLost, Message: "the session's sandbox is gone"}
 	tests := []struct {
 		name string
 		// Whether cancellation was requested, and the stop reason, if any,
@@ -638,21 +638,21 @@ func (suite suite) testEndTurn(t *testing.T) {
 		state      string
 		failure    *store.Failure
 	}{
-		{name: "the turn succeeded", stopReason: "end_turn", succeeded: true, state: store.TurnCompleted},
-		{name: "the turn succeeded and the runner reported no end", succeeded: true, state: store.TurnFailed, failure: &lost},
-		{name: "the turn failed", state: store.TurnFailed, failure: &lost},
-		{name: "the turn failed after the harness had ended it", stopReason: "end_turn", state: store.TurnFailed, failure: &lost},
-		{name: "the turn was cancelled and failed", cancelled: true, state: store.TurnCancelled},
+		{name: "succeeded", stopReason: "end_turn", succeeded: true, state: store.TurnCompleted},
+		{name: "succeeded without stop reason", succeeded: true, state: store.TurnFailed, failure: &lost},
+		{name: "failed", state: store.TurnFailed, failure: &lost},
+		{name: "failed after stop reason", stopReason: "end_turn", state: store.TurnFailed, failure: &lost},
+		{name: "cancelled and failed", cancelled: true, state: store.TurnCancelled},
 		{
-			name:      "the turn was cancelled and the harness stopped it",
+			name:      "cancelled and stopped by harness",
 			cancelled: true, stopReason: "cancelled", succeeded: true, state: store.TurnCancelled,
 		},
 		{
-			name:      "the turn was cancelled and succeeded without an end from the runner",
+			name:      "cancelled and succeeded without stop reason",
 			cancelled: true, succeeded: true, state: store.TurnCancelled,
 		},
 		{
-			name:      "the turn was cancelled when the harness had ended it by itself",
+			name:      "cancelled after harness ended turn",
 			cancelled: true, stopReason: "end_turn", succeeded: true, state: store.TurnCompleted,
 		},
 	}
@@ -672,31 +672,31 @@ func (suite suite) testEndTurn(t *testing.T) {
 			}
 			ended := st.end(dispatch.TurnID, test.succeeded, lost)
 			if ended.State != test.state || ended.EndedAt == nil {
-				t.Errorf("the turn ended as %s, not as %s", ended.State, test.state)
+				t.Errorf("state = %s, want %s", ended.State, test.state)
 			}
 			if (ended.Failure == nil) != (test.failure == nil) || ended.Failure != nil && *ended.Failure != *test.failure {
-				t.Errorf("the turn failed for %+v, not for %+v", ended.Failure, test.failure)
+				t.Errorf("failure = %+v, want %+v", ended.Failure, test.failure)
 			}
 			if kept := st.turn(dispatch.TurnID); kept.State != ended.State {
-				t.Errorf("the turn is kept as %s", kept.State)
+				t.Errorf("Turn state = %s, want the state EndTurn returned", kept.State)
 			}
 
 			// A turn ends once. Later calls change nothing.
 			again, changed, err := st.another().EndTurn(ctx, dispatch.TurnID, !test.succeeded, store.Failure{Reason: store.FailureRunner},
 				func(context.Context) ([]json.RawMessage, error) {
-					t.Error("what the turn said was read for a turn that had ended")
+					t.Error("items called for an ended turn")
 					return nil, nil
 				})
 			if err != nil || changed || again.ID != uuid.Nil {
-				t.Errorf("the turn ended a second time, as %+v: %v", again, err)
+				t.Errorf("second EndTurn = %+v: %v", again, err)
 			}
 			if kept := st.turn(dispatch.TurnID); kept.State != ended.State {
-				t.Errorf("the turn is %s after it was ended a second time", kept.State)
+				t.Errorf("Turn state after second EndTurn = %s, want unchanged", kept.State)
 			}
 			// The session accepts its next message.
 			next := st.queue(session)
 			if next.Seq != 2 {
-				t.Errorf("the next turn of the session has the number %d", next.Seq)
+				t.Errorf("next turn Seq = %d, want 2", next.Seq)
 			}
 			if _, _, err := st.CancelTurn(ctx, next.ID); err != nil {
 				t.Fatal(err)
@@ -704,12 +704,12 @@ func (suite suite) testEndTurn(t *testing.T) {
 		})
 	}
 	if _, changed, err := st.EndTurn(ctx, uuid.New(), true, store.Failure{}, nothing); err != nil || changed {
-		t.Errorf("a turn that does not exist was ended: %v", err)
+		t.Errorf("EndTurn of a nonexistent turn: %v, want no change", err)
 	}
 }
 
 // Of concurrent EndTurn calls for a turn, one ends it and stores its items.
-func (suite suite) testSupervisorsEndATurnOnceTogether(t *testing.T) {
+func (suite suite) testConcurrentEndTurn(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	dispatch := st.running(st.session())
@@ -729,14 +729,14 @@ func (suite suite) testSupervisorsEndATurnOnceTogether(t *testing.T) {
 		}
 	})
 	if ended.Load() != 1 || read.Load() != 1 {
-		t.Errorf("of eight Supervisors that ended a turn at once, %d ended it and %d read what it said", ended.Load(), read.Load())
+		t.Errorf("of 8 concurrent EndTurn calls, %d ended the turn and %d read its items, want 1 and 1", ended.Load(), read.Load())
 	}
 	if items, err := st.TurnItems(ctx, []uuid.UUID{dispatch.TurnID}); err != nil || len(items[dispatch.TurnID]) != 1 {
-		t.Errorf("the items of the turn are %s: %v", items, err)
+		t.Errorf("TurnItems = %s: %v", items, err)
 	}
 }
 
-func (suite suite) testEndTurnKeepsWhatTheTurnSaid(t *testing.T) {
+func (suite suite) testEndTurnStoresItems(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	session := st.session()
@@ -754,15 +754,15 @@ func (suite suite) testEndTurnKeepsWhatTheTurnSaid(t *testing.T) {
 		return nil, errors.New("the events cannot be read")
 	})
 	if err == nil {
-		t.Fatal("a turn ended whose items could not be read")
+		t.Fatal("EndTurn succeeded although items failed")
 	}
 	if kept := st.turn(dispatch.TurnID); kept.State != store.TurnRunning || kept.EndedAt != nil {
-		t.Fatalf("the turn whose items could not be read is %+v", kept)
+		t.Fatalf("turn after items failed = %+v, want running", kept)
 	}
 	if _, changed, err := st.EndTurn(ctx, dispatch.TurnID, true, store.Failure{}, func(context.Context) ([]json.RawMessage, error) {
 		return said, nil
 	}); err != nil || !changed {
-		t.Fatalf("the turn was not ended: %v", err)
+		t.Fatalf("EndTurn did not end the turn: %v", err)
 	}
 
 	silent := st.running(st.session())
@@ -772,11 +772,11 @@ func (suite suite) testEndTurnKeepsWhatTheTurnSaid(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(items) != 1 || len(items[dispatch.TurnID]) != len(said) {
-		t.Fatalf("the items of the turns are %s", items)
+		t.Fatalf("TurnItems = %s", items)
 	}
 	for i, given := range said {
 		if !keeps(t, items[dispatch.TurnID][i], string(given)) {
-			t.Errorf("item %d is %s, not %s", i+1, items[dispatch.TurnID][i], given)
+			t.Errorf("item %d = %s, want %s", i+1, items[dispatch.TurnID][i], given)
 		}
 	}
 }
@@ -795,7 +795,7 @@ func (suite suite) testSetFinished(t *testing.T) {
 	if ended.StopReason == nil || *ended.StopReason != "end_turn" || ended.Usage == nil ||
 		ended.Usage.TotalTokens != 18 || ended.Usage.InputTokens != 11 || ended.Usage.OutputTokens != 7 ||
 		ended.Usage.ThoughtTokens == nil || *ended.Usage.ThoughtTokens != 3 || ended.Usage.CachedReadTokens != nil {
-		t.Errorf("the turn ended with the stop reason %v and the usage %+v", ended.StopReason, ended.Usage)
+		t.Errorf("stop reason = %v, usage = %+v", ended.StopReason, ended.Usage)
 	}
 
 	silent := st.running(st.session())
@@ -803,7 +803,7 @@ func (suite suite) testSetFinished(t *testing.T) {
 		t.Fatal(err)
 	}
 	if ended := st.end(silent.TurnID, true, store.Failure{}); *ended.StopReason != "max_tokens" || ended.Usage != nil {
-		t.Errorf("a turn whose harness reported no usage has %+v", ended.Usage)
+		t.Errorf("usage of a turn without reported usage = %+v, want nil", ended.Usage)
 	}
 }
 
@@ -835,7 +835,7 @@ func (suite suite) testTurns(t *testing.T) {
 			seqs = append(seqs, turn.Seq)
 		}
 		if !slices.Equal(seqs, test.seqs) {
-			t.Errorf("the %d turns before turn %d are %v, not %v", test.limit, test.before, seqs, test.seqs)
+			t.Errorf("Turns(limit %d, before %d) = %v, want %v", test.limit, test.before, seqs, test.seqs)
 		}
 	}
 }
@@ -858,39 +858,39 @@ func (suite suite) testDispatchedTurns(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(dispatched) != 2 {
-		t.Fatalf("the dispatched turns are %+v", dispatched)
+		t.Fatalf("DispatchedTurns = %+v, want 2 turns", dispatched)
 	}
 	for _, turn := range dispatched {
 		switch turn.ID {
 		case waiting.TurnID:
 			if turn.Cancelling != 0 {
-				t.Errorf("the turn that waits to be followed is %+v", turn)
+				t.Errorf("unfollowed dispatched turn = %+v, want no cancellation", turn)
 			}
 		case running.TurnID:
 			if turn.Cancelling < time.Minute {
-				t.Errorf("the turn that runs and was asked to stop is %+v", turn)
+				t.Errorf("cancelling running turn = %+v, want Cancelling of at least a minute", turn)
 			}
 		default:
-			t.Errorf("the turn %s is not dispatched", turn.ID)
+			t.Errorf("unexpected turn %s in DispatchedTurns", turn.ID)
 		}
 	}
 }
 
 // An operation whose context is done fails without effect.
-func (suite suite) testCallerThatWaitsNoLonger(t *testing.T) {
+func (suite suite) testCancelledContext(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	session := st.session()
 	gone, leave := context.WithCancel(ctx)
 	leave()
 	if _, _, err := st.CreateTurn(gone, session, uuid.Nil, "hello", 0, 50); err == nil {
-		t.Error("a message was accepted whose sender waits no longer")
+		t.Error("CreateTurn succeeded with a cancelled context")
 	}
 	if turns, err := st.Turns(ctx, session, math.MaxInt32, 10); err != nil || len(turns) != 0 {
-		t.Errorf("the message left a turn behind: %v, %v", turns, err)
+		t.Errorf("CreateTurn with a cancelled context left turns %v: %v", turns, err)
 	}
 	if _, err := st.Session(gone, session); err == nil {
-		t.Error("a session was read for a caller that waits no longer")
+		t.Error("Session succeeded with a cancelled context")
 	}
 }
 
@@ -899,16 +899,16 @@ func (suite suite) testNotFound(t *testing.T) {
 	st := suite.open(t)
 	none := uuid.New()
 	for name, get := range map[string]func() error{
-		"project":         func() error { _, err := st.Project(ctx, none); return err },
-		"agent":           func() error { _, err := st.Agent(ctx, none); return err },
-		"session":         func() error { _, err := st.Session(ctx, none); return err },
-		"turn":            func() error { _, err := st.Turn(ctx, none); return err },
-		"harness of none": func() error { _, err := st.TurnHarness(ctx, none); return err },
-		"agent of none":   func() error { _, err := st.CreateAgent(ctx, none, store.Agent{Harness: "opencode"}); return err },
-		"session of none": func() error { _, err := st.CreateSession(ctx, none, uuid.Nil); return err },
+		"Project":       func() error { _, err := st.Project(ctx, none); return err },
+		"Agent":         func() error { _, err := st.Agent(ctx, none); return err },
+		"Session":       func() error { _, err := st.Session(ctx, none); return err },
+		"Turn":          func() error { _, err := st.Turn(ctx, none); return err },
+		"TurnHarness":   func() error { _, err := st.TurnHarness(ctx, none); return err },
+		"CreateAgent":   func() error { _, err := st.CreateAgent(ctx, none, store.Agent{Harness: "opencode"}); return err },
+		"CreateSession": func() error { _, err := st.CreateSession(ctx, none, uuid.Nil); return err },
 	} {
 		if err := get(); !errors.Is(err, store.ErrNotFound) {
-			t.Errorf("%s: %v", name, err)
+			t.Errorf("%s = %v, want ErrNotFound", name, err)
 		}
 	}
 }

@@ -173,7 +173,7 @@ func (d *Driver) EndSession(ctx context.Context, id uuid.UUID) (store.Session, e
 		return session, err
 	}
 	if err := d.sandboxes.Delete(ctx, session.Sandbox); err != nil {
-		return session, fmt.Errorf("delete the sandbox of the session %s: %w", id, err)
+		return session, fmt.Errorf("delete sandbox of session %s: %w", id, err)
 	}
 	if _, err := d.store.SetSandbox(ctx, id, session.Sandbox, ""); err != nil {
 		return session, err
@@ -260,7 +260,7 @@ func (d *Driver) announcePositions(ctx context.Context) {
 		return nil
 	})
 	if err != nil {
-		slog.ErrorContext(ctx, "tell the queued turns their positions", "error", err)
+		slog.ErrorContext(ctx, "announce queue positions", "error", err)
 	}
 }
 
@@ -280,7 +280,7 @@ func (d *Driver) orphaned() time.Duration {
 func (d *Driver) look(ctx context.Context) {
 	sandboxes, err := d.sandboxes.Sandboxes(ctx)
 	if err != nil {
-		slog.ErrorContext(ctx, "list the sandboxes", "error", err)
+		slog.ErrorContext(ctx, "list sandboxes", "error", err)
 		return
 	}
 	for _, made := range sandboxes {
@@ -292,7 +292,7 @@ func (d *Driver) look(ctx context.Context) {
 		switch {
 		case err != nil:
 			if !errors.Is(err, store.ErrNotFound) {
-				slog.ErrorContext(ctx, "read the session of a sandbox", "sandbox", made.Name, "error", err)
+				slog.ErrorContext(ctx, "read sandbox session", "sandbox", made.Name, "error", err)
 			}
 		case session.Sandbox != made.Name:
 			d.reap(ctx, sessionID, made)
@@ -308,9 +308,9 @@ func (d *Driver) reap(ctx context.Context, sessionID uuid.UUID, made sandbox.San
 	if time.Since(made.Created) < d.orphaned() {
 		return
 	}
-	slog.WarnContext(ctx, "delete a sandbox that its session does not have", "session", sessionID, "sandbox", made.Name)
+	slog.WarnContext(ctx, "deleting orphaned sandbox", "session", sessionID, "sandbox", made.Name)
 	if err := d.sandboxes.Delete(ctx, made.Name); err != nil {
-		slog.ErrorContext(ctx, "delete a sandbox that its session does not have", "sandbox", made.Name, "error", err)
+		slog.ErrorContext(ctx, "delete orphaned sandbox", "sandbox", made.Name, "error", err)
 	}
 }
 
@@ -321,7 +321,7 @@ func (d *Driver) reap(ctx context.Context, sessionID uuid.UUID, made sandbox.San
 func (d *Driver) lull(ctx context.Context, sessionID uuid.UUID, made sandbox.Sandbox) {
 	last, err := d.store.Turns(ctx, sessionID, math.MaxInt32, 1)
 	if err != nil {
-		slog.ErrorContext(ctx, "read the last turn of a session", "session", sessionID, "error", err)
+		slog.ErrorContext(ctx, "read last turn of session", "session", sessionID, "error", err)
 		return
 	}
 	if len(last) > 0 && (last[0].EndedAt == nil || time.Since(*last[0].EndedAt) < d.config.Idle) {
@@ -329,9 +329,9 @@ func (d *Driver) lull(ctx context.Context, sessionID uuid.UUID, made sandbox.San
 	}
 	switch err := d.sandboxes.Suspend(ctx, made.Name, made.Version); {
 	case err == nil:
-		slog.InfoContext(ctx, "put the sandbox of a session that is not at work to sleep", "session", sessionID, "sandbox", made.Name)
+		slog.InfoContext(ctx, "idle sandbox put to sleep", "session", sessionID, "sandbox", made.Name)
 	case !errors.Is(err, sandbox.ErrChanged) && !errors.Is(err, sandbox.ErrNotFound):
-		slog.ErrorContext(ctx, "put the sandbox of a session to sleep", "session", sessionID, "sandbox", made.Name, "error", err)
+		slog.ErrorContext(ctx, "put idle sandbox to sleep", "session", sessionID, "sandbox", made.Name, "error", err)
 	}
 }
 
@@ -358,12 +358,12 @@ func (d *Driver) sweep(ctx context.Context) {
 	for turnID, told := range mine {
 		still, err := d.events.Follow(ctx, turnID, d.id, d.lease())
 		if err != nil {
-			slog.ErrorContext(ctx, "say that the turn is followed", "turn", turnID, "error", err)
+			slog.ErrorContext(ctx, "renew turn lease", "turn", turnID, "error", err)
 		} else if !still {
 			// The lease lapsed and another Supervisor took the turn over.
 			// Events are recorded once even while both follow it, so leaving
 			// is enough.
-			slog.WarnContext(ctx, "another supervisor follows the turn", "turn", turnID)
+			slog.WarnContext(ctx, "turn taken over by another supervisor", "turn", turnID)
 			told.leave()
 		}
 	}
@@ -380,7 +380,7 @@ func (d *Driver) sweep(ctx context.Context) {
 	}
 	answers, err := d.store.Answers(ctx, nil)
 	if err != nil {
-		slog.ErrorContext(ctx, "read the answers to requests for approval", "error", err)
+		slog.ErrorContext(ctx, "read approval answers", "error", err)
 		return
 	}
 	for _, answer := range answers {
@@ -413,7 +413,7 @@ func (d *Driver) follow(ctx context.Context, turnID uuid.UUID) {
 	}
 	mine, err := d.events.Follow(ctx, turnID, d.id, d.lease())
 	if err != nil {
-		slog.ErrorContext(ctx, "say that the turn is followed", "turn", turnID, "error", err)
+		slog.ErrorContext(ctx, "claim turn lease", "turn", turnID, "error", err)
 		return
 	}
 	if !mine {
@@ -435,7 +435,7 @@ func (d *Driver) follow(ctx context.Context, turnID uuid.UUID) {
 			leaving, done := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			defer done()
 			if err := d.events.Leave(leaving, turnID, d.id); err != nil {
-				slog.ErrorContext(ctx, "say that the turn is followed no longer", "turn", turnID, "error", err)
+				slog.ErrorContext(ctx, "release turn lease", "turn", turnID, "error", err)
 			}
 		}()
 		d.run(following, turnID, told)
@@ -470,7 +470,7 @@ func (d *Driver) Ended(ctx context.Context, turn store.Turn) {
 	}
 	harness, err := d.store.TurnHarness(ctx, turn.ID)
 	if err != nil {
-		slog.ErrorContext(ctx, "read the harness of the turn", "turn", turn.ID, "error", err)
+		slog.ErrorContext(ctx, "read turn harness", "turn", turn.ID, "error", err)
 		return
 	}
 	d.metrics.Ended(harness, turn)

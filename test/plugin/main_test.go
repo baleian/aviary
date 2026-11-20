@@ -53,19 +53,19 @@ func TestBuild(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv("AVIARY_DATABASE_URL", "memory://records")
 	if err := app.Run(ctx, []string{"migrate"}, plugins); err != nil {
-		t.Errorf("the build migrated its database with: %v", err)
+		t.Errorf("migrate memory database: %v", err)
 	}
 	t.Setenv("AVIARY_DATABASE_URL", "postgres://user:secret@db.example/aviary")
 	if err := app.Run(ctx, []string{"migrate"}, plugins); err == nil || !strings.Contains(err.Error(), "memory") {
-		t.Errorf("the build migrated a database that it has no plugin for with: %v", err)
+		t.Errorf("migrate database without a plugin: err = %v, want an error listing the memory scheme", err)
 	}
 	// Likewise for the event log.
 	log, err := events.Open("memory://events", plugins.EventLogs...)
 	if err != nil {
-		t.Fatalf("the build opened its event log with: %v", err)
+		t.Fatalf("open memory event log: %v", err)
 	}
 	log.Close()
 	if _, err := events.Open("valkey://user:secret@events.example:6379", plugins.EventLogs...); err == nil || !strings.Contains(err.Error(), "memory") {
-		t.Errorf("the build opened an event log that it has no plugin for with: %v", err)
+		t.Errorf("open event log without a plugin: err = %v, want an error listing the memory scheme", err)
 	}
 }

@@ -116,23 +116,23 @@ func TestWhoMayDoWhat(t *testing.T) {
 				answered = 'p'
 			}
 			if answered != row.may[i] {
-				t.Errorf("%s sends %s %s, and that is answered with %d: %c and not %c", caller, row.method, row.path, status, answered, row.may[i])
+				t.Errorf("%s: %s %s = %d (%c), want %c", caller, row.method, row.path, status, answered, row.may[i])
 			}
 		}
 	}
 
 	// A change to a role applies to its members at once.
 	if status := s.answered("admin", "PUT", "/v1/roles/viewer", `{"permissions": ["sessions.view_all"]}`); status != http.StatusOK {
-		t.Fatalf("a role is changed with %d", status)
+		t.Fatalf("PUT role: status %d, want 200", status)
 	}
 	if status := s.answered("viewer", "GET", "/v1/sessions/"+session, ``); status != http.StatusOK {
-		t.Errorf("a member whose role may read every session now reads one with %d", status)
+		t.Errorf("viewer with sessions.view_all: GET session status %d, want 200", status)
 	}
 	// Removing a group removes the membership of its members.
 	if status := s.answered("admin", "DELETE", "/v1/members/"+member, ``); status != http.StatusNoContent {
-		t.Fatalf("a member is removed with %d", status)
+		t.Fatalf("DELETE member: status %d, want 204", status)
 	}
 	if status := s.answered("mate", "GET", "/v1/projects/"+project, ``); status != http.StatusNotFound {
-		t.Errorf("who was a member through a group that is none any more reads the project with %d", status)
+		t.Errorf("member of a removed group: GET project status %d, want 404", status)
 	}
 }

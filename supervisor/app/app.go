@@ -123,7 +123,7 @@ func Run(ctx context.Context, args []string, plugins Plugins) error {
 	case len(args) == 2 && args[0] == "migrate":
 		version, err := strconv.ParseInt(args[1], 10, 64)
 		if err != nil {
-			return fmt.Errorf("%q is not a schema version", args[1])
+			return fmt.Errorf("invalid schema version %q", args[1])
 		}
 		return store.MigrateTo(ctx, database, version, plugins.Databases...)
 	}
@@ -141,7 +141,7 @@ func sandboxSettings() (sandbox.Settings, error) {
 		return settings, err
 	}
 	if settings.Volume, err = resource.ParseQuantity(size); err != nil || settings.Volume.Sign() <= 0 {
-		return settings, fmt.Errorf("%s must be a size such as 10Gi", sandboxVolume)
+		return settings, fmt.Errorf("%s must be a positive quantity such as 10Gi", sandboxVolume)
 	}
 	// Optional: empty selects the default storage class of the cluster.
 	settings.StorageClass = os.Getenv(sandboxClass)
@@ -150,7 +150,7 @@ func sandboxSettings() (sandbox.Settings, error) {
 		return settings, err
 	}
 	if settings.MaxToolOutputBytes, err = strconv.Atoi(output); err != nil || settings.MaxToolOutputBytes < 0 {
-		return settings, fmt.Errorf("%s must be a number of bytes, or zero for no limit", maxToolOutput)
+		return settings, fmt.Errorf("%s must be a number of bytes, or 0 for no limit", maxToolOutput)
 	}
 	if settings.Proxy, err = address(proxyURL); err != nil {
 		return settings, err
@@ -318,7 +318,7 @@ func allowedSecretStores(plugins []secret.Plugin) (*secret.Stores, error) {
 	}
 	seconds, err := strconv.Atoi(written)
 	if err != nil || seconds < 0 {
-		return nil, fmt.Errorf("%s must be a number of seconds, or zero to read a store every time", secretCacheSeconds)
+		return nil, fmt.Errorf("%s must be a number of seconds, or 0 to disable caching", secretCacheSeconds)
 	}
 	return secret.NewStores(hosts, time.Duration(seconds)*time.Second, plugins...)
 }
@@ -376,7 +376,7 @@ func driverConfig() (driver.Config, error) {
 	}
 	for name, harness := range config.Harnesses {
 		if harness.Image == "" {
-			return config, fmt.Errorf("%s: the harness %s has no image", harnesses, name)
+			return config, fmt.Errorf("%s: harness %s has no image", harnesses, name)
 		}
 	}
 	idle, err := env(sandboxIdle)
@@ -385,7 +385,7 @@ func driverConfig() (driver.Config, error) {
 	}
 	seconds, err := strconv.Atoi(idle)
 	if err != nil || seconds < 0 {
-		return config, fmt.Errorf("%s must be a number of seconds, or zero for never", sandboxIdle)
+		return config, fmt.Errorf("%s must be a number of seconds, or 0 to disable sleeping", sandboxIdle)
 	}
 	config.Idle = time.Duration(seconds) * time.Second
 	retention, err := env(sandboxRetention)
@@ -393,7 +393,7 @@ func driverConfig() (driver.Config, error) {
 		return config, err
 	}
 	if seconds, err = strconv.Atoi(retention); err != nil || seconds < 0 {
-		return config, fmt.Errorf("%s must be a number of seconds, or zero for until the session is ended", sandboxRetention)
+		return config, fmt.Errorf("%s must be a number of seconds, or 0 to keep sandboxes until their session ends", sandboxRetention)
 	}
 	config.Retention = time.Duration(seconds) * time.Second
 	limit, err := env(maxConcurrentTurns)
@@ -401,21 +401,21 @@ func driverConfig() (driver.Config, error) {
 		return config, err
 	}
 	if config.MaxConcurrentTurns, err = strconv.Atoi(limit); err != nil || config.MaxConcurrentTurns < 1 {
-		return config, fmt.Errorf("%s must be a number above zero", maxConcurrentTurns)
+		return config, fmt.Errorf("%s must be a positive number", maxConcurrentTurns)
 	}
 	queued, err := env(maxQueuedTurns)
 	if err != nil {
 		return config, err
 	}
 	if config.MaxQueuedTurns, err = strconv.Atoi(queued); err != nil || config.MaxQueuedTurns < 0 {
-		return config, fmt.Errorf("%s must be a number, or zero for no limit", maxQueuedTurns)
+		return config, fmt.Errorf("%s must be a number, or 0 for no limit", maxQueuedTurns)
 	}
 	wait, err := env(maxQueueWait)
 	if err != nil {
 		return config, err
 	}
 	if seconds, err = strconv.Atoi(wait); err != nil || seconds < 0 {
-		return config, fmt.Errorf("%s must be a number of seconds, or zero for no limit", maxQueueWait)
+		return config, fmt.Errorf("%s must be a number of seconds, or 0 for no limit", maxQueueWait)
 	}
 	config.MaxQueueWait = time.Duration(seconds) * time.Second
 	startup, err := env(maxStartup)
@@ -423,7 +423,7 @@ func driverConfig() (driver.Config, error) {
 		return config, err
 	}
 	if seconds, err = strconv.Atoi(startup); err != nil || seconds < 0 {
-		return config, fmt.Errorf("%s must be a number of seconds, or zero for no limit", maxStartup)
+		return config, fmt.Errorf("%s must be a number of seconds, or 0 for no limit", maxStartup)
 	}
 	config.MaxStartup = time.Duration(seconds) * time.Second
 	longest, err := env(maxTurn)
@@ -431,7 +431,7 @@ func driverConfig() (driver.Config, error) {
 		return config, err
 	}
 	if seconds, err = strconv.Atoi(longest); err != nil || seconds < 1 {
-		return config, fmt.Errorf("%s must be a number of seconds above zero", maxTurn)
+		return config, fmt.Errorf("%s must be a positive number of seconds", maxTurn)
 	}
 	config.MaxTurn = time.Duration(seconds) * time.Second
 	return config, nil

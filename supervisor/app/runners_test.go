@@ -33,29 +33,29 @@ func TestCancel(t *testing.T) {
 	}
 	status, cancelling := cancel(asked)
 	if status != http.StatusAccepted || cancelling.State != "running" || cancelling.CancelRequestedAt == nil {
-		t.Errorf("cancelling a turn that runs was answered with %d and the turn %+v", status, cancelling)
+		t.Errorf("cancel running turn = %d %+v, want 202 running with cancel_requested_at", status, cancelling)
 	}
 	runner.cancelled()
 	if status, again := cancel(following); status != http.StatusAccepted || !again.CancelRequestedAt.Equal(*cancelling.CancelRequestedAt) {
-		t.Errorf("cancelling the turn again was answered with %d and the turn %+v", status, again)
+		t.Errorf("cancel again = %d %+v, want 202 with the same cancel_requested_at", status, again)
 	}
 	runner.report(finished("cancelled", nil))
 
 	expected := []string{"turn.started", "message.delta", "turn.cancelled"}
 	if events := watching(); !slices.Equal(types(events), expected) {
-		t.Errorf("the events of the cancelled turn are %v, not %v", types(events), expected)
+		t.Errorf("event types = %v, want %v", types(events), expected)
 	}
 	// The record keeps what the agent said before it was stopped.
 	record := asked.turn(accepted.ID)
 	if said := items(t, record); record.State != "cancelled" || record.StopReason != "cancelled" || record.Failure != nil ||
 		len(said) != 1 || said[0]["text"] != "one " {
-		t.Errorf("the record of the cancelled turn is %+v, and has the items %v", record, said)
+		t.Errorf("cancelled turn = %+v, items %v", record, said)
 	}
 	if status, ended := cancel(asked); status != http.StatusOK || ended.State != "cancelled" {
-		t.Errorf("cancelling the cancelled turn was answered with %d and the turn %+v", status, ended)
+		t.Errorf("cancel ended turn = %d %+v, want 200 cancelled", status, ended)
 	}
 	if next := asked.send(session, "again"); next.Seq != 2 {
-		t.Errorf("the next turn of the session has the number %d", next.Seq)
+		t.Errorf("next turn seq = %d, want 2", next.Seq)
 	}
 }
 
@@ -68,19 +68,19 @@ func TestCancelBeforeTheRunnerHasTheTurn(t *testing.T) {
 	aviary.service.Slow(true)
 	s := aviary.supervisor()
 	accepted := s.send(s.session(), "hello")
-	eventually(t, soon, "the turn is not followed", func() bool { return s.turn(accepted.ID).State == "running" })
+	eventually(t, soon, "turn is not running", func() bool { return s.turn(accepted.ID).State == "running" })
 	var cancelling turn
 	if status, _ := s.request("POST", "/v1/turns/"+accepted.ID+"/cancel", "", &cancelling); status != http.StatusAccepted {
-		t.Errorf("cancelling a turn that no runner has yet was answered with %d", status)
+		t.Errorf("cancel before the runner has the turn: status %d, want 202", status)
 	}
 	if events := s.follow(accepted.ID); !slices.Equal(types(events), []string{"turn.cancelled"}) {
-		t.Errorf("the events of the turn that was cancelled before it began are %v", events)
+		t.Errorf("events = %v, want only turn.cancelled", events)
 	}
 	if record := s.turn(accepted.ID); record.State != "cancelled" || record.Failure != nil || record.StartedAt != nil {
-		t.Errorf("the record of the turn that was cancelled before it began is %+v", record)
+		t.Errorf("turn = %+v, want cancelled and never started", record)
 	}
 	if given := aviary.service.Given(); len(given) != 0 {
-		t.Errorf("the runners were given %v", given)
+		t.Errorf("runners were given %v, want none", given)
 	}
 }
 
@@ -109,15 +109,15 @@ func TestStop(t *testing.T) {
 	select {
 	case <-stopped:
 	case <-time.After(soon):
-		t.Fatal("the Supervisor did not stop while a turn ran")
+		t.Fatal("Supervisor did not stop while a turn was running")
 	}
 	// The stopping Supervisor ends the event stream, and the client resumes
 	// it from another.
 	if more := client.rest(soon); !slices.Equal(types(read), []string{"turn.started", "message.delta"}) || len(more) != 0 {
-		t.Errorf("the client of the Supervisor that stopped read the events %v and then %v", read, more)
+		t.Errorf("stream of the stopped Supervisor: read %v, then %v", read, more)
 	}
 	if state := other.turn(accepted.ID).State; state != "running" {
-		t.Errorf("the turn of the Supervisor that stopped is %s", state)
+		t.Errorf("turn state after stop = %s, want running", state)
 	}
 
 	// The other Supervisor continues from the recorded events.
@@ -125,12 +125,12 @@ func TestStop(t *testing.T) {
 	runner.report(finished("end_turn", nil))
 	rest := other.read(accepted.ID, read[len(read)-1].ID).rest(patience)
 	if !slices.Equal(types(rest), []string{"message.delta", "turn.completed"}) {
-		t.Errorf("the client read on from the other Supervisor the events %v", rest)
+		t.Errorf("events resumed from the other Supervisor = %v", rest)
 	}
 	if said := items(t, other.turn(accepted.ID)); len(said) != 1 || said[0]["text"] != "one two" {
-		t.Errorf("the record of the turn has the items %v", said)
+		t.Errorf("turn items = %v", said)
 	}
 	if given := aviary.service.Given(); len(given) != 1 {
-		t.Errorf("the runners were given %v, not the turn once", given)
+		t.Errorf("runners were given %v, want the turn once", given)
 	}
 }

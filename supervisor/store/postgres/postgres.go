@@ -772,7 +772,7 @@ func (s *records) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool,
 	// called once.
 	said, err := items(ctx)
 	if err != nil {
-		return store.Turn{}, false, fmt.Errorf("read what the turn said: %w", err)
+		return store.Turn{}, false, fmt.Errorf("read turn items: %w", err)
 	}
 	if len(said) > 0 {
 		rows := make([]db.AddTurnItemsParams, len(said))

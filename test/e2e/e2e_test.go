@@ -65,7 +65,7 @@ var (
 func TestMain(m *testing.M) {
 	kubeconfig := os.Getenv("AVIARY_E2E_KUBECONFIG")
 	if kubeconfig == "" || apiURL == "" || len(harnesses) == 0 {
-		fmt.Fprintln(os.Stderr, "AVIARY_E2E_KUBECONFIG, AVIARY_E2E_API and AVIARY_E2E_HARNESSES are not set: run the tests with `make e2e`")
+		fmt.Fprintln(os.Stderr, "AVIARY_E2E_KUBECONFIG, AVIARY_E2E_API and AVIARY_E2E_HARNESSES must be set: run the tests with `make e2e`")
 		os.Exit(1)
 	}
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
@@ -140,7 +140,7 @@ func token(user string) (string, error) {
 		err = json.Unmarshal(raw, &answer)
 	}
 	if err != nil || answer.AccessToken == "" {
-		return "", fmt.Errorf("the identity provider gave no token of %s: %v: %s: `make e2e IDENTITY=keycloak` installs the provider", user, err, raw)
+		return "", fmt.Errorf("get token for %s from the identity provider: %v: %s (`make e2e IDENTITY=keycloak` installs the provider)", user, err, raw)
 	}
 	tokens.of[user] = answer.AccessToken
 	return answer.AccessToken, nil
@@ -197,7 +197,7 @@ func requestAs(t *testing.T, user, method, path, body string, into any) int {
 	}
 	if into != nil {
 		if err := json.Unmarshal(answer, into); err != nil {
-			t.Fatalf("%s %s was answered with %d %s: %v", method, path, response.StatusCode, answer, err)
+			t.Fatalf("%s %s: decode response %d %s: %v", method, path, response.StatusCode, answer, err)
 		}
 	}
 	return response.StatusCode
@@ -208,7 +208,7 @@ func create(t *testing.T, path, body string) string {
 	t.Helper()
 	var created struct{ ID string }
 	if status := request(t, "POST", path, body, &created); status != http.StatusCreated {
-		t.Fatalf("POST %s %s was answered with %d", path, body, status)
+		t.Fatalf("POST %s %s: got status %d, want 201", path, body, status)
 	}
 	return created.ID
 }
@@ -254,7 +254,7 @@ func owner(t *testing.T, method, path string, body any, statuses ...int) map[str
 	t.Helper()
 	token, err := rootToken()
 	if err != nil {
-		t.Fatalf("the root token of the secret store: %v: `make e2e` installs the store", err)
+		t.Fatalf("get secret store root token: %v (`make e2e` installs the store)", err)
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
@@ -267,10 +267,10 @@ func owner(t *testing.T, method, path string, body any, statuses ...int) map[str
 	answered.StatusCode(&status)
 	raw, err := answered.Raw()
 	if status == 0 {
-		t.Fatalf("%s %s of the secret store: %v", method, path, err)
+		t.Fatalf("secret store %s %s: %v", method, path, err)
 	}
 	if !slices.Contains(append(statuses, http.StatusOK, http.StatusNoContent), status) {
-		t.Fatalf("the secret store answered %s %s with %d %s", method, path, status, raw)
+		t.Fatalf("secret store %s %s: got %d %s", method, path, status, raw)
 	}
 	var answer struct{ Data map[string]any }
 	json.Unmarshal(raw, &answer)
@@ -326,7 +326,7 @@ func end(t *testing.T, session string) {
 	for _, left := range list.Turns {
 		request(t, "POST", "/v1/turns/"+left.ID+"/cancel", "", nil)
 	}
-	eventually(t, patience, "the session "+session+" is not ended, and its sandbox is left", func() bool {
+	eventually(t, patience, "session "+session+" could not be ended and its sandbox is left behind", func() bool {
 		return request(t, "DELETE", path, "", nil) == http.StatusOK
 	})
 }
@@ -387,7 +387,7 @@ func send(t *testing.T, session, text string) turn {
 	}
 	var accepted turn
 	if status := request(t, "POST", "/v1/sessions/"+session+"/messages", string(message), &accepted); status != http.StatusAccepted {
-		t.Fatalf("the message %q was answered with %d", text, status)
+		t.Fatalf("send %q: got status %d, want 202", text, status)
 	}
 	return accepted
 }
@@ -396,7 +396,7 @@ func record(t *testing.T, id string) turn {
 	t.Helper()
 	var record turn
 	if status := request(t, "GET", "/v1/turns/"+id, "", &record); status != http.StatusOK {
-		t.Fatalf("the turn %s was answered with %d", id, status)
+		t.Fatalf("get turn %s: got status %d, want 200", id, status)
 	}
 	return record
 }
@@ -435,7 +435,7 @@ func read(t *testing.T, id string) *reader {
 			response, err := call(following, administrator, "GET", "/v1/turns/"+id+"/events", "", "Last-Event-ID", last)
 			if err == nil && response.StatusCode != http.StatusOK {
 				response.Body.Close()
-				err = fmt.Errorf("the events were answered with %d", response.StatusCode)
+				err = fmt.Errorf("get events: status %d", response.StatusCode)
 			}
 			if err != nil {
 				time.Sleep(200 * time.Millisecond)
@@ -485,14 +485,14 @@ func (r *reader) until(t *testing.T, what string, holds func(event) bool) []even
 		select {
 		case next, open := <-r.events:
 			if !open {
-				t.Fatalf("the turn %s ended before %s; its events were %v", r.turn, what, events)
+				t.Fatalf("event stream of turn %s closed before the turn %s; events: %v", r.turn, what, events)
 			}
 			events = append(events, next)
 			if holds(next) {
 				return events
 			}
 		case <-deadline:
-			t.Fatalf("after %s, the turn %s has not %s; its events were %v", patience, r.turn, what, events)
+			t.Fatalf("after %s, turn %s has not %s; events: %v", patience, r.turn, what, events)
 		}
 	}
 }
@@ -510,7 +510,7 @@ func run(t *testing.T, session, text string) turn {
 	t.Helper()
 	accepted := send(t, session, text)
 	if last := read(t, accepted.ID).end(t); last.Type != "turn.completed" {
-		t.Fatalf("the turn %s of the message %q ended with %s %s", accepted.ID, text, last.Type, last.Data)
+		t.Fatalf("turn %s for %q ended with %s %s, want turn.completed", accepted.ID, text, last.Type, last.Data)
 	}
 	return record(t, accepted.ID)
 }
@@ -546,7 +546,7 @@ func metrics(t *testing.T, component string) string {
 		read, err := cluster.CoreV1().RESTClient().Get().Namespace(system).Resource("pods").
 			Name(pod.Name + ":9092").SubResource("proxy").Suffix("metrics").Do(ctx).Raw()
 		if err != nil {
-			t.Fatalf("the metrics of %s: %v", pod.Name, err)
+			t.Fatalf("get metrics of %s: %v", pod.Name, err)
 		}
 		metrics.Write(read)
 	}
@@ -580,7 +580,7 @@ func recorded(t *testing.T, id string) []map[string]any {
 func logged(t *testing.T, id, route, host string, status float64) map[string]any {
 	t.Helper()
 	var found map[string]any
-	eventually(t, soon, fmt.Sprintf("no Egress Proxy has recorded a %s request of the turn %s to %s that ended with %v", route, id, host, status), func() bool {
+	eventually(t, soon, fmt.Sprintf("no Egress Proxy access log line with route %s, turn %s, host %s and status %v", route, id, host, status), func() bool {
 		for _, line := range recorded(t, id) {
 			if line["route"] == route && line["host"] == host && line["status"] == status {
 				found = line
@@ -612,7 +612,7 @@ func sandboxesOf(t *testing.T, session string) []sandbox {
 	}
 	raw, err := cluster.CoreV1().RESTClient().Get().AbsPath(sandboxAPI).Param("labelSelector", selector).DoRaw(ctx)
 	if err != nil {
-		t.Fatalf("the sandboxes: %v: %s", err, raw)
+		t.Fatalf("list sandboxes: %v: %s", err, raw)
 	}
 	var listed struct{ Items []sandbox }
 	if err := json.Unmarshal(raw, &listed); err != nil {
@@ -635,7 +635,7 @@ func sandboxes(t *testing.T, session string) []string {
 // and its pod has terminated.
 func asleep(t *testing.T, session string) {
 	t.Helper()
-	eventually(t, patience, "the sandbox of the session "+session+" does not sleep", func() bool {
+	eventually(t, patience, "session "+session+" is not asleep", func() bool {
 		found := sandboxesOf(t, session)
 		if len(found) != 1 || found[0].Spec.OperatingMode != "Suspended" {
 			return false

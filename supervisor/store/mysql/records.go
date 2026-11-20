@@ -952,7 +952,7 @@ func (s *records) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool,
 		}
 		said, err := items(ctx)
 		if err != nil {
-			return fmt.Errorf("read what the turn said: %w", err)
+			return fmt.Errorf("read turn items: %w", err)
 		}
 		end := db.EndTurnParams{ID: row.ID, State: store.TurnFailed}
 		finished := succeeded && row.StopReason != nil

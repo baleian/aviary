@@ -99,8 +99,8 @@ func newMock(apiKey string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// A request for another host is a forward proxy request.
 		if r.Method == http.MethodConnect || r.URL.Host != "" {
-			slog.Info("asked for", "host", r.URL.Hostname())
-			refuse(w, http.StatusForbidden, "mock-llm passes nothing on")
+			slog.Info("refused proxy request", "host", r.URL.Hostname())
+			refuse(w, http.StatusForbidden, "mock-llm does not forward requests")
 			return
 		}
 		mux.ServeHTTP(w, r)
@@ -155,7 +155,7 @@ func (m *mock) next(c conversation) answer {
 		return answer{text: next.text}
 	}
 	m.refused[next.text] = true
-	return answer{failure: "the model cannot take the request right now", status: http.StatusServiceUnavailable}
+	return answer{failure: "model is overloaded; try again later", status: http.StatusServiceUnavailable}
 }
 
 // conversation is a model request as the script sees it.
@@ -369,8 +369,8 @@ func refuse(w http.ResponseWriter, status int, message string) {
 func withKey(apiKey string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+apiKey {
-			slog.Info("refused", "path", r.URL.Path)
-			refuse(w, http.StatusUnauthorized, "the request does not carry the API key of mock-llm")
+			slog.Info("unauthorized request", "path", r.URL.Path)
+			refuse(w, http.StatusUnauthorized, "missing or invalid API key")
 			return
 		}
 		next(w, r)
@@ -391,7 +391,7 @@ func (m *mock) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		} `json:"tools"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		refuse(w, http.StatusBadRequest, "the request is not JSON: "+err.Error())
+		refuse(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
 	if !request.Stream {
@@ -474,7 +474,7 @@ func (m *mock) responses(w http.ResponseWriter, r *http.Request) {
 		Tools        []tool          `json:"tools"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		refuse(w, http.StatusBadRequest, "the request is not JSON: "+err.Error())
+		refuse(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
 	if !request.Stream {

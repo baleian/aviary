@@ -57,7 +57,7 @@ func New(t testing.TB) *Service {
 		}
 		s.mu.Unlock()
 		if runner == nil {
-			http.Error(w, "the sandbox does not run", http.StatusServiceUnavailable)
+			http.Error(w, "sandbox is not running", http.StatusServiceUnavailable)
 			return
 		}
 		http.StripPrefix("/"+name, runner).ServeHTTP(w, r)
@@ -87,7 +87,7 @@ func (s *Service) Sandbox(_ context.Context, name string) (sandbox.Sandbox, erro
 	defer s.mu.Unlock()
 	m := s.sandboxes[name]
 	if m == nil {
-		return sandbox.Sandbox{}, fmt.Errorf("the sandbox %s: %w", name, sandbox.ErrNotFound)
+		return sandbox.Sandbox{}, fmt.Errorf("sandbox %s: %w", name, sandbox.ErrNotFound)
 	}
 	// A starting sandbox becomes ready when it is read, unless slow is set.
 	if m.state == sandbox.Starting && !s.slow {
@@ -134,9 +134,9 @@ func (s *Service) Suspend(_ context.Context, name, version string) error {
 	m := s.sandboxes[name]
 	switch {
 	case m == nil:
-		return fmt.Errorf("the sandbox %s: %w", name, sandbox.ErrNotFound)
+		return fmt.Errorf("sandbox %s: %w", name, sandbox.ErrNotFound)
 	case version != "" && version != strconv.Itoa(m.version):
-		return fmt.Errorf("the sandbox %s: %w", name, sandbox.ErrChanged)
+		return fmt.Errorf("sandbox %s: %w", name, sandbox.ErrChanged)
 	}
 	s.suspend(name, m)
 	return nil
@@ -178,7 +178,7 @@ func (s *Service) change(name string, change func(*made)) error {
 	defer s.mu.Unlock()
 	m := s.sandboxes[name]
 	if m == nil {
-		return fmt.Errorf("the sandbox %s: %w", name, sandbox.ErrNotFound)
+		return fmt.Errorf("sandbox %s: %w", name, sandbox.ErrNotFound)
 	}
 	m.version++
 	change(m)

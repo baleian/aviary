@@ -29,7 +29,7 @@ func TestMetrics(t *testing.T) {
 	completed := one.send(one.session(), "one")
 	runner := aviary.given(completed.ID)
 	if running := total("aviary_turns_running"); running != 1 {
-		t.Errorf("with a turn that one of them follows, the Supervisors report %v running turns", running)
+		t.Errorf("aviary_turns_running = %v, want 1", running)
 	}
 	thought := int64(3)
 	runner.report(started("harness-session"))
@@ -38,7 +38,7 @@ func TestMetrics(t *testing.T) {
 	runner.report(asks("1", "rm -r build"))
 	runner.report(asks("2", "git push"))
 	if status, _ := one.approve(completed.ID, "1", `{"option_id": "never"}`); status != http.StatusAccepted {
-		t.Fatalf("the answer to a request was answered with %d", status)
+		t.Fatalf("approve: status %d, want 202", status)
 	}
 	runner.answer()
 	runner.report(answered("1", "selected", "never"))
@@ -47,7 +47,7 @@ func TestMetrics(t *testing.T) {
 	runner.report(answered("2", "made up", ""))
 	runner.report(finished("end_turn", &store.Usage{TotalTokens: 18, InputTokens: 11, OutputTokens: 7, ThoughtTokens: &thought}))
 	if state := ended(one, completed.ID); state != "turn.completed" {
-		t.Fatalf("the first turn ended with %s", state)
+		t.Fatalf("first turn ended with %s, want turn.completed", state)
 	}
 
 	// A running turn, a queued turn that expires, and two refused messages.
@@ -59,24 +59,24 @@ func TestMetrics(t *testing.T) {
 	runner.report(started("harness-session"))
 	expired := one.send(one.session(), "three")
 	if status, _ := one.request("POST", "/v1/sessions/"+session+"/messages", `{"text": "again"}`, nil); status != http.StatusConflict {
-		t.Fatalf("a message to a session with a running turn was answered with %d", status)
+		t.Fatalf("send to a busy session: status %d, want 409", status)
 	}
 	if status, _ := other.request("POST", "/v1/sessions/"+other.session()+"/messages", `{"text": "four"}`, nil); status != http.StatusTooManyRequests {
-		t.Fatalf("a message beyond the most that may wait was answered with %d", status)
+		t.Fatalf("send to a full queue: status %d, want 429", status)
 	}
 	if state := ended(other, expired.ID); state != "turn.expired" {
-		t.Fatalf("the turn that waited ended with %s", state)
+		t.Fatalf("queued turn ended with %s, want turn.expired", state)
 	}
 
 	runner.report(asks("1", "rm -r build"))
 	if status, _ := other.request("POST", "/v1/turns/"+cancelled.ID+"/cancel", "", nil); status != http.StatusAccepted {
-		t.Fatalf("cancelling the running turn was answered with %d", status)
+		t.Fatalf("cancel: status %d, want 202", status)
 	}
 	runner.cancelled()
 	runner.report(answered("1", "cancelled", ""))
 	runner.report(finished("cancelled", nil))
 	if state := ended(one, cancelled.ID); state != "turn.cancelled" {
-		t.Fatalf("the cancelled turn ended with %s", state)
+		t.Fatalf("cancelled turn ended with %s, want turn.cancelled", state)
 	}
 
 	lost := other.send(other.session(), "five")
@@ -84,7 +84,7 @@ func TestMetrics(t *testing.T) {
 	runner.report(started("harness-session"))
 	runner.lose()
 	if state := ended(other, lost.ID); state != "turn.failed" {
-		t.Fatalf("the turn that lost its sandbox ended with %s", state)
+		t.Fatalf("turn without a sandbox ended with %s, want turn.failed", state)
 	}
 
 	expected := map[string]float64{
@@ -127,6 +127,6 @@ func TestMetrics(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	for series, reported := range differing() {
-		t.Errorf("the Supervisors report %v for %s, not %v", reported, series, expected[series])
+		t.Errorf("got %v for %s, want %v", reported, series, expected[series])
 	}
 }

@@ -39,7 +39,7 @@ func TestPluginIsChosenByTheScheme(t *testing.T) {
 	var asked []string
 	plugins := []store.Plugin{kind{[]string{"first", "firstly"}, &asked}, kind{[]string{"second"}, &asked}}
 	if _, err := store.Open(ctx, "firstly://host/records", plugins...); err == nil || !strings.Contains(err.Error(), "none") {
-		t.Errorf("the database was opened with: %v", err)
+		t.Errorf("Open = %v, want the plugin's error", err)
 	}
 	if err := store.Migrate(ctx, "second://user:password@host/records", plugins...); err != nil {
 		t.Error(err)
@@ -49,7 +49,7 @@ func TestPluginIsChosenByTheScheme(t *testing.T) {
 	}
 	expected := []string{"first open firstly://host/records", "second migrate second://user:password@host/records", "first migrate first://host/records to 7"}
 	if !slices.Equal(asked, expected) {
-		t.Errorf("the plugins were asked %q, not %q", asked, expected)
+		t.Errorf("plugin calls = %q, want %q", asked, expected)
 	}
 
 	// An address that no plugin handles, or that cannot be parsed, fails with
@@ -65,11 +65,11 @@ func TestPluginIsChosenByTheScheme(t *testing.T) {
 			"migrate to": store.MigrateTo(ctx, address, 7, plugins...),
 		} {
 			if err == nil || !strings.Contains(err.Error(), why) || strings.Contains(err.Error(), "secret") {
-				t.Errorf("%s of the database at %s: %v", name, address, err)
+				t.Errorf("%s %s: error = %v, want the reason without the password", name, address, err)
 			}
 		}
 	}
 	if len(asked) != len(expected) {
-		t.Errorf("a plugin was asked about a database that is not of its kind: %q", asked)
+		t.Errorf("unexpected plugin calls: %q", asked)
 	}
 }

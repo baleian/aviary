@@ -62,16 +62,16 @@ func TestEgressProxy(t *testing.T) {
 			// and a harness does not retry that.
 			check := named(at(listener(envoy, name), "http_filters"), "envoy.filters.http.ext_authz")
 			if code := at(check, "typed_config", "status_on_error", "code"); code != "ServiceUnavailable" {
-				t.Errorf("%s: a request on %s that no Supervisor can be asked about is answered with %v", values, name, code)
+				t.Errorf("%s: %s ext_authz status_on_error = %v, want ServiceUnavailable", values, name, code)
 			}
 		}
 		// Envoy's admin interface can stop Envoy and dump its configuration.
 		if socket := at(envoy, "admin", "address", "socket_address"); socket != nil {
-			t.Errorf("%s: Envoy's own interface listens on %v, where the forward proxy can be asked to connect", values, socket)
+			t.Errorf("%s: Envoy admin interface listens on %v, reachable through the forward proxy", values, socket)
 		}
 		routes := at(listener(envoy, "metrics"), "route_config", "virtual_hosts", 0, "routes")
 		if list, _ := routes.([]any); len(list) != 1 || at(routes, 0, "match", "path") != "/metrics" {
-			t.Errorf("%s: the metrics listener passes on more than the metrics: %v", values, routes)
+			t.Errorf("%s: metrics listener routes = %v, want only /metrics", values, routes)
 		}
 	}
 }
@@ -85,11 +85,11 @@ func TestEgressProxyRecordsWhereARequestCameFrom(t *testing.T) {
 		record, _ := at(listener(envoy, name), "access_log", 0, "typed_config", "log_format", "json_format").(map[string]any)
 		for _, field := range []string{"turn", "session", "agent", "project", "user", "subject"} {
 			if record[field] != told(field) {
-				t.Errorf("a line of the record of %s has %v as its %s", name, record[field], field)
+				t.Errorf("%s access log has %v for %s", name, record[field], field)
 			}
 		}
 		if provider, recorded := record["provider"]; recorded != model || (model && provider != told("provider")) {
-			t.Errorf("a line of the record of %s has %v as its provider", name, provider)
+			t.Errorf("%s access log has %v for provider", name, provider)
 		}
 	}
 }
@@ -101,7 +101,7 @@ func TestEgressProxyKeepsARequestForAsLongAsATurn(t *testing.T) {
 		objects, envoy := chart(t, values)
 		for _, name := range []string{"llm", "forward"} {
 			if idle := at(listener(envoy, name), "stream_idle_timeout"); idle != longest {
-				t.Errorf("%s: a silent request on %s is ended after %v, not after %s", values, name, idle, longest)
+				t.Errorf("%s: %s stream_idle_timeout = %v, want %s", values, name, idle, longest)
 			}
 		}
 		// The turn's deadline ends a model request, not Envoy.
@@ -113,17 +113,17 @@ func TestEgressProxyKeepsARequestForAsLongAsATurn(t *testing.T) {
 			}
 			passed++
 			if timeout := at(route, "route", "timeout"); timeout != "0s" {
-				t.Errorf("%s: a request to the model on the route %v is ended after %v", values, at(route, "match"), timeout)
+				t.Errorf("%s: model route %v has timeout %v, want 0s", values, at(route, "match"), timeout)
 			}
 		}
 		if passed != 2 {
-			t.Errorf("%s: %d routes pass model requests on, not the two for endpoints with TLS and without", values, passed)
+			t.Errorf("%s: %d model routes forward requests, want 2 (with and without TLS)", values, passed)
 		}
 		// A terminating pod is not given extra time for the turns that use it.
 		for _, name := range []string{"aviary-egress-proxy", "aviary-supervisor"} {
 			pod := at(find(objects, "Deployment", name), "spec", "template", "spec")
 			if grace := at(pod, "terminationGracePeriodSeconds"); grace != nil {
-				t.Errorf("%s: a pod of %s is given %v seconds to stop", values, name, grace)
+				t.Errorf("%s: %s terminationGracePeriodSeconds = %v, want unset", values, name, grace)
 			}
 		}
 	}
@@ -136,21 +136,21 @@ func TestModelRequestsGoWhereTheSupervisorSays(t *testing.T) {
 		objects, envoy := chart(t, values)
 		routes, _ := at(listener(envoy, "llm"), "route_config", "virtual_hosts", 0, "routes").([]any)
 		if len(routes) != 3 {
-			t.Fatalf("%s: the model requests have the routes %v", values, routes)
+			t.Fatalf("%s: model routes = %v, want 3", values, routes)
 		}
 		for i, cluster := range []string{"model-tls", "model"} {
 			route := routes[i]
 			if at(route, "route", "cluster") != cluster || at(route, "match", "headers", 0, "name") != "x-aviary-upstream-tls" ||
 				at(route, "typed_per_filter_config", "envoy.filters.http.dynamic_forward_proxy", "host_rewrite_header") != "x-aviary-upstream" {
-				t.Errorf("%s: a model request is passed on by the route %v", values, route)
+				t.Errorf("%s: unexpected model route %v", values, route)
 			}
 			if named(at(envoy, "static_resources", "clusters"), cluster) == nil {
-				t.Errorf("%s: the proxy has no cluster %s", values, cluster)
+				t.Errorf("%s: no Envoy cluster %s", values, cluster)
 			}
 		}
 		// Without an endpoint from the Supervisor, a request is not forwarded.
 		if last := routes[2]; at(last, "match", "headers") != nil || at(last, "direct_response", "status") != 503 {
-			t.Errorf("%s: a model request without an endpoint is answered by the route %v", values, last)
+			t.Errorf("%s: last model route = %v, want a direct 503 response for every request", values, last)
 		}
 		// The proxy has no key of its own to add, and mounts nothing to read
 		// one from.
@@ -159,11 +159,11 @@ func TestModelRequestsGoWhereTheSupervisorSays(t *testing.T) {
 			t.Fatal(err)
 		}
 		if strings.Contains(string(whole), "credential_injector") {
-			t.Errorf("%s: the proxy puts a key of its own into requests", values)
+			t.Errorf("%s: proxy configuration has a credential_injector", values)
 		}
 		proxy := at(find(objects, "Deployment", "aviary-egress-proxy"), "spec", "template", "spec")
 		if volumes, _ := at(proxy, "volumes").([]any); len(volumes) != 1 || at(volumes[0], "configMap", "name") != "aviary-egress-proxy" {
-			t.Errorf("%s: the pod of the proxy mounts %v", values, at(proxy, "volumes"))
+			t.Errorf("%s: proxy volumes = %v, want only its ConfigMap", values, at(proxy, "volumes"))
 		}
 	}
 }
@@ -177,7 +177,7 @@ func TestAllowedHosts(t *testing.T) {
 	for name, header := range map[string]string{"forward": ":authority", "llm": "x-aviary-upstream"} {
 		// With every host allowed, which is the default, there are no rules.
 		if _, open := chart(t, "default"); rules(open, name) != nil {
-			t.Errorf("with every host allowed, the proxy holds requests on %s against %v", name, rules(open, name))
+			t.Errorf("%s: with every host allowed, RBAC rules = %v, want none", name, rules(open, name))
 		}
 
 		_, set := chart(t, "set")
@@ -190,7 +190,7 @@ func TestAllowedHosts(t *testing.T) {
 			host, _ := at(permission, "header", "string_match", "exact").(string)
 			hosts = append(hosts, host)
 			if at(permission, "header", "string_match", "ignore_case") != true || at(permission, "header", "name") != header {
-				t.Errorf("on %s, the host %s is allowed by %v", name, host, permission)
+				t.Errorf("%s: permission for host %s = %v, want a case-insensitive header match", name, host, permission)
 			}
 		}
 		// A host matches on the default HTTPS and HTTP ports, and a host with
@@ -201,7 +201,7 @@ func TestAllowedHosts(t *testing.T) {
 			"git.example.com:8443",
 		}
 		if !slices.Equal(hosts, expected) || at(rules(set, name), "action") != "ALLOW" {
-			t.Errorf("on %s, the proxy lets requests through to %v, not to %v", name, hosts, expected)
+			t.Errorf("%s: allowed hosts = %v, want %v", name, hosts, expected)
 		}
 
 		// An empty list allows nothing.
@@ -209,11 +209,11 @@ func TestAllowedHosts(t *testing.T) {
 		permissions, _ = at(rules(closed, name), "policies", "listed-hosts", "permissions").([]any)
 		for _, permission := range permissions {
 			if at(permission, "header") != nil {
-				t.Errorf("on %s, with no host allowed, the proxy lets requests through by %v", name, permission)
+				t.Errorf("%s: with no host allowed, got host permission %v", name, permission)
 			}
 		}
 		if at(rules(closed, name), "action") != "ALLOW" {
-			t.Errorf("on %s, with no host allowed, the proxy holds requests against %v", name, rules(closed, name))
+			t.Errorf("%s: with no host allowed, RBAC rules = %v, want action ALLOW", name, rules(closed, name))
 		}
 	}
 }
@@ -243,13 +243,13 @@ func TestSupervisorSettings(t *testing.T) {
 		"AVIARY_MAX_TOOL_OUTPUT_BYTES":     "65536",
 	} {
 		if settings[name] != value {
-			t.Errorf("the Supervisor is told %s=%q, not %q", name, settings[name], value)
+			t.Errorf("Supervisor env %s = %q, want %q", name, settings[name], value)
 		}
 	}
 
 	// The model is set per agent, not per installation.
 	if model, told := settings["AVIARY_LLM_MODEL"]; told {
-		t.Errorf("the Supervisor is told the model %q", model)
+		t.Errorf("Supervisor env AVIARY_LLM_MODEL = %q, want unset", model)
 	}
 
 	objects, _ = chart(t, "set")
@@ -274,11 +274,11 @@ func TestSupervisorSettings(t *testing.T) {
 		"AVIARY_MAX_TOOL_OUTPUT_BYTES":     "23",
 	} {
 		if settings[name] != value {
-			t.Errorf("the Supervisor is told %s=%q, not %q", name, settings[name], value)
+			t.Errorf("Supervisor env %s = %q, want %q", name, settings[name], value)
 		}
 	}
 	if replicas := at(supervisor, "spec", "replicas"); replicas != 3 {
-		t.Errorf("the chart runs %v Supervisors, not 3", replicas)
+		t.Errorf("Supervisor replicas = %v, want 3", replicas)
 	}
 
 	// A value set for one harness leaves its other values and the other
@@ -289,13 +289,13 @@ func TestSupervisorSettings(t *testing.T) {
 		Resources resources
 	}
 	if err := json.Unmarshal([]byte(settings["AVIARY_HARNESSES"]), &harnesses); err != nil {
-		t.Fatalf("the Supervisor is told the harnesses %s: %v", settings["AVIARY_HARNESSES"], err)
+		t.Fatalf("parse AVIARY_HARNESSES %s: %v", settings["AVIARY_HARNESSES"], err)
 	}
 	opencode, codex := harnesses["opencode"], harnesses["codex"]
 	if len(harnesses) != 2 || opencode.Image != "aviary-harness-opencode:dev" || codex.Image != "aviary-harness-codex:dev" ||
 		!reflect.DeepEqual(opencode.Resources, resources{"requests": {"cpu": "250m", "memory": "1Gi"}, "limits": {"memory": "8Gi"}}) ||
 		!reflect.DeepEqual(codex.Resources, resources{"requests": {"cpu": "250m", "memory": "256Mi"}, "limits": {"memory": "4Gi"}}) {
-		t.Errorf("the Supervisor is told the harnesses %s", settings["AVIARY_HARNESSES"])
+		t.Errorf("AVIARY_HARNESSES = %s", settings["AVIARY_HARNESSES"])
 	}
 }
 
@@ -306,12 +306,12 @@ func TestSupervisorAnswersTheEgressProxy(t *testing.T) {
 	port := named(at(find(objects, "Service", "aviary-supervisor"), "spec", "ports"), "authz")
 	container := named(at(find(objects, "Deployment", "aviary-supervisor"), "spec", "template", "spec", "containers", 0, "ports"), "authz")
 	if at(port, "port") != 9091 || at(port, "targetPort") != "authz" || at(container, "containerPort") != 9091 {
-		t.Errorf("the Supervisor is asked at %v, and listens at %v", port, container)
+		t.Errorf("Supervisor authz Service port = %v, container port = %v; want 9091", port, container)
 	}
 	asked := at(named(at(envoy, "static_resources", "clusters"), "supervisor"), "load_assignment", "endpoints", 0, "lb_endpoints", 0,
 		"endpoint", "address", "socket_address")
 	if at(asked, "address") != "aviary-supervisor.aviary-system" || at(asked, "port_value") != 9091 {
-		t.Errorf("the proxy asks the Supervisor at %v", asked)
+		t.Errorf("proxy's Supervisor address = %v, want aviary-supervisor.aviary-system:9091", asked)
 	}
 }
 
@@ -325,10 +325,10 @@ func TestSupervisorEncryptionKeys(t *testing.T) {
 		mount := named(at(pod, "containers", 0, "volumeMounts"), "encryption")
 		told := env(supervisor)["AVIARY_ENCRYPTION_KEYS"]
 		if told == "" || at(mount, "mountPath") != told || at(mount, "readOnly") != true {
-			t.Errorf("%s: the Supervisor is told that the keys are in %q, and they are mounted as %v", values, told, mount)
+			t.Errorf("%s: AVIARY_ENCRYPTION_KEYS = %q, mount = %v; want a read-only mount at that path", values, told, mount)
 		}
 		if mounted := at(named(at(pod, "volumes"), "encryption"), "secret", "secretName"); mounted != secret {
-			t.Errorf("%s: the keys are those of the secret %v, not of %s", values, mounted, secret)
+			t.Errorf("%s: encryption keys Secret = %v, want %s", values, mounted, secret)
 		}
 	}
 }
@@ -343,26 +343,26 @@ func TestSandboxesAreCutOff(t *testing.T) {
 	policy := at(find(objects, "NetworkPolicy", "aviary-sandboxes"), "spec")
 	if at(find(objects, "NetworkPolicy", "aviary-sandboxes"), "metadata", "namespace") != "aviary-runtime" ||
 		len(at(policy, "podSelector").(map[string]any)) != 0 || !reflect.DeepEqual(at(policy, "policyTypes"), []any{"Ingress", "Egress"}) {
-		t.Errorf("the policy of the sandboxes is %v", policy)
+		t.Errorf("sandbox NetworkPolicy spec = %v", policy)
 	}
 	rules, _ := at(policy, "ingress").([]any)
 	if len(rules) != 1 || len(at(rules[0], "from").([]any)) != 1 ||
 		at(rules[0], "from", 0, "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name") != "aviary-system" ||
 		at(rules[0], "from", 0, "podSelector", "matchLabels", "app.kubernetes.io/component") != "supervisor" ||
 		!reflect.DeepEqual(at(rules[0], "ports"), []any{map[string]any{"protocol": "TCP", "port": 8700}}) {
-		t.Errorf("a sandbox may be connected to by %v", rules)
+		t.Errorf("sandbox ingress rules = %v, want only the Supervisors on port 8700", rules)
 	}
 	out, _ := at(policy, "egress").([]any)
 	if len(out) != 1 || len(at(out[0], "to").([]any)) != 1 ||
 		at(out[0], "to", 0, "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name") != "aviary-system" ||
 		at(out[0], "to", 0, "podSelector", "matchLabels", "app.kubernetes.io/component") != "egress-proxy" ||
 		!reflect.DeepEqual(at(out[0], "ports"), []any{map[string]any{"protocol": "TCP", "port": 8080}, map[string]any{"protocol": "TCP", "port": 3128}}) {
-		t.Errorf("a sandbox may connect to %v", out)
+		t.Errorf("sandbox egress rules = %v, want only the Egress Proxy on ports 8080 and 3128", out)
 	}
 	namespace := find(objects, "Namespace", "aviary-runtime")
 	if at(namespace, "metadata", "annotations", "helm.sh/resource-policy") != "keep" ||
 		at(namespace, "metadata", "labels", "pod-security.kubernetes.io/enforce") != "restricted" {
-		t.Errorf("the namespace of the sandboxes is %v", namespace)
+		t.Errorf("sandbox namespace = %v, want it kept on uninstall and restricted", namespace)
 	}
 }
 
@@ -374,7 +374,7 @@ func TestEgressProxyIsKeptFromTheInside(t *testing.T) {
 		objects, _ := chart(t, values)
 		rules, _ := at(find(objects, "NetworkPolicy", "aviary-egress-proxy"), "spec", "egress").([]any)
 		if len(rules) < 3 || at(rules[0], "ports", 0, "port") != 9091 || at(rules[1], "ports", 0, "port") != 53 {
-			t.Fatalf("%s: the policy of the proxy has the rules %v", values, rules)
+			t.Fatalf("%s: proxy egress rules = %v, want the Supervisor and DNS first", values, rules)
 		}
 		return rules[2:]
 	}
@@ -384,13 +384,13 @@ func TestEgressProxyIsKeptFromTheInside(t *testing.T) {
 	if len(anywhere) != 1 || at(anywhere[0], "ports") != nil ||
 		at(anywhere[0], "to", 0, "ipBlock", "cidr") != "0.0.0.0/0" || !reflect.DeepEqual(at(anywhere[0], "to", 0, "ipBlock", "except"), inside) ||
 		at(anywhere[0], "to", 1, "ipBlock", "cidr") != "::/0" || !reflect.DeepEqual(at(anywhere[0], "to", 1, "ipBlock", "except"), []any{"fc00::/7", "fe80::/10"}) {
-		t.Errorf("the proxy may connect to %v", anywhere)
+		t.Errorf("proxy egress rules = %v, want every address outside the private ranges", anywhere)
 	}
 
 	// The rules of extraEgress are added.
 	if set := outside("set"); len(set) != 2 ||
 		at(set[1], "to", 0, "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name") != "llm-gateway" {
-		t.Errorf("with a namespace named besides, the proxy may connect to %v", set)
+		t.Errorf("proxy egress rules with extraEgress = %v", set)
 	}
 }
 
@@ -403,22 +403,22 @@ func TestSupervisorPermissions(t *testing.T) {
 		"apiGroups": []any{"agents.x-k8s.io"}, "resources": []any{"sandboxes"}, "verbs": []any{"create", "get", "list", "patch", "delete"},
 	}}
 	if at(role, "metadata", "namespace") != "aviary-runtime" || !reflect.DeepEqual(at(role, "rules"), expected) {
-		t.Errorf("the Supervisor may %v in the namespace %v", at(role, "rules"), at(role, "metadata", "namespace"))
+		t.Errorf("Supervisor Role rules = %v in namespace %v", at(role, "rules"), at(role, "metadata", "namespace"))
 	}
 	binding := find(objects, "RoleBinding", "aviary-supervisor")
 	if at(binding, "metadata", "namespace") != "aviary-runtime" || at(binding, "roleRef", "name") != "aviary-supervisor" ||
 		at(binding, "subjects", 0, "name") != "aviary-supervisor" || at(binding, "subjects", 0, "namespace") != "aviary-system" {
-		t.Errorf("the role is bound as %v", binding)
+		t.Errorf("Supervisor RoleBinding = %v", binding)
 	}
 	for _, object := range objects {
 		if kind := object["kind"]; kind == "ClusterRole" || kind == "ClusterRoleBinding" {
-			t.Errorf("the chart makes the %v %v", kind, at(object, "metadata", "name"))
+			t.Errorf("chart renders %v %v", kind, at(object, "metadata", "name"))
 		}
 	}
 	// The schema is migrated once per release, before the Supervisors start.
 	migrate := find(objects, "Job", "aviary-migrate")
 	if at(migrate, "metadata", "annotations", "helm.sh/hook") != "pre-install,pre-upgrade" ||
 		!reflect.DeepEqual(at(migrate, "spec", "template", "spec", "containers", 0, "args"), []any{"migrate"}) {
-		t.Errorf("the migration is %v", migrate)
+		t.Errorf("migration Job = %v", migrate)
 	}
 }

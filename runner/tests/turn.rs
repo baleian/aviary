@@ -12,7 +12,7 @@ use tokio::time;
 use support::{Home, Session, ending, names, runner, said, start};
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_turn_is_told_as_it_goes() {
+async fn turn_events_are_streamed_in_order() {
     let home = Home::new();
     let runner = start(runner(&home)).await;
     let events = runner
@@ -68,7 +68,7 @@ async fn a_turn_is_told_as_it_goes() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_harness_stays_for_the_turns_of_a_session() {
+async fn harness_is_reused_across_turns() {
     let home = Home::new();
     let runner = start(runner(&home)).await;
     let first = runner.run("t1", "say one").await;
@@ -92,7 +92,7 @@ async fn the_harness_stays_for_the_turns_of_a_session() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_turn_is_started_once_however_often_it_is_sent() {
+async fn starting_a_turn_is_idempotent() {
     let home = Home::new();
     let runner = start(runner(&home)).await;
     assert_eq!(
@@ -116,7 +116,7 @@ async fn a_turn_is_started_once_however_often_it_is_sent() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_turn_that_the_runner_does_not_have_is_not_found() {
+async fn unknown_turn_is_not_found() {
     let home = Home::new();
     let runner = start(runner(&home)).await;
     assert_eq!(runner.follow("t1", 0).await.status, StatusCode::NOT_FOUND);
@@ -136,7 +136,7 @@ async fn a_turn_that_the_runner_does_not_have_is_not_found() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_events_of_a_turn_are_read_again_from_where_a_reader_left() {
+async fn events_resume_after_last_event_id() {
     let home = Home::new();
     let runner = start(runner(&home)).await;
     assert_eq!(
@@ -171,7 +171,7 @@ async fn the_events_of_a_turn_are_read_again_from_where_a_reader_left() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_turn_that_the_harness_fails_says_why() {
+async fn harness_error_fails_the_turn() {
     let home = Home::new();
     let runner = start(runner(&home)).await;
     let events = runner
@@ -196,7 +196,7 @@ async fn a_turn_that_the_harness_fails_says_why() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_harness_that_is_gone_is_started_again() {
+async fn exited_harness_is_restarted() {
     let home = Home::new();
     let runner = start(runner(&home)).await;
 
@@ -222,7 +222,7 @@ async fn a_harness_that_is_gone_is_started_again() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_session_that_the_harness_has_lost_fails_its_turns() {
+async fn lost_harness_session_fails_every_turn() {
     let home = Home::new();
     let runner = start(runner(&home)).await;
     runner.run("t1", "say one ; die").await;
@@ -233,12 +233,12 @@ async fn a_session_that_the_harness_has_lost_fails_its_turns() {
         assert_eq!(names(&events), ["failed"]);
         assert_eq!(ending(&events).data["reason"], "resume_failed");
         let message = ending(&events).data["message"].as_str().unwrap();
-        assert!(message.contains("the session is not known"), "{message}");
+        assert!(message.contains("unknown session"), "{message}");
     }
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_runner_of_another_pod_continues_the_session() {
+async fn new_runner_resumes_the_session() {
     let home = Home::new();
     let first = start(runner(&home)).await;
     let before = first.run("t1", "say one").await;
@@ -254,7 +254,7 @@ async fn the_runner_of_another_pod_continues_the_session() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_runner_that_is_told_to_end_ends_with_its_turn() {
+async fn runner_exits_on_sigterm() {
     let home = Home::new();
     let mut runner = start(runner(&home)).await;
     runner.turn("t1", "say on ; sleep 60000").await;
@@ -269,13 +269,13 @@ async fn a_runner_that_is_told_to_end_ends_with_its_turn() {
     assert!(told.success());
     let ended = time::timeout(Duration::from_secs(5), runner.child.wait())
         .await
-        .expect("the runner did not end")
+        .expect("timed out waiting for the runner to exit")
         .unwrap();
     assert!(ended.success(), "{ended}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_runner_that_others_reach_takes_nothing_from_its_own_pod() {
+async fn requests_from_own_pod_are_forbidden() {
     let home = Home::new();
     let mut command = runner(&home);
     command.env("AVIARY_RUNNER_ADDRESS", "0.0.0.0:0");
@@ -297,14 +297,14 @@ fn own_address() -> String {
     let socket = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
     socket
         .connect("10.255.255.255:9")
-        .expect("the machine reaches other machines");
+        .expect("connect UDP socket");
     let address = socket.local_addr().unwrap().ip();
     assert!(!address.is_loopback(), "{address}");
     address.to_string()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_runner_that_is_not_set_up_says_so() {
+async fn misconfigured_runner_fails_the_turn() {
     let home = Home::new();
     let mut command = runner(&home);
     command.env_remove("AVIARY_HARNESS_COMMAND");
@@ -325,7 +325,7 @@ async fn a_runner_that_is_not_set_up_says_so() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_instructions_are_where_the_harness_reads_them() {
+async fn instructions_file_is_written_every_turn() {
     let home = Home::new();
     let mut command = runner(&home);
     command.env("AVIARY_INSTRUCTIONS_FILE", home.instructions());
@@ -365,7 +365,7 @@ async fn the_instructions_are_where_the_harness_reads_them() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_harness_is_started_with_what_the_first_turn_tells() {
+async fn harness_starts_with_the_turn_environment() {
     let home = Home::new();
     let mut command = runner(&home);
     command.env("FROM_THE_IMAGE", "image");
@@ -383,7 +383,7 @@ async fn the_harness_is_started_with_what_the_first_turn_tells() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_long_texts_of_a_tool_call_are_cut_as_the_installation_says() {
+async fn tool_output_is_cut_at_the_configured_limit() {
     let home = Home::new();
     let mut command = runner(&home);
     command.env("AVIARY_MAX_TOOL_OUTPUT_BYTES", "100");
@@ -403,7 +403,7 @@ async fn the_long_texts_of_a_tool_call_are_cut_as_the_installation_says() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_harness_that_asks_is_allowed_once() {
+async fn requests_are_allowed_once_by_default() {
     let home = Home::new();
     let runner = start(runner(&home)).await;
     let events = runner.run("t1", "ask").await;
@@ -412,7 +412,7 @@ async fn a_harness_that_asks_is_allowed_once() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_harness_that_asks_is_answered_by_a_person() {
+async fn approval_requests_wait_for_an_answer() {
     let home = Home::new();
     let runner = start(runner(&home)).await;
     runner
@@ -479,7 +479,7 @@ async fn a_harness_that_asks_is_answered_by_a_person() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn requests_that_wait_at_once_are_each_given_their_own_answer() {
+async fn concurrent_approval_requests_get_their_own_answers() {
     let home = Home::new();
     let runner = start(runner(&home)).await;
     runner
@@ -504,7 +504,7 @@ async fn requests_that_wait_at_once_are_each_given_their_own_answer() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_turn_that_is_cancelled_while_its_harness_asks_is_stopped() {
+async fn cancel_resolves_pending_approval_requests() {
     let home = Home::new();
     let runner = start(runner(&home)).await;
     runner
@@ -530,7 +530,7 @@ async fn a_turn_that_is_cancelled_while_its_harness_asks_is_stopped() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_turn_that_is_cancelled_is_stopped_by_the_harness() {
+async fn cancelled_turn_is_stopped_by_the_harness() {
     let home = Home::new();
     let mut command = runner(&home);
     command.env("FAKE_HARNESS_STOP_MS", "300");
@@ -565,7 +565,7 @@ async fn a_turn_that_is_cancelled_is_stopped_by_the_harness() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_turn_that_is_cancelled_before_the_harness_is_ready_is_not_given_to_it() {
+async fn turn_cancelled_before_prompt_is_not_sent() {
     let home = Home::new();
     let mut command = runner(&home);
     command.env("FAKE_HARNESS_START_MS", "500");
@@ -579,7 +579,7 @@ async fn a_turn_that_is_cancelled_before_the_harness_is_ready_is_not_given_to_it
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_runner_that_waits_takes_no_cpu() {
+async fn idle_runner_uses_no_cpu() {
     let home = Home::new();
     let runner = start(runner(&home)).await;
     runner.run("t1", "say Hello").await;
@@ -590,7 +590,7 @@ async fn a_runner_that_waits_takes_no_cpu() {
     runner.turn("t2", "sleep 1000").await;
     runner.events("t2").await;
     let used = cpu(runner.child.id().unwrap()) - before;
-    assert!(used < 0.2, "the runner used {used} seconds of CPU in two");
+    assert!(used < 0.2, "runner CPU = {used}s in 2s, want < 0.2s");
 }
 
 /// Returns the CPU seconds, user and system, that the process has used.

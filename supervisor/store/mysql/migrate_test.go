@@ -33,7 +33,7 @@ func emptyDatabase(t *testing.T) string {
 	server := testenv.DatabaseURL(t, "mysql")
 	address, err := url.Parse(server)
 	if err != nil {
-		t.Fatalf("the URL of the database server of the tests: %v", err)
+		t.Fatalf("parse database server URL: %v", err)
 	}
 	name := "test_" + strings.ToLower(rand.Text())
 	exec(t, server, "create database "+name)
@@ -121,7 +121,7 @@ func TestMigrate(t *testing.T) {
 	}
 	defer db.Close()
 	if err := checkSchema(ctx, db); err == nil || !strings.Contains(err.Error(), "aviary-supervisor migrate") {
-		t.Errorf("of a database without the schema, a Supervisor is told: %v", err)
+		t.Errorf("checkSchema on a database without the schema = %v, want a hint to run aviary-supervisor migrate", err)
 	}
 
 	if err := (Plugin{}).Migrate(ctx, database); err != nil {
@@ -129,13 +129,13 @@ func TestMigrate(t *testing.T) {
 	}
 	newest := schema(t, database)
 	if len(newest) == 0 {
-		t.Fatal("the migrations made nothing")
+		t.Fatal("schema is empty after Migrate")
 	}
 	if err := checkSchema(ctx, db); err != nil {
-		t.Errorf("of a database with the schema, a Supervisor is told: %v", err)
+		t.Errorf("checkSchema after Migrate: %v", err)
 	}
 	if err := (Plugin{}).Migrate(ctx, database); err != nil {
-		t.Fatalf("migrate a database that is up to date: %v", err)
+		t.Fatalf("Migrate on an up-to-date database: %v", err)
 	}
 
 	// Each migration can be undone on its own.
@@ -146,19 +146,19 @@ func TestMigrate(t *testing.T) {
 		}
 	}
 	if left := schema(t, database); len(left) != 0 {
-		t.Errorf("the migrations, undone, leave behind:\n%s", strings.Join(left, "\n"))
+		t.Errorf("schema left after undoing all migrations:\n%s", strings.Join(left, "\n"))
 	}
 	if err := (Plugin{}).Migrate(ctx, database); err != nil {
 		t.Fatal(err)
 	}
 	if again := schema(t, database); !slices.Equal(again, newest) {
-		t.Errorf("the schema is not the same after the migrations were undone and done again:\n%s\nwas:\n%s",
+		t.Errorf("schema after migrating down and up again:\n%s\nwant:\n%s",
 			strings.Join(again, "\n"), strings.Join(newest, "\n"))
 	}
 
 	for _, version := range []int64{-1, int64(len(versions)) + 1} {
 		if err := (Plugin{}).MigrateTo(ctx, database, version); err == nil {
-			t.Errorf("the schema was moved to version %d, which there is not", version)
+			t.Errorf("MigrateTo(%d) succeeded, want an error", version)
 		}
 	}
 }
@@ -177,13 +177,13 @@ func TestCheckSchema(t *testing.T) {
 	exec(t, database, `insert into goose_db_version (version_id, is_applied)
 		select max(version_id) + 1, true from goose_db_version`)
 	if err := checkSchema(ctx, db); err != nil {
-		t.Errorf("of a schema that is newer than it needs, a Supervisor is told: %v", err)
+		t.Errorf("checkSchema on a newer schema: %v", err)
 	}
 
 	// One that dropped what this build uses is not.
 	exec(t, database, `update schema_floor set version = (select max(version_id) from goose_db_version)`)
 	if err := checkSchema(ctx, db); err == nil {
-		t.Error("a database that no longer supports this build is taken")
+		t.Error("checkSchema accepted a schema whose floor excludes this build")
 	}
 }
 
@@ -191,8 +191,8 @@ func TestConnect(t *testing.T) {
 	t.Parallel()
 	// An unusable URL fails with an error that does not reveal the password.
 	for address, why := range map[string]string{
-		"mysql://user:secret@host:port/name":             "parse the URL",
-		"mysql://user:secret@host:3306/name?timeout=5s":  `the parameter "timeout"`,
+		"mysql://user:secret@host:port/name":             "parse database URL",
+		"mysql://user:secret@host:3306/name?timeout=5s":  `parameter "timeout"`,
 		"mysql://user:secret@host:3306/name?tls=perhaps": "tls",
 	} {
 		db, err := connect(address)
@@ -200,14 +200,14 @@ func TestConnect(t *testing.T) {
 			db.Close()
 		}
 		if err == nil || !strings.Contains(err.Error(), why) || strings.Contains(err.Error(), "secret") {
-			t.Errorf("the database at %s was connected to with: %v", address, err)
+			t.Errorf("connect(%s) error = %v, want the reason without the password", address, err)
 		}
 	}
 	// A valid URL is accepted without connecting.
 	for _, address := range []string{"mysql://user:secret@host/name", "mysql://user@host:3307/name?tls=true", "mysql://host/name"} {
 		db, err := connect(address)
 		if err != nil {
-			t.Errorf("the database at %s: %v", address, err)
+			t.Errorf("connect(%s): %v", address, err)
 			continue
 		}
 		db.Close()
@@ -221,13 +221,13 @@ func TestConnect(t *testing.T) {
 	var zone, isolation string
 	if err := db.QueryRow(`select @@session.time_zone, @@session.transaction_isolation`).Scan(&zone, &isolation); err != nil ||
 		zone != "+00:00" || isolation != "READ-COMMITTED" {
-		t.Errorf("a connection has the time zone %s and reads as %s: %v", zone, isolation, err)
+		t.Errorf("session time zone = %s, isolation = %s, want +00:00 and READ-COMMITTED: %v", zone, isolation, err)
 	}
 	// Times are read as UTC, whatever the local time zone.
 	var at time.Time
 	if err := db.QueryRow(`select cast('2026-01-02 03:04:05.678901' as datetime(6))`).Scan(&at); err != nil ||
 		at.Location() != time.UTC || !at.Equal(time.Date(2026, 1, 2, 3, 4, 5, 678901000, time.UTC)) {
-		t.Errorf("a time of the database is read as %v: %v", at, err)
+		t.Errorf("datetime read as %v, want 2026-01-02 03:04:05.678901 UTC: %v", at, err)
 	}
 	// A value too long for its column is rejected, although the test server
 	// is configured to truncate it.
@@ -235,7 +235,7 @@ func TestConnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`insert into short (name) values ('longer')`); !failed(err, 1406) {
-		t.Errorf("a value that is too long for its column was taken: %v", err)
+		t.Errorf("insert of a too-long value = %v, want error 1406", err)
 	}
 	// An update counts the rows that it matched, unchanged ones included.
 	if _, err := db.Exec(`insert into short (name) values ('same')`); err != nil {
@@ -246,6 +246,6 @@ func TestConnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	if count, err := left.RowsAffected(); err != nil || count != 1 {
-		t.Errorf("an update that left its row as it was counts %d rows: %v", count, err)
+		t.Errorf("RowsAffected of an update that changes nothing = %d, want 1: %v", count, err)
 	}
 }

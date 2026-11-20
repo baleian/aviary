@@ -24,7 +24,7 @@ HELM := helm --kube-context kind-$(CLUSTER)
 # Database of the cluster: postgres or mysql.
 DATABASE ?= postgres
 ifeq ($(filter $(DATABASE),postgres mysql),)
-$(error DATABASE is postgres or mysql, not "$(DATABASE)")
+$(error DATABASE must be postgres or mysql, not "$(DATABASE)")
 endif
 # The e2e runs in a cluster of its own. Clusters with different names can run
 # the e2e at the same time.
@@ -40,7 +40,7 @@ E2E_HARNESSES ?= opencode codex
 # Identity provider of the e2e cluster: keycloak, or empty for none.
 IDENTITY ?=
 ifneq ($(filter-out keycloak,$(IDENTITY)),)
-$(error IDENTITY is keycloak or nothing, not "$(IDENTITY)")
+$(error IDENTITY must be keycloak or empty, not "$(IDENTITY)")
 endif
 # Runs Go in a container, so the host needs no Go toolchain. The arguments
 # are the module directory and extra docker options. The aviary-go volume
@@ -292,7 +292,7 @@ e2e-run:
 			$(E2E_KUBECTL) get pods,sandboxes.agents.x-k8s.io,persistentvolumeclaims --all-namespaces --output wide \
 				> $(E2E_OUT)/pods.txt 2>&1; \
 			$(E2E_KUBECTL) get events --all-namespaces --sort-by .lastTimestamp > $(E2E_OUT)/events.txt 2>&1; \
-			echo "The e2e failed. The cluster $(E2E_CLUSTER) is left as it is, and what it tells is in $(E2E_OUT)."; \
+			echo "e2e failed: the cluster $(E2E_CLUSTER) is kept, and its logs are in $(E2E_OUT)"; \
 		}; exit $$status
 
 e2e-down:

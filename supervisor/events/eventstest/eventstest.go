@@ -60,11 +60,11 @@ func words(from, to int) []string {
 // own. The log may be shared with other tests, so each test uses turns of its
 // own.
 func Run(t *testing.T, open func(t *testing.T) events.Log) {
-	t.Run("a message of a runner is recorded once and in its order", func(t *testing.T) {
+	t.Run("receive records each message once and in order", func(t *testing.T) {
 		t.Parallel()
 		log, turn := open(t), uuid.New()
 		if received, err := log.Received(ctx, turn); err != nil || received != 0 {
-			t.Fatalf("of a turn that has not begun, message %d is recorded: %v", received, err)
+			t.Fatalf("Received of a new turn = %d, %v; want 0", received, err)
 		}
 		for _, step := range []struct {
 			seq      uint64
@@ -92,28 +92,28 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 				t.Fatalf("message %d: %v", step.seq, err)
 			}
 			if received, err := log.Received(ctx, turn); err != nil || received != step.received {
-				t.Fatalf("after message %d, message %d is the last that is recorded: %v", step.seq, received, err)
+				t.Fatalf("after message %d: Received = %d, %v", step.seq, received, err)
 			}
 		}
 		recorded := all(t, log, turn)
 		if expected := []string{"message.delta one", "message.delta three"}; !slices.Equal(texts(recorded), expected) {
-			t.Errorf("the events are %q, not %q", texts(recorded), expected)
+			t.Errorf("events = %q, want %q", texts(recorded), expected)
 		}
 		for _, event := range recorded {
 			if !log.IsID(event.ID) {
-				t.Errorf("the event has the ID %q, which the log says is none", event.ID)
+				t.Errorf("IsID(%q) = false", event.ID)
 			}
 		}
 		for _, none := range []string{"an event", "$", "*", "-", "+", "(1"} {
 			if log.IsID(none) {
-				t.Errorf("the log says that %q is the ID of an event", none)
+				t.Errorf("IsID(%q) = true", none)
 			}
 		}
 	})
 
 	// A runner that loses its Supervisor resends the messages whose recording
 	// it did not hear of, while that Supervisor may still be recording them.
-	t.Run("a message that several Supervisors get at once is recorded once", func(t *testing.T) {
+	t.Run("concurrent receive records each message once", func(t *testing.T) {
 		t.Parallel()
 		turn, answer := uuid.New(), words(1, 300)
 		var receiving sync.WaitGroup
@@ -134,11 +134,11 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 			recorded = append(recorded, event.Data)
 		}
 		if !slices.Equal(recorded, answer) {
-			t.Errorf("%d events are recorded of %d messages that three Supervisors each got: %q", len(recorded), len(answer), recorded)
+			t.Errorf("recorded %d events for %d messages: %q", len(recorded), len(answer), recorded)
 		}
 	})
 
-	t.Run("a reader goes on from where it was, and waits for what comes", func(t *testing.T) {
+	t.Run("read resumes after an ID and waits for new events", func(t *testing.T) {
 		t.Parallel()
 		log, turn, said := open(t), uuid.New(), words(1, 2500)
 		for _, word := range said {
@@ -165,7 +165,7 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 				after = batch[len(batch)-1].ID
 			}
 			if !slices.Equal(read, said) {
-				t.Errorf("a reader that waits %s read %d events of %d", wait, len(read), len(said))
+				t.Errorf("wait %s: read %d events, want %d", wait, len(read), len(said))
 			}
 		}
 		last := all(t, log, turn)[len(said)-1].ID
@@ -181,7 +181,7 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 		began := time.Now()
 		batch, err := log.Read(ctx, turn, last, 10*time.Second)
 		if err != nil || len(batch) != 1 || batch[0].Type != "turn.completed" || time.Since(began) > 5*time.Second {
-			t.Errorf("a reader that waited got %v after %s: %v", batch, time.Since(began), err)
+			t.Errorf("waiting Read = %v after %s, %v; want turn.completed promptly", batch, time.Since(began), err)
 		}
 
 		// Without events, Read waits for the full duration, or returns at
@@ -189,15 +189,15 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 		began = time.Now()
 		if batch, err := log.Read(ctx, uuid.New(), events.Start, 100*time.Millisecond); err != nil || len(batch) != 0 ||
 			time.Since(began) < 100*time.Millisecond {
-			t.Errorf("a reader of a turn without events got %v after %s: %v", batch, time.Since(began), err)
+			t.Errorf("Read of a turn without events = %v after %s, %v; want nothing after the full wait", batch, time.Since(began), err)
 		}
 		began = time.Now()
 		if batch, err := log.Read(ctx, uuid.New(), events.Start, 0); err != nil || len(batch) != 0 || time.Since(began) > 5*time.Second {
-			t.Errorf("a reader that does not wait got %v after %s: %v", batch, time.Since(began), err)
+			t.Errorf("Read without wait = %v after %s, %v; want nothing at once", batch, time.Since(began), err)
 		}
 	})
 
-	t.Run("what the log holds of a turn goes when its time has passed", func(t *testing.T) {
+	t.Run("expire deletes the turn after the duration", func(t *testing.T) {
 		t.Parallel()
 		log := open(t)
 		// held reports whether the log holds anything of the turn.
@@ -229,26 +229,26 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 			t.Fatal(err)
 		}
 		if held(gone) || !held(soon) || !held(kept) {
-			t.Errorf("at once, the log holds the turn that was to go at once: %v, the one that was to go soon: %v, and the one to keep: %v",
+			t.Errorf("held: expired at once %v, expiring soon %v, kept %v; want false, true, true",
 				held(gone), held(soon), held(kept))
 		}
 		deadline := time.Now().Add(10 * time.Second)
 		for held(soon) {
 			if time.Now().After(deadline) {
-				t.Fatal("the log still holds a turn whose time has passed")
+				t.Fatal("turn not deleted after it expired")
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
 		if !held(kept) {
-			t.Error("the log does not hold a turn whose time has not passed")
+			t.Error("turn deleted before it expired")
 		}
 		// Expiring a turn that the log does not hold is not an error.
 		if err := log.Expire(ctx, uuid.New(), time.Hour); err != nil {
-			t.Errorf("a turn without events: %v", err)
+			t.Errorf("Expire of an unknown turn: %v", err)
 		}
 	})
 
-	t.Run("a turn is followed by one Supervisor at a time", func(t *testing.T) {
+	t.Run("follow grants the lease to one follower at a time", func(t *testing.T) {
 		t.Parallel()
 		log, turn := open(t), uuid.New()
 		one, other := uuid.New(), uuid.New()
@@ -261,31 +261,31 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 			return given
 		}
 		if !follows(log, one, time.Minute) {
-			t.Fatal("a turn that nobody follows was not given to the Supervisor that asked")
+			t.Fatal("Follow of an unfollowed turn = false")
 		}
 		// The holder renews the lease through any connection, and others are
 		// refused.
 		if !follows(open(t), one, time.Minute) {
-			t.Error("the Supervisor that follows the turn was not given it again")
+			t.Error("holder could not renew the lease")
 		}
 		if follows(open(t), other, time.Minute) {
-			t.Error("another Supervisor was given a turn that is followed")
+			t.Error("another follower got a held lease")
 		}
 		// Leases are per turn.
 		if given, err := log.Follow(ctx, uuid.New(), other, time.Minute); err != nil || !given {
-			t.Errorf("another turn was not given to the Supervisor that asked: %v", err)
+			t.Errorf("Follow of another turn = false, %v", err)
 		}
 
 		// Once a lease expires, another Supervisor gets the turn.
 		if !follows(log, one, 20*time.Millisecond) {
-			t.Fatal("the Supervisor that follows the turn was not given it again")
+			t.Fatal("holder could not renew the lease")
 		}
 		time.Sleep(100 * time.Millisecond)
 		if !follows(open(t), other, time.Minute) {
-			t.Error("the turn of a Supervisor that is gone was not given to the next")
+			t.Error("expired lease was not granted to another follower")
 		}
 		if follows(log, one, time.Minute) {
-			t.Error("the Supervisor that was gone was given the turn again")
+			t.Error("former holder got the lease back")
 		}
 
 		// Leave by a Supervisor that does not hold the lease does nothing.
@@ -294,17 +294,17 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 			t.Fatal(err)
 		}
 		if follows(log, one, time.Minute) {
-			t.Error("a Supervisor that did not follow the turn took it from the one that does by leaving it")
+			t.Error("Leave by a non-holder released the lease")
 		}
 		if err := log.Leave(ctx, turn, other); err != nil {
 			t.Fatal(err)
 		}
 		if !follows(open(t), one, time.Minute) {
-			t.Error("the turn that its Supervisor left was not given to the next")
+			t.Error("lease was not granted after the holder left")
 		}
 	})
 
-	t.Run("a turn that several Supervisors ask for at once is given to one", func(t *testing.T) {
+	t.Run("concurrent follow grants the lease once", func(t *testing.T) {
 		t.Parallel()
 		turn := uuid.New()
 		var given atomic.Int32
@@ -323,11 +323,11 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 		}
 		asked.Wait()
 		if given.Load() != 1 {
-			t.Errorf("of eight Supervisors that asked for a turn at once, %d were given it", given.Load())
+			t.Errorf("%d of 8 concurrent followers got the lease, want 1", given.Load())
 		}
 	})
 
-	t.Run("what one Supervisor announces, the others are told", func(t *testing.T) {
+	t.Run("announce reaches the watchers of the channel", func(t *testing.T) {
 		t.Parallel()
 		asked, connected := open(t), open(t)
 		channel, other := "tests:"+uuid.NewString(), "tests:"+uuid.NewString()
@@ -353,7 +353,7 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 					heard = got == turn
 				case <-time.After(20 * time.Millisecond):
 				case <-deadline:
-					t.Fatal("the other Supervisor was not told of the turn")
+					t.Fatal("announcement not received")
 				}
 			}
 		}
@@ -366,7 +366,7 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 			select {
 			case turn := <-told:
 				if turn == stranger {
-					t.Error("the Supervisor was told of a turn that was announced on another channel")
+					t.Error("received an announcement from another channel")
 				}
 			case <-moment:
 				passed = true
@@ -377,7 +377,7 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 		select {
 		case <-stopped:
 		case <-time.After(10 * time.Second):
-			t.Error("the Supervisor went on watching after it was stopped")
+			t.Error("Watch did not return after its context was canceled")
 		}
 	})
 }

@@ -64,14 +64,14 @@ func (Plugin) Open(ctx context.Context, written json.RawMessage) (identity.Provi
 	decoder := json.NewDecoder(bytes.NewReader(written))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&set); err != nil {
-		return nil, fmt.Errorf("the settings of the identity provider: %w", err)
+		return nil, fmt.Errorf("invalid identity provider settings: %w", err)
 	}
 	if set.Issuer == "" || set.Audience == "" || set.Claims.Subject == "" {
-		return nil, errors.New("the settings of the identity provider need an issuer, an audience and a claim for the subject")
+		return nil, errors.New("identity provider settings require issuer, audience and claims.subject")
 	}
 	issuer, err := gooidc.NewProvider(ctx, set.Issuer)
 	if err != nil {
-		return nil, fmt.Errorf("the identity provider at %s: %w", set.Issuer, err)
+		return nil, fmt.Errorf("discover OIDC issuer %s: %w", set.Issuer, err)
 	}
 	return &provider{verifier: issuer.Verifier(&gooidc.Config{ClientID: set.Audience}), claims: set.Claims}, nil
 }
@@ -92,7 +92,7 @@ func (p *provider) Caller(ctx context.Context, token string) (identity.Caller, e
 	}
 	caller := identity.Caller{DisplayName: text(told, p.claims.DisplayName), Groups: texts(told, p.claims.Groups)}
 	if caller.Subject = text(told, p.claims.Subject); caller.Subject == "" {
-		return identity.Caller{}, fmt.Errorf("the token names no caller in the claim %q", p.claims.Subject)
+		return identity.Caller{}, fmt.Errorf("token has no subject in claim %q", p.claims.Subject)
 	}
 	// An unverified email address could belong to anyone.
 	if seen, _ := find(told, "email_verified").(bool); seen || p.claims.Username != "email" {

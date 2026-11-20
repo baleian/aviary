@@ -76,7 +76,7 @@ func (m membership) members(project uuid.UUID) []told {
 			one.username = member.User.Username
 		}
 		if member.ProjectID != project || member.ID == uuid.Nil || member.CreatedAt.IsZero() || member.UpdatedAt.IsZero() {
-			m.t.Errorf("a member of the project %s is %+v", project, member)
+			m.t.Errorf("project %s: invalid member %+v", project, member)
 		}
 		all = append(all, one)
 	}
@@ -103,21 +103,21 @@ func (suite suite) testMembers(t *testing.T) {
 		t.Fatal(err)
 	}
 	if team.Group != "team-a" || team.User != nil || team.Role != "editor" || team.Permissions != nil || team.UpdatedBy != admin.ID || team.ProjectID != project {
-		t.Errorf("a group was added as %+v", team)
+		t.Errorf("AddMember(group) = %+v", team)
 	}
 	known := st.add(project, "alice@example.com", "", "", "sessions.run", "project.view")
 	if known.User == nil || known.User.ID != alice.ID || known.User.Subject != "subject-a" || known.User.Username != "alice@example.com" ||
 		known.Role != "" || !slices.Equal(known.Permissions, []string{"sessions.run", "project.view"}) || known.UpdatedBy != uuid.Nil {
-		t.Errorf("a user who has been seen was added as %+v, with the user %+v", known, known.User)
+		t.Errorf("AddMember(known user) = %+v, user %+v", known, known.User)
 	}
 	// A member with a role has no permissions of its own, even if some are
 	// given.
 	awaited := st.add(project, "bob@example.com", "", "viewer", "sessions.run")
 	if awaited.Role != "viewer" || awaited.Permissions != nil {
-		t.Errorf("a member with a role and with permissions was added as %+v", awaited)
+		t.Errorf("AddMember(role and permissions) = %+v, want the role only", awaited)
 	}
 	if awaited.User == nil || awaited.User.ID != uuid.Nil || awaited.User.Username != "bob@example.com" {
-		t.Errorf("someone who has not been seen was added as %+v, with the user %+v", awaited, awaited.User)
+		t.Errorf("AddMember(awaited user) = %+v, user %+v", awaited, awaited.User)
 	}
 	expected := []told{
 		{group: "team-a", role: "editor"},
@@ -125,29 +125,29 @@ func (suite suite) testMembers(t *testing.T) {
 		{username: "bob@example.com", role: "viewer"},
 	}
 	if members := st.members(project); !sameMembers(members, expected) {
-		t.Errorf("the members are %+v, not %+v", members, expected)
+		t.Errorf("Members = %+v, want %+v", members, expected)
 	}
 
 	// A group, a user or an awaited username is a member of a project once,
 	// and may be a member of another project too.
 	for who, again := range map[string]store.Member{
-		"a group":                of(project, "", "team-a", "viewer"),
-		"a user":                 of(project, "alice@example.com", "", "viewer"),
-		"someone who is awaited": of(project, "bob@example.com", "", "editor"),
+		"group":        of(project, "", "team-a", "viewer"),
+		"user":         of(project, "alice@example.com", "", "viewer"),
+		"awaited user": of(project, "bob@example.com", "", "editor"),
 	} {
 		if _, err := st.AddMember(ctx, again, uuid.Nil); !errors.Is(err, store.ErrMemberExists) {
-			t.Errorf("%s was added again with: %v", who, err)
+			t.Errorf("%s: second AddMember = %v, want ErrMemberExists", who, err)
 		}
 		again.ProjectID = other
 		if _, err := st.AddMember(ctx, again, uuid.Nil); err != nil {
-			t.Errorf("%s was added to another project with: %v", who, err)
+			t.Errorf("%s: AddMember to another project: %v", who, err)
 		}
 	}
 	if _, err := st.AddMember(ctx, of(uuid.New(), "", "team-a", "viewer"), uuid.Nil); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("a member was added to a project that there is not with: %v", err)
+		t.Errorf("AddMember to a nonexistent project = %v, want ErrNotFound", err)
 	}
 	if members := st.members(project); !sameMembers(members, expected) {
-		t.Errorf("after members were added again, the members are %+v, not %+v", members, expected)
+		t.Errorf("Members after duplicate adds = %+v, want %+v", members, expected)
 	}
 
 	// The user that gets an awaited username becomes the member in every
@@ -155,7 +155,7 @@ func (suite suite) testMembers(t *testing.T) {
 	bob := st.user("subject-b", "bob@example.com")
 	expected[2] = told{user: bob.ID, role: "viewer"}
 	if members := (membership{st.another()}).members(project); !sameMembers(members, expected) {
-		t.Errorf("after the awaited user was seen, the members are %+v, not %+v", members, expected)
+		t.Errorf("Members after UserOf with the awaited username = %+v, want %+v", members, expected)
 	}
 	// The members of the other project were added in random order.
 	elsewhere := st.members(other)
@@ -163,40 +163,40 @@ func (suite suite) testMembers(t *testing.T) {
 		return len(slices.DeleteFunc(slices.Clone(elsewhere), func(member told) bool { return member.user != user }))
 	}
 	if len(elsewhere) != 3 || users(alice.ID) != 1 || users(bob.ID) != 1 || users(uuid.Nil) != 1 {
-		t.Errorf("the members of the other project are %+v", elsewhere)
+		t.Errorf("Members of the other project = %+v", elsewhere)
 	}
 
 	// A role replaces the permissions of a member, and permissions replace
 	// its role.
 	set, err := st.SetMember(ctx, known.ID, "auditor", []string{"sessions.run"}, admin.ID)
 	if err != nil || set.Role != "auditor" || set.Permissions != nil || set.UpdatedBy != admin.ID || set.ID != known.ID || set.User == nil || set.User.ID != alice.ID {
-		t.Errorf("a member was given a role as %+v, with the error %v", set, err)
+		t.Errorf("SetMember(role) = %+v, %v", set, err)
 	}
 	set, err = st.SetMember(ctx, team.ID, "", []string{"project.view", "agents.manage"}, uuid.Nil)
 	if err != nil || set.Role != "" || !slices.Equal(set.Permissions, []string{"project.view", "agents.manage"}) || set.UpdatedBy != uuid.Nil || set.Group != "team-a" {
-		t.Errorf("a member was given permissions as %+v, with the error %v", set, err)
+		t.Errorf("SetMember(permissions) = %+v, %v", set, err)
 	}
 	expected[0], expected[1] = told{group: "team-a", permissions: []string{"project.view", "agents.manage"}}, told{user: alice.ID, role: "auditor"}
 	if members := st.members(project); !sameMembers(members, expected) {
-		t.Errorf("after two members were changed, the members are %+v, not %+v", members, expected)
+		t.Errorf("Members after SetMember = %+v, want %+v", members, expected)
 	}
 
 	if err := st.RemoveMember(ctx, known.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.RemoveMember(ctx, known.ID); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("a member that is none any more was removed with: %v", err)
+		t.Errorf("second RemoveMember = %v, want ErrNotFound", err)
 	}
 	if _, err := st.SetMember(ctx, known.ID, "viewer", nil, uuid.Nil); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("a member that is none any more was changed with: %v", err)
+		t.Errorf("SetMember of a removed member = %v, want ErrNotFound", err)
 	}
 	if members := st.members(project); !sameMembers(members, []told{expected[0], expected[2]}) {
-		t.Errorf("after a member was removed, the members are %+v", members)
+		t.Errorf("Members after RemoveMember = %+v", members)
 	}
 	// A removed user can be added again.
 	st.add(project, "alice@example.com", "", "user")
 	if members := st.members(project); !sameMembers(members, []told{expected[0], expected[2], {user: alice.ID, role: "user"}}) {
-		t.Errorf("after the user was made a member again, the members are %+v", members)
+		t.Errorf("Members after the user was added again = %+v", members)
 	}
 }
 
@@ -212,13 +212,13 @@ func (suite suite) testMembersWhoseUsernamesChange(t *testing.T) {
 	// Another user takes the username, but not the membership.
 	taker := st.user("subject-c", "alice@example.com")
 	if members := st.members(project); !sameMembers(members, []told{{user: alice.ID, role: "editor"}}) {
-		t.Errorf("after the username of a member was given to another user, the members are %+v", members)
+		t.Errorf("Members after another user took the username = %+v", members)
 	}
 	// The user that has the username now can be added under it.
 	st.add(project, "alice@example.com", "", "viewer")
 	expected := []told{{user: alice.ID, role: "editor"}, {user: taker.ID, role: "viewer"}}
 	if members := st.members(project); !sameMembers(members, expected) {
-		t.Errorf("the members are %+v, not %+v", members, expected)
+		t.Errorf("Members = %+v, want %+v", members, expected)
 	}
 
 	// The first user, a member already, is awaited under a new username. Once
@@ -226,15 +226,15 @@ func (suite suite) testMembersWhoseUsernamesChange(t *testing.T) {
 	// membership in the other project stays as it was.
 	st.add(project, "alice.kim@example.com", "", "auditor")
 	if members := st.members(project); len(members) != 3 || members[2].username != "alice.kim@example.com" {
-		t.Errorf("the members are %+v", members)
+		t.Errorf("Members = %+v, want a third member awaited as alice.kim@example.com", members)
 	}
 	st.user("subject-a", "alice.kim@example.com")
 	expected = []told{{user: taker.ID, role: "viewer"}, {user: alice.ID, role: "auditor"}}
 	if members := st.members(project); !sameMembers(members, expected) {
-		t.Errorf("after the user was given the username that was awaited, the members are %+v, not %+v", members, expected)
+		t.Errorf("Members after the user took the awaited username = %+v, want %+v", members, expected)
 	}
 	if elsewhere := st.members(other); !sameMembers(elsewhere, []told{{user: alice.ID, role: "user"}}) {
-		t.Errorf("the members of the other project are %+v", elsewhere)
+		t.Errorf("Members of the other project = %+v", elsewhere)
 	}
 }
 
@@ -243,7 +243,7 @@ func (suite suite) testProjects(t *testing.T) {
 	t.Parallel()
 	st := membership{suite.open(t)}
 	if all, err := st.Projects(ctx); err != nil || len(all) != 0 {
-		t.Errorf("a database without projects has %+v, with the error %v", all, err)
+		t.Errorf("Projects of an empty database = %+v, %v", all, err)
 	}
 	one, two, three, four := st.project(), st.project(), st.project(), st.project()
 	alice, bob := st.user("subject-a", "alice@example.com"), st.user("subject-b", "")
@@ -264,7 +264,7 @@ func (suite suite) testProjects(t *testing.T) {
 		ids := make([]uuid.UUID, len(listed))
 		for i, project := range listed {
 			if ids[i] = project.ID; project.Name != "test" || project.CreatedAt.IsZero() {
-				t.Errorf("a project is listed as %+v", project)
+				t.Errorf("listed project = %+v", project)
 			}
 		}
 		return ids
@@ -278,16 +278,16 @@ func (suite suite) testProjects(t *testing.T) {
 		projects []uuid.UUID
 	}{
 		{"all", func() ([]store.Project, error) { return st.Projects(ctx) }, []uuid.UUID{one, two, three, four}},
-		{"a user", of(alice.ID), []uuid.UUID{one, three}},
-		{"a user in a group", of(alice.ID, "team-b", "others"), []uuid.UUID{one, three, four}},
-		{"a user in groups, one of which is a member with the user", of(alice.ID, "team-a", "team-b"), []uuid.UUID{one, two, three, four}},
-		{"a user who is a member of none, in a group", of(bob.ID, "team-a"), []uuid.UUID{two, three}},
-		{"a user who is a member of none, in no group", of(bob.ID), []uuid.UUID{}},
-		{"nobody, in a group", of(uuid.Nil, "team-b"), []uuid.UUID{four}},
-		{"nobody, in no group", of(uuid.Nil), []uuid.UUID{}},
+		{"user", of(alice.ID), []uuid.UUID{one, three}},
+		{"user in group", of(alice.ID, "team-b", "others"), []uuid.UUID{one, three, four}},
+		{"user and group in the same project", of(alice.ID, "team-a", "team-b"), []uuid.UUID{one, two, three, four}},
+		{"non-member in group", of(bob.ID, "team-a"), []uuid.UUID{two, three}},
+		{"non-member without groups", of(bob.ID), []uuid.UUID{}},
+		{"unauthenticated in group", of(uuid.Nil, "team-b"), []uuid.UUID{four}},
+		{"unauthenticated without groups", of(uuid.Nil), []uuid.UUID{}},
 	} {
 		if ids := projects(listed.list); !slices.Equal(ids, listed.projects) {
-			t.Errorf("the projects of %s are %v, not %v", listed.who, ids, listed.projects)
+			t.Errorf("%s: projects = %v, want %v", listed.who, ids, listed.projects)
 		}
 	}
 }
@@ -313,20 +313,20 @@ func (suite suite) testPermissions(t *testing.T) {
 		groups  []string
 		held    []string
 	}{
-		{"a member with permissions of its own", project, alice.ID, nil, []string{"project.view", "sessions.view_all"}},
-		{"a member in a group with a role", project, alice.ID, []string{"others", "team-a"}, []string{"agents.manage", "connections.manage", "project.view", "sessions.run", "sessions.view_all"}},
-		{"a member in two groups", project, alice.ID, []string{"team-a", "team-b"}, []string{"agents.manage", "connections.manage", "project.view", "sessions.control_all", "sessions.run", "sessions.view_all"}},
-		{"a user who is a member through a group", project, bob.ID, []string{"team-a"}, editor},
-		{"nobody, in a group", project, uuid.Nil, []string{"team-b"}, []string{"project.view", "sessions.control_all"}},
-		{"a user who is no member, in no group", project, bob.ID, nil, nil},
-		{"a user who is no member, in a group that is none", project, bob.ID, []string{"others"}, nil},
-		{"nobody, in no group", project, uuid.Nil, nil, nil},
-		{"a member of another project", other, alice.ID, nil, nil},
-		{"a group in another project", other, alice.ID, []string{"team-a"}, []string{"project.view"}},
-		{"a project that there is not", uuid.New(), alice.ID, []string{"team-a"}, nil},
+		{"member with own permissions", project, alice.ID, nil, []string{"project.view", "sessions.view_all"}},
+		{"member in group with role", project, alice.ID, []string{"others", "team-a"}, []string{"agents.manage", "connections.manage", "project.view", "sessions.run", "sessions.view_all"}},
+		{"member in two groups", project, alice.ID, []string{"team-a", "team-b"}, []string{"agents.manage", "connections.manage", "project.view", "sessions.control_all", "sessions.run", "sessions.view_all"}},
+		{"member through group", project, bob.ID, []string{"team-a"}, editor},
+		{"unauthenticated in group", project, uuid.Nil, []string{"team-b"}, []string{"project.view", "sessions.control_all"}},
+		{"non-member without groups", project, bob.ID, nil, nil},
+		{"non-member in unknown group", project, bob.ID, []string{"others"}, nil},
+		{"unauthenticated without groups", project, uuid.Nil, nil, nil},
+		{"member of another project", other, alice.ID, nil, nil},
+		{"group in another project", other, alice.ID, []string{"team-a"}, []string{"project.view"}},
+		{"nonexistent project", uuid.New(), alice.ID, []string{"team-a"}, nil},
 	} {
 		if held, err := st.Permissions(ctx, asked.project, asked.user, asked.groups); err != nil || !slices.Equal(held, asked.held) {
-			t.Errorf("%s may %q, not %q: %v", asked.who, held, asked.held, err)
+			t.Errorf("%s: Permissions = %q, want %q: %v", asked.who, held, asked.held, err)
 		}
 	}
 
@@ -336,17 +336,17 @@ func (suite suite) testPermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	if held, err := st.Permissions(ctx, project, bob.ID, []string{"team-a"}); err != nil || !slices.Equal(held, []string{"project.view", "sessions.run"}) {
-		t.Errorf("after its role was changed, a member may %q: %v", held, err)
+		t.Errorf("Permissions of a role member after SetRole = %q, want [project.view sessions.run]: %v", held, err)
 	}
 	if held, err := st.Permissions(ctx, project, alice.ID, nil); err != nil || !slices.Equal(held, []string{"project.view", "sessions.view_all"}) {
-		t.Errorf("after a role was changed, a member with permissions of its own may %q: %v", held, err)
+		t.Errorf("Permissions of a member with own permissions after SetRole = %q: %v", held, err)
 	}
 	// An awaited member has no permissions until its user is known.
 	if held, err := st.Permissions(ctx, project, uuid.Nil, nil); err != nil || len(held) != 0 {
-		t.Errorf("nobody may %q in a project that awaits a member: %v", held, err)
+		t.Errorf("Permissions for uuid.Nil with an awaited member = %q, want none: %v", held, err)
 	}
 	carol := st.user("subject-c", "carol@example.com")
 	if held, err := st.Permissions(ctx, project, carol.ID, nil); err != nil || len(held) != 6 {
-		t.Errorf("the member that was awaited may %q: %v", held, err)
+		t.Errorf("Permissions of the awaited member after UserOf = %q, want the owner role's: %v", held, err)
 	}
 }

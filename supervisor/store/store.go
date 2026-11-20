@@ -20,8 +20,8 @@ var (
 	ErrNotFound     = errors.New("not found")
 	ErrSessionBusy  = errors.New("session has an unfinished turn")
 	ErrSessionEnded = errors.New("session has ended")
-	ErrQueueFull    = errors.New("too many turns wait to run")
-	ErrMemberExists = errors.New("the project has this member already")
+	ErrQueueFull    = errors.New("turn queue is full")
+	ErrMemberExists = errors.New("member already exists")
 	ErrTurnEnded    = errors.New("turn has ended")
 )
 
@@ -591,7 +591,7 @@ func plugin(address string, plugins []Plugin) (Plugin, error) {
 		if errors.As(err, &quoting) {
 			err = quoting.Err
 		}
-		return nil, fmt.Errorf("parse the URL of the database: %w", err)
+		return nil, fmt.Errorf("parse database URL: %w", err)
 	}
 	var known []string
 	for _, plugin := range plugins {
@@ -600,7 +600,7 @@ func plugin(address string, plugins []Plugin) (Plugin, error) {
 		}
 		known = append(known, plugin.Schemes()...)
 	}
-	return nil, fmt.Errorf("the URL of the database begins with %q, and this Supervisor was built with the plugins for: %s",
+	return nil, fmt.Errorf("unsupported database URL scheme %q (supported: %s)",
 		parsed.Scheme, strings.Join(known, ", "))
 }
 

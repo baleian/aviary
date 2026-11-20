@@ -45,7 +45,7 @@ pub fn runner(home: &Home) -> Command {
     let harness = runner.with_file_name("examples").join("fake-harness");
     assert!(
         harness.is_file(),
-        "{} is not built: run all the tests of the package, as `cargo test` does",
+        "{} not found: run `cargo test` for the whole package to build it",
         harness.display()
     );
     let mut command = Command::new(runner);
@@ -96,12 +96,12 @@ pub async fn start(mut command: Command) -> Running {
     let mut said = BufReader::new(child.stdout.take().unwrap()).lines();
     let line = time::timeout(PATIENCE, said.next_line())
         .await
-        .expect("the runner did not say where it listens")
+        .expect("timed out waiting for the runner to listen")
         .unwrap()
-        .expect("the runner ended before it listened");
+        .expect("runner exited before listening");
     let address = line
         .strip_prefix("listening on ")
-        .unwrap_or_else(|| panic!("the runner said {line:?}"));
+        .unwrap_or_else(|| panic!("runner printed {line:?}, want listening on <address>"));
     Running {
         child,
         session: Session::at(format!("http://{address}")),
@@ -149,7 +149,7 @@ impl Session {
     async fn sent(&self, request: reqwest::RequestBuilder) -> StatusCode {
         time::timeout(PATIENCE, request.send())
             .await
-            .expect("the runner did not answer")
+            .expect("timed out waiting for the runner")
             .unwrap()
             .status()
     }
@@ -163,7 +163,7 @@ impl Session {
         }
         let answer = time::timeout(PATIENCE, request.send())
             .await
-            .expect("the runner did not answer")
+            .expect("timed out waiting for the runner")
             .unwrap();
         Following {
             status: answer.status(),
@@ -179,7 +179,7 @@ impl Session {
     /// Returns all events of the turn, once it has ended.
     pub async fn events(&self, id: &str) -> Vec<Event> {
         let mut following = self.follow(id, 0).await;
-        assert_eq!(following.status, StatusCode::OK, "the events of {id}");
+        assert_eq!(following.status, StatusCode::OK, "GET /turns/{id}/events");
         let mut events = Vec::new();
         while let Some(event) = following.next().await {
             events.push(event);
@@ -227,7 +227,7 @@ impl Following {
             }
             let bytes = time::timeout(PATIENCE, self.bytes.next())
                 .await
-                .expect("the runner sent no event and did not end its answer")?;
+                .expect("timed out waiting for an event")?;
             self.read
                 .push_str(&String::from_utf8(bytes.unwrap()).unwrap());
         }
@@ -249,5 +249,5 @@ pub fn names(events: &[Event]) -> Vec<&str> {
 
 /// Returns the last event, which ends the turn.
 pub fn ending(events: &[Event]) -> &Event {
-    events.last().expect("the turn has no events")
+    events.last().expect("turn has no events")
 }

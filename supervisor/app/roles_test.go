@@ -20,14 +20,14 @@ func (s *supervisor) roles() map[string]role {
 	s.t.Helper()
 	var listed struct{ Roles []role }
 	if status, _ := s.request(http.MethodGet, "/v1/roles", "", &listed); status != http.StatusOK {
-		s.t.Fatalf("the roles are answered with %d", status)
+		s.t.Fatalf("list roles: status %d", status)
 	}
 	roles := map[string]role{}
 	for _, role := range listed.Roles {
 		roles[role.Name] = role
 	}
 	if len(roles) != len(listed.Roles) {
-		s.t.Fatalf("the roles are %+v", listed.Roles)
+		s.t.Fatalf("duplicate roles in %+v", listed.Roles)
 	}
 	return roles
 }
@@ -44,11 +44,11 @@ func TestRoles(t *testing.T) {
 		"auditor": {"project.view", "sessions.view_all"},
 	} {
 		if !slices.Equal(roles[name].Permissions, permissions) {
-			t.Errorf("the role %s may %q, not %q", name, roles[name].Permissions, permissions)
+			t.Errorf("role %s permissions = %q, want %q", name, roles[name].Permissions, permissions)
 		}
 	}
 	if len(roles) != 5 {
-		t.Errorf("the roles are %+v", roles)
+		t.Errorf("roles = %+v, want five", roles)
 	}
 
 	// A permission set always includes project.view, sessions.control_all
@@ -65,14 +65,14 @@ func TestRoles(t *testing.T) {
 		var changed role
 		if status, _ := s.request(http.MethodPut, "/v1/roles/editor", `{"permissions": `+asked+`}`, &changed); status != http.StatusOK ||
 			changed.Name != "editor" || !slices.Equal(changed.Permissions, set) || changed.UpdatedBy != "" {
-			t.Errorf("the role that is given %s is answered with %d %+v, not with %q", asked, status, changed, set)
+			t.Errorf("PUT permissions %s = %d %+v, want %q", asked, status, changed, set)
 		}
 		if read := s.roles()["editor"]; !slices.Equal(read.Permissions, set) {
-			t.Errorf("the role that was given %s is read as %+v", asked, read)
+			t.Errorf("role after PUT %s = %+v", asked, read)
 		}
 	}
 	if after := s.roles(); !slices.Equal(after["owner"].Permissions, roles["owner"].Permissions) || len(after) != 5 {
-		t.Errorf("after one role was changed, the roles are %+v", after)
+		t.Errorf("roles after changing editor = %+v", after)
 	}
 
 	for _, wrong := range []struct {
@@ -87,11 +87,11 @@ func TestRoles(t *testing.T) {
 	} {
 		var answer struct{ Code string }
 		if status, _ := s.request(http.MethodPut, wrong.path, wrong.body, &answer); status != wrong.status || answer.Code != wrong.code {
-			t.Errorf("PUT %s %s is answered with %d %q, not %d %q", wrong.path, wrong.body, status, answer.Code, wrong.status, wrong.code)
+			t.Errorf("PUT %s %s = %d %q, want %d %q", wrong.path, wrong.body, status, answer.Code, wrong.status, wrong.code)
 		}
 	}
 	if read := s.roles()["editor"]; !slices.Equal(read.Permissions, []string{"project.view", "agents.manage", "sessions.run"}) {
-		t.Errorf("after requests that were refused, the role is %+v", read)
+		t.Errorf("role after refused requests = %+v", read)
 	}
 }
 
@@ -107,10 +107,10 @@ func TestRolesAreChangedByAdministrators(t *testing.T) {
 	before := s.roles()["user"]
 	var answer struct{ Code string }
 	if status, _ := s.request(http.MethodPut, "/v1/roles/user", `{"permissions": ["sessions.view_all"]}`, &answer); status != http.StatusForbidden || answer.Code != "forbidden" {
-		t.Errorf("a user changes a role, and that is answered with %d %q", status, answer.Code)
+		t.Errorf("PUT role as a user = %d %q, want 403 forbidden", status, answer.Code)
 	}
 	if after := s.roles()["user"]; !slices.Equal(after.Permissions, before.Permissions) {
-		t.Errorf("after a user tried to change it, the role is %+v", after)
+		t.Errorf("role after a refused change = %+v", after)
 	}
 
 	s.token = "an-administrator"
@@ -119,10 +119,10 @@ func TestRolesAreChangedByAdministrators(t *testing.T) {
 	var changed role
 	if status, _ := s.request(http.MethodPut, "/v1/roles/user", `{"permissions": ["sessions.view_all"]}`, &changed); status != http.StatusOK ||
 		!slices.Equal(changed.Permissions, []string{"project.view", "sessions.view_all"}) || changed.UpdatedBy != admin.ID || admin.ID == "" {
-		t.Errorf("an administrator, the user %s, changes a role, and that is answered with %d %+v", admin.ID, status, changed)
+		t.Errorf("PUT role as admin %s = %d %+v", admin.ID, status, changed)
 	}
 	s.token = "a-user"
 	if read := s.roles()["user"]; !slices.Equal(read.Permissions, changed.Permissions) || read.UpdatedBy != admin.ID {
-		t.Errorf("the role that an administrator changed is read as %+v", read)
+		t.Errorf("role after the admin's change = %+v", read)
 	}
 }

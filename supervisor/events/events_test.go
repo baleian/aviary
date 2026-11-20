@@ -25,7 +25,7 @@ func TestLast(t *testing.T) {
 			data:      `{"stop_reason":"end_turn","usage":{"total_tokens":18,"input_tokens":11,"output_tokens":7}}`,
 		},
 		{
-			name:      "completed by a harness that reports no usage",
+			name:      "completed without usage",
 			turn:      store.Turn{State: store.TurnCompleted, StopReason: &reason},
 			eventType: TurnCompleted,
 			data:      `{"stop_reason":"end_turn"}`,
@@ -46,10 +46,10 @@ func TestLast(t *testing.T) {
 			name: "failed",
 			turn: store.Turn{
 				State:   store.TurnFailed,
-				Failure: &store.Failure{Reason: store.FailureSandboxLost, Message: "the sandbox of the session is gone"},
+				Failure: &store.Failure{Reason: store.FailureSandboxLost, Message: "the session's sandbox is gone"},
 			},
 			eventType: TurnFailed,
-			data:      `{"reason":"sandbox_lost","message":"the sandbox of the session is gone"}`,
+			data:      `{"reason":"sandbox_lost","message":"the session's sandbox is gone"}`,
 		},
 	}
 	for _, test := range tests {
@@ -60,14 +60,14 @@ func TestLast(t *testing.T) {
 				t.Fatal(err)
 			}
 			if eventType != test.eventType || string(encoded) != test.data {
-				t.Errorf("the last event is %s %s, not %s %s", eventType, encoded, test.eventType, test.data)
+				t.Errorf("Last = %s %s, want %s %s", eventType, encoded, test.eventType, test.data)
 			}
 			if !IsLast(eventType) {
-				t.Errorf("%s does not count as the last event of a turn", eventType)
+				t.Errorf("IsLast(%s) = false, want true", eventType)
 			}
 		})
 	}
 	if IsLast(TurnStarted) || IsLast(TurnQueued) || IsLast(messageDelta) {
-		t.Error("an event before the end of a turn counts as its last")
+		t.Error("IsLast = true for an event before the end of a turn")
 	}
 }

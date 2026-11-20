@@ -2,7 +2,7 @@
 {{- $hosts := without .Values.egressProxy.allowedHosts "*" }}
 {{- range $hosts }}
 {{- if not (regexMatch "^[^/@ *]+$" .) }}
-{{- fail (printf "egressProxy.allowedHosts takes \"*\" and host names, with a port if it is neither 443 nor 80, and %q is neither" .) }}
+{{- fail (printf "egressProxy.allowedHosts: %q is neither \"*\" nor a host name with an optional port" .) }}
 {{- end }}
 {{- end }}
 # Envoy configuration of the Egress Proxy. All outbound traffic of the
@@ -69,7 +69,7 @@ data:
                                 op: EQ
                                 value: {default_value: 403, runtime_key: none}
                           body:
-                            inline_string: "the model endpoint of the turn is at a host that egressProxy.allowedHosts does not allow\n"
+                            inline_string: "the host of the model endpoint is not in egressProxy.allowedHosts\n"
                     {{- end }}
                     {{- include "aviary.egress-proxy.access-log" "llm" | nindent 20 }}
                     route_config:
@@ -103,7 +103,7 @@ data:
                               direct_response:
                                 status: 503
                                 body:
-                                  inline_string: "the Supervisor named no model endpoint for the request\n"
+                                  inline_string: "no model endpoint for the request\n"
                     http_filters:
                       # Answers the kubelet's probe.
                       - name: envoy.filters.http.health_check

@@ -61,7 +61,7 @@ func Open(address string, plugins ...Plugin) (*Streams, error) {
 		if errors.As(err, &quoting) {
 			err = quoting.Err
 		}
-		return nil, fmt.Errorf("parse the URL of the event log: %w", err)
+		return nil, fmt.Errorf("parse event log URL: %w", err)
 	}
 	var known []string
 	for _, plugin := range plugins {
@@ -74,7 +74,7 @@ func Open(address string, plugins ...Plugin) (*Streams, error) {
 		}
 		known = append(known, plugin.Schemes()...)
 	}
-	return nil, fmt.Errorf("the URL of the event log begins with %q, and this Supervisor was built with the plugins for: %s",
+	return nil, fmt.Errorf("unsupported event log URL scheme %q (supported: %s)",
 		parsed.Scheme, strings.Join(known, ", "))
 }
 

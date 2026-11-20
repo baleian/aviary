@@ -50,7 +50,7 @@ var (
 	// not exist.
 	ErrNotFound = errors.New("not found")
 	// ErrChanged is returned when a Sandbox has changed since it was read.
-	ErrChanged = errors.New("changed since it was seen")
+	ErrChanged = errors.New("changed since it was read")
 )
 
 // Refusal is an error response from a runner.
@@ -61,7 +61,7 @@ type Refusal struct {
 }
 
 func (r *Refusal) Error() string {
-	return fmt.Sprintf("%s answered %d %s to %s: %s", r.Who, r.Status, http.StatusText(r.Status), r.Asked, r.Said)
+	return fmt.Sprintf("%s returned %d %s for %s: %s", r.Who, r.Status, http.StatusText(r.Status), r.Asked, r.Said)
 }
 
 // Is reports a 404 response as ErrNotFound.
@@ -288,7 +288,7 @@ func (c *Client) aliases(ctx context.Context) ([]corev1.HostAlias, error) {
 func (c *Client) Sandbox(ctx context.Context, name string) (Sandbox, error) {
 	found, err := c.sandboxes.Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		return Sandbox{}, fmt.Errorf("the sandbox %s: %w", name, ErrNotFound)
+		return Sandbox{}, fmt.Errorf("sandbox %s: %w", name, ErrNotFound)
 	}
 	if err != nil {
 		return Sandbox{}, err
@@ -399,9 +399,9 @@ func (c *Client) patch(ctx context.Context, name string, kind types.PatchType, p
 	patched, err := c.sandboxes.Patch(ctx, name, kind, body, metav1.PatchOptions{})
 	switch {
 	case apierrors.IsNotFound(err):
-		return nil, fmt.Errorf("the sandbox %s: %w", name, ErrNotFound)
+		return nil, fmt.Errorf("sandbox %s: %w", name, ErrNotFound)
 	case apierrors.IsConflict(err):
-		return nil, fmt.Errorf("the sandbox %s: %w", name, ErrChanged)
+		return nil, fmt.Errorf("sandbox %s: %w", name, ErrChanged)
 	}
 	return patched, err
 }

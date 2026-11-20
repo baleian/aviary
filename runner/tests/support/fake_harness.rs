@@ -129,7 +129,7 @@ impl Harness {
                 if fs::create_dir_all(SESSIONS).is_err()
                     || fs::write(session_file(&session), "").is_err()
                 {
-                    return refuse(id, "the session cannot be kept");
+                    return refuse(id, "cannot store session");
                 }
                 answer(id, json!({"sessionId": session}));
             }
@@ -138,7 +138,7 @@ impl Harness {
                 if session_file(session).is_file() {
                     answer(id, json!({}));
                 } else {
-                    refuse(id, "the session is not known");
+                    refuse(id, "unknown session");
                 }
             }
             Some("session/prompt") => {

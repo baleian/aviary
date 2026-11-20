@@ -28,7 +28,7 @@ type endpoint struct {
 func named(t *testing.T, answer *authv3.CheckResponse) *endpoint {
 	t.Helper()
 	if code := codes.Code(answer.GetStatus().GetCode()); code != codes.OK {
-		t.Fatalf("the request was refused with %v %v", code, answer.GetDeniedResponse())
+		t.Fatalf("check denied with %v %v", code, answer.GetDeniedResponse())
 	}
 	ok := answer.GetOkResponse()
 	if ok == nil {
@@ -44,7 +44,7 @@ func named(t *testing.T, answer *authv3.CheckResponse) *endpoint {
 		case "authorization":
 			found.authorization = value
 		default:
-			t.Errorf("the answer sets the header %s: %s", name, value)
+			t.Errorf("unexpected header %s: %s", name, value)
 		}
 	}
 	return found
@@ -71,7 +71,7 @@ func TestAgentNamesItsModel(t *testing.T) {
 		Model struct{ Provider, Name string }
 	}
 	if status, _ := s.request("GET", "/v1/agents/"+agent, "", &read); status != http.StatusOK || read.Model.Provider != provider || read.Model.Name != "a-model-of-the-provider" {
-		t.Errorf("the agent is read with the model %+v", read.Model)
+		t.Errorf("agent model = %+v", read.Model)
 	}
 
 	runner := aviary.given(s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID)
@@ -82,7 +82,7 @@ func TestAgentNamesItsModel(t *testing.T) {
 		"AVIARY_LLM_MODEL":    "a-model-of-the-provider",
 	}
 	if told := runner.Environment; !maps.Equal(told, expected) {
-		t.Errorf("the harness of the turn is started with %v, not %v", told, expected)
+		t.Errorf("harness environment = %v, want %v", told, expected)
 	}
 	token := aviary.token(runner.Sandbox)
 
@@ -90,7 +90,7 @@ func TestAgentNamesItsModel(t *testing.T) {
 	for _, supervisor := range []*supervisor{s, aviary.supervisor()} {
 		got := named(t, supervisor.check(token, false, "/custom/v2/chat/completions?stream=true"))
 		if got == nil || *got != (endpoint{host: "api.example.com", secure: "true", authorization: "Bearer sk-the-first-key"}) {
-			t.Errorf("the proxy is told to pass a model request on to %+v", got)
+			t.Errorf("model request endpoint = %+v", got)
 		}
 	}
 	// A forward proxy request is not rerouted. The metadata names its turn
@@ -98,12 +98,12 @@ func TestAgentNamesItsModel(t *testing.T) {
 	forward := s.check(token, true, "/custom/v2/chat/completions")
 	if got := named(t, forward); got != nil || forward.GetDynamicMetadata().GetFields()["turn"].GetStringValue() != runner.ID ||
 		forward.GetDynamicMetadata().GetFields()["provider"] != nil {
-		t.Errorf("about a request through the forward proxy, the proxy is told %+v and %v", got, forward.GetDynamicMetadata())
+		t.Errorf("forward proxy request: endpoint %+v, metadata %v", got, forward.GetDynamicMetadata())
 	}
 	// For the proxy's access log, a model request names its provider.
 	model := s.check(token, false, "/custom/v2/chat/completions")
 	if told := model.GetDynamicMetadata().GetFields()["provider"].GetStringValue(); told != provider {
-		t.Errorf("of a model request, the proxy is told the provider %q, not %q", told, provider)
+		t.Errorf("provider metadata = %q, want %q", told, provider)
 	}
 
 	// Only the path of the provider's URL and paths below it are allowed.
@@ -125,14 +125,14 @@ func TestAgentNamesItsModel(t *testing.T) {
 	} {
 		answer := s.check(token, false, path)
 		if code := codes.Code(answer.GetStatus().GetCode()); (code == codes.OK) != (status == http.StatusOK) {
-			t.Errorf("a model request for %s was answered with %v", path, code)
+			t.Errorf("model request for %s: code %v", path, code)
 			continue
 		}
 		if status == http.StatusOK {
 			continue
 		}
-		if got, why := refusal(answer); got != status || why != "the model endpoint of the turn is at the path /custom/v2/\n" {
-			t.Errorf("a model request for %s is refused with %d %q", path, got, why)
+		if got, why := refusal(answer); got != status || why != "model requests must be under the path /custom/v2/\n" {
+			t.Errorf("model request for %s denied with %d %q", path, got, why)
 		}
 	}
 
@@ -140,20 +140,20 @@ func TestAgentNamesItsModel(t *testing.T) {
 	replace := func(body string) {
 		t.Helper()
 		if status, _ := s.request("PUT", "/v1/providers/"+provider, body, nil); status != http.StatusOK {
-			t.Fatalf("the provider was replaced with %d", status)
+			t.Fatalf("PUT provider: status %d, want 200", status)
 		}
 	}
 	replace(`{"name": "a provider", "url": "http://model.example.com:8000", "api_key": {"value": "sk-the-second-key"}}`)
 	got := named(t, s.check(token, false, "/anything/at/all"))
 	if got == nil || *got != (endpoint{host: "model.example.com:8000", secure: "false", authorization: "Bearer sk-the-second-key"}) {
-		t.Errorf("after the provider was replaced, the proxy is told to pass a model request on to %+v", got)
+		t.Errorf("endpoint after replacing the provider = %+v", got)
 	}
 	// A provider without a key gets no Authorization header, not even the
 	// session token.
 	replace(`{"name": "a provider", "url": "http://model.example.com:8000"}`)
 	got = named(t, s.check(token, false, "/v1/chat/completions"))
 	if got == nil || *got != (endpoint{host: "model.example.com:8000", secure: "false", keyless: true}) {
-		t.Errorf("for a provider without a key, the proxy is told to pass a model request on to %+v", got)
+		t.Errorf("endpoint of a provider without a key = %+v", got)
 	}
 
 	// A key sealed with the keys of another installation does not open. The
@@ -168,16 +168,16 @@ func TestAgentNamesItsModel(t *testing.T) {
 	if _, err := aviary.records.ReplaceProvider(context.Background(), kept); err != nil {
 		t.Fatal(err)
 	}
-	if status, why := refusal(s.check(token, false, "/v1/chat/completions")); status != http.StatusServiceUnavailable || why != "the API key of the model provider cannot be read\n" {
-		t.Errorf("a model request whose key cannot be opened is refused with %d %q", status, why)
+	if status, why := refusal(s.check(token, false, "/v1/chat/completions")); status != http.StatusServiceUnavailable || why != "cannot read the model provider's API key\n" {
+		t.Errorf("request with a key that does not open: denied with %d %q", status, why)
 	}
 	// A URL that cannot be parsed, which the API would refuse.
 	kept.URL = "http://[::1"
 	if _, err := aviary.records.ReplaceProvider(context.Background(), kept); err != nil {
 		t.Fatal(err)
 	}
-	if status, why := refusal(s.check(token, false, "/v1/chat/completions")); status != http.StatusServiceUnavailable || why != "the URL of the model provider cannot be read\n" {
-		t.Errorf("a model request to a provider whose URL cannot be read is refused with %d %q", status, why)
+	if status, why := refusal(s.check(token, false, "/v1/chat/completions")); status != http.StatusServiceUnavailable || why != "the model provider's URL is invalid\n" {
+		t.Errorf("request with an invalid provider URL: denied with %d %q", status, why)
 	}
 }
 
@@ -203,21 +203,21 @@ func TestAgentFromBeforeModels(t *testing.T) {
 	s.send(s.session(), "hello")
 	runner := aviary.given(queued.ID.String())
 	if told := runner.Environment; len(told) != 0 {
-		t.Errorf("the harness of a turn whose agent names no model is started with %v", told)
+		t.Errorf("harness environment without a model = %v, want none", told)
 	}
 
 	token := aviary.token(runner.Sandbox)
-	if status, why := refusal(s.check(token, false, "/v1/chat/completions")); status != http.StatusNotFound || why != "the agent of the turn names no model\n" {
-		t.Errorf("a model request of a turn whose agent names no model is refused with %d %q", status, why)
+	if status, why := refusal(s.check(token, false, "/v1/chat/completions")); status != http.StatusNotFound || why != "the turn's agent has no model\n" {
+		t.Errorf("model request without a model: denied with %d %q", status, why)
 	}
 	// Forward proxy requests are not affected.
 	if got := named(t, s.check(token, true, "/")); got != nil {
-		t.Errorf("about a request through the forward proxy, the proxy is told %+v", got)
+		t.Errorf("forward proxy request: endpoint %+v, want nil", got)
 	}
 	var refused struct{ Code, Message string }
 	status, _ := s.request("POST", "/v1/sessions/"+session+"/messages", `{"text": "hello again"}`, &refused)
 	if status != http.StatusConflict || refused.Code != "agent_without_model" || refused.Message == "" {
-		t.Errorf("a message to a session of an agent that names no model was answered with %d %s %q", status, refused.Code, refused.Message)
+		t.Errorf("send without a model = %d %s %q, want 409 agent_without_model", status, refused.Code, refused.Message)
 	}
 }
 
@@ -231,20 +231,20 @@ func TestModelsThatAnAgentCannotName(t *testing.T) {
 	provider := s.create("/v1/projects/"+project+"/providers", `{"name": "a provider", "url": "https://api.example.com/v1"}`)
 	theirs := s.create("/v1/projects/"+other+"/providers", `{"name": "theirs", "url": "https://api.example.com/v1"}`)
 	for name, model := range map[string]string{
-		"the provider of another project": `{"provider": "` + theirs + `", "name": "a-model"}`,
-		"a provider that does not exist":  `{"provider": "` + project + `", "name": "a-model"}`,
-		"a provider that is no ID":        `{"provider": "a provider", "name": "a-model"}`,
-		"no provider":                     `{"name": "a-model"}`,
-		"no name":                         `{"provider": "` + provider + `"}`,
-		"nothing":                         `{}`,
-		"more than a model":               `{"provider": "` + provider + `", "name": "a-model", "url": "https://other.example.com"}`,
-		"only a name":                     `"a-model"`,
-		"a model that is none":            `null`,
+		"provider of another project": `{"provider": "` + theirs + `", "name": "a-model"}`,
+		"unknown provider":            `{"provider": "` + project + `", "name": "a-model"}`,
+		"invalid provider ID":         `{"provider": "a provider", "name": "a-model"}`,
+		"no provider":                 `{"name": "a-model"}`,
+		"no name":                     `{"provider": "` + provider + `"}`,
+		"empty object":                `{}`,
+		"unknown field":               `{"provider": "` + provider + `", "name": "a-model", "url": "https://other.example.com"}`,
+		"string":                      `"a-model"`,
+		"null":                        `null`,
 	} {
 		var refused struct{ Code, Message string }
 		status, _ := s.request("POST", "/v1/projects/"+project+"/agents", `{"harness": "opencode", "model": `+model+`}`, &refused)
 		if status != http.StatusBadRequest || refused.Code != "invalid_request" || refused.Message == "" {
-			t.Errorf("an agent that names %s was answered with %d %s %q", name, status, refused.Code, refused.Message)
+			t.Errorf("model %s: got %d %s %q, want 400 invalid_request", name, status, refused.Code, refused.Message)
 		}
 	}
 }

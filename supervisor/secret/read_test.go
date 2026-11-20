@@ -138,33 +138,33 @@ func TestReadRemembersForAWhile(t *testing.T) {
 		return value, err, logins, reads
 	}
 	if value, err, logins, reads := read(); err != nil || value != "sk-the-first" || logins != 1 || reads != 1 {
-		t.Fatalf("the value was read as %q after %d logins and %d reads: %v", value, logins, reads, err)
+		t.Fatalf("Read = %q after %d logins and %d reads: %v", value, logins, reads, err)
 	}
 	// While cached, the value is used even if the store has changed or is
 	// down.
 	held.set(func(s *shelf) { s.values["llm/model api_key"] = "sk-the-second" })
 	if value, err, logins, reads := read(); err != nil || value != "sk-the-first" || logins != 1 || reads != 1 {
-		t.Errorf("at once again, the value was read as %q after %d logins and %d reads: %v", value, logins, reads, err)
+		t.Errorf("second Read = %q after %d logins and %d reads: %v; want the cached value", value, logins, reads, err)
 	}
 	held.set(func(s *shelf) { s.down = errors.New("the store was not reached") })
 	if value, err, _, reads := read(); err != nil || value != "sk-the-first" || reads != 1 {
-		t.Errorf("at once again and with the store down, the value was read as %q after %d reads: %v", value, reads, err)
+		t.Errorf("Read with the store down = %q after %d reads: %v; want the cached value", value, reads, err)
 	}
 	// Once it expires, a store that is down yields an error, not the stale
 	// value.
 	time.Sleep(lasts + 100*time.Millisecond)
 	if value, err, _, reads := read(); err == nil || value != "" || reads != 2 || !strings.Contains(err.Error(), "was not reached") {
-		t.Errorf("after the while and with the store down, the value was read as %q after %d reads: %v", value, reads, err)
+		t.Errorf("Read after expiry with the store down = %q after %d reads: %v; want the store's error", value, reads, err)
 	}
 	held.set(func(s *shelf) { s.down = nil })
 	if value, err, logins, reads := read(); err != nil || value != "sk-the-second" || logins != 1 || reads != 3 {
-		t.Errorf("after the while, the value was read as %q after %d logins and %d reads: %v", value, logins, reads, err)
+		t.Errorf("Read after expiry = %q after %d logins and %d reads: %v", value, logins, reads, err)
 	}
 	// A value deleted from the store is gone once the cached one expires.
 	held.set(func(s *shelf) { delete(s.values, "llm/model api_key") })
 	time.Sleep(lasts + 100*time.Millisecond)
 	if value, err, _, _ := read(); err == nil || value != "" {
-		t.Errorf("a value that was taken out of the store was read as %q: %v", value, err)
+		t.Errorf("Read of a deleted value = %q, %v; want an error", value, err)
 	}
 }
 
@@ -179,7 +179,7 @@ func TestReadAgainOfAValueThatIsAskedForAllTheTime(t *testing.T) {
 		}
 	}
 	if _, reads := held.asked(); reads < 2 {
-		t.Errorf("a value that was asked for all the time was read from its store %d times", reads)
+		t.Errorf("store reads = %d, want at least 2", reads)
 	}
 }
 
@@ -192,7 +192,7 @@ func TestReadForgetsWhatItUsesNoLonger(t *testing.T) {
 	}
 	for deadline := time.Now().Add(10 * time.Second); stores.values.Metrics().Evictions == 0; time.Sleep(50 * time.Millisecond) {
 		if time.Now().After(deadline) {
-			t.Fatal("the Supervisor still holds a value that it uses no longer")
+			t.Fatal("expired value was not evicted")
 		}
 	}
 }
@@ -206,11 +206,11 @@ func TestReadWithNothingRemembered(t *testing.T) {
 		held.set(func(s *shelf) { s.values["llm/model api_key"] = value })
 		read, err := stores.Read(context.Background(), from, "the-credential", "llm/model", "api_key")
 		if _, reads := held.asked(); err != nil || read != value || reads != expected+1 {
-			t.Errorf("with nothing remembered, the value was read as %q after %d reads: %v", read, reads, err)
+			t.Errorf("uncached Read = %q after %d reads: %v", read, reads, err)
 		}
 	}
 	if logins, _ := held.asked(); logins != 1 || stores.values.Len() != 0 {
-		t.Errorf("with nothing remembered, the store was logged in to %d times and the Supervisor holds %d values", logins, stores.values.Len())
+		t.Errorf("without a cache: %d logins and %d cached values, want 1 and 0", logins, stores.values.Len())
 	}
 }
 
@@ -230,33 +230,33 @@ func TestReadLogsInWhenItsSessionHasEnded(t *testing.T) {
 		return value, err, logins
 	}
 	if value, err, logins := read("llm/model"); err != nil || value != "sk-the-first" || logins != 1 {
-		t.Fatalf("the value was read as %q after %d logins: %v", value, logins, err)
+		t.Fatalf("Read = %q after %d logins: %v", value, logins, err)
 	}
 	// Another value is read with the same session.
 	if value, err, logins := read("llm/other"); err != nil || value != "sk-other" || logins != 1 {
-		t.Errorf("another value was read as %q after %d logins: %v", value, logins, err)
+		t.Errorf("Read of another value = %q after %d logins: %v", value, logins, err)
 	}
 	// The store ends the session early.
 	held.set(func(s *shelf) { s.session++ })
 	if value, err, logins := read("llm/third"); err != nil || value != "sk-third" || logins != 2 {
-		t.Errorf("after the store ended the session, a value was read as %q after %d logins: %v", value, logins, err)
+		t.Errorf("Read after the store ended the session = %q after %d logins: %v", value, logins, err)
 	}
 	if _, reads := held.asked(); reads != 4 {
-		t.Errorf("the store was read %d times, not once for each value and once more with the session that had ended", reads)
+		t.Errorf("store reads = %d, want 4", reads)
 	}
 	// The session expires.
 	time.Sleep(lasts + 100*time.Millisecond)
 	if value, err, logins := read("llm/fourth"); err != nil || value != "sk-fourth" || logins != 3 {
-		t.Errorf("after the time of the session, a value was read as %q after %d logins: %v", value, logins, err)
+		t.Errorf("Read after the session expired = %q after %d logins: %v", value, logins, err)
 	}
 
 	// A failed login is not cached.
 	other := aStore()
-	if value, err := stores.Read(ctx, other, "another-credential", "llm/model", "api_key"); err == nil || value != "" || !strings.Contains(err.Error(), "does not take the login") {
-		t.Errorf("with a credential that the store does not take, the value was read as %q: %v", value, err)
+	if value, err := stores.Read(ctx, other, "another-credential", "llm/model", "api_key"); err == nil || value != "" || !strings.Contains(err.Error(), "login failed") {
+		t.Errorf("Read with a wrong credential = %q, %v; want a login error", value, err)
 	}
 	if value, err := stores.Read(ctx, other, "the-credential", "llm/model", "api_key"); err != nil || value != "sk-the-first" {
-		t.Errorf("after a login that the store refused, the value was read as %q: %v", value, err)
+		t.Errorf("Read after a failed login = %q, %v", value, err)
 	}
 }
 
@@ -268,26 +268,26 @@ func TestReadOfAStoreThatWasReplaced(t *testing.T) {
 	from := aStore()
 	ctx := context.Background()
 	if value, err := stores.Read(ctx, from, "the-credential", "llm/model", "api_key"); err != nil || value != "sk-the-first" {
-		t.Fatalf("the value was read as %q: %v", value, err)
+		t.Fatalf("Read = %q, %v", value, err)
 	}
 	held.set(func(s *shelf) { s.values["llm/model api_key"] = "sk-the-second" })
 	// Replace the store, as with another address or credential.
 	replaced := from
 	replaced.UpdatedAt = from.UpdatedAt.Add(time.Second)
 	if value, err := stores.Read(ctx, replaced, "the-credential", "llm/model", "api_key"); err != nil || value != "sk-the-second" {
-		t.Errorf("the value of the store that was replaced was read as %q: %v", value, err)
+		t.Errorf("Read of the replaced store = %q, %v", value, err)
 	}
 	if logins, reads := held.asked(); logins != 2 || reads != 2 {
-		t.Errorf("the store that was replaced was logged in to %d times and read %d times", logins, reads)
+		t.Errorf("replaced store: %d logins and %d reads, want 2 and 2", logins, reads)
 	}
 	// Another store with the same path and key.
 	other := aStore()
 	held.set(func(s *shelf) { s.values["llm/model api_key"] = "sk-the-third" })
 	if value, err := stores.Read(ctx, other, "the-credential", "llm/model", "api_key"); err != nil || value != "sk-the-third" {
-		t.Errorf("the value of another store was read as %q: %v", value, err)
+		t.Errorf("Read of another store = %q, %v", value, err)
 	}
 	if value, err := stores.Read(ctx, replaced, "the-credential", "llm/model", "api_key"); err != nil || value != "sk-the-second" {
-		t.Errorf("the value that is remembered of the first store was read as %q: %v", value, err)
+		t.Errorf("cached Read of the replaced store = %q, %v", value, err)
 	}
 }
 
@@ -305,15 +305,15 @@ func TestReadOfAStoreThatIsNotAllowed(t *testing.T) {
 	unreadable.Settings = json.RawMessage(`{}`)
 	for why, from := range map[string]store.SecretStore{
 		"supervisor.secretStores.allowedHosts": elsewhere,
-		`the kind "another"`:                   unknown,
+		`kind "another"`:                       unknown,
 		"address is required":                  unreadable,
 	} {
 		if value, err := stores.Read(ctx, from, "the-credential", "llm/model", "api_key"); err == nil || value != "" || !strings.Contains(err.Error(), why) {
-			t.Errorf("a store that is to be refused for %q was read as %q: %v", why, value, err)
+			t.Errorf("%q: Read = %q, %v; want an error containing it", why, value, err)
 		}
 	}
 	if logins, reads := held.asked(); logins != 0 || reads != 0 {
-		t.Errorf("the store was logged in to %d times and read %d times", logins, reads)
+		t.Errorf("%d logins and %d reads, want none", logins, reads)
 	}
 }
 
@@ -333,7 +333,7 @@ func TestReadAsksAStoreOnceForManyAtOnce(t *testing.T) {
 		defer mu.Unlock()
 		asks = append(asks, ask{kind, err != nil})
 		if took < 0 {
-			t.Errorf("the store took %s", took)
+			t.Errorf("Asked called with negative duration %s", took)
 		}
 	}
 	from := aStore()
@@ -345,7 +345,7 @@ func TestReadAsksAStoreOnceForManyAtOnce(t *testing.T) {
 	for range 20 {
 		readers.Go(func() {
 			if value, err := stores.Read(ctx, from, "the-credential", "llm/model", "api_key"); err != nil || value != "sk-the-first" {
-				t.Errorf("the value was read as %q: %v", value, err)
+				t.Errorf("Read = %q, %v", value, err)
 			}
 		})
 	}
@@ -353,23 +353,23 @@ func TestReadAsksAStoreOnceForManyAtOnce(t *testing.T) {
 	gone, leave := context.WithCancel(ctx)
 	leave()
 	if _, err := stores.Read(gone, from, "the-credential", "llm/model", "api_key"); !errors.Is(err, context.Canceled) {
-		t.Errorf("a reader that waits no longer was answered with: %v", err)
+		t.Errorf("Read with a canceled context = %v, want context.Canceled", err)
 	}
 	time.Sleep(100 * time.Millisecond)
 	close(waiting)
 	readers.Wait()
 	held.set(func(s *shelf) { s.held = nil })
 	if logins, reads := held.asked(); logins != 1 || reads != 1 {
-		t.Errorf("for 20 requests at once, the store was logged in to %d times and read %d times", logins, reads)
+		t.Errorf("20 concurrent reads: %d logins and %d reads, want 1 and 1", logins, reads)
 	}
 	// Failed reads are reported too.
 	if _, err := stores.Read(ctx, from, "the-credential", "llm/nothing", "api_key"); err == nil {
-		t.Error("a value that the store has not was read")
+		t.Error("Read of a missing value succeeded")
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	if len(asks) != 2 || asks[0] != (ask{"shelf", false}) || asks[1] != (ask{"shelf", true}) {
-		t.Errorf("the reads were counted as %+v", asks)
+		t.Errorf("Asked calls = %+v", asks)
 	}
 }
 
@@ -389,17 +389,17 @@ func TestReadRemembersNoMoreThanItMay(t *testing.T) {
 			}
 		}
 		if kept := stores.values.Len(); kept != maxValues {
-			t.Errorf("the Supervisor remembers %d values, not the %d that it may", kept, maxValues)
+			t.Errorf("cached values = %d, want %d", kept, maxValues)
 		}
 		// The first value was evicted and the last was not.
 		_, before := held.asked()
 		stores.Read(ctx, from, "the-credential", fmt.Sprintf("llm/%d", maxValues+49), "api_key")
 		if _, reads := held.asked(); reads != before {
-			t.Error("the value that was read last was read again")
+			t.Error("last value read was evicted")
 		}
 		stores.Read(ctx, from, "the-credential", "llm/0", "api_key")
 		if _, reads := held.asked(); reads != before+1 {
-			t.Error("the value that was read first is still remembered")
+			t.Error("first value read was not evicted")
 		}
 	})
 
@@ -415,12 +415,12 @@ func TestReadRemembersNoMoreThanItMay(t *testing.T) {
 			}
 		}
 		if kept := stores.values.Len(); kept > most || kept < most-50 {
-			t.Errorf("the Supervisor remembers %d values of %d bytes each, which is not about the %d bytes that it may", kept, maxValue, maxBytes)
+			t.Errorf("cached %d values of %d bytes, want about %d bytes in total", kept, maxValue, maxBytes)
 		}
 		// A value longer than maxValue is refused.
 		held.set(func(s *shelf) { s.every = strings.Repeat("k", maxValue+1) })
-		if value, err := stores.Read(ctx, from, "the-credential", "llm/long", "api_key"); err == nil || value != "" || !strings.Contains(err.Error(), "longer than a secret may be") {
-			t.Errorf("a value that is too long was read as %d bytes: %v", len(value), err)
+		if value, err := stores.Read(ctx, from, "the-credential", "llm/long", "api_key"); err == nil || value != "" || !strings.Contains(err.Error(), "exceeds the maximum size") {
+			t.Errorf("Read of an oversized value = %d bytes, %v; want an error", len(value), err)
 		}
 	})
 
@@ -437,7 +437,7 @@ func TestReadRemembersNoMoreThanItMay(t *testing.T) {
 			}
 		}
 		if kept := stores.sessions.Len(); kept != maxStores {
-			t.Errorf("the Supervisor holds the sessions of %d stores, not of the %d that it may", kept, maxStores)
+			t.Errorf("cached sessions = %d, want %d", kept, maxStores)
 		}
 		// The session of the first store was evicted.
 		before, _ := held.asked()
@@ -445,7 +445,7 @@ func TestReadRemembersNoMoreThanItMay(t *testing.T) {
 			t.Fatal(err)
 		}
 		if logins, _ := held.asked(); logins != before+1 {
-			t.Errorf("the store that was asked first was logged in to %d more times", logins-before)
+			t.Errorf("first store: %d more logins, want 1", logins-before)
 		}
 	})
 }

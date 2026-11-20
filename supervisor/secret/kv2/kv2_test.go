@@ -37,7 +37,7 @@ func TestSettings(t *testing.T) {
 		of("http://10.0.0.5:8200", "secret", "a-role"),
 	} {
 		if got, err := (Plugin{}).Address(good); err != nil || got != strings.TrimSuffix(field(good, "address"), "/") {
-			t.Errorf("the store with the settings %s is at %q: %v", good, got, err)
+			t.Errorf("Address(%s) = %q, %v", good, got, err)
 		}
 	}
 	for _, bad := range []json.RawMessage{
@@ -58,7 +58,7 @@ func TestSettings(t *testing.T) {
 		of(address, "secret", ""),
 	} {
 		if got, err := (Plugin{}).Address(bad); err == nil {
-			t.Errorf("the store with the settings %s is at %q", bad, got)
+			t.Errorf("Address(%s) = %q, want an error", bad, got)
 		}
 	}
 }
@@ -82,7 +82,7 @@ func TestLoginIsAsked(t *testing.T) {
 			var sent map[string]string
 			if raw, _ := io.ReadAll(r.Body); json.Unmarshal(raw, &sent) != nil ||
 				r.Method != http.MethodPost || r.URL.Path != "/v1/auth/approle/login" || sent["role_id"] != roleID || sent["secret_id"] != secretID {
-				t.Errorf("the store was asked %s %s with %v", r.Method, r.URL.Path, sent)
+				t.Errorf("unexpected login request %s %s %v", r.Method, r.URL.Path, sent)
 			}
 			w.WriteHeader(status)
 			io.WriteString(w, body)
@@ -94,23 +94,23 @@ func TestLoginIsAsked(t *testing.T) {
 
 	session, good, err := (Plugin{}).Login(ctx, http.DefaultClient, answering(http.StatusOK, `{"auth": {"client_token": "the-token", "lease_duration": 3600}}`), secretID)
 	if err != nil || session != "the-token" || good != time.Hour {
-		t.Errorf("the login gave %v, good for %s: %v", session, good, err)
+		t.Errorf("Login = %v, %s, %v", session, good, err)
 	}
 	// Errors do not include the response body.
 	for _, refusing := range []struct {
 		store json.RawMessage
 		why   string
 	}{
-		{answering(http.StatusBadRequest, `{"errors": ["invalid role or secret ID: the-detail"]}`), "the status 400"},
-		{answering(http.StatusForbidden, "the-detail"), "the status 403"},
-		{answering(http.StatusOK, `{"auth": {"client_token": "", "the-detail": true}}`), "no token"},
-		{answering(http.StatusOK, "the-detail"), "no token"},
-		{of("http://127.0.0.1:1", "secret", roleID), "was not reached"},
+		{answering(http.StatusBadRequest, `{"errors": ["invalid role or secret ID: the-detail"]}`), "status 400"},
+		{answering(http.StatusForbidden, "the-detail"), "status 403"},
+		{answering(http.StatusOK, `{"auth": {"client_token": "", "the-detail": true}}`), "no client token"},
+		{answering(http.StatusOK, "the-detail"), "no client token"},
+		{of("http://127.0.0.1:1", "secret", roleID), "connect to the store"},
 		{of("http://127.0.0.1:1", "", roleID), "mount is required"},
 	} {
 		session, _, err := (Plugin{}).Login(ctx, http.DefaultClient, refusing.store, secretID)
 		if err == nil || session != nil || !strings.Contains(err.Error(), refusing.why) || strings.Contains(err.Error(), "the-detail") || strings.Contains(err.Error(), secretID) {
-			t.Errorf("a store that answers the login with %s gave %v: %v", refusing.why, session, err)
+			t.Errorf("%s: Login = %v, %v; want an error without the response body or the secret ID", refusing.why, session, err)
 		}
 	}
 }
@@ -134,7 +134,7 @@ func owner(t *testing.T, method, path string, body any, statuses ...int) map[str
 	request.Header.Set("X-Vault-Token", rootToken)
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		t.Fatalf("the secret store of the tests: %v", err)
+		t.Fatalf("test secret store: %v", err)
 	}
 	defer response.Body.Close()
 	raw, _ := io.ReadAll(response.Body)
@@ -146,7 +146,7 @@ func owner(t *testing.T, method, path string, body any, statuses ...int) map[str
 			return answer.Data
 		}
 	}
-	t.Fatalf("the secret store of the tests answered %s %s with %d %s", method, path, response.StatusCode, raw)
+	t.Fatalf("test secret store: %s %s = %d %s", method, path, response.StatusCode, raw)
 	return nil
 }
 
@@ -164,7 +164,7 @@ func role(t *testing.T) (roleID, secretID, path string) {
 	roleID, _ = owner(t, "GET", "/v1/auth/approle/role/"+name+"/role-id", nil)["role_id"].(string)
 	secretID, _ = owner(t, "POST", "/v1/auth/approle/role/"+name+"/secret-id", nil)["secret_id"].(string)
 	if roleID == "" || secretID == "" {
-		t.Fatal("the secret store of the tests gave the role no IDs")
+		t.Fatal("test secret store returned no role ID or secret ID")
 	}
 	return roleID, secretID, name
 }
@@ -187,20 +187,20 @@ func TestLoginToAStore(t *testing.T) {
 	ctx := context.Background()
 
 	if err := stores.Check(ctx, Kind, of(address, "secret", roleID), secretID); err != nil {
-		t.Errorf("the store does not take the login of its role: %v", err)
+		t.Errorf("Check: %v", err)
 	}
 	session, good, err := (Plugin{}).Login(ctx, http.DefaultClient, of(address, "secret", other), another)
 	if token, _ := session.(string); err != nil || token == "" || good != time.Hour {
-		t.Errorf("the login gave %v, good for %s: %v", session, good, err)
+		t.Errorf("Login = %v, %s, %v", session, good, err)
 	}
 	for name, refused := range map[string]struct{ roleID, secretID string }{
-		"the secret ID of another role": {roleID, another},
-		"a secret ID of no role":        {roleID, "not-a-secret-id"},
-		"a role that is not there":      {"not-a-role", secretID},
+		"secret ID of another role": {roleID, another},
+		"unknown secret ID":         {roleID, "not-a-secret-id"},
+		"unknown role":              {"not-a-role", secretID},
 	} {
 		err := stores.Check(ctx, Kind, of(address, "secret", refused.roleID), refused.secretID)
-		if err == nil || !strings.Contains(err.Error(), "does not take the login: the store answered the login with the status 400") {
-			t.Errorf("the store is checked with %s as: %v", name, err)
+		if err == nil || !strings.Contains(err.Error(), "login failed: store returned status 400") {
+			t.Errorf("Check with %s: %v", name, err)
 		}
 	}
 }
@@ -233,30 +233,30 @@ func TestReadFromAStore(t *testing.T) {
 
 	for path, value := range map[string]string{own + "/model": "sk-the-first", own + "/a team/model one": "sk-of-a-path-with-spaces"} {
 		if read, err := stores.Read(ctx, registered, secretID, path, "api_key"); err != nil || read != value {
-			t.Errorf("the value at %s was read as %q: %v", path, read, err)
+			t.Errorf("Read(%s) = %q, %v", path, read, err)
 		}
 	}
 	// Errors say why, and do not reveal values.
 	for name, refused := range map[string]struct{ path, key, why string }{
-		"a path without a secret":           {own + "/nothing", "api_key", "the store has no secret at the path"},
-		"a path that the role may not read": {theirs + "/model", "api_key", "the store does not let the role read the secret at the path"},
-		"a key that the secret has not":     {own + "/model", "token", "the secret at the path holds no value under the key"},
-		"a value that is no text":           {own + "/model", "retries", "the value under the key is not a text"},
-		"no key":                            {own + "/model", "", "key is required"},
-		"no path":                           {"", "api_key", "path must be the path of a secret"},
-		"a path that begins with a slash":   {"/" + own + "/model", "api_key", "path must be the path of a secret"},
-		"a path with a step back":           {own + "/../" + theirs + "/model", "api_key", "path must be the path of a secret"},
+		"missing secret":             {own + "/nothing", "api_key", "secret not found"},
+		"path the role may not read": {theirs + "/model", "api_key", "role is not allowed to read the secret"},
+		"missing key":                {own + "/model", "token", "secret has no such key"},
+		"non-string value":           {own + "/model", "retries", "value is not a string"},
+		"no key":                     {own + "/model", "", "key is required"},
+		"no path":                    {"", "api_key", "path must be a secret path"},
+		"leading slash":              {"/" + own + "/model", "api_key", "path must be a secret path"},
+		"dot-dot segment":            {own + "/../" + theirs + "/model", "api_key", "path must be a secret path"},
 	} {
 		read, err := stores.Read(ctx, registered, secretID, refused.path, refused.key)
 		if err == nil || read != "" || !strings.Contains(err.Error(), refused.why) || strings.Contains(err.Error(), "sk-") {
-			t.Errorf("%s was read as %q: %v", name, read, err)
+			t.Errorf("%s: Read = %q, %v", name, read, err)
 		}
 	}
 	// A wrong secret ID fails the login.
 	wrong := registered
 	wrong.ID = uuid.New()
-	if read, err := stores.Read(ctx, wrong, "not-the-secret-id", own+"/model", "api_key"); err == nil || read != "" || !strings.Contains(err.Error(), "does not take the login") {
-		t.Errorf("a store that was logged in to with another secret ID was read as %q: %v", read, err)
+	if read, err := stores.Read(ctx, wrong, "not-the-secret-id", own+"/model", "api_key"); err == nil || read != "" || !strings.Contains(err.Error(), "login failed") {
+		t.Errorf("Read with a wrong secret ID = %q, %v", read, err)
 	}
 
 	// The plugin itself does not cache.
@@ -266,16 +266,16 @@ func TestReadFromAStore(t *testing.T) {
 	}
 	put(own+"/model", map[string]any{"api_key": "sk-the-second"})
 	if read, err := (Plugin{}).Read(ctx, http.DefaultClient, registered.Settings, session, own+"/model", "api_key"); err != nil || read != "sk-the-second" {
-		t.Errorf("after the value changed, it was read as %q: %v", read, err)
+		t.Errorf("Read after the change = %q, %v", read, err)
 	}
 	// A revoked token gives ErrSessionEnded, not a permission error.
 	owner(t, "POST", "/v1/auth/token/revoke", map[string]any{"token": session})
 	if read, err := (Plugin{}).Read(ctx, http.DefaultClient, registered.Settings, session, own+"/model", "api_key"); !errors.Is(err, secret.ErrSessionEnded) || read != "" {
-		t.Errorf("with a session that has ended, the value was read as %q: %v", read, err)
+		t.Errorf("Read with a revoked token = %q, %v; want ErrSessionEnded", read, err)
 	}
 	// Stores still serves its cached value: the revoked token was not its
 	// own session.
 	if read, err := stores.Read(ctx, registered, secretID, own+"/model", "api_key"); err != nil || read != "sk-the-first" {
-		t.Errorf("the value that the Supervisor remembers was read as %q: %v", read, err)
+		t.Errorf("cached Read = %q, %v", read, err)
 	}
 }

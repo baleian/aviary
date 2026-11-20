@@ -161,7 +161,7 @@ func (i *installation) ended(id uuid.UUID) store.Turn {
 			return turn
 		}
 		if time.Now().After(end) {
-			i.t.Fatalf("the turn did not end: %v", i.told(id))
+			i.t.Fatalf("turn did not end; events: %v", i.told(id))
 		}
 	}
 }
@@ -171,7 +171,7 @@ func (i *installation) eventually(what string, holds func() bool) {
 	i.t.Helper()
 	for end := time.Now().Add(5 * time.Second); !holds(); time.Sleep(5 * time.Millisecond) {
 		if time.Now().After(end) {
-			i.t.Fatalf("it did not come about that %s", what)
+			i.t.Fatalf("timed out waiting until %s", what)
 		}
 	}
 }
@@ -193,7 +193,7 @@ func TestATurnRunsInTheSandboxOfItsSession(t *testing.T) {
 
 	given := i.service.Turn(t)
 	if given.ID != turn.ID.String() || given.Text != "hello" || given.Instructions != "be kind" || given.Approval != Ask {
-		t.Errorf("the runner was given %+v", given)
+		t.Errorf("runner got %+v", given)
 	}
 	// The model URL is the Egress Proxy's, with the provider's path.
 	want := map[string]string{
@@ -203,18 +203,18 @@ func TestATurnRunsInTheSandboxOfItsSession(t *testing.T) {
 	}
 	for name, value := range want {
 		if given.Environment[name] != value {
-			t.Errorf("the harness is started with %s=%q, and not %q", name, given.Environment[name], value)
+			t.Errorf("harness env %s = %q, want %q", name, given.Environment[name], value)
 		}
 	}
 	if len(given.Environment) != len(want) {
-		t.Errorf("the harness is started with %v", given.Environment)
+		t.Errorf("harness env = %v", given.Environment)
 	}
 	agent, _ := i.store.Agent(ctx, session.AgentID)
 	made := i.service.Made()[given.Sandbox]
 	if i.sandbox(session) != given.Sandbox || made.Session != session.ID || made.Pod.Harness.Image != "registry.example.com/opencode:1.0" ||
 		made.Pod.Token != "the-token-of-"+session.ID.String() ||
 		made.Labels[labelAgent] != agent.ID.String() || made.Labels[labelProject] != agent.ProjectID.String() {
-		t.Errorf("the session has the sandbox %q, and the turn runs in %q, made for %+v", i.sandbox(session), given.Sandbox, made)
+		t.Errorf("session sandbox = %q, turn sandbox = %q, request = %+v", i.sandbox(session), given.Sandbox, made)
 	}
 
 	given.Tell("started", started)
@@ -223,16 +223,16 @@ func TestATurnRunsInTheSandboxOfItsSession(t *testing.T) {
 	ended := i.ended(turn.ID)
 	if ended.State != store.TurnCompleted || ended.StopReason == nil || *ended.StopReason != "end_turn" ||
 		ended.Usage == nil || ended.Usage.TotalTokens != 7 || ended.StartedAt == nil {
-		t.Errorf("the turn ended as %+v", ended)
+		t.Errorf("ended turn = %+v", ended)
 	}
 	if told := i.told(turn.ID); !slices.Equal(told, []string{events.TurnStarted, "message.delta", events.TurnCompleted}) {
-		t.Errorf("the clients of the turn read %v", told)
+		t.Errorf("events = %v", told)
 	}
 
 	next := i.send(driver, session, "and then")
 	again := i.service.Turn(t)
 	if again.Sandbox != given.Sandbox || again.ID != next.ID.String() || len(i.service.Made()) != 1 {
-		t.Errorf("the next turn runs in %q, of the sandboxes %v", again.Sandbox, i.service.Made())
+		t.Errorf("next turn sandbox = %q, sandboxes = %v", again.Sandbox, i.service.Made())
 	}
 	again.Tell("started", started)
 	again.Tell("finished", finished)
@@ -242,7 +242,7 @@ func TestATurnRunsInTheSandboxOfItsSession(t *testing.T) {
 	plain := i.session(store.Agent{})
 	i.send(driver, plain, "hello")
 	if other := i.service.Turn(t); other.Sandbox == given.Sandbox || len(other.Environment) != 0 || other.Approval != "" {
-		t.Errorf("the turn of another session was given as %+v", other)
+		t.Errorf("other session's turn = %+v", other)
 	}
 }
 
@@ -261,12 +261,12 @@ func TestASessionWhoseSandboxIsGoneGetsANewOne(t *testing.T) {
 	second := i.send(driver, session, "are you there")
 	again := i.service.Turn(t)
 	if i.sandbox(session) != again.Sandbox || len(i.service.Made()) != 1 {
-		t.Errorf("the turn runs in %q, the session has %q, of the sandboxes %v", again.Sandbox, i.sandbox(session), i.service.Made())
+		t.Errorf("turn sandbox = %q, session sandbox = %q, sandboxes = %v", again.Sandbox, i.sandbox(session), i.service.Made())
 	}
 	again.Tell("started", started)
 	again.Tell("finished", finished)
 	if ended := i.ended(second.ID); ended.State != store.TurnCompleted {
-		t.Errorf("the turn ended as %+v", ended)
+		t.Errorf("ended turn = %+v", ended)
 	}
 }
 
@@ -282,10 +282,10 @@ func TestATurnWhoseSandboxIsLostFails(t *testing.T) {
 	i.service.Lose(given.Sandbox)
 	given.Cut()
 	if ended := i.ended(turn.ID); !failed(ended, store.FailureSandboxLost) {
-		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
+		t.Errorf("ended turn = %+v, failure = %+v", ended, ended.Failure)
 	}
 	if kept := i.sandbox(session); kept != "" {
-		t.Errorf("the session still has the sandbox %q", kept)
+		t.Errorf("session sandbox = %q, want none", kept)
 	}
 }
 
@@ -302,11 +302,11 @@ func TestAReadingThatIsCutOffGoesOn(t *testing.T) {
 	given.Cut()
 	given.Tell("finished", finished)
 	if ended := i.ended(turn.ID); ended.State != store.TurnCompleted {
-		t.Errorf("the turn ended as %+v", ended)
+		t.Errorf("ended turn = %+v", ended)
 	}
 	want := []string{events.TurnStarted, "message.delta", "message.delta", events.TurnCompleted}
 	if told := i.told(turn.ID); !slices.Equal(told, want) {
-		t.Errorf("the clients of the turn read %v", told)
+		t.Errorf("events = %v", told)
 	}
 }
 
@@ -320,11 +320,11 @@ func TestATurnThatDoesNotStartInTimeIsGivenUp(t *testing.T) {
 	session := i.session(store.Agent{})
 	turn := i.send(driver, session, "hello")
 	ended := i.ended(turn.ID)
-	if !failed(ended, store.FailureStartup) || !strings.Contains(ended.Failure.Message, "the installation has no harness opencode") {
-		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
+	if !failed(ended, store.FailureStartup) || !strings.Contains(ended.Failure.Message, "harness opencode is not configured") {
+		t.Errorf("ended turn = %+v, failure = %+v", ended, ended.Failure)
 	}
 	if len(i.service.Made()) != 0 {
-		t.Errorf("the sandboxes are %v", i.service.Made())
+		t.Errorf("sandboxes = %v", i.service.Made())
 	}
 
 	// A harness that never starts the turn: its sandbox is put to sleep, and
@@ -335,15 +335,15 @@ func TestATurnThatDoesNotStartInTimeIsGivenUp(t *testing.T) {
 	turn = i.send(driver, session, "hello")
 	given := i.service.Turn(t)
 	if ended := i.ended(turn.ID); !failed(ended, store.FailureStartup) {
-		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
+		t.Errorf("ended turn = %+v, failure = %+v", ended, ended.Failure)
 	}
 	if i.service.State(given.Sandbox) != sandbox.Asleep || i.sandbox(session) != given.Sandbox {
-		t.Errorf("the sandbox is %s, and the session has %q", i.service.State(given.Sandbox), i.sandbox(session))
+		t.Errorf("sandbox state = %s, session sandbox = %q", i.service.State(given.Sandbox), i.sandbox(session))
 	}
 	next := i.send(driver, session, "again")
 	again := i.service.Turn(t)
 	if again.Sandbox != given.Sandbox || again.ID != next.ID.String() || i.service.Woken(given.Sandbox) != 1 {
-		t.Errorf("the next turn was given as %+v, and the sandbox woken %d times", again, i.service.Woken(given.Sandbox))
+		t.Errorf("next turn = %+v, sandbox woken %d times", again, i.service.Woken(given.Sandbox))
 	}
 }
 
@@ -356,14 +356,14 @@ func TestATurnThatRunsForTooLongIsGivenUp(t *testing.T) {
 	given.Tell("started", started)
 	ended := i.ended(turn.ID)
 	if !failed(ended, store.FailureTimedOut) || !strings.Contains(ended.Failure.Message, "300ms") {
-		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
+		t.Errorf("ended turn = %+v, failure = %+v", ended, ended.Failure)
 	}
 	// The sandbox is put to sleep, and the session keeps it.
 	if i.service.State(given.Sandbox) != sandbox.Asleep || i.sandbox(session) != given.Sandbox {
-		t.Errorf("the sandbox is %s, and the session has %q", i.service.State(given.Sandbox), i.sandbox(session))
+		t.Errorf("sandbox state = %s, session sandbox = %q", i.service.State(given.Sandbox), i.sandbox(session))
 	}
 	if told := i.told(turn.ID); !slices.Equal(told, []string{events.TurnStarted, events.TurnFailed}) {
-		t.Errorf("the clients of the turn read %v", told)
+		t.Errorf("events = %v", told)
 	}
 }
 
@@ -375,7 +375,7 @@ func TestATurnThatWaitsForAPersonHasNoMoreTimeThanAnyOther(t *testing.T) {
 	given.Tell("started", started)
 	given.Tell("approval.requested", asks)
 	if ended := i.ended(turn.ID); !failed(ended, store.FailureTimedOut) {
-		t.Errorf("the turn that waited for a person ended as %+v, %+v", ended, ended.Failure)
+		t.Errorf("ended turn = %+v, failure = %+v", ended, ended.Failure)
 	}
 }
 
@@ -404,10 +404,10 @@ func TestATurnIsToldToStop(t *testing.T) {
 		given.Stopped(t)
 		given.Tell("finished", map[string]string{"stop_reason": "cancelled"})
 		if ended := i.ended(turn.ID); ended.State != store.TurnCancelled {
-			t.Errorf("the turn ended as %+v", ended)
+			t.Errorf("ended turn = %+v", ended)
 		}
 		if i.service.State(given.Sandbox) != sandbox.Running {
-			t.Errorf("the sandbox of a turn that stopped is %s", i.service.State(given.Sandbox))
+			t.Errorf("sandbox state = %s, want Running", i.service.State(given.Sandbox))
 		}
 	}
 }
@@ -422,10 +422,10 @@ func TestATurnThatDoesNotStopIsStopped(t *testing.T) {
 	i.cancel(turn.ID, true)
 	given.Stopped(t)
 	if ended := i.ended(turn.ID); ended.State != store.TurnCancelled {
-		t.Errorf("the turn ended as %+v", ended)
+		t.Errorf("ended turn = %+v", ended)
 	}
 	if i.service.State(given.Sandbox) != sandbox.Asleep || i.sandbox(session) != given.Sandbox {
-		t.Errorf("the sandbox is %s, and the session has %q", i.service.State(given.Sandbox), i.sandbox(session))
+		t.Errorf("sandbox state = %s, session sandbox = %q", i.service.State(given.Sandbox), i.sandbox(session))
 	}
 }
 
@@ -438,7 +438,7 @@ func TestATurnThatIsAskedToStopBeforeItsRunnerHasItIsNotRun(t *testing.T) {
 	i.eventually("the turn is followed", func() bool { return i.turn(turn.ID).State == store.TurnRunning })
 	i.cancel(turn.ID, true)
 	if ended := i.ended(turn.ID); ended.State != store.TurnCancelled {
-		t.Errorf("the turn ended as %+v", ended)
+		t.Errorf("ended turn = %+v", ended)
 	}
 }
 
@@ -459,23 +459,23 @@ func TestAnotherSupervisorTakesUpATurn(t *testing.T) {
 	i.cancel(turn.ID, false)
 	// The next Supervisor records the event and passes the cancellation on.
 	second, _ := i.supervisor()
-	i.eventually("the other supervisor records the turn", func() bool { return len(i.told(turn.ID)) == 3 })
+	i.eventually("the second supervisor records the event", func() bool { return len(i.told(turn.ID)) == 3 })
 	given.Stopped(t)
 	given.Tell("finished", map[string]string{"stop_reason": "cancelled"})
 	if ended := i.ended(turn.ID); ended.State != store.TurnCancelled {
-		t.Errorf("the turn ended as %+v", ended)
+		t.Errorf("ended turn = %+v", ended)
 	}
 	want := []string{events.TurnStarted, "message.delta", "message.delta", events.TurnCancelled}
 	if told := i.told(turn.ID); !slices.Equal(told, want) {
-		t.Errorf("the clients of the turn read %v", told)
+		t.Errorf("events = %v", told)
 	}
 	// The turn was given once, and the session has one sandbox.
 	if len(i.service.Made()) != 1 {
-		t.Errorf("the sandboxes are %v", i.service.Made())
+		t.Errorf("sandboxes = %v", i.service.Made())
 	}
 	next := i.send(second, session, "and then")
 	if again := i.service.Turn(t); again.ID != next.ID.String() || again.Sandbox != given.Sandbox {
-		t.Errorf("the next turn was given as %+v", again)
+		t.Errorf("next turn = %+v", again)
 	}
 }
 
@@ -493,12 +493,12 @@ func TestATurnThatItsRunnerHasLostIsNotRunAgain(t *testing.T) {
 	i.service.Restart(given.Sandbox)
 	i.supervisor()
 	ended := i.ended(turn.ID)
-	if !failed(ended, store.FailureRunner) || !strings.Contains(ended.Failure.Message, "does not have the turn") {
-		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
+	if !failed(ended, store.FailureRunner) || !strings.Contains(ended.Failure.Message, "no longer has the turn") {
+		t.Errorf("ended turn = %+v, failure = %+v", ended, ended.Failure)
 	}
 	// The sandbox is kept, with its volume.
 	if i.sandbox(session) != given.Sandbox || len(i.service.Made()) != 1 {
-		t.Errorf("the session has the sandbox %q, of %v", i.sandbox(session), i.service.Made())
+		t.Errorf("session sandbox = %q, sandboxes = %v", i.sandbox(session), i.service.Made())
 	}
 }
 
@@ -522,12 +522,12 @@ func TestARunnerThatRunsAnotherTurnIsStoppedWithItsPod(t *testing.T) {
 	}
 	i.service.Turn(t)
 	next := i.send(driver, session, "and then")
-	if ended := i.ended(next.ID); !failed(ended, store.FailureRunner) || !strings.Contains(ended.Failure.Message, "runs another turn") {
-		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
+	if ended := i.ended(next.ID); !failed(ended, store.FailureRunner) || !strings.Contains(ended.Failure.Message, "running another turn") {
+		t.Errorf("ended turn = %+v, failure = %+v", ended, ended.Failure)
 	}
 	// Putting the sandbox to sleep stops the other turn with the pod.
 	if i.service.State(given.Sandbox) != sandbox.Asleep || i.sandbox(session) != given.Sandbox {
-		t.Errorf("the sandbox is %s, and the session has %q", i.service.State(given.Sandbox), i.sandbox(session))
+		t.Errorf("sandbox state = %s, session sandbox = %q", i.service.State(given.Sandbox), i.sandbox(session))
 	}
 }
 
@@ -551,10 +551,10 @@ func TestTwoSupervisorsMakeOneSandboxForASession(t *testing.T) {
 		}
 	}
 	if made[0] != made[1] || i.sandbox(session) != made[0] {
-		t.Errorf("the supervisors have the sandboxes %v, and the session %q", made, i.sandbox(session))
+		t.Errorf("provided sandboxes = %v, session sandbox = %q", made, i.sandbox(session))
 	}
 	if sandboxes := i.service.Made(); len(sandboxes) != 1 || sandboxes[made[0]].Session != session.ID {
-		t.Errorf("the sandboxes are %v", sandboxes)
+		t.Errorf("sandboxes = %v", sandboxes)
 	}
 }
 
@@ -571,16 +571,16 @@ func TestWhatARunnerTellsIsNotTakenAtItsWord(t *testing.T) {
 	given.Tell("message.delta", map[string]string{"text": "hi"})
 	i.eventually("the events are recorded", func() bool { return len(i.told(turn.ID)) == 2 })
 	if state := i.turn(turn.ID).State; state != store.TurnRunning {
-		t.Errorf("the turn is %s", state)
+		t.Errorf("turn state = %s, want running", state)
 	}
 	// A failure reason that a runner may not report.
 	given.Tell("failed", map[string]string{"reason": "timed_out", "message": "no"})
 	ended := i.ended(turn.ID)
 	if !failed(ended, store.FailureRunner) || ended.Failure.Message != "no" {
-		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
+		t.Errorf("ended turn = %+v, failure = %+v", ended, ended.Failure)
 	}
 	if told := i.told(turn.ID); !slices.Equal(told, []string{events.TurnStarted, "message.delta", events.TurnFailed}) {
-		t.Errorf("the clients of the turn read %v", told)
+		t.Errorf("events = %v", told)
 	}
 }
 
@@ -605,15 +605,15 @@ func TestASessionThatSleepsIsWokenForItsNextTurn(t *testing.T) {
 	next := i.send(driver, session, "and then")
 	again := i.service.Turn(t)
 	if again.ID != next.ID.String() || again.Sandbox != given.Sandbox || i.service.Woken(given.Sandbox) != 1 {
-		t.Errorf("the next turn was given as %+v, and the sandbox woken %d times", again, i.service.Woken(given.Sandbox))
+		t.Errorf("next turn = %+v, sandbox woken %d times", again, i.service.Woken(given.Sandbox))
 	}
 	if image := i.service.Made()[given.Sandbox].Pod.Harness.Image; image != "registry.example.com/opencode:2.0" {
-		t.Errorf("the sandbox was woken with the image %s", image)
+		t.Errorf("woken sandbox image = %s", image)
 	}
 	again.Tell("started", started)
 	again.Tell("finished", finished)
 	if ended := i.ended(next.ID); ended.State != store.TurnCompleted {
-		t.Errorf("the turn ended as %+v", ended)
+		t.Errorf("ended turn = %+v", ended)
 	}
 }
 
@@ -635,16 +635,16 @@ func TestASandboxThatIsNotWokenInTimeStaysWithItsSession(t *testing.T) {
 	i.service.Slow(true)
 	late := i.send(driver, session, "and then")
 	if ended := i.ended(late.ID); !failed(ended, store.FailureStartup) {
-		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
+		t.Errorf("ended turn = %+v, failure = %+v", ended, ended.Failure)
 	}
 	if i.sandbox(session) != given.Sandbox || len(i.service.Made()) != 1 {
-		t.Errorf("the sandboxes are %v, and the session has %q", i.service.Made(), i.sandbox(session))
+		t.Errorf("sandboxes = %v, session sandbox = %q", i.service.Made(), i.sandbox(session))
 	}
 
 	i.service.Slow(false)
 	next := i.send(driver, session, "again")
 	if again := i.service.Turn(t); again.ID != next.ID.String() || again.Sandbox != given.Sandbox {
-		t.Errorf("the next turn was given as %+v", again)
+		t.Errorf("next turn = %+v", again)
 	}
 }
 
@@ -662,21 +662,21 @@ func TestASessionThatIsNotAtWorkIsPutToSleep(t *testing.T) {
 	given.Tell("started", started)
 	time.Sleep(3 * i.config.Idle)
 	if state := i.service.State(given.Sandbox); state != sandbox.Running {
-		t.Fatalf("the sandbox of a session whose turn runs is %s", state)
+		t.Fatalf("sandbox state during the turn = %s, want Running", state)
 	}
 	given.Tell("finished", finished)
 	ended := i.ended(first.ID)
-	i.eventually("the sandbox of the session that is not at work is put to sleep", func() bool {
+	i.eventually("the idle sandbox is put to sleep", func() bool {
 		return i.service.State(given.Sandbox) == sandbox.Asleep
 	})
 	if idle := time.Since(*ended.EndedAt); idle < i.config.Idle {
-		t.Errorf("the sandbox was put to sleep after %s", idle)
+		t.Errorf("sandbox put to sleep after only %s", idle)
 	}
 
 	next := i.send(driver, session, "and then")
 	again := i.service.Turn(t)
 	if again.ID != next.ID.String() || again.Sandbox != given.Sandbox || i.service.Woken(given.Sandbox) != 1 {
-		t.Errorf("the next turn was given as %+v, and the sandbox woken %d times", again, i.service.Woken(given.Sandbox))
+		t.Errorf("next turn = %+v, sandbox woken %d times", again, i.service.Woken(given.Sandbox))
 	}
 }
 
@@ -697,12 +697,12 @@ func TestATurnThatComesAsItsSessionIsPutToSleepWakesIt(t *testing.T) {
 	next := i.send(driver, session, "and then")
 	again := i.service.Turn(t)
 	if again.ID != next.ID.String() || i.service.Woken(given.Sandbox) != 1 {
-		t.Errorf("the turn was given as %+v, and the sandbox woken %d times", again, i.service.Woken(given.Sandbox))
+		t.Errorf("turn = %+v, sandbox woken %d times", again, i.service.Woken(given.Sandbox))
 	}
 	again.Tell("started", started)
 	again.Tell("finished", finished)
 	if ended := i.ended(next.ID); ended.State != store.TurnCompleted {
-		t.Errorf("the turn ended as %+v", ended)
+		t.Errorf("ended turn = %+v", ended)
 	}
 }
 
@@ -722,13 +722,13 @@ func TestATurnThatWaitsForAPersonGoesOnWhenItIsToldSomething(t *testing.T) {
 
 		if answered {
 			if kept, err := i.store.AnswerApproval(ctx, turn.ID, "1", "once", uuid.Nil); err != nil || !kept {
-				t.Fatalf("the answer was kept: %t, %v", kept, err)
+				t.Fatalf("AnswerApproval = %t, %v", kept, err)
 			}
 			if err := i.events.AnnounceAnswer(ctx, turn.ID); err != nil {
 				t.Fatal(err)
 			}
 			if request, option := given.Answered(t); request != "1" || option != "once" {
-				t.Errorf("the request %q was answered with %q", request, option)
+				t.Errorf("answered request %q with option %q", request, option)
 			}
 			given.Tell("approval.resolved", map[string]string{"id": "1", "outcome": "selected", "option_id": "once"})
 			given.Tell("finished", finished)
@@ -740,14 +740,14 @@ func TestATurnThatWaitsForAPersonGoesOnWhenItIsToldSomething(t *testing.T) {
 		}
 		ended := i.ended(turn.ID)
 		if answered != (ended.State == store.TurnCompleted) || !answered != (ended.State == store.TurnCancelled) {
-			t.Errorf("the turn ended as %+v", ended)
+			t.Errorf("ended turn = %+v", ended)
 		}
 		want := []string{events.TurnStarted, "approval.requested", "approval.resolved", events.TurnCompleted}
 		if !answered {
 			want[3] = events.TurnCancelled
 		}
 		if told := i.told(turn.ID); !slices.Equal(told, want) {
-			t.Errorf("the clients of the turn read %v", told)
+			t.Errorf("events = %v", told)
 		}
 	}
 }
@@ -776,14 +776,14 @@ func TestASandboxThatItsSessionDoesNotHaveIsDeleted(t *testing.T) {
 	for _, name := range []string{given.Sandbox, left, foreign} {
 		i.service.Age(name, time.Hour)
 	}
-	i.eventually("the sandbox that its session does not have is deleted", func() bool {
+	i.eventually("the orphaned sandbox is deleted", func() bool {
 		_, there := i.service.Made()[left]
 		return !there
 	})
 	made := i.service.Made()
-	for what, name := range map[string]string{"of the session": given.Sandbox, "that is young": young, "of an unknown session": foreign} {
+	for what, name := range map[string]string{"the session's sandbox": given.Sandbox, "the young sandbox": young, "the unknown session's sandbox": foreign} {
 		if _, there := made[name]; !there {
-			t.Errorf("the sandbox %s was deleted", what)
+			t.Errorf("%s was deleted", what)
 		}
 	}
 }
@@ -802,12 +802,12 @@ func TestATurnWhoseSandboxIsPutToSleepFails(t *testing.T) {
 	}
 	ended := i.ended(turn.ID)
 	if !failed(ended, store.FailureRunner) || !strings.Contains(ended.Failure.Message, "put to sleep") {
-		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
+		t.Errorf("ended turn = %+v, failure = %+v", ended, ended.Failure)
 	}
 	// The session continues in the same sandbox.
 	next := i.send(driver, session, "and then")
 	if again := i.service.Turn(t); again.ID != next.ID.String() || again.Sandbox != given.Sandbox {
-		t.Errorf("the next turn was given as %+v", again)
+		t.Errorf("next turn = %+v", again)
 	}
 }
 
@@ -819,7 +819,7 @@ func TestASessionThatIsNotUsedForLongerThanItsSandboxIsKeptHasEnded(t *testing.T
 	given := i.service.Turn(t)
 	// The sandbox expires Retention after a turn is given to it.
 	if left := time.Until(i.service.Expires(given.Sandbox)); left < 59*time.Minute || left > time.Hour {
-		t.Errorf("the sandbox of the session is kept for %s", left)
+		t.Errorf("sandbox expires in %s, want about an hour", left)
 	}
 	given.Tell("started", started)
 	given.Tell("finished", finished)
@@ -830,7 +830,7 @@ func TestASessionThatIsNotUsedForLongerThanItsSandboxIsKeptHasEnded(t *testing.T
 	second := i.send(driver, session, "are you there")
 	again := i.service.Turn(t)
 	if again.ID != second.ID.String() {
-		t.Errorf("the turn was given as %+v", again)
+		t.Errorf("turn = %+v", again)
 	}
 	again.Tell("started", started)
 	again.Tell("finished", finished)
@@ -842,14 +842,14 @@ func TestASessionThatIsNotUsedForLongerThanItsSandboxIsKeptHasEnded(t *testing.T
 	third := i.send(driver, session, "and now")
 	ended := i.ended(third.ID)
 	if !failed(ended, store.FailureSessionExpired) || !strings.Contains(ended.Failure.Message, "1h0m0s") {
-		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
+		t.Errorf("ended turn = %+v, failure = %+v", ended, ended.Failure)
 	}
 	i.eventually("the session has ended", func() bool { return i.sessionOf(session.ID).EndedAt != nil })
 	if _, err := driver.Accept(ctx, session.ID, uuid.Nil, "once more"); !errors.Is(err, store.ErrSessionEnded) {
-		t.Errorf("a message to the session that has ended: %v", err)
+		t.Errorf("Accept on an ended session = %v, want ErrSessionEnded", err)
 	}
 	if len(i.service.Made()) != 0 || len(i.service.Given()) != 2 {
-		t.Errorf("the sandboxes are %v, and the runners were given %v", i.service.Made(), i.service.Given())
+		t.Errorf("sandboxes = %v, given turns = %v", i.service.Made(), i.service.Given())
 	}
 }
 
@@ -857,6 +857,6 @@ func TestAHarnessThatAnInstallationHas(t *testing.T) {
 	i := install(t)
 	driver := New(i.config, i.service, i.store, i.events, metrics.New())
 	if !driver.HasHarness("opencode") || driver.HasHarness("codex") {
-		t.Error("the driver has other harnesses than the installation")
+		t.Error("HasHarness does not match the configured harnesses")
 	}
 }

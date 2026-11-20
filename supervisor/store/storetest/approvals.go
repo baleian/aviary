@@ -13,7 +13,7 @@ import (
 	"aviary/supervisor/store"
 )
 
-func (suite suite) testAnswerApprovalKeepsOneOfTheAnswersGivenAtOnce(t *testing.T) {
+func (suite suite) testConcurrentAnswerApproval(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	dispatch := st.running(st.session())
@@ -32,7 +32,7 @@ func (suite suite) testAnswerApprovalKeepsOneOfTheAnswersGivenAtOnce(t *testing.
 		}
 	})
 	if answers, err := st.Answers(ctx, &dispatch.TurnID); err != nil || len(answers) != 1 || kept.Load() != 1 {
-		t.Errorf("of eight answers given at once, %d were kept, and those on their way are %v: %v", kept.Load(), answers, err)
+		t.Errorf("%d of 8 concurrent answers accepted, Answers = %v, want one: %v", kept.Load(), answers, err)
 	}
 }
 
@@ -78,16 +78,16 @@ func (suite suite) testApprovals(t *testing.T) {
 		t.Fatal(err)
 	}
 	if waiting := waiting(); !keepsAll(t, waiting, first, second) {
-		t.Errorf("the requests that wait are %s", waiting)
+		t.Errorf("WaitingApprovals = %s, want requests 1 and 2", waiting)
 	}
 	if asked, err := st.Approval(ctx, turn, "1"); err != nil || !keeps(t, asked.Request, first) || asked.Answered || asked.Resolved {
-		t.Errorf("the request that waits is %+v: %v", asked, err)
+		t.Errorf("waiting request = %+v: %v", asked, err)
 	}
 	if _, err := st.Approval(ctx, turn, "3"); err != store.ErrNotFound {
-		t.Errorf("a request that the runner did not report was read with %v", err)
+		t.Errorf("Approval of an unreported request = %v, want ErrNotFound", err)
 	}
 	if err := st.AddApproval(ctx, uuid.New(), "1", []byte(`{}`)); err == nil {
-		t.Error("a request of a turn that there is not was kept")
+		t.Error("AddApproval succeeded for a nonexistent turn")
 	}
 
 	// The first answer stands, and records the user who gave it.
@@ -96,53 +96,53 @@ func (suite suite) testApprovals(t *testing.T) {
 		t.Fatal(err)
 	}
 	if asked, err := st.Approval(ctx, turn, "1"); err != nil || asked.Answered || asked.AnsweredBy != uuid.Nil {
-		t.Errorf("a request without an answer is %+v: %v", asked, err)
+		t.Errorf("unanswered request = %+v: %v", asked, err)
 	}
 	if answered, err := st.AnswerApproval(ctx, turn, "1", "once", user.ID); err != nil || !answered {
-		t.Fatalf("the request was answered %t: %v", answered, err)
+		t.Fatalf("AnswerApproval = %t, want true: %v", answered, err)
 	}
 	if answered, err := st.AnswerApproval(ctx, turn, "1", "never", uuid.Nil); err != nil || answered {
-		t.Errorf("the request was answered a second time %t: %v", answered, err)
+		t.Errorf("second AnswerApproval = %t, want false: %v", answered, err)
 	}
 	if answered, err := st.AnswerApproval(ctx, turn, "3", "once", uuid.Nil); err != nil || answered {
-		t.Errorf("a request that there is not was answered %t: %v", answered, err)
+		t.Errorf("AnswerApproval of a nonexistent request = %t, want false: %v", answered, err)
 	}
 	if asked, err := st.Approval(ctx, turn, "1"); err != nil || !asked.Answered || asked.Resolved || asked.AnsweredBy != user.ID {
-		t.Errorf("the request that the user %s answered is %+v: %v", user.ID, asked, err)
+		t.Errorf("request answered by %s = %+v: %v", user.ID, asked, err)
 	}
 	// An answered request no longer waits, and its answer is pending delivery.
 	if waiting := waiting(); !keepsAll(t, waiting, second) {
-		t.Errorf("the requests that wait after an answer are %s", waiting)
+		t.Errorf("WaitingApprovals after an answer = %s, want request 2", waiting)
 	}
 	other := st.running(st.session())
 	on := []store.Answer{{TurnID: turn, ID: "1", OptionID: "once"}}
 	if all, mine, others := answers(nil), answers(&dispatch), answers(&other); !slices.Equal(all, on) || !slices.Equal(mine, on) || len(others) != 0 {
-		t.Errorf("the answers on their way are %v, those of the turn %v and those of another %v", all, mine, others)
+		t.Errorf("Answers = %v, for the turn %v, for another turn %v", all, mine, others)
 	}
 
 	// The harness receives the answer. Resolving again changes nothing.
 	resolved, waited, once, err := st.ResolveApproval(ctx, turn, "1", "selected")
 	if err != nil || !once || waited < 0 || waited > time.Minute || !keeps(t, resolved.Request, first) {
-		t.Fatalf("the request %s was resolved after %s, for the first time %t: %v", resolved.Request, waited, once, err)
+		t.Fatalf("ResolveApproval = %s, waited %s, first %t: %v", resolved.Request, waited, once, err)
 	}
 	if _, _, once, err := st.ResolveApproval(ctx, turn, "1", "cancelled"); err != nil || once {
-		t.Errorf("the request was resolved a second time: %v", err)
+		t.Errorf("request resolved twice: %v", err)
 	}
 	if _, _, once, err := st.ResolveApproval(ctx, turn, "3", "selected"); err != nil || once {
-		t.Errorf("a request that there is not was resolved: %v", err)
+		t.Errorf("nonexistent request resolved: %v", err)
 	}
 	if asked, err := st.Approval(ctx, turn, "1"); err != nil || !asked.Resolved {
-		t.Errorf("the resolved request is %+v: %v", asked, err)
+		t.Errorf("resolved request = %+v: %v", asked, err)
 	}
 	if answers := answers(nil); len(answers) != 0 {
-		t.Errorf("an answer that the harness has is still on its way: %v", answers)
+		t.Errorf("Answers after ResolveApproval = %v, want none", answers)
 	}
 	// A resolved request takes no answer.
 	if _, _, _, err := st.ResolveApproval(ctx, turn, "2", "cancelled"); err != nil {
 		t.Fatal(err)
 	}
 	if answered, err := st.AnswerApproval(ctx, turn, "2", "once", uuid.Nil); err != nil || answered {
-		t.Errorf("a request that was resolved was answered %t: %v", answered, err)
+		t.Errorf("AnswerApproval of a resolved request = %t, want false: %v", answered, err)
 	}
 
 	// Nor does a request of an ended turn, and the turn's undelivered answers
@@ -154,13 +154,13 @@ func (suite suite) testApprovals(t *testing.T) {
 		t.Fatal(err)
 	}
 	if answered, err := st.AnswerApproval(ctx, other.TurnID, "1", "once", uuid.Nil); err != nil || !answered {
-		t.Fatalf("the request of the other turn was answered %t: %v", answered, err)
+		t.Fatalf("AnswerApproval for the other turn = %t, want true: %v", answered, err)
 	}
 	st.end(other.TurnID, false, store.Failure{Reason: store.FailureSandboxLost})
 	if answered, err := st.AnswerApproval(ctx, other.TurnID, "2", "once", uuid.Nil); err != nil || answered {
-		t.Errorf("a request of a turn that has ended was answered %t: %v", answered, err)
+		t.Errorf("AnswerApproval for an ended turn = %t, want false: %v", answered, err)
 	}
 	if answers := answers(nil); len(answers) != 0 {
-		t.Errorf("the answers of a turn that has ended are still on their way: %v", answers)
+		t.Errorf("Answers after the turn ended = %v, want none", answers)
 	}
 }

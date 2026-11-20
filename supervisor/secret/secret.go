@@ -22,7 +22,7 @@ const keySize = 32
 
 // ErrSealed is returned when a secret does not open: it was sealed for
 // another place or with another key, or it was modified.
-var ErrSealed = errors.New("the secret does not open")
+var ErrSealed = errors.New("cannot open sealed secret")
 
 // Keys are the encryption keys of an installation. New secrets are sealed
 // with the current key, and the other keys still open what they sealed, so a
@@ -42,7 +42,7 @@ func Load(dir, current string) (*Keys, error) {
 		return nil, err
 	}
 	if _, found := k.ciphers[current]; !found {
-		return nil, fmt.Errorf("%s has no key named %q to seal secrets with", dir, current)
+		return nil, fmt.Errorf("%s: current key %q not found", dir, current)
 	}
 	return k, nil
 }
@@ -51,7 +51,7 @@ func Load(dir, current string) (*Keys, error) {
 func (k *Keys) read() error {
 	entries, err := os.ReadDir(k.dir)
 	if err != nil {
-		return fmt.Errorf("read the keys that secrets are sealed with: %w", err)
+		return fmt.Errorf("read encryption keys: %w", err)
 	}
 	ciphers := map[string]cipher.AEAD{}
 	for _, entry := range entries {
@@ -62,11 +62,11 @@ func (k *Keys) read() error {
 		}
 		encoded, err := os.ReadFile(filepath.Join(k.dir, entry.Name()))
 		if err != nil {
-			return fmt.Errorf("read the keys that secrets are sealed with: %w", err)
+			return fmt.Errorf("read encryption keys: %w", err)
 		}
 		key, err := base64.StdEncoding.DecodeString(string(encoded))
 		if err != nil || len(key) != keySize {
-			return fmt.Errorf("the key %q in %s is not %d bytes in base64", entry.Name(), k.dir, keySize)
+			return fmt.Errorf("key %q in %s is not %d base64-encoded bytes", entry.Name(), k.dir, keySize)
 		}
 		block, err := aes.NewCipher(key)
 		if err != nil {
@@ -98,7 +98,7 @@ func (k *Keys) cipher(name string) (cipher.AEAD, error) {
 	k.mu.RLock()
 	defer k.mu.RUnlock()
 	if found, known = k.ciphers[name]; !known {
-		return nil, fmt.Errorf("%s has no key named %q", k.dir, name)
+		return nil, fmt.Errorf("%s: key %q not found", k.dir, name)
 	}
 	return found, nil
 }

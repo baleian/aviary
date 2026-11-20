@@ -25,41 +25,41 @@ func TestFailures(t *testing.T) {
 		items           int
 	}{
 		{
-			name:    "the model endpoint refused the harness",
+			name:    "harness error",
 			reports: []message{started("harness-session"), failed("harness_error", "the model is out of order")},
 			reason:  "harness_error", message: "the model is out of order",
 		},
 		{
-			name:    "the harness could not continue its session",
-			reports: []message{failed("resume_failed", "the harness could not continue its session: it has none")},
-			reason:  "resume_failed", message: "the harness could not continue its session: it has none",
+			name:    "resume failed",
+			reports: []message{failed("resume_failed", "resume harness session: it has none")},
+			reason:  "resume_failed", message: "resume harness session: it has none",
 		},
 		{
-			name:    "the runner lost its harness while a tool ran",
+			name:    "runner error during a tool call",
 			reports: []message{started("harness-session"), tool, failed("runner_error", "the harness is lost")},
 			reason:  "runner_error", message: "the harness is lost",
 			items: 1,
 		},
 		{
 			// timed_out is reserved for the Supervisor.
-			name:    "the runner told a reason that is not a runner's to tell",
+			name:    "reserved reason from the runner",
 			reports: []message{started("harness-session"), failed("timed_out", "the turn took too long")},
 			reason:  "runner_error", message: "the turn took too long",
 		},
 		{
-			name:    "the sandbox was lost while a tool ran",
+			name:    "sandbox lost during a tool call",
 			reports: []message{started("harness-session"), tool},
 			lost:    true,
-			reason:  "sandbox_lost", message: "the sandbox of the session is gone",
+			reason:  "sandbox_lost", message: "the session's sandbox is gone",
 			items: 1,
 		},
 		{
-			name:   "the harness did not take the message in time",
+			name:   "startup timeout",
 			limits: func(config *driver.Config) { config.MaxStartup, config.Sweep = time.Second, 100*time.Millisecond },
 			reason: "startup_timed_out", message: "the harness did not start the turn",
 		},
 		{
-			name:    "the turn ran for longer than a turn may",
+			name:    "turn timeout",
 			limits:  func(config *driver.Config) { config.MaxTurn, config.Sweep = time.Second, 100*time.Millisecond },
 			reports: []message{started("harness-session"), tool},
 			reason:  "timed_out", message: "the turn ran for longer than 1s",
@@ -91,19 +91,19 @@ func TestFailures(t *testing.T) {
 				t.Fatal(err)
 			}
 			if last.Type != "turn.failed" || failure["reason"] != test.reason || failure["message"] != test.message {
-				t.Errorf("the turn ended with %v, not as failed for %s: %s", last, test.reason, test.message)
+				t.Errorf("last event = %v, want turn.failed with %s: %s", last, test.reason, test.message)
 			}
 			record := s.turn(accepted.ID)
 			if record.State != "failed" || record.Failure["reason"] != test.reason || record.Failure["message"] != test.message ||
 				record.StopReason != "" || len(record.Items) != test.items {
-				t.Errorf("the record of the turn is %+v", record)
+				t.Errorf("unexpected turn record %+v", record)
 			}
 
 			// The session still takes messages.
 			next := s.send(session, "again")
 			s.run(next.ID, "done")
 			if events := s.follow(next.ID); events[len(events)-1].Type != "turn.completed" {
-				t.Errorf("the next turn of the session ended with %v", events[len(events)-1])
+				t.Errorf("next turn ended with %v, want turn.completed", events[len(events)-1])
 			}
 		})
 	}

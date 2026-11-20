@@ -51,26 +51,26 @@ func TestSealedSecretOpensOnlyInItsPlace(t *testing.T) {
 
 	sealed := seal(t, keys, value, place)
 	if bytes.Contains(sealed, []byte(value)) {
-		t.Errorf("what is stored holds the secret: %q", sealed)
+		t.Errorf("sealed value contains the secret: %q", sealed)
 	}
 	if opened, err := keys.Open(sealed, place); err != nil || opened != value {
-		t.Errorf("the secret opened as %q, %v", opened, err)
+		t.Errorf("Open = %q, %v", opened, err)
 	}
 	if again := seal(t, keys, value, place); bytes.Equal(again, sealed) {
-		t.Error("the same secret was sealed to the same bytes twice")
+		t.Error("sealing the same secret twice gave the same bytes")
 	}
 
 	if opened, err := keys.Open(sealed, "providers/2/api_key"); !errors.Is(err, ErrSealed) {
-		t.Errorf("in another place the secret opened as %q, %v", opened, err)
+		t.Errorf("Open in another place = %q, %v; want ErrSealed", opened, err)
 	}
 	changed := bytes.Clone(sealed)
 	changed[len(changed)-1] ^= 1
 	if opened, err := keys.Open(changed, place); !errors.Is(err, ErrSealed) {
-		t.Errorf("a changed secret opened as %q, %v", opened, err)
+		t.Errorf("Open of a modified secret = %q, %v; want ErrSealed", opened, err)
 	}
 	for _, short := range [][]byte{nil, []byte("k1"), []byte("k1:"), sealed[:len("k1:")+4]} {
 		if opened, err := keys.Open(short, place); !errors.Is(err, ErrSealed) {
-			t.Errorf("%q opened as %q, %v", short, opened, err)
+			t.Errorf("Open(%q) = %q, %v; want ErrSealed", short, opened, err)
 		}
 	}
 }
@@ -87,14 +87,14 @@ func TestKeyIsReplaced(t *testing.T) {
 	add(t, dir, "k2")
 	after := load(t, dir, "k2")
 	if opened, err := after.Open(old, "place"); err != nil || opened != "old" {
-		t.Errorf("what was sealed with the key before opened as %q, %v", opened, err)
+		t.Errorf("Open of a secret sealed with the old key = %q, %v", opened, err)
 	}
 	sealed := seal(t, after, "new", "place")
 	if !bytes.HasPrefix(sealed, []byte("k2:")) {
-		t.Errorf("the secret was not sealed with the new key: %q", sealed)
+		t.Errorf("secret not sealed with the new key: %q", sealed)
 	}
 	if opened, err := before.Open(sealed, "place"); err != nil || opened != "new" {
-		t.Errorf("the Supervisor that started before opened it as %q, %v", opened, err)
+		t.Errorf("Open with keys loaded before the rotation = %q, %v", opened, err)
 	}
 
 	// A secret does not open without its key.
@@ -102,7 +102,7 @@ func TestKeyIsReplaced(t *testing.T) {
 		t.Fatal(err)
 	}
 	if opened, err := load(t, dir, "k2").Open(old, "place"); !errors.Is(err, ErrSealed) || !strings.Contains(err.Error(), `"k1"`) {
-		t.Errorf("without its key the secret opened as %q, %v", opened, err)
+		t.Errorf("Open without its key = %q, %v; want ErrSealed naming the key", opened, err)
 	}
 }
 
@@ -119,17 +119,17 @@ func TestKeysThatCannotBeUsed(t *testing.T) {
 	missing := t.TempDir()
 	add(t, missing, "k1")
 	if _, err := Load(missing, "k2"); err == nil || !strings.Contains(err.Error(), `"k2"`) {
-		t.Errorf("without the key to seal with, the keys were loaded: %v", err)
+		t.Errorf("Load without the current key: %v, want an error naming it", err)
 	}
 	if _, err := Load(filepath.Join(missing, "none"), "k1"); err == nil {
-		t.Error("the keys were loaded from a directory that does not exist")
+		t.Error("Load from a missing directory succeeded")
 	}
 	for name, content := range map[string]string{"short": short, "plain": "not a key in base64"} {
 		dir := t.TempDir()
 		add(t, dir, "k1")
 		write(dir, name, content)
 		if _, err := Load(dir, "k1"); err == nil || !strings.Contains(err.Error(), name) {
-			t.Errorf("a key that is %s was loaded: %v", name, err)
+			t.Errorf("Load with key file %s: %v, want an error naming it", name, err)
 		}
 	}
 
@@ -141,6 +141,6 @@ func TestKeysThatCannotBeUsed(t *testing.T) {
 	}
 	write(mounted, "..2026_11_17", "")
 	if _, err := Load(mounted, "k1"); err != nil {
-		t.Errorf("the keys of a mounted secret were not loaded: %v", err)
+		t.Errorf("Load from a mounted secret: %v", err)
 	}
 }
