@@ -21,13 +21,14 @@ The harness runs like this:
 | Working directory | `/home/workspace` |
 | Model endpoint | `AVIARY_LLM_BASE_URL`, `AVIARY_LLM_API_KEY` and `AVIARY_LLM_MODEL`. |
 | Approval | `AVIARY_APPROVAL=ask` for an agent that is to ask a person before it acts. Other agents do not have the variable. |
-| What lasts | Everything, for as long as the session has its sandbox: the whole file system, and the harness itself, which stays when a turn has ended. |
+| What lasts | The home, which is the volume of the session: also when the session was put to sleep, and its next turn runs in a new pod. The harness stays when a turn has ended, for as long as its pod is there. The rest of the file system is the image's, anew in every pod. |
 | Outside | The hosts that the installation allows, through the egress of the sandbox. The egress looks into requests over HTTPS with a certificate of its own CA, which the sandbox trusts. |
 
 The runner talks to the harness over its standard input and output with the
 [Agent Client Protocol](https://agentclientprotocol.com) (ACP). When it
 starts the harness it sends `initialize` and then `session/new`, or
-`session/resume` when it starts the harness of a session again. For a turn
+`session/resume` when the session has a harness session already, in this
+pod or in an earlier one: the runner keeps its ID in the home. For a turn
 it sends `session/prompt` with the message as text. From the harness's
 `session/update` notifications it passes on the agent's message and thought
 text, tool calls and their updates, and plans. When the prompt returns, the
@@ -53,16 +54,18 @@ allows the action once, by itself.
    use `sudo`, and `/home/workspace`, which is the user's. An image that
    builds on `images/harness-base` has them. Everything the harness needs to
    read or execute must be usable by that user.
-3. **Its record of the conversation is on disk.** A harness that is started
-   again continues its session from there.
+3. **Its record of the conversation is in the home.** A harness that is
+   started again, in the same pod or in a new pod of the session, continues
+   its session from there.
 4. **It takes the model endpoint from the environment.** The image
    configures the harness so that it reads `AVIARY_LLM_BASE_URL`,
    `AVIARY_LLM_API_KEY` and `AVIARY_LLM_MODEL`, and sends the key as a bearer
    token (`Authorization: Bearer ...`). The egress of the sandbox puts the
    key of the endpoint there.
 5. **It supports `session/resume`.** The harness is started for the first
-   turn of a session and stays for the turns after it. One that has ended is
-   started again for the next turn, and continues the harness session there.
+   turn of a session and stays for the turns after it. One that has ended,
+   or that is started in a new pod of the session, continues the harness
+   session there.
 6. **The file that the harness reads its instructions from**, in the
    environment variable `AVIARY_INSTRUCTIONS_FILE`. Before it starts the
    harness, the runner writes there what the agent is to be told in every

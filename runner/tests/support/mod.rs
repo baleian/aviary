@@ -52,6 +52,7 @@ pub fn runner(home: &Home) -> Command {
     let mut command = Command::new(runner);
     command
         .env_clear()
+        .env("HOME", home.path())
         .env("AVIARY_RUNNER_ADDRESS", "127.0.0.1:0")
         .env("AVIARY_HARNESS_COMMAND", harness)
         .current_dir(home.path().join("workspace"))
@@ -145,19 +146,6 @@ impl Session {
                 .json(&json!({"option_id": option})),
         )
         .await
-    }
-
-    /// Whether the runner says that the session is at work.
-    pub async fn active(&self) -> bool {
-        let answer = time::timeout(
-            PATIENCE,
-            self.client.get(format!("{}/active", self.url)).send(),
-        )
-        .await
-        .expect("the runner did not answer")
-        .unwrap();
-        assert_eq!(answer.status(), StatusCode::OK);
-        answer.json::<Value>().await.unwrap()["active"] == json!(true)
     }
 
     async fn sent(&self, request: reqwest::RequestBuilder) -> StatusCode {

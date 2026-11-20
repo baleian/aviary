@@ -10,7 +10,7 @@ use reqwest::StatusCode;
 use serde_json::json;
 use tokio::time;
 
-use support::{Home, ending, names, runner, said, start};
+use support::{Home, Session, ending, names, runner, said, start};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_turn_is_told_as_it_goes() {
@@ -247,6 +247,76 @@ async fn a_session_that_the_harness_has_lost_fails_its_turns() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_runner_of_another_pod_continues_the_session() {
+    let home = Home::new();
+    let first = start(runner(&home)).await;
+    let before = first.run("t1", "say one").await;
+    // The pod goes, as that of a sandbox that is put to sleep does, and the
+    // home of the session stays for the next pod.
+    drop(first);
+    let runner = start(runner(&home)).await;
+    let after = runner.run("t2", "recall").await;
+    assert_eq!(said(&after), "say one");
+    assert_eq!(
+        after[0].data["harness_session_id"],
+        before[0].data["harness_session_id"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runner_that_is_told_to_end_ends_with_its_turn() {
+    let home = Home::new();
+    let mut runner = start(runner(&home)).await;
+    runner.turn("t1", "say on ; sleep 60000").await;
+    let mut events = runner.follow("t1", 0).await;
+    assert_eq!(events.next().await.unwrap().name, "started");
+    // As the pod of a sandbox that is put to sleep is told.
+    let pid = runner.child.id().unwrap().to_string();
+    let told = std::process::Command::new("kill")
+        .args(["-TERM", &pid])
+        .status()
+        .unwrap();
+    assert!(told.success());
+    let ended = time::timeout(Duration::from_secs(5), runner.child.wait())
+        .await
+        .expect("the runner did not end")
+        .unwrap();
+    assert!(ended.success(), "{ended}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runner_that_others_reach_takes_nothing_from_its_own_pod() {
+    let home = Home::new();
+    let mut command = runner(&home);
+    command.env("AVIARY_RUNNER_ADDRESS", "0.0.0.0:0");
+    let runner = start(command).await;
+    let port = runner.url.rsplit(':').next().unwrap().to_owned();
+    // What comes from the machine of the runner, at the loopback address or
+    // at the address of the machine, is refused: in a sandbox, it is the
+    // agent that sends it.
+    for address in ["127.0.0.1".to_owned(), own_address()] {
+        let ours = Session::at(format!("http://{address}:{port}"));
+        assert_eq!(
+            ours.turn("t1", "say hello").await,
+            StatusCode::FORBIDDEN,
+            "{address}"
+        );
+        assert_eq!(ours.cancel("t1").await, StatusCode::FORBIDDEN, "{address}");
+    }
+}
+
+/// The address of this machine that it sends from to others.
+fn own_address() -> String {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    socket
+        .connect("10.255.255.255:9")
+        .expect("the machine reaches other machines");
+    let address = socket.local_addr().unwrap().ip();
+    assert!(!address.is_loopback(), "{address}");
+    address.to_string()
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_runner_that_is_not_set_up_says_so() {
     let home = Home::new();
     let mut command = runner(&home);
@@ -422,49 +492,6 @@ async fn a_harness_that_asks_is_answered_by_a_person() {
     assert_eq!(events.next().await.unwrap().data, json!({"text": "always"}));
     assert_eq!(events.next().await.unwrap().name, "finished");
     assert!(events.next().await.is_none());
-}
-
-// A sandbox can take longer to start than it may be idle, which the sandbox
-// service counts from when it was made. Before its first turn, a session is
-// at work the first time that it is asked, and only then.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_session_is_given_time_for_its_first_turn() {
-    let home = Home::new();
-    let runner = start(runner(&home)).await;
-    assert!(runner.active().await);
-    assert!(!runner.active().await);
-    assert!(!runner.active().await);
-}
-
-// A session is at work while a turn of it runs and waits for no person.
-// What runs the sandbox asks, and puts a session to sleep that is not.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_session_is_at_work_while_its_turn_waits_for_no_person() {
-    let home = Home::new();
-    let runner = start(runner(&home)).await;
-    // The harness asks after it is asked whether the session is at work.
-    runner
-        .turn_with(
-            "t1",
-            json!({"text": "sleep 500 ; ask ; ask", "approval": "ask"}),
-        )
-        .await;
-    assert!(runner.active().await);
-    let mut events = runner.follow("t1", 0).await;
-    assert_eq!(events.next().await.unwrap().name, "started");
-    assert_eq!(events.next().await.unwrap().name, "approval.requested");
-    assert!(!runner.active().await);
-    runner.answer("t1", "1", "once").await;
-    assert_eq!(events.next().await.unwrap().name, "approval.resolved");
-    // The harness goes on to its next request.
-    assert_eq!(events.next().await.unwrap().name, "message.delta");
-    assert_eq!(events.next().await.unwrap().name, "approval.requested");
-    assert!(!runner.active().await);
-    // A turn that is told to stop waits for no answer any more.
-    runner.cancel("t1").await;
-    assert_eq!(events.next().await.unwrap().name, "approval.resolved");
-    while events.next().await.is_some() {}
-    assert!(!runner.active().await);
 }
 
 #[tokio::test(flavor = "multi_thread")]

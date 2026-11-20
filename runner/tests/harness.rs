@@ -162,8 +162,23 @@ impl Bench {
     }
 
     /// Starts a session: a container of the harness image that runs what
-    /// the sandbox of a session runs, as root and in / as the sandbox does.
+    /// the sandbox of a session runs, as root and in / as the sandbox does,
+    /// with a volume of its own as its home.
     async fn session(&self) -> Sitting {
+        let home = self.next("home");
+        docker(&["volume", "create", "--label", &self.label(), &home]).await;
+        self.sitting(home).await
+    }
+
+    /// Has the session go on in another container, as a session that slept
+    /// goes on in another pod of its sandbox: with the home of the session.
+    async fn again(&self, sitting: Sitting) -> Sitting {
+        docker(&["rm", "--force", &sitting.harness]).await;
+        self.sitting(sitting.home).await
+    }
+
+    /// Starts a container of the session whose home is the volume.
+    async fn sitting(&self, home: String) -> Sitting {
         let label = self.label();
         let harness = self.next("harness");
         docker(&[
@@ -179,6 +194,8 @@ impl Bench {
             "0:0",
             "--workdir",
             "/",
+            "--volume",
+            &format!("{home}:/home"),
             "--env",
             "AVIARY_MAX_TOOL_OUTPUT_BYTES=65536",
             &self.image,
@@ -208,6 +225,7 @@ impl Bench {
         let sitting = Sitting {
             image: self.image.clone(),
             harness,
+            home,
             runner: Session::at(format!("http://{port}")),
             turns: AtomicU32::new(0),
         };
@@ -258,10 +276,12 @@ impl Drop for Bench {
     }
 }
 
-/// A session that is there: its container, with the runner in it.
+/// A session that is there: its container, with the runner in it, and the
+/// volume that is its home.
 struct Sitting {
     image: String,
     harness: String,
+    home: String,
     runner: Session,
     turns: AtomicU32,
 }
@@ -618,6 +638,32 @@ async fn a_session_goes_on_in_its_home_and_nowhere_else() {
         // conversation.
         let elsewhere = bench.session().await;
         elsewhere.say("recall").await.completed().says("nothing");
+    })
+    .await;
+}
+
+/// A session that is not at work is put to sleep: its pod goes, and its
+/// home stays. Its next turn is in another pod, whose harness continues the
+/// conversation and finds what the agent made.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the harness images"]
+async fn a_session_goes_on_in_another_pod_with_its_home() {
+    each(|bench| async move {
+        let session = bench.session().await;
+        let content = word("content");
+        let write = format!("run printf {content} > note.txt");
+        let first = session.say(&write).await;
+        first.completed();
+
+        let later = bench.again(session).await;
+        let recalled = later.say("recall").await;
+        recalled.completed().says(&write);
+        assert_eq!(recalled.session(), first.session(), "{}", recalled.image);
+        later
+            .say("run cat note.txt")
+            .await
+            .completed()
+            .says(&content);
     })
     .await;
 }

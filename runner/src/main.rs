@@ -6,18 +6,19 @@
 //!   GET  /turns/{turn}/events                the events of the turn, as they come
 //!   POST /turns/{turn}/cancel                tells the turn to stop
 //!   PUT  /turns/{turn}/approvals/{request}   answers a request for approval
-//!   GET  /active                             whether the session is at work
 //!
 //! A request may come twice: its sender sends it again when it does not know
 //! what came of it. A turn that the runner has is not started again, and a
-//! turn is told once to stop however often it is told.
+//! turn is told once to stop however often it is told. What comes from the
+//! pod of the runner, where the agent is, is refused: the agent could answer
+//! its own requests for approval.
 //!
 //! The harness is started for the first turn and stays when a turn has ended,
 //! with what it knows of the conversation.
 //!
-//! A session that is not at work may be put to sleep, sandbox and all: one
-//! that runs no turn, or whose turn waits for a person. It goes on from where
-//! it was when it is woken.
+//! A session that is not at work is put to sleep: its pod goes, and its home
+//! stays. The runner keeps the ID of the harness's session in the home, and
+//! the runner of the next pod of the session continues that session.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -26,10 +27,10 @@ use std::env;
 use std::error::Error;
 use std::fmt::{self, Display};
 use std::fs;
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::ProtocolVersion;
@@ -41,10 +42,14 @@ use agent_client_protocol::v1::schema::{
     SessionNotification, SessionUpdate, TextContent, ToolCallUpdate,
 };
 use agent_client_protocol::{AcpAgent, Agent, ByteStreams, Client, Responder, V1};
-use axum::extract::{Path as Named, State};
+use axum::extract::connect_info::Connected;
+use axum::extract::{ConnectInfo, Path as Named, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
+use axum::middleware;
 use axum::response::sse::{self, KeepAlive, Sse};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
+use axum::serve::IncomingStream;
 use axum::{Json, Router};
 use futures::channel::mpsc;
 use futures::{FutureExt, Stream, StreamExt};
@@ -52,6 +57,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::process::Command;
+use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -88,33 +94,76 @@ async fn serve() -> Result<(), Box<dyn Error>> {
     let listener = TcpListener::bind(&address).await?;
     // Whoever started the runner on a port that it was left to choose reads
     // here which one it is.
-    println!("listening on {}", listener.local_addr()?);
+    let listens = listener.local_addr()?;
+    println!("listening on {listens}");
+    // The pod of a sandbox that is put to sleep is told to end. The runner
+    // is the first process of the pod, which is sent no signal that it does
+    // not take, and ends by itself, with its harness.
+    let mut ended = signal(SignalKind::terminate())?;
     let (orders, ordered) = mpsc::unbounded();
     let runner = Arc::new(Runner {
         turn: Mutex::new(None),
-        waited: AtomicBool::new(false),
         changed: watch::Sender::new(()),
         orders,
     });
-    let routes = Router::new()
+    let mut routes = Router::new()
         .route("/turns/{turn}", put(start))
         .route("/turns/{turn}/events", get(events))
         .route("/turns/{turn}/cancel", post(cancel))
         .route("/turns/{turn}/approvals/{request}", put(answer))
-        .route("/active", get(active))
         .with_state(runner.clone());
-    tokio::spawn(async move { axum::serve(listener, routes).await });
-    run_turns(&runner, ordered).await;
+    // A runner that listens on the loopback interface alone is reached from
+    // its own machine only, as its tests reach it. In a sandbox it listens on
+    // every interface, for the Supervisor.
+    if !listens.ip().is_loopback() {
+        routes = routes.layer(middleware::from_fn(from_elsewhere));
+    }
+    let served = routes.into_make_service_with_connect_info::<Ours>();
+    tokio::spawn(async move { axum::serve(listener, served).await });
+    tokio::select! {
+        () = run_turns(&runner, ordered) => {}
+        _ = ended.recv() => {}
+    }
     Ok(())
+}
+
+/// Whether a request comes from the pod of the runner. A program in the pod
+/// reaches the runner from the loopback address, or from the address that it
+/// reaches it at: the address of the pod.
+#[derive(Clone, Copy)]
+struct Ours(bool);
+
+impl Connected<IncomingStream<'_, TcpListener>> for Ours {
+    fn connect_info(stream: IncomingStream<'_, TcpListener>) -> Self {
+        let remote = stream.remote_addr().ip().to_canonical();
+        Ours(match stream.io().local_addr() {
+            Ok(local) => remote.is_loopback() || local.ip().to_canonical() == remote,
+            // One whose address the runner does not know may be of the pod.
+            Err(_) => true,
+        })
+    }
+}
+
+/// Refuses what comes from the pod of the runner.
+async fn from_elsewhere(
+    ConnectInfo(Ours(ours)): ConnectInfo<Ours>,
+    request: Request,
+    next: middleware::Next,
+) -> Response {
+    if ours {
+        return (
+            StatusCode::FORBIDDEN,
+            "the runner takes nothing from its own pod\n",
+        )
+            .into_response();
+    }
+    next.run(request).await
 }
 
 /// What the runner has of the session.
 struct Runner {
     /// The turn that runs, or the last one that ran.
     turn: Mutex<Option<Turn>>,
-    /// Whether the runner has said, before its first turn, that the session
-    /// is at work.
-    waited: AtomicBool,
     /// Tells those who read the events of the turn that there is more.
     changed: watch::Sender<()>,
     /// Gives the turns to where the harness is talked to.
@@ -126,8 +175,6 @@ struct Turn {
     /// The events of the turn. The number of an event is its place, from 1.
     events: Vec<Event>,
     ended: bool,
-    /// How many requests of the turn for approval wait for their answers.
-    asking: usize,
     /// Carries what the turn is told to where the harness is talked to, in
     /// the order in which it was told.
     tell: mpsc::UnboundedSender<Told>,
@@ -189,11 +236,6 @@ impl Runner {
                 name,
                 data: data.to_string(),
             });
-            match name {
-                REQUESTED => turn.asking += 1,
-                RESOLVED => turn.asking = turn.asking.saturating_sub(1),
-                _ => {}
-            }
             turn.ended = name == FINISHED || name == FAILED;
         }
         drop(turn);
@@ -257,7 +299,6 @@ async fn start(
         id,
         events: Vec::new(),
         ended: false,
-        asking: 0,
         tell,
     });
     let _ = runner.orders.unbounded_send(Order { start, told });
@@ -324,19 +365,6 @@ async fn answer(
 ) -> StatusCode {
     let option_id = answer.option_id;
     runner.tell(&id, Told::Answer { request, option_id })
-}
-
-/// Whether the session is at work: a turn runs, and waits for no person.
-/// Before its first turn, the runner says once that it is. The sandbox
-/// service counts a sandbox idle from when it was made, and would put one that
-/// took longer than that to start to sleep before its first turn.
-async fn active(State(runner): State<Arc<Runner>>) -> Json<Value> {
-    let turn = runner.turn.lock().expect("the turn");
-    let active = match turn.as_ref() {
-        Some(turn) => !turn.ended && turn.asking == 0,
-        None => !runner.waited.swap(true, Ordering::Relaxed),
-    };
-    Json(json!({"active": active}))
 }
 
 /// Why the runner could not finish a turn.
@@ -419,6 +447,10 @@ async fn run_harness(
     orders: &mut mpsc::UnboundedReceiver<Order>,
     session: &mut Option<SessionId>,
 ) -> Result<(), Failure> {
+    // The session that a runner of an earlier pod of the session left.
+    if session.is_none() {
+        *session = remembered()?;
+    }
     // The runner starts the harness itself, to know when it has ended: a
     // harness may end between two turns, when nothing is asked of it.
     let command = variable(HARNESS_COMMAND)?;
@@ -498,11 +530,16 @@ async fn run_harness(
                     session_id
                 }
                 None => {
-                    harness
+                    let session_id = harness
                         .send_request(NewSessionRequest::new(cwd))
                         .block_task()
                         .await?
-                        .session_id
+                        .session_id;
+                    if let Err(failure) = remember(&session_id) {
+                        unready.set(Some(failure));
+                        return Err(agent_client_protocol::Error::internal_error());
+                    }
+                    session_id
                 }
             };
             *session = Some(session_id.clone());
@@ -656,6 +693,35 @@ fn instruct(instructions: &str) -> Result<(), Failure> {
         fs::create_dir_all(directory).map_err(Failure::runner)?;
     }
     fs::write(file, instructions).map_err(Failure::runner)
+}
+
+/// Where the runner keeps the ID of the harness's session: in the home of
+/// the session, which outlives the pod.
+fn session_file() -> Result<PathBuf, Failure> {
+    Ok(Path::new(&variable("HOME")?).join(".aviary/harness-session"))
+}
+
+/// The session of the harness that a runner of the session left, if one
+/// did.
+fn remembered() -> Result<Option<SessionId>, Failure> {
+    match fs::read_to_string(session_file()?) {
+        Ok(id) => Ok(Some(SessionId::new(id))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(Failure::runner(error)),
+    }
+}
+
+/// Keeps the ID of the harness's session for the runners of the later pods
+/// of the session. The file is written beside its place and then put there,
+/// so that none is read that was written in part.
+fn remember(session: &SessionId) -> Result<(), Failure> {
+    let file = session_file()?;
+    if let Some(directory) = file.parent() {
+        fs::create_dir_all(directory).map_err(Failure::runner)?;
+    }
+    let written = file.with_extension("new");
+    fs::write(&written, session.to_string()).map_err(Failure::runner)?;
+    fs::rename(&written, &file).map_err(Failure::runner)
 }
 
 fn variable(name: &str) -> Result<String, Failure> {
