@@ -131,7 +131,9 @@ func (l *log) Read(ctx context.Context, turnID uuid.UUID, after string, wait tim
 	}
 	var entries []valkey.XRangeEntry
 	if wait > 0 {
-		streams, err := l.client.Do(ctx, l.client.B().Xread().Count(waitBatch).Block(wait.Milliseconds()).
+		// BLOCK counts whole milliseconds, and BLOCK 0 blocks indefinitely.
+		block := max(wait.Milliseconds(), 1)
+		streams, err := l.client.Do(ctx, l.client.B().Xread().Count(waitBatch).Block(block).
 			Streams().Key(key(turnID)).Id(after).Build()).AsXRead()
 		if err != nil && !valkey.IsValkeyNil(err) {
 			return nil, err

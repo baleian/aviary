@@ -195,6 +195,13 @@ func Run(t *testing.T, open func(t *testing.T) events.Log) {
 		if batch, err := log.Read(ctx, uuid.New(), events.Start, 0); err != nil || len(batch) != 0 || time.Since(began) > 5*time.Second {
 			t.Errorf("Read without wait = %v after %s, %v; want nothing at once", batch, time.Since(began), err)
 		}
+		// A wait shorter than a millisecond is still a short wait.
+		short, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		began = time.Now()
+		if batch, err := log.Read(short, uuid.New(), events.Start, time.Microsecond); err != nil || len(batch) != 0 || time.Since(began) > time.Second {
+			t.Errorf("Read with a 1µs wait = %v after %s, %v; want nothing at once", batch, time.Since(began), err)
+		}
 	})
 
 	t.Run("expire deletes the turn after the duration", func(t *testing.T) {
