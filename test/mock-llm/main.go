@@ -64,12 +64,20 @@ func main() {
 		slog.Error("MOCK_LLM_API_KEY is not set")
 		os.Exit(1)
 	}
-	server := &http.Server{Addr: ":8080", Handler: newMock(apiKey), ReadHeaderTimeout: 10 * time.Second}
+	mock := newMock(apiKey)
+	server := &http.Server{Addr: ":8080", Handler: mock, ReadHeaderTimeout: 10 * time.Second}
+	failed := make(chan error, 2)
 	slog.Info("listening", "addr", server.Addr)
-	if err := server.ListenAndServe(); err != nil {
-		slog.Error("mock-llm stopped", "error", err)
-		os.Exit(1)
+	go func() { failed <- server.ListenAndServe() }()
+	// Over TLS too, with the certificate that is given, as a model endpoint
+	// on the internet answers.
+	if certificate := os.Getenv("MOCK_LLM_TLS_CERTIFICATE"); certificate != "" {
+		secured := &http.Server{Addr: ":8443", Handler: mock, ReadHeaderTimeout: 10 * time.Second}
+		slog.Info("listening", "addr", secured.Addr, "tls", true)
+		go func() { failed <- secured.ListenAndServeTLS(certificate, os.Getenv("MOCK_LLM_TLS_KEY")) }()
 	}
+	slog.Error("mock-llm stopped", "error", <-failed)
+	os.Exit(1)
 }
 
 // mock is the model server. It keeps nothing of a conversation: a harness
