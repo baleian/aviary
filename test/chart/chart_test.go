@@ -236,6 +236,9 @@ func TestSupervisorSettings(t *testing.T) {
 		"AVIARY_SANDBOXES_URL":             "http://opensandbox-server.opensandbox-system",
 		"AVIARY_TEMPLATE_STORE":            "s3://sandbox-images/publish",
 		"AVIARY_SANDBOX_IDLE_SECONDS":      "300",
+		"AVIARY_SANDBOX_HOSTS":             `["*"]`,
+		"AVIARY_RESOLVER_URL":              "https://aviary-supervisor.aviary-system.svc.cluster.local:9443",
+		"AVIARY_RESOLVER_TLS":              "/etc/aviary/resolver",
 		"AVIARY_SANDBOX_RETENTION_SECONDS": "0",
 		"AVIARY_MAX_CONCURRENT_TURNS":      "50",
 		"AVIARY_MAX_QUEUED_TURNS":          "500",
@@ -267,6 +270,7 @@ func TestSupervisorSettings(t *testing.T) {
 		"AVIARY_SANDBOXES_URL":             "https://sandboxes.example.com",
 		"AVIARY_TEMPLATE_STORE":            "s3://example/templates",
 		"AVIARY_SANDBOX_IDLE_SECONDS":      "0",
+		"AVIARY_SANDBOX_HOSTS":             `["pypi.org","*.example.com"]`,
 		"AVIARY_SANDBOX_RETENTION_SECONDS": "604800",
 		"AVIARY_MAX_CONCURRENT_TURNS":      "7",
 		"AVIARY_MAX_QUEUED_TURNS":          "11",
@@ -315,6 +319,28 @@ func TestSupervisorSettings(t *testing.T) {
 	}
 	if key(supervisor) == nil || !reflect.DeepEqual(key(supervisor), key(built)) {
 		t.Errorf("the Supervisor asks the sandbox service with the key %v, and the Job with %v", key(supervisor), key(built))
+	}
+}
+
+// The Supervisor answers the egress of the sandbox service with the
+// certificate of the secret that the values name, where it is told that the
+// certificate is, at the port that it is reached at.
+func TestSupervisorAnswersTheEgress(t *testing.T) {
+	for values, secret := range map[string]string{"default": "aviary-resolver-tls", "set": "other-resolver-tls"} {
+		objects, _ := chart(t, values)
+		supervisor := rendered.Find(objects, "Deployment", "aviary-supervisor")
+		pod := at(supervisor, "spec", "template", "spec")
+		mount := named(at(pod, "containers", 0, "volumeMounts"), "resolver")
+		if told := env(supervisor)["AVIARY_RESOLVER_TLS"]; told == "" || at(mount, "mountPath") != told || at(mount, "readOnly") != true {
+			t.Errorf("%s: the Supervisor is told that its certificate is in %q, and it is mounted as %v", values, told, mount)
+		}
+		if mounted := at(named(at(pod, "volumes"), "resolver"), "secret", "secretName"); mounted != secret {
+			t.Errorf("%s: the certificate is that of the secret %v, not of %s", values, mounted, secret)
+		}
+		port := named(at(rendered.Find(objects, "Service", "aviary-supervisor"), "spec", "ports"), "resolver")
+		if at(port, "port") != 9443 || !strings.HasSuffix(env(supervisor)["AVIARY_RESOLVER_URL"], ":9443") {
+			t.Errorf("%s: the egress reaches the Supervisor at %v, and the Supervisor says %s", values, port, env(supervisor)["AVIARY_RESOLVER_URL"])
+		}
 	}
 }
 

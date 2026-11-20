@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 var settings = map[string]string{
 	templateStore:      "s3://sandboxes/templates",
 	sandboxIdle:        "300",
+	sandboxHosts:       `["pypi.org", "*.example.com"]`,
 	sandboxRetention:   "0",
 	harnesses:          `{"opencode": {"image": "registry.example/opencode:1", "sandbox": {"cpu": "1", "memory": "2Gi", "disk": "4Gi"}}}`,
 	maxConcurrentTurns: "50",
@@ -52,7 +54,7 @@ func TestDriverConfig(t *testing.T) {
 		}
 		if config.MaxConcurrentTurns != 50 || config.MaxQueuedTurns != 500 || config.MaxQueueWait != 2*time.Minute ||
 			config.MaxStartup != 90*time.Second || templates.MaxToolOutputBytes != 65536 || config.MaxTurn != 30*time.Minute ||
-			config.Idle != 5*time.Minute || config.Retention != 0 {
+			config.Idle != 5*time.Minute || config.Retention != 0 || !slices.Equal(config.Hosts, []string{"pypi.org", "*.example.com"}) {
 			t.Errorf("the limits are %+v", config)
 		}
 	})
@@ -79,6 +81,7 @@ func TestDriverConfig(t *testing.T) {
 		// The sandbox service puts no sandbox to sleep sooner than after
 		// thirty seconds.
 		{sandboxIdle, ""}, {sandboxIdle, "-1"}, {sandboxIdle, "29"}, {sandboxIdle, "5m"},
+		{sandboxHosts, ""}, {sandboxHosts, "pypi.org"},
 		// Nor does it keep one for less than a minute.
 		{sandboxRetention, ""}, {sandboxRetention, "-1"}, {sandboxRetention, "59"},
 		{maxConcurrentTurns, ""}, {maxConcurrentTurns, "0"}, {maxConcurrentTurns, "many"},

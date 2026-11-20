@@ -76,6 +76,9 @@ type sandbox struct {
 	created     time.Time
 	// expires is when the sandbox is deleted, as the service was told.
 	expires time.Time
+	// policy is what the sandbox may reach, and vault what its egress asks
+	// about, as the service was given them.
+	policy, vault json.RawMessage
 }
 
 // New starts a sandbox service, which is stopped when the test ends.
@@ -95,6 +98,7 @@ func New(t testing.TB) *Service {
 	api.HandleFunc("DELETE /v1/sandboxes/{id}", s.deleteSandbox)
 	api.HandleFunc("POST /v1/sandboxes/{id}/resume", s.resumeSandbox)
 	api.HandleFunc("POST /v1/sandboxes/{id}/renew-expiration", s.renewSandbox)
+	api.HandleFunc("POST /v1/sandboxes/{id}/credential-vault", s.createVault)
 	api.HandleFunc("GET /v1/sandboxes/{id}/endpoints/{port}", s.endpoint)
 	lifecycle := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("OPEN-SANDBOX-API-KEY") != Key {
@@ -288,10 +292,11 @@ func (s *Service) createSandbox(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var asked struct {
-		TemplateID string            `json:"templateId"`
-		Timeout    *int64            `json:"timeout"`
-		Metadata   map[string]string `json:"metadata"`
-		Lifecycle  struct {
+		TemplateID    string            `json:"templateId"`
+		Timeout       *int64            `json:"timeout"`
+		Metadata      map[string]string `json:"metadata"`
+		NetworkPolicy json.RawMessage   `json:"networkPolicy"`
+		Lifecycle     struct {
 			IdlePolicy struct {
 				IdleTimeoutSeconds int    `json:"idleTimeoutSeconds"`
 				OnIdle             string `json:"onIdle"`
@@ -331,6 +336,7 @@ func (s *Service) createSandbox(w http.ResponseWriter, r *http.Request) {
 		state: "Pending", template: asked.TemplateID, metadata: asked.Metadata, runner: &runner{service: s, sandbox: id},
 		idle: policy.IdleTimeoutSeconds, created: time.Now(),
 		expires: time.Now().Add(time.Duration(*asked.Timeout) * time.Second),
+		policy:  asked.NetworkPolicy,
 	}
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "status": map[string]string{"state": "Pending"}})
@@ -425,6 +431,50 @@ func (s *Service) renewSandbox(w http.ResponseWriter, r *http.Request) {
 		sandbox.expires = asked.ExpiresAt
 		_ = json.NewEncoder(w).Encode(map[string]any{"expiresAt": asked.ExpiresAt})
 	}
+}
+
+// createVault has the egress of a sandbox ask about its requests. A sandbox
+// has one vault, and is given no other.
+func (s *Service) createVault(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var vault json.RawMessage
+	sandbox := s.sandboxes[r.PathValue("id")]
+	switch {
+	case sandbox == nil:
+		refuse(w, http.StatusNotFound, "FSB::SANDBOX_NOT_FOUND", "there is no such sandbox")
+	case sandbox.policy == nil || string(sandbox.policy) == "null":
+		refuse(w, http.StatusBadRequest, "INVALID", "a vault needs a network policy")
+	case sandbox.vault != nil:
+		refuse(w, http.StatusConflict, "CONFLICT", "the sandbox has a vault")
+	case json.NewDecoder(r.Body).Decode(&vault) != nil:
+		refuse(w, http.StatusBadRequest, "INVALID", "that is no vault")
+	default:
+		sandbox.vault = vault
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("{}"))
+	}
+}
+
+// Policy returns the network policy that the sandbox was made with, and
+// Vault what its egress was given to ask about, as JSON. Either is nothing
+// for a sandbox that has none.
+func (s *Service) Policy(id string) json.RawMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sandbox := s.sandboxes[id]; sandbox != nil {
+		return sandbox.policy
+	}
+	return nil
+}
+
+func (s *Service) Vault(id string) json.RawMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sandbox := s.sandboxes[id]; sandbox != nil {
+		return sandbox.vault
+	}
+	return nil
 }
 
 // Expires returns when the sandbox is deleted, as the service was told.

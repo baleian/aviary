@@ -38,6 +38,14 @@ supervisor:
     # entry and name it here. Keep the entries from before: what was sealed
     # with one does not open without it.
     key: k1
+  # Where the Supervisor answers the egress of the sandbox service, which
+  # asks it about every request that leaves a sandbox: a secret in the
+  # release namespace with the certificate of the Supervisor and its key, as
+  # tls.crt and tls.key. The certificate names
+  # aviary-supervisor.<namespace>.svc.cluster.local, and the egress has to
+  # trust it. The Supervisor reads it when it starts.
+  resolver:
+    secretName: aviary-resolver-tls
   # The secret stores of the projects: where a project keeps secrets that it
   # does not give to Aviary to store. The Supervisor itself connects to a
   # store, so a store must not be a way into the cluster: a project can
@@ -122,6 +130,15 @@ egressProxy:
 sandboxes:
   # Where its lifecycle API is.
   url: http://opensandbox-server.opensandbox-system
+  # The hosts that a sandbox may send requests to, those of the model
+  # endpoints among them: names, *.domains, or * for every host. Every
+  # request over HTTPS to a host that is named here, or to the model
+  # endpoint of the agent, is recorded with the turn and the user that it
+  # comes from, and a request to the model endpoint gets its key. A model
+  # endpoint over HTTP gets no key. The sandbox service keeps the sandboxes
+  # from the rest, and the installation of the sandbox service keeps them
+  # out of the cluster.
+  allowedHosts: ["*"]
   # A secret in the release namespace with the key of that API.
   apiKey:
     secretName: aviary-sandboxes

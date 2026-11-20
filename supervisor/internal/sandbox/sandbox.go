@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -203,6 +204,35 @@ type Request struct {
 	// Kept is for how long the sandbox is kept: then it is deleted, unless
 	// Keep gave it longer. Zero is until it is deleted.
 	Kept time.Duration
+	// Hosts are the hosts that the sandbox may send requests to, each a name
+	// or a *.domain, or * for every host.
+	Hosts []string
+}
+
+// everyHost stands for every host among the hosts that a sandbox may reach.
+const everyHost = "*"
+
+// networkPolicy is what the requests of a sandbox may reach.
+type networkPolicy struct {
+	DefaultAction string        `json:"defaultAction"`
+	Egress        []networkRule `json:"egress,omitempty"`
+}
+
+type networkRule struct {
+	Action string `json:"action"`
+	Target string `json:"target"`
+}
+
+// policy is the network policy of a sandbox that may reach the hosts.
+func policy(hosts []string) networkPolicy {
+	if slices.Contains(hosts, everyHost) {
+		return networkPolicy{DefaultAction: "allow"}
+	}
+	allowed := networkPolicy{DefaultAction: "deny"}
+	for _, host := range hosts {
+		allowed.Egress = append(allowed.Egress, networkRule{Action: "allow", Target: host})
+	}
+	return allowed
 }
 
 // activePath is where the runner tells whether its session is at work.
@@ -237,11 +267,15 @@ func (c *Client) CreateSandbox(ctx context.Context, request Request) (Sandbox, e
 		kept = forever
 	}
 	spec := struct {
-		TemplateID string            `json:"templateId"`
-		Timeout    int64             `json:"timeout"`
-		Metadata   map[string]string `json:"metadata,omitempty"`
-		Lifecycle  *lifecycle        `json:"lifecycle,omitempty"`
-	}{TemplateID: request.Template, Timeout: int64(kept.Seconds()), Metadata: request.Metadata}
+		TemplateID    string            `json:"templateId"`
+		Timeout       int64             `json:"timeout"`
+		Metadata      map[string]string `json:"metadata,omitempty"`
+		Lifecycle     *lifecycle        `json:"lifecycle,omitempty"`
+		NetworkPolicy networkPolicy     `json:"networkPolicy"`
+	}{
+		TemplateID: request.Template, Timeout: int64(kept.Seconds()), Metadata: request.Metadata,
+		NetworkPolicy: policy(request.Hosts),
+	}
 	if request.Idle > 0 {
 		spec.Lifecycle = &lifecycle{idlePolicy{
 			IdleTimeoutSeconds: int(request.Idle.Seconds()),
@@ -252,6 +286,50 @@ func (c *Client) CreateSandbox(ctx context.Context, request Request) (Sandbox, e
 	var sandbox Sandbox
 	err := c.ask(ctx, http.MethodPost, "/sandboxes", nil, spec, &sandbox)
 	return sandbox, err
+}
+
+// Ask has the egress of the sandbox ask the resolver at the endpoint about
+// every request of the sandbox to the hosts over HTTPS, each host a name or
+// a *.domain, and put into the request the headers that the resolver
+// answers with. A request that the resolver does not answer for is not
+// sent. The egress asks nothing about a request over HTTP: it would refuse
+// it. A sandbox that the egress asks for already is left as it is.
+func (c *Client) Ask(ctx context.Context, id, endpoint string, hosts []string) error {
+	type source struct {
+		Type     string `json:"type"`
+		Endpoint string `json:"endpoint"`
+	}
+	type credential struct {
+		Name   string `json:"name"`
+		Source source `json:"source"`
+	}
+	type match struct {
+		Hosts   []string `json:"hosts"`
+		Schemes []string `json:"schemes"`
+	}
+	type auth struct {
+		Credential string `json:"credential"`
+	}
+	type binding struct {
+		Name  string `json:"name"`
+		Match match  `json:"match"`
+		Auth  auth   `json:"auth"`
+	}
+	vault := struct {
+		Credentials []credential `json:"credentials"`
+		Bindings    []binding    `json:"bindings"`
+	}{
+		Credentials: []credential{{Name: "aviary", Source: source{Type: "exchange", Endpoint: endpoint}}},
+		Bindings: []binding{{
+			Name: "aviary", Match: match{Hosts: hosts, Schemes: []string{"https"}}, Auth: auth{Credential: "aviary"},
+		}},
+	}
+	err := c.ask(ctx, http.MethodPost, "/sandboxes/"+url.PathEscape(id)+"/credential-vault", nil, vault, nil)
+	var refusal *Refusal
+	if errors.As(err, &refusal) && refusal.Status == http.StatusConflict {
+		return nil
+	}
+	return err
 }
 
 // Keep has the sandbox kept until the time, and deleted then.

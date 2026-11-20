@@ -47,6 +47,13 @@ type Config struct {
 	// Templates are what the sandboxes are made from: the harnesses that
 	// agents can use, by name, as the release had their templates built.
 	Templates sandbox.Templates
+	// Hosts are the hosts that the sandboxes may send requests to, those of
+	// the model endpoints of the agents among them: names, *.domains, or *
+	// for every host.
+	Hosts []string
+	// Ask returns where the egress of the sandbox is to ask about the
+	// requests of the sandbox. Without it, the egress asks nothing.
+	Ask func(sandbox string) (string, error)
 	// Idle is how long the sandbox of a session may be idle before it is
 	// put to sleep: no turn of the session runs, or its turn waits for a
 	// person. It is woken for the next turn, and for the answer. Zero is

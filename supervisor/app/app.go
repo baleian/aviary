@@ -6,6 +6,7 @@ package app
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -28,6 +30,7 @@ import (
 	"aviary/supervisor/internal/authz"
 	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/internal/metrics"
+	"aviary/supervisor/internal/resolver"
 	"aviary/supervisor/internal/sandbox"
 	"aviary/supervisor/secret"
 	"aviary/supervisor/store"
@@ -54,10 +57,14 @@ const (
 	sandboxesKey       = "AVIARY_SANDBOXES_API_KEY"
 	templateStore      = "AVIARY_TEMPLATE_STORE"
 	sandboxIdle        = "AVIARY_SANDBOX_IDLE_SECONDS"
+	sandboxHosts       = "AVIARY_SANDBOX_HOSTS"
+	resolverURL        = "AVIARY_RESOLVER_URL"
+	resolverTLS        = "AVIARY_RESOLVER_TLS"
 	sandboxRetention   = "AVIARY_SANDBOX_RETENTION_SECONDS"
 	apiAddr            = ":8080"
 	authzAddr          = ":9091"
 	metricsAddr        = ":9092"
+	resolverAddr       = ":9443"
 	// shutdownTimeout is how long the requests to the API get to finish.
 	shutdownTimeout = 10 * time.Second
 	// identityPatience is how long the identity provider may take to answer
@@ -77,6 +84,9 @@ var handover = 5 * time.Second
 // ports are what a Supervisor listens on.
 type ports struct {
 	api, authz, metrics net.Listener
+	// resolver is where the egress of the sandbox service asks about the
+	// requests of the sandboxes, over TLS.
+	resolver net.Listener
 }
 
 // Plugins are the plugins of a build: what connects its Supervisor to the
@@ -251,17 +261,47 @@ func serve(ctx context.Context, database string, plugins Plugins) error {
 	if on.metrics, err = net.Listen("tcp", metricsAddr); err != nil {
 		return err
 	}
-	return serveOn(ctx, on, st, ev, client, config, keys, stores, callers)
+	resolvedAt, err := env(resolverURL)
+	if err != nil {
+		return err
+	}
+	if on.resolver, err = resolverListener(); err != nil {
+		return err
+	}
+	return serveOn(ctx, on, st, ev, client, config, keys, stores, callers, resolvedAt)
+}
+
+// resolverListener listens for the egress of the sandbox service with the
+// certificate and the key in the directory that is named, as tls.crt and
+// tls.key: the egress asks only over TLS.
+func resolverListener() (net.Listener, error) {
+	dir, err := env(resolverTLS)
+	if err != nil {
+		return nil, err
+	}
+	certificate, err := tls.LoadX509KeyPair(filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key"))
+	if err != nil {
+		return nil, fmt.Errorf("the certificate of the resolver: %w", err)
+	}
+	listener, err := net.Listen("tcp", resolverAddr)
+	if err != nil {
+		return nil, err
+	}
+	return tls.NewListener(listener, &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12}), nil
 }
 
 // serveOn serves on the ports until ctx is done, with the turns in the
 // database of the store and their sandboxes at the sandbox service of the
 // client. It seals the secrets that it stores with the keys, and reads the
-// others from the stores. The callers are who may use the API.
-func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, client *sandbox.Client, config driver.Config, keys *secret.Keys, stores *secret.Stores, callers api.Callers) error {
+// others from the stores. The callers are who may use the API. The egress of
+// the sandbox service reaches the resolver at the address.
+func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, client *sandbox.Client, config driver.Config, keys *secret.Keys, stores *secret.Stores, callers api.Callers, resolvedAt string) error {
 	m := metrics.New()
 	stores.Asked = m.SecretRead
+	answers := resolver.New(st, keys, stores, slog.Default())
+	config.Ask = func(sandbox string) (string, error) { return answers.Endpoint(resolvedAt, sandbox) }
 	dr := driver.New(config, client, st, ev, m)
+	resolverServer := &http.Server{Handler: answers.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	apiServer := &http.Server{
 		Handler:           api.New(st, ev, dr, keys, stores, callers, ctx.Done()),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -284,12 +324,13 @@ func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, 
 	metricsMux.Handle("GET /metrics", m.Handler())
 	metricsServer := &http.Server{Handler: metricsMux, ReadHeaderTimeout: 10 * time.Second}
 	defer metricsServer.Close()
-	failed := make(chan error, 3)
+	failed := make(chan error, 4)
 	go func() { failed <- apiServer.Serve(on.api) }()
+	go func() { failed <- resolverServer.Serve(on.resolver) }()
 	go func() { failed <- authzServer.Serve(on.authz) }()
 	go func() { failed <- metricsServer.Serve(on.metrics) }()
 	go dr.Run(ctx)
-	slog.Info("listening", "api", on.api.Addr().String(),
+	slog.Info("listening", "api", on.api.Addr().String(), "resolver", on.resolver.Addr().String(),
 		"authz", on.authz.Addr().String(), "metrics", on.metrics.Addr().String())
 
 	select {
@@ -304,7 +345,7 @@ func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, 
 	time.Sleep(handover)
 	stopping, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	err := apiServer.Shutdown(stopping)
+	err := errors.Join(apiServer.Shutdown(stopping), resolverServer.Shutdown(stopping))
 	authzServer.GracefulStop()
 	return err
 }
@@ -392,6 +433,13 @@ func driverConfig() (driver.Config, error) {
 	var err error
 	if config.Templates, err = templatesOf(); err != nil {
 		return config, err
+	}
+	hosts, err := env(sandboxHosts)
+	if err != nil {
+		return config, err
+	}
+	if err := json.Unmarshal([]byte(hosts), &config.Hosts); err != nil {
+		return config, fmt.Errorf("%s: %w", sandboxHosts, err)
 	}
 	idle, err := env(sandboxIdle)
 	if err != nil {

@@ -75,6 +75,14 @@ spec:
               value: {{ .Values.sandboxes.templateStore | quote }}
             - name: AVIARY_SANDBOX_IDLE_SECONDS
               value: {{ .Values.sandboxes.idleSeconds | quote }}
+            - name: AVIARY_SANDBOX_HOSTS
+              value: {{ .Values.sandboxes.allowedHosts | toJson | quote }}
+            # Where the egress of the sandbox service reaches the
+            # Supervisors, and their certificate.
+            - name: AVIARY_RESOLVER_URL
+              value: https://aviary-supervisor.{{ .Release.Namespace }}.svc.cluster.local:9443
+            - name: AVIARY_RESOLVER_TLS
+              value: /etc/aviary/resolver
             - name: AVIARY_SANDBOX_RETENTION_SECONDS
               value: {{ .Values.sandboxes.retentionSeconds | quote }}
             - name: AVIARY_HARNESSES
@@ -96,6 +104,8 @@ spec:
               containerPort: 8080
             - name: authz
               containerPort: 9091
+            - name: resolver
+              containerPort: 9443
             - name: metrics
               containerPort: 9092
           readinessProbe:
@@ -112,6 +122,9 @@ spec:
             - name: encryption
               mountPath: /etc/aviary/encryption
               readOnly: true
+            - name: resolver
+              mountPath: /etc/aviary/resolver
+              readOnly: true
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -121,3 +134,6 @@ spec:
         - name: encryption
           secret:
             secretName: {{ .Values.supervisor.encryption.secretName }}
+        - name: resolver
+          secret:
+            secretName: {{ .Values.supervisor.resolver.secretName }}

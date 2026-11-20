@@ -2,6 +2,7 @@ package driver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -846,6 +847,60 @@ func TestASessionThatIsNotUsedForLongerThanItsSandboxIsKeptHasEnded(t *testing.T
 	}
 	if len(i.service.Sandboxes()) != 0 || len(i.service.Given()) != 2 {
 		t.Errorf("the service has the sandboxes %v, and the runners were given %v", i.service.Sandboxes(), i.service.Given())
+	}
+}
+
+func TestTheSandboxOfASessionReachesTheHostsOfTheInstallation(t *testing.T) {
+	// ask is where the egress of a sandbox is to ask about its requests.
+	ask := func(sandbox string) (string, error) { return "https://resolver.example.com/for-" + sandbox, nil }
+	for _, test := range []struct {
+		hosts         []string
+		policy, vault string
+	}{
+		{
+			hosts:  []string{"pypi.org", "*.example.com"},
+			policy: `{"defaultAction":"deny","egress":[{"action":"allow","target":"pypi.org"},{"action":"allow","target":"*.example.com"}]}`,
+			vault:  `["pypi.org","*.example.com","models.example.com"]`,
+		},
+		// Of an installation that lets every host be reached, the requests
+		// to the model endpoint are asked about.
+		{hosts: []string{"*"}, policy: `{"defaultAction":"allow"}`, vault: `["models.example.com"]`},
+	} {
+		i := install(t, func(config *Config) {
+			config.Hosts, config.Ask = test.hosts, ask
+		})
+		driver, _ := i.supervisor()
+		session := i.session(store.Agent{Model: &store.Model{Name: "a-model"}})
+		for _, text := range []string{"hello", "and then"} {
+			turn := i.send(driver, session, text)
+			given := i.service.TurnWith(t, turn.ID.String())
+			given.Tell("started", started)
+			given.Tell("finished", finished)
+			i.ended(turn.ID)
+		}
+		sandbox := i.sandbox(session)
+		if policy := string(i.service.Policy(sandbox)); policy != test.policy {
+			t.Errorf("of the hosts %v, the sandbox may reach %s, not %s", test.hosts, policy, test.policy)
+		}
+		var vault struct {
+			Credentials []struct {
+				Name   string
+				Source struct{ Type, Endpoint string }
+			}
+			Bindings []struct {
+				Match struct{ Hosts, Schemes []string }
+				Auth  struct{ Credential string }
+			}
+		}
+		if err := json.Unmarshal(i.service.Vault(sandbox), &vault); err != nil || len(vault.Credentials) != 1 || len(vault.Bindings) != 1 {
+			t.Fatalf("of the hosts %v, the egress of the sandbox was given %s: %v", test.hosts, i.service.Vault(sandbox), err)
+		}
+		credential, binding := vault.Credentials[0], vault.Bindings[0]
+		hosts, _ := json.Marshal(binding.Match.Hosts)
+		if credential.Source.Type != "exchange" || credential.Source.Endpoint != "https://resolver.example.com/for-"+sandbox ||
+			binding.Auth.Credential != credential.Name || string(hosts) != test.vault || !slices.Equal(binding.Match.Schemes, []string{"https"}) {
+			t.Errorf("of the hosts %v, the egress of the sandbox was given %s", test.hosts, i.service.Vault(sandbox))
+		}
 	}
 }
 

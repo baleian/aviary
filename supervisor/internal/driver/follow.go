@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"slices"
 	"sync"
 	"time"
 
@@ -290,6 +292,9 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 	if given {
 		return runner, nil
 	}
+	if err := d.askAbout(following, turn, id); err != nil {
+		return nil, fmt.Errorf("have the egress of the sandbox ask about its requests: %w", err)
+	}
 	if d.config.Retention > 0 {
 		if err := d.sandboxes.Keep(following, id, time.Now().Add(d.config.Retention)); err != nil {
 			return nil, fmt.Errorf("have the sandbox of the session kept: %w", err)
@@ -369,8 +374,9 @@ func (d *Driver) provide(ctx context.Context, r *run) (string, error) {
 			metadataAgent:   turn.AgentID.String(),
 			metadataProject: turn.ProjectID.String(),
 		},
-		Idle: d.config.Idle,
-		Kept: d.config.Retention,
+		Idle:  d.config.Idle,
+		Kept:  d.config.Retention,
+		Hosts: d.config.Hosts,
 	})
 	if err != nil {
 		return "", err
@@ -397,6 +403,33 @@ func (d *Driver) provide(ctx context.Context, r *run) (string, error) {
 	}
 	r.keep(session.Sandbox)
 	return session.Sandbox, nil
+}
+
+// askAbout has the egress of the sandbox ask about the requests of the
+// sandbox to the hosts that it may reach by name, and to the model endpoint
+// of the turn's agent: Aviary records each of them, and gives the key of the
+// endpoint to a request to it.
+func (d *Driver) askAbout(ctx context.Context, turn store.FollowedTurn, id string) error {
+	if d.config.Ask == nil {
+		return nil
+	}
+	var hosts []string
+	for _, host := range d.config.Hosts {
+		if host != "*" {
+			hosts = append(hosts, host)
+		}
+	}
+	if endpoint, err := url.Parse(turn.ProviderURL); err == nil && endpoint.Hostname() != "" && !slices.Contains(hosts, endpoint.Hostname()) {
+		hosts = append(hosts, endpoint.Hostname())
+	}
+	if len(hosts) == 0 {
+		return nil
+	}
+	endpoint, err := d.config.Ask(id)
+	if err != nil {
+		return err
+	}
+	return d.sandboxes.Ask(ctx, id, endpoint, hosts)
 }
 
 // forget has the sandbox deleted, and the session have none.

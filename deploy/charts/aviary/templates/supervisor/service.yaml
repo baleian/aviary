@@ -13,6 +13,11 @@ spec:
     - name: http
       port: 80
       targetPort: http
+    # The egress of the sandbox service asks on this port about the requests
+    # of the sandboxes.
+    - name: resolver
+      port: 9443
+      targetPort: resolver
     # The Egress Proxy asks on this port which turn a request comes from.
     - name: authz
       port: 9091

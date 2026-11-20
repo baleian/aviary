@@ -4,6 +4,8 @@ supervisor:
   encryption:
     secretName: other-keys
     key: k2
+  resolver:
+    secretName: other-resolver-tls
   secretStores:
     allowedHosts:
       - secrets.example.com:8200
@@ -30,6 +32,7 @@ egressProxy:
             matchLabels: {kubernetes.io/metadata.name: llm-gateway}
 sandboxes:
   url: https://sandboxes.example.com
+  allowedHosts: [pypi.org, "*.example.com"]
   templateStore: s3://example/templates
   idleSeconds: 0
   retentionSeconds: 604800

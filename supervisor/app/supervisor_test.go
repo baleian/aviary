@@ -103,6 +103,7 @@ func install(t *testing.T, changes ...func(*driver.Config)) *installation {
 			MaxToolOutputBytes: 65536,
 			Poll:               5 * time.Millisecond,
 		},
+		Hosts:              []string{"*"},
 		MaxStartup:         90 * time.Second,
 		MaxTurn:            30 * time.Minute,
 		MaxQueueWait:       2 * time.Minute,
@@ -120,6 +121,10 @@ func install(t *testing.T, changes ...func(*driver.Config)) *installation {
 		keys: testenv.Keys(t), storeHosts: []string{storeHost}, secrets: &shelves{}, log: memorylog.New(),
 	}
 }
+
+// resolvedAt is where the Supervisors of the tests say that the egress of
+// a sandbox asks about its requests.
+const resolvedAt = "https://resolver.example.com:9443"
 
 // dispatching are the records as a Supervisor of the tests has them. They
 // note the token of every turn that is dispatched, which only the one who
@@ -154,7 +159,10 @@ func (i *installation) stores() *secret.Stores {
 type supervisor struct {
 	*installation
 	api, metrics string
-	proxies      authv3.AuthorizationClient
+	// resolver is where the Supervisor answers the egress of the sandbox
+	// service, without TLS here.
+	resolver string
+	proxies  authv3.AuthorizationClient
 	// stop tells the Supervisor to stop, as Kubernetes does, and returns
 	// when it has.
 	stop func()
@@ -174,7 +182,7 @@ func (i *installation) supervisor() *supervisor {
 		}
 		return listener
 	}
-	on := ports{api: listen(), authz: listen(), metrics: listen()}
+	on := ports{api: listen(), authz: listen(), metrics: listen(), resolver: listen()}
 	connect := func(listener net.Listener) *grpc.ClientConn {
 		connection, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err != nil {
@@ -187,12 +195,13 @@ func (i *installation) supervisor() *supervisor {
 		installation: i,
 		api:          "http://" + on.api.Addr().String(),
 		metrics:      "http://" + on.metrics.Addr().String(),
+		resolver:     "http://" + on.resolver.Addr().String(),
 		proxies:      authv3.NewAuthorizationClient(connect(on.authz)),
 	}
 	ctx, stop := context.WithCancel(context.Background())
 	stopped := make(chan error, 1)
 	go func() {
-		stopped <- serveOn(ctx, on, dispatching{i.records, i.tokens}, ev, i.sandboxes, i.config, i.keys, stores, i.callers)
+		stopped <- serveOn(ctx, on, dispatching{i.records, i.tokens}, ev, i.sandboxes, i.config, i.keys, stores, i.callers, resolvedAt)
 	}()
 	s.stop = sync.OnceFunc(func() {
 		stop()
