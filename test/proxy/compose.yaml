@@ -1,0 +1,22 @@
+# The Egress Proxy as the chart sets it up, once for each file of values in
+# this directory. `make test-proxy` writes the configuration that the chart
+# makes of the values to .out/proxy and names the image of the chart. The
+# only authority that the proxies trust is the certificate of the tests'
+# server.
+services:
+  listed: &proxy
+    image: ${ENVOY_IMAGE}
+    command: ["--config-path", "/etc/envoy/envoy.yaml", "--disable-hot-restart", "--log-level", "warn"]
+    volumes:
+      - ../../.out/proxy/listed:/etc/envoy:ro
+      - ../../.out/proxy/tls/cert.pem:/etc/ssl/certs/ca-certificates.crt:ro
+  open:
+    <<: *proxy
+    volumes:
+      - ../../.out/proxy/open:/etc/envoy:ro
+      - ../../.out/proxy/tls/cert.pem:/etc/ssl/certs/ca-certificates.crt:ro
+  closed:
+    <<: *proxy
+    volumes:
+      - ../../.out/proxy/closed:/etc/envoy:ro
+      - ../../.out/proxy/tls/cert.pem:/etc/ssl/certs/ca-certificates.crt:ro

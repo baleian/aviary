@@ -528,7 +528,7 @@ func (suite suite) testKeyInASecretStore(t *testing.T) {
 		t.Errorf("after that, the provider has its key at %+v: %v", read.APIKeyAt, err)
 	}
 
-	// The turn that runs in a sandbox tells of the provider with where its
+	// The turn that runs in a session tells of the provider with where its
 	// key is, and of the secret store as it is then.
 	agent, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: &store.Model{Provider: created.ID, Name: "a-model"}})
 	if err != nil {
@@ -538,16 +538,13 @@ func (suite suite) testKeyInASecretStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if set, err := st.SetSandbox(ctx, session.ID, "", "sandbox-1"); err != nil || !set {
-		t.Fatalf("the session was not given its sandbox: %v", err)
-	}
 	st.running(session.ID)
-	origin, err := st.SandboxTurn(ctx, "sandbox-1")
+	origin, err := st.SessionTurn(ctx, session.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if origin.Provider == nil || origin.Provider.APIKey != nil || !reflect.DeepEqual(origin.Provider.APIKeyAt, elsewhere) {
-		t.Errorf("the turn of the sandbox has the provider %+v", origin.Provider)
+		t.Errorf("the turn of the session has the provider %+v", origin.Provider)
 	}
 	if in := origin.SecretStore; in == nil || in.ID != secrets.ID || in.ProjectID != project.ID || in.Name != "a store" || in.Kind != "a kind" ||
 		!keeps(t, in.Settings, `{"where": "there"}`) || string(in.Credential) != "sealed" || !in.UpdatedAt.Equal(secrets.UpdatedAt) {
@@ -559,17 +556,17 @@ func (suite suite) testKeyInASecretStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	origin, err = st.another().SandboxTurn(ctx, "sandbox-1")
+	origin, err = st.another().SessionTurn(ctx, session.ID)
 	if in := origin.SecretStore; err != nil || in == nil || in.Kind != "another kind" || !keeps(t, in.Settings, `{"where": "elsewhere"}`) ||
 		string(in.Credential) != "another" || !in.UpdatedAt.Equal(moved.UpdatedAt) || !in.UpdatedAt.After(secrets.UpdatedAt) {
 		t.Errorf("after the secret store was replaced, the key of the provider is in %+v: %v", in, err)
 	}
 }
 
-// The turn that runs in a sandbox is found by the sandbox, with where it
+// The turn that runs in a session is found by the session, with where it
 // comes from: what it belongs to, who sent its message, and the provider of
 // its agent as the provider is then, with the secret store of its key.
-func (suite suite) testTurnOfASandbox(t *testing.T) {
+func (suite suite) testTurnOfASession(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	project, err := st.CreateProject(ctx, "test")
@@ -594,9 +591,9 @@ func (suite suite) testTurnOfASandbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	notFound := func(sandbox, what string) {
+	notFound := func(session uuid.UUID, what string) {
 		t.Helper()
-		if _, err := st.another().SandboxTurn(ctx, sandbox); !errors.Is(err, store.ErrNotFound) {
+		if _, err := st.another().SessionTurn(ctx, session); !errors.Is(err, store.ErrNotFound) {
 			t.Errorf("%s: %v", what, err)
 		}
 	}
@@ -605,25 +602,22 @@ func (suite suite) testTurnOfASandbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if kept, err := st.SetSandbox(ctx, session.ID, "", "sandbox-1"); err != nil || !kept {
-		t.Fatalf("the session was not given its sandbox: %v", err)
-	}
-	notFound("sandbox-1", "the sandbox of a session whose turn waits to run")
+	notFound(session.ID, "a session whose turn waits to run")
 	st.dispatch()
+	notFound(session.ID, "a session whose turn no Supervisor follows")
 	if _, err := st.FollowTurn(ctx, turn.ID); err != nil {
 		t.Fatal(err)
 	}
-	origin, err := st.another().SandboxTurn(ctx, "sandbox-1")
+	origin, err := st.another().SessionTurn(ctx, session.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if origin.TurnID != turn.ID || origin.SessionID != session.ID || origin.AgentID != agent.ID || origin.ProjectID != project.ID ||
 		origin.UserID != sender.ID || origin.Subject != "subject-of-ann" || origin.Provider == nil || origin.Provider.ID != provider.ID ||
 		origin.Provider.URL != provider.URL || string(origin.Provider.APIKey) != "a sealed key" || origin.Provider.APIKeyAt != nil || origin.SecretStore != nil {
-		t.Errorf("the turn of the sandbox comes from %+v, with the provider %+v", origin, origin.Provider)
+		t.Errorf("the turn of the session comes from %+v, with the provider %+v", origin, origin.Provider)
 	}
-	notFound("sandbox-2", "a sandbox that no session has")
-	notFound("", "no sandbox")
+	notFound(uuid.New(), "a session that there is not")
 
 	// The key of the provider is put in a secret store while the turn runs.
 	secrets, err := st.CreateSecretStore(ctx, store.SecretStore{
@@ -636,19 +630,19 @@ func (suite suite) testTurnOfASandbox(t *testing.T) {
 	if _, err := st.ReplaceProvider(ctx, store.Provider{ID: provider.ID, Name: "a provider", URL: "https://api.example.com/v2", APIKeyAt: at}); err != nil {
 		t.Fatal(err)
 	}
-	origin, err = st.another().SandboxTurn(ctx, "sandbox-1")
+	origin, err = st.another().SessionTurn(ctx, session.ID)
 	if err != nil || origin.Provider == nil || origin.Provider.URL != "https://api.example.com/v2" || origin.Provider.APIKey != nil ||
 		!reflect.DeepEqual(origin.Provider.APIKeyAt, at) {
-		t.Errorf("after its provider was replaced, the turn of the sandbox has the provider %+v: %v", origin.Provider, err)
+		t.Errorf("after its provider was replaced, the turn of the session has the provider %+v: %v", origin.Provider, err)
 	}
 	if in := origin.SecretStore; in == nil || in.ID != secrets.ID || in.ProjectID != project.ID || in.Kind != "a kind" ||
 		!keeps(t, in.Settings, `{"where": "there"}`) || string(in.Credential) != "sealed" || !in.UpdatedAt.Equal(secrets.UpdatedAt) {
 		t.Errorf("the key of the provider is in the secret store %+v", in)
 	}
 
-	// Once the turn has ended, nothing runs in the sandbox.
+	// Once the turn has ended, nothing runs in the session.
 	st.end(turn.ID, true, store.Failure{})
-	notFound("sandbox-1", "the sandbox of a session whose turn has ended")
+	notFound(session.ID, "a session whose turn has ended")
 }
 
 // second returns the error of an operation.
@@ -698,7 +692,7 @@ func (suite suite) testSecretStores(t *testing.T) {
 
 // An agent names its model: a provider of its project and a model of that
 // provider. A turn of the agent is followed with the provider's URL and the
-// model, and while it runs, its sandbox tells where it comes from and which
+// model, and while it runs, its session tells where it comes from and which
 // provider its agent uses, as the provider is then.
 func (suite suite) testModelOfAnAgent(t *testing.T) {
 	t.Parallel()
@@ -713,9 +707,9 @@ func (suite suite) testModelOfAnAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// session creates a session of an agent with the model, which runs in
-	// the sandbox, and has a Supervisor follow its turn.
-	session := func(model *store.Model, sandbox string) (store.Agent, store.Session, store.FollowedTurn) {
+	// session creates a session of an agent with the model, and has a
+	// Supervisor follow its turn.
+	session := func(model *store.Model) (store.Agent, store.Session, store.FollowedTurn) {
 		t.Helper()
 		agent, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: model})
 		if err != nil {
@@ -729,9 +723,6 @@ func (suite suite) testModelOfAnAgent(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if set, err := st.SetSandbox(ctx, session.ID, "", sandbox); err != nil || !set {
-			t.Fatalf("the session was not given its sandbox: %v", err)
-		}
 		st.queue(session.ID)
 		followed, err := st.FollowTurn(ctx, st.dispatch().TurnID)
 		if err != nil {
@@ -740,18 +731,18 @@ func (suite suite) testModelOfAnAgent(t *testing.T) {
 		return agent, session, followed
 	}
 
-	agent, held, followed := session(&store.Model{Provider: provider.ID, Name: "a-model"}, "sandbox-1")
+	agent, held, followed := session(&store.Model{Provider: provider.ID, Name: "a-model"})
 	if followed.ProviderURL != provider.URL || followed.Model != "a-model" || followed.AgentID != agent.ID || followed.ProjectID != project.ID {
 		t.Errorf("the turn of an agent that names its model is followed as %+v", followed)
 	}
-	origin, err := st.SandboxTurn(ctx, "sandbox-1")
+	origin, err := st.SessionTurn(ctx, held.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if origin.TurnID != followed.ID || origin.SessionID != held.ID || origin.AgentID != agent.ID || origin.ProjectID != project.ID ||
 		origin.Provider == nil || origin.Provider.ID != provider.ID || origin.Provider.URL != provider.URL || string(origin.Provider.APIKey) != "a sealed key" ||
 		origin.Provider.APIKeyAt != nil || origin.SecretStore != nil {
-		t.Errorf("the turn of the sandbox comes from %+v, with the provider %+v", origin, origin.Provider)
+		t.Errorf("the turn of the session comes from %+v, with the provider %+v", origin, origin.Provider)
 	}
 	// An agent names a provider that there is.
 	if _, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: &store.Model{Provider: uuid.New(), Name: "a-model"}}); err == nil {
@@ -761,38 +752,23 @@ func (suite suite) testModelOfAnAgent(t *testing.T) {
 	if _, err := st.ReplaceProvider(ctx, store.Provider{ID: provider.ID, Name: "a provider", URL: "http://model.example.com:8000"}); err != nil {
 		t.Fatal(err)
 	}
-	origin, err = st.another().SandboxTurn(ctx, "sandbox-1")
+	origin, err = st.another().SessionTurn(ctx, held.ID)
 	if err != nil || origin.Provider == nil || origin.Provider.URL != "http://model.example.com:8000" || origin.Provider.APIKey != nil {
-		t.Errorf("after its provider was replaced, the turn of the sandbox comes from %+v, with the provider %+v: %v", origin, origin.Provider, err)
+		t.Errorf("after its provider was replaced, the turn of the session comes from %+v, with the provider %+v: %v", origin, origin.Provider, err)
 	}
 
 	// An agent from before agents named their models has none.
-	_, _, plain := session(nil, "sandbox-2")
+	_, other, plain := session(nil)
 	if plain.ProviderURL != "" || plain.Model != "" {
 		t.Errorf("the turn of an agent that names no model is followed as %+v", plain)
 	}
-	if origin, err := st.SandboxTurn(ctx, "sandbox-2"); err != nil || origin.TurnID != plain.ID || origin.Provider != nil {
-		t.Errorf("the turn of the sandbox of an agent that names no model comes from %+v: %v", origin, err)
+	if origin, err := st.SessionTurn(ctx, other.ID); err != nil || origin.TurnID != plain.ID || origin.Provider != nil {
+		t.Errorf("the turn of the session of an agent that names no model comes from %+v: %v", origin, err)
 	}
 
-	// A sandbox tells of a turn only while the turn runs.
-	if _, err := st.SandboxTurn(ctx, "a-sandbox-of-no-session"); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("a sandbox of no session: %v", err)
-	}
+	// A session tells of a turn only while the turn runs.
 	st.end(followed.ID, true, store.Failure{})
-	if _, err := st.SandboxTurn(ctx, "sandbox-1"); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("the sandbox of a turn that has ended: %v", err)
-	}
-	waiting, err := st.CreateSession(ctx, agent.ID, uuid.Nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if set, err := st.SetSandbox(ctx, waiting.ID, "", "sandbox-3"); err != nil || !set {
-		t.Fatalf("the session was not given its sandbox: %v", err)
-	}
-	st.queue(waiting.ID)
-	st.dispatch()
-	if _, err := st.SandboxTurn(ctx, "sandbox-3"); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("the sandbox of a turn that no Supervisor follows: %v", err)
+	if _, err := st.SessionTurn(ctx, held.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("the session of a turn that has ended: %v", err)
 	}
 }

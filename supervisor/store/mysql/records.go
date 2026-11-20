@@ -874,11 +874,8 @@ func (s *records) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.Follo
 	return followed, nil
 }
 
-func (s *records) SandboxTurn(ctx context.Context, sandbox string) (store.Origin, error) {
-	if sandbox == "" {
-		return store.Origin{}, store.ErrNotFound
-	}
-	row, err := s.queries.SandboxTurn(ctx, &sandbox)
+func (s *records) SessionTurn(ctx context.Context, sessionID uuid.UUID) (store.Origin, error) {
+	row, err := s.queries.SessionTurn(ctx, key.ID(sessionID))
 	if err != nil {
 		return store.Origin{}, found(err)
 	}
@@ -886,7 +883,7 @@ func (s *records) SandboxTurn(ctx context.Context, sandbox string) (store.Origin
 }
 
 // originOf is where a running turn comes from, as a row tells it.
-func originOf(row db.SandboxTurnRow) store.Origin {
+func originOf(row db.SessionTurnRow) store.Origin {
 	origin := store.Origin{
 		TurnID: uuid.UUID(row.TurnID), SessionID: uuid.UUID(row.SessionID), AgentID: uuid.UUID(row.AgentID), ProjectID: uuid.UUID(row.ProjectID),
 		Subject: row.Subject,

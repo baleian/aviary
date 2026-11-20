@@ -1,0 +1,6 @@
+# An Egress Proxy that lets requests through to the hosts of a list. The
+# hosts are the tests themselves.
+egressProxy:
+  allowedHosts:
+    - model.test:8081
+    - allowed.test

@@ -339,10 +339,10 @@ func TestASessionIsOfItsCreator(t *testing.T) {
 	}
 }
 
-// The record of a request tells who sent the message of the turn that the
-// request comes from: the user, and the subject that the identity provider
-// knows the user by.
-func TestTheRecordOfARequestTellsWhoSentTheMessageOfItsTurn(t *testing.T) {
+// The Egress Proxy is told who sent the message of the turn that a request
+// comes from, for its record: the user, and the subject that the identity
+// provider knows the user by.
+func TestProxyIsToldWhoSentTheMessageOfATurn(t *testing.T) {
 	aviary := install(t)
 	aviary.callers = api.Callers{
 		Provider: tokens{
@@ -362,13 +362,11 @@ func TestTheRecordOfARequestTellsWhoSentTheMessageOfItsTurn(t *testing.T) {
 		s.token = sender
 		var who me
 		s.request(http.MethodGet, "/v1/me", "", &who)
-		turn := s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID
-		runner := aviary.given(turn)
-		for _, target := range []string{"https://api.example.com/v1/chat/completions", "https://pypi.org/simple/"} {
-			s.resolve(runner.Sandbox, "POST", target)
-			if record := aviary.record(turn); who.ID == "" || record["user"] != who.ID || who.Subject == "" || record["subject"] != who.Subject {
-				t.Errorf("of a request to %s of the turn that the user %q, the subject %q, sent, the record is %v",
-					target, who.ID, who.Subject, record)
+		runner := aviary.given(s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID)
+		for _, forward := range []bool{false, true} {
+			if origin := s.origin(aviary.token(runner.Sandbox), forward); who.ID == "" || origin["user"] != who.ID || who.Subject == "" || origin["subject"] != who.Subject {
+				t.Errorf("of a request of the turn that the user %q, the subject %q, sent, through the forward proxy %t, the proxy is told %v",
+					who.ID, who.Subject, forward, origin)
 			}
 		}
 		senders[who.ID] = true

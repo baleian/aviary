@@ -1,7 +1,9 @@
 # What connects to a sandbox, and what a sandbox connects to. The agent in a
-# sandbox may do other things than it was asked to, so the sandbox connects
-# to nothing: no other pod, no address outside and no DNS. The Supervisors
-# connect to its runner, and nothing else connects to it.
+# sandbox may do other things than it was asked to, so the sandbox reaches
+# the Egress Proxy and nothing else: no other pod, no address outside and no
+# DNS. What it sends out goes through the proxy, which decides and keeps a
+# record. The Supervisors connect to its runner, and nothing else connects
+# to it.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -21,3 +23,15 @@ spec:
               app.kubernetes.io/component: supervisor
       ports:
         - {protocol: TCP, port: 8700}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: aviary
+              app.kubernetes.io/component: egress-proxy
+      ports:
+        - {protocol: TCP, port: 8080}
+        - {protocol: TCP, port: 3128}

@@ -572,10 +572,10 @@ type Store interface {
 	// waits to run, and ErrTurnEnded if the turn has ended.
 	FollowTurn(ctx context.Context, turnID uuid.UUID) (FollowedTurn, error)
 
-	// SandboxTurn returns the turn that runs in the sandbox, and what the turn
-	// belongs to: the turn that runs of the session whose sandbox it is. It
-	// returns ErrNotFound if no turn runs in the sandbox.
-	SandboxTurn(ctx context.Context, sandbox string) (Origin, error)
+	// SessionTurn returns the turn that runs in the session, and what the
+	// turn belongs to. It returns ErrNotFound if no turn runs in the
+	// session.
+	SessionTurn(ctx context.Context, sessionID uuid.UUID) (Origin, error)
 
 	// StartTurn records that the harness of the turn has been given the
 	// message. It returns how long the turn took to start, from its dispatch,

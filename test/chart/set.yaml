@@ -4,8 +4,6 @@ supervisor:
   encryption:
     secretName: other-keys
     key: k2
-  resolver:
-    secretName: other-resolver-tls
   secretStores:
     allowedHosts:
       - secrets.example.com:8200
@@ -20,6 +18,16 @@ supervisor:
         claims: {username: email}
     admins: [platform]
     users: [team-a, team-b]
+egressProxy:
+  replicas: 2
+  allowedHosts:
+    - llm.example.com
+    - packages.example.com
+    - git.example.com:8443
+  extraEgress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: llm-gateway}
 sandboxes:
   idleSeconds: 0
   retentionSeconds: 604800

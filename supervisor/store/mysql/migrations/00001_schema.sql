@@ -135,16 +135,13 @@ create table sessions (
     -- The user who created the session, whose session it is. A session of an
     -- installation that asks nobody who they are is nobody's.
     created_by binary(16),
-    -- The sandbox that the session runs in, as the sandbox service names it.
+    -- The sandbox that the session runs in.
     sandbox varchar(255),
     created_at datetime(6) not null default (now(6)),
     -- When the session was ended. A session that has ended takes no message.
     ended_at datetime(6),
     foreign key (agent_id) references agents (id),
-    foreign key (created_by) references users (id),
-    -- A request that leaves a sandbox is told apart by the turn that runs in
-    -- the sandbox, which is found by the session whose sandbox it is.
-    key sessions_sandbox (sandbox)
+    foreign key (created_by) references users (id)
 );
 
 create table turns (

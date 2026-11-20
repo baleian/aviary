@@ -311,9 +311,9 @@ func TestRequests(t *testing.T) {
 	defer model.Close()
 	messages := []map[string]any{{"role": "user", "content": "say hello"}}
 	for _, path := range []string{"/v1/chat/completions", "/v1/responses"} {
-		// The model answers a request that the egress of a sandbox put its
-		// key into, and not one with what the harness holds in its place.
-		for _, key := range []string{"", "none"} {
+		// The model answers the Egress Proxy, which holds its key, and not a
+		// sandbox, which holds the token of its session.
+		for _, key := range []string{"", "a-session-token"} {
 			status, _, _ := events(t, model.URL+path, key, map[string]any{"stream": true, "messages": messages})
 			if status != http.StatusUnauthorized {
 				t.Errorf("%s with the key %q was answered with %d", path, key, status)

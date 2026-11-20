@@ -102,7 +102,7 @@ func Run(t *testing.T, create func(t *testing.T) Database) {
 		"AgentsOfAProject":                 suite.testAgentsOfAProject,
 		"SessionsOfAnAgent":                suite.testSessionsOfAnAgent,
 		"SandboxOfASession":                suite.testSandboxOfASession,
-		"TurnOfASandbox":                   suite.testTurnOfASandbox,
+		"TurnOfASession":                   suite.testTurnOfASession,
 		"EndSession":                       suite.testEndSession,
 		"Providers":                        suite.testProviders,
 		"SecretStores":                     suite.testSecretStores,

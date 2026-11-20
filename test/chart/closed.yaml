@@ -1,0 +1,3 @@
+# An installation that lets no request through to any host.
+egressProxy:
+  allowedHosts: []

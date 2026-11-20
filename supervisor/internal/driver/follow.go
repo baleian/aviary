@@ -234,11 +234,11 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 		return nil, nil
 	case seen.State == sandbox.Asleep:
 		// The session was not at work, and its sandbox was put to sleep.
-		harness, err := d.harness(turn)
+		pod, err := d.pod(turn)
 		if err != nil {
 			return nil, err
 		}
-		if err := d.sandboxes.Resume(following, id, harness); err != nil {
+		if err := d.sandboxes.Resume(following, id, pod); err != nil {
 			return nil, fmt.Errorf("wake the sandbox of the session: %w", err)
 		}
 		return nil, errors.New("the sandbox of the session is woken")
@@ -272,7 +272,7 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 	// The runner may have the turn even when no answer comes.
 	r.give()
 	err = runner.Start(following, turn.ID, sandbox.Turn{
-		Text: turn.Text, Instructions: turn.Instructions, Approval: turn.Approval, Environment: environment(turn),
+		Text: turn.Text, Instructions: turn.Instructions, Approval: turn.Approval, Environment: d.environment(turn),
 	})
 	if errors.Is(err, sandbox.ErrBusy) {
 		// A turn that this installation has ended runs on in the sandbox.
@@ -303,26 +303,31 @@ func (d *Driver) expired(ctx context.Context, turn store.FollowedTurn) bool {
 	return time.Since(last) >= d.config.Retention
 }
 
-// harness is the harness of the turn as the installation has it.
-func (d *Driver) harness(turn store.FollowedTurn) (sandbox.Harness, error) {
+// pod is the pod of the sandbox of the turn's session: of the harness as the
+// installation has it, with the token of the session.
+func (d *Driver) pod(turn store.FollowedTurn) (sandbox.Pod, error) {
 	harness, found := d.config.Harnesses[turn.Harness]
 	if !found {
-		return sandbox.Harness{}, fmt.Errorf("the installation has no harness %s", turn.Harness)
+		return sandbox.Pod{}, fmt.Errorf("the installation has no harness %s", turn.Harness)
 	}
-	return harness, nil
+	token, err := d.config.Token(turn.SessionID)
+	if err != nil {
+		return sandbox.Pod{}, fmt.Errorf("make the token of the session: %w", err)
+	}
+	return sandbox.Pod{Harness: harness, Token: token}, nil
 }
 
 // provide makes the sandbox of the turn's session, and returns its name.
 func (d *Driver) provide(ctx context.Context, r *run) (string, error) {
 	turn := r.turn
-	harness, err := d.harness(turn)
+	pod, err := d.pod(turn)
 	if err != nil {
 		return "", err
 	}
 	err = d.sandboxes.Create(ctx, sandbox.Request{
 		Session: turn.SessionID,
 		Labels:  map[string]string{labelAgent: turn.AgentID.String(), labelProject: turn.ProjectID.String()},
-		Harness: harness,
+		Pod:     pod,
 		Kept:    d.config.Retention,
 	})
 	if err != nil {

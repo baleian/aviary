@@ -1600,7 +1600,7 @@ func (q *Queries) ResolveApproval(ctx context.Context, arg ResolveApprovalParams
 	return result.RowsAffected()
 }
 
-const sandboxTurn = `-- name: SandboxTurn :one
+const sessionTurn = `-- name: SessionTurn :one
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
        coalesce(users.subject, '') as subject,
        agents.provider_id, coalesce(providers.url, '') as provider_url, providers.api_key as provider_api_key,
@@ -1615,10 +1615,10 @@ join agents on agents.id = sessions.agent_id
 left join users on users.id = turns.created_by
 left join providers on providers.id = agents.provider_id
 left join secret_stores on secret_stores.id = providers.api_key_store_id
-where sessions.sandbox = ? and turns.state = 'running'
+where turns.session_id = ? and turns.state = 'running'
 `
 
-type SandboxTurnRow struct {
+type SessionTurnRow struct {
 	TurnID          key.ID
 	SessionID       key.ID
 	AgentID         key.ID
@@ -1639,13 +1639,13 @@ type SandboxTurnRow struct {
 	StoreUpdatedAt  *time.Time
 }
 
-// The running turn of the session whose sandbox it is, what the turn
-// belongs to, who sent its message, and the provider of its agent as it is
-// now, if the agent names its model. A provider whose key is in a secret
-// store comes with that store, as it is now.
-func (q *Queries) SandboxTurn(ctx context.Context, sandbox *string) (SandboxTurnRow, error) {
-	row := q.db.QueryRowContext(ctx, sandboxTurn, sandbox)
-	var i SandboxTurnRow
+// The running turn of the session, what the turn belongs to, who sent its
+// message, and the provider of its agent as it is now, if the agent names
+// its model. A provider whose key is in a secret store comes with that
+// store, as it is now.
+func (q *Queries) SessionTurn(ctx context.Context, sessionID key.ID) (SessionTurnRow, error) {
+	row := q.db.QueryRowContext(ctx, sessionTurn, sessionID)
+	var i SessionTurnRow
 	err := row.Scan(
 		&i.TurnID,
 		&i.SessionID,

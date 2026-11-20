@@ -71,11 +71,16 @@ spec:
               value: {{ .Values.runtime.volume.storageClass | quote }}
             - name: AVIARY_SANDBOX_IDLE_SECONDS
               value: {{ .Values.sandboxes.idleSeconds | quote }}
-            # The certificate of the resolver.
-            - name: AVIARY_RESOLVER_TLS
-              value: /etc/aviary/resolver
             - name: AVIARY_SANDBOX_RETENTION_SECONDS
               value: {{ .Values.sandboxes.retentionSeconds | quote }}
+            # Where the harnesses in the sandboxes reach their models: the
+            # Egress Proxy, which passes a request on to the model endpoint
+            # of its turn.
+            - name: AVIARY_LLM_BASE_URL
+              value: http://aviary-egress-proxy.{{ .Release.Namespace }}:8080
+            # The proxy that the sandboxes use for everything else.
+            - name: AVIARY_PROXY_URL
+              value: http://aviary-egress-proxy.{{ .Release.Namespace }}:3128
             - name: AVIARY_HARNESSES
               value: {{ .Values.runtime.harnesses | toJson | quote }}
             - name: AVIARY_MAX_CONCURRENT_TURNS
@@ -93,8 +98,8 @@ spec:
           ports:
             - name: http
               containerPort: 8080
-            - name: resolver
-              containerPort: 9443
+            - name: authz
+              containerPort: 9091
             - name: metrics
               containerPort: 9092
           readinessProbe:
@@ -111,9 +116,6 @@ spec:
             - name: encryption
               mountPath: /etc/aviary/encryption
               readOnly: true
-            - name: resolver
-              mountPath: /etc/aviary/resolver
-              readOnly: true
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -123,6 +125,3 @@ spec:
         - name: encryption
           secret:
             secretName: {{ .Values.supervisor.encryption.secretName }}
-        - name: resolver
-          secret:
-            secretName: {{ .Values.supervisor.resolver.secretName }}

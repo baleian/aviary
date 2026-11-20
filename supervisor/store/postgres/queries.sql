@@ -178,11 +178,11 @@ join agents on agents.id = sessions.agent_id
 left join providers on providers.id = agents.provider_id
 where turns.id = @id;
 
--- name: SandboxTurn :one
--- The running turn of the session whose sandbox it is, what the turn
--- belongs to, who sent its message, and the provider of its agent as it is
--- now, if the agent names its model. A provider whose key is in a secret
--- store comes with that store, as it is now.
+-- name: SessionTurn :one
+-- The running turn of the session, what the turn belongs to, who sent its
+-- message, and the provider of its agent as it is now, if the agent names
+-- its model. A provider whose key is in a secret store comes with that
+-- store, as it is now.
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
        coalesce(users.subject, '')::text as subject,
        agents.provider_id, coalesce(providers.url, '')::text as provider_url, providers.api_key as provider_api_key,
@@ -197,7 +197,7 @@ join agents on agents.id = sessions.agent_id
 left join users on users.id = turns.created_by
 left join providers on providers.id = agents.provider_id
 left join secret_stores on secret_stores.id = providers.api_key_store_id
-where sessions.sandbox = @sandbox and turns.state = 'running';
+where turns.session_id = @session_id and turns.state = 'running';
 
 -- name: SetFinished :exec
 update turns set stop_reason = @stop_reason::text, total_tokens = @total_tokens, input_tokens = @input_tokens,

@@ -130,7 +130,7 @@ create table sessions (
     -- The user who created the session, whose session it is. A session of an
     -- installation that asks nobody who they are is nobody's.
     created_by uuid references users (id),
-    -- The sandbox that the session runs in, as the sandbox service names it.
+    -- The sandbox that the session runs in.
     sandbox text,
     created_at timestamptz not null default now(),
     -- When the session was ended. A session that has ended takes no message.
@@ -222,9 +222,6 @@ insert into schema_floor (version) values (0);
 -- sessions newest first, in the order of their IDs.
 create index agents_project on agents (project_id);
 create index sessions_agent on sessions (agent_id, id);
--- A request that leaves a sandbox is told apart by the turn that runs in the
--- sandbox, which is found by the session whose sandbox it is.
-create index sessions_sandbox on sessions (sandbox) where sandbox is not null;
 -- A session runs one turn at a time.
 create unique index turns_unfinished_per_session on turns (session_id) where ended_at is null;
 -- The queued turns in the order in which they are dispatched.

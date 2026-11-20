@@ -1579,75 +1579,6 @@ func (q *Queries) ResolveApproval(ctx context.Context, arg ResolveApprovalParams
 	return i, err
 }
 
-const sandboxTurn = `-- name: SandboxTurn :one
-select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
-       coalesce(users.subject, '')::text as subject,
-       agents.provider_id, coalesce(providers.url, '')::text as provider_url, providers.api_key as provider_api_key,
-       providers.api_key_store_id, coalesce(providers.api_key_path, '')::text as api_key_path,
-       coalesce(providers.api_key_name, '')::text as api_key_name,
-       coalesce(secret_stores.name, '')::text as store_name, coalesce(secret_stores.kind, '')::text as store_kind,
-       secret_stores.settings as store_settings, secret_stores.credential as store_credential,
-       secret_stores.created_at as store_created_at, secret_stores.updated_at as store_updated_at
-from turns
-join sessions on sessions.id = turns.session_id
-join agents on agents.id = sessions.agent_id
-left join users on users.id = turns.created_by
-left join providers on providers.id = agents.provider_id
-left join secret_stores on secret_stores.id = providers.api_key_store_id
-where sessions.sandbox = $1 and turns.state = 'running'
-`
-
-type SandboxTurnRow struct {
-	TurnID          uuid.UUID
-	SessionID       uuid.UUID
-	AgentID         uuid.UUID
-	ProjectID       uuid.UUID
-	CreatedBy       *uuid.UUID
-	Subject         string
-	ProviderID      *uuid.UUID
-	ProviderUrl     string
-	ProviderApiKey  []byte
-	ApiKeyStoreID   *uuid.UUID
-	ApiKeyPath      string
-	ApiKeyName      string
-	StoreName       string
-	StoreKind       string
-	StoreSettings   []byte
-	StoreCredential []byte
-	StoreCreatedAt  *time.Time
-	StoreUpdatedAt  *time.Time
-}
-
-// The running turn of the session whose sandbox it is, what the turn
-// belongs to, who sent its message, and the provider of its agent as it is
-// now, if the agent names its model. A provider whose key is in a secret
-// store comes with that store, as it is now.
-func (q *Queries) SandboxTurn(ctx context.Context, sandbox *string) (SandboxTurnRow, error) {
-	row := q.db.QueryRow(ctx, sandboxTurn, sandbox)
-	var i SandboxTurnRow
-	err := row.Scan(
-		&i.TurnID,
-		&i.SessionID,
-		&i.AgentID,
-		&i.ProjectID,
-		&i.CreatedBy,
-		&i.Subject,
-		&i.ProviderID,
-		&i.ProviderUrl,
-		&i.ProviderApiKey,
-		&i.ApiKeyStoreID,
-		&i.ApiKeyPath,
-		&i.ApiKeyName,
-		&i.StoreName,
-		&i.StoreKind,
-		&i.StoreSettings,
-		&i.StoreCredential,
-		&i.StoreCreatedAt,
-		&i.StoreUpdatedAt,
-	)
-	return i, err
-}
-
 const seeUser = `-- name: SeeUser :one
 insert into users (id, subject, username, display_name)
 values ($1, $2, $3, $4)
@@ -1679,6 +1610,75 @@ func (q *Queries) SeeUser(ctx context.Context, arg SeeUserParams) (User, error) 
 		&i.Username,
 		&i.DisplayName,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const sessionTurn = `-- name: SessionTurn :one
+select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
+       coalesce(users.subject, '')::text as subject,
+       agents.provider_id, coalesce(providers.url, '')::text as provider_url, providers.api_key as provider_api_key,
+       providers.api_key_store_id, coalesce(providers.api_key_path, '')::text as api_key_path,
+       coalesce(providers.api_key_name, '')::text as api_key_name,
+       coalesce(secret_stores.name, '')::text as store_name, coalesce(secret_stores.kind, '')::text as store_kind,
+       secret_stores.settings as store_settings, secret_stores.credential as store_credential,
+       secret_stores.created_at as store_created_at, secret_stores.updated_at as store_updated_at
+from turns
+join sessions on sessions.id = turns.session_id
+join agents on agents.id = sessions.agent_id
+left join users on users.id = turns.created_by
+left join providers on providers.id = agents.provider_id
+left join secret_stores on secret_stores.id = providers.api_key_store_id
+where turns.session_id = $1 and turns.state = 'running'
+`
+
+type SessionTurnRow struct {
+	TurnID          uuid.UUID
+	SessionID       uuid.UUID
+	AgentID         uuid.UUID
+	ProjectID       uuid.UUID
+	CreatedBy       *uuid.UUID
+	Subject         string
+	ProviderID      *uuid.UUID
+	ProviderUrl     string
+	ProviderApiKey  []byte
+	ApiKeyStoreID   *uuid.UUID
+	ApiKeyPath      string
+	ApiKeyName      string
+	StoreName       string
+	StoreKind       string
+	StoreSettings   []byte
+	StoreCredential []byte
+	StoreCreatedAt  *time.Time
+	StoreUpdatedAt  *time.Time
+}
+
+// The running turn of the session, what the turn belongs to, who sent its
+// message, and the provider of its agent as it is now, if the agent names
+// its model. A provider whose key is in a secret store comes with that
+// store, as it is now.
+func (q *Queries) SessionTurn(ctx context.Context, sessionID uuid.UUID) (SessionTurnRow, error) {
+	row := q.db.QueryRow(ctx, sessionTurn, sessionID)
+	var i SessionTurnRow
+	err := row.Scan(
+		&i.TurnID,
+		&i.SessionID,
+		&i.AgentID,
+		&i.ProjectID,
+		&i.CreatedBy,
+		&i.Subject,
+		&i.ProviderID,
+		&i.ProviderUrl,
+		&i.ProviderApiKey,
+		&i.ApiKeyStoreID,
+		&i.ApiKeyPath,
+		&i.ApiKeyName,
+		&i.StoreName,
+		&i.StoreKind,
+		&i.StoreSettings,
+		&i.StoreCredential,
+		&i.StoreCreatedAt,
+		&i.StoreUpdatedAt,
 	)
 	return i, err
 }

@@ -6,29 +6,32 @@ package app
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
 
+	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
+	"github.com/google/uuid"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/client-go/rest"
 
 	"aviary/supervisor/events"
 	"aviary/supervisor/identity"
 	"aviary/supervisor/internal/api"
+	"aviary/supervisor/internal/authz"
 	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/internal/metrics"
-	"aviary/supervisor/internal/resolver"
 	"aviary/supervisor/internal/sandbox"
 	"aviary/supervisor/secret"
 	"aviary/supervisor/store"
@@ -55,16 +58,21 @@ const (
 	sandboxVolume      = "AVIARY_SANDBOX_VOLUME_SIZE"
 	sandboxClass       = "AVIARY_SANDBOX_STORAGE_CLASS"
 	sandboxIdle        = "AVIARY_SANDBOX_IDLE_SECONDS"
-	resolverTLS        = "AVIARY_RESOLVER_TLS"
 	sandboxRetention   = "AVIARY_SANDBOX_RETENTION_SECONDS"
+	modelsURL          = "AVIARY_LLM_BASE_URL"
+	proxyURL           = "AVIARY_PROXY_URL"
 	apiAddr            = ":8080"
+	authzAddr          = ":9091"
 	metricsAddr        = ":9092"
-	resolverAddr       = ":9443"
 	// shutdownTimeout is how long the requests to the API get to finish.
 	shutdownTimeout = 10 * time.Second
 	// identityPatience is how long the identity provider may take to answer
 	// when the Supervisor starts.
 	identityPatience = 30 * time.Second
+	// keepaliveInterval is how often the Supervisor asks the other end of an
+	// idle connection whether it is still there, and how long it waits for
+	// the answer. The Egress Proxy asks the same of it.
+	keepaliveInterval = 30 * time.Second
 )
 
 // handover is how long a Supervisor that was told to stop goes on serving.
@@ -74,10 +82,7 @@ var handover = 5 * time.Second
 
 // ports are what a Supervisor listens on.
 type ports struct {
-	api, metrics net.Listener
-	// resolver is where the egress of the sandbox service asks about the
-	// requests of the sandboxes, over TLS.
-	resolver net.Listener
+	api, authz, metrics net.Listener
 }
 
 // Plugins are the plugins of a build: what connects its Supervisor to the
@@ -160,7 +165,24 @@ func sandboxSettings() (sandbox.Settings, error) {
 	if settings.MaxToolOutputBytes, err = strconv.Atoi(output); err != nil || settings.MaxToolOutputBytes < 0 {
 		return settings, fmt.Errorf("%s must be a number of bytes, or zero for no limit", maxToolOutput)
 	}
-	return settings, nil
+	if settings.Proxy, err = address(proxyURL); err != nil {
+		return settings, err
+	}
+	settings.Models, err = address(modelsURL)
+	return settings, err
+}
+
+// address reads the URL of the Egress Proxy that the variable names.
+func address(name string) (*url.URL, error) {
+	value, err := env(name)
+	if err != nil {
+		return nil, err
+	}
+	at, err := url.Parse(value)
+	if err != nil || at.Scheme != "http" || at.Hostname() == "" {
+		return nil, fmt.Errorf("%s must be a URL such as http://aviary-egress-proxy.aviary-system:8080", name)
+	}
+	return at, nil
 }
 
 func serve(ctx context.Context, database string, plugins Plugins) error {
@@ -214,61 +236,53 @@ func serve(ctx context.Context, database string, plugins Plugins) error {
 	if on.api, err = net.Listen("tcp", apiAddr); err != nil {
 		return err
 	}
+	if on.authz, err = net.Listen("tcp", authzAddr); err != nil {
+		return err
+	}
 	if on.metrics, err = net.Listen("tcp", metricsAddr); err != nil {
 		return err
 	}
-	if on.resolver, err = resolverListener(); err != nil {
-		return err
-	}
-	return serveOn(ctx, on, st, ev, client, config, keys, stores, callers, slog.Default())
-}
-
-// resolverListener listens for the egress of the sandbox service with the
-// certificate and the key in the directory that is named, as tls.crt and
-// tls.key: the egress asks only over TLS.
-func resolverListener() (net.Listener, error) {
-	dir, err := env(resolverTLS)
-	if err != nil {
-		return nil, err
-	}
-	certificate, err := tls.LoadX509KeyPair(filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key"))
-	if err != nil {
-		return nil, fmt.Errorf("the certificate of the resolver: %w", err)
-	}
-	listener, err := net.Listen("tcp", resolverAddr)
-	if err != nil {
-		return nil, err
-	}
-	return tls.NewListener(listener, &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12}), nil
+	return serveOn(ctx, on, st, ev, client, config, keys, stores, callers)
 }
 
 // serveOn serves on the ports until ctx is done, with the turns in the
 // database of the store and their sandboxes kept by sandboxes. It seals the
-// secrets that it stores with the keys, and reads the others from the
-// stores. The callers are who may use the API. The resolver writes the
-// records of the requests of the sandboxes to records.
-func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, sandboxes driver.Sandboxes, config driver.Config, keys *secret.Keys, stores *secret.Stores, callers api.Callers, records *slog.Logger) error {
+// secrets that it stores and the tokens of the sessions with the keys, and
+// reads the other secrets from the stores. The callers are who may use the
+// API.
+func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, sandboxes driver.Sandboxes, config driver.Config, keys *secret.Keys, stores *secret.Stores, callers api.Callers) error {
 	m := metrics.New()
 	stores.Asked = m.SecretRead
-	answers := resolver.New(st, keys, stores, records)
+	config.Token = func(session uuid.UUID) (string, error) { return authz.Token(keys, session) }
 	dr := driver.New(config, sandboxes, st, ev, m)
-	resolverServer := &http.Server{Handler: answers.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	apiServer := &http.Server{
 		Handler:           api.New(st, ev, dr, keys, stores, callers, ctx.Done()),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	// The Egress Proxy asks on a port of its own, so that the sandboxes can
+	// be kept from it. A machine that is gone closes no connection: both ends
+	// of a connection find that out by asking, and close it.
+	authzServer := grpc.NewServer(
+		grpc.KeepaliveParams(keepalive.ServerParameters{Time: keepaliveInterval, Timeout: keepaliveInterval}),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             keepaliveInterval / 2,
+			PermitWithoutStream: true,
+		}),
+	)
+	authv3.RegisterAuthorizationServer(authzServer, authz.New(st, keys, stores))
 	// The metrics are on a port of their own, which the clients of the API
-	// have no way to. They are served until the Supervisor has stopped.
+	// and the sandboxes have no way to. They are served until the
+	// Supervisor has stopped.
 	metricsMux := http.NewServeMux()
 	metricsMux.Handle("GET /metrics", m.Handler())
 	metricsServer := &http.Server{Handler: metricsMux, ReadHeaderTimeout: 10 * time.Second}
 	defer metricsServer.Close()
 	failed := make(chan error, 3)
 	go func() { failed <- apiServer.Serve(on.api) }()
-	go func() { failed <- resolverServer.Serve(on.resolver) }()
+	go func() { failed <- authzServer.Serve(on.authz) }()
 	go func() { failed <- metricsServer.Serve(on.metrics) }()
 	go dr.Run(ctx)
-	slog.Info("listening", "api", on.api.Addr().String(), "resolver", on.resolver.Addr().String(),
+	slog.Info("listening", "api", on.api.Addr().String(), "authz", on.authz.Addr().String(),
 		"metrics", on.metrics.Addr().String())
 
 	select {
@@ -283,7 +297,9 @@ func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, 
 	time.Sleep(handover)
 	stopping, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	return errors.Join(apiServer.Shutdown(stopping), resolverServer.Shutdown(stopping))
+	err := apiServer.Shutdown(stopping)
+	authzServer.GracefulStop()
+	return err
 }
 
 // encryption reads the keys that secrets are sealed with: the directory
@@ -371,6 +387,9 @@ func driverConfig() (driver.Config, error) {
 	// {"cpu": "250m", "memory": "1Gi"}, "limits": {"memory": "4Gi"}}}}.
 	encoded, err := env(harnesses)
 	if err != nil {
+		return config, err
+	}
+	if config.Models, err = address(modelsURL); err != nil {
 		return config, err
 	}
 	if err := json.Unmarshal([]byte(encoded), &config.Harnesses); err != nil {

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -50,7 +51,7 @@ type Sandboxes interface {
 	Sandbox(ctx context.Context, name string) (sandbox.Sandbox, error)
 	Sandboxes(ctx context.Context) ([]sandbox.Sandbox, error)
 	Suspend(ctx context.Context, name, version string) error
-	Resume(ctx context.Context, name string, harness sandbox.Harness) error
+	Resume(ctx context.Context, name string, pod sandbox.Pod) error
 	Keep(ctx context.Context, name string, turn uuid.UUID, until time.Time) (sandbox.Sandbox, error)
 	Delete(ctx context.Context, name string) error
 }
@@ -58,6 +59,14 @@ type Sandboxes interface {
 type Config struct {
 	// Harnesses are the harnesses that agents can use, by name.
 	Harnesses map[string]sandbox.Harness
+	// Models is where the harnesses reach their models: the Egress Proxy,
+	// which passes a request on to the model endpoint of its turn. Its path
+	// is not used: a harness reaches the endpoint of its turn under the path
+	// of the endpoint's own URL.
+	Models *url.URL
+	// Token returns the token of a session, which the pod of its sandbox
+	// sends with what leaves it.
+	Token func(session uuid.UUID) (string, error)
 	// Idle is how long the sandbox of a session may be idle before it is
 	// put to sleep: no turn of the session runs. It is woken for the next
 	// turn. Zero is never to put it to sleep.
@@ -478,14 +487,19 @@ func (d *Driver) Ended(ctx context.Context, turn store.Turn) {
 }
 
 // environment is what the harness of the turn's session is started with.
-func environment(turn store.FollowedTurn) map[string]string {
+func (d *Driver) environment(turn store.FollowedTurn) map[string]string {
 	told := map[string]string{}
 	if turn.ProviderURL != "" {
-		told["AVIARY_LLM_BASE_URL"] = strings.TrimSuffix(turn.ProviderURL, "/")
+		// The harness reaches its model at the Egress Proxy, which passes a
+		// request on to the endpoint of the provider that the turn's agent
+		// names. The proxy serves the endpoint under the path of the
+		// provider's URL, which was checked when the provider was given it.
+		models := *d.config.Models
+		if endpoint, err := url.Parse(turn.ProviderURL); err == nil {
+			models.Path = strings.TrimSuffix(endpoint.Path, "/")
+		}
+		told["AVIARY_LLM_BASE_URL"] = models.String()
 		told["AVIARY_LLM_MODEL"] = turn.Model
-		// A sandbox holds no key of a model endpoint. The harness sends
-		// this in its place.
-		told["AVIARY_LLM_API_KEY"] = "none"
 	}
 	// The image of the harness reads this, and starts its harness so that
 	// it asks.

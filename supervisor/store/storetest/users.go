@@ -161,13 +161,9 @@ func (suite suite) testSessionOfAUser(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		sandbox := "sandbox-of-" + followed.SessionID.String()
-		if set, err := st.SetSandbox(ctx, followed.SessionID, "", sandbox); err != nil || !set {
-			t.Fatalf("the session was not given its sandbox: %v", err)
-		}
 		sender, sent := senders[dispatch.TurnID]
 		subject := map[uuid.UUID]string{user.ID: "subject-a", other.ID: "subject-b"}[sender]
-		if origin, err := st.SandboxTurn(ctx, sandbox); err != nil || !sent || origin.UserID != sender || origin.Subject != subject {
+		if origin, err := st.SessionTurn(ctx, followed.SessionID); err != nil || !sent || origin.UserID != sender || origin.Subject != subject {
 			t.Errorf("a request of the running turn that %s, the subject %q, sent comes from %+v, with the error %v", sender, subject, origin, err)
 		}
 	}

@@ -10,7 +10,10 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -111,12 +114,22 @@ type Harness struct {
 	Resources corev1.ResourceRequirements `json:"resources"`
 }
 
+// Pod is what the pod of a sandbox is made of. A sandbox that is woken gets
+// a pod of what it is woken with.
+type Pod struct {
+	Harness Harness
+	// Token is the token of the session, which the pod sends with every
+	// request that leaves it: the Egress Proxy knows the session of a
+	// request by it.
+	Token string
+}
+
 // Request is a sandbox to make, for a session.
 type Request struct {
 	Session uuid.UUID
 	// Labels tell whose the sandbox is, besides its session.
-	Labels  map[string]string
-	Harness Harness
+	Labels map[string]string
+	Pod    Pod
 	// Kept is for how long the sandbox is kept from now, after which it is
 	// deleted with its volume. Zero is until it is deleted.
 	Kept time.Duration
@@ -133,6 +146,10 @@ type Settings struct {
 	// MaxToolOutputBytes is the longest text of a tool call that the runner
 	// tells as it is. Zero is no limit.
 	MaxToolOutputBytes int
+	// Proxy is the forward proxy of the Egress Proxy, which everything that
+	// a sandbox sends out goes through, and Models is where its harness
+	// reaches its model, which is the Egress Proxy too.
+	Proxy, Models *url.URL
 }
 
 // Client has the sandboxes made.
@@ -169,13 +186,17 @@ func (c *Client) Create(ctx context.Context, request Request) error {
 	if c.settings.StorageClass != "" {
 		claim.StorageClassName = &c.settings.StorageClass
 	}
+	pod, err := c.pod(ctx, request.Pod)
+	if err != nil {
+		return err
+	}
 	made := &agents.Sandbox{
 		ObjectMeta: metav1.ObjectMeta{Name: Name(request.Session), Labels: labels},
 		Spec: agents.SandboxSpec{
 			SandboxBlueprint: agents.SandboxBlueprint{
 				PodTemplate: agents.PodTemplate{
 					ObjectMeta: agents.PodMetadata{Labels: labels},
-					Spec:       c.pod(request.Harness),
+					Spec:       pod,
 				},
 				VolumeClaimTemplates: []agents.PersistentVolumeClaimTemplate{{
 					EmbeddedObjectMetadata: agents.EmbeddedObjectMetadata{Name: home},
@@ -191,16 +212,50 @@ func (c *Client) Create(ctx context.Context, request Request) error {
 	if request.Kept > 0 {
 		made.Spec.ShutdownTime = new(metav1.NewTime(time.Now().Add(request.Kept)))
 	}
-	_, err := c.sandboxes.Create(ctx, made, metav1.CreateOptions{})
+	_, err = c.sandboxes.Create(ctx, made, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
 		return nil
 	}
 	return err
 }
 
-// pod is the pod of a sandbox of the harness.
-func (c *Client) pod(harness Harness) corev1.PodSpec {
+// pod is the pod of a sandbox.
+func (c *Client) pod(ctx context.Context, pod Pod) (corev1.PodSpec, error) {
+	aliases, err := c.aliases(ctx)
+	if err != nil {
+		return corev1.PodSpec{}, fmt.Errorf("look up the Egress Proxy: %w", err)
+	}
+	// The password of the proxy is the token of the session.
+	proxy := *c.settings.Proxy
+	proxy.User = url.UserPassword("session", pod.Token)
+	// A harness may talk to itself over the loopback interface, and it
+	// reaches its model at the proxy itself, on another port.
+	direct := strings.Join([]string{"localhost", "127.0.0.1", "::1", c.settings.Models.Hostname()}, ",")
+	env := []corev1.EnvVar{
+		{Name: "AVIARY_MAX_TOOL_OUTPUT_BYTES", Value: strconv.Itoa(c.settings.MaxToolOutputBytes)},
+		// The pod holds no key of a model endpoint. The harness sends the
+		// token of the session as its API key, and the Egress Proxy puts the
+		// key in its place.
+		{Name: "AVIARY_LLM_API_KEY", Value: pod.Token},
+	}
+	// Everything else that the programs in the pod fetch goes through the
+	// proxy. Some programs read the names in capitals and some the others.
+	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
+		env = append(env, corev1.EnvVar{Name: name, Value: proxy.String()})
+	}
+	env = append(env, corev1.EnvVar{Name: "NO_PROXY", Value: direct}, corev1.EnvVar{Name: "no_proxy", Value: direct})
 	return corev1.PodSpec{
+		// The pod has no DNS: the network policy lets no lookup out, because
+		// a lookup can carry data out of the cluster. The pod finds the
+		// Egress Proxy in its hosts file. A program that looks another name
+		// up gets its failure in a second or two, with these options, and
+		// not in twenty.
+		HostAliases: aliases,
+		DNSConfig: &corev1.PodDNSConfig{Options: []corev1.PodDNSConfigOption{
+			{Name: "timeout", Value: new("1")},
+			{Name: "attempts", Value: new("1")},
+			{Name: "ndots", Value: new("1")},
+		}},
 		// The pod has nothing to ask the cluster.
 		AutomountServiceAccountToken: new(false),
 		EnableServiceLinks:           new(false),
@@ -210,13 +265,11 @@ func (c *Client) pod(harness Harness) corev1.PodSpec {
 		},
 		Containers: []corev1.Container{{
 			Name:      "harness",
-			Image:     harness.Image,
+			Image:     pod.Harness.Image,
 			Command:   session,
-			Resources: harness.Resources,
-			Env: []corev1.EnvVar{
-				{Name: "AVIARY_MAX_TOOL_OUTPUT_BYTES", Value: strconv.Itoa(c.settings.MaxToolOutputBytes)},
-			},
-			Ports: []corev1.ContainerPort{{Name: "runner", ContainerPort: RunnerPort}},
+			Resources: pod.Harness.Resources,
+			Env:       env,
+			Ports:     []corev1.ContainerPort{{Name: "runner", ContainerPort: RunnerPort}},
 			// The sandbox runs once its runner listens.
 			ReadinessProbe: &corev1.Probe{
 				ProbeHandler:  corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(RunnerPort)}},
@@ -224,7 +277,24 @@ func (c *Client) pod(harness Harness) corev1.PodSpec {
 			},
 			VolumeMounts: []corev1.VolumeMount{{Name: home, MountPath: "/home"}},
 		}},
+	}, nil
+}
+
+// aliases looks up the addresses of what a pod connects to, the Egress
+// Proxy, for the hosts file of the pod.
+func (c *Client) aliases(ctx context.Context) ([]corev1.HostAlias, error) {
+	var aliases []corev1.HostAlias
+	for _, host := range slices.Compact([]string{c.settings.Proxy.Hostname(), c.settings.Models.Hostname()}) {
+		ips, err := net.DefaultResolver.LookupHost(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		// A host that is named by its address needs no entry.
+		if ips[0] != host {
+			aliases = append(aliases, corev1.HostAlias{IP: ips[0], Hostnames: []string{host}})
+		}
 	}
+	return aliases, nil
 }
 
 // Sandbox returns the sandbox with the name, or ErrNotFound.
@@ -304,13 +374,17 @@ func (c *Client) Suspend(ctx context.Context, name, version string) error {
 	return err
 }
 
-// Resume wakes the sandbox: a pod is made for it again, with its volume. The
-// pod is of the harness as the installation has it now.
-func (c *Client) Resume(ctx context.Context, name string, harness Harness) error {
+// Resume wakes the sandbox: a pod is made for it again, with its volume, of
+// what it is woken with.
+func (c *Client) Resume(ctx context.Context, name string, pod Pod) error {
+	spec, err := c.pod(ctx, pod)
+	if err != nil {
+		return err
+	}
 	// The pod is replaced as a whole: what an older pod had and this one
 	// does not have does not stay.
-	_, err := c.patch(ctx, name, types.JSONPatchType, []map[string]any{
-		{"op": "add", "path": "/spec/podTemplate/spec", "value": c.pod(harness)},
+	_, err = c.patch(ctx, name, types.JSONPatchType, []map[string]any{
+		{"op": "add", "path": "/spec/podTemplate/spec", "value": spec},
 		{"op": "add", "path": "/spec/operatingMode", "value": agents.SandboxOperatingModeRunning},
 	})
 	return err

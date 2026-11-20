@@ -2,23 +2,26 @@ package app
 
 import (
 	"bufio"
-	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	"github.com/google/uuid"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 
 	"aviary/supervisor/events"
 	memorylog "aviary/supervisor/events/memory"
@@ -34,9 +37,11 @@ import (
 )
 
 // The tests of this package run whole Supervisors, as serveOn serves them,
-// on records and an event log that are in memory. Their sandbox service is
-// one in which nothing runs, so a test plays the part of the runner for the
-// turns that it sends: it is given the turn, and tells what comes of it.
+// on records and an event log that are in memory. Their sandboxes are ones
+// in which nothing runs, so a test plays the part of the runner for the
+// turns that it sends: it is given the turn, and tells what comes of it. It
+// also plays the Egress Proxy, which asks a Supervisor about the requests
+// of the sandboxes.
 
 // patience is how long a test waits for what the Supervisor is to do, and
 // soon how long for what it is to do at once: a Supervisor that does it only
@@ -52,8 +57,8 @@ func TestMain(m *testing.M) {
 }
 
 // installation is what the Supervisors of a test share: their records, an
-// event log, the sandboxes of the sessions, the keys that secrets are sealed
-// with, and what they record of the requests of the sandboxes.
+// event log, the sandboxes of the sessions, and the keys that secrets are
+// sealed with.
 type installation struct {
 	t *testing.T
 	// records are the records of the installation, as its database holds
@@ -64,9 +69,6 @@ type installation struct {
 	service *sandboxtest.Service
 	config  driver.Config
 	keys    *secret.Keys
-	// requests are the records of the requests of the sandboxes, as the
-	// logs of the Supervisors are collected: a line of JSON for each.
-	requests *written
 	// storeHosts are the hosts at which the installation allows the secret
 	// stores of its projects, and secrets is what those stores hold. They
 	// are of the kind that the tests have a plugin for.
@@ -90,6 +92,7 @@ func install(t *testing.T, changes ...func(*driver.Config)) *installation {
 			"opencode": {Image: "registry.example.com/harness-opencode:1.0"},
 			"codex":    {Image: "registry.example.com/harness-codex:1.0"},
 		},
+		Models:             &url.URL{Scheme: "http", Host: "127.0.0.2:8080"},
 		MaxStartup:         90 * time.Second,
 		MaxTurn:            30 * time.Minute,
 		MaxQueueWait:       2 * time.Minute,
@@ -100,42 +103,20 @@ func install(t *testing.T, changes ...func(*driver.Config)) *installation {
 		change(&config)
 	}
 	return &installation{
-		t: t, records: memorystore.New(), service: sandboxtest.New(t), config: config, requests: &written{},
+		t: t, records: memorystore.New(), service: sandboxtest.New(t), config: config,
 		keys: testenv.Keys(t), storeHosts: []string{storeHost}, secrets: &shelves{}, log: memorylog.New(),
 	}
 }
 
-// written is what several Supervisors write at once.
-type written struct {
-	mu   sync.Mutex
-	text bytes.Buffer
-}
-
-func (w *written) Write(line []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.text.Write(line)
-}
-
-// record returns the last record that a Supervisor wrote of a request of
-// the turn, or nothing if there is none.
-func (i *installation) record(turn string) map[string]any {
+// token returns the token of the session of the sandbox, which its pod was
+// made with.
+func (i *installation) token(sandbox string) string {
 	i.t.Helper()
-	i.requests.mu.Lock()
-	defer i.requests.mu.Unlock()
-	for _, line := range slices.Backward(strings.Split(i.requests.text.String(), "\n")) {
-		if line == "" {
-			continue
-		}
-		var record map[string]any
-		if err := json.Unmarshal([]byte(line), &record); err != nil {
-			i.t.Fatalf("a Supervisor recorded %q: %v", line, err)
-		}
-		if record["turn"] == turn {
-			return record
-		}
+	made, found := i.service.Made()[sandbox]
+	if !found || made.Pod.Token == "" {
+		i.t.Fatalf("the sandbox %s has no token", sandbox)
 	}
-	return nil
+	return made.Pod.Token
 }
 
 // stores returns the secret stores of the installation as one of its
@@ -155,9 +136,9 @@ func (i *installation) stores() *secret.Stores {
 type supervisor struct {
 	*installation
 	api, metrics string
-	// resolver is where the Supervisor answers the egress of the sandbox
-	// service, without TLS here.
-	resolver string
+	// proxies is how the Egress Proxy asks the Supervisor about the requests
+	// of the sandboxes.
+	proxies authv3.AuthorizationClient
 	// stop tells the Supervisor to stop, as Kubernetes does, and returns
 	// when it has.
 	stop func()
@@ -177,18 +158,22 @@ func (i *installation) supervisor() *supervisor {
 		}
 		return listener
 	}
-	on := ports{api: listen(), metrics: listen(), resolver: listen()}
+	on := ports{api: listen(), authz: listen(), metrics: listen()}
+	connection, err := grpc.NewClient(on.authz.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		i.t.Fatal(err)
+	}
+	i.t.Cleanup(func() { connection.Close() })
 	s := &supervisor{
 		installation: i,
 		api:          "http://" + on.api.Addr().String(),
 		metrics:      "http://" + on.metrics.Addr().String(),
-		resolver:     "http://" + on.resolver.Addr().String(),
+		proxies:      authv3.NewAuthorizationClient(connection),
 	}
 	ctx, stop := context.WithCancel(context.Background())
 	stopped := make(chan error, 1)
-	records := slog.New(slog.NewJSONHandler(i.requests, nil))
 	go func() {
-		stopped <- serveOn(ctx, on, i.records, ev, i.service, i.config, i.keys, stores, i.callers, records)
+		stopped <- serveOn(ctx, on, i.records, ev, i.service, i.config, i.keys, stores, i.callers)
 	}()
 	s.stop = sync.OnceFunc(func() {
 		stop()
@@ -578,6 +563,43 @@ func answered(id, outcome, option string) message {
 func (r *runner) answer() (id, option string) {
 	r.installation.t.Helper()
 	return r.Answered(r.installation.t)
+}
+
+// The Egress Proxy, which asks whose request a token belongs to.
+
+// check asks the Supervisor about a request as the proxy does: a model
+// request for the path, which carries the token as its bearer token, or one
+// through the forward proxy, which carries it as the password.
+func (s *supervisor) check(token string, forward bool, path string) *authv3.CheckResponse {
+	s.t.Helper()
+	headers, extensions := map[string]string{"authorization": "Bearer " + token}, map[string]string{"listener": "llm"}
+	if forward {
+		headers = map[string]string{"proxy-authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte("session:"+token))}
+		extensions["listener"] = "forward"
+	}
+	answer, err := s.proxies.Check(context.Background(), &authv3.CheckRequest{Attributes: &authv3.AttributeContext{
+		Request:           &authv3.AttributeContext_Request{Http: &authv3.AttributeContext_HttpRequest{Headers: headers, Path: path}},
+		ContextExtensions: extensions,
+	}})
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	return answer
+}
+
+// origin returns where the Supervisor says a request with the token comes
+// from, or nothing if it refuses the request.
+func (s *supervisor) origin(token string, forward bool) map[string]string {
+	s.t.Helper()
+	answer := s.check(token, forward, "/v1/chat/completions")
+	if codes.Code(answer.GetStatus().GetCode()) != codes.OK {
+		return nil
+	}
+	origin := map[string]string{}
+	for name, value := range answer.GetDynamicMetadata().GetFields() {
+		origin[name] = value.GetStringValue()
+	}
+	return origin
 }
 
 // The metrics, as Prometheus reads them.

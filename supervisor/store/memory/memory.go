@@ -966,16 +966,13 @@ func (s *Store) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.Followe
 	return followed, nil
 }
 
-func (s *Store) SandboxTurn(ctx context.Context, sandbox string) (store.Origin, error) {
+func (s *Store) SessionTurn(ctx context.Context, sessionID uuid.UUID) (store.Origin, error) {
 	if err := s.begin(ctx); err != nil {
 		return store.Origin{}, err
 	}
 	defer s.mu.Unlock()
-	if sandbox == "" {
-		return store.Origin{}, store.ErrNotFound
-	}
 	for _, turn := range s.created {
-		if turn.State == store.TurnRunning && s.sessions[turn.SessionID].Sandbox == sandbox {
+		if turn.State == store.TurnRunning && turn.SessionID == sessionID {
 			return s.originOf(turn), nil
 		}
 	}

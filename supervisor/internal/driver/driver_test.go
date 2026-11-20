@@ -3,6 +3,7 @@ package driver
 import (
 	"context"
 	"errors"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -37,7 +38,11 @@ func install(t *testing.T, changes ...func(*Config)) *installation {
 	t.Helper()
 	i := &installation{t: t, store: memorystore.New(), events: events.New(memorylog.New()), service: sandboxtest.New(t)}
 	i.config = Config{
-		Harnesses:          map[string]sandbox.Harness{"opencode": {Image: "registry.example.com/opencode:1.0"}},
+		Harnesses: map[string]sandbox.Harness{"opencode": {Image: "registry.example.com/opencode:1.0"}},
+		Models:    &url.URL{Scheme: "http", Host: "egress-proxy.example.com:8080"},
+		Token: func(session uuid.UUID) (string, error) {
+			return "the-token-of-" + session.String(), nil
+		},
 		MaxConcurrentTurns: 50,
 		MaxStartup:         time.Minute,
 		MaxTurn:            time.Hour,
@@ -195,10 +200,11 @@ func TestATurnRunsInTheSandboxOfItsSession(t *testing.T) {
 	if given.ID != turn.ID.String() || given.Text != "hello" || given.Instructions != "be kind" || given.Approval != Ask {
 		t.Errorf("the runner was given %+v", given)
 	}
+	// The harness reaches its model at the Egress Proxy, under the path of
+	// the provider.
 	want := map[string]string{
-		"AVIARY_LLM_BASE_URL": "https://models.example.com/v1",
+		"AVIARY_LLM_BASE_URL": "http://egress-proxy.example.com:8080/v1",
 		"AVIARY_LLM_MODEL":    "a-model",
-		"AVIARY_LLM_API_KEY":  "none",
 		"AVIARY_APPROVAL":     Ask,
 	}
 	for name, value := range want {
@@ -209,10 +215,12 @@ func TestATurnRunsInTheSandboxOfItsSession(t *testing.T) {
 	if len(given.Environment) != len(want) {
 		t.Errorf("the harness is started with %v", given.Environment)
 	}
-	// The sandbox is that of the session, and says whose it is.
+	// The sandbox is that of the session, says whose it is, and has the
+	// token of the session.
 	agent, _ := i.store.Agent(ctx, session.AgentID)
 	made := i.service.Made()[given.Sandbox]
-	if i.sandbox(session) != given.Sandbox || made.Session != session.ID || made.Harness.Image != "registry.example.com/opencode:1.0" ||
+	if i.sandbox(session) != given.Sandbox || made.Session != session.ID || made.Pod.Harness.Image != "registry.example.com/opencode:1.0" ||
+		made.Pod.Token != "the-token-of-"+session.ID.String() ||
 		made.Labels[labelAgent] != agent.ID.String() || made.Labels[labelProject] != agent.ProjectID.String() {
 		t.Errorf("the session has the sandbox %q, and the turn runs in %q, made for %+v", i.sandbox(session), given.Sandbox, made)
 	}
@@ -610,7 +618,7 @@ func TestASessionThatSleepsIsWokenForItsNextTurn(t *testing.T) {
 	if again.ID != next.ID.String() || again.Sandbox != given.Sandbox || i.service.Woken(given.Sandbox) != 1 {
 		t.Errorf("the next turn was given as %+v, and the sandbox woken %d times", again, i.service.Woken(given.Sandbox))
 	}
-	if image := i.service.Made()[given.Sandbox].Harness.Image; image != "registry.example.com/opencode:2.0" {
+	if image := i.service.Made()[given.Sandbox].Pod.Harness.Image; image != "registry.example.com/opencode:2.0" {
 		t.Errorf("the sandbox was woken with the image %s", image)
 	}
 	again.Tell("started", started)

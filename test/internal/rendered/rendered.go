@@ -74,3 +74,21 @@ func Named(list any, name string) any {
 	}
 	return nil
 }
+
+// Envoy returns the configuration of the Egress Proxy that the chart made,
+// and the files that hold it by their names.
+func Envoy(objects []map[string]any) (map[string]any, map[string]string, error) {
+	files := map[string]string{}
+	data, _ := At(Find(objects, "ConfigMap", "aviary-egress-proxy"), "data").(map[string]any)
+	for name, content := range data {
+		files[name], _ = content.(string)
+	}
+	var config map[string]any
+	if err := yaml.Unmarshal([]byte(files["envoy.yaml"]), &config); err != nil {
+		return nil, nil, err
+	}
+	if config == nil {
+		return nil, nil, errors.New("the chart made no configuration for the Egress Proxy")
+	}
+	return config, files, nil
+}

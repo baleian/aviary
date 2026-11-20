@@ -20,6 +20,8 @@ var settings = map[string]string{
 	sandboxVolume:    "10Gi",
 	sandboxIdle:      "300",
 	sandboxRetention: "0",
+	modelsURL:        "http://aviary-egress-proxy.aviary-system:8080",
+	proxyURL:         "http://aviary-egress-proxy.aviary-system:3128",
 	harnesses: `{"opencode": {"image": "registry.example/opencode:1",
 		"resources": {"requests": {"cpu": "250m", "memory": "1Gi"}, "limits": {"memory": "4Gi"}}}}`,
 	maxConcurrentTurns: "50",
@@ -56,6 +58,9 @@ func TestDriverConfig(t *testing.T) {
 			config.MaxStartup != 90*time.Second || config.MaxTurn != 30*time.Minute || config.Idle != 5*time.Minute || config.Retention != 0 {
 			t.Errorf("the limits are %+v", config)
 		}
+		if config.Models.String() != settings[modelsURL] {
+			t.Errorf("the harnesses reach their models at %s", config.Models)
+		}
 	})
 
 	t.Run("without the limits that there need not be", func(t *testing.T) {
@@ -70,6 +75,7 @@ func TestDriverConfig(t *testing.T) {
 	})
 
 	for _, wrong := range []struct{ name, value string }{
+		{modelsURL, ""}, {modelsURL, "aviary-egress-proxy:8080"}, {modelsURL, "https://aviary-egress-proxy:8080"},
 		{harnesses, ""}, {harnesses, `{"opencode": `},
 		{harnesses, `{"opencode": {"resources": {"requests": {"cpu": "1"}}}}`},
 		{harnesses, `{"opencode": {"image": "registry.example/opencode:1", "resources": {"requests": {"cpu": "lots"}}}}`},
@@ -98,7 +104,8 @@ func TestSandboxSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if made.Namespace != "aviary-runtime" || !made.Volume.Equal(resource.MustParse("10Gi")) || made.StorageClass != "fast" || made.MaxToolOutputBytes != 65536 {
+	if made.Namespace != "aviary-runtime" || !made.Volume.Equal(resource.MustParse("10Gi")) || made.StorageClass != "fast" || made.MaxToolOutputBytes != 65536 ||
+		made.Proxy.String() != settings[proxyURL] || made.Models.String() != settings[modelsURL] {
 		t.Errorf("the sandboxes are made with %+v", made)
 	}
 	// Without a class, the volumes are of the default class of the cluster.
@@ -111,6 +118,7 @@ func TestSandboxSettings(t *testing.T) {
 		{sandboxNamespace, ""},
 		{sandboxVolume, ""}, {sandboxVolume, "large"}, {sandboxVolume, "0"},
 		{maxToolOutput, ""}, {maxToolOutput, "-1"},
+		{proxyURL, ""}, {proxyURL, "http://"}, {modelsURL, ""},
 	} {
 		set(t, map[string]string{wrong.name: wrong.value})
 		if made, err := sandboxSettings(); err == nil || !strings.Contains(err.Error(), wrong.name) {

@@ -1,0 +1,4 @@
+# An Egress Proxy whose list does not allow the model endpoint of the tests.
+egressProxy:
+  allowedHosts:
+    - allowed.test

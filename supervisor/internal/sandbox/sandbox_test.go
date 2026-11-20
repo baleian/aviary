@@ -3,6 +3,8 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"net"
+	"net/url"
 	"slices"
 	"testing"
 	"time"
@@ -23,26 +25,32 @@ import (
 var ctx = context.Background()
 
 // cluster returns a client of sandboxes in a cluster of a test, and the
-// sandboxes of the cluster as they are kept there.
+// sandboxes of the cluster as they are kept there. The Egress Proxy of the
+// cluster is on this machine.
 func cluster(t *testing.T, settings Settings) (*Client, typed.SandboxInterface) {
 	t.Helper()
 	settings.Namespace = "sessions"
+	settings.Proxy = &url.URL{Scheme: "http", Host: "localhost:3128"}
+	settings.Models = &url.URL{Scheme: "http", Host: "localhost:8080"}
 	sandboxes := fake.NewSimpleClientset().AgentsV1beta1().Sandboxes(settings.Namespace)
 	return &Client{sandboxes: sandboxes, settings: settings}, sandboxes
 }
 
-var opencode = Harness{
-	Image: "harness-opencode:1",
-	Resources: corev1.ResourceRequirements{
-		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("250m"), corev1.ResourceMemory: resource.MustParse("1Gi")},
-		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi")},
+var opencode = Pod{
+	Harness: Harness{
+		Image: "harness-opencode:1",
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("250m"), corev1.ResourceMemory: resource.MustParse("1Gi")},
+			Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi")},
+		},
 	},
+	Token: "the-token-of-the-session",
 }
 
 func TestTheSandboxOfASessionIsMadeWithItsVolume(t *testing.T) {
 	c, sandboxes := cluster(t, Settings{Volume: resource.MustParse("10Gi"), StorageClass: "fast", MaxToolOutputBytes: 100})
 	session := uuid.New()
-	request := Request{Session: session, Labels: map[string]string{"aviary.io/agent": "an-agent"}, Harness: opencode}
+	request := Request{Session: session, Labels: map[string]string{"aviary.io/agent": "an-agent"}, Pod: opencode}
 	if err := c.Create(ctx, request); err != nil {
 		t.Fatal(err)
 	}
@@ -59,12 +67,36 @@ func TestTheSandboxOfASessionIsMadeWithItsVolume(t *testing.T) {
 		t.Errorf("the pod is %+v, with %+v", pod, pod.SecurityContext)
 	}
 	harness := pod.Containers[0]
-	if harness.Image != opencode.Image || !slices.Equal(harness.Command, []string{"aviary-session"}) ||
+	if harness.Image != opencode.Harness.Image || !slices.Equal(harness.Command, []string{"aviary-session"}) ||
 		!harness.Resources.Requests.Cpu().Equal(resource.MustParse("250m")) || !harness.Resources.Limits.Memory().Equal(resource.MustParse("4Gi")) ||
 		harness.ReadinessProbe.TCPSocket.Port.IntValue() != RunnerPort ||
-		len(harness.Env) != 1 || harness.Env[0].Name != "AVIARY_MAX_TOOL_OUTPUT_BYTES" || harness.Env[0].Value != "100" ||
 		len(harness.VolumeMounts) != 1 || harness.VolumeMounts[0].Name != "home" || harness.VolumeMounts[0].MountPath != "/home" {
 		t.Errorf("the harness runs as %+v", harness)
+	}
+	// What the pod sends out goes through the Egress Proxy, with the token
+	// of the session, and the harness has the token in place of a key.
+	env := map[string]string{}
+	for _, variable := range harness.Env {
+		env[variable.Name] = variable.Value
+	}
+	through := "http://session:the-token-of-the-session@localhost:3128"
+	for name, value := range map[string]string{
+		"AVIARY_MAX_TOOL_OUTPUT_BYTES": "100",
+		"AVIARY_LLM_API_KEY":           "the-token-of-the-session",
+		"HTTP_PROXY":                   through, "HTTPS_PROXY": through, "http_proxy": through, "https_proxy": through,
+		"NO_PROXY": "localhost,127.0.0.1,::1,localhost", "no_proxy": "localhost,127.0.0.1,::1,localhost",
+	} {
+		if env[name] != value {
+			t.Errorf("the harness is started with %s=%q, not %q", name, env[name], value)
+		}
+	}
+	if len(env) != 8 {
+		t.Errorf("the harness is started with %v", env)
+	}
+	// It has no DNS, and finds the proxy in its hosts file.
+	if aliases := pod.HostAliases; len(aliases) != 1 || !slices.Equal(aliases[0].Hostnames, []string{"localhost"}) ||
+		!net.ParseIP(aliases[0].IP).IsLoopback() || pod.DNSConfig == nil || len(pod.DNSConfig.Options) != 3 {
+		t.Errorf("the pod finds the hosts %v, with %+v", aliases, pod.DNSConfig)
 	}
 	claims := made.Spec.VolumeClaimTemplates
 	if len(claims) != 1 || claims[0].Name != "home" || *claims[0].Spec.StorageClassName != "fast" ||
@@ -81,7 +113,7 @@ func TestTheSandboxOfASessionIsMadeWithItsVolume(t *testing.T) {
 	}
 	// One that is kept for a time is deleted then, with its volume.
 	kept := uuid.New()
-	if err := c.Create(ctx, Request{Session: kept, Harness: opencode, Kept: time.Hour}); err != nil {
+	if err := c.Create(ctx, Request{Session: kept, Pod: opencode, Kept: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	made, err = sandboxes.Get(ctx, Name(kept), metav1.GetOptions{})
@@ -93,7 +125,7 @@ func TestTheSandboxOfASessionIsMadeWithItsVolume(t *testing.T) {
 	}
 	// Without a class, the volume is of the default class of the cluster.
 	c, sandboxes = cluster(t, Settings{Volume: resource.MustParse("1Gi")})
-	if err := c.Create(ctx, Request{Session: session, Harness: opencode}); err != nil {
+	if err := c.Create(ctx, Request{Session: session, Pod: opencode}); err != nil {
 		t.Fatal(err)
 	}
 	if made, err := sandboxes.Get(ctx, Name(session), metav1.GetOptions{}); err != nil || made.Spec.VolumeClaimTemplates[0].Spec.StorageClassName != nil {
@@ -183,7 +215,7 @@ func TestASandboxSleepsWakesIsKeptAndIsDeleted(t *testing.T) {
 	c, sandboxes := cluster(t, Settings{Volume: resource.MustParse("1Gi")})
 	session := uuid.New()
 	name := Name(session)
-	if err := c.Create(ctx, Request{Session: session, Harness: opencode}); err != nil {
+	if err := c.Create(ctx, Request{Session: session, Pod: opencode}); err != nil {
 		t.Fatal(err)
 	}
 	spec := func() agents.SandboxSpec {
@@ -204,7 +236,7 @@ func TestASandboxSleepsWakesIsKeptAndIsDeleted(t *testing.T) {
 	}
 	// It wakes with the harness as the installation has it now, of which
 	// the pod has all and only what it has.
-	if err := c.Resume(ctx, name, Harness{Image: "harness-opencode:2"}); err != nil || spec().OperatingMode != agents.SandboxOperatingModeRunning {
+	if err := c.Resume(ctx, name, Pod{Harness: Harness{Image: "harness-opencode:2"}}); err != nil || spec().OperatingMode != agents.SandboxOperatingModeRunning {
 		t.Errorf("the sandbox that is woken is %s: %v", spec().OperatingMode, err)
 	}
 	if harness := spec().PodTemplate.Spec.Containers[0]; harness.Image != "harness-opencode:2" || len(harness.Resources.Requests) != 0 {
@@ -259,9 +291,10 @@ func TestASandboxSleepsWakesIsKeptAndIsDeleted(t *testing.T) {
 
 func TestASandboxIsPutToSleepOnlyAsItWasSeen(t *testing.T) {
 	clients := fake.NewSimpleClientset()
-	c := &Client{sandboxes: clients.AgentsV1beta1().Sandboxes("sessions"), settings: Settings{Namespace: "sessions", Volume: resource.MustParse("1Gi")}}
+	c, _ := cluster(t, Settings{Volume: resource.MustParse("1Gi")})
+	c.sandboxes = clients.AgentsV1beta1().Sandboxes("sessions")
 	session := uuid.New()
-	if err := c.Create(ctx, Request{Session: session, Harness: opencode}); err != nil {
+	if err := c.Create(ctx, Request{Session: session, Pod: opencode}); err != nil {
 		t.Fatal(err)
 	}
 	// The cluster of the test knows no versions, so it answers here as a

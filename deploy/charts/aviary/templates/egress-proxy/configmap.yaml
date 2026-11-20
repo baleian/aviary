@@ -1,0 +1,298 @@
+{{- $allowAny := has "*" .Values.egressProxy.allowedHosts }}
+{{- $hosts := without .Values.egressProxy.allowedHosts "*" }}
+{{- range $hosts }}
+{{- if not (regexMatch "^[^/@ *]+$" .) }}
+{{- fail (printf "egressProxy.allowedHosts takes \"*\" and host names, with a port if it is neither 443 nor 80, and %q is neither" .) }}
+{{- end }}
+{{- end }}
+# The configuration of the Egress Proxy, which is Envoy. Whatever a sandbox
+# sends out goes through it, on one of two listeners. On both, the pod of the
+# sandbox sends the token of its session, Envoy asks the Supervisor which
+# turn runs in that session, and writes a record of the request with that
+# turn. It reads no request or response body.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aviary-egress-proxy
+  labels:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: egress-proxy
+data:
+  envoy.yaml: |
+    node:
+      id: aviary-egress-proxy
+      cluster: aviary-egress-proxy
+    # Envoy's own interface can stop Envoy and show its configuration. It
+    # listens on a socket that has no address, so nothing outside the pod
+    # reaches it, and the forward proxy below cannot be asked to connect to
+    # it. Of what it serves, only the metrics are passed on: see the listener
+    # for them.
+    admin:
+      address:
+        pipe: {path: "@aviary-egress-proxy-admin"}
+    static_resources:
+      listeners:
+        # The model requests. The pod sends the token of its session in
+        # place of an API key. The Supervisor answers with the model endpoint
+        # of the turn, that of the provider that the turn's agent names, and
+        # with its key. Envoy puts the key in the token's place and passes the
+        # request on to that endpoint.
+        - name: llm
+          address:
+            socket_address: {address: 0.0.0.0, port_value: 8080}
+          filter_chains:
+            - filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: llm
+                    # A model can be silent for minutes before it answers. A
+                    # stream that is silent for as long as a turn may run
+                    # belongs to a pod that is gone.
+                    stream_idle_timeout: {{ .Values.runtime.maxTurnSeconds }}s
+                    generate_request_id: false
+                    # The Supervisor names an endpoint in these headers: its
+                    # host, and whether it is reached with TLS. Only the
+                    # Supervisor is to say where a request goes, so what a
+                    # pod sends in them is dropped before a route is chosen.
+                    early_header_mutation_extensions:
+                      - name: envoy.http.early_header_mutation.header_mutation
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.http.early_header_mutation.header_mutation.v3.HeaderMutation
+                          mutations:
+                            - remove: x-aviary-upstream
+                            - remove: x-aviary-upstream-tls
+                    {{- if not $allowAny }}
+                    # A request to an endpoint that is not a listed host is
+                    # refused without a word of why. Envoy itself answers
+                    # nothing else here with this status.
+                    local_reply_config:
+                      mappers:
+                        - filter:
+                            status_code_filter:
+                              comparison:
+                                op: EQ
+                                value: {default_value: 403, runtime_key: none}
+                          body:
+                            inline_string: "the model endpoint of the turn is at a host that egressProxy.allowedHosts does not allow\n"
+                    {{- end }}
+                    {{- include "aviary.egress-proxy.access-log" "llm" | nindent 20 }}
+                    route_config:
+                      virtual_hosts:
+                        - name: llm
+                          domains: ["*"]
+                          # The first would say "http", which is how the pod
+                          # reached Envoy and not how Envoy reaches the
+                          # endpoint. The others are for Envoy.
+                          request_headers_to_remove: [x-forwarded-proto, x-aviary-upstream, x-aviary-upstream-tls]
+                          routes:
+                            # To the endpoint that the Supervisor named.
+                            {{- range $secure := list true false }}
+                            - match:
+                                prefix: /
+                                headers:
+                                  - name: x-aviary-upstream-tls
+                                    string_match: {exact: {{ $secure | quote }}}
+                              route:
+                                cluster: {{ ternary "model-tls" "model" $secure }}
+                                timeout: 0s
+                              typed_per_filter_config:
+                                envoy.filters.http.dynamic_forward_proxy:
+                                  "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.PerRouteConfig
+                                  host_rewrite_header: x-aviary-upstream
+                            {{- end }}
+                            # The Supervisor is asked about a request that
+                            # has a route, and the route is chosen again
+                            # with its answer. An answer that names no
+                            # endpoint leaves the request here.
+                            - match: {prefix: /}
+                              direct_response:
+                                status: 503
+                                body:
+                                  inline_string: "the Supervisor named no model endpoint for the request\n"
+                    http_filters:
+                      # Answers the kubelet's probe.
+                      - name: envoy.filters.http.health_check
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.health_check.v3.HealthCheck
+                          pass_through_mode: false
+                          headers:
+                            - name: ":path"
+                              string_match: {exact: /healthz}
+                      {{- include "aviary.egress-proxy.ext-authz" true | nindent 22 }}
+                      {{- if not $allowAny }}
+                      # Refuses a request to an endpoint that the Supervisor
+                      # named and that is not a listed host.
+                      - name: envoy.filters.http.rbac
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC
+                          rules:
+                            action: ALLOW
+                            policies:
+                              listed-hosts:
+                                principals: [{any: true}]
+                                permissions:
+                                  # A request without an endpoint goes
+                                  # nowhere: its route says so.
+                                  - not_rule:
+                                      header: {name: x-aviary-upstream, present_match: true}
+                                  {{- include "aviary.egress-proxy.hosts" (dict "hosts" $hosts "header" "x-aviary-upstream") | nindent 34 }}
+                      {{- end }}
+                      # Looks up the host of an endpoint that the Supervisor
+                      # named.
+                      - name: envoy.filters.http.dynamic_forward_proxy
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig
+                          dns_cache_config: {name: model, dns_lookup_family: V4_PREFERRED}
+                      {{- include "aviary.egress-proxy.router" . | nindent 22 }}
+        # Everything else, as a forward proxy. The pod has it in its proxy
+        # variables, with the token of its session as the password. Envoy
+        # lets a request through only to the hosts that
+        # egressProxy.allowedHosts allows. A request for an HTTPS URL arrives
+        # as CONNECT: Envoy sees the host and the port and passes the rest on
+        # as it is. Where Envoy itself can connect to is set by its network
+        # policy.
+        - name: forward
+          address:
+            socket_address: {address: 0.0.0.0, port_value: 3128}
+          filter_chains:
+            - filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: forward
+                    stream_idle_timeout: {{ .Values.runtime.maxTurnSeconds }}s
+                    generate_request_id: false
+                    {{- include "aviary.egress-proxy.access-log" "forward" | nindent 20 }}
+                    route_config:
+                      virtual_hosts:
+                        - name: forward
+                          domains: ["*"]
+                          # The password is for this proxy, not for the host.
+                          request_headers_to_remove: [proxy-authorization, x-forwarded-proto]
+                          # Tells the Supervisor that the token is the
+                          # password of the proxy.
+                          typed_per_filter_config:
+                            envoy.filters.http.ext_authz:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+                              check_settings:
+                                context_extensions: {listener: forward}
+                          routes:
+                            - match: {connect_matcher: {}}
+                              route:
+                                cluster: forward
+                                timeout: 0s
+                                upgrade_configs:
+                                  - upgrade_type: CONNECT
+                                    connect_config: {}
+                            - match: {prefix: /}
+                              route: {cluster: forward, timeout: 0s}
+                    http_filters:
+                      {{- include "aviary.egress-proxy.ext-authz" false | nindent 22 }}
+                      {{- if not $allowAny }}
+                      # Refuses a request to a host that is not listed,
+                      # before the host's address is looked up.
+                      - name: envoy.filters.http.rbac
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC
+                          rules:
+                            action: ALLOW
+                            {{- if $hosts }}
+                            policies:
+                              listed-hosts:
+                                principals: [{any: true}]
+                                permissions:
+                                  {{- include "aviary.egress-proxy.hosts" (dict "hosts" $hosts "header" ":authority") | nindent 34 }}
+                            {{- end }}
+                      {{- end }}
+                      - name: envoy.filters.http.dynamic_forward_proxy
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig
+                          dns_cache_config: {name: forward, dns_lookup_family: V4_PREFERRED}
+                      {{- include "aviary.egress-proxy.router" . | nindent 22 }}
+        # The metrics, in the form that Prometheus reads.
+        - name: metrics
+          address:
+            socket_address: {address: 0.0.0.0, port_value: 9092}
+          filter_chains:
+            - filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: metrics
+                    route_config:
+                      virtual_hosts:
+                        - name: metrics
+                          domains: ["*"]
+                          routes:
+                            - match: {path: /metrics}
+                              route: {cluster: admin, prefix_rewrite: /stats/prometheus}
+                    http_filters:
+                      {{- include "aviary.egress-proxy.router" . | nindent 22 }}
+      clusters:
+        - name: admin
+          type: STATIC
+          load_assignment:
+            cluster_name: admin
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        pipe: {path: "@aviary-egress-proxy-admin"}
+        - name: supervisor
+          type: STRICT_DNS
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              explicit_http_config:
+                http2_protocol_options:
+                  # A Supervisor whose machine is gone closes no connection.
+                  # Envoy finds that out by asking, and connects to another.
+                  connection_keepalive: {interval: 30s, timeout: 10s}
+          load_assignment:
+            cluster_name: supervisor
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address: {address: aviary-supervisor.{{ .Release.Namespace }}, port_value: 9091}
+        - name: forward
+          lb_policy: CLUSTER_PROVIDED
+          cluster_type:
+            name: envoy.clusters.dynamic_forward_proxy
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig
+              dns_cache_config: {name: forward, dns_lookup_family: V4_PREFERRED}
+        # The model endpoints that the Supervisor names, which are reached by
+        # their host names: those without TLS, and those with it. Envoy
+        # holds the certificate of an endpoint against its host name.
+        - name: model
+          lb_policy: CLUSTER_PROVIDED
+          cluster_type:
+            name: envoy.clusters.dynamic_forward_proxy
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig
+              dns_cache_config: {name: model, dns_lookup_family: V4_PREFERRED}
+        - name: model-tls
+          lb_policy: CLUSTER_PROVIDED
+          cluster_type:
+            name: envoy.clusters.dynamic_forward_proxy
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig
+              dns_cache_config: {name: model, dns_lookup_family: V4_PREFERRED}
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              # The host name of the endpoint is the name that Envoy asks
+              # for and that the certificate has to be for.
+              upstream_http_protocol_options: {auto_sni: true, auto_san_validation: true}
+              # HTTP/2 if the endpoint offers it, so that many turns share a
+              # few connections.
+              auto_config: {}
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+              common_tls_context:
+                validation_context:
+                  trusted_ca: {filename: /etc/ssl/certs/ca-certificates.crt}

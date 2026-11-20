@@ -151,10 +151,10 @@ func (s *Service) suspend(name string, m *made) {
 	m.runner = s.Runner(name)
 }
 
-// Resume wakes the sandbox, of the harness, with a runner that has no turn.
-func (s *Service) Resume(_ context.Context, name string, harness sandbox.Harness) error {
+// Resume wakes the sandbox, of the pod, with a runner that has no turn.
+func (s *Service) Resume(_ context.Context, name string, pod sandbox.Pod) error {
 	return s.change(name, func(m *made) {
-		m.request.Harness = harness
+		m.request.Pod = pod
 		if m.state == sandbox.Asleep {
 			m.state = sandbox.Starting
 			m.woken++
@@ -188,7 +188,7 @@ func (s *Service) change(name string, change func(*made)) error {
 }
 
 // Made returns the sandboxes that there are: what each was made for, by its
-// name, with the harness that it was last woken with.
+// name, with the pod that it was last woken with.
 func (s *Service) Made() map[string]sandbox.Request {
 	s.mu.Lock()
 	defer s.mu.Unlock()
