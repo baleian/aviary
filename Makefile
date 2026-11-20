@@ -282,7 +282,7 @@ build:
 # so it reaches the registry by its address, which the certificate does not
 # name.
 images: build
-	kind load docker-image --name $(CLUSTER) $(SUPERVISOR_IMAGE) $(RUNNER_IMAGE) $(OPENCODE_IMAGE) $(CODEX_IMAGE) $(MOCK_LLM_IMAGE)
+	kind load docker-image --name $(CLUSTER) $(SUPERVISOR_IMAGE) $(OPENCODE_IMAGE) $(CODEX_IMAGE) $(MOCK_LLM_IMAGE)
 	registry=$$($(KUBECTL) --namespace aviary-data get service registry --output jsonpath='{.spec.clusterIP}') && \
 	for image in $(OPENCODE_IMAGE) $(CODEX_IMAGE); do \
 		docker exec $(CLUSTER)-control-plane ctr --namespace k8s.io images tag --force \
