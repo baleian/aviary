@@ -29,6 +29,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Stdio;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::ProtocolVersion;
@@ -91,6 +92,7 @@ async fn serve() -> Result<(), Box<dyn Error>> {
     let (orders, ordered) = mpsc::unbounded();
     let runner = Arc::new(Runner {
         turn: Mutex::new(None),
+        waited: AtomicBool::new(false),
         changed: watch::Sender::new(()),
         orders,
     });
@@ -110,6 +112,9 @@ async fn serve() -> Result<(), Box<dyn Error>> {
 struct Runner {
     /// The turn that runs, or the last one that ran.
     turn: Mutex<Option<Turn>>,
+    /// Whether the runner has said, before its first turn, that the session
+    /// is at work.
+    waited: AtomicBool,
     /// Tells those who read the events of the turn that there is more.
     changed: watch::Sender<()>,
     /// Gives the turns to where the harness is talked to.
@@ -322,11 +327,15 @@ async fn answer(
 }
 
 /// Whether the session is at work: a turn runs, and waits for no person.
+/// Before its first turn, the runner says once that it is. The sandbox
+/// service counts a sandbox idle from when it was made, and would put one that
+/// took longer than that to start to sleep before its first turn.
 async fn active(State(runner): State<Arc<Runner>>) -> Json<Value> {
     let turn = runner.turn.lock().expect("the turn");
-    let active = turn
-        .as_ref()
-        .is_some_and(|turn| !turn.ended && turn.asking == 0);
+    let active = match turn.as_ref() {
+        Some(turn) => !turn.ended && turn.asking == 0,
+        None => !runner.waited.swap(true, Ordering::Relaxed),
+    };
     Json(json!({"active": active}))
 }
 

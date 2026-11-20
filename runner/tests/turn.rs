@@ -424,14 +424,24 @@ async fn a_harness_that_asks_is_answered_by_a_person() {
     assert!(events.next().await.is_none());
 }
 
+// A sandbox can take longer to start than it may be idle, which the sandbox
+// service counts from when it was made. Before its first turn, a session is
+// at work the first time that it is asked, and only then.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_is_given_time_for_its_first_turn() {
+    let home = Home::new();
+    let runner = start(runner(&home)).await;
+    assert!(runner.active().await);
+    assert!(!runner.active().await);
+    assert!(!runner.active().await);
+}
+
 // A session is at work while a turn of it runs and waits for no person.
 // What runs the sandbox asks, and puts a session to sleep that is not.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_session_is_at_work_while_its_turn_waits_for_no_person() {
     let home = Home::new();
     let runner = start(runner(&home)).await;
-    assert!(!runner.active().await);
-
     runner
         .turn_with("t1", json!({"text": "ask ; ask", "approval": "ask"}))
         .await;
