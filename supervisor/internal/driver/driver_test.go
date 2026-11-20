@@ -386,6 +386,18 @@ func TestATurnThatRunsForTooLongIsGivenUp(t *testing.T) {
 	}
 }
 
+func TestATurnThatWaitsForAPersonHasNoMoreTimeThanAnyOther(t *testing.T) {
+	i := install(t, func(config *Config) { config.MaxTurn = 300 * time.Millisecond })
+	driver, _ := i.supervisor()
+	turn := i.send(driver, i.session(store.Agent{Approval: Ask}), "hello")
+	given := i.service.Turn(t)
+	given.Tell("started", started)
+	given.Tell("approval.requested", asks)
+	if ended := i.ended(turn.ID); !failed(ended, store.FailureTimedOut) {
+		t.Errorf("the turn that waited for a person ended as %+v, %+v", ended, ended.Failure)
+	}
+}
+
 // cancel asks the turn to stop, as the API does.
 func (i *installation) cancel(turn uuid.UUID, announce bool) {
 	i.t.Helper()

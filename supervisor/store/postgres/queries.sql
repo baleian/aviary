@@ -132,15 +132,10 @@ join agents on agents.id = sessions.agent_id
 where turns.id = @id;
 
 -- name: CountWaitingTurns :one
--- A queued turn waits only if the turns that run leave it no room. A turn
--- that waits for a person takes none: one with a request for approval that is
--- not resolved.
+-- A queued turn waits only if the turns that run leave it no room.
 select ((select count(*) from turns where state = 'queued')
         - greatest(0, sqlc.arg(max_running)::bigint
-                      - (select count(*) from turns
-                         where state in ('dispatching', 'running')
-                           and not exists (select 1 from approvals
-                                           where approvals.turn_id = turns.id and approvals.resolved_at is null))))::bigint as waiting;
+                      - (select count(*) from turns where state in ('dispatching', 'running'))))::bigint as waiting;
 
 -- name: QueuedTurns :many
 select id from turns where state = 'queued' order by created_at, id;
@@ -149,8 +144,7 @@ select id from turns where state = 'queued' order by created_at, id;
 select id from turns where ended_at is null and cancel_requested_at is not null;
 
 -- name: NextTurns :many
--- The queued turns that there is room to run, oldest first. A turn that
--- waits for a person takes no room, as in CountWaitingTurns.
+-- The queued turns that there is room to run, oldest first.
 select turns.id as turn_id, agents.harness, extract(epoch from now() - turns.created_at)::float8 as waited
 from turns
 join sessions on sessions.id = turns.session_id
@@ -158,10 +152,7 @@ join agents on agents.id = sessions.agent_id
 where turns.state = 'queued'
 order by turns.created_at, turns.id
 limit greatest(sqlc.arg(max_running)::bigint
-               - (select count(*) from turns as running
-                  where running.state in ('dispatching', 'running')
-                    and not exists (select 1 from approvals
-                                    where approvals.turn_id = running.id and approvals.resolved_at is null)), 0);
+               - (select count(*) from turns as running where running.state in ('dispatching', 'running')), 0);
 
 -- name: DispatchTurn :execrows
 -- A turn that was cancelled since it was read is left as it is.
@@ -178,15 +169,12 @@ update turns set state = 'running' where id = @id and state in ('dispatching', '
 
 -- name: FollowedTurn :one
 -- The turn as the Supervisor that follows it gets it, with whether it has a
--- request for approval that is not resolved, and how long ago one of its
--- requests was resolved last.
+-- request for approval that is not resolved.
 select sqlc.embed(turns), agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
        agents.approval, coalesce(providers.url, '')::text as provider_url, agents.model, sessions.sandbox,
        extract(epoch from now() - coalesce(turns.dispatched_at, turns.created_at))::float8 as dispatched,
        exists (select 1 from approvals
-               where approvals.turn_id = turns.id and approvals.resolved_at is null)::boolean as waiting,
-       coalesce((select extract(epoch from now() - max(approvals.resolved_at)) from approvals
-                 where approvals.turn_id = turns.id), 0)::float8 as answered
+               where approvals.turn_id = turns.id and approvals.resolved_at is null)::boolean as waiting
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id

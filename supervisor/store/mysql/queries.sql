@@ -120,11 +120,8 @@ select count(*) from turns where state = 'queued';
 
 -- name: CountRunningTurns :one
 -- The turns that take the room of a turn that runs: those that were
--- dispatched and have not ended, without those that wait for a person, which
--- have a request for approval that is not resolved.
-select count(*) from turns
-where state in ('dispatching', 'running')
-  and not exists (select 1 from approvals where approvals.turn_id = turns.id and approvals.resolved_at is null);
+-- dispatched and have not ended.
+select count(*) from turns where state in ('dispatching', 'running');
 
 -- name: QueuedTurns :many
 select id from turns where state = 'queued' order by created_at, id;
@@ -156,14 +153,11 @@ update turns set state = 'running' where id = ? and state in ('dispatching', 'ru
 
 -- name: FollowedTurn :one
 -- The turn as the Supervisor that follows it gets it, with whether it has a
--- request for approval that is not resolved, and how long ago one of its
--- requests was resolved last.
+-- request for approval that is not resolved.
 select sqlc.embed(turns), agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
        agents.approval, coalesce(providers.url, '') as provider_url, agents.model, sessions.sandbox,
        cast(timestampdiff(microsecond, coalesce(turns.dispatched_at, turns.created_at), now(6)) as signed) as dispatched,
-       exists (select 1 from approvals where approvals.turn_id = turns.id and approvals.resolved_at is null) as waiting,
-       cast(coalesce((select timestampdiff(microsecond, max(approvals.resolved_at), now(6)) from approvals
-                      where approvals.turn_id = turns.id), 0) as signed) as answered
+       exists (select 1 from approvals where approvals.turn_id = turns.id and approvals.resolved_at is null) as waiting
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id

@@ -693,7 +693,6 @@ func (s *records) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.Follo
 		Model:        row.Model,
 		Dispatched:   time.Duration(row.Dispatched * float64(time.Second)),
 		Waiting:      row.Waiting,
-		Answered:     time.Duration(row.Answered * float64(time.Second)),
 	}
 	if row.Sandbox != nil {
 		followed.Sandbox = *row.Sandbox

@@ -442,8 +442,12 @@ async fn a_session_is_given_time_for_its_first_turn() {
 async fn a_session_is_at_work_while_its_turn_waits_for_no_person() {
     let home = Home::new();
     let runner = start(runner(&home)).await;
+    // The harness asks after it is asked whether the session is at work.
     runner
-        .turn_with("t1", json!({"text": "ask ; ask", "approval": "ask"}))
+        .turn_with(
+            "t1",
+            json!({"text": "sleep 500 ; ask ; ask", "approval": "ask"}),
+        )
         .await;
     assert!(runner.active().await);
     let mut events = runner.follow("t1", 0).await;

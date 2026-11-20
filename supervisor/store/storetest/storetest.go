@@ -118,7 +118,7 @@ func Run(t *testing.T, create func(t *testing.T) Database) {
 		"SupervisorsDispatchWithinTheLimitTogether":         suite.testSupervisorsDispatchWithinTheLimitTogether,
 		"SupervisorsDispatchWithinTheLimitWhileTurnsCome":   suite.testSupervisorsDispatchWithinTheLimitWhileTurnsCome,
 		"DispatchTurnsLeavesATurnThatWasCancelledMeanwhile": suite.testDispatchTurnsLeavesATurnThatWasCancelledMeanwhile,
-		"DispatchTurnsCountsNoTurnThatWaitsForAPerson":      suite.testDispatchTurnsCountsNoTurnThatWaitsForAPerson,
+		"DispatchTurnsCountsATurnThatWaitsForAPerson":       suite.testDispatchTurnsCountsATurnThatWaitsForAPerson,
 		"AnnounceQueue":                   suite.testAnnounceQueue,
 		"FollowTurn":                      suite.testFollowTurn,
 		"SupervisorsEndATurnOnceTogether": suite.testSupervisorsEndATurnOnceTogether,

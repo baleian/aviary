@@ -40,10 +40,8 @@ type run struct {
 	given  bool
 	// started is whether the harness has the message.
 	started bool
-	// asking is how many requests of the turn wait for a person, and
-	// answered when the harness last got its answer to one.
-	asking   int
-	answered time.Time
+	// asking is how many requests of the turn wait for a person.
+	asking int
 	// stopping is when the turn was asked to stop, if it was.
 	stopping time.Time
 	// holdup is why the turn is not with its runner yet.
@@ -98,9 +96,6 @@ func (d *Driver) run(ctx context.Context, turnID uuid.UUID, told *orders) {
 	}
 	if turn.Waiting {
 		r.asking = 1
-	}
-	if turn.Answered > 0 {
-		r.answered = time.Now().Add(-turn.Answered)
 	}
 	// What is done for the turn while it is followed ends with the
 	// following. What settles the turn does not.
@@ -637,16 +632,9 @@ func with(object []byte, name string, value any) ([]byte, error) {
 func (r *run) limit(config Config) (time.Time, store.Failure) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	// A turn may wait for a person without end: its time does not pass
-	// while it waits, and starts again when the person has answered.
-	at := r.dispatched
-	if r.answered.After(at) {
-		at = r.answered
-	}
-	if r.asking > 0 {
-		at = time.Now()
-	}
-	at = at.Add(config.MaxTurn)
+	// The time that the turn waits for a person is of its time too: its
+	// sandbox runs while it waits.
+	at := r.dispatched.Add(config.MaxTurn)
 	failure := store.Failure{
 		Reason: store.FailureTimedOut, Message: fmt.Sprintf("the turn ran for longer than %s", config.MaxTurn),
 	}
@@ -731,17 +719,14 @@ func (r *run) start() {
 // answer to a request.
 func (r *run) ask() {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.asking++
-	r.mu.Unlock()
-	poke(r.changed)
 }
 
 func (r *run) answer() {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.asking = max(r.asking-1, 0)
-	r.answered = time.Now()
-	r.mu.Unlock()
-	poke(r.changed)
 }
 
 // stop notes that the turn was asked to stop, and returns the runner that

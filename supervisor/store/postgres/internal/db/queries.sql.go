@@ -211,15 +211,10 @@ func (q *Queries) ClaimMembers(ctx context.Context, username string) error {
 const countWaitingTurns = `-- name: CountWaitingTurns :one
 select ((select count(*) from turns where state = 'queued')
         - greatest(0, $1::bigint
-                      - (select count(*) from turns
-                         where state in ('dispatching', 'running')
-                           and not exists (select 1 from approvals
-                                           where approvals.turn_id = turns.id and approvals.resolved_at is null))))::bigint as waiting
+                      - (select count(*) from turns where state in ('dispatching', 'running'))))::bigint as waiting
 `
 
-// A queued turn waits only if the turns that run leave it no room. A turn
-// that waits for a person takes none: one with a request for approval that is
-// not resolved.
+// A queued turn waits only if the turns that run leave it no room.
 func (q *Queries) CountWaitingTurns(ctx context.Context, maxRunning int64) (int64, error) {
 	row := q.db.QueryRow(ctx, countWaitingTurns, maxRunning)
 	var waiting int64
@@ -652,9 +647,7 @@ select turns.id, turns.session_id, turns.seq, turns.created_by, turns.state, tur
        agents.approval, coalesce(providers.url, '')::text as provider_url, agents.model, sessions.sandbox,
        extract(epoch from now() - coalesce(turns.dispatched_at, turns.created_at))::float8 as dispatched,
        exists (select 1 from approvals
-               where approvals.turn_id = turns.id and approvals.resolved_at is null)::boolean as waiting,
-       coalesce((select extract(epoch from now() - max(approvals.resolved_at)) from approvals
-                 where approvals.turn_id = turns.id), 0)::float8 as answered
+               where approvals.turn_id = turns.id and approvals.resolved_at is null)::boolean as waiting
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
@@ -674,12 +667,10 @@ type FollowedTurnRow struct {
 	Sandbox      *string
 	Dispatched   float64
 	Waiting      bool
-	Answered     float64
 }
 
 // The turn as the Supervisor that follows it gets it, with whether it has a
-// request for approval that is not resolved, and how long ago one of its
-// requests was resolved last.
+// request for approval that is not resolved.
 func (q *Queries) FollowedTurn(ctx context.Context, id uuid.UUID) (FollowedTurnRow, error) {
 	row := q.db.QueryRow(ctx, followedTurn, id)
 	var i FollowedTurnRow
@@ -714,7 +705,6 @@ func (q *Queries) FollowedTurn(ctx context.Context, id uuid.UUID) (FollowedTurnR
 		&i.Sandbox,
 		&i.Dispatched,
 		&i.Waiting,
-		&i.Answered,
 	)
 	return i, err
 }
@@ -1417,10 +1407,7 @@ join agents on agents.id = sessions.agent_id
 where turns.state = 'queued'
 order by turns.created_at, turns.id
 limit greatest($1::bigint
-               - (select count(*) from turns as running
-                  where running.state in ('dispatching', 'running')
-                    and not exists (select 1 from approvals
-                                    where approvals.turn_id = running.id and approvals.resolved_at is null)), 0)
+               - (select count(*) from turns as running where running.state in ('dispatching', 'running')), 0)
 `
 
 type NextTurnsRow struct {
@@ -1429,8 +1416,7 @@ type NextTurnsRow struct {
 	Waited  float64
 }
 
-// The queued turns that there is room to run, oldest first. A turn that
-// waits for a person takes no room, as in CountWaitingTurns.
+// The queued turns that there is room to run, oldest first.
 func (q *Queries) NextTurns(ctx context.Context, maxRunning int64) ([]NextTurnsRow, error) {
 	rows, err := q.db.Query(ctx, nextTurns, maxRunning)
 	if err != nil {

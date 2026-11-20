@@ -413,9 +413,9 @@ func (suite suite) testDispatchTurnsLeavesATurnThatWasCancelledMeanwhile(t *test
 	}
 }
 
-// A turn that waits for a person takes no place among the turns that run:
-// neither when turns are dispatched, nor when those that wait are counted.
-func (suite suite) testDispatchTurnsCountsNoTurnThatWaitsForAPerson(t *testing.T) {
+// A turn that waits for a person takes its place among the turns that run,
+// as any other: its sandbox runs while it waits.
+func (suite suite) testDispatchTurnsCountsATurnThatWaitsForAPerson(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	// One turn has room to run.
@@ -427,49 +427,19 @@ func (suite suite) testDispatchTurnsCountsNoTurnThatWaitsForAPerson(t *testing.T
 		}
 		return turn.ID, waiting
 	}
-	dispatch := func() []uuid.UUID {
-		t.Helper()
-		dispatches, err := st.DispatchTurns(ctx, 1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		turns := []uuid.UUID{}
-		for _, dispatch := range dispatches {
-			turns = append(turns, dispatch.TurnID)
-		}
-		return turns
-	}
 	first, _ := send()
-	if turns := dispatch(); !slices.Equal(turns, []uuid.UUID{first}) {
-		t.Fatalf("the turns %v were dispatched, not the one that waited", turns)
+	dispatches, err := st.DispatchTurns(ctx, 1)
+	if err != nil || len(dispatches) != 1 || dispatches[0].TurnID != first {
+		t.Fatalf("the turns %+v were dispatched, not the one that waited: %v", dispatches, err)
 	}
-	second, waiting := send()
-	if turns := dispatch(); waiting != 1 || len(turns) != 0 {
-		t.Errorf("while a turn runs, %d turns wait and the turns %v were dispatched beyond the limit", waiting, turns)
-	}
-
 	if err := st.AddApproval(ctx, first, "1", []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
-	if turns := dispatch(); !slices.Equal(turns, []uuid.UUID{second}) {
-		t.Fatalf("while the turn that runs waits for a person, the turns %v were dispatched, not the one that waited", turns)
-	}
-	st.end(second, false, store.Failure{Reason: store.FailureSandboxLost})
-	// The turn waits also when a person has answered, until its harness has
-	// the answer.
-	if answered, err := st.AnswerApproval(ctx, first, "1", "once", uuid.Nil); err != nil || !answered {
-		t.Fatalf("the request was answered %t: %v", answered, err)
-	}
-	if _, waiting := send(); waiting != 0 {
+	if _, waiting := send(); waiting != 1 {
 		t.Errorf("%d turns wait while the only turn that runs waits for a person", waiting)
 	}
-
-	// It takes its place again when its harness has the answer.
-	if _, _, _, err := st.ResolveApproval(ctx, first, "1", "selected"); err != nil {
-		t.Fatal(err)
-	}
-	if turns := dispatch(); len(turns) != 0 {
-		t.Errorf("the turns %v were dispatched beyond the limit, while a turn runs that waits for a person no longer", turns)
+	if dispatches, err := st.DispatchTurns(ctx, 1); err != nil || len(dispatches) != 0 {
+		t.Errorf("the turns %+v were dispatched beyond the limit, while the turn that runs waits for a person: %v", dispatches, err)
 	}
 }
 

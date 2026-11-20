@@ -747,12 +747,11 @@ func (t *turn) waiting() bool {
 }
 
 // running returns how many turns run or are about to: those that were
-// dispatched and have not ended, without those that wait for a person. The
-// caller holds the lock.
+// dispatched and have not ended. The caller holds the lock.
 func (s *Store) running() int {
 	running := 0
 	for _, turn := range s.created {
-		if (turn.State == store.TurnDispatching || turn.State == store.TurnRunning) && !turn.waiting() {
+		if turn.State == store.TurnDispatching || turn.State == store.TurnRunning {
 			running++
 		}
 	}
@@ -965,15 +964,6 @@ func (s *Store) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.Followe
 	}
 	if turn.dispatchedAt != nil {
 		followed.Dispatched = now.Sub(*turn.dispatchedAt)
-	}
-	var answered time.Time
-	for _, approval := range turn.approvals {
-		if approval.resolved && approval.resolvedAt.After(answered) {
-			answered = approval.resolvedAt
-		}
-	}
-	if !answered.IsZero() {
-		followed.Answered = now.Sub(answered)
 	}
 	if agent.Model != nil {
 		followed.Model = agent.Model.Name

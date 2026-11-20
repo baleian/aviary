@@ -422,11 +422,12 @@ comes later finds what there is to answer.
   here, OpenCode asks before it runs a command or changes a file, and Codex
   before a command runs outside its sandbox:
   [`images/README.md`](images/README.md) tells more.
-- **A request waits until it is answered.** The time of its turn does not
-  pass while the turn waits for a person, and the session sleeps meanwhile:
-  its sandbox is woken for the answer. From the answer on, the turn may run
-  for `runtime.maxTurnSeconds` again. Cancelling the turn ends its requests
-  as `cancelled`.
+- **A request waits for as long as its turn may run.** The time that a turn
+  waits for a person is of its `runtime.maxTurnSeconds` too, because its
+  sandbox runs while it waits, and the turn takes its place among the turns
+  that run. A turn whose time ends while it waits fails as `timed_out`, and
+  the next message of the session goes on with what was said. Cancelling the
+  turn ends its requests as `cancelled`.
 - **What an option does is up to the harness too.** How long an
   `allow_always` holds differs: in OpenCode until the turn ends, in Codex
   for the rest of the session. After a refusal both end the turn, Codex with
@@ -536,7 +537,7 @@ installs it in the local cluster with a file of values of your own.
 | `runtime.maxQueuedTurns` | The most turns that may wait to run. A message beyond it is answered with 429. Default 500, and 0 is no limit. |
 | `runtime.maxQueueWaitSeconds` | How long a turn may wait to run before it ends as expired. Default 120, and 0 is no limit. |
 | `runtime.maxStartupSeconds` | How long a turn may take until its harness has the message, which for the first turn of a session is after its sandbox was made. A turn that takes longer fails. Its sandbox is deleted if the runner in it had the turn, and stays for the next turn if it was still being made or woken. Default 120, and 0 is no limit. |
-| `runtime.maxTurnSeconds` | How long a turn may run before it fails and its sandbox is deleted. Default 1800. |
+| `runtime.maxTurnSeconds` | How long a turn may run before it fails and its sandbox is deleted, the time that it waits for a person included. Default 1800. |
 | `runtime.maxToolOutputBytes` | The longest text of a tool call that the events carry as it is. A longer text is cut. Default 65536, and 0 is no limit. |
 | `runtime.harnesses` | The harnesses that agents can use, each with its image. `sandbox` is the size of the sandbox of a session: its `cpu`, `memory` and `disk`. A release has OpenSandbox build a template for each harness, from the image and that size, when it is installed and when either has changed. OpenSandbox takes the image from its registry without credentials. |
 

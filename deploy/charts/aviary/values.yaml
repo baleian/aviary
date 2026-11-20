@@ -140,10 +140,10 @@ runtime:
   # runner in it had the turn. One that was still being made or woken stays
   # with what the agent had in it, for the next turn. Zero is no limit.
   maxStartupSeconds: 120
-  # How long a turn may run, from when it left the queue. A turn is
-  # everything that an agent does for one message, which can be many
-  # requests to the model. A turn that runs longer fails, and its sandbox is
-  # deleted with what the session had in it.
+  # How long a turn may run, from when it left the queue, the time that it
+  # waits for a person included. A turn is everything that an agent does for
+  # one message, which can be many requests to the model. A turn that runs
+  # longer fails, and its sandbox is deleted with what the session had in it.
   maxTurnSeconds: 1800
   # The longest text of a tool call, in what the tool was called with or
   # returned, that is reported in the events of a turn as it is. A longer
