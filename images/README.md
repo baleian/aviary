@@ -1,7 +1,7 @@
 # Harness images
 
-A harness is the agent program that Aviary runs for a turn, such as OpenCode
-or Codex. A harness image packages one harness. This page describes what
+A harness is the agent program that Aviary runs for the turns of a session,
+such as OpenCode or Codex. A harness image packages one harness. This page describes what
 Aviary does with a harness image and what the image must provide, so that you
 can build an image for a harness that this repository does not ship.
 
@@ -22,6 +22,7 @@ The harness runs like this:
 | Model endpoint | `AVIARY_LLM_BASE_URL`, `AVIARY_LLM_API_KEY` and `AVIARY_LLM_MODEL`. |
 | Approval | `AVIARY_APPROVAL=ask` for an agent that is to ask a person before it acts. Other agents do not have the variable. |
 | What lasts | Everything, for as long as the session has its sandbox: the whole file system, and the harness itself, which stays when a turn has ended. |
+| Outside | The hosts that the installation allows, through the egress of the sandbox. The egress looks into requests over HTTPS with a certificate of its own CA, which the sandbox trusts. |
 
 The runner talks to the harness over its standard input and output with the
 [Agent Client Protocol](https://agentclientprotocol.com) (ACP). When it
@@ -105,23 +106,18 @@ there. The images here ran into these cases:
 - **Configuration that the harness writes next to its state.** OpenCode
   installs packages into its configuration directory, so the image keeps the
   configuration in the image, at `/etc/xdg`, and not in the session home.
-- **The harness's own sandbox.** Codex's sandbox creates namespaces, which a
-  pod does not allow. The pod is the sandbox, so the image starts Codex with
-  full access.
+- **The harness's own sandbox.** The sandbox of the session is what keeps
+  the agent in, and the agent may become root in it, so the image starts
+  Codex with full access.
 - **Settings that the harness does not read from the environment.** Codex
   takes the model and the server address from its configuration. The image
   starts it through a small script that puts the variables there.
-- **Programs that do not use the proxy variables.** What a harness or its
-  tools fetch from outside has to go through the proxy. git, npm and curl
-  use the variables. Node's `fetch` does not, unless `NODE_USE_ENV_PROXY=1`
-  is set, which `images/harness-base` does.
 - **A sandbox that is the only thing that asks.** Codex asks a person only
-  when a command is to leave its sandbox, and the sandbox does not start in
-  a pod. For an agent that is to ask, the image starts Codex in its
-  read-only mode all the same: a command that the model tries inside the
-  sandbox fails, and it runs when the model has asked for it to run outside
-  and a person has allowed that. The failed try costs one more request to
-  the model.
+  when a command is to run outside its own sandbox. For an agent that is to
+  ask, the image starts Codex in its read-only mode: what the model tries in
+  that sandbox may fail, and it runs when the model has asked for it to run
+  outside and a person has allowed that. A failed try costs one more
+  request to the model.
 - **What the harness makes of a refusal.** Both harnesses here end the turn
   when a person refuses an action: OpenCode with the stop reason `end_turn`,
   Codex with `cancelled`. Aviary records the turn as the harness ends it.
@@ -156,20 +152,26 @@ there. The images here ran into these cases:
    the agent run shell commands, so they need the harness to offer the model
    a tool with a `command` or a `cmd` parameter. A harness that fetches
    something for itself when it starts fails them, and so does one that runs
-   a command of an agent that is to ask without asking.
-3. Make the image available to the cluster. For the local cluster that is
-   `kind load docker-image --name aviary <image>`.
-4. Add the harness to the chart's values under a name of your choice:
+   a command of an agent that is to ask without asking. The containers reach
+   nothing but the model server, which is also their proxy in the usual
+   variables, so the tests see what a harness fetches. git, npm and curl use
+   the variables, and Node's `fetch` does with `NODE_USE_ENV_PROXY=1`, which
+   `images/harness-base` sets.
+3. Push the image to a registry that OpenSandbox can take it from without
+   credentials. The local cluster has one, into which `make images` puts the
+   images of this repository.
+4. Add the harness to the chart's values under a name of your choice, with
+   the image as it is named in that registry and the size of the sandbox of
+   a session:
 
    ```yaml
    runtime:
      harnesses:
        myharness:
          image: registry.example.com/aviary-harness-myharness:1.0
-         # What the turns of an agent get that has no resources of its own.
-         resources:
-           requests: {cpu: 250m, memory: 512Mi}
-           limits: {memory: 4Gi}
+         sandbox: {cpu: "1", memory: 2Gi, disk: 4Gi}
    ```
+
+   A release has OpenSandbox build a template of the sandbox from the image.
 
 5. Create an agent with that name: `{"harness": "myharness"}`.

@@ -1,22 +1,26 @@
 # Aviary
 
 Aviary runs AI agent harnesses, such as OpenCode and Codex, on Kubernetes.
-Every message that a user sends is a turn, and every turn runs in a pod of
-its own that is gone when the turn ends. What the session has to keep, its
-conversation and its files, lives on a volume, so the pod of the next turn
-continues where the last one stopped.
+Every message that a user sends is a turn, and every session runs its turns
+in a sandbox of its own, which keeps the harness and the files of the
+session from one turn to the next. A session that is not at work is put to
+sleep, sandbox and all, and goes on from where it was when it is woken. The
+sandboxes are those of [OpenSandbox](https://github.com/alibaba/OpenSandbox).
 
 Aviary is meant as a reference for organizations that want to run agents for
-many users on their own cluster: the agent has no long-lived process to
-attack or to leak into, a session costs nothing while nobody talks to it,
-and the number of turns that run at once is a setting.
+many users on their own cluster: an agent reaches only the hosts that the
+installation allows and never holds the key of its model, every request that
+leaves a sandbox is recorded with the turn and the user that it came from, a
+session costs no CPU or memory while nobody talks to it, and the number of
+turns that run at once is a setting.
 
 > **Status.** Aviary is at an early stage. A message sent to the API runs as
-> a turn, sessions continue across turns, turns beyond a limit wait their
-> turn, and what was said can be read back. The pod of a turn reaches the
-> outside only through a proxy that keeps a record. Every agent names its
-> model, at an endpoint that its project registers with a key that no pod
-> holds. An agent can be made to ask a person before it acts. Supervisors
+> a turn in the sandbox of its session, sessions continue across turns,
+> turns beyond a limit wait their turn, and what was said can be read back.
+> A sandbox reaches only the hosts that are allowed, and its requests are
+> recorded. Every agent names its model, at an endpoint that its project
+> registers with a key that no sandbox holds. An agent can be made to ask a
+> person before it acts, and its session sleeps while it waits. Supervisors
 > can be replaced while turns run.
 > With an identity provider, it knows its callers and holds each to what
 > they may do in a project. It has only run on a local cluster. See
@@ -25,34 +29,46 @@ and the number of turns that run at once is a setting.
 ## How it works
 
 ```
-            messages, events                     one Job per turn
-  client ───────────────────▶ Supervisor ─────────────────────────▶ turn pod
-                               │      ▲                             ┌─────────────────┐
-                    database   │      │ gRPC: the message down,     │ runner          │
-                    event log  │      └─ what the agent does up ────│   │ ACP         │
-                                                                    │ harness         │
-                                                                    │   /home ── session volume
-                                                                    └─────────────────┘
+            messages, events                  makes, wakes and deletes
+  client ───────────────────▶ Supervisor ─────────────────────────▶ OpenSandbox
+                               │  ▲   ▲                                  │
+                    database   │  │   │ HTTP: the turn down,             ▼
+                    event log  │  │   └─ what the agent does up ──── sandbox of the session
+                                  │                                ┌─────────────────┐
+                                  │                                │ runner          │
+                                  │                                │   │ ACP         │
+                                  │                                │ harness, /home  │
+                                  │                                └────────┬────────┘
+                                  │ asks about each request:                │ what it sends out
+                                  └─ record it, give the model's key ─── egress ──▶ allowed hosts
 ```
 
 1. A client creates a project, in it a model provider and an agent that
    uses a model of that provider, and a session of the agent, and sends the
    session a message.
 2. The **Supervisor** records the message as a turn. If fewer turns are
-   running than the limit allows, it creates a Job for the turn. Otherwise
-   the turn waits, and turns run in the order in which they were sent.
-3. In the pod, the **runner** connects to the Supervisor, takes the message
-   and starts the **harness**. It talks to the harness with the
+   running than the limit allows, a Supervisor takes the turn and follows it
+   until it has ended. Otherwise the turn waits, and turns run in the order
+   in which they were sent.
+3. The Supervisor has OpenSandbox make the **sandbox** of the session from
+   the template of the agent's harness, or wake it if it sleeps, and gives
+   the turn to the **runner** in it. The runner starts the **harness** for
+   the first turn and talks to it with the
    [Agent Client Protocol](https://agentclientprotocol.com), so it does not
    know which harness it is.
-4. The harness works on the message with the session's home mounted at
-   `/home`. The runner reports what it does, and the client reads that as a
-   stream of events. A runner that loses its Supervisor goes on with
-   another.
-5. When Kubernetes reports that the pod has stopped, the Supervisor ends the
-   turn, keeps what the agent said and did in it, and deletes the Job. Only
-   then does the session take its next message, so two pods never work on
-   the same session home.
+4. The harness works on the message in the sandbox, with its home at
+   `/home`. The runner tells what it does, the Supervisor records that, and
+   the client reads it as a stream of events. If the Supervisor goes,
+   another follows the turn on from what was recorded.
+5. When the runner tells that the turn has ended, the Supervisor ends the
+   turn and keeps what the agent said and did in it. The harness and the
+   files stay in the sandbox for the next turn. A session that runs no
+   turn, or whose turn waits for a person, is put to sleep after a while,
+   and woken for its next message or for the answer.
+6. What the sandbox sends out passes its **egress**, which lets it reach the
+   hosts that the installation allows and no others. The egress asks the
+   Supervisors about the requests: they record each with its turn, and give
+   a request to the model endpoint of the agent its key.
 
 The Supervisor keeps its records in a database and the events of running
 turns in an event log, and reaches each through a plugin. It has plugins for
@@ -103,8 +119,9 @@ makes it with MySQL in the place of PostgreSQL.
 The API listens inside the cluster. Forward a port to it, tell the project
 where its model is, and send a message. A model provider is the base URL of
 a model endpoint and its key. The endpoint must be reachable from the
-cluster, so `localhost` will not do. OpenCode needs a server with the Chat
-Completions API of OpenAI, Codex one with the Responses API.
+cluster, so `localhost` will not do, and a request to it gets the key only
+over HTTPS on port 443. OpenCode needs a server with the Chat Completions
+API of OpenAI, Codex one with the Responses API.
 
 ```sh
 kubectl --context kind-aviary --namespace aviary-system \
@@ -112,7 +129,7 @@ kubectl --context kind-aviary --namespace aviary-system \
 
 project=$(curl -s -X POST localhost:8080/v1/projects -d '{"name": "demo"}' | jq -r .id)
 provider=$(curl -s -X POST localhost:8080/v1/projects/$project/providers \
-  -d '{"name": "a model server", "url": "http://model-server.example.com/v1", "api_key": {"value": "..."}}' | jq -r .id)
+  -d '{"name": "a model server", "url": "https://model-server.example.com/v1", "api_key": {"value": "..."}}' | jq -r .id)
 agent=$(curl -s -X POST localhost:8080/v1/projects/$project/agents \
   -d '{"harness": "opencode", "model": {"provider": "'$provider'", "name": "..."}}' | jq -r .id)
 session=$(curl -s -X POST localhost:8080/v1/agents/$agent/sessions | jq -r .id)
@@ -330,7 +347,8 @@ agent names, for the model that the agent names.
   sandbox puts it into a request of a turn that uses the provider only if
   the request goes over HTTPS to the host and the port of the provider's
   URL, below the path of the URL. What else a sandbox sends out carries no
-  key.
+  key. The egress looks into requests over HTTPS on port 443 only, so an
+  endpoint on another port gets none.
 - **A provider can be replaced while turns use it.** Their next model
   request gets the key as it is then, if it goes to the endpoint as it is
   then.
@@ -404,17 +422,17 @@ comes later finds what there is to answer.
   here, OpenCode asks before it runs a command or changes a file, and Codex
   before a command runs outside its sandbox:
   [`images/README.md`](images/README.md) tells more.
-- **A request waits for as long as its turn runs.** It has no time limit of
-  its own. A turn that waits for a person is a running turn: it keeps its
-  pod, and it is stopped when it has run for `runtime.maxTurnSeconds`. The
-  request then ends as `cancelled` and the turn fails as `timed_out`.
-  Cancelling the turn ends its requests in the same way.
+- **A request waits until it is answered.** The time of its turn does not
+  pass while the turn waits for a person, and the session sleeps meanwhile:
+  its sandbox is woken for the answer. From the answer on, the turn may run
+  for `runtime.maxTurnSeconds` again. Cancelling the turn ends its requests
+  as `cancelled`.
 - **What an option does is up to the harness too.** How long an
   `allow_always` holds differs: in OpenCode until the turn ends, in Codex
   for the rest of the session. After a refusal both end the turn, Codex with
   the stop reason `cancelled`.
 - **It is not what keeps an agent in.** The harness that asks runs in the
-  pod, beside the tools of the agent and as the same user. Approval keeps an
+  sandbox, beside the tools of the agent and as the same user. Approval keeps an
   agent that means well from acting on a mistake. What an agent can reach is
   bounded by `sandboxes.allowedHosts`, whatever was approved.
 
@@ -448,13 +466,14 @@ a turn has `started_at` once its harness has been given the message.
 | `completed` | `end_turn`, `max_tokens`, `max_turn_requests` or `refusal` | The harness ended the turn. |
 | `completed` | `cancelled` | The harness ended the turn because a person refused what it asked approval for. Codex does. |
 | `cancelled` | `cancelled` | The turn was cancelled, and the harness stopped when it was asked to. |
-| `cancelled` | none | The turn was cancelled before its harness was given the message, if it has no `started_at`. Otherwise its harness did not stop in time and its pod was stopped. |
-| `failed` | none or `cancelled` | The turn failed, for the reason in `failure`. A harness whose pod is about to be stopped, as for `timed_out`, is asked to end the turn first. `cancelled` says that it did. |
+| `cancelled` | none | The turn was cancelled before its harness was given the message, if it has no `started_at`. Otherwise its harness did not stop in time, and its sandbox was deleted. |
+| `failed` | none | The turn failed, for the reason in `failure`. |
 | `expired` | none | The turn waited to run for longer than it may. |
 
 The items are what the user saw. What the harness remembers of a turn that
-did not complete is up to the harness, and it can be less: a harness whose
-pod was stopped did not get to write down what it was saying.
+did not complete is up to the harness, and it can be less. A turn whose
+sandbox was deleted, as one that ran for too long, leaves the agent nothing:
+the next turn of the session has a new sandbox.
 
 `usage` holds `total_tokens`, `input_tokens` and `output_tokens`, and
 `thought_tokens`, `cached_read_tokens` and `cached_write_tokens` if the
@@ -508,7 +527,7 @@ installs it in the local cluster with a file of values of your own.
 | `supervisor.encryption.secretName`, `.key` | A secret with the keys that the Supervisor seals secrets with before it stores them, and the entry of it that seals. An entry is 32 random bytes in base64. To replace the key, add an entry and name it, and keep the entries from before. |
 | `sandboxes.url` | Where the lifecycle API of OpenSandbox is, which runs the sandboxes of the sessions. Default `http://opensandbox-server.opensandbox-system`. |
 | `sandboxes.apiKey.secretName`, `.secretKey` | A secret with the key of that API. |
-| `sandboxes.allowedHosts` | The hosts that a sandbox may send requests to, those of the model endpoints among them: names, `*.domain`s, or `*` for every host, which is the default. Every request over HTTPS to a host that is named, or to the model endpoint of the agent, is recorded with its turn and the user who sent the message, and only a request to the model endpoint gets its key. A model endpoint over HTTP gets no key. The installation of OpenSandbox keeps the sandboxes out of the cluster. |
+| `sandboxes.allowedHosts` | The hosts that a sandbox may send requests to, those of the model endpoints among them: names, `*.domain`s, or `*` for every host, which is the default. Every request over HTTPS to a host that is named, or to the model endpoint of the agent, is recorded with its turn and the user who sent the message, and only a request to the model endpoint gets its key. A model endpoint over HTTP, or on another port than 443, gets no key. The installation of OpenSandbox keeps the sandboxes out of the cluster. A change holds for the sandboxes that are made after it. |
 | `supervisor.resolver.secretName` | A secret with the certificate and the key (`tls.crt`, `tls.key`) with which the Supervisors answer the egress of OpenSandbox, for `aviary-supervisor.<namespace>.svc.cluster.local`. The egress has to trust the certificate. Default `aviary-resolver-tls`. |
 | `sandboxes.idleSeconds` | After how many seconds a session that is not at work is put to sleep: one that runs no turn, or whose turn waits for a person. It is woken as it was for its next turn and for the answer. Default 300, and 0 is never. OpenSandbox must be set up to put sandboxes to sleep. |
 | `sandboxes.retentionSeconds` | For how many seconds the sandbox of a session is kept after a turn of the session was last given to it. A session that is not used for longer has ended: its sandbox is deleted, and what was said in it stays. Default 0, which is until the session is ended. |
@@ -521,23 +540,25 @@ installs it in the local cluster with a file of values of your own.
 | `runtime.maxToolOutputBytes` | The longest text of a tool call that the events carry as it is. A longer text is cut. Default 65536, and 0 is no limit. |
 | `runtime.harnesses` | The harnesses that agents can use, each with its image. `sandbox` is the size of the sandbox of a session: its `cpu`, `memory` and `disk`. A release has OpenSandbox build a template for each harness, from the image and that size, when it is installed and when either has changed. OpenSandbox takes the image from its registry without credentials. |
 
-The turn pods mount the runner as an image volume, so the cluster's
-Kubernetes and container runtime must support image volumes, and its
-network plugin must enforce network policies: they are what cuts the turn
-pods off. The namespace of the turn pods enforces the restricted level of
-the Pod Security Standards. The local cluster runs Kubernetes 1.37.
+The chart does not install OpenSandbox either. Aviary runs on its Fast
+Sandbox runtime, whose sandboxes need nodes with KVM, and `hack/kind` shows
+what it takes besides: a pool of sandboxes, an object store for the
+templates and for the sandboxes that sleep, the idle pause of the server
+with the gateway telling it of the activity of the sandboxes, and an egress
+that looks into HTTPS. The egress has to trust the certificate of the
+Supervisors and to wait for their answer
+(`OPENSANDBOX_EGRESS_CREDENTIAL_RESOLVER_TIMEOUT`), which can take as long
+as a secret store takes to give a key. The local cluster runs Kubernetes
+1.37.
 
-An agent that was created with resources keeps them, and the pods of its
-turns get exactly those. An agent without follows the default of its
-harness: when `runtime.harnesses` changes, its next turn gets the new
-resources. Aviary sets no bound on what an agent may be given.
-A LimitRange or a ResourceQuota on the namespace of the turn pods,
-`aviary-runtime`, does that: Kubernetes then refuses the pod of a turn that
-asks for more, and the turn fails as `startup_timed_out`.
+The size of a sandbox is that of its harness in `runtime.harnesses`, and a
+change of it holds for the sandboxes that are made after it. Aviary sets no
+bound on how many sandboxes there are: the pool of OpenSandbox does. A turn
+that finds the pool full waits among the turns that wait to run.
 
 A Supervisor that is to stop, as when its deployment is scaled in or rolled
-out, does not wait for the turns that use it. The runners of the Supervisor
-go on with another.
+out, does not wait for the turns that it follows. Another Supervisor
+follows them on, from what was recorded.
 
 To run a harness that is not in this repository, see
 [Harness images](images/README.md). To connect Aviary to a database, an
@@ -577,9 +598,10 @@ checks, how to run some of the tests and where a new one goes.
   it went, and not what it sent.
 - **Measured token usage.** The usage of a turn is what its harness reports.
   Aviary does not count tokens.
-- **Approval that outlasts the turn.** A request for approval waits in a
-  running pod, for as long as a turn may run. It cannot be left open for
-  days and answered then.
+- **A model endpoint that moves.** The egress of a sandbox is told which
+  hosts to ask about when the first turn of the session runs in it. A
+  provider whose URL is given a host that `sandboxes.allowedHosts` does not
+  name gets no key from the sandboxes that its sessions have already.
 - **Anything but a local cluster.** Aviary has not run on a cloud provider's
   Kubernetes or under load.
 

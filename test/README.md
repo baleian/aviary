@@ -21,7 +21,7 @@ or `run ls`.
 
 | Target | Where | What the part runs against |
 | --- | --- | --- |
-| `test-supervisor` | `supervisor/` | Kubernetes is the fake of client-go, and the test is the runner, the API client and the egress of the sandbox service. The tests in `supervisor/app` run the whole Supervisor, several of them where it matters, with its records and its event log in memory. Those in the other directories test a package. A plugin is tested against what it connects to, in containers that the run starts and removes: a database of each kind (PostgreSQL and MySQL), an event log of each product (Valkey and Redis) and a secret store (OpenBao). What holds of every store of the records is in `supervisor/store/storetest`, and what holds of every event log in `supervisor/events/eventstest`: the plugins pass them, and so do the store and the log in memory. |
+| `test-supervisor` | `supervisor/` | The sandbox service and the runners in its sandboxes are those of `internal/sandbox/sandboxtest`, and the test is the API client and the egress of the sandbox service. The tests in `supervisor/app` run the whole Supervisor, several of them where it matters, with its records and its event log in memory. Those in the other directories test a package. A plugin is tested against what it connects to, in containers that the run starts and removes: a database of each kind (PostgreSQL and MySQL), an event log of each product (Valkey and Redis) and a secret store (OpenBao). What holds of every store of the records is in `supervisor/store/storetest`, and what holds of every event log in `supervisor/events/eventstest`: the plugins pass them, and so do the store and the log in memory. |
 | `test-plugin` | `test/plugin/` | A build of the Supervisor outside its module, with plugins of its own that keep everything in memory. It passes the suites of the stores and of the logs, and it is a Supervisor with the plugins that it lists. |
 | `test-runner` | `runner/` | The tests in `tests/turn.rs` run the runner with `fake-harness`, a harness that does what its message says, and send it the turns of a session as the Supervisor does. Those in `src/main.rs` test its functions. |
 | `test-chart` | `test/chart/` | What the chart renders from its own values and from those in the directory. |
@@ -59,7 +59,7 @@ make e2e & make e2e E2E_CLUSTER=aviary-e2e-mysql DATABASE=mysql IDENTITY=keycloa
 ```
 
 When a test fails the cluster stays, and the logs of the Supervisors and of
-the pods that the sandboxes run in are written to `.out/e2e`, in a directory
+OpenSandbox are written to `.out/e2e`, in a directory
 by the name of the cluster. `make e2e-run` then runs the tests in it again,
 or some of them:
 

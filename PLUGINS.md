@@ -110,10 +110,10 @@ makes a cluster with the images of your checkout, your plugin among them,
 and installs Aviary in it on the PostgreSQL and the Valkey of the local
 stack. Install your product in that cluster, put its URL into a secret in
 the namespace `aviary-system` under the key `uri`, and point the Supervisor
-at the secret:
+at the secret, keeping the values that `make e2e-up` gave the chart:
 
 ```bash
-helm --kube-context kind-aviary-e2e upgrade aviary deploy/charts/aviary --namespace aviary-system --values test/e2e/values.yaml --set supervisor.database.secretName=<your secret> --wait
+helm --kube-context kind-aviary-e2e upgrade aviary deploy/charts/aviary --namespace aviary-system --reuse-values --set supervisor.database.secretName=<your secret> --wait
 ```
 
 That migrates the database with your plugin and starts the Supervisors on
