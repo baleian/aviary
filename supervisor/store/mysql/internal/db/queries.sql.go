@@ -241,8 +241,8 @@ func (q *Queries) CountRunningTurns(ctx context.Context) (int64, error) {
 }
 
 const createAgent = `-- name: CreateAgent :execrows
-insert into agents (id, project_id, harness, instructions, resources, approval, provider_id, model)
-select ?, projects.id, ?, ?, ?, ?,
+insert into agents (id, project_id, harness, instructions, approval, provider_id, model)
+select ?, projects.id, ?, ?, ?,
        ?, ?
 from projects where projects.id = ?
 `
@@ -251,7 +251,6 @@ type CreateAgentParams struct {
 	ID           key.ID
 	Harness      string
 	Instructions string
-	Resources    *json.RawMessage
 	Approval     string
 	ProviderID   *key.ID
 	Model        string
@@ -263,7 +262,6 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (int64
 		arg.ID,
 		arg.Harness,
 		arg.Instructions,
-		arg.Resources,
 		arg.Approval,
 		arg.ProviderID,
 		arg.Model,
@@ -419,18 +417,12 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) error {
 }
 
 const dispatchTurn = `-- name: DispatchTurn :execrows
-update turns set state = 'dispatching', token_hash = ?, dispatched_at = now(6)
-where id = ? and state = 'queued'
+update turns set state = 'dispatching', dispatched_at = now(6) where id = ? and state = 'queued'
 `
 
-type DispatchTurnParams struct {
-	TokenHash []byte
-	ID        key.ID
-}
-
 // A turn that was cancelled since it was read is left as it is.
-func (q *Queries) DispatchTurn(ctx context.Context, arg DispatchTurnParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, dispatchTurn, arg.TokenHash, arg.ID)
+func (q *Queries) DispatchTurn(ctx context.Context, id key.ID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, dispatchTurn, id)
 	if err != nil {
 		return 0, err
 	}
@@ -438,16 +430,12 @@ func (q *Queries) DispatchTurn(ctx context.Context, arg DispatchTurnParams) (int
 }
 
 const dispatchedTurns = `-- name: DispatchedTurns :many
-select id, state,
-       cast(timestampdiff(microsecond, coalesce(dispatched_at, created_at), now(6)) as signed) as age,
-       cast(coalesce(timestampdiff(microsecond, cancel_requested_at, now(6)), 0) as signed) as cancelling
+select id, cast(coalesce(timestampdiff(microsecond, cancel_requested_at, now(6)), 0) as signed) as cancelling
 from turns where state in ('dispatching', 'running')
 `
 
 type DispatchedTurnsRow struct {
 	ID         key.ID
-	State      string
-	Age        int64
 	Cancelling int64
 }
 
@@ -460,12 +448,7 @@ func (q *Queries) DispatchedTurns(ctx context.Context) ([]DispatchedTurnsRow, er
 	var items []DispatchedTurnsRow
 	for rows.Next() {
 		var i DispatchedTurnsRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.State,
-			&i.Age,
-			&i.Cancelling,
-		); err != nil {
+		if err := rows.Scan(&i.ID, &i.Cancelling); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -879,25 +862,6 @@ func (q *Queries) GetUserBySubject(ctx context.Context, subject string) (User, e
 		&i.CreatedAt,
 	)
 	return i, err
-}
-
-const giveUpTurn = `-- name: GiveUpTurn :execrows
-update turns set failure_reason = ?, failure_message = nullif(?, '')
-where id = ? and state = 'dispatching' and failure_reason is null and cancel_requested_at is null
-`
-
-type GiveUpTurnParams struct {
-	Reason  *string
-	Message interface{}
-	ID      key.ID
-}
-
-func (q *Queries) GiveUpTurn(ctx context.Context, arg GiveUpTurnParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, giveUpTurn, arg.Reason, arg.Message, arg.ID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
 }
 
 const isMember = `-- name: IsMember :one
@@ -1455,40 +1419,6 @@ func (q *Queries) LockTurn(ctx context.Context, id key.ID) (Turn, error) {
 	return i, err
 }
 
-const lockTurnOfToken = `-- name: LockTurnOfToken :one
-select id, session_id, seq, state, text, created_at, dispatched_at, started_at, cancel_requested_at, ended_at, token_hash, runner_id, stop_reason, failure_reason, failure_message, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens, created_by from turns where token_hash = ? for update
-`
-
-func (q *Queries) LockTurnOfToken(ctx context.Context, tokenHash []byte) (Turn, error) {
-	row := q.db.QueryRowContext(ctx, lockTurnOfToken, tokenHash)
-	var i Turn
-	err := row.Scan(
-		&i.ID,
-		&i.SessionID,
-		&i.Seq,
-		&i.State,
-		&i.Text,
-		&i.CreatedAt,
-		&i.DispatchedAt,
-		&i.StartedAt,
-		&i.CancelRequestedAt,
-		&i.EndedAt,
-		&i.TokenHash,
-		&i.RunnerID,
-		&i.StopReason,
-		&i.FailureReason,
-		&i.FailureMessage,
-		&i.TotalTokens,
-		&i.InputTokens,
-		&i.OutputTokens,
-		&i.ThoughtTokens,
-		&i.CachedReadTokens,
-		&i.CachedWriteTokens,
-		&i.CreatedBy,
-	)
-	return i, err
-}
-
 const lockTurnsToExpire = `-- name: LockTurnsToExpire :many
 select id from turns
 where state = 'queued' and created_at < now(6) - interval ? microsecond
@@ -1531,34 +1461,22 @@ func (q *Queries) NextSeq(ctx context.Context, sessionID key.ID) (int64, error) 
 }
 
 const nextTurns = `-- name: NextTurns :many
-select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, agents.harness,
-       agents.resources, agents.approval, coalesce(providers.url, '') as provider_url, agents.model,
-       cast(timestampdiff(microsecond, turns.created_at, now(6)) as signed) as waited
+select turns.id as turn_id, agents.harness, cast(timestampdiff(microsecond, turns.created_at, now(6)) as signed) as waited
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
-left join providers on providers.id = agents.provider_id
 where turns.state = 'queued'
 order by turns.created_at, turns.id
 limit ?
 `
 
 type NextTurnsRow struct {
-	TurnID      key.ID
-	SessionID   key.ID
-	AgentID     key.ID
-	ProjectID   key.ID
-	Harness     string
-	Resources   *json.RawMessage
-	Approval    string
-	ProviderUrl string
-	Model       string
-	Waited      int64
+	TurnID  key.ID
+	Harness string
+	Waited  int64
 }
 
-// The queued turns, oldest first, and what it takes to run each. A turn of
-// an agent that names its model has the URL of the agent's provider and the
-// name of the model.
+// The queued turns, oldest first.
 func (q *Queries) NextTurns(ctx context.Context, limit int32) ([]NextTurnsRow, error) {
 	rows, err := q.db.QueryContext(ctx, nextTurns, limit)
 	if err != nil {
@@ -1568,18 +1486,7 @@ func (q *Queries) NextTurns(ctx context.Context, limit int32) ([]NextTurnsRow, e
 	var items []NextTurnsRow
 	for rows.Next() {
 		var i NextTurnsRow
-		if err := rows.Scan(
-			&i.TurnID,
-			&i.SessionID,
-			&i.AgentID,
-			&i.ProjectID,
-			&i.Harness,
-			&i.Resources,
-			&i.Approval,
-			&i.ProviderUrl,
-			&i.Model,
-			&i.Waited,
-		); err != nil {
+		if err := rows.Scan(&i.TurnID, &i.Harness, &i.Waited); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1699,9 +1606,7 @@ func (q *Queries) ReplaceSecretStore(ctx context.Context, arg ReplaceSecretStore
 }
 
 const requeueTurn = `-- name: RequeueTurn :exec
-update turns set state = 'queued', token_hash = null, dispatched_at = null, runner_id = null,
-       failure_reason = null, failure_message = null
-where id = ?
+update turns set state = 'queued', dispatched_at = null where id = ?
 `
 
 // The turn waits to run again, with nothing left of its dispatch.
@@ -1729,75 +1634,6 @@ func (q *Queries) ResolveApproval(ctx context.Context, arg ResolveApprovalParams
 		return 0, err
 	}
 	return result.RowsAffected()
-}
-
-const runningTurn = `-- name: RunningTurn :one
-select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
-       coalesce(users.subject, '') as subject,
-       agents.provider_id, coalesce(providers.url, '') as provider_url, providers.api_key as provider_api_key,
-       providers.api_key_store_id, coalesce(providers.api_key_path, '') as api_key_path,
-       coalesce(providers.api_key_name, '') as api_key_name,
-       coalesce(secret_stores.name, '') as store_name, coalesce(secret_stores.kind, '') as store_kind,
-       secret_stores.settings as store_settings, secret_stores.credential as store_credential,
-       secret_stores.created_at as store_created_at, secret_stores.updated_at as store_updated_at
-from turns
-join sessions on sessions.id = turns.session_id
-join agents on agents.id = sessions.agent_id
-left join users on users.id = turns.created_by
-left join providers on providers.id = agents.provider_id
-left join secret_stores on secret_stores.id = providers.api_key_store_id
-where turns.token_hash = ? and turns.state = 'running'
-`
-
-type RunningTurnRow struct {
-	TurnID          key.ID
-	SessionID       key.ID
-	AgentID         key.ID
-	ProjectID       key.ID
-	CreatedBy       *key.ID
-	Subject         string
-	ProviderID      *key.ID
-	ProviderUrl     string
-	ProviderApiKey  []byte
-	ApiKeyStoreID   *key.ID
-	ApiKeyPath      string
-	ApiKeyName      string
-	StoreName       string
-	StoreKind       string
-	StoreSettings   *json.RawMessage
-	StoreCredential []byte
-	StoreCreatedAt  *time.Time
-	StoreUpdatedAt  *time.Time
-}
-
-// The running turn that the token belongs to, what the turn belongs to, who
-// sent its message, and the provider of its agent as it is now, if the agent
-// names its model. A provider whose key is in a secret store comes with that
-// store, as it is now.
-func (q *Queries) RunningTurn(ctx context.Context, tokenHash []byte) (RunningTurnRow, error) {
-	row := q.db.QueryRowContext(ctx, runningTurn, tokenHash)
-	var i RunningTurnRow
-	err := row.Scan(
-		&i.TurnID,
-		&i.SessionID,
-		&i.AgentID,
-		&i.ProjectID,
-		&i.CreatedBy,
-		&i.Subject,
-		&i.ProviderID,
-		&i.ProviderUrl,
-		&i.ProviderApiKey,
-		&i.ApiKeyStoreID,
-		&i.ApiKeyPath,
-		&i.ApiKeyName,
-		&i.StoreName,
-		&i.StoreKind,
-		&i.StoreSettings,
-		&i.StoreCredential,
-		&i.StoreCreatedAt,
-		&i.StoreUpdatedAt,
-	)
-	return i, err
 }
 
 const sandboxTurn = `-- name: SandboxTurn :one
@@ -1839,8 +1675,10 @@ type SandboxTurnRow struct {
 	StoreUpdatedAt  *time.Time
 }
 
-// The running turn of the session whose sandbox it is, with what RunningTurn
-// tells of a turn.
+// The running turn of the session whose sandbox it is, what the turn
+// belongs to, who sent its message, and the provider of its agent as it is
+// now, if the agent names its model. A provider whose key is in a secret
+// store comes with that store, as it is now.
 func (q *Queries) SandboxTurn(ctx context.Context, sandbox *string) (SandboxTurnRow, error) {
 	row := q.db.QueryRowContext(ctx, sandboxTurn, sandbox)
 	var i SandboxTurnRow
@@ -1864,27 +1702,6 @@ func (q *Queries) SandboxTurn(ctx context.Context, sandbox *string) (SandboxTurn
 		&i.StoreCreatedAt,
 		&i.StoreUpdatedAt,
 	)
-	return i, err
-}
-
-const sessionOfTurn = `-- name: SessionOfTurn :one
-select sessions.harness_session_id, agents.harness, agents.instructions
-from sessions
-join agents on agents.id = sessions.agent_id
-where sessions.id = ?
-`
-
-type SessionOfTurnRow struct {
-	HarnessSessionID *string
-	Harness          string
-	Instructions     string
-}
-
-// What a runner is given of the session of its turn.
-func (q *Queries) SessionOfTurn(ctx context.Context, id key.ID) (SessionOfTurnRow, error) {
-	row := q.db.QueryRowContext(ctx, sessionOfTurn, id)
-	var i SessionOfTurnRow
-	err := row.Scan(&i.HarnessSessionID, &i.Harness, &i.Instructions)
 	return i, err
 }
 
@@ -2007,20 +1824,6 @@ func (q *Queries) Startup(ctx context.Context, id key.ID) (int64, error) {
 	var startup int64
 	err := row.Scan(&startup)
 	return startup, err
-}
-
-const takeTurn = `-- name: TakeTurn :exec
-update turns set state = 'running', runner_id = ? where id = ?
-`
-
-type TakeTurnParams struct {
-	RunnerID *key.ID
-	ID       key.ID
-}
-
-func (q *Queries) TakeTurn(ctx context.Context, arg TakeTurnParams) error {
-	_, err := q.db.ExecContext(ctx, takeTurn, arg.RunnerID, arg.ID)
-	return err
 }
 
 const updateUser = `-- name: UpdateUser :exec

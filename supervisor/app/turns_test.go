@@ -51,26 +51,25 @@ func TestTurn(t *testing.T) {
 	if state := s.turn(accepted.ID).State; state != "running" {
 		t.Errorf("a turn that its runner has is %s", state)
 	}
-	// The token is good for the model endpoint and the forward proxy while
-	// its turn runs.
-	token := aviary.token(accepted.ID)
-	for _, forward := range []bool{false, true} {
-		origin := s.origin(token, forward)
-		if origin["turn"] != accepted.ID || origin["session"] != session || origin["agent"] == "" || origin["project"] == "" {
-			t.Errorf("the token of the running turn is that of %v", origin)
+	// The requests of the sandbox, to the model endpoint and elsewhere, are
+	// recorded with the turn while it runs.
+	for target, model := range map[string]bool{"https://api.example.com/v1/chat/completions": true, "https://pypi.org/simple/": false} {
+		if status, _ := s.resolve(runner.Sandbox, "POST", target); status != http.StatusOK {
+			t.Errorf("a request to %s of the running turn was answered with %d", target, status)
+		}
+		record := aviary.record(accepted.ID)
+		if record["msg"] != "request" || record["session"] != session || record["agent"] == nil || record["project"] == nil {
+			t.Errorf("a request to %s of the running turn is recorded as %v", target, record)
 		}
 		// The installation asks nobody who they are: nobody sent the message.
-		_, user := origin["user"]
-		if _, subject := origin["subject"]; user || subject {
-			t.Errorf("the proxy is told that someone sent the message of the turn: %v", origin)
+		_, user := record["user"]
+		if _, subject := record["subject"]; user || subject {
+			t.Errorf("the record tells that someone sent the message of the turn: %v", record)
 		}
-		// A model request goes to a provider, which the proxy is told too.
-		if _, provider := origin["provider"]; provider == forward {
-			t.Errorf("of a request that is through the forward proxy %t, the proxy is told the provider %q", forward, origin["provider"])
+		// A model request goes to a provider, which the record tells too.
+		if _, provider := record["provider"]; provider != model {
+			t.Errorf("of a request to %s, the record tells the provider %v", target, record["provider"])
 		}
-	}
-	if origin := s.origin("another-token", false); origin != nil {
-		t.Errorf("a token of no turn is that of %v", origin)
 	}
 
 	runner.report(started("harness-session-1"))
@@ -112,8 +111,8 @@ func TestTurn(t *testing.T) {
 		said[1]["type"] != "tool_call" || said[1]["title"] != "ls" || said[1]["status"] != "completed" || said[1]["output"] != "a.txt" {
 		t.Errorf("the record of the turn has the items %v", said)
 	}
-	if origin := s.origin(token, true); origin != nil {
-		t.Errorf("the token of a turn that has ended is that of %v", origin)
+	if status, _ := s.resolve(runner.Sandbox, "GET", "https://pypi.org/simple/"); status != http.StatusForbidden {
+		t.Errorf("a request of the sandbox after its turn has ended was answered with %d", status)
 	}
 
 	// The next turn of the session runs in the same sandbox, in which the

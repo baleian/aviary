@@ -46,9 +46,6 @@ type Store struct {
 	turns        map[uuid.UUID]*turn
 	// created are the turns in the order in which they were created.
 	created []*turn
-	// dispatched are the turns that were dispatched, by the hashes of their
-	// tokens.
-	dispatched map[string]*turn
 }
 
 // session is what the store holds of a session.
@@ -64,8 +61,6 @@ type session struct {
 type turn struct {
 	store.Turn
 	dispatchedAt *time.Time
-	// runner is the runner that took the turn, if it named itself.
-	runner *uuid.UUID
 	// items are what the agent said and did in the turn.
 	items []json.RawMessage
 	// approvals are the requests of the turn for approval, oldest first.
@@ -106,7 +101,6 @@ func New() *Store {
 		providers:    map[uuid.UUID]store.Provider{},
 		secretStores: map[uuid.UUID]store.SecretStore{},
 		turns:        map[uuid.UUID]*turn{},
-		dispatched:   map[string]*turn{},
 	}
 }
 
@@ -181,7 +175,7 @@ func valid(what string, given json.RawMessage) error {
 // is given: nothing that a caller changes afterwards changes a record.
 
 func agentOf(agent store.Agent) store.Agent {
-	agent.Resources, agent.Model = bytes.Clone(agent.Resources), clone(agent.Model)
+	agent.Model = clone(agent.Model)
 	return agent
 }
 
@@ -257,11 +251,6 @@ func (s *Store) CreateAgent(ctx context.Context, projectID uuid.UUID, agent stor
 	if _, found := s.projects[projectID]; !found {
 		return store.Agent{}, store.ErrNotFound
 	}
-	if agent.Resources != nil {
-		if err := valid("the resources of the agent", agent.Resources); err != nil {
-			return store.Agent{}, err
-		}
-	}
 	if agent.Model != nil {
 		if _, found := s.providers[agent.Model.Provider]; !found {
 			return store.Agent{}, fmt.Errorf("the agent names the provider %s, which there is not", agent.Model.Provider)
@@ -269,7 +258,7 @@ func (s *Store) CreateAgent(ctx context.Context, projectID uuid.UUID, agent stor
 	}
 	created := agentOf(store.Agent{
 		ID: id, ProjectID: projectID, Harness: agent.Harness, CreatedAt: s.now(), Instructions: agent.Instructions,
-		Resources: agent.Resources, Approval: agent.Approval, Model: agent.Model,
+		Approval: agent.Approval, Model: agent.Model,
 	})
 	s.agents[id] = created
 	return agentOf(created), nil
@@ -892,17 +881,8 @@ func (s *Store) DispatchTurns(ctx context.Context, limit int) ([]store.Dispatch,
 	dispatches := make([]store.Dispatch, room)
 	for i, turn := range queued[:room] {
 		agent, now := s.agents[s.sessions[turn.SessionID].AgentID], s.now()
-		dispatch := store.Dispatch{
-			TurnID: turn.ID, SessionID: turn.SessionID, AgentID: agent.ID, ProjectID: agent.ProjectID, Harness: agent.Harness,
-			Resources: bytes.Clone(agent.Resources), Approval: agent.Approval,
-			Token: store.NewToken(), Waited: now.Sub(turn.CreatedAt),
-		}
-		if agent.Model != nil {
-			dispatch.ProviderURL, dispatch.Model = s.providers[agent.Model.Provider].URL, agent.Model.Name
-		}
 		turn.State, turn.dispatchedAt = store.TurnDispatching, &now
-		s.dispatched[string(store.HashToken(dispatch.Token))] = turn
-		dispatches[i] = dispatch
+		dispatches[i] = store.Dispatch{TurnID: turn.ID, Harness: agent.Harness, Waited: now.Sub(turn.CreatedAt)}
 	}
 	return dispatches, nil
 }
@@ -917,13 +897,7 @@ func (s *Store) RequeueTurn(ctx context.Context, turnID uuid.UUID) (bool, error)
 		turn.StartedAt != nil || turn.CancelRequestedAt != nil {
 		return false, nil
 	}
-	// Nothing is left of the dispatch: the token of the turn opens nothing.
-	for hash, dispatched := range s.dispatched {
-		if dispatched == turn {
-			delete(s.dispatched, hash)
-		}
-	}
-	turn.State, turn.dispatchedAt, turn.runner, turn.Failure = store.TurnQueued, nil, nil, nil
+	turn.State, turn.dispatchedAt = store.TurnQueued, nil
 	return true, nil
 }
 
@@ -975,10 +949,7 @@ func (s *Store) DispatchedTurns(ctx context.Context) ([]store.DispatchedTurn, er
 		if turn.State != store.TurnDispatching && turn.State != store.TurnRunning {
 			continue
 		}
-		one := store.DispatchedTurn{ID: turn.ID, Taken: turn.State == store.TurnRunning, Age: now.Sub(turn.CreatedAt)}
-		if turn.dispatchedAt != nil {
-			one.Age = now.Sub(*turn.dispatchedAt)
-		}
+		one := store.DispatchedTurn{ID: turn.ID}
 		if turn.CancelRequestedAt != nil {
 			one.Cancelling = now.Sub(*turn.CancelRequestedAt)
 		}
@@ -1027,54 +998,6 @@ func (s *Store) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.Followe
 	return followed, nil
 }
 
-func (s *Store) TakeTurn(ctx context.Context, token string, runner *uuid.UUID) (store.TakenTurn, error) {
-	if err := s.begin(ctx); err != nil {
-		return store.TakenTurn{}, err
-	}
-	defer s.mu.Unlock()
-	turn, found := s.dispatched[string(store.HashToken(token))]
-	if !found {
-		return store.TakenTurn{}, store.ErrNotFound
-	}
-	switch {
-	// A turn that waits for its runner is given to the runner that asks.
-	case turn.State == store.TurnDispatching && turn.CancelRequestedAt == nil && turn.Failure == nil:
-	// A turn that runs is given again to the runner that took it.
-	case turn.State == store.TurnRunning && runner != nil && turn.runner != nil && *turn.runner == *runner:
-	case turn.State == store.TurnDispatching:
-		// The turn was not taken, so it was cancelled or given up before
-		// its runner came for it.
-		return store.TakenTurn{}, store.ErrTurnCancelled
-	case turn.State == store.TurnRunning:
-		return store.TakenTurn{}, store.ErrTurnTaken
-	default:
-		return store.TakenTurn{}, store.ErrTurnEnded
-	}
-	session := s.sessions[turn.SessionID]
-	agent := s.agents[session.AgentID]
-	taken := store.TakenTurn{
-		Turn: store.Turn{
-			ID: turn.ID, SessionID: turn.SessionID, Seq: turn.Seq, State: store.TurnRunning, Text: turn.Text, CreatedAt: turn.CreatedAt,
-		},
-		HarnessSessionID: clone(session.harness), Harness: agent.Harness, Instructions: agent.Instructions,
-		Again: turn.State == store.TurnRunning,
-	}
-	turn.State, turn.runner = store.TurnRunning, clone(runner)
-	return taken, nil
-}
-
-func (s *Store) RunningTurn(ctx context.Context, token string) (store.Origin, error) {
-	if err := s.begin(ctx); err != nil {
-		return store.Origin{}, err
-	}
-	defer s.mu.Unlock()
-	turn, found := s.dispatched[string(store.HashToken(token))]
-	if !found || turn.State != store.TurnRunning {
-		return store.Origin{}, store.ErrNotFound
-	}
-	return s.originOf(turn), nil
-}
-
 func (s *Store) SandboxTurn(ctx context.Context, sandbox string) (store.Origin, error) {
 	if err := s.begin(ctx); err != nil {
 		return store.Origin{}, err
@@ -1083,7 +1006,7 @@ func (s *Store) SandboxTurn(ctx context.Context, sandbox string) (store.Origin, 
 	if sandbox == "" {
 		return store.Origin{}, store.ErrNotFound
 	}
-	for _, turn := range s.dispatched {
+	for _, turn := range s.created {
 		if turn.State == store.TurnRunning && s.sessions[turn.SessionID].Sandbox == sandbox {
 			return s.originOf(turn), nil
 		}
@@ -1155,19 +1078,6 @@ func (s *Store) SetFinished(ctx context.Context, turnID uuid.UUID, stopReason st
 	return nil
 }
 
-func (s *Store) GiveUpTurn(ctx context.Context, turnID uuid.UUID, failure store.Failure) (bool, error) {
-	if err := s.begin(ctx); err != nil {
-		return false, err
-	}
-	defer s.mu.Unlock()
-	turn, found := s.turns[turnID]
-	if !found || turn.State != store.TurnDispatching || turn.Failure != nil || turn.CancelRequestedAt != nil {
-		return false, nil
-	}
-	turn.Failure = &failure
-	return true, nil
-}
-
 // EndTurn holds the store while it reads what the turn said, as the
 // transaction of a database holds the turn: what else is asked of the store
 // waits until the turn has ended or not.
@@ -1202,14 +1112,7 @@ func (s *Store) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool, f
 	case ended:
 		turn.State = store.TurnCompleted
 	default:
-		turn.State = store.TurnFailed
-	}
-	// A failed turn keeps the reason that it was given up for, if it was.
-	switch {
-	case turn.State != store.TurnFailed:
-		turn.Failure = nil
-	case turn.Failure == nil:
-		turn.Failure = &failure
+		turn.State, turn.Failure = store.TurnFailed, &failure
 	}
 	return turn.record(), true, nil
 }

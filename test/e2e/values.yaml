@@ -1,6 +1,4 @@
-# How the e2e installs Aviary: with more than one of each of its parts, and
-# with the model server of the tests as the only host that the Egress Proxy
-# lets requests through to.
+# How the e2e installs Aviary: with more than one of each of its parts.
 supervisor:
   replicas: 2
   # The secret store of the cluster, which `make secret-store` installs. What
@@ -13,12 +11,3 @@ supervisor:
 sandboxes:
   # So that a test sees a session sleep without waiting five minutes for it.
   idleSeconds: 30
-egressProxy:
-  replicas: 2
-  allowedHosts:
-    - mock-llm.aviary-e2e
-  # The model server of the tests is in the cluster.
-  extraEgress:
-    - to:
-        - namespaceSelector:
-            matchLabels: {kubernetes.io/metadata.name: aviary-e2e}

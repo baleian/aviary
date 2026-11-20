@@ -7,7 +7,7 @@ cluster.
 | Level | Command | What runs | What it shows |
 | --- | --- | --- | --- |
 | Lint | `make lint` | gofmt, go vet, rustfmt and clippy, and the generators of the Go code. | The code is formatted, the linters object to nothing, and the generated code is what the generators make of its sources now. |
-| Unit and component | `make test` | Each part by itself, with what it talks to played by the test. Takes about 15 seconds. | What a part does: the Supervisor, the runner, the chart, the Egress Proxy, the mock model server. |
+| Unit and component | `make test` | Each part by itself, with what it talks to played by the test. Takes about 15 seconds. | What a part does: the Supervisor, the runner, the chart, the mock model server. |
 | Harness | `make test-harness` | The harness images in containers, each with the runner that takes the turns of a session, with a mock model server. The tests are in `runner/tests/harness.rs`. Takes under a minute. | A harness and the runner work together: sessions, tools, cancelling, failures, and what the harness asks of the outside. |
 | e2e | `make e2e` | Aviary as the chart installs it, in a kind cluster that the run makes and removes. The tests are in `test/e2e/`. Takes about ten minutes, six of them to make the cluster. | The parts work together: a turn from the API to the sandbox of its session and back, a session that is ended, a sandbox that is lost, turns while Supervisors are replaced. |
 
@@ -21,11 +21,10 @@ or `run ls`.
 
 | Target | Where | What the part runs against |
 | --- | --- | --- |
-| `test-supervisor` | `supervisor/` | Kubernetes is the fake of client-go, and the test is the runner, the API client and the Egress Proxy. The tests in `supervisor/app` run the whole Supervisor, several of them where it matters, with its records and its event log in memory. Those in the other directories test a package. A plugin is tested against what it connects to, in containers that the run starts and removes: a database of each kind (PostgreSQL and MySQL), an event log of each product (Valkey and Redis) and a secret store (OpenBao). What holds of every store of the records is in `supervisor/store/storetest`, and what holds of every event log in `supervisor/events/eventstest`: the plugins pass them, and so do the store and the log in memory. |
+| `test-supervisor` | `supervisor/` | Kubernetes is the fake of client-go, and the test is the runner, the API client and the egress of the sandbox service. The tests in `supervisor/app` run the whole Supervisor, several of them where it matters, with its records and its event log in memory. Those in the other directories test a package. A plugin is tested against what it connects to, in containers that the run starts and removes: a database of each kind (PostgreSQL and MySQL), an event log of each product (Valkey and Redis) and a secret store (OpenBao). What holds of every store of the records is in `supervisor/store/storetest`, and what holds of every event log in `supervisor/events/eventstest`: the plugins pass them, and so do the store and the log in memory. |
 | `test-plugin` | `test/plugin/` | A build of the Supervisor outside its module, with plugins of its own that keep everything in memory. It passes the suites of the stores and of the logs, and it is a Supervisor with the plugins that it lists. |
 | `test-runner` | `runner/` | The tests in `tests/turn.rs` run the runner with `fake-harness`, a harness that does what its message says, and send it the turns of a session as the Supervisor does. Those in `src/main.rs` test its functions. |
-| `test-chart` | `test/chart/` | What the chart renders from its own values and from those in the directory, and Envoy's own check of the configuration that it is given. |
-| `test-proxy` | `test/proxy/` | Envoy with what the chart renders. The test is the pod, the Supervisor, the model endpoint and the hosts outside. |
+| `test-chart` | `test/chart/` | What the chart renders from its own values and from those in the directory. |
 | `test-mock-llm` | `test/mock-llm/` | The mock model server. |
 
 `TESTS` narrows a run to some tests. It is passed to `go test` or to

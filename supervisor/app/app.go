@@ -20,14 +20,9 @@ import (
 	"syscall"
 	"time"
 
-	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/keepalive"
-
 	"aviary/supervisor/events"
 	"aviary/supervisor/identity"
 	"aviary/supervisor/internal/api"
-	"aviary/supervisor/internal/authz"
 	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/internal/metrics"
 	"aviary/supervisor/internal/resolver"
@@ -62,7 +57,6 @@ const (
 	resolverTLS        = "AVIARY_RESOLVER_TLS"
 	sandboxRetention   = "AVIARY_SANDBOX_RETENTION_SECONDS"
 	apiAddr            = ":8080"
-	authzAddr          = ":9091"
 	metricsAddr        = ":9092"
 	resolverAddr       = ":9443"
 	// shutdownTimeout is how long the requests to the API get to finish.
@@ -70,10 +64,6 @@ const (
 	// identityPatience is how long the identity provider may take to answer
 	// when the Supervisor starts.
 	identityPatience = 30 * time.Second
-	// keepaliveInterval is how often the Supervisor asks the other end of an
-	// idle connection whether it is still there, and how long it waits for
-	// the answer. The Egress Proxy asks the same of it.
-	keepaliveInterval = 30 * time.Second
 )
 
 // handover is how long a Supervisor that was told to stop goes on serving.
@@ -83,7 +73,7 @@ var handover = 5 * time.Second
 
 // ports are what a Supervisor listens on.
 type ports struct {
-	api, authz, metrics net.Listener
+	api, metrics net.Listener
 	// resolver is where the egress of the sandbox service asks about the
 	// requests of the sandboxes, over TLS.
 	resolver net.Listener
@@ -255,9 +245,6 @@ func serve(ctx context.Context, database string, plugins Plugins) error {
 	if on.api, err = net.Listen("tcp", apiAddr); err != nil {
 		return err
 	}
-	if on.authz, err = net.Listen("tcp", authzAddr); err != nil {
-		return err
-	}
 	if on.metrics, err = net.Listen("tcp", metricsAddr); err != nil {
 		return err
 	}
@@ -268,7 +255,7 @@ func serve(ctx context.Context, database string, plugins Plugins) error {
 	if on.resolver, err = resolverListener(); err != nil {
 		return err
 	}
-	return serveOn(ctx, on, st, ev, client, config, keys, stores, callers, resolvedAt)
+	return serveOn(ctx, on, st, ev, client, config, keys, stores, callers, resolvedAt, slog.Default())
 }
 
 // resolverListener listens for the egress of the sandbox service with the
@@ -294,11 +281,12 @@ func resolverListener() (net.Listener, error) {
 // database of the store and their sandboxes at the sandbox service of the
 // client. It seals the secrets that it stores with the keys, and reads the
 // others from the stores. The callers are who may use the API. The egress of
-// the sandbox service reaches the resolver at the address.
-func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, client *sandbox.Client, config driver.Config, keys *secret.Keys, stores *secret.Stores, callers api.Callers, resolvedAt string) error {
+// the sandbox service reaches the resolver at the address, which writes the
+// records of the requests of the sandboxes to records.
+func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, client *sandbox.Client, config driver.Config, keys *secret.Keys, stores *secret.Stores, callers api.Callers, resolvedAt string, records *slog.Logger) error {
 	m := metrics.New()
 	stores.Asked = m.SecretRead
-	answers := resolver.New(st, keys, stores, slog.Default())
+	answers := resolver.New(st, keys, stores, records)
 	config.Ask = func(sandbox string) (string, error) { return answers.Endpoint(resolvedAt, sandbox) }
 	dr := driver.New(config, client, st, ev, m)
 	resolverServer := &http.Server{Handler: answers.Handler(), ReadHeaderTimeout: 10 * time.Second}
@@ -306,32 +294,19 @@ func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, 
 		Handler:           api.New(st, ev, dr, keys, stores, callers, ctx.Done()),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	// A machine that is gone closes no connection. Both ends of a connection
-	// find that out by asking, and close it.
-	alive := []grpc.ServerOption{
-		grpc.KeepaliveParams(keepalive.ServerParameters{Time: keepaliveInterval, Timeout: keepaliveInterval}),
-		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-			MinTime:             keepaliveInterval / 2,
-			PermitWithoutStream: true,
-		}),
-	}
-	// The Egress Proxy asks on a port of its own.
-	authzServer := grpc.NewServer(alive...)
-	authv3.RegisterAuthorizationServer(authzServer, authz.New(st, keys, stores))
 	// The metrics are on a port of their own, which the clients of the API
 	// have no way to. They are served until the Supervisor has stopped.
 	metricsMux := http.NewServeMux()
 	metricsMux.Handle("GET /metrics", m.Handler())
 	metricsServer := &http.Server{Handler: metricsMux, ReadHeaderTimeout: 10 * time.Second}
 	defer metricsServer.Close()
-	failed := make(chan error, 4)
+	failed := make(chan error, 3)
 	go func() { failed <- apiServer.Serve(on.api) }()
 	go func() { failed <- resolverServer.Serve(on.resolver) }()
-	go func() { failed <- authzServer.Serve(on.authz) }()
 	go func() { failed <- metricsServer.Serve(on.metrics) }()
 	go dr.Run(ctx)
 	slog.Info("listening", "api", on.api.Addr().String(), "resolver", on.resolver.Addr().String(),
-		"authz", on.authz.Addr().String(), "metrics", on.metrics.Addr().String())
+		"metrics", on.metrics.Addr().String())
 
 	select {
 	case err := <-failed:
@@ -345,9 +320,7 @@ func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, 
 	time.Sleep(handover)
 	stopping, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	err := errors.Join(apiServer.Shutdown(stopping), resolverServer.Shutdown(stopping))
-	authzServer.GracefulStop()
-	return err
+	return errors.Join(apiServer.Shutdown(stopping), resolverServer.Shutdown(stopping))
 }
 
 // encryption reads the keys that secrets are sealed with: the directory

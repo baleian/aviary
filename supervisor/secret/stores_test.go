@@ -175,8 +175,9 @@ func TestStoreIsAskedWithCare(t *testing.T) {
 	if err := hurried.Check(ctx, "asking", at(slow.URL), "a credential"); err == nil || time.Since(began) > 2*time.Second {
 		t.Errorf("a store that does not answer was waited for %s: %v", time.Since(began), err)
 	}
-	// By itself it waits less than the Egress Proxy waits for the Supervisor,
-	// and it asks a store itself, through no proxy of its environment.
+	// By itself it waits a few seconds at most, for the egress of a sandbox
+	// waits for the Supervisor meanwhile, and it asks a store itself,
+	// through no proxy of its environment.
 	client := stores(t, "*").client
 	if transport, ok := client.Transport.(*http.Transport); client.Timeout != timeout || timeout > 4*time.Second || !ok || transport.Proxy != nil {
 		t.Errorf("a store is asked with the client %+v, which waits %s", client.Transport, client.Timeout)

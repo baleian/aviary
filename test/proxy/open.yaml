@@ -1,4 +1,0 @@
-# An Egress Proxy that lets requests through to every host, as the chart's
-# own values have it.
-egressProxy:
-  allowedHosts: ["*"]

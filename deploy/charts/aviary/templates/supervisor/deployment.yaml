@@ -102,8 +102,6 @@ spec:
           ports:
             - name: http
               containerPort: 8080
-            - name: authz
-              containerPort: 9091
             - name: resolver
               containerPort: 9443
             - name: metrics

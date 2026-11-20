@@ -32,10 +32,7 @@ and the number of turns that run at once is a setting.
                     event log  │      └─ what the agent does up ────│   │ ACP         │
                                                                     │ harness         │
                                                                     │   /home ── session volume
-                                                                    └────────┬────────┘
-                                       model requests, with the turn's token │
-              model endpoint ◀─────────────── Egress Proxy ◀─────────────────┘
-                              with the API key
+                                                                    └─────────────────┘
 ```
 
 1. A client creates a project, in it a model provider and an agent that
@@ -51,16 +48,7 @@ and the number of turns that run at once is a setting.
 4. The harness works on the message with the session's home mounted at
    `/home`. The runner reports what it does, and the client reads that as a
    stream of events. A runner that loses its Supervisor goes on with
-   another. The harness reaches the model through the **Egress
-   Proxy**. The pod holds no key of the model endpoint, only the token of
-   its turn: the proxy asks the Supervisor which turn the token belongs to,
-   and the Supervisor answers with the endpoint of the agent's provider and
-   its key. The proxy puts the key in the token's place, passes the request
-   on to that endpoint and records it. Whatever else the
-   agent fetches goes through the same proxy, which lets a request through
-   to the hosts that the installation allows and records it with its turn.
-   A network policy keeps the pod from connecting to anything but the
-   Supervisor and the proxy, and it has no DNS.
+   another.
 5. When Kubernetes reports that the pod has stopped, the Supervisor ends the
    turn, keeps what the agent said and did in it, and deletes the Job. Only
    then does the session take its next message, so two pods never work on
@@ -71,22 +59,27 @@ turns in an event log, and reaches each through a plugin. It has plugins for
 PostgreSQL, for MySQL and for Valkey and only needs their addresses, so both
 can be managed services. [Plugins](PLUGINS.md) lists the products and
 versions that it is tested with, and tells how to connect it to another
-product. The Egress Proxy is [Envoy](https://www.envoyproxy.io), which the
-chart installs. A model provider is a URL and a key, so it can be the API
-of a provider, an AI gateway or a model server of your own.
+product. A model provider is a URL and a key, so it can be the API of a
+provider, an AI gateway or a model server of your own.
 
-The record of the Egress Proxy is a line of JSON for every request, on its
-standard output. A line names the turn and the session, the agent and the
-project that the turn belongs to, so it tells by itself where a request came
+A sandbox may send requests to the hosts of `sandboxes.allowedHosts` and to
+no others, and the installation of OpenSandbox is to keep the sandboxes out
+of the cluster. Every request over HTTPS to a host that is named there, or
+to the model endpoint of the agent, is recorded by the Supervisors, and only
+a request to the model endpoint gets its key. A request of a sandbox in
+which no turn runs is refused.
+
+The record of a request is a line of JSON on the standard output of a
+Supervisor, with the `msg` `request`, or `request refused` and the reason
+as `why`. It names the `sandbox`, the `turn`, and the `session`, the `agent`
+and the `project` of the turn, so it tells by itself where a request came
 from. In an installation with an identity provider it also names who sent
 the message of the turn: the `user`, by the ID that `GET /v1/me` answers
-that user, and the `subject` that the identity provider knows the user by,
-which tells who it was without the records of Aviary. The line of a model
-request also names the provider that it went to.
-It also has the time, the host, the path if the request was not for an
-HTTPS URL, the status of the answer, the bytes in both directions and how
-long the request took. How long the lines are kept is up to what collects
-the logs of the cluster.
+that user, and the `subject` that the identity provider knows the user by.
+A request to the model endpoint names its `provider`. Then come the
+`method`, the `scheme`, the `host`, the `port` and the `path` of the
+request, without its query. How long the lines are kept is up to what
+collects the logs of the cluster.
 
 ## Try it locally
 
@@ -110,9 +103,7 @@ makes it with MySQL in the place of PostgreSQL.
 The API listens inside the cluster. Forward a port to it, tell the project
 where its model is, and send a message. A model provider is the base URL of
 a model endpoint and its key. The endpoint must be reachable from the
-cluster, so `localhost` will not do, and an endpoint at a private address
-needs an entry in `egressProxy.extraEgress`: see
-[Configuration](#configuration). OpenCode needs a server with the Chat
+cluster, so `localhost` will not do. OpenCode needs a server with the Chat
 Completions API of OpenAI, Codex one with the Responses API.
 
 ```sh
@@ -335,16 +326,17 @@ agent names, for the model that the agent names.
 - **Or the key stays in a secret store of the project.** Aviary then stores
   where the key is and not the key, and reads it from the store when a model
   request comes: see [Secret stores](#secret-stores).
-- **The key goes to its endpoint and nowhere else.** The Egress Proxy puts
-  it into the model requests of the turns that use the provider, which it
-  passes on to the host of the provider's URL, below the path of the URL.
-  What else a pod sends out carries no key. The pod cannot say where its
-  model requests go.
+- **The key goes to its endpoint and nowhere else.** The egress of a
+  sandbox puts it into a request of a turn that uses the provider only if
+  the request goes over HTTPS to the host and the port of the provider's
+  URL, below the path of the URL. What else a sandbox sends out carries no
+  key.
 - **A provider can be replaced while turns use it.** Their next model
-  request goes to the endpoint as it is then, with the key as it is then.
+  request gets the key as it is then, if it goes to the endpoint as it is
+  then.
 - **The host of a provider is a host like any other.** If the installation
-  lists the hosts that the Egress Proxy lets requests through to, the list
-  has to allow it.
+  lists the hosts that a sandbox may reach, `sandboxes.allowedHosts`, the
+  list has to allow it.
 
 ### Secret stores
 
@@ -382,8 +374,8 @@ provider=$(curl -s -X POST localhost:8080/v1/projects/$project/providers \
   values, 16 MiB of them, and the logins to at most 1,000 stores, and
   forgets what it used longest ago. A value of more than 8 KiB is not taken
   for a secret.
-- **A request whose key cannot be read is refused.** The model request ends
-  with 503 and the reason, and the turns of other providers go on.
+- **A request whose key cannot be read is refused.** Its record tells why,
+  and the turns of other providers go on.
 - **The credential is stored sealed**, as the key of a provider is. A store
   is read with `"credential": {"stored": true}`.
 - **Give the role no more than Aviary is to read.** Whoever can create a
@@ -423,8 +415,8 @@ comes later finds what there is to answer.
   the stop reason `cancelled`.
 - **It is not what keeps an agent in.** The harness that asks runs in the
   pod, beside the tools of the agent and as the same user. Approval keeps an
-  agent that means well from acting on a mistake. What a pod can reach is
-  bounded by the network policy and the Egress Proxy, whatever was approved.
+  agent that means well from acting on a mistake. What an agent can reach is
+  bounded by `sandboxes.allowedHosts`, whatever was approved.
 
 An agent without `approval` asks nobody. If its harness asks for permission
 all the same, the runner allows the action once.
@@ -457,7 +449,7 @@ a turn has `started_at` once its harness has been given the message.
 | `completed` | `cancelled` | The harness ended the turn because a person refused what it asked approval for. Codex does. |
 | `cancelled` | `cancelled` | The turn was cancelled, and the harness stopped when it was asked to. |
 | `cancelled` | none | The turn was cancelled before its harness was given the message, if it has no `started_at`. Otherwise its harness did not stop in time and its pod was stopped. |
-| `failed` | none or `cancelled` | The turn failed, for the reason in `failure`. A harness whose pod is about to be stopped, as for `timed_out` and `pod_lost`, is asked to end the turn first. `cancelled` says that it did. |
+| `failed` | none or `cancelled` | The turn failed, for the reason in `failure`. A harness whose pod is about to be stopped, as for `timed_out`, is asked to end the turn first. `cancelled` says that it did. |
 | `expired` | none | The turn waited to run for longer than it may. |
 
 The items are what the user saw. What the harness remembers of a turn that
@@ -469,7 +461,8 @@ pod was stopped did not get to write down what it was saying.
 harness gives them. A turn that has ended has it too. It is what the harness
 says, not a measurement, and harnesses count differently: Codex reports the
 sum of the model requests of a turn, OpenCode only the last one. What the
-Egress Proxy logs can be relied on: every model request, with its turn.
+Supervisors record can be relied on: every model request over HTTPS, with
+its turn.
 
 ## Metrics
 
@@ -496,21 +489,6 @@ moment, because no Supervisor holds them. The length of the queue is
 measured whenever a turn is accepted instead. The metrics of the Go runtime
 and of the process are served as well.
 
-An Egress Proxy serves the metrics of Envoy on the same port and path. Among
-them:
-
-| Metric | |
-| --- | --- |
-| `envoy_http_downstream_rq_total`, `envoy_http_downstream_rq_xx` | The requests and the classes of their response codes. The label `envoy_http_conn_manager_prefix` is `llm` for the requests to the model endpoint, where the probes of Kubernetes count as well, and `forward` for all others. |
-| `envoy_http_downstream_rq_time` | How long the requests took, in milliseconds. |
-| `envoy_http_ext_authz_ok`, `envoy_http_ext_authz_denied`, `envoy_http_ext_authz_error` | What the Supervisor answered when it was asked for the turn of a request. |
-| `envoy_http_rbac_denied` | The requests to hosts that `egressProxy.allowedHosts` does not allow. It is there only if the list names hosts. |
-
-Of the interface that Envoy has for its operator, the metrics are all that
-can be reached. A turn pod can read them too, if it asks the forward proxy
-for the proxy's own address and `egressProxy.allowedHosts` allows that
-address, which the default does.
-
 ## Configuration
 
 Aviary is installed with the Helm chart in `deploy/charts/aviary`. The chart
@@ -519,8 +497,8 @@ installs it in the local cluster with a file of values of your own.
 
 | Value | |
 | --- | --- |
-| `supervisor.replicas`, `egressProxy.replicas` | How many Supervisors and Egress Proxies run. Each of them serves any request. Default 1. |
-| `supervisor.resources`, `egressProxy.resources` | What the pod of a Supervisor and of an Egress Proxy asks for and may use at most. |
+| `supervisor.replicas` | How many Supervisors run. Each of them serves any request. Default 1. |
+| `supervisor.resources` | What the pod of a Supervisor asks for and may use at most. |
 | `supervisor.database.secretName`, `.secretKey` | A secret with the URL of the database. Its scheme names the kind of the database: `postgresql://…` is PostgreSQL, and `mysql://…` is MySQL. |
 | `supervisor.events.secretName`, `.secretKey` | A secret with the URL of the event log. Its scheme names the kind of the log: `valkey://…` is Valkey, and `valkeys://…` is Valkey with TLS. |
 | `supervisor.secretStores.allowedHosts` | The hosts at which the projects may have secret stores: `*` for every host, a host name for the host on the ports of HTTPS and HTTP, or a host name with a port. The default allows none. |
@@ -528,8 +506,6 @@ installs it in the local cluster with a file of values of your own.
 | `supervisor.auth.provider` | The identity provider whose tokens tell who sends a request to the API: its `kind`, and the `settings` of a provider of that kind. The default is none, and the API then asks nobody. See [Callers](#callers). |
 | `supervisor.auth.admins`, `.users` | The groups of the identity provider whose members are the administrators of the installation, and the groups whose members may use the API. The default of both is none: nobody is an administrator, and everyone whom the provider knows may use the API. |
 | `supervisor.encryption.secretName`, `.key` | A secret with the keys that the Supervisor seals secrets with before it stores them, and the entry of it that seals. An entry is 32 random bytes in base64. To replace the key, add an entry and name it, and keep the entries from before. |
-| `egressProxy.allowedHosts` | The hosts that the Egress Proxy lets requests through to, those of the model providers among them. The default, `*`, is every host. |
-| `egressProxy.insideCIDRs`, `.extraEgress` | A network policy keeps the Egress Proxy itself out of these address ranges, so that it is no way into the cluster. `extraEgress` names what it may still reach there, as egress rules of a network policy: the endpoint of a model provider that is a service in the cluster or at a private address needs one. |
 | `sandboxes.url` | Where the lifecycle API of OpenSandbox is, which runs the sandboxes of the sessions. Default `http://opensandbox-server.opensandbox-system`. |
 | `sandboxes.apiKey.secretName`, `.secretKey` | A secret with the key of that API. |
 | `sandboxes.allowedHosts` | The hosts that a sandbox may send requests to, those of the model endpoints among them: names, `*.domain`s, or `*` for every host, which is the default. Every request over HTTPS to a host that is named, or to the model endpoint of the agent, is recorded with its turn and the user who sent the message, and only a request to the model endpoint gets its key. A model endpoint over HTTP gets no key. The installation of OpenSandbox keeps the sandboxes out of the cluster. |
@@ -559,10 +535,9 @@ A LimitRange or a ResourceQuota on the namespace of the turn pods,
 `aviary-runtime`, does that: Kubernetes then refuses the pod of a turn that
 asks for more, and the turn fails as `startup_timed_out`.
 
-Neither a Supervisor nor an Egress Proxy that is to stop, as when its
-deployment is scaled in or rolled out, waits for the turns that use it. The
-runners of the Supervisor go on with another, and the requests that the
-proxy was passing on break.
+A Supervisor that is to stop, as when its deployment is scaled in or rolled
+out, does not wait for the turns that use it. The runners of the Supervisor
+go on with another.
 
 To run a harness that is not in this repository, see
 [Harness images](images/README.md). To connect Aviary to a database, an
@@ -594,14 +569,14 @@ checks, how to run some of the tests and where a new one goes.
 | `images/` | The images of the Supervisor, the runner and the harnesses. |
 | `deploy/charts/aviary/` | The Helm chart. |
 | `hack/kind/` | The local cluster. |
-| `test/` | The tests of the chart, of the Egress Proxy and of the parts together, the mock model server, and a build of the Supervisor with plugins of its own. The tests of the Supervisor and of the runner are with their code. |
+| `test/` | The tests of the chart and of the parts together, the mock model server, and a build of the Supervisor with plugins of its own. The tests of the Supervisor and of the runner are with their code. |
 
 ## What is missing
 
-- **Looking into what an agent sends.** The Egress Proxy records which host
-  a turn connects to. It does not read what is sent over HTTPS.
+- **Looking into what an agent sends.** The record of a request tells where
+  it went, and not what it sent.
 - **Measured token usage.** The usage of a turn is what its harness reports.
-  The Egress Proxy does not count tokens.
+  Aviary does not count tokens.
 - **Approval that outlasts the turn.** A request for approval waits in a
   running pod, for as long as a turn may run. It cannot be left open for
   days and answered then.

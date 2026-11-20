@@ -132,32 +132,47 @@ func TestModelRequestWithAKeyFromASecretStore(t *testing.T) {
 	provider := s.create("/v1/projects/"+project+"/providers", keyed(in(kept, "llm/model", "api_key")))
 	agent := s.create("/v1/projects/"+project+"/agents", `{"harness": "opencode", "model": {"provider": "`+provider+`", "name": "a-model"}}`)
 	turn := s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID
-	aviary.given(turn)
-	token := aviary.token(turn)
-	// told returns the key that a Supervisor tells the proxy to send a model
-	// request of the turn with.
+	sandbox := aviary.given(turn).Sandbox
+	const model = "https://api.example.com/v1/chat/completions"
+	// told returns the key that a Supervisor has the egress put into a model
+	// request of the turn.
 	told := func(s *supervisor) string {
 		t.Helper()
-		got := named(t, s.check(token, false, "/v1/chat/completions"))
-		if got == nil || got.host != "api.example.com" || got.secure != "true" || got.keyless {
-			t.Fatalf("the proxy is told to pass a model request on to %+v", got)
+		status, headers := s.resolve(sandbox, "POST", model)
+		if status != http.StatusOK || len(headers) != 1 {
+			t.Fatalf("a model request was answered with %d and the headers %v", status, headers)
 		}
-		return got.authorization
+		return headers["authorization"]
+	}
+	// refused returns the status with which a Supervisor refuses a model
+	// request of the turn, and why it says that it does.
+	refused := func(s *supervisor) (int, string) {
+		t.Helper()
+		status, _ := s.resolve(sandbox, "POST", model)
+		why, _ := aviary.record(turn)["why"].(string)
+		return status, why
+	}
+	// elsewhere tells whether a request of the turn to another host goes on
+	// without a key.
+	elsewhere := func(s *supervisor) bool {
+		t.Helper()
+		status, headers := s.resolve(sandbox, "GET", "https://pypi.org/simple/")
+		return status == http.StatusOK && len(headers) == 0
 	}
 	const reads = `aviary_secret_read_seconds_count{kind="scripted",outcome="read"}`
 
 	if key := told(s); key != "Bearer sk-the-first" {
-		t.Errorf("the proxy is told to send the model request with %q", key)
+		t.Errorf("the model request is sent with %q", key)
 	}
 	// The key of a provider is for its endpoint alone.
-	if got := named(t, s.check(token, true, "/")); got != nil {
-		t.Errorf("about a request through the forward proxy, the proxy is told %+v", got)
+	if !elsewhere(s) {
+		t.Error("a request to another host is not sent as it is")
 	}
 	// The Supervisor read the key once, when the provider was made, and
 	// remembers it: also when the store has another by now.
 	aviary.secrets.put(address, "llm/model", "api_key", "sk-the-second")
 	if key := told(s); key != "Bearer sk-the-first" || s.metric(reads) != 1 {
-		t.Errorf("the proxy is told to send the model request with %q, after %v reads of the store", key, s.metric(reads))
+		t.Errorf("the model request is sent with %q, after %v reads of the store", key, s.metric(reads))
 	}
 	// A Supervisor that does not remember it reads what the store has now.
 	if another := aviary.supervisor(); told(another) != "Bearer sk-the-second" || another.metric(reads) != 1 {
@@ -168,16 +183,15 @@ func TestModelRequestWithAKeyFromASecretStore(t *testing.T) {
 	// reason, and the other requests of the turn go on.
 	aviary.secrets.put(address, "llm/model", "api_key", "")
 	third := aviary.supervisor()
-	status, why := refusal(third.check(token, false, "/v1/chat/completions"))
-	if status != http.StatusServiceUnavailable ||
-		why != "the API key of the model provider cannot be read from its secret store: the store has no value at the path and under the key\n" {
+	if status, why := refused(third); status != http.StatusServiceUnavailable ||
+		why != "the API key of the model provider cannot be read from its secret store: the store has no value at the path and under the key" {
 		t.Errorf("a model request whose key the store does not give is refused with %d %q", status, why)
 	}
 	if failed := third.metric(`aviary_secret_read_seconds_count{kind="scripted",outcome="failed"}`); failed != 1 {
 		t.Errorf("the Supervisor counted %v reads that failed", failed)
 	}
-	if got := named(t, third.check(token, true, "/")); got != nil {
-		t.Errorf("about a request through the forward proxy, the proxy is told %+v", got)
+	if !elsewhere(third) {
+		t.Error("while the key cannot be read, a request to another host is not sent as it is")
 	}
 
 	// A store that is registered anew is read anew: what a Supervisor
@@ -187,21 +201,30 @@ func TestModelRequestWithAKeyFromASecretStore(t *testing.T) {
 		t.Fatalf("the secret store was replaced with %d", status)
 	}
 	if key := told(s); key != "Bearer sk-the-third" {
-		t.Errorf("after the secret store was replaced, the proxy is told to send the model request with %q", key)
+		t.Errorf("after the secret store was replaced, the model request is sent with %q", key)
 	}
 
 	// An installation that allows no store at that host any more reads none
-	// there, and one with other keys cannot log in to it.
+	// there, and a Supervisor cannot log in to a store whose credential it
+	// cannot open, as one that is sealed with keys of another installation.
 	closed := *aviary
 	closed.storeHosts = nil
-	if status, why := refusal(closed.supervisor().check(token, false, "/v1/chat/completions")); status != http.StatusServiceUnavailable ||
+	if status, why := refused(closed.supervisor()); status != http.StatusServiceUnavailable ||
 		!strings.Contains(why, "supervisor.secretStores.allowedHosts") {
 		t.Errorf("a model request whose key is in a store that is not allowed is refused with %d %q", status, why)
 	}
-	stranger := *aviary
-	stranger.keys = testenv.Keys(t)
-	if status, why := refusal(stranger.supervisor().check(token, false, "/v1/chat/completions")); status != http.StatusServiceUnavailable ||
-		why != "the credential of the secret store of the model provider cannot be read\n" {
+	held, err := aviary.records.SecretStore(context.Background(), uuid.MustParse(kept))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held.Credential, err = testenv.Keys(t).Seal("another-credential", store.SecretStoreCredentialPlace(held.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := aviary.records.ReplaceSecretStore(context.Background(), held); err != nil {
+		t.Fatal(err)
+	}
+	if status, why := refused(s); status != http.StatusServiceUnavailable ||
+		why != "the credential of the secret store of the model provider cannot be read" {
 		t.Errorf("a model request whose store cannot be logged in to is refused with %d %q", status, why)
 	}
 }

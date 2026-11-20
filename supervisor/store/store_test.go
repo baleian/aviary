@@ -74,15 +74,3 @@ func TestPluginIsChosenByTheScheme(t *testing.T) {
 		t.Errorf("a plugin was asked about a database that is not of its kind: %q", asked)
 	}
 }
-
-func TestTokens(t *testing.T) {
-	t.Parallel()
-	first, second := store.NewToken(), store.NewToken()
-	if first == second || len(first) < 20 {
-		t.Errorf("the tokens of two turns are %q and %q", first, second)
-	}
-	hash := store.HashToken(first)
-	if string(hash) == first || !slices.Equal(hash, store.HashToken(first)) || slices.Equal(hash, store.HashToken(second)) {
-		t.Errorf("what is kept of the token %q is %x", first, hash)
-	}
-}

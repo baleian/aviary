@@ -29,10 +29,7 @@ func (suite suite) testAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	given := store.Agent{
-		Harness: "opencode", Instructions: "Be brief.", Resources: json.RawMessage(`{"limits": {"memory": "2Gi"}}`), Approval: "ask",
-		Model: &store.Model{Provider: provider.ID, Name: "a-model"},
-	}
+	given := store.Agent{Harness: "opencode", Instructions: "Be brief.", Approval: "ask", Model: &store.Model{Provider: provider.ID, Name: "a-model"}}
 	created, err := st.CreateAgent(ctx, project.ID, given)
 	if err != nil {
 		t.Fatal(err)
@@ -43,7 +40,7 @@ func (suite suite) testAgents(t *testing.T) {
 	}
 	for how, agent := range map[string]store.Agent{"created": created, "read": read} {
 		if agent.ID == uuid.Nil || agent.ID != created.ID || agent.ProjectID != project.ID || agent.Harness != "opencode" ||
-			agent.Instructions != "Be brief." || !keeps(t, agent.Resources, string(given.Resources)) || agent.Approval != "ask" ||
+			agent.Instructions != "Be brief." || agent.Approval != "ask" ||
 			!reflect.DeepEqual(agent.Model, given.Model) || agent.CreatedAt.IsZero() || !agent.CreatedAt.Equal(created.CreatedAt) {
 			t.Errorf("the agent is %s as %+v, with the model %+v", how, agent, agent.Model)
 		}
@@ -53,7 +50,7 @@ func (suite suite) testAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if read, err := st.Agent(ctx, plain.ID); err != nil || read.Harness != "codex" || read.Instructions != "" || read.Resources != nil ||
+	if read, err := st.Agent(ctx, plain.ID); err != nil || read.Harness != "codex" || read.Instructions != "" ||
 		read.Approval != "" || read.Model != nil {
 		t.Errorf("the agent with nothing of its own is read as %+v: %v", read, err)
 	}
@@ -93,7 +90,7 @@ func (suite suite) testAgentsOfAProject(t *testing.T) {
 		project uuid.UUID
 		agent   store.Agent
 	}{
-		{project.ID, store.Agent{Harness: "opencode", Instructions: "Be brief.", Resources: json.RawMessage(`{"limits": {"memory": "2Gi"}}`), Approval: "ask"}},
+		{project.ID, store.Agent{Harness: "opencode", Instructions: "Be brief.", Approval: "ask"}},
 		{other.ID, store.Agent{Harness: "opencode"}},
 		{project.ID, store.Agent{Harness: "codex", Model: &store.Model{Provider: provider.ID, Name: "a-model"}}},
 		{project.ID, store.Agent{Harness: "opencode"}},
@@ -122,8 +119,7 @@ func (suite suite) testAgentsOfAProject(t *testing.T) {
 				t.Fatal(err)
 			}
 			if agent.ID != read.ID || agent.ProjectID != listed.project || agent.Harness != read.Harness || agent.Instructions != read.Instructions ||
-				!bytes.Equal(agent.Resources, read.Resources) || agent.Approval != read.Approval || !reflect.DeepEqual(agent.Model, read.Model) ||
-				!agent.CreatedAt.Equal(read.CreatedAt) {
+				agent.Approval != read.Approval || !reflect.DeepEqual(agent.Model, read.Model) || !agent.CreatedAt.Equal(read.CreatedAt) {
 				t.Errorf("the agent %d of the project is listed as %+v and read as %+v", i, agent, read)
 			}
 		}
@@ -296,9 +292,9 @@ func (suite suite) testEndSession(t *testing.T) {
 		}
 	}
 	busy("waits to run")
-	dispatch, runner := st.dispatch(), uuid.New()
-	busy("waits for its runner")
-	if _, err := st.TakeTurn(ctx, dispatch.Token, &runner); err != nil {
+	dispatch := st.dispatch()
+	busy("waits to be followed")
+	if _, err := st.FollowTurn(ctx, dispatch.TurnID); err != nil {
 		t.Fatal(err)
 	}
 	busy("runs")
@@ -532,8 +528,8 @@ func (suite suite) testKeyInASecretStore(t *testing.T) {
 		t.Errorf("after that, the provider has its key at %+v: %v", read.APIKeyAt, err)
 	}
 
-	// The token of a running turn tells of the provider with where its key
-	// is, and of the secret store as it is then.
+	// The turn that runs in a sandbox tells of the provider with where its
+	// key is, and of the secret store as it is then.
 	agent, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: &store.Model{Provider: created.ID, Name: "a-model"}})
 	if err != nil {
 		t.Fatal(err)
@@ -542,13 +538,16 @@ func (suite suite) testKeyInASecretStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dispatch, _ := st.running(session.ID)
-	origin, err := st.RunningTurn(ctx, dispatch.Token)
+	if set, err := st.SetSandbox(ctx, session.ID, "", "sandbox-1"); err != nil || !set {
+		t.Fatalf("the session was not given its sandbox: %v", err)
+	}
+	st.running(session.ID)
+	origin, err := st.SandboxTurn(ctx, "sandbox-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if origin.Provider == nil || origin.Provider.APIKey != nil || !reflect.DeepEqual(origin.Provider.APIKeyAt, elsewhere) {
-		t.Errorf("the token of the running turn is that of the provider %+v", origin.Provider)
+		t.Errorf("the turn of the sandbox has the provider %+v", origin.Provider)
 	}
 	if in := origin.SecretStore; in == nil || in.ID != secrets.ID || in.ProjectID != project.ID || in.Name != "a store" || in.Kind != "a kind" ||
 		!keeps(t, in.Settings, `{"where": "there"}`) || string(in.Credential) != "sealed" || !in.UpdatedAt.Equal(secrets.UpdatedAt) {
@@ -560,7 +559,7 @@ func (suite suite) testKeyInASecretStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	origin, err = st.another().RunningTurn(ctx, dispatch.Token)
+	origin, err = st.another().SandboxTurn(ctx, "sandbox-1")
 	if in := origin.SecretStore; err != nil || in == nil || in.Kind != "another kind" || !keeps(t, in.Settings, `{"where": "elsewhere"}`) ||
 		string(in.Credential) != "another" || !in.UpdatedAt.Equal(moved.UpdatedAt) || !in.UpdatedAt.After(secrets.UpdatedAt) {
 		t.Errorf("after the secret store was replaced, the key of the provider is in %+v: %v", in, err)
@@ -698,9 +697,9 @@ func (suite suite) testSecretStores(t *testing.T) {
 }
 
 // An agent names its model: a provider of its project and a model of that
-// provider. A turn of the agent is dispatched with the provider's URL and
-// the model, and while it runs, its token tells where it comes from and
-// which provider its agent uses, as the provider is then.
+// provider. A turn of the agent is followed with the provider's URL and the
+// model, and while it runs, its sandbox tells where it comes from and which
+// provider its agent uses, as the provider is then.
 func (suite suite) testModelOfAnAgent(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -714,9 +713,9 @@ func (suite suite) testModelOfAnAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// session creates a session of an agent with the model, and has a
-	// runner take its turn.
-	session := func(model *store.Model) (store.Agent, store.Session, store.Dispatch) {
+	// session creates a session of an agent with the model, which runs in
+	// the sandbox, and has a Supervisor follow its turn.
+	session := func(model *store.Model, sandbox string) (store.Agent, store.Session, store.FollowedTurn) {
 		t.Helper()
 		agent, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: model})
 		if err != nil {
@@ -730,22 +729,29 @@ func (suite suite) testModelOfAnAgent(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		dispatch, _ := st.running(session.ID)
-		return agent, session, dispatch
+		if set, err := st.SetSandbox(ctx, session.ID, "", sandbox); err != nil || !set {
+			t.Fatalf("the session was not given its sandbox: %v", err)
+		}
+		st.queue(session.ID)
+		followed, err := st.FollowTurn(ctx, st.dispatch().TurnID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return agent, session, followed
 	}
 
-	agent, held, dispatch := session(&store.Model{Provider: provider.ID, Name: "a-model"})
-	if dispatch.ProviderURL != provider.URL || dispatch.Model != "a-model" || dispatch.AgentID != agent.ID || dispatch.ProjectID != project.ID {
-		t.Errorf("the turn of an agent that names its model was dispatched as %+v", dispatch)
+	agent, held, followed := session(&store.Model{Provider: provider.ID, Name: "a-model"}, "sandbox-1")
+	if followed.ProviderURL != provider.URL || followed.Model != "a-model" || followed.AgentID != agent.ID || followed.ProjectID != project.ID {
+		t.Errorf("the turn of an agent that names its model is followed as %+v", followed)
 	}
-	origin, err := st.RunningTurn(ctx, dispatch.Token)
+	origin, err := st.SandboxTurn(ctx, "sandbox-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if origin.TurnID != dispatch.TurnID || origin.SessionID != held.ID || origin.AgentID != agent.ID || origin.ProjectID != project.ID ||
+	if origin.TurnID != followed.ID || origin.SessionID != held.ID || origin.AgentID != agent.ID || origin.ProjectID != project.ID ||
 		origin.Provider == nil || origin.Provider.ID != provider.ID || origin.Provider.URL != provider.URL || string(origin.Provider.APIKey) != "a sealed key" ||
 		origin.Provider.APIKeyAt != nil || origin.SecretStore != nil {
-		t.Errorf("the token of the running turn is that of %+v, with the provider %+v", origin, origin.Provider)
+		t.Errorf("the turn of the sandbox comes from %+v, with the provider %+v", origin, origin.Provider)
 	}
 	// An agent names a provider that there is.
 	if _, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: &store.Model{Provider: uuid.New(), Name: "a-model"}}); err == nil {
@@ -755,34 +761,38 @@ func (suite suite) testModelOfAnAgent(t *testing.T) {
 	if _, err := st.ReplaceProvider(ctx, store.Provider{ID: provider.ID, Name: "a provider", URL: "http://model.example.com:8000"}); err != nil {
 		t.Fatal(err)
 	}
-	origin, err = st.another().RunningTurn(ctx, dispatch.Token)
+	origin, err = st.another().SandboxTurn(ctx, "sandbox-1")
 	if err != nil || origin.Provider == nil || origin.Provider.URL != "http://model.example.com:8000" || origin.Provider.APIKey != nil {
-		t.Errorf("after its provider was replaced, the token of the running turn is that of %+v, with the provider %+v: %v", origin, origin.Provider, err)
+		t.Errorf("after its provider was replaced, the turn of the sandbox comes from %+v, with the provider %+v: %v", origin, origin.Provider, err)
 	}
 
 	// An agent from before agents named their models has none.
-	_, _, plain := session(nil)
+	_, _, plain := session(nil, "sandbox-2")
 	if plain.ProviderURL != "" || plain.Model != "" {
-		t.Errorf("the turn of an agent that names no model was dispatched as %+v", plain)
+		t.Errorf("the turn of an agent that names no model is followed as %+v", plain)
 	}
-	if origin, err := st.RunningTurn(ctx, plain.Token); err != nil || origin.TurnID != plain.TurnID || origin.Provider != nil {
-		t.Errorf("the token of the turn of an agent that names no model is that of %+v: %v", origin, err)
+	if origin, err := st.SandboxTurn(ctx, "sandbox-2"); err != nil || origin.TurnID != plain.ID || origin.Provider != nil {
+		t.Errorf("the turn of the sandbox of an agent that names no model comes from %+v: %v", origin, err)
 	}
 
-	// A token tells of its turn only while the turn runs.
-	if _, err := st.RunningTurn(ctx, "a-token-of-no-turn"); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("a token of no turn: %v", err)
+	// A sandbox tells of a turn only while the turn runs.
+	if _, err := st.SandboxTurn(ctx, "a-sandbox-of-no-session"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("a sandbox of no session: %v", err)
 	}
-	st.end(dispatch.TurnID, true, store.Failure{})
-	if _, err := st.RunningTurn(ctx, dispatch.Token); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("the token of a turn that has ended: %v", err)
+	st.end(followed.ID, true, store.Failure{})
+	if _, err := st.SandboxTurn(ctx, "sandbox-1"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("the sandbox of a turn that has ended: %v", err)
 	}
 	waiting, err := st.CreateSession(ctx, agent.ID, uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if set, err := st.SetSandbox(ctx, waiting.ID, "", "sandbox-3"); err != nil || !set {
+		t.Fatalf("the session was not given its sandbox: %v", err)
+	}
 	st.queue(waiting.ID)
-	if _, err := st.RunningTurn(ctx, st.dispatch().Token); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("the token of a turn that no runner has taken: %v", err)
+	st.dispatch()
+	if _, err := st.SandboxTurn(ctx, "sandbox-3"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("the sandbox of a turn that no Supervisor follows: %v", err)
 	}
 }

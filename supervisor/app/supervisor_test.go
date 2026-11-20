@@ -2,25 +2,23 @@ package app
 
 import (
 	"bufio"
+	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	"github.com/google/uuid"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 
 	"aviary/supervisor/events"
 	memorylog "aviary/supervisor/events/memory"
@@ -53,7 +51,8 @@ func TestMain(m *testing.M) {
 }
 
 // installation is what the Supervisors of a test share: their records, an
-// event log, a sandbox service and the keys that secrets are sealed with.
+// event log, a sandbox service, the keys that secrets are sealed with, and
+// what they record of the requests of the sandboxes.
 type installation struct {
 	t *testing.T
 	// records are the records of the installation, as its database holds
@@ -65,9 +64,9 @@ type installation struct {
 	sandboxes *sandbox.Client
 	config    driver.Config
 	keys      *secret.Keys
-	// tokens are the tokens of the turns that were dispatched, by the IDs
-	// of the turns.
-	tokens *sync.Map
+	// requests are the records of the requests of the sandboxes, as the
+	// logs of the Supervisors are collected: a line of JSON for each.
+	requests *written
 	// storeHosts are the hosts at which the installation allows the secret
 	// stores of its projects, and secrets is what those stores hold. They
 	// are of the kind that the tests have a plugin for.
@@ -117,7 +116,7 @@ func install(t *testing.T, changes ...func(*driver.Config)) *installation {
 		change(&config)
 	}
 	return &installation{
-		t: t, records: memorystore.New(), service: service, sandboxes: sandboxes, config: config, tokens: &sync.Map{},
+		t: t, records: memorystore.New(), service: service, sandboxes: sandboxes, config: config, requests: &written{},
 		keys: testenv.Keys(t), storeHosts: []string{storeHost}, secrets: &shelves{}, log: memorylog.New(),
 	}
 }
@@ -126,20 +125,37 @@ func install(t *testing.T, changes ...func(*driver.Config)) *installation {
 // a sandbox asks about its requests.
 const resolvedAt = "https://resolver.example.com:9443"
 
-// dispatching are the records as a Supervisor of the tests has them. They
-// note the token of every turn that is dispatched, which only the one who
-// dispatches a turn is told.
-type dispatching struct {
-	store.Store
-	tokens *sync.Map
+// written is what several Supervisors write at once.
+type written struct {
+	mu   sync.Mutex
+	text bytes.Buffer
 }
 
-func (d dispatching) DispatchTurns(ctx context.Context, limit int) ([]store.Dispatch, error) {
-	dispatches, err := d.Store.DispatchTurns(ctx, limit)
-	for _, dispatch := range dispatches {
-		d.tokens.Store(dispatch.TurnID.String(), dispatch.Token)
+func (w *written) Write(line []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.text.Write(line)
+}
+
+// record returns the last record that a Supervisor wrote of a request of
+// the turn, or nothing if there is none.
+func (i *installation) record(turn string) map[string]any {
+	i.t.Helper()
+	i.requests.mu.Lock()
+	defer i.requests.mu.Unlock()
+	for _, line := range slices.Backward(strings.Split(i.requests.text.String(), "\n")) {
+		if line == "" {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			i.t.Fatalf("a Supervisor recorded %q: %v", line, err)
+		}
+		if record["turn"] == turn {
+			return record
+		}
 	}
-	return dispatches, err
+	return nil
 }
 
 // stores returns the secret stores of the installation as one of its
@@ -162,7 +178,6 @@ type supervisor struct {
 	// resolver is where the Supervisor answers the egress of the sandbox
 	// service, without TLS here.
 	resolver string
-	proxies  authv3.AuthorizationClient
 	// stop tells the Supervisor to stop, as Kubernetes does, and returns
 	// when it has.
 	stop func()
@@ -182,26 +197,18 @@ func (i *installation) supervisor() *supervisor {
 		}
 		return listener
 	}
-	on := ports{api: listen(), authz: listen(), metrics: listen(), resolver: listen()}
-	connect := func(listener net.Listener) *grpc.ClientConn {
-		connection, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
-		if err != nil {
-			i.t.Fatal(err)
-		}
-		i.t.Cleanup(func() { connection.Close() })
-		return connection
-	}
+	on := ports{api: listen(), metrics: listen(), resolver: listen()}
 	s := &supervisor{
 		installation: i,
 		api:          "http://" + on.api.Addr().String(),
 		metrics:      "http://" + on.metrics.Addr().String(),
 		resolver:     "http://" + on.resolver.Addr().String(),
-		proxies:      authv3.NewAuthorizationClient(connect(on.authz)),
 	}
 	ctx, stop := context.WithCancel(context.Background())
 	stopped := make(chan error, 1)
+	records := slog.New(slog.NewJSONHandler(i.requests, nil))
 	go func() {
-		stopped <- serveOn(ctx, on, dispatching{i.records, i.tokens}, ev, i.sandboxes, i.config, i.keys, stores, i.callers, resolvedAt)
+		stopped <- serveOn(ctx, on, i.records, ev, i.sandboxes, i.config, i.keys, stores, i.callers, resolvedAt, records)
 	}()
 	s.stop = sync.OnceFunc(func() {
 		stop()
@@ -493,20 +500,6 @@ func (i *installation) given(turn string) *runner {
 	return &runner{Turn: i.service.TurnWith(i.t, turn), installation: i}
 }
 
-// token waits for the turn to be dispatched, and returns its token.
-func (i *installation) token(turn string) string {
-	i.t.Helper()
-	var token string
-	eventually(i.t, soon, "the turn "+turn+" is not dispatched", func() bool {
-		noted, found := i.tokens.Load(turn)
-		if found {
-			token = noted.(string)
-		}
-		return found
-	})
-	return token
-}
-
 // message is what a runner tells of its turn: an event.
 type message struct {
 	name string
@@ -575,43 +568,6 @@ func (s *supervisor) run(turn, text string) {
 	r.report(started("harness-session"))
 	r.report(said(text))
 	r.report(finished("end_turn", nil))
-}
-
-// The Egress Proxy, which asks whose request a token belongs to.
-
-// check asks the Supervisor about a request as the proxy does: a model
-// request for the path, which carries the token as its bearer token, or one
-// through the forward proxy, which carries it as the password.
-func (s *supervisor) check(token string, forward bool, path string) *authv3.CheckResponse {
-	s.t.Helper()
-	headers, extensions := map[string]string{"authorization": "Bearer " + token}, map[string]string{"listener": "llm"}
-	if forward {
-		headers = map[string]string{"proxy-authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte("turn:"+token))}
-		extensions["listener"] = "forward"
-	}
-	answer, err := s.proxies.Check(context.Background(), &authv3.CheckRequest{Attributes: &authv3.AttributeContext{
-		Request:           &authv3.AttributeContext_Request{Http: &authv3.AttributeContext_HttpRequest{Headers: headers, Path: path}},
-		ContextExtensions: extensions,
-	}})
-	if err != nil {
-		s.t.Fatal(err)
-	}
-	return answer
-}
-
-// origin returns where the Supervisor says a request with the token comes
-// from, or nothing if it refuses the request.
-func (s *supervisor) origin(token string, forward bool) map[string]string {
-	s.t.Helper()
-	answer := s.check(token, forward, "/v1/chat/completions")
-	if codes.Code(answer.GetStatus().GetCode()) != codes.OK {
-		return nil
-	}
-	origin := map[string]string{}
-	for name, value := range answer.GetDynamicMetadata().GetFields() {
-		origin[name] = value.GetStringValue()
-	}
-	return origin
 }
 
 // cancelled waits for the Supervisor to tell the runner to stop its turn.

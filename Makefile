@@ -71,17 +71,8 @@ GO_TEST := test -race -shuffle=on -count=1 -timeout 2m
 # The generator of the Go code for the queries of the Supervisor.
 SQLC_RUN := docker run --rm --user $$(id -u):$$(id -g) \
 	--volume $(CURDIR)/supervisor:/src --workdir /src $(SQLC_IMAGE)
-# What the tests make of the chart, and the image of Envoy that the chart
-# runs as the Egress Proxy.
+# What the tests make of the chart.
 RENDER := helm template aviary deploy/charts/aviary --namespace aviary-system
-ENVOY_IMAGE = $(shell sed --quiet 's/^  image: \(envoyproxy.*\)/\1/p' deploy/charts/aviary/values.yaml)
-# The Egress Proxies that the tests of the proxy run against, and the names
-# under which those proxies find the tests.
-PROXIES = ENVOY_IMAGE=$(ENVOY_IMAGE) docker compose --file test/proxy/compose.yaml --project-name aviary-test-proxy
-AMONG_PROXIES := --network aviary-test-proxy_default --env AVIARY_TEST_PROXY=1 \
-	--network-alias aviary-supervisor.aviary-system --network-alias model.test \
-	--network-alias allowed.test --network-alias other.test \
-	--network-alias tls.test --network-alias unnamed.test
 # What the tests of the Supervisor run against, and how the tests reach it.
 SERVICES := docker compose --file test/compose.yaml --project-name aviary-test-supervisor
 IN_SERVICES := --network aviary-test-supervisor_default \
@@ -91,7 +82,7 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 	--env AVIARY_TEST_REDIS_URL=redis://default:test@events-redis:6379 \
 	--env AVIARY_TEST_SECRET_STORE_URL=http://secret-store:8200
 
-.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down secret-store identity-provider build images secrets deploy e2e e2e-up e2e-run e2e-down
+.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-chart test-harness cluster-up cluster-down secret-store identity-provider build images secrets deploy e2e e2e-up e2e-run e2e-down
 
 # Writes the Go code for the queries of the Supervisor's PostgreSQL plugin,
 # which are in supervisor/store/postgres/queries.sql, to internal/db beside
@@ -114,7 +105,7 @@ lint:
 # make test-supervisor TESTS='-run TestStore/EndTurn ./store/postgres'
 # make test-runner TESTS=cut
 test:
-	$(MAKE) --jobs --output-sync=target test-supervisor test-plugin test-runner test-mock-llm test-chart test-proxy
+	$(MAKE) --jobs --output-sync=target test-supervisor test-plugin test-runner test-mock-llm test-chart
 
 # The services are started anew for every run and removed after it, also
 # when a test fails.
@@ -136,39 +127,15 @@ test-mock-llm: TESTS ?= ./...
 test-mock-llm:
 	$(call GO,test/mock-llm) $(GO_TEST) $(TESTS)
 
-# Renders the chart with its own values and with those in test/chart, checks
-# what it makes of them and that it refuses what it can make nothing of, and
-# has Envoy check the configuration that it is given.
+# Renders the chart with its own values and with those in test/chart, and
+# checks what it makes of them.
 test-chart: TESTS ?= ./chart/...
 test-chart:
 	helm lint --strict --quiet deploy/charts/aviary
 	mkdir -p .out/chart
 	$(RENDER) > .out/chart/default.yaml
 	$(RENDER) --values test/chart/set.yaml > .out/chart/set.yaml
-	$(RENDER) --values test/chart/closed.yaml > .out/chart/closed.yaml
-	! $(RENDER) --set 'egressProxy.allowedHosts={https://example.com}' > /dev/null 2>&1
 	$(call GO,test,--env AVIARY_TEST_RENDERED=/src/.out/chart) $(GO_TEST) $(TESTS)
-	for values in default set closed; do \
-		$(call GO,test) run ./internal/unpack /src/.out/chart/$$values.yaml /src/.out/chart/$$values && \
-		docker run --rm --volume $(CURDIR)/.out/chart/$$values:/etc/envoy:ro \
-			$(ENVOY_IMAGE) --mode validate --log-level error --config-path /etc/envoy/envoy.yaml || exit 1; \
-	done
-
-# Runs the Egress Proxy with what the chart makes of each file of values in
-# test/proxy, and sends it requests. The tests are the Supervisor and the
-# hosts of the proxy, so the proxy finds them under those names.
-test-proxy: TESTS ?= ./proxy/...
-test-proxy:
-	mkdir -p .out/proxy
-	$(call GO,test) run ./internal/selfsigned tls.test /src/.out/proxy/tls
-	for values in listed open closed; do \
-		$(RENDER) --values test/proxy/$$values.yaml > .out/proxy/$$values.yaml && \
-		$(call GO,test) run ./internal/unpack /src/.out/proxy/$$values.yaml /src/.out/proxy/$$values || exit 1; \
-	done
-	$(PROXIES) up --detach --force-recreate
-	$(call GO,test,$(AMONG_PROXIES)) $(GO_TEST) $(TESTS); \
-		status=$$?; [ $$status = 0 ] || $(PROXIES) logs --no-color --tail 40; \
-		$(PROXIES) down --volumes; exit $$status
 
 # Tests the harness images as the pods of turns run them, in containers and
 # without a cluster. A few at a time: a harness takes some memory.

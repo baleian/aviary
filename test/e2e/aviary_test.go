@@ -96,10 +96,8 @@ func ready(t *testing.T, component string, count int) bool {
 // start in time. The first turns are tried until one of each harness
 // completes.
 func installation(t *testing.T) {
-	for _, component := range []string{"supervisor", "egress-proxy"} {
-		if !ready(t, component, 2) {
-			t.Fatalf("the installation does not run two of %s: run `make e2e`, which installs it", component)
-		}
+	if !ready(t, "supervisor", 2) {
+		t.Fatal("the installation does not run two Supervisors: run `make e2e`, which installs it")
 	}
 	// The sandboxes of the last sessions of an earlier run may still be on
 	// their way out.

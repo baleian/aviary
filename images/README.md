@@ -57,8 +57,8 @@ allows the action once, by itself.
 4. **It takes the model endpoint from the environment.** The image
    configures the harness so that it reads `AVIARY_LLM_BASE_URL`,
    `AVIARY_LLM_API_KEY` and `AVIARY_LLM_MODEL`, and sends the key as a bearer
-   token (`Authorization: Bearer ...`). The Egress Proxy looks for the key
-   there.
+   token (`Authorization: Bearer ...`). The egress of the sandbox puts the
+   key of the endpoint there.
 5. **It supports `session/resume`.** The harness is started for the first
    turn of a session and stays for the turns after it. One that has ended is
    started again for the next turn, and continues the harness session there.

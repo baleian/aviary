@@ -1,10 +1,10 @@
 # Plugins
 
-The core of Aviary is the Supervisor, the runner and the Egress Proxy. What
-an installation keeps its data in is not part of the core: the Supervisor
-knows a database, an event log, a secret store and an identity provider
-only by an interface, and a plugin connects it to one kind of each. An
-installation picks among the plugins that its Supervisor was built with.
+The core of Aviary is the Supervisor and the runner. What an installation
+keeps its data in is not part of the core: the Supervisor knows a database,
+an event log, a secret store and an identity provider only by an interface,
+and a plugin connects it to one kind of each. An installation picks among
+the plugins that its Supervisor was built with.
 
 | What | Interface | How an installation picks | Plugins in this repository |
 | --- | --- | --- | --- |

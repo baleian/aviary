@@ -21,8 +21,8 @@ import (
 	"aviary/supervisor/store"
 )
 
-// timeout is how long a store gets to answer. The Egress Proxy waits a
-// little longer for the Supervisor, which may ask a store before it answers.
+// timeout is how long a store gets to answer. The egress of a sandbox waits
+// for the Supervisor, which may ask a store before it answers.
 const timeout = 3 * time.Second
 
 // What a Supervisor remembers of the secret stores is no more than this,
@@ -120,11 +120,11 @@ type placed struct {
 }
 
 // NewStores returns the stores of an installation that allows them at the
-// hosts and asks them with the plugins. A host is written as for the Egress
-// Proxy: "*" is every host, a name the host on the ports of HTTPS and HTTP,
-// and a name with a port the host on that port. A value that is read from a
-// store is remembered for so long, and not at all with zero: the store is
-// then read every time. The stores are closed when they are of no more use.
+// hosts and asks them with the plugins. A host is "*" for every host, a name
+// for the host on the ports of HTTPS and HTTP, or a name with a port for the
+// host on that port. A value that is read from a store is remembered for so
+// long, and not at all with zero: the store is then read every time. The
+// stores are closed when they are of no more use.
 func NewStores(hosts []string, remembered time.Duration, plugins ...Plugin) (*Stores, error) {
 	for _, allowed := range hosts {
 		if allowed != "*" && !host.MatchString(allowed) {

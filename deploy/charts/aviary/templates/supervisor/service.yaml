@@ -18,7 +18,3 @@ spec:
     - name: resolver
       port: 9443
       targetPort: resolver
-    # The Egress Proxy asks on this port which turn a request comes from.
-    - name: authz
-      port: 9091
-      targetPort: authz

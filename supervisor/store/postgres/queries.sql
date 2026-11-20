@@ -5,8 +5,8 @@ insert into projects (id, name) values (@id, @name) returning *;
 select * from projects where id = @id;
 
 -- name: CreateAgent :one
-insert into agents (id, project_id, harness, instructions, resources, approval, provider_id, model)
-select @id::uuid, projects.id, @harness::text, @instructions::text, @resources::jsonb, @approval::text,
+insert into agents (id, project_id, harness, instructions, approval, provider_id, model)
+select @id::uuid, projects.id, @harness::text, @instructions::text, @approval::text,
        sqlc.narg(provider_id)::uuid, @model::text
 from projects where projects.id = @project_id
 returning *;
@@ -158,16 +158,11 @@ select id from turns where ended_at is null and cancel_requested_at is not null;
 
 -- name: NextTurns :many
 -- The queued turns that there is room to run, oldest first. A turn that
--- waits for a person takes no room, as in CountWaitingTurns. A turn of an
--- agent that names its model has the URL of the agent's provider and the
--- name of the model.
-select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, agents.harness,
-       agents.resources, agents.approval, coalesce(providers.url, '')::text as provider_url, agents.model,
-       extract(epoch from now() - turns.created_at)::float8 as waited
+-- waits for a person takes no room, as in CountWaitingTurns.
+select turns.id as turn_id, agents.harness, extract(epoch from now() - turns.created_at)::float8 as waited
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
-left join providers on providers.id = agents.provider_id
 where turns.state = 'queued'
 order by turns.created_at, turns.id
 limit greatest(sqlc.arg(max_running)::bigint
@@ -178,39 +173,19 @@ limit greatest(sqlc.arg(max_running)::bigint
 
 -- name: DispatchTurn :execrows
 -- A turn that was cancelled since it was read is left as it is.
-update turns set state = 'dispatching', token_hash = @token_hash, dispatched_at = now()
+update turns set state = 'dispatching', dispatched_at = now()
 where id = @id and state = 'queued';
 
 -- name: RequeueTurn :execrows
 -- The turn waits to run again, with nothing left of its dispatch. A turn
 -- whose harness has been given the message, or that was asked to stop, is
 -- left as it is.
-update turns set state = 'queued', token_hash = null, dispatched_at = null, runner_id = null,
-       failure_reason = null, failure_message = null
+update turns set state = 'queued', dispatched_at = null
 where id = @id and state in ('dispatching', 'running') and started_at is null and cancel_requested_at is null;
 
 -- name: DispatchedTurns :many
-select id,
-       (state = 'running')::boolean as taken,
-       extract(epoch from now() - coalesce(dispatched_at, created_at))::float8 as age,
-       coalesce(extract(epoch from now() - cancel_requested_at), 0)::float8 as cancelling
+select id, coalesce(extract(epoch from now() - cancel_requested_at), 0)::float8 as cancelling
 from turns where state in ('dispatching', 'running');
-
--- name: TakeTurn :one
--- A turn that waits for its runner is given to the runner that asks. A turn
--- that runs is given again to the runner that took it.
-with asked as (
-    select turns.id, turns.session_id, turns.state from turns where turns.token_hash = @token_hash for update
-)
-update turns set state = 'running', runner_id = sqlc.narg(runner_id)
-from asked
-join sessions on sessions.id = asked.session_id
-join agents on agents.id = sessions.agent_id
-where turns.id = asked.id
-      and ((turns.state = 'dispatching' and turns.cancel_requested_at is null and turns.failure_reason is null)
-           or (turns.state = 'running' and turns.runner_id = sqlc.narg(runner_id)))
-returning turns.id, turns.session_id, turns.seq, turns.text, turns.created_at, sessions.harness_session_id,
-          agents.harness, agents.instructions, (asked.state = 'running')::boolean as again;
 
 -- name: FollowTurn :execrows
 -- A turn that was dispatched and has not ended runs once it is followed.
@@ -233,33 +208,11 @@ join agents on agents.id = sessions.agent_id
 left join providers on providers.id = agents.provider_id
 where turns.id = @id;
 
--- name: GetTurnState :one
-select state from turns where token_hash = @token_hash;
-
--- name: RunningTurn :one
--- The running turn that the token belongs to, what the turn belongs to, who
--- sent its message, and the provider of its agent as it is now, if the agent
--- names its model. A provider whose key is in a secret store comes with that
--- store, as it is now.
-select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
-       coalesce(users.subject, '')::text as subject,
-       agents.provider_id, coalesce(providers.url, '')::text as provider_url, providers.api_key as provider_api_key,
-       providers.api_key_store_id, coalesce(providers.api_key_path, '')::text as api_key_path,
-       coalesce(providers.api_key_name, '')::text as api_key_name,
-       coalesce(secret_stores.name, '')::text as store_name, coalesce(secret_stores.kind, '')::text as store_kind,
-       secret_stores.settings as store_settings, secret_stores.credential as store_credential,
-       secret_stores.created_at as store_created_at, secret_stores.updated_at as store_updated_at
-from turns
-join sessions on sessions.id = turns.session_id
-join agents on agents.id = sessions.agent_id
-left join users on users.id = turns.created_by
-left join providers on providers.id = agents.provider_id
-left join secret_stores on secret_stores.id = providers.api_key_store_id
-where turns.token_hash = @token_hash and turns.state = 'running';
-
 -- name: SandboxTurn :one
--- The running turn of the session whose sandbox it is, with what RunningTurn
--- tells of a turn.
+-- The running turn of the session whose sandbox it is, what the turn
+-- belongs to, who sent its message, and the provider of its agent as it is
+-- now, if the agent names its model. A provider whose key is in a secret
+-- store comes with that store, as it is now.
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
        coalesce(users.subject, '')::text as subject,
        agents.provider_id, coalesce(providers.url, '')::text as provider_url, providers.api_key as provider_api_key,
@@ -296,15 +249,10 @@ update turns set state = 'expired', ended_at = now()
 where state = 'queued' and created_at < now() - make_interval(secs => @seconds::float8)
 returning *;
 
--- name: GiveUpTurn :execrows
-update turns set failure_reason = @reason::text, failure_message = nullif(@message::text, '')
-where id = @id and state = 'dispatching' and failure_reason is null and cancel_requested_at is null;
-
 -- name: EndTurn :one
 -- A turn that was asked to stop is cancelled, unless the harness had ended
 -- it by itself. Otherwise it is completed if its pod succeeded and the runner
--- reported why the harness stopped, and failed if not. A failed turn keeps
--- the reason that it was given up for, if it was.
+-- reported why the harness stopped, and failed if not.
 with ending as (
     select case
                when cancel_requested_at is not null
@@ -315,12 +263,8 @@ with ending as (
     from turns where id = @id and ended_at is null
 )
 update turns set ended_at = now(), state = ending.state,
-       failure_reason = case when ending.state = 'failed' then coalesce(turns.failure_reason, @reason::text) end,
-       failure_message = case
-           when ending.state <> 'failed' then null
-           when turns.failure_reason is not null then turns.failure_message
-           else nullif(@message::text, '')
-       end
+       failure_reason = case when ending.state = 'failed' then @reason::text end,
+       failure_message = case when ending.state = 'failed' then nullif(@message::text, '') end
 from ending
 where turns.id = @id and turns.ended_at is null
 returning turns.*;

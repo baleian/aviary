@@ -309,8 +309,7 @@ func (s *records) CreateAgent(ctx context.Context, projectID uuid.UUID, agent st
 		return store.Agent{}, err
 	}
 	params := db.CreateAgentParams{
-		ID: id, ProjectID: projectID, Harness: agent.Harness, Instructions: agent.Instructions,
-		Resources: agent.Resources, Approval: agent.Approval,
+		ID: id, ProjectID: projectID, Harness: agent.Harness, Instructions: agent.Instructions, Approval: agent.Approval,
 	}
 	if agent.Model != nil {
 		params.ProviderID, params.Model = &agent.Model.Provider, agent.Model.Name
@@ -616,26 +615,14 @@ func (s *records) DispatchTurns(ctx context.Context, limit int) ([]store.Dispatc
 	}
 	dispatches := []store.Dispatch{}
 	for _, row := range rows {
-		dispatch := store.Dispatch{
-			TurnID:    row.TurnID,
-			SessionID: row.SessionID,
-			AgentID:   row.AgentID,
-			ProjectID: row.ProjectID,
-			Harness:   row.Harness,
-			Resources: row.Resources,
-			Approval:  row.Approval,
-			// The agent's provider and model, if it names its model.
-			ProviderURL: row.ProviderUrl,
-			Model:       row.Model,
-			Token:       store.NewToken(),
-			Waited:      time.Duration(row.Waited * float64(time.Second)),
-		}
-		taken, err := queries.DispatchTurn(ctx, db.DispatchTurnParams{ID: row.TurnID, TokenHash: store.HashToken(dispatch.Token)})
+		taken, err := queries.DispatchTurn(ctx, row.TurnID)
 		if err != nil {
 			return nil, err
 		}
 		if taken == 1 {
-			dispatches = append(dispatches, dispatch)
+			dispatches = append(dispatches, store.Dispatch{
+				TurnID: row.TurnID, Harness: row.Harness, Waited: time.Duration(row.Waited * float64(time.Second)),
+			})
 		}
 	}
 	return dispatches, tx.Commit(ctx)
@@ -674,52 +661,9 @@ func (s *records) DispatchedTurns(ctx context.Context) ([]store.DispatchedTurn, 
 	}
 	turns := make([]store.DispatchedTurn, len(rows))
 	for i, row := range rows {
-		turns[i] = store.DispatchedTurn{
-			ID:         row.ID,
-			Taken:      row.Taken,
-			Age:        time.Duration(row.Age * float64(time.Second)),
-			Cancelling: time.Duration(row.Cancelling * float64(time.Second)),
-		}
+		turns[i] = store.DispatchedTurn{ID: row.ID, Cancelling: time.Duration(row.Cancelling * float64(time.Second))}
 	}
 	return turns, nil
-}
-
-func (s *records) TakeTurn(ctx context.Context, token string, runner *uuid.UUID) (store.TakenTurn, error) {
-	hash := store.HashToken(token)
-	row, err := s.queries.TakeTurn(ctx, db.TakeTurnParams{TokenHash: hash, RunnerID: runner})
-	if err == nil {
-		return store.TakenTurn{
-			Turn: store.Turn{
-				ID:        row.ID,
-				SessionID: row.SessionID,
-				Seq:       int(row.Seq),
-				State:     store.TurnRunning,
-				Text:      row.Text,
-				CreatedAt: row.CreatedAt,
-			},
-			HarnessSessionID: row.HarnessSessionID,
-			Harness:          row.Harness,
-			Instructions:     row.Instructions,
-			Again:            row.Again,
-		}, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return store.TakenTurn{}, err
-	}
-	state, err := s.queries.GetTurnState(ctx, hash)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return store.TakenTurn{}, store.ErrNotFound
-	case err != nil:
-		return store.TakenTurn{}, err
-	case state == store.TurnDispatching:
-		// The turn was not taken, so it was cancelled or given up before
-		// its runner came for it.
-		return store.TakenTurn{}, store.ErrTurnCancelled
-	case state == store.TurnRunning:
-		return store.TakenTurn{}, store.ErrTurnTaken
-	}
-	return store.TakenTurn{}, store.ErrTurnEnded
 }
 
 func (s *records) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.FollowedTurn, error) {
@@ -762,14 +706,6 @@ func (s *records) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.Follo
 	return followed, nil
 }
 
-func (s *records) RunningTurn(ctx context.Context, token string) (store.Origin, error) {
-	row, err := s.queries.RunningTurn(ctx, store.HashToken(token))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return store.Origin{}, store.ErrNotFound
-	}
-	return originOf(row), err
-}
-
 func (s *records) SandboxTurn(ctx context.Context, sandbox string) (store.Origin, error) {
 	if sandbox == "" {
 		return store.Origin{}, store.ErrNotFound
@@ -778,11 +714,11 @@ func (s *records) SandboxTurn(ctx context.Context, sandbox string) (store.Origin
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.Origin{}, store.ErrNotFound
 	}
-	return originOf(db.RunningTurnRow(row)), err
+	return originOf(row), err
 }
 
 // originOf is where a running turn comes from, as a row tells it.
-func originOf(row db.RunningTurnRow) store.Origin {
+func originOf(row db.SandboxTurnRow) store.Origin {
 	origin := store.Origin{TurnID: row.TurnID, SessionID: row.SessionID, AgentID: row.AgentID, ProjectID: row.ProjectID, Subject: row.Subject}
 	if row.CreatedBy != nil {
 		origin.UserID = *row.CreatedBy
@@ -831,11 +767,6 @@ func (s *records) SetFinished(ctx context.Context, turnID uuid.UUID, stopReason 
 		finished.CachedWriteTokens = usage.CachedWriteTokens
 	}
 	return s.queries.SetFinished(ctx, finished)
-}
-
-func (s *records) GiveUpTurn(ctx context.Context, turnID uuid.UUID, failure store.Failure) (bool, error) {
-	changed, err := s.queries.GiveUpTurn(ctx, db.GiveUpTurnParams{ID: turnID, Reason: failure.Reason, Message: failure.Message})
-	return changed == 1, err
 }
 
 func (s *records) EndTurn(ctx context.Context, turnID uuid.UUID, succeeded bool, failure store.Failure,
@@ -966,7 +897,6 @@ func agentFrom(row db.Agent) store.Agent {
 		Harness:      row.Harness,
 		CreatedAt:    row.CreatedAt,
 		Instructions: row.Instructions,
-		Resources:    row.Resources,
 		Approval:     row.Approval,
 	}
 	if row.ProviderID != nil {
