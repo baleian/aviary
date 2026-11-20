@@ -89,8 +89,8 @@ cluster run on. The commands were tested with kind 0.33, Helm 4.3 and
 Docker 29 on Linux.
 
 ```sh
-make cluster-up   # a kind cluster with an NFS volume, PostgreSQL, Valkey,
-                  # an object store and OpenSandbox
+make cluster-up   # a kind cluster with PostgreSQL, Valkey, an object store
+                  # and OpenSandbox
 make images       # builds the images and loads them into the cluster
 make deploy       # installs Aviary with its Helm chart
 ```

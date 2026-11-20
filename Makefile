@@ -1,6 +1,5 @@
 CLUSTER := aviary
 NODE_IMAGE := kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
-NFS_PROVISIONER_CHART := 1.8.0
 CNPG_CHART := 0.29.1
 VALKEY_CHART := 1.0.0
 # OpenSandbox publishes its charts in its repository only, so they are taken
@@ -180,12 +179,6 @@ cluster-up: $(OPENSANDBOX_CHARTS) $(REGISTRY_CERTIFICATE) $(CA)
 		kind create cluster --name $(CLUSTER) --image $(NODE_IMAGE) --config hack/kind/cluster.yaml
 	kind get nodes --name $(CLUSTER) | xargs --max-procs 0 -I {} \
 		sh -c 'docker exec --interactive {} bash -s < hack/kind/sandbox-node.sh'
-	$(HELM) upgrade --install nfs-server-provisioner nfs-server-provisioner \
-		--repo https://kubernetes-sigs.github.io/nfs-ganesha-server-and-external-provisioner \
-		--version $(NFS_PROVISIONER_CHART) \
-		--namespace nfs --create-namespace \
-		--values hack/kind/nfs-server-provisioner-values.yaml \
-		--wait
 	$(KUBECTL) create namespace aviary-data --dry-run=client --output yaml | $(KUBECTL) apply -f -
 ifeq ($(DATABASE),mysql)
 	$(KUBECTL) get secret mysql-users --namespace aviary-data >/dev/null 2>&1 || \
