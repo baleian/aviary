@@ -535,7 +535,7 @@ installs it in the local cluster with a file of values of your own.
 | `runtime.maxConcurrentTurns` | The most turns that run at once. Default 50. |
 | `runtime.maxQueuedTurns` | The most turns that may wait to run. A message beyond it is answered with 429. Default 500, and 0 is no limit. |
 | `runtime.maxQueueWaitSeconds` | How long a turn may wait to run before it ends as expired. Default 120, and 0 is no limit. |
-| `runtime.maxStartupSeconds` | How long a turn may take until its harness has the message, which for the first turn of a session is after its sandbox was made. A turn that takes longer fails, and its sandbox is deleted. Default 90, and 0 is no limit. |
+| `runtime.maxStartupSeconds` | How long a turn may take until its harness has the message, which for the first turn of a session is after its sandbox was made. A turn that takes longer fails, and its sandbox is deleted. Default 120, and 0 is no limit. |
 | `runtime.maxTurnSeconds` | How long a turn may run before it fails and its sandbox is deleted. Default 1800. |
 | `runtime.maxToolOutputBytes` | The longest text of a tool call that the events carry as it is. A longer text is cut. Default 65536, and 0 is no limit. |
 | `runtime.harnesses` | The harnesses that agents can use, each with its image. `sandbox` is the size of the sandbox of a session: its `cpu`, `memory` and `disk`. A release has OpenSandbox build a template for each harness, from the image and that size, when it is installed and when either has changed. OpenSandbox takes the image from its registry without credentials. |

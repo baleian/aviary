@@ -74,7 +74,7 @@ func TestSupervisorSettings(t *testing.T) {
 		"AVIARY_MAX_CONCURRENT_TURNS":      "50",
 		"AVIARY_MAX_QUEUED_TURNS":          "500",
 		"AVIARY_MAX_QUEUE_WAIT_SECONDS":    "120",
-		"AVIARY_MAX_STARTUP_SECONDS":       "90",
+		"AVIARY_MAX_STARTUP_SECONDS":       "120",
 		"AVIARY_MAX_TURN_SECONDS":          "1800",
 		"AVIARY_MAX_TOOL_OUTPUT_BYTES":     "65536",
 	} {

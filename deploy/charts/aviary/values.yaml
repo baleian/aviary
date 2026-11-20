@@ -138,7 +138,7 @@ runtime:
   # takes longer on a node that has not run the template of the harness
   # before. A turn that takes longer fails, and its sandbox is deleted. Zero
   # is no limit.
-  maxStartupSeconds: 90
+  maxStartupSeconds: 120
   # How long a turn may run, from when it left the queue. A turn is
   # everything that an agent does for one message, which can be many
   # requests to the model. A turn that runs longer fails, and its sandbox is
