@@ -3,13 +3,15 @@
 mod support;
 
 use std::fs;
+use std::process::Stdio;
 use std::time::Duration;
 
 use reqwest::StatusCode;
 use serde_json::json;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time;
 
-use support::{Home, Session, ending, names, runner, said, start};
+use support::{Home, PATIENCE, Session, ending, names, runner, said, start};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn turn_events_are_streamed_in_order() {
@@ -198,7 +200,10 @@ async fn harness_error_fails_the_turn() {
 #[tokio::test(flavor = "multi_thread")]
 async fn exited_harness_is_restarted() {
     let home = Home::new();
-    let runner = start(runner(&home)).await;
+    let mut command = runner(&home);
+    command.stderr(Stdio::piped());
+    let mut runner = start(command).await;
+    let mut logged = BufReader::new(runner.child.stderr.take().unwrap()).lines();
 
     // The harness exits mid-turn.
     let died = runner.run("t1", "say going ; die").await;
@@ -211,7 +216,17 @@ async fn exited_harness_is_restarted() {
     // The harness exits between turns.
     let left = runner.run("t3", "say bye ; leave").await;
     assert_eq!(ending(&left).name, "finished");
-    time::sleep(Duration::from_millis(300)).await;
+    let exited = time::timeout(PATIENCE, async {
+        while let Some(line) = logged.next_line().await.unwrap() {
+            if line.contains("harness exited") {
+                return;
+            }
+        }
+        panic!("runner closed stderr without logging that the harness exited");
+    });
+    exited
+        .await
+        .expect("runner did not log that the harness exited");
     let back = runner.run("t4", "say back").await;
     assert_eq!(said(&back), "back", "{back:?}");
     assert_eq!(ending(&back).name, "finished");

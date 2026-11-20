@@ -451,7 +451,6 @@ async fn run_harness(
     );
     let ended = process.wait().fuse();
     futures::pin_mut!(ended);
-    let gone = || agent_client_protocol::Error::internal_error().data("harness exited");
     let cwd = env::current_dir().map_err(Failure::runner)?;
     // Unset or 0 means no limit.
     let longest = env::var(MAX_TOOL_OUTPUT)
@@ -529,7 +528,13 @@ async fn run_harness(
                             Some(order) => order,
                             None => return Ok(()),
                         },
-                        _ = ended => return Err(gone()),
+                        status = ended => {
+                            unready.set(Some(Failure::harness(match status {
+                                Ok(status) => format!("harness exited ({status})"),
+                                Err(error) => format!("wait for harness: {error}"),
+                            })));
+                            return Err(agent_client_protocol::Error::internal_error());
+                        }
                     },
                 };
                 if let Err(failure) = instruct(&start.instructions) {
