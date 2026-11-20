@@ -740,8 +740,8 @@ func originOf(row db.SandboxTurnRow) store.Origin {
 	return origin
 }
 
-func (s *records) StartTurn(ctx context.Context, turnID uuid.UUID, harnessSessionID string) (time.Duration, bool, error) {
-	startup, err := s.queries.StartTurn(ctx, db.StartTurnParams{TurnID: turnID, HarnessSessionID: harnessSessionID})
+func (s *records) StartTurn(ctx context.Context, turnID uuid.UUID) (time.Duration, bool, error) {
+	startup, err := s.queries.StartTurn(ctx, turnID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, nil
 	}

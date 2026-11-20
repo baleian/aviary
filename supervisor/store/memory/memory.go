@@ -51,8 +51,6 @@ type Store struct {
 // session is what the store holds of a session.
 type session struct {
 	store.Session
-	// harness is the harness session that the turns of the session continue.
-	harness *string
 	// turns are the turns of the session, in their order.
 	turns []*turn
 }
@@ -1038,7 +1036,7 @@ func (s *Store) originOf(turn *turn) store.Origin {
 	return origin
 }
 
-func (s *Store) StartTurn(ctx context.Context, turnID uuid.UUID, harnessSessionID string) (time.Duration, bool, error) {
+func (s *Store) StartTurn(ctx context.Context, turnID uuid.UUID) (time.Duration, bool, error) {
 	if err := s.begin(ctx); err != nil {
 		return 0, false, err
 	}
@@ -1048,7 +1046,7 @@ func (s *Store) StartTurn(ctx context.Context, turnID uuid.UUID, harnessSessionI
 		return 0, false, nil
 	}
 	now := s.now()
-	turn.StartedAt, s.sessions[turn.SessionID].harness = &now, &harnessSessionID
+	turn.StartedAt = &now
 	if turn.dispatchedAt == nil {
 		return 0, true, nil
 	}

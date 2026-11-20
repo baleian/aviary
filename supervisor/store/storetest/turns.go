@@ -508,7 +508,7 @@ func (suite suite) testRequeueTurn(t *testing.T) {
 		t.Errorf("the dispatched turns are %+v: %v", dispatched, err)
 	}
 	// What comes late of the dispatch before does nothing to the turn.
-	if _, started, err := st.StartTurn(ctx, first.ID, "harness-session-1"); err != nil || started || st.turn(first.ID).StartedAt != nil {
+	if _, started, err := st.StartTurn(ctx, first.ID); err != nil || started || st.turn(first.ID).StartedAt != nil {
 		t.Errorf("a turn that waits to run started %t: %v", started, err)
 	}
 
@@ -535,7 +535,7 @@ func (suite suite) testRequeueTurn(t *testing.T) {
 	}
 	refused("a turn that waits to run", second.ID)
 	refused("a turn that there is not", uuid.New())
-	if _, _, err := st.StartTurn(ctx, first.ID, "harness-session-1"); err != nil {
+	if _, _, err := st.StartTurn(ctx, first.ID); err != nil {
 		t.Fatal(err)
 	}
 	refused("a turn whose harness has been given the message", first.ID)
@@ -591,7 +591,7 @@ func (suite suite) testSupervisorsRequeueAndStartATurnAtOnce(t *testing.T) {
 			if i == 0 {
 				requeued, err = requeuer.RequeueTurn(ctx, turn)
 			} else {
-				_, started, err = starter.StartTurn(ctx, turn, "harness-session-1")
+				_, started, err = starter.StartTurn(ctx, turn)
 			}
 			if err != nil {
 				t.Error(err)
@@ -706,7 +706,7 @@ func (suite suite) testStartTurn(t *testing.T) {
 	if started := st.turn(dispatch.TurnID).StartedAt; started != nil {
 		t.Fatalf("a turn whose harness has no message yet started at %v", started)
 	}
-	startup, first, err := st.StartTurn(ctx, dispatch.TurnID, "harness-session-1")
+	startup, first, err := st.StartTurn(ctx, dispatch.TurnID)
 	if err != nil || !first || startup < 0 || startup > time.Minute {
 		t.Fatalf("the turn started after %s, for the first time %t: %v", startup, first, err)
 	}
@@ -715,8 +715,8 @@ func (suite suite) testStartTurn(t *testing.T) {
 		t.Fatal("the turn has not started")
 	}
 
-	// A runner that lost its Supervisor reports the start again.
-	if _, first, err := st.StartTurn(ctx, dispatch.TurnID, "harness-session-2"); err != nil || first {
+	// Another Supervisor that follows the turn reads the start again.
+	if _, first, err := st.StartTurn(ctx, dispatch.TurnID); err != nil || first {
 		t.Errorf("the turn started a second time: %v", err)
 	}
 	if again := st.turn(dispatch.TurnID).StartedAt; !again.Equal(*started) {

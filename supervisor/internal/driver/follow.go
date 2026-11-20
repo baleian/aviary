@@ -564,13 +564,7 @@ func (d *Driver) record(ctx context.Context, r *run, event sandbox.Event) (*endi
 	data := event.Data
 	switch event.Name {
 	case "started":
-		var told struct {
-			HarnessSessionID string `json:"harness_session_id"`
-		}
-		if json.Unmarshal(data, &told) != nil || told.HarnessSessionID == "" {
-			return wrong, nil
-		}
-		startup, first, err := d.store.StartTurn(ctx, turn.ID, told.HarnessSessionID)
+		startup, first, err := d.store.StartTurn(ctx, turn.ID)
 		if err != nil {
 			return nil, err
 		}

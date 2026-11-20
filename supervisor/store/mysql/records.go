@@ -936,7 +936,7 @@ func originOf(row db.SandboxTurnRow) store.Origin {
 	return origin
 }
 
-func (s *records) StartTurn(ctx context.Context, turnID uuid.UUID, harnessSessionID string) (time.Duration, bool, error) {
+func (s *records) StartTurn(ctx context.Context, turnID uuid.UUID) (time.Duration, bool, error) {
 	var startup time.Duration
 	var first bool
 	err := s.within(ctx, func(queries *db.Queries) error {
@@ -949,11 +949,6 @@ func (s *records) StartTurn(ctx context.Context, turnID uuid.UUID, harnessSessio
 			return err
 		}
 		if err := queries.StartTurn(ctx, row.ID); err != nil {
-			return err
-		}
-		// The session keeps the harness session, for its next turn to
-		// continue.
-		if err := queries.SetHarnessSession(ctx, db.SetHarnessSessionParams{ID: row.SessionID, HarnessSessionID: &harnessSessionID}); err != nil {
 			return err
 		}
 		took, err := queries.Startup(ctx, row.ID)

@@ -592,12 +592,11 @@ type Store interface {
 	// returns ErrNotFound if no turn runs in the sandbox.
 	SandboxTurn(ctx context.Context, sandbox string) (Origin, error)
 
-	// StartTurn records that the harness of the turn has been given the message,
-	// and the harness session that the turn runs in, for the next turn of the
-	// session to continue. It returns how long the turn took to start, from its
-	// dispatch, and reports false, and records nothing, for a turn that had
-	// started before or that waits to run.
-	StartTurn(ctx context.Context, turnID uuid.UUID, harnessSessionID string) (time.Duration, bool, error)
+	// StartTurn records that the harness of the turn has been given the
+	// message. It returns how long the turn took to start, from its dispatch,
+	// and reports false, and records nothing, for a turn that had started
+	// before or that waits to run.
+	StartTurn(ctx context.Context, turnID uuid.UUID) (time.Duration, bool, error)
 
 	// TurnHarness returns the harness of the agent that the turn belongs to,
 	// or ErrNotFound if there is no such turn.

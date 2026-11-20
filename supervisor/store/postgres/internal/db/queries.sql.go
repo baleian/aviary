@@ -140,7 +140,7 @@ update turns set
        ended_at = case when state = 'queued' then now() end,
        cancel_requested_at = coalesce(cancel_requested_at, now())
 where id = $1 and ended_at is null
-returning id, session_id, seq, state, text, created_at, ended_at, token_hash, stop_reason, dispatched_at, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens, cancel_requested_at, failure_reason, failure_message, started_at, runner_id, created_by
+returning id, session_id, seq, created_by, state, text, created_at, dispatched_at, started_at, cancel_requested_at, ended_at, stop_reason, failure_reason, failure_message, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens
 `
 
 // A queued turn ends at once. A dispatched one is only marked.
@@ -151,25 +151,23 @@ func (q *Queries) CancelTurn(ctx context.Context, id uuid.UUID) (Turn, error) {
 		&i.ID,
 		&i.SessionID,
 		&i.Seq,
+		&i.CreatedBy,
 		&i.State,
 		&i.Text,
 		&i.CreatedAt,
-		&i.EndedAt,
-		&i.TokenHash,
-		&i.StopReason,
 		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CancelRequestedAt,
+		&i.EndedAt,
+		&i.StopReason,
+		&i.FailureReason,
+		&i.FailureMessage,
 		&i.TotalTokens,
 		&i.InputTokens,
 		&i.OutputTokens,
 		&i.ThoughtTokens,
 		&i.CachedReadTokens,
 		&i.CachedWriteTokens,
-		&i.CancelRequestedAt,
-		&i.FailureReason,
-		&i.FailureMessage,
-		&i.StartedAt,
-		&i.RunnerID,
-		&i.CreatedBy,
 	)
 	return i, err
 }
@@ -234,7 +232,7 @@ insert into agents (id, project_id, harness, instructions, approval, provider_id
 select $1::uuid, projects.id, $2::text, $3::text, $4::text,
        $5::uuid, $6::text
 from projects where projects.id = $7
-returning id, project_id, harness, created_at, instructions, resources, approval, provider_id, model
+returning id, project_id, harness, instructions, approval, provider_id, model, created_at
 `
 
 type CreateAgentParams struct {
@@ -262,12 +260,11 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 		&i.ID,
 		&i.ProjectID,
 		&i.Harness,
-		&i.CreatedAt,
 		&i.Instructions,
-		&i.Resources,
 		&i.Approval,
 		&i.ProviderID,
 		&i.Model,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -293,7 +290,7 @@ insert into providers (id, project_id, name, url, api_key, api_key_store_id, api
 select $1::uuid, projects.id, $2::text, $3::text, $4::bytea,
        $5::uuid, $6::text, $7::text
 from projects where projects.id = $8
-returning id, project_id, name, url, api_key, created_at, updated_at, api_key_store_id, api_key_path, api_key_name
+returning id, project_id, name, url, api_key, api_key_store_id, api_key_path, api_key_name, created_at, updated_at
 `
 
 type CreateProviderParams struct {
@@ -325,11 +322,11 @@ func (q *Queries) CreateProvider(ctx context.Context, arg CreateProviderParams) 
 		&i.Name,
 		&i.Url,
 		&i.ApiKey,
-		&i.CreatedAt,
-		&i.UpdatedAt,
 		&i.ApiKeyStoreID,
 		&i.ApiKeyPath,
 		&i.ApiKeyName,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -376,7 +373,7 @@ func (q *Queries) CreateSecretStore(ctx context.Context, arg CreateSecretStorePa
 const createSession = `-- name: CreateSession :one
 insert into sessions (id, agent_id, created_by)
 select $1::uuid, agents.id, $2::uuid from agents where agents.id = $3
-returning id, agent_id, created_at, harness_session_id, created_by, sandbox, ended_at
+returning id, agent_id, created_by, sandbox, created_at, ended_at
 `
 
 type CreateSessionParams struct {
@@ -391,10 +388,9 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 	err := row.Scan(
 		&i.ID,
 		&i.AgentID,
-		&i.CreatedAt,
-		&i.HarnessSessionID,
 		&i.CreatedBy,
 		&i.Sandbox,
+		&i.CreatedAt,
 		&i.EndedAt,
 	)
 	return i, err
@@ -406,7 +402,7 @@ select $1::uuid, sessions.id,
        (select coalesce(max(seq), 0) + 1 from turns where session_id = sessions.id),
        'queued', $2::text, $3::uuid
 from sessions where sessions.id = $4 and sessions.ended_at is null
-returning id, session_id, seq, state, text, created_at, ended_at, token_hash, stop_reason, dispatched_at, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens, cancel_requested_at, failure_reason, failure_message, started_at, runner_id, created_by
+returning id, session_id, seq, created_by, state, text, created_at, dispatched_at, started_at, cancel_requested_at, ended_at, stop_reason, failure_reason, failure_message, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens
 `
 
 type CreateTurnParams struct {
@@ -429,25 +425,23 @@ func (q *Queries) CreateTurn(ctx context.Context, arg CreateTurnParams) (Turn, e
 		&i.ID,
 		&i.SessionID,
 		&i.Seq,
+		&i.CreatedBy,
 		&i.State,
 		&i.Text,
 		&i.CreatedAt,
-		&i.EndedAt,
-		&i.TokenHash,
-		&i.StopReason,
 		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CancelRequestedAt,
+		&i.EndedAt,
+		&i.StopReason,
+		&i.FailureReason,
+		&i.FailureMessage,
 		&i.TotalTokens,
 		&i.InputTokens,
 		&i.OutputTokens,
 		&i.ThoughtTokens,
 		&i.CachedReadTokens,
 		&i.CachedWriteTokens,
-		&i.CancelRequestedAt,
-		&i.FailureReason,
-		&i.FailureMessage,
-		&i.StartedAt,
-		&i.RunnerID,
-		&i.CreatedBy,
 	)
 	return i, err
 }
@@ -514,7 +508,7 @@ const endSession = `-- name: EndSession :one
 update sessions set ended_at = now()
 where sessions.id = $1
   and not exists (select 1 from turns where turns.session_id = sessions.id and turns.ended_at is null)
-returning id, agent_id, created_at, harness_session_id, created_by, sandbox, ended_at
+returning id, agent_id, created_by, sandbox, created_at, ended_at
 `
 
 // A session with a turn that has not ended is left as it is.
@@ -524,10 +518,9 @@ func (q *Queries) EndSession(ctx context.Context, id uuid.UUID) (Session, error)
 	err := row.Scan(
 		&i.ID,
 		&i.AgentID,
-		&i.CreatedAt,
-		&i.HarnessSessionID,
 		&i.CreatedBy,
 		&i.Sandbox,
+		&i.CreatedAt,
 		&i.EndedAt,
 	)
 	return i, err
@@ -548,7 +541,7 @@ update turns set ended_at = now(), state = ending.state,
        failure_message = case when ending.state = 'failed' then nullif($2::text, '') end
 from ending
 where turns.id = $3 and turns.ended_at is null
-returning turns.id, turns.session_id, turns.seq, turns.state, turns.text, turns.created_at, turns.ended_at, turns.token_hash, turns.stop_reason, turns.dispatched_at, turns.total_tokens, turns.input_tokens, turns.output_tokens, turns.thought_tokens, turns.cached_read_tokens, turns.cached_write_tokens, turns.cancel_requested_at, turns.failure_reason, turns.failure_message, turns.started_at, turns.runner_id, turns.created_by
+returning turns.id, turns.session_id, turns.seq, turns.created_by, turns.state, turns.text, turns.created_at, turns.dispatched_at, turns.started_at, turns.cancel_requested_at, turns.ended_at, turns.stop_reason, turns.failure_reason, turns.failure_message, turns.total_tokens, turns.input_tokens, turns.output_tokens, turns.thought_tokens, turns.cached_read_tokens, turns.cached_write_tokens
 `
 
 type EndTurnParams struct {
@@ -573,25 +566,23 @@ func (q *Queries) EndTurn(ctx context.Context, arg EndTurnParams) (Turn, error) 
 		&i.ID,
 		&i.SessionID,
 		&i.Seq,
+		&i.CreatedBy,
 		&i.State,
 		&i.Text,
 		&i.CreatedAt,
-		&i.EndedAt,
-		&i.TokenHash,
-		&i.StopReason,
 		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CancelRequestedAt,
+		&i.EndedAt,
+		&i.StopReason,
+		&i.FailureReason,
+		&i.FailureMessage,
 		&i.TotalTokens,
 		&i.InputTokens,
 		&i.OutputTokens,
 		&i.ThoughtTokens,
 		&i.CachedReadTokens,
 		&i.CachedWriteTokens,
-		&i.CancelRequestedAt,
-		&i.FailureReason,
-		&i.FailureMessage,
-		&i.StartedAt,
-		&i.RunnerID,
-		&i.CreatedBy,
 	)
 	return i, err
 }
@@ -599,7 +590,7 @@ func (q *Queries) EndTurn(ctx context.Context, arg EndTurnParams) (Turn, error) 
 const expireTurns = `-- name: ExpireTurns :many
 update turns set state = 'expired', ended_at = now()
 where state = 'queued' and created_at < now() - make_interval(secs => $1::float8)
-returning id, session_id, seq, state, text, created_at, ended_at, token_hash, stop_reason, dispatched_at, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens, cancel_requested_at, failure_reason, failure_message, started_at, runner_id, created_by
+returning id, session_id, seq, created_by, state, text, created_at, dispatched_at, started_at, cancel_requested_at, ended_at, stop_reason, failure_reason, failure_message, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens
 `
 
 func (q *Queries) ExpireTurns(ctx context.Context, seconds float64) ([]Turn, error) {
@@ -615,25 +606,23 @@ func (q *Queries) ExpireTurns(ctx context.Context, seconds float64) ([]Turn, err
 			&i.ID,
 			&i.SessionID,
 			&i.Seq,
+			&i.CreatedBy,
 			&i.State,
 			&i.Text,
 			&i.CreatedAt,
-			&i.EndedAt,
-			&i.TokenHash,
-			&i.StopReason,
 			&i.DispatchedAt,
+			&i.StartedAt,
+			&i.CancelRequestedAt,
+			&i.EndedAt,
+			&i.StopReason,
+			&i.FailureReason,
+			&i.FailureMessage,
 			&i.TotalTokens,
 			&i.InputTokens,
 			&i.OutputTokens,
 			&i.ThoughtTokens,
 			&i.CachedReadTokens,
 			&i.CachedWriteTokens,
-			&i.CancelRequestedAt,
-			&i.FailureReason,
-			&i.FailureMessage,
-			&i.StartedAt,
-			&i.RunnerID,
-			&i.CreatedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -659,7 +648,7 @@ func (q *Queries) FollowTurn(ctx context.Context, id uuid.UUID) (int64, error) {
 }
 
 const followedTurn = `-- name: FollowedTurn :one
-select turns.id, turns.session_id, turns.seq, turns.state, turns.text, turns.created_at, turns.ended_at, turns.token_hash, turns.stop_reason, turns.dispatched_at, turns.total_tokens, turns.input_tokens, turns.output_tokens, turns.thought_tokens, turns.cached_read_tokens, turns.cached_write_tokens, turns.cancel_requested_at, turns.failure_reason, turns.failure_message, turns.started_at, turns.runner_id, turns.created_by, agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
+select turns.id, turns.session_id, turns.seq, turns.created_by, turns.state, turns.text, turns.created_at, turns.dispatched_at, turns.started_at, turns.cancel_requested_at, turns.ended_at, turns.stop_reason, turns.failure_reason, turns.failure_message, turns.total_tokens, turns.input_tokens, turns.output_tokens, turns.thought_tokens, turns.cached_read_tokens, turns.cached_write_tokens, agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
        agents.approval, coalesce(providers.url, '')::text as provider_url, agents.model, sessions.sandbox,
        extract(epoch from now() - coalesce(turns.dispatched_at, turns.created_at))::float8 as dispatched,
        exists (select 1 from approvals
@@ -698,25 +687,23 @@ func (q *Queries) FollowedTurn(ctx context.Context, id uuid.UUID) (FollowedTurnR
 		&i.Turn.ID,
 		&i.Turn.SessionID,
 		&i.Turn.Seq,
+		&i.Turn.CreatedBy,
 		&i.Turn.State,
 		&i.Turn.Text,
 		&i.Turn.CreatedAt,
-		&i.Turn.EndedAt,
-		&i.Turn.TokenHash,
-		&i.Turn.StopReason,
 		&i.Turn.DispatchedAt,
+		&i.Turn.StartedAt,
+		&i.Turn.CancelRequestedAt,
+		&i.Turn.EndedAt,
+		&i.Turn.StopReason,
+		&i.Turn.FailureReason,
+		&i.Turn.FailureMessage,
 		&i.Turn.TotalTokens,
 		&i.Turn.InputTokens,
 		&i.Turn.OutputTokens,
 		&i.Turn.ThoughtTokens,
 		&i.Turn.CachedReadTokens,
 		&i.Turn.CachedWriteTokens,
-		&i.Turn.CancelRequestedAt,
-		&i.Turn.FailureReason,
-		&i.Turn.FailureMessage,
-		&i.Turn.StartedAt,
-		&i.Turn.RunnerID,
-		&i.Turn.CreatedBy,
 		&i.AgentID,
 		&i.ProjectID,
 		&i.Harness,
@@ -748,7 +735,7 @@ func (q *Queries) FreeUsername(ctx context.Context, arg FreeUsernameParams) erro
 }
 
 const getAgent = `-- name: GetAgent :one
-select id, project_id, harness, created_at, instructions, resources, approval, provider_id, model from agents where id = $1
+select id, project_id, harness, instructions, approval, provider_id, model, created_at from agents where id = $1
 `
 
 func (q *Queries) GetAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
@@ -758,18 +745,17 @@ func (q *Queries) GetAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
 		&i.ID,
 		&i.ProjectID,
 		&i.Harness,
-		&i.CreatedAt,
 		&i.Instructions,
-		&i.Resources,
 		&i.Approval,
 		&i.ProviderID,
 		&i.Model,
+		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const getApproval = `-- name: GetApproval :one
-select turn_id, id, request, requested_at, option_id, answered_at, outcome, resolved_at, answered_by from approvals where turn_id = $1 and id = $2
+select turn_id, id, request, requested_at, option_id, answered_at, answered_by, outcome, resolved_at from approvals where turn_id = $1 and id = $2
 `
 
 type GetApprovalParams struct {
@@ -787,9 +773,9 @@ func (q *Queries) GetApproval(ctx context.Context, arg GetApprovalParams) (Appro
 		&i.RequestedAt,
 		&i.OptionID,
 		&i.AnsweredAt,
+		&i.AnsweredBy,
 		&i.Outcome,
 		&i.ResolvedAt,
-		&i.AnsweredBy,
 	)
 	return i, err
 }
@@ -851,7 +837,7 @@ func (q *Queries) GetProject(ctx context.Context, id uuid.UUID) (Project, error)
 }
 
 const getProvider = `-- name: GetProvider :one
-select id, project_id, name, url, api_key, created_at, updated_at, api_key_store_id, api_key_path, api_key_name from providers where id = $1
+select id, project_id, name, url, api_key, api_key_store_id, api_key_path, api_key_name, created_at, updated_at from providers where id = $1
 `
 
 func (q *Queries) GetProvider(ctx context.Context, id uuid.UUID) (Provider, error) {
@@ -863,11 +849,11 @@ func (q *Queries) GetProvider(ctx context.Context, id uuid.UUID) (Provider, erro
 		&i.Name,
 		&i.Url,
 		&i.ApiKey,
-		&i.CreatedAt,
-		&i.UpdatedAt,
 		&i.ApiKeyStoreID,
 		&i.ApiKeyPath,
 		&i.ApiKeyName,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -893,7 +879,7 @@ func (q *Queries) GetSecretStore(ctx context.Context, id uuid.UUID) (SecretStore
 }
 
 const getSession = `-- name: GetSession :one
-select id, agent_id, created_at, harness_session_id, created_by, sandbox, ended_at from sessions where id = $1
+select id, agent_id, created_by, sandbox, created_at, ended_at from sessions where id = $1
 `
 
 func (q *Queries) GetSession(ctx context.Context, id uuid.UUID) (Session, error) {
@@ -902,17 +888,16 @@ func (q *Queries) GetSession(ctx context.Context, id uuid.UUID) (Session, error)
 	err := row.Scan(
 		&i.ID,
 		&i.AgentID,
-		&i.CreatedAt,
-		&i.HarnessSessionID,
 		&i.CreatedBy,
 		&i.Sandbox,
+		&i.CreatedAt,
 		&i.EndedAt,
 	)
 	return i, err
 }
 
 const getTurn = `-- name: GetTurn :one
-select id, session_id, seq, state, text, created_at, ended_at, token_hash, stop_reason, dispatched_at, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens, cancel_requested_at, failure_reason, failure_message, started_at, runner_id, created_by from turns where id = $1
+select id, session_id, seq, created_by, state, text, created_at, dispatched_at, started_at, cancel_requested_at, ended_at, stop_reason, failure_reason, failure_message, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens from turns where id = $1
 `
 
 func (q *Queries) GetTurn(ctx context.Context, id uuid.UUID) (Turn, error) {
@@ -922,25 +907,23 @@ func (q *Queries) GetTurn(ctx context.Context, id uuid.UUID) (Turn, error) {
 		&i.ID,
 		&i.SessionID,
 		&i.Seq,
+		&i.CreatedBy,
 		&i.State,
 		&i.Text,
 		&i.CreatedAt,
-		&i.EndedAt,
-		&i.TokenHash,
-		&i.StopReason,
 		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CancelRequestedAt,
+		&i.EndedAt,
+		&i.StopReason,
+		&i.FailureReason,
+		&i.FailureMessage,
 		&i.TotalTokens,
 		&i.InputTokens,
 		&i.OutputTokens,
 		&i.ThoughtTokens,
 		&i.CachedReadTokens,
 		&i.CachedWriteTokens,
-		&i.CancelRequestedAt,
-		&i.FailureReason,
-		&i.FailureMessage,
-		&i.StartedAt,
-		&i.RunnerID,
-		&i.CreatedBy,
 	)
 	return i, err
 }
@@ -1014,7 +997,7 @@ func (q *Queries) IsMember(ctx context.Context, arg IsMemberParams) (bool, error
 }
 
 const listAgents = `-- name: ListAgents :many
-select id, project_id, harness, created_at, instructions, resources, approval, provider_id, model from agents where project_id = $1 order by created_at, id
+select id, project_id, harness, instructions, approval, provider_id, model, created_at from agents where project_id = $1 order by created_at, id
 `
 
 func (q *Queries) ListAgents(ctx context.Context, projectID uuid.UUID) ([]Agent, error) {
@@ -1030,12 +1013,11 @@ func (q *Queries) ListAgents(ctx context.Context, projectID uuid.UUID) ([]Agent,
 			&i.ID,
 			&i.ProjectID,
 			&i.Harness,
-			&i.CreatedAt,
 			&i.Instructions,
-			&i.Resources,
 			&i.Approval,
 			&i.ProviderID,
 			&i.Model,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1231,7 +1213,7 @@ func (q *Queries) ListRoles(ctx context.Context) ([]Role, error) {
 }
 
 const listSessions = `-- name: ListSessions :many
-select id, agent_id, created_at, harness_session_id, created_by, sandbox, ended_at from sessions where agent_id = $1 and id < $2 order by id desc limit $3
+select id, agent_id, created_by, sandbox, created_at, ended_at from sessions where agent_id = $1 and id < $2 order by id desc limit $3
 `
 
 type ListSessionsParams struct {
@@ -1254,10 +1236,9 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 		if err := rows.Scan(
 			&i.ID,
 			&i.AgentID,
-			&i.CreatedAt,
-			&i.HarnessSessionID,
 			&i.CreatedBy,
 			&i.Sandbox,
+			&i.CreatedAt,
 			&i.EndedAt,
 		); err != nil {
 			return nil, err
@@ -1271,7 +1252,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 }
 
 const listSessionsOf = `-- name: ListSessionsOf :many
-select id, agent_id, created_at, harness_session_id, created_by, sandbox, ended_at from sessions where agent_id = $1 and created_by = $2::uuid and id < $3
+select id, agent_id, created_by, sandbox, created_at, ended_at from sessions where agent_id = $1 and created_by = $2::uuid and id < $3
 order by id desc limit $4
 `
 
@@ -1300,10 +1281,9 @@ func (q *Queries) ListSessionsOf(ctx context.Context, arg ListSessionsOfParams) 
 		if err := rows.Scan(
 			&i.ID,
 			&i.AgentID,
-			&i.CreatedAt,
-			&i.HarnessSessionID,
 			&i.CreatedBy,
 			&i.Sandbox,
+			&i.CreatedAt,
 			&i.EndedAt,
 		); err != nil {
 			return nil, err
@@ -1346,7 +1326,7 @@ func (q *Queries) ListTurnItems(ctx context.Context, turnIds []uuid.UUID) ([]Lis
 }
 
 const listTurns = `-- name: ListTurns :many
-select id, session_id, seq, state, text, created_at, ended_at, token_hash, stop_reason, dispatched_at, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens, cancel_requested_at, failure_reason, failure_message, started_at, runner_id, created_by from turns where session_id = $1 and seq < $2 order by seq desc limit $3
+select id, session_id, seq, created_by, state, text, created_at, dispatched_at, started_at, cancel_requested_at, ended_at, stop_reason, failure_reason, failure_message, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens from turns where session_id = $1 and seq < $2 order by seq desc limit $3
 `
 
 type ListTurnsParams struct {
@@ -1370,25 +1350,23 @@ func (q *Queries) ListTurns(ctx context.Context, arg ListTurnsParams) ([]Turn, e
 			&i.ID,
 			&i.SessionID,
 			&i.Seq,
+			&i.CreatedBy,
 			&i.State,
 			&i.Text,
 			&i.CreatedAt,
-			&i.EndedAt,
-			&i.TokenHash,
-			&i.StopReason,
 			&i.DispatchedAt,
+			&i.StartedAt,
+			&i.CancelRequestedAt,
+			&i.EndedAt,
+			&i.StopReason,
+			&i.FailureReason,
+			&i.FailureMessage,
 			&i.TotalTokens,
 			&i.InputTokens,
 			&i.OutputTokens,
 			&i.ThoughtTokens,
 			&i.CachedReadTokens,
 			&i.CachedWriteTokens,
-			&i.CancelRequestedAt,
-			&i.FailureReason,
-			&i.FailureMessage,
-			&i.StartedAt,
-			&i.RunnerID,
-			&i.CreatedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -1412,7 +1390,7 @@ func (q *Queries) Lock(ctx context.Context, key int64) error {
 }
 
 const lockSession = `-- name: LockSession :one
-select id, agent_id, created_at, harness_session_id, created_by, sandbox, ended_at from sessions where id = $1 for update
+select id, agent_id, created_by, sandbox, created_at, ended_at from sessions where id = $1 for update
 `
 
 // Holds the session until the transaction ends: no message to it is taken
@@ -1423,10 +1401,9 @@ func (q *Queries) LockSession(ctx context.Context, id uuid.UUID) (Session, error
 	err := row.Scan(
 		&i.ID,
 		&i.AgentID,
-		&i.CreatedAt,
-		&i.HarnessSessionID,
 		&i.CreatedBy,
 		&i.Sandbox,
+		&i.CreatedAt,
 		&i.EndedAt,
 	)
 	return i, err
@@ -1515,7 +1492,7 @@ update providers set name = $1, url = $2, api_key = $3,
        api_key_store_id = $4, api_key_path = $5, api_key_name = $6,
        updated_at = now()
 where id = $7
-returning id, project_id, name, url, api_key, created_at, updated_at, api_key_store_id, api_key_path, api_key_name
+returning id, project_id, name, url, api_key, api_key_store_id, api_key_path, api_key_name, created_at, updated_at
 `
 
 type ReplaceProviderParams struct {
@@ -1547,11 +1524,11 @@ func (q *Queries) ReplaceProvider(ctx context.Context, arg ReplaceProviderParams
 		&i.Name,
 		&i.Url,
 		&i.ApiKey,
-		&i.CreatedAt,
-		&i.UpdatedAt,
 		&i.ApiKeyStoreID,
 		&i.ApiKeyPath,
 		&i.ApiKeyName,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -1844,28 +1821,16 @@ func (q *Queries) SetSandbox(ctx context.Context, arg SetSandboxParams) (int64, 
 }
 
 const startTurn = `-- name: StartTurn :one
-with started as (
-    update turns set started_at = now()
-    where turns.id = $2 and turns.started_at is null and turns.state <> 'queued'
-    returning turns.session_id, coalesce(extract(epoch from now() - turns.dispatched_at), 0)::float8 as startup
-)
-update sessions set harness_session_id = $1::text
-from started
-where sessions.id = started.session_id
-returning started.startup
+update turns set started_at = now()
+where id = $1 and started_at is null and state <> 'queued'
+returning coalesce(extract(epoch from now() - dispatched_at), 0)::float8 as startup
 `
 
-type StartTurnParams struct {
-	HarnessSessionID string
-	TurnID           uuid.UUID
-}
-
-// The harness of the turn has been given the message. The session keeps the
-// harness session, for its next turn to continue. The answer is how long the
-// turn took to start. There is none for a turn that had started before, or
-// that waits to run.
-func (q *Queries) StartTurn(ctx context.Context, arg StartTurnParams) (float64, error) {
-	row := q.db.QueryRow(ctx, startTurn, arg.HarnessSessionID, arg.TurnID)
+// The harness of the turn has been given the message. The answer is how long
+// the turn took to start. There is none for a turn that had started before,
+// or that waits to run.
+func (q *Queries) StartTurn(ctx context.Context, turnID uuid.UUID) (float64, error) {
+	row := q.db.QueryRow(ctx, startTurn, turnID)
 	var startup float64
 	err := row.Scan(&startup)
 	return startup, err

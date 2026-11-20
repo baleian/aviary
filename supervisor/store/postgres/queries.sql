@@ -96,19 +96,12 @@ where id = @id
 returning *;
 
 -- name: StartTurn :one
--- The harness of the turn has been given the message. The session keeps the
--- harness session, for its next turn to continue. The answer is how long the
--- turn took to start. There is none for a turn that had started before, or
--- that waits to run.
-with started as (
-    update turns set started_at = now()
-    where turns.id = @turn_id and turns.started_at is null and turns.state <> 'queued'
-    returning turns.session_id, coalesce(extract(epoch from now() - turns.dispatched_at), 0)::float8 as startup
-)
-update sessions set harness_session_id = @harness_session_id::text
-from started
-where sessions.id = started.session_id
-returning started.startup;
+-- The harness of the turn has been given the message. The answer is how long
+-- the turn took to start. There is none for a turn that had started before,
+-- or that waits to run.
+update turns set started_at = now()
+where id = @turn_id and started_at is null and state <> 'queued'
+returning coalesce(extract(epoch from now() - dispatched_at), 0)::float8 as startup;
 
 -- name: Lock :exec
 -- Waits for the advisory lock of the key and holds it until the transaction

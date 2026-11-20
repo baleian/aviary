@@ -588,14 +588,6 @@ func TestWhatARunnerTellsIsNotTakenAtItsWord(t *testing.T) {
 	if told := i.told(turn.ID); !slices.Equal(told, []string{events.TurnStarted, "message.delta", events.TurnFailed}) {
 		t.Errorf("the clients of the turn read %v", told)
 	}
-
-	// A turn that starts without a harness session cannot be continued.
-	next := i.send(driver, session, "and then")
-	again := i.service.Turn(t)
-	again.Tell("started", map[string]string{})
-	if ended := i.ended(next.ID); !failed(ended, store.FailureRunner) || !strings.Contains(ended.Failure.Message, `"started"`) {
-		t.Errorf("the turn ended as %+v, %+v", ended, ended.Failure)
-	}
 }
 
 func TestASessionThatSleepsIsWokenForItsNextTurn(t *testing.T) {

@@ -198,9 +198,6 @@ where sessions.sandbox = ? and turns.state = 'running';
 -- name: StartTurn :exec
 update turns set started_at = now(6) where id = ?;
 
--- name: SetHarnessSession :exec
-update sessions set harness_session_id = sqlc.arg(harness_session_id) where id = sqlc.arg(id);
-
 -- name: Startup :one
 -- How long the turn took to start, in microseconds.
 select cast(coalesce(timestampdiff(microsecond, dispatched_at, started_at), 0) as signed) as startup from turns where id = ?;

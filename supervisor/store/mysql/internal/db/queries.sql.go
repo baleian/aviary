@@ -531,7 +531,7 @@ func (q *Queries) FollowTurn(ctx context.Context, id key.ID) error {
 }
 
 const followedTurn = `-- name: FollowedTurn :one
-select turns.id, turns.session_id, turns.seq, turns.state, turns.text, turns.created_at, turns.dispatched_at, turns.started_at, turns.cancel_requested_at, turns.ended_at, turns.token_hash, turns.runner_id, turns.stop_reason, turns.failure_reason, turns.failure_message, turns.total_tokens, turns.input_tokens, turns.output_tokens, turns.thought_tokens, turns.cached_read_tokens, turns.cached_write_tokens, turns.created_by, agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
+select turns.id, turns.session_id, turns.seq, turns.created_by, turns.state, turns.text, turns.created_at, turns.dispatched_at, turns.started_at, turns.cancel_requested_at, turns.ended_at, turns.stop_reason, turns.failure_reason, turns.failure_message, turns.total_tokens, turns.input_tokens, turns.output_tokens, turns.thought_tokens, turns.cached_read_tokens, turns.cached_write_tokens, agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
        agents.approval, coalesce(providers.url, '') as provider_url, agents.model, sessions.sandbox,
        cast(timestampdiff(microsecond, coalesce(turns.dispatched_at, turns.created_at), now(6)) as signed) as dispatched,
        exists (select 1 from approvals where approvals.turn_id = turns.id and approvals.resolved_at is null) as waiting,
@@ -569,6 +569,7 @@ func (q *Queries) FollowedTurn(ctx context.Context, id key.ID) (FollowedTurnRow,
 		&i.Turn.ID,
 		&i.Turn.SessionID,
 		&i.Turn.Seq,
+		&i.Turn.CreatedBy,
 		&i.Turn.State,
 		&i.Turn.Text,
 		&i.Turn.CreatedAt,
@@ -576,8 +577,6 @@ func (q *Queries) FollowedTurn(ctx context.Context, id key.ID) (FollowedTurnRow,
 		&i.Turn.StartedAt,
 		&i.Turn.CancelRequestedAt,
 		&i.Turn.EndedAt,
-		&i.Turn.TokenHash,
-		&i.Turn.RunnerID,
 		&i.Turn.StopReason,
 		&i.Turn.FailureReason,
 		&i.Turn.FailureMessage,
@@ -587,7 +586,6 @@ func (q *Queries) FollowedTurn(ctx context.Context, id key.ID) (FollowedTurnRow,
 		&i.Turn.ThoughtTokens,
 		&i.Turn.CachedReadTokens,
 		&i.Turn.CachedWriteTokens,
-		&i.Turn.CreatedBy,
 		&i.AgentID,
 		&i.ProjectID,
 		&i.Harness,
@@ -619,7 +617,7 @@ func (q *Queries) FreeUsername(ctx context.Context, arg FreeUsernameParams) erro
 }
 
 const getAgent = `-- name: GetAgent :one
-select id, project_id, harness, instructions, resources, approval, provider_id, model, created_at from agents where id = ?
+select id, project_id, harness, instructions, approval, provider_id, model, created_at from agents where id = ?
 `
 
 func (q *Queries) GetAgent(ctx context.Context, id key.ID) (Agent, error) {
@@ -630,7 +628,6 @@ func (q *Queries) GetAgent(ctx context.Context, id key.ID) (Agent, error) {
 		&i.ProjectID,
 		&i.Harness,
 		&i.Instructions,
-		&i.Resources,
 		&i.Approval,
 		&i.ProviderID,
 		&i.Model,
@@ -640,7 +637,7 @@ func (q *Queries) GetAgent(ctx context.Context, id key.ID) (Agent, error) {
 }
 
 const getApproval = `-- name: GetApproval :one
-select turn_id, id, request, requested_at, option_id, answered_at, outcome, resolved_at, answered_by from approvals where turn_id = ? and id = ?
+select turn_id, id, request, requested_at, option_id, answered_at, answered_by, outcome, resolved_at from approvals where turn_id = ? and id = ?
 `
 
 type GetApprovalParams struct {
@@ -658,9 +655,9 @@ func (q *Queries) GetApproval(ctx context.Context, arg GetApprovalParams) (Appro
 		&i.RequestedAt,
 		&i.OptionID,
 		&i.AnsweredAt,
+		&i.AnsweredBy,
 		&i.Outcome,
 		&i.ResolvedAt,
-		&i.AnsweredBy,
 	)
 	return i, err
 }
@@ -780,7 +777,7 @@ func (q *Queries) GetSecretStore(ctx context.Context, id key.ID) (SecretStore, e
 }
 
 const getSession = `-- name: GetSession :one
-select id, agent_id, harness_session_id, created_at, created_by, sandbox, ended_at from sessions where id = ?
+select id, agent_id, created_by, sandbox, created_at, ended_at from sessions where id = ?
 `
 
 func (q *Queries) GetSession(ctx context.Context, id key.ID) (Session, error) {
@@ -789,17 +786,16 @@ func (q *Queries) GetSession(ctx context.Context, id key.ID) (Session, error) {
 	err := row.Scan(
 		&i.ID,
 		&i.AgentID,
-		&i.HarnessSessionID,
-		&i.CreatedAt,
 		&i.CreatedBy,
 		&i.Sandbox,
+		&i.CreatedAt,
 		&i.EndedAt,
 	)
 	return i, err
 }
 
 const getTurn = `-- name: GetTurn :one
-select id, session_id, seq, state, text, created_at, dispatched_at, started_at, cancel_requested_at, ended_at, token_hash, runner_id, stop_reason, failure_reason, failure_message, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens, created_by from turns where id = ?
+select id, session_id, seq, created_by, state, text, created_at, dispatched_at, started_at, cancel_requested_at, ended_at, stop_reason, failure_reason, failure_message, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens from turns where id = ?
 `
 
 func (q *Queries) GetTurn(ctx context.Context, id key.ID) (Turn, error) {
@@ -809,6 +805,7 @@ func (q *Queries) GetTurn(ctx context.Context, id key.ID) (Turn, error) {
 		&i.ID,
 		&i.SessionID,
 		&i.Seq,
+		&i.CreatedBy,
 		&i.State,
 		&i.Text,
 		&i.CreatedAt,
@@ -816,8 +813,6 @@ func (q *Queries) GetTurn(ctx context.Context, id key.ID) (Turn, error) {
 		&i.StartedAt,
 		&i.CancelRequestedAt,
 		&i.EndedAt,
-		&i.TokenHash,
-		&i.RunnerID,
 		&i.StopReason,
 		&i.FailureReason,
 		&i.FailureMessage,
@@ -827,7 +822,6 @@ func (q *Queries) GetTurn(ctx context.Context, id key.ID) (Turn, error) {
 		&i.ThoughtTokens,
 		&i.CachedReadTokens,
 		&i.CachedWriteTokens,
-		&i.CreatedBy,
 	)
 	return i, err
 }
@@ -898,7 +892,7 @@ func (q *Queries) IsSessionBusy(ctx context.Context, sessionID key.ID) (bool, er
 }
 
 const listAgents = `-- name: ListAgents :many
-select id, project_id, harness, instructions, resources, approval, provider_id, model, created_at from agents where project_id = ? order by created_at, id
+select id, project_id, harness, instructions, approval, provider_id, model, created_at from agents where project_id = ? order by created_at, id
 `
 
 func (q *Queries) ListAgents(ctx context.Context, projectID key.ID) ([]Agent, error) {
@@ -915,7 +909,6 @@ func (q *Queries) ListAgents(ctx context.Context, projectID key.ID) ([]Agent, er
 			&i.ProjectID,
 			&i.Harness,
 			&i.Instructions,
-			&i.Resources,
 			&i.Approval,
 			&i.ProviderID,
 			&i.Model,
@@ -1156,7 +1149,7 @@ func (q *Queries) ListRoles(ctx context.Context) ([]Role, error) {
 }
 
 const listSessions = `-- name: ListSessions :many
-select id, agent_id, harness_session_id, created_at, created_by, sandbox, ended_at from sessions where agent_id = ? and id < ? order by id desc limit ?
+select id, agent_id, created_by, sandbox, created_at, ended_at from sessions where agent_id = ? and id < ? order by id desc limit ?
 `
 
 type ListSessionsParams struct {
@@ -1179,10 +1172,9 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 		if err := rows.Scan(
 			&i.ID,
 			&i.AgentID,
-			&i.HarnessSessionID,
-			&i.CreatedAt,
 			&i.CreatedBy,
 			&i.Sandbox,
+			&i.CreatedAt,
 			&i.EndedAt,
 		); err != nil {
 			return nil, err
@@ -1199,7 +1191,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 }
 
 const listSessionsOf = `-- name: ListSessionsOf :many
-select id, agent_id, harness_session_id, created_at, created_by, sandbox, ended_at from sessions
+select id, agent_id, created_by, sandbox, created_at, ended_at from sessions
 where agent_id = ? and created_by = ? and id < ?
 order by id desc limit ?
 `
@@ -1229,10 +1221,9 @@ func (q *Queries) ListSessionsOf(ctx context.Context, arg ListSessionsOfParams) 
 		if err := rows.Scan(
 			&i.ID,
 			&i.AgentID,
-			&i.HarnessSessionID,
-			&i.CreatedAt,
 			&i.CreatedBy,
 			&i.Sandbox,
+			&i.CreatedAt,
 			&i.EndedAt,
 		); err != nil {
 			return nil, err
@@ -1291,7 +1282,7 @@ func (q *Queries) ListTurnItems(ctx context.Context, turnIds []key.ID) ([]ListTu
 }
 
 const listTurns = `-- name: ListTurns :many
-select id, session_id, seq, state, text, created_at, dispatched_at, started_at, cancel_requested_at, ended_at, token_hash, runner_id, stop_reason, failure_reason, failure_message, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens, created_by from turns where session_id = ? and seq < ? order by seq desc limit ?
+select id, session_id, seq, created_by, state, text, created_at, dispatched_at, started_at, cancel_requested_at, ended_at, stop_reason, failure_reason, failure_message, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens from turns where session_id = ? and seq < ? order by seq desc limit ?
 `
 
 type ListTurnsParams struct {
@@ -1315,6 +1306,7 @@ func (q *Queries) ListTurns(ctx context.Context, arg ListTurnsParams) ([]Turn, e
 			&i.ID,
 			&i.SessionID,
 			&i.Seq,
+			&i.CreatedBy,
 			&i.State,
 			&i.Text,
 			&i.CreatedAt,
@@ -1322,8 +1314,6 @@ func (q *Queries) ListTurns(ctx context.Context, arg ListTurnsParams) ([]Turn, e
 			&i.StartedAt,
 			&i.CancelRequestedAt,
 			&i.EndedAt,
-			&i.TokenHash,
-			&i.RunnerID,
 			&i.StopReason,
 			&i.FailureReason,
 			&i.FailureMessage,
@@ -1333,7 +1323,6 @@ func (q *Queries) ListTurns(ctx context.Context, arg ListTurnsParams) ([]Turn, e
 			&i.ThoughtTokens,
 			&i.CachedReadTokens,
 			&i.CachedWriteTokens,
-			&i.CreatedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -1362,7 +1351,7 @@ func (q *Queries) Lock(ctx context.Context, name string) (string, error) {
 }
 
 const lockSession = `-- name: LockSession :one
-select id, agent_id, harness_session_id, created_at, created_by, sandbox, ended_at from sessions where id = ? for update
+select id, agent_id, created_by, sandbox, created_at, ended_at from sessions where id = ? for update
 `
 
 // Holds the session until the transaction ends: the messages that reach a
@@ -1374,17 +1363,16 @@ func (q *Queries) LockSession(ctx context.Context, id key.ID) (Session, error) {
 	err := row.Scan(
 		&i.ID,
 		&i.AgentID,
-		&i.HarnessSessionID,
-		&i.CreatedAt,
 		&i.CreatedBy,
 		&i.Sandbox,
+		&i.CreatedAt,
 		&i.EndedAt,
 	)
 	return i, err
 }
 
 const lockTurn = `-- name: LockTurn :one
-select id, session_id, seq, state, text, created_at, dispatched_at, started_at, cancel_requested_at, ended_at, token_hash, runner_id, stop_reason, failure_reason, failure_message, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens, created_by from turns where id = ? for update
+select id, session_id, seq, created_by, state, text, created_at, dispatched_at, started_at, cancel_requested_at, ended_at, stop_reason, failure_reason, failure_message, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens from turns where id = ? for update
 `
 
 // Holds the turn until the transaction ends: what is done to a turn at once
@@ -1396,6 +1384,7 @@ func (q *Queries) LockTurn(ctx context.Context, id key.ID) (Turn, error) {
 		&i.ID,
 		&i.SessionID,
 		&i.Seq,
+		&i.CreatedBy,
 		&i.State,
 		&i.Text,
 		&i.CreatedAt,
@@ -1403,8 +1392,6 @@ func (q *Queries) LockTurn(ctx context.Context, id key.ID) (Turn, error) {
 		&i.StartedAt,
 		&i.CancelRequestedAt,
 		&i.EndedAt,
-		&i.TokenHash,
-		&i.RunnerID,
 		&i.StopReason,
 		&i.FailureReason,
 		&i.FailureMessage,
@@ -1414,7 +1401,6 @@ func (q *Queries) LockTurn(ctx context.Context, id key.ID) (Turn, error) {
 		&i.ThoughtTokens,
 		&i.CachedReadTokens,
 		&i.CachedWriteTokens,
-		&i.CreatedBy,
 	)
 	return i, err
 }
@@ -1735,20 +1721,6 @@ func (q *Queries) SetFinished(ctx context.Context, arg SetFinishedParams) error 
 		arg.CachedWriteTokens,
 		arg.ID,
 	)
-	return err
-}
-
-const setHarnessSession = `-- name: SetHarnessSession :exec
-update sessions set harness_session_id = ? where id = ?
-`
-
-type SetHarnessSessionParams struct {
-	HarnessSessionID *string
-	ID               key.ID
-}
-
-func (q *Queries) SetHarnessSession(ctx context.Context, arg SetHarnessSessionParams) error {
-	_, err := q.db.ExecContext(ctx, setHarnessSession, arg.HarnessSessionID, arg.ID)
 	return err
 }
 
