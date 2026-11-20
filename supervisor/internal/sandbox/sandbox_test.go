@@ -63,8 +63,17 @@ func TestTheSandboxOfASessionIsMadeWithItsVolume(t *testing.T) {
 		t.Errorf("the sandbox and its pod are labelled %v and %v", made.Labels, made.Spec.PodTemplate.ObjectMeta.Labels)
 	}
 	pod := made.Spec.PodTemplate.Spec
-	if *pod.AutomountServiceAccountToken || *pod.EnableServiceLinks || *pod.SecurityContext.FSGroup != agentUser {
-		t.Errorf("the pod is %+v, with %+v", pod, pod.SecurityContext)
+	if *pod.AutomountServiceAccountToken || *pod.EnableServiceLinks {
+		t.Errorf("the pod is %+v", pod)
+	}
+	// The agent is not root and cannot become root.
+	if who := pod.SecurityContext; !*who.RunAsNonRoot || *who.RunAsUser != agentUser || *who.RunAsGroup != agentUser ||
+		*who.FSGroup != agentUser || *who.FSGroupChangePolicy != corev1.FSGroupChangeOnRootMismatch ||
+		who.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Errorf("the pod runs as %+v", who)
+	}
+	if may := pod.Containers[0].SecurityContext; *may.AllowPrivilegeEscalation || !slices.Equal(may.Capabilities.Drop, []corev1.Capability{"ALL"}) {
+		t.Errorf("the harness may %+v", may)
 	}
 	harness := pod.Containers[0]
 	if harness.Image != opencode.Harness.Image || !slices.Equal(harness.Command, []string{"aviary-session"}) ||

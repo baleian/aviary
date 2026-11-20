@@ -162,8 +162,9 @@ impl Bench {
     }
 
     /// Starts a session: a container of the harness image that runs what
-    /// the sandbox of a session runs, as root and in / as the sandbox does,
-    /// with a volume of its own as its home.
+    /// the sandbox of a session runs, as the sandbox does: as the user of the
+    /// agent, who cannot become root, in /, with a volume of its own as its
+    /// home.
     async fn session(&self) -> Sitting {
         let home = self.next("home");
         docker(&["volume", "create", "--label", &self.label(), &home]).await;
@@ -191,7 +192,11 @@ impl Bench {
             "--network",
             &self.name,
             "--user",
-            "0:0",
+            "10000:10000",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
             "--workdir",
             "/",
             "--volume",
@@ -668,30 +673,34 @@ async fn a_session_goes_on_in_another_pod_with_its_home() {
     .await;
 }
 
-/// The sandbox of a session is what keeps the agent in. Inside it the agent
-/// is a user like one at a machine of their own, who may become root to
-/// install what the work needs.
+/// The agent is a user who cannot become root, as in a restricted namespace.
+/// What it installs for itself with npm goes to its home, which outlives the
+/// pod.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
-async fn an_agent_is_a_user_who_may_become_root() {
+async fn an_agent_is_a_user_who_installs_into_its_home() {
     each(|bench| async move {
         let session = bench.session().await;
         let who = session
-            .say("run echo I am $(id -un) in $(pwd) with the home $HOME")
+            .say("run echo I am $(id -un) in $(pwd) with the home $HOME, and npm installs into $(npm config get prefix)")
             .await;
         who.completed();
         let told = tools(&who.events);
         assert!(
-            told.contains("I am agent in /home/workspace with the home /home"),
+            told.contains("I am agent in /home/workspace with the home /home, and npm installs into /home/.local"),
             "{}: {told}",
             who.image
         );
         let root = session
-            .say("run sudo -n sh -c 'echo I am now $(id -un)'")
+            .say("run sudo -n true || echo nobody becomes root here")
             .await;
         root.completed();
         let told = tools(&root.events);
-        assert!(told.contains("I am now root"), "{}: {told}", root.image);
+        assert!(
+            told.contains("nobody becomes root here"),
+            "{}: {told}",
+            root.image
+        );
     })
     .await;
 }

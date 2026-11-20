@@ -259,9 +259,18 @@ func (c *Client) pod(ctx context.Context, pod Pod) (corev1.PodSpec, error) {
 		// The pod has nothing to ask the cluster.
 		AutomountServiceAccountToken: new(false),
 		EnableServiceLinks:           new(false),
+		// The agent runs as a user who cannot become root, with what a
+		// restricted namespace allows and no more.
 		SecurityContext: &corev1.PodSecurityContext{
-			// The agent can write to the volume, which is made for root.
-			FSGroup: new(int64(agentUser)),
+			RunAsNonRoot: new(true),
+			RunAsUser:    new(int64(agentUser)),
+			RunAsGroup:   new(int64(agentUser)),
+			// The agent can write to the volume, which is made for root. Its
+			// files are not gone through at every start, which takes long for
+			// a home of many files.
+			FSGroup:             new(int64(agentUser)),
+			FSGroupChangePolicy: new(corev1.FSGroupChangeOnRootMismatch),
+			SeccompProfile:      &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 		},
 		Containers: []corev1.Container{{
 			Name:      "harness",
@@ -269,7 +278,11 @@ func (c *Client) pod(ctx context.Context, pod Pod) (corev1.PodSpec, error) {
 			Command:   session,
 			Resources: pod.Harness.Resources,
 			Env:       env,
-			Ports:     []corev1.ContainerPort{{Name: "runner", ContainerPort: RunnerPort}},
+			SecurityContext: &corev1.SecurityContext{
+				AllowPrivilegeEscalation: new(false),
+				Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+			},
+			Ports: []corev1.ContainerPort{{Name: "runner", ContainerPort: RunnerPort}},
 			// The sandbox runs once its runner listens.
 			ReadinessProbe: &corev1.Probe{
 				ProbeHandler:  corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(RunnerPort)}},

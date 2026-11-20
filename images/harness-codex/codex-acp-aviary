@@ -8,8 +8,8 @@ CODEX_CONFIG=$(jq --null-input --compact-output \
 export CODEX_CONFIG
 # An agent that is to ask runs Codex in the mode in which it changes nothing
 # and fetches nothing unasked. Codex keeps the commands of that mode in its
-# own sandbox, so what is to change something only runs once the model has
-# asked for it to run outside that sandbox and a person has agreed.
+# sandbox, which does not start in a pod, so a command only runs once the
+# model has asked for it to run outside the sandbox and a person has agreed.
 if [ "${AVIARY_APPROVAL:-}" = ask ]; then
   export INITIAL_AGENT_MODE=read-only
 fi

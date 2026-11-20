@@ -340,8 +340,8 @@ func TestSupervisorEncryptionKeys(t *testing.T) {
 
 // A sandbox connects to the Egress Proxy and to nothing else: not even to
 // the cluster's DNS, which can carry data out. Only the Supervisors connect
-// to it, at its runner. Its namespace stays when the chart is uninstalled,
-// with the sessions in it.
+// to it, at its runner. Its namespace is restricted, and stays when the
+// chart is uninstalled, with the sessions in it.
 func TestSandboxesAreCutOff(t *testing.T) {
 	objects, _ := chart(t, "default")
 	policy := at(find(objects, "NetworkPolicy", "aviary-sandboxes"), "spec")
@@ -363,8 +363,10 @@ func TestSandboxesAreCutOff(t *testing.T) {
 		!reflect.DeepEqual(at(out[0], "ports"), []any{map[string]any{"protocol": "TCP", "port": 8080}, map[string]any{"protocol": "TCP", "port": 3128}}) {
 		t.Errorf("a sandbox may connect to %v", out)
 	}
+	// Kubernetes holds the sandboxes to what a restricted namespace allows.
 	namespace := find(objects, "Namespace", "aviary-runtime")
-	if at(namespace, "metadata", "annotations", "helm.sh/resource-policy") != "keep" {
+	if at(namespace, "metadata", "annotations", "helm.sh/resource-policy") != "keep" ||
+		at(namespace, "metadata", "labels", "pod-security.kubernetes.io/enforce") != "restricted" {
 		t.Errorf("the namespace of the sandboxes is %v", namespace)
 	}
 }

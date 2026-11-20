@@ -1,29 +1,14 @@
 #!/bin/sh
 # What the sandbox of a session runs, which is the runner. A sandbox starts
-# it as root, in /. The runner and the harness run as the user of the agent,
-# in the workspace of the session.
+# it as the user of the agent, in /. The runner and the harness run in the
+# workspace of the session.
 set -eu
-# A connection that is open when the sandbox is put to sleep is dead when it
-# is woken, and nothing says so: what is sent on it is not answered. The
-# kernel gives such a connection up after half a minute with this, and after
-# a quarter of an hour without. Where the setting cannot be written, the
-# session is in no sandbox that sleeps.
-{ echo 6 > /proc/sys/net/ipv4/tcp_retries2; } 2>/dev/null || true
-# A sandbox has the clock of the machine that runs it to set its own by.
-# Without, its clock is that of when its template was built, and falls
-# behind while it sleeps: a certificate looks as if it were not valid yet.
-# The clock is set whenever it is off by a tenth of a second, which it is
-# at once when the sandbox has been woken.
-if [ -e /dev/ptp0 ]; then
-	phc2sys -s /dev/ptp0 -c CLOCK_REALTIME -O 0 -S 0.1 -R 4 -m -q -l 3 < /dev/null &
-fi
-# sudo looks the name of the machine up, which a sandbox does not have in
-# its hosts file.
-name=$(cat /proc/sys/kernel/hostname)
-grep -qw "$name" /etc/hosts || echo "127.0.0.1 $name" >> /etc/hosts || true
 # The home is the volume of the session, which has no workspace yet when the
 # session is new.
-install --owner agent --group agent --directory /home/workspace
+mkdir -p /home/workspace
 cd /home/workspace
 export HOME=/home
-exec setpriv --reuid agent --regid agent --init-groups aviary-runner
+# What the agent installs with npm for itself goes to its home, which
+# outlives the pod, and the programs of it are found there.
+export NPM_CONFIG_PREFIX=/home/.local PATH="/home/.local/bin:$PATH"
+exec aviary-runner
