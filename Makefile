@@ -7,12 +7,6 @@ VALKEY_CHART := 1.0.0
 AGENT_SANDBOX := v1.0.11
 AGENT_SANDBOX_SHA256 := 4c54dc1284e9d34e9a00b88de2cb0f098f2dbce4ade814616fd49d44cfd5d1c2
 AGENT_SANDBOX_MANIFEST := .out/agent-sandbox-$(AGENT_SANDBOX).yaml
-# The model server of the e2e answers over TLS with a certificate of this CA.
-# The local clusters share them.
-CA := .out/ca/ca.crt
-CA_KEY := .out/ca/ca.key
-MOCK_LLM := mock-llm.aviary-e2e.svc.cluster.local
-MOCK_LLM_CERTIFICATE := .out/mock-llm/tls.crt
 GO_IMAGE := golang:1.27.4-trixie@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9
 SQLC_IMAGE := sqlc/sqlc:1.31.1@sha256:70f53171d27b2424e9358869975455a6e955a5aa8e58a998a270a6e34e525537
 
@@ -170,20 +164,6 @@ $(AGENT_SANDBOX_MANIFEST):
 	echo "$(AGENT_SANDBOX_SHA256)  $@.new" | sha256sum --check --quiet
 	mv $@.new $@
 
-$(CA):
-	mkdir -p $(@D)
-	openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=CA of the local clusters" \
-		-addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign" \
-		-keyout $(CA_KEY) -out $@
-
-# A certificate of the CA for the name, with its key beside it.
-CERTIFY = mkdir -p $(@D) && openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-	-subj "/CN=$(1)" -addext "subjectAltName=DNS:$(1)" -CA $(CA) -CAkey $(CA_KEY) \
-	-keyout $(@D)/tls.key -out $@
-
-$(MOCK_LLM_CERTIFICATE): $(CA)
-	$(call CERTIFY,$(MOCK_LLM))
-
 cluster-up: $(AGENT_SANDBOX_MANIFEST)
 	kind get clusters 2>/dev/null | grep -qx $(CLUSTER) || \
 		kind create cluster --name $(CLUSTER) --image $(NODE_IMAGE) --config hack/kind/cluster.yaml
@@ -295,14 +275,8 @@ e2e: e2e-up
 	$(MAKE) e2e-run
 	$(MAKE) e2e-down
 
-# The model server of the e2e answers over HTTPS with its certificate, which
-# is in a secret beside it.
-e2e-up: $(MOCK_LLM_CERTIFICATE)
+e2e-up:
 	$(MAKE) cluster-down cluster-up secret-store $(if $(IDENTITY),identity-provider) images secrets CLUSTER=$(E2E_CLUSTER)
-	$(E2E_KUBECTL) create namespace aviary-e2e --dry-run=client --output yaml | $(E2E_KUBECTL) apply -f -
-	$(E2E_KUBECTL) create secret tls mock-llm-tls --namespace aviary-e2e \
-		--cert $(MOCK_LLM_CERTIFICATE) --key $(dir $(MOCK_LLM_CERTIFICATE))tls.key --dry-run=client --output yaml | \
-		$(E2E_KUBECTL) apply -f -
 	$(E2E_KUBECTL) apply --filename test/e2e/mock-llm.yaml --filename test/e2e/api.yaml
 	helm --kube-context kind-$(E2E_CLUSTER) upgrade --install aviary deploy/charts/aviary \
 		--namespace aviary-system --values test/e2e/values.yaml \
@@ -313,19 +287,18 @@ e2e-up: $(MOCK_LLM_CERTIFICATE)
 # Aviary at the port of a node that test/e2e/api.yaml opens. In a cluster
 # that was made with an identity provider, they are run with it too:
 # make e2e-run E2E_CLUSTER=aviary-e2e-mysql IDENTITY=keycloak
-# No more tests run at once than the pool of the local cluster has room for
-# the sandboxes of their sessions. Beyond that, their turns wait for room and
-# expire.
 e2e-run:
 	mkdir -p $(E2E_OUT)
 	kind get kubeconfig --internal --name $(E2E_CLUSTER) > $(E2E_OUT)/kubeconfig
 	$(call GO,test,--network kind --env AVIARY_E2E_KUBECONFIG=/src/$(E2E_OUT)/kubeconfig \
 		--env AVIARY_E2E_API=http://$(E2E_CLUSTER)-control-plane:30080 \
 		--env AVIARY_E2E_IDENTITY=$(IDENTITY) \
-		--env AVIARY_E2E_HARNESSES="$(E2E_HARNESSES)") test -count=1 -parallel 5 -timeout 20m -v ./e2e/... $(TESTS); \
+		--env AVIARY_E2E_HARNESSES="$(E2E_HARNESSES)") test -count=1 -timeout 20m -v ./e2e/... $(TESTS); \
 		status=$$?; [ $$status = 0 ] || { \
-			$(E2E_KUBECTL) --namespace aviary-system logs --selector app.kubernetes.io/component=supervisor \
-				--prefix --tail -1 > $(E2E_OUT)/supervisor.log 2>&1; \
+			for part in supervisor egress-proxy; do \
+				$(E2E_KUBECTL) --namespace aviary-system logs --selector app.kubernetes.io/component=$$part \
+					--prefix --tail -1 > $(E2E_OUT)/$$part.log 2>&1; \
+			done; \
 			$(E2E_KUBECTL) --namespace agent-sandbox-system logs deployment/agent-sandbox-controller \
 				--tail -1 > $(E2E_OUT)/agent-sandbox.log 2>&1; \
 			$(E2E_KUBECTL) get pods,sandboxes.agents.x-k8s.io,persistentvolumeclaims --all-namespaces --output wide \

@@ -32,16 +32,23 @@ import (
 )
 
 const (
-	// system is the namespace of Aviary, and data that of the identity
-	// provider and of the secret store of the cluster.
-	system = "aviary-system"
-	data   = "aviary-data"
+	// system is the namespace of Aviary, runtime that of the sandboxes, and
+	// data that of the identity provider and of the secret store of the
+	// cluster.
+	system  = "aviary-system"
+	runtime = "aviary-runtime"
+	data    = "aviary-data"
 	// patience is how long a test waits for a turn to end. The first turn of
-	// a session may wait a minute and a half for its sandbox, and the longest
-	// answer of the tests takes a minute.
+	// a session waits for its sandbox, and the longest answer of the tests
+	// takes a minute.
 	patience = 3 * time.Minute
 	// soon is how long it waits for what follows on something at once.
 	soon = 30 * time.Second
+	// idle is how long a session may be idle before it is put to sleep, as
+	// the values of the e2e set it, and look how often the Supervisors look
+	// for such sessions.
+	idle = 30 * time.Second
+	look = time.Minute
 )
 
 var (
@@ -215,16 +222,13 @@ func create(t *testing.T, path, body string) string {
 	return created.ID
 }
 
-// The model server of the tests, by its whole name: a sandbox is no pod, and
-// does not know the short names of the cluster. It answers only the requests
-// that carry its key, which a sandbox does not hold: the egress of the
-// sandbox puts the key into a request over HTTPS to the endpoint. The path of
-// a model request begins with modelPath, below the path of the endpoint.
+// The model server of the tests. It answers only the requests that carry its
+// key, which a sandbox does not hold: the Egress Proxy puts the key into a
+// model request.
 const (
-	mockHost  = "mock-llm.aviary-e2e.svc.cluster.local"
-	mockURL   = "https://" + mockHost + "/v1"
-	mockKey   = "mock-llm-key"
-	modelPath = "/v1/"
+	mockHost = "mock-llm.aviary-e2e"
+	mockURL  = "http://" + mockHost + "/v1"
+	mockKey  = "mock-llm-key"
 )
 
 // provider creates a provider of the project: the model server of the
@@ -318,9 +322,8 @@ func (a agent) session(t *testing.T) string {
 	return id
 }
 
-// end ends the session. Its sandbox stays until then, and the pool of the
-// cluster has room for only so many: a session that a test left would take
-// the place of a session of another test.
+// end ends the session, and its sandbox goes with it. A session that a test
+// left would keep its sandbox, and the cluster has room for only so many.
 func end(t *testing.T, session string) {
 	t.Helper()
 	path := "/v1/sessions/" + session
@@ -566,104 +569,111 @@ func metrics(t *testing.T, component string) string {
 	return metrics.String()
 }
 
-// logged waits for the Supervisors to have recorded a request of the turn
-// whose path begins as given, and returns the records of such requests of
-// the turn, each as the fields of its line in the log of a Supervisor.
-func logged(t *testing.T, turn, path string) []map[string]any {
+// recorded returns the requests of a turn that the Egress Proxies have
+// recorded, each as the fields of its line.
+func recorded(t *testing.T, id string) []map[string]any {
 	t.Helper()
-	var records []map[string]any
-	eventually(t, soon, fmt.Sprintf("no Supervisor has recorded a request of the turn %s to %s", turn, path), func() bool {
-		records = nil
-		for _, pod := range running(t, "supervisor") {
-			log, err := cluster.CoreV1().Pods(system).GetLogs(pod.Name, &corev1.PodLogOptions{}).Stream(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			lines := bufio.NewScanner(log)
-			lines.Buffer(nil, 1<<20)
-			for lines.Scan() {
-				var line map[string]any
-				if json.Unmarshal(lines.Bytes(), &line) != nil || line["msg"] != "request" || line["turn"] != turn {
-					continue
-				}
-				if at, _ := line["path"].(string); strings.HasPrefix(at, path) {
-					records = append(records, line)
-				}
-			}
-			log.Close()
+	var requests []map[string]any
+	for _, pod := range running(t, "egress-proxy") {
+		log, err := cluster.CoreV1().Pods(system).GetLogs(pod.Name, &corev1.PodLogOptions{}).Stream(ctx)
+		if err != nil {
+			t.Fatal(err)
 		}
-		return len(records) > 0
-	})
-	return records
+		lines := bufio.NewScanner(log)
+		lines.Buffer(nil, 1<<20)
+		for lines.Scan() {
+			var line map[string]any
+			if json.Unmarshal(lines.Bytes(), &line) == nil && line["turn"] == id {
+				requests = append(requests, line)
+			}
+		}
+		log.Close()
+	}
+	return requests
 }
 
-// sandboxKey is the key of the sandbox service, which `make secrets` keeps
-// in a secret beside the Supervisors.
-var sandboxKey = sync.OnceValues(func() (string, error) {
-	kept, err := cluster.CoreV1().Secrets(system).Get(ctx, "aviary-sandboxes", metav1.GetOptions{})
-	if err != nil {
-		return "", err
-	}
-	return string(kept.Data["api-key"]), nil
-})
-
-// sandboxService sends the sandbox service of the cluster a request as
-// Aviary does, through the API server, with the parameters that are given
-// as names and values. It returns the status and the body of the answer.
-func sandboxService(t *testing.T, method, path string, parameters ...string) (int, []byte) {
+// logged waits for the proxies to have recorded a request of the turn to the
+// host that ended with the status, and returns the record.
+func logged(t *testing.T, id, route, host string, status float64) map[string]any {
 	t.Helper()
-	key, err := sandboxKey()
-	if err != nil {
-		t.Fatalf("the key of the sandbox service: %v: `make e2e` installs the service", err)
-	}
-	asked := cluster.CoreV1().RESTClient().Verb(method).Namespace("opensandbox-system").
-		Resource("services").Name("opensandbox-server:http").SubResource("proxy").Suffix("v1", path).
-		SetHeader("OPEN-SANDBOX-API-KEY", key)
-	for i := 0; i+1 < len(parameters); i += 2 {
-		asked = asked.Param(parameters[i], parameters[i+1])
-	}
-	answered := asked.Do(ctx)
-	var status int
-	answered.StatusCode(&status)
-	raw, err := answered.Raw()
-	if status == 0 {
-		t.Fatalf("%s %s of the sandbox service: %v", method, path, err)
-	}
-	return status, raw
+	var found map[string]any
+	eventually(t, soon, fmt.Sprintf("no Egress Proxy has recorded a %s request of the turn %s to %s that ended with %v", route, id, host, status), func() bool {
+		for _, line := range recorded(t, id) {
+			if line["route"] == route && line["host"] == host && line["status"] == status {
+				found = line
+			}
+		}
+		return found != nil
+	})
+	return found
 }
 
-// sandboxes returns the sandboxes that the sandbox service has for the
-// session, or all that it has if no session is named.
+// sandbox is the sandbox of a session as agent-sandbox keeps it.
+type sandbox struct {
+	Metadata struct{ Name, UID string }
+	Spec     struct{ OperatingMode string }
+	Status   struct {
+		Conditions []struct{ Type, Status string }
+	}
+}
+
+// sandboxAPI is the path of the sandboxes in the API of the cluster.
+const sandboxAPI = "/apis/agents.x-k8s.io/v1beta1/namespaces/" + runtime + "/sandboxes"
+
+// sandboxesOf returns the sandboxes of the session, or those of every
+// session if no session is named.
+func sandboxesOf(t *testing.T, session string) []sandbox {
+	t.Helper()
+	selector := "aviary.io/session"
+	if session != "" {
+		selector += "=" + session
+	}
+	raw, err := cluster.CoreV1().RESTClient().Get().AbsPath(sandboxAPI).Param("labelSelector", selector).DoRaw(ctx)
+	if err != nil {
+		t.Fatalf("the sandboxes: %v: %s", err, raw)
+	}
+	var listed struct{ Items []sandbox }
+	if err := json.Unmarshal(raw, &listed); err != nil {
+		t.Fatal(err)
+	}
+	return listed.Items
+}
+
+// sandboxes returns the names of the sandboxes of the session, or of those
+// of every session if no session is named.
 func sandboxes(t *testing.T, session string) []string {
 	t.Helper()
-	var of []string
-	if session != "" {
-		of = []string{"metadata", "aviary-session=" + session}
+	var names []string
+	for _, found := range sandboxesOf(t, session) {
+		names = append(names, found.Metadata.Name)
 	}
-	status, raw := sandboxService(t, "GET", "sandboxes", of...)
-	var listed struct{ Items []struct{ ID string } }
-	if err := json.Unmarshal(raw, &listed); err != nil || status != http.StatusOK {
-		t.Fatalf("the sandbox service answered for its sandboxes with %d %s", status, raw)
-	}
-	var ids []string
-	for _, sandbox := range listed.Items {
-		ids = append(ids, sandbox.ID)
-	}
-	return ids
+	return names
 }
 
-// asleep waits for the sandbox service to have put the sandbox of the
-// session to sleep, which it does with a session that is not at work.
+// asleep waits for the Supervisors to have put the sandbox of the session to
+// sleep, which they do with a session that is not at work, and for its pod
+// to be gone.
 func asleep(t *testing.T, session string) {
 	t.Helper()
 	eventually(t, patience, "the sandbox of the session "+session+" does not sleep", func() bool {
-		status, raw := sandboxService(t, "GET", "sandboxes", "metadata", "aviary-session="+session)
-		var listed struct {
-			Items []struct{ Status struct{ State string } }
+		found := sandboxesOf(t, session)
+		if len(found) != 1 || found[0].Spec.OperatingMode != "Suspended" {
+			return false
 		}
-		return status == http.StatusOK && json.Unmarshal(raw, &listed) == nil &&
-			len(listed.Items) == 1 && listed.Items[0].Status.State == "Paused"
+		for _, condition := range found[0].Status.Conditions {
+			if condition.Type == "Suspended" {
+				return condition.Status == "True"
+			}
+		}
+		return false
 	})
+}
+
+// sessionPods returns the pods of the sandbox of the session: one while it
+// runs.
+func sessionPods(t *testing.T, session string) []corev1.Pod {
+	t.Helper()
+	return pods(t, runtime, "aviary.io/session="+session)
 }
 
 // total adds up the series whose names and labels begin as given, over the
