@@ -2,7 +2,7 @@
 
 import {h, icon, prefs} from './util.js';
 import {unauthenticated} from './api.js';
-import {app, enter, forget, theme, brand, NotFound} from './state.js';
+import {app, enter, forget, theme, tabIcon, NotFound} from './state.js';
 import {feed} from './feed.js';
 import {on, resolve, go, path, link} from './router.js';
 import {mount, draw, signOut} from './shell.js';
@@ -140,6 +140,6 @@ unauthenticated.on(() => {
 });
 
 theme.apply();
-brand.apply();
+tabIcon();
 mountBar(() => { shown?.cleanup?.(); shown = null; root.replaceChildren(); render(); });
 render();

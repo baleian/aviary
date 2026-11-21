@@ -5,7 +5,7 @@
 import {h, icon, use, initials} from './util.js';
 import {signIn} from './api.js';
 import {accounts} from './backend.js';
-import {forget, brand} from './state.js';
+import {forget} from './state.js';
 import {go} from './router.js';
 
 const ART = `
@@ -58,7 +58,7 @@ export function signinView(root) {
   root.replaceChildren(h('section.signin',
     art.firstElementChild,
     h('div.si-card',
-      h('div.si-logo', use(brand.logo()), 'Aviary'),
+      h('div.si-logo', use('#logo'), 'Aviary'),
       h('p.si-tag', 'Room to fly. One guarded door.'),
       h('button.btn.pri.lg.wide', {type: 'button', onclick: enter, autofocus: true}, 'Continue with your organization', icon('arrow', 'lg'))),
   ));

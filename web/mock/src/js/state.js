@@ -207,32 +207,12 @@ export const theme = {
 };
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { theme.apply(); app.changed.emit(); });
 
-// The first is the mark that was chosen. The others were drawn beside it.
-export const MARKS = ['flight', 'beacon', 'perch', 'sharp', 'wing'];
-
-// brand is the mark of the logo. The mock offers several, to compare them in
-// place.
-export const brand = {
-  get() {
-    const chosen = prefs.get('logo', MARKS[0]);
-    return MARKS.includes(chosen) ? chosen : MARKS[0];
-  },
-  set(value) {
-    prefs.set('logo', value);
-    brand.apply();
-    app.changed.emit();
-  },
-  logo: () => '#logo-' + brand.get(),
-  mark: () => '#mark-' + brand.get(),
-  // apply sets the icon of the tab to the logo.
-  apply() {
-    const source = document.getElementById('logo-' + brand.get());
-    const mark = document.getElementById('mark-' + brand.get());
-    if (!source || !mark) return;
-    const box = mark.getAttribute('viewBox');
-    const placed = source.querySelector('use');
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2E90FA"/><stop offset="1" stop-color="#0A5FD6"/></linearGradient></defs>` +
-      `<rect width="48" height="48" rx="13" fill="url(#g)"/><svg x="${placed.getAttribute('x')}" y="${placed.getAttribute('y')}" width="${placed.getAttribute('width')}" height="${placed.getAttribute('height')}" viewBox="${box}" style="color:#fff;--dot:#FFC53D">${mark.innerHTML}</svg></svg>`;
-    document.getElementById('favicon').href = 'data:image/svg+xml,' + encodeURIComponent(svg);
-  },
-};
+// tabIcon sets the icon of the tab to the logo.
+export function tabIcon() {
+  const mark = document.getElementById('mark');
+  const placed = document.getElementById('logo')?.querySelector('use');
+  if (!mark || !placed) return;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2E90FA"/><stop offset="1" stop-color="#0A5FD6"/></linearGradient></defs>` +
+    `<rect width="48" height="48" rx="13" fill="url(#g)"/><svg x="${placed.getAttribute('x')}" y="${placed.getAttribute('y')}" width="${placed.getAttribute('width')}" height="${placed.getAttribute('height')}" viewBox="${mark.getAttribute('viewBox')}" style="color:#fff;--dot:#FFC53D">${mark.innerHTML}</svg></svg>`;
+  document.getElementById('favicon').href = 'data:image/svg+xml,' + encodeURIComponent(svg);
+}

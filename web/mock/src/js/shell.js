@@ -2,7 +2,7 @@
 // below it where a view draws.
 
 import {h, icon, use} from './util.js';
-import {app, theme, brand, forget, can, controls} from './state.js';
+import {app, theme, forget, can, controls} from './state.js';
 import {link, to, go} from './router.js';
 import {menu, item, avatar, projectTile, label, adminBadge, segmented, toast} from './ui.js';
 import {signIn} from './api.js';
@@ -78,7 +78,7 @@ export function draw(route, context) {
   const flip = h('button.ib', {type: 'button', title: dark ? 'Switch to the light theme' : 'Switch to the dark theme', onclick: () => theme.set(dark ? 'light' : 'dark')}, icon(dark ? 'sun' : 'moon', 'lg'));
 
   bar.replaceChildren(...[
-    h('a.logo', {href: link(home), title: 'Aviary'}, use(brand.logo()), 'Aviary'),
+    h('a.logo', {href: link(home), title: 'Aviary'}, use('#logo'), 'Aviary'),
     h('span.slash'),
     switcher,
     tabs && h('nav.navt', {'aria-label': 'Project'}, tabs.map(([name, text, path]) => h('a' + (route.name === name ? '.on' : ''), {href: link(path)}, text))),

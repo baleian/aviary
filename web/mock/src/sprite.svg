@@ -4,22 +4,10 @@
 <linearGradient id="glass" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--glass-1)"/><stop offset="1" stop-color="var(--glass-2)"/></linearGradient>
 
 <!-- The mark, in one colour, and the logo, the mark on its tile. The second colour of a mark is --dot. -->
-<!-- flight: the letter A as a rounded chevron, and a wing that crosses it. The wing comes from behind
-     the left leg and breaks through the right one, which is cut around it. -->
-<symbol id="mark-flight" viewBox="0 0 48 48"><mask id="mf" maskUnits="userSpaceOnUse" x="0" y="0" width="48" height="48"><rect width="48" height="48" fill="#fff"/><path d="M9 39Q18 25 44 22.5Q33 39.5 9 39Z" fill="#000" stroke="#000" stroke-width="3.4" stroke-linejoin="round"/></mask><path d="M24 9 40 40" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" mask="url(#mf)"/><path d="M9 39Q18 25 44 22.5Q33 39.5 9 39Z" fill="var(--dot,currentColor)"/><path d="M8 40 24 9" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round"/></symbol>
-<symbol id="logo-flight" viewBox="0 0 48 48"><rect width="48" height="48" rx="13" fill="url(#sky)"/><use href="#mark-flight" x="8.5" y="8" width="30" height="30" style="color:#fff;--dot:#FFC53D"/></symbol>
-<!-- beacon: the letter A as a rounded chevron, and a dot below it. -->
-<symbol id="mark-beacon" viewBox="0 0 48 48"><path d="M8 40 24 9l16 31" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="24" cy="37.4" r="4.7" fill="var(--dot,currentColor)"/></symbol>
-<symbol id="logo-beacon" viewBox="0 0 48 48"><rect width="48" height="48" rx="13" fill="url(#sky)"/><use href="#mark-beacon" x="9.5" y="8.5" width="29" height="29" style="color:#fff;--dot:#FFC53D"/></symbol>
-<!-- perch: the same chevron with a bar. -->
-<symbol id="mark-perch" viewBox="0 0 48 48"><path d="M8 40 24 9l16 31" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/><path d="M19.5 33.5h9" fill="none" stroke="var(--dot,currentColor)" stroke-width="6.4" stroke-linecap="round"/></symbol>
-<symbol id="logo-perch" viewBox="0 0 48 48"><rect width="48" height="48" rx="13" fill="url(#sky)"/><use href="#mark-perch" x="9.5" y="8.5" width="29" height="29" style="color:#fff;--dot:#FFC53D"/></symbol>
-<!-- sharp: the chevron of the Night Flight direction, as it was drawn. -->
-<symbol id="mark-sharp" viewBox="2 1 60 60"><path d="M32 6 60.9 56H49.4L32 25.9 14.6 56H3.1Z" fill="currentColor"/><circle cx="32" cy="50.25" r="5.75" fill="var(--dot,currentColor)"/></symbol>
-<symbol id="logo-sharp" viewBox="0 0 48 48"><rect width="48" height="48" rx="13" fill="url(#sky)"/><use href="#mark-sharp" x="10" y="9" width="28" height="28" style="color:#fff;--dot:#FFC53D"/></symbol>
-<!-- wing: the first mark of the Skylight direction. -->
-<symbol id="mark-wing" viewBox="0 0 48 48"><mask id="mk" maskUnits="userSpaceOnUse" x="0" y="0" width="48" height="48"><rect width="48" height="48" fill="#fff"/><path d="M8 37.5Q18 22.5 44 20.5Q32 38.5 8 37.5Z" fill="#000" stroke="#000" stroke-width="3" stroke-linejoin="round"/></mask><path d="M11 42V22a13 13 0 0 1 26 0v20" stroke="currentColor" stroke-width="6.5" stroke-linecap="round" fill="none" mask="url(#mk)"/><path d="M8 37.5Q18 22.5 44 20.5Q32 38.5 8 37.5Z" fill="var(--dot,currentColor)"/></symbol>
-<symbol id="logo-wing" viewBox="0 0 48 48"><rect width="48" height="48" rx="13" fill="url(#sky)"/><use href="#mark-wing" x="8" y="7.5" width="32" height="32" style="color:#fff;--dot:#FFC53D"/></symbol>
+<!-- The mark is the letter A as a rounded chevron, and a wing that crosses it. The wing comes from
+     behind the left leg and breaks through the right one, which is cut around it. -->
+<symbol id="mark" viewBox="0 0 48 48"><mask id="mf" maskUnits="userSpaceOnUse" x="0" y="0" width="48" height="48"><rect width="48" height="48" fill="#fff"/><path d="M9 39Q18 25 44 22.5Q33 39.5 9 39Z" fill="#000" stroke="#000" stroke-width="3.4" stroke-linejoin="round"/></mask><path d="M24 9 40 40" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" mask="url(#mf)"/><path d="M9 39Q18 25 44 22.5Q33 39.5 9 39Z" fill="var(--dot,currentColor)"/><path d="M8 40 24 9" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round"/></symbol>
+<symbol id="logo" viewBox="0 0 48 48"><rect width="48" height="48" rx="13" fill="url(#sky)"/><use href="#mark" x="8.5" y="8" width="30" height="30" style="color:#fff;--dot:#FFC53D"/></symbol>
 
 <symbol id="wing" viewBox="0 0 36 18"><path d="M0 17Q10 2 36 0Q24 18 0 17Z"/></symbol>
 <symbol id="bird" viewBox="0 0 40 40"><path d="M15.5 21Q10 12 15 3.5Q23 11 21 19.5Z" fill="currentColor" opacity=".55"/><path d="M4 28.5Q14 14 37 12Q26 29.5 4 28.5Z" fill="currentColor"/></symbol>
