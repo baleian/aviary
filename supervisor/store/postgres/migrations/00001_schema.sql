@@ -106,6 +106,7 @@ create table agents (
     provider_id uuid not null references providers (id),
     model text not null,
     created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
     -- Also serves listing the agents of a project.
     constraint agents_project_slug unique (project_id, slug)
 );

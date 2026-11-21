@@ -230,7 +230,7 @@ insert into agents (id, project_id, slug, name, description, harness, instructio
 select $1::uuid, projects.id, $2::text, $3::text, $4::text, $5::text, $6::text,
        $7::text, $8::uuid, $9::text
 from projects where projects.id = $10
-returning id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at
+returning id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at
 `
 
 type CreateAgentParams struct {
@@ -272,6 +272,7 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 		&i.ProviderID,
 		&i.Model,
 		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -755,7 +756,7 @@ func (q *Queries) FreeUsername(ctx context.Context, arg FreeUsernameParams) erro
 }
 
 const getAgent = `-- name: GetAgent :one
-select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at from agents where id = $1
+select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at from agents where id = $1
 `
 
 func (q *Queries) GetAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
@@ -773,6 +774,7 @@ func (q *Queries) GetAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
 		&i.ProviderID,
 		&i.Model,
 		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -1027,7 +1029,7 @@ func (q *Queries) IsMember(ctx context.Context, arg IsMemberParams) (bool, error
 }
 
 const listAgents = `-- name: ListAgents :many
-select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at from agents where project_id = $1 order by created_at, id
+select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at from agents where project_id = $1 order by created_at, id
 `
 
 func (q *Queries) ListAgents(ctx context.Context, projectID uuid.UUID) ([]Agent, error) {
@@ -1051,6 +1053,7 @@ func (q *Queries) ListAgents(ctx context.Context, projectID uuid.UUID) ([]Agent,
 			&i.ProviderID,
 			&i.Model,
 			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1678,6 +1681,51 @@ func (q *Queries) RemoveMember(ctx context.Context, id uuid.UUID) (int64, error)
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const replaceAgent = `-- name: ReplaceAgent :one
+update agents set name = $1, description = $2, instructions = $3, approval = $4,
+       provider_id = $5, model = $6, updated_at = now()
+where id = $7
+returning id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at
+`
+
+type ReplaceAgentParams struct {
+	Name         string
+	Description  string
+	Instructions string
+	Approval     string
+	ProviderID   uuid.UUID
+	Model        string
+	ID           uuid.UUID
+}
+
+func (q *Queries) ReplaceAgent(ctx context.Context, arg ReplaceAgentParams) (Agent, error) {
+	row := q.db.QueryRow(ctx, replaceAgent,
+		arg.Name,
+		arg.Description,
+		arg.Instructions,
+		arg.Approval,
+		arg.ProviderID,
+		arg.Model,
+		arg.ID,
+	)
+	var i Agent
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Slug,
+		&i.Name,
+		&i.Description,
+		&i.Harness,
+		&i.Instructions,
+		&i.Approval,
+		&i.ProviderID,
+		&i.Model,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const replaceProvider = `-- name: ReplaceProvider :one

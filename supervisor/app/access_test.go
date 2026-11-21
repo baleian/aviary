@@ -90,6 +90,7 @@ func TestWhoMayDoWhat(t *testing.T) {
 		{"POST", "/v1/projects/" + project + "/agents", `{}`, "pppfffffph"},
 		{"GET", "/v1/projects/" + project + "/agents", ``, everyMember},
 		{"GET", "/v1/agents/" + agent, ``, everyMember},
+		{"PUT", "/v1/agents/" + agent, `{}`, "pppfffffph"},
 		{"POST", "/v1/projects/" + project + "/providers", `{}`, connections},
 		{"GET", "/v1/projects/" + project + "/providers", ``, everyMember},
 		{"GET", "/v1/providers/" + models, ``, everyMember},

@@ -163,7 +163,8 @@ func (suite suite) testAgents(t *testing.T) {
 		if agent.ID == uuid.Nil || agent.ID != created.ID || agent.ProjectID != project.ID || agent.Slug != "reviewer" ||
 			agent.Name != "Code reviewer" || agent.Description != "Reviews a branch before it is merged." || agent.Harness != "opencode" ||
 			agent.Instructions != "Be brief." || agent.Approval != "ask" ||
-			agent.Model != given.Model || agent.CreatedAt.IsZero() || !agent.CreatedAt.Equal(created.CreatedAt) {
+			agent.Model != given.Model || agent.CreatedAt.IsZero() || !agent.CreatedAt.Equal(created.CreatedAt) ||
+			!agent.UpdatedAt.Equal(created.CreatedAt) {
 			t.Errorf("%s agent = %+v, model %+v", how, agent, agent.Model)
 		}
 	}
@@ -184,6 +185,79 @@ func (suite suite) testAgents(t *testing.T) {
 	if read, err := st.Session(ctx, session.ID); err != nil || read.ID != session.ID || read.AgentID != created.ID ||
 		session.AgentID != created.ID || session.CreatedAt.IsZero() || !read.CreatedAt.Equal(session.CreatedAt) {
 		t.Errorf("created session %+v, read %+v: %v", session, read, err)
+	}
+}
+
+// sameAgent reports whether the two agents are equal.
+func sameAgent(one, other store.Agent) bool {
+	return one.ID == other.ID && one.ProjectID == other.ProjectID && one.Slug == other.Slug && one.Name == other.Name &&
+		one.Description == other.Description && one.Harness == other.Harness && one.Instructions == other.Instructions &&
+		one.Approval == other.Approval && one.Model == other.Model &&
+		one.CreatedAt.Equal(other.CreatedAt) && one.UpdatedAt.Equal(other.UpdatedAt)
+}
+
+// ReplaceAgent replaces all of an agent but its project, its slug and its
+// harness.
+func (suite suite) testReplaceAgent(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	project := st.project()
+	var providers []store.Provider
+	for _, name := range []string{"a provider", "another"} {
+		provider, err := st.CreateProvider(ctx, store.Provider{ID: uuid.New(), ProjectID: project.ID, Name: name, URL: "https://api.example.com/v1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		providers = append(providers, provider)
+	}
+	created, err := st.CreateAgent(ctx, project.ID, store.Agent{
+		Slug: "reviewer", Name: "Code reviewer", Description: "Reviews a branch before it is merged.", Harness: "opencode",
+		Instructions: "Be brief.", Approval: "ask", Model: store.Model{Provider: providers[0].ID, Name: "a-model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := st.CreateAgent(ctx, project.ID, store.Agent{Slug: "other", Harness: "codex", Model: created.Model})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The slug, the harness and the project of the given agent are ignored.
+	given := store.Agent{
+		ID: created.ID, ProjectID: uuid.New(), Slug: "renamed", Name: "Reviewer", Description: "Reviews.", Harness: "codex",
+		Instructions: "Be thorough.", Model: store.Model{Provider: providers[1].ID, Name: "another-model"},
+	}
+	replaced, err := st.ReplaceAgent(ctx, given)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := st.another().Agent(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for how, agent := range map[string]store.Agent{"replaced": replaced, "read": read} {
+		if agent.ID != created.ID || agent.ProjectID != project.ID || agent.Slug != "reviewer" || agent.Harness != "opencode" ||
+			agent.Name != "Reviewer" || agent.Description != "Reviews." || agent.Instructions != "Be thorough." || agent.Approval != "" ||
+			agent.Model != given.Model || !agent.CreatedAt.Equal(created.CreatedAt) || !agent.UpdatedAt.After(created.UpdatedAt) ||
+			!agent.UpdatedAt.Equal(replaced.UpdatedAt) {
+			t.Errorf("%s agent = %+v, model %+v", how, agent, agent.Model)
+		}
+	}
+	// The other agents are as they were.
+	if read, err := st.Agent(ctx, other.ID); err != nil || !sameAgent(read, other) {
+		t.Errorf("another agent after ReplaceAgent = %+v, want %+v: %v", read, other, err)
+	}
+
+	given.Model.Provider = uuid.New()
+	if _, err := st.ReplaceAgent(ctx, given); err == nil || errors.Is(err, store.ErrNotFound) {
+		t.Errorf("ReplaceAgent with a nonexistent provider = %v, want another error", err)
+	}
+	given.ID, given.Model = uuid.New(), created.Model
+	if _, err := st.ReplaceAgent(ctx, given); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("ReplaceAgent of a nonexistent agent = %v, want ErrNotFound", err)
+	}
+	if read, err := st.Agent(ctx, created.ID); err != nil || !sameAgent(read, replaced) {
+		t.Errorf("agent after failed replacements = %+v, want %+v: %v", read, replaced, err)
 	}
 }
 

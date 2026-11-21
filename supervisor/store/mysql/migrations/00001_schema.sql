@@ -119,6 +119,7 @@ create table agents (
     provider_id binary(16) not null,
     model mediumtext not null,
     created_at datetime(6) not null default (now(6)),
+    updated_at datetime(6) not null default (now(6)),
     foreign key (project_id) references projects (id),
     foreign key (provider_id) references providers (id),
     unique key agents_project_slug (project_id, slug)

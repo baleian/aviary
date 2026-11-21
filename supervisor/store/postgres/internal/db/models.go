@@ -22,6 +22,7 @@ type Agent struct {
 	ProviderID   uuid.UUID
 	Model        string
 	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 type Approval struct {

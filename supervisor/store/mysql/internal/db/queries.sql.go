@@ -621,7 +621,7 @@ func (q *Queries) FreeUsername(ctx context.Context, arg FreeUsernameParams) erro
 }
 
 const getAgent = `-- name: GetAgent :one
-select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at from agents where id = ?
+select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at from agents where id = ?
 `
 
 func (q *Queries) GetAgent(ctx context.Context, id key.ID) (Agent, error) {
@@ -639,6 +639,7 @@ func (q *Queries) GetAgent(ctx context.Context, id key.ID) (Agent, error) {
 		&i.ProviderID,
 		&i.Model,
 		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -907,7 +908,7 @@ func (q *Queries) IsSessionBusy(ctx context.Context, sessionID key.ID) (bool, er
 }
 
 const listAgents = `-- name: ListAgents :many
-select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at from agents where project_id = ? order by created_at, id
+select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at from agents where project_id = ? order by created_at, id
 `
 
 func (q *Queries) ListAgents(ctx context.Context, projectID key.ID) ([]Agent, error) {
@@ -931,6 +932,7 @@ func (q *Queries) ListAgents(ctx context.Context, projectID key.ID) ([]Agent, er
 			&i.ProviderID,
 			&i.Model,
 			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1723,6 +1725,38 @@ delete from project_members where id = ?
 
 func (q *Queries) RemoveMember(ctx context.Context, id key.ID) (int64, error) {
 	result, err := q.db.ExecContext(ctx, removeMember, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const replaceAgent = `-- name: ReplaceAgent :execrows
+update agents set name = ?, description = ?, instructions = ?,
+       approval = ?, provider_id = ?, model = ?, updated_at = now(6)
+where id = ?
+`
+
+type ReplaceAgentParams struct {
+	Name         string
+	Description  string
+	Instructions string
+	Approval     string
+	ProviderID   key.ID
+	Model        string
+	ID           key.ID
+}
+
+func (q *Queries) ReplaceAgent(ctx context.Context, arg ReplaceAgentParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, replaceAgent,
+		arg.Name,
+		arg.Description,
+		arg.Instructions,
+		arg.Approval,
+		arg.ProviderID,
+		arg.Model,
+		arg.ID,
+	)
 	if err != nil {
 		return 0, err
 	}

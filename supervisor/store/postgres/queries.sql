@@ -14,6 +14,12 @@ returning *;
 -- name: GetAgent :one
 select * from agents where id = @id;
 
+-- name: ReplaceAgent :one
+update agents set name = @name, description = @description, instructions = @instructions, approval = @approval,
+       provider_id = @provider_id, model = @model, updated_at = now()
+where id = @id
+returning *;
+
 -- name: ListAgents :many
 select * from agents where project_id = @project_id order by created_at, id;
 

@@ -241,12 +241,32 @@ func (s *Store) CreateAgent(ctx context.Context, projectID uuid.UUID, agent stor
 	if _, found := s.providers[agent.Model.Provider]; !found {
 		return store.Agent{}, fmt.Errorf("provider %s does not exist", agent.Model.Provider)
 	}
+	now := s.now()
 	created := store.Agent{
 		ID: id, ProjectID: projectID, Slug: agent.Slug, Name: agent.Name, Description: agent.Description, Harness: agent.Harness,
-		CreatedAt: s.now(), Instructions: agent.Instructions, Approval: agent.Approval, Model: agent.Model,
+		CreatedAt: now, UpdatedAt: now, Instructions: agent.Instructions, Approval: agent.Approval, Model: agent.Model,
 	}
 	s.agents[id] = created
 	return created, nil
+}
+
+func (s *Store) ReplaceAgent(ctx context.Context, agent store.Agent) (store.Agent, error) {
+	if err := s.begin(ctx); err != nil {
+		return store.Agent{}, err
+	}
+	defer s.mu.Unlock()
+	replaced, found := s.agents[agent.ID]
+	if !found {
+		return store.Agent{}, store.ErrNotFound
+	}
+	if _, found := s.providers[agent.Model.Provider]; !found {
+		return store.Agent{}, fmt.Errorf("provider %s does not exist", agent.Model.Provider)
+	}
+	replaced.Name, replaced.Description = agent.Name, agent.Description
+	replaced.Instructions, replaced.Approval, replaced.Model = agent.Instructions, agent.Approval, agent.Model
+	replaced.UpdatedAt = s.now()
+	s.agents[agent.ID] = replaced
+	return replaced, nil
 }
 
 // member refers to its user by subject or, while the user is awaited, by

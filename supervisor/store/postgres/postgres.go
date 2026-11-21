@@ -339,6 +339,17 @@ func (s *records) Agent(ctx context.Context, id uuid.UUID) (store.Agent, error) 
 	return agentFrom(row), err
 }
 
+func (s *records) ReplaceAgent(ctx context.Context, agent store.Agent) (store.Agent, error) {
+	row, err := s.queries.ReplaceAgent(ctx, db.ReplaceAgentParams{
+		ID: agent.ID, Name: agent.Name, Description: agent.Description, Instructions: agent.Instructions,
+		Approval: agent.Approval, ProviderID: agent.Model.Provider, Model: agent.Model.Name,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.Agent{}, store.ErrNotFound
+	}
+	return agentFrom(row), err
+}
+
 func (s *records) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agent, error) {
 	rows, err := s.queries.ListAgents(ctx, projectID)
 	if err != nil {
@@ -951,6 +962,7 @@ func agentFrom(row db.Agent) store.Agent {
 		Description:  row.Description,
 		Harness:      row.Harness,
 		CreatedAt:    row.CreatedAt,
+		UpdatedAt:    row.UpdatedAt,
 		Instructions: row.Instructions,
 		Approval:     row.Approval,
 		Model:        store.Model{Provider: row.ProviderID, Name: row.Model},

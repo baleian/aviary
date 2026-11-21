@@ -33,6 +33,10 @@ func TestAviary(t *testing.T) {
 				t.Parallel()
 				approval(t, harness)
 			})
+			t.Run("replaced "+harness+" agent runs its next turn as it then is", func(t *testing.T) {
+				t.Parallel()
+				replaces(t, harness)
+			})
 			t.Run("idle "+harness+" session sleeps", func(t *testing.T) {
 				t.Parallel()
 				sleeps(t, harness)
@@ -254,6 +258,54 @@ func approval(t *testing.T, name string) {
 		eventually(t, soon, "Supervisor metrics have no "+series, func() bool {
 			return total(metrics(t, "supervisor"), series) >= 1
 		})
+	}
+}
+
+// An agent that is replaced runs the next turn of its sessions as it then is,
+// also in a sandbox that is awake: here with other instructions, and asking a
+// person before it acts. The harness is started again for that, and still has
+// the conversation.
+func replaces(t *testing.T, name string) {
+	before, after := unique("plum"), unique("pear")
+	project := newProject(t)
+	models := provider(t, project, mockKey)
+	agent := agentOf(t, project, models, fmt.Sprintf(`{"harness": %q, "instructions": "The word of the day is %s."}`, name, before))
+	session := agent.session(t)
+	if first := run(t, session, "find "+before); !strings.Contains(first.said(), "present") {
+		t.Fatalf("model was not sent the agent's instructions: said %q", first.said())
+	}
+
+	body := fmt.Sprintf(`{"name": "Renamed", "instructions": "The word of the day is %s.", "approval": "ask", "model": {"provider": %q, "name": "mock"}}`,
+		after, models)
+	var replaced struct{ Name, Harness, Approval string }
+	if status := request(t, "PUT", "/v1/agents/"+agent.id, body, &replaced); status != http.StatusOK ||
+		replaced.Name != "Renamed" || replaced.Harness != name || replaced.Approval != "ask" {
+		t.Fatalf("replace agent: got %d %+v, want 200 with the agent as it was replaced", status, replaced)
+	}
+	if second := run(t, session, "find "+after); !strings.Contains(second.said(), "present") {
+		t.Errorf("model was not sent the replaced instructions: said %q", second.said())
+	}
+	accepted := send(t, session, "escalate ls")
+	events := read(t, accepted.ID)
+	var asked approvalRequest
+	events.until(t, "asked for approval", func(next event) bool {
+		return next.Type == "approval.requested" && json.Unmarshal([]byte(next.Data), &asked) == nil
+	})
+	var option string
+	for _, offered := range asked.Options {
+		if offered.Kind == "allow_once" {
+			option = offered.ID
+		}
+	}
+	answer := fmt.Sprintf(`{"option_id": %q}`, option)
+	if status := request(t, "POST", "/v1/turns/"+accepted.ID+"/approvals/"+asked.ID, answer, nil); status != http.StatusAccepted {
+		t.Fatalf("answer %s to approval request %+v: got status %d, want 202", answer, asked, status)
+	}
+	if last := events.end(t); last.Type != "turn.completed" {
+		t.Fatalf("turn of the replaced agent ended with %s %s, want turn.completed", last.Type, last.Data)
+	}
+	if recalled := run(t, session, "recall"); !strings.Contains(recalled.said(), "find "+before) {
+		t.Errorf("the harness does not have the conversation from before the agent was replaced: said %q", recalled.said())
 	}
 }
 

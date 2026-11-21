@@ -73,6 +73,8 @@ type Agent struct {
 	Description string    `json:"description"`
 	Harness     string    `json:"harness"`
 	CreatedAt   time.Time `json:"created_at"`
+	// UpdatedAt is when the agent was last replaced.
+	UpdatedAt time.Time `json:"updated_at"`
 	// Instructions, if not empty, are given to the agent before every turn.
 	Instructions string `json:"instructions,omitempty"`
 	// Approval is "ask" if the harness asks a person for approval before it
@@ -439,6 +441,12 @@ type Store interface {
 	CreateAgent(ctx context.Context, projectID uuid.UUID, agent Agent) (Agent, error)
 
 	Agent(ctx context.Context, id uuid.UUID) (Agent, error)
+
+	// ReplaceAgent replaces the name, description, instructions, approval and
+	// model of the agent with the same ID. It returns ErrNotFound if there is
+	// no such agent, and an error if the provider of its model does not
+	// exist.
+	ReplaceAgent(ctx context.Context, agent Agent) (Agent, error)
 
 	// Agents returns the agents of the project in creation order.
 	Agents(ctx context.Context, projectID uuid.UUID) ([]Agent, error)

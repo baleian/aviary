@@ -101,6 +101,7 @@ func New(ctx context.Context, st store.Store, ev *events.Streams, dr *driver.Dri
 	mux.Handle("POST /v1/projects/{pid}/agents", a.inProject(agentsManage, a.createAgent))
 	mux.Handle("GET /v1/projects/{pid}/agents", a.inProject(projectView, a.listAgents))
 	mux.Handle("GET /v1/agents/{aid}", a.ofProject(projectView, "aid", a.ofAgent, a.getAgent))
+	mux.Handle("PUT /v1/agents/{aid}", a.ofProject(agentsManage, "aid", a.ofAgent, a.replaceAgent))
 	mux.Handle("POST /v1/agents/{aid}/sessions", a.ofProject(sessionsRun, "aid", a.ofAgent, a.createSession))
 	// listSessions does its own access check, since what it lists depends on
 	// the caller.
@@ -188,6 +189,49 @@ func (a *api) listHarnesses(w http.ResponseWriter, _ *http.Request) error {
 	return nil
 }
 
+// agentRequest is the body of a request that creates or replaces an agent.
+type agentRequest struct {
+	Slug         string `json:"slug"`
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	Harness      string `json:"harness"`
+	Instructions string `json:"instructions"`
+	Approval     string `json:"approval"`
+	Model        *struct {
+		Provider string `json:"provider"`
+		Name     string `json:"name"`
+	} `json:"model"`
+}
+
+// agentFrom returns the agent that the request describes, without its slug
+// and harness, which the caller checks. The agent is one of the project.
+func (a *api) agentFrom(r *http.Request, projectID uuid.UUID, request agentRequest) (store.Agent, error) {
+	if request.Approval != "" && request.Approval != driver.Ask {
+		return store.Agent{}, invalid(`approval must be "ask" or empty`)
+	}
+	if request.Model == nil {
+		return store.Agent{}, invalid("model is required")
+	}
+	// The provider must belong to the agent's project.
+	providerID, err := uuid.Parse(request.Model.Provider)
+	if err != nil {
+		return store.Agent{}, invalid("model.provider must be the ID of a provider of the project")
+	}
+	provider, err := a.store.Provider(r.Context(), providerID)
+	switch {
+	case errors.Is(err, store.ErrNotFound) || (err == nil && provider.ProjectID != projectID):
+		return store.Agent{}, invalid("model.provider must be the ID of a provider of the project")
+	case err != nil:
+		return store.Agent{}, err
+	case request.Model.Name == "":
+		return store.Agent{}, invalid("model.name is required")
+	}
+	return store.Agent{
+		Name: request.Name, Description: request.Description, Instructions: request.Instructions, Approval: request.Approval,
+		Model: store.Model{Provider: providerID, Name: request.Model.Name},
+	}, nil
+}
+
 func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 	projectID, err := pathID(r, "pid")
 	if err != nil {
@@ -196,18 +240,7 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 	if _, err := a.store.Project(r.Context(), projectID); err != nil {
 		return err
 	}
-	var request struct {
-		Slug         string `json:"slug"`
-		Name         string `json:"name"`
-		Description  string `json:"description"`
-		Harness      string `json:"harness"`
-		Instructions string `json:"instructions"`
-		Approval     string `json:"approval"`
-		Model        *struct {
-			Provider string `json:"provider"`
-			Name     string `json:"name"`
-		} `json:"model"`
-	}
+	var request agentRequest
 	if err := decode(w, r, &request); err != nil {
 		return err
 	}
@@ -217,34 +250,51 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 	if !a.driver.HasHarness(request.Harness) {
 		return invalid("harness must be one of the configured harnesses")
 	}
-	if request.Approval != "" && request.Approval != driver.Ask {
-		return invalid(`approval must be "ask" or empty`)
-	}
-	if request.Model == nil {
-		return invalid("model is required")
-	}
-	// The provider must belong to the agent's project.
-	providerID, err := uuid.Parse(request.Model.Provider)
-	if err != nil {
-		return invalid("model.provider must be the ID of a provider of the project")
-	}
-	provider, err := a.store.Provider(r.Context(), providerID)
-	switch {
-	case errors.Is(err, store.ErrNotFound) || (err == nil && provider.ProjectID != projectID):
-		return invalid("model.provider must be the ID of a provider of the project")
-	case err != nil:
-		return err
-	case request.Model.Name == "":
-		return invalid("model.name is required")
-	}
-	agent, err := a.store.CreateAgent(r.Context(), projectID, store.Agent{
-		Slug: request.Slug, Name: request.Name, Description: request.Description, Harness: request.Harness,
-		Instructions: request.Instructions, Approval: request.Approval, Model: store.Model{Provider: providerID, Name: request.Model.Name},
-	})
+	agent, err := a.agentFrom(r, projectID, request)
 	if err != nil {
 		return err
 	}
-	respond(w, http.StatusCreated, agent)
+	agent.Slug, agent.Harness = request.Slug, request.Harness
+	created, err := a.store.CreateAgent(r.Context(), projectID, agent)
+	if err != nil {
+		return err
+	}
+	respond(w, http.StatusCreated, created)
+	return nil
+}
+
+// replaceAgent replaces what can be changed of an agent. Its slug names it,
+// and only its harness can continue the conversations of its sessions, so
+// the request leaves both out or as they are.
+func (a *api) replaceAgent(w http.ResponseWriter, r *http.Request) error {
+	id, err := pathID(r, "aid")
+	if err != nil {
+		return err
+	}
+	existing, err := a.store.Agent(r.Context(), id)
+	if err != nil {
+		return err
+	}
+	var request agentRequest
+	if err := decode(w, r, &request); err != nil {
+		return err
+	}
+	if request.Slug != "" && request.Slug != existing.Slug {
+		return invalid("slug cannot be changed")
+	}
+	if request.Harness != "" && request.Harness != existing.Harness {
+		return invalid("harness cannot be changed")
+	}
+	agent, err := a.agentFrom(r, existing.ProjectID, request)
+	if err != nil {
+		return err
+	}
+	agent.ID = id
+	replaced, err := a.store.ReplaceAgent(r.Context(), agent)
+	if err != nil {
+		return err
+	}
+	respond(w, http.StatusOK, replaced)
 	return nil
 }
 

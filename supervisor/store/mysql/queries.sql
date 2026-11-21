@@ -13,6 +13,11 @@ from projects where projects.id = sqlc.arg(project_id);
 -- name: GetAgent :one
 select * from agents where id = ?;
 
+-- name: ReplaceAgent :execrows
+update agents set name = sqlc.arg(name), description = sqlc.arg(description), instructions = sqlc.arg(instructions),
+       approval = sqlc.arg(approval), provider_id = sqlc.arg(provider_id), model = sqlc.arg(model), updated_at = now(6)
+where id = sqlc.arg(id);
+
 -- name: ListAgents :many
 select * from agents where project_id = ? order by created_at, id;
 

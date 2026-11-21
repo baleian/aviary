@@ -428,6 +428,17 @@ func (s *records) Agent(ctx context.Context, id uuid.UUID) (store.Agent, error) 
 	return agentFrom(row), nil
 }
 
+func (s *records) ReplaceAgent(ctx context.Context, agent store.Agent) (store.Agent, error) {
+	params := db.ReplaceAgentParams{
+		ID: key.ID(agent.ID), Name: agent.Name, Description: agent.Description, Instructions: agent.Instructions,
+		Approval: agent.Approval, ProviderID: key.ID(agent.Model.Provider), Model: agent.Model.Name,
+	}
+	if err := created(s.queries.ReplaceAgent(ctx, params)); err != nil {
+		return store.Agent{}, err
+	}
+	return s.Agent(ctx, agent.ID)
+}
+
 func (s *records) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agent, error) {
 	rows, err := s.queries.ListAgents(ctx, key.ID(projectID))
 	if err != nil {
@@ -443,7 +454,7 @@ func (s *records) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agen
 func agentFrom(row db.Agent) store.Agent {
 	return store.Agent{
 		ID: uuid.UUID(row.ID), ProjectID: uuid.UUID(row.ProjectID), Slug: row.Slug, Name: row.Name, Description: row.Description,
-		Harness: row.Harness, CreatedAt: row.CreatedAt, Instructions: row.Instructions, Approval: row.Approval,
+		Harness: row.Harness, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, Instructions: row.Instructions, Approval: row.Approval,
 		Model: store.Model{Provider: uuid.UUID(row.ProviderID), Name: row.Model},
 	}
 }
