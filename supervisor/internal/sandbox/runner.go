@@ -59,7 +59,8 @@ type Turn struct {
 	// Approval is "ask" if the harness asks a person before it acts.
 	Approval string `json:"approval"`
 	// Environment holds environment variables of the harness, such as the
-	// agent's model. They apply when the harness starts.
+	// agent's model. A harness has both from its start, so the runner starts
+	// a new one for a turn in which they differ.
 	Environment map[string]string `json:"environment"`
 }
 

@@ -11,9 +11,11 @@
 //! does not know. Requests from the runner's own pod are refused, so that the
 //! agent cannot answer its own approval requests.
 //!
-//! The harness is started for the first turn and kept for the turns after it.
-//! The runner stores the harness session ID in the home, which outlives the
-//! pod, so the runner in the session's next pod resumes the same session.
+//! The harness is started for the first turn and kept for the turns after it,
+//! until a turn has another approval mode or environment: that turn gets a
+//! new harness. The runner stores the harness session ID in the home, which
+//! outlives the pod, so a new harness and the runner in the session's next
+//! pod resume the same session.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -194,7 +196,8 @@ struct Start {
     #[serde(default)]
     approval: String,
     /// Variables added to the runner's environment for the harness, such as
-    /// the agent's model. Only the turn that starts the harness uses them.
+    /// the agent's model. A harness keeps those that it started with, so a
+    /// turn that has others gets a new harness.
     #[serde(default)]
     environment: BTreeMap<String, String>,
 }
@@ -408,22 +411,36 @@ impl Error for Failure {}
 /// session.
 async fn run_turns(runner: &Arc<Runner>, mut orders: mpsc::UnboundedReceiver<Order>) {
     let mut session = None;
-    while let Some(order) = orders.next().await {
-        if let Err(failure) = run_harness(runner, order, &mut orders, &mut session).await {
-            eprintln!("{failure}");
-            runner.fail(&failure);
+    // A turn that the last harness left to a new one.
+    let mut left = None;
+    loop {
+        let order = match left.take() {
+            Some(order) => order,
+            None => match orders.next().await {
+                Some(order) => order,
+                None => return,
+            },
+        };
+        match run_harness(runner, order, &mut orders, &mut session).await {
+            Ok(next) => left = next,
+            Err(failure) => {
+                eprintln!("{failure}");
+                runner.fail(&failure);
+            }
         }
     }
 }
 
 /// Starts a harness and runs turns on it, beginning with `first`, until the
-/// harness exits or a turn fails.
+/// harness exits or a turn fails. A turn whose approval mode or environment
+/// differ from those of `first` is returned instead of run, since the harness
+/// has them from its start.
 async fn run_harness(
     runner: &Arc<Runner>,
     first: Order,
     orders: &mut mpsc::UnboundedReceiver<Order>,
     session: &mut Option<SessionId>,
-) -> Result<(), Failure> {
+) -> Result<Option<Order>, Failure> {
     // The harness session of an earlier pod, if any.
     if session.is_none() {
         *session = remembered()?;
@@ -458,6 +475,9 @@ async fn run_harness(
         .and_then(|bytes| bytes.parse::<usize>().ok())
         .filter(|bytes| *bytes > 0);
     let asks = first.start.approval == "ask";
+    let environment = first.start.environment.clone();
+    // The turn that needs a new harness.
+    let mut left = None;
     // Set when session/resume fails.
     let forgotten = Cell::new(false);
     // The runner's own failure, if it ends the connection.
@@ -537,6 +557,10 @@ async fn run_harness(
                         }
                     },
                 };
+                if (start.approval == "ask") != asks || start.environment != environment {
+                    left = Some(Order { start, told });
+                    return Ok(());
+                }
                 if let Err(failure) = instruct(&start.instructions) {
                     unready.set(Some(failure));
                     return Err(agent_client_protocol::Error::internal_error());
@@ -651,7 +675,8 @@ async fn run_harness(
             Some(failure) => failure,
             None if forgotten.get() => Failure::forgotten(error),
             None => Failure::answered(error),
-        })
+        })?;
+    Ok(left)
 }
 
 /// Writes the agent's instructions, even empty ones, to the file that the
