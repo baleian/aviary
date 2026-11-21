@@ -245,11 +245,14 @@ func (q *Queries) CountSandboxes(ctx context.Context) ([]CountSandboxesRow, erro
 const countWaitingTurns = `-- name: CountWaitingTurns :one
 select ((select count(*) from turns where state = 'queued')
         - greatest(0, $1::bigint
-                      - (select count(*) from turns where state in ('dispatching', 'running'))))::bigint as waiting
+                      - (select count(*) from turns
+                         where ended_at is null and state in ('dispatching', 'running'))))::bigint as waiting
 `
 
 // Counts the queued turns that have no room to run among @max_running. The
-// count is negative if room is left.
+// count is negative if room is left. The dispatching and running turns are
+// found by ended_at, as wherever they are read: the unfinished turns have an
+// index, and the states alone would read every turn.
 func (q *Queries) CountWaitingTurns(ctx context.Context, maxRunning int64) (int64, error) {
 	row := q.db.QueryRow(ctx, countWaitingTurns, maxRunning)
 	var waiting int64
@@ -549,7 +552,7 @@ func (q *Queries) DispatchTurn(ctx context.Context, id uuid.UUID) (int64, error)
 
 const dispatchedTurns = `-- name: DispatchedTurns :many
 select id, coalesce(extract(epoch from now() - cancel_requested_at), 0)::float8 as cancelling
-from turns where state in ('dispatching', 'running')
+from turns where ended_at is null and state in ('dispatching', 'running')
 `
 
 type DispatchedTurnsRow struct {
@@ -1784,7 +1787,8 @@ join agents on agents.id = sessions.agent_id
 where turns.state = 'queued'
 order by turns.created_at, turns.id
 limit greatest($1::bigint
-               - (select count(*) from turns as running where running.state in ('dispatching', 'running')), 0)
+               - (select count(*) from turns as running
+                  where running.ended_at is null and running.state in ('dispatching', 'running')), 0)
 `
 
 type NextTurnsRow struct {

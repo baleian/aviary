@@ -307,11 +307,14 @@ order by requested_at, id;
 
 -- name: Answers :many
 -- Lists the answers not yet delivered to the harnesses of unfinished turns:
--- those of the turn, or of all turns if turn_id is null.
+-- those of the turn, or of all turns if turn_id is null. Only dispatched
+-- turns have requests, and they are found by their state, which has an
+-- index: the requests of all turns that have ended are not read.
 select approvals.turn_id, approvals.id, coalesce(approvals.option_id, '') as option_id
-from approvals
-join turns on turns.id = approvals.turn_id
-where approvals.answered_at is not null and approvals.resolved_at is null and turns.ended_at is null
+from turns
+join approvals on approvals.turn_id = turns.id
+where turns.state in ('dispatching', 'running')
+  and approvals.answered_at is not null and approvals.resolved_at is null
   and (sqlc.narg(turn_id) is null or approvals.turn_id = sqlc.narg(turn_id));
 
 -- name: GetUserBySubject :one

@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -44,6 +45,44 @@ func (f fixture) Age(t *testing.T, by time.Duration, turns ...uuid.UUID) {
 
 func TestStore(t *testing.T) {
 	storetest.Run(t, func(t *testing.T) storetest.Database { return fixture(newDatabase(t)) })
+}
+
+// What the Supervisors do for every message, request and sweep finds the
+// unfinished turns and the sessions with a sandbox through indexes: it reads
+// no table from end to end, however many sessions and turns have ended.
+func TestRoutineSkipsEndedRecords(t *testing.T) {
+	t.Parallel()
+	database := newDatabase(t)
+	project, provider, agent := key.ID(uuid.New()), key.ID(uuid.New()), key.ID(uuid.New())
+	exec(t, database, "insert into projects (id, slug) values (?, 'ended')", project)
+	exec(t, database, "insert into providers (id, project_id, name, url) values (?, ?, 'ended', 'https://api.example.com/v1')", provider, project)
+	exec(t, database, `insert into agents (id, project_id, slug, harness, provider_id, model)
+		values (?, ?, 'ended', 'opencode', ?, 'a-model')`, agent, project, provider)
+	exec(t, database, `insert /*+ set_var(cte_max_recursion_depth = 20000) */ into sessions (id, agent_id, ended_at)
+		with recursive numbers (n) as (select 1 union all select n + 1 from numbers where n < 20000)
+		select uuid_to_bin(uuid()), ?, now(6) from numbers`, agent)
+	exec(t, database, `insert into turns (id, session_id, seq, state, text, ended_at)
+		select uuid_to_bin(uuid()), id, 1, 'completed', 'hello', now(6) from sessions`)
+	exec(t, database, "insert into turn_items (turn_id, seq, item) select id, 1, '{}' from turns")
+	exec(t, database, `insert into approvals (turn_id, id, request, option_id, answered_at, outcome, resolved_at)
+		select id, '1', '{}', 'once', now(6), 'selected', now(6) from turns`)
+	exec(t, database, "analyze table sessions, turns, turn_items, approvals")
+
+	// The rows of each table that were read without an index.
+	scanned := func() []string {
+		t.Helper()
+		return rows(t, database, `select object_name, count_read from performance_schema.table_io_waits_summary_by_index_usage
+			where object_schema = database() and index_name is null
+			  and object_name in ('sessions', 'turns', 'turn_items', 'approvals') order by object_name`)
+	}
+	before := scanned()
+	if len(before) != 4 {
+		t.Fatalf("the server counts the rows read of %v, want of four tables", before)
+	}
+	storetest.Routine(t, fixture(database).Open(t))
+	if after := scanned(); !slices.Equal(after, before) {
+		t.Errorf("rows read without an index, by table: %v before the routine, %v after it", before, after)
+	}
 }
 
 // TestDeadlock checks that within retries a transaction that MySQL rolled

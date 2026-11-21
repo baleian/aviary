@@ -191,10 +191,13 @@ where turns.id = @id;
 
 -- name: CountWaitingTurns :one
 -- Counts the queued turns that have no room to run among @max_running. The
--- count is negative if room is left.
+-- count is negative if room is left. The dispatching and running turns are
+-- found by ended_at, as wherever they are read: the unfinished turns have an
+-- index, and the states alone would read every turn.
 select ((select count(*) from turns where state = 'queued')
         - greatest(0, sqlc.arg(max_running)::bigint
-                      - (select count(*) from turns where state in ('dispatching', 'running'))))::bigint as waiting;
+                      - (select count(*) from turns
+                         where ended_at is null and state in ('dispatching', 'running'))))::bigint as waiting;
 
 -- name: QueuedTurns :many
 select id from turns where state = 'queued' order by created_at, id;
@@ -211,7 +214,8 @@ join agents on agents.id = sessions.agent_id
 where turns.state = 'queued'
 order by turns.created_at, turns.id
 limit greatest(sqlc.arg(max_running)::bigint
-               - (select count(*) from turns as running where running.state in ('dispatching', 'running')), 0);
+               - (select count(*) from turns as running
+                  where running.ended_at is null and running.state in ('dispatching', 'running')), 0);
 
 -- name: DispatchTurn :execrows
 -- Dispatches the turn if it is still queued: it may have been cancelled since
@@ -221,7 +225,7 @@ where id = @id and state = 'queued';
 
 -- name: DispatchedTurns :many
 select id, coalesce(extract(epoch from now() - cancel_requested_at), 0)::float8 as cancelling
-from turns where state in ('dispatching', 'running');
+from turns where ended_at is null and state in ('dispatching', 'running');
 
 -- name: FollowTurn :execrows
 update turns set state = 'running' where id = @id and state in ('dispatching', 'running');
