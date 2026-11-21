@@ -1,4 +1,5 @@
 import {
+  Fragment,
   type InputHTMLAttributes,
   type ReactNode,
   type SelectHTMLAttributes,
@@ -65,6 +66,61 @@ export function Toggle({
       <i />
       <span>{children}</span>
     </label>
+  );
+}
+
+// Options is a choice among a few cards. The body of a card shows below it
+// while it is chosen, and keeps what was entered in it while it is not.
+export function Options<T extends string>({
+  name,
+  value,
+  onChange,
+  choices,
+}: {
+  name: string;
+  value: T;
+  onChange: (value: T) => void;
+  choices: { value: T; title: string; body?: ReactNode }[];
+}) {
+  return (
+    <div className="opts">
+      {choices.map((choice) => (
+        <Fragment key={choice.value}>
+          <label className="opt">
+            <input
+              type="radio"
+              name={name}
+              value={choice.value}
+              checked={choice.value === value}
+              onChange={() => onChange(choice.value)}
+            />
+            <span className="dot" />
+            <span>
+              <b>{choice.title}</b>
+            </span>
+          </label>
+          {choice.body && (
+            <div className="opt-body" hidden={choice.value !== value}>
+              {choice.body}
+            </div>
+          )}
+        </Fragment>
+      ))}
+    </div>
+  );
+}
+
+// Secret is a field for a key or a credential, which the browser neither
+// shows nor fills in.
+export function Secret(props: InputHTMLAttributes<HTMLInputElement>) {
+  return (
+    <input
+      className="inp mono"
+      type="password"
+      autoComplete="new-password"
+      spellCheck={false}
+      {...props}
+    />
   );
 }
 

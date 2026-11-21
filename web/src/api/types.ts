@@ -92,6 +92,8 @@ export interface SecretStore {
   name: string;
   // How the store is accessed, such as "kv-v2".
   kind: string;
+  // What the kind needs to reach the store. The credential is not among it,
+  // and is never returned.
   settings?: Record<string, unknown>;
   created_at: string;
   updated_at: string;

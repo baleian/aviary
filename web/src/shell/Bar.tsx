@@ -170,6 +170,12 @@ export function Bar({ me }: { me: Me }) {
           >
             Agents
           </NavLink>
+          <NavLink
+            to={`/p/${project.slug}/connections`}
+            className={({ isActive }) => (isActive ? "on" : undefined)}
+          >
+            Connections
+          </NavLink>
         </nav>
       )}
       <div className="nav-r">

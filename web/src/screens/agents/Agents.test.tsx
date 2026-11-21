@@ -166,17 +166,26 @@ it("shows a caller only what their role allows", async () => {
   expect(screen.getByRole("menuitem", { name: "Delete agent…" })).toBeTruthy();
 });
 
-it("asks a project without a model provider to add one first", async () => {
+it("sends a project without a model provider to add one first", async () => {
   const user = open("/p/playground/agents", "alice");
   expect(await screen.findByText("No agents yet")).toBeTruthy();
   await user.click(screen.getAllByRole("button", { name: /New agent/ })[0]);
-  const dialog = within(
+  let dialog = within(
     screen.getByRole("dialog", { name: "Add a model provider first" }),
   );
-  expect(
-    dialog.getByRole("button", { name: "Add a model provider" }),
-  ).toBeTruthy();
   await user.click(dialog.getByRole("button", { name: "Cancel" }));
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(screen.getByText("No agents yet")).toBeTruthy();
+
+  await user.click(screen.getAllByRole("button", { name: /New agent/ })[0]);
+  dialog = within(
+    screen.getByRole("dialog", { name: "Add a model provider first" }),
+  );
+  await user.click(
+    dialog.getByRole("button", { name: "Add a model provider" }),
+  );
+  expect(
+    await screen.findByRole("heading", { name: "Connections" }),
+  ).toBeTruthy();
+  expect(screen.getByText("No model providers yet")).toBeTruthy();
 });
