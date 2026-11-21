@@ -1,4 +1,5 @@
 import type { Session, Turn } from "../api/types.ts";
+import { clip } from "./format.ts";
 
 // How a turn stands. Besides the states of the API it tells apart the
 // moments of a running turn that look different: before its harness has the
@@ -58,4 +59,9 @@ export function standingText(session: Session): string {
 // working reports whether a session takes room among the turns that run.
 export function working(stands: Standing): boolean {
   return ["starting", "running", "waiting", "stopping"].includes(stands);
+}
+
+// suggest makes the title of a session from its first message.
+export function suggest(text: string): string {
+  return clip(text.split("\n").find((line) => line.trim()) ?? text, 72);
 }

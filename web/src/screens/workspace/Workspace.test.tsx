@@ -2,7 +2,7 @@
 import { focusManager } from "@tanstack/react-query";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
-import { api } from "../../api/client.ts";
+import { api, ApiError } from "../../api/client.ts";
 import { backend } from "../../api/fake.ts";
 import { transport } from "../../api/transport.ts";
 import { fast, leave, open } from "../../testing.tsx";
@@ -14,6 +14,34 @@ afterEach(async () => {
 });
 
 const BACKEND = "/p/storefront/agents/backend-engineer";
+const REVIEWER = "/p/storefront/agents/reviewer";
+
+// box returns the box in which the message is written.
+const box = () =>
+  screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Message" });
+
+// bar returns what the composer says below the message.
+const bar = () => document.querySelector(".composer .bar")!;
+
+// pathOf returns the path of the session of the backend engineer with the
+// title.
+async function pathOf(title: string) {
+  const mock = await backend();
+  const request = (path: string) =>
+    mock.request("GET", path, { token: "alice", body: null }).body;
+  const { projects } = request("/v1/projects") as {
+    projects: { id: string; slug: string }[];
+  };
+  const storefront = projects.find((each) => each.slug === "storefront")!;
+  const { agents } = request(`/v1/projects/${storefront.id}/agents`) as {
+    agents: { id: string; slug: string }[];
+  };
+  const agent = agents.find((each) => each.slug === "backend-engineer")!;
+  const { sessions } = request(`/v1/agents/${agent.id}/sessions?limit=100`) as {
+    sessions: { id: string; title: string }[];
+  };
+  return `${BACKEND}/s/${sessions.find((each) => each.title === title)!.id}`;
+}
 
 // list returns the list of sessions, once it has some.
 async function list() {
@@ -44,6 +72,8 @@ async function talk(title: string) {
       id: string;
     };
   return {
+    id: session.id,
+    agent: reviewer.id,
     path: `/p/storefront/agents/reviewer/s/${session.id}`,
     request,
     send,
@@ -58,6 +88,18 @@ async function talk(title: string) {
       });
     },
   };
+}
+
+// deafen has the stream of the project tell nothing from now on, as a
+// stream does whose connection hangs.
+async function deafen() {
+  const carrier = await transport();
+  const stream = carrier.stream.bind(carrier);
+  vi.spyOn(carrier, "stream").mockImplementation((path, options, handlers) =>
+    path.startsWith("/v1/projects/")
+      ? stream(path, options, { ...handlers, onEvent: () => {} })
+      : stream(path, options, handlers),
+  );
 }
 
 // refocus has the window lose the focus and get it back, at which the
@@ -324,7 +366,7 @@ it("shows a turn that begins elsewhere, and follows it", async () => {
 
 it("says where a turn that waits is in the queue", async () => {
   const session = await talk("In the queue");
-  open(session.path, "alice");
+  const user = open(session.path, "alice");
   await screen.findByRole("heading", { name: "In the queue" });
   const { mock } = await backend();
   // The turn waits long enough to be seen waiting.
@@ -340,12 +382,14 @@ it("says where a turn that waits is in the queue", async () => {
     await waitFor(() =>
       expect(shown.querySelector(".chip")!.textContent).toBe("Queued · 3"),
     );
-    expect(shown.querySelector(".state")!.textContent).toBe(
+    expect(shown.querySelector(".state span + span")!.textContent).toBe(
       "In the queue, 2 ahead",
     );
     const head = document.querySelector(".conv-h .chip")!;
     expect(head.textContent).toBe("Queued");
-    session.request("POST", `/v1/turns/${turn.id}/cancel`);
+    expect(bar().textContent).toBe("QueuedCancel turn");
+    expect(turn.id).toBeTruthy();
+    await user.click(within(shown as HTMLElement).getByText("Cancel"));
     await waitFor(() =>
       expect(shown.querySelector(".fail")!.textContent).toBe(
         "Cancelled before it started",
@@ -355,6 +399,282 @@ it("says where a turn that waits is in the queue", async () => {
   } finally {
     mock.speed = 0;
     mock.scenario = "auto";
+  }
+});
+
+it("sends the first message of a new session, which names it", async () => {
+  const user = open(REVIEWER, "alice");
+  await list();
+  expect(document.activeElement).toBe(box());
+  // The message waits to be accepted until the test says so.
+  const post = api.post;
+  let accept: (() => void) | undefined;
+  vi.spyOn(api, "post").mockImplementation(async (path, body) => {
+    if (path.endsWith("/messages")) {
+      await new Promise<void>((resolve) => {
+        accept = resolve;
+      });
+    }
+    return post(path, body);
+  });
+  const message = "What does the cart do with an empty bundle?";
+  await user.type(box(), message + "{Enter}");
+  // The session is made, named after the message, and opened.
+  expect(await screen.findByRole("heading", { name: message })).toBeTruthy();
+  // Until the message is accepted it stays in the box, on its way.
+  await waitFor(() => expect(accept).toBeTruthy());
+  expect(box().value).toBe(message);
+  const send = screen.getByRole<HTMLButtonElement>("button", { name: "Send" });
+  expect(send.querySelector(".ring")).toBeTruthy();
+  expect(document.querySelectorAll(".turn").length).toBe(0);
+  accept!();
+  const current = (await list()).getByRole("link", { current: "page" });
+  expect(current.textContent).toContain(message);
+  const turn = await waitFor(() => {
+    const found = document.querySelector(".turn");
+    expect(found).toBeTruthy();
+    return found!;
+  });
+  expect(turn.querySelector(".bub-u")!.textContent).toBe(message);
+  await waitFor(() =>
+    expect(turn.querySelector(".chip")!.textContent).toBe("Completed"),
+  );
+  expect(turn.querySelector(".bub-a")!.textContent).toContain("You said:");
+  expect(document.querySelectorAll(".turn").length).toBe(1);
+  // The box is ready for the next message.
+  expect(box().value).toBe("");
+  expect(document.activeElement).toBe(box());
+  expect(bar().textContent).toContain("Enter to send");
+});
+
+it("sends a message to a session, and shows the turn that it begins", async () => {
+  const session = await talk("Typed");
+  await session.say("First?");
+  const user = open(session.path, "alice");
+  await waitFor(() =>
+    expect(document.querySelectorAll(".turn").length).toBe(1),
+  );
+  await user.type(box(), "One{Shift>}{Enter}{/Shift}two?");
+  expect(box().value).toBe("One\ntwo?");
+  expect(document.querySelectorAll(".turn").length).toBe(1);
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  const second = await waitFor(() => {
+    const turns = document.querySelectorAll(".turn");
+    expect(turns.length).toBe(2);
+    return turns[1];
+  });
+  expect(second.querySelector(".bub-u")!.textContent).toBe("One\ntwo?");
+  expect(box().value).toBe("");
+  await waitFor(() =>
+    expect(second.querySelector(".chip")!.textContent).toBe("Completed"),
+  );
+  expect(document.querySelector(".conv-h")!.textContent).toContain("2 turns");
+  // A message that was begun here is not carried to another session.
+  await user.type(box(), "Left behind");
+  await user.click(screen.getByRole("link", { name: /New session/ }));
+  await screen.findByRole("heading", { name: "New session" });
+  expect(box().value).toBe("");
+});
+
+it("says what the turn is doing where the message is written, and stops it", async () => {
+  const session = await talk("To be stopped");
+  const user = open(session.path, "alice");
+  await screen.findByRole("heading", { name: "To be stopped" });
+  const { mock } = await backend();
+  // The agent takes long enough over this to be seen at it.
+  mock.speed = 5;
+  mock.scenario = "long";
+  try {
+    await user.type(box(), "Read all of it.{Enter}");
+    await waitFor(() => expect(bar().textContent).toContain("Starting…"));
+    const send = screen.getByRole<HTMLButtonElement>("button", {
+      name: "Send",
+    });
+    expect(send.disabled).toBe(true);
+    await user.click(within(bar() as HTMLElement).getByText("Stop turn"));
+    await waitFor(() => expect(bar().textContent).toContain("Stopping…"));
+    expect(within(bar() as HTMLElement).queryByText("Stop turn")).toBeNull();
+    const turn = document.querySelector(".turn")!;
+    expect(turn.querySelector(".chip")!.textContent).toBe("Stopping");
+  } finally {
+    mock.speed = 0;
+    mock.scenario = "auto";
+  }
+});
+
+it("waits before it sends again when the queue is full", async () => {
+  const session = await talk("Busy times");
+  const user = open(session.path, "alice");
+  await screen.findByRole("heading", { name: "Busy times" });
+  const refusal = { code: "queue_full", message: "too many turns are queued" };
+  const post = vi
+    .spyOn(api, "post")
+    .mockRejectedValueOnce(new ApiError(429, refusal, { "retry-after": "1" }));
+  await user.type(box(), "Now?{Enter}");
+  await waitFor(() =>
+    expect(bar().textContent).toBe("The queue is full. Try again in 1 s."),
+  );
+  // The message stays, and is not sent before the wait is over.
+  expect(box().value).toBe("Now?");
+  await user.type(box(), "{Enter}");
+  expect(post).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(bar().textContent).toContain("Enter to send"), {
+    timeout: 3000,
+  });
+  // Without a time from the API the wait is a few seconds.
+  post.mockRejectedValueOnce(new ApiError(429, refusal, {}));
+  await user.type(box(), "{Enter}");
+  await waitFor(() =>
+    expect(bar().textContent).toBe("The queue is full. Try again in 5 s."),
+  );
+  expect(document.querySelectorAll(".turn").length).toBe(0);
+});
+
+it("reads a session again that is not as the console has it", async () => {
+  // The stream tells the console nothing of what happens elsewhere.
+  await deafen();
+  const busy = await talk("Sent to twice");
+  let user = open(busy.path, "alice");
+  await screen.findByRole("heading", { name: "Sent to twice" });
+  const { mock } = await backend();
+  // The agent takes its time over the message from elsewhere.
+  mock.speed = 5;
+  try {
+    busy.send("From elsewhere?");
+    await user.type(box(), "From here{Enter}");
+    expect(
+      await screen.findByText("The session has an unfinished turn."),
+    ).toBeTruthy();
+    // The turn from elsewhere shows, and the message stays to be sent.
+    await waitFor(() =>
+      expect(document.querySelector(".turn .bub-u")?.textContent).toBe(
+        "From elsewhere?",
+      ),
+    );
+    expect(box().value).toBe("From here");
+    await waitFor(() => expect(bar().textContent).toContain("Starting…"));
+  } finally {
+    mock.speed = 0;
+  }
+  await leave();
+
+  const ended = await talk("Ended elsewhere");
+  user = open(ended.path, "alice");
+  await screen.findByRole("heading", { name: "Ended elsewhere" });
+  ended.request("DELETE", "/v1/sessions/" + ended.id);
+  await user.type(box(), "Still there?{Enter}");
+  expect(await screen.findByText("The session has ended.")).toBeTruthy();
+  await waitFor(() =>
+    expect(document.querySelector(".gate")?.textContent).toBe(
+      "This session has ended.New session",
+    ),
+  );
+});
+
+it("leaves the workspace of an agent that was deleted meanwhile", async () => {
+  await deafen();
+  const session = await talk("Of an agent that goes");
+  const user = open(REVIEWER, "alice");
+  await list();
+  session.request("DELETE", "/v1/agents/" + session.agent);
+  await user.type(box(), "Anyone?{Enter}");
+  expect(await screen.findByText("Reviewer was deleted.")).toBeTruthy();
+  await waitFor(() =>
+    expect(document.title).toBe("Agents · Storefront · Aviary"),
+  );
+  // The agents were read again, without the one that was deleted.
+  await screen.findByText("Backend engineer");
+  expect(screen.queryByText("Reviewer")).toBeNull();
+});
+
+it("offers to stop a turn only to who may", async () => {
+  const session = await talk("Not hers to stop");
+  const { mock } = await backend();
+  mock.speed = 5;
+  mock.scenario = "queue";
+  try {
+    session.send("Wait for it.");
+    // Erin reads every session of Storefront, and controls her own.
+    open(session.path, "erin");
+    const shown = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>(".turn");
+      expect(found?.querySelector(".chip")?.textContent).toBe("Queued · 3");
+      return found!;
+    });
+    expect(within(shown).queryByText("Cancel")).toBeNull();
+    expect(document.querySelector(".gate")).toBeTruthy();
+  } finally {
+    mock.speed = 0;
+    mock.scenario = "auto";
+  }
+});
+
+it("says why a message cannot be sent, in the place of its box", async () => {
+  const gate = () => document.querySelector(".gate")?.textContent;
+  open(await pathOf("Rename the env vars to STOREFRONT_*"), "alice");
+  await waitFor(() =>
+    expect(gate()).toBe("This session has ended.New session"),
+  );
+  expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
+  await leave();
+
+  // Erin reads every session of Storefront, and runs her own.
+  open(await pathOf("Summarise the open TODOs in src/cart"), "erin");
+  await waitFor(() =>
+    expect(gate()).toBe("Only Bob Lee can send messages here."),
+  );
+  await leave();
+
+  // A turn that failed is not hers to send again.
+  open(await pathOf("Bump the payment SDK to v4 and fix what breaks"), "erin");
+  await waitFor(() =>
+    expect(document.querySelector(".turn .fail")).toBeTruthy(),
+  );
+  expect(gate()).toBe("Only its creator can send messages here.");
+  expect(screen.queryByRole("button", { name: /Send again/ })).toBeNull();
+  await leave();
+
+  // She audits Data Platform, and runs no session there.
+  open("/p/data-platform/agents/sql-analyst", "erin");
+  await waitFor(() =>
+    expect(gate()).toBe("Your role cannot run sessions here."),
+  );
+  expect(screen.queryByRole("link", { name: /New session/ })).toBeNull();
+});
+
+it("takes the message of a turn that failed, to send it again", async () => {
+  const user = open(
+    await pathOf("Bump the payment SDK to v4 and fix what breaks"),
+    "alice",
+  );
+  const again = await screen.findByRole("button", { name: /Send again/ });
+  expect(box().value).toBe("");
+  await user.click(again);
+  const failed = again.closest(".turn")!.querySelector(".bub-u")!.textContent;
+  expect(failed).toBeTruthy();
+  expect(box().value).toBe(failed);
+  expect(document.activeElement).toBe(box());
+});
+
+it("says that a turn waits for a sandbox that sleeps to wake", async () => {
+  const user = open(
+    await pathOf("Why does the checkout test flake on CI?"),
+    "alice",
+  );
+  await waitFor(() =>
+    expect(document.querySelector(".conv-h")!.textContent).toContain("Asleep"),
+  );
+  const { mock } = await backend();
+  mock.speed = 5;
+  try {
+    await user.type(box(), "And now?{Enter}");
+    await waitFor(() =>
+      expect(
+        document.querySelector(".turn:last-of-type .state")?.textContent,
+      ).toBe("Waking up…"),
+    );
+  } finally {
+    mock.speed = 0;
   }
 });
 

@@ -4,13 +4,17 @@ import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { queryClient } from "../query.ts";
-import { api, type TurnEvent } from "./client.ts";
+import { api, ApiError, type TurnEvent } from "./client.ts";
 import {
   advance,
   followTurn,
   joinTurn,
   olderSessions,
   olderTurns,
+  rereadSession,
+  sendMessage,
+  startSession,
+  stopTurn,
   useTurns,
 } from "./conversation.ts";
 import type { SessionPage } from "./feed.ts";
@@ -319,4 +323,103 @@ it("keeps what the events of a turn told when the turns are read again", async (
       items: [{ type: "message", text: "So far." }],
     }),
   ]);
+});
+
+it("keeps a turn that was added while the turns were read", async () => {
+  queryClient.setQueryData(TURNS, [turn(1, { ended_at: "x" })]);
+  const answer = answering();
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client: queryClient }, children);
+  const { result } = renderHook(() => useTurns("s1"), { wrapper });
+  // A message is sent before the answer comes, which is of the turns as
+  // they were.
+  queryClient.setQueryData(TURNS, [...read(), turn(2, { state: "queued" })]);
+  answer({ turns: [turn(1, { ended_at: "x", state: "completed" })] });
+  await waitFor(() => expect(result.current.data![0].state).toBe("completed"));
+  expect(result.current.data!.map((each) => each.seq)).toEqual([1, 2]);
+});
+
+// answered has the API answer the next request that is posted.
+const answered = (body: unknown) =>
+  vi.spyOn(api, "post").mockResolvedValue(body);
+
+it("keeps a session that it starts as if it had been read", async () => {
+  queryClient.setQueryData<SessionPage>(LIST, {
+    sessions: [session("s8")],
+    more: false,
+  });
+  const post = answered(session("s9"));
+  expect(await startSession("a1", "Fix the cart")).toEqual(session("s9"));
+  expect(post).toHaveBeenCalledWith("/v1/agents/a1/sessions", {
+    title: "Fix the cart",
+  });
+  expect(queryClient.getQueryData(["session", "s9"])).toEqual(session("s9"));
+  expect(queryClient.getQueryData(["turns", "s9"])).toEqual([]);
+  expect(listed()).toEqual([["s9", "s8"], false]);
+});
+
+it("adds the turn of a message that it sends to the turns that were read", async () => {
+  queryClient.setQueryData(TURNS, [turn(1)]);
+  const post = answered(turn(2, { state: "queued" }));
+  expect(await sendMessage("s1", "Next")).toEqual(turn(2, { state: "queued" }));
+  expect(post).toHaveBeenCalledWith("/v1/sessions/s1/messages", {
+    text: "Next",
+  });
+  expect(seqs()).toEqual([1, 2]);
+  // The session may have told of the turn before the answer came.
+  await sendMessage("s1", "Next");
+  expect(seqs()).toEqual([1, 2]);
+});
+
+it("keeps a turn that it stops as the API then has it", async () => {
+  const items = [{ type: "message" as const, text: "So far." }];
+  queryClient.setQueryData(TURNS, [
+    turn(1),
+    turn(2, { state: "queued", position: 2, items }),
+  ]);
+  const [first] = read();
+  const post = answered(
+    turn(2, { state: "running", cancel_requested_at: "now" }),
+  );
+  await stopTurn("s1", "t2");
+  expect(post).toHaveBeenCalledWith("/v1/turns/t2/cancel");
+  // What its events told stays: its record does not have it.
+  expect(read()[1]).toEqual(
+    turn(2, {
+      state: "running",
+      cancel_requested_at: "now",
+      position: 2,
+      items,
+    }),
+  );
+  expect(read()[0]).toBe(first);
+
+  // A turn that has ended is as its record has it.
+  const ended = turn(2, { state: "completed", ended_at: "x" });
+  queryClient.setQueryData(TURNS, [turn(1), ended]);
+  await stopTurn("s1", "t2");
+  expect(read()[1]).toEqual(ended);
+});
+
+it("takes a turn that ended by itself for stopped", async () => {
+  queryClient.setQueryData(TURNS, [turn(2, { state: "running" })]);
+  const refusal = { code: "turn_ended", message: "the turn has ended" };
+  const post = vi
+    .spyOn(api, "post")
+    .mockRejectedValueOnce(new ApiError(409, refusal, {}));
+  await stopTurn("s1", "t2");
+  expect(read()[0].state).toBe("running");
+  // Any other refusal is the caller's to show.
+  const other = new ApiError(403, { code: "forbidden", message: "no" }, {});
+  post.mockRejectedValueOnce(other);
+  await expect(stopTurn("s1", "t2")).rejects.toBe(other);
+});
+
+it("reads a session and its turns again", async () => {
+  const invalidate = vi
+    .spyOn(queryClient, "invalidateQueries")
+    .mockResolvedValue();
+  await rereadSession("s1");
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: ["session", "s1"] });
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: TURNS });
 });

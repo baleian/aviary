@@ -1,14 +1,15 @@
 import { useQuery } from "@tanstack/react-query";
 import { queryClient } from "../query.ts";
-import { api, type ApiError, isLast, type TurnEvent } from "./client.ts";
+import { api, ApiError, isLast, type TurnEvent } from "./client.ts";
 import {
   readSession,
   readSessions,
   type SessionPage,
+  take,
   useFeedReady,
 } from "./feed.ts";
 import { add, NOTHING } from "./items.ts";
-import type { ApprovalRequest, Turn, Usage } from "./types.ts";
+import type { ApprovalRequest, Session, Turn, Usage } from "./types.ts";
 
 // How many sessions or turns the lists read at a time.
 const PAGE = 20;
@@ -69,13 +70,16 @@ export function useTurns(session: string) {
       );
       // A turn that has not ended keeps what its events have told, which
       // its record does not have.
-      const shown = queryClient.getQueryData<Turn[]>(turnsKey(session));
-      return turns.reverse().map((turn) => {
-        const told = shown?.find((other) => other.id === turn.id);
+      const shown = queryClient.getQueryData<Turn[]>(turnsKey(session)) ?? [];
+      const read = turns.reverse().map((turn) => {
+        const told = shown.find((other) => other.id === turn.id);
         return turn.ended_at || !told
           ? turn
           : { ...turn, items: told.items, position: told.position };
       });
+      // A turn that was added while the turns were read stays.
+      const last = read.at(-1)?.seq ?? 0;
+      return [...read, ...shown.filter((turn) => turn.seq > last)];
     },
     // The turns are read when their session is opened, and not again by
     // themselves: that would drop the older ones that were added.
@@ -96,6 +100,67 @@ export async function olderTurns(session: string): Promise<void> {
   queryClient.setQueryData<Turn[]>(key, (list) =>
     list?.[0]?.seq === first.seq ? [...turns.reverse(), ...list] : list,
   );
+}
+
+// startSession creates a session of an agent with a title, and keeps it as
+// if it had been read: its conversation opens without a wait.
+export async function startSession(
+  agent: string,
+  title: string,
+): Promise<Session> {
+  const session = await api.post<Session>(`/v1/agents/${agent}/sessions`, {
+    title,
+  });
+  queryClient.setQueryData<Session>(["session", session.id], session);
+  queryClient.setQueryData<Turn[]>(turnsKey(session.id), []);
+  take(session);
+  return session;
+}
+
+// sendMessage sends a message to a session, and adds the turn that it
+// begins to the turns that were read.
+export async function sendMessage(
+  session: string,
+  text: string,
+): Promise<Turn> {
+  const turn = await api.post<Turn>(`/v1/sessions/${session}/messages`, {
+    text,
+  });
+  // The session may have told of the turn already.
+  queryClient.setQueryData<Turn[]>(turnsKey(session), (list = []) =>
+    list.some((other) => other.id === turn.id) ? list : [...list, turn],
+  );
+  return turn;
+}
+
+// stopTurn asks for a turn to be stopped, or to be taken from the queue,
+// and keeps the turn as the API then has it. A turn that runs goes on until
+// its harness has stopped: its events say when.
+export async function stopTurn(session: string, id: string): Promise<void> {
+  let record: Turn;
+  try {
+    record = await api.post<Turn>(`/v1/turns/${id}/cancel`);
+  } catch (error) {
+    // The turn ended by itself meanwhile.
+    if (error instanceof ApiError && error.code === "turn_ended") return;
+    throw error;
+  }
+  queryClient.setQueryData<Turn[]>(turnsKey(session), (list) =>
+    list?.map((turn) =>
+      turn.id === id && !turn.ended_at
+        ? { ...record, items: turn.items, position: turn.position }
+        : turn,
+    ),
+  );
+}
+
+// rereadSession reads a session and its turns again, after the API said
+// that they are not as the console has them.
+export function rereadSession(session: string): Promise<unknown> {
+  return Promise.all([
+    queryClient.invalidateQueries({ queryKey: ["session", session] }),
+    queryClient.invalidateQueries({ queryKey: turnsKey(session) }),
+  ]);
 }
 
 // joinTurn reads the turn with the ID, which the session got after its

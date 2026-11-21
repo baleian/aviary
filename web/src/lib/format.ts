@@ -98,3 +98,12 @@ export function duration(ms: number): string {
   if (minutes < 60) return `${minutes}m ${two(seconds % 60)}s`;
   return `${Math.floor(minutes / 60)}h ${two(minutes % 60)}m`;
 }
+
+// clip writes a text on one line, cut short if it is longer than longest
+// characters.
+export function clip(text: string, longest: number): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > longest
+    ? flat.slice(0, longest - 1).trimEnd() + "…"
+    : flat;
+}

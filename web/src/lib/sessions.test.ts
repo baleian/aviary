@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { Session, Turn } from "../api/types.ts";
-import { followed, standing, standingText, status } from "./sessions.ts";
+import {
+  followed,
+  standing,
+  standingText,
+  status,
+  suggest,
+} from "./sessions.ts";
 
 const turn = (more: Partial<Turn>): Turn => ({
   id: "t",
@@ -73,5 +79,17 @@ describe("standing", () => {
   it("says that a session has no messages yet", () => {
     expect(standing(session({}))).toBe("none");
     expect(standingText(session({}))).toBe("No messages yet");
+  });
+});
+
+describe("suggest", () => {
+  it("names a session after the first line of its first message", () => {
+    expect(suggest("Fix the cart")).toBe("Fix the cart");
+    expect(suggest("\n  \nFix the cart.\nThen run the tests.")).toBe(
+      "Fix the cart.",
+    );
+    const long = "word ".repeat(30);
+    expect(suggest(long).length).toBeLessThanOrEqual(72);
+    expect(suggest(long).endsWith("…")).toBe(true);
   });
 });

@@ -1,6 +1,7 @@
 import { Link, useMatch, useNavigate, useParams } from "react-router";
-import { can } from "../../api/project.ts";
-import { useMe } from "../../api/queries.ts";
+import { can, type ProjectContext } from "../../api/project.ts";
+import { type Tinted, useMe } from "../../api/queries.ts";
+import type { Agent, Me } from "../../api/types.ts";
 import { label } from "../../lib/format.ts";
 import { useTitle } from "../../lib/title.ts";
 import { useProject } from "../../shell/project.ts";
@@ -8,6 +9,8 @@ import { Missing } from "../../shell/ProjectFrame.tsx";
 import { AgentTile } from "../../ui/Avatar.tsx";
 import { Icon } from "../../ui/Icon.tsx";
 import { AgentMenu } from "../agents/AgentMenu.tsx";
+import { barred, useCompose } from "./compose.ts";
+import { Composer, Gate } from "./Composer.tsx";
 import { Conversation } from "./Conversation.tsx";
 import { SessionList } from "./SessionList.tsx";
 
@@ -16,15 +19,30 @@ import { SessionList } from "./SessionList.tsx";
 export function Workspace() {
   const context = useProject();
   const me = useMe().data!;
-  const navigate = useNavigate();
   const { agent: slug } = useParams();
-  const sid = useMatch("/p/:project/agents/:agent/s/:sid")?.params.sid;
   const agent = context.agents.find((other) => other.slug === slug);
   useTitle(agent && label(agent), label(context.project));
   if (!agent) return <Missing />;
+  return <Sessions context={context} agent={agent} me={me} />;
+}
 
+function Sessions({
+  context,
+  agent,
+  me,
+}: {
+  context: ProjectContext;
+  agent: Tinted<Agent>;
+  me: Me;
+}) {
+  const navigate = useNavigate();
+  const sid = useMatch("/p/:project/agents/:agent/s/:sid")?.params.sid;
+  // The message is the workspace's, so that the first message of a session
+  // stays while the session is created and opens.
+  const compose = useCompose(context, agent, sid);
   const project = `/p/${context.project.slug}`;
   const base = `${project}/agents/${agent.slug}`;
+  const why = barred(context, me);
   return (
     <section className="sess no-details">
       <aside className="pane list">
@@ -73,6 +91,7 @@ export function Workspace() {
             agent={agent}
             me={me}
             id={sid}
+            compose={compose}
           />
         ) : (
           <>
@@ -97,6 +116,15 @@ export function Workspace() {
                 </div>
               </div>
             </div>
+            {why ? (
+              <Gate why={why} context={context} agent={agent} me={me} />
+            ) : (
+              <Composer
+                agent={agent}
+                compose={compose}
+                onSend={() => void compose.send()}
+              />
+            )}
           </>
         )}
       </main>

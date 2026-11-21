@@ -11,6 +11,8 @@ import type {
   Provider,
   Role,
   SecretStore,
+  Session,
+  Turn,
 } from "./types.ts";
 
 export const PERMISSIONS: Permission[] = [
@@ -64,6 +66,33 @@ export function permissionsIn(
 
 export function can(context: ProjectContext, permission: Permission): boolean {
   return context.permissions.includes(permission);
+}
+
+// sessionAccess returns what the caller may do with a session: whether it is
+// the caller's own, whether the caller may send messages to it, and whether
+// the caller may rename and end it. Without an identity provider every
+// session is the caller's.
+export function sessionAccess(
+  context: ProjectContext,
+  me: Me,
+  session: Session,
+): { own: boolean; send: boolean; control: boolean } {
+  const own = !me.id || session.created_by === me.id;
+  const runs = can(context, "sessions.run");
+  return {
+    own,
+    send: me.admin || (own && runs),
+    control: me.admin || (own ? runs : can(context, "sessions.control_all")),
+  };
+}
+
+// controls reports whether the caller may stop a turn and answer its
+// requests for approval.
+export function controls(context: ProjectContext, me: Me, turn: Turn): boolean {
+  if (me.admin) return true;
+  return turn.created_by === me.id
+    ? can(context, "sessions.run")
+    : can(context, "sessions.control_all");
 }
 
 // What useProjectContext found: the project, or that it is still being

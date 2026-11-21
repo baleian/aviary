@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { cleanup, render } from "@testing-library/react";
-import { afterEach, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { afterEach, expect, it, vi } from "vitest";
 import type { Tinted } from "../../api/queries.ts";
 import type { Agent, Item, Turn } from "../../api/types.ts";
 import type { Who } from "../../ui/who.ts";
@@ -37,9 +38,22 @@ const turn = (more: Partial<Turn>): Turn => ({
 });
 
 // show draws a turn, and returns its text and its element.
-function show(of: Partial<Turn>, items: Item[] = []) {
+function show(
+  of: Partial<Turn>,
+  items: Item[] = [],
+  more: {
+    waking?: boolean;
+    onStop?: () => void;
+    onAgain?: (text: string) => void;
+  } = {},
+) {
   const { container } = render(
-    <TurnView turn={turn({ ...of, items })} agent={agent} person={person} />,
+    <TurnView
+      turn={turn({ ...of, items })}
+      agent={agent}
+      person={person}
+      {...more}
+    />,
   );
   const element = container.querySelector<HTMLElement>(".turn")!;
   return { element, text: element.textContent ?? "" };
@@ -290,4 +304,50 @@ it("says what a turn that has not ended is doing", () => {
   expect(waiting.element.querySelector(".chip")!.textContent).toBe(
     "Needs approval",
   );
+});
+
+it("says that a turn waits for its sandbox to wake", () => {
+  const starts = { state: "queued", started_at: undefined } as const;
+  const waking = show({ ...starts, ended_at: undefined }, [], { waking: true });
+  expect(waking.element.querySelector(".state")!.textContent).toBe(
+    "Waking up…",
+  );
+});
+
+it("offers to take a turn from the queue to who may", async () => {
+  const user = userEvent.setup();
+  const waits = {
+    state: "queued",
+    started_at: undefined,
+    ended_at: undefined,
+    position: 2,
+  } as const;
+  const onStop = vi.fn();
+  const may = show(waits, [], { onStop });
+  await user.click(may.element.querySelector(".state .btn")!);
+  expect(onStop).toHaveBeenCalledTimes(1);
+  cleanup();
+  expect(show(waits).element.querySelector(".state .btn")).toBeNull();
+});
+
+it("offers to send again the message of a turn that did not run to its end", async () => {
+  const user = userEvent.setup();
+  const onAgain = vi.fn();
+  for (const state of ["failed", "expired"] as const) {
+    const { element } = show({ state }, [], { onAgain });
+    const again = element.querySelector(".fail .acts .btn")!;
+    expect(again.textContent).toBe("Send again");
+    await user.click(again);
+    expect(onAgain).toHaveBeenLastCalledWith("Do it.");
+    cleanup();
+    // Not where no message can be sent.
+    expect(show({ state }).element.querySelector(".acts")).toBeNull();
+    cleanup();
+  }
+  expect(onAgain).toHaveBeenCalledTimes(2);
+  for (const state of ["cancelled", "completed"] as const) {
+    const { element } = show({ state }, [], { onAgain });
+    expect(element.querySelector(".acts")).toBeNull();
+    cleanup();
+  }
 });

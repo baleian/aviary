@@ -23,9 +23,11 @@ it("creates a project, and opens it", async () => {
   expect((slug as HTMLInputElement).value).toBe("billing");
 
   await user.click(dialog.getByRole("button", { name: "Create project" }));
+  // The project opens. A new project begins with its first steps.
   expect(
-    await screen.findByRole("heading", { name: /Billing 2!/ }),
+    await screen.findByRole("link", { name: "Add a provider" }),
   ).toBeTruthy();
+  expect(screen.getByRole("heading", { name: /Billing 2!/ })).toBeTruthy();
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(screen.getByRole("status").textContent).toContain(
     "Created Billing 2!",
@@ -34,8 +36,6 @@ it("creates a project, and opens it", async () => {
   expect(
     screen.getByRole("button", { name: /Billing 2!/ }).className,
   ).toContain("sw-b");
-  // A new project begins with its first steps.
-  expect(screen.getByRole("link", { name: "Add a provider" })).toBeTruthy();
 });
 
 it("says what is wrong with a project, and keeps the dialog", async () => {

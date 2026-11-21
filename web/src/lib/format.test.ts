@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fullTime, initials, pick, sentence, when } from "./format.ts";
+import { clip, fullTime, initials, pick, sentence, when } from "./format.ts";
 
 describe("when", () => {
   const now = new Date(2026, 10, 22, 15, 30);
@@ -62,4 +62,12 @@ describe("sentence", () => {
   it("has words for no message", () => {
     expect(sentence("")).toBe("Something went wrong.");
   });
+});
+
+it("clips a text to one line of a length", () => {
+  expect(clip("  Fix\n the   cart ", 40)).toBe("Fix the cart");
+  expect(clip("Fix the cart", 12)).toBe("Fix the cart");
+  expect(clip("Fix the cart now", 12)).toBe("Fix the car…");
+  // No space is left before the mark of the cut.
+  expect(clip("Fix the cart now", 9)).toBe("Fix the…");
 });

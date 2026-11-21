@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { mine, PERMISSIONS, permissionsIn, summary } from "./project.ts";
-import type { Me, Member, Permission, Role } from "./types.ts";
+import {
+  controls,
+  mine,
+  PERMISSIONS,
+  permissionsIn,
+  type ProjectContext,
+  sessionAccess,
+  summary,
+} from "./project.ts";
+import type { Me, Member, Permission, Role, Session, Turn } from "./types.ts";
 
 const roles: Role[] = [
   { name: "owner", permissions: [...PERMISSIONS] },
@@ -114,5 +122,70 @@ describe("mine", () => {
       "m-u-bob",
       "m-team-a",
     ]);
+  });
+});
+
+const holding = (...permissions: Permission[]) =>
+  ({ permissions }) as ProjectContext;
+const admin: Me = { id: "u-ann", admin: true };
+
+describe("sessionAccess", () => {
+  const session = (by?: string) =>
+    ({ id: "s", agent_id: "a", created_by: by }) as Session;
+
+  it("lets the caller who runs sessions send to their own, and rename and end it", () => {
+    expect(
+      sessionAccess(holding("sessions.run"), bob, session("u-bob")),
+    ).toEqual({ own: true, send: true, control: true });
+    expect(
+      sessionAccess(holding("sessions.view_all"), bob, session("u-bob")),
+    ).toEqual({ own: true, send: false, control: false });
+  });
+
+  it("lets only who controls every session rename and end someone else's", () => {
+    expect(
+      sessionAccess(holding("sessions.run"), bob, session("u-carol")),
+    ).toEqual({ own: false, send: false, control: false });
+    expect(
+      sessionAccess(
+        holding("sessions.run", "sessions.control_all"),
+        bob,
+        session("u-carol"),
+      ),
+    ).toEqual({ own: false, send: false, control: true });
+  });
+
+  it("lets an administrator do everything", () => {
+    expect(sessionAccess(holding(), admin, session("u-carol"))).toEqual({
+      own: false,
+      send: true,
+      control: true,
+    });
+  });
+
+  it("takes every session for the caller's own without an identity provider", () => {
+    const anyone: Me = { admin: false };
+    expect(sessionAccess(holding("sessions.run"), anyone, session()).own).toBe(
+      true,
+    );
+  });
+});
+
+describe("controls", () => {
+  const turn = (by?: string) => ({ id: "t", created_by: by }) as Turn;
+
+  it("lets the caller who runs sessions stop their own turn", () => {
+    expect(controls(holding("sessions.run"), bob, turn("u-bob"))).toBe(true);
+    expect(controls(holding("sessions.view_all"), bob, turn("u-bob"))).toBe(
+      false,
+    );
+  });
+
+  it("lets only who controls every session stop someone else's", () => {
+    expect(controls(holding("sessions.run"), bob, turn("u-carol"))).toBe(false);
+    expect(
+      controls(holding("sessions.control_all"), bob, turn("u-carol")),
+    ).toBe(true);
+    expect(controls(holding(), admin, turn("u-carol"))).toBe(true);
   });
 });

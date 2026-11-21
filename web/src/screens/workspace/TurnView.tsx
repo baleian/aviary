@@ -350,10 +350,16 @@ function Footer({
   turn,
   stands,
   quiet,
+  waking,
+  onStop,
+  onAgain,
 }: {
   turn: Turn;
   stands: Status;
   quiet: boolean;
+  waking?: boolean;
+  onStop?: () => void;
+  onAgain?: (text: string) => void;
 }) {
   if (stands === "queued") {
     return (
@@ -369,14 +375,27 @@ function Footer({
               : `${(turn.position ?? 0) - 1} ahead`}
           </b>
         </span>
+        {onStop && (
+          <button className="btn grey sm" type="button" onClick={onStop}>
+            Cancel
+          </button>
+        )}
       </p>
     );
   }
-  if (stands === "starting" || stands === "stopping") {
+  if (stands === "starting") {
     return (
       <p className="state">
         <span className="ring" />
-        <span>{stands === "starting" ? "Starting…" : "Stopping…"}</span>
+        <span>{waking ? "Waking up…" : "Starting…"}</span>
+      </p>
+    );
+  }
+  if (stands === "stopping") {
+    return (
+      <p className="state">
+        <span className="ring" />
+        <span>Stopping…</span>
       </p>
     );
   }
@@ -420,6 +439,18 @@ function Footer({
       </p>
     );
   }
+  const again = onAgain && (
+    <div className="acts">
+      <button
+        className="btn sec sm"
+        type="button"
+        onClick={() => onAgain(turn.text ?? "")}
+      >
+        <Icon name="refresh" />
+        Send again
+      </button>
+    </div>
+  );
   if (stands === "failed") {
     return (
       <div className="fail">
@@ -428,6 +459,7 @@ function Footer({
         {turn.failure?.message && (
           <pre className="code wrapped">{turn.failure.message}</pre>
         )}
+        {again}
       </div>
     );
   }
@@ -436,6 +468,7 @@ function Footer({
       <div className="fail soft">
         <Icon name="hour" className="lg" />
         <b>This turn waited too long in the queue</b>
+        {again}
       </div>
     );
   }
@@ -453,11 +486,22 @@ export const TurnView = memo(function TurnView({
   turn,
   agent,
   person,
+  waking,
+  onStop,
+  onAgain,
 }: {
   turn: Turn;
   agent: Tinted<Agent>;
   // How to show the user with an ID.
   person: (id?: string) => Who;
+  // Whether the turn found the sandbox of its session asleep, and waits
+  // for it to wake.
+  waking?: boolean;
+  // Stops the turn, for a caller who may while it has not ended.
+  onStop?: () => void;
+  // Takes the message of a turn that did not run to its end, to send it
+  // again.
+  onAgain?: (text: string) => void;
 }) {
   const stands = followed(turn);
   const items = turn.items ?? [];
@@ -505,7 +549,14 @@ export const TurnView = memo(function TurnView({
             writing={stands === "running"}
             person={person}
           />
-          <Footer turn={turn} stands={stands} quiet={!items.length} />
+          <Footer
+            turn={turn}
+            stands={stands}
+            quiet={!items.length}
+            waking={waking}
+            onStop={onStop}
+            onAgain={onAgain}
+          />
         </div>
       </div>
     </div>

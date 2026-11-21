@@ -11,10 +11,11 @@ import {
   followTurn,
   joinTurn,
   olderTurns,
+  stopTurn,
   useSession,
   useTurns,
 } from "../../api/conversation.ts";
-import type { ProjectContext } from "../../api/project.ts";
+import { controls, type ProjectContext } from "../../api/project.ts";
 import type { Tinted } from "../../api/queries.ts";
 import type { Agent, Me, Session, Turn } from "../../api/types.ts";
 import { plural, sentence } from "../../lib/format.ts";
@@ -26,6 +27,8 @@ import { Icon } from "../../ui/Icon.tsx";
 import { Time } from "../../ui/Time.tsx";
 import { oops } from "../../ui/toast.ts";
 import { person } from "../../ui/who.ts";
+import { barred, type Compose } from "./compose.ts";
+import { Composer, Gate } from "./Composer.tsx";
 import { SandboxBadge, SessionTitle } from "./marks.tsx";
 import { TurnView } from "./TurnView.tsx";
 
@@ -101,19 +104,21 @@ const NEAR = 96;
 
 const NONE: Turn[] = [];
 
-// Conversation is a session: its head, and its turns from the oldest that
-// was read to the newest. It opens at the newest turn, and follows the turn
-// that has not ended.
+// Conversation is a session: its head, its turns from the oldest that was
+// read to the newest, and the box for the next message. It opens at the
+// newest turn, and follows the turn that has not ended.
 export function Conversation({
   context,
   agent,
   me,
   id,
+  compose,
 }: {
   context: ProjectContext;
   agent: Tinted<Agent>;
   me: Me;
   id: string;
+  compose: Compose;
 }) {
   const session = useSession(id);
   const turns = useTurns(id);
@@ -217,6 +222,14 @@ export function Conversation({
     setAway(false);
   }
 
+  const live = unfinished ? newest : undefined;
+  // What stops the turn that has not ended, for a caller who may.
+  const stop =
+    live && controls(context, me, live)
+      ? () => void stopTurn(id, live.id).catch(oops)
+      : undefined;
+  const why = barred(context, me, session.data);
+
   return (
     <>
       <Header
@@ -241,7 +254,15 @@ export function Conversation({
             )}
           </div>
           {list.map((turn) => (
-            <TurnView key={turn.id} turn={turn} agent={agent} person={who} />
+            <TurnView
+              key={turn.id}
+              turn={turn}
+              agent={agent}
+              person={who}
+              waking={turn.id === compose.woken}
+              onStop={turn.id === unfinished ? stop : undefined}
+              onAgain={why ? undefined : compose.fill}
+            />
           ))}
           {!list.length && (
             <div style={{ paddingTop: "48px" }}>
@@ -255,6 +276,28 @@ export function Conversation({
           <Icon name="dn" />
           Latest
         </button>
+      )}
+      {why ? (
+        <Gate
+          why={why}
+          context={context}
+          agent={agent}
+          me={me}
+          session={session.data}
+        />
+      ) : (
+        <Composer
+          agent={agent}
+          compose={compose}
+          turn={live}
+          // A message that is sent is seen: the conversation goes to its
+          // end.
+          onSend={() => {
+            toEnd();
+            void compose.send();
+          }}
+          onStop={stop}
+        />
       )}
     </>
   );
