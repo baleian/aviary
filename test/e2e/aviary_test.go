@@ -390,9 +390,13 @@ func keepsAwake(t *testing.T, name string) {
 	}
 	// Other tests have turns too, so the state metrics are only checked to
 	// count this one.
-	series := fmt.Sprintf(`aviary_turns{harness=%q,state="awaiting_approval"}`, name)
-	if awaiting := total(metrics(t, "state-metrics"), series); awaiting < 1 {
-		t.Errorf("state metrics count %v turns of %s awaiting approval while this one does", awaiting, name)
+	for _, series := range []string{
+		fmt.Sprintf(`aviary_turns{harness=%q,state="awaiting_approval"}`, name),
+		fmt.Sprintf(`aviary_approvals_waiting{harness=%q}`, name),
+	} {
+		if counted := total(metrics(t, "state-metrics"), series); counted < 1 {
+			t.Errorf("state metrics report %v for %s while a turn of %s awaits approval", counted, series, name)
+		}
 	}
 
 	var option string

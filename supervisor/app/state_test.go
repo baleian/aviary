@@ -115,23 +115,22 @@ func TestStateMetricsCountSandboxes(t *testing.T) {
 }
 
 // The state metrics count the turns that have not ended by harness and by how
-// far they have come, and report every state of the harnesses from the start.
+// far they have come, and the requests that wait for a person. They report
+// every series of the harnesses from the start.
 func TestStateMetricsCountTurns(t *testing.T) {
 	t.Parallel()
 	aviary := install(t, func(config *driver.Config) { config.MaxConcurrentTurns = 3 })
 	s := aviary.supervisor()
 	metrics := stateMetrics(t, aviary.records)
-	// reported returns the sample of the turns of the harness in the state,
-	// or -1 if there is none.
-	reported := func(metric, harness, state string) float64 {
+	// sample returns the sample of the series, or -1 if there is none.
+	sample := func(series string) float64 {
 		t.Helper()
 		status, lines := scrape(t, metrics)
 		if status != http.StatusOK {
 			t.Fatalf("scrape: status %d, want 200", status)
 		}
-		series := fmt.Sprintf(`%s{harness=%q,state=%q} `, metric, harness, state)
 		for _, line := range lines {
-			if sample, found := strings.CutPrefix(line, series); found {
+			if sample, found := strings.CutPrefix(line, series+" "); found {
 				value, err := strconv.ParseFloat(sample, 64)
 				if err != nil {
 					t.Fatalf("%s: %v", line, err)
@@ -141,8 +140,15 @@ func TestStateMetricsCountTurns(t *testing.T) {
 		}
 		return -1
 	}
+	reported := func(metric, harness, state string) float64 {
+		t.Helper()
+		return sample(fmt.Sprintf(`%s{harness=%q,state=%q}`, metric, harness, state))
+	}
 	states := []string{"queued", "starting", "running", "awaiting_approval"}
 	for _, harness := range []string{"codex", "opencode"} {
+		if requests := sample(fmt.Sprintf(`aviary_approvals_waiting{harness=%q}`, harness)); requests != 0 {
+			t.Errorf("without turns, waiting approval requests of %s = %v, want 0", harness, requests)
+		}
 		for _, state := range states {
 			if turns, age := reported("aviary_turns", harness, state), reported("aviary_turns_oldest_age_seconds", harness, state); turns != 0 || age != 0 {
 				t.Errorf("without turns, %s turns of %s = %v with the oldest at %v, want 0 and 0", state, harness, turns, age)
@@ -155,7 +161,8 @@ func TestStateMetricsCountTurns(t *testing.T) {
 	// is queued.
 	aviary.given(s.send(s.session(), "one").ID)
 	aviary.given(s.send(s.session(), "two").ID).report(started("harness-session"))
-	asking := aviary.given(s.send(s.session(`{"harness": "codex"}`), "three").ID)
+	third := s.send(s.session(`{"harness": "codex"}`), "three")
+	asking := aviary.given(third.ID)
 	asking.report(started("harness-session"))
 	asking.report(asks("1", "rm -r build"))
 	s.send(s.session(), "four")
@@ -178,6 +185,19 @@ func TestStateMetricsCountTurns(t *testing.T) {
 	}
 	if age := reported("aviary_turns_oldest_age_seconds", "codex", "queued"); age != 0 {
 		t.Errorf("age of the oldest queued turn of a harness without one = %v, want 0", age)
+	}
+
+	// A turn can have several requests waiting, and one that has its answer
+	// no longer waits.
+	asking.report(asks("2", "git push"))
+	eventually(t, soon, "the state metrics do not count both requests of the turn", func() bool {
+		return sample(`aviary_approvals_waiting{harness="codex"}`) == 2 && reported("aviary_turns", "codex", "awaiting_approval") == 1
+	})
+	if status, _ := s.approve(third.ID, "1", `{"option_id": "never"}`); status != http.StatusAccepted {
+		t.Fatalf("approve: status %d, want 202", status)
+	}
+	if requests := sample(`aviary_approvals_waiting{harness="codex"}`); requests != 1 || sample(`aviary_approvals_waiting{harness="opencode"}`) != 0 {
+		t.Errorf("waiting approval requests of codex after an answer = %v, want 1, and none of opencode", requests)
 	}
 }
 

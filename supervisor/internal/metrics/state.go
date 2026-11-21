@@ -48,6 +48,10 @@ func NewState(counts Counts, harnesses []string) *State {
 				"Time since the oldest turn of a harness and state left the queue or, for queued turns, since its message, in seconds. 0 without such a turn.",
 				[]string{"harness", "state"}, nil,
 			),
+			asking: prometheus.NewDesc(
+				"aviary_approvals_waiting", "Number of approval requests that wait for a person's answer, by harness.",
+				[]string{"harness"}, nil,
+			),
 		},
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
@@ -119,16 +123,18 @@ func stateOf(turn store.UnfinishedTurn) string {
 }
 
 // turns collects the number of unfinished turns of each harness in each
-// state, and the age of the oldest of them.
+// state, the age of the oldest of them, and the number of their approval
+// requests that wait for a person.
 type turns struct {
-	counts        Counts
-	harnesses     []string
-	count, oldest *prometheus.Desc
+	counts                Counts
+	harnesses             []string
+	count, oldest, asking *prometheus.Desc
 }
 
 func (t turns) Describe(descs chan<- *prometheus.Desc) {
 	descs <- t.count
 	descs <- t.oldest
+	descs <- t.asking
 }
 
 func (t turns) Collect(collected chan<- prometheus.Metric) {
@@ -140,8 +146,9 @@ func (t turns) Collect(collected chan<- prometheus.Metric) {
 		return
 	}
 	type group struct{ harness, state string }
-	count, oldest := map[group]int{}, map[group]time.Duration{}
+	count, oldest, asking := map[group]int{}, map[group]time.Duration{}, map[string]int{}
 	for _, harness := range t.harnesses {
+		asking[harness] = 0
 		for _, state := range turnStates {
 			count[group{harness, state}] = 0
 		}
@@ -150,9 +157,13 @@ func (t turns) Collect(collected chan<- prometheus.Metric) {
 		of := group{turn.Harness, stateOf(turn)}
 		count[of]++
 		oldest[of] = max(oldest[of], turn.Age)
+		asking[turn.Harness] += turn.Asking
 	}
 	for of, turns := range count {
 		collected <- prometheus.MustNewConstMetric(t.count, prometheus.GaugeValue, float64(turns), of.harness, of.state)
 		collected <- prometheus.MustNewConstMetric(t.oldest, prometheus.GaugeValue, oldest[of].Seconds(), of.harness, of.state)
+	}
+	for harness, requests := range asking {
+		collected <- prometheus.MustNewConstMetric(t.asking, prometheus.GaugeValue, float64(requests), harness)
 	}
 }
