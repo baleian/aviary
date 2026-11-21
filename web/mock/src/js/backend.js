@@ -841,7 +841,10 @@ route('PUT', '/v1/agents/{aid}', ({who, body}, aid) => {
 });
 route('DELETE', '/v1/agents/{aid}', ({who}, aid) => {
   const agent = one(db.agents, aid);
+  // The sessions of every member end, so it takes the permission to end them
+  // too.
   may(who, agent.project_id, 'agents.manage');
+  may(who, agent.project_id, 'sessions.control_all');
   if (agent.deleted_at) return [200, agent];
   const live = db.sessions.filter((session) => session.agent_id === aid && !session.ended_at);
   if (db.turns.some((turn) => !turn.ended_at && live.some((session) => session.id === turn.session_id))) {

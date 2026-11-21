@@ -36,8 +36,11 @@ export function agentMenu(context, agent, changed, size = '') {
   if (!can(context, 'agents.manage')) return null;
   const more = h('button.ib' + (size ? '.' + size : ''), {type: 'button', title: 'More', 'aria-haspopup': 'true', onclick: () => menu(more, (close) => [
     item({glyph: 'edit', text: 'Edit agent', onclick: async () => { if (await editAgent(context, agent)) changed(false); }}, close),
-    h('hr'),
-    item({glyph: 'trash', text: 'Delete agent…', danger: true, onclick: async () => { if (await deleteAgent(context, agent)) changed(true); }}, close),
+    // Deleting an agent ends the sessions of every member.
+    can(context, 'sessions.control_all') && [
+      h('hr'),
+      item({glyph: 'trash', text: 'Delete agent…', danger: true, onclick: async () => { if (await deleteAgent(context, agent)) changed(true); }}, close),
+    ],
   ], {align: 'right'})}, icon('dots'));
   return more;
 }
