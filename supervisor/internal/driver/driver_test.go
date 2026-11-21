@@ -214,6 +214,9 @@ func TestATurnRunsInTheSandboxOfItsSession(t *testing.T) {
 		made.Labels[labelAgent] != agent.ID.String() || made.Labels[labelProject] != agent.ProjectID.String() {
 		t.Errorf("session sandbox = %q, turn sandbox = %q, request = %+v", i.sandbox(session), given.Sandbox, made)
 	}
+	if state := i.sessionOf(session.ID).SandboxState; state != store.SandboxAwake {
+		t.Errorf("recorded sandbox state = %q, want awake", state)
+	}
 
 	given.Tell("started", started)
 	given.Tell("message.delta", map[string]string{"text": "hi"})
@@ -525,8 +528,9 @@ func TestARunnerThatRunsAnotherTurnIsStoppedWithItsPod(t *testing.T) {
 		t.Errorf("ended turn = %+v, failure = %+v", ended, ended.Failure)
 	}
 	// Putting the sandbox to sleep stops the other turn with the pod.
-	if i.service.State(given.Sandbox) != sandbox.Asleep || i.sandbox(session) != given.Sandbox {
-		t.Errorf("sandbox state = %s, session sandbox = %q", i.service.State(given.Sandbox), i.sandbox(session))
+	kept := i.sessionOf(session.ID)
+	if i.service.State(given.Sandbox) != sandbox.Asleep || kept.Sandbox != given.Sandbox || kept.SandboxState != store.SandboxAsleep {
+		t.Errorf("sandbox state = %s, session sandbox = %q, recorded as %q", i.service.State(given.Sandbox), kept.Sandbox, kept.SandboxState)
 	}
 }
 
@@ -671,11 +675,17 @@ func TestASessionThatIsNotAtWorkIsPutToSleep(t *testing.T) {
 	if idle := time.Since(*ended.EndedAt); idle < i.config.Idle {
 		t.Errorf("sandbox put to sleep after only %s", idle)
 	}
+	i.eventually("the session records that its sandbox is asleep", func() bool {
+		return i.sessionOf(session.ID).SandboxState == store.SandboxAsleep
+	})
 
 	next := i.send(driver, session, "and then")
 	again := i.service.Turn(t)
 	if again.ID != next.ID.String() || again.Sandbox != given.Sandbox || i.service.Woken(given.Sandbox) != 1 {
 		t.Errorf("next turn = %+v, sandbox woken %d times", again, i.service.Woken(given.Sandbox))
+	}
+	if state := i.sessionOf(session.ID).SandboxState; state != store.SandboxAwake {
+		t.Errorf("recorded state of the woken sandbox = %q, want awake", state)
 	}
 }
 
@@ -702,6 +712,102 @@ func TestATurnThatComesAsItsSessionIsPutToSleepWakesIt(t *testing.T) {
 	again.Tell("finished", finished)
 	if ended := i.ended(next.ID); ended.State != store.TurnCompleted {
 		t.Errorf("ended turn = %+v", ended)
+	}
+}
+
+// earlier is a sandbox service whose list was read before the sandboxes
+// changed.
+type earlier struct {
+	*sandboxtest.Service
+	listed []sandbox.Sandbox
+}
+
+func (e earlier) Sandboxes(context.Context) ([]sandbox.Sandbox, error) {
+	return e.listed, nil
+}
+
+// A session records whether its sandbox is awake or asleep: what a Supervisor
+// does to the sandbox, and what it finds that something else has done.
+func TestASessionRecordsWhetherItsSandboxIsAsleep(t *testing.T) {
+	i := install(t)
+	driver := New(i.config, i.service, i.store, i.events, metrics.New(nil, nil))
+	session := i.session(store.Agent{})
+	name := sandbox.Name(session.ID)
+	if err := i.service.Create(ctx, sandbox.Request{Session: session.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := i.store.SetSandbox(ctx, session.ID, "", name); err != nil {
+		t.Fatal(err)
+	}
+	recorded := func(after, state string) {
+		t.Helper()
+		if kept := i.sessionOf(session.ID).SandboxState; kept != state {
+			t.Errorf("after %s: recorded sandbox state = %q, want %q", after, kept, state)
+		}
+	}
+	sleep := func() {
+		t.Helper()
+		if err := i.service.Suspend(ctx, name, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Something else puts the sandbox to sleep and wakes it.
+	sleep()
+	driver.look(ctx)
+	recorded("something else put the sandbox to sleep", store.SandboxAsleep)
+	if err := i.service.Resume(ctx, name, sandbox.Pod{}); err != nil {
+		t.Fatal(err)
+	}
+	driver.look(ctx)
+	recorded("something else woke the sandbox", store.SandboxAwake)
+
+	// Another Supervisor puts the sandbox to sleep after this one has listed
+	// the sandboxes. What the session records since then is kept.
+	listed, err := i.service.Sandboxes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sleep()
+	if err := i.store.SetSandboxState(ctx, session.ID, name, store.SandboxAsleep); err != nil {
+		t.Fatal(err)
+	}
+	New(i.config, earlier{i.service, listed}, i.store, i.events, metrics.New(nil, nil)).look(ctx)
+	recorded("a look at sandboxes that were listed earlier", store.SandboxAsleep)
+
+	// A turn wakes the sandbox, and giving the turn up puts it to sleep.
+	turn := i.send(driver, session, "hello")
+	if _, err := i.store.DispatchTurns(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	followed, err := i.store.FollowTurn(ctx, turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &run{turn: followed, sandbox: followed.Sandbox}
+	if runner, err := driver.attempt(ctx, ctx, r, false); runner != nil || err == nil {
+		t.Fatalf("attempt on a sleeping sandbox = %v, %v, want it to wait for the sandbox", runner, err)
+	}
+	recorded("a turn woke the sandbox", store.SandboxAwake)
+	r.give()
+	driver.giveUp(ctx, r, store.Failure{Reason: store.FailureRunner})
+	recorded("the turn was given up", store.SandboxAsleep)
+	if state := i.service.State(name); state != sandbox.Asleep {
+		t.Errorf("sandbox state after the turn was given up = %s, want Asleep", state)
+	}
+
+	// The sandbox of an idle session is put to sleep.
+	if err := i.service.Resume(ctx, name, sandbox.Pod{}); err != nil {
+		t.Fatal(err)
+	}
+	driver.look(ctx)
+	recorded("something else woke the sandbox again", store.SandboxAwake)
+	i.store.Age(time.Hour, turn.ID)
+	i.config.Idle = time.Minute
+	New(i.config, i.service, i.store, i.events, metrics.New(nil, nil)).look(ctx)
+	recorded("the idle sandbox was put to sleep", store.SandboxAsleep)
+	if state := i.service.State(name); state != sandbox.Asleep {
+		t.Errorf("state of the idle sandbox = %s, want Asleep", state)
 	}
 }
 

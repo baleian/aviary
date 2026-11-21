@@ -30,9 +30,15 @@ update sessions set title = @title where id = @id returning *;
 
 -- name: SetSandbox :execrows
 -- Changes the session's sandbox only if it is still @was. An empty string
--- means none.
-update sessions set sandbox = nullif(sqlc.arg(sandbox)::text, '')
+-- means none. A sandbox that is set is awake.
+update sessions
+set sandbox = nullif(sqlc.arg(sandbox)::text, ''),
+    sandbox_state = case when sqlc.arg(sandbox)::text <> '' then 'awake' end
 where id = @id and coalesce(sandbox, '') = sqlc.arg(was)::text;
+
+-- name: SetSandboxState :exec
+-- Changes the state only while the session has the sandbox.
+update sessions set sandbox_state = sqlc.arg(state)::text where id = @id and sandbox = sqlc.arg(sandbox)::text;
 
 -- name: HoldSession :one
 -- Keeps the session from being ended until the transaction ends. It takes

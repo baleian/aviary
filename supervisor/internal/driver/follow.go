@@ -232,6 +232,9 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 		if err := d.sandboxes.Resume(following, id, pod); err != nil {
 			return nil, fmt.Errorf("wake sandbox: %w", err)
 		}
+		if err := d.store.SetSandboxState(ctx, turn.SessionID, id, store.SandboxAwake); err != nil {
+			slog.ErrorContext(ctx, "record sandbox state", "session", turn.SessionID, "sandbox", id, "error", err)
+		}
 		return nil, errors.New("waking the session's sandbox")
 	case seen.State != sandbox.Running:
 		why := "the session's sandbox is not running yet"
@@ -352,7 +355,7 @@ func (d *Driver) forget(ctx context.Context, sessionID uuid.UUID, id string) {
 func (d *Driver) giveUp(ctx context.Context, r *run, failure store.Failure) {
 	slog.WarnContext(ctx, "giving up turn", "turn", r.turn.ID, "reason", failure.Reason, "message", failure.Message)
 	if id := r.sandboxID(); id != "" && r.wasGiven() {
-		err := d.sandboxes.Suspend(ctx, id, "")
+		err := d.suspend(ctx, r.turn.SessionID, id, "")
 		if errors.Is(err, sandbox.ErrNotFound) {
 			// The next turn creates a new sandbox.
 			_, err = d.store.SetSandbox(ctx, r.turn.SessionID, id, "")

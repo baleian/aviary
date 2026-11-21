@@ -118,6 +118,8 @@ create table sessions (
     created_by uuid references users (id),
     -- The name of the session's sandbox, if it has one.
     sandbox text,
+    -- Whether the sandbox is awake or asleep, if the session has one.
+    sandbox_state text,
     created_at timestamptz not null default now(),
     ended_at timestamptz
 );

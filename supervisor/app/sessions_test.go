@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"aviary/supervisor/internal/driver"
 )
 
 // Ending a session deletes its sandbox and keeps its turns, and the session
@@ -65,5 +67,66 @@ func TestSessionEnds(t *testing.T) {
 	}
 	if status, _ := s.request("DELETE", "/v1/sessions/00000000-0000-0000-0000-000000000000", "", nil); status != http.StatusNotFound {
 		t.Errorf("end unknown session: status %d, want 404", status)
+	}
+}
+
+// A session says whether its sandbox is awake or asleep, and nothing of a
+// sandbox that it does not have.
+func TestSessionSandbox(t *testing.T) {
+	t.Parallel()
+	aviary := install(t, func(config *driver.Config) {
+		config.Idle = 300 * time.Millisecond
+		// Sandboxes are looked at only every few sweeps.
+		config.Sweep = 20 * time.Millisecond
+	})
+	s := aviary.supervisor()
+	session := s.session()
+	path := "/v1/sessions/" + session
+	read := func() map[string]any {
+		t.Helper()
+		var read map[string]any
+		if status, _ := s.request("GET", path, "", &read); status != http.StatusOK {
+			t.Fatalf("GET session: status %d, want 200", status)
+		}
+		return read
+	}
+	if state, has := read()["sandbox"]; has {
+		t.Errorf("sandbox of a session without turns = %v, want none", state)
+	}
+
+	first := s.send(session, "hello")
+	runner := aviary.given(first.ID)
+	if state := read()["sandbox"]; state != "awake" {
+		t.Errorf("sandbox of a session with a running turn = %v, want awake", state)
+	}
+	runner.report(started("harness-session"))
+	runner.report(finished("end_turn", nil))
+	eventually(t, patience, "the idle session does not say that it is asleep", func() bool {
+		return read()["sandbox"] == "asleep"
+	})
+	// The list of sessions says the same.
+	var list struct{ Sessions []map[string]any }
+	if status, _ := s.request("GET", "/v1/agents/"+read()["agent_id"].(string)+"/sessions", "", &list); status != http.StatusOK ||
+		len(list.Sessions) != 1 || list.Sessions[0]["sandbox"] != "asleep" {
+		t.Errorf("list sessions = %d %v, want one that is asleep", status, list.Sessions)
+	}
+
+	second := s.send(session, "and then")
+	runner = aviary.given(second.ID)
+	if state := read()["sandbox"]; state != "awake" {
+		t.Errorf("sandbox of a woken session = %v, want awake", state)
+	}
+	runner.report(started("harness-session"))
+	runner.report(finished("end_turn", nil))
+
+	var ended map[string]any
+	if status, _ := s.request("DELETE", path, "", &ended); status != http.StatusOK || ended["ended_at"] == nil {
+		t.Fatalf("end session = %d %v", status, ended)
+	}
+	if state, has := ended["sandbox"]; has {
+		t.Errorf("sandbox of the session as it ended = %v, want none", state)
+	}
+	if state, has := read()["sandbox"]; has {
+		t.Errorf("sandbox of an ended session = %v, want none", state)
 	}
 }

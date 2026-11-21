@@ -75,13 +75,14 @@ type SecretStore struct {
 }
 
 type Session struct {
-	ID        uuid.UUID
-	AgentID   uuid.UUID
-	Title     string
-	CreatedBy *uuid.UUID
-	Sandbox   *string
-	CreatedAt time.Time
-	EndedAt   *time.Time
+	ID           uuid.UUID
+	AgentID      uuid.UUID
+	Title        string
+	CreatedBy    *uuid.UUID
+	Sandbox      *string
+	SandboxState *string
+	CreatedAt    time.Time
+	EndedAt      *time.Time
 }
 
 type Turn struct {

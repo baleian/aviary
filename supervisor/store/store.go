@@ -134,7 +134,17 @@ type Session struct {
 	// Sandbox is the name of the session's sandbox. It is empty if the
 	// session has none: it has run no turn yet, or its sandbox was deleted.
 	Sandbox string `json:"-"`
+	// SandboxState is SandboxAwake or SandboxAsleep. It is empty if the
+	// session has no sandbox.
+	SandboxState string `json:"sandbox,omitempty"`
 }
+
+// Sandbox states. An awake sandbox has a pod, or is getting one. The pod of
+// an asleep sandbox was deleted, and its volume is kept.
+const (
+	SandboxAwake  = "awake"
+	SandboxAsleep = "asleep"
+)
 
 // Provider is a model provider of a project: a model endpoint and its API
 // key. A provider has a stored key, a key in a secret store, or no key.
@@ -433,11 +443,16 @@ type Store interface {
 	SetSessionTitle(ctx context.Context, id uuid.UUID, title string) (Session, error)
 
 	// SetSandbox changes the session's sandbox from from to to, where ""
-	// means none. It is a compare-and-swap: it reports false and changes
-	// nothing if the session's sandbox is not from, as when another Supervisor
-	// has changed it meanwhile. It returns ErrNotFound if there is no such
-	// session.
+	// means none. A sandbox that is set is awake. It is a compare-and-swap:
+	// it reports false and changes nothing if the session's sandbox is not
+	// from, as when another Supervisor has changed it meanwhile. It returns
+	// ErrNotFound if there is no such session.
 	SetSandbox(ctx context.Context, sessionID uuid.UUID, from, to string) (bool, error)
+
+	// SetSandboxState records that the session's sandbox is awake or asleep.
+	// It changes nothing if the session's sandbox is not the named one, as
+	// when the sandbox was deleted meanwhile.
+	SetSandboxState(ctx context.Context, sessionID uuid.UUID, sandbox, state string) error
 
 	// EndSession ends the session, which then accepts no messages, and
 	// returns it, including its sandbox. A session that has already ended is

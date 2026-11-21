@@ -259,13 +259,22 @@ func sleeps(t *testing.T, name string) {
 	if len(before) != 1 || len(awake) != 1 {
 		t.Fatalf("session has %d sandboxes and %d pods, want one of each", len(before), len(awake))
 	}
+	if state := sandboxState(t, session); state != "awake" {
+		t.Errorf("session says that its sandbox is %q, want awake", state)
+	}
 	asleep(t, session)
 	eventually(t, soon, "the sleeping sandbox's pod still exists", func() bool {
 		return len(sessionPods(t, session)) == 0
 	})
+	eventually(t, soon, "the session does not say that its sandbox is asleep", func() bool {
+		return sandboxState(t, session) == "asleep"
+	})
 
 	if recalled := run(t, session, "recall"); !strings.Contains(recalled.said(), write) {
 		t.Errorf("woken session did not recall the conversation: said %q", recalled.said())
+	}
+	if state := sandboxState(t, session); state != "awake" {
+		t.Errorf("woken session says that its sandbox is %q, want awake", state)
 	}
 	if read := run(t, session, "run cat "+file); !strings.Contains(read.tools(), content) {
 		t.Errorf("woken session did not read its file: tool calls %s", read.tools())

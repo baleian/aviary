@@ -386,7 +386,7 @@ func (q *Queries) CreateSecretStore(ctx context.Context, arg CreateSecretStorePa
 const createSession = `-- name: CreateSession :one
 insert into sessions (id, agent_id, title, created_by)
 select $1::uuid, agents.id, $2::text, $3::uuid from agents where agents.id = $4
-returning id, agent_id, title, created_by, sandbox, created_at, ended_at
+returning id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at
 `
 
 type CreateSessionParams struct {
@@ -410,6 +410,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		&i.Title,
 		&i.CreatedBy,
 		&i.Sandbox,
+		&i.SandboxState,
 		&i.CreatedAt,
 		&i.EndedAt,
 	)
@@ -529,7 +530,7 @@ const endSession = `-- name: EndSession :one
 update sessions set ended_at = now()
 where sessions.id = $1
   and not exists (select 1 from turns where turns.session_id = sessions.id and turns.ended_at is null)
-returning id, agent_id, title, created_by, sandbox, created_at, ended_at
+returning id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at
 `
 
 // Ends the session unless it has an unfinished turn.
@@ -542,6 +543,7 @@ func (q *Queries) EndSession(ctx context.Context, id uuid.UUID) (Session, error)
 		&i.Title,
 		&i.CreatedBy,
 		&i.Sandbox,
+		&i.SandboxState,
 		&i.CreatedAt,
 		&i.EndedAt,
 	)
@@ -897,7 +899,7 @@ func (q *Queries) GetSecretStore(ctx context.Context, id uuid.UUID) (SecretStore
 }
 
 const getSession = `-- name: GetSession :one
-select id, agent_id, title, created_by, sandbox, created_at, ended_at from sessions where id = $1
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at from sessions where id = $1
 `
 
 func (q *Queries) GetSession(ctx context.Context, id uuid.UUID) (Session, error) {
@@ -909,6 +911,7 @@ func (q *Queries) GetSession(ctx context.Context, id uuid.UUID) (Session, error)
 		&i.Title,
 		&i.CreatedBy,
 		&i.Sandbox,
+		&i.SandboxState,
 		&i.CreatedAt,
 		&i.EndedAt,
 	)
@@ -1311,7 +1314,7 @@ func (q *Queries) ListSecretStores(ctx context.Context, projectID uuid.UUID) ([]
 }
 
 const listSessions = `-- name: ListSessions :many
-select id, agent_id, title, created_by, sandbox, created_at, ended_at from sessions where agent_id = $1 and id < $2 order by id desc limit $3
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at from sessions where agent_id = $1 and id < $2 order by id desc limit $3
 `
 
 type ListSessionsParams struct {
@@ -1337,6 +1340,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 			&i.Title,
 			&i.CreatedBy,
 			&i.Sandbox,
+			&i.SandboxState,
 			&i.CreatedAt,
 			&i.EndedAt,
 		); err != nil {
@@ -1351,7 +1355,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 }
 
 const listSessionsOf = `-- name: ListSessionsOf :many
-select id, agent_id, title, created_by, sandbox, created_at, ended_at from sessions where agent_id = $1 and created_by = $2::uuid and id < $3
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at from sessions where agent_id = $1 and created_by = $2::uuid and id < $3
 order by id desc limit $4
 `
 
@@ -1383,6 +1387,7 @@ func (q *Queries) ListSessionsOf(ctx context.Context, arg ListSessionsOfParams) 
 			&i.Title,
 			&i.CreatedBy,
 			&i.Sandbox,
+			&i.SandboxState,
 			&i.CreatedAt,
 			&i.EndedAt,
 		); err != nil {
@@ -1488,7 +1493,7 @@ func (q *Queries) Lock(ctx context.Context, key int64) error {
 }
 
 const lockSession = `-- name: LockSession :one
-select id, agent_id, title, created_by, sandbox, created_at, ended_at from sessions where id = $1 for update
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at from sessions where id = $1 for update
 `
 
 // Locks the session until the transaction ends, so that no message is
@@ -1502,6 +1507,7 @@ func (q *Queries) LockSession(ctx context.Context, id uuid.UUID) (Session, error
 		&i.Title,
 		&i.CreatedBy,
 		&i.Sandbox,
+		&i.SandboxState,
 		&i.CreatedAt,
 		&i.EndedAt,
 	)
@@ -1874,7 +1880,9 @@ func (q *Queries) SetRole(ctx context.Context, arg SetRoleParams) (Role, error) 
 }
 
 const setSandbox = `-- name: SetSandbox :execrows
-update sessions set sandbox = nullif($1::text, '')
+update sessions
+set sandbox = nullif($1::text, ''),
+    sandbox_state = case when $1::text <> '' then 'awake' end
 where id = $2 and coalesce(sandbox, '') = $3::text
 `
 
@@ -1885,7 +1893,7 @@ type SetSandboxParams struct {
 }
 
 // Changes the session's sandbox only if it is still @was. An empty string
-// means none.
+// means none. A sandbox that is set is awake.
 func (q *Queries) SetSandbox(ctx context.Context, arg SetSandboxParams) (int64, error) {
 	result, err := q.db.Exec(ctx, setSandbox, arg.Sandbox, arg.ID, arg.Was)
 	if err != nil {
@@ -1894,8 +1902,24 @@ func (q *Queries) SetSandbox(ctx context.Context, arg SetSandboxParams) (int64, 
 	return result.RowsAffected(), nil
 }
 
+const setSandboxState = `-- name: SetSandboxState :exec
+update sessions set sandbox_state = $1::text where id = $2 and sandbox = $3::text
+`
+
+type SetSandboxStateParams struct {
+	State   string
+	ID      uuid.UUID
+	Sandbox string
+}
+
+// Changes the state only while the session has the sandbox.
+func (q *Queries) SetSandboxState(ctx context.Context, arg SetSandboxStateParams) error {
+	_, err := q.db.Exec(ctx, setSandboxState, arg.State, arg.ID, arg.Sandbox)
+	return err
+}
+
 const setSessionTitle = `-- name: SetSessionTitle :one
-update sessions set title = $1 where id = $2 returning id, agent_id, title, created_by, sandbox, created_at, ended_at
+update sessions set title = $1 where id = $2 returning id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at
 `
 
 type SetSessionTitleParams struct {
@@ -1912,6 +1936,7 @@ func (q *Queries) SetSessionTitle(ctx context.Context, arg SetSessionTitleParams
 		&i.Title,
 		&i.CreatedBy,
 		&i.Sandbox,
+		&i.SandboxState,
 		&i.CreatedAt,
 		&i.EndedAt,
 	)

@@ -567,8 +567,22 @@ func (s *Store) SetSandbox(ctx context.Context, sessionID uuid.UUID, from, to st
 	if session.Sandbox != from {
 		return false, nil
 	}
-	session.Sandbox = to
+	session.Sandbox, session.SandboxState = to, ""
+	if to != "" {
+		session.SandboxState = store.SandboxAwake
+	}
 	return true, nil
+}
+
+func (s *Store) SetSandboxState(ctx context.Context, sessionID uuid.UUID, sandbox, state string) error {
+	if err := s.begin(ctx); err != nil {
+		return err
+	}
+	defer s.mu.Unlock()
+	if session, found := s.sessions[sessionID]; found && sandbox != "" && session.Sandbox == sandbox {
+		session.SandboxState = state
+	}
+	return nil
 }
 
 func (s *Store) EndSession(ctx context.Context, id uuid.UUID) (store.Session, error) {

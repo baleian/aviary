@@ -185,7 +185,7 @@ func (d *Driver) EndSession(ctx context.Context, id uuid.UUID) (store.Session, e
 	if _, err := d.store.SetSandbox(ctx, id, session.Sandbox, ""); err != nil {
 		return session, err
 	}
-	session.Sandbox = ""
+	session.Sandbox, session.SandboxState = "", ""
 	return session, nil
 }
 
@@ -282,8 +282,9 @@ func (d *Driver) orphaned() time.Duration {
 }
 
 // look deletes the sandboxes that their sessions do not reference, and puts
-// idle sessions to sleep. Sandboxes of sessions that the store does not know
-// are left alone.
+// idle sessions to sleep. It also corrects the recorded state of a sandbox
+// that something else has put to sleep or woken. Sandboxes of sessions that
+// the store does not know are left alone.
 func (d *Driver) look(ctx context.Context) {
 	sandboxes, err := d.sandboxes.Sandboxes(ctx)
 	if err != nil {
@@ -303,8 +304,11 @@ func (d *Driver) look(ctx context.Context) {
 			}
 		case session.Sandbox != made.Name:
 			d.reap(ctx, sessionID, made)
-		case d.config.Idle > 0 && (made.State == sandbox.Running || made.State == sandbox.Starting):
-			d.lull(ctx, sessionID, made)
+		default:
+			d.correct(ctx, session, made)
+			if d.config.Idle > 0 && (made.State == sandbox.Running || made.State == sandbox.Starting) {
+				d.lull(ctx, sessionID, made)
+			}
 		}
 	}
 }
@@ -334,12 +338,58 @@ func (d *Driver) lull(ctx context.Context, sessionID uuid.UUID, made sandbox.San
 	if len(last) > 0 && (last[0].EndedAt == nil || time.Since(*last[0].EndedAt) < d.config.Idle) {
 		return
 	}
-	switch err := d.sandboxes.Suspend(ctx, made.Name, made.Version); {
+	switch err := d.suspend(ctx, sessionID, made.Name, made.Version); {
 	case err == nil:
 		slog.InfoContext(ctx, "idle sandbox put to sleep", "session", sessionID, "sandbox", made.Name)
 	case !errors.Is(err, sandbox.ErrChanged) && !errors.Is(err, sandbox.ErrNotFound):
 		slog.ErrorContext(ctx, "put idle sandbox to sleep", "session", sessionID, "sandbox", made.Name, "error", err)
 	}
+}
+
+// suspend puts the session's sandbox to sleep, if version is empty or still
+// current, and records that it is asleep.
+func (d *Driver) suspend(ctx context.Context, sessionID uuid.UUID, name, version string) error {
+	if err := d.sandboxes.Suspend(ctx, name, version); err != nil {
+		return err
+	}
+	return d.store.SetSandboxState(ctx, sessionID, name, store.SandboxAsleep)
+}
+
+// stateOf returns the state to record for a sandbox as it was read, or "" if
+// the sandbox is lost.
+func stateOf(seen sandbox.Sandbox) string {
+	switch seen.State {
+	case sandbox.Asleep:
+		return store.SandboxAsleep
+	case sandbox.Running, sandbox.Starting:
+		return store.SandboxAwake
+	}
+	return ""
+}
+
+// correct records the state of the session's sandbox if the session records
+// another, as after something else has put the sandbox to sleep or woken it.
+func (d *Driver) correct(ctx context.Context, session store.Session, made sandbox.Sandbox) {
+	if state := stateOf(made); state == "" || state == session.SandboxState {
+		return
+	}
+	// The session may record what happened after made was read.
+	seen, err := d.sandboxes.Sandbox(ctx, made.Name)
+	if err != nil {
+		if !errors.Is(err, sandbox.ErrNotFound) {
+			slog.ErrorContext(ctx, "read sandbox", "session", session.ID, "sandbox", made.Name, "error", err)
+		}
+		return
+	}
+	state := stateOf(seen)
+	if state == "" || state == session.SandboxState {
+		return
+	}
+	if err := d.store.SetSandboxState(ctx, session.ID, made.Name, state); err != nil {
+		slog.ErrorContext(ctx, "record sandbox state", "session", session.ID, "sandbox", made.Name, "error", err)
+		return
+	}
+	slog.InfoContext(ctx, "sandbox state corrected", "session", session.ID, "sandbox", made.Name, "state", state)
 }
 
 // lease is how long a turn stays this Supervisor's after it claims the turn.

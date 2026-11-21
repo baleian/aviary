@@ -27,7 +27,14 @@ select * from sessions where id = ?;
 update sessions set title = sqlc.arg(title) where id = sqlc.arg(id);
 
 -- name: SetSandbox :exec
-update sessions set sandbox = sqlc.narg(sandbox) where id = sqlc.arg(id);
+-- A sandbox that is set is awake.
+update sessions
+set sandbox = sqlc.narg(sandbox), sandbox_state = if(sqlc.narg(sandbox) is null, null, 'awake')
+where id = sqlc.arg(id);
+
+-- name: SetSandboxState :exec
+-- Changes the state only while the session has the sandbox.
+update sessions set sandbox_state = sqlc.arg(state) where id = sqlc.arg(id) and sandbox = sqlc.arg(sandbox);
 
 -- name: ListSessions :many
 -- Lists the agent's sessions with IDs below before, newest first: IDs

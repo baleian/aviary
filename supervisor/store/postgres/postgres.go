@@ -398,6 +398,10 @@ func (s *records) SetSandbox(ctx context.Context, sessionID uuid.UUID, from, to 
 	return false, nil
 }
 
+func (s *records) SetSandboxState(ctx context.Context, sessionID uuid.UUID, sandbox, state string) error {
+	return s.queries.SetSandboxState(ctx, db.SetSandboxStateParams{ID: sessionID, Sandbox: sandbox, State: state})
+}
+
 func (s *records) EndSession(ctx context.Context, id uuid.UUID) (store.Session, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -965,6 +969,9 @@ func sessionFrom(row db.Session) store.Session {
 	}
 	if row.Sandbox != nil {
 		session.Sandbox = *row.Sandbox
+	}
+	if row.SandboxState != nil {
+		session.SandboxState = *row.SandboxState
 	}
 	return session
 }

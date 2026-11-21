@@ -784,7 +784,7 @@ func (q *Queries) GetSecretStore(ctx context.Context, id key.ID) (SecretStore, e
 }
 
 const getSession = `-- name: GetSession :one
-select id, agent_id, title, created_by, sandbox, created_at, ended_at from sessions where id = ?
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at from sessions where id = ?
 `
 
 func (q *Queries) GetSession(ctx context.Context, id key.ID) (Session, error) {
@@ -796,6 +796,7 @@ func (q *Queries) GetSession(ctx context.Context, id key.ID) (Session, error) {
 		&i.Title,
 		&i.CreatedBy,
 		&i.Sandbox,
+		&i.SandboxState,
 		&i.CreatedAt,
 		&i.EndedAt,
 	)
@@ -1243,7 +1244,7 @@ func (q *Queries) ListSecretStores(ctx context.Context, projectID key.ID) ([]Sec
 }
 
 const listSessions = `-- name: ListSessions :many
-select id, agent_id, title, created_by, sandbox, created_at, ended_at from sessions where agent_id = ? and id < ? order by id desc limit ?
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at from sessions where agent_id = ? and id < ? order by id desc limit ?
 `
 
 type ListSessionsParams struct {
@@ -1269,6 +1270,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 			&i.Title,
 			&i.CreatedBy,
 			&i.Sandbox,
+			&i.SandboxState,
 			&i.CreatedAt,
 			&i.EndedAt,
 		); err != nil {
@@ -1286,7 +1288,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 }
 
 const listSessionsOf = `-- name: ListSessionsOf :many
-select id, agent_id, title, created_by, sandbox, created_at, ended_at from sessions
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at from sessions
 where agent_id = ? and created_by = ? and id < ?
 order by id desc limit ?
 `
@@ -1319,6 +1321,7 @@ func (q *Queries) ListSessionsOf(ctx context.Context, arg ListSessionsOfParams) 
 			&i.Title,
 			&i.CreatedBy,
 			&i.Sandbox,
+			&i.SandboxState,
 			&i.CreatedAt,
 			&i.EndedAt,
 		); err != nil {
@@ -1444,7 +1447,7 @@ func (q *Queries) Lock(ctx context.Context, name string) (string, error) {
 }
 
 const lockSession = `-- name: LockSession :one
-select id, agent_id, title, created_by, sandbox, created_at, ended_at from sessions where id = ? for update
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at from sessions where id = ? for update
 `
 
 // Locks the session until the transaction ends, which serializes accepting
@@ -1458,6 +1461,7 @@ func (q *Queries) LockSession(ctx context.Context, id key.ID) (Session, error) {
 		&i.Title,
 		&i.CreatedBy,
 		&i.Sandbox,
+		&i.SandboxState,
 		&i.CreatedAt,
 		&i.EndedAt,
 	)
@@ -1838,7 +1842,9 @@ func (q *Queries) SetRole(ctx context.Context, arg SetRoleParams) error {
 }
 
 const setSandbox = `-- name: SetSandbox :exec
-update sessions set sandbox = ? where id = ?
+update sessions
+set sandbox = ?, sandbox_state = if(? is null, null, 'awake')
+where id = ?
 `
 
 type SetSandboxParams struct {
@@ -1846,8 +1852,25 @@ type SetSandboxParams struct {
 	ID      key.ID
 }
 
+// A sandbox that is set is awake.
 func (q *Queries) SetSandbox(ctx context.Context, arg SetSandboxParams) error {
-	_, err := q.db.ExecContext(ctx, setSandbox, arg.Sandbox, arg.ID)
+	_, err := q.db.ExecContext(ctx, setSandbox, arg.Sandbox, arg.Sandbox, arg.ID)
+	return err
+}
+
+const setSandboxState = `-- name: SetSandboxState :exec
+update sessions set sandbox_state = ? where id = ? and sandbox = ?
+`
+
+type SetSandboxStateParams struct {
+	State   *string
+	ID      key.ID
+	Sandbox *string
+}
+
+// Changes the state only while the session has the sandbox.
+func (q *Queries) SetSandboxState(ctx context.Context, arg SetSandboxStateParams) error {
+	_, err := q.db.ExecContext(ctx, setSandboxState, arg.State, arg.ID, arg.Sandbox)
 	return err
 }
 

@@ -254,10 +254,15 @@ func (suite suite) testSetSandbox(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	id := st.session()
+	// A sandbox that is set is awake.
 	has := func(sandbox string) {
 		t.Helper()
-		if session, err := st.another().Session(ctx, id); err != nil || session.Sandbox != sandbox {
-			t.Errorf("sandbox = %q, want %q: %v", session.Sandbox, sandbox, err)
+		state := ""
+		if sandbox != "" {
+			state = store.SandboxAwake
+		}
+		if session, err := st.another().Session(ctx, id); err != nil || session.Sandbox != sandbox || session.SandboxState != state {
+			t.Errorf("sandbox = %q %q, want %q %q: %v", session.Sandbox, session.SandboxState, sandbox, state, err)
 		}
 	}
 	has("")
@@ -308,6 +313,64 @@ func (suite suite) testSetSandbox(t *testing.T) {
 	})
 	if given.Load() != 1 {
 		t.Errorf("%d of 8 concurrent SetSandbox calls succeeded, want 1", given.Load())
+	}
+}
+
+// SetSandboxState records the state of the sandbox that the session has, and
+// of no other.
+func (suite suite) testSetSandboxState(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	id := st.session()
+	for _, step := range []struct {
+		// from and to change the session's sandbox, if they differ. Otherwise
+		// the state of sandbox is recorded.
+		from, to       string
+		sandbox, state string
+		then           string
+	}{
+		// A session without a sandbox has no state.
+		{sandbox: "sandbox-1", state: store.SandboxAsleep, then: ""},
+		{sandbox: "", state: store.SandboxAsleep, then: ""},
+		{from: "", to: "sandbox-1", then: store.SandboxAwake},
+		{sandbox: "sandbox-1", state: store.SandboxAsleep, then: store.SandboxAsleep},
+		{sandbox: "sandbox-1", state: store.SandboxAsleep, then: store.SandboxAsleep},
+		// A sandbox that the session does not have, such as an earlier one.
+		{sandbox: "sandbox-0", state: store.SandboxAwake, then: store.SandboxAsleep},
+		{sandbox: "sandbox-1", state: store.SandboxAwake, then: store.SandboxAwake},
+		{sandbox: "sandbox-1", state: store.SandboxAsleep, then: store.SandboxAsleep},
+		// The next sandbox is awake, whatever the one before it was.
+		{from: "sandbox-1", to: "", then: ""},
+		{sandbox: "sandbox-1", state: store.SandboxAsleep, then: ""},
+		{from: "", to: "sandbox-2", then: store.SandboxAwake},
+		{sandbox: "sandbox-2", state: store.SandboxAsleep, then: store.SandboxAsleep},
+	} {
+		if step.from != step.to {
+			if set, err := st.SetSandbox(ctx, id, step.from, step.to); err != nil || !set {
+				t.Fatalf("SetSandbox(%q, %q) = %t, %v", step.from, step.to, set, err)
+			}
+		} else if err := st.SetSandboxState(ctx, id, step.sandbox, step.state); err != nil {
+			t.Fatalf("SetSandboxState(%q, %q) = %v", step.sandbox, step.state, err)
+		}
+		if session, err := st.another().Session(ctx, id); err != nil || session.SandboxState != step.then {
+			t.Errorf("sandbox state after %+v = %q, want %q: %v", step, session.SandboxState, step.then, err)
+		}
+	}
+	if err := st.SetSandboxState(ctx, uuid.New(), "sandbox-2", store.SandboxAwake); err != nil {
+		t.Errorf("SetSandboxState of a nonexistent session = %v", err)
+	}
+
+	// Sessions and EndSession return the state too.
+	session, err := st.Session(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := st.Sessions(ctx, session.AgentID, uuid.Nil, uuid.Max, 10)
+	if err != nil || len(sessions) != 1 || sessions[0].SandboxState != store.SandboxAsleep {
+		t.Errorf("Sessions = %+v, want one that is asleep: %v", sessions, err)
+	}
+	if ended, err := st.EndSession(ctx, id); err != nil || ended.Sandbox != "sandbox-2" || ended.SandboxState != store.SandboxAsleep {
+		t.Errorf("EndSession = %+v, want it with sandbox-2 asleep: %v", ended, err)
 	}
 }
 

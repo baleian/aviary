@@ -657,6 +657,17 @@ func asleep(t *testing.T, session string) {
 	})
 }
 
+// sandboxState returns what the session says of its sandbox: awake or asleep,
+// or nothing if it has none.
+func sandboxState(t *testing.T, session string) string {
+	t.Helper()
+	var read struct{ Sandbox string }
+	if status := request(t, "GET", "/v1/sessions/"+session, "", &read); status != http.StatusOK {
+		t.Fatalf("GET session %s: status %d, want 200", session, status)
+	}
+	return read.Sandbox
+}
+
 // sessionPods returns the pods of the session's sandbox, one while it runs.
 func sessionPods(t *testing.T, session string) []corev1.Pod {
 	t.Helper()
