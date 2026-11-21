@@ -117,7 +117,7 @@ export function seed(now) {
   const toolsGateway = provider(tools, 'Company gateway', 'https://llm.example.com/v1', 'stored', 4 * DAY - 2 * HOUR);
 
   const agent = (projectID, slug, name, description, harness, providerID, model, approval, instructions, ago) => {
-    const record = {id: id(ago), project_id: projectID, slug, name, description, harness, created_at: at(ago), model: {provider: providerID, name: model}};
+    const record = {id: id(ago), project_id: projectID, slug, name, description, harness, created_at: at(ago), updated_at: at(ago), model: {provider: providerID, name: model}};
     if (instructions) record.instructions = instructions;
     if (approval) record.approval = 'ask';
     db.agents.push(record);

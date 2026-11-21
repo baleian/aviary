@@ -4,12 +4,12 @@
 import {h, icon, use, time, num, code, clip, prefs, toClipboard, plural} from './util.js';
 import {api} from './api.js';
 import {app, project, can, person, sessionAccess, controls, NotFound} from './state.js';
-import {link, to, go} from './router.js';
+import {link, to, go, path} from './router.js';
 import {agentTile, label, chip, avatar, stateIcon, stateName, toast, oops, sentence, menu, item, confirm, wrong, copyButton, segmented, empty, loading, blank} from './ui.js';
 import {standing, standingText, endedText, title, suggest, sandboxBadge, sandboxMark} from './sessions.js';
 import {feed} from './feed.js';
 import {TurnView} from './turnview.js';
-import {providerOf} from './v-agents.js';
+import {providerOf, agentMenu} from './v-agents.js';
 
 // The page size of the lists, which is also the API's default.
 const PAGE = 20;
@@ -40,8 +40,10 @@ class Workspace {
     this.frame = h('section.sess' + (this.details ? '' : '.no-details'),
       h('aside.pane.list',
         h('div.l-h',
-          h('a.l-ag', {href: link(to.agents(context.project)), title: 'All agents of ' + label(context.project)},
-            agentTile(agent), h('div', h('b', label(agent)), h('small', agent.harness, ' · ', agent.model.name))),
+          h('div.l-top',
+            h('a.l-ag', {href: link(to.agents(context.project)), title: 'All agents of ' + label(context.project)},
+              agentTile(agent), h('div', h('b', label(agent)), h('small', agent.harness, ' · ', agent.model.name))),
+            agentMenu(context, agent, () => go(path()), 'sm')),
           this.runs ? start : null),
         h('div.pane-s',
           h('div.l-t', 'Sessions', this.readsAll && segmented([['all', 'All'], ['mine', 'Mine']], this.filter, (value) => { this.filter = value; this.drawList(); })),
@@ -719,9 +721,9 @@ export async function workspaceView(root, params, env) {
     context,
     cleanup: () => workspace.close(),
     // update shows another session of the same agent without drawing the
-    // workspace again.
+    // workspace again. An agent that was changed is drawn again.
     update(next) {
-      if (next.project !== params.project || next.agent !== params.agent) return false;
+      if (next.project !== params.project || next.agent !== params.agent || !context.agents.includes(agent)) return false;
       workspace.open(next.sid || null).catch(oops);
       return true;
     },

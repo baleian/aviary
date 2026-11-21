@@ -791,11 +791,9 @@ route('PUT', '/v1/providers/{id}', ({who, body}, id) => {
   return [200, providerRecord(provider)];
 });
 
-route('POST', '/v1/projects/{pid}/agents', ({who, body}, pid) => {
-  inProject(who, pid, 'agents.manage');
-  const request = decode(body, ['slug', 'name', 'description', 'harness', 'instructions', 'approval', 'model']);
-  checkSlug(text(request.slug));
-  if (!db.config.harnesses.includes(request.harness)) invalid('harness must be one of the configured harnesses');
+// agentSettings checks what a request sets of an agent of the project,
+// besides its slug and its harness, and returns it.
+function agentSettings(request, pid) {
   const approval = text(request.approval);
   if (approval && approval !== 'ask') invalid('approval must be "ask" or empty');
   if (request.model == null) invalid('model is required');
@@ -803,13 +801,41 @@ route('POST', '/v1/projects/{pid}/agents', ({who, body}, pid) => {
   const provider = UUID.test(request.model.provider) && db.providers.find((other) => other.id === request.model.provider && other.project_id === pid);
   if (!provider) invalid('model.provider must be the ID of a provider of the project');
   if (!text(request.model.name)) invalid('model.name is required');
+  const settings = {name: text(request.name), description: text(request.description)};
+  if (text(request.instructions)) settings.instructions = request.instructions;
+  if (approval) settings.approval = approval;
+  settings.model = {provider: provider.id, name: request.model.name};
+  return settings;
+}
+
+const AGENT = ['slug', 'name', 'description', 'harness', 'instructions', 'approval', 'model'];
+
+route('POST', '/v1/projects/{pid}/agents', ({who, body}, pid) => {
+  inProject(who, pid, 'agents.manage');
+  const request = decode(body, AGENT);
+  checkSlug(text(request.slug));
+  if (!db.config.harnesses.includes(request.harness)) invalid('harness must be one of the configured harnesses');
+  const settings = agentSettings(request, pid);
   if (db.agents.some((agent) => agent.project_id === pid && agent.slug === request.slug)) refuse(409, 'slug_taken', 'the slug is already taken');
-  const agent = {id: uuid7(), project_id: pid, slug: request.slug, name: text(request.name), description: text(request.description), harness: request.harness, created_at: iso()};
-  if (text(request.instructions)) agent.instructions = request.instructions;
-  if (approval) agent.approval = approval;
-  agent.model = {provider: provider.id, name: request.model.name};
+  const now = iso();
+  const agent = {id: uuid7(), project_id: pid, slug: request.slug, harness: request.harness, created_at: now, updated_at: now, ...settings};
   db.agents.push(agent);
   return [201, agent];
+});
+route('PUT', '/v1/agents/{aid}', ({who, body}, aid) => {
+  const agent = one(db.agents, aid);
+  may(who, agent.project_id, 'agents.manage');
+  const request = decode(body, AGENT);
+  // The slug and the harness stay: the body leaves them out, or as they are.
+  if (text(request.slug) && request.slug !== agent.slug) invalid('slug cannot be changed');
+  if (text(request.harness) && request.harness !== agent.harness) invalid('harness cannot be changed');
+  const settings = agentSettings(request, agent.project_id);
+  // The rest is replaced together: what the body leaves out is empty
+  // afterwards.
+  delete agent.instructions;
+  delete agent.approval;
+  Object.assign(agent, settings, {updated_at: iso()});
+  return [200, agent];
 });
 route('GET', '/v1/projects/{pid}/agents', ({who}, pid) => {
   inProject(who, pid, 'project.view');
