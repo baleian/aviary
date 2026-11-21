@@ -665,8 +665,9 @@ make e2e           # all components together, in a kind cluster of its own
 
 None of them needs a model: a mock model server answers from a script. All
 but `make e2e` also need Rust, which rustup installs in the version that
-`rust-toolchain.toml` names. `make e2e` creates its own cluster and deletes
-it when the tests pass, so it does not touch the cluster of
+`rust-toolchain.toml` names. `make lint` also needs Node.js for the code in
+`web/`, and is tested with Node.js 26. `make e2e` creates its own cluster
+and deletes it when the tests pass, so it does not touch the cluster of
 `make cluster-up`. [test/README.md](test/README.md) describes what each of
 them checks, how to run some of the tests, and where a new test goes.
 

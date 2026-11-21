@@ -74,7 +74,7 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 	--env AVIARY_TEST_REDIS_URL=redis://default:test@events-redis:6379 \
 	--env AVIARY_TEST_SECRET_STORE_URL=http://secret-store:8200
 
-.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down secret-store identity-provider headlamp grafana build images secrets deploy e2e e2e-up e2e-run e2e-down
+.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down secret-store identity-provider headlamp grafana web-dev build images secrets deploy e2e e2e-up e2e-run e2e-down
 
 # Generates the Go code of the SQL queries. Run it after changing a query or
 # a migration.
@@ -83,13 +83,14 @@ sqlc:
 
 # Checks formatting, runs the linters, and checks that the generated code is
 # up to date.
-lint:
+lint: web/node_modules/.package-lock.json
 	@files=$$($(call IN_GO) gofmt -l supervisor test) || exit 1; \
 		[ -z "$$files" ] || { echo "gofmt would change these files:"; echo "$$files"; exit 1; }
 	for module in supervisor test test/mock-llm test/plugin; do $(call GO,$$module) vet ./... || exit 1; done
 	cargo fmt --all --check
 	cargo clippy --locked --all-targets -- --deny warnings
 	$(SQLC_RUN) diff
+	cd web && npm run lint
 
 # Runs the tests that need no cluster, in parallel. TESTS narrows a single
 # target, for example
@@ -161,6 +162,11 @@ $(AGENT_SANDBOX_MANIFEST):
 		https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$(AGENT_SANDBOX)/sandbox.yaml
 	echo "$(AGENT_SANDBOX_SHA256)  $@.new" | sha256sum --check --quiet
 	mv $@.new $@
+
+# Installs the packages of the console in the versions that
+# web/package-lock.json names.
+web/node_modules/.package-lock.json: web/package-lock.json
+	cd web && npm ci
 
 cluster-up: $(AGENT_SANDBOX_MANIFEST)
 	kind get clusters 2>/dev/null | grep -qx $(CLUSTER) || \
@@ -253,6 +259,11 @@ grafana:
 		--values hack/kind/grafana-values.yaml \
 		--wait
 	@echo "Grafana is at http://localhost:3000"
+
+# Serves the console at http://localhost:5173 from its source in web/. A
+# change to the source shows in the browser when the file is saved.
+web-dev: web/node_modules/.package-lock.json
+	cd web && npm run dev
 
 build:
 	docker build --file images/supervisor/Dockerfile --tag $(SUPERVISOR_IMAGE) .
