@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Joins the files under src/ into one page, index.html.
+"""Joins the mock into one page, index.html.
 
     python3 web/mock/build.py
 
 - src/page.html is the page. The styles, the sprite and the script go in
   place of /*@css*/, <!--@sprite--> and /*@js*/.
-- src/css/*.css are joined in the order of their names.
+- The styles and the sprite are those of the console, in ../src/styles and
+  ../src/assets. The styles of the mock itself, src/css/*.css, come after
+  them.
 - The modules are collected from src/js/main.js along its imports. Each is
   wrapped in a function, so that other modules see only what it exports. The
   build fails if a module imports a name that the other does not export.
@@ -24,6 +26,9 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent
 SRC = ROOT / "src"
+CONSOLE = ROOT.parent / "src"
+# The styles of the console, in the order in which it loads them.
+STYLES = ["tokens.css", "base.css", "shell.css", "screens.css"]
 
 IMPORT = re.compile(r"^import\s*\{([^}]*)\}\s*from\s*'(\.[^']+)';?[ \t]*$", re.M)
 EXPORT = re.compile(r"^export\s+((?:async\s+)?function\*?|const|let|class)\s+([A-Za-z_$][\w$]*)", re.M)
@@ -85,8 +90,9 @@ def bundle():
 
 def main():
     page = (SRC / "page.html").read_text()
-    css = "\n".join(path.read_text().strip() for path in sorted((SRC / "css").glob("*.css")))
-    sprite = (SRC / "sprite.svg").read_text().strip()
+    styles = [CONSOLE / "styles" / name for name in STYLES] + sorted((SRC / "css").glob("*.css"))
+    css = "\n".join(path.read_text().strip() for path in styles)
+    sprite = (CONSOLE / "assets" / "sprite.svg").read_text().strip()
     script = bundle().replace("</script", "<\\/script")
     for mark, text in (("/*@css*/", css), ("<!--@sprite-->", sprite), ("/*@js*/", script)):
         if page.count(mark) != 1:

@@ -1,5 +1,6 @@
 /* The bars of the mock. They are not part of the product, and keep one look
    in both themes. */
+:root { --mock-top: 32px; }
 .mock {
   position: fixed; inset: 0 0 auto 0; height: 32px; z-index: 200; display: flex; align-items: center; gap: 14px; padding: 0 12px 0 14px;
   background: #1C1E21; color: #A6ABB3; font: 500 12px/1 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; word-spacing: 0; white-space: nowrap;

@@ -1,3 +1,10 @@
+import { Bar } from "./shell/Bar.tsx";
+
 export function App() {
-  return <h1>Aviary</h1>;
+  return (
+    <>
+      <Bar />
+      <main id="view" />
+    </>
+  );
 }

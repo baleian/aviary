@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <!-- The logo of src/assets/sprite.svg, with its colours written out. -->
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2E90FA"/>
+      <stop offset="1" stop-color="#0A5FD6"/>
+    </linearGradient>
+    <mask id="cut" maskUnits="userSpaceOnUse" x="0" y="0" width="48" height="48">
+      <rect width="48" height="48" fill="#fff"/>
+      <path d="M9 39Q18 25 44 22.5Q33 39.5 9 39Z" fill="#000" stroke="#000" stroke-width="3.4" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+  <rect width="48" height="48" rx="13" fill="url(#sky)"/>
+  <svg x="8.5" y="8" width="30" height="30" viewBox="0 0 48 48">
+    <path d="M24 9 40 40" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" mask="url(#cut)"/>
+    <path d="M9 39Q18 25 44 22.5Q33 39.5 9 39Z" fill="#FFC53D"/>
+    <path d="M8 40 24 9" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round"/>
+  </svg>
+</svg>

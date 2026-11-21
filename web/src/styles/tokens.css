@@ -97,16 +97,16 @@
   --ring: 0 0 0 3px rgba(11, 111, 224, 0.24);
 
   --sans:
-    "Plus Jakarta Sans", "Pretendard Variable", "Pretendard", ui-sans-serif,
-    system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
-    "Noto Sans KR", "Malgun Gothic", sans-serif;
+    "Plus Jakarta Sans Variable", "Plus Jakarta Sans", "Pretendard Variable",
+    "Pretendard", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "Noto Sans KR", "Malgun Gothic", sans-serif;
   --mono:
-    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
-    "Liberation Mono", "Pretendard Variable", "Pretendard", "Noto Sans KR",
-    monospace;
+    "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular,
+    Menlo, Consolas, "Liberation Mono", "Pretendard Variable", "Pretendard",
+    "Noto Sans KR", monospace;
 
-  /* The bars of the mock, which are not part of the product. */
-  --mock-top: 32px;
+  /* The room that the bars of the mock take, which the mock sets. */
+  --mock-top: 0px;
   --mock-bottom: 0px;
   --nav-h: 60px;
 }
