@@ -158,6 +158,13 @@ export function Bar({ me }: { me: Me }) {
       {project && (
         <nav className="navt" aria-label="Project">
           <NavLink
+            to={`/p/${project.slug}`}
+            end
+            className={({ isActive }) => (isActive ? "on" : undefined)}
+          >
+            Overview
+          </NavLink>
+          <NavLink
             to={`/p/${project.slug}/agents`}
             className={({ isActive }) => (isActive ? "on" : undefined)}
           >

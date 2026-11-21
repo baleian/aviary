@@ -23,7 +23,9 @@ it("creates a project, and opens it", async () => {
   expect((slug as HTMLInputElement).value).toBe("billing");
 
   await user.click(dialog.getByRole("button", { name: "Create project" }));
-  expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+  expect(
+    await screen.findByRole("heading", { name: /Billing 2!/ }),
+  ).toBeTruthy();
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(screen.getByRole("status").textContent).toContain(
     "Created Billing 2!",
@@ -32,7 +34,8 @@ it("creates a project, and opens it", async () => {
   expect(
     screen.getByRole("button", { name: /Billing 2!/ }).className,
   ).toContain("sw-b");
-  expect(screen.getByText("No agents yet")).toBeTruthy();
+  // A new project begins with its first steps.
+  expect(screen.getByRole("link", { name: "Add a provider" })).toBeTruthy();
 });
 
 it("says what is wrong with a project, and keeps the dialog", async () => {
@@ -85,7 +88,7 @@ it("moves between the projects in the bar", async () => {
     await screen.findByRole("button", { name: /Data Platform/ }),
   ).toBeTruthy();
   expect(screen.queryByRole("menu")).toBeNull();
-  expect(document.title).toBe("Agents · Data Platform · Aviary");
+  expect(document.title).toBe("Overview · Data Platform · Aviary");
 
   await user.click(screen.getByRole("button", { name: /Data Platform/ }));
   await user.click(screen.getByRole("menuitem", { name: "New project" }));
@@ -104,8 +107,9 @@ it("comes back to the project that was last in view", async () => {
   open("/p/data-platform/agents", "alice");
   await screen.findByRole("heading", { name: "Agents" });
   again("/", "alice");
-  expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
-  expect(screen.getByRole("button", { name: /Data Platform/ })).toBeTruthy();
+  expect(
+    await screen.findByRole("heading", { name: /Data Platform/, level: 1 }),
+  ).toBeTruthy();
 });
 
 it("begins at the projects for a caller who was in none", async () => {

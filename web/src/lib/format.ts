@@ -80,3 +80,12 @@ export function sentence(message: string): string {
 export function label(record: { name: string; slug: string }): string {
   return record.name || record.slug;
 }
+
+export function num(value: number): string {
+  return value.toLocaleString("en-US");
+}
+
+// plural counts things in words: "1 member", "3 members".
+export function plural(count: number, one: string, many = one + "s"): string {
+  return `${num(count)} ${count === 1 ? one : many}`;
+}

@@ -85,3 +85,66 @@ export interface Agent {
 export interface Harness {
   name: string;
 }
+
+export interface SecretStore {
+  id: string;
+  project_id: string;
+  name: string;
+  // How the store is accessed, such as "kv-v2".
+  kind: string;
+  settings?: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+// What a tool call does, as its harness reports it.
+export interface ToolCall {
+  id?: string;
+  title?: string;
+  kind?: string;
+  input?: unknown;
+}
+
+// A request of an agent to a person, to approve what it is about to do.
+export interface ApprovalRequest {
+  id: string;
+  tool_call?: ToolCall;
+  options: { id: string; name: string; kind: string }[];
+}
+
+export type TurnState =
+  "queued" | "running" | "completed" | "failed" | "cancelled" | "expired";
+
+// A turn: a message to a session, and what the agent did with it. A session
+// carries its newest turn without the text.
+export interface Turn {
+  id: string;
+  session_id: string;
+  // The place of the turn in its session, from 1.
+  seq: number;
+  state: TurnState;
+  text?: string;
+  created_by?: string;
+  created_at: string;
+  // When the harness had the message.
+  started_at?: string;
+  ended_at?: string;
+  cancel_requested_at?: string;
+  failure?: { reason: string; message?: string };
+  // The requests that wait for an answer, while the turn has not ended.
+  approvals?: ApprovalRequest[];
+}
+
+export interface Session {
+  id: string;
+  agent_id: string;
+  title: string;
+  created_by?: string;
+  created_at: string;
+  ended_at?: string;
+  // Why the session ended, unless a caller ended it.
+  end_reason?: "expired" | "agent_deleted";
+  // Absent before the first turn and after the session has ended.
+  sandbox?: "awake" | "asleep" | "lost";
+  last_turn?: Turn;
+}

@@ -57,6 +57,15 @@ export function AgentTile({
   );
 }
 
+export function RoleBadge({ role }: { role: string }) {
+  return (
+    <span className={`role r-${role}`}>
+      {role === "auditor" && <Icon name="eye" />}
+      {role}
+    </span>
+  );
+}
+
 export function AdminBadge({ text = "Admin" }: { text?: string }) {
   return (
     <span className="adm">

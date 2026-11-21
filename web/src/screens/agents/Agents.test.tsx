@@ -31,6 +31,9 @@ it("lists the agents of a project", async () => {
   const unnamed = screen.getByRole("link", { name: /release-helper/ });
   expect(unnamed.textContent).toContain("No description");
   expect(document.title).toBe("Agents · Storefront · Aviary");
+  // The bar marks the screen that is in view, and no other.
+  expect(screen.getByRole("link", { name: "Agents" }).className).toBe("on");
+  expect(screen.getByRole("link", { name: "Overview" }).className).toBe("");
 });
 
 it("creates an agent", async () => {

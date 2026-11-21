@@ -156,7 +156,9 @@ export function uuid7(ms = Date.now(), random = Math.random) {
   else { lastStamp = ms; sequence = 0; }
   const hex = (n, width) => Math.floor(n).toString(16).padStart(width, '0').slice(-width);
   const stamp = hex(ms, 12);
-  const a = hex(sequence + random() * 0x100, 3);
+  // The IDs of one millisecond are told apart by their place in it, which
+  // comes before what is random.
+  const a = hex(sequence * 0x10 + random() * 0x10, 3);
   const b = hex(0x8000 + random() * 0x3fff, 4);
   const c = hex(random() * 0xffffff, 6) + hex(random() * 0xffffff, 6);
   return `${stamp.slice(0, 8)}-${stamp.slice(8)}-7${a}-${b}-${c}`;

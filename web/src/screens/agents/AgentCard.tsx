@@ -10,17 +10,20 @@ import { Icon } from "../../ui/Icon.tsx";
 import { Time } from "../../ui/Time.tsx";
 
 // AgentCard is the card of an agent, which leads to its sessions. A full
-// card also says what the agent is for and when it was created. more, a
-// button, takes the corner of the card.
+// card also says what the agent is for and when it was created. badge
+// stands in the corner of the card instead of its arrow, and more, a
+// button, takes the corner for itself.
 export function AgentCard({
   context,
   agent,
   full,
+  badge,
   more,
 }: {
   context: ProjectContext;
   agent: Tinted<Agent>;
   full?: boolean;
+  badge?: ReactNode;
   more?: ReactNode;
 }) {
   const provider = context.providers.find(
@@ -33,11 +36,12 @@ export function AgentCard({
     >
       <div className="top">
         <AgentTile agent={agent} size="xl" />
-        {!more && (
-          <span className="go">
-            <Icon name="out" />
-          </span>
-        )}
+        {!more &&
+          (badge || (
+            <span className="go">
+              <Icon name="out" />
+            </span>
+          ))}
       </div>
       <h3>
         {label(agent)}

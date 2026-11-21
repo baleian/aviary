@@ -10,6 +10,7 @@ import type {
   Project,
   Provider,
   Role,
+  SecretStore,
 } from "./types.ts";
 
 export const PERMISSIONS: Permission[] = [
@@ -26,6 +27,7 @@ export interface ProjectContext {
   project: Tinted<Project>;
   agents: Tinted<Agent>[];
   providers: Provider[];
+  stores: SecretStore[];
   members: Member[];
   roles: Role[];
   // What the caller may do in the project.
@@ -37,6 +39,7 @@ export interface ProjectContext {
 export const keys = {
   agents: (project: string) => ["agents", project],
   providers: (project: string) => ["providers", project],
+  stores: (project: string) => ["stores", project],
   members: (project: string) => ["members", project],
   roles: ["roles"],
 };
@@ -85,7 +88,7 @@ export function useProjectContext(slug: string): Found {
   const project = projects?.find((other) => other.slug === slug);
   const id = project?.id ?? "";
   const base = "/v1/projects/" + id;
-  const [agents, providers, members, roles] = useQueries({
+  const [agents, providers, stores, members, roles] = useQueries({
     queries: [
       {
         queryKey: keys.agents(id),
@@ -98,6 +101,16 @@ export function useProjectContext(slug: string): Found {
         queryFn: async () =>
           (await api.get<{ providers: Provider[] }>(base + "/providers"))
             .providers,
+        enabled: !!project,
+      },
+      {
+        queryKey: keys.stores(id),
+        queryFn: async () =>
+          (
+            await api.get<{ secret_stores: SecretStore[] }>(
+              base + "/secret-stores",
+            )
+          ).secret_stores,
         enabled: !!project,
       },
       {
@@ -117,22 +130,30 @@ export function useProjectContext(slug: string): Found {
 
   const context = useMemo(() => {
     if (!me || !project) return undefined;
-    if (!agents.data || !providers.data || !members.data || !roles.data) {
-      return undefined;
-    }
+    if (!agents.data || !providers.data || !stores.data) return undefined;
+    if (!members.data || !roles.data) return undefined;
     return {
       project,
       agents: agents.data.map((agent, tint) => ({ ...agent, tint })),
       providers: providers.data,
+      stores: stores.data,
       members: members.data,
       roles: roles.data,
       permissions: permissionsIn(me, members.data, roles.data),
     };
-  }, [me, project, agents.data, providers.data, members.data, roles.data]);
+  }, [
+    me,
+    project,
+    agents.data,
+    providers.data,
+    stores.data,
+    members.data,
+    roles.data,
+  ]);
 
   if (!projects) return { state: "pending" };
   if (!project) return { state: "missing" };
-  const error = [agents, providers, members, roles].find(
+  const error = [agents, providers, stores, members, roles].find(
     (query) => query.error,
   )?.error;
   if (error) {

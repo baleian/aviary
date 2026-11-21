@@ -3,6 +3,7 @@ import { useProjects } from "./api/queries.ts";
 import { prefs } from "./lib/prefs.ts";
 import { Account } from "./screens/Account.tsx";
 import { Agents } from "./screens/agents/Agents.tsx";
+import { Overview } from "./screens/Overview.tsx";
 import { Projects } from "./screens/Projects.tsx";
 import { SignIn } from "./screens/SignIn.tsx";
 import { ProjectFrame } from "./shell/ProjectFrame.tsx";
@@ -31,7 +32,7 @@ export function App() {
           <Route index element={<Home />} />
           <Route path="/projects" element={<Projects />} />
           <Route path="/p/:project" element={<ProjectFrame />}>
-            <Route index element={<Navigate to="agents" replace />} />
+            <Route index element={<Overview />} />
             <Route path="agents" element={<Agents />} />
             <Route path="*" element={<NotFound />} />
           </Route>
