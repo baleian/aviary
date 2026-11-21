@@ -10,3 +10,11 @@ export interface Me {
   groups?: string[];
   admin: boolean;
 }
+
+export interface Project {
+  id: string;
+  slug: string;
+  // For display only, and empty if the project was given none.
+  name: string;
+  created_at: string;
+}

@@ -27,7 +27,7 @@ script: each message to a session is an instruction, such as `say done` or
 | `test-chart` | `test/chart/` | The chart rendered with its default values and with the values files in the directory. |
 | `test-proxy` | `test/proxy/` | Envoy with the configuration that the chart renders. The test plays the sandbox, the Supervisor, the model endpoint and the outside hosts. |
 | `test-mock-llm` | `test/mock-llm/` | The mock model server. |
-| `test-web` | `web/` | Node.js, with the API answered in memory. The tests are next to the code, in `*.test.ts`. |
+| `test-web` | `web/` | Node.js, with the API answered in memory, and the screens in a DOM without a browser. The tests are next to the code, in `*.test.ts` and `*.test.tsx`. |
 
 `TESTS` selects tests. It is passed to `go test`, `cargo test` or Vitest:
 
