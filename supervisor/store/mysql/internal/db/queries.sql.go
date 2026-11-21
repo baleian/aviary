@@ -112,9 +112,10 @@ func (q *Queries) AnswerApproval(ctx context.Context, arg AnswerApprovalParams) 
 
 const answers = `-- name: Answers :many
 select approvals.turn_id, approvals.id, coalesce(approvals.option_id, '') as option_id
-from approvals
-join turns on turns.id = approvals.turn_id
-where approvals.answered_at is not null and approvals.resolved_at is null and turns.ended_at is null
+from turns
+join approvals on approvals.turn_id = turns.id
+where turns.state in ('dispatching', 'running')
+  and approvals.answered_at is not null and approvals.resolved_at is null
   and (? is null or approvals.turn_id = ?)
 `
 
@@ -129,7 +130,9 @@ type AnswersRow struct {
 }
 
 // Lists the answers not yet delivered to the harnesses of unfinished turns:
-// those of the turn, or of all turns if turn_id is null.
+// those of the turn, or of all turns if turn_id is null. Only dispatched
+// turns have requests, and they are found by their state, which has an
+// index: the requests of all turns that have ended are not read.
 func (q *Queries) Answers(ctx context.Context, arg AnswersParams) ([]AnswersRow, error) {
 	rows, err := q.db.QueryContext(ctx, answers, arg.TurnID, arg.TurnID)
 	if err != nil {
@@ -172,33 +175,6 @@ func (q *Queries) CancelQueuedTurn(ctx context.Context, id key.ID) error {
 	return err
 }
 
-const cancellingTurns = `-- name: CancellingTurns :many
-select id from turns where ended_at is null and cancel_requested_at is not null
-`
-
-func (q *Queries) CancellingTurns(ctx context.Context) ([]key.ID, error) {
-	rows, err := q.db.QueryContext(ctx, cancellingTurns)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []key.ID
-	for rows.Next() {
-		var id key.ID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		items = append(items, id)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const claimMembers = `-- name: ClaimMembers :exec
 update project_members
 join users on users.username = project_members.username
@@ -233,6 +209,41 @@ func (q *Queries) CountRunningTurns(ctx context.Context) (int64, error) {
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const countSandboxes = `-- name: CountSandboxes :many
+select sandbox_state as state, count(*) as sandboxes from sessions
+where sandbox is not null and ended_at is null
+group by sandbox_state
+`
+
+type CountSandboxesRow struct {
+	State     *string
+	Sandboxes int64
+}
+
+// Counts the sandboxes of the sessions that have not ended, by state.
+func (q *Queries) CountSandboxes(ctx context.Context) ([]CountSandboxesRow, error) {
+	rows, err := q.db.QueryContext(ctx, countSandboxes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CountSandboxesRow
+	for rows.Next() {
+		var i CountSandboxesRow
+		if err := rows.Scan(&i.State, &i.Sandboxes); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const createAgent = `-- name: CreateAgent :execrows
@@ -1613,6 +1624,58 @@ func (q *Queries) ListTurns(ctx context.Context, arg ListTurnsParams) ([]Turn, e
 			&i.ThoughtTokens,
 			&i.CachedReadTokens,
 			&i.CachedWriteTokens,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUnfinishedTurns = `-- name: ListUnfinishedTurns :many
+select agents.harness, turns.state, turns.started_at is not null as started,
+       cast(timestampdiff(microsecond, coalesce(turns.dispatched_at, turns.created_at), now(6)) as signed) as age,
+       (select count(*) from approvals
+        where approvals.turn_id = turns.id and approvals.answered_at is null and approvals.resolved_at is null) as asking
+from turns
+join sessions on sessions.id = turns.session_id
+join agents on agents.id = sessions.agent_id
+where turns.state in ('queued', 'dispatching', 'running')
+`
+
+type ListUnfinishedTurnsRow struct {
+	Harness string
+	State   string
+	Started bool
+	Age     int64
+	Asking  int64
+}
+
+// Lists the turns that have not ended, which are found by their state. age is
+// the microseconds since the turn left the queue or, for a queued turn, since
+// its message. asking is the number of its approval requests that wait for a
+// person.
+func (q *Queries) ListUnfinishedTurns(ctx context.Context) ([]ListUnfinishedTurnsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listUnfinishedTurns)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListUnfinishedTurnsRow
+	for rows.Next() {
+		var i ListUnfinishedTurnsRow
+		if err := rows.Scan(
+			&i.Harness,
+			&i.State,
+			&i.Started,
+			&i.Age,
+			&i.Asking,
 		); err != nil {
 			return nil, err
 		}

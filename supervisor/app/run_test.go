@@ -127,7 +127,7 @@ func TestRunMigrates(t *testing.T) {
 			t.Errorf("Run(%q): plugin calls %q, error %v", test.args, build.asked, err)
 		}
 	}
-	for _, wrong := range [][]string{{"migrate", "latest"}, {"migrate", "7", "8"}, {"serve"}} {
+	for _, wrong := range [][]string{{"migrate", "latest"}, {"migrate", "7", "8"}, {"serve"}, {"state-metrics", "7"}} {
 		build := &build{}
 		if err := Run(ctx, wrong, build.plugins()); err == nil || len(build.asked) != 0 {
 			t.Errorf("Run(%q): plugin calls %q, error %v; want an error and no calls", wrong, build.asked, err)
@@ -141,6 +141,22 @@ func TestRunMigrates(t *testing.T) {
 	t.Setenv(databaseURL, "")
 	if err := Run(ctx, []string{"migrate"}, (&build{}).plugins()); err == nil || !strings.Contains(err.Error(), databaseURL) {
 		t.Errorf("migrate without a database URL: %v, want an error naming the setting", err)
+	}
+}
+
+// "state-metrics" needs the harnesses, and reads the database through the
+// plugin selected by the URL scheme.
+func TestRunServesStateMetricsFromTheDatabase(t *testing.T) {
+	t.Setenv(databaseURL, "postgres://user:secret@db.example/aviary")
+	t.Setenv(harnesses, "")
+	err := Run(context.Background(), []string{"state-metrics"}, (&build{}).plugins())
+	if err == nil || !strings.Contains(err.Error(), harnesses) {
+		t.Errorf("state-metrics without harnesses: %v, want an error naming the setting", err)
+	}
+	t.Setenv(harnesses, `{"opencode": {"image": "registry.example/opencode:1"}}`)
+	err = Run(context.Background(), []string{"state-metrics"}, (&build{}).plugins())
+	if err == nil || !strings.Contains(err.Error(), "records") || strings.Contains(err.Error(), "secret") {
+		t.Errorf("state-metrics with an unknown database scheme: %v, want an error listing the schemes without the password", err)
 	}
 }
 

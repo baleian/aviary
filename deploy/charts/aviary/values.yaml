@@ -63,6 +63,16 @@ supervisor:
     # every authenticated user may.
     users: []
 
+# The state metrics of the installation, such as the number of sandboxes in
+# each state. A pod of its own serves them from the database, with the image
+# of the Supervisor: the Supervisors report only their own work.
+stateMetrics:
+  enabled: true
+  podAnnotations: {}
+  resources:
+    requests: {cpu: 10m, memory: 64Mi}
+    limits: {memory: 128Mi}
+
 # The Egress Proxy, which all outbound traffic of the sandboxes goes through.
 # It forwards model requests to the model provider of the turn with the
 # provider's API key, and logs every request with its turn.

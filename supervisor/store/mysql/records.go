@@ -597,6 +597,20 @@ func (s *records) SessionsWithSandbox(ctx context.Context) ([]store.Session, err
 	return sessions, nil
 }
 
+func (s *records) SandboxCounts(ctx context.Context) (map[string]int, error) {
+	rows, err := s.queries.CountSandboxes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	counts := make(map[string]int, len(rows))
+	for _, row := range rows {
+		if row.State != nil {
+			counts[*row.State] = int(row.Sandboxes)
+		}
+	}
+	return counts, nil
+}
+
 func (s *records) EndSession(ctx context.Context, id uuid.UUID, reason string) (store.Session, error) {
 	var session store.Session
 	params := db.EndSessionParams{ID: key.ID(id)}
@@ -859,11 +873,6 @@ func ids(rows []key.ID) []uuid.UUID {
 	return ids
 }
 
-func (s *records) CancellingTurns(ctx context.Context) ([]uuid.UUID, error) {
-	rows, err := s.queries.CancellingTurns(ctx)
-	return ids(rows), err
-}
-
 func (s *records) Turn(ctx context.Context, id uuid.UUID) (store.Turn, error) {
 	row, err := s.queries.GetTurn(ctx, key.ID(id))
 	return turnFrom(row), found(err)
@@ -1005,6 +1014,20 @@ func (s *records) DispatchedTurns(ctx context.Context) ([]store.DispatchedTurn, 
 	turns := make([]store.DispatchedTurn, len(rows))
 	for i, row := range rows {
 		turns[i] = store.DispatchedTurn{ID: uuid.UUID(row.ID), Cancelling: since(row.Cancelling)}
+	}
+	return turns, nil
+}
+
+func (s *records) UnfinishedTurns(ctx context.Context) ([]store.UnfinishedTurn, error) {
+	rows, err := s.queries.ListUnfinishedTurns(ctx)
+	if err != nil {
+		return nil, err
+	}
+	turns := make([]store.UnfinishedTurn, len(rows))
+	for i, row := range rows {
+		turns[i] = store.UnfinishedTurn{
+			Harness: row.Harness, State: row.State, Started: row.Started, Age: since(row.Age), Asking: int(row.Asking),
+		}
 	}
 	return turns, nil
 }

@@ -300,6 +300,22 @@ type DispatchedTurn struct {
 	Cancelling time.Duration
 }
 
+// UnfinishedTurn is a turn that has not ended, as the state metrics count it.
+type UnfinishedTurn struct {
+	// Harness is that of the session's agent.
+	Harness string
+	// State is TurnQueued, TurnDispatching or TurnRunning.
+	State string
+	// Started reports whether the harness has received the message.
+	Started bool
+	// Age is how long ago the turn left the queue or, for a queued turn, how
+	// long ago its message was sent.
+	Age time.Duration
+	// Asking is the number of the turn's approval requests that wait for a
+	// person's answer.
+	Asking int
+}
+
 // FollowedTurn is a turn with what the Supervisor that follows it needs to
 // run it.
 type FollowedTurn struct {
@@ -500,6 +516,11 @@ type Store interface {
 	// particular order. Sessions that have ended are among them.
 	SessionsWithSandbox(ctx context.Context) ([]Session, error)
 
+	// SandboxCounts returns the number of sandboxes in each state, keyed by
+	// state. It counts the sandboxes of the sessions that have not ended. A
+	// state without sandboxes may be absent from the map.
+	SandboxCounts(ctx context.Context) (map[string]int, error)
+
 	// EndSession ends the session, which then accepts no messages, and
 	// returns it, including its sandbox. reason is EndExpired, or empty if a
 	// caller ends the session. A session that has already ended is returned
@@ -556,10 +577,6 @@ type Store interface {
 	// positions are never announced out of order.
 	AnnounceQueue(ctx context.Context, announce func(queued []uuid.UUID) error) error
 
-	// CancellingTurns returns the unfinished turns whose cancellation was
-	// requested.
-	CancellingTurns(ctx context.Context) ([]uuid.UUID, error)
-
 	Turn(ctx context.Context, id uuid.UUID) (Turn, error)
 
 	// Turns returns up to limit turns of the session with sequence numbers
@@ -590,6 +607,10 @@ type Store interface {
 	ExpireTurns(ctx context.Context, wait time.Duration) ([]Turn, error)
 
 	DispatchedTurns(ctx context.Context) ([]DispatchedTurn, error)
+
+	// UnfinishedTurns returns the turns that have not ended, in no particular
+	// order.
+	UnfinishedTurns(ctx context.Context) ([]UnfinishedTurn, error)
 
 	// FollowTurn marks a dispatched turn as running and returns it to the
 	// Supervisor that follows it, which runs the turn and records its outcome.

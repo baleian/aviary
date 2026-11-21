@@ -687,6 +687,63 @@ func (suite suite) testSessionsWithSandbox(t *testing.T) {
 	}
 }
 
+// SandboxCounts counts the sandboxes of the sessions that have not ended, by
+// state.
+func (suite suite) testSandboxCounts(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	// A state without sandboxes may be absent or zero.
+	counted := func() map[string]int {
+		t.Helper()
+		counts, err := st.another().SandboxCounts(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		maps.DeleteFunc(counts, func(_ string, sandboxes int) bool { return sandboxes == 0 })
+		return counts
+	}
+	if counts := counted(); len(counts) != 0 {
+		t.Errorf("SandboxCounts of a database without sessions = %v, want none", counts)
+	}
+	sandbox := func(state string) uuid.UUID {
+		t.Helper()
+		id := st.session()
+		name := "sandbox-of-" + id.String()
+		if set, err := st.SetSandbox(ctx, id, "", name); err != nil || !set {
+			t.Fatalf("SetSandbox = %t, %v", set, err)
+		}
+		if err := st.SetSandboxState(ctx, id, name, state); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	sandbox(store.SandboxAwake)
+	woken := sandbox(store.SandboxAsleep)
+	sandbox(store.SandboxAsleep)
+	sandbox(store.SandboxAsleep)
+	sandbox(store.SandboxLost)
+	// Sessions without a sandbox, and one that has ended, are not counted.
+	st.session()
+	deleted, ended := sandbox(store.SandboxAwake), sandbox(store.SandboxAsleep)
+	if set, err := st.SetSandbox(ctx, deleted, "sandbox-of-"+deleted.String(), ""); err != nil || !set {
+		t.Fatalf("SetSandbox = %t, %v", set, err)
+	}
+	if _, err := st.EndSession(ctx, ended, ""); err != nil {
+		t.Fatal(err)
+	}
+	expected := map[string]int{store.SandboxAwake: 1, store.SandboxAsleep: 3, store.SandboxLost: 1}
+	if counts := counted(); !maps.Equal(counts, expected) {
+		t.Errorf("SandboxCounts = %v, want %v", counts, expected)
+	}
+	if err := st.SetSandboxState(ctx, woken, "sandbox-of-"+woken.String(), store.SandboxAwake); err != nil {
+		t.Fatal(err)
+	}
+	expected = map[string]int{store.SandboxAwake: 2, store.SandboxAsleep: 2, store.SandboxLost: 1}
+	if counts := counted(); !maps.Equal(counts, expected) {
+		t.Errorf("SandboxCounts after a sandbox woke = %v, want %v", counts, expected)
+	}
+}
+
 // Sessions pages through the sessions of an agent newest first, all of them
 // or those of one user.
 func (suite suite) testListSessions(t *testing.T) {

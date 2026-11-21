@@ -111,6 +111,7 @@ func Run(t *testing.T, create func(t *testing.T) Database) {
 		"SetSandbox":                           suite.testSetSandbox,
 		"SetSandboxState":                      suite.testSetSandboxState,
 		"SessionsWithSandbox":                  suite.testSessionsWithSandbox,
+		"SandboxCounts":                        suite.testSandboxCounts,
 		"SessionTurn":                          suite.testSessionTurn,
 		"SessionTitles":                        suite.testSessionTitles,
 		"EndSession":                           suite.testEndSession,
@@ -145,6 +146,7 @@ func Run(t *testing.T, create func(t *testing.T) Database) {
 		"Turns":                                suite.testTurns,
 		"LastTurns":                            suite.testLastTurns,
 		"DispatchedTurns":                      suite.testDispatchedTurns,
+		"UnfinishedTurns":                      suite.testUnfinishedTurns,
 		"NotFound":                             suite.testNotFound,
 		"Approvals":                            suite.testApprovals,
 	} {

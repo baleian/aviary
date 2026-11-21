@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "Turns, latency, tokens and egress of an Aviary installation, from the metrics of its Supervisors and Egress Proxies.",
+  "description": "Sandboxes, turns, latency, tokens and egress of an Aviary installation, from its metrics.",
   "editable": true,
   "graphTooltip": 1,
   "links": [],
@@ -71,17 +71,25 @@
     },
     {
       "type": "stat",
-      "title": "Running turns",
-      "description": "Turns that the Supervisors follow now.",
+      "title": "Turns",
+      "description": "Turns that have left the queue and not ended, whether starting, running or awaiting approval, and turns that wait in the queue, now.",
       "id": 3,
       "gridPos": {"h": 4, "w": 4, "x": 4, "y": 1},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
-          "expr": "sum(aviary_turns_running{namespace=\"$namespace\", harness=~\"$harness\"}) or vector(0)",
+          "expr": "sum(aviary_turns{namespace=\"$namespace\", harness=~\"$harness\", state!=\"queued\"})",
+          "instant": true,
           "legendFormat": "running",
           "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(aviary_turns{namespace=\"$namespace\", harness=~\"$harness\", state=\"queued\"})",
+          "instant": true,
+          "legendFormat": "queued",
+          "refId": "B"
         }
       ],
       "fieldConfig": {
@@ -90,17 +98,25 @@
           "decimals": 0,
           "color": {"mode": "fixed", "fixedColor": "blue"}
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "queued"},
+            "properties": [
+              {"id": "color", "value": {"mode": "thresholds"}},
+              {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"color": "text", "value": null}, {"color": "orange", "value": 0.5}]}}
+            ]
+          }
+        ]
       },
       "options": {
         "colorMode": "value",
-        "graphMode": "area",
+        "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
         "showPercentChange": false,
         "text": {"titleSize": 13, "valueSize": 34},
-        "textMode": "value",
+        "textMode": "value_and_name",
         "wideLayout": true
       }
     },
@@ -484,18 +500,305 @@
     },
     {
       "type": "row",
-      "title": "Turns",
-      "id": 20,
+      "title": "Sandboxes",
+      "id": 14,
       "gridPos": {"h": 1, "w": 24, "x": 0, "y": 9},
       "collapsed": false,
       "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Sandboxes now",
+      "description": "Sandboxes of the sessions that have not ended, by state, as the state metrics count them in the database.",
+      "id": 15,
+      "gridPos": {"h": 8, "w": 4, "x": 0, "y": 10},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(aviary_sandboxes{namespace=\"$namespace\", state=\"awake\"})",
+          "instant": true,
+          "legendFormat": "awake",
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(aviary_sandboxes{namespace=\"$namespace\", state=\"asleep\"})",
+          "instant": true,
+          "legendFormat": "asleep",
+          "refId": "B"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(aviary_sandboxes{namespace=\"$namespace\", state=\"lost\"})",
+          "instant": true,
+          "legendFormat": "lost",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {"mode": "fixed", "fixedColor": "text"}
+        },
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "awake"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}]},
+          {"matcher": {"id": "byName", "options": "asleep"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "blue"}}]},
+          {
+            "matcher": {"id": "byName", "options": "lost"},
+            "properties": [
+              {"id": "color", "value": {"mode": "thresholds"}},
+              {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"color": "text", "value": null}, {"color": "red", "value": 0.5}]}}
+            ]
+          }
+        ]
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "showPercentChange": false,
+        "text": {"titleSize": 13, "valueSize": 34},
+        "textMode": "value_and_name",
+        "wideLayout": true
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Sandboxes by state",
+      "description": "Sandboxes of the sessions that have not ended. An awake sandbox has a pod, an asleep one only its volume, and a lost one is gone although its session has not ended.",
+      "id": 16,
+      "gridPos": {"h": 8, "w": 20, "x": 4, "y": 10},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(aviary_sandboxes{namespace=\"$namespace\", state=\"awake\"})",
+          "legendFormat": "awake",
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(aviary_sandboxes{namespace=\"$namespace\", state=\"asleep\"})",
+          "legendFormat": "asleep",
+          "refId": "B"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(aviary_sandboxes{namespace=\"$namespace\", state=\"lost\"})",
+          "legendFormat": "lost",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "lineInterpolation": "stepAfter", "fillOpacity": 70, "lineWidth": 0, "showPoints": "never", "axisSoftMax": 1, "stacking": {"mode": "normal", "group": "A"}}
+        },
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "awake"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}]},
+          {"matcher": {"id": "byName", "options": "asleep"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "blue"}}]},
+          {"matcher": {"id": "byName", "options": "lost"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]}
+        ]
+      },
+      "options": {
+        "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "none"}
+      }
+    },
+    {
+      "type": "row",
+      "title": "Turns",
+      "id": 20,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 18},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Turns now",
+      "description": "Turns that have not ended, by state, as the state metrics count them in the database.",
+      "id": 100,
+      "gridPos": {"h": 8, "w": 4, "x": 0, "y": 19},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(aviary_turns{namespace=\"$namespace\", harness=~\"$harness\", state=\"queued\"})",
+          "instant": true,
+          "legendFormat": "queued",
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(aviary_turns{namespace=\"$namespace\", harness=~\"$harness\", state=\"starting\"})",
+          "instant": true,
+          "legendFormat": "starting",
+          "refId": "B"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(aviary_turns{namespace=\"$namespace\", harness=~\"$harness\", state=\"running\"})",
+          "instant": true,
+          "legendFormat": "running",
+          "refId": "C"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(aviary_turns{namespace=\"$namespace\", harness=~\"$harness\", state=\"awaiting_approval\"})",
+          "instant": true,
+          "legendFormat": "awaiting approval",
+          "refId": "D"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {"mode": "fixed", "fixedColor": "text"}
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "queued"},
+            "properties": [
+              {"id": "color", "value": {"mode": "thresholds"}},
+              {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"color": "text", "value": null}, {"color": "semi-dark-orange", "value": 0.5}]}}
+            ]
+          },
+          {"matcher": {"id": "byName", "options": "starting"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "blue"}}]},
+          {"matcher": {"id": "byName", "options": "running"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}]},
+          {"matcher": {"id": "byName", "options": "awaiting approval"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "purple"}}]}
+        ]
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "showPercentChange": false,
+        "text": {"titleSize": 13, "valueSize": 30},
+        "textMode": "value_and_name",
+        "wideLayout": true
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Turns by state",
+      "description": "Turns that have not ended. A turn that has left the queue is starting until its harness has the message, and then running, or awaiting approval while one of its requests waits for a person. All three take room among the turns that may run at once.",
+      "id": 101,
+      "gridPos": {"h": 8, "w": 12, "x": 4, "y": 19},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(aviary_turns{namespace=\"$namespace\", harness=~\"$harness\", state=\"awaiting_approval\"})",
+          "legendFormat": "awaiting approval",
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(aviary_turns{namespace=\"$namespace\", harness=~\"$harness\", state=\"running\"})",
+          "legendFormat": "running",
+          "refId": "B"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(aviary_turns{namespace=\"$namespace\", harness=~\"$harness\", state=\"starting\"})",
+          "legendFormat": "starting",
+          "refId": "C"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(aviary_turns{namespace=\"$namespace\", harness=~\"$harness\", state=\"queued\"})",
+          "legendFormat": "queued",
+          "refId": "D"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "lineInterpolation": "stepAfter", "fillOpacity": 70, "lineWidth": 0, "showPoints": "never", "axisSoftMax": 1, "stacking": {"mode": "normal", "group": "A"}}
+        },
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "awaiting approval"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "purple"}}]},
+          {"matcher": {"id": "byName", "options": "running"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}]},
+          {"matcher": {"id": "byName", "options": "starting"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "blue"}}]},
+          {"matcher": {"id": "byName", "options": "queued"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "semi-dark-orange"}}]}
+        ]
+      },
+      "options": {
+        "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "none"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Oldest turn by state",
+      "description": "Age of the oldest turn in each state: since its message for a queued turn, and since it left the queue for the others. An age well beyond the limit of its state means that no Supervisor is ending the turn.",
+      "id": 102,
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 19},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "max(aviary_turns_oldest_age_seconds{namespace=\"$namespace\", harness=~\"$harness\", state=\"queued\"})",
+          "legendFormat": "queued",
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "max(aviary_turns_oldest_age_seconds{namespace=\"$namespace\", harness=~\"$harness\", state=\"starting\"})",
+          "legendFormat": "starting",
+          "refId": "B"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "max(aviary_turns_oldest_age_seconds{namespace=\"$namespace\", harness=~\"$harness\", state=\"running\"})",
+          "legendFormat": "running",
+          "refId": "C"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "max(aviary_turns_oldest_age_seconds{namespace=\"$namespace\", harness=~\"$harness\", state=\"awaiting_approval\"})",
+          "legendFormat": "awaiting approval",
+          "refId": "D"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "queued"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#d95926"}}]},
+          {"matcher": {"id": "byName", "options": "starting"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "semi-dark-blue"}}]},
+          {"matcher": {"id": "byName", "options": "running"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "semi-dark-green"}}]},
+          {"matcher": {"id": "byName", "options": "awaiting approval"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "semi-dark-purple"}}]}
+        ]
+      },
+      "options": {
+        "legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "right", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
     },
     {
       "type": "timeseries",
       "title": "Accepted turns",
       "description": "Turns accepted per minute, of all harnesses: those that started at once, and those that waited in the queue.",
       "id": 21,
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 10},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 27},
       "interval": "1m",
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
@@ -534,7 +837,7 @@
       "title": "Ended turns by state",
       "description": "Turns that ended per minute, by state.",
       "id": 22,
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 10},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 27},
       "interval": "1m",
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
@@ -566,16 +869,16 @@
     },
     {
       "type": "timeseries",
-      "title": "Running turns by harness",
-      "description": "Turns that the Supervisors follow, by harness.",
+      "title": "Turns by Supervisor",
+      "description": "Turns that each Supervisor follows. A turn whose Supervisor stops is taken over by another.",
       "id": 23,
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 10},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 27},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
-          "expr": "sum by (harness) (aviary_turns_running{namespace=\"$namespace\", harness=~\"$harness\"})",
-          "legendFormat": "{{harness}}",
+          "expr": "label_replace(sum by (pod) (aviary_turns_followed{namespace=\"$namespace\", harness=~\"$harness\"}), \"pod\", \"$1\", \"pod\", \"aviary-supervisor-(.+)\")",
+          "legendFormat": "{{pod}}",
           "refId": "A"
         }
       ],
@@ -599,7 +902,7 @@
       "title": "Failed turns by reason",
       "description": "Turns that failed per minute, by failure reason.",
       "id": 24,
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 18},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 35},
       "interval": "1m",
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
@@ -637,7 +940,7 @@
       "title": "Failures by reason",
       "description": "Turns that failed in the selected range, by failure reason.",
       "id": 25,
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 18},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 35},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -685,7 +988,7 @@
       "title": "Ended turns by harness",
       "description": "Turns that ended in the selected range, by harness and state.",
       "id": 26,
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 18},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 35},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -727,7 +1030,7 @@
       "title": "Refused messages by reason",
       "description": "Messages per minute that were not accepted as turns: queue_full when the queue was full, session_busy when the session had an unfinished turn.",
       "id": 27,
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 26},
+      "gridPos": {"h": 8, "w": 6, "x": 0, "y": 43},
       "interval": "1m",
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
@@ -760,7 +1063,7 @@
       "title": "Queue length when accepted",
       "description": "Queued turns, the new one included, when turns were accepted. 0 for a turn that started at once.",
       "id": 28,
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 26},
+      "gridPos": {"h": 8, "w": 6, "x": 6, "y": 43},
       "interval": "1m",
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
@@ -799,7 +1102,7 @@
       "title": "Approval answers by outcome",
       "description": "Approval requests answered per minute, by the kind of the selected option, or cancelled if the turn was stopped first.",
       "id": 29,
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 26},
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 43},
       "interval": "1m",
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
@@ -832,10 +1135,40 @@
       }
     },
     {
+      "type": "timeseries",
+      "title": "Approval requests waiting",
+      "description": "Approval requests that wait for a person's answer. A turn can have several.",
+      "id": 103,
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 43},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(aviary_approvals_waiting{namespace=\"$namespace\", harness=~\"$harness\"})",
+          "legendFormat": "waiting",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "color": {"mode": "fixed", "fixedColor": "purple"},
+          "custom": {"drawStyle": "line", "lineInterpolation": "stepAfter", "fillOpacity": 70, "lineWidth": 0, "showPoints": "never", "axisSoftMax": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"calcs": ["lastNotNull", "max"], "displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
       "type": "row",
       "title": "Latency",
       "id": 30,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 34},
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 51},
       "collapsed": false,
       "panels": []
     },
@@ -844,7 +1177,7 @@
       "title": "Queue wait",
       "description": "Time that turns waited in the queue, from their message until a Supervisor took them.",
       "id": 31,
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 35},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 52},
       "interval": "1m",
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
@@ -890,7 +1223,7 @@
       "title": "Startup by harness",
       "description": "Time from a turn leaving the queue until its harness had the message, by harness. It includes creating or waking the sandbox.",
       "id": 32,
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 35},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 52},
       "interval": "1m",
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
@@ -928,7 +1261,7 @@
       "title": "Startup distribution",
       "description": "Turns per minute by startup time. Turns that create or wake a sandbox take longer than those whose sandbox is running.",
       "id": 33,
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 35},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 52},
       "interval": "1m",
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
@@ -958,7 +1291,7 @@
       "title": "Run duration by state",
       "description": "Time from a turn's harness having the message until the turn ended, by state.",
       "id": 34,
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 43},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 60},
       "interval": "1m",
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
@@ -999,7 +1332,7 @@
       "title": "Run duration distribution",
       "description": "Turns per minute by run duration.",
       "id": 35,
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 43},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 60},
       "interval": "1m",
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
@@ -1029,7 +1362,7 @@
       "title": "Approval wait by outcome",
       "description": "Time from a harness asking for approval until it had the answer, by outcome.",
       "id": 36,
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 43},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 60},
       "interval": "1m",
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
@@ -1072,7 +1405,7 @@
       "type": "row",
       "title": "Tokens",
       "id": 40,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 51},
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 68},
       "collapsed": false,
       "panels": []
     },
@@ -1081,7 +1414,7 @@
       "title": "Tokens by kind",
       "description": "Tokens per minute that the harnesses reported for ended turns, by kind. Harnesses differ in what they count.",
       "id": 41,
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 52},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 69},
       "interval": "1m",
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
@@ -1117,7 +1450,7 @@
       "title": "Tokens by harness",
       "description": "Tokens of all kinds per minute that the harnesses reported for ended turns, by harness.",
       "id": 42,
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 52},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 69},
       "interval": "1m",
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
@@ -1147,7 +1480,7 @@
       "title": "Tokens per ended turn",
       "description": "Average tokens per turn that ended in the selected range, by kind.",
       "id": 43,
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 52},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 69},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1192,7 +1525,7 @@
       "type": "row",
       "title": "Egress Proxy: model requests",
       "id": 50,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 60},
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 77},
       "collapsed": false,
       "panels": []
     },
@@ -1201,7 +1534,7 @@
       "title": "Model requests by response",
       "description": "Model requests answered per second, by status class: the providers' responses, and the refusals and errors of the proxy. Kubelet probes are not counted.",
       "id": 51,
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 61},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 78},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1236,7 +1569,7 @@
       "title": "Provider responses by status code",
       "description": "Responses of the model providers per second, by status code, such as 401 for a wrong key or 429 when a provider limits the rate. The first response with a code on each proxy is not counted, since Envoy creates the code's counter with it.",
       "id": 52,
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 61},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 78},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1270,7 +1603,7 @@
       "title": "Model response time",
       "description": "Time from sending a request to a model provider until the end of its response. A streamed response ends with its last token.",
       "id": 53,
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 61},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 78},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1315,7 +1648,7 @@
       "title": "Checks of model requests",
       "description": "What the proxies did with model requests: allowed them, or refused them because the Supervisor found no running turn or no usable provider, because the endpoint's host is not allowed, or because the Supervisor could not be asked.",
       "id": 54,
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 69},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 86},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1368,7 +1701,7 @@
       "title": "Supervisor check time",
       "description": "Time that the Supervisors took to answer the proxies' checks, which every model and forward request waits for.",
       "id": 55,
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 69},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 86},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1413,7 +1746,7 @@
       "title": "Model request problems",
       "description": "Model requests per second that did not complete normally: closed by the sandbox, reset by the provider, or ended by the idle timeout, and connections to providers that failed, timed out or failed TLS.",
       "id": 56,
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 69},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 86},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1480,7 +1813,7 @@
       "title": "Model traffic",
       "description": "Bytes per second that the proxies sent to the model providers and received from them.",
       "id": 57,
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 77},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 94},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1518,7 +1851,7 @@
       "title": "Model requests in flight",
       "description": "Model requests that the proxies handle now, and their open connections to model providers.",
       "id": 58,
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 77},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 94},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1557,7 +1890,7 @@
       "title": "Model request duration at the proxy",
       "description": "Model requests per minute by their duration at the proxy, from the sandbox's request until the end of the response, the Supervisor check included. The band below 1 ms is the kubelet probes.",
       "id": 59,
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 77},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 94},
       "interval": "1m",
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
@@ -1586,7 +1919,7 @@
       "type": "row",
       "title": "Egress Proxy: forward proxy",
       "id": 60,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 85},
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 102},
       "collapsed": false,
       "panels": []
     },
@@ -1595,7 +1928,7 @@
       "title": "Forward requests by response",
       "description": "Requests and HTTPS tunnels of the forward proxy answered per second, by status class. A host that is not allowed gets 403, and a request without a running turn 407.",
       "id": 61,
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 86},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 103},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1630,7 +1963,7 @@
       "title": "Checks of forward requests",
       "description": "What the proxies did with forward requests: allowed them, or refused them because no turn runs in the session, because the host is not allowed, or because the Supervisor could not be asked.",
       "id": 62,
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 86},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 103},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1683,7 +2016,7 @@
       "title": "Tunnels",
       "description": "HTTPS tunnels (CONNECT) of the forward proxy: open now, and opened per second.",
       "id": 63,
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 86},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 103},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1721,7 +2054,7 @@
       "title": "Forward request duration",
       "description": "Duration of forward requests at the proxy, the Supervisor check included. For an HTTPS tunnel, how long the tunnel was open.",
       "id": 64,
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 94},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 111},
       "interval": "1m",
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
@@ -1760,7 +2093,7 @@
       "title": "Open connections from sandboxes",
       "description": "Connections that sandboxes have open to the proxies, by listener: llm for model requests and the kubelet probes, forward for all other requests.",
       "id": 65,
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 94},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 111},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1793,7 +2126,7 @@
       "title": "Upstream connections",
       "description": "Connections that the proxies have open to model providers (model, model-tls), to allowed hosts (forward) and to the Supervisors (supervisor).",
       "id": 66,
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 94},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 111},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1828,7 +2161,7 @@
       "title": "Traffic with sandboxes",
       "description": "Bytes per second that the proxies received from sandboxes and sent to them, by listener.",
       "id": 67,
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 102},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 119},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1868,7 +2201,7 @@
       "title": "DNS cache",
       "description": "Hosts in the DNS caches of the proxies: model endpoints, and the allowed hosts that the forward proxy reached. The highest count of any proxy.",
       "id": 68,
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 102},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 119},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1907,7 +2240,7 @@
       "title": "DNS lookups",
       "description": "DNS lookups of the proxies per second, by cache and result. A failed lookup fails its request with 503.",
       "id": 69,
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 102},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 119},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1971,7 +2304,7 @@
       "type": "row",
       "title": "Secret stores",
       "id": 70,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 110},
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 127},
       "collapsed": false,
       "panels": []
     },
@@ -1980,7 +2313,7 @@
       "title": "Secret reads",
       "description": "Values read from the projects' secret stores per second, by store kind and outcome. Values that a Supervisor has cached are not read.",
       "id": 71,
-      "gridPos": {"h": 8, "w": 9, "x": 0, "y": 111},
+      "gridPos": {"h": 8, "w": 9, "x": 0, "y": 128},
       "interval": "1m",
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
@@ -2013,7 +2346,7 @@
       "title": "Secret read time",
       "description": "Time that the secret stores took to return a value, by store kind.",
       "id": 72,
-      "gridPos": {"h": 8, "w": 9, "x": 9, "y": 111},
+      "gridPos": {"h": 8, "w": 9, "x": 9, "y": 128},
       "interval": "1m",
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
@@ -2059,7 +2392,7 @@
       "title": "Secret reads in range",
       "description": "Values read from secret stores in the selected range, and reads that failed. A model request whose key cannot be read gets 503.",
       "id": 73,
-      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 111},
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 128},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -2109,7 +2442,7 @@
       "type": "row",
       "title": "Supervisor runtime",
       "id": 80,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 119},
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 136},
       "collapsed": false,
       "panels": []
     },
@@ -2118,7 +2451,7 @@
       "title": "Supervisor pods",
       "description": "The Supervisor pods now: how long they have run, and their CPU, memory, goroutines and open files.",
       "id": 81,
-      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 120},
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 137},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -2192,7 +2525,7 @@
       "title": "Supervisor pods up",
       "description": "Whether each Supervisor pod answered its scrapes. Replaced pods end and new pods begin.",
       "id": 82,
-      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 120},
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 137},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -2225,7 +2558,7 @@
       "title": "CPU",
       "description": "CPU used by each Supervisor, in cores.",
       "id": 83,
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 126},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 143},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -2254,7 +2587,7 @@
       "title": "Memory",
       "description": "Resident memory of each Supervisor, and the part of it that its Go heap uses.",
       "id": 84,
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 126},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 143},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -2291,7 +2624,7 @@
       "title": "Goroutines",
       "description": "Goroutines of each Supervisor. They grow with the turns that it follows and the event streams that it serves.",
       "id": 85,
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 126},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 143},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -2321,7 +2654,7 @@
       "title": "Garbage collection",
       "description": "Garbage collections per minute of each Supervisor, and the longest of its recent stop-the-world pauses (dashed, right axis).",
       "id": 86,
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 134},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 151},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -2365,7 +2698,7 @@
       "title": "Open files",
       "description": "File descriptors that each Supervisor has open, its network connections included.",
       "id": 87,
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 134},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 151},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -2395,7 +2728,7 @@
       "title": "Network",
       "description": "Bytes per second that each Supervisor received and sent over the network.",
       "id": 88,
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 134},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 151},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -2431,7 +2764,7 @@
       "type": "row",
       "title": "Egress Proxy runtime",
       "id": 90,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 142},
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 159},
       "collapsed": false,
       "panels": []
     },
@@ -2440,7 +2773,7 @@
       "title": "Egress Proxy pods",
       "description": "The Egress Proxy pods now: how long Envoy has run, its state, worker threads, connections and allocated memory.",
       "id": 91,
-      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 143},
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 160},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -2520,7 +2853,7 @@
       "title": "Egress Proxy pods up",
       "description": "Whether each Egress Proxy pod answered its scrapes. Replaced pods end and new pods begin.",
       "id": 92,
-      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 143},
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 160},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -2553,7 +2886,7 @@
       "title": "Requests received by listener",
       "description": "Requests per second that arrived at each listener of the proxies, and the kubelet probes among those on llm.",
       "id": 93,
-      "gridPos": {"h": 8, "w": 6, "x": 0, "y": 149},
+      "gridPos": {"h": 8, "w": 6, "x": 0, "y": 166},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -2592,7 +2925,7 @@
       "title": "Memory",
       "description": "Memory that each Envoy has allocated, and the physical memory that its allocator holds (dashed).",
       "id": 94,
-      "gridPos": {"h": 8, "w": 6, "x": 6, "y": 149},
+      "gridPos": {"h": 8, "w": 6, "x": 6, "y": 166},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -2629,7 +2962,7 @@
       "title": "Connections",
       "description": "Connections that each Envoy has open on all its listeners: from sandboxes, kubelet probes and metric scrapes.",
       "id": 95,
-      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 149},
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 166},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -2659,7 +2992,7 @@
       "title": "Event loop stalls",
       "description": "Times in the selected range that an Envoy thread did not respond to its watchdog in time, a sign of a starved or blocked proxy.",
       "id": 96,
-      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 149},
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 166},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -2738,8 +3071,8 @@
         "name": "harness",
         "label": "Harness",
         "datasource": {"type": "prometheus", "uid": "${datasource}"},
-        "definition": "label_values(aviary_turns_running{namespace=\"$namespace\"}, harness)",
-        "query": "label_values(aviary_turns_running{namespace=\"$namespace\"}, harness)",
+        "definition": "label_values(aviary_turns_followed{namespace=\"$namespace\"}, harness)",
+        "query": "label_values(aviary_turns_followed{namespace=\"$namespace\"}, harness)",
         "current": {"text": ["All"], "value": ["$__all"]},
         "hide": 0,
         "includeAll": true,

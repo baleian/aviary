@@ -52,13 +52,19 @@ func (s supervisor) project() store.Project {
 // session creates a session of a new agent in a new project.
 func (s supervisor) session() uuid.UUID {
 	s.t.Helper()
+	return s.sessionOf("opencode")
+}
+
+// sessionOf is like session, with the agent's harness.
+func (s supervisor) sessionOf(harness string) uuid.UUID {
+	s.t.Helper()
 	project := s.project()
 	provider, err := s.CreateProvider(ctx, store.Provider{ID: uuid.New(), ProjectID: project.ID, Name: "a provider", URL: "https://api.example.com/v1"})
 	if err != nil {
 		s.t.Fatal(err)
 	}
 	agent, err := s.CreateAgent(ctx, project.ID, store.Agent{
-		Slug: unique("agent"), Harness: "opencode", Instructions: "Be brief.", Approval: "ask",
+		Slug: unique("agent"), Harness: harness, Instructions: "Be brief.", Approval: "ask",
 		Model: store.Model{Provider: provider.ID, Name: "a-model"},
 	})
 	if err != nil {
@@ -593,13 +599,7 @@ func (suite suite) testCancelTurn(t *testing.T) {
 		!again.CancelRequestedAt.Equal(*asked.CancelRequestedAt) {
 		t.Errorf("second CancelTurn of a running turn = %+v, %t: %v", again, unended, err)
 	}
-	if cancelling, err := st.CancellingTurns(ctx); err != nil || !slices.Equal(cancelling, []uuid.UUID{dispatch.TurnID}) {
-		t.Errorf("CancellingTurns = %v, want the running turn: %v", cancelling, err)
-	}
 	st.end(dispatch.TurnID, false, store.Failure{Reason: store.FailureSandboxLost})
-	if cancelling, err := st.CancellingTurns(ctx); err != nil || len(cancelling) != 0 {
-		t.Errorf("CancellingTurns after the turn ended = %v, want none: %v", cancelling, err)
-	}
 
 	// Cancelling a turn that has ended changes nothing.
 	completed := st.running(session)
@@ -913,6 +913,79 @@ func (suite suite) testDispatchedTurns(t *testing.T) {
 			}
 		default:
 			t.Errorf("unexpected turn %s in DispatchedTurns", turn.ID)
+		}
+	}
+}
+
+// UnfinishedTurns lists the turns that have not ended, each with its harness,
+// how far it has come, its requests that wait for a person, and the time
+// since it left the queue or, while it is queued, since its message.
+func (suite suite) testUnfinishedTurns(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	if turns, err := st.UnfinishedTurns(ctx); err != nil || len(turns) != 0 {
+		t.Errorf("UnfinishedTurns of a database without turns = %+v, %v, want none", turns, err)
+	}
+	// The turns are told apart by the harness of their agent.
+	ended := st.running(st.sessionOf("ended"))
+	st.end(ended.TurnID, true, store.Failure{})
+	st.queue(st.sessionOf("dispatching"))
+	st.dispatch()
+	// This turn waited in the queue for an hour and has just left it.
+	waited := st.queue(st.sessionOf("starting"))
+	st.database.Age(t, time.Hour, waited.ID)
+	if _, err := st.FollowTurn(ctx, st.dispatch().TurnID); err != nil {
+		t.Fatal(err)
+	}
+	started, asking := st.running(st.sessionOf("running")), st.running(st.sessionOf("asking"))
+	for _, turn := range []uuid.UUID{started.TurnID, asking.TurnID} {
+		if _, _, err := st.StartTurn(ctx, turn); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Of three requests, one has an answer and one is resolved.
+	for _, id := range []string{"1", "2", "3"} {
+		if err := st.AddApproval(ctx, asking.TurnID, id, []byte(`{}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if answered, err := st.AnswerApproval(ctx, asking.TurnID, "2", "once", uuid.Nil); err != nil || !answered {
+		t.Fatalf("AnswerApproval = %t, %v", answered, err)
+	}
+	if _, _, _, err := st.ResolveApproval(ctx, asking.TurnID, "3", "cancelled"); err != nil {
+		t.Fatal(err)
+	}
+	st.database.Age(t, 2*time.Minute, asking.TurnID)
+	queued := st.queue(st.sessionOf("queued"))
+	st.database.Age(t, 10*time.Minute, queued.ID)
+
+	listed, err := st.another().UnfinishedTurns(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns := map[string]store.UnfinishedTurn{}
+	for _, turn := range listed {
+		turns[turn.Harness] = turn
+	}
+	expected := map[string]store.UnfinishedTurn{
+		"dispatching": {State: store.TurnDispatching},
+		"starting":    {State: store.TurnRunning},
+		"running":     {State: store.TurnRunning, Started: true},
+		"asking":      {State: store.TurnRunning, Started: true, Asking: 1},
+		"queued":      {State: store.TurnQueued},
+	}
+	if len(listed) != len(expected) {
+		t.Fatalf("UnfinishedTurns = %+v, want %d turns", listed, len(expected))
+	}
+	for harness, want := range expected {
+		if turn := turns[harness]; turn.State != want.State || turn.Started != want.Started || turn.Asking != want.Asking {
+			t.Errorf("unfinished turn of %s = %+v, want state %s, started %t, %d waiting requests",
+				harness, turn, want.State, want.Started, want.Asking)
+		}
+	}
+	for harness, age := range map[string]time.Duration{"queued": 10 * time.Minute, "starting": 0, "asking": 2 * time.Minute} {
+		if turn := turns[harness]; turn.Age < age || turn.Age > age+time.Minute {
+			t.Errorf("age of the turn of %s = %s, want %s and a little more", harness, turn.Age, age)
 		}
 	}
 }

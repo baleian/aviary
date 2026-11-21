@@ -331,6 +331,14 @@ func sleeps(t *testing.T, name string) {
 	if state := sandboxState(t, session); state != "awake" {
 		t.Errorf("session says that its sandbox is %q, want awake", state)
 	}
+	// Other tests have sandboxes too, so the state metrics are only checked
+	// to count this one.
+	counted := func(state string) float64 {
+		return total(metrics(t, "state-metrics"), `aviary_sandboxes{state="`+state+`"}`)
+	}
+	if awake := counted("awake"); awake < 1 {
+		t.Errorf("state metrics count %v awake sandboxes while the session is awake", awake)
+	}
 	asleep(t, session)
 	eventually(t, soon, "the sleeping sandbox's pod still exists", func() bool {
 		return len(sessionPods(t, session)) == 0
@@ -338,6 +346,9 @@ func sleeps(t *testing.T, name string) {
 	eventually(t, soon, "the session does not say that its sandbox is asleep", func() bool {
 		return sandboxState(t, session) == "asleep"
 	})
+	if asleep := counted("asleep"); asleep < 1 {
+		t.Errorf("state metrics count %v asleep sandboxes while the session is asleep", asleep)
+	}
 
 	if recalled := run(t, session, "recall"); !strings.Contains(recalled.said(), write) {
 		t.Errorf("woken session did not recall the conversation: said %q", recalled.said())
@@ -376,6 +387,16 @@ func keepsAwake(t *testing.T, name string) {
 	found, still := sandboxesOf(t, session), sessionPods(t, session)
 	if len(found) != 1 || found[0].Spec.OperatingMode == "Suspended" || len(waiting) != 1 || len(still) != 1 || still[0].UID != waiting[0].UID {
 		t.Fatalf("sandbox of a turn awaiting approval was suspended or its pod replaced: %v", found)
+	}
+	// Other tests have turns too, so the state metrics are only checked to
+	// count this one.
+	for _, series := range []string{
+		fmt.Sprintf(`aviary_turns{harness=%q,state="awaiting_approval"}`, name),
+		fmt.Sprintf(`aviary_approvals_waiting{harness=%q}`, name),
+	} {
+		if counted := total(metrics(t, "state-metrics"), series); counted < 1 {
+			t.Errorf("state metrics report %v for %s while a turn of %s awaits approval", counted, series, name)
+		}
 	}
 
 	var option string

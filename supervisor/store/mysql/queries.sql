@@ -74,6 +74,12 @@ update sessions set sandbox_state = sqlc.arg(state) where id = sqlc.arg(id) and 
 -- name: ListSessionsWithSandbox :many
 select * from sessions where sandbox is not null;
 
+-- name: CountSandboxes :many
+-- Counts the sandboxes of the sessions that have not ended, by state.
+select sandbox_state as state, count(*) as sandboxes from sessions
+where sandbox is not null and ended_at is null
+group by sandbox_state;
+
 -- name: ListSessions :many
 -- Lists the agent's sessions with IDs below before, newest first: IDs
 -- increase with creation time.
@@ -178,9 +184,6 @@ select count(*) from turns where state in ('dispatching', 'running');
 -- name: QueuedTurns :many
 select id from turns where state = 'queued' order by created_at, id;
 
--- name: CancellingTurns :many
-select id from turns where ended_at is null and cancel_requested_at is not null;
-
 -- name: NextTurns :many
 select turns.id as turn_id, agents.harness, cast(timestampdiff(microsecond, turns.created_at, now(6)) as signed) as waited
 from turns
@@ -198,6 +201,20 @@ update turns set state = 'dispatching', dispatched_at = now(6) where id = ? and 
 -- name: DispatchedTurns :many
 select id, cast(coalesce(timestampdiff(microsecond, cancel_requested_at, now(6)), 0) as signed) as cancelling
 from turns where state in ('dispatching', 'running');
+
+-- name: ListUnfinishedTurns :many
+-- Lists the turns that have not ended, which are found by their state. age is
+-- the microseconds since the turn left the queue or, for a queued turn, since
+-- its message. asking is the number of its approval requests that wait for a
+-- person.
+select agents.harness, turns.state, turns.started_at is not null as started,
+       cast(timestampdiff(microsecond, coalesce(turns.dispatched_at, turns.created_at), now(6)) as signed) as age,
+       (select count(*) from approvals
+        where approvals.turn_id = turns.id and approvals.answered_at is null and approvals.resolved_at is null) as asking
+from turns
+join sessions on sessions.id = turns.session_id
+join agents on agents.id = sessions.agent_id
+where turns.state in ('queued', 'dispatching', 'running');
 
 -- name: FollowTurn :exec
 update turns set state = 'running' where id = ? and state in ('dispatching', 'running');
@@ -301,11 +318,14 @@ order by requested_at, id;
 
 -- name: Answers :many
 -- Lists the answers not yet delivered to the harnesses of unfinished turns:
--- those of the turn, or of all turns if turn_id is null.
+-- those of the turn, or of all turns if turn_id is null. Only dispatched
+-- turns have requests, and they are found by their state, which has an
+-- index: the requests of all turns that have ended are not read.
 select approvals.turn_id, approvals.id, coalesce(approvals.option_id, '') as option_id
-from approvals
-join turns on turns.id = approvals.turn_id
-where approvals.answered_at is not null and approvals.resolved_at is null and turns.ended_at is null
+from turns
+join approvals on approvals.turn_id = turns.id
+where turns.state in ('dispatching', 'running')
+  and approvals.answered_at is not null and approvals.resolved_at is null
   and (sqlc.narg(turn_id) is null or approvals.turn_id = sqlc.narg(turn_id));
 
 -- name: GetUserBySubject :one

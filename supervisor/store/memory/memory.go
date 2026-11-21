@@ -662,6 +662,20 @@ func (s *Store) SessionsWithSandbox(ctx context.Context) ([]store.Session, error
 	return sessions, nil
 }
 
+func (s *Store) SandboxCounts(ctx context.Context) (map[string]int, error) {
+	if err := s.begin(ctx); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+	counts := map[string]int{}
+	for _, session := range s.sessions {
+		if session.Sandbox != "" && session.EndedAt == nil {
+			counts[session.SandboxState]++
+		}
+	}
+	return counts, nil
+}
+
 func (s *Store) EndSession(ctx context.Context, id uuid.UUID, reason string) (store.Session, error) {
 	if err := s.begin(ctx); err != nil {
 		return store.Session{}, err
@@ -918,20 +932,6 @@ func (s *Store) AnnounceQueue(ctx context.Context, announce func(queued []uuid.U
 	return announce(queued)
 }
 
-func (s *Store) CancellingTurns(ctx context.Context) ([]uuid.UUID, error) {
-	if err := s.begin(ctx); err != nil {
-		return nil, err
-	}
-	defer s.mu.Unlock()
-	cancelling := []uuid.UUID{}
-	for _, turn := range s.created {
-		if turn.EndedAt == nil && turn.CancelRequestedAt != nil {
-			cancelling = append(cancelling, turn.ID)
-		}
-	}
-	return cancelling, nil
-}
-
 func (s *Store) Turn(ctx context.Context, id uuid.UUID) (store.Turn, error) {
 	if err := s.begin(ctx); err != nil {
 		return store.Turn{}, err
@@ -1066,6 +1066,33 @@ func (s *Store) DispatchedTurns(ctx context.Context) ([]store.DispatchedTurn, er
 		dispatched = append(dispatched, one)
 	}
 	return dispatched, nil
+}
+
+func (s *Store) UnfinishedTurns(ctx context.Context) ([]store.UnfinishedTurn, error) {
+	if err := s.begin(ctx); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+	now, unfinished := s.now(), []store.UnfinishedTurn{}
+	for _, turn := range s.created {
+		if turn.EndedAt != nil {
+			continue
+		}
+		one := store.UnfinishedTurn{
+			Harness: s.agents[s.sessions[turn.SessionID].AgentID].Harness, State: turn.State,
+			Started: turn.StartedAt != nil, Age: now.Sub(turn.CreatedAt),
+		}
+		if turn.dispatchedAt != nil {
+			one.Age = now.Sub(*turn.dispatchedAt)
+		}
+		for _, approval := range turn.approvals {
+			if !approval.answered && !approval.resolved {
+				one.Asking++
+			}
+		}
+		unfinished = append(unfinished, one)
+	}
+	return unfinished, nil
 }
 
 func (s *Store) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.FollowedTurn, error) {

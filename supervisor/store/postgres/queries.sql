@@ -78,6 +78,12 @@ update sessions set sandbox_state = sqlc.arg(state)::text where id = @id and san
 -- name: ListSessionsWithSandbox :many
 select * from sessions where sandbox is not null;
 
+-- name: CountSandboxes :many
+-- Counts the sandboxes of the sessions that have not ended, by state.
+select sandbox_state as state, count(*) as sandboxes from sessions
+where sandbox is not null and ended_at is null
+group by sandbox_state;
+
 -- name: HoldSession :one
 -- Keeps the session from being ended until the transaction ends. It takes
 -- only the key share lock that adding the turn takes anyway: a stronger lock
@@ -185,16 +191,16 @@ where turns.id = @id;
 
 -- name: CountWaitingTurns :one
 -- Counts the queued turns that have no room to run among @max_running. The
--- count is negative if room is left.
+-- count is negative if room is left. The dispatching and running turns are
+-- found by ended_at, as wherever they are read: the unfinished turns have an
+-- index, and the states alone would read every turn.
 select ((select count(*) from turns where state = 'queued')
         - greatest(0, sqlc.arg(max_running)::bigint
-                      - (select count(*) from turns where state in ('dispatching', 'running'))))::bigint as waiting;
+                      - (select count(*) from turns
+                         where ended_at is null and state in ('dispatching', 'running'))))::bigint as waiting;
 
 -- name: QueuedTurns :many
 select id from turns where state = 'queued' order by created_at, id;
-
--- name: CancellingTurns :many
-select id from turns where ended_at is null and cancel_requested_at is not null;
 
 -- name: NextTurns :many
 -- Lists the oldest queued turns that have room to run among @max_running.
@@ -205,7 +211,8 @@ join agents on agents.id = sessions.agent_id
 where turns.state = 'queued'
 order by turns.created_at, turns.id
 limit greatest(sqlc.arg(max_running)::bigint
-               - (select count(*) from turns as running where running.state in ('dispatching', 'running')), 0);
+               - (select count(*) from turns as running
+                  where running.ended_at is null and running.state in ('dispatching', 'running')), 0);
 
 -- name: DispatchTurn :execrows
 -- Dispatches the turn if it is still queued: it may have been cancelled since
@@ -215,7 +222,20 @@ where id = @id and state = 'queued';
 
 -- name: DispatchedTurns :many
 select id, coalesce(extract(epoch from now() - cancel_requested_at), 0)::float8 as cancelling
-from turns where state in ('dispatching', 'running');
+from turns where ended_at is null and state in ('dispatching', 'running');
+
+-- name: ListUnfinishedTurns :many
+-- Lists the turns that have not ended. age is the seconds since the turn left
+-- the queue or, for a queued turn, since its message. asking is the number of
+-- its approval requests that wait for a person.
+select agents.harness, turns.state, (turns.started_at is not null)::boolean as started,
+       extract(epoch from now() - coalesce(turns.dispatched_at, turns.created_at))::float8 as age,
+       (select count(*) from approvals
+        where approvals.turn_id = turns.id and approvals.answered_at is null and approvals.resolved_at is null) as asking
+from turns
+join sessions on sessions.id = turns.session_id
+join agents on agents.id = sessions.agent_id
+where turns.ended_at is null;
 
 -- name: FollowTurn :execrows
 update turns set state = 'running' where id = @id and state in ('dispatching', 'running');

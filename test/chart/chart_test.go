@@ -313,6 +313,42 @@ func TestSupervisorSettings(t *testing.T) {
 	}
 }
 
+// One pod serves the state metrics. Of the Supervisor's settings it gets only
+// the database and the harnesses, and it has no access to the cluster.
+func TestStateMetrics(t *testing.T) {
+	objects, _ := chart(t, "default")
+	served := find(objects, "Deployment", "aviary-state-metrics")
+	// Two pods would report every count twice, also while one replaces the
+	// other.
+	if at(served, "spec", "replicas") != 1 || at(served, "spec", "strategy", "type") != "Recreate" {
+		t.Errorf("state metrics: replicas = %v, strategy = %v; want 1 and Recreate", at(served, "spec", "replicas"), at(served, "spec", "strategy"))
+	}
+	pod := at(served, "spec", "template", "spec")
+	container := at(pod, "containers", 0)
+	supervisor := at(find(objects, "Deployment", "aviary-supervisor"), "spec", "template", "spec", "containers", 0)
+	if at(container, "image") != at(supervisor, "image") || !reflect.DeepEqual(at(container, "args"), []any{"state-metrics"}) ||
+		at(named(at(container, "ports"), "metrics"), "containerPort") != 9092 {
+		t.Errorf("state metrics container = %v, want the image of the Supervisor with the command state-metrics and the port 9092", container)
+	}
+	for _, name := range []string{"AVIARY_DATABASE_URL", "AVIARY_HARNESSES"} {
+		if set := named(at(container, "env"), name); set == nil || !reflect.DeepEqual(set, named(at(supervisor, "env"), name)) {
+			t.Errorf("state metrics env %s = %v, want that of the Supervisor", name, set)
+		}
+	}
+	if count(at(container, "env")) != 2 {
+		t.Errorf("state metrics env = %v, want only the database URL and the harnesses", at(container, "env"))
+	}
+	if at(pod, "automountServiceAccountToken") != false || at(pod, "serviceAccountName") != nil {
+		t.Errorf("state metrics pod has the service account %v, token mounted %v; want neither",
+			at(pod, "serviceAccountName"), at(pod, "automountServiceAccountToken"))
+	}
+
+	objects, _ = chart(t, "set")
+	if served := find(objects, "Deployment", "aviary-state-metrics"); served != nil {
+		t.Errorf("chart renders the state metrics although they are disabled: %v", served)
+	}
+}
+
 // The Egress Proxy asks the Supervisors on a dedicated port, which the
 // sandboxes cannot reach.
 func TestSupervisorAnswersTheEgressProxy(t *testing.T) {

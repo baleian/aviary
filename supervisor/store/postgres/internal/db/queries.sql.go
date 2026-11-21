@@ -174,30 +174,6 @@ func (q *Queries) CancelTurn(ctx context.Context, id uuid.UUID) (Turn, error) {
 	return i, err
 }
 
-const cancellingTurns = `-- name: CancellingTurns :many
-select id from turns where ended_at is null and cancel_requested_at is not null
-`
-
-func (q *Queries) CancellingTurns(ctx context.Context) ([]uuid.UUID, error) {
-	rows, err := q.db.Query(ctx, cancellingTurns)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []uuid.UUID
-	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		items = append(items, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const claimMembers = `-- name: ClaimMembers :exec
 update project_members set user_id = users.id, username = null
 from users
@@ -210,14 +186,49 @@ func (q *Queries) ClaimMembers(ctx context.Context, username string) error {
 	return err
 }
 
+const countSandboxes = `-- name: CountSandboxes :many
+select sandbox_state as state, count(*) as sandboxes from sessions
+where sandbox is not null and ended_at is null
+group by sandbox_state
+`
+
+type CountSandboxesRow struct {
+	State     *string
+	Sandboxes int64
+}
+
+// Counts the sandboxes of the sessions that have not ended, by state.
+func (q *Queries) CountSandboxes(ctx context.Context) ([]CountSandboxesRow, error) {
+	rows, err := q.db.Query(ctx, countSandboxes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CountSandboxesRow
+	for rows.Next() {
+		var i CountSandboxesRow
+		if err := rows.Scan(&i.State, &i.Sandboxes); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countWaitingTurns = `-- name: CountWaitingTurns :one
 select ((select count(*) from turns where state = 'queued')
         - greatest(0, $1::bigint
-                      - (select count(*) from turns where state in ('dispatching', 'running'))))::bigint as waiting
+                      - (select count(*) from turns
+                         where ended_at is null and state in ('dispatching', 'running'))))::bigint as waiting
 `
 
 // Counts the queued turns that have no room to run among @max_running. The
-// count is negative if room is left.
+// count is negative if room is left. The dispatching and running turns are
+// found by ended_at, as wherever they are read: the unfinished turns have an
+// index, and the states alone would read every turn.
 func (q *Queries) CountWaitingTurns(ctx context.Context, maxRunning int64) (int64, error) {
 	row := q.db.QueryRow(ctx, countWaitingTurns, maxRunning)
 	var waiting int64
@@ -517,7 +528,7 @@ func (q *Queries) DispatchTurn(ctx context.Context, id uuid.UUID) (int64, error)
 
 const dispatchedTurns = `-- name: DispatchedTurns :many
 select id, coalesce(extract(epoch from now() - cancel_requested_at), 0)::float8 as cancelling
-from turns where state in ('dispatching', 'running')
+from turns where ended_at is null and state in ('dispatching', 'running')
 `
 
 type DispatchedTurnsRow struct {
@@ -1657,6 +1668,54 @@ func (q *Queries) ListTurns(ctx context.Context, arg ListTurnsParams) ([]Turn, e
 	return items, nil
 }
 
+const listUnfinishedTurns = `-- name: ListUnfinishedTurns :many
+select agents.harness, turns.state, (turns.started_at is not null)::boolean as started,
+       extract(epoch from now() - coalesce(turns.dispatched_at, turns.created_at))::float8 as age,
+       (select count(*) from approvals
+        where approvals.turn_id = turns.id and approvals.answered_at is null and approvals.resolved_at is null) as asking
+from turns
+join sessions on sessions.id = turns.session_id
+join agents on agents.id = sessions.agent_id
+where turns.ended_at is null
+`
+
+type ListUnfinishedTurnsRow struct {
+	Harness string
+	State   string
+	Started bool
+	Age     float64
+	Asking  int64
+}
+
+// Lists the turns that have not ended. age is the seconds since the turn left
+// the queue or, for a queued turn, since its message. asking is the number of
+// its approval requests that wait for a person.
+func (q *Queries) ListUnfinishedTurns(ctx context.Context) ([]ListUnfinishedTurnsRow, error) {
+	rows, err := q.db.Query(ctx, listUnfinishedTurns)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListUnfinishedTurnsRow
+	for rows.Next() {
+		var i ListUnfinishedTurnsRow
+		if err := rows.Scan(
+			&i.Harness,
+			&i.State,
+			&i.Started,
+			&i.Age,
+			&i.Asking,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lock = `-- name: Lock :exec
 select pg_advisory_xact_lock($1)
 `
@@ -1752,7 +1811,8 @@ join agents on agents.id = sessions.agent_id
 where turns.state = 'queued'
 order by turns.created_at, turns.id
 limit greatest($1::bigint
-               - (select count(*) from turns as running where running.state in ('dispatching', 'running')), 0)
+               - (select count(*) from turns as running
+                  where running.ended_at is null and running.state in ('dispatching', 'running')), 0)
 `
 
 type NextTurnsRow struct {

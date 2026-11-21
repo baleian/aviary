@@ -111,7 +111,8 @@ func Main(plugins Plugins) {
 // Run serves until ctx is done. With the arguments "migrate [<version>]", it
 // instead migrates the database schema to the latest or the given version,
 // up or down. Serving does not migrate: a release runs "migrate" once, before
-// it starts the Supervisors.
+// it starts the Supervisors. With the argument "state-metrics", it instead
+// serves the state metrics of the installation until ctx is done.
 func Run(ctx context.Context, args []string, plugins Plugins) error {
 	database, err := env(databaseURL)
 	if err != nil {
@@ -128,8 +129,49 @@ func Run(ctx context.Context, args []string, plugins Plugins) error {
 			return fmt.Errorf("invalid schema version %q", args[1])
 		}
 		return store.MigrateTo(ctx, database, version, plugins.Databases...)
+	case len(args) == 1 && args[0] == "state-metrics":
+		return serveState(ctx, database, plugins)
 	}
-	return errors.New("usage: aviary-supervisor [migrate [<version>]]")
+	return errors.New("usage: aviary-supervisor [migrate [<version>] | state-metrics]")
+}
+
+// serveState serves the state metrics, which need the database and the names
+// of the harnesses.
+func serveState(ctx context.Context, database string, plugins Plugins) error {
+	configured, err := harnessSettings()
+	if err != nil {
+		return err
+	}
+	st, err := store.Open(ctx, database, plugins.Databases...)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	on, err := net.Listen("tcp", metricsAddr)
+	if err != nil {
+		return err
+	}
+	return serveStateOn(ctx, on, st, slices.Sorted(maps.Keys(configured)))
+}
+
+// serveStateOn serves the state metrics on the listener until ctx is done.
+func serveStateOn(ctx context.Context, on net.Listener, st store.Store, harnesses []string) error {
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", metrics.NewState(st, harnesses).Handler())
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	failed := make(chan error, 1)
+	go func() { failed <- server.Serve(on) }()
+	slog.Info("listening", "metrics", on.Addr().String())
+
+	select {
+	case err := <-failed:
+		return err
+	case <-ctx.Done():
+	}
+	slog.Info("stopping")
+	stopping, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	return server.Shutdown(stopping)
 }
 
 func sandboxSettings() (sandbox.Settings, error) {
@@ -362,25 +404,35 @@ func callersOf(ctx context.Context, plugins []identity.Plugin) (api.Callers, err
 	return callers, err
 }
 
-func driverConfig() (driver.Config, error) {
-	var config driver.Config
-	// The harnesses are a JSON object such as {"opencode": {"image":
-	// "registry.example.com/harness-opencode:1.0", "resources": {"requests":
-	// {"cpu": "250m", "memory": "1Gi"}, "limits": {"memory": "4Gi"}}}}.
+// harnessSettings reads the harnesses, a JSON object such as {"opencode":
+// {"image": "registry.example.com/harness-opencode:1.0", "resources":
+// {"requests": {"cpu": "250m", "memory": "1Gi"}, "limits": {"memory":
+// "4Gi"}}}}.
+func harnessSettings() (map[string]sandbox.Harness, error) {
 	encoded, err := env(harnesses)
 	if err != nil {
+		return nil, err
+	}
+	var configured map[string]sandbox.Harness
+	if err := json.Unmarshal([]byte(encoded), &configured); err != nil {
+		return nil, fmt.Errorf("%s: %w", harnesses, err)
+	}
+	for name, harness := range configured {
+		if harness.Image == "" {
+			return nil, fmt.Errorf("%s: harness %s has no image", harnesses, name)
+		}
+	}
+	return configured, nil
+}
+
+func driverConfig() (driver.Config, error) {
+	var config driver.Config
+	var err error
+	if config.Harnesses, err = harnessSettings(); err != nil {
 		return config, err
 	}
 	if config.Models, err = address(modelsURL); err != nil {
 		return config, err
-	}
-	if err := json.Unmarshal([]byte(encoded), &config.Harnesses); err != nil {
-		return config, fmt.Errorf("%s: %w", harnesses, err)
-	}
-	for name, harness := range config.Harnesses {
-		if harness.Image == "" {
-			return config, fmt.Errorf("%s: harness %s has no image", harnesses, name)
-		}
 	}
 	idle, err := env(sandboxIdle)
 	if err != nil {

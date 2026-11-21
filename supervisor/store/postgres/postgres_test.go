@@ -88,3 +88,58 @@ func (f fixture) Age(t *testing.T, by time.Duration, turns ...uuid.UUID) {
 func TestStore(t *testing.T) {
 	storetest.Run(t, func(t *testing.T) storetest.Database { return fixture(newDatabase(t)) })
 }
+
+// What the Supervisors do for every message, request and sweep finds the
+// unfinished turns and the sessions with a sandbox through indexes: it reads
+// no table from end to end, however many sessions and turns have ended.
+func TestRoutineSkipsEndedRecords(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	database := newDatabase(t)
+	exec(t, database, `
+		with project as (
+			insert into projects (id, slug) values (gen_random_uuid(), 'ended') returning id
+		), provider as (
+			insert into providers (id, project_id, name, url)
+			select gen_random_uuid(), id, 'ended', 'https://api.example.com/v1' from project returning id, project_id
+		), agent as (
+			insert into agents (id, project_id, slug, harness, provider_id, model)
+			select gen_random_uuid(), project_id, 'ended', 'opencode', id, 'a-model' from provider returning id
+		), session as (
+			insert into sessions (id, agent_id, ended_at)
+			select gen_random_uuid(), agent.id, now() from agent, generate_series(1, 20000) returning id
+		), turn as (
+			insert into turns (id, session_id, seq, state, text, ended_at)
+			select gen_random_uuid(), id, 1, 'completed', 'hello', now() from session returning id
+		), item as (
+			insert into turn_items (turn_id, seq, item) select id, 1, '{}' from turn
+		)
+		insert into approvals (turn_id, id, request, option_id, answered_at, outcome, resolved_at)
+		select id, '1', '{}', 'once', now(), 'selected', now() from turn`)
+	exec(t, database, "analyze")
+	exec(t, database, "select pg_stat_reset()")
+
+	st, err := postgres.Plugin{}.Open(ctx, database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storetest.Routine(t, st)
+	// A connection adds what it read to the statistics when it closes.
+	st.Close()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		others := rows(t, database, "select count(*) from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid()")
+		if others[0] == "0" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s connections to the database are still open", others[0])
+		}
+	}
+	const growing = "relname in ('sessions', 'turns', 'turn_items', 'approvals')"
+	if counted := rows(t, database, "select relname from pg_stat_user_tables where idx_scan > 0 and "+growing); len(counted) != 4 {
+		t.Fatalf("the statistics count index scans of %v, want of all four tables", counted)
+	}
+	if read := rows(t, database, "select relname from pg_stat_user_tables where seq_scan > 0 and "+growing); len(read) != 0 {
+		t.Errorf("the routine read %v from end to end", read)
+	}
+}

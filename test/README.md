@@ -64,9 +64,9 @@ make e2e & make e2e E2E_CLUSTER=aviary-e2e-mysql DATABASE=mysql IDENTITY=keycloa
 ```
 
 If a test fails, the cluster is kept, and the logs of the Supervisors, the
-Egress Proxies and agent-sandbox, the pods, sandboxes and volumes, and the
-cluster events are written to `.out/e2e/<cluster>`. The cluster's kubeconfig
-is there too, until `make e2e-down` deletes the cluster:
+state metrics, the Egress Proxies and agent-sandbox, the pods, sandboxes and
+volumes, and the cluster events are written to `.out/e2e/<cluster>`. The
+cluster's kubeconfig is there too, until `make e2e-down` deletes the cluster:
 
 ```sh
 KUBECONFIG=.out/e2e/aviary-e2e/host.kubeconfig kubectl get pods --all-namespaces

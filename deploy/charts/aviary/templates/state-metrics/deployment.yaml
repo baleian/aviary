@@ -1,0 +1,60 @@
+{{- if .Values.stateMetrics.enabled }}
+# Serves the state metrics of the installation, which it reads from the
+# database at every scrape. It is one pod, replaced before its successor
+# starts: two would report every count twice.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aviary-state-metrics
+  labels:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: state-metrics
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aviary
+      app.kubernetes.io/component: state-metrics
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aviary
+        app.kubernetes.io/component: state-metrics
+      {{- with .Values.stateMetrics.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: state-metrics
+          image: {{ .Values.supervisor.image }}
+          args: ["state-metrics"]
+          env:
+            - name: AVIARY_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.supervisor.database.secretName }}
+                  key: {{ .Values.supervisor.database.secretKey }}
+            - name: AVIARY_HARNESSES
+              value: {{ .Values.runtime.harnesses | toJson | quote }}
+          ports:
+            - name: metrics
+              containerPort: 9092
+          readinessProbe:
+            tcpSocket:
+              port: metrics
+          resources:
+            {{- toYaml .Values.stateMetrics.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+{{- end }}
