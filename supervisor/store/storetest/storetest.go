@@ -140,6 +140,7 @@ func Run(t *testing.T, create func(t *testing.T) Database) {
 		"EndTurnStoresItems":                   suite.testEndTurnStoresItems,
 		"SetFinished":                          suite.testSetFinished,
 		"Turns":                                suite.testTurns,
+		"LastTurns":                            suite.testLastTurns,
 		"DispatchedTurns":                      suite.testDispatchedTurns,
 		"NotFound":                             suite.testNotFound,
 		"Approvals":                            suite.testApprovals,

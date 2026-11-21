@@ -118,6 +118,14 @@ select * from turns where id = ? for update;
 -- name: ListTurns :many
 select * from turns where session_id = sqlc.arg(session_id) and seq < sqlc.arg(before) order by seq desc limit ?;
 
+-- name: ListLastTurns :many
+-- Lists the newest turn of each of the sessions that has one.
+select turns.* from turns
+join (
+    select other.session_id, max(other.seq) as seq from turns as other
+    where other.session_id in (sqlc.slice('session_ids')) group by other.session_id
+) as newest on newest.session_id = turns.session_id and newest.seq = turns.seq;
+
 -- name: GetTurnHarness :one
 select agents.harness
 from turns

@@ -139,6 +139,20 @@ func session(t *testing.T, name string) {
 	if answers < 1 || first.Usage["input_tokens"] != 11*answers || first.Usage["output_tokens"] != 7*answers {
 		t.Errorf("first turn usage = %v, want 11 input and 7 output tokens per model response", first.Usage)
 	}
+	// The session carries its newest turn, in the list of sessions too.
+	var listed struct {
+		Sessions []struct {
+			ID       string `json:"id"`
+			LastTurn struct {
+				ID    string `json:"id"`
+				State string `json:"state"`
+			} `json:"last_turn"`
+		}
+	}
+	if status := request(t, "GET", "/v1/agents/"+agent.id+"/sessions", "", &listed); status != http.StatusOK || len(listed.Sessions) != 1 ||
+		listed.Sessions[0].ID != session || listed.Sessions[0].LastTurn.ID != first.ID || listed.Sessions[0].LastTurn.State != "completed" {
+		t.Errorf("list of sessions: got %d %+v, want the session with its completed turn", status, listed.Sessions)
+	}
 
 	t.Run("continues", func(t *testing.T) {
 		t.Parallel()

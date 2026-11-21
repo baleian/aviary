@@ -196,3 +196,72 @@ func TestSessionExpires(t *testing.T) {
 		t.Errorf("end_reason of a session that a caller ended = %v, want none", reason)
 	}
 }
+
+// A session carries its newest turn, without the text and the items of the
+// turn, wherever the API returns the session.
+func TestSessionLastTurn(t *testing.T) {
+	t.Parallel()
+	aviary := install(t)
+	s := aviary.supervisor()
+	agent := s.agent(s.project(), `{"harness": "opencode", "approval": "ask"}`)
+	session := s.create("/v1/agents/"+agent+"/sessions", "")
+	path := "/v1/sessions/" + session
+	// last returns the newest turn that a response of the API has for the
+	// session.
+	last := func(method, path, body string) map[string]any {
+		t.Helper()
+		var read map[string]any
+		if status, _ := s.request(method, path, body, &read); status != http.StatusOK {
+			t.Fatalf("%s %s: status %d, want 200", method, path, status)
+		}
+		if listed, list := read["sessions"].([]any); list {
+			if len(listed) != 1 {
+				t.Fatalf("%s %s lists %d sessions, want one", method, path, len(listed))
+			}
+			read = listed[0].(map[string]any)
+		}
+		turn, _ := read["last_turn"].(map[string]any)
+		return turn
+	}
+	if turn := last("GET", path, ""); turn != nil {
+		t.Errorf("last_turn of a session without turns = %v, want none", turn)
+	}
+
+	first := s.send(session, "hello")
+	runner := aviary.given(first.ID)
+	runner.report(started("harness-session"))
+	runner.report(said("hi"))
+	turn := last("GET", path, "")
+	if turn["id"] != first.ID || turn["seq"] != float64(1) || turn["state"] != "running" || turn["started_at"] == nil {
+		t.Errorf("last_turn of a session with a running turn = %v", turn)
+	}
+	for _, left := range []string{"text", "items", "approvals"} {
+		if value, has := turn[left]; has {
+			t.Errorf("last_turn has %s = %v, want it left out", left, value)
+		}
+	}
+
+	// A request that waits for an answer is listed with the turn.
+	runner.report(asks("1", "ls"))
+	if waiting, _ := last("GET", path, "")["approvals"].([]any); len(waiting) != 1 || waiting[0].(map[string]any)["id"] != "1" {
+		t.Errorf("approvals of the last turn = %v, want the request that waits", waiting)
+	}
+	if listed := last("GET", "/v1/agents/"+agent+"/sessions", ""); listed["id"] != first.ID || len(listed["approvals"].([]any)) != 1 {
+		t.Errorf("last_turn in the list of sessions = %v", listed)
+	}
+	runner.report(answered("1", "cancelled", ""))
+	runner.report(finished("end_turn", nil))
+
+	second := s.send(session, "and then")
+	runner = aviary.given(second.ID)
+	runner.report(started("harness-session"))
+	runner.report(failed("harness_error", "the model is out of order"))
+	turn = last("PATCH", path, `{"title": "Renamed"}`)
+	failure, _ := turn["failure"].(map[string]any)
+	if turn["id"] != second.ID || turn["seq"] != float64(2) || turn["state"] != "failed" || failure["reason"] != "harness_error" || turn["approvals"] != nil {
+		t.Errorf("last_turn of a session whose second turn failed = %v", turn)
+	}
+	if ended := last("DELETE", path, ""); ended["id"] != second.ID {
+		t.Errorf("last_turn of the session as it ended = %v", ended)
+	}
+}

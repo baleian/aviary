@@ -897,6 +897,20 @@ func (s *Store) Turns(ctx context.Context, sessionID uuid.UUID, before, limit in
 	return turns, nil
 }
 
+func (s *Store) LastTurns(ctx context.Context, sessionIDs []uuid.UUID) (map[uuid.UUID]store.Turn, error) {
+	if err := s.begin(ctx); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+	last := map[uuid.UUID]store.Turn{}
+	for _, id := range sessionIDs {
+		if session, found := s.sessions[id]; found && len(session.turns) > 0 {
+			last[id] = session.turns[len(session.turns)-1].record()
+		}
+	}
+	return last, nil
+}
+
 func (s *Store) TurnItems(ctx context.Context, turnIDs []uuid.UUID) (map[uuid.UUID][]json.RawMessage, error) {
 	if err := s.begin(ctx); err != nil {
 		return nil, err

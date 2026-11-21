@@ -945,6 +945,69 @@ func (q *Queries) ListAgents(ctx context.Context, projectID key.ID) ([]Agent, er
 	return items, nil
 }
 
+const listLastTurns = `-- name: ListLastTurns :many
+select turns.id, turns.session_id, turns.seq, turns.created_by, turns.state, turns.text, turns.created_at, turns.dispatched_at, turns.started_at, turns.cancel_requested_at, turns.ended_at, turns.stop_reason, turns.failure_reason, turns.failure_message, turns.total_tokens, turns.input_tokens, turns.output_tokens, turns.thought_tokens, turns.cached_read_tokens, turns.cached_write_tokens from turns
+join (
+    select other.session_id, max(other.seq) as seq from turns as other
+    where other.session_id in (/*SLICE:session_ids*/?) group by other.session_id
+) as newest on newest.session_id = turns.session_id and newest.seq = turns.seq
+`
+
+// Lists the newest turn of each of the sessions that has one.
+func (q *Queries) ListLastTurns(ctx context.Context, sessionIds []key.ID) ([]Turn, error) {
+	query := listLastTurns
+	var queryParams []interface{}
+	if len(sessionIds) > 0 {
+		for _, v := range sessionIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:session_ids*/?", strings.Repeat(",?", len(sessionIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:session_ids*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Turn
+	for rows.Next() {
+		var i Turn
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.Seq,
+			&i.CreatedBy,
+			&i.State,
+			&i.Text,
+			&i.CreatedAt,
+			&i.DispatchedAt,
+			&i.StartedAt,
+			&i.CancelRequestedAt,
+			&i.EndedAt,
+			&i.StopReason,
+			&i.FailureReason,
+			&i.FailureMessage,
+			&i.TotalTokens,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.ThoughtTokens,
+			&i.CachedReadTokens,
+			&i.CachedWriteTokens,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMembers = `-- name: ListMembers :many
 select project_members.id, project_members.project_id, project_members.user_id, project_members.username, project_members.group_name, project_members.role, project_members.permissions, project_members.created_at, project_members.updated_at, project_members.updated_by, users.subject, users.username as user_username, users.display_name, users.created_at as user_created_at
 from project_members left join users on users.id = project_members.user_id

@@ -799,6 +799,22 @@ func (s *records) Turns(ctx context.Context, sessionID uuid.UUID, before, limit 
 	return turns, nil
 }
 
+func (s *records) LastTurns(ctx context.Context, sessionIDs []uuid.UUID) (map[uuid.UUID]store.Turn, error) {
+	of := make([]key.ID, len(sessionIDs))
+	for i, id := range sessionIDs {
+		of[i] = key.ID(id)
+	}
+	rows, err := s.queries.ListLastTurns(ctx, of)
+	if err != nil {
+		return nil, err
+	}
+	last := make(map[uuid.UUID]store.Turn, len(rows))
+	for _, row := range rows {
+		last[uuid.UUID(row.SessionID)] = turnFrom(row)
+	}
+	return last, nil
+}
+
 func (s *records) TurnItems(ctx context.Context, turnIDs []uuid.UUID) (map[uuid.UUID][]json.RawMessage, error) {
 	of := make([]key.ID, len(turnIDs))
 	for i, id := range turnIDs {

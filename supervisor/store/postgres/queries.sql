@@ -137,6 +137,10 @@ select * from turns where id = @id;
 -- name: ListTurns :many
 select * from turns where session_id = @session_id and seq < @before order by seq desc limit @count;
 
+-- name: ListLastTurns :many
+-- Lists the newest turn of each of the sessions that has one.
+select distinct on (session_id) * from turns where session_id = any(@session_ids::uuid[]) order by session_id, seq desc;
+
 -- name: GetTurnHarness :one
 select agents.harness
 from turns

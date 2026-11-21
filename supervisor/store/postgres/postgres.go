@@ -640,6 +640,18 @@ func (s *records) Turns(ctx context.Context, sessionID uuid.UUID, before, limit 
 	return turns, nil
 }
 
+func (s *records) LastTurns(ctx context.Context, sessionIDs []uuid.UUID) (map[uuid.UUID]store.Turn, error) {
+	rows, err := s.queries.ListLastTurns(ctx, sessionIDs)
+	if err != nil {
+		return nil, err
+	}
+	last := make(map[uuid.UUID]store.Turn, len(rows))
+	for _, row := range rows {
+		last[row.SessionID] = turnFrom(row)
+	}
+	return last, nil
+}
+
 func (s *records) TurnItems(ctx context.Context, turnIDs []uuid.UUID) (map[uuid.UUID][]json.RawMessage, error) {
 	rows, err := s.queries.ListTurnItems(ctx, turnIDs)
 	if err != nil {

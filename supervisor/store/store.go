@@ -535,6 +535,10 @@ type Store interface {
 	// below before, newest first.
 	Turns(ctx context.Context, sessionID uuid.UUID, before, limit int) ([]Turn, error)
 
+	// LastTurns returns the newest turn of each of the sessions, keyed by
+	// session ID. A session without turns is absent from the map.
+	LastTurns(ctx context.Context, sessionIDs []uuid.UUID) (map[uuid.UUID]Turn, error)
+
 	// TurnItems returns what the agent said and did in each of the turns, in
 	// order, keyed by turn ID. A turn has items only once it has ended, and
 	// turns without items are absent from the map.

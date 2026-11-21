@@ -330,9 +330,64 @@ func (a *api) listSessions(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 	}
+	records, err := a.sessionRecords(r.Context(), sessions)
+	if err != nil {
+		return err
+	}
 	respond(w, http.StatusOK, struct {
-		Sessions []store.Session `json:"sessions"`
-	}{sessions})
+		Sessions []sessionRecord `json:"sessions"`
+	}{records})
+	return nil
+}
+
+// sessionRecord is a session with its newest turn, if it has one.
+type sessionRecord struct {
+	store.Session
+	LastTurn *lastTurn `json:"last_turn,omitempty"`
+}
+
+// lastTurn is a turn as its session carries it: a turn record without the
+// text and the items.
+type lastTurn struct {
+	store.Turn
+	// Text is never set. It keeps the text of the turn out of the JSON.
+	Text      string            `json:"text,omitempty"`
+	Approvals []json.RawMessage `json:"approvals,omitempty"`
+}
+
+func (a *api) sessionRecords(ctx context.Context, sessions []store.Session) ([]sessionRecord, error) {
+	ids := make([]uuid.UUID, len(sessions))
+	for i, session := range sessions {
+		ids[i] = session.ID
+	}
+	last, err := a.store.LastTurns(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	records := make([]sessionRecord, len(sessions))
+	for i, session := range sessions {
+		records[i] = sessionRecord{Session: session}
+		turn, found := last[session.ID]
+		if !found {
+			continue
+		}
+		records[i].LastTurn = &lastTurn{Turn: turn}
+		if turn.EndedAt == nil {
+			if records[i].LastTurn.Approvals, err = a.store.WaitingApprovals(ctx, turn.ID); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return records, nil
+}
+
+// respondSession responds with the session and its newest turn.
+func (a *api) respondSession(w http.ResponseWriter, r *http.Request, session store.Session) error {
+	records, err := a.sessionRecords(r.Context(), []store.Session{session})
+	if err != nil {
+		return err
+	}
+	respond(w, http.StatusOK, records[0])
 	return nil
 }
 
@@ -345,8 +400,7 @@ func (a *api) getSession(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	respond(w, http.StatusOK, session)
-	return nil
+	return a.respondSession(w, r, session)
 }
 
 // updateSession changes the session's title, the one field that can be
@@ -369,8 +423,7 @@ func (a *api) updateSession(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	respond(w, http.StatusOK, session)
-	return nil
+	return a.respondSession(w, r, session)
 }
 
 // endSession ends the session and deletes its sandbox. The conversation is
@@ -384,8 +437,7 @@ func (a *api) endSession(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	respond(w, http.StatusOK, session)
-	return nil
+	return a.respondSession(w, r, session)
 }
 
 // createMessage queues a message as the session's next turn, and responds

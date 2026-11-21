@@ -1062,6 +1062,52 @@ func (q *Queries) ListAgents(ctx context.Context, projectID uuid.UUID) ([]Agent,
 	return items, nil
 }
 
+const listLastTurns = `-- name: ListLastTurns :many
+select distinct on (session_id) id, session_id, seq, created_by, state, text, created_at, dispatched_at, started_at, cancel_requested_at, ended_at, stop_reason, failure_reason, failure_message, total_tokens, input_tokens, output_tokens, thought_tokens, cached_read_tokens, cached_write_tokens from turns where session_id = any($1::uuid[]) order by session_id, seq desc
+`
+
+// Lists the newest turn of each of the sessions that has one.
+func (q *Queries) ListLastTurns(ctx context.Context, sessionIds []uuid.UUID) ([]Turn, error) {
+	rows, err := q.db.Query(ctx, listLastTurns, sessionIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Turn
+	for rows.Next() {
+		var i Turn
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.Seq,
+			&i.CreatedBy,
+			&i.State,
+			&i.Text,
+			&i.CreatedAt,
+			&i.DispatchedAt,
+			&i.StartedAt,
+			&i.CancelRequestedAt,
+			&i.EndedAt,
+			&i.StopReason,
+			&i.FailureReason,
+			&i.FailureMessage,
+			&i.TotalTokens,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.ThoughtTokens,
+			&i.CachedReadTokens,
+			&i.CachedWriteTokens,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMembers = `-- name: ListMembers :many
 select project_members.id, project_members.project_id, project_members.user_id, project_members.username, project_members.group_name, project_members.role, project_members.permissions, project_members.created_at, project_members.updated_at, project_members.updated_by, users.subject, users.username as user_username, users.display_name, users.created_at as user_created_at
 from project_members left join users on users.id = project_members.user_id

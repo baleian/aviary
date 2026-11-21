@@ -854,6 +854,33 @@ func (suite suite) testTurns(t *testing.T) {
 	}
 }
 
+// LastTurns returns the newest turn of each session that has turns.
+func (suite suite) testLastTurns(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	if last, err := st.LastTurns(ctx, nil); err != nil || len(last) != 0 {
+		t.Errorf("LastTurns of no sessions = %+v, %v, want none", last, err)
+	}
+	fresh, once, often, other := st.session(), st.session(), st.session(), st.session()
+	st.end(st.running(other).TurnID, false, store.Failure{Reason: store.FailureSandboxLost})
+	only := st.running(once)
+	for range 2 {
+		st.end(st.running(often).TurnID, true, store.Failure{})
+	}
+	queued := st.queue(often)
+
+	last, err := st.another().LastTurns(ctx, []uuid.UUID{fresh, once, often, uuid.New()})
+	if err != nil || len(last) != 2 {
+		t.Fatalf("LastTurns = %+v, %v, want the turns of two sessions", last, err)
+	}
+	if turn := last[once]; turn.ID != only.TurnID || turn.SessionID != once || turn.Seq != 1 || turn.State != store.TurnRunning || turn.Text != "hello" {
+		t.Errorf("newest turn of a session with one turn = %+v", turn)
+	}
+	if turn := last[often]; turn.ID != queued.ID || turn.Seq != 3 || turn.State != store.TurnQueued || turn.EndedAt != nil {
+		t.Errorf("newest turn of a session with three turns = %+v, want the third, queued", turn)
+	}
+}
+
 func (suite suite) testDispatchedTurns(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
