@@ -64,7 +64,7 @@ func (s supervisor) session() uuid.UUID {
 	if err != nil {
 		s.t.Fatal(err)
 	}
-	session, err := s.CreateSession(ctx, agent.ID, uuid.Nil)
+	session, err := s.CreateSession(ctx, agent.ID, uuid.Nil, "")
 	if err != nil {
 		s.t.Fatal(err)
 	}
@@ -914,13 +914,14 @@ func (suite suite) testNotFound(t *testing.T) {
 	none := uuid.New()
 	agent := store.Agent{Slug: unique("agent"), Harness: "opencode"}
 	for name, get := range map[string]func() error{
-		"Project":       func() error { _, err := st.Project(ctx, none); return err },
-		"Agent":         func() error { _, err := st.Agent(ctx, none); return err },
-		"Session":       func() error { _, err := st.Session(ctx, none); return err },
-		"Turn":          func() error { _, err := st.Turn(ctx, none); return err },
-		"TurnHarness":   func() error { _, err := st.TurnHarness(ctx, none); return err },
-		"CreateAgent":   func() error { _, err := st.CreateAgent(ctx, none, agent); return err },
-		"CreateSession": func() error { _, err := st.CreateSession(ctx, none, uuid.Nil); return err },
+		"Project":         func() error { _, err := st.Project(ctx, none); return err },
+		"Agent":           func() error { _, err := st.Agent(ctx, none); return err },
+		"Session":         func() error { _, err := st.Session(ctx, none); return err },
+		"Turn":            func() error { _, err := st.Turn(ctx, none); return err },
+		"TurnHarness":     func() error { _, err := st.TurnHarness(ctx, none); return err },
+		"CreateAgent":     func() error { _, err := st.CreateAgent(ctx, none, agent); return err },
+		"CreateSession":   func() error { _, err := st.CreateSession(ctx, none, uuid.Nil, ""); return err },
+		"SetSessionTitle": func() error { _, err := st.SetSessionTitle(ctx, none, "a title"); return err },
 	} {
 		if err := get(); !errors.Is(err, store.ErrNotFound) {
 			t.Errorf("%s = %v, want ErrNotFound", name, err)

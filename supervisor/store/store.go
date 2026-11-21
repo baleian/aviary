@@ -121,6 +121,8 @@ type Member struct {
 type Session struct {
 	ID      uuid.UUID `json:"id"`
 	AgentID uuid.UUID `json:"agent_id"`
+	// Title is a display title. It is empty if none was given.
+	Title string `json:"title"`
 	// CreatedBy is the user who created and owns the session, or uuid.Nil
 	// if the request was not authenticated.
 	CreatedBy uuid.UUID  `json:"created_by,omitzero"`
@@ -417,11 +419,15 @@ type Store interface {
 	// Agents returns the agents of the project in creation order.
 	Agents(ctx context.Context, projectID uuid.UUID) ([]Agent, error)
 
-	// CreateSession creates a session of the agent. It returns ErrNotFound if
-	// the agent does not exist.
-	CreateSession(ctx context.Context, agentID, by uuid.UUID) (Session, error)
+	// CreateSession creates a session of the agent with the title, which may
+	// be empty. It returns ErrNotFound if the agent does not exist.
+	CreateSession(ctx context.Context, agentID, by uuid.UUID, title string) (Session, error)
 
 	Session(ctx context.Context, id uuid.UUID) (Session, error)
+
+	// SetSessionTitle replaces the session's title, which may be empty, and
+	// returns the session. It returns ErrNotFound if there is no such session.
+	SetSessionTitle(ctx context.Context, id uuid.UUID, title string) (Session, error)
 
 	// SetSandbox changes the session's sandbox from from to to, where ""
 	// means none. It is a compare-and-swap: it reports false and changes

@@ -17,11 +17,14 @@ select * from agents where id = ?;
 select * from agents where project_id = ? order by created_at, id;
 
 -- name: CreateSession :execrows
-insert into sessions (id, agent_id, created_by)
-select sqlc.arg(id), agents.id, sqlc.narg(created_by) from agents where agents.id = sqlc.arg(agent_id);
+insert into sessions (id, agent_id, title, created_by)
+select sqlc.arg(id), agents.id, sqlc.arg(title), sqlc.narg(created_by) from agents where agents.id = sqlc.arg(agent_id);
 
 -- name: GetSession :one
 select * from sessions where id = ?;
+
+-- name: SetSessionTitle :execrows
+update sessions set title = sqlc.arg(title) where id = sqlc.arg(id);
 
 -- name: SetSandbox :exec
 update sessions set sandbox = sqlc.narg(sandbox) where id = sqlc.arg(id);

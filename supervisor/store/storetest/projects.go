@@ -176,7 +176,7 @@ func (suite suite) testAgents(t *testing.T) {
 		t.Errorf("agent with only a slug, a harness and a model = %+v: %v", read, err)
 	}
 
-	session, err := st.CreateSession(ctx, created.ID, uuid.Nil)
+	session, err := st.CreateSession(ctx, created.ID, uuid.Nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +335,7 @@ func (suite suite) testListSessions(t *testing.T) {
 	// users.
 	created := []store.Session{first}
 	for _, by := range []uuid.UUID{alice, bob, alice, uuid.Nil, alice} {
-		session, err := st.CreateSession(ctx, agent, by)
+		session, err := st.CreateSession(ctx, agent, by, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -345,7 +345,7 @@ func (suite suite) testListSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.CreateSession(ctx, elsewhere.AgentID, alice); err != nil {
+	if _, err := st.CreateSession(ctx, elsewhere.AgentID, alice, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -386,6 +386,64 @@ func (suite suite) testListSessions(t *testing.T) {
 			t.Errorf("%s: sessions = %v, want %v", listed.what, answer, listed.sessions)
 		}
 	}
+}
+
+// A session has the title that it was created with, which may be empty. The
+// title can be changed and emptied, also once the session has ended.
+func (suite suite) testSessionTitles(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	untitled, err := st.Session(ctx, st.session())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := st.CreateSession(ctx, untitled.AgentID, uuid.Nil, "Fix the build")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// titled checks the title of the session that another Supervisor reads
+	// and lists.
+	other := st.another()
+	titled := func(id uuid.UUID, want string) {
+		t.Helper()
+		read, err := other.Session(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		listed, err := other.Sessions(ctx, untitled.AgentID, uuid.Nil, uuid.Max, 10)
+		at := slices.IndexFunc(listed, func(one store.Session) bool { return one.ID == id })
+		if err != nil || at < 0 {
+			t.Fatalf("Sessions = %+v, want one with ID %v: %v", listed, id, err)
+		}
+		for how, got := range map[string]store.Session{"read": read, "listed": listed[at]} {
+			if got.Title != want {
+				t.Errorf("%s title = %q, want %q", how, got.Title, want)
+			}
+		}
+	}
+	if untitled.Title != "" || session.Title != "Fix the build" {
+		t.Errorf("titles of new sessions = %q and %q, want empty and %q", untitled.Title, session.Title, "Fix the build")
+	}
+	titled(untitled.ID, "")
+	titled(session.ID, "Fix the build")
+
+	// The first title is the one that the session has already.
+	for _, title := range []string{"Fix the build", "Fix the tests", "빌드 고치기", ""} {
+		set, err := st.SetSessionTitle(ctx, session.ID, title)
+		if err != nil || set.ID != session.ID || set.Title != title || !set.CreatedAt.Equal(session.CreatedAt) {
+			t.Errorf("SetSessionTitle(%q) = %+v, %v", title, set, err)
+		}
+		titled(session.ID, title)
+	}
+	titled(untitled.ID, "")
+
+	if _, err := st.EndSession(ctx, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if set, err := st.SetSessionTitle(ctx, session.ID, "Fixed"); err != nil || set.Title != "Fixed" || set.EndedAt == nil {
+		t.Errorf("SetSessionTitle of an ended session = %+v, %v", set, err)
+	}
+	titled(session.ID, "Fixed")
 }
 
 // A session can be ended once it has no unfinished turn. It then accepts no
@@ -634,7 +692,7 @@ func (suite suite) testProviderKeyInSecretStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := st.CreateSession(ctx, agent.ID, uuid.Nil)
+	session, err := st.CreateSession(ctx, agent.ID, uuid.Nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -683,7 +741,7 @@ func (suite suite) testSessionTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := st.CreateSession(ctx, agent.ID, sender.ID)
+	session, err := st.CreateSession(ctx, agent.ID, sender.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -805,7 +863,7 @@ func (suite suite) testAgentModel(t *testing.T) {
 		read.Model != model || agent.Model != model {
 		t.Errorf("agent with model %+v: created %+v, read %+v: %v", model, agent, read, err)
 	}
-	session, err := st.CreateSession(ctx, agent.ID, uuid.Nil)
+	session, err := st.CreateSession(ctx, agent.ID, uuid.Nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

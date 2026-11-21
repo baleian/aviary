@@ -20,7 +20,8 @@ func TestRefusals(t *testing.T) {
 	s := aviary.supervisor()
 	project := s.project()
 	agents := "/v1/projects/" + project + "/agents"
-	session := s.create("/v1/agents/"+s.agent(project, `{"harness": "opencode"}`)+"/sessions", "")
+	sessions := "/v1/agents/" + s.agent(project, `{"harness": "opencode"}`) + "/sessions"
+	session := s.create(sessions, "")
 	providers := "/v1/projects/" + project + "/providers"
 	provided := s.create(providers, `{"name": "a provider", "url": "https://api.example.com/v1"}`)
 	provider := "/v1/providers/" + provided
@@ -68,8 +69,16 @@ func TestRefusals(t *testing.T) {
 		{"POST", "/v1/projects/" + none + "/agents", `{"slug": "test", "harness": "opencode", ` + model + `}`, http.StatusNotFound, notFound},
 		{"GET", "/v1/agents/" + none, ``, http.StatusNotFound, notFound},
 
+		{"POST", sessions, `{"title": 7}`, http.StatusBadRequest, invalid},
+		{"POST", sessions, `{"title": "a title", "agent_id": "` + none + `"}`, http.StatusBadRequest, invalid},
 		{"POST", "/v1/agents/" + none + "/sessions", ``, http.StatusNotFound, notFound},
 		{"GET", "/v1/sessions/" + none, ``, http.StatusNotFound, notFound},
+		{"PATCH", "/v1/sessions/" + session, ``, http.StatusBadRequest, invalid},
+		{"PATCH", "/v1/sessions/" + session, `{}`, http.StatusBadRequest, invalid},
+		{"PATCH", "/v1/sessions/" + session, `{"title": null}`, http.StatusBadRequest, invalid},
+		{"PATCH", "/v1/sessions/" + session, `{"title": 7}`, http.StatusBadRequest, invalid},
+		{"PATCH", "/v1/sessions/" + session, `{"title": "a title", "agent_id": "` + none + `"}`, http.StatusBadRequest, invalid},
+		{"PATCH", "/v1/sessions/" + none, `{"title": "a title"}`, http.StatusNotFound, notFound},
 
 		{"POST", "/v1/sessions/" + session + "/messages", `{}`, http.StatusBadRequest, invalid},
 		{"POST", "/v1/sessions/" + session + "/messages", string(long), http.StatusBadRequest, invalid},
@@ -166,8 +175,35 @@ func TestResources(t *testing.T) {
 		}
 	}
 
-	if session := get("/v1/sessions/" + s.create("/v1/agents/"+agent+"/sessions", "")); session["agent_id"] != agent {
-		t.Errorf("unexpected session %v", session)
+	sessions := returned("/v1/agents/"+agent+"/sessions", `{"title": "Fix the build"}`, "/v1/sessions/", "sessions")
+	session, _ := sessions["created"]["id"].(string)
+	for how, resource := range sessions {
+		if resource["id"] != session || resource["agent_id"] != agent || resource["title"] != "Fix the build" || resource["created_at"] == nil {
+			t.Errorf("%s session %v", how, resource)
+		}
+	}
+	// A session created without a body has an empty title.
+	untitled := get("/v1/sessions/" + s.create("/v1/agents/"+agent+"/sessions", ""))
+	if title, given := untitled["title"]; untitled["agent_id"] != agent || !given || title != "" {
+		t.Errorf("session created without a body %v", untitled)
+	}
+}
+
+// A client can change the title of a session, and empty it.
+func TestSessionTitles(t *testing.T) {
+	t.Parallel()
+	s := install(t).supervisor()
+	agent := s.agent(s.project(), `{"harness": "opencode"}`)
+	session := "/v1/sessions/" + s.create("/v1/agents/"+agent+"/sessions", `{"title": "Fix the build"}`)
+	for _, title := range []string{"Fix the tests", ""} {
+		body := fmt.Sprintf(`{"title": %q}`, title)
+		var changed, read map[string]any
+		if status, _ := s.request("PATCH", session, body, &changed); status != http.StatusOK || changed["title"] != title {
+			t.Errorf("PATCH %s %s = %d, title %v, want %q", session, body, status, changed["title"], title)
+		}
+		if status, _ := s.request("GET", session, "", &read); status != http.StatusOK || read["title"] != title {
+			t.Errorf("GET %s after PATCH %s = %d, title %v, want %q", session, body, status, read["title"], title)
+		}
 	}
 }
 

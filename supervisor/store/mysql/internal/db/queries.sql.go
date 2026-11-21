@@ -353,18 +353,24 @@ func (q *Queries) CreateSecretStore(ctx context.Context, arg CreateSecretStorePa
 }
 
 const createSession = `-- name: CreateSession :execrows
-insert into sessions (id, agent_id, created_by)
-select ?, agents.id, ? from agents where agents.id = ?
+insert into sessions (id, agent_id, title, created_by)
+select ?, agents.id, ?, ? from agents where agents.id = ?
 `
 
 type CreateSessionParams struct {
 	ID        key.ID
+	Title     string
 	CreatedBy *key.ID
 	AgentID   key.ID
 }
 
 func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, createSession, arg.ID, arg.CreatedBy, arg.AgentID)
+	result, err := q.db.ExecContext(ctx, createSession,
+		arg.ID,
+		arg.Title,
+		arg.CreatedBy,
+		arg.AgentID,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -775,7 +781,7 @@ func (q *Queries) GetSecretStore(ctx context.Context, id key.ID) (SecretStore, e
 }
 
 const getSession = `-- name: GetSession :one
-select id, agent_id, created_by, sandbox, created_at, ended_at from sessions where id = ?
+select id, agent_id, title, created_by, sandbox, created_at, ended_at from sessions where id = ?
 `
 
 func (q *Queries) GetSession(ctx context.Context, id key.ID) (Session, error) {
@@ -784,6 +790,7 @@ func (q *Queries) GetSession(ctx context.Context, id key.ID) (Session, error) {
 	err := row.Scan(
 		&i.ID,
 		&i.AgentID,
+		&i.Title,
 		&i.CreatedBy,
 		&i.Sandbox,
 		&i.CreatedAt,
@@ -1158,7 +1165,7 @@ func (q *Queries) ListRoles(ctx context.Context) ([]Role, error) {
 }
 
 const listSessions = `-- name: ListSessions :many
-select id, agent_id, created_by, sandbox, created_at, ended_at from sessions where agent_id = ? and id < ? order by id desc limit ?
+select id, agent_id, title, created_by, sandbox, created_at, ended_at from sessions where agent_id = ? and id < ? order by id desc limit ?
 `
 
 type ListSessionsParams struct {
@@ -1181,6 +1188,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 		if err := rows.Scan(
 			&i.ID,
 			&i.AgentID,
+			&i.Title,
 			&i.CreatedBy,
 			&i.Sandbox,
 			&i.CreatedAt,
@@ -1200,7 +1208,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 }
 
 const listSessionsOf = `-- name: ListSessionsOf :many
-select id, agent_id, created_by, sandbox, created_at, ended_at from sessions
+select id, agent_id, title, created_by, sandbox, created_at, ended_at from sessions
 where agent_id = ? and created_by = ? and id < ?
 order by id desc limit ?
 `
@@ -1230,6 +1238,7 @@ func (q *Queries) ListSessionsOf(ctx context.Context, arg ListSessionsOfParams) 
 		if err := rows.Scan(
 			&i.ID,
 			&i.AgentID,
+			&i.Title,
 			&i.CreatedBy,
 			&i.Sandbox,
 			&i.CreatedAt,
@@ -1357,7 +1366,7 @@ func (q *Queries) Lock(ctx context.Context, name string) (string, error) {
 }
 
 const lockSession = `-- name: LockSession :one
-select id, agent_id, created_by, sandbox, created_at, ended_at from sessions where id = ? for update
+select id, agent_id, title, created_by, sandbox, created_at, ended_at from sessions where id = ? for update
 `
 
 // Locks the session until the transaction ends, which serializes accepting
@@ -1368,6 +1377,7 @@ func (q *Queries) LockSession(ctx context.Context, id key.ID) (Session, error) {
 	err := row.Scan(
 		&i.ID,
 		&i.AgentID,
+		&i.Title,
 		&i.CreatedBy,
 		&i.Sandbox,
 		&i.CreatedAt,
@@ -1761,6 +1771,23 @@ type SetSandboxParams struct {
 func (q *Queries) SetSandbox(ctx context.Context, arg SetSandboxParams) error {
 	_, err := q.db.ExecContext(ctx, setSandbox, arg.Sandbox, arg.ID)
 	return err
+}
+
+const setSessionTitle = `-- name: SetSessionTitle :execrows
+update sessions set title = ? where id = ?
+`
+
+type SetSessionTitleParams struct {
+	Title string
+	ID    key.ID
+}
+
+func (q *Queries) SetSessionTitle(ctx context.Context, arg SetSessionTitleParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setSessionTitle, arg.Title, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const startTurn = `-- name: StartTurn :exec

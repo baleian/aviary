@@ -189,7 +189,8 @@ a client shows the slug when the name is empty.
 | `POST /v1/projects/{id}/secret-stores` | Registers a secret store of the project. Body: `{"name": "...", "kind": "...", "settings": {...}, "credential": {"value": "..."}}`. See [Secret stores](#secret-stores). |
 | `PUT /v1/secret-stores/{id}` | Replaces the name, the kind, the settings and the credential of a secret store together. |
 | `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"slug": "...", "name": "...", "harness": "...", "model": {"provider": "...", "name": "..."}, "instructions": "...", "approval": "ask"}`. The harness is one of the configured harnesses. The model is a provider of the project, by ID, and the provider's name for the model. The optional instructions are given to the agent before every turn. With `"approval": "ask"`, the agent asks a person before it acts (see [Approval](#approval)); without it, it asks nobody. Returns 409 if another agent of the project has the slug. |
-| `POST /v1/agents/{id}/sessions` | Creates a session, which belongs to the caller. With an identity provider, its `created_by` is the caller's user ID. |
+| `POST /v1/agents/{id}/sessions` | Creates a session, which belongs to the caller. Body, which may be left out: `{"title": "..."}`. The title is optional and only for display; a session created without one has an empty title. With an identity provider, its `created_by` is the caller's user ID. |
+| `PATCH /v1/sessions/{id}` | Changes the title of a session, also of one that has ended. Body: `{"title": "..."}`, where an empty title leaves the session without one. Returns 200 with the session. |
 | `POST /v1/sessions/{id}/messages` | Sends a message. Body: `{"text": "..."}`. Returns 202 with the turn, whose `created_by` is set as for a session; 409 if a turn of the session has not ended or the session has ended; 429 with `Retry-After` if too many turns are queued. |
 | `DELETE /v1/sessions/{id}` | Ends a session. Returns 200 with the session, which then has `ended_at`. The session's sandbox is deleted with its volume and everything that the agent had in it, unless the storage class keeps the data of deleted volumes (see `runtime.volume` in [Configuration](#configuration)). The conversation stays readable, and the session accepts no more messages. Returns 409 if a turn of the session has not ended. |
 | `POST /v1/turns/{id}/cancel` | Cancels a turn. A queued turn ends at once: 200 with the turn. A running turn is told to stop, and ends when its harness has stopped: 202 with the turn. Returns 409 if the turn has ended in another way. |
@@ -398,9 +399,9 @@ Everything else needs a permission in the project:
 | `project.view` | Viewing the project and its agents, model providers and secret stores, without their secrets. Every member has it. |
 | `agents.manage` | Creating agents in the project. |
 | `connections.manage` | Registering and replacing the project's model providers and secret stores. |
-| `sessions.run` | Creating sessions, and in one's own sessions: sending messages, stopping turns, answering approval requests, reading the conversation and ending the session. |
+| `sessions.run` | Creating sessions, and in one's own sessions: sending messages, stopping turns, answering approval requests, reading the conversation, changing the title and ending the session. |
 | `sessions.view_all` | Reading the sessions of other members. |
-| `sessions.control_all` | Stopping the turns of other members, answering their approval requests and ending their sessions. Includes `sessions.view_all`. |
+| `sessions.control_all` | Stopping the turns of other members, answering their approval requests, and changing the titles of their sessions and ending them. Includes `sessions.view_all`. |
 
 A member is a user, by username, or a group of the identity provider, which
 includes everyone that the provider puts in it. A member has a role, or
@@ -416,9 +417,10 @@ the other is not a member.
 
 A session belongs to the caller who created it, and only that caller can
 send it messages. Reading one's own session, stopping its turns, answering
-their approval requests and ending it need `sessions.run`. For the sessions
-of other members, reading needs `sessions.view_all`, and stopping,
-answering and ending need `sessions.control_all`.
+their approval requests, changing its title and ending it need
+`sessions.run`. For the sessions of other members, reading needs
+`sessions.view_all`, and stopping, answering, changing the title and ending
+need `sessions.control_all`.
 
 There are exactly five roles. An administrator can change the permissions
 of a role with `PUT /v1/roles/{name}`, which applies to everyone with the

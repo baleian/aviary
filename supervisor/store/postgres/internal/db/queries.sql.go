@@ -381,23 +381,30 @@ func (q *Queries) CreateSecretStore(ctx context.Context, arg CreateSecretStorePa
 }
 
 const createSession = `-- name: CreateSession :one
-insert into sessions (id, agent_id, created_by)
-select $1::uuid, agents.id, $2::uuid from agents where agents.id = $3
-returning id, agent_id, created_by, sandbox, created_at, ended_at
+insert into sessions (id, agent_id, title, created_by)
+select $1::uuid, agents.id, $2::text, $3::uuid from agents where agents.id = $4
+returning id, agent_id, title, created_by, sandbox, created_at, ended_at
 `
 
 type CreateSessionParams struct {
 	ID        uuid.UUID
+	Title     string
 	CreatedBy *uuid.UUID
 	AgentID   uuid.UUID
 }
 
 func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error) {
-	row := q.db.QueryRow(ctx, createSession, arg.ID, arg.CreatedBy, arg.AgentID)
+	row := q.db.QueryRow(ctx, createSession,
+		arg.ID,
+		arg.Title,
+		arg.CreatedBy,
+		arg.AgentID,
+	)
 	var i Session
 	err := row.Scan(
 		&i.ID,
 		&i.AgentID,
+		&i.Title,
 		&i.CreatedBy,
 		&i.Sandbox,
 		&i.CreatedAt,
@@ -519,7 +526,7 @@ const endSession = `-- name: EndSession :one
 update sessions set ended_at = now()
 where sessions.id = $1
   and not exists (select 1 from turns where turns.session_id = sessions.id and turns.ended_at is null)
-returning id, agent_id, created_by, sandbox, created_at, ended_at
+returning id, agent_id, title, created_by, sandbox, created_at, ended_at
 `
 
 // Ends the session unless it has an unfinished turn.
@@ -529,6 +536,7 @@ func (q *Queries) EndSession(ctx context.Context, id uuid.UUID) (Session, error)
 	err := row.Scan(
 		&i.ID,
 		&i.AgentID,
+		&i.Title,
 		&i.CreatedBy,
 		&i.Sandbox,
 		&i.CreatedAt,
@@ -885,7 +893,7 @@ func (q *Queries) GetSecretStore(ctx context.Context, id uuid.UUID) (SecretStore
 }
 
 const getSession = `-- name: GetSession :one
-select id, agent_id, created_by, sandbox, created_at, ended_at from sessions where id = $1
+select id, agent_id, title, created_by, sandbox, created_at, ended_at from sessions where id = $1
 `
 
 func (q *Queries) GetSession(ctx context.Context, id uuid.UUID) (Session, error) {
@@ -894,6 +902,7 @@ func (q *Queries) GetSession(ctx context.Context, id uuid.UUID) (Session, error)
 	err := row.Scan(
 		&i.ID,
 		&i.AgentID,
+		&i.Title,
 		&i.CreatedBy,
 		&i.Sandbox,
 		&i.CreatedAt,
@@ -1229,7 +1238,7 @@ func (q *Queries) ListRoles(ctx context.Context) ([]Role, error) {
 }
 
 const listSessions = `-- name: ListSessions :many
-select id, agent_id, created_by, sandbox, created_at, ended_at from sessions where agent_id = $1 and id < $2 order by id desc limit $3
+select id, agent_id, title, created_by, sandbox, created_at, ended_at from sessions where agent_id = $1 and id < $2 order by id desc limit $3
 `
 
 type ListSessionsParams struct {
@@ -1252,6 +1261,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 		if err := rows.Scan(
 			&i.ID,
 			&i.AgentID,
+			&i.Title,
 			&i.CreatedBy,
 			&i.Sandbox,
 			&i.CreatedAt,
@@ -1268,7 +1278,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 }
 
 const listSessionsOf = `-- name: ListSessionsOf :many
-select id, agent_id, created_by, sandbox, created_at, ended_at from sessions where agent_id = $1 and created_by = $2::uuid and id < $3
+select id, agent_id, title, created_by, sandbox, created_at, ended_at from sessions where agent_id = $1 and created_by = $2::uuid and id < $3
 order by id desc limit $4
 `
 
@@ -1297,6 +1307,7 @@ func (q *Queries) ListSessionsOf(ctx context.Context, arg ListSessionsOfParams) 
 		if err := rows.Scan(
 			&i.ID,
 			&i.AgentID,
+			&i.Title,
 			&i.CreatedBy,
 			&i.Sandbox,
 			&i.CreatedAt,
@@ -1404,7 +1415,7 @@ func (q *Queries) Lock(ctx context.Context, key int64) error {
 }
 
 const lockSession = `-- name: LockSession :one
-select id, agent_id, created_by, sandbox, created_at, ended_at from sessions where id = $1 for update
+select id, agent_id, title, created_by, sandbox, created_at, ended_at from sessions where id = $1 for update
 `
 
 // Locks the session until the transaction ends, so that no message is
@@ -1415,6 +1426,7 @@ func (q *Queries) LockSession(ctx context.Context, id uuid.UUID) (Session, error
 	err := row.Scan(
 		&i.ID,
 		&i.AgentID,
+		&i.Title,
 		&i.CreatedBy,
 		&i.Sandbox,
 		&i.CreatedAt,
@@ -1807,6 +1819,30 @@ func (q *Queries) SetSandbox(ctx context.Context, arg SetSandboxParams) (int64, 
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const setSessionTitle = `-- name: SetSessionTitle :one
+update sessions set title = $1 where id = $2 returning id, agent_id, title, created_by, sandbox, created_at, ended_at
+`
+
+type SetSessionTitleParams struct {
+	Title string
+	ID    uuid.UUID
+}
+
+func (q *Queries) SetSessionTitle(ctx context.Context, arg SetSessionTitleParams) (Session, error) {
+	row := q.db.QueryRow(ctx, setSessionTitle, arg.Title, arg.ID)
+	var i Session
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.Title,
+		&i.CreatedBy,
+		&i.Sandbox,
+		&i.CreatedAt,
+		&i.EndedAt,
+	)
+	return i, err
 }
 
 const startTurn = `-- name: StartTurn :one

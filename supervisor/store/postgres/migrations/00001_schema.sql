@@ -112,6 +112,7 @@ create table agents (
 create table sessions (
     id uuid primary key,
     agent_id uuid not null references agents (id),
+    title text not null default '',
     -- The owner of the session. Null if the request was not authenticated.
     created_by uuid references users (id),
     -- The name of the session's sandbox, if it has one.

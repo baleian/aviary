@@ -351,12 +351,12 @@ func (s *records) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agen
 	return agents, nil
 }
 
-func (s *records) CreateSession(ctx context.Context, agentID, by uuid.UUID) (store.Session, error) {
+func (s *records) CreateSession(ctx context.Context, agentID, by uuid.UUID, title string) (store.Session, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return store.Session{}, err
 	}
-	params := db.CreateSessionParams{ID: id, AgentID: agentID}
+	params := db.CreateSessionParams{ID: id, AgentID: agentID, Title: title}
 	if by != uuid.Nil {
 		params.CreatedBy = &by
 	}
@@ -369,6 +369,14 @@ func (s *records) CreateSession(ctx context.Context, agentID, by uuid.UUID) (sto
 
 func (s *records) Session(ctx context.Context, id uuid.UUID) (store.Session, error) {
 	row, err := s.queries.GetSession(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.Session{}, store.ErrNotFound
+	}
+	return sessionFrom(row), err
+}
+
+func (s *records) SetSessionTitle(ctx context.Context, id uuid.UUID, title string) (store.Session, error) {
+	row, err := s.queries.SetSessionTitle(ctx, db.SetSessionTitleParams{ID: id, Title: title})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.Session{}, store.ErrNotFound
 	}
@@ -926,7 +934,7 @@ func providerFrom(row db.Provider) store.Provider {
 }
 
 func sessionFrom(row db.Session) store.Session {
-	session := store.Session{ID: row.ID, AgentID: row.AgentID, CreatedAt: row.CreatedAt, EndedAt: row.EndedAt}
+	session := store.Session{ID: row.ID, AgentID: row.AgentID, Title: row.Title, CreatedAt: row.CreatedAt, EndedAt: row.EndedAt}
 	if row.CreatedBy != nil {
 		session.CreatedBy = *row.CreatedBy
 	}

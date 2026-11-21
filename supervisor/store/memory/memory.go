@@ -513,7 +513,7 @@ func (s *Store) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agent,
 	return agents, nil
 }
 
-func (s *Store) CreateSession(ctx context.Context, agentID, by uuid.UUID) (store.Session, error) {
+func (s *Store) CreateSession(ctx context.Context, agentID, by uuid.UUID, title string) (store.Session, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return store.Session{}, err
@@ -525,7 +525,7 @@ func (s *Store) CreateSession(ctx context.Context, agentID, by uuid.UUID) (store
 	if _, found := s.agents[agentID]; !found {
 		return store.Session{}, store.ErrNotFound
 	}
-	created := &session{Session: store.Session{ID: id, AgentID: agentID, CreatedBy: by, CreatedAt: s.now()}}
+	created := &session{Session: store.Session{ID: id, AgentID: agentID, Title: title, CreatedBy: by, CreatedAt: s.now()}}
 	s.sessions[id] = created
 	return created.record(), nil
 }
@@ -539,6 +539,19 @@ func (s *Store) Session(ctx context.Context, id uuid.UUID) (store.Session, error
 	if !found {
 		return store.Session{}, store.ErrNotFound
 	}
+	return session.record(), nil
+}
+
+func (s *Store) SetSessionTitle(ctx context.Context, id uuid.UUID, title string) (store.Session, error) {
+	if err := s.begin(ctx); err != nil {
+		return store.Session{}, err
+	}
+	defer s.mu.Unlock()
+	session, found := s.sessions[id]
+	if !found {
+		return store.Session{}, store.ErrNotFound
+	}
+	session.Title = title
 	return session.record(), nil
 }
 

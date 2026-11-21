@@ -24,6 +24,9 @@ const (
 	controls
 	// ends ends a session. Other users' sessions need sessions.control_all.
 	ends
+	// retitles changes the title of a session. Other users' sessions need
+	// sessions.control_all.
+	retitles
 )
 
 var errNotTheirs = &apiError{status: http.StatusForbidden, Code: "forbidden", Message: "only the session's creator can send messages to it"}
@@ -81,7 +84,7 @@ func (a *api) mayWith(r *http.Request, session store.Session, sender uuid.UUID, 
 		return errNotTheirs
 	case do == controls && sender != who.id:
 		needed = sessionsControlAll
-	case do == ends && session.CreatedBy != who.id:
+	case (do == ends || do == retitles) && session.CreatedBy != who.id:
 		needed = sessionsControlAll
 	}
 	if !slices.Contains(held, needed) {

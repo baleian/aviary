@@ -76,6 +76,7 @@ type SecretStore struct {
 type Session struct {
 	ID        uuid.UUID
 	AgentID   uuid.UUID
+	Title     string
 	CreatedBy *uuid.UUID
 	Sandbox   *string
 	CreatedAt time.Time

@@ -104,6 +104,7 @@ func TestWhoMayDoWhat(t *testing.T) {
 		// The request does not exist, so those who may answer get 404.
 		{"POST", "/v1/turns/" + turn + "/approvals/none", `{"option_id": "allow"}`, "hhfhfffhfh"},
 		{"POST", "/v1/turns/" + turn + "/cancel", ``, "ppfpfffpfh"},
+		{"PATCH", "/v1/sessions/" + session, `{"title": "a title"}`, "ppfpfffpfh"},
 		// The turn is still running, so those who may end the session get 409.
 		{"DELETE", "/v1/sessions/" + session, ``, "ppfpfffpfh"},
 	} {

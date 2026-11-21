@@ -447,12 +447,12 @@ func agentFrom(row db.Agent) store.Agent {
 	}
 }
 
-func (s *records) CreateSession(ctx context.Context, agentID, by uuid.UUID) (store.Session, error) {
+func (s *records) CreateSession(ctx context.Context, agentID, by uuid.UUID, title string) (store.Session, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return store.Session{}, err
 	}
-	params := db.CreateSessionParams{ID: key.ID(id), AgentID: key.ID(agentID)}
+	params := db.CreateSessionParams{ID: key.ID(id), AgentID: key.ID(agentID), Title: title}
 	if by != uuid.Nil {
 		params.CreatedBy = (*key.ID)(&by)
 	}
@@ -465,6 +465,13 @@ func (s *records) CreateSession(ctx context.Context, agentID, by uuid.UUID) (sto
 func (s *records) Session(ctx context.Context, id uuid.UUID) (store.Session, error) {
 	row, err := s.queries.GetSession(ctx, key.ID(id))
 	return sessionFrom(row), found(err)
+}
+
+func (s *records) SetSessionTitle(ctx context.Context, id uuid.UUID, title string) (store.Session, error) {
+	if err := created(s.queries.SetSessionTitle(ctx, db.SetSessionTitleParams{ID: key.ID(id), Title: title})); err != nil {
+		return store.Session{}, err
+	}
+	return s.Session(ctx, id)
 }
 
 func (s *records) SetSandbox(ctx context.Context, sessionID uuid.UUID, from, to string) (bool, error) {
@@ -545,7 +552,9 @@ func (s *records) Sessions(ctx context.Context, agentID, by, before uuid.UUID, l
 }
 
 func sessionFrom(row db.Session) store.Session {
-	session := store.Session{ID: uuid.UUID(row.ID), AgentID: uuid.UUID(row.AgentID), CreatedAt: row.CreatedAt, EndedAt: row.EndedAt}
+	session := store.Session{
+		ID: uuid.UUID(row.ID), AgentID: uuid.UUID(row.AgentID), Title: row.Title, CreatedAt: row.CreatedAt, EndedAt: row.EndedAt,
+	}
 	if row.CreatedBy != nil {
 		session.CreatedBy = uuid.UUID(*row.CreatedBy)
 	}

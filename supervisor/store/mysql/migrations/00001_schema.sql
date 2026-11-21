@@ -126,6 +126,7 @@ create table agents (
 create table sessions (
     id binary(16) primary key,
     agent_id binary(16) not null,
+    title mediumtext not null default (''),
     -- The owner of the session. Null if the request was not authenticated.
     created_by binary(16),
     -- The name of the session's sandbox, if it has one.

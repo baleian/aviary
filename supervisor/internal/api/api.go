@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"math"
 	"net/http"
@@ -61,6 +62,7 @@ var (
 	errAnswered    = &apiError{status: http.StatusConflict, Code: "approval_answered", Message: "the approval request already has an answer"}
 	errQueueFull   = &apiError{status: http.StatusTooManyRequests, Code: "queue_full", Message: "too many turns are queued; retry later", retryAfter: 5}
 	errInternal    = &apiError{status: http.StatusInternalServerError, Code: "internal", Message: "internal error"}
+	errNoBody      = &apiError{status: http.StatusBadRequest, Code: "invalid_request", Message: "request body is required"}
 )
 
 // slugForm matches a slug: a lowercase DNS label (RFC 1035).
@@ -96,6 +98,7 @@ func New(st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Key
 	// the caller.
 	mux.Handle("GET /v1/agents/{aid}/sessions", handler(a.listSessions))
 	mux.Handle("GET /v1/sessions/{sid}", a.withSession(reads, a.getSession))
+	mux.Handle("PATCH /v1/sessions/{sid}", a.withSession(retitles, a.updateSession))
 	mux.Handle("DELETE /v1/sessions/{sid}", a.withSession(ends, a.endSession))
 	mux.Handle("POST /v1/sessions/{sid}/messages", a.withSession(sends, a.createMessage))
 	mux.Handle("GET /v1/sessions/{sid}/turns", a.withSession(reads, a.listTurns))
@@ -256,7 +259,14 @@ func (a *api) createSession(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	session, err := a.store.CreateSession(r.Context(), agentID, callerOf(r).id)
+	// The body is optional.
+	var request struct {
+		Title string `json:"title"`
+	}
+	if err := decode(w, r, &request); err != nil && !errors.Is(err, errNoBody) {
+		return err
+	}
+	session, err := a.store.CreateSession(r.Context(), agentID, callerOf(r).id, request.Title)
 	if err != nil {
 		return err
 	}
@@ -312,6 +322,30 @@ func (a *api) getSession(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	session, err := a.store.Session(r.Context(), id)
+	if err != nil {
+		return err
+	}
+	respond(w, http.StatusOK, session)
+	return nil
+}
+
+// updateSession changes the session's title, the one field that can be
+// changed.
+func (a *api) updateSession(w http.ResponseWriter, r *http.Request) error {
+	id, err := pathID(r, "sid")
+	if err != nil {
+		return err
+	}
+	var request struct {
+		Title *string `json:"title"`
+	}
+	if err := decode(w, r, &request); err != nil {
+		return err
+	}
+	if request.Title == nil {
+		return invalid("title is required")
+	}
+	session, err := a.store.SetSessionTitle(r.Context(), id, *request.Title)
 	if err != nil {
 		return err
 	}
@@ -635,7 +669,10 @@ func checkSlug(slug string) error {
 func decode(w http.ResponseWriter, r *http.Request, into any) error {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(into); err != nil {
+	switch err := decoder.Decode(into); {
+	case errors.Is(err, io.EOF):
+		return errNoBody
+	case err != nil:
 		return invalid("request body is not valid JSON for this endpoint")
 	}
 	return nil

@@ -18,12 +18,15 @@ select * from agents where id = @id;
 select * from agents where project_id = @project_id order by created_at, id;
 
 -- name: CreateSession :one
-insert into sessions (id, agent_id, created_by)
-select @id::uuid, agents.id, sqlc.narg(created_by)::uuid from agents where agents.id = @agent_id
+insert into sessions (id, agent_id, title, created_by)
+select @id::uuid, agents.id, @title::text, sqlc.narg(created_by)::uuid from agents where agents.id = @agent_id
 returning *;
 
 -- name: GetSession :one
 select * from sessions where id = @id;
+
+-- name: SetSessionTitle :one
+update sessions set title = @title where id = @id returning *;
 
 -- name: SetSandbox :execrows
 -- Changes the session's sandbox only if it is still @was. An empty string
