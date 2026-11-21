@@ -1,8 +1,11 @@
 package app
 
 import (
+	"encoding/json"
 	"net/http"
+	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"aviary/supervisor/identity"
@@ -131,6 +134,117 @@ func TestLists(t *testing.T) {
 	} {
 		if status, _ := as(refused.caller).request("GET", refused.path, "", nil); status != refused.status {
 			t.Errorf("GET %s as %s: status %d, want %d", refused.path, refused.caller, status, refused.status)
+		}
+	}
+}
+
+// The model providers and the secret stores of a project are listed to every
+// member, in the order in which they were created and as they are read: with
+// neither the key nor the credential.
+func TestListsOfConnections(t *testing.T) {
+	aviary := install(t)
+	provider := tokens{"admin": {Subject: "admin", Groups: []string{"platform"}}}
+	for _, caller := range []string{"viewer", "stranger"} {
+		provider[caller] = identity.Caller{Subject: caller, Username: caller + "@example.com"}
+	}
+	aviary.callers = api.Callers{Provider: provider, Admins: []string{"platform"}}
+	s := aviary.supervisor()
+	as := func(caller string) *supervisor {
+		s.token = caller
+		return s
+	}
+	const address, key = "https://" + storeHost, "sk-a-key"
+
+	project, other, empty := as("admin").project(), s.project(), s.project()
+	s.create("/v1/projects/"+project+"/members", `{"user": "viewer@example.com", "role": "viewer"}`)
+	providers := func(project string) string { return "/v1/projects/" + project + "/providers" }
+	stores := func(project string) string { return "/v1/projects/" + project + "/secret-stores" }
+	first := s.create(stores(project), scriptedStore("first", address, "a-credential", "a-credential"))
+	second := s.create(stores(project), scriptedStore("second", address, "another", "another"))
+	theirStore := s.create(stores(other), scriptedStore("theirs", address, "a-credential", "a-credential"))
+	aviary.secrets.put(address, "llm/model", "api_key", key)
+	stored := s.create(providers(project), keyed(`{"value": "`+key+`"}`))
+	located := s.create(providers(project), keyed(in(first, "llm/model", "api_key")))
+	keyless := s.create(providers(project), `{"name": "keyless", "url": "http://10.0.0.5:8000/v1"}`)
+	theirs := s.create(providers(other), keyed(`{"value": "`+key+`"}`))
+
+	type resources = []map[string]any
+	// list returns the resources under name at path, and fails the test if
+	// the response holds the key.
+	list := func(caller, path, name string) resources {
+		t.Helper()
+		var raw json.RawMessage
+		if status, _ := as(caller).request("GET", path, "", &raw); status != http.StatusOK {
+			t.Fatalf("GET %s as %s: status %d %s, want 200", path, caller, status, raw)
+		}
+		if strings.Contains(string(raw), key) {
+			t.Errorf("GET %s as %s contains the key: %s", path, caller, raw)
+		}
+		var answer map[string]resources
+		if err := json.Unmarshal(raw, &answer); err != nil {
+			t.Fatal(err)
+		}
+		if answer[name] == nil {
+			t.Errorf("GET %s as %s = %s, want a list under %q", path, caller, raw, name)
+		}
+		return answer[name]
+	}
+	for _, listed := range []struct {
+		caller, path, name, read string
+		ids                      []string
+	}{
+		{"viewer", providers(project), "providers", "/v1/providers/", []string{stored, located, keyless}},
+		{"admin", providers(project), "providers", "/v1/providers/", []string{stored, located, keyless}},
+		{"admin", providers(other), "providers", "/v1/providers/", []string{theirs}},
+		{"admin", providers(empty), "providers", "/v1/providers/", []string{}},
+		{"viewer", stores(project), "secret_stores", "/v1/secret-stores/", []string{first, second}},
+		{"admin", stores(project), "secret_stores", "/v1/secret-stores/", []string{first, second}},
+		{"admin", stores(other), "secret_stores", "/v1/secret-stores/", []string{theirStore}},
+		{"admin", stores(empty), "secret_stores", "/v1/secret-stores/", []string{}},
+	} {
+		ids := []string{}
+		for _, resource := range list(listed.caller, listed.path, listed.name) {
+			id, _ := resource["id"].(string)
+			ids = append(ids, id)
+			var read map[string]any
+			if status, _ := s.request("GET", listed.read+id, "", &read); status != http.StatusOK || !reflect.DeepEqual(resource, read) {
+				t.Errorf("GET %s as %s lists %v, which is read as %d %v", listed.path, listed.caller, resource, status, read)
+			}
+		}
+		if !slices.Equal(ids, listed.ids) {
+			t.Errorf("GET %s as %s = %v, want %v", listed.path, listed.caller, ids, listed.ids)
+		}
+	}
+	// A key is listed as stored, or by where it is.
+	keys := map[string]any{}
+	for _, provider := range list("viewer", providers(project), "providers") {
+		id, _ := provider["id"].(string)
+		keys[id] = provider["api_key"]
+	}
+	if want := map[string]any{
+		stored:  map[string]any{"stored": true},
+		located: map[string]any{"store": first, "path": "llm/model", "key": "api_key"},
+		keyless: nil,
+	}; !reflect.DeepEqual(keys, want) {
+		t.Errorf("listed keys = %v, want %v", keys, want)
+	}
+	for _, store := range list("viewer", stores(project), "secret_stores") {
+		if !reflect.DeepEqual(store["credential"], map[string]any{"stored": true}) {
+			t.Errorf("listed secret store %v, want a stored credential", store)
+		}
+	}
+
+	none := "00000000-0000-0000-0000-000000000000"
+	for _, refused := range []struct{ caller, path string }{
+		{"stranger", providers(project)},
+		{"stranger", stores(project)},
+		{"viewer", providers(other)},
+		{"viewer", stores(other)},
+		{"admin", providers(none)},
+		{"admin", stores(none)},
+	} {
+		if status, _ := as(refused.caller).request("GET", refused.path, "", nil); status != http.StatusNotFound {
+			t.Errorf("GET %s as %s: status %d, want 404", refused.path, refused.caller, status)
 		}
 	}
 }

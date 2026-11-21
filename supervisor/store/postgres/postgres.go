@@ -467,6 +467,18 @@ func (s *records) Provider(ctx context.Context, id uuid.UUID) (store.Provider, e
 	return providerFrom(row), err
 }
 
+func (s *records) Providers(ctx context.Context, projectID uuid.UUID) ([]store.Provider, error) {
+	rows, err := s.queries.ListProviders(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	providers := make([]store.Provider, len(rows))
+	for i, row := range rows {
+		providers[i] = providerFrom(row)
+	}
+	return providers, nil
+}
+
 func (s *records) ReplaceProvider(ctx context.Context, provider store.Provider) (store.Provider, error) {
 	params := db.ReplaceProviderParams{ID: provider.ID, Name: provider.Name, Url: provider.URL, ApiKey: provider.APIKey}
 	if at := provider.APIKeyAt; at != nil {
@@ -496,6 +508,18 @@ func (s *records) SecretStore(ctx context.Context, id uuid.UUID) (store.SecretSt
 		return store.SecretStore{}, store.ErrNotFound
 	}
 	return secretStoreFrom(row), err
+}
+
+func (s *records) SecretStores(ctx context.Context, projectID uuid.UUID) ([]store.SecretStore, error) {
+	rows, err := s.queries.ListSecretStores(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	stores := make([]store.SecretStore, len(rows))
+	for i, row := range rows {
+		stores[i] = secretStoreFrom(row)
+	}
+	return stores, nil
 }
 
 func (s *records) ReplaceSecretStore(ctx context.Context, secrets store.SecretStore) (store.SecretStore, error) {

@@ -61,6 +61,9 @@ from projects where projects.id = sqlc.arg(project_id);
 -- name: GetProvider :one
 select * from providers where id = ?;
 
+-- name: ListProviders :many
+select * from providers where project_id = ? order by created_at, id;
+
 -- name: ReplaceProvider :execrows
 update providers set name = sqlc.arg(name), url = sqlc.arg(url), api_key = sqlc.narg(api_key),
        api_key_store_id = sqlc.narg(api_key_store_id), api_key_path = sqlc.arg(api_key_path),
@@ -74,6 +77,9 @@ from projects where projects.id = sqlc.arg(project_id);
 
 -- name: GetSecretStore :one
 select * from secret_stores where id = ?;
+
+-- name: ListSecretStores :many
+select * from secret_stores where project_id = ? order by created_at, id;
 
 -- name: ReplaceSecretStore :execrows
 update secret_stores

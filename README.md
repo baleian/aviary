@@ -201,6 +201,8 @@ a client shows the slug when the name is empty.
 | `GET /v1/me` | Returns the caller, as the identity provider identifies it. See [Authentication](#authentication). |
 | `GET /v1/projects` | Lists the caller's projects, oldest first: `{"projects": [...]}`. These are the projects that the caller or one of the caller's groups is a member of, and all projects for an administrator. |
 | `GET /v1/projects/{id}/agents` | Lists the agents of the project in the order in which they were created: `{"agents": [...]}`. |
+| `GET /v1/projects/{id}/providers` | Lists the model providers of the project in the order in which they were created: `{"providers": [...]}`. |
+| `GET /v1/projects/{id}/secret-stores` | Lists the secret stores of the project in the order in which they were registered: `{"secret_stores": [...]}`. |
 | `GET /v1/agents/{id}/sessions` | Lists the sessions of the agent that the caller may read, newest first: `{"sessions": [...]}`. These are the caller's own with `sessions.run`, and everyone's with `sessions.view_all`. `?limit=` is the page size, 20 by default and at most 100. `?before=` takes the ID of a session and returns the sessions before it, which is how to read the next page. |
 | `GET /v1/projects/{id}/members` | Lists the members of the project in the order in which they were added: `{"members": [...]}`. See [Roles](#roles). |
 | `POST /v1/projects/{id}/members` | Adds a user or a group to the project. Body: `{"user": "..."}` with a username, or `{"group": "..."}` with the name of a group of the identity provider, and with it `{"role": "..."}` or `{"permissions": [...]}`. Administrators only. Returns 409 if the project already has that member. |

@@ -455,6 +455,9 @@ type Store interface {
 
 	Provider(ctx context.Context, id uuid.UUID) (Provider, error)
 
+	// Providers returns the providers of the project in creation order.
+	Providers(ctx context.Context, projectID uuid.UUID) ([]Provider, error)
+
 	// ReplaceProvider replaces the name, URL and API key of the provider with
 	// the same ID; a provider given no key has none afterwards. It returns
 	// ErrNotFound if there is no such provider.
@@ -466,6 +469,9 @@ type Store interface {
 	CreateSecretStore(ctx context.Context, secrets SecretStore) (SecretStore, error)
 
 	SecretStore(ctx context.Context, id uuid.UUID) (SecretStore, error)
+
+	// SecretStores returns the secret stores of the project in creation order.
+	SecretStores(ctx context.Context, projectID uuid.UUID) ([]SecretStore, error)
 
 	// ReplaceSecretStore replaces the name, kind, settings and credential of
 	// the secret store with the same ID. It returns ErrNotFound if there is no

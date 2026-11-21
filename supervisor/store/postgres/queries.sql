@@ -72,6 +72,9 @@ returning *;
 -- name: GetProvider :one
 select * from providers where id = @id;
 
+-- name: ListProviders :many
+select * from providers where project_id = @project_id order by created_at, id;
+
 -- name: ReplaceProvider :one
 update providers set name = @name, url = @url, api_key = sqlc.narg(api_key),
        api_key_store_id = sqlc.narg(api_key_store_id), api_key_path = @api_key_path, api_key_name = @api_key_name,
@@ -87,6 +90,9 @@ returning *;
 
 -- name: GetSecretStore :one
 select * from secret_stores where id = @id;
+
+-- name: ListSecretStores :many
+select * from secret_stores where project_id = @project_id order by created_at, id;
 
 -- name: ReplaceSecretStore :one
 update secret_stores

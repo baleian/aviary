@@ -97,6 +97,28 @@ func (a *api) getSecretStore(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+func (a *api) listSecretStores(w http.ResponseWriter, r *http.Request) error {
+	projectID, err := pathID(r, "pid")
+	if err != nil {
+		return err
+	}
+	if _, err := a.store.Project(r.Context(), projectID); err != nil {
+		return err
+	}
+	found, err := a.store.SecretStores(r.Context(), projectID)
+	if err != nil {
+		return err
+	}
+	stores := make([]secretStore, len(found))
+	for i, from := range found {
+		stores[i] = answeredStore(from)
+	}
+	respond(w, http.StatusOK, struct {
+		SecretStores []secretStore `json:"secret_stores"`
+	}{stores})
+	return nil
+}
+
 // replaceSecretStore replaces the name, kind, settings and credential of a
 // secret store together, so that a stored credential cannot be redirected to
 // another address.

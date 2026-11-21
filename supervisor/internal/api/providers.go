@@ -165,6 +165,28 @@ func (a *api) getProvider(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+func (a *api) listProviders(w http.ResponseWriter, r *http.Request) error {
+	projectID, err := pathID(r, "pid")
+	if err != nil {
+		return err
+	}
+	if _, err := a.store.Project(r.Context(), projectID); err != nil {
+		return err
+	}
+	found, err := a.store.Providers(r.Context(), projectID)
+	if err != nil {
+		return err
+	}
+	providers := make([]provider, len(found))
+	for i, from := range found {
+		providers[i] = answered(from)
+	}
+	respond(w, http.StatusOK, struct {
+		Providers []provider `json:"providers"`
+	}{providers})
+	return nil
+}
+
 // replaceProvider replaces the name, URL and key of a provider together, so
 // that a stored key cannot be redirected to another URL.
 func (a *api) replaceProvider(w http.ResponseWriter, r *http.Request) error {

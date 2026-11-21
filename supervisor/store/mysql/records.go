@@ -588,6 +588,22 @@ func (s *records) Provider(ctx context.Context, id uuid.UUID) (store.Provider, e
 	if err != nil {
 		return store.Provider{}, found(err)
 	}
+	return providerFrom(row), nil
+}
+
+func (s *records) Providers(ctx context.Context, projectID uuid.UUID) ([]store.Provider, error) {
+	rows, err := s.queries.ListProviders(ctx, key.ID(projectID))
+	if err != nil {
+		return nil, err
+	}
+	providers := make([]store.Provider, len(rows))
+	for i, row := range rows {
+		providers[i] = providerFrom(row)
+	}
+	return providers, nil
+}
+
+func providerFrom(row db.Provider) store.Provider {
 	provider := store.Provider{
 		ID: uuid.UUID(row.ID), ProjectID: uuid.UUID(row.ProjectID), Name: row.Name, URL: row.Url, APIKey: row.ApiKey,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
@@ -595,7 +611,7 @@ func (s *records) Provider(ctx context.Context, id uuid.UUID) (store.Provider, e
 	if row.ApiKeyStoreID != nil {
 		provider.APIKeyAt = &store.SecretReference{Store: uuid.UUID(*row.ApiKeyStoreID), Path: row.ApiKeyPath, Key: row.ApiKeyName}
 	}
-	return provider, nil
+	return provider
 }
 
 func (s *records) ReplaceProvider(ctx context.Context, provider store.Provider) (store.Provider, error) {
@@ -620,10 +636,26 @@ func (s *records) CreateSecretStore(ctx context.Context, secrets store.SecretSto
 
 func (s *records) SecretStore(ctx context.Context, id uuid.UUID) (store.SecretStore, error) {
 	row, err := s.queries.GetSecretStore(ctx, key.ID(id))
+	return secretStoreFrom(row), found(err)
+}
+
+func (s *records) SecretStores(ctx context.Context, projectID uuid.UUID) ([]store.SecretStore, error) {
+	rows, err := s.queries.ListSecretStores(ctx, key.ID(projectID))
+	if err != nil {
+		return nil, err
+	}
+	stores := make([]store.SecretStore, len(rows))
+	for i, row := range rows {
+		stores[i] = secretStoreFrom(row)
+	}
+	return stores, nil
+}
+
+func secretStoreFrom(row db.SecretStore) store.SecretStore {
 	return store.SecretStore{
 		ID: uuid.UUID(row.ID), ProjectID: uuid.UUID(row.ProjectID), Name: row.Name, Kind: row.Kind,
 		Settings: row.Settings, Credential: row.Credential, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
-	}, found(err)
+	}
 }
 
 func (s *records) ReplaceSecretStore(ctx context.Context, secrets store.SecretStore) (store.SecretStore, error) {

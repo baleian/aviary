@@ -649,6 +649,23 @@ func (s *Store) Provider(ctx context.Context, id uuid.UUID) (store.Provider, err
 	return providerOf(provider), nil
 }
 
+func (s *Store) Providers(ctx context.Context, projectID uuid.UUID) ([]store.Provider, error) {
+	if err := s.begin(ctx); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+	providers := []store.Provider{}
+	for _, provider := range s.providers {
+		if provider.ProjectID == projectID {
+			providers = append(providers, providerOf(provider))
+		}
+	}
+	slices.SortFunc(providers, func(one, other store.Provider) int {
+		return cmp.Or(one.CreatedAt.Compare(other.CreatedAt), bytes.Compare(one.ID[:], other.ID[:]))
+	})
+	return providers, nil
+}
+
 func (s *Store) ReplaceProvider(ctx context.Context, provider store.Provider) (store.Provider, error) {
 	if err := s.begin(ctx); err != nil {
 		return store.Provider{}, err
@@ -699,6 +716,23 @@ func (s *Store) SecretStore(ctx context.Context, id uuid.UUID) (store.SecretStor
 		return store.SecretStore{}, store.ErrNotFound
 	}
 	return secretStoreOf(secrets), nil
+}
+
+func (s *Store) SecretStores(ctx context.Context, projectID uuid.UUID) ([]store.SecretStore, error) {
+	if err := s.begin(ctx); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+	stores := []store.SecretStore{}
+	for _, secrets := range s.secretStores {
+		if secrets.ProjectID == projectID {
+			stores = append(stores, secretStoreOf(secrets))
+		}
+	}
+	slices.SortFunc(stores, func(one, other store.SecretStore) int {
+		return cmp.Or(one.CreatedAt.Compare(other.CreatedAt), bytes.Compare(one.ID[:], other.ID[:]))
+	})
+	return stores, nil
 }
 
 func (s *Store) ReplaceSecretStore(ctx context.Context, secrets store.SecretStore) (store.SecretStore, error) {

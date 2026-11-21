@@ -842,6 +842,104 @@ func (suite suite) testSecretStores(t *testing.T) {
 	}
 }
 
+// Providers lists the providers of a project in creation order, as Provider
+// reads them.
+func (suite suite) testListProviders(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	project, other := st.project(), st.project()
+	if providers, err := st.Providers(ctx, project.ID); err != nil || providers == nil || len(providers) != 0 {
+		t.Errorf("Providers of a project without providers = %+v, %v, want empty", providers, err)
+	}
+	secrets, err := st.CreateSecretStore(ctx, store.SecretStore{
+		ID: uuid.New(), ProjectID: project.ID, Name: "a store", Kind: "a kind", Settings: json.RawMessage(`{}`), Credential: []byte("sealed"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created []store.Provider
+	for _, given := range []store.Provider{
+		{ProjectID: project.ID, Name: "stored", URL: "https://api.example.com/v1", APIKey: []byte("a sealed key")},
+		{ProjectID: other.ID, Name: "theirs", URL: "https://api.example.com/v1"},
+		{ProjectID: project.ID, Name: "elsewhere", URL: "http://10.0.0.5:8000/v1", APIKeyAt: &store.SecretReference{Store: secrets.ID, Path: "llm/a-provider", Key: "api_key"}},
+		{ProjectID: project.ID, Name: "keyless", URL: "http://model.example.com:8000"},
+	} {
+		// As the API does: IDs that increase with creation time.
+		given.ID = uuid.Must(uuid.NewV7())
+		provider, err := st.CreateProvider(ctx, given)
+		if err != nil {
+			t.Fatal(err)
+		}
+		created = append(created, provider)
+	}
+	for _, listed := range []struct {
+		project   uuid.UUID
+		providers []store.Provider
+	}{
+		{project.ID, []store.Provider{created[0], created[2], created[3]}},
+		{other.ID, []store.Provider{created[1]}},
+		{uuid.New(), []store.Provider{}},
+	} {
+		providers, err := st.Providers(ctx, listed.project)
+		if err != nil || len(providers) != len(listed.providers) {
+			t.Fatalf("want %d providers, got %+v: %v", len(listed.providers), providers, err)
+		}
+		for i, provider := range providers {
+			if read, err := st.Provider(ctx, listed.providers[i].ID); err != nil || !same(provider, read) {
+				t.Errorf("provider %d: listed %+v, read %+v: %v", i, provider, read, err)
+			}
+		}
+	}
+}
+
+// SecretStores lists the secret stores of a project in creation order, as
+// SecretStore reads them.
+func (suite suite) testListSecretStores(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	project, other := st.project(), st.project()
+	if stores, err := st.SecretStores(ctx, project.ID); err != nil || stores == nil || len(stores) != 0 {
+		t.Errorf("SecretStores of a project without secret stores = %+v, %v, want empty", stores, err)
+	}
+	var created []store.SecretStore
+	for _, given := range []store.SecretStore{
+		{ProjectID: project.ID, Name: "first", Kind: "a kind", Settings: json.RawMessage(`{"where": "here"}`), Credential: []byte("a sealed credential")},
+		{ProjectID: other.ID, Name: "theirs", Kind: "a kind", Settings: json.RawMessage(`{}`), Credential: []byte("sealed")},
+		{ProjectID: project.ID, Name: "second", Kind: "another kind", Settings: json.RawMessage(`{"where": "there"}`), Credential: []byte("another")},
+	} {
+		given.ID = uuid.Must(uuid.NewV7())
+		secrets, err := st.CreateSecretStore(ctx, given)
+		if err != nil {
+			t.Fatal(err)
+		}
+		created = append(created, secrets)
+	}
+	for _, listed := range []struct {
+		project uuid.UUID
+		stores  []store.SecretStore
+	}{
+		{project.ID, []store.SecretStore{created[0], created[2]}},
+		{other.ID, []store.SecretStore{created[1]}},
+		{uuid.New(), []store.SecretStore{}},
+	} {
+		stores, err := st.SecretStores(ctx, listed.project)
+		if err != nil || len(stores) != len(listed.stores) {
+			t.Fatalf("want %d secret stores, got %+v: %v", len(listed.stores), stores, err)
+		}
+		for i, secrets := range stores {
+			read, err := st.SecretStore(ctx, listed.stores[i].ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if secrets.ID != read.ID || secrets.ProjectID != listed.project || secrets.Name != read.Name || secrets.Kind != read.Kind ||
+				!keeps(t, secrets.Settings, string(read.Settings)) || !bytes.Equal(secrets.Credential, read.Credential) ||
+				!secrets.CreatedAt.Equal(read.CreatedAt) || !secrets.UpdatedAt.Equal(read.UpdatedAt) {
+				t.Errorf("secret store %d: listed %+v, read %+v", i, secrets, read)
+			}
+		}
+	}
+}
+
 // A followed turn has the provider URL and the model of its agent, and the
 // origin of a running turn has the current provider.
 func (suite suite) testAgentModel(t *testing.T) {

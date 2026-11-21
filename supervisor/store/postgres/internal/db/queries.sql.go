@@ -1208,6 +1208,41 @@ func (q *Queries) ListProjectsOfMember(ctx context.Context, arg ListProjectsOfMe
 	return items, nil
 }
 
+const listProviders = `-- name: ListProviders :many
+select id, project_id, name, url, api_key, api_key_store_id, api_key_path, api_key_name, created_at, updated_at from providers where project_id = $1 order by created_at, id
+`
+
+func (q *Queries) ListProviders(ctx context.Context, projectID uuid.UUID) ([]Provider, error) {
+	rows, err := q.db.Query(ctx, listProviders, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Provider
+	for rows.Next() {
+		var i Provider
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Name,
+			&i.Url,
+			&i.ApiKey,
+			&i.ApiKeyStoreID,
+			&i.ApiKeyPath,
+			&i.ApiKeyName,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRoles = `-- name: ListRoles :many
 select name, permissions, updated_at, updated_by from roles order by name
 `
@@ -1226,6 +1261,39 @@ func (q *Queries) ListRoles(ctx context.Context) ([]Role, error) {
 			&i.Permissions,
 			&i.UpdatedAt,
 			&i.UpdatedBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSecretStores = `-- name: ListSecretStores :many
+select id, project_id, name, kind, settings, credential, created_at, updated_at from secret_stores where project_id = $1 order by created_at, id
+`
+
+func (q *Queries) ListSecretStores(ctx context.Context, projectID uuid.UUID) ([]SecretStore, error) {
+	rows, err := q.db.Query(ctx, listSecretStores, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SecretStore
+	for rows.Next() {
+		var i SecretStore
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Name,
+			&i.Kind,
+			&i.Settings,
+			&i.Credential,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
