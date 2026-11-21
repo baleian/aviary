@@ -331,6 +331,14 @@ func sleeps(t *testing.T, name string) {
 	if state := sandboxState(t, session); state != "awake" {
 		t.Errorf("session says that its sandbox is %q, want awake", state)
 	}
+	// Other tests have sandboxes too, so the state metrics are only checked
+	// to count this one.
+	counted := func(state string) float64 {
+		return total(metrics(t, "state-metrics"), `aviary_sandboxes{state="`+state+`"}`)
+	}
+	if awake := counted("awake"); awake < 1 {
+		t.Errorf("state metrics count %v awake sandboxes while the session is awake", awake)
+	}
 	asleep(t, session)
 	eventually(t, soon, "the sleeping sandbox's pod still exists", func() bool {
 		return len(sessionPods(t, session)) == 0
@@ -338,6 +346,9 @@ func sleeps(t *testing.T, name string) {
 	eventually(t, soon, "the session does not say that its sandbox is asleep", func() bool {
 		return sandboxState(t, session) == "asleep"
 	})
+	if asleep := counted("asleep"); asleep < 1 {
+		t.Errorf("state metrics count %v asleep sandboxes while the session is asleep", asleep)
+	}
 
 	if recalled := run(t, session, "recall"); !strings.Contains(recalled.said(), write) {
 		t.Errorf("woken session did not recall the conversation: said %q", recalled.said())

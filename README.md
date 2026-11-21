@@ -564,6 +564,7 @@ of your own.
 | `supervisor.secretStores.cacheSeconds` | Seconds that a value read from a secret store is cached. Default 60. 0 reads the store for every model request. |
 | `supervisor.auth.provider` | The identity provider that authenticates API requests: its `kind`, and `settings` for a provider of that kind. If `kind` is empty, the default, requests are not authenticated. See [Authentication](#authentication). |
 | `supervisor.auth.admins`, `.users` | Groups of the identity provider whose members administer the installation, and groups whose members may use the API besides the administrators. Both are empty by default: nobody is an administrator, and every authenticated user may use the API. |
+| `stateMetrics.enabled`, `.resources` | Whether the installation serves its [state metrics](#metrics), and the resource requests and limits of the pod that serves them. Default true. |
 | `egressProxy.allowedHosts` | Hosts that the sandboxes may reach, including those of model providers: `*` for any host, a host name for the host on the default HTTPS and HTTP ports, or a host name with a port. Subdomains are separate hosts. Default `*`. |
 | `egressProxy.insideCIDRs`, `.extraEgress` | Address ranges that a NetworkPolicy blocks the Egress Proxy from connecting to, so that the sandboxes cannot use it to reach into the cluster, and additional NetworkPolicy egress rules for the proxy. A model provider or an allowed host that is in the cluster or at a private address needs such a rule. |
 | `sandboxes.idleSeconds` | Seconds without a running turn after which a session is put to sleep: its pod is deleted and its volume is kept, and its next turn wakes it in a new pod. Default 300. 0 disables sleeping. |
@@ -618,6 +619,18 @@ no Supervisor holds the queue: `aviary_turn_queue_length` measures it
 whenever a turn is accepted. Every series of the configured harnesses and
 secret store kinds starts at zero, so that `rate()` and `increase()` count
 its first event. Go runtime and process metrics are served as well.
+
+The state of the installation, such as the number of its sandboxes, is not
+the work of one Supervisor, and every Supervisor would report the same. A
+single pod, `aviary-state-metrics`, reports it instead, on the same port and
+path, so that these metrics add up like the others. It runs the image of the
+Supervisor with the command `state-metrics` and reads the database at every
+scrape; a scrape fails while it cannot. Setting `stateMetrics.enabled` to
+false leaves the pod out.
+
+| Metric | Description |
+| --- | --- |
+| `aviary_sandboxes` | Sandboxes of the sessions that have not ended, by `state`: `awake`, `asleep` or `lost`, as the sessions say of their `sandbox`. |
 
 An Egress Proxy serves the metrics of Envoy on the same port and path, among
 them:

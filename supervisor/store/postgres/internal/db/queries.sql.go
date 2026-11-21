@@ -210,6 +210,38 @@ func (q *Queries) ClaimMembers(ctx context.Context, username string) error {
 	return err
 }
 
+const countSandboxes = `-- name: CountSandboxes :many
+select sandbox_state as state, count(*) as sandboxes from sessions
+where sandbox is not null and ended_at is null
+group by sandbox_state
+`
+
+type CountSandboxesRow struct {
+	State     *string
+	Sandboxes int64
+}
+
+// Counts the sandboxes of the sessions that have not ended, by state.
+func (q *Queries) CountSandboxes(ctx context.Context) ([]CountSandboxesRow, error) {
+	rows, err := q.db.Query(ctx, countSandboxes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CountSandboxesRow
+	for rows.Next() {
+		var i CountSandboxesRow
+		if err := rows.Scan(&i.State, &i.Sandboxes); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countWaitingTurns = `-- name: CountWaitingTurns :one
 select ((select count(*) from turns where state = 'queued')
         - greatest(0, $1::bigint

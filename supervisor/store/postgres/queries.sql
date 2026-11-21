@@ -78,6 +78,12 @@ update sessions set sandbox_state = sqlc.arg(state)::text where id = @id and san
 -- name: ListSessionsWithSandbox :many
 select * from sessions where sandbox is not null;
 
+-- name: CountSandboxes :many
+-- Counts the sandboxes of the sessions that have not ended, by state.
+select sandbox_state as state, count(*) as sandboxes from sessions
+where sandbox is not null and ended_at is null
+group by sandbox_state;
+
 -- name: HoldSession :one
 -- Keeps the session from being ended until the transaction ends. It takes
 -- only the key share lock that adding the turn takes anyway: a stronger lock

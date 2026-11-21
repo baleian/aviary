@@ -111,7 +111,8 @@ func Main(plugins Plugins) {
 // Run serves until ctx is done. With the arguments "migrate [<version>]", it
 // instead migrates the database schema to the latest or the given version,
 // up or down. Serving does not migrate: a release runs "migrate" once, before
-// it starts the Supervisors.
+// it starts the Supervisors. With the argument "state-metrics", it instead
+// serves the state metrics of the installation until ctx is done.
 func Run(ctx context.Context, args []string, plugins Plugins) error {
 	database, err := env(databaseURL)
 	if err != nil {
@@ -128,8 +129,44 @@ func Run(ctx context.Context, args []string, plugins Plugins) error {
 			return fmt.Errorf("invalid schema version %q", args[1])
 		}
 		return store.MigrateTo(ctx, database, version, plugins.Databases...)
+	case len(args) == 1 && args[0] == "state-metrics":
+		return serveState(ctx, database, plugins)
 	}
-	return errors.New("usage: aviary-supervisor [migrate [<version>]]")
+	return errors.New("usage: aviary-supervisor [migrate [<version>] | state-metrics]")
+}
+
+// serveState serves the state metrics, which need only the database.
+func serveState(ctx context.Context, database string, plugins Plugins) error {
+	st, err := store.Open(ctx, database, plugins.Databases...)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	on, err := net.Listen("tcp", metricsAddr)
+	if err != nil {
+		return err
+	}
+	return serveStateOn(ctx, on, st)
+}
+
+// serveStateOn serves the state metrics on the listener until ctx is done.
+func serveStateOn(ctx context.Context, on net.Listener, st store.Store) error {
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", metrics.NewState(st).Handler())
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	failed := make(chan error, 1)
+	go func() { failed <- server.Serve(on) }()
+	slog.Info("listening", "metrics", on.Addr().String())
+
+	select {
+	case err := <-failed:
+		return err
+	case <-ctx.Done():
+	}
+	slog.Info("stopping")
+	stopping, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	return server.Shutdown(stopping)
 }
 
 func sandboxSettings() (sandbox.Settings, error) {

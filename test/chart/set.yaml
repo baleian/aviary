@@ -18,6 +18,8 @@ supervisor:
         claims: {username: email}
     admins: [platform]
     users: [team-a, team-b]
+stateMetrics:
+  enabled: false
 egressProxy:
   replicas: 2
   concurrency: 4

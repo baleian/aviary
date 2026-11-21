@@ -479,6 +479,20 @@ func (s *records) SessionsWithSandbox(ctx context.Context) ([]store.Session, err
 	return sessions, nil
 }
 
+func (s *records) SandboxCounts(ctx context.Context) (map[string]int, error) {
+	rows, err := s.queries.CountSandboxes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	counts := make(map[string]int, len(rows))
+	for _, row := range rows {
+		if row.State != nil {
+			counts[*row.State] = int(row.Sandboxes)
+		}
+	}
+	return counts, nil
+}
+
 func (s *records) EndSession(ctx context.Context, id uuid.UUID, reason string) (store.Session, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {

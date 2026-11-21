@@ -74,6 +74,12 @@ update sessions set sandbox_state = sqlc.arg(state) where id = sqlc.arg(id) and 
 -- name: ListSessionsWithSandbox :many
 select * from sessions where sandbox is not null;
 
+-- name: CountSandboxes :many
+-- Counts the sandboxes of the sessions that have not ended, by state.
+select sandbox_state as state, count(*) as sandboxes from sessions
+where sandbox is not null and ended_at is null
+group by sandbox_state;
+
 -- name: ListSessions :many
 -- Lists the agent's sessions with IDs below before, newest first: IDs
 -- increase with creation time.

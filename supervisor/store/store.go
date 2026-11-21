@@ -500,6 +500,11 @@ type Store interface {
 	// particular order. Sessions that have ended are among them.
 	SessionsWithSandbox(ctx context.Context) ([]Session, error)
 
+	// SandboxCounts returns the number of sandboxes in each state, keyed by
+	// state. It counts the sandboxes of the sessions that have not ended. A
+	// state without sandboxes may be absent from the map.
+	SandboxCounts(ctx context.Context) (map[string]int, error)
+
 	// EndSession ends the session, which then accepts no messages, and
 	// returns it, including its sandbox. reason is EndExpired, or empty if a
 	// caller ends the session. A session that has already ended is returned

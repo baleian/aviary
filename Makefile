@@ -286,13 +286,15 @@ secrets:
 		$(KUBECTL) create secret generic aviary-encryption --namespace aviary-system \
 			--from-literal=k1=$$(openssl rand -base64 32)
 
-# The image ID restarts the Supervisors when the image changes. VALUES adds a
-# values file, for example
+# The image ID restarts the pods that run the Supervisor image when the image
+# changes. VALUES adds a values file, for example
 # make deploy VALUES=my-values.yaml
 deploy: secrets
+	image=$$(docker image inspect --format '{{.Id}}' $(SUPERVISOR_IMAGE)) && \
 	$(HELM) upgrade --install aviary deploy/charts/aviary \
 		--namespace aviary-system \
-		--set-string 'supervisor.podAnnotations.aviary\.io/image-id='$$(docker image inspect --format '{{.Id}}' $(SUPERVISOR_IMAGE)) \
+		--set-string 'supervisor.podAnnotations.aviary\.io/image-id='$$image \
+		--set-string 'stateMetrics.podAnnotations.aviary\.io/image-id='$$image \
 		$(if $(VALUES),--values $(VALUES)) \
 		--wait
 	$(KUBECTL) apply --filename hack/kind/api.yaml
@@ -331,7 +333,7 @@ e2e-run:
 		--env AVIARY_E2E_IDENTITY=$(IDENTITY) \
 		--env AVIARY_E2E_HARNESSES="$(E2E_HARNESSES)") test -count=1 -timeout 20m -v ./e2e/... $(TESTS); \
 		status=$$?; [ $$status = 0 ] || { \
-			for part in supervisor egress-proxy; do \
+			for part in supervisor state-metrics egress-proxy; do \
 				$(E2E_KUBECTL) --namespace aviary-system logs --selector app.kubernetes.io/component=$$part \
 					--prefix --tail -1 > $(E2E_OUT)/$$part.log 2>&1; \
 			done; \

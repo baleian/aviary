@@ -16,7 +16,7 @@ import (
 // Metrics counts and times the turns. Each Supervisor reports only its own
 // work, so that the metrics of all replicas add up. State that exists only in
 // the database, such as the queue length, is not reported, since every
-// replica would report the same value.
+// replica would report the same value; State reports the sandboxes.
 type Metrics struct {
 	registry   *prometheus.Registry
 	queue      prometheus.Histogram

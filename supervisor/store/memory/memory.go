@@ -662,6 +662,20 @@ func (s *Store) SessionsWithSandbox(ctx context.Context) ([]store.Session, error
 	return sessions, nil
 }
 
+func (s *Store) SandboxCounts(ctx context.Context) (map[string]int, error) {
+	if err := s.begin(ctx); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+	counts := map[string]int{}
+	for _, session := range s.sessions {
+		if session.Sandbox != "" && session.EndedAt == nil {
+			counts[session.SandboxState]++
+		}
+	}
+	return counts, nil
+}
+
 func (s *Store) EndSession(ctx context.Context, id uuid.UUID, reason string) (store.Session, error) {
 	if err := s.begin(ctx); err != nil {
 		return store.Session{}, err
