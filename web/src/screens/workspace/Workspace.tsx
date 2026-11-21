@@ -1,8 +1,11 @@
+import { useState } from "react";
 import { Link, useMatch, useNavigate, useParams } from "react-router";
 import { can, type ProjectContext } from "../../api/project.ts";
 import { type Tinted, useMe } from "../../api/queries.ts";
 import type { Agent, Me } from "../../api/types.ts";
+import { cls } from "../../lib/cls.ts";
 import { label } from "../../lib/format.ts";
+import { prefs } from "../../lib/prefs.ts";
 import { useTitle } from "../../lib/title.ts";
 import { useProject } from "../../shell/project.ts";
 import { Missing } from "../../shell/ProjectFrame.tsx";
@@ -12,6 +15,7 @@ import { AgentMenu } from "../agents/AgentMenu.tsx";
 import { barred, useCompose } from "./compose.ts";
 import { Composer, Gate } from "./Composer.tsx";
 import { Conversation } from "./Conversation.tsx";
+import { Details, DetailsButton } from "./Details.tsx";
 import { SessionList } from "./SessionList.tsx";
 
 // Workspace is the screen of an agent: its sessions on the left, and beside
@@ -43,8 +47,14 @@ function Sessions({
   const project = `/p/${context.project.slug}`;
   const base = `${project}/agents/${agent.slug}`;
   const why = barred(context, me);
+  // The details show unless the caller has hidden them, here or before.
+  const [details, setDetails] = useState(() => prefs.get("details") !== "0");
+  const toggle = () => {
+    prefs.set("details", details ? "0" : "1");
+    setDetails(!details);
+  };
   return (
-    <section className="sess no-details">
+    <section className={cls("sess", !details && "no-details")}>
       <aside className="pane list">
         <div className="l-h">
           <div className="l-top">
@@ -83,24 +93,27 @@ function Sessions({
           current={sid}
         />
       </aside>
-      <main className="conv">
-        {sid ? (
-          <Conversation
-            key={sid}
-            context={context}
-            agent={agent}
-            me={me}
-            id={sid}
-            compose={compose}
-          />
-        ) : (
-          <>
+      {sid ? (
+        <Conversation
+          key={sid}
+          context={context}
+          agent={agent}
+          me={me}
+          id={sid}
+          compose={compose}
+          details={details}
+          onDetails={toggle}
+        />
+      ) : (
+        <>
+          <main className="conv">
             <div className="conv-h">
               <div className="tx">
                 <h1>
                   <span>New session</span>
                 </h1>
               </div>
+              <DetailsButton shown={details} onToggle={toggle} />
             </div>
             <div className="welcome">
               <div className="box">
@@ -125,9 +138,12 @@ function Sessions({
                 onSend={() => void compose.send()}
               />
             )}
-          </>
-        )}
-      </main>
+          </main>
+          {details && (
+            <Details context={context} agent={agent} me={me} onClose={toggle} />
+          )}
+        </>
+      )}
     </section>
   );
 }

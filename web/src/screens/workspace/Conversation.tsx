@@ -1,4 +1,5 @@
 import {
+  type ReactNode,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -30,21 +31,24 @@ import { oops, toast } from "../../ui/toast.ts";
 import { person } from "../../ui/who.ts";
 import { barred, type Compose } from "./compose.ts";
 import { Composer, Gate } from "./Composer.tsx";
+import { Details, DetailsButton } from "./Details.tsx";
 import { SandboxBadge, SessionTitle } from "./marks.tsx";
 import { TurnView } from "./TurnView.tsx";
 
 // Header is the head of a conversation: its title, how it stands, and when
-// it began.
+// it began. actions are the buttons at its end.
 function Header({
   context,
   me,
   session,
   newest,
+  actions,
 }: {
   context: ProjectContext;
   me: Me;
   session: Session;
   newest?: Turn;
+  actions: ReactNode;
 }) {
   const stands = newest && followed(newest);
   const owner =
@@ -95,6 +99,7 @@ function Header({
           </span>
         </p>
       </div>
+      {actions}
     </div>
   );
 }
@@ -106,20 +111,26 @@ const NEAR = 96;
 const NONE: Turn[] = [];
 
 // Conversation is a session: its head, its turns from the oldest that was
-// read to the newest, and the box for the next message. It opens at the
-// newest turn, and follows the turn that has not ended.
+// read to the newest, and the box for the next message, with the details of
+// the session beside them if they are shown. It opens at the newest turn,
+// and follows the turn that has not ended.
 export function Conversation({
   context,
   agent,
   me,
   id,
   compose,
+  details,
+  onDetails,
 }: {
   context: ProjectContext;
   agent: Tinted<Agent>;
   me: Me;
   id: string;
   compose: Compose;
+  // Whether the details show, and what shows and hides them.
+  details: boolean;
+  onDetails: () => void;
 }) {
   const session = useSession(id);
   const turns = useTurns(id);
@@ -166,33 +177,55 @@ export function Conversation({
   const error = session.error ?? turns.error;
   const base = `/p/${context.project.slug}/agents/${agent.slug}`;
   const foreign = session.data && session.data.agent_id !== agent.id;
+  const side = (of?: Session) =>
+    details && (
+      <Details
+        context={context}
+        agent={agent}
+        me={me}
+        session={of}
+        turns={list}
+        empty={!of}
+        onClose={onDetails}
+      />
+    );
   if (error || foreign) {
     const missing =
       foreign || (error instanceof ApiError && error.status === 404);
     return (
-      <Blank
-        glyph={missing ? "search" : "warn"}
-        title={missing ? "No such session" : "Could not open the session"}
-        text={
-          missing
-            ? "It does not exist, or you do not have access to it."
-            : sentence(error?.message ?? "")
-        }
-        actions={
-          <Link className="btn sec" to={base}>
-            Start a new session
-          </Link>
-        }
-      />
+      <>
+        <main className="conv">
+          <Blank
+            glyph={missing ? "search" : "warn"}
+            title={missing ? "No such session" : "Could not open the session"}
+            text={
+              missing
+                ? "It does not exist, or you do not have access to it."
+                : sentence(error?.message ?? "")
+            }
+            actions={
+              <Link className="btn sec" to={base}>
+                Start a new session
+              </Link>
+            }
+          />
+        </main>
+        {side()}
+      </>
     );
   }
   if (!session.data || !turns.data) {
     return (
-      <div className="welcome">
-        <div style={{ width: "420px" }}>
-          <Loading lines={4} />
-        </div>
-      </div>
+      <>
+        <main className="conv">
+          <div className="welcome">
+            <div style={{ width: "420px" }}>
+              <Loading lines={4} />
+            </div>
+          </div>
+        </main>
+        {side()}
+      </>
     );
   }
 
@@ -245,74 +278,78 @@ export function Conversation({
 
   return (
     <>
-      <Header
-        context={context}
-        me={me}
-        session={session.data}
-        newest={newest}
-      />
-      <div className="conv-s" ref={scroller} onScroll={scrolled}>
-        <div className="thread">
-          <div className="more-turns">
-            {more && (
-              <button
-                className="btn sec sm"
-                type="button"
-                disabled={loading}
-                onClick={() => void older()}
-              >
-                <Icon name="up" />
-                Earlier turns
-              </button>
-            )}
-          </div>
-          {list.map((turn) => (
-            <TurnView
-              key={turn.id}
-              turn={turn}
-              agent={agent}
-              person={who}
-              waking={turn.id === compose.woken}
-              onStop={turn.id === unfinished ? stop : undefined}
-              onAnswer={turn.id === unfinished ? answer : undefined}
-              onAgain={why ? undefined : compose.fill}
-            />
-          ))}
-          {!list.length && (
-            <div style={{ paddingTop: "48px" }}>
-              <Empty glyph="chat" title="No messages yet" />
-            </div>
-          )}
-        </div>
-      </div>
-      {away && unfinished && (
-        <button className="btn sec sm jump" type="button" onClick={toEnd}>
-          <Icon name="dn" />
-          Latest
-        </button>
-      )}
-      {why ? (
-        <Gate
-          why={why}
+      <main className="conv">
+        <Header
           context={context}
-          agent={agent}
           me={me}
           session={session.data}
+          newest={newest}
+          actions={<DetailsButton shown={details} onToggle={onDetails} />}
         />
-      ) : (
-        <Composer
-          agent={agent}
-          compose={compose}
-          turn={live}
-          // A message that is sent is seen: the conversation goes to its
-          // end.
-          onSend={() => {
-            toEnd();
-            void compose.send();
-          }}
-          onStop={stop}
-        />
-      )}
+        <div className="conv-s" ref={scroller} onScroll={scrolled}>
+          <div className="thread">
+            <div className="more-turns">
+              {more && (
+                <button
+                  className="btn sec sm"
+                  type="button"
+                  disabled={loading}
+                  onClick={() => void older()}
+                >
+                  <Icon name="up" />
+                  Earlier turns
+                </button>
+              )}
+            </div>
+            {list.map((turn) => (
+              <TurnView
+                key={turn.id}
+                turn={turn}
+                agent={agent}
+                person={who}
+                waking={turn.id === compose.woken}
+                onStop={turn.id === unfinished ? stop : undefined}
+                onAnswer={turn.id === unfinished ? answer : undefined}
+                onAgain={why ? undefined : compose.fill}
+              />
+            ))}
+            {!list.length && (
+              <div style={{ paddingTop: "48px" }}>
+                <Empty glyph="chat" title="No messages yet" />
+              </div>
+            )}
+          </div>
+        </div>
+        {away && unfinished && (
+          <button className="btn sec sm jump" type="button" onClick={toEnd}>
+            <Icon name="dn" />
+            Latest
+          </button>
+        )}
+        {why ? (
+          <Gate
+            why={why}
+            context={context}
+            agent={agent}
+            me={me}
+            session={session.data}
+          />
+        ) : (
+          <Composer
+            agent={agent}
+            compose={compose}
+            turn={live}
+            // A message that is sent is seen: the conversation goes to its
+            // end.
+            onSend={() => {
+              toEnd();
+              void compose.send();
+            }}
+            onStop={stop}
+          />
+        )}
+      </main>
+      {side(session.data)}
     </>
   );
 }

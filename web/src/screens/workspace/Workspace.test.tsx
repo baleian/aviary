@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { focusManager } from "@tanstack/react-query";
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { api, ApiError } from "../../api/client.ts";
 import { backend } from "../../api/fake.ts";
@@ -206,7 +206,7 @@ it("opens a session at its newest turn", async () => {
       name: "Why does the checkout test flake on CI?",
     }),
   ).toBeTruthy();
-  const head = document.querySelector(".conv-h")!.textContent;
+  const head = document.querySelector(".conv-h .tx")!.textContent;
   expect(head).toContain("Completed");
   expect(head).toContain("Asleep");
   expect(head).toMatch(/Started .* · 2 turns$/);
@@ -852,6 +852,157 @@ it("tells nobody of a request that is not theirs to answer", async () => {
   });
   await new Promise((resolve) => setTimeout(resolve, 150));
   expect(screen.queryByText("is waiting for you")).toBeNull();
+});
+
+// details returns the pane of the details, and what each of its rows says.
+function details() {
+  const pane = document.querySelector<HTMLElement>(".pane.details")!;
+  const rows = new Map<string, string>();
+  for (const name of pane.querySelectorAll("dt")) {
+    rows.set(name.textContent, name.nextElementSibling!.textContent);
+  }
+  return { pane, rows };
+}
+
+it("shows the details of a session and of its agent beside the conversation", async () => {
+  const path = await pathOf("Why does the checkout test flake on CI?");
+  open(path, "alice");
+  await waitFor(() =>
+    expect(document.querySelectorAll(".turn").length).toBe(2),
+  );
+  const { pane, rows } = details();
+  expect(within(pane).getByRole("heading", { level: 2 }).textContent).toBe(
+    "Session details",
+  );
+  expect(pane.querySelector(".idb span")!.textContent).toBe(
+    path.split("/").pop(),
+  );
+  expect(rows.get("Owner")).toBe("AKAlice Kim");
+  expect(rows.get("Started")).toMatch(/^Today \d\d:\d\d$/);
+  expect(rows.get("Turns")).toBe("22 completed");
+  expect(rows.get("Sandbox")).toBe("Asleep");
+  expect(rows.has("Ended")).toBe(false);
+  // The tokens are those that its turns took together.
+  const mock = await backend();
+  const { turns } = mock.request(
+    "GET",
+    `/v1/sessions/${path.split("/").pop()}/turns`,
+    { token: "alice", body: null },
+  ).body as { turns: { usage: Record<string, number> }[] };
+  const sum = (field: string) =>
+    turns
+      .reduce((total, turn) => total + turn.usage[field], 0)
+      .toLocaleString("en-US");
+  expect(pane.querySelector(".tok")!.textContent).toBe(
+    `${sum("input_tokens")}in${sum("output_tokens")}out`,
+  );
+  // And of the agent.
+  expect(rows.get("Slug")).toBe("backend-engineer");
+  expect(rows.get("Harness")).toBe("opencode");
+  expect(rows.get("Model")).toBe("coder-large");
+  expect(rows.get("Provider")).toBe("Company gateway");
+  expect(rows.get("Approval")).toBe("ask");
+  expect(pane.querySelector(".about")!.textContent).toBe(
+    "Features, fixes and tests for the storefront backend.",
+  );
+});
+
+it("leaves the details empty while a session is read, and when there is none", async () => {
+  const session = await talk("Read slowly");
+  const get = api.get;
+  let answer: (() => void) | undefined;
+  vi.spyOn(api, "get").mockImplementation(async (asked: string) => {
+    if (asked === "/v1/sessions/" + session.id) {
+      await new Promise<void>((resolve) => {
+        answer = resolve;
+      });
+    }
+    return get(asked);
+  });
+  open(session.path, "alice");
+  await waitFor(() => expect(answer).toBeTruthy());
+  expect(details().pane.textContent).toBe("");
+  answer!();
+  await waitFor(() => expect(details().rows.get("Turns")).toBe("0"));
+  await leave();
+
+  open(`${REVIEWER}/s/019b0000-0000-7000-8000-000000000000`, "alice");
+  await screen.findByRole("heading", { name: "No such session" });
+  expect(details().pane.textContent).toBe("");
+});
+
+it("tells of the agent beside the start of a new session", async () => {
+  open(REVIEWER, "alice");
+  await list();
+  const { pane, rows } = details();
+  expect(within(pane).getByRole("heading", { level: 2 }).textContent).toBe(
+    "About this agent",
+  );
+  expect(pane.querySelector(".idb")).toBeNull();
+  expect([...rows.keys()]).toEqual([
+    "Slug",
+    "Harness",
+    "Model",
+    "Provider",
+    "Approval",
+  ]);
+  expect(rows.get("Approval")).toBe("None");
+});
+
+it("says of how many turns the details tell when not all were read", async () => {
+  const session = await talk("A long one in detail");
+  for (let seq = 1; seq <= 22; seq++) await session.say("Message " + seq);
+  const user = open(session.path, "alice");
+  await waitFor(() =>
+    expect(document.querySelectorAll(".turn").length).toBe(20),
+  );
+  expect(details().rows.get("Turns")).toBe("22of those shown: 20 completed");
+  expect(details().pane.querySelector(".r-s h4 small")!.textContent).toBe(
+    "of the turns shown",
+  );
+  await user.click(screen.getByRole("button", { name: /Earlier turns/ }));
+  await waitFor(() =>
+    expect(details().rows.get("Turns")).toBe("2222 completed"),
+  );
+  expect(details().pane.querySelector(".r-s h4 small")).toBeNull();
+});
+
+it("hides the details, and keeps them so", async () => {
+  const path = await pathOf("Why does the checkout test flake on CI?");
+  let user = open(path, "alice");
+  await waitFor(() =>
+    expect(document.querySelectorAll(".turn").length).toBe(2),
+  );
+  const button = () => screen.getByRole("button", { name: "Details" });
+  const frame = () => document.querySelector(".sess")!;
+  expect(button().getAttribute("aria-pressed")).toBe("true");
+  expect(frame().className).toBe("sess");
+  await user.click(button());
+  expect(document.querySelector(".pane.details")).toBeNull();
+  expect(button().getAttribute("aria-pressed")).toBe("false");
+  expect(frame().className).toBe("sess no-details");
+  // Also at the start of a new session, and when the console is opened
+  // again.
+  await user.click(screen.getByRole("link", { name: /New session/ }));
+  await screen.findByRole("heading", { name: "New session" });
+  expect(document.querySelector(".pane.details")).toBeNull();
+  cleanup();
+  user = open(path, "alice");
+  await waitFor(() =>
+    expect(document.querySelectorAll(".turn").length).toBe(2),
+  );
+  expect(document.querySelector(".pane.details")).toBeNull();
+  await user.click(button());
+  expect(details().rows.get("Sandbox")).toBe("Asleep");
+  // The pane closes itself, too.
+  await user.click(
+    within(details().pane).getByRole("button", { name: "Close" }),
+  );
+  expect(document.querySelector(".pane.details")).toBeNull();
+  cleanup();
+  open(REVIEWER, "alice");
+  await list();
+  expect(document.querySelector(".pane.details")).toBeNull();
 });
 
 it("keeps the head of the conversation as its session is", async () => {

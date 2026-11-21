@@ -42,5 +42,6 @@ export async function leave() {
   signOut();
   setTheme("system");
   prefs.set("project", null);
+  prefs.set("details", null);
   (await backend()).reset();
 }
