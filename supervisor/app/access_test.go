@@ -91,8 +91,10 @@ func TestWhoMayDoWhat(t *testing.T) {
 		{"GET", "/v1/projects/" + project + "/agents", ``, everyMember},
 		{"GET", "/v1/agents/" + agent, ``, everyMember},
 		{"PUT", "/v1/agents/" + agent, `{}`, "pppfffffph"},
-		// The agent has a running turn, so those who may delete it get 409.
-		{"DELETE", "/v1/agents/" + agent, ``, "pppfffffph"},
+		// Deleting an agent ends the sessions of every member, so it also
+		// needs sessions.control_all. The agent has a running turn, so those
+		// who may delete it get 409.
+		{"DELETE", "/v1/agents/" + agent, ``, "ppfffffffh"},
 		{"POST", "/v1/projects/" + project + "/providers", `{}`, connections},
 		{"GET", "/v1/projects/" + project + "/providers", ``, everyMember},
 		{"GET", "/v1/providers/" + models, ``, everyMember},
@@ -128,6 +130,17 @@ func TestWhoMayDoWhat(t *testing.T) {
 			if answered != row.may[i] {
 				t.Errorf("%s: %s %s = %d (%c), want %c", caller, row.method, row.path, status, answered, row.may[i])
 			}
+		}
+	}
+
+	// A caller who may not delete an agent is told which permission it lacks.
+	for caller, lacked := range map[string]string{"editor": "sessions.control_all", "custom": "agents.manage", "user": "agents.manage"} {
+		var refusal struct{ Code, Message string }
+		as := *s
+		as.token = caller
+		if status, _ := as.request("DELETE", "/v1/agents/"+agent, "", &refusal); status != http.StatusForbidden ||
+			refusal.Code != "forbidden" || !strings.Contains(refusal.Message, lacked) {
+			t.Errorf("%s: DELETE agent = %d %s %q, want 403 for the lack of %s", caller, status, refusal.Code, refusal.Message, lacked)
 		}
 	}
 

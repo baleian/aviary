@@ -103,7 +103,8 @@ func New(ctx context.Context, st store.Store, ev *events.Streams, dr *driver.Dri
 	mux.Handle("GET /v1/projects/{pid}/agents", a.inProject(projectView, a.listAgents))
 	mux.Handle("GET /v1/agents/{aid}", a.ofProject(projectView, "aid", a.ofAgent, a.getAgent))
 	mux.Handle("PUT /v1/agents/{aid}", a.ofProject(agentsManage, "aid", a.ofAgent, a.replaceAgent))
-	mux.Handle("DELETE /v1/agents/{aid}", a.ofProject(agentsManage, "aid", a.ofAgent, a.deleteAgent))
+	// deleteAgent does its own access check, since it needs two permissions.
+	mux.Handle("DELETE /v1/agents/{aid}", handler(a.deleteAgent))
 	mux.Handle("POST /v1/agents/{aid}/sessions", a.ofProject(sessionsRun, "aid", a.ofAgent, a.createSession))
 	// listSessions does its own access check, since what it lists depends on
 	// the caller.
@@ -301,14 +302,30 @@ func (a *api) replaceAgent(w http.ResponseWriter, r *http.Request) error {
 }
 
 // deleteAgent deletes the agent: its sessions end, and their sandboxes are
-// deleted. The agent and the conversations are kept.
+// deleted. The agent and the conversations are kept. Since the sessions of
+// every member end, the caller needs sessions.control_all besides
+// agents.manage.
 func (a *api) deleteAgent(w http.ResponseWriter, r *http.Request) error {
 	id, err := pathID(r, "aid")
 	if err != nil {
 		return err
 	}
-	agent, err := a.driver.DeleteAgent(r.Context(), id)
+	agent, err := a.store.Agent(r.Context(), id)
 	if err != nil {
+		return err
+	}
+	if !callerOf(r).admin {
+		held, err := a.held(r, agent.ProjectID)
+		if err != nil {
+			return err
+		}
+		for _, permission := range []string{agentsManage, sessionsControlAll} {
+			if !slices.Contains(held, permission) {
+				return lacks(permission)
+			}
+		}
+	}
+	if agent, err = a.driver.DeleteAgent(r.Context(), id); err != nil {
 		return err
 	}
 	slog.InfoContext(r.Context(), "agent deleted", "agent", id, "by", callerOf(r).Subject)
