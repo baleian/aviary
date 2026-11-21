@@ -305,7 +305,7 @@ function emit(turnID, type, data) {
 // is as they were told, with the session as it is now. Changes that come
 // together are told once.
 function changed() {
-  if (telling) return;
+  if (telling || !told) return;
   telling = setTimeout(() => {
     telling = 0;
     for (const session of db.sessions) {
@@ -1044,12 +1044,17 @@ export function reset() {
   approvalsOf = new Map();
   runs = new Map();
   feeds = new Set();
-  told = new Map(db.sessions.map((session) => [session.id, JSON.stringify(sessionRecord(session))]));
+  told = null;
   for (const left of db.live) {
     const turn = db.turns.find((other) => other.id === left.turn);
     emit(turn.id, 'turn.started', {});
     run(turn, script(left.script, turn.text), {answers: left.answers, instant: true});
   }
+  // The turns that the example data leaves running are played up to where
+  // they wait. That is how the data begins, and no change of it.
+  setTimeout(() => {
+    told = new Map(db.sessions.map((session) => [session.id, JSON.stringify(sessionRecord(session))]));
+  }, 0);
 }
 
 // What the other member asks, in turn.
