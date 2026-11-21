@@ -602,7 +602,7 @@ each pod.
 | Metric | Description |
 | --- | --- |
 | `aviary_turn_queue_length` | Number of queued turns when a turn was accepted, that turn included. 0 for a turn that did not have to wait. |
-| `aviary_turns_running` | Running turns that this Supervisor follows, by `harness`. |
+| `aviary_turns_followed` | Turns that this Supervisor follows, by `harness`. |
 | `aviary_turns_ended_total` | Ended turns, by `harness`, `state` and, for a failed turn, `reason`. |
 | `aviary_turn_queue_duration_seconds` | Time that a turn waited to run, from its message until it left the queue, by `harness`. |
 | `aviary_turn_startup_duration_seconds` | Time that a turn took to start, from leaving the queue until its harness had the message, by `harness`. |
@@ -612,13 +612,14 @@ each pod.
 | `aviary_messages_refused_total` | Messages that were not accepted as turns, by `reason`: `queue_full` or `session_busy`. |
 | `aviary_secret_read_seconds` | Time that a secret store of a project took to return a value, by the store's `kind` and `outcome`: `read` or `failed`. Cached values are not read and not counted. |
 
-Each Supervisor reports its own work and state, so the metrics of all
-Supervisors add up: the sum of `aviary_turns_running` is the number of
-running turns. No Supervisor holds the queue, so `aviary_turn_queue_length`
-measures it whenever a turn is accepted; the state metrics below count the
-queued turns at any moment. Every series of the configured harnesses and
-secret store kinds starts at zero, so that `rate()` and `increase()` count
-its first event. Go runtime and process metrics are served as well.
+Each Supervisor reports its own work, so the metrics of all Supervisors add
+up. `aviary_turns_followed` shows how the turns are spread over the
+Supervisors; how many turns there are, also in the queue, is among the state
+metrics below. No Supervisor holds the queue, so `aviary_turn_queue_length`
+measures it whenever a turn is accepted. Every series of the configured
+harnesses and secret store kinds starts at zero, so that `rate()` and
+`increase()` count its first event. Go runtime and process metrics are
+served as well.
 
 The state of the installation, such as the number of its sandboxes, is not
 the work of one Supervisor, and every Supervisor would report the same. A

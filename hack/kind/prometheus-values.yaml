@@ -40,7 +40,7 @@ serverFiles:
         metric_relabel_configs:
           - source_labels: [__name__]
             regex: "\
-              aviary_turns_(running|ended_total)|aviary_turn_tokens_total|aviary_messages_refused_total|\
+              aviary_turns_(followed|ended_total)|aviary_turn_tokens_total|aviary_messages_refused_total|\
               aviary_turn_queue_length_(bucket|count)|aviary_turn_(queue|startup|run)_duration_seconds_bucket|\
               aviary_(approval_wait|secret_read)_seconds_(bucket|count)|\
               go_goroutines|go_gc_duration_seconds(_count)?|go_memstats_heap_inuse_bytes|\

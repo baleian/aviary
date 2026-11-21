@@ -15,12 +15,12 @@ import (
 
 // Metrics counts and times the turns. Each Supervisor reports only its own
 // work, so that the metrics of all replicas add up. State that exists only in
-// the database, such as the queue length, is not reported, since every
-// replica would report the same value; State reports the sandboxes.
+// the database, such as the number of queued turns, is left to State, since
+// every replica would report the same value.
 type Metrics struct {
 	registry   *prometheus.Registry
 	queue      prometheus.Histogram
-	running    *prometheus.GaugeVec
+	followed   *prometheus.GaugeVec
 	ended      *prometheus.CounterVec
 	waited     *prometheus.HistogramVec
 	startup    *prometheus.HistogramVec
@@ -63,9 +63,9 @@ func New(harnesses, secretStoreKinds []string) *Metrics {
 			Help:    "Number of turns waiting to run when a turn is accepted, including that turn. 0 if the turn did not have to wait.",
 			Buckets: []float64{0, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000},
 		}),
-		running: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "aviary_turns_running",
-			Help: "Number of running turns that this Supervisor follows.",
+		followed: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "aviary_turns_followed",
+			Help: "Number of turns that this Supervisor follows.",
 		}, []string{"harness"}),
 		ended: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "aviary_turns_ended_total",
@@ -106,7 +106,7 @@ func New(harnesses, secretStoreKinds []string) *Metrics {
 		}, []string{"kind", "outcome"}),
 	}
 	m.registry.MustRegister(
-		m.queue, m.running, m.ended, m.waited, m.startup, m.ran, m.tokens, m.refused, m.approved, m.secretRead,
+		m.queue, m.followed, m.ended, m.waited, m.startup, m.ran, m.tokens, m.refused, m.approved, m.secretRead,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
@@ -114,7 +114,7 @@ func New(harnesses, secretStoreKinds []string) *Metrics {
 		m.refused.WithLabelValues(reason)
 	}
 	for _, harness := range harnesses {
-		m.running.WithLabelValues(harness)
+		m.followed.WithLabelValues(harness)
 		m.waited.WithLabelValues(harness)
 		m.startup.WithLabelValues(harness)
 		for _, state := range []string{store.TurnCompleted, store.TurnCancelled, store.TurnExpired} {
@@ -155,9 +155,9 @@ func (m *Metrics) Accepted(waiting int) {
 // Following counts a turn that this Supervisor follows, until the returned
 // function is called.
 func (m *Metrics) Following(harness string) (left func()) {
-	running := m.running.WithLabelValues(harness)
-	running.Inc()
-	return running.Dec
+	followed := m.followed.WithLabelValues(harness)
+	followed.Inc()
+	return followed.Dec
 }
 
 // Dispatched records how long a dispatched turn was queued.

@@ -15,7 +15,7 @@ func TestMetricsStartAtZero(t *testing.T) {
 	t.Parallel()
 	s := install(t).supervisor()
 	for _, series := range []string{
-		`aviary_turns_running{harness="codex"} 0`,
+		`aviary_turns_followed{harness="codex"} 0`,
 		`aviary_turns_ended_total{harness="opencode",reason="",state="completed"} 0`,
 		`aviary_turns_ended_total{harness="opencode",reason="",state="cancelled"} 0`,
 		`aviary_turns_ended_total{harness="opencode",reason="",state="expired"} 0`,
@@ -55,8 +55,8 @@ func TestMetrics(t *testing.T) {
 
 	completed := one.send(one.session(), "one")
 	runner := aviary.given(completed.ID)
-	if running := total("aviary_turns_running"); running != 1 {
-		t.Errorf("aviary_turns_running = %v, want 1", running)
+	if followed := total("aviary_turns_followed"); followed != 1 {
+		t.Errorf("aviary_turns_followed = %v, want 1", followed)
 	}
 	thought := int64(3)
 	runner.report(started("harness-session"))
@@ -138,7 +138,7 @@ func TestMetrics(t *testing.T) {
 		`aviary_turn_tokens_total{harness="opencode",kind="output"}`:                        7,
 		`aviary_turn_tokens_total{harness="opencode",kind="thought"}`:                       3,
 		"aviary_turn_tokens_total":                                                          21,
-		"aviary_turns_running":                                                              0,
+		"aviary_turns_followed":                                                             0,
 	}
 	// A turn is counted shortly after its last event.
 	differing := func() map[string]float64 {

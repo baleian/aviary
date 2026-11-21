@@ -869,16 +869,16 @@
     },
     {
       "type": "timeseries",
-      "title": "Running turns by harness",
-      "description": "Turns that the Supervisors follow, by harness.",
+      "title": "Turns by Supervisor",
+      "description": "Turns that each Supervisor follows. A turn whose Supervisor stops is taken over by another.",
       "id": 23,
       "gridPos": {"h": 8, "w": 8, "x": 16, "y": 27},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
-          "expr": "sum by (harness) (aviary_turns_running{namespace=\"$namespace\", harness=~\"$harness\"})",
-          "legendFormat": "{{harness}}",
+          "expr": "label_replace(sum by (pod) (aviary_turns_followed{namespace=\"$namespace\", harness=~\"$harness\"}), \"pod\", \"$1\", \"pod\", \"aviary-supervisor-(.+)\")",
+          "legendFormat": "{{pod}}",
           "refId": "A"
         }
       ],
@@ -3071,8 +3071,8 @@
         "name": "harness",
         "label": "Harness",
         "datasource": {"type": "prometheus", "uid": "${datasource}"},
-        "definition": "label_values(aviary_turns_running{namespace=\"$namespace\"}, harness)",
-        "query": "label_values(aviary_turns_running{namespace=\"$namespace\"}, harness)",
+        "definition": "label_values(aviary_turns_followed{namespace=\"$namespace\"}, harness)",
+        "query": "label_values(aviary_turns_followed{namespace=\"$namespace\"}, harness)",
         "current": {"text": ["All"], "value": ["$__all"]},
         "hide": 0,
         "includeAll": true,
