@@ -113,9 +113,12 @@ metadata:
   name: keycloak
   namespace: aviary-data
 spec:
+  # The node port that hack/kind/cluster.yaml maps to localhost:8081.
+  type: NodePort
   selector:
     app.kubernetes.io/name: keycloak
   ports:
     - name: http
       port: 8080
       targetPort: http
+      nodePort: 30081

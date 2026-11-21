@@ -214,6 +214,7 @@ secret-store:
 identity-provider:
 	$(KUBECTL) apply -f hack/kind/keycloak.yaml
 	$(KUBECTL) --namespace aviary-data rollout status deployment/keycloak --timeout 300s
+	@echo "Keycloak is at http://localhost:8081"
 
 # Installs Headlamp in the local cluster, a web UI for its resources, logs
 # and events, at http://localhost:4466.

@@ -371,12 +371,10 @@ has four users, whose passwords are their names: `alice` is an
 administrator, `bob` and `carol` may use the API, `carol` is also in the
 group `team-a`, and `dave` is in no group. Aviary uses this provider when it
 is installed with `make deploy VALUES=hack/kind/aviary-keycloak-values.yaml`.
-A caller gets a token from the provider and sends it:
+The provider is at http://localhost:8081. A caller gets a token from it and
+sends it:
 
 ```sh
-kubectl --context kind-aviary --namespace aviary-data \
-  port-forward service/keycloak 8081:8080 &
-
 token=$(curl -s localhost:8081/realms/aviary/protocol/openid-connect/token \
   -d grant_type=password -d client_id=aviary -d username=alice -d password=alice | jq -r .access_token)
 curl -s -H "Authorization: Bearer $token" localhost:8080/v1/me
