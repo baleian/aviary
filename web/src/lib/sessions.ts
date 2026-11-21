@@ -9,7 +9,8 @@ export type Status = Turn["state"] | "starting" | "waiting" | "stopping";
 // has ended, or "none" for one without turns.
 export type Standing = Status | "ended" | "none";
 
-const NAMES: Record<Standing, string> = {
+// What the console calls each way that a turn or a session stands.
+export const STATUS_NAMES: Record<Standing, string> = {
   queued: "Queued",
   starting: "Starting",
   running: "Running",
@@ -42,7 +43,7 @@ export function standing(session: Session): Standing {
 export function standingText(session: Session): string {
   const stands = standing(session);
   if (stands === "ended" && session.end_reason === "expired") return "Expired";
-  return NAMES[stands];
+  return STATUS_NAMES[stands];
 }
 
 // working reports whether a session takes room among the turns that run.

@@ -181,7 +181,8 @@ export function DeleteAgent({
 }: {
   context: ProjectContext;
   agent: Agent;
-  onClose: () => void;
+  // onClose is told whether the agent was deleted.
+  onClose: (deleted: boolean) => void;
 }) {
   return (
     <Dialog
@@ -205,7 +206,7 @@ export function DeleteAgent({
         return true;
       }}
       onClose={(deleted) => {
-        onClose();
+        onClose(!!deleted);
         if (deleted) toast(`Deleted ${label(agent)}`, "ok");
       }}
     />

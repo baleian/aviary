@@ -133,8 +133,48 @@ export interface Turn {
   ended_at?: string;
   cancel_requested_at?: string;
   failure?: { reason: string; message?: string };
+  // Why the model stopped, for a turn that completed.
+  stop_reason?: string;
+  usage?: Usage;
   // The requests that wait for an answer, while the turn has not ended.
   approvals?: ApprovalRequest[];
+  // What the agent said and did, once the turn has ended.
+  items?: Item[];
+}
+
+// The tokens of a turn, as its harness reports them.
+export interface Usage {
+  input_tokens: number;
+  output_tokens: number;
+  thought_tokens?: number;
+  cached_read_tokens?: number;
+  cached_write_tokens?: number;
+}
+
+// A part of what an agent said and did in a turn.
+export type Item =
+  | { type: "message"; text: string }
+  | { type: "thought"; text: string }
+  | { type: "plan"; entries?: PlanEntry[] }
+  | ({
+      type: "tool_call";
+      status?: string;
+      output?: unknown;
+      meta?: unknown;
+    } & ToolCall)
+  | ({
+      type: "approval";
+      // How the request ended: "selected" with the option that was chosen,
+      // or otherwise without one.
+      outcome?: string;
+      option_id?: string;
+      answered_by?: string;
+    } & Partial<ApprovalRequest>);
+
+export interface PlanEntry {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+  priority?: string;
 }
 
 export interface Session {

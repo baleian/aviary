@@ -89,3 +89,12 @@ export function num(value: number): string {
 export function plural(count: number, one: string, many = one + "s"): string {
   return `${num(count)} ${count === 1 ? one : many}`;
 }
+
+// duration writes a length of time: "42s", "3m 07s", "1h 05m".
+export function duration(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return seconds + "s";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${two(seconds % 60)}s`;
+  return `${Math.floor(minutes / 60)}h ${two(minutes % 60)}m`;
+}

@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes } from "react-router";
 import { useProjects } from "./api/queries.ts";
 import { prefs } from "./lib/prefs.ts";
@@ -9,8 +10,15 @@ import { Overview } from "./screens/Overview.tsx";
 import { Projects } from "./screens/Projects.tsx";
 import { SignIn } from "./screens/SignIn.tsx";
 import { ProjectFrame } from "./shell/ProjectFrame.tsx";
-import { NotFound, Signed } from "./shell/Signed.tsx";
+import { NotFound, Signed, Wait } from "./shell/Signed.tsx";
 import { Toasts } from "./ui/Toasts.tsx";
+
+// The workspace is loaded when it is first opened: it brings what renders
+// the Markdown of the agents, which the other screens do not need.
+const Workspace = lazy(async () => {
+  const module = await import("./screens/workspace/Workspace.tsx");
+  return { default: module.Workspace };
+});
 
 // Home goes to where a caller begins: the project that was last in view, or
 // the caller's only project, or else the list of projects.
@@ -36,6 +44,14 @@ export function App() {
           <Route path="/p/:project" element={<ProjectFrame />}>
             <Route index element={<Overview />} />
             <Route path="agents" element={<Agents />} />
+            <Route
+              path="agents/:agent/*"
+              element={
+                <Suspense fallback={<Wait />}>
+                  <Workspace />
+                </Suspense>
+              }
+            />
             <Route path="connections" element={<Connections />} />
             <Route path="access" element={<Access />} />
             <Route path="*" element={<NotFound />} />

@@ -1,0 +1,70 @@
+import { describe, expect, it } from "vitest";
+import {
+  changed,
+  exitCode,
+  findDiff,
+  inputOf,
+  outputText,
+  pathOf,
+} from "./tools.ts";
+
+describe("findDiff", () => {
+  const diff = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new";
+
+  it("finds a unified diff, also inside the fields of a tool", () => {
+    expect(findDiff(diff)).toBe(diff);
+    expect(findDiff({ metadata: { diff } })).toBe(diff);
+    expect(findDiff({ content: [{ text: diff }] })).toBe(diff);
+  });
+
+  it("does not take other text for one", () => {
+    expect(findDiff("- a list\n- of things")).toBeNull();
+    expect(findDiff("@@ only a header")).toBeNull();
+    expect(findDiff({ output: "done" })).toBeNull();
+    expect(findDiff(null)).toBeNull();
+  });
+});
+
+describe("changed", () => {
+  it("makes a diff of the text before and after an edit", () => {
+    expect(changed({ oldString: "a\nb", newString: "a\nc" })).toBe(
+      "@@\n- a\n- b\n+ a\n+ c",
+    );
+    expect(changed({ old_str: "", new_str: "x" })).toBe("@@\n+ x");
+  });
+
+  it("makes none of other input", () => {
+    expect(changed({ command: "ls" })).toBeNull();
+    expect(changed({ old_string: "a" })).toBeNull();
+  });
+});
+
+describe("outputText", () => {
+  it("is the text of the output, in whichever field it is", () => {
+    expect(outputText("plain")).toBe("plain");
+    expect(outputText({ stdout: "out", stderr: "err" })).toBe("out");
+    expect(outputText({ output: "", aggregated_output: "all" })).toBe("all");
+    expect(outputText({ error: "refused" })).toBe("refused");
+  });
+
+  it("is empty for output without text", () => {
+    expect(outputText({ exit_code: 0 })).toBe("");
+    expect(outputText(undefined)).toBe("");
+  });
+});
+
+it("reads the exit code of a command", () => {
+  expect(exitCode({ exit_code: 2 })).toBe(2);
+  expect(exitCode({ metadata: { exit: 0 } })).toBe(0);
+  expect(exitCode({ exit_code: "2" })).toBeNull();
+  expect(exitCode(undefined)).toBeNull();
+});
+
+it("reads the file that a tool call is about", () => {
+  expect(pathOf({ filePath: "a.ts" })).toBe("a.ts");
+  expect(pathOf({ file_path: "b.ts" })).toBe("b.ts");
+  expect(pathOf({ path: "c.ts" })).toBe("c.ts");
+  expect(pathOf({ path: 7 })).toBe("");
+  expect(inputOf("text")).toEqual({});
+  expect(inputOf({ command: "ls" })).toEqual({ command: "ls" });
+});

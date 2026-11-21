@@ -158,13 +158,13 @@ function useRecent(context: ProjectContext, me: Me) {
   const lists = useQueries({
     queries: context.agents.map((agent) => ({
       queryKey: ["sessions", agent.id, { limit: RECENT }],
-      queryFn: () => readSessions(agent.id, `limit=${RECENT}`),
+      queryFn: () => readSessions(agent.id, RECENT),
       enabled: reads && ready,
     })),
   });
   const rows: Row[] = [];
   for (const [index, list] of lists.entries()) {
-    for (const session of list.data ?? []) {
+    for (const session of list.data?.sessions ?? []) {
       // Without an identity provider every session is the caller's.
       if (me.id && session.created_by !== me.id) continue;
       const agent = context.agents[index];

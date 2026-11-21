@@ -11,6 +11,16 @@ import type { Session } from "./types.ts";
 // are read once the stream is open, and read again each time it has opened
 // again.
 
+// The sessions of an agent that were read, newest first, and whether the
+// agent has older ones.
+export interface SessionPage {
+  sessions: Session[];
+  more: boolean;
+}
+
+// The most sessions that the API lists at once.
+const LISTED = 100;
+
 // What the stream has told of each session, and when: a count that grows
 // with every session told.
 const told = new Map<string, { session: Session; at: number }>();
@@ -30,43 +40,59 @@ function setReady(value: boolean) {
 // older session that a list does not have comes with its page.
 export function take(session: Session) {
   told.set(session.id, { session, at: ++clock });
-  queryClient.setQueriesData<Session[]>(
+  // A session that was read by itself stays as the stream tells it.
+  queryClient.setQueryData<Session>(["session", session.id], (read) =>
+    read ? session : read,
+  );
+  queryClient.setQueriesData<SessionPage>(
     { queryKey: ["sessions", session.agent_id] },
-    (list) => {
-      if (!list) return list;
+    (page) => {
+      if (!page) return page;
+      const list = page.sessions;
       if (list.some((other) => other.id === session.id)) {
-        return list.map((other) => (other.id === session.id ? session : other));
+        const sessions = list.map((other) =>
+          other.id === session.id ? session : other,
+        );
+        return { ...page, sessions };
       }
       return !list.length || session.id > list[0].id
-        ? [session, ...list]
-        : list;
+        ? { ...page, sessions: [session, ...list] }
+        : page;
     },
   );
 }
 
-// readSessions reads a page of the sessions of an agent, newest first. A
-// session that changes while the page is read is returned as the stream
-// told it, which is newer, and so is one that is created meanwhile.
+// readSessions reads up to count sessions of an agent, newest first: its
+// newest ones, or those before the session with an ID. A session that
+// changes while they are read is returned as the stream told it, which is
+// newer, and so is one that is created meanwhile.
 export async function readSessions(
   agent: string,
-  query: string,
-): Promise<Session[]> {
+  count: number,
+  before?: string,
+): Promise<SessionPage> {
   const since = clock;
+  // One more is asked for than is returned, which tells whether there are
+  // older ones.
+  const limit = Math.min(count + 1, LISTED);
   const { sessions } = await api.get<{ sessions: Session[] }>(
-    `/v1/agents/${agent}/sessions?${query}`,
+    `/v1/agents/${agent}/sessions?limit=${limit}` +
+      (before ? `&before=${before}` : ""),
   );
   const newer = [...told.values()].filter((each) => each.at > since);
-  const page = sessions.map(
+  let read = sessions.map(
     (session) =>
       newer.find((each) => each.session.id === session.id)?.session ?? session,
   );
-  if (query.includes("before=")) return page;
-  const newest = sessions[0]?.id ?? "";
-  const created = newer
-    .map((each) => each.session)
-    .filter((session) => session.agent_id === agent && session.id > newest)
-    .sort((a, b) => (a.id < b.id ? 1 : -1));
-  return [...created, ...page];
+  if (!before) {
+    const newest = sessions[0]?.id ?? "";
+    const created = newer
+      .map((each) => each.session)
+      .filter((session) => session.agent_id === agent && session.id > newest)
+      .sort((a, b) => (a.id < b.id ? 1 : -1));
+    read = [...created, ...read];
+  }
+  return { sessions: read.slice(0, limit - 1), more: read.length >= limit };
 }
 
 // useFeed follows the changes of the project with the ID, while there is
