@@ -1,96 +1,109 @@
 /* Design tokens. Every colour in the application is one of these, so that the
    dark theme is one block of overrides. The theme is the data-theme of the
    document, and a part of a page can be given the other one. */
-:root, [data-theme="light"] {
+:root,
+[data-theme="light"] {
   color-scheme: light;
 
   /* Surfaces */
-  --page: #F5F8FC;
-  --page-glow: #FFFFFF;
-  --surface: #FFFFFF;
-  --surface-2: #F5F8FC;
-  --surface-3: #EDF1F5;
-  --surface-hover: #FAFCFF;
-  --nav: rgba(255, 255, 255, .9);
-  --overlay: rgba(13, 27, 46, .4);
-  --code: #F3F6FA;
-  --night: #0B1728;
-  --on-night: #FFFFFF;
-  --night-dim: #C9D6E8;
+  --page: #f5f8fc;
+  --page-glow: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f5f8fc;
+  --surface-3: #edf1f5;
+  --surface-hover: #fafcff;
+  --nav: rgba(255, 255, 255, 0.9);
+  --overlay: rgba(13, 27, 46, 0.4);
+  --code: #f3f6fa;
+  --night: #0b1728;
+  --on-night: #ffffff;
+  --night-dim: #c9d6e8;
   --night-line: transparent;
 
   /* Text and lines */
-  --ink: #0D1B2E;
+  --ink: #0d1b2e;
   --ink2: #344256;
-  --slate: #5D6B82;
-  --mist: #98A4B5;
-  --line: #E3E8EF;
-  --line2: #CFD8E3;
-  --ctl: #8492A6;
+  --slate: #5d6b82;
+  --mist: #98a4b5;
+  --line: #e3e8ef;
+  --line2: #cfd8e3;
+  --ctl: #8492a6;
 
   /* Kingfisher: actions, selection, the running turn */
-  --king: #0B6FE0;
-  --king-h: #0A56B8;
-  --on-king: #FFFFFF;
-  --link: #0A56B8;
-  --k-ink: #0A4FA8;
-  --k200: #B9D6FB;
-  --k100: #DCEBFF;
-  --k50: #EEF5FF;
+  --king: #0b6fe0;
+  --king-h: #0a56b8;
+  --on-king: #ffffff;
+  --link: #0a56b8;
+  --k-ink: #0a4fa8;
+  --k200: #b9d6fb;
+  --k100: #dcebff;
+  --k50: #eef5ff;
 
   /* Canary: the moments that need a person */
-  --canary: #FFC53D;
-  --on-canary: #0D1B2E;
-  --c100: #FFF3CC;
-  --c50: #FFF9E6;
-  --c-line: #FFD466;
-  --c-ink: #6B4700;
-  --c-dot: #F0A500;
-  --c-icon: #C98600;
-  --c-glow: rgba(214, 146, 0, .6);
+  --canary: #ffc53d;
+  --on-canary: #0d1b2e;
+  --c100: #fff3cc;
+  --c50: #fff9e6;
+  --c-line: #ffd466;
+  --c-ink: #6b4700;
+  --c-dot: #f0a500;
+  --c-icon: #c98600;
+  --c-glow: rgba(214, 146, 0, 0.6);
 
-  --green: #12A866;
-  --g100: #DDF6E8;
-  --g-ink: #0A6340;
-  --coral: #F0553A;
-  --r100: #FFE8E2;
-  --r-ink: #B0290F;
-  --danger: #D93A1F;
-  --danger-h: #B0290F;
-  --dusk: #6E63E6;
-  --d100: #ECEBFF;
-  --d-ink: #4338A8;
-  --n100: #EDF1F5;
+  --green: #12a866;
+  --g100: #ddf6e8;
+  --g-ink: #0a6340;
+  --coral: #f0553a;
+  --r100: #ffe8e2;
+  --r-ink: #b0290f;
+  --danger: #d93a1f;
+  --danger-h: #b0290f;
+  --dusk: #6e63e6;
+  --d100: #ecebff;
+  --d-ink: #4338a8;
+  --n100: #edf1f5;
   --n-ink: #475467;
 
   /* Badges that invert the page */
-  --badge: #0D1B2E;
-  --on-badge: #FFFFFF;
+  --badge: #0d1b2e;
+  --on-badge: #ffffff;
 
   /* Avatars and project tiles */
-  --av1: #DCEBFF; --av1-ink: #0A4FA8;
-  --av2: #D6F3EE; --av2-ink: #0B6B60;
-  --av3: #E9E5FF; --av3-ink: #5240B8;
-  --av4: #FFE4EC; --av4-ink: #A81F52;
+  --av1: #dcebff;
+  --av1-ink: #0a4fa8;
+  --av2: #d6f3ee;
+  --av2-ink: #0b6b60;
+  --av3: #e9e5ff;
+  --av3-ink: #5240b8;
+  --av4: #ffe4ec;
+  --av4-ink: #a81f52;
 
   /* Large quiet surfaces */
-  --hero-2: #EAF3FF;
-  --sky-1: #DCEBFF;
-  --sky-2: #EEF5FF;
-  --sky-3: #F8FBFF;
-  --sky-glow: #FFFFFF;
-  --glass-1: rgba(255, 255, 255, .75);
-  --glass-2: rgba(255, 255, 255, .1);
-  --rib: #A9CCF8;
-  --trail: #7FB4F5;
+  --hero-2: #eaf3ff;
+  --sky-1: #dcebff;
+  --sky-2: #eef5ff;
+  --sky-3: #f8fbff;
+  --sky-glow: #ffffff;
+  --glass-1: rgba(255, 255, 255, 0.75);
+  --glass-2: rgba(255, 255, 255, 0.1);
+  --rib: #a9ccf8;
+  --trail: #7fb4f5;
 
-  --sh1: 0 1px 2px rgba(13, 27, 46, .05);
-  --sh2: 0 1px 2px rgba(13, 27, 46, .04), 0 12px 28px -16px rgba(13, 60, 130, .22);
-  --sh3: 0 2px 6px rgba(13, 27, 46, .05), 0 32px 72px -28px rgba(13, 60, 130, .38);
-  --ring: 0 0 0 3px rgba(11, 111, 224, .24);
+  --sh1: 0 1px 2px rgba(13, 27, 46, 0.05);
+  --sh2:
+    0 1px 2px rgba(13, 27, 46, 0.04), 0 12px 28px -16px rgba(13, 60, 130, 0.22);
+  --sh3:
+    0 2px 6px rgba(13, 27, 46, 0.05), 0 32px 72px -28px rgba(13, 60, 130, 0.38);
+  --ring: 0 0 0 3px rgba(11, 111, 224, 0.24);
 
-  --sans: "Plus Jakarta Sans", "Pretendard Variable", "Pretendard", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans KR", "Malgun Gothic", sans-serif;
-  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", "Pretendard Variable", "Pretendard", "Noto Sans KR", monospace;
+  --sans:
+    "Plus Jakarta Sans", "Pretendard Variable", "Pretendard", ui-sans-serif,
+    system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    "Noto Sans KR", "Malgun Gothic", sans-serif;
+  --mono:
+    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", "Pretendard Variable", "Pretendard", "Noto Sans KR",
+    monospace;
 
   /* The bars of the mock, which are not part of the product. */
   --mock-top: 32px;
@@ -102,80 +115,84 @@
   color-scheme: dark;
 
   --page: #091221;
-  --page-glow: rgba(46, 144, 250, .09);
-  --surface: #101C30;
-  --surface-2: #0C1628;
-  --surface-3: #1A2840;
-  --surface-hover: #14223A;
-  --nav: rgba(11, 21, 37, .86);
-  --overlay: rgba(2, 6, 14, .64);
-  --code: #0A1424;
-  --night: #060C18;
-  --on-night: #E9EFF8;
-  --night-dim: #9FB0C8;
-  --night-line: #1E2C45;
+  --page-glow: rgba(46, 144, 250, 0.09);
+  --surface: #101c30;
+  --surface-2: #0c1628;
+  --surface-3: #1a2840;
+  --surface-hover: #14223a;
+  --nav: rgba(11, 21, 37, 0.86);
+  --overlay: rgba(2, 6, 14, 0.64);
+  --code: #0a1424;
+  --night: #060c18;
+  --on-night: #e9eff8;
+  --night-dim: #9fb0c8;
+  --night-line: #1e2c45;
 
-  --ink: #E9EFF8;
-  --ink2: #C5D0E0;
-  --slate: #93A1B9;
-  --mist: #64748F;
-  --line: #1E2C45;
-  --line2: #2B3C59;
-  --ctl: #51658A;
+  --ink: #e9eff8;
+  --ink2: #c5d0e0;
+  --slate: #93a1b9;
+  --mist: #64748f;
+  --line: #1e2c45;
+  --line2: #2b3c59;
+  --ctl: #51658a;
 
-  --king: #0B6FE0;
-  --king-h: #2A84EE;
-  --on-king: #FFFFFF;
-  --link: #7CB6FF;
-  --k-ink: #A9CFFF;
-  --k200: #25497F;
-  --k100: #17325E;
-  --k50: #13264A;
+  --king: #0b6fe0;
+  --king-h: #2a84ee;
+  --on-king: #ffffff;
+  --link: #7cb6ff;
+  --k-ink: #a9cfff;
+  --k200: #25497f;
+  --k100: #17325e;
+  --k50: #13264a;
 
-  --canary: #FFC53D;
-  --on-canary: #0D1B2E;
-  --c100: #3A2F10;
-  --c50: #261F0E;
-  --c-line: #7A5E14;
-  --c-ink: #FFD66E;
-  --c-dot: #FFB81F;
-  --c-icon: #F5B62E;
-  --c-glow: rgba(255, 184, 31, .28);
+  --canary: #ffc53d;
+  --on-canary: #0d1b2e;
+  --c100: #3a2f10;
+  --c50: #261f0e;
+  --c-line: #7a5e14;
+  --c-ink: #ffd66e;
+  --c-dot: #ffb81f;
+  --c-icon: #f5b62e;
+  --c-glow: rgba(255, 184, 31, 0.28);
 
-  --green: #22C07A;
-  --g100: #0E3325;
-  --g-ink: #74E2B0;
-  --coral: #FF7559;
-  --r100: #3D1B16;
-  --r-ink: #FFA08D;
-  --danger: #D93A1F;
-  --danger-h: #EE5236;
-  --dusk: #9389FF;
-  --d100: #25225A;
-  --d-ink: #C0BAFF;
-  --n100: #1A2840;
-  --n-ink: #AFBCD1;
+  --green: #22c07a;
+  --g100: #0e3325;
+  --g-ink: #74e2b0;
+  --coral: #ff7559;
+  --r100: #3d1b16;
+  --r-ink: #ffa08d;
+  --danger: #d93a1f;
+  --danger-h: #ee5236;
+  --dusk: #9389ff;
+  --d100: #25225a;
+  --d-ink: #c0baff;
+  --n100: #1a2840;
+  --n-ink: #afbcd1;
 
-  --badge: #22314C;
-  --on-badge: #E9EFF8;
+  --badge: #22314c;
+  --on-badge: #e9eff8;
 
-  --av1: #17325E; --av1-ink: #A9CFFF;
-  --av2: #0F3A36; --av2-ink: #7FE0D1;
-  --av3: #2A2466; --av3-ink: #C6BDFF;
-  --av4: #4A1830; --av4-ink: #FFA3C1;
+  --av1: #17325e;
+  --av1-ink: #a9cfff;
+  --av2: #0f3a36;
+  --av2-ink: #7fe0d1;
+  --av3: #2a2466;
+  --av3-ink: #c6bdff;
+  --av4: #4a1830;
+  --av4-ink: #ffa3c1;
 
-  --hero-2: #12294B;
-  --sky-1: #0A1630;
-  --sky-2: #0C1D3C;
+  --hero-2: #12294b;
+  --sky-1: #0a1630;
+  --sky-2: #0c1d3c;
   --sky-3: #091221;
-  --sky-glow: rgba(46, 144, 250, .22);
-  --glass-1: rgba(84, 160, 255, .16);
+  --sky-glow: rgba(46, 144, 250, 0.22);
+  --glass-1: rgba(84, 160, 255, 0.16);
   --glass-2: rgba(84, 160, 255, 0);
-  --rib: #23467B;
-  --trail: #3D76C4;
+  --rib: #23467b;
+  --trail: #3d76c4;
 
-  --sh1: 0 1px 2px rgba(0, 0, 0, .32);
-  --sh2: 0 1px 2px rgba(0, 0, 0, .3), 0 14px 30px -16px rgba(0, 0, 0, .7);
-  --sh3: 0 2px 6px rgba(0, 0, 0, .35), 0 32px 72px -24px rgba(0, 0, 0, .8);
-  --ring: 0 0 0 3px rgba(84, 160, 255, .38);
+  --sh1: 0 1px 2px rgba(0, 0, 0, 0.32);
+  --sh2: 0 1px 2px rgba(0, 0, 0, 0.3), 0 14px 30px -16px rgba(0, 0, 0, 0.7);
+  --sh3: 0 2px 6px rgba(0, 0, 0, 0.35), 0 32px 72px -24px rgba(0, 0, 0, 0.8);
+  --ring: 0 0 0 3px rgba(84, 160, 255, 0.38);
 }
