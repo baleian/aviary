@@ -195,7 +195,7 @@ export async function overviewView(root, params, env) {
       sessions = [session, ...sessions.filter((other) => other.id !== session.id)];
       drawSessions();
     }),
-    feed.reopened.on(() => load().catch(() => {})),
+    feed.stale.on(() => load().catch(() => {})),
   ];
   load().catch((error) => { if (!env.stale()) rowsBox.replaceChildren(h('p.sub', {style: {padding: '12px 20px'}}, 'Could not load the sessions: ' + error.message)); });
 

@@ -54,7 +54,7 @@ class Workspace {
     this.provider = provider;
     this.unwatch = [
       feed.sessions.on((session) => this.took(session)),
-      feed.reopened.on(() => this.reread().catch(() => {})),
+      feed.stale.on(() => this.reread().catch(() => {})),
     ];
   }
 
@@ -109,8 +109,7 @@ class Workspace {
     }
   }
 
-  // reread reads again what the list shows, after the stream of changes
-  // broke.
+  // reread reads again what the list shows, which may be out of date.
   async reread() {
     const {page} = await this.read(`limit=${Math.min(Math.max(this.rows.length, PAGE), 100)}`);
     for (const session of page) this.took(session);

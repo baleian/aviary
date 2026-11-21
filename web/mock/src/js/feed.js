@@ -21,9 +21,10 @@ export const feed = {
   // Emitted with (session, before) when a session of the project has changed:
   // the session as it is now, and as the feed knew it before, if it did.
   sessions: emitter(),
-  // Emitted when the stream has opened again after it broke. It may have
-  // missed changes, so the views read again what they show.
-  reopened: emitter(),
+  // Emitted when what the views read may be out of date, so that they read
+  // it again: the stream has opened again after it broke, or the tab is shown
+  // again after it was hidden.
+  stale: emitter(),
 
   // watch follows the project with the ID, and no other. Without an ID it
   // follows none.
@@ -50,7 +51,7 @@ export const feed = {
         if (watched !== projectID) return;
         open = true;
         settle();
-        if (opens++) feed.reopened.emit();
+        if (opens++) feed.stale.emit();
       },
       // Without the stream the console shows what it read, and nothing moves.
       onError: () => { if (watched === projectID) settle(); },
@@ -70,3 +71,9 @@ export const feed = {
     if (!known.has(session.id)) known.set(session.id, session);
   },
 };
+
+// A browser may stop the stream of a tab that is hidden, and the stream does
+// not repeat what it missed.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && watched) feed.stale.emit();
+});
