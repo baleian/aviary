@@ -74,7 +74,7 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 	--env AVIARY_TEST_REDIS_URL=redis://default:test@events-redis:6379 \
 	--env AVIARY_TEST_SECRET_STORE_URL=http://secret-store:8200
 
-.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down secret-store identity-provider headlamp grafana web-dev build images secrets deploy e2e e2e-up e2e-run e2e-down
+.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-web test-chart test-proxy test-harness cluster-up cluster-down secret-store identity-provider headlamp grafana web-dev build images secrets deploy e2e e2e-up e2e-run e2e-down
 
 # Generates the Go code of the SQL queries. Run it after changing a query or
 # a migration.
@@ -97,7 +97,7 @@ lint: web/node_modules/.package-lock.json
 # make test-supervisor TESTS='-run TestStore/EndTurn ./store/postgres'
 # make test-runner TESTS=cut
 test:
-	$(MAKE) --jobs --output-sync=target test-supervisor test-plugin test-runner test-mock-llm test-chart test-proxy
+	$(MAKE) --jobs --output-sync=target test-supervisor test-plugin test-runner test-mock-llm test-web test-chart test-proxy
 
 test-supervisor: TESTS ?= ./...
 test-supervisor:
@@ -116,6 +116,9 @@ test-runner:
 test-mock-llm: TESTS ?= ./...
 test-mock-llm:
 	$(call GO,test/mock-llm) $(GO_TEST) $(TESTS)
+
+test-web: web/node_modules/.package-lock.json
+	cd web && npm test -- $(TESTS)
 
 # Renders the chart with its default values and with those in test/chart,
 # checks the output and that invalid values are refused, and has Envoy

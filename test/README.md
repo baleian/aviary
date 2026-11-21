@@ -6,8 +6,8 @@ what needs a cluster.
 
 | Level | Command | What runs | What it checks |
 | --- | --- | --- | --- |
-| Lint | `make lint` | gofmt, go vet, rustfmt, clippy, and the Go code generator. | The code is formatted, the linters pass, and the generated code is up to date. |
-| Unit and component | `make test` | Each part on its own, with the test playing what it talks to. | What each part does: the Supervisor, the runner, the chart, the Egress Proxy and the mock model server. |
+| Lint | `make lint` | gofmt, go vet, rustfmt, clippy, the Go code generator, and for `web/` Prettier, oxlint and the TypeScript compiler. | The code is formatted, the linters pass, and the generated code is up to date. |
+| Unit and component | `make test` | Each part on its own, with the test playing what it talks to. | What each part does: the Supervisor, the runner, the chart, the Egress Proxy, the mock model server and the code in `web/`. |
 | Harness | `make test-harness` | The harness images in containers, each with the runner, against the mock model server. The tests are in `runner/tests/harness.rs`. | A harness and the runner work together: sessions, tools, cancellation, failures, what the agent installs, and what the harness requests from outside. |
 | e2e | `make e2e` | Aviary as the chart installs it, in a kind cluster that the run creates and deletes. The tests are in `test/e2e/`. | The parts work together: a turn from the API to its session's sandbox and back, sessions that sleep and wake, what a sandbox can reach through the Egress Proxy, ending a session, losing a sandbox, and turns while the Supervisors are replaced. |
 
@@ -27,13 +27,15 @@ script: each message to a session is an instruction, such as `say done` or
 | `test-chart` | `test/chart/` | The chart rendered with its default values and with the values files in the directory. |
 | `test-proxy` | `test/proxy/` | Envoy with the configuration that the chart renders. The test plays the sandbox, the Supervisor, the model endpoint and the outside hosts. |
 | `test-mock-llm` | `test/mock-llm/` | The mock model server. |
+| `test-web` | `web/` | Node.js, with the API answered in memory. The tests are next to the code, in `*.test.ts`. |
 
-`TESTS` selects tests. It is passed to `go test` or `cargo test`:
+`TESTS` selects tests. It is passed to `go test`, `cargo test` or Vitest:
 
 ```sh
 make test-supervisor TESTS='-run TestQueue .'
 make test-supervisor TESTS='-run TestStore/EndTurn ./store/postgres'
 make test-runner TESTS=cancel
+make test-web TESTS=client
 make test-harness TESTS=instructions
 make test-harness HARNESS_IMAGES=aviary-harness-codex:dev
 ```
