@@ -4,7 +4,7 @@
 // product.
 
 import {h, clock, prefs} from './util.js';
-import {mock, accounts, settings, setIdentityProvider, elsewhere} from './backend.js';
+import {mock, accounts, settings, setIdentityProvider, elsewhere, request} from './backend.js';
 import {SCENARIOS} from './scripts.js';
 import {entries, logged, clear} from './log.js';
 import {signIn, signedInAs, cutStreams, network} from './api.js';
@@ -124,8 +124,9 @@ export function mountBar(again) {
   }
   logged.on(() => drawLog(false));
 
-  // For the scripts that check the mock: what the console has asked of the API.
-  window.aviaryMock = {requests: entries, mock};
+  // For the scripts that check the mock: what the console has asked of the
+  // API, and the API itself, to ask it as another caller.
+  window.aviaryMock = {requests: entries, mock, request};
 
   mock.changed.on(() => { next.value = mock.scenario; drawWho(); });
   drawWho();

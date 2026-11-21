@@ -30,13 +30,38 @@ export function agentCard(context, agent, {badge, full = false, more} = {}) {
 }
 
 // agentMenu is the button that opens the menu of an agent, for a caller who
-// manages the agents. changed is called after the agent has changed.
+// manages the agents. changed is called after the agent has changed, with
+// true if it was deleted.
 export function agentMenu(context, agent, changed, size = '') {
   if (!can(context, 'agents.manage')) return null;
   const more = h('button.ib' + (size ? '.' + size : ''), {type: 'button', title: 'More', 'aria-haspopup': 'true', onclick: () => menu(more, (close) => [
-    item({glyph: 'edit', text: 'Edit agent', onclick: async () => { if (await editAgent(context, agent)) changed(); }}, close),
+    item({glyph: 'edit', text: 'Edit agent', onclick: async () => { if (await editAgent(context, agent)) changed(false); }}, close),
+    h('hr'),
+    item({glyph: 'trash', text: 'Delete agent…', danger: true, onclick: async () => { if (await deleteAgent(context, agent)) changed(true); }}, close),
   ], {align: 'right'})}, icon('dots'));
   return more;
+}
+
+// deleteAgent deletes the agent once the caller has confirmed it, and
+// reports whether it did.
+async function deleteAgent(context, agent) {
+  const deleted = await confirm({
+    title: `Delete ${label(agent)}?`,
+    lead: 'The sessions of every member end, and the files that the agent made in them are deleted.',
+    action: 'Delete agent', danger: true,
+    submit: async () => {
+      try {
+        return await api.delete('/v1/agents/' + agent.id);
+      } catch (error) {
+        if (error.code === 'session_busy') throw wrong('Stop its running turns first.');
+        throw error;
+      }
+    },
+  });
+  if (!deleted) return false;
+  await refresh(context, 'agents');
+  toast(`Deleted ${label(agent)}`, 'ok');
+  return true;
 }
 
 // editAgent creates an agent, or replaces one: all of it but its slug and its

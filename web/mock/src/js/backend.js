@@ -816,7 +816,8 @@ route('POST', '/v1/projects/{pid}/agents', ({who, body}, pid) => {
   checkSlug(text(request.slug));
   if (!db.config.harnesses.includes(request.harness)) invalid('harness must be one of the configured harnesses');
   const settings = agentSettings(request, pid);
-  if (db.agents.some((agent) => agent.project_id === pid && agent.slug === request.slug)) refuse(409, 'slug_taken', 'the slug is already taken');
+  // A deleted agent does not hold its slug.
+  if (db.agents.some((agent) => agent.project_id === pid && agent.slug === request.slug && !agent.deleted_at)) refuse(409, 'slug_taken', 'the slug is already taken');
   const now = iso();
   const agent = {id: uuid7(), project_id: pid, slug: request.slug, harness: request.harness, created_at: now, updated_at: now, ...settings};
   db.agents.push(agent);
@@ -830,6 +831,7 @@ route('PUT', '/v1/agents/{aid}', ({who, body}, aid) => {
   if (text(request.slug) && request.slug !== agent.slug) invalid('slug cannot be changed');
   if (text(request.harness) && request.harness !== agent.harness) invalid('harness cannot be changed');
   const settings = agentSettings(request, agent.project_id);
+  if (agent.deleted_at) refuse(409, 'agent_deleted', 'the agent is deleted');
   // The rest is replaced together: what the body leaves out is empty
   // afterwards.
   delete agent.instructions;
@@ -837,9 +839,27 @@ route('PUT', '/v1/agents/{aid}', ({who, body}, aid) => {
   Object.assign(agent, settings, {updated_at: iso()});
   return [200, agent];
 });
+route('DELETE', '/v1/agents/{aid}', ({who}, aid) => {
+  const agent = one(db.agents, aid);
+  may(who, agent.project_id, 'agents.manage');
+  if (agent.deleted_at) return [200, agent];
+  const live = db.sessions.filter((session) => session.agent_id === aid && !session.ended_at);
+  if (db.turns.some((turn) => !turn.ended_at && live.some((session) => session.id === turn.session_id))) {
+    refuse(409, 'session_busy', 'the session has an unfinished turn');
+  }
+  // Its sessions end as when a caller ends them, and say why. The agent is
+  // kept, and is no longer listed.
+  const now = iso();
+  for (const session of live) {
+    Object.assign(session, {ended_at: now, end_reason: 'agent_deleted'});
+    delete session.sandbox;
+  }
+  agent.deleted_at = now;
+  return [200, agent];
+});
 route('GET', '/v1/projects/{pid}/agents', ({who}, pid) => {
   inProject(who, pid, 'project.view');
-  return [200, {agents: db.agents.filter((agent) => agent.project_id === pid)}];
+  return [200, {agents: db.agents.filter((agent) => agent.project_id === pid && !agent.deleted_at)}];
 });
 route('GET', '/v1/agents/{aid}', ({who}, aid) => {
   const agent = one(db.agents, aid);
@@ -851,6 +871,7 @@ route('POST', '/v1/agents/{aid}/sessions', ({who, body}, aid) => {
   const agent = one(db.agents, aid);
   may(who, agent.project_id, 'sessions.run');
   const request = decode(body, ['title'], true);
+  if (agent.deleted_at) refuse(409, 'agent_deleted', 'the agent is deleted');
   const session = {id: uuid7(), agent_id: aid, title: text(request.title), created_at: iso()};
   if (who.id) session.created_by = who.id;
   db.sessions.push(session);
@@ -1102,7 +1123,7 @@ const ASKED = ['Which tests cover the checkout total?', 'Where do we retry a fai
 // title of the session, or null if nobody else can run a session there.
 export function elsewhere(token, projectSlug, agentSlug) {
   const project = db.projects.find((other) => other.slug === projectSlug);
-  const agents = project ? db.agents.filter((agent) => agent.project_id === project.id) : [];
+  const agents = project ? db.agents.filter((agent) => agent.project_id === project.id && !agent.deleted_at) : [];
   const agent = agents.find((other) => other.slug === agentSlug) || agents[0];
   if (!agent || !db.config.idp) return null;
   for (const [key, account] of Object.entries(db.accounts)) {

@@ -3,7 +3,7 @@
 
 import {h, icon, use, time, num, code, clip, prefs, toClipboard, plural} from './util.js';
 import {api} from './api.js';
-import {app, project, can, person, sessionAccess, controls, NotFound} from './state.js';
+import {app, project, refresh, can, person, sessionAccess, controls, NotFound} from './state.js';
 import {link, to, go, path} from './router.js';
 import {agentTile, label, chip, avatar, stateIcon, stateName, toast, oops, sentence, menu, item, confirm, wrong, copyButton, segmented, empty, loading, blank} from './ui.js';
 import {standing, standingText, endedText, title, suggest, sandboxBadge, sandboxMark} from './sessions.js';
@@ -36,14 +36,14 @@ class Workspace {
     this.listMore = h('div.sl-more');
     this.centre = h('main.conv');
     this.side = h('aside.pane.details');
-    const start = h('a.btn.pri.wide', {href: link(to.agent(context.project, agent))}, icon('plus'), 'New session');
+    const start = this.start = h('a.btn.pri.wide', {href: link(to.agent(context.project, agent))}, icon('plus'), 'New session');
     this.frame = h('section.sess' + (this.details ? '' : '.no-details'),
       h('aside.pane.list',
         h('div.l-h',
           h('div.l-top',
             h('a.l-ag', {href: link(to.agents(context.project)), title: 'All agents of ' + label(context.project)},
               agentTile(agent), h('div', h('b', label(agent)), h('small', agent.harness, ' · ', agent.model.name))),
-            agentMenu(context, agent, () => go(path()), 'sm')),
+            agentMenu(context, agent, (deleted) => go(deleted ? to.agents(context.project) : path()), 'sm')),
           this.runs ? start : null),
         h('div.pane-s',
           h('div.l-t', 'Sessions', this.readsAll && segmented([['all', 'All'], ['mine', 'Mine']], this.filter, (value) => { this.filter = value; this.drawList(); })),
@@ -69,6 +69,12 @@ class Workspace {
   // took takes a session as the stream of changes reports it.
   took(session) {
     if (session.agent_id !== this.agent.id) return;
+    if (session.end_reason === 'agent_deleted' && !this.deleted) {
+      // A deleted agent gets no new session.
+      this.deleted = true;
+      this.start.remove();
+      if (this.current?.draft) this.drawComposer();
+    }
     this.place(session);
     const current = this.current;
     if (current?.session?.id !== session.id) return;
@@ -539,8 +545,11 @@ class Workspace {
     const fresh = h('a.btn.sec.sm', {href: link(to.agent(this.context.project, this.agent))}, icon('plus'), 'New session');
     const cannot = h('b', 'Your role cannot run sessions here.');
     if (current.draft) {
+      if (this.deleted) return gate('lock', h('b', 'This agent was deleted.'));
       if (!this.runs) return gate('eye', cannot);
     } else if (current.session.ended_at) {
+      // A deleted agent gets no new session.
+      if (current.session.end_reason === 'agent_deleted') return gate('lock', h('b', 'This session ended because its agent was deleted.'));
       return gate('lock', h('b', `This session has ${endedText(current.session).toLowerCase()}.`), this.runs && fresh);
     } else if (!current.access.send) {
       const owner = person(this.context, current.session.created_by);
@@ -629,6 +638,11 @@ class Workspace {
         const sid = current.session.id;
         this.current = null;
         await this.open(sid);
+      } else if (error.code === 'agent_deleted') {
+        // Someone deleted the agent while it was in view.
+        toast(`${label(this.agent)} was deleted.`, 'bad');
+        await refresh(this.context, 'agents');
+        go(to.agents(this.context.project));
       } else {
         oops(error);
       }

@@ -12,7 +12,7 @@ export function standing(session, turn = session.last_turn) {
   return {key: turn ? status(turn) : 'none', turn};
 }
 
-// endedText says how a session ended: a person ended it, or it expired.
+// endedText says how a session ended: it expired, or it was ended.
 export function endedText(session) {
   return session.end_reason === 'expired' ? 'Expired' : 'Ended';
 }
