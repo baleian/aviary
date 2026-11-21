@@ -205,6 +205,20 @@ update turns set state = 'dispatching', dispatched_at = now(6) where id = ? and 
 select id, cast(coalesce(timestampdiff(microsecond, cancel_requested_at, now(6)), 0) as signed) as cancelling
 from turns where state in ('dispatching', 'running');
 
+-- name: ListUnfinishedTurns :many
+-- Lists the turns that have not ended, which are found by their state. age is
+-- the microseconds since the turn left the queue or, for a queued turn, since
+-- its message. asking is the number of its approval requests that wait for a
+-- person.
+select agents.harness, turns.state, turns.started_at is not null as started,
+       cast(timestampdiff(microsecond, coalesce(turns.dispatched_at, turns.created_at), now(6)) as signed) as age,
+       (select count(*) from approvals
+        where approvals.turn_id = turns.id and approvals.answered_at is null and approvals.resolved_at is null) as asking
+from turns
+join sessions on sessions.id = turns.session_id
+join agents on agents.id = sessions.agent_id
+where turns.state in ('queued', 'dispatching', 'running');
+
 -- name: FollowTurn :exec
 update turns set state = 'running' where id = ? and state in ('dispatching', 'running');
 

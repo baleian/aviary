@@ -42,6 +42,8 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.supervisor.database.secretName }}
                   key: {{ .Values.supervisor.database.secretKey }}
+            - name: AVIARY_HARNESSES
+              value: {{ .Values.runtime.harnesses | toJson | quote }}
           ports:
             - name: metrics
               containerPort: 9092

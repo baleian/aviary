@@ -614,9 +614,9 @@ each pod.
 
 Each Supervisor reports its own work and state, so the metrics of all
 Supervisors add up: the sum of `aviary_turns_running` is the number of
-running turns. No metric reports the current length of the queue, because
-no Supervisor holds the queue: `aviary_turn_queue_length` measures it
-whenever a turn is accepted. Every series of the configured harnesses and
+running turns. No Supervisor holds the queue, so `aviary_turn_queue_length`
+measures it whenever a turn is accepted; the state metrics below count the
+queued turns at any moment. Every series of the configured harnesses and
 secret store kinds starts at zero, so that `rate()` and `increase()` count
 its first event. Go runtime and process metrics are served as well.
 
@@ -631,6 +631,8 @@ false leaves the pod out.
 | Metric | Description |
 | --- | --- |
 | `aviary_sandboxes` | Sandboxes of the sessions that have not ended, by `state`: `awake`, `asleep` or `lost`, as the sessions say of their `sandbox`. |
+| `aviary_turns` | Turns that have not ended, by `harness` and `state`: `queued`; `starting`, from leaving the queue until the harness has the message; `running`; or `awaiting_approval`, while a request of the turn waits for a person. |
+| `aviary_turns_oldest_age_seconds` | Age of the oldest turn of each `harness` and `state`: the time since its message for a queued turn, and since it left the queue for the others. 0 without such a turn. An age well beyond the limit of its state, `runtime.maxQueueWaitSeconds`, `runtime.maxStartupSeconds` or `runtime.maxTurnSeconds`, means that no Supervisor is ending the turn. |
 
 An Egress Proxy serves the metrics of Envoy on the same port and path, among
 them:

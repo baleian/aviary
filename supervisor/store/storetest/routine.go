@@ -56,6 +56,8 @@ func Routine(t *testing.T, st store.Store) {
 
 	_, err = s.DispatchedTurns(ctx)
 	must("DispatchedTurns", err)
+	_, err = s.UnfinishedTurns(ctx)
+	must("UnfinishedTurns", err)
 	_, err = s.SessionsWithSandbox(ctx)
 	must("SessionsWithSandbox", err)
 	_, err = s.SandboxCounts(ctx)

@@ -144,11 +144,17 @@ func TestRunMigrates(t *testing.T) {
 	}
 }
 
-// "state-metrics" reads the database through the plugin selected by the URL
-// scheme, and needs no other setting.
+// "state-metrics" needs the harnesses, and reads the database through the
+// plugin selected by the URL scheme.
 func TestRunServesStateMetricsFromTheDatabase(t *testing.T) {
 	t.Setenv(databaseURL, "postgres://user:secret@db.example/aviary")
+	t.Setenv(harnesses, "")
 	err := Run(context.Background(), []string{"state-metrics"}, (&build{}).plugins())
+	if err == nil || !strings.Contains(err.Error(), harnesses) {
+		t.Errorf("state-metrics without harnesses: %v, want an error naming the setting", err)
+	}
+	t.Setenv(harnesses, `{"opencode": {"image": "registry.example/opencode:1"}}`)
+	err = Run(context.Background(), []string{"state-metrics"}, (&build{}).plugins())
 	if err == nil || !strings.Contains(err.Error(), "records") || strings.Contains(err.Error(), "secret") {
 		t.Errorf("state-metrics with an unknown database scheme: %v, want an error listing the schemes without the password", err)
 	}

@@ -300,6 +300,22 @@ type DispatchedTurn struct {
 	Cancelling time.Duration
 }
 
+// UnfinishedTurn is a turn that has not ended, as the state metrics count it.
+type UnfinishedTurn struct {
+	// Harness is that of the session's agent.
+	Harness string
+	// State is TurnQueued, TurnDispatching or TurnRunning.
+	State string
+	// Started reports whether the harness has received the message.
+	Started bool
+	// Age is how long ago the turn left the queue or, for a queued turn, how
+	// long ago its message was sent.
+	Age time.Duration
+	// Asking is the number of the turn's approval requests that wait for a
+	// person's answer.
+	Asking int
+}
+
 // FollowedTurn is a turn with what the Supervisor that follows it needs to
 // run it.
 type FollowedTurn struct {
@@ -595,6 +611,10 @@ type Store interface {
 	ExpireTurns(ctx context.Context, wait time.Duration) ([]Turn, error)
 
 	DispatchedTurns(ctx context.Context) ([]DispatchedTurn, error)
+
+	// UnfinishedTurns returns the turns that have not ended, in no particular
+	// order.
+	UnfinishedTurns(ctx context.Context) ([]UnfinishedTurn, error)
 
 	// FollowTurn marks a dispatched turn as running and returns it to the
 	// Supervisor that follows it, which runs the turn and records its outcome.

@@ -807,6 +807,21 @@ func (s *records) DispatchedTurns(ctx context.Context) ([]store.DispatchedTurn, 
 	return turns, nil
 }
 
+func (s *records) UnfinishedTurns(ctx context.Context) ([]store.UnfinishedTurn, error) {
+	rows, err := s.queries.ListUnfinishedTurns(ctx)
+	if err != nil {
+		return nil, err
+	}
+	turns := make([]store.UnfinishedTurn, len(rows))
+	for i, row := range rows {
+		turns[i] = store.UnfinishedTurn{
+			Harness: row.Harness, State: row.State, Started: row.Started,
+			Age: time.Duration(row.Age * float64(time.Second)), Asking: int(row.Asking),
+		}
+	}
+	return turns, nil
+}
+
 func (s *records) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.FollowedTurn, error) {
 	given, err := s.queries.FollowTurn(ctx, turnID)
 	if err != nil {

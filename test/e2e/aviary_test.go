@@ -388,6 +388,12 @@ func keepsAwake(t *testing.T, name string) {
 	if len(found) != 1 || found[0].Spec.OperatingMode == "Suspended" || len(waiting) != 1 || len(still) != 1 || still[0].UID != waiting[0].UID {
 		t.Fatalf("sandbox of a turn awaiting approval was suspended or its pod replaced: %v", found)
 	}
+	// Other tests have turns too, so the state metrics are only checked to
+	// count this one.
+	series := fmt.Sprintf(`aviary_turns{harness=%q,state="awaiting_approval"}`, name)
+	if awaiting := total(metrics(t, "state-metrics"), series); awaiting < 1 {
+		t.Errorf("state metrics count %v turns of %s awaiting approval while this one does", awaiting, name)
+	}
 
 	var option string
 	for _, offered := range asked.Options {

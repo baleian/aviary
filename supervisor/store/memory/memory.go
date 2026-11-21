@@ -1082,6 +1082,33 @@ func (s *Store) DispatchedTurns(ctx context.Context) ([]store.DispatchedTurn, er
 	return dispatched, nil
 }
 
+func (s *Store) UnfinishedTurns(ctx context.Context) ([]store.UnfinishedTurn, error) {
+	if err := s.begin(ctx); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+	now, unfinished := s.now(), []store.UnfinishedTurn{}
+	for _, turn := range s.created {
+		if turn.EndedAt != nil {
+			continue
+		}
+		one := store.UnfinishedTurn{
+			Harness: s.agents[s.sessions[turn.SessionID].AgentID].Harness, State: turn.State,
+			Started: turn.StartedAt != nil, Age: now.Sub(turn.CreatedAt),
+		}
+		if turn.dispatchedAt != nil {
+			one.Age = now.Sub(*turn.dispatchedAt)
+		}
+		for _, approval := range turn.approvals {
+			if !approval.answered && !approval.resolved {
+				one.Asking++
+			}
+		}
+		unfinished = append(unfinished, one)
+	}
+	return unfinished, nil
+}
+
 func (s *Store) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.FollowedTurn, error) {
 	if err := s.begin(ctx); err != nil {
 		return store.FollowedTurn{}, err

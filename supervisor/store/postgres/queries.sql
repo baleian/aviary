@@ -227,6 +227,19 @@ where id = @id and state = 'queued';
 select id, coalesce(extract(epoch from now() - cancel_requested_at), 0)::float8 as cancelling
 from turns where ended_at is null and state in ('dispatching', 'running');
 
+-- name: ListUnfinishedTurns :many
+-- Lists the turns that have not ended. age is the seconds since the turn left
+-- the queue or, for a queued turn, since its message. asking is the number of
+-- its approval requests that wait for a person.
+select agents.harness, turns.state, (turns.started_at is not null)::boolean as started,
+       extract(epoch from now() - coalesce(turns.dispatched_at, turns.created_at))::float8 as age,
+       (select count(*) from approvals
+        where approvals.turn_id = turns.id and approvals.answered_at is null and approvals.resolved_at is null) as asking
+from turns
+join sessions on sessions.id = turns.session_id
+join agents on agents.id = sessions.agent_id
+where turns.ended_at is null;
+
 -- name: FollowTurn :execrows
 update turns set state = 'running' where id = @id and state in ('dispatching', 'running');
 

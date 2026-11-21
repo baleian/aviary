@@ -1023,6 +1023,20 @@ func (s *records) DispatchedTurns(ctx context.Context) ([]store.DispatchedTurn, 
 	return turns, nil
 }
 
+func (s *records) UnfinishedTurns(ctx context.Context) ([]store.UnfinishedTurn, error) {
+	rows, err := s.queries.ListUnfinishedTurns(ctx)
+	if err != nil {
+		return nil, err
+	}
+	turns := make([]store.UnfinishedTurn, len(rows))
+	for i, row := range rows {
+		turns[i] = store.UnfinishedTurn{
+			Harness: row.Harness, State: row.State, Started: row.Started, Age: since(row.Age), Asking: int(row.Asking),
+		}
+	}
+	return turns, nil
+}
+
 func (s *records) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.FollowedTurn, error) {
 	if err := s.queries.FollowTurn(ctx, key.ID(turnID)); err != nil {
 		return store.FollowedTurn{}, err

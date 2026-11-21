@@ -146,6 +146,7 @@ func Run(t *testing.T, create func(t *testing.T) Database) {
 		"Turns":                                suite.testTurns,
 		"LastTurns":                            suite.testLastTurns,
 		"DispatchedTurns":                      suite.testDispatchedTurns,
+		"UnfinishedTurns":                      suite.testUnfinishedTurns,
 		"NotFound":                             suite.testNotFound,
 		"Approvals":                            suite.testApprovals,
 	} {

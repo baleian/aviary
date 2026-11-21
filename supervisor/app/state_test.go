@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -18,7 +19,7 @@ import (
 )
 
 // stateMetrics serves the state metrics of the store until the test ends, and
-// returns their URL.
+// returns their URL. The harnesses are those of install.
 func stateMetrics(t *testing.T, st store.Store) string {
 	t.Helper()
 	on, err := net.Listen("tcp", "127.0.0.1:0")
@@ -27,7 +28,7 @@ func stateMetrics(t *testing.T, st store.Store) string {
 	}
 	ctx, stop := context.WithCancel(context.Background())
 	stopped := make(chan error, 1)
-	go func() { stopped <- serveStateOn(ctx, on, st) }()
+	go func() { stopped <- serveStateOn(ctx, on, st, []string{"codex", "opencode"}) }()
 	t.Cleanup(func() {
 		stop()
 		select {
@@ -113,11 +114,94 @@ func TestStateMetricsCountSandboxes(t *testing.T) {
 	}
 }
 
-// unreadable is a store whose database cannot be reached.
-type unreadable struct{ store.Store }
+// The state metrics count the turns that have not ended by harness and by how
+// far they have come, and report every state of the harnesses from the start.
+func TestStateMetricsCountTurns(t *testing.T) {
+	t.Parallel()
+	aviary := install(t, func(config *driver.Config) { config.MaxConcurrentTurns = 3 })
+	s := aviary.supervisor()
+	metrics := stateMetrics(t, aviary.records)
+	// reported returns the sample of the turns of the harness in the state,
+	// or -1 if there is none.
+	reported := func(metric, harness, state string) float64 {
+		t.Helper()
+		status, lines := scrape(t, metrics)
+		if status != http.StatusOK {
+			t.Fatalf("scrape: status %d, want 200", status)
+		}
+		series := fmt.Sprintf(`%s{harness=%q,state=%q} `, metric, harness, state)
+		for _, line := range lines {
+			if sample, found := strings.CutPrefix(line, series); found {
+				value, err := strconv.ParseFloat(sample, 64)
+				if err != nil {
+					t.Fatalf("%s: %v", line, err)
+				}
+				return value
+			}
+		}
+		return -1
+	}
+	states := []string{"queued", "starting", "running", "awaiting_approval"}
+	for _, harness := range []string{"codex", "opencode"} {
+		for _, state := range states {
+			if turns, age := reported("aviary_turns", harness, state), reported("aviary_turns_oldest_age_seconds", harness, state); turns != 0 || age != 0 {
+				t.Errorf("without turns, %s turns of %s = %v with the oldest at %v, want 0 and 0", state, harness, turns, age)
+			}
+		}
+	}
 
-func (unreadable) SandboxCounts(context.Context) (map[string]int, error) {
-	return nil, errors.New("dial tcp db.example:5432: connection refused")
+	// Three turns take the room to run: one whose harness does not have the
+	// message yet, one that runs, and one that waits for a person. A fourth
+	// is queued.
+	aviary.given(s.send(s.session(), "one").ID)
+	aviary.given(s.send(s.session(), "two").ID).report(started("harness-session"))
+	asking := aviary.given(s.send(s.session(`{"harness": "codex"}`), "three").ID)
+	asking.report(started("harness-session"))
+	asking.report(asks("1", "rm -r build"))
+	s.send(s.session(), "four")
+	expected := map[[2]string]float64{
+		{"opencode", "starting"}: 1, {"opencode", "running"}: 1, {"codex", "awaiting_approval"}: 1, {"opencode", "queued"}: 1,
+	}
+	eventually(t, soon, "the state metrics do not count the four turns by harness and state", func() bool {
+		for _, harness := range []string{"codex", "opencode"} {
+			for _, state := range states {
+				if reported("aviary_turns", harness, state) != expected[[2]string{harness, state}] {
+					return false
+				}
+			}
+		}
+		return true
+	})
+	// Only a state with turns has an oldest one.
+	if age := reported("aviary_turns_oldest_age_seconds", "opencode", "queued"); age <= 0 {
+		t.Errorf("age of the oldest queued turn = %v, want more than 0", age)
+	}
+	if age := reported("aviary_turns_oldest_age_seconds", "codex", "queued"); age != 0 {
+		t.Errorf("age of the oldest queued turn of a harness without one = %v, want 0", age)
+	}
+}
+
+// unreadable is a store whose database cannot be reached for the sandboxes or
+// for the turns.
+type unreadable struct {
+	store.Store
+	turns bool
+}
+
+var errUnreachable = errors.New("dial tcp db.example:5432: connection refused")
+
+func (u unreadable) SandboxCounts(ctx context.Context) (map[string]int, error) {
+	if u.turns {
+		return u.Store.SandboxCounts(ctx)
+	}
+	return nil, errUnreachable
+}
+
+func (u unreadable) UnfinishedTurns(ctx context.Context) ([]store.UnfinishedTurn, error) {
+	if u.turns {
+		return nil, errUnreachable
+	}
+	return u.Store.UnfinishedTurns(ctx)
 }
 
 // A scrape fails while the database cannot be read, so that its state is not
@@ -125,9 +209,11 @@ func (unreadable) SandboxCounts(context.Context) (map[string]int, error) {
 // database.
 func TestStateMetricsFailWithoutTheDatabase(t *testing.T) {
 	t.Parallel()
-	status, lines := scrape(t, stateMetrics(t, unreadable{memorystore.New()}))
-	if body := strings.Join(lines, "\n"); status != http.StatusInternalServerError ||
-		strings.Contains(body, "db.example") || strings.Contains(body, "aviary_sandboxes{") {
-		t.Errorf("scrape without the database = %d %q, want 500 without the address or a count", status, body)
+	for _, turns := range []bool{false, true} {
+		status, lines := scrape(t, stateMetrics(t, unreadable{Store: memorystore.New(), turns: turns}))
+		if body := strings.Join(lines, "\n"); status != http.StatusInternalServerError ||
+			strings.Contains(body, "db.example") || strings.Contains(body, "aviary_sandboxes{") || strings.Contains(body, "aviary_turns{") {
+			t.Errorf("scrape without the database = %d %q, want 500 without the address or a count", status, body)
+		}
 	}
 }
