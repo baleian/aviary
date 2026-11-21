@@ -163,7 +163,7 @@ export const api = {
 // The events of the API (README.md, "Turn events"). The panel of the mock marks
 // a stream that carried any other event.
 const EVENTS = new Set(['turn.queued', 'turn.started', 'message.delta', 'thought.delta', 'tool.call', 'tool.update', 'plan.update',
-  'approval.requested', 'approval.resolved', 'turn.completed', 'turn.failed', 'turn.cancelled', 'turn.expired']);
+  'session.update', 'approval.requested', 'approval.resolved', 'turn.completed', 'turn.failed', 'turn.cancelled', 'turn.expired']);
 
 // The event streams that are open, so that the mock can break them.
 const streams = new Set();

@@ -116,8 +116,8 @@ function failing(reason) {
   return script;
 }
 
-// retitle is how a harness would name the session: the mock's stand-in for
-// the session_info_update of the Agent Client Protocol.
+// retitle has the harness name its session, as a harness does with the
+// session_info_update of the Agent Client Protocol.
 async function retitle(ctx) {
   await ctx.pause(400);
   ctx.emit('session.update', {title: 'A title that the harness wrote'});
