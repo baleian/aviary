@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -22,6 +23,12 @@ import (
 const (
 	duplicateEntry = 1062
 	deadlock       = 1213
+)
+
+// The unique keys on slugs, as MySQL names them in errors.
+const (
+	projectSlug = "projects.projects_slug"
+	agentSlug   = "agents.agents_project_slug"
 )
 
 // Rows of the locks table.
@@ -83,6 +90,13 @@ func failed(err error, number uint16) bool {
 	return errors.As(err, &failure) && failure.Number == number
 }
 
+// duplicate reports whether err is a duplicate entry for the unique key. The
+// key is named only in the message, which ends with it.
+func duplicate(err error, key string) bool {
+	var failure *mysql.MySQLError
+	return errors.As(err, &failure) && failure.Number == duplicateEntry && strings.HasSuffix(failure.Message, " for key '"+key+"'")
+}
+
 // found maps sql.ErrNoRows to store.ErrNotFound.
 func found(err error) error {
 	if errors.Is(err, sql.ErrNoRows) {
@@ -112,12 +126,16 @@ func since(microseconds int64) time.Duration {
 	return time.Duration(microseconds) * time.Microsecond
 }
 
-func (s *records) CreateProject(ctx context.Context, name string) (store.Project, error) {
+func (s *records) CreateProject(ctx context.Context, project store.Project) (store.Project, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return store.Project{}, err
 	}
-	if err := s.queries.CreateProject(ctx, db.CreateProjectParams{ID: key.ID(id), Name: name}); err != nil {
+	params := db.CreateProjectParams{ID: key.ID(id), Slug: project.Slug, Name: project.Name}
+	switch err := s.queries.CreateProject(ctx, params); {
+	case duplicate(err, projectSlug):
+		return store.Project{}, store.ErrSlugTaken
+	case err != nil:
 		return store.Project{}, err
 	}
 	return s.Project(ctx, id)
@@ -125,7 +143,7 @@ func (s *records) CreateProject(ctx context.Context, name string) (store.Project
 
 func (s *records) Project(ctx context.Context, id uuid.UUID) (store.Project, error) {
 	row, err := s.queries.GetProject(ctx, key.ID(id))
-	return store.Project{ID: uuid.UUID(row.ID), Name: row.Name, CreatedAt: row.CreatedAt}, found(err)
+	return store.Project{ID: uuid.UUID(row.ID), Slug: row.Slug, Name: row.Name, CreatedAt: row.CreatedAt}, found(err)
 }
 
 func (s *records) Projects(ctx context.Context) ([]store.Project, error) {
@@ -148,7 +166,7 @@ func (s *records) ProjectsOf(ctx context.Context, userID uuid.UUID, groups []str
 func projectsFrom(rows []db.Project) []store.Project {
 	projects := make([]store.Project, len(rows))
 	for i, row := range rows {
-		projects[i] = store.Project{ID: uuid.UUID(row.ID), Name: row.Name, CreatedAt: row.CreatedAt}
+		projects[i] = store.Project{ID: uuid.UUID(row.ID), Slug: row.Slug, Name: row.Name, CreatedAt: row.CreatedAt}
 	}
 	return projects
 }
@@ -389,10 +407,13 @@ func (s *records) CreateAgent(ctx context.Context, projectID uuid.UUID, agent st
 		return store.Agent{}, err
 	}
 	params := db.CreateAgentParams{
-		ID: key.ID(id), ProjectID: key.ID(projectID), Harness: agent.Harness, Instructions: agent.Instructions, Approval: agent.Approval,
-		ProviderID: key.ID(agent.Model.Provider), Model: agent.Model.Name,
+		ID: key.ID(id), ProjectID: key.ID(projectID), Slug: agent.Slug, Name: agent.Name, Harness: agent.Harness,
+		Instructions: agent.Instructions, Approval: agent.Approval, ProviderID: key.ID(agent.Model.Provider), Model: agent.Model.Name,
 	}
-	if err := created(s.queries.CreateAgent(ctx, params)); err != nil {
+	switch err := created(s.queries.CreateAgent(ctx, params)); {
+	case duplicate(err, agentSlug):
+		return store.Agent{}, store.ErrSlugTaken
+	case err != nil:
 		return store.Agent{}, err
 	}
 	return s.Agent(ctx, id)
@@ -420,8 +441,8 @@ func (s *records) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agen
 
 func agentFrom(row db.Agent) store.Agent {
 	return store.Agent{
-		ID: uuid.UUID(row.ID), ProjectID: uuid.UUID(row.ProjectID), Harness: row.Harness, CreatedAt: row.CreatedAt,
-		Instructions: row.Instructions, Approval: row.Approval,
+		ID: uuid.UUID(row.ID), ProjectID: uuid.UUID(row.ProjectID), Slug: row.Slug, Name: row.Name, Harness: row.Harness,
+		CreatedAt: row.CreatedAt, Instructions: row.Instructions, Approval: row.Approval,
 		Model: store.Model{Provider: uuid.UUID(row.ProviderID), Name: row.Model},
 	}
 }

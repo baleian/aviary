@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -17,7 +18,7 @@ func TestRefusals(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
 	s := aviary.supervisor()
-	project := s.create("/v1/projects", `{"name": "test"}`)
+	project := s.project()
 	agents := "/v1/projects/" + project + "/agents"
 	session := s.create("/v1/agents/"+s.agent(project, `{"harness": "opencode"}`)+"/sessions", "")
 	providers := "/v1/projects/" + project + "/providers"
@@ -38,7 +39,7 @@ func TestRefusals(t *testing.T) {
 	}{
 		{"POST", "/v1/projects", ``, http.StatusBadRequest, invalid},
 		{"POST", "/v1/projects", `{}`, http.StatusBadRequest, invalid},
-		{"POST", "/v1/projects", `{"name": "test", "owner": "someone"}`, http.StatusBadRequest, invalid},
+		{"POST", "/v1/projects", `{"slug": "test", "owner": "someone"}`, http.StatusBadRequest, invalid},
 		{"GET", "/v1/projects/" + none, ``, http.StatusNotFound, notFound},
 		{"GET", "/v1/projects/not-an-id", ``, http.StatusNotFound, notFound},
 
@@ -60,11 +61,11 @@ func TestRefusals(t *testing.T) {
 		{"PUT", provider, `{"name": "a provider"}`, http.StatusBadRequest, invalid},
 		{"PUT", "/v1/providers/" + none, `{"name": "a provider", "url": "https://api.example.com/v1"}`, http.StatusNotFound, notFound},
 
-		{"POST", agents, `{"harness": "another", ` + model + `}`, http.StatusBadRequest, invalid},
-		{"POST", agents, `{"harness": "opencode", "resources": {"limits": {"memory": "2Gi"}}, ` + model + `}`, http.StatusBadRequest, invalid},
-		{"POST", agents, `{"harness": "opencode", "approval": "always", ` + model + `}`, http.StatusBadRequest, invalid},
-		{"POST", agents, `{"harness": "opencode"}`, http.StatusBadRequest, invalid},
-		{"POST", "/v1/projects/" + none + "/agents", `{"harness": "opencode", ` + model + `}`, http.StatusNotFound, notFound},
+		{"POST", agents, `{"slug": "test", "harness": "another", ` + model + `}`, http.StatusBadRequest, invalid},
+		{"POST", agents, `{"slug": "test", "harness": "opencode", "resources": {"limits": {"memory": "2Gi"}}, ` + model + `}`, http.StatusBadRequest, invalid},
+		{"POST", agents, `{"slug": "test", "harness": "opencode", "approval": "always", ` + model + `}`, http.StatusBadRequest, invalid},
+		{"POST", agents, `{"slug": "test", "harness": "opencode"}`, http.StatusBadRequest, invalid},
+		{"POST", "/v1/projects/" + none + "/agents", `{"slug": "test", "harness": "opencode", ` + model + `}`, http.StatusNotFound, notFound},
 		{"GET", "/v1/agents/" + none, ``, http.StatusNotFound, notFound},
 
 		{"POST", "/v1/agents/" + none + "/sessions", ``, http.StatusNotFound, notFound},
@@ -107,27 +108,139 @@ func TestResources(t *testing.T) {
 		}
 		return resource
 	}
-
-	project := s.create("/v1/projects", `{"name": "a project"}`)
-	if created := get("/v1/projects/" + project); created["id"] != project || created["name"] != "a project" || created["created_at"] == nil {
-		t.Errorf("unexpected project %v", created)
+	// returned posts body to path and returns the new resource three ways:
+	// from the response, from GET read+ID, and from the list at path under
+	// the key list.
+	returned := func(path, body, read, list string) map[string]map[string]any {
+		t.Helper()
+		var created map[string]any
+		if status, _ := s.request("POST", path, body, &created); status != http.StatusCreated {
+			t.Fatalf("POST %s %s: status %d, want 201", path, body, status)
+		}
+		id, _ := created["id"].(string)
+		forms := map[string]map[string]any{"created": created, "read": get(read + id), "listed": nil}
+		listed, _ := get(path)[list].([]any)
+		for _, resource := range listed {
+			if resource, _ := resource.(map[string]any); resource["id"] == id {
+				forms["listed"] = resource
+			}
+		}
+		return forms
+	}
+	// named reports whether the resource has the slug and the name, which is
+	// returned even if it is empty.
+	named := func(resource map[string]any, slug, name string) bool {
+		given, present := resource["name"]
+		return resource["slug"] == slug && present && given == name
 	}
 
-	// Optional fields that were not given are omitted, not defaulted.
-	full := get("/v1/agents/" + s.agent(project, `{"harness": "codex", "instructions": "Be brief.", "approval": "ask"}`))
-	if full["project_id"] != project || full["harness"] != "codex" || full["instructions"] != "Be brief." || full["approval"] != "ask" {
-		t.Errorf("unexpected agent %v", full)
+	projects := returned("/v1/projects", `{"slug": "a-project", "name": "A project"}`, "/v1/projects/", "projects")
+	project, _ := projects["created"]["id"].(string)
+	for how, resource := range projects {
+		if resource["id"] != project || !named(resource, "a-project", "A project") || resource["created_at"] == nil {
+			t.Errorf("%s project %v", how, resource)
+		}
 	}
-	for _, body := range []string{`{"harness": "opencode"}`, `{"harness": "opencode", "instructions": "", "approval": ""}`} {
+	for how, resource := range returned("/v1/projects", `{"slug": "unnamed"}`, "/v1/projects/", "projects") {
+		if !named(resource, "unnamed", "") {
+			t.Errorf("%s project without a name %v", how, resource)
+		}
+	}
+
+	provider := s.create("/v1/projects/"+project+"/providers", `{"name": "a provider", "url": "https://api.example.com/v1"}`)
+	agents := returned("/v1/projects/"+project+"/agents", `{"slug": "reviewer", "name": "Code reviewer", "harness": "codex", `+
+		`"instructions": "Be brief.", "approval": "ask", "model": {"provider": "`+provider+`", "name": "a-model"}}`, "/v1/agents/", "agents")
+	agent, _ := agents["created"]["id"].(string)
+	for how, full := range agents {
+		if full["id"] != agent || full["project_id"] != project || !named(full, "reviewer", "Code reviewer") || full["harness"] != "codex" ||
+			full["instructions"] != "Be brief." || full["approval"] != "ask" {
+			t.Errorf("%s agent %v", how, full)
+		}
+	}
+	// Optional fields that were not given are omitted, not defaulted, except
+	// for the name, which is empty.
+	for _, body := range []string{`{"harness": "opencode"}`, `{"harness": "opencode", "name": "", "instructions": "", "approval": ""}`} {
 		plain := get("/v1/agents/" + s.agent(project, body))
-		if plain["instructions"] != nil || plain["approval"] != nil || plain["harness"] != "opencode" {
+		if name, given := plain["name"]; plain["instructions"] != nil || plain["approval"] != nil || plain["harness"] != "opencode" || !given || name != "" {
 			t.Errorf("agent created with %s = %v", body, plain)
 		}
 	}
 
-	agent := full["id"].(string)
 	if session := get("/v1/sessions/" + s.create("/v1/agents/"+agent+"/sessions", "")); session["agent_id"] != agent {
 		t.Errorf("unexpected session %v", session)
+	}
+}
+
+// A slug is a lowercase DNS label. No two projects have the same slug, and no
+// two agents of a project.
+func TestSlugs(t *testing.T) {
+	t.Parallel()
+	s := install(t).supervisor()
+	project, other := s.project(), s.project()
+	providers := map[string]string{}
+	for _, in := range []string{project, other} {
+		providers[in] = s.create("/v1/projects/"+in+"/providers", `{"name": "a provider", "url": "https://api.example.com/v1"}`)
+	}
+	agents := func(project string) string { return "/v1/projects/" + project + "/agents" }
+	// agent returns the body of an agent of the project with the slug.
+	agent := func(project, slug string) string {
+		return fmt.Sprintf(`{"slug": %q, "harness": "opencode", "model": {"provider": %q, "name": "a-model"}}`, slug, providers[project])
+	}
+	// post returns the status and the error code of the response.
+	post := func(path, body string) (int, string) {
+		t.Helper()
+		var answer struct{ Code string }
+		status, _ := s.request("POST", path, body, &answer)
+		return status, answer.Code
+	}
+
+	const invalid = "invalid_request"
+	for _, test := range []struct {
+		slug   string
+		status int
+		code   string
+	}{
+		{"a", http.StatusCreated, ""},
+		{"a-1", http.StatusCreated, ""},
+		{"x--y9", http.StatusCreated, ""},
+		{"a" + strings.Repeat("b", 62), http.StatusCreated, ""},
+		{"", http.StatusBadRequest, invalid},
+		{"Demo", http.StatusBadRequest, invalid},
+		{"dEMO", http.StatusBadRequest, invalid},
+		{"1demo", http.StatusBadRequest, invalid},
+		{"-demo", http.StatusBadRequest, invalid},
+		{"demo-", http.StatusBadRequest, invalid},
+		{"de_mo", http.StatusBadRequest, invalid},
+		{"de mo", http.StatusBadRequest, invalid},
+		{"de.mo", http.StatusBadRequest, invalid},
+		{"démo", http.StatusBadRequest, invalid},
+		{"a" + strings.Repeat("b", 63), http.StatusBadRequest, invalid},
+	} {
+		for what, request := range map[string][2]string{
+			"project": {"/v1/projects", fmt.Sprintf(`{"slug": %q}`, test.slug)},
+			"agent":   {agents(project), agent(project, test.slug)},
+		} {
+			if status, code := post(request[0], request[1]); status != test.status || code != test.code {
+				t.Errorf("%s with slug %q: got %d %q, want %d %q", what, test.slug, status, code, test.status, test.code)
+			}
+		}
+	}
+
+	for _, test := range []struct {
+		what, path, body string
+		status           int
+		code             string
+	}{
+		{"project without a slug", "/v1/projects", `{"name": "Demo"}`, http.StatusBadRequest, invalid},
+		{"agent without a slug", agents(project), `{"harness": "opencode", "model": {"provider": "` + providers[project] + `", "name": "a-model"}}`,
+			http.StatusBadRequest, invalid},
+		{"project with a taken slug", "/v1/projects", `{"slug": "a", "name": "Another"}`, http.StatusConflict, "slug_taken"},
+		{"agent with a slug taken in its project", agents(project), agent(project, "a"), http.StatusConflict, "slug_taken"},
+		{"agent with the slug of another project's agent", agents(other), agent(other, "a"), http.StatusCreated, ""},
+	} {
+		if status, code := post(test.path, test.body); status != test.status || code != test.code {
+			t.Errorf("%s: got %d %q, want %d %q", test.what, status, code, test.status, test.code)
+		}
 	}
 }
 

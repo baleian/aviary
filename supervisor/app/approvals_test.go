@@ -216,7 +216,7 @@ func TestApprovalIsAnsweredBySomeone(t *testing.T) {
 	}
 	s := aviary.supervisor()
 	s.token = "an-administrator"
-	project := s.create("/v1/projects", `{"name": "test"}`)
+	project := s.project()
 	agent := s.agent(project, `{"harness": "opencode", "approval": "ask"}`)
 	s.create("/v1/projects/"+project+"/members", `{"user": "alice@example.com", "role": "user"}`)
 	s.create("/v1/projects/"+project+"/members", `{"user": "carol@example.com", "role": "owner"}`)

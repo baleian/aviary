@@ -39,19 +39,27 @@ func (s supervisor) another() supervisor {
 	return supervisor{Store: s.database.Open(s.t), t: s.t, database: s.database}
 }
 
-// session creates a session of a new agent in a new project.
-func (s supervisor) session() uuid.UUID {
+// project creates a project with a slug of its own.
+func (s supervisor) project() store.Project {
 	s.t.Helper()
-	project, err := s.CreateProject(ctx, "test")
+	project, err := s.CreateProject(ctx, store.Project{Slug: unique("project")})
 	if err != nil {
 		s.t.Fatal(err)
 	}
+	return project
+}
+
+// session creates a session of a new agent in a new project.
+func (s supervisor) session() uuid.UUID {
+	s.t.Helper()
+	project := s.project()
 	provider, err := s.CreateProvider(ctx, store.Provider{ID: uuid.New(), ProjectID: project.ID, Name: "a provider", URL: "https://api.example.com/v1"})
 	if err != nil {
 		s.t.Fatal(err)
 	}
 	agent, err := s.CreateAgent(ctx, project.ID, store.Agent{
-		Harness: "opencode", Instructions: "Be brief.", Approval: "ask", Model: store.Model{Provider: provider.ID, Name: "a-model"},
+		Slug: unique("agent"), Harness: "opencode", Instructions: "Be brief.", Approval: "ask",
+		Model: store.Model{Provider: provider.ID, Name: "a-model"},
 	})
 	if err != nil {
 		s.t.Fatal(err)
@@ -904,13 +912,14 @@ func (suite suite) testNotFound(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	none := uuid.New()
+	agent := store.Agent{Slug: unique("agent"), Harness: "opencode"}
 	for name, get := range map[string]func() error{
 		"Project":       func() error { _, err := st.Project(ctx, none); return err },
 		"Agent":         func() error { _, err := st.Agent(ctx, none); return err },
 		"Session":       func() error { _, err := st.Session(ctx, none); return err },
 		"Turn":          func() error { _, err := st.Turn(ctx, none); return err },
 		"TurnHarness":   func() error { _, err := st.TurnHarness(ctx, none); return err },
-		"CreateAgent":   func() error { _, err := st.CreateAgent(ctx, none, store.Agent{Harness: "opencode"}); return err },
+		"CreateAgent":   func() error { _, err := st.CreateAgent(ctx, none, agent); return err },
 		"CreateSession": func() error { _, err := st.CreateSession(ctx, none, uuid.Nil); return err },
 	} {
 		if err := get(); !errors.Is(err, store.ErrNotFound) {

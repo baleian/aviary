@@ -1,8 +1,10 @@
 -- +goose Up
 create table projects (
     id uuid primary key,
-    name text not null,
-    created_at timestamptz not null default now()
+    slug text not null,
+    name text not null default '',
+    created_at timestamptz not null default now(),
+    constraint projects_slug unique (slug)
 );
 
 -- Users as authenticated by the identity provider.
@@ -90,6 +92,8 @@ create table providers (
 create table agents (
     id uuid primary key,
     project_id uuid not null references projects (id),
+    slug text not null,
+    name text not null default '',
     harness text not null,
     -- Given to the agent before every turn, if not empty.
     instructions text not null default '',
@@ -100,7 +104,9 @@ create table agents (
     -- for the model.
     provider_id uuid not null references providers (id),
     model text not null,
-    created_at timestamptz not null default now()
+    created_at timestamptz not null default now(),
+    -- Also serves listing the agents of a project.
+    constraint agents_project_slug unique (project_id, slug)
 );
 
 create table sessions (
@@ -186,8 +192,7 @@ create table schema_floor (
 );
 insert into schema_floor (version) values (0);
 
--- For listing the agents of a project, and the sessions of an agent by ID.
-create index agents_project on agents (project_id);
+-- For listing the sessions of an agent by ID.
 create index sessions_agent on sessions (agent_id, id);
 -- A session has at most one unfinished turn.
 create unique index turns_unfinished_per_session on turns (session_id) where ended_at is null;

@@ -25,6 +25,12 @@ import (
 // violation.
 const uniqueViolation = "23505"
 
+// The unique constraints on slugs, as the schema names them.
+const (
+	projectSlug = "projects_slug"
+	agentSlug   = "agents_project_slug"
+)
+
 // dispatchLock is the key of the advisory lock that serializes dispatching.
 const dispatchLock int64 = 0x617669617279 // "aviary"
 
@@ -61,13 +67,22 @@ func (s *records) Close() {
 	s.pool.Close()
 }
 
-func (s *records) CreateProject(ctx context.Context, name string) (store.Project, error) {
+func (s *records) CreateProject(ctx context.Context, project store.Project) (store.Project, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return store.Project{}, err
 	}
-	row, err := s.queries.CreateProject(ctx, db.CreateProjectParams{ID: id, Name: name})
+	row, err := s.queries.CreateProject(ctx, db.CreateProjectParams{ID: id, Slug: project.Slug, Name: project.Name})
+	if violates(err, projectSlug) {
+		return store.Project{}, store.ErrSlugTaken
+	}
 	return store.Project(row), err
+}
+
+// violates reports whether err is a violation of the unique constraint.
+func violates(err error, constraint string) bool {
+	var refused *pgconn.PgError
+	return errors.As(err, &refused) && refused.Code == uniqueViolation && refused.ConstraintName == constraint
 }
 
 func (s *records) Project(ctx context.Context, id uuid.UUID) (store.Project, error) {
@@ -303,12 +318,15 @@ func (s *records) CreateAgent(ctx context.Context, projectID uuid.UUID, agent st
 		return store.Agent{}, err
 	}
 	params := db.CreateAgentParams{
-		ID: id, ProjectID: projectID, Harness: agent.Harness, Instructions: agent.Instructions, Approval: agent.Approval,
-		ProviderID: agent.Model.Provider, Model: agent.Model.Name,
+		ID: id, ProjectID: projectID, Slug: agent.Slug, Name: agent.Name, Harness: agent.Harness,
+		Instructions: agent.Instructions, Approval: agent.Approval, ProviderID: agent.Model.Provider, Model: agent.Model.Name,
 	}
 	row, err := s.queries.CreateAgent(ctx, params)
-	if errors.Is(err, pgx.ErrNoRows) {
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
 		return store.Agent{}, store.ErrNotFound
+	case violates(err, agentSlug):
+		return store.Agent{}, store.ErrSlugTaken
 	}
 	return agentFrom(row), err
 }
@@ -868,6 +886,8 @@ func agentFrom(row db.Agent) store.Agent {
 	return store.Agent{
 		ID:           row.ID,
 		ProjectID:    row.ProjectID,
+		Slug:         row.Slug,
+		Name:         row.Name,
 		Harness:      row.Harness,
 		CreatedAt:    row.CreatedAt,
 		Instructions: row.Instructions,

@@ -152,7 +152,7 @@ func TestSecretStores(t *testing.T) {
 		return record.Credential, opened
 	}
 
-	project := s.create("/v1/projects", `{"name": "test"}`)
+	project := s.project()
 	stores := "/v1/projects/" + project + "/secret-stores"
 	// The "takes" setting belongs to the fake and is not a secret.
 	created := answer("POST", stores, scriptedStore("a store", address, first, first), http.StatusCreated)
@@ -206,10 +206,10 @@ func TestSecretStoresThatAreRefused(t *testing.T) {
 	closed.storeHosts = nil
 	unlisted := closed.supervisor()
 	const address, credential = "https://" + storeHost, "a-credential"
-	project := s.create("/v1/projects", `{"name": "test"}`)
+	project := s.project()
 	stores := "/v1/projects/" + project + "/secret-stores"
 	existing := "/v1/secret-stores/" + s.create(stores, scriptedStore("a store", address, credential, credential))
-	elsewhere := "/v1/projects/" + unlisted.create("/v1/projects", `{"name": "test"}`) + "/secret-stores"
+	elsewhere := "/v1/projects/" + unlisted.project() + "/secret-stores"
 	none := uuid.NewString()
 	// with returns the body of a store with the kind, settings and
 	// credential.

@@ -13,6 +13,8 @@ import (
 type Agent struct {
 	ID           uuid.UUID
 	ProjectID    uuid.UUID
+	Slug         string
+	Name         string
 	Harness      string
 	Instructions string
 	Approval     string
@@ -35,6 +37,7 @@ type Approval struct {
 
 type Project struct {
 	ID        uuid.UUID
+	Slug      string
 	Name      string
 	CreatedAt time.Time
 }

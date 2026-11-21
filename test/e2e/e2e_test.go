@@ -279,14 +279,22 @@ func owner(t *testing.T, method, path string, body any, statuses ...int) map[str
 
 type agent struct{ id string }
 
-// agentOf creates an agent in the project from body, with a model of the
-// provider.
+// newProject creates a project and returns its ID. The slug is random, since
+// the cluster may have the projects of earlier runs.
+func newProject(t *testing.T) string {
+	t.Helper()
+	return create(t, "/v1/projects", fmt.Sprintf(`{"slug": %q}`, unique("e2e")))
+}
+
+// agentOf creates an agent in the project from body, with a slug of its own
+// and a model of the provider.
 func agentOf(t *testing.T, project, provider, body string) agent {
 	t.Helper()
 	var settings map[string]any
 	if err := json.Unmarshal([]byte(body), &settings); err != nil {
 		t.Fatal(err)
 	}
+	settings["slug"] = unique("agent")
 	settings["model"] = map[string]string{"provider": provider, "name": "mock"}
 	with, err := json.Marshal(settings)
 	if err != nil {
@@ -299,7 +307,7 @@ func agentOf(t *testing.T, project, provider, body string) agent {
 // mock model server.
 func newAgent(t *testing.T, body string) agent {
 	t.Helper()
-	project := create(t, "/v1/projects", `{"name": "e2e"}`)
+	project := newProject(t)
 	return agentOf(t, project, provider(t, project, mockKey), body)
 }
 

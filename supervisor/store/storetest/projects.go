@@ -16,19 +16,141 @@ import (
 	"aviary/supervisor/store"
 )
 
+// A project has a slug that no other project has, and a name that may be
+// empty.
+func (suite suite) testProjectSlugs(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	named, err := st.CreateProject(ctx, store.Project{Slug: "demo", Name: "Demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unnamed, err := st.CreateProject(ctx, store.Project{Slug: "plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := st.another().Projects(ctx)
+	if err != nil || len(listed) != 2 {
+		t.Fatalf("Projects = %+v, want two: %v", listed, err)
+	}
+	for i, expected := range []struct {
+		created    store.Project
+		slug, name string
+	}{
+		{named, "demo", "Demo"},
+		{unnamed, "plain", ""},
+	} {
+		read, err := st.another().Project(ctx, expected.created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for how, project := range map[string]store.Project{"created": expected.created, "read": read, "listed": listed[i]} {
+			if project.ID != expected.created.ID || project.Slug != expected.slug || project.Name != expected.name ||
+				project.CreatedAt.IsZero() || !project.CreatedAt.Equal(expected.created.CreatedAt) {
+				t.Errorf("%s project = %+v, want slug %q and name %q", how, project, expected.slug, expected.name)
+			}
+		}
+	}
+
+	// Another Supervisor refuses a taken slug, whatever the name.
+	for _, refused := range []store.Project{{Slug: "demo"}, {Slug: "demo", Name: "Demo"}, {Slug: "plain", Name: "Plain"}} {
+		if _, err := st.another().CreateProject(ctx, refused); !errors.Is(err, store.ErrSlugTaken) {
+			t.Errorf("CreateProject(%+v) = %v, want ErrSlugTaken", refused, err)
+		}
+	}
+	st.contend("CreateProject", func(s supervisor) error {
+		_, err := s.CreateProject(ctx, store.Project{Slug: "contested"})
+		return err
+	})
+	if all, err := st.Projects(ctx); err != nil || len(all) != 3 {
+		t.Errorf("Projects after refused creations = %+v, want three: %v", all, err)
+	}
+}
+
+// An agent has a slug that no other agent of its project has. Agents of other
+// projects may have it.
+func (suite suite) testAgentSlugs(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	project, other := st.project(), st.project()
+	// model returns a model of a new provider of the project.
+	model := func(project store.Project) store.Model {
+		t.Helper()
+		provider, err := st.CreateProvider(ctx, store.Provider{ID: uuid.New(), ProjectID: project.ID, Name: "a provider", URL: "https://api.example.com/v1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return store.Model{Provider: provider.ID, Name: "a-model"}
+	}
+	ours, theirs := model(project), model(other)
+	if _, err := st.CreateAgent(ctx, project.ID, store.Agent{Slug: "reviewer", Harness: "opencode", Model: ours}); err != nil {
+		t.Fatal(err)
+	}
+	refused := store.Agent{Slug: "reviewer", Name: "Another reviewer", Harness: "codex", Model: ours}
+	if _, err := st.another().CreateAgent(ctx, project.ID, refused); !errors.Is(err, store.ErrSlugTaken) {
+		t.Errorf("CreateAgent with a slug taken in the project = %v, want ErrSlugTaken", err)
+	}
+	elsewhere, err := st.CreateAgent(ctx, other.ID, store.Agent{Slug: "reviewer", Harness: "opencode", Model: theirs})
+	if err != nil || elsewhere.ProjectID != other.ID || elsewhere.Slug != "reviewer" {
+		t.Errorf("CreateAgent with the slug in another project = %+v: %v", elsewhere, err)
+	}
+	st.contend("CreateAgent", func(s supervisor) error {
+		_, err := s.CreateAgent(ctx, project.ID, store.Agent{Slug: "contested", Harness: "opencode", Model: ours})
+		return err
+	})
+	for _, listed := range []struct {
+		project store.Project
+		slugs   []string
+	}{
+		{project, []string{"reviewer", "contested"}},
+		{other, []string{"reviewer"}},
+	} {
+		agents, err := st.Agents(ctx, listed.project.ID)
+		var slugs []string
+		for _, agent := range agents {
+			slugs = append(slugs, agent.Slug)
+		}
+		if err != nil || !slices.Equal(slugs, listed.slugs) {
+			t.Errorf("Agents of project %s = %v, want %v: %v", listed.project.Slug, slugs, listed.slugs, err)
+		}
+	}
+}
+
+// contend has several Supervisors call create at once, and fails the test
+// unless one call succeeds and the others return ErrSlugTaken.
+func (s supervisor) contend(what string, create func(supervisor) error) {
+	s.t.Helper()
+	supervisors := s.supervisors(8)
+	var created, taken atomic.Int32
+	atOnce(len(supervisors), func(i int) {
+		switch err := create(supervisors[i]); {
+		case err == nil:
+			created.Add(1)
+		case errors.Is(err, store.ErrSlugTaken):
+			taken.Add(1)
+		default:
+			s.t.Error(err)
+		}
+	})
+	if created.Load() != 1 || int(taken.Load()) != len(supervisors)-1 {
+		s.t.Errorf("concurrent %s with one slug: %d succeeded and %d returned ErrSlugTaken, want 1 and %d",
+			what, created.Load(), taken.Load(), len(supervisors)-1)
+	}
+}
+
 // Agents and sessions are stored as they are created.
 func (suite suite) testAgents(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
-	project, err := st.CreateProject(ctx, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	project := st.project()
 	provider, err := st.CreateProvider(ctx, store.Provider{ID: uuid.New(), ProjectID: project.ID, Name: "a provider", URL: "https://api.example.com/v1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	given := store.Agent{Harness: "opencode", Instructions: "Be brief.", Approval: "ask", Model: store.Model{Provider: provider.ID, Name: "a-model"}}
+	given := store.Agent{
+		Slug: "reviewer", Name: "Code reviewer", Harness: "opencode", Instructions: "Be brief.", Approval: "ask",
+		Model: store.Model{Provider: provider.ID, Name: "a-model"},
+	}
 	created, err := st.CreateAgent(ctx, project.ID, given)
 	if err != nil {
 		t.Fatal(err)
@@ -38,20 +160,20 @@ func (suite suite) testAgents(t *testing.T) {
 		t.Fatal(err)
 	}
 	for how, agent := range map[string]store.Agent{"created": created, "read": read} {
-		if agent.ID == uuid.Nil || agent.ID != created.ID || agent.ProjectID != project.ID || agent.Harness != "opencode" ||
-			agent.Instructions != "Be brief." || agent.Approval != "ask" ||
+		if agent.ID == uuid.Nil || agent.ID != created.ID || agent.ProjectID != project.ID || agent.Slug != "reviewer" ||
+			agent.Name != "Code reviewer" || agent.Harness != "opencode" || agent.Instructions != "Be brief." || agent.Approval != "ask" ||
 			agent.Model != given.Model || agent.CreatedAt.IsZero() || !agent.CreatedAt.Equal(created.CreatedAt) {
 			t.Errorf("%s agent = %+v, model %+v", how, agent, agent.Model)
 		}
 	}
-	// An agent with only a harness and a model.
-	plain, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "codex", Model: given.Model})
+	// An agent with only a slug, a harness and a model.
+	plain, err := st.CreateAgent(ctx, project.ID, store.Agent{Slug: "plain", Harness: "codex", Model: given.Model})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if read, err := st.Agent(ctx, plain.ID); err != nil || read.Harness != "codex" || read.Instructions != "" ||
-		read.Approval != "" || read.Model != given.Model {
-		t.Errorf("agent with only a harness and a model = %+v: %v", read, err)
+	if read, err := st.Agent(ctx, plain.ID); err != nil || read.Slug != "plain" || read.Name != "" || read.Harness != "codex" ||
+		read.Instructions != "" || read.Approval != "" || read.Model != given.Model {
+		t.Errorf("agent with only a slug, a harness and a model = %+v: %v", read, err)
 	}
 
 	session, err := st.CreateSession(ctx, created.ID, uuid.Nil)
@@ -69,14 +191,7 @@ func (suite suite) testAgents(t *testing.T) {
 func (suite suite) testListAgents(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
-	project, err := st.CreateProject(ctx, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	other, err := st.CreateProject(ctx, "other")
-	if err != nil {
-		t.Fatal(err)
-	}
+	project, other := st.project(), st.project()
 	if agents, err := st.Agents(ctx, project.ID); err != nil || agents == nil || len(agents) != 0 {
 		t.Errorf("Agents of a project without agents = %+v, %v, want empty", agents, err)
 	}
@@ -94,10 +209,10 @@ func (suite suite) testListAgents(t *testing.T) {
 		project uuid.UUID
 		agent   store.Agent
 	}{
-		{project.ID, store.Agent{Harness: "opencode", Instructions: "Be brief.", Approval: "ask", Model: model}},
-		{other.ID, store.Agent{Harness: "opencode", Model: store.Model{Provider: theirs.ID, Name: "a-model"}}},
-		{project.ID, store.Agent{Harness: "codex", Model: store.Model{Provider: provider.ID, Name: "another-model"}}},
-		{project.ID, store.Agent{Harness: "opencode", Model: model}},
+		{project.ID, store.Agent{Slug: "first", Name: "First", Harness: "opencode", Instructions: "Be brief.", Approval: "ask", Model: model}},
+		{other.ID, store.Agent{Slug: "first", Harness: "opencode", Model: store.Model{Provider: theirs.ID, Name: "a-model"}}},
+		{project.ID, store.Agent{Slug: "second", Harness: "codex", Model: store.Model{Provider: provider.ID, Name: "another-model"}}},
+		{project.ID, store.Agent{Slug: "third", Harness: "opencode", Model: model}},
 	} {
 		agent, err := st.CreateAgent(ctx, given.project, given.agent)
 		if err != nil {
@@ -122,8 +237,9 @@ func (suite suite) testListAgents(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if agent.ID != read.ID || agent.ProjectID != listed.project || agent.Harness != read.Harness || agent.Instructions != read.Instructions ||
-				agent.Approval != read.Approval || agent.Model != read.Model || !agent.CreatedAt.Equal(read.CreatedAt) {
+			if agent.ID != read.ID || agent.ProjectID != listed.project || agent.Slug != read.Slug || agent.Name != read.Name ||
+				agent.Harness != read.Harness || agent.Instructions != read.Instructions || agent.Approval != read.Approval ||
+				agent.Model != read.Model || !agent.CreatedAt.Equal(read.CreatedAt) {
 				t.Errorf("agent %d: listed %+v, read %+v", i, agent, read)
 			}
 		}
@@ -399,15 +515,7 @@ func (suite suite) testConcurrentEndSessionAndCreateTurn(t *testing.T) {
 func (suite suite) testProviders(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
-	project, err := st.CreateProject(ctx, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if read, err := st.Project(ctx, project.ID); err != nil || read.ID != project.ID || read.Name != "test" || project.Name != "test" ||
-		project.CreatedAt.IsZero() || !read.CreatedAt.Equal(project.CreatedAt) {
-		t.Errorf("created project %+v, read %+v: %v", project, read, err)
-	}
-
+	project := st.project()
 	given := store.Provider{ID: uuid.New(), ProjectID: project.ID, Name: "a provider", URL: "https://api.example.com/v1", APIKey: []byte("a sealed key")}
 	created, err := st.CreateProvider(ctx, given)
 	if err != nil {
@@ -474,10 +582,7 @@ func same(one, other store.Provider) bool {
 func (suite suite) testProviderKeyInSecretStore(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
-	project, err := st.CreateProject(ctx, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	project := st.project()
 	secrets, err := st.CreateSecretStore(ctx, store.SecretStore{
 		ID: uuid.New(), ProjectID: project.ID, Name: "a store", Kind: "a kind", Settings: json.RawMessage(`{"where": "there"}`), Credential: []byte("sealed"),
 	})
@@ -525,7 +630,7 @@ func (suite suite) testProviderKeyInSecretStore(t *testing.T) {
 
 	// The origin of a running turn has the location of the provider's key,
 	// and the secret store as it is then.
-	agent, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: store.Model{Provider: created.ID, Name: "a-model"}})
+	agent, err := st.CreateAgent(ctx, project.ID, store.Agent{Slug: unique("agent"), Harness: "opencode", Model: store.Model{Provider: created.ID, Name: "a-model"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -563,17 +668,14 @@ func (suite suite) testProviderKeyInSecretStore(t *testing.T) {
 func (suite suite) testSessionTurn(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
-	project, err := st.CreateProject(ctx, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	project := st.project()
 	provider, err := st.CreateProvider(ctx, store.Provider{
 		ID: uuid.New(), ProjectID: project.ID, Name: "a provider", URL: "https://api.example.com/v1", APIKey: []byte("a sealed key"),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: store.Model{Provider: provider.ID, Name: "a-model"}})
+	agent, err := st.CreateAgent(ctx, project.ID, store.Agent{Slug: unique("agent"), Harness: "opencode", Model: store.Model{Provider: provider.ID, Name: "a-model"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -649,10 +751,7 @@ func second[T any](_ T, err error) error {
 func (suite suite) testSecretStores(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
-	project, err := st.CreateProject(ctx, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	project := st.project()
 	given := store.SecretStore{
 		ID: uuid.New(), ProjectID: project.ID, Name: "a store", Kind: "a kind",
 		Settings: json.RawMessage(`{"address": "https://secrets.example.com:8200", "nested": {"b": 2, "a": [1, "two"]}}`), Credential: []byte("a sealed credential"),
@@ -690,10 +789,7 @@ func (suite suite) testSecretStores(t *testing.T) {
 func (suite suite) testAgentModel(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
-	project, err := st.CreateProject(ctx, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	project := st.project()
 	provider, err := st.CreateProvider(ctx, store.Provider{
 		ID: uuid.New(), ProjectID: project.ID, Name: "a provider", URL: "https://api.example.com/v1", APIKey: []byte("a sealed key"),
 	})
@@ -701,7 +797,7 @@ func (suite suite) testAgentModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	model := store.Model{Provider: provider.ID, Name: "a-model"}
-	agent, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: model})
+	agent, err := st.CreateAgent(ctx, project.ID, store.Agent{Slug: unique("agent"), Harness: "opencode", Model: model})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -731,7 +827,7 @@ func (suite suite) testAgentModel(t *testing.T) {
 		t.Errorf("SessionTurn = %+v, provider %+v", origin, origin.Provider)
 	}
 	// The provider of the model must exist.
-	if _, err := st.CreateAgent(ctx, project.ID, store.Agent{Harness: "opencode", Model: store.Model{Provider: uuid.New(), Name: "a-model"}}); err == nil {
+	if _, err := st.CreateAgent(ctx, project.ID, store.Agent{Slug: unique("agent"), Harness: "opencode", Model: store.Model{Provider: uuid.New(), Name: "a-model"}}); err == nil {
 		t.Error("CreateAgent succeeded with a nonexistent provider")
 	}
 	// The provider is replaced while a turn uses it.

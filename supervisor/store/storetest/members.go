@@ -15,15 +15,6 @@ type membership struct {
 	supervisor
 }
 
-func (m membership) project() uuid.UUID {
-	m.t.Helper()
-	project, err := m.CreateProject(ctx, "test")
-	if err != nil {
-		m.t.Fatal(err)
-	}
-	return project.ID
-}
-
 func (m membership) user(subject, username string) store.User {
 	m.t.Helper()
 	user, err := m.UserOf(ctx, subject, username, "")
@@ -92,7 +83,7 @@ func sameMembers(one, other []told) bool {
 func (suite suite) testMembers(t *testing.T) {
 	t.Parallel()
 	st := membership{suite.open(t)}
-	project, other := st.project(), st.project()
+	project, other := st.project().ID, st.project().ID
 	alice := st.user("subject-a", "alice@example.com")
 	admin := st.user("subject-z", "")
 
@@ -204,7 +195,7 @@ func (suite suite) testMembers(t *testing.T) {
 func (suite suite) testMembersWhoseUsernamesChange(t *testing.T) {
 	t.Parallel()
 	st := membership{suite.open(t)}
-	project, other := st.project(), st.project()
+	project, other := st.project().ID, st.project().ID
 	alice := st.user("subject-a", "alice@example.com")
 	st.add(project, "alice@example.com", "", "editor")
 	st.add(other, "alice@example.com", "", "user")
@@ -245,7 +236,7 @@ func (suite suite) testProjects(t *testing.T) {
 	if all, err := st.Projects(ctx); err != nil || len(all) != 0 {
 		t.Errorf("Projects of an empty database = %+v, %v", all, err)
 	}
-	one, two, three, four := st.project(), st.project(), st.project(), st.project()
+	one, two, three, four := st.project().ID, st.project().ID, st.project().ID, st.project().ID
 	alice, bob := st.user("subject-a", "alice@example.com"), st.user("subject-b", "")
 	st.add(three, "alice@example.com", "", "viewer")
 	st.add(one, "alice@example.com", "", "", "project.view")
@@ -263,7 +254,7 @@ func (suite suite) testProjects(t *testing.T) {
 		}
 		ids := make([]uuid.UUID, len(listed))
 		for i, project := range listed {
-			if ids[i] = project.ID; project.Name != "test" || project.CreatedAt.IsZero() {
+			if ids[i] = project.ID; project.Slug == "" || project.CreatedAt.IsZero() {
 				t.Errorf("listed project = %+v", project)
 			}
 		}
@@ -297,7 +288,7 @@ func (suite suite) testProjects(t *testing.T) {
 func (suite suite) testPermissions(t *testing.T) {
 	t.Parallel()
 	st := membership{suite.open(t)}
-	project, other := st.project(), st.project()
+	project, other := st.project().ID, st.project().ID
 	alice, bob := st.user("subject-a", "alice@example.com"), st.user("subject-b", "")
 	st.add(project, "alice@example.com", "", "", "project.view", "sessions.view_all")
 	st.add(project, "", "team-a", "editor")

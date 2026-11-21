@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"regexp"
 	"slices"
 	"strconv"
 
@@ -53,6 +54,7 @@ func (e *apiError) Error() string { return e.Message }
 
 var (
 	errNotFound    = &apiError{status: http.StatusNotFound, Code: "not_found", Message: "no such resource"}
+	errSlugTaken   = &apiError{status: http.StatusConflict, Code: "slug_taken", Message: "the slug is already taken"}
 	errSessionBusy = &apiError{status: http.StatusConflict, Code: "session_busy", Message: "the session has an unfinished turn"}
 	errSessionOver = &apiError{status: http.StatusConflict, Code: "session_ended", Message: "the session has ended"}
 	errTurnEnded   = &apiError{status: http.StatusConflict, Code: "turn_ended", Message: "the turn has ended"}
@@ -60,6 +62,9 @@ var (
 	errQueueFull   = &apiError{status: http.StatusTooManyRequests, Code: "queue_full", Message: "too many turns are queued; retry later", retryAfter: 5}
 	errInternal    = &apiError{status: http.StatusInternalServerError, Code: "internal", Message: "internal error"}
 )
+
+// slugForm matches a slug: a lowercase DNS label (RFC 1035).
+var slugForm = regexp.MustCompile(`^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$`)
 
 // New returns the API handler. Event streams stay open until their clients
 // disconnect or closing is closed.
@@ -108,15 +113,16 @@ func New(st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Key
 
 func (a *api) createProject(w http.ResponseWriter, r *http.Request) error {
 	var request struct {
+		Slug string `json:"slug"`
 		Name string `json:"name"`
 	}
 	if err := decode(w, r, &request); err != nil {
 		return err
 	}
-	if request.Name == "" {
-		return invalid("name is required")
+	if err := checkSlug(request.Slug); err != nil {
+		return err
 	}
-	project, err := a.store.CreateProject(r.Context(), request.Name)
+	project, err := a.store.CreateProject(r.Context(), store.Project{Slug: request.Slug, Name: request.Name})
 	if err != nil {
 		return err
 	}
@@ -164,6 +170,8 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	var request struct {
+		Slug         string `json:"slug"`
+		Name         string `json:"name"`
 		Harness      string `json:"harness"`
 		Instructions string `json:"instructions"`
 		Approval     string `json:"approval"`
@@ -173,6 +181,9 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 		} `json:"model"`
 	}
 	if err := decode(w, r, &request); err != nil {
+		return err
+	}
+	if err := checkSlug(request.Slug); err != nil {
 		return err
 	}
 	if !a.driver.HasHarness(request.Harness) {
@@ -199,8 +210,8 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 		return invalid("model.name is required")
 	}
 	agent, err := a.store.CreateAgent(r.Context(), projectID, store.Agent{
-		Harness: request.Harness, Instructions: request.Instructions, Approval: request.Approval,
-		Model: store.Model{Provider: providerID, Name: request.Model.Name},
+		Slug: request.Slug, Name: request.Name, Harness: request.Harness, Instructions: request.Instructions,
+		Approval: request.Approval, Model: store.Model{Provider: providerID, Name: request.Model.Name},
 	})
 	if err != nil {
 		return err
@@ -554,6 +565,8 @@ func (h handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		failure = errQueueFull
 	case errors.Is(err, store.ErrMemberExists):
 		failure = errMemberExists
+	case errors.Is(err, store.ErrSlugTaken):
+		failure = errSlugTaken
 	default:
 		slog.ErrorContext(r.Context(), "request failed", "method", r.Method, "path", r.URL.Path, "error", err)
 		failure = errInternal
@@ -607,6 +620,16 @@ func queryID(r *http.Request, name string, absent uuid.UUID) (uuid.UUID, error) 
 
 func invalid(message string) error {
 	return &apiError{status: http.StatusBadRequest, Code: "invalid_request", Message: message}
+}
+
+func checkSlug(slug string) error {
+	switch {
+	case slug == "":
+		return invalid("slug is required")
+	case !slugForm.MatchString(slug):
+		return invalid("slug must be 1 to 63 lowercase letters, digits and hyphens, beginning with a letter and not ending with a hyphen")
+	}
+	return nil
 }
 
 func decode(w http.ResponseWriter, r *http.Request, into any) error {

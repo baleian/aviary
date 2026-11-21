@@ -37,7 +37,7 @@ func (s *supervisor) members(project string) []member {
 // a role or with custom permissions.
 func TestMembers(t *testing.T) {
 	s := install(t).supervisor()
-	project := s.create("/v1/projects", `{"name": "test"}`)
+	project := s.project()
 	if members := s.members(project); len(members) != 0 {
 		t.Errorf("members of a new project = %+v, want none", members)
 	}
@@ -125,7 +125,7 @@ func TestMembersAreGivenByAdministrators(t *testing.T) {
 	s.token = "an-administrator"
 	var admin me
 	s.request(http.MethodGet, "/v1/me", "", &admin)
-	project := s.create("/v1/projects", `{"name": "test"}`)
+	project := s.project()
 	var added member
 	if status, _ := s.request(http.MethodPost, "/v1/projects/"+project+"/members", `{"user": "alice@example.com", "role": "user"}`, &added); status != http.StatusCreated ||
 		added.UpdatedBy != admin.ID || admin.ID == "" || added.User == nil || added.User.ID != "" {
@@ -188,7 +188,7 @@ func TestProjectsOfACaller(t *testing.T) {
 	if none := projects("an-administrator"); len(none) != 0 {
 		t.Errorf("projects = %v, want none", none)
 	}
-	one, two, three := s.create("/v1/projects", `{"name": "one"}`), s.create("/v1/projects", `{"name": "two"}`), s.create("/v1/projects", `{"name": "three"}`)
+	one, two, three := s.project(), s.project(), s.project()
 	s.create("/v1/projects/"+one+"/members", `{"user": "alice@example.com", "role": "viewer"}`)
 	s.create("/v1/projects/"+three+"/members", `{"group": "team-a", "role": "user"}`)
 	for token, expected := range map[string][]string{
@@ -203,7 +203,7 @@ func TestProjectsOfACaller(t *testing.T) {
 
 	// Without an identity provider, every caller is an admin.
 	nobody := install(t).supervisor()
-	first, second := nobody.create("/v1/projects", `{"name": "one"}`), nobody.create("/v1/projects", `{"name": "two"}`)
+	first, second := nobody.project(), nobody.project()
 	s = nobody
 	if listed := projects(""); !slices.Equal(listed, []string{first, second}) {
 		t.Errorf("projects without an identity provider = %v, want both", listed)

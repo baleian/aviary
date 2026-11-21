@@ -63,10 +63,10 @@ func TestAgentNamesItsModel(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
 	s := aviary.supervisor()
-	project := s.create("/v1/projects", `{"name": "test"}`)
-	providers, agents := "/v1/projects/"+project+"/providers", "/v1/projects/"+project+"/agents"
-	provider := s.create(providers, `{"name": "a provider", "url": "https://api.example.com/custom/v2/", "api_key": {"value": "sk-the-first-key"}}`)
-	agent := s.create(agents, `{"harness": "opencode", "model": {"provider": "`+provider+`", "name": "a-model-of-the-provider"}}`)
+	project := s.project()
+	provider := s.create("/v1/projects/"+project+"/providers",
+		`{"name": "a provider", "url": "https://api.example.com/custom/v2/", "api_key": {"value": "sk-the-first-key"}}`)
+	agent := s.agent(project, `{"harness": "opencode", "model": {"provider": "`+provider+`", "name": "a-model-of-the-provider"}}`)
 	var read struct {
 		Model struct{ Provider, Name string }
 	}
@@ -187,7 +187,7 @@ func TestModelsThatAnAgentCannotName(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
 	s := aviary.supervisor()
-	project, other := s.create("/v1/projects", `{"name": "test"}`), s.create("/v1/projects", `{"name": "another"}`)
+	project, other := s.project(), s.project()
 	provider := s.create("/v1/projects/"+project+"/providers", `{"name": "a provider", "url": "https://api.example.com/v1"}`)
 	theirs := s.create("/v1/projects/"+other+"/providers", `{"name": "theirs", "url": "https://api.example.com/v1"}`)
 	for name, model := range map[string]string{
@@ -202,7 +202,7 @@ func TestModelsThatAnAgentCannotName(t *testing.T) {
 		"null":                        `null`,
 	} {
 		var refused struct{ Code, Message string }
-		status, _ := s.request("POST", "/v1/projects/"+project+"/agents", `{"harness": "opencode", "model": `+model+`}`, &refused)
+		status, _ := s.request("POST", "/v1/projects/"+project+"/agents", `{"slug": "an-agent", "harness": "opencode", "model": `+model+`}`, &refused)
 		if status != http.StatusBadRequest || refused.Code != "invalid_request" || refused.Message == "" {
 			t.Errorf("model %s: got %d %s %q, want 400 invalid_request", name, status, refused.Code, refused.Message)
 		}

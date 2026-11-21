@@ -147,11 +147,11 @@ address needs an entry in `egressProxy.extraEgress` (see
 Chat Completions API, and Codex one with the Responses API.
 
 ```sh
-project=$(curl -s -X POST localhost:8080/v1/projects -d '{"name": "demo"}' | jq -r .id)
+project=$(curl -s -X POST localhost:8080/v1/projects -d '{"slug": "demo"}' | jq -r .id)
 provider=$(curl -s -X POST localhost:8080/v1/projects/$project/providers \
   -d '{"name": "a model server", "url": "https://model-server.example.com/v1", "api_key": {"value": "..."}}' | jq -r .id)
 agent=$(curl -s -X POST localhost:8080/v1/projects/$project/agents \
-  -d '{"harness": "opencode", "model": {"provider": "'$provider'", "name": "..."}}' | jq -r .id)
+  -d '{"slug": "assistant", "harness": "opencode", "model": {"provider": "'$provider'", "name": "..."}}' | jq -r .id)
 session=$(curl -s -X POST localhost:8080/v1/agents/$agent/sessions | jq -r .id)
 
 turn=$(curl -s -X POST localhost:8080/v1/sessions/$session/messages \
@@ -174,14 +174,21 @@ and a request that needs a permission that the caller lacks returns 403.
 Administrators may do everything. Without an identity provider, requests are
 not authenticated, and every caller is an administrator.
 
+Paths name a project or an agent by its ID. Each also has a slug, chosen
+when it is created: 1 to 63 lowercase letters, digits and hyphens, beginning
+with a letter and not ending with a hyphen. A project's slug is unique in the
+installation, and an agent's slug is unique in its project. Slugs cannot be
+changed. The name of a project or an agent is optional and only for display;
+a client shows the slug when the name is empty.
+
 | Request | Description |
 | --- | --- |
-| `POST /v1/projects` | Creates a project. Body: `{"name": "..."}`. Administrators only. |
+| `POST /v1/projects` | Creates a project. Body: `{"slug": "...", "name": "..."}`. Returns 409 if another project has the slug. Administrators only. |
 | `POST /v1/projects/{id}/providers` | Creates a model provider in the project. Body: `{"name": "...", "url": "...", "api_key": {"value": "..."}}`. The URL is the base URL of a model endpoint, and the key is sent to it as a bearer token. A key in a secret store of the project is given by its location: `"api_key": {"store": "...", "path": "...", "key": "..."}`. An endpoint that takes no key has no `api_key`. See [Model providers](#model-providers). |
 | `PUT /v1/providers/{id}` | Replaces the name, the URL and the key of a provider together: a provider given no key has none afterwards. |
 | `POST /v1/projects/{id}/secret-stores` | Registers a secret store of the project. Body: `{"name": "...", "kind": "...", "settings": {...}, "credential": {"value": "..."}}`. See [Secret stores](#secret-stores). |
 | `PUT /v1/secret-stores/{id}` | Replaces the name, the kind, the settings and the credential of a secret store together. |
-| `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"harness": "...", "model": {"provider": "...", "name": "..."}, "instructions": "...", "approval": "ask"}`. The harness is one of the configured harnesses. The model is a provider of the project, by ID, and the provider's name for the model. The optional instructions are given to the agent before every turn. With `"approval": "ask"`, the agent asks a person before it acts (see [Approval](#approval)); without it, it asks nobody. |
+| `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"slug": "...", "name": "...", "harness": "...", "model": {"provider": "...", "name": "..."}, "instructions": "...", "approval": "ask"}`. The harness is one of the configured harnesses. The model is a provider of the project, by ID, and the provider's name for the model. The optional instructions are given to the agent before every turn. With `"approval": "ask"`, the agent asks a person before it acts (see [Approval](#approval)); without it, it asks nobody. Returns 409 if another agent of the project has the slug. |
 | `POST /v1/agents/{id}/sessions` | Creates a session, which belongs to the caller. With an identity provider, its `created_by` is the caller's user ID. |
 | `POST /v1/sessions/{id}/messages` | Sends a message. Body: `{"text": "..."}`. Returns 202 with the turn, whose `created_by` is set as for a session; 409 if a turn of the session has not ended or the session has ended; 429 with `Retry-After` if too many turns are queued. |
 | `DELETE /v1/sessions/{id}` | Ends a session. Returns 200 with the session, which then has `ended_at`. The session's sandbox is deleted with its volume and everything that the agent had in it, unless the storage class keeps the data of deleted volumes (see `runtime.volume` in [Configuration](#configuration)). The conversation stays readable, and the session accepts no more messages. Returns 409 if a turn of the session has not ended. |

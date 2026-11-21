@@ -190,7 +190,7 @@ func (t *turn) record() store.Turn {
 	return turn
 }
 
-func (s *Store) CreateProject(ctx context.Context, name string) (store.Project, error) {
+func (s *Store) CreateProject(ctx context.Context, project store.Project) (store.Project, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return store.Project{}, err
@@ -199,9 +199,14 @@ func (s *Store) CreateProject(ctx context.Context, name string) (store.Project, 
 		return store.Project{}, err
 	}
 	defer s.mu.Unlock()
-	project := store.Project{ID: id, Name: name, CreatedAt: s.now()}
-	s.projects[id] = project
-	return project, nil
+	for _, other := range s.projects {
+		if other.Slug == project.Slug {
+			return store.Project{}, store.ErrSlugTaken
+		}
+	}
+	created := store.Project{ID: id, Slug: project.Slug, Name: project.Name, CreatedAt: s.now()}
+	s.projects[id] = created
+	return created, nil
 }
 
 func (s *Store) Project(ctx context.Context, id uuid.UUID) (store.Project, error) {
@@ -228,12 +233,17 @@ func (s *Store) CreateAgent(ctx context.Context, projectID uuid.UUID, agent stor
 	if _, found := s.projects[projectID]; !found {
 		return store.Agent{}, store.ErrNotFound
 	}
+	for _, other := range s.agents {
+		if other.ProjectID == projectID && other.Slug == agent.Slug {
+			return store.Agent{}, store.ErrSlugTaken
+		}
+	}
 	if _, found := s.providers[agent.Model.Provider]; !found {
 		return store.Agent{}, fmt.Errorf("provider %s does not exist", agent.Model.Provider)
 	}
 	created := store.Agent{
-		ID: id, ProjectID: projectID, Harness: agent.Harness, CreatedAt: s.now(), Instructions: agent.Instructions,
-		Approval: agent.Approval, Model: agent.Model,
+		ID: id, ProjectID: projectID, Slug: agent.Slug, Name: agent.Name, Harness: agent.Harness, CreatedAt: s.now(),
+		Instructions: agent.Instructions, Approval: agent.Approval, Model: agent.Model,
 	}
 	s.agents[id] = created
 	return created, nil

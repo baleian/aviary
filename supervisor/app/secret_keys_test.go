@@ -32,7 +32,7 @@ func TestProviderWithItsKeyInASecretStore(t *testing.T) {
 	aviary := install(t)
 	s := aviary.supervisor()
 	const address, value = "https://" + storeHost, "sk-in-the-store"
-	project, other := s.create("/v1/projects", `{"name": "test"}`), s.create("/v1/projects", `{"name": "another"}`)
+	project, other := s.project(), s.project()
 	providers := "/v1/projects/" + project + "/providers"
 	kept := s.create("/v1/projects/"+project+"/secret-stores", scriptedStore("a store", address, "a-credential", "a-credential"))
 	theirs := s.create("/v1/projects/"+other+"/secret-stores", scriptedStore("theirs", address, "a-credential", "a-credential"))
@@ -126,11 +126,11 @@ func TestModelRequestWithAKeyFromASecretStore(t *testing.T) {
 	aviary := install(t)
 	s := aviary.supervisor()
 	const address = "https://" + storeHost
-	project := s.create("/v1/projects", `{"name": "test"}`)
+	project := s.project()
 	kept := s.create("/v1/projects/"+project+"/secret-stores", scriptedStore("a store", address, "a-credential", "a-credential"))
 	aviary.secrets.put(address, "llm/model", "api_key", "sk-the-first")
 	provider := s.create("/v1/projects/"+project+"/providers", keyed(in(kept, "llm/model", "api_key")))
-	agent := s.create("/v1/projects/"+project+"/agents", `{"harness": "opencode", "model": {"provider": "`+provider+`", "name": "a-model"}}`)
+	agent := s.agent(project, `{"harness": "opencode", "model": {"provider": "`+provider+`", "name": "a-model"}}`)
 	token := aviary.token(aviary.given(s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID).Sandbox)
 	// told returns the Authorization header that a Supervisor sets on a
 	// model request of the turn.

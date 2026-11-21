@@ -46,7 +46,7 @@ func TestCallersAreAskedWhoTheyAre(t *testing.T) {
 
 	send := func(method, path, authorization string) *http.Response {
 		t.Helper()
-		request, err := http.NewRequest(method, s.api+path, strings.NewReader(`{"name": "a project"}`))
+		request, err := http.NewRequest(method, s.api+path, strings.NewReader(`{"slug": "a-project"}`))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -202,7 +202,7 @@ func TestNobodyIsAskedWithoutAnIdentityProvider(t *testing.T) {
 		if status, _ := s.request(http.MethodGet, "/v1/me", "", &answer); status != http.StatusOK || !reflect.DeepEqual(answer, map[string]any{"admin": true}) {
 			t.Errorf("token %q: GET /v1/me = %d %v", token, status, answer)
 		}
-		if status, _ := s.request(http.MethodPost, "/v1/projects", `{"name": "a project"}`, nil); status != http.StatusCreated {
+		if status, _ := s.request(http.MethodPost, "/v1/projects", `{"slug": "`+unique("project")+`"}`, nil); status != http.StatusCreated {
 			t.Errorf("token %q: POST /v1/projects status %d, want 201", token, status)
 		}
 	}
@@ -294,7 +294,7 @@ func TestASessionIsOfItsCreator(t *testing.T) {
 		return caller, created, read
 	}
 	s.token = "an-administrator"
-	project := s.create("/v1/projects", `{"name": "test"}`)
+	project := s.project()
 	agent := s.agent(project, `{"harness": "opencode"}`)
 	s.create("/v1/projects/"+project+"/members", `{"user": "alice@example.com", "role": "user"}`)
 	s.create("/v1/projects/"+project+"/members", `{"user": "bob@example.com", "role": "user"}`)
@@ -345,7 +345,7 @@ func TestProxyIsToldWhoSentTheMessageOfATurn(t *testing.T) {
 	}
 	s := aviary.supervisor()
 	s.token = "an-administrator"
-	project := s.create("/v1/projects", `{"name": "test"}`)
+	project := s.project()
 	agent := s.agent(project, `{"harness": "opencode"}`)
 	s.create("/v1/projects/"+project+"/members", `{"user": "alice@example.com", "role": "user"}`)
 

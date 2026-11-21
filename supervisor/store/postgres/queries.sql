@@ -1,12 +1,12 @@
 -- name: CreateProject :one
-insert into projects (id, name) values (@id, @name) returning *;
+insert into projects (id, slug, name) values (@id, @slug, @name) returning *;
 
 -- name: GetProject :one
 select * from projects where id = @id;
 
 -- name: CreateAgent :one
-insert into agents (id, project_id, harness, instructions, approval, provider_id, model)
-select @id::uuid, projects.id, @harness::text, @instructions::text, @approval::text,
+insert into agents (id, project_id, slug, name, harness, instructions, approval, provider_id, model)
+select @id::uuid, projects.id, @slug::text, @name::text, @harness::text, @instructions::text, @approval::text,
        @provider_id::uuid, @model::text
 from projects where projects.id = @project_id
 returning *;

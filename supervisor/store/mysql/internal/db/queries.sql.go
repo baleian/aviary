@@ -236,14 +236,16 @@ func (q *Queries) CountRunningTurns(ctx context.Context) (int64, error) {
 }
 
 const createAgent = `-- name: CreateAgent :execrows
-insert into agents (id, project_id, harness, instructions, approval, provider_id, model)
-select ?, projects.id, ?, ?, ?,
-       ?, ?
+insert into agents (id, project_id, slug, name, harness, instructions, approval, provider_id, model)
+select ?, projects.id, ?, ?, ?, ?,
+       ?, ?, ?
 from projects where projects.id = ?
 `
 
 type CreateAgentParams struct {
 	ID           key.ID
+	Slug         string
+	Name         string
 	Harness      string
 	Instructions string
 	Approval     string
@@ -255,6 +257,8 @@ type CreateAgentParams struct {
 func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, createAgent,
 		arg.ID,
+		arg.Slug,
+		arg.Name,
 		arg.Harness,
 		arg.Instructions,
 		arg.Approval,
@@ -269,16 +273,17 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (int64
 }
 
 const createProject = `-- name: CreateProject :exec
-insert into projects (id, name) values (?, ?)
+insert into projects (id, slug, name) values (?, ?, ?)
 `
 
 type CreateProjectParams struct {
 	ID   key.ID
+	Slug string
 	Name string
 }
 
 func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) error {
-	_, err := q.db.ExecContext(ctx, createProject, arg.ID, arg.Name)
+	_, err := q.db.ExecContext(ctx, createProject, arg.ID, arg.Slug, arg.Name)
 	return err
 }
 
@@ -603,7 +608,7 @@ func (q *Queries) FreeUsername(ctx context.Context, arg FreeUsernameParams) erro
 }
 
 const getAgent = `-- name: GetAgent :one
-select id, project_id, harness, instructions, approval, provider_id, model, created_at from agents where id = ?
+select id, project_id, slug, name, harness, instructions, approval, provider_id, model, created_at from agents where id = ?
 `
 
 func (q *Queries) GetAgent(ctx context.Context, id key.ID) (Agent, error) {
@@ -612,6 +617,8 @@ func (q *Queries) GetAgent(ctx context.Context, id key.ID) (Agent, error) {
 	err := row.Scan(
 		&i.ID,
 		&i.ProjectID,
+		&i.Slug,
+		&i.Name,
 		&i.Harness,
 		&i.Instructions,
 		&i.Approval,
@@ -694,13 +701,18 @@ func (q *Queries) GetMember(ctx context.Context, id key.ID) (GetMemberRow, error
 }
 
 const getProject = `-- name: GetProject :one
-select id, name, created_at from projects where id = ?
+select id, slug, name, created_at from projects where id = ?
 `
 
 func (q *Queries) GetProject(ctx context.Context, id key.ID) (Project, error) {
 	row := q.db.QueryRowContext(ctx, getProject, id)
 	var i Project
-	err := row.Scan(&i.ID, &i.Name, &i.CreatedAt)
+	err := row.Scan(
+		&i.ID,
+		&i.Slug,
+		&i.Name,
+		&i.CreatedAt,
+	)
 	return i, err
 }
 
@@ -878,7 +890,7 @@ func (q *Queries) IsSessionBusy(ctx context.Context, sessionID key.ID) (bool, er
 }
 
 const listAgents = `-- name: ListAgents :many
-select id, project_id, harness, instructions, approval, provider_id, model, created_at from agents where project_id = ? order by created_at, id
+select id, project_id, slug, name, harness, instructions, approval, provider_id, model, created_at from agents where project_id = ? order by created_at, id
 `
 
 func (q *Queries) ListAgents(ctx context.Context, projectID key.ID) ([]Agent, error) {
@@ -893,6 +905,8 @@ func (q *Queries) ListAgents(ctx context.Context, projectID key.ID) ([]Agent, er
 		if err := rows.Scan(
 			&i.ID,
 			&i.ProjectID,
+			&i.Slug,
+			&i.Name,
 			&i.Harness,
 			&i.Instructions,
 			&i.Approval,
@@ -1026,7 +1040,7 @@ func (q *Queries) ListPermissions(ctx context.Context, arg ListPermissionsParams
 }
 
 const listProjects = `-- name: ListProjects :many
-select id, name, created_at from projects order by created_at, id
+select id, slug, name, created_at from projects order by created_at, id
 `
 
 func (q *Queries) ListProjects(ctx context.Context) ([]Project, error) {
@@ -1038,7 +1052,12 @@ func (q *Queries) ListProjects(ctx context.Context) ([]Project, error) {
 	var items []Project
 	for rows.Next() {
 		var i Project
-		if err := rows.Scan(&i.ID, &i.Name, &i.CreatedAt); err != nil {
+		if err := rows.Scan(
+			&i.ID,
+			&i.Slug,
+			&i.Name,
+			&i.CreatedAt,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1053,7 +1072,7 @@ func (q *Queries) ListProjects(ctx context.Context) ([]Project, error) {
 }
 
 const listProjectsOfMember = `-- name: ListProjectsOfMember :many
-select projects.id, projects.name, projects.created_at from projects
+select projects.id, projects.slug, projects.name, projects.created_at from projects
 where exists (
     select 1 from project_members
     where project_members.project_id = projects.id
@@ -1087,7 +1106,12 @@ func (q *Queries) ListProjectsOfMember(ctx context.Context, arg ListProjectsOfMe
 	var items []Project
 	for rows.Next() {
 		var i Project
-		if err := rows.Scan(&i.ID, &i.Name, &i.CreatedAt); err != nil {
+		if err := rows.Scan(
+			&i.ID,
+			&i.Slug,
+			&i.Name,
+			&i.CreatedAt,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

@@ -22,6 +22,7 @@ var (
 	ErrSessionEnded = errors.New("session has ended")
 	ErrQueueFull    = errors.New("turn queue is full")
 	ErrMemberExists = errors.New("member already exists")
+	ErrSlugTaken    = errors.New("slug is taken")
 	ErrTurnEnded    = errors.New("turn has ended")
 )
 
@@ -39,7 +40,10 @@ const (
 )
 
 type Project struct {
-	ID        uuid.UUID `json:"id"`
+	ID uuid.UUID `json:"id"`
+	// Slug is unique among the projects.
+	Slug string `json:"slug"`
+	// Name is a display name. It is empty if none was given.
 	Name      string    `json:"name"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -60,6 +64,10 @@ type User struct {
 type Agent struct {
 	ID        uuid.UUID `json:"id"`
 	ProjectID uuid.UUID `json:"project_id"`
+	// Slug is unique among the agents of the project.
+	Slug string `json:"slug"`
+	// Name is a display name. It is empty if none was given.
+	Name      string    `json:"name"`
 	Harness   string    `json:"harness"`
 	CreatedAt time.Time `json:"created_at"`
 	// Instructions, if not empty, are given to the agent before every turn.
@@ -347,7 +355,9 @@ type Store interface {
 	// Close closes the connections to the database.
 	Close()
 
-	CreateProject(ctx context.Context, name string) (Project, error)
+	// CreateProject creates the project. It returns ErrSlugTaken if another
+	// project has its slug.
+	CreateProject(ctx context.Context, project Project) (Project, error)
 
 	Project(ctx context.Context, id uuid.UUID) (Project, error)
 
@@ -397,9 +407,9 @@ type Store interface {
 	// order. It returns ErrNotFound if there is no such role.
 	SetRole(ctx context.Context, name string, permissions []string, by uuid.UUID) (Role, error)
 
-	// CreateAgent creates an agent in the project with the harness,
-	// instructions, approval and model of agent. It returns ErrNotFound if the
-	// project does not exist, and an error if the model's provider does not.
+	// CreateAgent creates the agent in the project. It returns ErrNotFound if
+	// the project does not exist, ErrSlugTaken if another agent of the project
+	// has its slug, and an error if the provider of its model does not exist.
 	CreateAgent(ctx context.Context, projectID uuid.UUID, agent Agent) (Agent, error)
 
 	Agent(ctx context.Context, id uuid.UUID) (Agent, error)

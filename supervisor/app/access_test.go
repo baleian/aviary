@@ -46,7 +46,7 @@ func TestWhoMayDoWhat(t *testing.T) {
 	s := installation.supervisor()
 
 	s.token = "admin"
-	project, other := s.create("/v1/projects", `{"name": "test"}`), s.create("/v1/projects", `{"name": "other"}`)
+	project, other := s.project(), s.project()
 	members := "/v1/projects/" + project + "/members"
 	for _, role := range []string{"owner", "editor", "user", "viewer", "auditor"} {
 		s.create(members, `{"user": "`+role+`@example.com", "role": "`+role+`"}`)

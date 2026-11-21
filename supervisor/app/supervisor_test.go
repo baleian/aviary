@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -245,6 +246,19 @@ func (s *supervisor) create(path, body string) string {
 	return created.ID
 }
 
+var lastSlug atomic.Int64
+
+// unique returns a slug that it has not returned before.
+func unique(prefix string) string {
+	return prefix + "-" + strconv.FormatInt(lastSlug.Add(1), 10)
+}
+
+// project creates a project with a slug of its own and returns its ID.
+func (s *supervisor) project() string {
+	s.t.Helper()
+	return s.create("/v1/projects", `{"slug": "`+unique("project")+`"}`)
+}
+
 // session creates a session of a new agent in a new project. agent is the
 // JSON body of the agent, which defaults to an OpenCode agent.
 func (s *supervisor) session(agent ...string) string {
@@ -253,10 +267,11 @@ func (s *supervisor) session(agent ...string) string {
 	if len(agent) > 0 {
 		body = agent[0]
 	}
-	return s.create("/v1/agents/"+s.agent(s.create("/v1/projects", `{"name": "test"}`), body)+"/sessions", "")
+	return s.create("/v1/agents/"+s.agent(s.project(), body)+"/sessions", "")
 }
 
-// agent creates an agent from body, with a model of a new provider of the
+// agent creates an agent from body and returns its ID. Unless body has them,
+// the agent gets a slug of its own and a model of a new provider of the
 // project.
 func (s *supervisor) agent(project, body string) string {
 	s.t.Helper()
@@ -264,9 +279,14 @@ func (s *supervisor) agent(project, body string) string {
 	if err := json.Unmarshal([]byte(body), &settings); err != nil {
 		s.t.Fatal(err)
 	}
-	provider := s.create("/v1/projects/"+project+"/providers",
-		`{"name": "a provider", "url": "https://api.example.com/v1", "api_key": {"value": "sk-a-key"}}`)
-	settings["model"] = map[string]string{"provider": provider, "name": "a-model"}
+	if _, given := settings["slug"]; !given {
+		settings["slug"] = unique("agent")
+	}
+	if _, given := settings["model"]; !given {
+		provider := s.create("/v1/projects/"+project+"/providers",
+			`{"name": "a provider", "url": "https://api.example.com/v1", "api_key": {"value": "sk-a-key"}}`)
+		settings["model"] = map[string]string{"provider": provider, "name": "a-model"}
+	}
 	with, err := json.Marshal(settings)
 	if err != nil {
 		s.t.Fatal(err)

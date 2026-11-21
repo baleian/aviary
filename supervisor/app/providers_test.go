@@ -81,7 +81,7 @@ func TestProviders(t *testing.T) {
 		return record.APIKey, opened
 	}
 
-	project := s.create("/v1/projects", `{"name": "test"}`)
+	project := s.project()
 	providers := "/v1/projects/" + project + "/providers"
 	created := answer("POST", providers,
 		`{"name": "a provider", "url": "https://api.example.com/v1", "api_key": {"value": "`+first+`"}}`, http.StatusCreated)

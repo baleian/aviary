@@ -1,8 +1,11 @@
 -- +goose Up
 create table projects (
     id binary(16) primary key,
-    name mediumtext not null,
-    created_at datetime(6) not null default (now(6))
+    -- Compared exactly, not case-insensitively.
+    slug varchar(63) character set utf8mb4 collate utf8mb4_bin not null,
+    name mediumtext not null default (''),
+    created_at datetime(6) not null default (now(6)),
+    unique key projects_slug (slug)
 );
 
 -- Users as authenticated by the identity provider. Subjects and usernames are
@@ -101,6 +104,9 @@ create table providers (
 create table agents (
     id binary(16) primary key,
     project_id binary(16) not null,
+    -- Compared exactly, not case-insensitively.
+    slug varchar(63) character set utf8mb4 collate utf8mb4_bin not null,
+    name mediumtext not null default (''),
     harness mediumtext not null,
     -- Given to the agent before every turn, if not empty.
     instructions mediumtext not null default (''),
@@ -113,7 +119,8 @@ create table agents (
     model mediumtext not null,
     created_at datetime(6) not null default (now(6)),
     foreign key (project_id) references projects (id),
-    foreign key (provider_id) references providers (id)
+    foreign key (provider_id) references providers (id),
+    unique key agents_project_slug (project_id, slug)
 );
 
 create table sessions (

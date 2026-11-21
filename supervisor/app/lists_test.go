@@ -25,7 +25,7 @@ func TestLists(t *testing.T) {
 		return s
 	}
 
-	project, other := as("admin").create("/v1/projects", `{"name": "test"}`), s.create("/v1/projects", `{"name": "other"}`)
+	project, other := as("admin").project(), s.project()
 	members := map[string]string{}
 	for caller, role := range map[string]string{"ann": "user", "ben": "user", "viewer": "viewer", "auditor": "auditor"} {
 		members[caller] = s.create("/v1/projects/"+project+"/members", `{"user": "`+caller+`@example.com", "role": "`+role+`"}`)
@@ -54,7 +54,7 @@ func TestLists(t *testing.T) {
 		}
 	}
 	var empty struct{ Agents []agent }
-	if status, _ := as("admin").request("GET", "/v1/projects/"+s.create("/v1/projects", `{"name": "new"}`)+"/agents", "", &empty); status != http.StatusOK || empty.Agents == nil {
+	if status, _ := as("admin").request("GET", "/v1/projects/"+s.project()+"/agents", "", &empty); status != http.StatusOK || empty.Agents == nil {
 		t.Errorf("list agents of an empty project = %d %+v, want an empty list", status, empty.Agents)
 	}
 
@@ -138,7 +138,7 @@ func TestLists(t *testing.T) {
 // Without an identity provider, every session is listed to every caller.
 func TestListsOfAnInstallationThatAsksNobody(t *testing.T) {
 	s := install(t).supervisor()
-	agent := s.agent(s.create("/v1/projects", `{"name": "test"}`), `{"harness": "opencode"}`)
+	agent := s.agent(s.project(), `{"harness": "opencode"}`)
 	older, newer := s.create("/v1/agents/"+agent+"/sessions", ""), s.create("/v1/agents/"+agent+"/sessions", "")
 	var answer struct{ Sessions []struct{ ID string } }
 	if status, _ := s.request("GET", "/v1/agents/"+agent+"/sessions", "", &answer); status != http.StatusOK ||

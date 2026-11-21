@@ -72,7 +72,7 @@ func (i *installation) supervisor() (*Driver, func()) {
 // model is a-model of a new provider.
 func (i *installation) session(agent store.Agent) store.Session {
 	i.t.Helper()
-	project, err := i.store.CreateProject(ctx, "test")
+	project, err := i.store.CreateProject(ctx, store.Project{Slug: "project-" + uuid.NewString()})
 	if err != nil {
 		i.t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func (i *installation) session(agent store.Agent) store.Session {
 	if err != nil {
 		i.t.Fatal(err)
 	}
-	agent.Harness, agent.Model = "opencode", store.Model{Provider: provider.ID, Name: "a-model"}
+	agent.Slug, agent.Harness, agent.Model = "agent", "opencode", store.Model{Provider: provider.ID, Name: "a-model"}
 	made, err := i.store.CreateAgent(ctx, project.ID, agent)
 	if err != nil {
 		i.t.Fatal(err)

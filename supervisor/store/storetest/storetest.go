@@ -5,7 +5,9 @@ package storetest
 import (
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +24,13 @@ type Database interface {
 	// Age moves all recorded times of the turns and of their approval
 	// requests back by the given duration.
 	Age(t *testing.T, by time.Duration, turns ...uuid.UUID)
+}
+
+var lastSlug atomic.Int64
+
+// unique returns a slug that it has not returned before.
+func unique(prefix string) string {
+	return prefix + "-" + strconv.FormatInt(lastSlug.Add(1), 10)
 }
 
 // keeps reports whether kept is the same JSON value as given, allowing U+FFFD
@@ -87,11 +96,13 @@ func Run(t *testing.T, create func(t *testing.T) Database) {
 		"MembersWhoseUsernamesChange":          suite.testMembersWhoseUsernamesChange,
 		"Permissions":                          suite.testPermissions,
 		"Projects":                             suite.testProjects,
+		"ProjectSlugs":                         suite.testProjectSlugs,
 		"Roles":                                suite.testRoles,
 		"CreatedBy":                            suite.testCreatedBy,
 		"Users":                                suite.testUsers,
 		"ConcurrentUserOf":                     suite.testConcurrentUserOf,
 		"Agents":                               suite.testAgents,
+		"AgentSlugs":                           suite.testAgentSlugs,
 		"ListAgents":                           suite.testListAgents,
 		"ListSessions":                         suite.testListSessions,
 		"SetSandbox":                           suite.testSetSandbox,

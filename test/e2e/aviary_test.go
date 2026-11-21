@@ -331,7 +331,7 @@ const (
 // Egress Proxy, which allows only the listed hosts and logs every request
 // with its turn.
 func egress(t *testing.T) {
-	project := create(t, "/v1/projects", `{"name": "e2e"}`)
+	project := newProject(t)
 	keyed := provider(t, project, mockKey)
 	agent := agentOf(t, project, keyed, harness(harnesses[0]))
 
@@ -408,7 +408,7 @@ func egress(t *testing.T) {
 // A turn's model requests go to the provider of its agent, with that
 // provider's key. A replaced key applies from the next request.
 func providers(t *testing.T) {
-	project := create(t, "/v1/projects", `{"name": "e2e"}`)
+	project := newProject(t)
 	// Two providers of the same model server, one with a key that it does
 	// not accept.
 	right, wrong := provider(t, project, mockKey), provider(t, project, "a-key-that-the-model-does-not-know")
@@ -443,7 +443,7 @@ func providers(t *testing.T) {
 // for the configured time, after which model requests carry the store's
 // current key.
 func secretStore(t *testing.T) {
-	project := create(t, "/v1/projects", `{"name": "e2e"}`)
+	project := newProject(t)
 	// The store's owner gives Aviary an AppRole that may read the secrets
 	// under a path of its own.
 	name := unique("e2e")
@@ -682,7 +682,7 @@ func callers(t *testing.T) {
 	}
 
 	// The member and the team are members of the first of two projects.
-	theirs, other := create(t, "/v1/projects", `{"name": "theirs"}`), create(t, "/v1/projects", `{"name": "other"}`)
+	theirs, other := newProject(t), newProject(t)
 	agent := agentOf(t, theirs, provider(t, theirs, mockKey), harness(harnesses[0]))
 	create(t, "/v1/projects/"+theirs+"/members", fmt.Sprintf(`{"user": %q, "role": "user"}`, member))
 	create(t, "/v1/projects/"+theirs+"/members", fmt.Sprintf(`{"group": %q, "role": "viewer"}`, team))
