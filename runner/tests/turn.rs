@@ -70,6 +70,21 @@ async fn turn_events_are_streamed_in_order() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn session_title_of_the_harness_is_reported() {
+    let home = Home::new();
+    let runner = start(runner(&home)).await;
+    // Session information without a title is not reported.
+    let events = runner
+        .run("t1", "title ; title Fix the build ; say done")
+        .await;
+    assert_eq!(
+        names(&events),
+        ["started", "session.update", "message.delta", "finished"]
+    );
+    assert_eq!(events[1].data, json!({"title": "Fix the build"}));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn harness_is_reused_across_turns() {
     let home = Home::new();
     let runner = start(runner(&home)).await;

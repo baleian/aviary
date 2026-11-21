@@ -77,6 +77,10 @@ func TestTurn(t *testing.T) {
 	runner.report(said("there"))
 	runner.report(message{"tool.call", map[string]string{"id": "t1", "title": "ls", "kind": "execute", "status": "pending"}})
 	runner.report(message{"tool.update", map[string]string{"id": "t1", "status": "completed", "output": "a.txt"}})
+	// The harness names its session, which is passed on. An event that
+	// clients do not know is not.
+	runner.report(message{"session.update", map[string]string{"title": "Greeting"}})
+	runner.report(message{"harness.note", map[string]string{"text": "for the runner only"}})
 	// The session takes no message while its turn runs.
 	var refusal struct{ Code string }
 	if status, _ := s.request("POST", "/v1/sessions/"+session+"/messages", `{"text": "again"}`, &refusal); status != http.StatusConflict || refusal.Code != "session_busy" {
@@ -85,9 +89,12 @@ func TestTurn(t *testing.T) {
 	runner.report(finished("end_turn", &store.Usage{TotalTokens: 18, InputTokens: 11, OutputTokens: 7}))
 
 	events := watching()
-	expected := []string{"turn.started", "message.delta", "message.delta", "tool.call", "tool.update", "turn.completed"}
+	expected := []string{"turn.started", "message.delta", "message.delta", "tool.call", "tool.update", "session.update", "turn.completed"}
 	if !slices.Equal(types(events), expected) {
 		t.Fatalf("event types = %v, want %v", types(events), expected)
+	}
+	if named := events[len(events)-2].Data; named != `{"title":"Greeting"}` {
+		t.Errorf("session.update data = %s, want the title", named)
 	}
 	var last struct {
 		StopReason string           `json:"stop_reason"`
@@ -113,6 +120,11 @@ func TestTurn(t *testing.T) {
 	}
 	if origin := s.origin(token, true); origin != nil {
 		t.Errorf("origin of an ended turn's token = %v, want nil", origin)
+	}
+	// The title is the client's to set: the session keeps its own.
+	var kept struct{ Title string }
+	if status, _ := s.request("GET", "/v1/sessions/"+session, "", &kept); status != http.StatusOK || kept.Title != "" {
+		t.Errorf("session after its harness named it = %d with the title %q, want its own empty title", status, kept.Title)
 	}
 
 	// The next turn runs in the same sandbox, where the harness keeps its

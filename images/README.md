@@ -34,7 +34,8 @@ The runner talks to the harness over its standard input and output with the
   message as text. The turn ends when the prompt returns, and the harness
   stays for the next turn.
 - **Events.** From `session/update` notifications, the runner reports the
-  agent's message and thought text, tool calls and their updates, and plans.
+  agent's message and thought text, tool calls and their updates, plans, and
+  a title that the harness gives the session.
 - **Cancellation.** To cancel a turn, the runner sends `session/cancel`. A
   harness that then ends the turn answers the prompt with the stop reason
   `cancelled`. A turn cancelled before its prompt is sent never reaches the

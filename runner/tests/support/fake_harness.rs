@@ -8,6 +8,8 @@
 //!   big <bytes>        calls a tool that returns that many bytes
 //!   flood <n> <bytes>  says n chunks of that many bytes each
 //!   plan <entry>       sends a plan with the entry
+//!   title [<text>]     gives the session the title, or with no text sends
+//!                      session information without a title
 //!   ask [<n>]          sends n permission requests at once (default 1), then
 //!                      says the option or outcome that each one got
 //!   instructions       says the contents of AVIARY_INSTRUCTIONS_FILE
@@ -269,6 +271,16 @@ impl Harness {
                         "entries": [{"content": rest, "priority": "medium", "status": "pending"}],
                     }),
                 ),
+                "title" => {
+                    let mut info = json!({
+                        "sessionUpdate": "session_info_update",
+                        "updatedAt": "2026-01-01T00:00:00Z",
+                    });
+                    if !rest.is_empty() {
+                        info["title"] = json!(rest);
+                    }
+                    self.update(session, info);
+                }
                 "ask" => {
                     let requests: Vec<String> = (0..rest.parse().unwrap_or(1))
                         .map(|request| format!("permission-{request}"))

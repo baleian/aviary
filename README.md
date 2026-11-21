@@ -225,6 +225,7 @@ a client shows the slug when the name is empty.
 | `tool.call` | `id`, `title`, `kind`, `status`, `input`: the agent started to use a tool. |
 | `tool.update` | `id`, and those of `title`, `kind`, `status`, `input` and `output` that changed. Text in `input` or `output` longer than `runtime.maxToolOutputBytes` is truncated, and says so at its end. |
 | `plan.update` | `entries`: the agent's plan, each entry with `content`, `priority` and `status`. |
+| `session.update` | `title`: a title that the harness gives the session. Aviary does not set it: a client that wants it changes the title of the session. |
 | `approval.requested` | The harness asks a person before it acts, and waits. `id`: the request. `tool_call`: what the harness is about to do, with the fields of `tool.call`. `options`: the possible answers, each with `id`, `name` and `kind`, which is `allow_once`, `allow_always`, `reject_once` or `reject_always`. |
 | `approval.resolved` | The harness has its answer to the request `id`. `outcome`: `selected` with the chosen `option_id`, or `cancelled` if the turn was stopped before an answer came. `answered_by`: with an identity provider, the ID of the user who answered. |
 | `turn.completed` | `stop_reason`: why the harness ended the turn. `usage`: the token usage that the harness reported, if any. The last event of the turn. |

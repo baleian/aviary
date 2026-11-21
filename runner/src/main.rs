@@ -761,6 +761,12 @@ fn event(update: SessionUpdate, longest: Option<usize>) -> Option<(&'static str,
         SessionUpdate::ToolCallUpdate(update) => {
             Some(("tool.update", tool_update(update, longest)))
         }
+        // The harness may name its session. An update without a title is
+        // about something else.
+        SessionUpdate::SessionInfoUpdate(info) => {
+            let title = info.title.take().filter(|title| !title.trim().is_empty())?;
+            Some(("session.update", json!({"title": title})))
+        }
         SessionUpdate::Plan(plan) => Some((
             "plan.update",
             json!({
