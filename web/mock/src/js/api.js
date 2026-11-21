@@ -117,8 +117,9 @@ export const api = {
   // changes and that the caller may read, as the session is after the change.
   // The stream does not repeat what happened before it opened, so onOpen()
   // is called each time it has opened: what was read before that may be out
-  // of date. If the connection breaks, it connects again. It returns a
-  // function that stops following.
+  // of date. If the connection breaks, or the API ends the stream as it does
+  // every few minutes, it connects again. It returns a function that stops
+  // following.
   changes(projectID, {onSession, onOpen = () => {}, onError = () => {}}) {
     const path = `/v1/projects/${projectID}/events`;
     let stop = () => {};
@@ -130,6 +131,9 @@ export const api = {
         entry.last = event.type;
         touch();
         if (event.type === 'session') onSession(JSON.parse(event.data));
+      }, () => {
+        stop('ended by the API');
+        connect();
       });
       entry.status = stream.response.status;
       touch();

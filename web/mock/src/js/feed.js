@@ -22,8 +22,8 @@ export const feed = {
   // the session as it is now, and as the feed knew it before, if it did.
   sessions: emitter(),
   // Emitted when what the views read may be out of date, so that they read
-  // it again: the stream has opened again after it broke, or the tab is shown
-  // again after it was hidden.
+  // it again: the stream has opened again, after it broke or the API ended
+  // it, or the tab is shown again after it was hidden.
   stale: emitter(),
 
   // watch follows the project with the ID, and no other. Without an ID it

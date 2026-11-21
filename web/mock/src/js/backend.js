@@ -211,11 +211,11 @@ function sessionRecord(session) {
 }
 
 // turnRecord is a turn with its items, which exist once the turn has ended,
-// and with the approval requests that wait while it has not.
+// and with the approval requests that wait for an answer while it has not.
 function turnRecord(turn) {
   const record = {...turn, items: db.items.get(turn.id) || []};
   if (!turn.ended_at) {
-    const waiting = [...(approvalsOf.get(turn.id)?.values() || [])].filter((asked) => !asked.resolved).map((asked) => asked.request);
+    const waiting = [...(approvalsOf.get(turn.id)?.values() || [])].filter((asked) => !asked.answered && !asked.resolved).map((asked) => asked.request);
     if (waiting.length) record.approvals = waiting;
   }
   return record;
@@ -929,7 +929,7 @@ route('POST', '/v1/turns/{tid}/approvals/{rid}', ({who, body}, tid, rid) => {
 // The events of a turn are a stream: see open().
 route('GET', '/v1/turns/{tid}/events', ({who}, tid) => [200, withTurn(who, tid, 'reads')]);
 // The changes of a project are a stream too: see watch().
-route('GET', '/v1/projects/{pid}/events', ({who}, pid) => [200, inProject(who, pid, 'project.view')], 'proposed');
+route('GET', '/v1/projects/{pid}/events', ({who}, pid) => [200, inProject(who, pid, 'project.view')]);
 
 route('GET', '/v1/projects/{pid}/providers', ({who}, pid) => {
   inProject(who, pid, 'project.view');
@@ -942,10 +942,8 @@ route('GET', '/v1/projects/{pid}/secret-stores', ({who}, pid) => {
 route('GET', '/v1/harnesses', () => [200, {harnesses: [...db.config.harnesses].sort().map((name) => ({name}))}]);
 
 // Fields that the mock adds to what the API returns today, as [pattern of
-// the path, "field name"].
-const ASSUMED = [
-  [/^\/v1\/(agents\/[^/]+\/sessions|sessions\/[^/]+)$/, 'field last_turn'],
-];
+// the path, "field name"]. There are none at present.
+const ASSUMED = [];
 
 // flagOf returns "proposed" for a request that the API does not have yet,
 // and "field x" for one whose answer has a field that the API does not have
@@ -1018,12 +1016,17 @@ export function open(turnID, {token = '', after = ''} = {}, onEvent, onEnd) {
   return {response: {status: 200, headers: {'Content-Type': 'text/event-stream'}, body: null}, close};
 }
 
+// How long a stream of changes stays open, in ms, or up to a quarter longer.
+const STREAM_LIFE = 5 * 60 * 1000;
+
 // watch answers GET /v1/projects/{id}/events. If the request is refused, it
 // returns the response. Otherwise it calls onEvent with a "session" event for
 // every session of the project that changes from then on and that the caller
-// may read: the session as it is after the change. The returned close() ends
-// the stream.
-export function watch(projectID, {token = ''} = {}, onEvent) {
+// may read: the session as it is after the change. The API ends the stream
+// after a few minutes, so that the caller's token and permissions are checked
+// again when the next one opens; onEnd is called then. The returned close()
+// ends the stream before that.
+export function watch(projectID, {token = ''} = {}, onEvent, onEnd = () => {}) {
   const response = request('GET', `/v1/projects/${projectID}/events`, {token});
   if (response.status !== 200) return {response};
   const who = identify(token);
@@ -1032,7 +1035,15 @@ export function watch(projectID, {token = ''} = {}, onEvent) {
   const own = held.includes('sessions.run');
   const feed = {project: projectID, sees: (session) => all || (own && session.created_by === who.id), onEvent};
   feeds.add(feed);
-  return {response: {status: 200, headers: {'Content-Type': 'text/event-stream'}, body: null}, close: () => feeds.delete(feed)};
+  const life = setTimeout(() => {
+    feeds.delete(feed);
+    onEnd();
+  }, STREAM_LIFE * (1 + Math.random() / 4));
+  const close = () => {
+    clearTimeout(life);
+    feeds.delete(feed);
+  };
+  return {response: {status: 200, headers: {'Content-Type': 'text/event-stream'}, body: null}, close};
 }
 
 // ---- The controls of the mock ---------------------------------------------
