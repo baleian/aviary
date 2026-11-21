@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -136,6 +138,11 @@ const Ask = "ask"
 func (d *Driver) HasHarness(name string) bool {
 	_, found := d.config.Harnesses[name]
 	return found
+}
+
+// Harnesses returns the names of the configured harnesses, sorted.
+func (d *Driver) Harnesses() []string {
+	return slices.Sorted(maps.Keys(d.config.Harnesses))
 }
 
 // Wake has the driver dispatch queued turns soon. It does not block.

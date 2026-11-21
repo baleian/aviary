@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"reflect"
 	"slices"
@@ -10,6 +11,8 @@ import (
 
 	"aviary/supervisor/identity"
 	"aviary/supervisor/internal/api"
+	"aviary/supervisor/internal/driver"
+	"aviary/supervisor/internal/sandbox"
 )
 
 // Agents are listed to every member of the project, and sessions to those
@@ -245,6 +248,34 @@ func TestListsOfConnections(t *testing.T) {
 	} {
 		if status, _ := as(refused.caller).request("GET", refused.path, "", nil); status != http.StatusNotFound {
 			t.Errorf("GET %s as %s: status %d, want 404", refused.path, refused.caller, status)
+		}
+	}
+}
+
+// The harnesses that agents can use are listed by name, as the installation
+// configures them, and an agent can be created with each.
+func TestListOfHarnesses(t *testing.T) {
+	t.Parallel()
+	type harnesses = []map[string]any
+	for _, test := range []struct {
+		configured map[string]sandbox.Harness
+		listed     harnesses
+	}{
+		{nil, harnesses{{"name": "codex"}, {"name": "opencode"}}},
+		{map[string]sandbox.Harness{"another": {Image: "registry.example.com/harness-another:1.0"}}, harnesses{{"name": "another"}}},
+	} {
+		s := install(t, func(config *driver.Config) {
+			if test.configured != nil {
+				config.Harnesses = test.configured
+			}
+		}).supervisor()
+		var answer struct{ Harnesses harnesses }
+		if status, _ := s.request("GET", "/v1/harnesses", "", &answer); status != http.StatusOK || !reflect.DeepEqual(answer.Harnesses, test.listed) {
+			t.Fatalf("GET /v1/harnesses = %d %v, want %v", status, answer.Harnesses, test.listed)
+		}
+		project := s.project()
+		for _, harness := range answer.Harnesses {
+			s.agent(project, fmt.Sprintf(`{"harness": %q}`, harness["name"]))
 		}
 	}
 }

@@ -77,6 +77,7 @@ func New(st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Key
 	// permissions of the members that are them or one of their groups.
 	mux.Handle("GET /v1/roles", handler(a.listRoles))
 	mux.Handle("PUT /v1/roles/{name}", a.administrator(a.setRole))
+	mux.Handle("GET /v1/harnesses", handler(a.listHarnesses))
 	mux.Handle("POST /v1/projects", a.administrator(a.createProject))
 	mux.Handle("GET /v1/projects", handler(a.listProjects))
 	mux.Handle("GET /v1/projects/{pid}", a.inProject(projectView, a.getProject))
@@ -163,6 +164,22 @@ func (a *api) getProject(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	respond(w, http.StatusOK, project)
+	return nil
+}
+
+// listHarnesses lists the harnesses that agents can use.
+func (a *api) listHarnesses(w http.ResponseWriter, _ *http.Request) error {
+	type harness struct {
+		Name string `json:"name"`
+	}
+	names := a.driver.Harnesses()
+	harnesses := make([]harness, len(names))
+	for i, name := range names {
+		harnesses[i] = harness{name}
+	}
+	respond(w, http.StatusOK, struct {
+		Harnesses []harness `json:"harnesses"`
+	}{harnesses})
 	return nil
 }
 
