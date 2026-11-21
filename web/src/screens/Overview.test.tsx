@@ -1,7 +1,10 @@
 // @vitest-environment happy-dom
-import { screen, within } from "@testing-library/react";
-import { afterEach, beforeAll, expect, it } from "vitest";
+import { act, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeAll, expect, it, vi } from "vitest";
+import { api } from "../api/client.ts";
 import { backend } from "../api/fake.ts";
+import { transport } from "../api/transport.ts";
+import type { Session } from "../api/types.ts";
 import { fast, leave, open } from "../testing.tsx";
 
 beforeAll(fast);
@@ -91,6 +94,62 @@ it("shows no more than the newest few sessions", async () => {
   expect(rows[0].textContent).toContain("Second of two");
   expect(rows[0].textContent).toContain("No messages yet");
   expect(rows[1].textContent).toContain("First of two");
+});
+
+it("follows the sessions as they change, without being read again", async () => {
+  open("/p/storefront", "alice");
+  const waiting = await screen.findByRole("link", {
+    name: /Backend engineer is waiting for you/,
+  });
+  const mock = await backend();
+  const request = (method: string, path: string, body: unknown = null) =>
+    mock.request(method, path, { token: "alice", body }).body;
+
+  // A session that is created shows at the top.
+  const id = waiting.getAttribute("href")!.split("/").pop()!;
+  const session = request("GET", `/v1/sessions/${id}`) as Session;
+  request("POST", `/v1/agents/${session.agent_id}/sessions`, {
+    title: "Made elsewhere",
+  });
+  const rows = within(document.querySelector<HTMLElement>(".rows")!);
+  expect(await rows.findByText("Made elsewhere")).toBeTruthy();
+  expect(rows.getAllByRole("link")[0].textContent).toContain("Made elsewhere");
+  expect(rows.getAllByRole("link").length).toBe(6);
+
+  // An answer to the request lets the turn go on, and nothing waits for the
+  // caller any longer.
+  const turn = session.last_turn!;
+  const asked = turn.approvals![0];
+  request("POST", `/v1/turns/${turn.id}/approvals/${asked.id}`, {
+    option_id: asked.options[0].id,
+  });
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("link", { name: /is waiting for you/ }),
+    ).toBeNull(),
+  );
+  expect(screen.queryByText("Needs you")).toBeNull();
+});
+
+it("reads the sessions only once it follows their changes", async () => {
+  const carrier = await transport();
+  let begin = () => {};
+  vi.spyOn(carrier, "stream").mockImplementationOnce(
+    (_path, _options, handlers) => {
+      begin = handlers.onOpen;
+      return () => {};
+    },
+  );
+  const get = vi.spyOn(api, "get");
+  const read = () =>
+    get.mock.calls.filter(([path]) => path.includes("/sessions?")).length;
+  open("/p/storefront", "alice");
+  await screen.findByText("Your recent sessions");
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  expect(read()).toBe(0);
+  act(() => begin());
+  await waitFor(() => expect(read()).toBe(4));
+  vi.restoreAllMocks();
 });
 
 it("shows only the caller's own sessions, and what their role allows", async () => {

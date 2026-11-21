@@ -65,3 +65,91 @@ describe("http", () => {
     expect(reply).toMatchObject({ status: 502, body: null });
   });
 });
+
+// streams has the API answer the next request with a stream of the chunks,
+// and returns what the stream called, in order.
+function streams(status: number, chunks: string[]) {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(new TextEncoder().encode(chunk));
+      }
+      controller.close();
+    },
+  });
+  const fetch = vi.fn(async () => new Response(body, { status }));
+  vi.stubGlobal("fetch", fetch);
+  const calls: unknown[] = [];
+  const handlers = {
+    onOpen: () => calls.push("open"),
+    onEvent: (event: unknown) => calls.push(event),
+    onEnd: () => calls.push("end"),
+    onError: (error: unknown) => calls.push({ error }),
+  };
+  return { fetch, calls, handlers };
+}
+
+describe("http.stream", () => {
+  it("reads the events of a stream, however they are cut into chunks", async () => {
+    const { fetch, calls, handlers } = streams(200, [
+      "id: 7-0\nevent: turn.started\ndata: {}\n\nid: 7-1\nevent: mess",
+      'age.delta\ndata: {"text": "Hel',
+      'lo"}\n\n: a comment keeps the connection alive\n\n',
+    ]);
+    http.stream("/v1/turns/t1/events", { token: "t0", after: "6-9" }, handlers);
+    await vi.waitFor(() => expect(calls).toContain("end"));
+    expect(fetch).toHaveBeenCalledWith(
+      "/v1/turns/t1/events",
+      expect.objectContaining({
+        headers: {
+          Accept: "text/event-stream",
+          Authorization: "Bearer t0",
+          "Last-Event-ID": "6-9",
+        },
+      }),
+    );
+    expect(calls).toEqual([
+      "open",
+      { id: "7-0", type: "turn.started", data: "{}" },
+      { id: "7-1", type: "message.delta", data: '{"text": "Hello"}' },
+      "end",
+    ]);
+  });
+
+  it("reports that the API refused the stream", async () => {
+    const { calls, handlers } = streams(404, ['{"code": "not_found"}']);
+    http.stream("/v1/projects/p1/events", { token: "" }, handlers);
+    await vi.waitFor(() => expect(calls.length).toBe(1));
+    expect(calls[0]).toMatchObject({
+      error: { status: 404, body: { code: "not_found" } },
+    });
+  });
+
+  it("reports that the connection broke, unless the stream was closed", async () => {
+    const calls: unknown[] = [];
+    const handlers = {
+      onOpen: () => calls.push("open"),
+      onEvent: () => {},
+      onEnd: () => calls.push("end"),
+      onError: (error: unknown) => calls.push(error),
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("fetch failed");
+      }),
+    );
+    http.stream("/v1/projects/p1/events", { token: "" }, handlers);
+    await vi.waitFor(() => expect(calls.length).toBe(1));
+    expect(calls[0]).toBeInstanceOf(TypeError);
+
+    const close = http.stream(
+      "/v1/projects/p1/events",
+      { token: "" },
+      handlers,
+    );
+    close();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(calls.length).toBe(1);
+  });
+});

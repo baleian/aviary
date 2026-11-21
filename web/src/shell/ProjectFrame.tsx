@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { Link, Outlet, useParams } from "react-router";
 import { ApiError } from "../api/client.ts";
+import { useFeed } from "../api/feed.ts";
 import { useProjectContext } from "../api/project.ts";
 import { sentence } from "../lib/format.ts";
 import { prefs } from "../lib/prefs.ts";
@@ -47,6 +48,7 @@ export function ProjectFrame() {
   const { project: slug = "" } = useParams();
   const found = useProjectContext(slug);
   const ready = found.state === "ready";
+  useFeed(ready ? found.context.project.id : undefined);
   // The console comes back to the project that was last in view.
   useEffect(() => {
     if (ready) prefs.set("project", slug);

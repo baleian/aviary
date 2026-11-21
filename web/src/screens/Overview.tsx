@@ -1,7 +1,7 @@
 import { useQueries } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import { Link } from "react-router";
-import { api } from "../api/client.ts";
+import { readSessions, useFeedReady } from "../api/feed.ts";
 import { can, type ProjectContext } from "../api/project.ts";
 import { type Tinted, useMe } from "../api/queries.ts";
 import type {
@@ -153,16 +153,13 @@ function SessionRow({ context, row }: { context: ProjectContext; row: Row }) {
 function useRecent(context: ProjectContext, me: Me) {
   const reads =
     can(context, "sessions.run") || can(context, "sessions.view_all");
+  // The sessions are read once the feed can keep them up to date.
+  const ready = useFeedReady();
   const lists = useQueries({
     queries: context.agents.map((agent) => ({
       queryKey: ["sessions", agent.id, { limit: RECENT }],
-      queryFn: async () =>
-        (
-          await api.get<{ sessions: Session[] }>(
-            `/v1/agents/${agent.id}/sessions?limit=${RECENT}`,
-          )
-        ).sessions,
-      enabled: reads,
+      queryFn: () => readSessions(agent.id, `limit=${RECENT}`),
+      enabled: reads && ready,
     })),
   });
   const rows: Row[] = [];
@@ -177,7 +174,7 @@ function useRecent(context: ProjectContext, me: Me) {
   rows.sort((a, b) => (a.session.id < b.session.id ? 1 : -1));
   return {
     rows: rows.slice(0, RECENT),
-    pending: reads && lists.some((list) => list.isPending),
+    pending: reads && (!ready || lists.some((list) => list.isPending)),
     error: lists.find((list) => list.error)?.error,
   };
 }
