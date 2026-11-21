@@ -67,7 +67,7 @@ serverFiles:
             target_label: pod
         metric_relabel_configs:
           - source_labels: [__name__]
-            regex: aviary_sandboxes
+            regex: aviary_(sandboxes|turns|turns_oldest_age_seconds|approvals_waiting)
             action: keep
       - job_name: aviary-egress-proxy
         kubernetes_sd_configs:
