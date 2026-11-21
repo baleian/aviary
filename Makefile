@@ -178,7 +178,13 @@ else
 		--version $(CNPG_CHART) \
 		--namespace cnpg-system --create-namespace \
 		--wait
-	$(KUBECTL) apply -f hack/kind/postgres.yaml
+# The webhook of the operator can refuse connections for a moment after the
+# operator's pod is ready.
+	for attempt in 1 2 3 4 5 6 7 8 9 10; do \
+		$(KUBECTL) apply -f hack/kind/postgres.yaml && break; \
+		[ $$attempt -lt 10 ] || exit 1; \
+		sleep 3; \
+	done
 endif
 	$(KUBECTL) get secret valkey-users --namespace aviary-data >/dev/null 2>&1 || \
 		$(KUBECTL) create secret generic valkey-users --namespace aviary-data \
