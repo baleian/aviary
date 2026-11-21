@@ -40,20 +40,18 @@ const turn = (more: Partial<Turn>): Turn => ({
 // show draws a turn, and returns its text and its element.
 function show(
   of: Partial<Turn>,
-  items: Item[] = [],
+  items: Item[] | null = [],
   more: {
     waking?: boolean;
     onStop?: () => void;
     onAgain?: (text: string) => void;
+    onAnswer?: (request: string, option: string) => Promise<boolean>;
   } = {},
 ) {
+  // Without items the turn is as its record has it before it has ended.
+  const drawn = items ? turn({ ...of, items }) : turn(of);
   const { container } = render(
-    <TurnView
-      turn={turn({ ...of, items })}
-      agent={agent}
-      person={person}
-      {...more}
-    />,
+    <TurnView turn={drawn} agent={agent} person={person} {...more} />,
   );
   const element = container.querySelector<HTMLElement>(".turn")!;
   return { element, text: element.textContent ?? "" };
@@ -194,6 +192,53 @@ it("leaves a tool call that waits for approval to its request", () => {
   const steps = element.querySelectorAll(".step");
   expect(steps.length).toBe(1);
   expect(steps[0].querySelector(".tag")!.textContent).toBe("read");
+  // The request comes where it was made: after the steps before it.
+  const blocks = [...element.querySelector(".ag-c")!.children];
+  expect(blocks.map((block) => block.className)).toEqual([
+    "ag-n",
+    "steps",
+    "appr",
+  ]);
+});
+
+it("shows a request that waits, and who may answer it", async () => {
+  const user = userEvent.setup();
+  const waits = { state: "running", ended_at: undefined } as const;
+  const options = [{ id: "once", name: "Allow once", kind: "allow_once" }];
+  const request = {
+    id: "r1",
+    tool_call: { id: "c1", kind: "execute", input: { command: "git push" } },
+    options,
+  };
+  // The record of a turn that has not ended lists the requests that wait,
+  // before its events have been read.
+  const onAnswer = vi.fn(() => Promise.resolve(true));
+  const onStop = vi.fn();
+  const listed = show({ ...waits, approvals: [request] }, null, {
+    onAnswer,
+    onStop,
+  });
+  const card = listed.element.querySelector(".appr")!;
+  expect(card.querySelector(".cmd")!.textContent).toBe("$git pushexecute");
+  await user.click(card.querySelector(".btn.pri")!);
+  expect(onAnswer).toHaveBeenCalledWith("r1", "once");
+  cleanup();
+
+  const read = show(waits, [{ type: "approval", ...request }], {
+    onAnswer,
+    onStop,
+  });
+  await user.click(read.element.querySelector(".appr .btn.grey")!);
+  expect(onStop).toHaveBeenCalledTimes(1);
+  cleanup();
+
+  // A caller who may not answer is told whose turn it is.
+  const other = show({ ...waits, created_by: "Bo" }, [
+    { type: "approval", ...request },
+  ]);
+  expect(other.element.querySelector(".appr-w")!.textContent).toBe(
+    "Waiting for Bo to answer",
+  );
 });
 
 it("says how many tokens a turn took, and why the model stopped", () => {

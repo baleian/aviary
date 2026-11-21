@@ -7,6 +7,7 @@ import { queryClient } from "../query.ts";
 import { api, ApiError, type TurnEvent } from "./client.ts";
 import {
   advance,
+  answerRequest,
   followTurn,
   joinTurn,
   olderSessions,
@@ -422,4 +423,18 @@ it("reads a session and its turns again", async () => {
   await rereadSession("s1");
   expect(invalidate).toHaveBeenCalledWith({ queryKey: ["session", "s1"] });
   expect(invalidate).toHaveBeenCalledWith({ queryKey: TURNS });
+});
+
+it("answers a request for approval, unless someone else has", async () => {
+  const post = answered({ id: "7", option_id: "once" });
+  expect(await answerRequest("t2", "7", "once")).toBe(true);
+  expect(post).toHaveBeenCalledWith("/v1/turns/t2/approvals/7", {
+    option_id: "once",
+  });
+  const taken = { code: "approval_answered", message: "already answered" };
+  post.mockRejectedValueOnce(new ApiError(409, taken, {}));
+  expect(await answerRequest("t2", "7", "once")).toBe(false);
+  const ended = new ApiError(409, { code: "turn_ended", message: "over" }, {});
+  post.mockRejectedValueOnce(ended);
+  await expect(answerRequest("t2", "7", "once")).rejects.toBe(ended);
 });

@@ -11,6 +11,7 @@ import type { IconName } from "../../ui/icons.ts";
 import { Time } from "../../ui/Time.tsx";
 import type { Who } from "../../ui/who.ts";
 import { CodeBlock, Markdown } from "./Markdown.tsx";
+import { Command, Request } from "./Request.tsx";
 import {
   changed,
   exitCode,
@@ -61,27 +62,6 @@ const DOING: Partial<Record<Status, string>> = {
   waiting: "is waiting for an answer",
   stopping: "is stopping",
 };
-
-function Command({
-  input,
-  kind,
-}: {
-  input: Record<string, unknown>;
-  kind?: string;
-}) {
-  return (
-    <div className={cls("cmd", !kind && "in")}>
-      <i>$</i>
-      <span>
-        {String(input.command)}
-        {!kind && typeof input.cwd === "string" && (
-          <small>in {input.cwd}</small>
-        )}
-      </span>
-      {kind && <span className="tag">{kind}</span>}
-    </div>
-  );
-}
 
 function Plan({ entries, over }: { entries: PlanEntry[]; over: boolean }) {
   const done = entries.filter((entry) => entry.status === "completed").length;
@@ -268,13 +248,20 @@ function Blocks({
   items,
   over,
   writing,
+  asker,
   person,
+  onAnswer,
+  onStop,
 }: {
   items: Item[];
   over: boolean;
   // Whether the agent may be writing the last item.
   writing: boolean;
+  // Who is to answer the requests of the turn.
+  asker: Who;
   person: (id?: string) => Who;
+  onAnswer?: (request: string, option: string) => Promise<boolean>;
+  onStop?: () => void;
 }) {
   const approvals = items.filter((item) => item.type === "approval");
   const asked = (call?: string) =>
@@ -311,8 +298,19 @@ function Blocks({
       return;
     }
     if (item.type === "approval") {
-      // The answer to a request shows with its tool call, if it has one.
-      if (item.outcome && !tools.has(item.tool_call?.id)) {
+      if (!item.outcome) {
+        close();
+        out.push(
+          <Request
+            key={index}
+            item={item}
+            asked={asker}
+            onAnswer={onAnswer}
+            onStop={onStop}
+          />,
+        );
+      } else if (!tools.has(item.tool_call?.id)) {
+        // The answer to a request shows with its tool call, if it has one.
         close();
         out.push(<Answered key={index} item={item} alone person={person} />);
       }
@@ -489,6 +487,7 @@ export const TurnView = memo(function TurnView({
   waking,
   onStop,
   onAgain,
+  onAnswer,
 }: {
   turn: Turn;
   agent: Tinted<Agent>;
@@ -502,9 +501,19 @@ export const TurnView = memo(function TurnView({
   // Takes the message of a turn that did not run to its end, to send it
   // again.
   onAgain?: (text: string) => void;
+  // Answers a request of the turn for approval with one of its options,
+  // for a caller who may. It reports whether the request has its answer.
+  onAnswer?: (request: string, option: string) => Promise<boolean>;
 }) {
   const stands = followed(turn);
-  const items = turn.items ?? [];
+  // The record of a turn that has not ended lists the requests that wait,
+  // which show before the events of the turn have been read.
+  const items =
+    turn.items ??
+    (turn.approvals ?? []).map((request): Item => ({
+      type: "approval",
+      ...request,
+    }));
   const over = !!turn.ended_at;
   const headline =
     turn.ended_at && turn.started_at ? (
@@ -547,7 +556,10 @@ export const TurnView = memo(function TurnView({
             items={items}
             over={over}
             writing={stands === "running"}
+            asker={person(turn.created_by)}
             person={person}
+            onAnswer={onAnswer}
+            onStop={onStop}
           />
           <Footer
             turn={turn}

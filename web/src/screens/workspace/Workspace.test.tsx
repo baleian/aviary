@@ -14,6 +14,8 @@ afterEach(async () => {
 });
 
 const BACKEND = "/p/storefront/agents/backend-engineer";
+// The session of the example data whose turn waits for approval.
+const RETRY = "Add retry with backoff to the webhook sender";
 const REVIEWER = "/p/storefront/agents/reviewer";
 
 // box returns the box in which the message is written.
@@ -50,8 +52,9 @@ async function list() {
   return within(nav);
 }
 
-// talk starts a session of the reviewer of Storefront, as if elsewhere.
-async function talk(title: string) {
+// talk starts a session of an agent of Storefront, as if elsewhere: of the
+// reviewer, who works without asking, unless another is named.
+async function talk(title: string, slug = "reviewer") {
   const mock = await backend();
   const request = (method: string, path: string, body: unknown = null) =>
     mock.request(method, path, { token: "alice", body }).body;
@@ -62,8 +65,8 @@ async function talk(title: string) {
   const { agents } = request("GET", `/v1/projects/${storefront.id}/agents`) as {
     agents: { id: string; slug: string }[];
   };
-  const reviewer = agents.find((each) => each.slug === "reviewer")!;
-  const session = request("POST", `/v1/agents/${reviewer.id}/sessions`, {
+  const agent = agents.find((each) => each.slug === slug)!;
+  const session = request("POST", `/v1/agents/${agent.id}/sessions`, {
     title,
   }) as { id: string };
   // send sends a message, and returns its turn.
@@ -73,8 +76,8 @@ async function talk(title: string) {
     };
   return {
     id: session.id,
-    agent: reviewer.id,
-    path: `/p/storefront/agents/reviewer/s/${session.id}`,
+    agent: agent.id,
+    path: `/p/storefront/agents/${slug}/s/${session.id}`,
     request,
     send,
     // say sends a message, and waits for the agent to have answered it.
@@ -676,6 +679,179 @@ it("says that a turn waits for a sandbox that sleeps to wake", async () => {
   } finally {
     mock.speed = 0;
   }
+});
+
+// card returns the request for approval that waits in the conversation.
+const card = () => screen.findByRole("group", { name: "Request for approval" });
+
+// A message that is no question has the agents of the mock work with their
+// tools, and the backend engineer asks before it changes a file.
+const WORK = "Note down that the total rounds twice, and run the tests.";
+
+it("answers a request for approval, and the turn goes on", async () => {
+  const user = open(await pathOf(RETRY), "alice");
+  const asking = await card();
+  expect(asking.querySelector("h3")!.textContent).toBe(
+    "May I run this command?",
+  );
+  expect(asking.querySelector(".cmd")!.textContent).toBe(
+    "$git push origin retry-backoffexecute",
+  );
+  expect(bar().textContent).toBe("Waiting for approvalStop turn");
+  await user.click(within(asking).getByRole("button", { name: "Allow once" }));
+  // The harness has its answer, and goes on to the end of the turn.
+  await waitFor(() =>
+    expect(document.querySelector(".conv-h .chip")!.textContent).toBe(
+      "Completed",
+    ),
+  );
+  expect(
+    screen.queryByRole("group", { name: "Request for approval" }),
+  ).toBeNull();
+  const newest = [...document.querySelectorAll(".turn")].at(-1)!;
+  const pushed = [...newest.querySelectorAll(".step")].at(-1)!;
+  expect(pushed.textContent).toContain("git push origin retry-backoff");
+  expect(pushed.querySelector(".answer")!.textContent).toBe(
+    "Allow once by Alice Kim",
+  );
+  expect(newest.textContent).toContain("Pushed. The branch");
+});
+
+it("refuses what an agent asks to do, one request after another", async () => {
+  const session = await talk("Asked twice", "backend-engineer");
+  const user = open(session.path, "alice");
+  await screen.findByRole("heading", { name: "Asked twice" });
+  await user.type(box(), WORK + "{Enter}");
+  // The change of a file comes first.
+  let asking = await card();
+  expect(asking.querySelector("h3")!.textContent).toBe(
+    "May I change this file?",
+  );
+  expect(asking.querySelector(".cmd")!.textContent).toBe(
+    "›/home/workspace/NOTES.mdedit",
+  );
+  expect(asking.querySelector(".code .ad")).toBeTruthy();
+  await user.click(within(asking).getByRole("button", { name: "Allow once" }));
+  // Then the command, which is refused.
+  await waitFor(async () =>
+    expect((await card()).querySelector(".cmd")!.textContent).toBe(
+      "$npm testexecute",
+    ),
+  );
+  asking = await card();
+  await user.click(within(asking).getByRole("button", { name: "Reject" }));
+  const turn = document.querySelector(".turn")!;
+  await waitFor(() =>
+    expect(turn.querySelector(".chip")!.textContent).toBe("Completed"),
+  );
+  const answers = [...turn.querySelectorAll(".step .answer")];
+  expect(answers.map((answer) => answer.textContent)).toEqual([
+    "Allow once by Alice Kim",
+    "Reject by Alice Kim",
+  ]);
+  expect(answers[1].className).toContain("no");
+});
+
+it("says so when someone else has answered a request first", async () => {
+  const user = open(await pathOf(RETRY), "alice");
+  const asking = await card();
+  const taken = { code: "approval_answered", message: "already answered" };
+  const post = vi
+    .spyOn(api, "post")
+    .mockRejectedValueOnce(new ApiError(409, taken, {}));
+  await user.click(within(asking).getByRole("button", { name: "Allow once" }));
+  expect(
+    await screen.findByText("Someone has already answered this request."),
+  ).toBeTruthy();
+  // The request waits for the harness to say that it has the answer.
+  expect(asking.querySelector(".appr-w")!.textContent).toBe("Allow once");
+  expect(post).toHaveBeenCalledTimes(1);
+});
+
+it("offers the answers again when one could not be sent", async () => {
+  const user = open(await pathOf(RETRY), "alice");
+  const asking = await card();
+  const refusal = { code: "forbidden", message: "you may not answer this" };
+  vi.spyOn(api, "post").mockRejectedValueOnce(new ApiError(403, refusal, {}));
+  await user.click(within(asking).getByRole("button", { name: "Reject" }));
+  expect(await screen.findByText("You may not answer this.")).toBeTruthy();
+  await waitFor(() => expect(asking.querySelector(".appr-a")).toBeTruthy());
+});
+
+it("stops a turn from its request for approval", async () => {
+  const user = open(await pathOf(RETRY), "alice");
+  const asking = await card();
+  await user.click(within(asking).getByRole("button", { name: "Stop turn" }));
+  const newest = () => [...document.querySelectorAll(".turn")].at(-1)!;
+  await waitFor(() =>
+    expect(newest().querySelector(".fail")?.textContent).toBe("Stopped"),
+  );
+  expect(
+    screen.queryByRole("group", { name: "Request for approval" }),
+  ).toBeNull();
+  // The request that was not answered says so.
+  expect(newest().querySelector(".answer.no")!.textContent).toBe(
+    "Not answered",
+  );
+});
+
+it("tells a caller who may not answer whose answer a turn waits for", async () => {
+  // Erin reads every session of Storefront, and controls her own.
+  open(await pathOf(RETRY), "erin");
+  const asking = await card();
+  expect(asking.querySelector(".appr-w")!.textContent).toMatch(
+    /^Waiting for .+ to answer$/,
+  );
+  expect(within(asking).queryByRole("button")).toBeNull();
+});
+
+it("tells the caller of a request that waits in another session", async () => {
+  const user = open("/p/storefront", "alice");
+  await screen.findByRole("heading", { name: /Storefront/ });
+  const session = await talk("Asks elsewhere", "backend-engineer");
+  session.send(WORK);
+  const told = await screen.findByText("is waiting for you");
+  expect(told.textContent).toBe("Backend engineer is waiting for you");
+  // A request is told of once, however its session changes meanwhile.
+  session.request("PATCH", "/v1/sessions/" + session.id, {
+    title: "Asks elsewhere",
+  });
+  session.request("PATCH", "/v1/sessions/" + session.id, {
+    title: "Still asks elsewhere",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  expect(screen.getAllByText("is waiting for you").length).toBe(1);
+  await user.click(screen.getByRole("link", { name: "Review" }));
+  // The request is in the conversation that opens, and is not told of
+  // again there.
+  expect(
+    await screen.findByRole("heading", { name: "Still asks elsewhere" }),
+  ).toBeTruthy();
+  const asking = await card();
+  expect(screen.queryByText("is waiting for you")).toBeNull();
+  await user.click(within(asking).getByRole("button", { name: "Allow once" }));
+  await waitFor(async () =>
+    expect((await card()).querySelector(".cmd")!.textContent).toBe(
+      "$npm testexecute",
+    ),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  expect(screen.queryByText("is waiting for you")).toBeNull();
+});
+
+it("tells nobody of a request that is not theirs to answer", async () => {
+  open("/p/storefront", "erin");
+  await screen.findByRole("heading", { name: /Storefront/ });
+  const session = await talk("Not hers to answer", "backend-engineer");
+  const turn = session.send(WORK);
+  await waitFor(() => {
+    const read = session.request("GET", "/v1/turns/" + turn.id) as {
+      approvals?: unknown[];
+    };
+    expect(read.approvals?.length).toBe(1);
+  });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  expect(screen.queryByText("is waiting for you")).toBeNull();
 });
 
 it("keeps the head of the conversation as its session is", async () => {

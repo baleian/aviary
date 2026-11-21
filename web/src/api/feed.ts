@@ -1,4 +1,4 @@
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useEffectEvent, useSyncExternalStore } from "react";
 import { queryClient } from "../query.ts";
 import { api } from "./client.ts";
 import type { Session } from "./types.ts";
@@ -105,13 +105,21 @@ export async function readSession(id: string): Promise<Session> {
 }
 
 // useFeed follows the changes of the project with the ID, while there is
-// one.
-export function useFeed(project: string | undefined) {
+// one. onChange is called with each session that changes, after the
+// console has it as it is.
+export function useFeed(
+  project: string | undefined,
+  onChange?: (session: Session) => void,
+) {
+  const tell = useEffectEvent((session: Session) => {
+    take(session);
+    onChange?.(session);
+  });
   useEffect(() => {
     if (!project) return;
     let opened = false;
     const stop = api.changes(project, {
-      onSession: take,
+      onSession: tell,
       onOpen: () => {
         if (opened) {
           void queryClient.invalidateQueries({ queryKey: ["sessions"] });

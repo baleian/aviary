@@ -6,6 +6,7 @@ import { useProjectContext } from "../api/project.ts";
 import { sentence } from "../lib/format.ts";
 import { prefs } from "../lib/prefs.ts";
 import { Blank } from "../ui/Blank.tsx";
+import { useAnnounce } from "./announce.tsx";
 import { Wait } from "./Signed.tsx";
 
 // Missing is the screen of what the caller cannot see: it does not exist,
@@ -48,7 +49,8 @@ export function ProjectFrame() {
   const { project: slug = "" } = useParams();
   const found = useProjectContext(slug);
   const ready = found.state === "ready";
-  useFeed(ready ? found.context.project.id : undefined);
+  const announce = useAnnounce(ready ? found.context : undefined);
+  useFeed(ready ? found.context.project.id : undefined, announce);
   // The console comes back to the project that was last in view.
   useEffect(() => {
     if (ready) prefs.set("project", slug);

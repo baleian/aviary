@@ -8,6 +8,7 @@ import {
 import { Link } from "react-router";
 import { ApiError } from "../../api/client.ts";
 import {
+  answerRequest,
   followTurn,
   joinTurn,
   olderTurns,
@@ -25,7 +26,7 @@ import { Blank, Empty, Loading } from "../../ui/Blank.tsx";
 import { Chip } from "../../ui/Chip.tsx";
 import { Icon } from "../../ui/Icon.tsx";
 import { Time } from "../../ui/Time.tsx";
-import { oops } from "../../ui/toast.ts";
+import { oops, toast } from "../../ui/toast.ts";
 import { person } from "../../ui/who.ts";
 import { barred, type Compose } from "./compose.ts";
 import { Composer, Gate } from "./Composer.tsx";
@@ -223,11 +224,23 @@ export function Conversation({
   }
 
   const live = unfinished ? newest : undefined;
-  // What stops the turn that has not ended, for a caller who may.
-  const stop =
-    live && controls(context, me, live)
-      ? () => void stopTurn(id, live.id).catch(oops)
-      : undefined;
+  // What stops the turn that has not ended and answers its requests, for
+  // a caller who may.
+  const may = live && controls(context, me, live);
+  const stop = may ? () => void stopTurn(id, live.id).catch(oops) : undefined;
+  const answer = may
+    ? async (request: string, option: string) => {
+        try {
+          if (!(await answerRequest(live.id, request, option))) {
+            toast("Someone has already answered this request.");
+          }
+          return true;
+        } catch (failure) {
+          oops(failure);
+          return false;
+        }
+      }
+    : undefined;
   const why = barred(context, me, session.data);
 
   return (
@@ -261,6 +274,7 @@ export function Conversation({
               person={who}
               waking={turn.id === compose.woken}
               onStop={turn.id === unfinished ? stop : undefined}
+              onAnswer={turn.id === unfinished ? answer : undefined}
               onAgain={why ? undefined : compose.fill}
             />
           ))}

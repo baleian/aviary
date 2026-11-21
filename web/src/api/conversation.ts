@@ -154,6 +154,28 @@ export async function stopTurn(session: string, id: string): Promise<void> {
   );
 }
 
+// answerRequest answers a request of a turn for approval with one of its
+// options. The events of the turn say when the harness has the answer. It
+// reports whether the answer was taken: a request has one answer, and
+// someone else may have given it.
+export async function answerRequest(
+  turn: string,
+  request: string,
+  option: string,
+): Promise<boolean> {
+  try {
+    await api.post(`/v1/turns/${turn}/approvals/${request}`, {
+      option_id: option,
+    });
+    return true;
+  } catch (error) {
+    if (error instanceof ApiError && error.code === "approval_answered") {
+      return false;
+    }
+    throw error;
+  }
+}
+
 // rereadSession reads a session and its turns again, after the API said
 // that they are not as the console has them.
 export function rereadSession(session: string): Promise<unknown> {
