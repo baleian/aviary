@@ -873,11 +873,6 @@ func ids(rows []key.ID) []uuid.UUID {
 	return ids
 }
 
-func (s *records) CancellingTurns(ctx context.Context) ([]uuid.UUID, error) {
-	rows, err := s.queries.CancellingTurns(ctx)
-	return ids(rows), err
-}
-
 func (s *records) Turn(ctx context.Context, id uuid.UUID) (store.Turn, error) {
 	row, err := s.queries.GetTurn(ctx, key.ID(id))
 	return turnFrom(row), found(err)

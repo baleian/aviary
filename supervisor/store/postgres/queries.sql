@@ -202,9 +202,6 @@ select ((select count(*) from turns where state = 'queued')
 -- name: QueuedTurns :many
 select id from turns where state = 'queued' order by created_at, id;
 
--- name: CancellingTurns :many
-select id from turns where ended_at is null and cancel_requested_at is not null;
-
 -- name: NextTurns :many
 -- Lists the oldest queued turns that have room to run among @max_running.
 select turns.id as turn_id, agents.harness, extract(epoch from now() - turns.created_at)::float8 as waited

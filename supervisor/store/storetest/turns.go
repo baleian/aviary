@@ -599,13 +599,7 @@ func (suite suite) testCancelTurn(t *testing.T) {
 		!again.CancelRequestedAt.Equal(*asked.CancelRequestedAt) {
 		t.Errorf("second CancelTurn of a running turn = %+v, %t: %v", again, unended, err)
 	}
-	if cancelling, err := st.CancellingTurns(ctx); err != nil || !slices.Equal(cancelling, []uuid.UUID{dispatch.TurnID}) {
-		t.Errorf("CancellingTurns = %v, want the running turn: %v", cancelling, err)
-	}
 	st.end(dispatch.TurnID, false, store.Failure{Reason: store.FailureSandboxLost})
-	if cancelling, err := st.CancellingTurns(ctx); err != nil || len(cancelling) != 0 {
-		t.Errorf("CancellingTurns after the turn ended = %v, want none: %v", cancelling, err)
-	}
 
 	// Cancelling a turn that has ended changes nothing.
 	completed := st.running(session)

@@ -184,9 +184,6 @@ select count(*) from turns where state in ('dispatching', 'running');
 -- name: QueuedTurns :many
 select id from turns where state = 'queued' order by created_at, id;
 
--- name: CancellingTurns :many
-select id from turns where ended_at is null and cancel_requested_at is not null;
-
 -- name: NextTurns :many
 select turns.id as turn_id, agents.harness, cast(timestampdiff(microsecond, turns.created_at, now(6)) as signed) as waited
 from turns

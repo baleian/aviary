@@ -577,10 +577,6 @@ type Store interface {
 	// positions are never announced out of order.
 	AnnounceQueue(ctx context.Context, announce func(queued []uuid.UUID) error) error
 
-	// CancellingTurns returns the unfinished turns whose cancellation was
-	// requested.
-	CancellingTurns(ctx context.Context) ([]uuid.UUID, error)
-
 	Turn(ctx context.Context, id uuid.UUID) (Turn, error)
 
 	// Turns returns up to limit turns of the session with sequence numbers

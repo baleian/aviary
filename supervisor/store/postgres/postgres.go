@@ -695,10 +695,6 @@ func (s *records) AnnounceQueue(ctx context.Context, announce func(queued []uuid
 	return tx.Commit(ctx)
 }
 
-func (s *records) CancellingTurns(ctx context.Context) ([]uuid.UUID, error) {
-	return s.queries.CancellingTurns(ctx)
-}
-
 func (s *records) Turn(ctx context.Context, id uuid.UUID) (store.Turn, error) {
 	row, err := s.queries.GetTurn(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {

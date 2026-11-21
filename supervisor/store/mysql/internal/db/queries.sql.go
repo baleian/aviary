@@ -175,33 +175,6 @@ func (q *Queries) CancelQueuedTurn(ctx context.Context, id key.ID) error {
 	return err
 }
 
-const cancellingTurns = `-- name: CancellingTurns :many
-select id from turns where ended_at is null and cancel_requested_at is not null
-`
-
-func (q *Queries) CancellingTurns(ctx context.Context) ([]key.ID, error) {
-	rows, err := q.db.QueryContext(ctx, cancellingTurns)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []key.ID
-	for rows.Next() {
-		var id key.ID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		items = append(items, id)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const claimMembers = `-- name: ClaimMembers :exec
 update project_members
 join users on users.username = project_members.username

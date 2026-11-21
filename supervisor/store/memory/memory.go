@@ -932,20 +932,6 @@ func (s *Store) AnnounceQueue(ctx context.Context, announce func(queued []uuid.U
 	return announce(queued)
 }
 
-func (s *Store) CancellingTurns(ctx context.Context) ([]uuid.UUID, error) {
-	if err := s.begin(ctx); err != nil {
-		return nil, err
-	}
-	defer s.mu.Unlock()
-	cancelling := []uuid.UUID{}
-	for _, turn := range s.created {
-		if turn.EndedAt == nil && turn.CancelRequestedAt != nil {
-			cancelling = append(cancelling, turn.ID)
-		}
-	}
-	return cancelling, nil
-}
-
 func (s *Store) Turn(ctx context.Context, id uuid.UUID) (store.Turn, error) {
 	if err := s.begin(ctx); err != nil {
 		return store.Turn{}, err
