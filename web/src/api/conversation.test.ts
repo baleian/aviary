@@ -1,11 +1,23 @@
+// @vitest-environment happy-dom
+import { QueryClientProvider } from "@tanstack/react-query";
+import { cleanup, renderHook, waitFor } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { queryClient } from "../query.ts";
-import { api } from "./client.ts";
-import { olderSessions, olderTurns } from "./conversation.ts";
+import { api, type TurnEvent } from "./client.ts";
+import {
+  advance,
+  followTurn,
+  joinTurn,
+  olderSessions,
+  olderTurns,
+  useTurns,
+} from "./conversation.ts";
 import type { SessionPage } from "./feed.ts";
 import type { Session, Turn } from "./types.ts";
 
 afterEach(() => {
+  cleanup();
   vi.restoreAllMocks();
   queryClient.clear();
 });
@@ -22,7 +34,8 @@ function answering() {
 }
 
 const TURNS = ["turns", "s1"];
-const turn = (seq: number) => ({ id: "t" + seq, seq }) as Turn;
+const turn = (seq: number, more: Partial<Turn> = {}) =>
+  ({ id: "t" + seq, seq, ...more }) as Turn;
 const seqs = () =>
   queryClient.getQueryData<Turn[]>(TURNS)!.map((each) => each.seq);
 
@@ -77,4 +90,233 @@ it("adds older sessions after the sessions that they were read for", async () =>
   answer({ sessions: [session("s5")] });
   await read;
   expect(listed()).toEqual([["s9", "s8"], true]);
+});
+
+it("adds a turn that the session got to the turns that were read", async () => {
+  queryClient.setQueryData(TURNS, []);
+  const invalidate = vi
+    .spyOn(queryClient, "invalidateQueries")
+    .mockResolvedValue();
+  const join = async (seq: number) => {
+    const answer = answering();
+    const joined = joinTurn("s1", "t" + seq);
+    expect(api.get).toHaveBeenCalledWith("/v1/turns/t" + seq);
+    answer(turn(seq));
+    await joined;
+  };
+  await join(1);
+  await join(2);
+  // A turn that is there is left alone.
+  await join(2);
+  await join(1);
+  expect(seqs()).toEqual([1, 2]);
+  expect(invalidate).not.toHaveBeenCalled();
+
+  // With more turns missing than the one, all are read again.
+  await join(5);
+  expect(seqs()).toEqual([1, 2]);
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: TURNS });
+});
+
+const NOW = "2026-11-22T10:00:05.000Z";
+const event = (
+  type: string,
+  data: Record<string, unknown> = {},
+): TurnEvent => ({
+  type,
+  data,
+});
+
+it("says where a turn is after each event that tells it", () => {
+  const queued = turn(1, { state: "queued" });
+  expect(advance(queued, event("turn.queued", { position: 2 }), NOW)).toEqual({
+    ...queued,
+    position: 2,
+  });
+  expect(advance(queued, event("turn.started"), NOW)).toEqual({
+    ...queued,
+    state: "running",
+    started_at: NOW,
+  });
+  const running = turn(1, { state: "running", started_at: "earlier" });
+  // A time that the turn has is kept.
+  expect(advance(running, event("turn.started"), NOW)).toEqual(running);
+  const ended = { ...running, ended_at: "later" };
+  expect(advance(ended, event("turn.cancelled"), NOW).ended_at).toBe("later");
+  const usage = { input_tokens: 5, output_tokens: 7 };
+  expect(
+    advance(
+      running,
+      event("turn.completed", { stop_reason: "end_turn", usage }),
+      NOW,
+    ),
+  ).toEqual({
+    ...running,
+    state: "completed",
+    stop_reason: "end_turn",
+    usage,
+    ended_at: NOW,
+  });
+  const failure = { reason: "timed_out", message: "too long" };
+  expect(advance(running, event("turn.failed", failure), NOW)).toEqual({
+    ...running,
+    state: "failed",
+    failure,
+    ended_at: NOW,
+  });
+  expect(advance(running, event("turn.cancelled"), NOW)).toEqual({
+    ...running,
+    state: "cancelled",
+    ended_at: NOW,
+  });
+  expect(advance(queued, event("turn.expired"), NOW)).toEqual({
+    ...queued,
+    state: "expired",
+    ended_at: NOW,
+  });
+  expect(advance(running, event("message.delta", { text: "x" }), NOW)).toBe(
+    running,
+  );
+});
+
+// following follows the turn t2 of the turns that were read, and returns
+// how to have an event of it come.
+function following(onError = vi.fn()) {
+  let tell!: (event: TurnEvent) => void;
+  const stop = vi.fn();
+  vi.spyOn(api, "events").mockImplementation((_turn, handlers) => {
+    tell = handlers.onEvent;
+    return stop;
+  });
+  expect(followTurn("s1", "t2", onError)).toBe(stop);
+  expect(api.events).toHaveBeenCalledWith("t2", expect.anything());
+  return (type: string, data: Record<string, unknown> = {}) =>
+    tell({ type, data });
+}
+
+const read = () => queryClient.getQueryData<Turn[]>(TURNS)!;
+
+it("keeps a turn as its events say it stands, with what it has said so far", () => {
+  queryClient.setQueryData(TURNS, [turn(1), turn(2, { state: "queued" })]);
+  const [first] = read();
+  const tell = following();
+  tell("turn.queued", { position: 2 });
+  expect(read()[1]).toMatchObject({ state: "queued", position: 2 });
+  tell("turn.started");
+  expect(read()[1].state).toBe("running");
+  const started = read()[1].started_at;
+  expect(Date.parse(started!)).toBeGreaterThan(Date.now() - 5000);
+  tell("message.delta", { text: "Hel" });
+  tell("message.delta", { text: "lo" });
+  expect(read()[1].items).toEqual([{ type: "message", text: "Hello" }]);
+  expect(read()[1].started_at).toBe(started);
+
+  // A request that waits makes the turn wait, until it has its answer.
+  tell("approval.requested", { id: "1", options: [] });
+  expect(read()[1].approvals).toMatchObject([{ id: "1" }]);
+  tell("approval.resolved", { id: "1", outcome: "selected", option_id: "a" });
+  expect(read()[1].approvals).toEqual([]);
+  expect(read()[1].items!.length).toBe(2);
+
+  // An event that is not of the turn changes nothing, and no other turn is
+  // touched.
+  const before = read();
+  tell("session.update", { title: "A title" });
+  expect(read()).toBe(before);
+  expect(read()[0]).toBe(first);
+});
+
+it("leaves a turn as its record has it once the turn has ended", () => {
+  const record = turn(2, {
+    state: "completed",
+    ended_at: "2026-11-22T10:00:09Z",
+    items: [{ type: "message", text: "From the record." }],
+  });
+  queryClient.setQueryData(TURNS, [record]);
+  // The events come again from the first, though the record was read
+  // meanwhile.
+  const tell = following();
+  tell("turn.started");
+  tell("message.delta", { text: "From" });
+  expect(read()[0]).toBe(record);
+});
+
+it("takes an agent that says something for one that has the message", () => {
+  queryClient.setQueryData(TURNS, [turn(2, { state: "queued" })]);
+  const tell = following();
+  tell("thought.delta", { text: "Hm." });
+  expect(read()[0]).toMatchObject({
+    state: "running",
+    items: [{ type: "thought", text: "Hm." }],
+  });
+  expect(read()[0].started_at).toBeTruthy();
+});
+
+it("puts the record of a turn in its place once the turn has ended", async () => {
+  queryClient.setQueryData(TURNS, [turn(2, { state: "running" })]);
+  const onError = vi.fn();
+  const tell = following(onError);
+  tell("message.delta", { text: "Almost." });
+  let answer = answering();
+  tell("turn.completed", { stop_reason: "end_turn" });
+  // The turn has ended at once, with what it said.
+  expect(read()[0]).toMatchObject({
+    state: "completed",
+    stop_reason: "end_turn",
+    items: [{ type: "message", text: "Almost." }],
+  });
+  expect(read()[0].ended_at).toBeTruthy();
+  expect(api.get).toHaveBeenCalledWith("/v1/turns/t2");
+  const record = turn(2, {
+    state: "completed",
+    ended_at: "2026-11-22T10:00:09Z",
+    items: [{ type: "message", text: "From the record." }],
+  });
+  answer(record);
+  await waitFor(() => expect(read()[0]).toEqual(record));
+  expect(onError).not.toHaveBeenCalled();
+
+  // A record that cannot be read leaves the turn as its events told it.
+  queryClient.setQueryData(TURNS, [turn(2, { state: "running" })]);
+  const failed = new Error("no answer");
+  vi.spyOn(api, "get").mockRejectedValue(failed);
+  answer = () => {};
+  tell("turn.cancelled");
+  await waitFor(() => expect(onError).toHaveBeenCalledWith(failed));
+  expect(read()[0].state).toBe("cancelled");
+});
+
+it("keeps what the events of a turn told when the turns are read again", async () => {
+  const told = turn(2, {
+    state: "queued",
+    position: 3,
+    items: [{ type: "message", text: "So far." }],
+  });
+  queryClient.setQueryData(TURNS, [
+    turn(1, { ended_at: "x", items: [{ type: "message", text: "Old." }] }),
+    told,
+  ]);
+  // The API lists the newest turn first, and a turn that has not ended
+  // without what it has said.
+  const answer = answering();
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client: queryClient }, children);
+  const { result } = renderHook(() => useTurns("s1"), { wrapper });
+  expect(api.get).toHaveBeenCalledWith("/v1/sessions/s1/turns?limit=20");
+  answer({
+    turns: [
+      turn(2, { state: "running", started_at: "y" }),
+      turn(1, { ended_at: "x", items: [{ type: "message", text: "New." }] }),
+    ],
+  });
+  await waitFor(() => expect(result.current.data![1].state).toBe("running"));
+  expect(result.current.data).toEqual([
+    turn(1, { ended_at: "x", items: [{ type: "message", text: "New." }] }),
+    turn(2, {
+      state: "running",
+      started_at: "y",
+      position: 3,
+      items: [{ type: "message", text: "So far." }],
+    }),
+  ]);
 });

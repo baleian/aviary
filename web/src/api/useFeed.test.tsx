@@ -66,6 +66,7 @@ it("has the sessions read again each time the stream has opened again", async ()
   // The API ends a stream after a few minutes, and the console opens it
   // again.
   await act(() => vi.advanceTimersByTimeAsync(7 * 60 * 1000));
-  expect(invalidate).toHaveBeenCalledTimes(1);
+  expect(invalidate).toHaveBeenCalledTimes(2);
   expect(invalidate).toHaveBeenCalledWith({ queryKey: ["sessions"] });
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: ["session"] });
 });

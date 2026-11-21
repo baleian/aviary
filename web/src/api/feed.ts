@@ -95,6 +95,15 @@ export async function readSessions(
   return { sessions: read.slice(0, limit - 1), more: read.length >= limit };
 }
 
+// readSession reads a session. If the session changes while it is read, it
+// is returned as the stream told it, which is newer.
+export async function readSession(id: string): Promise<Session> {
+  const since = clock;
+  const session = await api.get<Session>("/v1/sessions/" + id);
+  const newer = told.get(id);
+  return newer && newer.at > since ? newer.session : session;
+}
+
 // useFeed follows the changes of the project with the ID, while there is
 // one.
 export function useFeed(project: string | undefined) {
@@ -104,8 +113,10 @@ export function useFeed(project: string | undefined) {
     const stop = api.changes(project, {
       onSession: take,
       onOpen: () => {
-        if (opened)
+        if (opened) {
           void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+          void queryClient.invalidateQueries({ queryKey: ["session"] });
+        }
         opened = true;
         setReady(true);
       },

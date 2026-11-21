@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { api } from "./client.ts";
-import { readSessions, take } from "./feed.ts";
+import { readSession, readSessions, take } from "./feed.ts";
 import type { Session } from "./types.ts";
 
 const session = (id: string, title: string, agent = "a1"): Session => ({
@@ -39,6 +39,24 @@ it("returns a session that changed during the read as the stream told it", async
     "read",
     "read",
   ]);
+});
+
+it("returns a session that changed while it was read as the stream told it", async () => {
+  take(session("s2", "told before the read"));
+  for (const told of [false, true]) {
+    let answer!: (read: Session) => void;
+    const get = vi.spyOn(api, "get").mockReturnValue(
+      new Promise((resolve) => {
+        answer = resolve;
+      }),
+    );
+    const read = readSession("s2");
+    expect(get).toHaveBeenCalledWith("/v1/sessions/s2");
+    if (told) take(session("s2", "told during the read"));
+    take(session("s3", "another session"));
+    answer(session("s2", "read"));
+    expect((await read).title).toBe(told ? "told during the read" : "read");
+  }
 });
 
 it("adds the sessions that were created during the read of the newest", async () => {

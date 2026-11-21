@@ -1,4 +1,4 @@
-import { type Reply, transport } from "./transport.ts";
+import { type Reply, type ServerEvent, transport } from "./transport.ts";
 import type { Session } from "./types.ts";
 
 // ApiError is a request that the API refused.
@@ -84,48 +84,119 @@ export const api = {
       onError?: (error: ApiError) => void;
     },
   ): () => void {
-    let stopped = false;
-    let close = () => {};
-    let waiting: ReturnType<typeof setTimeout> | undefined;
-    let broken = 0;
-    const again = () => {
-      const ms = RETRY[Math.min(broken++, RETRY.length - 1)];
-      waiting = setTimeout(() => void open(), ms);
-    };
-    const open = async () => {
-      const carrier = await transport();
-      if (stopped) return;
-      close = carrier.stream(
-        `/v1/projects/${project}/events`,
-        { token },
-        {
-          onOpen: () => {
-            broken = 0;
-            handlers.onOpen?.();
-          },
-          onEvent: (event) => {
-            if (event.type === "session") {
-              handlers.onSession(JSON.parse(event.data) as Session);
-            }
-          },
-          onEnd: () => void open(),
-          onError: (error) => {
-            // What is in the way of the API, such as a proxy, answers for
-            // it while it restarts.
-            if (error instanceof Error || error.status >= 500) return again();
-            handlers.onError?.(refusal(error));
-          },
-        },
-      );
-    };
-    void open();
-    return () => {
-      stopped = true;
-      clearTimeout(waiting);
-      close();
-    };
+    return follow(`/v1/projects/${project}/events`, {
+      onOpen: handlers.onOpen,
+      onEvent: (event) => {
+        if (event.type === "session") {
+          handlers.onSession(JSON.parse(event.data) as Session);
+        }
+      },
+      onEnd: () => "now",
+      onError: handlers.onError,
+    });
+  },
+
+  // events follows the events of a turn: GET /v1/turns/{id}/events. It
+  // calls onEvent with each event, from the first of the turn to the one
+  // that says how the turn ended. A stream that breaks, or that the API
+  // ends before that, is opened again and goes on after the last event
+  // that came. It gives up, with onError, if the API refuses it. It returns
+  // a function that stops following.
+  events(
+    turn: string,
+    handlers: {
+      onEvent: (event: TurnEvent) => void;
+      onError?: (error: ApiError) => void;
+    },
+  ): () => void {
+    let last = "";
+    let over = false;
+    return follow(`/v1/turns/${turn}/events`, {
+      after: () => last,
+      onEvent: (event) => {
+        if (event.id) last = event.id;
+        over = isLast(event.type);
+        handlers.onEvent({ type: event.type, data: JSON.parse(event.data) });
+      },
+      onEnd: () => (over ? "never" : "later"),
+      onError: handlers.onError,
+    });
   },
 };
+
+// An event of a turn, with its data.
+export interface TurnEvent {
+  type: string;
+  data: Record<string, unknown>;
+}
+
+// isLast reports whether an event of the type is the last of its turn: it
+// says how the turn ended.
+export function isLast(type: string): boolean {
+  return [
+    "turn.completed",
+    "turn.failed",
+    "turn.cancelled",
+    "turn.expired",
+  ].includes(type);
+}
+
+// follow keeps a stream of the API open until it is stopped. A stream whose
+// connection breaks is opened again, later each time. When the API ends the
+// stream, onEnd says when to open it again: now, later as after a break, or
+// never. If the API refuses the stream, follow gives up, with onError.
+function follow(
+  path: string,
+  handlers: {
+    // The ID of the event to go on after, for a stream that can.
+    after?: () => string;
+    onOpen?: () => void;
+    onEvent: (event: ServerEvent) => void;
+    onEnd: () => "now" | "later" | "never";
+    onError?: (error: ApiError) => void;
+  },
+): () => void {
+  let stopped = false;
+  let close = () => {};
+  let waiting: ReturnType<typeof setTimeout> | undefined;
+  let broken = 0;
+  const again = () => {
+    const ms = RETRY[Math.min(broken++, RETRY.length - 1)];
+    waiting = setTimeout(() => void open(), ms);
+  };
+  const open = async () => {
+    const carrier = await transport();
+    if (stopped) return;
+    close = carrier.stream(
+      path,
+      { token, after: handlers.after?.() },
+      {
+        onOpen: () => {
+          broken = 0;
+          handlers.onOpen?.();
+        },
+        onEvent: handlers.onEvent,
+        onEnd: () => {
+          const next = handlers.onEnd();
+          if (next === "now") void open();
+          if (next === "later") again();
+        },
+        onError: (error) => {
+          // What is in the way of the API, such as a proxy, answers for
+          // it while it restarts.
+          if (error instanceof Error || error.status >= 500) return again();
+          handlers.onError?.(refusal(error));
+        },
+      },
+    );
+  };
+  void open();
+  return () => {
+    stopped = true;
+    clearTimeout(waiting);
+    close();
+  };
+}
 
 // refusal makes the error of an answer that refuses, and tells the listeners
 // if it refuses the token.

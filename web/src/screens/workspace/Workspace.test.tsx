@@ -1,12 +1,17 @@
 // @vitest-environment happy-dom
 import { focusManager } from "@tanstack/react-query";
-import { screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeAll, expect, it } from "vitest";
+import { act, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeAll, expect, it, vi } from "vitest";
+import { api } from "../../api/client.ts";
 import { backend } from "../../api/fake.ts";
+import { transport } from "../../api/transport.ts";
 import { fast, leave, open } from "../../testing.tsx";
 
 beforeAll(fast);
-afterEach(leave);
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await leave();
+});
 
 const BACKEND = "/p/storefront/agents/backend-engineer";
 
@@ -17,8 +22,7 @@ async function list() {
   return within(nav);
 }
 
-// talk starts a session of the reviewer of Storefront, as if elsewhere. The
-// agent answers each message that is said at once.
+// talk starts a session of the reviewer of Storefront, as if elsewhere.
 async function talk(title: string) {
   const mock = await backend();
   const request = (method: string, path: string, body: unknown = null) =>
@@ -34,12 +38,18 @@ async function talk(title: string) {
   const session = request("POST", `/v1/agents/${reviewer.id}/sessions`, {
     title,
   }) as { id: string };
+  // send sends a message, and returns its turn.
+  const send = (text: string) =>
+    request("POST", `/v1/sessions/${session.id}/messages`, { text }) as {
+      id: string;
+    };
   return {
     path: `/p/storefront/agents/reviewer/s/${session.id}`,
+    request,
+    send,
+    // say sends a message, and waits for the agent to have answered it.
     async say(text: string) {
-      const turn = request("POST", `/v1/sessions/${session.id}/messages`, {
-        text,
-      }) as { id: string };
+      const turn = send(text);
       await waitFor(() => {
         const read = request("GET", "/v1/turns/" + turn.id) as {
           ended_at?: string;
@@ -140,6 +150,7 @@ it("shows a member who reads only their own sessions just those", async () => {
 });
 
 it("opens a session at its newest turn", async () => {
+  const get = vi.spyOn(api, "get");
   const user = open(BACKEND, "alice");
   const sessions = await list();
   await user.click(
@@ -170,6 +181,9 @@ it("opens a session at its newest turn", async () => {
   // The list marks the session in view.
   const current = sessions.getByRole("link", { current: "page" });
   expect(current.textContent).toContain("Why does the checkout test flake");
+  // The turns came with their list: none is read by itself.
+  const paths = get.mock.calls.map(([path]) => path);
+  expect(paths.filter((path) => path.startsWith("/v1/turns/"))).toEqual([]);
 });
 
 it("reads the earlier turns of a long conversation when asked", async () => {
@@ -216,6 +230,134 @@ it("reads the turns of a session again when it is opened again", async () => {
   );
 });
 
+it("shows what the agent has said and done so far in a turn that has not ended", async () => {
+  const user = open(BACKEND, "alice");
+  const sessions = await list();
+  const row = () =>
+    sessions
+      .getAllByRole("link")
+      .find((link) => link.textContent?.includes("Add retry with backoff"))!;
+  expect(row().textContent).toContain("Needs approval");
+  const id = row().getAttribute("href")!.split("/").pop()!;
+  await user.click(row());
+  const newest = await waitFor(() => {
+    const turns = document.querySelectorAll(".turn");
+    expect(turns.length).toBe(3);
+    return turns[2];
+  });
+  // The record of a turn that has not ended has none of this: it comes
+  // with the events of the turn.
+  await waitFor(() =>
+    expect(newest.querySelector(".bub-a")?.textContent).toBe(
+      "I will create the branch and push it.",
+    ),
+  );
+  expect(newest.querySelector(".chip")!.textContent).toBe("Needs approval");
+  expect(newest.textContent).toContain("is waiting for an answer");
+  const head = () => document.querySelector(".conv-h .chip")!.textContent;
+  expect(head()).toBe("Waiting for approval");
+  // The branch was made, with Alice's leave. The push waits for an answer.
+  const steps = () => newest.querySelectorAll(".step");
+  expect(steps().length).toBe(1);
+  expect(steps()[0].textContent).toContain("git checkout -b retry-backoff");
+  expect(steps()[0].querySelector(".answer")!.textContent).toMatch(
+    /by Alice Kim$/,
+  );
+
+  // Someone answers elsewhere, and the turn goes on to its end.
+  const mock = await backend();
+  const request = (method: string, path: string, body: unknown = null) =>
+    mock.request(method, path, { token: "alice", body }).body;
+  const waiting = (
+    request("GET", "/v1/sessions/" + id) as {
+      last_turn: {
+        id: string;
+        approvals: { id: string; options: { id: string }[] }[];
+      };
+    }
+  ).last_turn;
+  const [asked] = waiting.approvals;
+  request("POST", `/v1/turns/${waiting.id}/approvals/${asked.id}`, {
+    option_id: asked.options[0].id,
+  });
+  await waitFor(() => expect(head()).toBe("Completed"));
+  expect(newest.querySelector(".chip")!.textContent).toBe("Completed");
+  expect(steps().length).toBe(2);
+  expect(steps()[1].textContent).toContain("git push origin retry-backoff");
+  expect(newest.textContent).toContain("Pushed. The branch");
+  expect(newest.querySelector(".typing")).toBeNull();
+  await waitFor(() => expect(row().textContent).toContain("Completed"));
+});
+
+it("shows a turn that begins elsewhere, and follows it", async () => {
+  const session = await talk("Joined");
+  await session.say("First");
+  open(session.path, "alice");
+  await waitFor(() =>
+    expect(document.querySelectorAll(".turn").length).toBe(1),
+  );
+  // The agent takes a moment over this one, as agents do.
+  const { mock } = await backend();
+  mock.speed = 0.05;
+  try {
+    await session.say("Second?");
+  } finally {
+    mock.speed = 0;
+  }
+  const second = await waitFor(() => {
+    const turns = document.querySelectorAll(".turn");
+    expect(turns.length).toBe(2);
+    return turns[1];
+  });
+  expect(second.querySelector(".bub-u")!.textContent).toBe("Second?");
+  await waitFor(() =>
+    expect(second.querySelector(".chip")!.textContent).toBe("Completed"),
+  );
+  expect(second.querySelector(".bub-a")!.textContent).toContain(
+    "You said: “Second?”",
+  );
+  expect(second.querySelector(".done-l")!.textContent).toMatch(/tokens in/);
+  const head = document.querySelector(".conv-h")!;
+  expect(head.textContent).toContain("2 turns");
+  expect(head.querySelector(".chip")!.textContent).toBe("Completed");
+});
+
+it("says where a turn that waits is in the queue", async () => {
+  const session = await talk("In the queue");
+  open(session.path, "alice");
+  await screen.findByRole("heading", { name: "In the queue" });
+  const { mock } = await backend();
+  // The turn waits long enough to be seen waiting.
+  mock.speed = 5;
+  mock.scenario = "queue";
+  try {
+    const turn = session.send("Wait for it.");
+    const shown = await waitFor(() => {
+      const found = document.querySelector(".turn");
+      expect(found).toBeTruthy();
+      return found!;
+    });
+    await waitFor(() =>
+      expect(shown.querySelector(".chip")!.textContent).toBe("Queued · 3"),
+    );
+    expect(shown.querySelector(".state")!.textContent).toBe(
+      "In the queue, 2 ahead",
+    );
+    const head = document.querySelector(".conv-h .chip")!;
+    expect(head.textContent).toBe("Queued");
+    session.request("POST", `/v1/turns/${turn.id}/cancel`);
+    await waitFor(() =>
+      expect(shown.querySelector(".fail")!.textContent).toBe(
+        "Cancelled before it started",
+      ),
+    );
+    expect(head.textContent).toBe("Cancelled");
+  } finally {
+    mock.speed = 0;
+    mock.scenario = "auto";
+  }
+});
+
 it("keeps the head of the conversation as its session is", async () => {
   const user = open(BACKEND, "alice");
   const sessions = await list();
@@ -232,6 +374,63 @@ it("keeps the head of the conversation as its session is", async () => {
   });
   expect(
     await screen.findByRole("heading", { name: "Renamed elsewhere" }),
+  ).toBeTruthy();
+});
+
+it("reads the sessions once the stream of the project is open, and not before", async () => {
+  const session = await talk("Read late");
+  const carrier = await transport();
+  const stream = carrier.stream.bind(carrier);
+  // The stream of the project is open when the test says so.
+  let opened: (() => void) | undefined;
+  vi.spyOn(carrier, "stream").mockImplementation((path, options, handlers) =>
+    path.startsWith("/v1/projects/")
+      ? stream(path, options, {
+          ...handlers,
+          onOpen: () => {
+            opened = handlers.onOpen;
+          },
+        })
+      : stream(path, options, handlers),
+  );
+  const get = vi.spyOn(api, "get");
+  open(session.path, "alice");
+  await waitFor(() => expect(opened).toBeTruthy());
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  const read = () =>
+    get.mock.calls
+      .map(([path]) => path)
+      .filter(
+        (path) =>
+          path === "/v1/sessions/" + session.path.split("/").pop() ||
+          path.startsWith("/v1/agents/"),
+      );
+  expect(read()).toEqual([]);
+  act(() => opened!());
+  expect(
+    await screen.findByRole("heading", { name: "Read late" }),
+  ).toBeTruthy();
+  await list();
+  expect(read().length).toBe(2);
+});
+
+it("shows a session as the stream told it while it was read", async () => {
+  const session = await talk("Before the read");
+  const path = "/v1/sessions/" + session.path.split("/").pop();
+  const get = api.get;
+  vi.spyOn(api, "get").mockImplementation(async (asked: string) => {
+    const body = await get(asked);
+    if (asked === path) {
+      // The stream tells of the change before the answer arrives, which
+      // is of the session as it was.
+      session.request("PATCH", path, { title: "Renamed during the read" });
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    }
+    return body;
+  });
+  open(session.path, "alice");
+  expect(
+    await screen.findByRole("heading", { name: "Renamed during the read" }),
   ).toBeTruthy();
 });
 

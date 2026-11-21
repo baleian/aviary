@@ -13,8 +13,9 @@ export interface Account {
 // What the console uses of web/mock/src/js/backend.js.
 interface Backend {
   // What the mock is set to do. speed is how fast it works: 1 is its usual
-  // pace, and 0 is at once.
-  mock: { speed: number };
+  // pace, and 0 is at once. scenario is what the next turn plays, such as
+  // "queue" for a turn that waits in the queue first.
+  mock: { speed: number; scenario: string };
   request(
     method: string,
     path: string,

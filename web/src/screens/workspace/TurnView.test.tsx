@@ -39,7 +39,7 @@ const turn = (more: Partial<Turn>): Turn => ({
 // show draws a turn, and returns its text and its element.
 function show(of: Partial<Turn>, items: Item[] = []) {
   const { container } = render(
-    <TurnView turn={turn(of)} items={items} agent={agent} person={person} />,
+    <TurnView turn={turn({ ...of, items })} agent={agent} person={person} />,
   );
   const element = container.querySelector<HTMLElement>(".turn")!;
   return { element, text: element.textContent ?? "" };
@@ -232,27 +232,53 @@ it("says why a turn failed, expired or was stopped", () => {
 
 it("says what a turn that has not ended is doing", () => {
   const running = { state: "running", ended_at: undefined } as const;
-  const queued = show({ ...running, state: "queued", started_at: undefined });
+  const waits = { ...running, state: "queued", started_at: undefined } as const;
+  const queued = show({ ...waits, position: 1 });
   expect(queued.text).toContain("is in the queue");
+  expect(queued.element.querySelector(".chip")!.textContent).toBe("Queued · 1");
   expect(queued.element.querySelector(".state")!.textContent).toBe(
-    "In the queue",
+    "In the queue, next to run",
   );
   cleanup();
-  const starting = show({ ...running, started_at: undefined });
-  expect(starting.element.querySelector(".chip")!.textContent).toBe("Starting");
-  expect(starting.element.querySelector(".state")!.textContent).toBe(
-    "Starting…",
+  const third = show({ ...waits, position: 3 });
+  expect(third.element.querySelector(".chip")!.textContent).toBe("Queued · 3");
+  expect(third.element.querySelector(".state")!.textContent).toBe(
+    "In the queue, 2 ahead",
   );
   cleanup();
+  // A turn without a place in the queue was taken, and waits for its
+  // sandbox.
+  for (const taken of [waits, { ...running, started_at: undefined }]) {
+    const starting = show(taken);
+    expect(starting.text).toContain("is starting");
+    expect(starting.element.querySelector(".chip")!.textContent).toBe(
+      "Starting",
+    );
+    expect(starting.element.querySelector(".state")!.textContent).toBe(
+      "Starting…",
+    );
+    cleanup();
+  }
   const working = show(running);
   expect(working.element.querySelector(".turn-h")!.textContent).toContain(
     "started ",
   );
   expect(working.element.querySelector(".state")!.textContent).toBe("Working…");
   cleanup();
-  // Once the agent has said something, that shows instead.
+  // Once the agent has said something, that shows instead, marked as
+  // being written while it is the last.
   const said = show(running, [{ type: "message", text: "Looking." }]);
   expect(said.element.querySelector(".state")).toBeNull();
+  expect(said.element.querySelector(".bub-a")!.className).toBe("bub-a typing");
+  cleanup();
+  const doing = show(running, [
+    { type: "message", text: "Looking." },
+    { type: "tool_call", id: "c1", kind: "read", status: "in_progress" },
+  ]);
+  expect(doing.element.querySelector(".bub-a")!.className).toBe("bub-a");
+  cleanup();
+  const done = show({}, [{ type: "message", text: "Looked." }]);
+  expect(done.element.querySelector(".bub-a")!.className).toBe("bub-a");
   cleanup();
   const stopping = show({ ...running, cancel_requested_at: "x" });
   expect(stopping.element.querySelector(".state")!.textContent).toBe(

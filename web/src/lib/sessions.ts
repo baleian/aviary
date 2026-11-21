@@ -31,6 +31,15 @@ export function status(turn: Turn): Status {
   return turn.started_at ? "running" : "starting";
 }
 
+// followed returns how a turn stands whose events the console follows. A
+// turn that has to wait is told its place in the queue. One without a place
+// was taken at once and waits only for its sandbox, though its record says
+// "queued" until its harness has the message.
+export function followed(turn: Turn): Status {
+  const stands = status(turn);
+  return stands === "queued" && !turn.position ? "starting" : stands;
+}
+
 export function standing(session: Session): Standing {
   const turn = session.last_turn;
   if (turn && !turn.ended_at) return status(turn);

@@ -1,4 +1,4 @@
-import type { ReactElement, ReactNode } from "react";
+import { memo, type ReactElement, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -37,7 +37,7 @@ export function CodeBlock({
 // Markdown shows the Markdown that an agent wrote. The text of an agent is
 // not trusted: its HTML is not rendered, its images are not loaded, and only
 // a link to a web or mail address is a link.
-export function Markdown({ text }: { text: string }) {
+export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
     <div className="md">
       <ReactMarkdown
@@ -73,4 +73,4 @@ export function Markdown({ text }: { text: string }) {
       </ReactMarkdown>
     </div>
   );
-}
+});

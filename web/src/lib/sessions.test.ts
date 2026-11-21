@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Session, Turn } from "../api/types.ts";
-import { standing, standingText, status } from "./sessions.ts";
+import { followed, standing, standingText, status } from "./sessions.ts";
 
 const turn = (more: Partial<Turn>): Turn => ({
   id: "t",
@@ -36,6 +36,15 @@ describe("status", () => {
         turn({ started_at: "x", approvals: asks, cancel_requested_at: "x" }),
       ),
     ).toBe("stopping");
+  });
+});
+
+describe("followed", () => {
+  it("takes a queued turn without a place in the queue for one that starts", () => {
+    expect(followed(turn({ state: "queued" }))).toBe("starting");
+    expect(followed(turn({ state: "queued", position: 2 }))).toBe("queued");
+    expect(followed(turn({ started_at: "x" }))).toBe("running");
+    expect(followed(turn({ state: "expired", ended_at: "x" }))).toBe("expired");
   });
 });
 

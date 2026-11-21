@@ -1090,7 +1090,8 @@ a:hover .top > .go {
 .bub-a .code {
   max-width: 100%;
 }
-.caret {
+.caret,
+.bub-a.typing .md > :last-child::after {
   display: inline-block;
   width: 8px;
   height: 17px;
@@ -1099,6 +1100,9 @@ a:hover .top > .go {
   vertical-align: -3px;
   margin-left: 4px;
   animation: pulse 1s steps(2) infinite;
+}
+.bub-a.typing .md > :last-child::after {
+  content: "";
 }
 .th {
   font: 500 13px/20px var(--sans);

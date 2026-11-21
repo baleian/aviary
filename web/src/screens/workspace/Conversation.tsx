@@ -1,12 +1,24 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { Link } from "react-router";
 import { ApiError } from "../../api/client.ts";
-import { olderTurns, useSession, useTurns } from "../../api/conversation.ts";
+import {
+  followTurn,
+  joinTurn,
+  olderTurns,
+  useSession,
+  useTurns,
+} from "../../api/conversation.ts";
 import type { ProjectContext } from "../../api/project.ts";
 import type { Tinted } from "../../api/queries.ts";
 import type { Agent, Me, Session, Turn } from "../../api/types.ts";
 import { plural, sentence } from "../../lib/format.ts";
-import { standing, STATUS_NAMES } from "../../lib/sessions.ts";
+import { followed, STATUS_NAMES } from "../../lib/sessions.ts";
 import { Avatar } from "../../ui/Avatar.tsx";
 import { Blank, Empty, Loading } from "../../ui/Blank.tsx";
 import { Chip } from "../../ui/Chip.tsx";
@@ -30,7 +42,7 @@ function Header({
   session: Session;
   newest?: Turn;
 }) {
-  const stands = standing(session);
+  const stands = newest && followed(newest);
   const owner =
     me.id && session.created_by !== me.id
       ? person(me, context.members, session.created_by)
@@ -45,14 +57,14 @@ function Header({
         <p>
           {session.ended_at ? (
             <Chip tone="ended">{ended}</Chip>
-          ) : stands === "none" ? (
-            <Chip tone="idle">No messages yet</Chip>
-          ) : (
+          ) : stands ? (
             <Chip tone={stands}>
               {stands === "waiting"
                 ? "Waiting for approval"
                 : STATUS_NAMES[stands]}
             </Chip>
+          ) : (
+            <Chip tone="idle">No messages yet</Chip>
           )}
           <SandboxBadge session={session} />
           {owner && (
@@ -83,8 +95,15 @@ function Header({
   );
 }
 
+// How near its end the conversation has to be scrolled to stay there as it
+// grows, in pixels.
+const NEAR = 96;
+
+const NONE: Turn[] = [];
+
 // Conversation is a session: its head, and its turns from the oldest that
-// was read to the newest. It opens at the newest turn.
+// was read to the newest. It opens at the newest turn, and follows the turn
+// that has not ended.
 export function Conversation({
   context,
   agent,
@@ -101,19 +120,42 @@ export function Conversation({
   const scroller = useRef<HTMLDivElement>(null);
   // How tall the turns were before older ones were added above them.
   const before = useRef<number | null>(null);
+  // Whether the view stays at the end of the conversation as it grows.
+  const stick = useRef(true);
+  const [away, setAway] = useState(false);
   const [loading, setLoading] = useState(false);
-  const list = turns.data ?? [];
-  const opened = turns.isSuccess && session.isSuccess;
+  const list = turns.data ?? NONE;
+  const newest = list.at(-1);
+  const who = useCallback(
+    (user?: string) => person(me, context.members, user),
+    [me, context.members],
+  );
 
-  // The conversation opens at its end. Older turns that are added above
-  // leave what is in view where it is.
+  const unfinished = newest && !newest.ended_at ? newest.id : undefined;
+  useEffect(() => {
+    if (unfinished) return followTurn(id, unfinished, oops);
+  }, [id, unfinished]);
+
+  // A turn that began elsewhere joins the turns that are shown.
+  const last = session.data?.last_turn;
+  const joins =
+    turns.data && last && last.seq > (newest?.seq ?? 0) ? last.id : undefined;
+  useEffect(() => {
+    if (joins) joinTurn(id, joins).catch(oops);
+  }, [id, joins]);
+
+  // Older turns that are added above leave what is in view where it is.
+  // Otherwise a conversation that is at its end stays there.
   useLayoutEffect(() => {
     const node = scroller.current;
-    if (!node || !opened) return;
-    if (before.current == null) node.scrollTop = node.scrollHeight;
-    else node.scrollTop += node.scrollHeight - before.current;
-    before.current = null;
-  }, [opened, id, list.length]);
+    if (!node) return;
+    if (before.current != null) {
+      node.scrollTop += node.scrollHeight - before.current;
+      before.current = null;
+    } else if (stick.current) {
+      node.scrollTop = node.scrollHeight;
+    }
+  }, [list]);
 
   const error = session.error ?? turns.error;
   const base = `/p/${context.project.slug}/agents/${agent.slug}`;
@@ -161,15 +203,29 @@ export function Conversation({
     setLoading(false);
   }
 
+  function scrolled() {
+    const node = scroller.current!;
+    const left = node.scrollHeight - node.scrollTop - node.clientHeight;
+    stick.current = left < NEAR;
+    setAway(!stick.current);
+  }
+
+  function toEnd() {
+    const node = scroller.current!;
+    stick.current = true;
+    node.scrollTop = node.scrollHeight;
+    setAway(false);
+  }
+
   return (
     <>
       <Header
         context={context}
         me={me}
         session={session.data}
-        newest={list[list.length - 1]}
+        newest={newest}
       />
-      <div className="conv-s" ref={scroller}>
+      <div className="conv-s" ref={scroller} onScroll={scrolled}>
         <div className="thread">
           <div className="more-turns">
             {more && (
@@ -185,13 +241,7 @@ export function Conversation({
             )}
           </div>
           {list.map((turn) => (
-            <TurnView
-              key={turn.id}
-              turn={turn}
-              items={turn.items ?? []}
-              agent={agent}
-              person={(user) => person(me, context.members, user)}
-            />
+            <TurnView key={turn.id} turn={turn} agent={agent} person={who} />
           ))}
           {!list.length && (
             <div style={{ paddingTop: "48px" }}>
@@ -200,6 +250,12 @@ export function Conversation({
           )}
         </div>
       </div>
+      {away && unfinished && (
+        <button className="btn sec sm jump" type="button" onClick={toEnd}>
+          <Icon name="dn" />
+          Latest
+        </button>
+      )}
     </>
   );
 }

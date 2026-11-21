@@ -132,13 +132,17 @@ export interface Turn {
   started_at?: string;
   ended_at?: string;
   cancel_requested_at?: string;
+  // The place of the turn in the queue, while it waits there. The events of
+  // the turn tell it, and its record does not have it.
+  position?: number;
   failure?: { reason: string; message?: string };
   // Why the model stopped, for a turn that completed.
   stop_reason?: string;
   usage?: Usage;
   // The requests that wait for an answer, while the turn has not ended.
   approvals?: ApprovalRequest[];
-  // What the agent said and did, once the turn has ended.
+  // What the agent said and did. The record of a turn has it once the turn
+  // has ended. Until then the console assembles it from the events.
   items?: Item[];
 }
 

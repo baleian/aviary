@@ -1,9 +1,9 @@
-import type { ReactNode } from "react";
+import { memo, type ReactNode } from "react";
 import type { Tinted } from "../../api/queries.ts";
 import type { Agent, Item, PlanEntry, Turn } from "../../api/types.ts";
 import { cls } from "../../lib/cls.ts";
 import { clock, duration, label, num } from "../../lib/format.ts";
-import { type Status, status, STATUS_NAMES } from "../../lib/sessions.ts";
+import { followed, type Status, STATUS_NAMES } from "../../lib/sessions.ts";
 import { AgentTile, Avatar } from "../../ui/Avatar.tsx";
 import { Chip } from "../../ui/Chip.tsx";
 import { Icon } from "../../ui/Icon.tsx";
@@ -166,7 +166,7 @@ function Answered({
 }
 
 // Step is a tool call: what was run or changed, and what came of it.
-function Step({
+const Step = memo(function Step({
   item,
   approval,
   over,
@@ -260,17 +260,20 @@ function Step({
       </div>
     </details>
   );
-}
+});
 
 // Blocks is what the agent said and did, in order. Tool calls that follow
 // each other are one list of steps.
 function Blocks({
   items,
   over,
+  writing,
   person,
 }: {
   items: Item[];
   over: boolean;
+  // Whether the agent may be writing the last item.
+  writing: boolean;
   person: (id?: string) => Who;
 }) {
   const approvals = items.filter((item) => item.type === "approval");
@@ -317,8 +320,9 @@ function Blocks({
     }
     close();
     if (item.type === "message") {
+      const typing = writing && index === items.length - 1;
       out.push(
-        <div key={index} className="bub-a">
+        <div key={index} className={cls("bub-a", typing && "typing")}>
           <Markdown text={item.text} />
         </div>,
       );
@@ -357,7 +361,14 @@ function Footer({
         <span className="c-dusk">
           <Icon name="clock" className="lg" />
         </span>
-        <span>In the queue</span>
+        <span>
+          In the queue,{" "}
+          <b>
+            {turn.position === 1
+              ? "next to run"
+              : `${(turn.position ?? 0) - 1} ahead`}
+          </b>
+        </span>
       </p>
     );
   }
@@ -437,21 +448,19 @@ function Footer({
 }
 
 // TurnView is one turn of a conversation: the message that was sent, and
-// what the agent said and did.
-export function TurnView({
+// what the agent said and did, or has said and done so far.
+export const TurnView = memo(function TurnView({
   turn,
-  items,
   agent,
   person,
 }: {
   turn: Turn;
-  // What the agent said and did so far.
-  items: Item[];
   agent: Tinted<Agent>;
   // How to show the user with an ID.
   person: (id?: string) => Who;
 }) {
-  const stands = status(turn);
+  const stands = followed(turn);
+  const items = turn.items ?? [];
   const over = !!turn.ended_at;
   const headline =
     turn.ended_at && turn.started_at ? (
@@ -470,7 +479,11 @@ export function TurnView({
     <div className="turn" id={"turn-" + turn.seq}>
       <div className="turn-h">
         <b>Turn {turn.seq}</b>
-        <Chip tone={stands}>{STATUS_NAMES[stands]}</Chip>
+        <Chip tone={stands}>
+          {stands === "queued"
+            ? `Queued · ${turn.position}`
+            : STATUS_NAMES[stands]}
+        </Chip>
         {headline}
       </div>
       <div className="msg-u">
@@ -486,10 +499,15 @@ export function TurnView({
             {label(agent)}
             {DOING[stands] && <small>{DOING[stands]}</small>}
           </div>
-          <Blocks items={items} over={over} person={person} />
+          <Blocks
+            items={items}
+            over={over}
+            writing={stands === "running"}
+            person={person}
+          />
           <Footer turn={turn} stands={stands} quiet={!items.length} />
         </div>
       </div>
     </div>
   );
-}
+});
