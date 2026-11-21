@@ -40,6 +40,9 @@ where id = @id and coalesce(sandbox, '') = sqlc.arg(was)::text;
 -- Changes the state only while the session has the sandbox.
 update sessions set sandbox_state = sqlc.arg(state)::text where id = @id and sandbox = sqlc.arg(sandbox)::text;
 
+-- name: ListSessionsWithSandbox :many
+select * from sessions where sandbox is not null;
+
 -- name: HoldSession :one
 -- Keeps the session from being ended until the transaction ends. It takes
 -- only the key share lock that adding the turn takes anyway: a stronger lock

@@ -107,6 +107,7 @@ func Run(t *testing.T, create func(t *testing.T) Database) {
 		"ListSessions":                         suite.testListSessions,
 		"SetSandbox":                           suite.testSetSandbox,
 		"SetSandboxState":                      suite.testSetSandboxState,
+		"SessionsWithSandbox":                  suite.testSessionsWithSandbox,
 		"SessionTurn":                          suite.testSessionTurn,
 		"SessionTitles":                        suite.testSessionTitles,
 		"EndSession":                           suite.testEndSession,

@@ -350,19 +350,24 @@ func (d *Driver) forget(ctx context.Context, sessionID uuid.UUID, id string) {
 // giveUp ends the turn as failed. If the runner may have the turn, the
 // sandbox is put to sleep: this stops the turn with the pod, and keeps the
 // session's volume for the next turn, which wakes the sandbox. A sandbox
-// that the turn has not reached, such as one still being created or woken,
-// is left alone.
+// that is gone is recorded as lost, and the next turn creates a new one. A
+// sandbox that the turn has not reached, such as one still being created or
+// woken, is left alone.
 func (d *Driver) giveUp(ctx context.Context, r *run, failure store.Failure) {
 	slog.WarnContext(ctx, "giving up turn", "turn", r.turn.ID, "reason", failure.Reason, "message", failure.Message)
 	if id := r.sandboxID(); id != "" && r.wasGiven() {
-		err := d.suspend(ctx, r.turn.SessionID, id, "")
-		if errors.Is(err, sandbox.ErrNotFound) {
-			// The next turn creates a new sandbox.
-			_, err = d.store.SetSandbox(ctx, r.turn.SessionID, id, "")
+		var err error
+		gone := failure.Reason == store.FailureSandboxLost
+		if !gone {
+			err = d.suspend(ctx, r.turn.SessionID, id, "")
+			gone = errors.Is(err, sandbox.ErrNotFound)
+		}
+		if gone {
+			err = d.store.SetSandboxState(ctx, r.turn.SessionID, id, store.SandboxLost)
 		}
 		// Leave the turn unended; a later sweep follows it again and retries.
 		if err != nil {
-			slog.ErrorContext(ctx, "put sandbox to sleep", "session", r.turn.SessionID, "sandbox", id, "error", err)
+			slog.ErrorContext(ctx, "give up turn", "turn", r.turn.ID, "sandbox", id, "error", err)
 			return
 		}
 	}

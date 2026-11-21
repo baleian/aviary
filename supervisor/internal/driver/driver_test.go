@@ -275,19 +275,32 @@ func TestASessionWhoseSandboxIsGoneGetsANewOne(t *testing.T) {
 func TestATurnWhoseSandboxIsLostFails(t *testing.T) {
 	i := install(t)
 	driver, _ := i.supervisor()
-	session := i.session(store.Agent{})
-	turn := i.send(driver, session, "hello")
-	given := i.service.Turn(t)
-	given.Tell("started", started)
-	i.eventually("the turn has started", func() bool { return i.turn(turn.ID).StartedAt != nil })
+	// The sandbox is gone, or is being deleted.
+	for _, lose := range []func(string){i.service.Lose, i.service.Terminate} {
+		session := i.session(store.Agent{})
+		turn := i.send(driver, session, "hello")
+		given := i.service.Turn(t)
+		given.Tell("started", started)
+		i.eventually("the turn has started", func() bool { return i.turn(turn.ID).StartedAt != nil })
 
-	i.service.Lose(given.Sandbox)
-	given.Cut()
-	if ended := i.ended(turn.ID); !failed(ended, store.FailureSandboxLost) {
-		t.Errorf("ended turn = %+v, failure = %+v", ended, ended.Failure)
-	}
-	if kept := i.sandbox(session); kept != "" {
-		t.Errorf("session sandbox = %q, want none", kept)
+		lose(given.Sandbox)
+		given.Cut()
+		if ended := i.ended(turn.ID); !failed(ended, store.FailureSandboxLost) {
+			t.Errorf("ended turn = %+v, failure = %+v", ended, ended.Failure)
+		}
+		if state := i.sessionOf(session.ID).SandboxState; state != store.SandboxLost {
+			t.Errorf("recorded sandbox state = %q, want lost", state)
+		}
+
+		// The next turn gets a new sandbox.
+		next := i.send(driver, session, "and then")
+		again := i.service.Turn(t)
+		if kept := i.sessionOf(session.ID); again.ID != next.ID.String() || kept.Sandbox != again.Sandbox || kept.SandboxState != store.SandboxAwake {
+			t.Errorf("next turn = %+v, session sandbox = %q, recorded as %q", again, kept.Sandbox, kept.SandboxState)
+		}
+		if state := i.service.State(again.Sandbox); state != sandbox.Running {
+			t.Errorf("state of the new sandbox = %s, want Running", state)
+		}
 	}
 }
 
@@ -811,6 +824,152 @@ func TestASessionRecordsWhetherItsSandboxIsAsleep(t *testing.T) {
 	}
 }
 
+// A session whose sandbox is gone records that it is lost, unless the session
+// has a turn that has not ended.
+func TestASessionRecordsThatItsSandboxIsLost(t *testing.T) {
+	i := install(t)
+	driver := New(i.config, i.service, i.store, i.events, metrics.New(nil, nil))
+	session := i.session(store.Agent{})
+	name := sandbox.Name(session.ID)
+	create := func() {
+		t.Helper()
+		if err := i.service.Create(ctx, sandbox.Request{Session: session.ID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recorded := func(after, state string) {
+		t.Helper()
+		if kept := i.sessionOf(session.ID); kept.Sandbox != name || kept.SandboxState != state {
+			t.Errorf("after %s: session sandbox = %q, recorded as %q, want %q recorded as %q", after, kept.Sandbox, kept.SandboxState, name, state)
+		}
+	}
+	create()
+	if _, err := i.store.SetSandbox(ctx, session.ID, "", name); err != nil {
+		t.Fatal(err)
+	}
+
+	// The sandbox was created after this Supervisor listed the sandboxes.
+	New(i.config, earlier{i.service, nil}, i.store, i.events, metrics.New(nil, nil)).look(ctx)
+	recorded("a look at sandboxes that were listed before the session's was created", store.SandboxAwake)
+
+	// A queued turn has not ended.
+	turn := i.send(driver, session, "hello")
+	i.service.Lose(name)
+	driver.look(ctx)
+	recorded("the sandbox was deleted while a turn had not ended", store.SandboxAwake)
+	i.cancel(turn.ID, false)
+	driver.look(ctx)
+	recorded("the sandbox was deleted", store.SandboxLost)
+	// A sandbox that is recorded as it is found is not read again.
+	settled := New(i.config, unread{i.service, t}, i.store, i.events, metrics.New(nil, nil))
+	settled.look(ctx)
+
+	// The sandbox is there again.
+	create()
+	driver.look(ctx)
+	recorded("the sandbox was created again", store.SandboxAwake)
+	settled.look(ctx)
+
+	// A turn is given up for another reason when its sandbox is gone.
+	turn = i.send(driver, session, "and then")
+	if _, err := i.store.DispatchTurns(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	followed, err := i.store.FollowTurn(ctx, turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &run{turn: followed, sandbox: followed.Sandbox}
+	r.give()
+	i.service.Lose(name)
+	driver.giveUp(ctx, r, store.Failure{Reason: store.FailureTimedOut})
+	recorded("a turn was given up without its sandbox", store.SandboxLost)
+	if ended := i.turn(turn.ID); !failed(ended, store.FailureTimedOut) {
+		t.Errorf("turn given up without its sandbox = %+v, failure = %+v", ended, ended.Failure)
+	}
+
+	create()
+	driver.look(ctx)
+	i.service.Terminate(name)
+	driver.look(ctx)
+	recorded("the sandbox began to be deleted", store.SandboxLost)
+}
+
+// unread is a sandbox service that fails the test if a single sandbox is
+// read.
+type unread struct {
+	*sandboxtest.Service
+	t *testing.T
+}
+
+func (u unread) Sandbox(_ context.Context, name string) (sandbox.Sandbox, error) {
+	u.t.Errorf("sandbox %s was read", name)
+	return sandbox.Sandbox{}, errors.New("not to be read")
+}
+
+// stuck is a sandbox service that cannot delete sandboxes.
+type stuck struct {
+	*sandboxtest.Service
+}
+
+func (stuck) Delete(context.Context, string) error {
+	return errors.New("the cluster does not answer")
+}
+
+func TestTheSandboxOfASessionThatHasEndedIsDeleted(t *testing.T) {
+	i := install(t)
+	driver := New(i.config, i.service, i.store, i.events, metrics.New(nil, nil))
+	// housed returns a new session with a sandbox.
+	housed := func() (store.Session, string) {
+		t.Helper()
+		session := i.session(store.Agent{})
+		if err := i.service.Create(ctx, sandbox.Request{Session: session.ID}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := i.store.SetSandbox(ctx, session.ID, "", sandbox.Name(session.ID)); err != nil {
+			t.Fatal(err)
+		}
+		return session, sandbox.Name(session.ID)
+	}
+	there := func(name string) bool {
+		_, there := i.service.Made()[name]
+		return there
+	}
+
+	// The sandbox cannot be deleted when the session is ended, nor later.
+	session, name := housed()
+	failing := New(i.config, stuck{i.service}, i.store, i.events, metrics.New(nil, nil))
+	if ended, err := failing.EndSession(ctx, session.ID); err == nil || ended.EndedAt == nil {
+		t.Fatalf("EndSession = %+v, %v, want the ended session and an error", ended, err)
+	}
+	failing.look(ctx)
+	if kept := i.sessionOf(session.ID); kept.EndedAt == nil || kept.Sandbox != name || !there(name) {
+		t.Fatalf("ended session = %+v, its sandbox is there: %t; want it to keep the sandbox that was not deleted", kept, there(name))
+	}
+	driver.look(ctx)
+	if kept := i.sandbox(session); kept != "" || there(name) {
+		t.Errorf("after a look, the ended session has sandbox %q, and the sandbox is there: %t; want neither", kept, there(name))
+	}
+
+	// The sandbox was deleted, and the session still records it.
+	session, name = housed()
+	if _, err := i.store.EndSession(ctx, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	i.service.Lose(name)
+	driver.look(ctx)
+	if kept := i.sessionOf(session.ID); kept.Sandbox != "" || kept.SandboxState != "" {
+		t.Errorf("ended session whose sandbox is gone has sandbox %q, recorded as %q; want none", kept.Sandbox, kept.SandboxState)
+	}
+
+	// The sandbox of a session that has not ended is kept.
+	session, name = housed()
+	driver.look(ctx)
+	if kept := i.sandbox(session); kept != name || !there(name) {
+		t.Errorf("session that has not ended has sandbox %q, and the sandbox is there: %t; want it kept", kept, there(name))
+	}
+}
+
 // asks is the data of an approval.requested event.
 var asks = map[string]any{"id": "1", "options": []map[string]string{{"id": "once", "kind": "allow_once", "name": "Once"}}}
 
@@ -891,6 +1050,22 @@ func TestASandboxThatItsSessionDoesNotHaveIsDeleted(t *testing.T) {
 			t.Errorf("%s was deleted", what)
 		}
 	}
+
+	// A session got its sandbox after a Supervisor read the sessions.
+	New(i.config, i.service, before{Store: i.store}, i.events, metrics.New(nil, nil)).look(ctx)
+	if _, there := i.service.Made()[given.Sandbox]; !there {
+		t.Error("the sandbox that its session got after the sessions were read was deleted")
+	}
+}
+
+// before is a store whose sessions with a sandbox were read before any
+// session had one.
+type before struct {
+	store.Store
+}
+
+func (before) SessionsWithSandbox(context.Context) ([]store.Session, error) {
+	return nil, nil
 }
 
 func TestATurnWhoseSandboxIsPutToSleepFails(t *testing.T) {

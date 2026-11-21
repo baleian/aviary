@@ -132,12 +132,14 @@ create table sessions (
     created_by binary(16),
     -- The name of the session's sandbox, if it has one.
     sandbox varchar(255),
-    -- Whether the sandbox is awake or asleep, if the session has one.
+    -- 'awake', 'asleep' or 'lost', if the session has a sandbox.
     sandbox_state varchar(32),
     created_at datetime(6) not null default (now(6)),
     ended_at datetime(6),
     foreign key (agent_id) references agents (id),
-    foreign key (created_by) references users (id)
+    foreign key (created_by) references users (id),
+    -- For listing the sessions that have a sandbox.
+    key sessions_sandbox (sandbox)
 );
 
 create table turns (

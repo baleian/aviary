@@ -1401,6 +1401,39 @@ func (q *Queries) ListSessionsOf(ctx context.Context, arg ListSessionsOfParams) 
 	return items, nil
 }
 
+const listSessionsWithSandbox = `-- name: ListSessionsWithSandbox :many
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at from sessions where sandbox is not null
+`
+
+func (q *Queries) ListSessionsWithSandbox(ctx context.Context) ([]Session, error) {
+	rows, err := q.db.Query(ctx, listSessionsWithSandbox)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Session
+	for rows.Next() {
+		var i Session
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.Title,
+			&i.CreatedBy,
+			&i.Sandbox,
+			&i.SandboxState,
+			&i.CreatedAt,
+			&i.EndedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTurnItems = `-- name: ListTurnItems :many
 select turn_id, item from turn_items where turn_id = any($1::uuid[]) order by turn_id, seq
 `

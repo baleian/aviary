@@ -338,7 +338,7 @@ func (suite suite) testSetSandboxState(t *testing.T) {
 		// A sandbox that the session does not have, such as an earlier one.
 		{sandbox: "sandbox-0", state: store.SandboxAwake, then: store.SandboxAsleep},
 		{sandbox: "sandbox-1", state: store.SandboxAwake, then: store.SandboxAwake},
-		{sandbox: "sandbox-1", state: store.SandboxAsleep, then: store.SandboxAsleep},
+		{sandbox: "sandbox-1", state: store.SandboxLost, then: store.SandboxLost},
 		// The next sandbox is awake, whatever the one before it was.
 		{from: "sandbox-1", to: "", then: ""},
 		{sandbox: "sandbox-1", state: store.SandboxAsleep, then: ""},
@@ -371,6 +371,59 @@ func (suite suite) testSetSandboxState(t *testing.T) {
 	}
 	if ended, err := st.EndSession(ctx, id); err != nil || ended.Sandbox != "sandbox-2" || ended.SandboxState != store.SandboxAsleep {
 		t.Errorf("EndSession = %+v, want it with sandbox-2 asleep: %v", ended, err)
+	}
+}
+
+// SessionsWithSandbox returns the sessions that have a sandbox, ended or not,
+// and no others.
+func (suite suite) testSessionsWithSandbox(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	if sessions, err := st.SessionsWithSandbox(ctx); err != nil || len(sessions) != 0 {
+		t.Errorf("SessionsWithSandbox of a database without sessions = %+v, %v, want none", sessions, err)
+	}
+	set := func(id uuid.UUID, from, to string) {
+		t.Helper()
+		if set, err := st.SetSandbox(ctx, id, from, to); err != nil || !set {
+			t.Fatalf("SetSandbox(%q, %q) = %t, %v", from, to, set, err)
+		}
+	}
+	awake, asleep, ended, deleted := st.session(), st.session(), st.session(), st.session()
+	st.session()
+	set(awake, "", "sandbox-1")
+	set(asleep, "", "sandbox-2")
+	if err := st.SetSandboxState(ctx, asleep, "sandbox-2", store.SandboxAsleep); err != nil {
+		t.Fatal(err)
+	}
+	set(ended, "", "sandbox-3")
+	if _, err := st.EndSession(ctx, ended); err != nil {
+		t.Fatal(err)
+	}
+	set(deleted, "", "sandbox-4")
+	set(deleted, "sandbox-4", "")
+
+	sessions, err := st.another().SessionsWithSandbox(ctx)
+	if err != nil || len(sessions) != 3 {
+		t.Fatalf("SessionsWithSandbox = %+v, %v, want three sessions", sessions, err)
+	}
+	for _, session := range sessions {
+		read, err := st.Session(ctx, session.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sandbox, state string
+		switch session.ID {
+		case awake:
+			sandbox, state = "sandbox-1", store.SandboxAwake
+		case asleep:
+			sandbox, state = "sandbox-2", store.SandboxAsleep
+		case ended:
+			sandbox, state = "sandbox-3", store.SandboxAwake
+		}
+		if session.Sandbox != sandbox || session.SandboxState != state || (session.EndedAt != nil) != (session.ID == ended) ||
+			session.AgentID != read.AgentID || !session.CreatedAt.Equal(read.CreatedAt) {
+			t.Errorf("listed session %+v, ended at %v; want sandbox %q, recorded as %q, of session %+v", session, session.EndedAt, sandbox, state, read)
+		}
 	}
 }
 

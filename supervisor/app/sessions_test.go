@@ -70,8 +70,8 @@ func TestSessionEnds(t *testing.T) {
 	}
 }
 
-// A session says whether its sandbox is awake or asleep, and nothing of a
-// sandbox that it does not have.
+// A session says whether its sandbox is awake, asleep or lost, and nothing of
+// a sandbox that it does not have.
 func TestSessionSandbox(t *testing.T) {
 	t.Parallel()
 	aviary := install(t, func(config *driver.Config) {
@@ -115,6 +115,19 @@ func TestSessionSandbox(t *testing.T) {
 	runner = aviary.given(second.ID)
 	if state := read()["sandbox"]; state != "awake" {
 		t.Errorf("sandbox of a woken session = %v, want awake", state)
+	}
+	runner.report(started("harness-session"))
+	runner.report(finished("end_turn", nil))
+
+	// The sandbox is deleted from outside, and the next turn gets a new one.
+	runner.lose()
+	eventually(t, patience, "the session does not say that its sandbox is lost", func() bool {
+		return read()["sandbox"] == "lost"
+	})
+	third := s.send(session, "are you there")
+	runner = aviary.given(third.ID)
+	if state := read()["sandbox"]; state != "awake" {
+		t.Errorf("sandbox of a session that got a new one = %v, want awake", state)
 	}
 	runner.report(started("harness-session"))
 	runner.report(finished("end_turn", nil))

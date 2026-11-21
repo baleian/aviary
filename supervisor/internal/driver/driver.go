@@ -172,21 +172,28 @@ func (d *Driver) Accept(ctx context.Context, sessionID, by uuid.UUID, text strin
 
 // EndSession ends the session and deletes its sandbox with its volume. It
 // returns the errors of store.EndSession. If the sandbox cannot be deleted,
-// the session still ends and the error is returned; ending the session again
-// retries the deletion.
+// the session still ends and the error is returned. The deletion is retried
+// when the session is ended again, and at every look at the sandboxes.
 func (d *Driver) EndSession(ctx context.Context, id uuid.UUID) (store.Session, error) {
 	session, err := d.store.EndSession(ctx, id)
 	if err != nil || session.Sandbox == "" {
 		return session, err
 	}
-	if err := d.sandboxes.Delete(ctx, session.Sandbox); err != nil {
-		return session, fmt.Errorf("delete sandbox of session %s: %w", id, err)
-	}
-	if _, err := d.store.SetSandbox(ctx, id, session.Sandbox, ""); err != nil {
+	if err := d.discard(ctx, session); err != nil {
 		return session, err
 	}
 	session.Sandbox, session.SandboxState = "", ""
 	return session, nil
+}
+
+// discard deletes the sandbox of a session that has ended, with its volume,
+// and removes it from the session.
+func (d *Driver) discard(ctx context.Context, session store.Session) error {
+	if err := d.sandboxes.Delete(ctx, session.Sandbox); err != nil {
+		return fmt.Errorf("delete sandbox of session %s: %w", session.ID, err)
+	}
+	_, err := d.store.SetSandbox(ctx, session.ID, session.Sandbox, "")
+	return err
 }
 
 // QueueMoved tells the driver that a turn left the queue without being
@@ -281,36 +288,107 @@ func (d *Driver) orphaned() time.Duration {
 	return 30 * d.config.Sweep
 }
 
-// look deletes the sandboxes that their sessions do not reference, and puts
-// idle sessions to sleep. It also corrects the recorded state of a sandbox
-// that something else has put to sleep or woken. Sandboxes of sessions that
-// the store does not know are left alone.
+// look compares the sandboxes with what the sessions record. It deletes the
+// sandboxes that their sessions do not reference and those of sessions that
+// have ended, and puts idle sessions to sleep. It also corrects the recorded
+// state of a sandbox that something else has put to sleep, woken or deleted.
+// Sandboxes of sessions that the store does not know are left alone.
 func (d *Driver) look(ctx context.Context) {
+	// The sessions are read first, so that a sandbox that is not listed is
+	// gone, not new.
+	sessions, err := d.store.SessionsWithSandbox(ctx)
+	if err != nil {
+		slog.ErrorContext(ctx, "list sessions with a sandbox", "error", err)
+		return
+	}
 	sandboxes, err := d.sandboxes.Sandboxes(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "list sandboxes", "error", err)
 		return
 	}
+	recorded := make(map[string]store.Session, len(sessions))
+	for _, session := range sessions {
+		recorded[session.Sandbox] = session
+	}
 	for _, made := range sandboxes {
-		sessionID, err := uuid.Parse(made.Session)
-		if err != nil {
-			continue
-		}
-		session, err := d.store.Session(ctx, sessionID)
-		switch {
-		case err != nil:
-			if !errors.Is(err, store.ErrNotFound) {
+		session, found := recorded[made.Name]
+		delete(recorded, made.Name)
+		if !found {
+			// The session got the sandbox after the sessions were read, or
+			// does not reference it.
+			sessionID, err := uuid.Parse(made.Session)
+			if err != nil {
+				continue
+			}
+			session, err = d.store.Session(ctx, sessionID)
+			switch {
+			case errors.Is(err, store.ErrNotFound):
+				continue
+			case err != nil:
 				slog.ErrorContext(ctx, "read sandbox session", "sandbox", made.Name, "error", err)
+				continue
+			case session.Sandbox != made.Name:
+				d.reap(ctx, sessionID, made)
+				continue
 			}
-		case session.Sandbox != made.Name:
-			d.reap(ctx, sessionID, made)
-		default:
-			d.correct(ctx, session, made)
-			if d.config.Idle > 0 && (made.State == sandbox.Running || made.State == sandbox.Starting) {
-				d.lull(ctx, sessionID, made)
-			}
+		}
+		d.tend(ctx, session, made)
+	}
+	for _, session := range recorded {
+		d.tend(ctx, session, sandbox.Sandbox{Name: session.Sandbox, State: sandbox.Lost})
+	}
+}
+
+// tend brings the session's sandbox and its recorded state in line. made is
+// the sandbox as it was listed, lost if it was not.
+func (d *Driver) tend(ctx context.Context, session store.Session, made sandbox.Sandbox) {
+	switch {
+	case session.EndedAt != nil:
+		if err := d.discard(ctx, session); err != nil {
+			slog.ErrorContext(ctx, "delete sandbox of ended session", "session", session.ID, "sandbox", made.Name, "error", err)
+			return
+		}
+		slog.InfoContext(ctx, "sandbox of ended session deleted", "session", session.ID, "sandbox", made.Name)
+	case made.State == sandbox.Lost:
+		d.lose(ctx, session)
+	default:
+		d.correct(ctx, session, made)
+		if d.config.Idle > 0 && (made.State == sandbox.Running || made.State == sandbox.Starting) {
+			d.lull(ctx, session.ID, made)
 		}
 	}
+}
+
+// lose records that the session's sandbox is lost. A session with a turn
+// that has not ended is left to that turn, which finds the sandbox gone.
+func (d *Driver) lose(ctx context.Context, session store.Session) {
+	if session.SandboxState == store.SandboxLost {
+		return
+	}
+	last, err := d.store.Turns(ctx, session.ID, math.MaxInt32, 1)
+	if err != nil {
+		slog.ErrorContext(ctx, "read last turn of session", "session", session.ID, "error", err)
+		return
+	}
+	if len(last) > 0 && last[0].EndedAt == nil {
+		return
+	}
+	// A turn may have created the sandbox again since the sandboxes were
+	// listed.
+	seen, err := d.sandboxes.Sandbox(ctx, session.Sandbox)
+	switch {
+	case errors.Is(err, sandbox.ErrNotFound):
+	case err != nil:
+		slog.ErrorContext(ctx, "read sandbox", "session", session.ID, "sandbox", session.Sandbox, "error", err)
+		return
+	case seen.State != sandbox.Lost:
+		return
+	}
+	if err := d.store.SetSandboxState(ctx, session.ID, session.Sandbox, store.SandboxLost); err != nil {
+		slog.ErrorContext(ctx, "record sandbox state", "session", session.ID, "sandbox", session.Sandbox, "error", err)
+		return
+	}
+	slog.WarnContext(ctx, "sandbox lost", "session", session.ID, "sandbox", session.Sandbox)
 }
 
 // reap deletes a sandbox that its session does not reference: a Supervisor
@@ -355,8 +433,8 @@ func (d *Driver) suspend(ctx context.Context, sessionID uuid.UUID, name, version
 	return d.store.SetSandboxState(ctx, sessionID, name, store.SandboxAsleep)
 }
 
-// stateOf returns the state to record for a sandbox as it was read, or "" if
-// the sandbox is lost.
+// stateOf returns whether the sandbox, as it was read, is awake or asleep, or
+// "" if it is lost.
 func stateOf(seen sandbox.Sandbox) string {
 	switch seen.State {
 	case sandbox.Asleep:

@@ -36,6 +36,9 @@ where id = sqlc.arg(id);
 -- Changes the state only while the session has the sandbox.
 update sessions set sandbox_state = sqlc.arg(state) where id = sqlc.arg(id) and sandbox = sqlc.arg(sandbox);
 
+-- name: ListSessionsWithSandbox :many
+select * from sessions where sandbox is not null;
+
 -- name: ListSessions :many
 -- Lists the agent's sessions with IDs below before, newest first: IDs
 -- increase with creation time.

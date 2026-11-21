@@ -118,7 +118,7 @@ create table sessions (
     created_by uuid references users (id),
     -- The name of the session's sandbox, if it has one.
     sandbox text,
-    -- Whether the sandbox is awake or asleep, if the session has one.
+    -- 'awake', 'asleep' or 'lost', if the session has a sandbox.
     sandbox_state text,
     created_at timestamptz not null default now(),
     ended_at timestamptz
@@ -198,6 +198,8 @@ insert into schema_floor (version) values (0);
 
 -- For listing the sessions of an agent by ID.
 create index sessions_agent on sessions (agent_id, id);
+-- For listing the sessions that have a sandbox.
+create index sessions_with_sandbox on sessions (id) where sandbox is not null;
 -- A session has at most one unfinished turn.
 create unique index turns_unfinished_per_session on turns (session_id) where ended_at is null;
 -- The queue, in dispatch order.

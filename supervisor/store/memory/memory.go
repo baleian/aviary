@@ -585,6 +585,20 @@ func (s *Store) SetSandboxState(ctx context.Context, sessionID uuid.UUID, sandbo
 	return nil
 }
 
+func (s *Store) SessionsWithSandbox(ctx context.Context) ([]store.Session, error) {
+	if err := s.begin(ctx); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+	sessions := []store.Session{}
+	for _, session := range s.sessions {
+		if session.Sandbox != "" {
+			sessions = append(sessions, session.record())
+		}
+	}
+	return sessions, nil
+}
+
 func (s *Store) EndSession(ctx context.Context, id uuid.UUID) (store.Session, error) {
 	if err := s.begin(ctx); err != nil {
 		return store.Session{}, err

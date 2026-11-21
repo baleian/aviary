@@ -134,16 +134,19 @@ type Session struct {
 	// Sandbox is the name of the session's sandbox. It is empty if the
 	// session has none: it has run no turn yet, or its sandbox was deleted.
 	Sandbox string `json:"-"`
-	// SandboxState is SandboxAwake or SandboxAsleep. It is empty if the
-	// session has no sandbox.
+	// SandboxState is SandboxAwake, SandboxAsleep or SandboxLost. It is empty
+	// if the session has no sandbox.
 	SandboxState string `json:"sandbox,omitempty"`
 }
 
 // Sandbox states. An awake sandbox has a pod, or is getting one. The pod of
-// an asleep sandbox was deleted, and its volume is kept.
+// an asleep sandbox was deleted, and its volume is kept. A lost sandbox is
+// gone with its volume, although its session has not ended: the session's
+// next turn gets a new one.
 const (
 	SandboxAwake  = "awake"
 	SandboxAsleep = "asleep"
+	SandboxLost   = "lost"
 )
 
 // Provider is a model provider of a project: a model endpoint and its API
@@ -449,10 +452,14 @@ type Store interface {
 	// ErrNotFound if there is no such session.
 	SetSandbox(ctx context.Context, sessionID uuid.UUID, from, to string) (bool, error)
 
-	// SetSandboxState records that the session's sandbox is awake or asleep.
-	// It changes nothing if the session's sandbox is not the named one, as
-	// when the sandbox was deleted meanwhile.
+	// SetSandboxState records that the session's sandbox is awake, asleep or
+	// lost. It changes nothing if the session's sandbox is not the named one,
+	// as when the sandbox was deleted meanwhile.
 	SetSandboxState(ctx context.Context, sessionID uuid.UUID, sandbox, state string) error
+
+	// SessionsWithSandbox returns the sessions that have a sandbox, in no
+	// particular order. Sessions that have ended are among them.
+	SessionsWithSandbox(ctx context.Context) ([]Session, error)
 
 	// EndSession ends the session, which then accepts no messages, and
 	// returns it, including its sandbox. A session that has already ended is

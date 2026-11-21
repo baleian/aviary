@@ -47,6 +47,7 @@ func TestAviary(t *testing.T) {
 			"an agent uses its provider":                           providers,
 			"a provider keeps its key in a secret store":           secretStore,
 			"a failed turn reports its reason":                     failures,
+			"an idle session loses its sandbox":                    loses,
 			"a turn is cancelled":                                  cancel,
 			"a session is ended":                                   ended,
 			"the Supervisors report turn metrics":                  supervisorMetrics,
@@ -544,6 +545,9 @@ func failures(t *testing.T) {
 		if last.Type != "turn.failed" || lost.Failure["reason"] != "sandbox_lost" || lost.tools() == "" {
 			t.Errorf("turn ended with %s %s, record = %+v; want failed with sandbox_lost and its tool calls kept", last.Type, last.Data, lost)
 		}
+		if state := sandboxState(t, session); state != "lost" {
+			t.Errorf("session says that its sandbox is %q, want lost", state)
+		}
 		if next := run(t, session, "say done"); !strings.Contains(next.said(), "done") {
 			t.Errorf("session did not continue after its sandbox was deleted: said %q", next.said())
 		}
@@ -551,6 +555,32 @@ func failures(t *testing.T) {
 			t.Errorf("sandboxes after deleting %s = %v, want one new sandbox", had[0].Metadata.UID, has)
 		}
 	})
+}
+
+// A session whose sandbox is deleted while no turn runs says that the sandbox
+// is lost, and its next turn gets a new one.
+func loses(t *testing.T) {
+	session := newAgent(t, harness(harnesses[0])).session(t)
+	run(t, session, "say ready")
+	had := sandboxesOf(t, session)
+	if len(had) != 1 {
+		t.Fatalf("session sandboxes = %v, want one", had)
+	}
+	if err := cluster.CoreV1().RESTClient().Delete().AbsPath(sandboxAPI, had[0].Metadata.Name).Do(ctx).Error(); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, look+soon, "the session does not say that its sandbox is lost", func() bool {
+		return sandboxState(t, session) == "lost"
+	})
+	if next := run(t, session, "say done"); !strings.Contains(next.said(), "done") {
+		t.Errorf("session did not continue after its sandbox was deleted: said %q", next.said())
+	}
+	if has := sandboxesOf(t, session); len(has) != 1 || has[0].Metadata.UID == had[0].Metadata.UID {
+		t.Errorf("sandboxes after deleting %s = %v, want one new sandbox", had[0].Metadata.UID, has)
+	}
+	if state := sandboxState(t, session); state != "awake" {
+		t.Errorf("session with a new sandbox says that its sandbox is %q, want awake", state)
+	}
 }
 
 // said reads events until the agent has said text, and returns what it said

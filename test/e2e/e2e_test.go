@@ -43,7 +43,7 @@ const (
 	// soon is how long a test waits for something that should follow at once.
 	soon = 30 * time.Second
 	// idle is sandboxes.idleSeconds in values.yaml, and look how often the
-	// Supervisors look for idle sessions.
+	// Supervisors look at the sandboxes.
 	idle = 30 * time.Second
 	look = time.Minute
 )
@@ -657,8 +657,8 @@ func asleep(t *testing.T, session string) {
 	})
 }
 
-// sandboxState returns what the session says of its sandbox: awake or asleep,
-// or nothing if it has none.
+// sandboxState returns what the session says of its sandbox: awake, asleep or
+// lost, or nothing if it has none.
 func sandboxState(t *testing.T, session string) string {
 	t.Helper()
 	var read struct{ Sandbox string }

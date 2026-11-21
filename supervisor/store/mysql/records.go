@@ -503,6 +503,18 @@ func (s *records) SetSandboxState(ctx context.Context, sessionID uuid.UUID, sand
 	return s.queries.SetSandboxState(ctx, db.SetSandboxStateParams{ID: key.ID(sessionID), Sandbox: &sandbox, State: &state})
 }
 
+func (s *records) SessionsWithSandbox(ctx context.Context) ([]store.Session, error) {
+	rows, err := s.queries.ListSessionsWithSandbox(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sessions := make([]store.Session, len(rows))
+	for i, row := range rows {
+		sessions[i] = sessionFrom(row)
+	}
+	return sessions, nil
+}
+
 func (s *records) EndSession(ctx context.Context, id uuid.UUID) (store.Session, error) {
 	var session store.Session
 	err := s.within(ctx, func(queries *db.Queries) error {

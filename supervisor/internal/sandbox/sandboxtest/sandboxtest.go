@@ -230,6 +230,11 @@ func (s *Service) Lose(name string) {
 	_ = s.Delete(context.Background(), name)
 }
 
+// Terminate leaves the sandbox being deleted: lost, and still listed.
+func (s *Service) Terminate(name string) {
+	_ = s.change(name, func(m *made) { m.state = sandbox.Lost })
+}
+
 // Expires returns the requested shutdown time of the sandbox.
 func (s *Service) Expires(name string) time.Time {
 	s.mu.Lock()
