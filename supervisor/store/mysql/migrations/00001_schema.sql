@@ -107,6 +107,7 @@ create table agents (
     -- Compared exactly, not case-insensitively.
     slug varchar(63) character set utf8mb4 collate utf8mb4_bin not null,
     name mediumtext not null default (''),
+    description mediumtext not null default (''),
     harness mediumtext not null,
     -- Given to the agent before every turn, if not empty.
     instructions mediumtext not null default (''),

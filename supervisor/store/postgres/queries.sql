@@ -5,9 +5,9 @@ insert into projects (id, slug, name) values (@id, @slug, @name) returning *;
 select * from projects where id = @id;
 
 -- name: CreateAgent :one
-insert into agents (id, project_id, slug, name, harness, instructions, approval, provider_id, model)
-select @id::uuid, projects.id, @slug::text, @name::text, @harness::text, @instructions::text, @approval::text,
-       @provider_id::uuid, @model::text
+insert into agents (id, project_id, slug, name, description, harness, instructions, approval, provider_id, model)
+select @id::uuid, projects.id, @slug::text, @name::text, @description::text, @harness::text, @instructions::text,
+       @approval::text, @provider_id::uuid, @model::text
 from projects where projects.id = @project_id
 returning *;
 

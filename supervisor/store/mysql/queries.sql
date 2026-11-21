@@ -5,9 +5,9 @@ insert into projects (id, slug, name) values (sqlc.arg(id), sqlc.arg(slug), sqlc
 select * from projects where id = ?;
 
 -- name: CreateAgent :execrows
-insert into agents (id, project_id, slug, name, harness, instructions, approval, provider_id, model)
-select sqlc.arg(id), projects.id, sqlc.arg(slug), sqlc.arg(name), sqlc.arg(harness), sqlc.arg(instructions),
-       sqlc.arg(approval), sqlc.arg(provider_id), sqlc.arg(model)
+insert into agents (id, project_id, slug, name, description, harness, instructions, approval, provider_id, model)
+select sqlc.arg(id), projects.id, sqlc.arg(slug), sqlc.arg(name), sqlc.arg(description), sqlc.arg(harness),
+       sqlc.arg(instructions), sqlc.arg(approval), sqlc.arg(provider_id), sqlc.arg(model)
 from projects where projects.id = sqlc.arg(project_id);
 
 -- name: GetAgent :one

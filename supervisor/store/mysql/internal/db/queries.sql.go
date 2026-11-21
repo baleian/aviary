@@ -236,9 +236,9 @@ func (q *Queries) CountRunningTurns(ctx context.Context) (int64, error) {
 }
 
 const createAgent = `-- name: CreateAgent :execrows
-insert into agents (id, project_id, slug, name, harness, instructions, approval, provider_id, model)
+insert into agents (id, project_id, slug, name, description, harness, instructions, approval, provider_id, model)
 select ?, projects.id, ?, ?, ?, ?,
-       ?, ?, ?
+       ?, ?, ?, ?
 from projects where projects.id = ?
 `
 
@@ -246,6 +246,7 @@ type CreateAgentParams struct {
 	ID           key.ID
 	Slug         string
 	Name         string
+	Description  string
 	Harness      string
 	Instructions string
 	Approval     string
@@ -259,6 +260,7 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (int64
 		arg.ID,
 		arg.Slug,
 		arg.Name,
+		arg.Description,
 		arg.Harness,
 		arg.Instructions,
 		arg.Approval,
@@ -614,7 +616,7 @@ func (q *Queries) FreeUsername(ctx context.Context, arg FreeUsernameParams) erro
 }
 
 const getAgent = `-- name: GetAgent :one
-select id, project_id, slug, name, harness, instructions, approval, provider_id, model, created_at from agents where id = ?
+select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at from agents where id = ?
 `
 
 func (q *Queries) GetAgent(ctx context.Context, id key.ID) (Agent, error) {
@@ -625,6 +627,7 @@ func (q *Queries) GetAgent(ctx context.Context, id key.ID) (Agent, error) {
 		&i.ProjectID,
 		&i.Slug,
 		&i.Name,
+		&i.Description,
 		&i.Harness,
 		&i.Instructions,
 		&i.Approval,
@@ -897,7 +900,7 @@ func (q *Queries) IsSessionBusy(ctx context.Context, sessionID key.ID) (bool, er
 }
 
 const listAgents = `-- name: ListAgents :many
-select id, project_id, slug, name, harness, instructions, approval, provider_id, model, created_at from agents where project_id = ? order by created_at, id
+select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at from agents where project_id = ? order by created_at, id
 `
 
 func (q *Queries) ListAgents(ctx context.Context, projectID key.ID) ([]Agent, error) {
@@ -914,6 +917,7 @@ func (q *Queries) ListAgents(ctx context.Context, projectID key.ID) ([]Agent, er
 			&i.ProjectID,
 			&i.Slug,
 			&i.Name,
+			&i.Description,
 			&i.Harness,
 			&i.Instructions,
 			&i.Approval,

@@ -226,17 +226,18 @@ func (q *Queries) CountWaitingTurns(ctx context.Context, maxRunning int64) (int6
 }
 
 const createAgent = `-- name: CreateAgent :one
-insert into agents (id, project_id, slug, name, harness, instructions, approval, provider_id, model)
+insert into agents (id, project_id, slug, name, description, harness, instructions, approval, provider_id, model)
 select $1::uuid, projects.id, $2::text, $3::text, $4::text, $5::text, $6::text,
-       $7::uuid, $8::text
-from projects where projects.id = $9
-returning id, project_id, slug, name, harness, instructions, approval, provider_id, model, created_at
+       $7::text, $8::uuid, $9::text
+from projects where projects.id = $10
+returning id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at
 `
 
 type CreateAgentParams struct {
 	ID           uuid.UUID
 	Slug         string
 	Name         string
+	Description  string
 	Harness      string
 	Instructions string
 	Approval     string
@@ -250,6 +251,7 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 		arg.ID,
 		arg.Slug,
 		arg.Name,
+		arg.Description,
 		arg.Harness,
 		arg.Instructions,
 		arg.Approval,
@@ -263,6 +265,7 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 		&i.ProjectID,
 		&i.Slug,
 		&i.Name,
+		&i.Description,
 		&i.Harness,
 		&i.Instructions,
 		&i.Approval,
@@ -742,7 +745,7 @@ func (q *Queries) FreeUsername(ctx context.Context, arg FreeUsernameParams) erro
 }
 
 const getAgent = `-- name: GetAgent :one
-select id, project_id, slug, name, harness, instructions, approval, provider_id, model, created_at from agents where id = $1
+select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at from agents where id = $1
 `
 
 func (q *Queries) GetAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
@@ -753,6 +756,7 @@ func (q *Queries) GetAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
 		&i.ProjectID,
 		&i.Slug,
 		&i.Name,
+		&i.Description,
 		&i.Harness,
 		&i.Instructions,
 		&i.Approval,
@@ -1011,7 +1015,7 @@ func (q *Queries) IsMember(ctx context.Context, arg IsMemberParams) (bool, error
 }
 
 const listAgents = `-- name: ListAgents :many
-select id, project_id, slug, name, harness, instructions, approval, provider_id, model, created_at from agents where project_id = $1 order by created_at, id
+select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at from agents where project_id = $1 order by created_at, id
 `
 
 func (q *Queries) ListAgents(ctx context.Context, projectID uuid.UUID) ([]Agent, error) {
@@ -1028,6 +1032,7 @@ func (q *Queries) ListAgents(ctx context.Context, projectID uuid.UUID) ([]Agent,
 			&i.ProjectID,
 			&i.Slug,
 			&i.Name,
+			&i.Description,
 			&i.Harness,
 			&i.Instructions,
 			&i.Approval,

@@ -407,8 +407,9 @@ func (s *records) CreateAgent(ctx context.Context, projectID uuid.UUID, agent st
 		return store.Agent{}, err
 	}
 	params := db.CreateAgentParams{
-		ID: key.ID(id), ProjectID: key.ID(projectID), Slug: agent.Slug, Name: agent.Name, Harness: agent.Harness,
-		Instructions: agent.Instructions, Approval: agent.Approval, ProviderID: key.ID(agent.Model.Provider), Model: agent.Model.Name,
+		ID: key.ID(id), ProjectID: key.ID(projectID), Slug: agent.Slug, Name: agent.Name, Description: agent.Description,
+		Harness: agent.Harness, Instructions: agent.Instructions, Approval: agent.Approval,
+		ProviderID: key.ID(agent.Model.Provider), Model: agent.Model.Name,
 	}
 	switch err := created(s.queries.CreateAgent(ctx, params)); {
 	case duplicate(err, agentSlug):
@@ -441,8 +442,8 @@ func (s *records) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agen
 
 func agentFrom(row db.Agent) store.Agent {
 	return store.Agent{
-		ID: uuid.UUID(row.ID), ProjectID: uuid.UUID(row.ProjectID), Slug: row.Slug, Name: row.Name, Harness: row.Harness,
-		CreatedAt: row.CreatedAt, Instructions: row.Instructions, Approval: row.Approval,
+		ID: uuid.UUID(row.ID), ProjectID: uuid.UUID(row.ProjectID), Slug: row.Slug, Name: row.Name, Description: row.Description,
+		Harness: row.Harness, CreatedAt: row.CreatedAt, Instructions: row.Instructions, Approval: row.Approval,
 		Model: store.Model{Provider: uuid.UUID(row.ProviderID), Name: row.Model},
 	}
 }

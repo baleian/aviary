@@ -242,8 +242,8 @@ func (s *Store) CreateAgent(ctx context.Context, projectID uuid.UUID, agent stor
 		return store.Agent{}, fmt.Errorf("provider %s does not exist", agent.Model.Provider)
 	}
 	created := store.Agent{
-		ID: id, ProjectID: projectID, Slug: agent.Slug, Name: agent.Name, Harness: agent.Harness, CreatedAt: s.now(),
-		Instructions: agent.Instructions, Approval: agent.Approval, Model: agent.Model,
+		ID: id, ProjectID: projectID, Slug: agent.Slug, Name: agent.Name, Description: agent.Description, Harness: agent.Harness,
+		CreatedAt: s.now(), Instructions: agent.Instructions, Approval: agent.Approval, Model: agent.Model,
 	}
 	s.agents[id] = created
 	return created, nil

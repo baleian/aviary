@@ -194,6 +194,7 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 	var request struct {
 		Slug         string `json:"slug"`
 		Name         string `json:"name"`
+		Description  string `json:"description"`
 		Harness      string `json:"harness"`
 		Instructions string `json:"instructions"`
 		Approval     string `json:"approval"`
@@ -232,8 +233,8 @@ func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
 		return invalid("model.name is required")
 	}
 	agent, err := a.store.CreateAgent(r.Context(), projectID, store.Agent{
-		Slug: request.Slug, Name: request.Name, Harness: request.Harness, Instructions: request.Instructions,
-		Approval: request.Approval, Model: store.Model{Provider: providerID, Name: request.Model.Name},
+		Slug: request.Slug, Name: request.Name, Description: request.Description, Harness: request.Harness,
+		Instructions: request.Instructions, Approval: request.Approval, Model: store.Model{Provider: providerID, Name: request.Model.Name},
 	})
 	if err != nil {
 		return err

@@ -67,9 +67,12 @@ type Agent struct {
 	// Slug is unique among the agents of the project.
 	Slug string `json:"slug"`
 	// Name is a display name. It is empty if none was given.
-	Name      string    `json:"name"`
-	Harness   string    `json:"harness"`
-	CreatedAt time.Time `json:"created_at"`
+	Name string `json:"name"`
+	// Description says what the agent is for, for display. It is empty if
+	// none was given.
+	Description string    `json:"description"`
+	Harness     string    `json:"harness"`
+	CreatedAt   time.Time `json:"created_at"`
 	// Instructions, if not empty, are given to the agent before every turn.
 	Instructions string `json:"instructions,omitempty"`
 	// Approval is "ask" if the harness asks a person for approval before it

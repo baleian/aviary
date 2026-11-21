@@ -15,6 +15,7 @@ type Agent struct {
 	ProjectID    uuid.UUID
 	Slug         string
 	Name         string
+	Description  string
 	Harness      string
 	Instructions string
 	Approval     string

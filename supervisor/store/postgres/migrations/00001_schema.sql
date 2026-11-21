@@ -94,6 +94,7 @@ create table agents (
     project_id uuid not null references projects (id),
     slug text not null,
     name text not null default '',
+    description text not null default '',
     harness text not null,
     -- Given to the agent before every turn, if not empty.
     instructions text not null default '',

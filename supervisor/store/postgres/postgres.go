@@ -318,7 +318,7 @@ func (s *records) CreateAgent(ctx context.Context, projectID uuid.UUID, agent st
 		return store.Agent{}, err
 	}
 	params := db.CreateAgentParams{
-		ID: id, ProjectID: projectID, Slug: agent.Slug, Name: agent.Name, Harness: agent.Harness,
+		ID: id, ProjectID: projectID, Slug: agent.Slug, Name: agent.Name, Description: agent.Description, Harness: agent.Harness,
 		Instructions: agent.Instructions, Approval: agent.Approval, ProviderID: agent.Model.Provider, Model: agent.Model.Name,
 	}
 	row, err := s.queries.CreateAgent(ctx, params)
@@ -920,6 +920,7 @@ func agentFrom(row db.Agent) store.Agent {
 		ProjectID:    row.ProjectID,
 		Slug:         row.Slug,
 		Name:         row.Name,
+		Description:  row.Description,
 		Harness:      row.Harness,
 		CreatedAt:    row.CreatedAt,
 		Instructions: row.Instructions,
