@@ -196,6 +196,7 @@ a client shows the slug when the name is empty.
 | `POST /v1/turns/{id}/cancel` | Cancels a turn. A queued turn ends at once: 200 with the turn. A running turn is told to stop, and ends when its harness has stopped: 202 with the turn. Returns 409 if the turn has ended in another way. |
 | `POST /v1/turns/{id}/approvals/{request}` | Answers an approval request of the turn. Body: `{"option_id": "..."}`, the `id` of one of the request's options. Returns 202 when the answer is on its way to the harness, 400 if the request has no such option, and 409 if the request already has an answer or the turn has ended. |
 | `GET /v1/turns/{id}/events` | Streams the events of the turn as server-sent events. A client that reconnects sends `Last-Event-ID` and receives the events after it. |
+| `GET /v1/projects/{id}/events` | Streams the sessions of the project as server-sent events, each when it changes. See [Session changes](#session-changes). |
 | `GET /v1/sessions/{id}/turns` | Lists the turns of the session, newest first: `{"turns": [...]}`. `?limit=` is the page size, 20 by default and at most 100. `?before=` takes the `seq` of a turn and returns the turns before it, which is how to read the next page. The first turn of a session has `seq` 1. |
 | `GET /v1/projects/{id}`, `/v1/providers/{id}`, `/v1/secret-stores/{id}`, `/v1/agents/{id}`, `/v1/sessions/{id}`, `/v1/turns/{id}` | Returns the resource. |
 | `GET /v1/me` | Returns the caller, as the identity provider identifies it. See [Authentication](#authentication). |
@@ -326,6 +327,32 @@ that connects later can find it.
 
 An agent without `approval` asks nobody. If its harness asks for permission
 anyway, the runner allows the action once.
+
+### Session changes
+
+`GET /v1/projects/{id}/events` reports the sessions of a project as they
+change, so that a client can show their state without reading them over and
+over. An event has the type `session`, and its data is the session as
+`GET /v1/sessions/{id}` returns it. A session is sent when:
+
+- it is created, gets another title or ends,
+- its sandbox wakes, sleeps or is lost,
+- its newest turn changes: a message is accepted, the turn starts, an
+  approval request is made or answered, the turn is asked to stop, or it
+  ends.
+
+Changes that follow each other closely are sent as one event, with the
+session as it then is. A caller is sent the sessions that it may read: its
+own with `sessions.run`, and everyone's with `sessions.view_all`. What the
+agent says and does is not sent here: a client that shows a conversation
+follows the events of its turn.
+
+The stream starts with the changes that follow its opening, and cannot be
+resumed with `Last-Event-ID`. A client opens the stream and then reads the
+sessions that it shows, and does both again when the stream ends. The
+Supervisor ends a stream after about five minutes, so that the caller's
+token and permissions are checked again, and earlier if the client reads too
+slowly.
 
 ### Authentication
 

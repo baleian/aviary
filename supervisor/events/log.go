@@ -56,12 +56,13 @@ type Log interface {
 	// that asks gets it at once. It does nothing if follower does not hold
 	// the lease.
 	Leave(ctx context.Context, turnID, follower uuid.UUID) error
-	// Announce announces the turn to the watchers of channel.
-	Announce(ctx context.Context, channel string, turnID uuid.UUID) error
-	// Watch calls announced for every turn announced on channel, until ctx is
+	// Announce announces id, the ID of a turn or a session, to the watchers
+	// of channel.
+	Announce(ctx context.Context, channel string, id uuid.UUID) error
+	// Watch calls announced for every ID announced on channel, until ctx is
 	// done. It may miss announcements while the log is unreachable, and
 	// resumes when it is reachable again.
-	Watch(ctx context.Context, channel string, announced func(turnID uuid.UUID))
+	Watch(ctx context.Context, channel string, announced func(id uuid.UUID))
 	// Close closes the connection to the log.
 	Close()
 }

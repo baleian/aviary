@@ -241,9 +241,10 @@ func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, 
 	m := metrics.New(slices.Sorted(maps.Keys(config.Harnesses)), stores.Kinds())
 	stores.Asked = m.SecretRead
 	config.Token = func(session uuid.UUID) (string, error) { return authz.Token(keys, session) }
+	st = announcing{Store: st, events: ev}
 	dr := driver.New(config, sandboxes, st, ev, m)
 	apiServer := &http.Server{
-		Handler:           api.New(st, ev, dr, keys, stores, callers, ctx.Done()),
+		Handler:           api.New(ctx, st, ev, dr, keys, stores, callers),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	// Authz checks have a port of their own, which can be closed to the

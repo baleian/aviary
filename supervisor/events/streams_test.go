@@ -208,44 +208,51 @@ func TestAppendLast(t *testing.T) {
 	}
 }
 
-// Cancels and answers are announced to the other Supervisors on separate
-// channels.
+// Cancels, answers and changes are announced to the other Supervisors on
+// separate channels.
 func TestAnnounce(t *testing.T) {
 	t.Parallel()
 	log := memory.New()
 	asked, connected := events.New(log), events.New(log)
 	watching, stop := context.WithCancel(ctx)
 	defer stop()
-	cancelled, answered := make(chan uuid.UUID, 10), make(chan uuid.UUID, 10)
+	cancelled, answered, changed := make(chan uuid.UUID, 10), make(chan uuid.UUID, 10), make(chan uuid.UUID, 10)
 	go connected.WatchCancels(watching, func(turn uuid.UUID) { cancelled <- turn })
 	go connected.WatchAnswers(watching, func(turn uuid.UUID) { answered <- turn })
+	go connected.WatchChanges(watching, func(session uuid.UUID) { changed <- session })
 
-	// Announcements made before the watcher subscribes are lost, so the
-	// turn is announced until it is heard.
-	heard := func(announce func(context.Context, uuid.UUID) error, on, other chan uuid.UUID) {
+	// Announcements made before the watcher subscribes are lost, so the ID
+	// is announced until it is heard.
+	heard := func(announce func(context.Context, uuid.UUID) error, on chan uuid.UUID, others ...chan uuid.UUID) {
 		t.Helper()
-		turn := uuid.New()
+		id := uuid.New()
 		deadline := time.After(10 * time.Second)
 		for {
-			if err := announce(ctx, turn); err != nil {
+			if err := announce(ctx, id); err != nil {
 				t.Fatal(err)
 			}
 			select {
 			case got := <-on:
-				if got != turn {
-					t.Errorf("unexpected announced turn %s", got)
+				if got != id {
+					t.Errorf("unexpected announced ID %s", got)
+				}
+				for _, other := range others {
+					select {
+					case got := <-other:
+						t.Fatalf("%s announced on the wrong channel", got)
+					default:
+					}
 				}
 				return
-			case got := <-other:
-				t.Fatalf("turn %s announced on the wrong channel", got)
 			case <-time.After(20 * time.Millisecond):
 			case <-deadline:
 				t.Fatal("announcement not received")
 			}
 		}
 	}
-	heard(asked.AnnounceCancel, cancelled, answered)
-	heard(asked.AnnounceAnswer, answered, cancelled)
+	heard(asked.AnnounceCancel, cancelled, answered, changed)
+	heard(asked.AnnounceAnswer, answered, cancelled, changed)
+	heard(asked.AnnounceChange, changed, cancelled, answered)
 }
 
 // kind is a plugin that opens logs in memory.

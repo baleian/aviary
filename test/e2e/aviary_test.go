@@ -50,6 +50,7 @@ func TestAviary(t *testing.T) {
 			"an idle session loses its sandbox":                    loses,
 			"a turn is cancelled":                                  cancel,
 			"a session is ended":                                   ended,
+			"a client watches the sessions of a project":           watches,
 			"the Supervisors report turn metrics":                  supervisorMetrics,
 		}
 		if identity {
@@ -684,6 +685,34 @@ func ended(t *testing.T) {
 	var list struct{ Turns []turn }
 	if status := request(t, "GET", path+"/turns", "", &list); status != http.StatusOK || len(list.Turns) != 1 || !whole(list.Turns[0], answer) {
 		t.Errorf("turns of the ended session: got %d %+v, want its one turn with the whole answer", status, list.Turns)
+	}
+}
+
+// A client that watches a project is sent each of its sessions when the
+// session changes, whichever Supervisor the client reaches.
+func watches(t *testing.T) {
+	project := newProject(t)
+	changes := watch(t, project)
+	session := agentOf(t, project, provider(t, project, mockKey), harness(harnesses[0])).session(t)
+	done := run(t, session, "say done")
+	deadline := time.After(soon)
+	for {
+		select {
+		case sent, open := <-changes:
+			switch {
+			case !open:
+				t.Fatal("the stream of changes ended before the session was sent with its completed turn")
+			case sent.ID != session:
+				t.Errorf("session %s was sent, want only %s", sent.ID, session)
+			case sent.LastTurn.ID == done.ID && sent.LastTurn.State == "completed":
+				if sent.Sandbox != "awake" {
+					t.Errorf("the session was sent with the sandbox %q, want awake", sent.Sandbox)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatalf("after %s, the session was not sent with its completed turn", soon)
+		}
 	}
 }
 

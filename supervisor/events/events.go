@@ -39,6 +39,9 @@ const cancelChannel = "turns:cancel"
 // answerChannel carries the announcements of answers to approval requests.
 const answerChannel = "turns:answer"
 
+// changeChannel carries the announcements of sessions that have changed.
+const changeChannel = "sessions:change"
+
 // keptFor is how long the events of a turn are kept after it ends, for
 // clients that are still reading. By then its items are in the database.
 const keptFor = time.Hour
@@ -162,6 +165,20 @@ func (s *Streams) AnnounceAnswer(ctx context.Context, turnID uuid.UUID) error {
 // is unreachable.
 func (s *Streams) WatchAnswers(ctx context.Context, answered func(turnID uuid.UUID)) {
 	s.log.Watch(ctx, answerChannel, answered)
+}
+
+// AnnounceChange tells every Supervisor that the session or one of its turns
+// has changed, since the clients that watch it may be connected to any of
+// them.
+func (s *Streams) AnnounceChange(ctx context.Context, sessionID uuid.UUID) error {
+	return s.log.Announce(ctx, changeChannel, sessionID)
+}
+
+// WatchChanges calls changed for every session announced by AnnounceChange,
+// until ctx is done. Like WatchCancels, it misses announcements while the log
+// is unreachable.
+func (s *Streams) WatchChanges(ctx context.Context, changed func(sessionID uuid.UUID)) {
+	s.log.Watch(ctx, changeChannel, changed)
 }
 
 // Last returns the last event of an ended turn.

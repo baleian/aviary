@@ -187,16 +187,16 @@ func (l *log) Leave(ctx context.Context, turnID, follower uuid.UUID) error {
 	return leave.Exec(ctx, l.client, []string{followerKey(turnID)}, []string{follower.String()}).Error()
 }
 
-func (l *log) Announce(ctx context.Context, channel string, turnID uuid.UUID) error {
-	return l.client.Do(ctx, l.client.B().Publish().Channel(channel).Message(turnID.String()).Build()).Error()
+func (l *log) Announce(ctx context.Context, channel string, id uuid.UUID) error {
+	return l.client.Do(ctx, l.client.B().Publish().Channel(channel).Message(id.String()).Build()).Error()
 }
 
-func (l *log) Watch(ctx context.Context, channel string, announced func(turnID uuid.UUID)) {
+func (l *log) Watch(ctx context.Context, channel string, announced func(id uuid.UUID)) {
 	for ctx.Err() == nil {
 		err := l.client.Receive(ctx, l.client.B().Subscribe().Channel(channel).Build(),
 			func(message valkey.PubSubMessage) {
-				if turnID, err := uuid.Parse(message.Message); err == nil {
-					announced(turnID)
+				if id, err := uuid.Parse(message.Message); err == nil {
+					announced(id)
 				}
 			})
 		if ctx.Err() != nil {

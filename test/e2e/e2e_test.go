@@ -512,6 +512,47 @@ func (r *reader) end(t *testing.T) event {
 	return events[len(events)-1]
 }
 
+// change is a session as the stream of its project's changes sends it.
+type change struct {
+	ID       string `json:"id"`
+	Sandbox  string `json:"sandbox"`
+	LastTurn struct {
+		ID    string `json:"id"`
+		State string `json:"state"`
+	} `json:"last_turn"`
+}
+
+// watch follows the changes of the project's sessions from now on. The
+// channel is closed when the stream ends.
+func watch(t *testing.T, project string) <-chan change {
+	t.Helper()
+	following, stop := context.WithTimeout(ctx, patience)
+	t.Cleanup(stop)
+	response, err := call(following, administrator, "GET", "/v1/projects/"+project+"/events", "")
+	if err != nil {
+		t.Fatalf("watch project %s: %v", project, err)
+	}
+	if response.StatusCode != http.StatusOK {
+		response.Body.Close()
+		t.Fatalf("watch project %s: got status %d, want 200", project, response.StatusCode)
+	}
+	changes := make(chan change, 1000)
+	go func() {
+		defer close(changes)
+		defer response.Body.Close()
+		lines := bufio.NewScanner(response.Body)
+		lines.Buffer(nil, 1<<20)
+		for lines.Scan() {
+			data, found := strings.CutPrefix(lines.Text(), "data: ")
+			var sent change
+			if found && json.Unmarshal([]byte(data), &sent) == nil {
+				changes <- sent
+			}
+		}
+	}()
+	return changes
+}
+
 // run sends a message to the session, waits for its turn to complete, and
 // returns the turn.
 func run(t *testing.T, session, text string) turn {

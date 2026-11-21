@@ -39,6 +39,7 @@ type api struct {
 	// that providers reference in them.
 	stores  *secret.Stores
 	callers Callers
+	changes *changes
 	closing <-chan struct{}
 }
 
@@ -69,9 +70,10 @@ var (
 var slugForm = regexp.MustCompile(`^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$`)
 
 // New returns the API handler. Event streams stay open until their clients
-// disconnect or closing is closed.
-func New(st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Keys, stores *secret.Stores, callers Callers, closing <-chan struct{}) http.Handler {
-	a := &api{store: st, events: ev, driver: dr, keys: keys, stores: stores, callers: callers, closing: closing}
+// disconnect or ctx is done.
+func New(ctx context.Context, st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Keys, stores *secret.Stores, callers Callers) http.Handler {
+	a := &api{store: st, events: ev, driver: dr, keys: keys, stores: stores, callers: callers, changes: newChanges(), closing: ctx.Done()}
+	go a.sendChanges(ctx)
 	mux := http.NewServeMux()
 	// Admins may do everything. Other callers have, in a project, the
 	// permissions of the members that are them or one of their groups.
@@ -81,6 +83,9 @@ func New(st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Key
 	mux.Handle("POST /v1/projects", a.administrator(a.createProject))
 	mux.Handle("GET /v1/projects", handler(a.listProjects))
 	mux.Handle("GET /v1/projects/{pid}", a.inProject(projectView, a.getProject))
+	// streamChanges does its own access check, since what it sends depends
+	// on the caller.
+	mux.Handle("GET /v1/projects/{pid}/events", handler(a.streamChanges))
 	mux.Handle("GET /v1/projects/{pid}/members", a.inProject(projectView, a.listMembers))
 	mux.Handle("POST /v1/projects/{pid}/members", a.administrator(a.addMember))
 	mux.Handle("PUT /v1/members/{mid}", a.administrator(a.setMember))

@@ -181,7 +181,7 @@ func (l *Log) Leave(_ context.Context, turnID, follower uuid.UUID) error {
 	return nil
 }
 
-func (l *Log) Announce(_ context.Context, channel string, turnID uuid.UUID) error {
+func (l *Log) Announce(_ context.Context, channel string, id uuid.UUID) error {
 	l.mu.Lock()
 	watching := make([]*func(uuid.UUID), 0, len(l.watchers[channel]))
 	for watcher := range l.watchers[channel] {
@@ -189,12 +189,12 @@ func (l *Log) Announce(_ context.Context, channel string, turnID uuid.UUID) erro
 	}
 	l.mu.Unlock()
 	for _, watcher := range watching {
-		(*watcher)(turnID)
+		(*watcher)(id)
 	}
 	return nil
 }
 
-func (l *Log) Watch(ctx context.Context, channel string, announced func(turnID uuid.UUID)) {
+func (l *Log) Watch(ctx context.Context, channel string, announced func(id uuid.UUID)) {
 	l.mu.Lock()
 	if l.watchers[channel] == nil {
 		l.watchers[channel] = map[*func(uuid.UUID)]struct{}{}

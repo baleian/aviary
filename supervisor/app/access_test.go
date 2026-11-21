@@ -79,6 +79,9 @@ func TestWhoMayDoWhat(t *testing.T) {
 		{"POST", "/v1/projects", `{}`, onlyAdmin},
 		{"GET", "/v1/projects/" + project, ``, everyMember},
 		{"GET", "/v1/projects/" + other, ``, "phhhhhhhhh"},
+		// Every member gets the changes of the sessions that they may read.
+		{"GET", "/v1/projects/" + project + "/events", ``, everyMember},
+		{"GET", "/v1/projects/" + none + "/events", ``, "hhhhhhhhhh"},
 		{"GET", members, ``, everyMember},
 		{"POST", members, `{}`, onlyAdmin},
 		{"PUT", "/v1/members/" + member, `{}`, onlyAdmin},

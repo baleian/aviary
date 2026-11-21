@@ -318,33 +318,44 @@ func (s *supervisor) turn(id string) turn {
 	return record
 }
 
-// event is a server-sent event of a turn.
+// event is a server-sent event.
 type event struct {
 	ID, Type, Data string
 }
 
-// reader streams the events of a turn.
+// reader streams the events that the API serves at a path.
 type reader struct {
 	t           *testing.T
-	turn, token string
+	path, token string
 	events      chan event
+	// opened is closed when the stream is open.
+	opened chan struct{}
 	// ended receives nil when the Supervisor ends the stream, or the error
 	// that broke it.
 	ended chan error
 }
 
-// read starts streaming the events of the turn that follow the event ID
-// after, or all of them if after is empty.
-func (s *supervisor) read(turn, after string) *reader {
+// open starts streaming the events at path that follow the event ID after,
+// or all of them if after is empty.
+func (s *supervisor) open(path, after string) *reader {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.t.Cleanup(cancel)
-	r := &reader{t: s.t, turn: turn, token: s.token, events: make(chan event, 10000), ended: make(chan error, 1)}
+	r := &reader{
+		t: s.t, path: path, token: s.token,
+		events: make(chan event, 10000), opened: make(chan struct{}), ended: make(chan error, 1),
+	}
 	go func() { r.ended <- r.stream(ctx, s.api, after) }()
 	return r
 }
 
+// read starts streaming the events of the turn that follow the event ID
+// after, or all of them if after is empty.
+func (s *supervisor) read(turn, after string) *reader {
+	return s.open("/v1/turns/"+turn+"/events", after)
+}
+
 func (r *reader) stream(ctx context.Context, api, after string) error {
-	request, err := http.NewRequestWithContext(ctx, "GET", api+"/v1/turns/"+r.turn+"/events", nil)
+	request, err := http.NewRequestWithContext(ctx, "GET", api+r.path, nil)
 	if err != nil {
 		return err
 	}
@@ -360,8 +371,9 @@ func (r *reader) stream(ctx context.Context, api, after string) error {
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("events of turn %s: status %d", r.turn, response.StatusCode)
+		return fmt.Errorf("GET %s: status %d", r.path, response.StatusCode)
 	}
+	close(r.opened)
 	var next event
 	lines := bufio.NewScanner(response.Body)
 	lines.Buffer(nil, 1<<20)
@@ -394,7 +406,7 @@ func (r *reader) next() event {
 				return event
 			}
 		case <-time.After(soon):
-			r.t.Fatalf("no event for turn %s", r.turn)
+			r.t.Fatalf("no event at %s", r.path)
 		}
 	}
 }
@@ -406,10 +418,10 @@ func (r *reader) rest(within time.Duration) []event {
 	select {
 	case err := <-r.ended:
 		if err != nil {
-			r.t.Fatalf("event stream of turn %s: %v", r.turn, err)
+			r.t.Fatalf("event stream at %s: %v", r.path, err)
 		}
 	case <-time.After(within):
-		r.t.Fatalf("timed out after %s: event stream of turn %s has not ended", within, r.turn)
+		r.t.Fatalf("timed out after %s: event stream at %s has not ended", within, r.path)
 	}
 	var rest []event
 	for {
