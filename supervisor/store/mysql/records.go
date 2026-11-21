@@ -433,10 +433,71 @@ func (s *records) ReplaceAgent(ctx context.Context, agent store.Agent) (store.Ag
 		ID: key.ID(agent.ID), Name: agent.Name, Description: agent.Description, Instructions: agent.Instructions,
 		Approval: agent.Approval, ProviderID: key.ID(agent.Model.Provider), Model: agent.Model.Name,
 	}
-	if err := created(s.queries.ReplaceAgent(ctx, params)); err != nil {
+	if err := created(s.queries.ReplaceAgent(ctx, params)); errors.Is(err, store.ErrNotFound) {
+		return store.Agent{}, s.deleted(ctx, agent.ID)
+	} else if err != nil {
 		return store.Agent{}, err
 	}
 	return s.Agent(ctx, agent.ID)
+}
+
+// deleted returns ErrAgentDeleted if the agent exists, which is why a
+// statement for agents that are not deleted found none, and ErrNotFound if
+// it does not.
+func (s *records) deleted(ctx context.Context, id uuid.UUID) error {
+	if _, err := s.Agent(ctx, id); err != nil {
+		return err
+	}
+	return store.ErrAgentDeleted
+}
+
+func (s *records) DeleteAgent(ctx context.Context, id uuid.UUID) (store.Agent, []store.Session, error) {
+	var agent store.Agent
+	var ended []store.Session
+	err := s.within(ctx, func(queries *db.Queries) error {
+		ended = nil
+		// Lock the agent, then its sessions, before checking their turns: a
+		// concurrent session or message either is there by then, or finds
+		// the agent deleted and the session ended.
+		row, err := queries.LockAgent(ctx, key.ID(id))
+		if err != nil {
+			return found(err)
+		}
+		if row.DeletedAt == nil {
+			if _, err := queries.LockAgentSessions(ctx, key.ID(id)); err != nil {
+				return err
+			}
+			busy, err := queries.IsAgentBusy(ctx, key.ID(id))
+			if err != nil {
+				return err
+			}
+			if busy {
+				return store.ErrSessionBusy
+			}
+			if err := queries.EndAgentSessions(ctx, key.ID(id)); err != nil {
+				return err
+			}
+			rows, err := queries.ListSessionsEndedWithAgent(ctx, key.ID(id))
+			if err != nil {
+				return err
+			}
+			for _, row := range rows {
+				ended = append(ended, sessionFrom(row))
+			}
+			if err := queries.DeleteAgent(ctx, key.ID(id)); err != nil {
+				return err
+			}
+			if row, err = queries.GetAgent(ctx, key.ID(id)); err != nil {
+				return err
+			}
+		}
+		agent = agentFrom(row)
+		return nil
+	})
+	if err != nil {
+		return store.Agent{}, nil, err
+	}
+	return agent, ended, nil
 }
 
 func (s *records) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agent, error) {
@@ -454,7 +515,8 @@ func (s *records) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agen
 func agentFrom(row db.Agent) store.Agent {
 	return store.Agent{
 		ID: uuid.UUID(row.ID), ProjectID: uuid.UUID(row.ProjectID), Slug: row.Slug, Name: row.Name, Description: row.Description,
-		Harness: row.Harness, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, Instructions: row.Instructions, Approval: row.Approval,
+		Harness: row.Harness, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, DeletedAt: row.DeletedAt,
+		Instructions: row.Instructions, Approval: row.Approval,
 		Model: store.Model{Provider: uuid.UUID(row.ProviderID), Name: row.Model},
 	}
 }
@@ -468,7 +530,16 @@ func (s *records) CreateSession(ctx context.Context, agentID, by uuid.UUID, titl
 	if by != uuid.Nil {
 		params.CreatedBy = (*key.ID)(&by)
 	}
-	if err := created(s.queries.CreateSession(ctx, params)); err != nil {
+	// The agent is held, so that it is not deleted before it has the session.
+	err = s.within(ctx, func(queries *db.Queries) error {
+		if _, err := queries.HoldAgent(ctx, key.ID(agentID)); err != nil {
+			return found(err)
+		}
+		return created(queries.CreateSession(ctx, params))
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		return store.Session{}, s.deleted(ctx, agentID)
+	} else if err != nil {
 		return store.Session{}, err
 	}
 	return s.Session(ctx, id)

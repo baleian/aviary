@@ -15,17 +15,46 @@ returning *;
 select * from agents where id = @id;
 
 -- name: ReplaceAgent :one
+-- Returns no row if the agent does not exist or is deleted.
 update agents set name = @name, description = @description, instructions = @instructions, approval = @approval,
        provider_id = @provider_id, model = @model, updated_at = now()
-where id = @id
+where id = @id and deleted_at is null
 returning *;
 
+-- name: LockAgent :one
+-- Locks the agent until the transaction ends, so that it gets no session
+-- meanwhile.
+select * from agents where id = @id for update;
+
+-- name: LockAgentSessions :many
+-- Locks the agent's sessions that have not ended until the transaction ends,
+-- so that none of them accepts a message meanwhile.
+select id from sessions where agent_id = @agent_id and ended_at is null for update;
+
+-- name: IsAgentBusy :one
+-- Reports whether a session of the agent has an unfinished turn.
+select exists (select 1 from turns join sessions on sessions.id = turns.session_id
+               where sessions.agent_id = @agent_id and turns.ended_at is null);
+
+-- name: EndAgentSessions :many
+update sessions set ended_at = now(), end_reason = 'agent_deleted'
+where agent_id = @agent_id and ended_at is null
+returning *;
+
+-- name: DeleteAgent :one
+update agents set deleted_at = now() where id = @id returning *;
+
 -- name: ListAgents :many
-select * from agents where project_id = @project_id order by created_at, id;
+select * from agents where project_id = @project_id and deleted_at is null order by created_at, id;
 
 -- name: CreateSession :one
+-- Returns no row if the agent does not exist or is deleted. The agent is
+-- locked as the insert locks it anyway, but before it is read: an agent
+-- that is being deleted is read as deleted.
 insert into sessions (id, agent_id, title, created_by)
-select @id::uuid, agents.id, @title::text, sqlc.narg(created_by)::uuid from agents where agents.id = @agent_id
+select @id::uuid, agents.id, @title::text, sqlc.narg(created_by)::uuid from agents
+where agents.id = @agent_id and agents.deleted_at is null
+for key share
 returning *;
 
 -- name: GetSession :one

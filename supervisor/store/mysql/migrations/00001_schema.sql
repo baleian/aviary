@@ -120,9 +120,13 @@ create table agents (
     model mediumtext not null,
     created_at datetime(6) not null default (now(6)),
     updated_at datetime(6) not null default (now(6)),
+    -- Set if the agent is deleted.
+    deleted_at datetime(6),
     foreign key (project_id) references projects (id),
     foreign key (provider_id) references providers (id),
-    unique key agents_project_slug (project_id, slug)
+    -- A slug is unique among the agents of a project that are not deleted:
+    -- the key has no value for a deleted agent.
+    unique key agents_project_slug (project_id, (if(deleted_at is null, slug, null)))
 );
 
 create table sessions (

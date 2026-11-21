@@ -107,9 +107,13 @@ create table agents (
     model text not null,
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now(),
-    -- Also serves listing the agents of a project.
-    constraint agents_project_slug unique (project_id, slug)
+    -- Set if the agent is deleted.
+    deleted_at timestamptz
 );
+
+-- A slug is unique among the agents of a project that are not deleted. Also
+-- serves listing them.
+create unique index agents_project_slug on agents (project_id, slug) where deleted_at is null;
 
 create table sessions (
     id uuid primary key,

@@ -118,3 +118,126 @@ func TestAgentIsReplaced(t *testing.T) {
 		t.Errorf("agent after refused replacements = %v, want %v", after, last)
 	}
 }
+
+// Deleting an agent ends its sessions, deletes their sandboxes and frees its
+// slug. The agent and its sessions stay readable.
+func TestAgentIsDeleted(t *testing.T) {
+	t.Parallel()
+	aviary := install(t)
+	s := aviary.supervisor()
+	s.hears()
+	project := s.project()
+	stream := s.changes(project)
+	agents := "/v1/projects/" + project + "/agents"
+	agent := s.agent(project, `{"slug": "reviewer", "harness": "opencode"}`)
+	path := "/v1/agents/" + agent
+	other := s.create("/v1/agents/"+s.agent(project, `{"harness": "opencode"}`)+"/sessions", "")
+	// A session that was never used, and one with a sandbox and a turn that
+	// is still running.
+	idle, used := s.create(path+"/sessions", ""), s.create(path+"/sessions", "")
+	runner := aviary.given(s.send(used, "hello").ID)
+	runner.report(started("harness-session"))
+	read := func(path string) map[string]any {
+		t.Helper()
+		var record map[string]any
+		if status, _ := s.request("GET", path, "", &record); status != http.StatusOK {
+			t.Fatalf("GET %s: status %d, want 200", path, status)
+		}
+		return record
+	}
+	// listed returns the IDs of the project's agents.
+	listed := func() []string {
+		t.Helper()
+		ids := []string{}
+		for _, listed := range read(agents)["agents"].([]any) {
+			ids = append(ids, listed.(map[string]any)["id"].(string))
+		}
+		return ids
+	}
+
+	// A turn that has not ended keeps the agent.
+	var refusal struct{ Code string }
+	if status, _ := s.request("DELETE", path, "", &refusal); status != http.StatusConflict || refusal.Code != "session_busy" {
+		t.Fatalf("delete an agent with a running turn = %d %s, want 409 session_busy", status, refusal.Code)
+	}
+	if kept := read(path); kept["deleted_at"] != nil || len(listed()) != 2 || read("/v1/sessions/" + idle)["ended_at"] != nil {
+		t.Errorf("after the refused deletion the agent is %v, among %d listed", kept, len(listed()))
+	}
+	runner.report(finished("end_turn", nil))
+	if sandboxes := aviary.service.Made(); len(sandboxes) != 1 {
+		t.Fatalf("sandboxes before the agent is deleted = %v, want one", sandboxes)
+	}
+	// Every change so far has been sent.
+	stream.sent("the session with its completed turn", func(session map[string]any) bool {
+		last, _ := session["last_turn"].(map[string]any)
+		return session["id"] == used && last["state"] == "completed"
+	})
+
+	var deleted map[string]any
+	if status, _ := s.request("DELETE", path, "", &deleted); status != http.StatusOK || deleted["id"] != agent || deleted["deleted_at"] == nil ||
+		deleted["slug"] != "reviewer" {
+		t.Fatalf("delete agent = %d %v, want 200 with the agent and deleted_at", status, deleted)
+	}
+	if again := read(path); !reflect.DeepEqual(again, deleted) {
+		t.Errorf("deleted agent read as %v, want %v", again, deleted)
+	}
+	if ids := listed(); len(ids) != 1 || ids[0] == agent {
+		t.Errorf("agents listed after the deletion = %v, want only the other agent", ids)
+	}
+	// Its sessions have ended, and say why. Those who watch the project are
+	// sent both.
+	ended := map[string]bool{}
+	for len(ended) < 2 {
+		session := stream.sent("a session that ended with its agent", func(session map[string]any) bool {
+			return session["ended_at"] != nil && session["end_reason"] == "agent_deleted"
+		})
+		ended[session["id"].(string)] = true
+	}
+	if !ended[idle] || !ended[used] {
+		t.Errorf("sessions sent as ended with their agent = %v, want %s and %s", ended, idle, used)
+	}
+	for _, id := range []string{idle, used} {
+		session := read("/v1/sessions/" + id)
+		if _, has := session["sandbox"]; session["ended_at"] == nil || session["end_reason"] != "agent_deleted" || has {
+			t.Errorf("session %s of the deleted agent = %v, want it ended without a sandbox", id, session)
+		}
+	}
+	if sandboxes := aviary.service.Made(); len(sandboxes) != 0 {
+		t.Errorf("sandboxes after the agent was deleted = %v, want none", sandboxes)
+	}
+	if session := read("/v1/sessions/" + other); session["ended_at"] != nil {
+		t.Errorf("session of another agent = %v, want it not ended", session)
+	}
+	if turns, _ := read("/v1/sessions/" + used + "/turns")["turns"].([]any); len(turns) != 1 {
+		t.Errorf("turns of a session of the deleted agent = %v, want its one turn", turns)
+	}
+	if sessions, _ := read(path + "/sessions")["sessions"].([]any); len(sessions) != 2 {
+		t.Errorf("sessions listed for the deleted agent = %v, want its two", sessions)
+	}
+
+	model := fmt.Sprintf(`"model": {"provider": %q, "name": "a-model"}`, deleted["model"].(map[string]any)["provider"])
+	for _, test := range []struct {
+		method, path, body string
+		status             int
+		code               string
+	}{
+		{"POST", path + "/sessions", ``, http.StatusConflict, "agent_deleted"},
+		{"PUT", path, `{` + model + `}`, http.StatusConflict, "agent_deleted"},
+		{"POST", "/v1/sessions/" + idle + "/messages", `{"text": "hello"}`, http.StatusConflict, "session_ended"},
+		{"DELETE", "/v1/agents/" + uuid.NewString(), ``, http.StatusNotFound, "not_found"},
+	} {
+		var refusal struct{ Code, Message string }
+		if status, _ := s.request(test.method, test.path, test.body, &refusal); status != test.status || refusal.Code != test.code || refusal.Message == "" {
+			t.Errorf("%s %s %s = %d %s %q, want %d %s", test.method, test.path, test.body, status, refusal.Code, refusal.Message, test.status, test.code)
+		}
+	}
+	// Deleting it again changes nothing.
+	var again map[string]any
+	if status, _ := s.request("DELETE", path, "", &again); status != http.StatusOK || !reflect.DeepEqual(again, deleted) {
+		t.Errorf("second deletion = %d %v, want 200 with %v", status, again, deleted)
+	}
+	// Its slug is free again.
+	if next := s.create(agents, `{"slug": "reviewer", "harness": "opencode", `+model+`}`); next == agent {
+		t.Errorf("agent created with the slug of the deleted one has its ID %s", next)
+	}
+}

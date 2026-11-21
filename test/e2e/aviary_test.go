@@ -54,6 +54,7 @@ func TestAviary(t *testing.T) {
 			"an idle session loses its sandbox":                    loses,
 			"a turn is cancelled":                                  cancel,
 			"a session is ended":                                   ended,
+			"an agent is deleted":                                  deletes,
 			"a client watches the sessions of a project":           watches,
 			"the Supervisors report turn metrics":                  supervisorMetrics,
 		}
@@ -765,6 +766,52 @@ func watches(t *testing.T) {
 		case <-deadline:
 			t.Fatalf("after %s, the session was not sent with its completed turn", soon)
 		}
+	}
+}
+
+// Deleting an agent ends its sessions and deletes their sandboxes. The
+// conversations stay readable, and the agent's slug is free again.
+func deletes(t *testing.T) {
+	project := newProject(t)
+	models := provider(t, project, mockKey)
+	agent := agentOf(t, project, models, harness(harnesses[0]))
+	path := "/v1/agents/" + agent.id
+	session := agent.session(t)
+	run(t, session, "say done")
+	if kept := sandboxes(t, session); len(kept) != 1 {
+		t.Fatalf("session sandboxes = %v, want one", kept)
+	}
+
+	var deleted struct {
+		ID        string     `json:"id"`
+		Slug      string     `json:"slug"`
+		DeletedAt *time.Time `json:"deleted_at"`
+	}
+	if status := request(t, "DELETE", path, "", &deleted); status != http.StatusOK || deleted.ID != agent.id || deleted.DeletedAt == nil {
+		t.Fatalf("delete agent: got %d %+v, want 200 with deleted_at", status, deleted)
+	}
+	var over struct {
+		EndedAt   *time.Time `json:"ended_at"`
+		EndReason string     `json:"end_reason"`
+	}
+	if status := request(t, "GET", "/v1/sessions/"+session, "", &over); status != http.StatusOK || over.EndedAt == nil || over.EndReason != "agent_deleted" {
+		t.Errorf("session of the deleted agent: got %d %+v, want it ended with the reason agent_deleted", status, over)
+	}
+	eventually(t, soon, "the sandbox of the deleted agent's session still exists", func() bool {
+		return len(sandboxes(t, session)) == 0
+	})
+	var list struct{ Turns []turn }
+	if status := request(t, "GET", "/v1/sessions/"+session+"/turns", "", &list); status != http.StatusOK ||
+		len(list.Turns) != 1 || !strings.Contains(list.Turns[0].said(), "done") {
+		t.Errorf("turns of the deleted agent's session: got %d %+v, want its one turn", status, list.Turns)
+	}
+	var refusal struct{ Code string }
+	if status := request(t, "POST", path+"/sessions", "", &refusal); status != http.StatusConflict || refusal.Code != "agent_deleted" {
+		t.Errorf("session of a deleted agent: got %d %s, want 409 agent_deleted", status, refusal.Code)
+	}
+	body := fmt.Sprintf(`{"slug": %q, "harness": %q, "model": {"provider": %q, "name": "mock"}}`, deleted.Slug, harnesses[0], models)
+	if next := create(t, "/v1/projects/"+project+"/agents", body); next == agent.id {
+		t.Errorf("agent created with the slug of the deleted one has its ID %s", next)
 	}
 }
 

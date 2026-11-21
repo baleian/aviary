@@ -23,6 +23,7 @@ type Agent struct {
 	Model        string
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+	DeletedAt    *time.Time
 }
 
 type Approval struct {

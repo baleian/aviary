@@ -234,7 +234,7 @@ func (s *Store) CreateAgent(ctx context.Context, projectID uuid.UUID, agent stor
 		return store.Agent{}, store.ErrNotFound
 	}
 	for _, other := range s.agents {
-		if other.ProjectID == projectID && other.Slug == agent.Slug {
+		if other.ProjectID == projectID && other.Slug == agent.Slug && other.DeletedAt == nil {
 			return store.Agent{}, store.ErrSlugTaken
 		}
 	}
@@ -259,6 +259,9 @@ func (s *Store) ReplaceAgent(ctx context.Context, agent store.Agent) (store.Agen
 	if !found {
 		return store.Agent{}, store.ErrNotFound
 	}
+	if replaced.DeletedAt != nil {
+		return store.Agent{}, store.ErrAgentDeleted
+	}
 	if _, found := s.providers[agent.Model.Provider]; !found {
 		return store.Agent{}, fmt.Errorf("provider %s does not exist", agent.Model.Provider)
 	}
@@ -267,6 +270,41 @@ func (s *Store) ReplaceAgent(ctx context.Context, agent store.Agent) (store.Agen
 	replaced.UpdatedAt = s.now()
 	s.agents[agent.ID] = replaced
 	return replaced, nil
+}
+
+func (s *Store) DeleteAgent(ctx context.Context, id uuid.UUID) (store.Agent, []store.Session, error) {
+	if err := s.begin(ctx); err != nil {
+		return store.Agent{}, nil, err
+	}
+	defer s.mu.Unlock()
+	agent, found := s.agents[id]
+	if !found {
+		return store.Agent{}, nil, store.ErrNotFound
+	}
+	if agent.DeletedAt != nil {
+		agent.DeletedAt = clone(agent.DeletedAt)
+		return agent, nil, nil
+	}
+	var live []*session
+	for _, session := range s.sessions {
+		if session.AgentID != id || session.EndedAt != nil {
+			continue
+		}
+		if turns := len(session.turns); turns > 0 && session.turns[turns-1].EndedAt == nil {
+			return store.Agent{}, nil, store.ErrSessionBusy
+		}
+		live = append(live, session)
+	}
+	now := s.now()
+	var ended []store.Session
+	for _, session := range live {
+		session.EndedAt, session.EndReason = clone(&now), store.EndAgentDeleted
+		ended = append(ended, session.record())
+	}
+	agent.DeletedAt = clone(&now)
+	s.agents[id] = agent
+	agent.DeletedAt = clone(&now)
+	return agent, ended, nil
 }
 
 // member refers to its user by subject or, while the user is awaited, by
@@ -513,6 +551,7 @@ func (s *Store) Agent(ctx context.Context, id uuid.UUID) (store.Agent, error) {
 	if !found {
 		return store.Agent{}, store.ErrNotFound
 	}
+	agent.DeletedAt = clone(agent.DeletedAt)
 	return agent, nil
 }
 
@@ -523,7 +562,7 @@ func (s *Store) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agent,
 	defer s.mu.Unlock()
 	agents := []store.Agent{}
 	for _, agent := range s.agents {
-		if agent.ProjectID == projectID {
+		if agent.ProjectID == projectID && agent.DeletedAt == nil {
 			agents = append(agents, agent)
 		}
 	}
@@ -542,8 +581,12 @@ func (s *Store) CreateSession(ctx context.Context, agentID, by uuid.UUID, title 
 		return store.Session{}, err
 	}
 	defer s.mu.Unlock()
-	if _, found := s.agents[agentID]; !found {
+	agent, found := s.agents[agentID]
+	if !found {
 		return store.Session{}, store.ErrNotFound
+	}
+	if agent.DeletedAt != nil {
+		return store.Session{}, store.ErrAgentDeleted
 	}
 	created := &session{Session: store.Session{ID: id, AgentID: agentID, Title: title, CreatedBy: by, CreatedAt: s.now()}}
 	s.sessions[id] = created

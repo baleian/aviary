@@ -15,7 +15,7 @@ const (
 	// projectView allows reading the project and its agents, model providers
 	// and secret stores, without secrets. Every member has it.
 	projectView = "project.view"
-	// agentsManage allows creating and replacing agents.
+	// agentsManage allows creating, replacing and deleting agents.
 	agentsManage = "agents.manage"
 	// connectionsManage allows registering and replacing model providers and
 	// secret stores.

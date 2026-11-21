@@ -91,6 +91,8 @@ func TestWhoMayDoWhat(t *testing.T) {
 		{"GET", "/v1/projects/" + project + "/agents", ``, everyMember},
 		{"GET", "/v1/agents/" + agent, ``, everyMember},
 		{"PUT", "/v1/agents/" + agent, `{}`, "pppfffffph"},
+		// The agent has a running turn, so those who may delete it get 409.
+		{"DELETE", "/v1/agents/" + agent, ``, "pppfffffph"},
 		{"POST", "/v1/projects/" + project + "/providers", `{}`, connections},
 		{"GET", "/v1/projects/" + project + "/providers", ``, everyMember},
 		{"GET", "/v1/providers/" + models, ``, everyMember},

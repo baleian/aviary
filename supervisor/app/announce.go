@@ -40,6 +40,14 @@ func (a announcing) turnChanged(ctx context.Context, turnID uuid.UUID) {
 	a.changed(ctx, turn.SessionID)
 }
 
+func (a announcing) DeleteAgent(ctx context.Context, id uuid.UUID) (store.Agent, []store.Session, error) {
+	agent, ended, err := a.Store.DeleteAgent(ctx, id)
+	for _, session := range ended {
+		a.changed(ctx, session.ID)
+	}
+	return agent, ended, err
+}
+
 func (a announcing) CreateSession(ctx context.Context, agentID, by uuid.UUID, title string) (store.Session, error) {
 	session, err := a.Store.CreateSession(ctx, agentID, by, title)
 	if err == nil {

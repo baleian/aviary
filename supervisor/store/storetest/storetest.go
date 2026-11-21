@@ -103,6 +103,8 @@ func Run(t *testing.T, create func(t *testing.T) Database) {
 		"ConcurrentUserOf":                     suite.testConcurrentUserOf,
 		"Agents":                               suite.testAgents,
 		"ReplaceAgent":                         suite.testReplaceAgent,
+		"DeleteAgent":                          suite.testDeleteAgent,
+		"ConcurrentDeleteAgent":                suite.testConcurrentDeleteAgent,
 		"AgentSlugs":                           suite.testAgentSlugs,
 		"ListAgents":                           suite.testListAgents,
 		"ListSessions":                         suite.testListSessions,

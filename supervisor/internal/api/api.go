@@ -59,6 +59,7 @@ var (
 	errSlugTaken   = &apiError{status: http.StatusConflict, Code: "slug_taken", Message: "the slug is already taken"}
 	errSessionBusy = &apiError{status: http.StatusConflict, Code: "session_busy", Message: "the session has an unfinished turn"}
 	errSessionOver = &apiError{status: http.StatusConflict, Code: "session_ended", Message: "the session has ended"}
+	errAgentGone   = &apiError{status: http.StatusConflict, Code: "agent_deleted", Message: "the agent is deleted"}
 	errTurnEnded   = &apiError{status: http.StatusConflict, Code: "turn_ended", Message: "the turn has ended"}
 	errAnswered    = &apiError{status: http.StatusConflict, Code: "approval_answered", Message: "the approval request already has an answer"}
 	errQueueFull   = &apiError{status: http.StatusTooManyRequests, Code: "queue_full", Message: "too many turns are queued; retry later", retryAfter: 5}
@@ -102,6 +103,7 @@ func New(ctx context.Context, st store.Store, ev *events.Streams, dr *driver.Dri
 	mux.Handle("GET /v1/projects/{pid}/agents", a.inProject(projectView, a.listAgents))
 	mux.Handle("GET /v1/agents/{aid}", a.ofProject(projectView, "aid", a.ofAgent, a.getAgent))
 	mux.Handle("PUT /v1/agents/{aid}", a.ofProject(agentsManage, "aid", a.ofAgent, a.replaceAgent))
+	mux.Handle("DELETE /v1/agents/{aid}", a.ofProject(agentsManage, "aid", a.ofAgent, a.deleteAgent))
 	mux.Handle("POST /v1/agents/{aid}/sessions", a.ofProject(sessionsRun, "aid", a.ofAgent, a.createSession))
 	// listSessions does its own access check, since what it lists depends on
 	// the caller.
@@ -295,6 +297,22 @@ func (a *api) replaceAgent(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	respond(w, http.StatusOK, replaced)
+	return nil
+}
+
+// deleteAgent deletes the agent: its sessions end, and their sandboxes are
+// deleted. The agent and the conversations are kept.
+func (a *api) deleteAgent(w http.ResponseWriter, r *http.Request) error {
+	id, err := pathID(r, "aid")
+	if err != nil {
+		return err
+	}
+	agent, err := a.driver.DeleteAgent(r.Context(), id)
+	if err != nil {
+		return err
+	}
+	slog.InfoContext(r.Context(), "agent deleted", "agent", id, "by", callerOf(r).Subject)
+	respond(w, http.StatusOK, agent)
 	return nil
 }
 
@@ -722,6 +740,8 @@ func (h handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		failure = errSessionBusy
 	case errors.Is(err, store.ErrSessionEnded):
 		failure = errSessionOver
+	case errors.Is(err, store.ErrAgentDeleted):
+		failure = errAgentGone
 	case errors.Is(err, store.ErrQueueFull):
 		failure = errQueueFull
 	case errors.Is(err, store.ErrMemberExists):

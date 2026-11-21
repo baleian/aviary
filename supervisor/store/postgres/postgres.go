@@ -345,9 +345,63 @@ func (s *records) ReplaceAgent(ctx context.Context, agent store.Agent) (store.Ag
 		Approval: agent.Approval, ProviderID: agent.Model.Provider, Model: agent.Model.Name,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return store.Agent{}, store.ErrNotFound
+		return store.Agent{}, s.deleted(ctx, agent.ID)
 	}
 	return agentFrom(row), err
+}
+
+// deleted returns ErrAgentDeleted if the agent exists, which is why a
+// statement for agents that are not deleted found none, and ErrNotFound if
+// it does not.
+func (s *records) deleted(ctx context.Context, id uuid.UUID) error {
+	if _, err := s.Agent(ctx, id); err != nil {
+		return err
+	}
+	return store.ErrAgentDeleted
+}
+
+func (s *records) DeleteAgent(ctx context.Context, id uuid.UUID) (store.Agent, []store.Session, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.Agent{}, nil, err
+	}
+	defer tx.Rollback(ctx)
+	queries := s.queries.WithTx(tx)
+	// Lock the agent, then its sessions, before checking their turns: a
+	// concurrent session or message either is there by then, or finds the
+	// agent deleted and the session ended.
+	row, err := queries.LockAgent(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.Agent{}, nil, store.ErrNotFound
+	}
+	if err != nil {
+		return store.Agent{}, nil, err
+	}
+	if row.DeletedAt != nil {
+		return agentFrom(row), nil, nil
+	}
+	if _, err := queries.LockAgentSessions(ctx, id); err != nil {
+		return store.Agent{}, nil, err
+	}
+	busy, err := queries.IsAgentBusy(ctx, id)
+	if err != nil {
+		return store.Agent{}, nil, err
+	}
+	if busy {
+		return store.Agent{}, nil, store.ErrSessionBusy
+	}
+	rows, err := queries.EndAgentSessions(ctx, id)
+	if err != nil {
+		return store.Agent{}, nil, err
+	}
+	if row, err = queries.DeleteAgent(ctx, id); err != nil {
+		return store.Agent{}, nil, err
+	}
+	ended := make([]store.Session, len(rows))
+	for i, row := range rows {
+		ended[i] = sessionFrom(row)
+	}
+	return agentFrom(row), ended, tx.Commit(ctx)
 }
 
 func (s *records) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agent, error) {
@@ -373,7 +427,7 @@ func (s *records) CreateSession(ctx context.Context, agentID, by uuid.UUID, titl
 	}
 	row, err := s.queries.CreateSession(ctx, params)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return store.Session{}, store.ErrNotFound
+		return store.Session{}, s.deleted(ctx, agentID)
 	}
 	return sessionFrom(row), err
 }
@@ -963,6 +1017,7 @@ func agentFrom(row db.Agent) store.Agent {
 		Harness:      row.Harness,
 		CreatedAt:    row.CreatedAt,
 		UpdatedAt:    row.UpdatedAt,
+		DeletedAt:    row.DeletedAt,
 		Instructions: row.Instructions,
 		Approval:     row.Approval,
 		Model:        store.Model{Provider: row.ProviderID, Name: row.Model},

@@ -191,6 +191,25 @@ func (d *Driver) endSession(ctx context.Context, id uuid.UUID, reason string) (s
 	return session, nil
 }
 
+// DeleteAgent deletes the agent, which ends its sessions, and deletes their
+// sandboxes with their volumes. It returns the errors of store.DeleteAgent. A
+// sandbox that cannot be deleted is deleted at a later look at the sandboxes.
+func (d *Driver) DeleteAgent(ctx context.Context, id uuid.UUID) (store.Agent, error) {
+	agent, ended, err := d.store.DeleteAgent(ctx, id)
+	if err != nil {
+		return store.Agent{}, err
+	}
+	for _, session := range ended {
+		if session.Sandbox == "" {
+			continue
+		}
+		if err := d.discard(ctx, session); err != nil {
+			slog.ErrorContext(ctx, "delete sandbox of ended session", "session", session.ID, "sandbox", session.Sandbox, "error", err)
+		}
+	}
+	return agent, nil
+}
+
 // discard deletes the sandbox of a session that has ended, with its volume,
 // and removes it from the session.
 func (d *Driver) discard(ctx context.Context, session store.Session) error {

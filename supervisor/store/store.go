@@ -24,6 +24,7 @@ var (
 	ErrMemberExists = errors.New("member already exists")
 	ErrSlugTaken    = errors.New("slug is taken")
 	ErrTurnEnded    = errors.New("turn has ended")
+	ErrAgentDeleted = errors.New("agent is deleted")
 )
 
 // Turn states. A queued turn waits to run, a dispatching turn waits for a
@@ -75,6 +76,9 @@ type Agent struct {
 	CreatedAt   time.Time `json:"created_at"`
 	// UpdatedAt is when the agent was last replaced.
 	UpdatedAt time.Time `json:"updated_at"`
+	// DeletedAt is set if the agent is deleted: it is no longer listed and
+	// gets no new sessions, and its sessions have ended.
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 	// Instructions, if not empty, are given to the agent before every turn.
 	Instructions string `json:"instructions,omitempty"`
 	// Approval is "ask" if the harness asks a person for approval before it
@@ -133,8 +137,9 @@ type Session struct {
 	CreatedBy uuid.UUID  `json:"created_by,omitzero"`
 	CreatedAt time.Time  `json:"created_at"`
 	EndedAt   *time.Time `json:"ended_at,omitempty"`
-	// EndReason is EndExpired if the session ended because it expired. It is
-	// empty if a caller ended the session, or the session has not ended.
+	// EndReason is EndExpired or EndAgentDeleted if the session ended for
+	// that reason. It is empty if a caller ended the session, or the session
+	// has not ended.
 	EndReason string `json:"end_reason,omitempty"`
 	// Sandbox is the name of the session's sandbox. It is empty if the
 	// session has none: it has run no turn yet, or its sandbox was deleted.
@@ -154,10 +159,16 @@ const (
 	SandboxLost   = "lost"
 )
 
-// EndExpired is the end reason of a session that was unused for longer than
-// the installation keeps sandboxes: its sandbox was deleted with the agent's
-// files.
-const EndExpired = "expired"
+// End reasons of the sessions that no caller ended.
+const (
+	// EndExpired is the end reason of a session that was unused for longer
+	// than the installation keeps sandboxes: its sandbox was deleted with
+	// the agent's files.
+	EndExpired = "expired"
+	// EndAgentDeleted is the end reason of a session whose agent was
+	// deleted.
+	EndAgentDeleted = "agent_deleted"
+)
 
 // Provider is a model provider of a project: a model endpoint and its API
 // key. A provider has a stored key, a key in a secret store, or no key.
@@ -437,22 +448,34 @@ type Store interface {
 
 	// CreateAgent creates the agent in the project. It returns ErrNotFound if
 	// the project does not exist, ErrSlugTaken if another agent of the project
-	// has its slug, and an error if the provider of its model does not exist.
+	// has its slug and is not deleted, and an error if the provider of its
+	// model does not exist.
 	CreateAgent(ctx context.Context, projectID uuid.UUID, agent Agent) (Agent, error)
 
+	// Agent returns the agent, also if it is deleted.
 	Agent(ctx context.Context, id uuid.UUID) (Agent, error)
 
 	// ReplaceAgent replaces the name, description, instructions, approval and
 	// model of the agent with the same ID. It returns ErrNotFound if there is
-	// no such agent, and an error if the provider of its model does not
-	// exist.
+	// no such agent, ErrAgentDeleted if it is deleted, and an error if the
+	// provider of its model does not exist.
 	ReplaceAgent(ctx context.Context, agent Agent) (Agent, error)
 
-	// Agents returns the agents of the project in creation order.
+	// DeleteAgent marks the agent as deleted and ends its sessions that have
+	// not ended, with the reason EndAgentDeleted. It returns the agent and
+	// the sessions that it ended, including their sandboxes. An agent that is
+	// already deleted is returned unchanged, without sessions. DeleteAgent
+	// returns ErrNotFound if there is no such agent, and ErrSessionBusy if a
+	// turn of one of its sessions has not ended.
+	DeleteAgent(ctx context.Context, id uuid.UUID) (Agent, []Session, error)
+
+	// Agents returns the agents of the project that are not deleted, in
+	// creation order.
 	Agents(ctx context.Context, projectID uuid.UUID) ([]Agent, error)
 
 	// CreateSession creates a session of the agent with the title, which may
-	// be empty. It returns ErrNotFound if the agent does not exist.
+	// be empty. It returns ErrNotFound if the agent does not exist, and
+	// ErrAgentDeleted if it is deleted.
 	CreateSession(ctx context.Context, agentID, by uuid.UUID, title string) (Session, error)
 
 	Session(ctx context.Context, id uuid.UUID) (Session, error)

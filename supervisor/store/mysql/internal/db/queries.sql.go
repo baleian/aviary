@@ -424,6 +424,15 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) error {
 	return err
 }
 
+const deleteAgent = `-- name: DeleteAgent :exec
+update agents set deleted_at = now(6) where id = ?
+`
+
+func (q *Queries) DeleteAgent(ctx context.Context, id key.ID) error {
+	_, err := q.db.ExecContext(ctx, deleteAgent, id)
+	return err
+}
+
 const dispatchTurn = `-- name: DispatchTurn :execrows
 update turns set state = 'dispatching', dispatched_at = now(6) where id = ? and state = 'queued'
 `
@@ -485,6 +494,15 @@ type DropMembersBeforeClaimParams struct {
 // that awaits a member under it, so that the awaited member takes its place.
 func (q *Queries) DropMembersBeforeClaim(ctx context.Context, arg DropMembersBeforeClaimParams) error {
 	_, err := q.db.ExecContext(ctx, dropMembersBeforeClaim, arg.Username, arg.Username)
+	return err
+}
+
+const endAgentSessions = `-- name: EndAgentSessions :exec
+update sessions set ended_at = now(6), end_reason = 'agent_deleted' where agent_id = ? and ended_at is null
+`
+
+func (q *Queries) EndAgentSessions(ctx context.Context, agentID key.ID) error {
+	_, err := q.db.ExecContext(ctx, endAgentSessions, agentID)
 	return err
 }
 
@@ -621,7 +639,7 @@ func (q *Queries) FreeUsername(ctx context.Context, arg FreeUsernameParams) erro
 }
 
 const getAgent = `-- name: GetAgent :one
-select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at from agents where id = ?
+select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at, deleted_at from agents where id = ?
 `
 
 func (q *Queries) GetAgent(ctx context.Context, id key.ID) (Agent, error) {
@@ -640,6 +658,7 @@ func (q *Queries) GetAgent(ctx context.Context, id key.ID) (Agent, error) {
 		&i.Model,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -874,6 +893,32 @@ func (q *Queries) GetUserBySubject(ctx context.Context, subject string) (User, e
 	return i, err
 }
 
+const holdAgent = `-- name: HoldAgent :one
+select id from agents where id = ? and deleted_at is null for share
+`
+
+// Keeps the agent from being deleted until the transaction ends. Returns no
+// row if the agent does not exist or is deleted.
+func (q *Queries) HoldAgent(ctx context.Context, id key.ID) (key.ID, error) {
+	row := q.db.QueryRowContext(ctx, holdAgent, id)
+	var id_2 key.ID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
+const isAgentBusy = `-- name: IsAgentBusy :one
+select exists (select 1 from turns join sessions on sessions.id = turns.session_id
+               where sessions.agent_id = ? and turns.ended_at is null)
+`
+
+// Reports whether a session of the agent has an unfinished turn.
+func (q *Queries) IsAgentBusy(ctx context.Context, agentID key.ID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, isAgentBusy, agentID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const isMember = `-- name: IsMember :one
 select exists (
     select 1 from project_members
@@ -908,7 +953,7 @@ func (q *Queries) IsSessionBusy(ctx context.Context, sessionID key.ID) (bool, er
 }
 
 const listAgents = `-- name: ListAgents :many
-select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at from agents where project_id = ? order by created_at, id
+select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at, deleted_at from agents where project_id = ? and deleted_at is null order by created_at, id
 `
 
 func (q *Queries) ListAgents(ctx context.Context, projectID key.ID) ([]Agent, error) {
@@ -933,6 +978,7 @@ func (q *Queries) ListAgents(ctx context.Context, projectID key.ID) ([]Agent, er
 			&i.Model,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1359,6 +1405,43 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 	return items, nil
 }
 
+const listSessionsEndedWithAgent = `-- name: ListSessionsEndedWithAgent :many
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason from sessions where agent_id = ? and end_reason = 'agent_deleted'
+`
+
+func (q *Queries) ListSessionsEndedWithAgent(ctx context.Context, agentID key.ID) ([]Session, error) {
+	rows, err := q.db.QueryContext(ctx, listSessionsEndedWithAgent, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Session
+	for rows.Next() {
+		var i Session
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.Title,
+			&i.CreatedBy,
+			&i.Sandbox,
+			&i.SandboxState,
+			&i.CreatedAt,
+			&i.EndedAt,
+			&i.EndReason,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSessionsOf = `-- name: ListSessionsOf :many
 select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason from sessions
 where agent_id = ? and created_by = ? and id < ?
@@ -1556,6 +1639,62 @@ func (q *Queries) Lock(ctx context.Context, name string) (string, error) {
 	return name_2, err
 }
 
+const lockAgent = `-- name: LockAgent :one
+select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at, deleted_at from agents where id = ? for update
+`
+
+// Locks the agent until the transaction ends, so that it gets no session
+// meanwhile.
+func (q *Queries) LockAgent(ctx context.Context, id key.ID) (Agent, error) {
+	row := q.db.QueryRowContext(ctx, lockAgent, id)
+	var i Agent
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Slug,
+		&i.Name,
+		&i.Description,
+		&i.Harness,
+		&i.Instructions,
+		&i.Approval,
+		&i.ProviderID,
+		&i.Model,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const lockAgentSessions = `-- name: LockAgentSessions :many
+select id from sessions where agent_id = ? and ended_at is null for update
+`
+
+// Locks the agent's sessions that have not ended until the transaction ends,
+// so that none of them accepts a message meanwhile.
+func (q *Queries) LockAgentSessions(ctx context.Context, agentID key.ID) ([]key.ID, error) {
+	rows, err := q.db.QueryContext(ctx, lockAgentSessions, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []key.ID
+	for rows.Next() {
+		var id key.ID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockSession = `-- name: LockSession :one
 select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason from sessions where id = ? for update
 `
@@ -1734,7 +1873,7 @@ func (q *Queries) RemoveMember(ctx context.Context, id key.ID) (int64, error) {
 const replaceAgent = `-- name: ReplaceAgent :execrows
 update agents set name = ?, description = ?, instructions = ?,
        approval = ?, provider_id = ?, model = ?, updated_at = now(6)
-where id = ?
+where id = ? and deleted_at is null
 `
 
 type ReplaceAgentParams struct {
@@ -1747,6 +1886,7 @@ type ReplaceAgentParams struct {
 	ID           key.ID
 }
 
+// Changes nothing if the agent does not exist or is deleted.
 func (q *Queries) ReplaceAgent(ctx context.Context, arg ReplaceAgentParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, replaceAgent,
 		arg.Name,

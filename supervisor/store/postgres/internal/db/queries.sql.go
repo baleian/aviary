@@ -230,7 +230,7 @@ insert into agents (id, project_id, slug, name, description, harness, instructio
 select $1::uuid, projects.id, $2::text, $3::text, $4::text, $5::text, $6::text,
        $7::text, $8::uuid, $9::text
 from projects where projects.id = $10
-returning id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at
+returning id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at, deleted_at
 `
 
 type CreateAgentParams struct {
@@ -273,6 +273,7 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 		&i.Model,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -386,7 +387,9 @@ func (q *Queries) CreateSecretStore(ctx context.Context, arg CreateSecretStorePa
 
 const createSession = `-- name: CreateSession :one
 insert into sessions (id, agent_id, title, created_by)
-select $1::uuid, agents.id, $2::text, $3::uuid from agents where agents.id = $4
+select $1::uuid, agents.id, $2::text, $3::uuid from agents
+where agents.id = $4 and agents.deleted_at is null
+for key share
 returning id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason
 `
 
@@ -397,6 +400,9 @@ type CreateSessionParams struct {
 	AgentID   uuid.UUID
 }
 
+// Returns no row if the agent does not exist or is deleted. The agent is
+// locked as the insert locks it anyway, but before it is read: an agent
+// that is being deleted is read as deleted.
 func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error) {
 	row := q.db.QueryRow(ctx, createSession,
 		arg.ID,
@@ -469,6 +475,31 @@ func (q *Queries) CreateTurn(ctx context.Context, arg CreateTurnParams) (Turn, e
 	return i, err
 }
 
+const deleteAgent = `-- name: DeleteAgent :one
+update agents set deleted_at = now() where id = $1 returning id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at, deleted_at
+`
+
+func (q *Queries) DeleteAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
+	row := q.db.QueryRow(ctx, deleteAgent, id)
+	var i Agent
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Slug,
+		&i.Name,
+		&i.Description,
+		&i.Harness,
+		&i.Instructions,
+		&i.Approval,
+		&i.ProviderID,
+		&i.Model,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const dispatchTurn = `-- name: DispatchTurn :execrows
 update turns set state = 'dispatching', dispatched_at = now()
 where id = $1 and state = 'queued'
@@ -526,6 +557,42 @@ where awaited.project_id = member.project_id and awaited.username = $1::text
 func (q *Queries) DropMembersBeforeClaim(ctx context.Context, username string) error {
 	_, err := q.db.Exec(ctx, dropMembersBeforeClaim, username)
 	return err
+}
+
+const endAgentSessions = `-- name: EndAgentSessions :many
+update sessions set ended_at = now(), end_reason = 'agent_deleted'
+where agent_id = $1 and ended_at is null
+returning id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason
+`
+
+func (q *Queries) EndAgentSessions(ctx context.Context, agentID uuid.UUID) ([]Session, error) {
+	rows, err := q.db.Query(ctx, endAgentSessions, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Session
+	for rows.Next() {
+		var i Session
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.Title,
+			&i.CreatedBy,
+			&i.Sandbox,
+			&i.SandboxState,
+			&i.CreatedAt,
+			&i.EndedAt,
+			&i.EndReason,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const endSession = `-- name: EndSession :one
@@ -756,7 +823,7 @@ func (q *Queries) FreeUsername(ctx context.Context, arg FreeUsernameParams) erro
 }
 
 const getAgent = `-- name: GetAgent :one
-select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at from agents where id = $1
+select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at, deleted_at from agents where id = $1
 `
 
 func (q *Queries) GetAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
@@ -775,6 +842,7 @@ func (q *Queries) GetAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
 		&i.Model,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -1007,6 +1075,19 @@ func (q *Queries) HoldSession(ctx context.Context, id uuid.UUID) (uuid.UUID, err
 	return id_2, err
 }
 
+const isAgentBusy = `-- name: IsAgentBusy :one
+select exists (select 1 from turns join sessions on sessions.id = turns.session_id
+               where sessions.agent_id = $1 and turns.ended_at is null)
+`
+
+// Reports whether a session of the agent has an unfinished turn.
+func (q *Queries) IsAgentBusy(ctx context.Context, agentID uuid.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, isAgentBusy, agentID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const isMember = `-- name: IsMember :one
 select exists (
     select 1 from project_members
@@ -1029,7 +1110,7 @@ func (q *Queries) IsMember(ctx context.Context, arg IsMemberParams) (bool, error
 }
 
 const listAgents = `-- name: ListAgents :many
-select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at from agents where project_id = $1 order by created_at, id
+select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at, deleted_at from agents where project_id = $1 and deleted_at is null order by created_at, id
 `
 
 func (q *Queries) ListAgents(ctx context.Context, projectID uuid.UUID) ([]Agent, error) {
@@ -1054,6 +1135,7 @@ func (q *Queries) ListAgents(ctx context.Context, projectID uuid.UUID) ([]Agent,
 			&i.Model,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1586,6 +1668,59 @@ func (q *Queries) Lock(ctx context.Context, key int64) error {
 	return err
 }
 
+const lockAgent = `-- name: LockAgent :one
+select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at, deleted_at from agents where id = $1 for update
+`
+
+// Locks the agent until the transaction ends, so that it gets no session
+// meanwhile.
+func (q *Queries) LockAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
+	row := q.db.QueryRow(ctx, lockAgent, id)
+	var i Agent
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Slug,
+		&i.Name,
+		&i.Description,
+		&i.Harness,
+		&i.Instructions,
+		&i.Approval,
+		&i.ProviderID,
+		&i.Model,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const lockAgentSessions = `-- name: LockAgentSessions :many
+select id from sessions where agent_id = $1 and ended_at is null for update
+`
+
+// Locks the agent's sessions that have not ended until the transaction ends,
+// so that none of them accepts a message meanwhile.
+func (q *Queries) LockAgentSessions(ctx context.Context, agentID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, lockAgentSessions, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockSession = `-- name: LockSession :one
 select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason from sessions where id = $1 for update
 `
@@ -1686,8 +1821,8 @@ func (q *Queries) RemoveMember(ctx context.Context, id uuid.UUID) (int64, error)
 const replaceAgent = `-- name: ReplaceAgent :one
 update agents set name = $1, description = $2, instructions = $3, approval = $4,
        provider_id = $5, model = $6, updated_at = now()
-where id = $7
-returning id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at
+where id = $7 and deleted_at is null
+returning id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at, deleted_at
 `
 
 type ReplaceAgentParams struct {
@@ -1700,6 +1835,7 @@ type ReplaceAgentParams struct {
 	ID           uuid.UUID
 }
 
+// Returns no row if the agent does not exist or is deleted.
 func (q *Queries) ReplaceAgent(ctx context.Context, arg ReplaceAgentParams) (Agent, error) {
 	row := q.db.QueryRow(ctx, replaceAgent,
 		arg.Name,
@@ -1724,6 +1860,7 @@ func (q *Queries) ReplaceAgent(ctx context.Context, arg ReplaceAgentParams) (Age
 		&i.Model,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }

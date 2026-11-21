@@ -14,12 +14,42 @@ from projects where projects.id = sqlc.arg(project_id);
 select * from agents where id = ?;
 
 -- name: ReplaceAgent :execrows
+-- Changes nothing if the agent does not exist or is deleted.
 update agents set name = sqlc.arg(name), description = sqlc.arg(description), instructions = sqlc.arg(instructions),
        approval = sqlc.arg(approval), provider_id = sqlc.arg(provider_id), model = sqlc.arg(model), updated_at = now(6)
-where id = sqlc.arg(id);
+where id = sqlc.arg(id) and deleted_at is null;
+
+-- name: LockAgent :one
+-- Locks the agent until the transaction ends, so that it gets no session
+-- meanwhile.
+select * from agents where id = ? for update;
+
+-- name: HoldAgent :one
+-- Keeps the agent from being deleted until the transaction ends. Returns no
+-- row if the agent does not exist or is deleted.
+select id from agents where id = ? and deleted_at is null for share;
+
+-- name: LockAgentSessions :many
+-- Locks the agent's sessions that have not ended until the transaction ends,
+-- so that none of them accepts a message meanwhile.
+select id from sessions where agent_id = ? and ended_at is null for update;
+
+-- name: IsAgentBusy :one
+-- Reports whether a session of the agent has an unfinished turn.
+select exists (select 1 from turns join sessions on sessions.id = turns.session_id
+               where sessions.agent_id = ? and turns.ended_at is null);
+
+-- name: EndAgentSessions :exec
+update sessions set ended_at = now(6), end_reason = 'agent_deleted' where agent_id = ? and ended_at is null;
+
+-- name: ListSessionsEndedWithAgent :many
+select * from sessions where agent_id = ? and end_reason = 'agent_deleted';
+
+-- name: DeleteAgent :exec
+update agents set deleted_at = now(6) where id = ?;
 
 -- name: ListAgents :many
-select * from agents where project_id = ? order by created_at, id;
+select * from agents where project_id = ? and deleted_at is null order by created_at, id;
 
 -- name: CreateSession :execrows
 insert into sessions (id, agent_id, title, created_by)

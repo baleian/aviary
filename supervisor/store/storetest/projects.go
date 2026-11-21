@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
 	"slices"
@@ -188,7 +189,8 @@ func (suite suite) testAgents(t *testing.T) {
 	}
 }
 
-// sameAgent reports whether the two agents are equal.
+// sameAgent reports whether the two agents are equal, apart from whether
+// they are deleted.
 func sameAgent(one, other store.Agent) bool {
 	return one.ID == other.ID && one.ProjectID == other.ProjectID && one.Slug == other.Slug && one.Name == other.Name &&
 		one.Description == other.Description && one.Harness == other.Harness && one.Instructions == other.Instructions &&
@@ -318,6 +320,190 @@ func (suite suite) testListAgents(t *testing.T) {
 				agent.Model != read.Model || !agent.CreatedAt.Equal(read.CreatedAt) {
 				t.Errorf("agent %d: listed %+v, read %+v", i, agent, read)
 			}
+		}
+	}
+}
+
+// DeleteAgent marks an agent as deleted and ends its sessions. The agent and
+// the sessions stay readable, and the agent's slug is free again.
+func (suite suite) testDeleteAgent(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	project := st.project()
+	provider, err := st.CreateProvider(ctx, store.Provider{ID: uuid.New(), ProjectID: project.ID, Name: "a provider", URL: "https://api.example.com/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	create := func(slug string) store.Agent {
+		t.Helper()
+		agent, err := st.CreateAgent(ctx, project.ID, store.Agent{Slug: slug, Harness: "opencode", Model: store.Model{Provider: provider.ID, Name: "a-model"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return agent
+	}
+	session := func(agent store.Agent) uuid.UUID {
+		t.Helper()
+		session, err := st.CreateSession(ctx, agent.ID, uuid.Nil, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return session.ID
+	}
+	agent, other := create("reviewer"), create("other")
+	// A session that was never used, one with a sandbox and an ended turn,
+	// one that a caller has ended, one with a queued turn, and a session of
+	// the other agent.
+	idle, used, over, busy, theirs := session(agent), session(agent), session(agent), session(agent), session(other)
+	if set, err := st.SetSandbox(ctx, used, "", "sandbox-1"); err != nil || !set {
+		t.Fatalf("SetSandbox did not set the sandbox: %v", err)
+	}
+	st.queue(used)
+	st.end(st.dispatch().TurnID, true, store.Failure{})
+	before, err := st.EndSession(ctx, over, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued := st.queue(busy)
+
+	// A turn that has not ended keeps the agent and its sessions.
+	if _, _, err := st.DeleteAgent(ctx, agent.ID); !errors.Is(err, store.ErrSessionBusy) {
+		t.Fatalf("DeleteAgent with a queued turn = %v, want ErrSessionBusy", err)
+	}
+	if read, err := st.another().Agent(ctx, agent.ID); err != nil || read.DeletedAt != nil {
+		t.Errorf("agent with a queued turn was deleted at %v: %v", read.DeletedAt, err)
+	}
+	if read, err := st.another().Session(ctx, idle); err != nil || read.EndedAt != nil {
+		t.Errorf("session of an agent with a queued turn ended at %v: %v", read.EndedAt, err)
+	}
+	if _, _, err := st.CancelTurn(ctx, queued.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, ended, err := st.DeleteAgent(ctx, agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted.DeletedAt == nil || deleted.DeletedAt.Before(agent.CreatedAt) {
+		t.Fatalf("DeleteAgent returned the agent deleted at %v", deleted.DeletedAt)
+	}
+	if kept := deleted; !sameAgent(agent, kept) {
+		t.Errorf("deleted agent = %+v, want it as it was: %+v", kept, agent)
+	}
+	sandboxes := map[uuid.UUID]string{}
+	for _, session := range ended {
+		if session.AgentID != agent.ID || session.EndedAt == nil || session.EndReason != store.EndAgentDeleted {
+			t.Errorf("DeleteAgent returned the session %+v, ended at %v", session, session.EndedAt)
+		}
+		sandboxes[session.ID] = session.Sandbox
+	}
+	if !maps.Equal(sandboxes, map[uuid.UUID]string{idle: "", used: "sandbox-1", busy: ""}) {
+		t.Errorf("DeleteAgent ended the sessions %v, want %s, %s with its sandbox and %s", sandboxes, idle, used, busy)
+	}
+	for id, reason := range map[uuid.UUID]string{idle: store.EndAgentDeleted, used: store.EndAgentDeleted, busy: store.EndAgentDeleted, over: ""} {
+		read, err := st.another().Session(ctx, id)
+		if err != nil || read.EndedAt == nil || read.EndReason != reason {
+			t.Errorf("session %s of the deleted agent ended at %v with the reason %q, want %q: %v", id, read.EndedAt, read.EndReason, reason, err)
+		}
+	}
+	if read, err := st.Session(ctx, over); err != nil || !read.EndedAt.Equal(*before.EndedAt) {
+		t.Errorf("session that had ended before now ended at %v, want %v: %v", read.EndedAt, before.EndedAt, err)
+	}
+	if read, err := st.Session(ctx, theirs); err != nil || read.EndedAt != nil {
+		t.Errorf("session of another agent ended at %v: %v", read.EndedAt, err)
+	}
+	if _, _, err := st.CreateTurn(ctx, idle, uuid.Nil, "hello", 0, 50); !errors.Is(err, store.ErrSessionEnded) {
+		t.Errorf("CreateTurn in a session of the deleted agent = %v, want ErrSessionEnded", err)
+	}
+
+	// The agent stays readable, is not listed, and stays as it is.
+	read, err := st.another().Agent(ctx, agent.ID)
+	if err != nil || read.DeletedAt == nil || !read.DeletedAt.Equal(*deleted.DeletedAt) || !sameAgent(read, agent) {
+		t.Errorf("deleted agent read as %+v, deleted at %v: %v", read, read.DeletedAt, err)
+	}
+	if agents, err := st.Agents(ctx, project.ID); err != nil || len(agents) != 1 || agents[0].ID != other.ID {
+		t.Errorf("Agents after DeleteAgent = %+v, want only the other agent: %v", agents, err)
+	}
+	again, none, err := st.another().DeleteAgent(ctx, agent.ID)
+	if err != nil || len(none) != 0 || again.DeletedAt == nil || !again.DeletedAt.Equal(*deleted.DeletedAt) {
+		t.Errorf("second DeleteAgent = %+v, deleted at %v, with the sessions %v: %v", again, again.DeletedAt, none, err)
+	}
+	if _, err := st.CreateSession(ctx, agent.ID, uuid.Nil, ""); !errors.Is(err, store.ErrAgentDeleted) {
+		t.Errorf("CreateSession of the deleted agent = %v, want ErrAgentDeleted", err)
+	}
+	if _, err := st.ReplaceAgent(ctx, agent); !errors.Is(err, store.ErrAgentDeleted) {
+		t.Errorf("ReplaceAgent of the deleted agent = %v, want ErrAgentDeleted", err)
+	}
+	if _, _, err := st.DeleteAgent(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("DeleteAgent of a nonexistent agent = %v, want ErrNotFound", err)
+	}
+
+	// Its slug is free, and that of the other agent is not.
+	if next := create("reviewer"); next.ID == agent.ID || next.DeletedAt != nil {
+		t.Errorf("agent created with the slug of the deleted one = %+v", next)
+	}
+	if _, err := st.CreateAgent(ctx, project.ID, store.Agent{Slug: "other", Harness: "opencode", Model: agent.Model}); !errors.Is(err, store.ErrSlugTaken) {
+		t.Errorf("CreateAgent with the slug of an agent that is not deleted = %v, want ErrSlugTaken", err)
+	}
+}
+
+// Concurrent deletions, sessions and messages never leave a deleted agent
+// with a session that has not ended, or with an unfinished turn.
+func (suite suite) testConcurrentDeleteAgent(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	supervisors := st.supervisors(9)
+	for range 20 {
+		id := st.session()
+		first, err := st.Session(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var deletions, accepted atomic.Int32
+		atOnce(len(supervisors), func(i int) {
+			switch i % 3 {
+			case 0:
+				switch _, _, err := supervisors[i].DeleteAgent(ctx, first.AgentID); {
+				case err == nil:
+					deletions.Add(1)
+				case !errors.Is(err, store.ErrSessionBusy):
+					t.Error(err)
+				}
+			case 1:
+				if _, err := supervisors[i].CreateSession(ctx, first.AgentID, uuid.Nil, ""); err != nil && !errors.Is(err, store.ErrAgentDeleted) {
+					t.Error(err)
+				}
+			default:
+				switch _, _, err := supervisors[i].CreateTurn(ctx, id, uuid.Nil, "hello", 0, 50); {
+				case err == nil:
+					accepted.Add(1)
+				case !errors.Is(err, store.ErrSessionBusy) && !errors.Is(err, store.ErrSessionEnded):
+					t.Error(err)
+				}
+			}
+		})
+		agent, err := st.Agent(ctx, first.AgentID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sessions, err := st.Sessions(ctx, first.AgentID, uuid.Nil, uuid.Max, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		live := 0
+		for _, session := range sessions {
+			if session.EndedAt == nil {
+				live++
+			}
+		}
+		// Either every deletion succeeded, no message was accepted and every
+		// session has ended, or a message was accepted and no deletion
+		// succeeded.
+		all := int32(len(supervisors) / 3)
+		if agent.DeletedAt != nil && (deletions.Load() != all || accepted.Load() != 0 || live != 0) ||
+			agent.DeletedAt == nil && (deletions.Load() != 0 || accepted.Load() != 1 || live != len(sessions)) {
+			t.Fatalf("concurrent DeleteAgent, CreateSession and CreateTurn: agent deleted at %v, %d of its %d sessions not ended, %d deletions and %d messages succeeded",
+				agent.DeletedAt, live, len(sessions), deletions.Load(), accepted.Load())
 		}
 	}
 }
