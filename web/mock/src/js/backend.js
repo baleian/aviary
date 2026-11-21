@@ -1099,6 +1099,9 @@ export function watch(projectID, {token = ''} = {}, onEvent, onEnd = () => {}) {
 // ---- The controls of the mock ---------------------------------------------
 
 export function reset() {
+  // What was about to be told of the data before is not told of the new.
+  clearTimeout(telling);
+  telling = 0;
   db = seed(Date.now());
   eventsOf = new Map();
   watchers = new Map();

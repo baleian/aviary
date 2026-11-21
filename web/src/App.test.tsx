@@ -1,42 +1,13 @@
 // @vitest-environment happy-dom
-import { QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router";
+import { screen } from "@testing-library/react";
 import { afterEach, beforeAll, expect, it } from "vitest";
 import { backend } from "./api/fake.ts";
-import { App } from "./App.tsx";
 import { prefs } from "./lib/prefs.ts";
 import { queryClient } from "./query.ts";
-import { signIn, signOut } from "./session/auth.ts";
-import { setTheme } from "./theme.ts";
+import { fast, leave, open } from "./testing.tsx";
 
-// The tests run the console as development does: the backend of the mock
-// answers it, and the accounts of the mock sign in. Alice is an
-// administrator, Bob a member of one project, and Dave is in no group that
-// may use the installation.
-beforeAll(() => {
-  prefs.set("mock.speed", "0");
-});
-
-afterEach(() => {
-  cleanup();
-  signOut();
-  setTheme("system");
-});
-
-// open shows the console at a path, to the account that is signed in.
-function open(path: string, account = "") {
-  signIn(account);
-  render(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[path]}>
-        <App />
-      </MemoryRouter>
-    </QueryClientProvider>,
-  );
-  return userEvent.setup();
-}
+beforeAll(fast);
+afterEach(leave);
 
 const toSignIn = { name: /Continue with your organization/ };
 

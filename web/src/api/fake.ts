@@ -22,6 +22,8 @@ interface Backend {
   ): Reply;
   accounts(): Account[];
   setIdentityProvider(on: boolean): void;
+  // reset puts the example data back as it began.
+  reset(): void;
 }
 
 // How long an answer takes at the usual pace, in ms: between the two.

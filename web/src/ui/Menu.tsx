@@ -114,6 +114,7 @@ export function MenuItem({
   on,
   danger,
   disabled,
+  className,
   to,
   onClick,
 }: {
@@ -127,11 +128,12 @@ export function MenuItem({
   on?: boolean;
   danger?: boolean;
   disabled?: boolean;
+  className?: string;
   to?: string;
   onClick?: () => void;
 }) {
   const close = useContext(Close);
-  const className = cls("it", on && "on", danger && "dng");
+  const row = cls("it", on && "on", danger && "dng", className);
   const content = (
     <>
       {lead}
@@ -149,14 +151,14 @@ export function MenuItem({
   );
   if (to) {
     return (
-      <Link className={className} to={to} role="menuitem">
+      <Link className={row} to={to} role="menuitem">
         {content}
       </Link>
     );
   }
   return (
     <button
-      className={className}
+      className={row}
       type="button"
       role="menuitem"
       disabled={disabled}

@@ -1,8 +1,8 @@
 import type { Tinted } from "../api/queries.ts";
-import type { Project } from "../api/types.ts";
+import type { Agent, Project } from "../api/types.ts";
 import { cls } from "../lib/cls.ts";
 import { initials, label, pick } from "../lib/format.ts";
-import { Icon } from "./Icon.tsx";
+import { Icon, Use } from "./Icon.tsx";
 import type { Who } from "./who.ts";
 
 export function Avatar({
@@ -38,6 +38,21 @@ export function ProjectTile({
   return (
     <span className={cls("pt", colour, size)} aria-hidden="true">
       {label(project)[0]}
+    </span>
+  );
+}
+
+// AgentTile is the picture of an agent: a bird in one of six plumages.
+export function AgentTile({
+  agent,
+  size,
+}: {
+  agent: Tinted<Agent>;
+  size?: "xs" | "md" | "xl" | "xxl";
+}) {
+  return (
+    <span className={cls("at", `t${(agent.tint % 6) + 1}`, size)}>
+      <Use symbol="bird" />
     </span>
   );
 }
