@@ -176,6 +176,12 @@ export function Bar({ me }: { me: Me }) {
           >
             Connections
           </NavLink>
+          <NavLink
+            to={`/p/${project.slug}/access`}
+            className={({ isActive }) => (isActive ? "on" : undefined)}
+          >
+            Access
+          </NavLink>
         </nav>
       )}
       <div className="nav-r">

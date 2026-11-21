@@ -69,6 +69,20 @@ export function Toggle({
   );
 }
 
+// Check is a box to tick, with its text.
+export function Check({
+  children,
+  ...props
+}: { children?: ReactNode } & InputHTMLAttributes<HTMLInputElement>) {
+  return (
+    <label className="cb">
+      <input type="checkbox" {...props} />
+      <i />
+      {children && <span>{children}</span>}
+    </label>
+  );
+}
+
 // Options is a choice among a few cards. The body of a card shows below it
 // while it is chosen, and keeps what was entered in it while it is not.
 export function Options<T extends string>({

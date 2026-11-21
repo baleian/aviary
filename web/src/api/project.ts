@@ -53,12 +53,7 @@ export function permissionsIn(
 ): Permission[] {
   if (me.admin) return [...PERMISSIONS];
   const held = new Set<Permission>();
-  for (const member of members) {
-    // A member who has not signed in yet has no ID, and is nobody so far.
-    const mine = member.user
-      ? !!member.user.id && member.user.id === me.id
-      : (me.groups ?? []).includes(member.group ?? "");
-    if (!mine) continue;
+  for (const member of mine(me, members)) {
     const role = roles.find((other) => other.name === member.role);
     const granted =
       member.role === "custom" ? member.permissions : role?.permissions;
@@ -161,4 +156,52 @@ export function useProjectContext(slug: string): Found {
     return gone ? { state: "missing" } : { state: "failed", error };
   }
   return context ? { state: "ready", context } : { state: "pending" };
+}
+
+// What each permission allows, in the words of the console.
+export const ALLOWS: Record<Permission, string> = {
+  "project.view": "See the project",
+  "agents.manage": "Manage agents",
+  "connections.manage": "Manage connections",
+  "sessions.run": "Run sessions",
+  "sessions.view_all": "See every session",
+  "sessions.control_all": "Control every session",
+};
+
+// The roles of the installation, and what each is for.
+export const ROLES = ["owner", "editor", "user", "viewer", "auditor"];
+export const ROLE_NOTES: Record<string, string> = {
+  owner: "Runs the project",
+  editor: "Builds agents and connections",
+  user: "Works with the agents",
+  viewer: "Looks, and touches nothing",
+  auditor: "Reads every session",
+};
+
+// summary says in a few words what a set of permissions allows.
+export function summary(permissions: Permission[]): string {
+  if (PERMISSIONS.every((permission) => permissions.includes(permission))) {
+    return "Everything in this project";
+  }
+  // Seeing the project goes first, and controlling every session includes
+  // seeing them.
+  const controls = permissions.includes("sessions.control_all");
+  const rest = permissions.filter(
+    (permission) =>
+      permission !== "project.view" &&
+      !(permission === "sessions.view_all" && controls),
+  );
+  const words = rest.map((permission) => ALLOWS[permission].toLowerCase());
+  return ["See the project", ...words].join(" · ");
+}
+
+// mine returns the members of a project through which the caller is in it:
+// the caller as a user, and the caller's groups. A member who has not signed
+// in yet has no ID, and is nobody so far.
+export function mine(me: Me, members: Member[]): Member[] {
+  return members.filter((member) =>
+    member.user
+      ? !!member.user.id && member.user.id === me.id
+      : (me.groups ?? []).includes(member.group ?? ""),
+  );
 }

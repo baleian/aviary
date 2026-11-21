@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from "react-router";
 import { useProjects } from "./api/queries.ts";
 import { prefs } from "./lib/prefs.ts";
+import { Access } from "./screens/access/Access.tsx";
 import { Account } from "./screens/Account.tsx";
 import { Agents } from "./screens/agents/Agents.tsx";
 import { Connections } from "./screens/connections/Connections.tsx";
@@ -36,6 +37,7 @@ export function App() {
             <Route index element={<Overview />} />
             <Route path="agents" element={<Agents />} />
             <Route path="connections" element={<Connections />} />
+            <Route path="access" element={<Access />} />
             <Route path="*" element={<NotFound />} />
           </Route>
           <Route path="/me" element={<Account />} />

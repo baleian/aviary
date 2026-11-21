@@ -30,3 +30,10 @@ export function person(me: Me, members: Member[], id?: string): Who {
   const short = "User " + id.slice(0, 8);
   return { name: short, known: false, key: id, title: "User " + id };
 }
+
+// nameOf returns what to call a member of a project: the group, or the user.
+export function nameOf(member: Member): string {
+  return (
+    member.group || member.user?.display_name || member.user?.username || ""
+  );
+}

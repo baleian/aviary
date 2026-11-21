@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PERMISSIONS, permissionsIn } from "./project.ts";
+import { mine, PERMISSIONS, permissionsIn, summary } from "./project.ts";
 import type { Me, Member, Permission, Role } from "./types.ts";
 
 const roles: Role[] = [
@@ -80,5 +80,39 @@ describe("permissionsIn", () => {
     ];
     expect(permissionsIn(bob, members, roles)).toEqual([]);
     expect(permissionsIn({ admin: false }, members, roles)).toEqual([]);
+  });
+});
+
+describe("summary", () => {
+  it("says in words what a set of permissions allows", () => {
+    expect(summary([...PERMISSIONS])).toBe("Everything in this project");
+    expect(summary(["project.view"])).toBe("See the project");
+    expect(summary(["project.view", "sessions.run", "agents.manage"])).toBe(
+      "See the project · run sessions · manage agents",
+    );
+  });
+
+  it("does not say that controlling every session includes seeing them", () => {
+    expect(
+      summary(["project.view", "sessions.view_all", "sessions.control_all"]),
+    ).toBe("See the project · control every session");
+    expect(summary(["project.view", "sessions.view_all"])).toBe(
+      "See the project · see every session",
+    );
+  });
+});
+
+describe("mine", () => {
+  it("returns the members through which the caller is in the project", () => {
+    const members = [
+      member({ user: "u-bob" }, "user"),
+      member({ user: "u-carol" }, "owner"),
+      member({ group: "team-a" }, "viewer"),
+      member({ group: "team-b" }, "viewer"),
+    ];
+    expect(mine(bob, members).map((each) => each.id)).toEqual([
+      "m-u-bob",
+      "m-team-a",
+    ]);
   });
 });
