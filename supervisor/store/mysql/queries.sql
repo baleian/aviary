@@ -60,7 +60,7 @@ select * from sessions where id = ? for update;
 select exists (select 1 from turns where session_id = ? and ended_at is null);
 
 -- name: EndSession :exec
-update sessions set ended_at = now(6) where id = ?;
+update sessions set ended_at = now(6), end_reason = sqlc.narg(reason) where id = sqlc.arg(id);
 
 -- name: CreateProvider :execrows
 insert into providers (id, project_id, name, url, api_key, api_key_store_id, api_key_path, api_key_name)

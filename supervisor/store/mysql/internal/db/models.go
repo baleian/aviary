@@ -84,6 +84,7 @@ type Session struct {
 	SandboxState *string
 	CreatedAt    time.Time
 	EndedAt      *time.Time
+	EndReason    *string
 }
 
 type Turn struct {

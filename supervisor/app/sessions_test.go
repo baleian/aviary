@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"aviary/supervisor/internal/driver"
 )
 
@@ -141,5 +143,56 @@ func TestSessionSandbox(t *testing.T) {
 	}
 	if state, has := read()["sandbox"]; has {
 		t.Errorf("sandbox of an ended session = %v, want none", state)
+	}
+}
+
+// A session that was not used for longer than its sandbox is kept ends when
+// the sandbox is gone, and says why it ended.
+func TestSessionExpires(t *testing.T) {
+	t.Parallel()
+	aviary := install(t, func(config *driver.Config) {
+		config.Retention = time.Hour
+		// Sandboxes are looked at only every few sweeps.
+		config.Sweep = 20 * time.Millisecond
+	})
+	s := aviary.supervisor()
+	session := s.session()
+	path := "/v1/sessions/" + session
+	read := func() map[string]any {
+		t.Helper()
+		var read map[string]any
+		if status, _ := s.request("GET", path, "", &read); status != http.StatusOK {
+			t.Fatalf("GET session: status %d, want 200", status)
+		}
+		return read
+	}
+	first := s.send(session, "hello")
+	runner := aviary.given(first.ID)
+	runner.report(started("harness-session"))
+	runner.report(finished("end_turn", nil))
+
+	// Two hours later, the sandbox has expired.
+	aviary.records.Age(2*time.Hour, uuid.MustParse(first.ID))
+	runner.lose()
+	eventually(t, patience, "the session whose sandbox expired has not ended", func() bool {
+		ended := read()
+		_, has := ended["sandbox"]
+		return ended["ended_at"] != nil && !has
+	})
+	if reason := read()["end_reason"]; reason != "expired" {
+		t.Errorf("end_reason of the expired session = %v, want expired", reason)
+	}
+	var refusal struct{ Code string }
+	if status, _ := s.request("POST", path+"/messages", `{"text": "again"}`, &refusal); status != http.StatusConflict || refusal.Code != "session_ended" {
+		t.Errorf("send to an expired session = %d %s, want 409 session_ended", status, refusal.Code)
+	}
+
+	// A session that a caller ends says nothing of why.
+	var ended map[string]any
+	if status, _ := s.request("DELETE", "/v1/sessions/"+s.session(), "", &ended); status != http.StatusOK || ended["ended_at"] == nil {
+		t.Fatalf("end session = %d %v", status, ended)
+	}
+	if reason, has := ended["end_reason"]; has {
+		t.Errorf("end_reason of a session that a caller ended = %v, want none", reason)
 	}
 }

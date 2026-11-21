@@ -489,11 +489,16 @@ func (q *Queries) DropMembersBeforeClaim(ctx context.Context, arg DropMembersBef
 }
 
 const endSession = `-- name: EndSession :exec
-update sessions set ended_at = now(6) where id = ?
+update sessions set ended_at = now(6), end_reason = ? where id = ?
 `
 
-func (q *Queries) EndSession(ctx context.Context, id key.ID) error {
-	_, err := q.db.ExecContext(ctx, endSession, id)
+type EndSessionParams struct {
+	Reason *string
+	ID     key.ID
+}
+
+func (q *Queries) EndSession(ctx context.Context, arg EndSessionParams) error {
+	_, err := q.db.ExecContext(ctx, endSession, arg.Reason, arg.ID)
 	return err
 }
 
@@ -784,7 +789,7 @@ func (q *Queries) GetSecretStore(ctx context.Context, id key.ID) (SecretStore, e
 }
 
 const getSession = `-- name: GetSession :one
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at from sessions where id = ?
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason from sessions where id = ?
 `
 
 func (q *Queries) GetSession(ctx context.Context, id key.ID) (Session, error) {
@@ -799,6 +804,7 @@ func (q *Queries) GetSession(ctx context.Context, id key.ID) (Session, error) {
 		&i.SandboxState,
 		&i.CreatedAt,
 		&i.EndedAt,
+		&i.EndReason,
 	)
 	return i, err
 }
@@ -1244,7 +1250,7 @@ func (q *Queries) ListSecretStores(ctx context.Context, projectID key.ID) ([]Sec
 }
 
 const listSessions = `-- name: ListSessions :many
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at from sessions where agent_id = ? and id < ? order by id desc limit ?
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason from sessions where agent_id = ? and id < ? order by id desc limit ?
 `
 
 type ListSessionsParams struct {
@@ -1273,6 +1279,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 			&i.SandboxState,
 			&i.CreatedAt,
 			&i.EndedAt,
+			&i.EndReason,
 		); err != nil {
 			return nil, err
 		}
@@ -1288,7 +1295,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 }
 
 const listSessionsOf = `-- name: ListSessionsOf :many
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at from sessions
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason from sessions
 where agent_id = ? and created_by = ? and id < ?
 order by id desc limit ?
 `
@@ -1324,6 +1331,7 @@ func (q *Queries) ListSessionsOf(ctx context.Context, arg ListSessionsOfParams) 
 			&i.SandboxState,
 			&i.CreatedAt,
 			&i.EndedAt,
+			&i.EndReason,
 		); err != nil {
 			return nil, err
 		}
@@ -1339,7 +1347,7 @@ func (q *Queries) ListSessionsOf(ctx context.Context, arg ListSessionsOfParams) 
 }
 
 const listSessionsWithSandbox = `-- name: ListSessionsWithSandbox :many
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at from sessions where sandbox is not null
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason from sessions where sandbox is not null
 `
 
 func (q *Queries) ListSessionsWithSandbox(ctx context.Context) ([]Session, error) {
@@ -1360,6 +1368,7 @@ func (q *Queries) ListSessionsWithSandbox(ctx context.Context) ([]Session, error
 			&i.SandboxState,
 			&i.CreatedAt,
 			&i.EndedAt,
+			&i.EndReason,
 		); err != nil {
 			return nil, err
 		}
@@ -1483,7 +1492,7 @@ func (q *Queries) Lock(ctx context.Context, name string) (string, error) {
 }
 
 const lockSession = `-- name: LockSession :one
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at from sessions where id = ? for update
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason from sessions where id = ? for update
 `
 
 // Locks the session until the transaction ends, which serializes accepting
@@ -1500,6 +1509,7 @@ func (q *Queries) LockSession(ctx context.Context, id key.ID) (Session, error) {
 		&i.SandboxState,
 		&i.CreatedAt,
 		&i.EndedAt,
+		&i.EndReason,
 	)
 	return i, err
 }

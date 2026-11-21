@@ -414,7 +414,7 @@ func (s *records) SessionsWithSandbox(ctx context.Context) ([]store.Session, err
 	return sessions, nil
 }
 
-func (s *records) EndSession(ctx context.Context, id uuid.UUID) (store.Session, error) {
+func (s *records) EndSession(ctx context.Context, id uuid.UUID, reason string) (store.Session, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return store.Session{}, err
@@ -433,7 +433,7 @@ func (s *records) EndSession(ctx context.Context, id uuid.UUID) (store.Session, 
 	if row.EndedAt != nil {
 		return sessionFrom(row), nil
 	}
-	row, err = queries.EndSession(ctx, id)
+	row, err = queries.EndSession(ctx, db.EndSessionParams{ID: id, Reason: reason})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.Session{}, store.ErrSessionBusy
 	}
@@ -984,6 +984,9 @@ func sessionFrom(row db.Session) store.Session {
 	}
 	if row.SandboxState != nil {
 		session.SandboxState = *row.SandboxState
+	}
+	if row.EndReason != nil {
+		session.EndReason = *row.EndReason
 	}
 	return session
 }

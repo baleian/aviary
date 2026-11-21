@@ -279,21 +279,20 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 	return runner, nil
 }
 
-// expired reports whether the session's previous turn is older than
-// Retention. A missing sandbox has then expired, and the session has ended.
+// expired reports whether the session's previous turn is stale. A missing
+// sandbox has then expired, and the session has ended.
 func (d *Driver) expired(ctx context.Context, turn store.FollowedTurn) bool {
-	if d.config.Retention == 0 {
-		return false
-	}
 	before, err := d.store.Turns(ctx, turn.SessionID, turn.Seq, 1)
-	if err != nil || len(before) == 0 {
-		return false
-	}
-	last := before[0].CreatedAt
-	if before[0].StartedAt != nil {
-		last = *before[0].StartedAt
-	}
-	return time.Since(last) >= d.config.Retention
+	return err == nil && len(before) > 0 && d.stale(before[0])
+}
+
+// stale reports whether the turn was sent longer ago than Retention. If it
+// is the last turn of its session and the session's sandbox is gone, the
+// sandbox has expired. The time counts from when the turn was sent, which is
+// before the turn was given to the sandbox, so that a sandbox that expires is
+// not taken for one that was lost.
+func (d *Driver) stale(turn store.Turn) bool {
+	return d.config.Retention > 0 && time.Since(turn.CreatedAt) >= d.config.Retention
 }
 
 // pod returns the pod of the session's sandbox, with the harness as
@@ -372,7 +371,7 @@ func (d *Driver) giveUp(ctx context.Context, r *run, failure store.Failure) {
 		}
 	}
 	if d.end(ctx, r.turn.ID, false, failure) && failure.Reason == store.FailureSessionExpired {
-		if _, err := d.store.EndSession(ctx, r.turn.SessionID); err != nil {
+		if _, err := d.endSession(ctx, r.turn.SessionID, store.EndExpired); err != nil {
 			slog.ErrorContext(ctx, "end session", "session", r.turn.SessionID, "error", err)
 		}
 	}

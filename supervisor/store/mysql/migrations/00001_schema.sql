@@ -136,6 +136,9 @@ create table sessions (
     sandbox_state varchar(32),
     created_at datetime(6) not null default (now(6)),
     ended_at datetime(6),
+    -- 'expired' if the session ended because it expired. Null if a caller
+    -- ended it.
+    end_reason varchar(32),
     foreign key (agent_id) references agents (id),
     foreign key (created_by) references users (id),
     -- For listing the sessions that have a sandbox.

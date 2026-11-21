@@ -131,6 +131,9 @@ type Session struct {
 	CreatedBy uuid.UUID  `json:"created_by,omitzero"`
 	CreatedAt time.Time  `json:"created_at"`
 	EndedAt   *time.Time `json:"ended_at,omitempty"`
+	// EndReason is EndExpired if the session ended because it expired. It is
+	// empty if a caller ended the session, or the session has not ended.
+	EndReason string `json:"end_reason,omitempty"`
 	// Sandbox is the name of the session's sandbox. It is empty if the
 	// session has none: it has run no turn yet, or its sandbox was deleted.
 	Sandbox string `json:"-"`
@@ -148,6 +151,11 @@ const (
 	SandboxAsleep = "asleep"
 	SandboxLost   = "lost"
 )
+
+// EndExpired is the end reason of a session that was unused for longer than
+// the installation keeps sandboxes: its sandbox was deleted with the agent's
+// files.
+const EndExpired = "expired"
 
 // Provider is a model provider of a project: a model endpoint and its API
 // key. A provider has a stored key, a key in a secret store, or no key.
@@ -462,10 +470,11 @@ type Store interface {
 	SessionsWithSandbox(ctx context.Context) ([]Session, error)
 
 	// EndSession ends the session, which then accepts no messages, and
-	// returns it, including its sandbox. A session that has already ended is
-	// returned unchanged. It returns ErrNotFound if there is no such session,
-	// and ErrSessionBusy if one of its turns has not ended.
-	EndSession(ctx context.Context, id uuid.UUID) (Session, error)
+	// returns it, including its sandbox. reason is EndExpired, or empty if a
+	// caller ends the session. A session that has already ended is returned
+	// unchanged. It returns ErrNotFound if there is no such session, and
+	// ErrSessionBusy if one of its turns has not ended.
+	EndSession(ctx context.Context, id uuid.UUID, reason string) (Session, error)
 
 	// Sessions returns up to limit sessions of the agent with IDs below
 	// before, newest first: those created by by, or all if by is uuid.Nil.

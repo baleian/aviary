@@ -953,7 +953,7 @@ func TestTheSandboxOfASessionThatHasEndedIsDeleted(t *testing.T) {
 
 	// The sandbox was deleted, and the session still records it.
 	session, name = housed()
-	if _, err := i.store.EndSession(ctx, session.ID); err != nil {
+	if _, err := i.store.EndSession(ctx, session.ID, ""); err != nil {
 		t.Fatal(err)
 	}
 	i.service.Lose(name)
@@ -1125,11 +1125,73 @@ func TestASessionThatIsNotUsedForLongerThanItsSandboxIsKeptHasEnded(t *testing.T
 		t.Errorf("ended turn = %+v, failure = %+v", ended, ended.Failure)
 	}
 	i.eventually("the session has ended", func() bool { return i.sessionOf(session.ID).EndedAt != nil })
+	if reason := i.sessionOf(session.ID).EndReason; reason != store.EndExpired {
+		t.Errorf("end reason of the session = %q, want expired", reason)
+	}
 	if _, err := driver.Accept(ctx, session.ID, uuid.Nil, "once more"); !errors.Is(err, store.ErrSessionEnded) {
 		t.Errorf("Accept on an ended session = %v, want ErrSessionEnded", err)
 	}
 	if len(i.service.Made()) != 0 || len(i.service.Given()) != 2 {
 		t.Errorf("sandboxes = %v, given turns = %v", i.service.Made(), i.service.Given())
+	}
+}
+
+// A session whose sandbox has expired ends at the next look at the sandboxes,
+// without a message to it.
+func TestASessionWhoseSandboxHasExpiredEnds(t *testing.T) {
+	i := install(t, func(config *Config) { config.Retention = time.Hour })
+	// ran returns a session that has run a turn, with the turn and the name of
+	// the sandbox.
+	ran := func() (store.Session, uuid.UUID, string) {
+		t.Helper()
+		driver, stop := i.supervisor()
+		defer stop()
+		session := i.session(store.Agent{})
+		turn := i.send(driver, session, "hello")
+		given := i.service.Turn(t)
+		given.Tell("started", started)
+		given.Tell("finished", finished)
+		i.ended(turn.ID)
+		return session, turn.ID, given.Sandbox
+	}
+	driver := New(i.config, i.service, i.store, i.events, metrics.New(nil, nil))
+	expired := func(session store.Session) bool {
+		kept := i.sessionOf(session.ID)
+		return kept.EndedAt != nil && kept.EndReason == store.EndExpired && kept.Sandbox == ""
+	}
+
+	// The sandbox is gone at the time until which it was kept.
+	session, turn, name := ran()
+	i.store.Age(time.Until(i.service.Expires(name)), turn)
+	i.service.Lose(name)
+	driver.look(ctx)
+	if !expired(session) {
+		t.Errorf("session whose sandbox expired = %+v, want it ended as expired, without a sandbox", i.sessionOf(session.ID))
+	}
+
+	// A sandbox that is gone sooner is lost. Its session ends once it has not
+	// been used for as long as a sandbox is kept.
+	session, turn, name = ran()
+	i.service.Lose(name)
+	driver.look(ctx)
+	if kept := i.sessionOf(session.ID); kept.EndedAt != nil || kept.SandboxState != store.SandboxLost {
+		t.Errorf("session whose sandbox is gone early = %+v, want it to go on with its sandbox recorded as lost", kept)
+	}
+	New(i.config, unread{i.service, t}, i.store, i.events, metrics.New(nil, nil)).look(ctx)
+	i.store.Age(2*time.Hour, turn)
+	driver.look(ctx)
+	if !expired(session) {
+		t.Errorf("unused session whose sandbox is lost = %+v, want it ended as expired, without a sandbox", i.sessionOf(session.ID))
+	}
+
+	// A session whose sandbox is still there goes on, also if the sandbox
+	// was not listed.
+	session, turn, name = ran()
+	i.store.Age(2*time.Hour, turn)
+	driver.look(ctx)
+	New(i.config, earlier{i.service, nil}, i.store, i.events, metrics.New(nil, nil)).look(ctx)
+	if kept := i.sessionOf(session.ID); kept.EndedAt != nil || kept.Sandbox != name {
+		t.Errorf("unused session whose sandbox is there = %+v, want it to go on in sandbox %s", kept, name)
 	}
 }
 

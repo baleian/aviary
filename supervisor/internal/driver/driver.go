@@ -175,7 +175,12 @@ func (d *Driver) Accept(ctx context.Context, sessionID, by uuid.UUID, text strin
 // the session still ends and the error is returned. The deletion is retried
 // when the session is ended again, and at every look at the sandboxes.
 func (d *Driver) EndSession(ctx context.Context, id uuid.UUID) (store.Session, error) {
-	session, err := d.store.EndSession(ctx, id)
+	return d.endSession(ctx, id, "")
+}
+
+// endSession ends the session for the reason, as EndSession does.
+func (d *Driver) endSession(ctx context.Context, id uuid.UUID, reason string) (store.Session, error) {
+	session, err := d.store.EndSession(ctx, id, reason)
 	if err != nil || session.Sandbox == "" {
 		return session, err
 	}
@@ -359,10 +364,13 @@ func (d *Driver) tend(ctx context.Context, session store.Session, made sandbox.S
 	}
 }
 
-// lose records that the session's sandbox is lost. A session with a turn
-// that has not ended is left to that turn, which finds the sandbox gone.
+// lose handles a sandbox that is gone. If the sandbox has expired, its
+// session ends; otherwise the session records that the sandbox is lost. A
+// session with a turn that has not ended is left to that turn, which finds
+// the sandbox gone.
 func (d *Driver) lose(ctx context.Context, session store.Session) {
-	if session.SandboxState == store.SandboxLost {
+	lost := session.SandboxState == store.SandboxLost
+	if lost && d.config.Retention == 0 {
 		return
 	}
 	last, err := d.store.Turns(ctx, session.ID, math.MaxInt32, 1)
@@ -371,6 +379,10 @@ func (d *Driver) lose(ctx context.Context, session store.Session) {
 		return
 	}
 	if len(last) > 0 && last[0].EndedAt == nil {
+		return
+	}
+	expired := len(last) > 0 && d.stale(last[0])
+	if lost && !expired {
 		return
 	}
 	// A turn may have created the sandbox again since the sandboxes were
@@ -382,6 +394,16 @@ func (d *Driver) lose(ctx context.Context, session store.Session) {
 		slog.ErrorContext(ctx, "read sandbox", "session", session.ID, "sandbox", session.Sandbox, "error", err)
 		return
 	case seen.State != sandbox.Lost:
+		return
+	}
+	if expired {
+		// A session that got a turn meanwhile is left to that turn.
+		switch _, err := d.endSession(ctx, session.ID, store.EndExpired); {
+		case err == nil:
+			slog.InfoContext(ctx, "session expired", "session", session.ID, "sandbox", session.Sandbox)
+		case !errors.Is(err, store.ErrSessionBusy):
+			slog.ErrorContext(ctx, "end expired session", "session", session.ID, "error", err)
+		}
 		return
 	}
 	if err := d.store.SetSandboxState(ctx, session.ID, session.Sandbox, store.SandboxLost); err != nil {

@@ -121,7 +121,10 @@ create table sessions (
     -- 'awake', 'asleep' or 'lost', if the session has a sandbox.
     sandbox_state text,
     created_at timestamptz not null default now(),
-    ended_at timestamptz
+    ended_at timestamptz,
+    -- 'expired' if the session ended because it expired. Null if a caller
+    -- ended it.
+    end_reason text
 );
 
 create table turns (

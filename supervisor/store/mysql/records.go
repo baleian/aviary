@@ -515,8 +515,12 @@ func (s *records) SessionsWithSandbox(ctx context.Context) ([]store.Session, err
 	return sessions, nil
 }
 
-func (s *records) EndSession(ctx context.Context, id uuid.UUID) (store.Session, error) {
+func (s *records) EndSession(ctx context.Context, id uuid.UUID, reason string) (store.Session, error) {
 	var session store.Session
+	params := db.EndSessionParams{ID: key.ID(id)}
+	if reason != "" {
+		params.Reason = &reason
+	}
 	err := s.within(ctx, func(queries *db.Queries) error {
 		// Lock the session before checking its turns, so that a concurrent
 		// message either has added its turn or finds the session ended.
@@ -532,7 +536,7 @@ func (s *records) EndSession(ctx context.Context, id uuid.UUID) (store.Session, 
 			if busy {
 				return store.ErrSessionBusy
 			}
-			if err := queries.EndSession(ctx, key.ID(id)); err != nil {
+			if err := queries.EndSession(ctx, params); err != nil {
 				return err
 			}
 			if row, err = queries.GetSession(ctx, key.ID(id)); err != nil {
@@ -580,6 +584,9 @@ func sessionFrom(row db.Session) store.Session {
 	}
 	if row.SandboxState != nil {
 		session.SandboxState = *row.SandboxState
+	}
+	if row.EndReason != nil {
+		session.EndReason = *row.EndReason
 	}
 	return session
 }

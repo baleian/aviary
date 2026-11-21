@@ -369,7 +369,7 @@ func (suite suite) testSetSandboxState(t *testing.T) {
 	if err != nil || len(sessions) != 1 || sessions[0].SandboxState != store.SandboxAsleep {
 		t.Errorf("Sessions = %+v, want one that is asleep: %v", sessions, err)
 	}
-	if ended, err := st.EndSession(ctx, id); err != nil || ended.Sandbox != "sandbox-2" || ended.SandboxState != store.SandboxAsleep {
+	if ended, err := st.EndSession(ctx, id, ""); err != nil || ended.Sandbox != "sandbox-2" || ended.SandboxState != store.SandboxAsleep {
 		t.Errorf("EndSession = %+v, want it with sandbox-2 asleep: %v", ended, err)
 	}
 }
@@ -396,7 +396,7 @@ func (suite suite) testSessionsWithSandbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	set(ended, "", "sandbox-3")
-	if _, err := st.EndSession(ctx, ended); err != nil {
+	if _, err := st.EndSession(ctx, ended, ""); err != nil {
 		t.Fatal(err)
 	}
 	set(deleted, "", "sandbox-4")
@@ -555,7 +555,7 @@ func (suite suite) testSessionTitles(t *testing.T) {
 	}
 	titled(untitled.ID, "")
 
-	if _, err := st.EndSession(ctx, session.ID); err != nil {
+	if _, err := st.EndSession(ctx, session.ID, ""); err != nil {
 		t.Fatal(err)
 	}
 	if set, err := st.SetSessionTitle(ctx, session.ID, "Fixed"); err != nil || set.Title != "Fixed" || set.EndedAt == nil {
@@ -565,7 +565,7 @@ func (suite suite) testSessionTitles(t *testing.T) {
 }
 
 // A session can be ended once it has no unfinished turn. It then accepts no
-// messages and keeps its turns.
+// messages, and keeps its turns and the reason for which it ended.
 func (suite suite) testEndSession(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -578,7 +578,7 @@ func (suite suite) testEndSession(t *testing.T) {
 	st.queue(id)
 	busy := func(turn string) {
 		t.Helper()
-		if _, err := st.EndSession(ctx, id); !errors.Is(err, store.ErrSessionBusy) {
+		if _, err := st.EndSession(ctx, id, store.EndExpired); !errors.Is(err, store.ErrSessionBusy) {
 			t.Errorf("EndSession with a %s turn = %v, want ErrSessionBusy", turn, err)
 		}
 		if session, err := st.another().Session(ctx, id); err != nil || session.EndedAt != nil {
@@ -594,16 +594,16 @@ func (suite suite) testEndSession(t *testing.T) {
 	busy("running")
 	st.end(dispatch.TurnID, true, store.Failure{})
 
-	ended, err := st.EndSession(ctx, id)
+	ended, err := st.EndSession(ctx, id, store.EndExpired)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ended.ID != id || ended.EndedAt == nil || ended.EndedAt.Before(ended.CreatedAt) || ended.Sandbox != "sandbox-1" {
+	if ended.ID != id || ended.EndedAt == nil || ended.EndedAt.Before(ended.CreatedAt) || ended.EndReason != store.EndExpired || ended.Sandbox != "sandbox-1" {
 		t.Fatalf("EndSession = %+v, ended at %v", ended, ended.EndedAt)
 	}
 	// Ending it again returns it as it ended.
-	again, err := st.another().EndSession(ctx, id)
-	if err != nil || again.EndedAt == nil || !again.EndedAt.Equal(*ended.EndedAt) || again.Sandbox != "sandbox-1" {
+	again, err := st.another().EndSession(ctx, id, "")
+	if err != nil || again.EndedAt == nil || !again.EndedAt.Equal(*ended.EndedAt) || again.EndReason != store.EndExpired || again.Sandbox != "sandbox-1" {
 		t.Errorf("second EndSession = %+v, ended at %v, want %v: %v", again, again.EndedAt, ended.EndedAt, err)
 	}
 	// Session and Sessions return it ended too.
@@ -615,9 +615,13 @@ func (suite suite) testEndSession(t *testing.T) {
 	if err != nil || len(sessions) != 1 {
 		t.Fatalf("Sessions = %+v, want one: %v", sessions, err)
 	}
-	for how, session := range map[string]store.Session{"read": read, "listed": sessions[0]} {
-		if session.EndedAt == nil || !session.EndedAt.Equal(*ended.EndedAt) {
-			t.Errorf("%s session ended at %v, want %v", how, session.EndedAt, ended.EndedAt)
+	housed, err := st.SessionsWithSandbox(ctx)
+	if err != nil || len(housed) != 1 {
+		t.Fatalf("SessionsWithSandbox = %+v, want one: %v", housed, err)
+	}
+	for how, session := range map[string]store.Session{"read": read, "listed": sessions[0], "listed with its sandbox": housed[0]} {
+		if session.EndedAt == nil || !session.EndedAt.Equal(*ended.EndedAt) || session.EndReason != store.EndExpired {
+			t.Errorf("%s session ended at %v for reason %q, want %v for %q", how, session.EndedAt, session.EndReason, ended.EndedAt, store.EndExpired)
 		}
 	}
 
@@ -633,11 +637,19 @@ func (suite suite) testEndSession(t *testing.T) {
 		t.Errorf("Turns of the ended session = %+v: %v", turns, err)
 	}
 
-	// A session without turns can be ended; a missing one cannot.
-	if fresh, err := st.EndSession(ctx, st.session()); err != nil || fresh.EndedAt == nil || fresh.Sandbox != "" {
+	// A session without turns can be ended; a missing one cannot. A session
+	// that a caller ends has no reason, also if it is ended again for one.
+	fresh, err := st.EndSession(ctx, st.session(), "")
+	if err != nil || fresh.EndedAt == nil || fresh.EndReason != "" || fresh.Sandbox != "" {
 		t.Errorf("EndSession of a session without turns = %+v, ended at %v: %v", fresh, fresh.EndedAt, err)
 	}
-	if _, err := st.EndSession(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
+	if again, err := st.EndSession(ctx, fresh.ID, store.EndExpired); err != nil || again.EndReason != "" {
+		t.Errorf("EndSession of a session that a caller ended = %+v, %v, want it without a reason", again, err)
+	}
+	if read, err := st.another().Session(ctx, fresh.ID); err != nil || read.EndReason != "" {
+		t.Errorf("session that a caller ended = %+v, %v, want it without a reason", read, err)
+	}
+	if _, err := st.EndSession(ctx, uuid.New(), ""); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("EndSession of a nonexistent session = %v, want ErrNotFound", err)
 	}
 }
@@ -653,7 +665,7 @@ func (suite suite) testConcurrentEndSessionAndCreateTurn(t *testing.T) {
 		var ended, accepted atomic.Int32
 		atOnce(len(supervisors), func(i int) {
 			if i%2 == 0 {
-				switch _, err := supervisors[i].EndSession(ctx, id); {
+				switch _, err := supervisors[i].EndSession(ctx, id, ""); {
 				case err == nil:
 					ended.Add(1)
 				case !errors.Is(err, store.ErrSessionBusy):

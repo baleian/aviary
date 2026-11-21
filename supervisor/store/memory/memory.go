@@ -599,7 +599,7 @@ func (s *Store) SessionsWithSandbox(ctx context.Context) ([]store.Session, error
 	return sessions, nil
 }
 
-func (s *Store) EndSession(ctx context.Context, id uuid.UUID) (store.Session, error) {
+func (s *Store) EndSession(ctx context.Context, id uuid.UUID, reason string) (store.Session, error) {
 	if err := s.begin(ctx); err != nil {
 		return store.Session{}, err
 	}
@@ -613,7 +613,7 @@ func (s *Store) EndSession(ctx context.Context, id uuid.UUID) (store.Session, er
 			return store.Session{}, store.ErrSessionBusy
 		}
 		ended := s.now()
-		session.EndedAt = &ended
+		session.EndedAt, session.EndReason = &ended, reason
 	}
 	return session.record(), nil
 }

@@ -386,7 +386,7 @@ func (q *Queries) CreateSecretStore(ctx context.Context, arg CreateSecretStorePa
 const createSession = `-- name: CreateSession :one
 insert into sessions (id, agent_id, title, created_by)
 select $1::uuid, agents.id, $2::text, $3::uuid from agents where agents.id = $4
-returning id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at
+returning id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason
 `
 
 type CreateSessionParams struct {
@@ -413,6 +413,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		&i.SandboxState,
 		&i.CreatedAt,
 		&i.EndedAt,
+		&i.EndReason,
 	)
 	return i, err
 }
@@ -527,15 +528,21 @@ func (q *Queries) DropMembersBeforeClaim(ctx context.Context, username string) e
 }
 
 const endSession = `-- name: EndSession :one
-update sessions set ended_at = now()
-where sessions.id = $1
+update sessions set ended_at = now(), end_reason = nullif($1::text, '')
+where sessions.id = $2
   and not exists (select 1 from turns where turns.session_id = sessions.id and turns.ended_at is null)
-returning id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at
+returning id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason
 `
 
-// Ends the session unless it has an unfinished turn.
-func (q *Queries) EndSession(ctx context.Context, id uuid.UUID) (Session, error) {
-	row := q.db.QueryRow(ctx, endSession, id)
+type EndSessionParams struct {
+	Reason string
+	ID     uuid.UUID
+}
+
+// Ends the session unless it has an unfinished turn. An empty reason is
+// stored as null.
+func (q *Queries) EndSession(ctx context.Context, arg EndSessionParams) (Session, error) {
+	row := q.db.QueryRow(ctx, endSession, arg.Reason, arg.ID)
 	var i Session
 	err := row.Scan(
 		&i.ID,
@@ -546,6 +553,7 @@ func (q *Queries) EndSession(ctx context.Context, id uuid.UUID) (Session, error)
 		&i.SandboxState,
 		&i.CreatedAt,
 		&i.EndedAt,
+		&i.EndReason,
 	)
 	return i, err
 }
@@ -899,7 +907,7 @@ func (q *Queries) GetSecretStore(ctx context.Context, id uuid.UUID) (SecretStore
 }
 
 const getSession = `-- name: GetSession :one
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at from sessions where id = $1
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason from sessions where id = $1
 `
 
 func (q *Queries) GetSession(ctx context.Context, id uuid.UUID) (Session, error) {
@@ -914,6 +922,7 @@ func (q *Queries) GetSession(ctx context.Context, id uuid.UUID) (Session, error)
 		&i.SandboxState,
 		&i.CreatedAt,
 		&i.EndedAt,
+		&i.EndReason,
 	)
 	return i, err
 }
@@ -1314,7 +1323,7 @@ func (q *Queries) ListSecretStores(ctx context.Context, projectID uuid.UUID) ([]
 }
 
 const listSessions = `-- name: ListSessions :many
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at from sessions where agent_id = $1 and id < $2 order by id desc limit $3
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason from sessions where agent_id = $1 and id < $2 order by id desc limit $3
 `
 
 type ListSessionsParams struct {
@@ -1343,6 +1352,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 			&i.SandboxState,
 			&i.CreatedAt,
 			&i.EndedAt,
+			&i.EndReason,
 		); err != nil {
 			return nil, err
 		}
@@ -1355,7 +1365,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 }
 
 const listSessionsOf = `-- name: ListSessionsOf :many
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at from sessions where agent_id = $1 and created_by = $2::uuid and id < $3
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason from sessions where agent_id = $1 and created_by = $2::uuid and id < $3
 order by id desc limit $4
 `
 
@@ -1390,6 +1400,7 @@ func (q *Queries) ListSessionsOf(ctx context.Context, arg ListSessionsOfParams) 
 			&i.SandboxState,
 			&i.CreatedAt,
 			&i.EndedAt,
+			&i.EndReason,
 		); err != nil {
 			return nil, err
 		}
@@ -1402,7 +1413,7 @@ func (q *Queries) ListSessionsOf(ctx context.Context, arg ListSessionsOfParams) 
 }
 
 const listSessionsWithSandbox = `-- name: ListSessionsWithSandbox :many
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at from sessions where sandbox is not null
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason from sessions where sandbox is not null
 `
 
 func (q *Queries) ListSessionsWithSandbox(ctx context.Context) ([]Session, error) {
@@ -1423,6 +1434,7 @@ func (q *Queries) ListSessionsWithSandbox(ctx context.Context) ([]Session, error
 			&i.SandboxState,
 			&i.CreatedAt,
 			&i.EndedAt,
+			&i.EndReason,
 		); err != nil {
 			return nil, err
 		}
@@ -1526,7 +1538,7 @@ func (q *Queries) Lock(ctx context.Context, key int64) error {
 }
 
 const lockSession = `-- name: LockSession :one
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at from sessions where id = $1 for update
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason from sessions where id = $1 for update
 `
 
 // Locks the session until the transaction ends, so that no message is
@@ -1543,6 +1555,7 @@ func (q *Queries) LockSession(ctx context.Context, id uuid.UUID) (Session, error
 		&i.SandboxState,
 		&i.CreatedAt,
 		&i.EndedAt,
+		&i.EndReason,
 	)
 	return i, err
 }
@@ -1952,7 +1965,7 @@ func (q *Queries) SetSandboxState(ctx context.Context, arg SetSandboxStateParams
 }
 
 const setSessionTitle = `-- name: SetSessionTitle :one
-update sessions set title = $1 where id = $2 returning id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at
+update sessions set title = $1 where id = $2 returning id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason
 `
 
 type SetSessionTitleParams struct {
@@ -1972,6 +1985,7 @@ func (q *Queries) SetSessionTitle(ctx context.Context, arg SetSessionTitleParams
 		&i.SandboxState,
 		&i.CreatedAt,
 		&i.EndedAt,
+		&i.EndReason,
 	)
 	return i, err
 }

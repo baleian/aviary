@@ -55,8 +55,9 @@ select id from sessions where id = @id for key share;
 select * from sessions where id = @id for update;
 
 -- name: EndSession :one
--- Ends the session unless it has an unfinished turn.
-update sessions set ended_at = now()
+-- Ends the session unless it has an unfinished turn. An empty reason is
+-- stored as null.
+update sessions set ended_at = now(), end_reason = nullif(sqlc.arg(reason)::text, '')
 where sessions.id = @id
   and not exists (select 1 from turns where turns.session_id = sessions.id and turns.ended_at is null)
 returning *;
