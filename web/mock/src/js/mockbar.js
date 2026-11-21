@@ -4,12 +4,12 @@
 // product.
 
 import {h, clock, prefs} from './util.js';
-import {mock, accounts, settings, setIdentityProvider} from './backend.js';
+import {mock, accounts, settings, setIdentityProvider, elsewhere} from './backend.js';
 import {SCENARIOS} from './scripts.js';
 import {entries, logged, clear} from './log.js';
 import {signIn, signedInAs, cutStreams, network} from './api.js';
 import {forget} from './state.js';
-import {link} from './router.js';
+import {link, resolve} from './router.js';
 import {toast} from './ui.js';
 
 const two = (n) => String(n).padStart(2, '0');
@@ -65,9 +65,14 @@ export function mountBar(again) {
     h('label', 'Next turn', next),
     h('label.opt2', 'Speed', speed),
     h('span.sp'),
-    h('button.opt2', {type: 'button', title: 'Break the open event streams, as a network would. Each connects again with Last-Event-ID.', onclick: () => {
+    h('button.opt2', {type: 'button', title: 'Another member of the project sends a message, as from another screen', onclick: () => {
+      const params = resolve()?.params || {};
+      const sent = params.project ? elsewhere(signedInAs(), params.project, params.agent) : null;
+      toast(sent ? `${sent.name} sent a message in “${sent.title}”.` : 'Nobody else can run a session here. Open a project with other members.');
+    }}, 'Other user'),
+    h('button.opt2', {type: 'button', title: 'Break the open event streams, as a network would. Each connects again.', onclick: () => {
       const cut = cutStreams();
-      toast(cut ? `Cut ${cut} event stream${cut > 1 ? 's' : ''}. Reconnected after the last event received.` : 'No event stream is open. Open a session with a running turn.');
+      toast(cut ? `Cut ${cut} event stream${cut > 1 ? 's' : ''}. Each connected again.` : 'No event stream is open.');
     }}, 'Cut stream'),
     h('a.b', {href: link('/brand')}, 'Brand'),
     toggle);

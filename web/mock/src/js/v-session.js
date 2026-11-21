@@ -3,19 +3,16 @@
 
 import {h, icon, use, time, num, code, clip, prefs, toClipboard, plural} from './util.js';
 import {api} from './api.js';
-import {app, project, can, person, sessionAccess, NotFound} from './state.js';
+import {app, project, can, person, sessionAccess, controls, NotFound} from './state.js';
 import {link, to, go} from './router.js';
 import {agentTile, label, chip, avatar, stateIcon, stateName, toast, oops, sentence, menu, item, confirm, wrong, copyButton, segmented, empty, loading, blank} from './ui.js';
-import {summarize, standing, standingText, endedText, title, suggest, sandboxBadge, sandboxMark} from './sessions.js';
+import {standing, standingText, endedText, title, suggest, sandboxBadge, sandboxMark} from './sessions.js';
+import {feed} from './feed.js';
 import {TurnView} from './turnview.js';
 import {providerOf} from './v-agents.js';
 
 // The page size of the lists, which is also the API's default.
 const PAGE = 20;
-
-// How often the list of sessions is read again, to see what changed without
-// the page: a sandbox that fell asleep, a session that someone else started.
-const REFRESH = 15000;
 
 class Workspace {
   constructor(root, context, agent, env) {
@@ -55,42 +52,92 @@ class Workspace {
     this.list.replaceChildren(h('div', {style: {padding: '6px 10px'}}, loading(4)));
     this.loadList().catch(oops);
     this.provider = provider;
-    this.refreshing = setInterval(() => this.refresh().catch(() => {}), REFRESH);
+    this.unwatch = [
+      feed.sessions.on((session) => this.took(session)),
+      feed.reopened.on(() => this.reread().catch(() => {})),
+    ];
   }
 
   // close stops what the workspace does on its own.
   close() {
     this.leave();
-    clearInterval(this.refreshing);
+    for (const off of this.unwatch) off();
   }
 
-  // refresh reads the newest sessions again and takes over what changed.
-  async refresh() {
-    if (document.hidden) return;
-    const {sessions} = await api.get(`/v1/agents/${this.agent.id}/sessions?limit=${Math.min(Math.max(this.rows.length, PAGE), 100)}`);
+  // took takes a session as the stream of changes reports it.
+  took(session) {
+    if (session.agent_id !== this.agent.id) return;
+    this.place(session);
     const current = this.current;
-    let changed = false;
-    for (const session of sessions) {
-      const row = this.rows.find((other) => other.session.id === session.id);
-      if (!row) {
-        const fresh = {session, stands: null};
-        this.rows.push(fresh);
-        summarize(session).then((stands) => { fresh.stands = stands; this.drawList(); }).catch(() => {});
-        changed = true;
-      } else if (JSON.stringify(row.session) !== JSON.stringify(session)) {
-        row.session = session;
-        changed = true;
-        if (current?.session?.id === session.id) {
-          current.session = session;
-          this.drawHeader();
-          this.drawComposer();
-          this.drawDetails();
-        }
-      }
-    }
-    if (!changed) return;
+    if (current?.session?.id !== session.id) return;
+    const ended = current.session.ended_at;
+    current.session = session;
+    this.drawHeader();
+    if (session.ended_at !== ended) this.drawComposer();
+    this.drawDetails();
+    this.joined(current).catch(oops);
+  }
+
+  // place shows a session in the list as it is now. A session that the list
+  // does not have is added if it is newer than all of them: an older one
+  // comes with its page.
+  place(session) {
+    const row = this.rows.find((other) => other.session.id === session.id);
+    if (row) row.session = session;
+    else if (this.loaded && (this.listDone || !this.rows.length || session.id > this.rows[0].session.id)) this.rows.unshift({session});
+    else return;
     this.rows.sort((a, b) => (a.session.id < b.session.id ? 1 : -1));
     this.drawList();
+  }
+
+  // read reads a page of the agent's sessions. A session that changes while
+  // the page is read is returned as the stream of changes reports it, which
+  // is newer, and so is one that is created meanwhile.
+  async read(query) {
+    await feed.ready();
+    const changed = new Map();
+    const off = feed.sessions.on((session) => { if (session.agent_id === this.agent.id) changed.set(session.id, session); });
+    try {
+      const {sessions} = await api.get(`/v1/agents/${this.agent.id}/sessions?${query}`);
+      const newest = sessions.length ? sessions[0].id : '';
+      const created = [...changed.values()].filter((session) => session.id > newest && !query.includes('before='));
+      const page = [...created, ...sessions.map((session) => changed.get(session.id) || session)];
+      for (const session of page) feed.note(session);
+      return {page, full: sessions.length};
+    } finally {
+      off();
+    }
+  }
+
+  // reread reads again what the list shows, after the stream of changes
+  // broke.
+  async reread() {
+    const {page} = await this.read(`limit=${Math.min(Math.max(this.rows.length, PAGE), 100)}`);
+    for (const session of page) this.took(session);
+  }
+
+  // joined shows the newest turn of the session in view if the page does not
+  // have it yet: a message that someone else sent, or the caller from another
+  // window.
+  async joined(current) {
+    const last = current.session.last_turn;
+    const newest = current.views[current.views.length - 1];
+    if (!last || this.sending || current.joining || (newest && newest.turn.seq >= last.seq)) return;
+    current.joining = true;
+    try {
+      const record = await api.get('/v1/turns/' + last.id);
+      if (this.current !== current || current.views.some((view) => view.turn.id === record.id)) return;
+      const view = new TurnView(record, this.turnEnv());
+      if (!current.views.length) this.thread.replaceChildren(this.olderBox);
+      current.views.push(view);
+      this.thread.append(view.el);
+      if (this.stick) this.toBottom();
+      if (!record.ended_at) this.follow(view);
+      this.afterDraw(view);
+      this.drawDetails();
+    } finally {
+      current.joining = false;
+    }
   }
 
   toggleDetails() {
@@ -105,19 +152,16 @@ class Workspace {
 
   async loadList(more = false) {
     const last = more && this.rows[this.rows.length - 1];
-    const {sessions} = await api.get(`/v1/agents/${this.agent.id}/sessions?limit=${PAGE}` + (last ? '&before=' + last.session.id : ''));
-    const known = new Set(this.rows.map((row) => row.session.id));
-    const fresh = sessions.filter((session) => !known.has(session.id)).map((session) => ({session, stands: null}));
-    this.rows = more ? [...this.rows, ...fresh] : [...this.rows.filter((row) => !sessions.some((session) => session.id === row.session.id)), ...fresh];
+    const {page, full} = await this.read(`limit=${PAGE}` + (last ? '&before=' + last.session.id : ''));
+    for (const session of page) {
+      const row = this.rows.find((other) => other.session.id === session.id);
+      if (row) row.session = session;
+      else this.rows.push({session});
+    }
     this.rows.sort((a, b) => (a.session.id < b.session.id ? 1 : -1));
-    this.listDone = sessions.length < PAGE;
+    this.loaded = true;
+    this.listDone = full < PAGE;
     this.drawList();
-    await Promise.all(fresh.map(async (row) => {
-      const stands = await summarize(row.session);
-      // The session in view knows better: it follows its turn.
-      if (!row.stands) row.stands = stands;
-      this.drawList();
-    }));
   }
 
   drawList() {
@@ -128,14 +172,15 @@ class Workspace {
       const {context, agent} = this;
       const shown = this.rows.filter((row) => this.filter === 'all' || row.session.created_by === app.me.id);
       const open = this.current?.session?.id;
-      this.list.replaceChildren(...shown.map(({session, stands}) => {
+      this.list.replaceChildren(...shown.map(({session}) => {
         const owner = app.config.idp && session.created_by !== app.me.id ? person(context, session.created_by) : null;
-        const failure = stands?.key === 'failed' && stands.turn?.failure;
+        const stands = standing(session);
+        const failure = stands.key === 'failed' && stands.turn?.failure;
         return h('a' + (session.id === open ? '.on' : ''), {href: link(to.session(context.project, agent, session)), 'aria-current': session.id === open ? 'page' : null},
-          h('span.sic', stands ? stateIcon(stands.key) : h('span.skel', {style: {width: '16px', height: '16px', borderRadius: '50%'}})),
+          h('span.sic', stateIcon(stands.key)),
           h('span.tx', title(session),
             h('small', owner && h('span.own', avatar(owner, 'xs'), owner.name),
-              h('span', time(session.created_at), stands && [' · ', stands.key === 'waiting' ? h('span.c-wait', 'Needs approval') : standingText(stands)]),
+              h('span', time(session.created_at), ' · ', stands.key === 'waiting' ? h('span.c-wait', 'Needs approval') : standingText(stands)),
               failure && h('span.err', failure.message || failure.reason))),
           sandboxMark(session));
       }));
@@ -149,16 +194,10 @@ class Workspace {
     });
   }
 
-  // noteStanding updates the row of the session in view from its newest turn.
-  noteStanding() {
-    const current = this.current;
-    if (!current?.session) return;
-    const row = this.rows.find((other) => other.session.id === current.session.id);
-    if (!row) return;
-    const newest = current.views[current.views.length - 1];
-    row.session = current.session;
-    row.stands = standing(current.session, newest ? {...newest.turn, approvals: newest.waiting} : null);
-    this.drawList();
+  // noteSession shows the session in view in the list as the page last got
+  // it from the API.
+  noteSession() {
+    if (this.current?.session) this.place(this.current.session);
   }
 
   // ---- Opening a session ----------------------------------------------------
@@ -185,20 +224,26 @@ class Workspace {
     this.current = null;
     this.centre.replaceChildren(h('div.welcome', h('div', {style: {width: '420px'}}, loading(4))));
     this.side.replaceChildren();
+    // What changes while the session is read is newer than what is read.
+    let changed = null;
+    const off = feed.sessions.on((session) => { if (session.id === sid) changed = session; });
     try {
-      const [session, page] = await Promise.all([api.get('/v1/sessions/' + sid), api.get(`/v1/sessions/${sid}/turns?limit=${PAGE}`)]);
+      await feed.ready();
+      const [read, page] = await Promise.all([api.get('/v1/sessions/' + sid), api.get(`/v1/sessions/${sid}/turns?limit=${PAGE}`)]);
       if (mine !== this.opening) return;
+      const session = changed || read;
       if (session.agent_id !== this.agent.id) throw new NotFound(sid);
       const turns = page.turns.reverse();
       this.current = {session, access: sessionAccess(this.context, session), views: [], older: turns.length === PAGE && turns[0].seq > 1};
       this.current.views = turns.map((turn) => new TurnView(turn, this.turnEnv()));
       this.drawCentre();
       this.drawDetails();
-      this.noteStanding();
+      this.noteSession();
       this.drawList();
       const newest = this.current.views[this.current.views.length - 1];
       if (newest && !newest.turn.ended_at) this.follow(newest);
       this.toBottom();
+      this.joined(this.current).catch(oops);
     } catch (error) {
       if (mine !== this.opening) return;
       const missing = error instanceof NotFound || error.status === 404;
@@ -208,6 +253,8 @@ class Workspace {
         text: missing ? 'It does not exist, or you do not have access to it.' : sentence(error.message),
         actions: h('a.btn.sec', {href: link(to.agent(this.context.project, this.agent))}, 'Start a new session'),
       }));
+    } finally {
+      off();
     }
   }
 
@@ -216,7 +263,7 @@ class Workspace {
     return {
       context, agent,
       person: (id) => person(context, id),
-      mayControl: (turn) => app.me.admin || (turn.created_by === app.me.id ? can(context, 'sessions.run') : can(context, 'sessions.control_all')),
+      mayControl: (turn) => controls(context, turn),
       answer: (turn, request, option) => this.answer(turn, request, option),
       stop: (turn) => this.stop(turn),
       again: (text) => this.fill(text),
@@ -226,28 +273,26 @@ class Workspace {
     };
   }
 
-  // follow reads the events of a turn that has not ended.
+  // follow reads the events of a turn that has not ended. What the turn
+  // changes of its session, such as its sandbox, comes with the stream of
+  // changes.
   follow(view) {
     const current = this.current;
-    this.unfollow = api.events(view.turn.id, {
+    this.unfollow?.();
+    const stop = this.unfollow = api.events(view.turn.id, {
       onEvent: (event) => {
         if (this.current !== current) return;
         if (event.type === 'session.update') this.suggested(event.data);
         else view.apply(event);
-        // The harness has the message, so the sandbox is awake by now.
-        if (event.type === 'turn.started' && event.id) this.reload(current);
       },
       onEnd: async () => {
         if (this.current !== current) return;
-        this.unfollow = null;
+        if (this.unfollow === stop) this.unfollow = null;
         try {
           view.replace(await api.get('/v1/turns/' + view.turn.id));
         } catch (error) {
           oops(error);
         }
-        // How a turn ends can change its session: the session may have ended,
-        // or lost its sandbox.
-        await this.reload(current);
         if (this.current !== current) return;
         this.keyed = '';
         this.afterDraw(view);
@@ -255,19 +300,6 @@ class Workspace {
       },
       onError: oops,
     });
-  }
-
-  // reload reads the session in view again.
-  async reload(current) {
-    try {
-      current.session = await api.get('/v1/sessions/' + current.session.id);
-    } catch (error) {
-      return;
-    }
-    if (this.current !== current) return;
-    this.drawHeader();
-    this.drawDetails();
-    this.noteStanding();
   }
 
   // afterDraw brings the rest of the screen in line with the newest turn.
@@ -280,7 +312,6 @@ class Workspace {
       this.drawHeader();
       this.drawComposer();
       this.drawDetails();
-      this.noteStanding();
     }
     if (this.stick) this.toBottom();
     this.drawJump();
@@ -415,7 +446,7 @@ class Workspace {
           current.session = await api.patch('/v1/sessions/' + session.id, {title: next});
           // A title that a person wrote is not replaced by a suggestion.
           current.named = true;
-          this.noteStanding();
+          this.noteSession();
         } catch (error) {
           oops(error);
         }
@@ -448,7 +479,7 @@ class Workspace {
       current.autoTitle = current.session.title;
       if (this.current !== current) return;
       this.drawHeader();
-      this.noteStanding();
+      this.noteSession();
     } catch (error) {
       console.error(error);
     }
@@ -475,7 +506,7 @@ class Workspace {
     this.drawHeader();
     this.drawComposer();
     this.drawDetails();
-    this.noteStanding();
+    this.noteSession();
   }
 
   // ---- Sending --------------------------------------------------------------
@@ -566,7 +597,7 @@ class Workspace {
         const named = suggest(text);
         const session = await api.post(`/v1/agents/${this.agent.id}/sessions`, {title: named});
         current = this.current = {session, access: sessionAccess(this.context, session), views: [], older: false, autoTitle: named};
-        this.rows.unshift({session, stands: standing(session, null)});
+        this.place(session);
         this.drawCentre();
         // The message is kept in the box until it has been accepted.
         this.input.value = text;
@@ -579,6 +610,8 @@ class Workspace {
       if (this.current !== current) return;
       if (asleep) current.woken = turn.id;
       this.input.value = '';
+      // The stream of changes may have shown the turn already.
+      if (current.views.some((other) => other.turn.id === turn.id)) return;
       const view = new TurnView({...turn, items: []}, this.turnEnv());
       if (!current.views.length) this.thread.replaceChildren(this.olderBox);
       current.views.push(view);

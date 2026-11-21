@@ -6,7 +6,8 @@ import {api} from './api.js';
 import {app, project, can, person} from './state.js';
 import {link, to} from './router.js';
 import {agentTile, projectTile, label, chip, avatar, roleBadge, empty, loading} from './ui.js';
-import {summarize, standingText, title} from './sessions.js';
+import {standing, standingText, title} from './sessions.js';
+import {feed} from './feed.js';
 import {agentCard, newAgent} from './v-agents.js';
 
 function greeting() {
@@ -50,18 +51,17 @@ function sessionRow(context, {session, agent, stands}) {
     chip(TONES[stands.key] || stands.key, stands.key === 'waiting' ? 'Waiting for approval' : standingText(stands)));
 }
 
+// How many of the caller's sessions the overview shows.
+const RECENT = 6;
+
+const own = (session) => !app.config.idp || session.created_by === app.me.id;
+
 // recent reads the caller's newest sessions in the project. The API lists
 // sessions by agent, so the console asks every agent and merges.
 async function recent(context) {
   if (!can(context, 'sessions.run') && !can(context, 'sessions.view_all')) return [];
-  const lists = await Promise.all(context.agents.map(async (agent) => {
-    const {sessions} = await api.get(`/v1/agents/${agent.id}/sessions?limit=6`, 'workaround');
-    return sessions.map((session) => ({session, agent}));
-  }));
-  const own = lists.flat().filter(({session}) => !app.config.idp || session.created_by === app.me.id)
-    .sort((a, b) => (a.session.id < b.session.id ? 1 : -1)).slice(0, 6);
-  const stands = await Promise.all(own.map(({session}) => summarize(session)));
-  return own.map((row, index) => ({...row, stands: stands[index]}));
+  const lists = await Promise.all(context.agents.map(async (agent) => (await api.get(`/v1/agents/${agent.id}/sessions?limit=${RECENT}`, 'workaround')).sessions));
+  return lists.flat().filter(own);
 }
 
 function start(context, add) {
@@ -83,7 +83,7 @@ export async function overviewView(root, params, env) {
   const add = () => newAgent(context);
   const manageAgents = can(context, 'agents.manage');
 
-  const nudge = h('div', {hidden: true});
+  let nudge = h('div', {hidden: true});
   const grid = h('div.agents');
   const drawAgents = (rows = []) => {
     const badge = (agent) => {
@@ -158,21 +158,46 @@ export async function overviewView(root, params, env) {
   )));
 
   // The sessions come after the page, since they take a request for each
-  // agent and one more for each session.
-  recent(context).then((rows) => {
-    if (env.stale()) return;
+  // agent. From then on they follow the stream of changes.
+  let sessions = [];
+  const drawSessions = () => {
+    sessions = sessions.sort((a, b) => (a.id < b.id ? 1 : -1)).slice(0, RECENT);
+    const rows = sessions.map((session) => ({session, agent: agents.find((agent) => agent.id === session.agent_id), stands: standing(session)}))
+      .filter((row) => row.agent);
     drawAgents(rows);
     const waiting = rows.find((row) => row.stands.key === 'waiting');
-    if (waiting) {
-      nudge.replaceWith(h('a.nudge', {href: link(to.session(current, waiting.agent, waiting.session))},
-        h('span', icon('shield', 'lg')),
-        h('div.tx', h('b', label(waiting.agent), ' is waiting for you'), h('small', wants(waiting.stands.turn.approvals[0]))),
-        h('span.btn.pri.sm', 'Review')));
-    }
+    const next = !waiting ? h('div', {hidden: true}) : h('a.nudge', {href: link(to.session(current, waiting.agent, waiting.session))},
+      h('span', icon('shield', 'lg')),
+      h('div.tx', h('b', label(waiting.agent), ' is waiting for you'), h('small', wants(waiting.stands.turn.approvals[0]))),
+      h('span.btn.pri.sm', 'Review'));
+    nudge.replaceWith(next);
+    nudge = next;
     rowsBox.replaceChildren(...(rows.length ? rows.map((row) => sessionRow(context, row))
       : [h('div', {style: {borderTop: '1px solid var(--line)'}}, empty('chat', 'No sessions yet',
         can(context, 'sessions.run') ? 'Open an agent to start one.' : null))]));
-  }).catch((error) => { if (!env.stale()) rowsBox.replaceChildren(h('p.sub', {style: {padding: '12px 20px'}}, 'Could not load the sessions: ' + error.message)); });
+  };
+  // What changed since the sessions were last read is newer than what is
+  // read.
+  const changed = new Set();
+  const load = async () => {
+    await feed.ready();
+    changed.clear();
+    const read = await recent(context);
+    if (env.stale()) return;
+    for (const session of read) feed.note(session);
+    sessions = [...sessions.filter((session) => changed.has(session.id)), ...read.filter((session) => !changed.has(session.id))];
+    drawSessions();
+  };
+  const unwatch = [
+    feed.sessions.on((session) => {
+      if (!own(session)) return;
+      changed.add(session.id);
+      sessions = [session, ...sessions.filter((other) => other.id !== session.id)];
+      drawSessions();
+    }),
+    feed.reopened.on(() => load().catch(() => {})),
+  ];
+  load().catch((error) => { if (!env.stale()) rowsBox.replaceChildren(h('p.sub', {style: {padding: '12px 20px'}}, 'Could not load the sessions: ' + error.message)); });
 
-  return {context};
+  return {context, cleanup: () => { for (const off of unwatch) off(); }};
 }

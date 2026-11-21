@@ -2,10 +2,11 @@
 // below it where a view draws.
 
 import {h, icon, use} from './util.js';
-import {app, theme, brand, forget, can} from './state.js';
+import {app, theme, brand, forget, can, controls} from './state.js';
 import {link, to, go} from './router.js';
-import {menu, item, avatar, projectTile, label, adminBadge, segmented} from './ui.js';
+import {menu, item, avatar, projectTile, label, adminBadge, segmented, toast} from './ui.js';
 import {signIn} from './api.js';
+import {feed} from './feed.js';
 import {newProject} from './v-projects.js';
 
 let bar;
@@ -17,7 +18,25 @@ export function mount(root) {
   view = h('main#view');
   root.replaceChildren(bar, view);
   app.changed.on(() => draw(shown.route, shown.context));
+  feed.sessions.on(announce);
   return view;
+}
+
+// The approval requests that the caller has been told of.
+const announced = new Set();
+
+// announce tells the caller that a turn waits for an answer that the caller
+// may give, wherever in the project the caller is. A request of the session
+// in view shows in the conversation itself.
+function announce(session) {
+  const {context, route} = shown;
+  const turn = session.last_turn;
+  if (!context || !turn || turn.ended_at) return;
+  const fresh = (turn.approvals || []).filter((request) => !announced.has(turn.id + '/' + request.id));
+  for (const request of fresh) announced.add(turn.id + '/' + request.id);
+  const agent = context.agents.find((other) => other.id === session.agent_id);
+  if (!fresh.length || !agent || !controls(context, turn) || route?.params?.sid === session.id) return;
+  toast([h('b', label(agent)), ' is waiting for you'], '', 9000, h('a', {href: link(to.session(context.project, agent, session))}, 'Review'));
 }
 
 export function signOut() {

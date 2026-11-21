@@ -289,6 +289,7 @@ dialog.dlg::backdrop { background: var(--overlay); backdrop-filter: blur(2px); a
 .toast.bad .i { color: var(--coral); }
 .toast.ok .i { color: var(--green); }
 .toast code { color: var(--night-dim); }
+.toast a { margin-left: 6px; padding: 2px 10px; border-radius: 999px; background: var(--canary); color: var(--on-canary); font-weight: 700; text-decoration: none; pointer-events: auto; }
 
 /* Text written in Markdown, by an agent. */
 .md > :first-child { margin-top: 0; }

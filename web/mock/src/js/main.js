@@ -3,6 +3,7 @@
 import {h, icon, prefs} from './util.js';
 import {unauthenticated} from './api.js';
 import {app, enter, forget, theme, brand, NotFound} from './state.js';
+import {feed} from './feed.js';
 import {on, resolve, go, path, link} from './router.js';
 import {mount, draw, signOut} from './shell.js';
 import {blank, label, sentence, loading} from './ui.js';
@@ -80,6 +81,11 @@ async function render() {
     go(back || (known ? '/p/' + known.slug : '/projects'), {replace: true});
     return;
   }
+
+  // The stream of changes is that of the project in view, and is open before
+  // the view reads anything.
+  const viewed = route?.params.project && (app.projects || []).find((project) => project.slug === route.params.project);
+  feed.watch(viewed ? viewed.id : null);
 
   if (!route) {
     shown?.cleanup?.();

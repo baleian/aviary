@@ -1,11 +1,12 @@
 // The client of the Supervisor's API. The views call only this module.
 //
-// In the mock, send() and events() hand the request to backend.js. In the
-// product they are fetch() calls against /v1 with the caller's token: the
-// events with fetch too, because EventSource cannot send the Authorization
-// header. Nothing else in this file, and nothing in the views, changes.
+// In the mock, send(), events() and changes() hand the request to backend.js.
+// In the product they are fetch() calls against /v1 with the caller's token:
+// the streams with fetch too, because EventSource cannot send the
+// Authorization header. Nothing else in this file, and nothing in the views,
+// changes.
 
-import {request, open, flagOf, settings} from './backend.js';
+import {request, open, watch, flagOf, settings} from './backend.js';
 import {record, touch} from './log.js';
 import {sleep, prefs, emitter} from './util.js';
 
@@ -102,6 +103,49 @@ export const api = {
         if (!entry.closed) { entry.closed = true; entry.note = [entry.note, why].filter(Boolean).join(' · '); touch(); }
         stream.close();
       };
+    }
+    streams.add(following);
+    connect();
+    return () => {
+      streams.delete(following);
+      stop('closed by the page');
+    };
+  },
+
+  // changes follows what changes in a project: GET /v1/projects/{id}/events.
+  // It calls onSession(session) with every session of the project that
+  // changes and that the caller may read, as the session is after the change.
+  // The stream does not repeat what happened before it opened, so onOpen()
+  // is called each time it has opened: what was read before that may be out
+  // of date. If the connection breaks, it connects again. It returns a
+  // function that stops following.
+  changes(projectID, {onSession, onOpen = () => {}, onError = () => {}}) {
+    const path = `/v1/projects/${projectID}/events`;
+    let stop = () => {};
+    const following = {cut: () => { stop('connection lost'); connect(); }};
+    function connect() {
+      const entry = record({at: Date.now(), method: 'SSE', path, status: 0, ms: 0, flag: flagOf('GET', path), note: '', events: 0, last: ''});
+      const stream = watch(projectID, {token}, (event) => {
+        entry.events++;
+        entry.last = event.type;
+        touch();
+        if (event.type === 'session') onSession(JSON.parse(event.data));
+      });
+      entry.status = stream.response.status;
+      touch();
+      if (stream.response.status !== 200) {
+        const error = new ApiError(stream.response.status, stream.response.body, stream.response.headers);
+        entry.closed = true;
+        streams.delete(following);
+        if (error.status === 401) unauthenticated.emit();
+        queueMicrotask(() => onError(error));
+        return;
+      }
+      stop = (why) => {
+        if (!entry.closed) { entry.closed = true; entry.note = why; touch(); }
+        stream.close();
+      };
+      queueMicrotask(onOpen);
     }
     streams.add(following);
     connect();

@@ -79,10 +79,13 @@ export function stateName(key) {
 
 // ---- Toasts ---------------------------------------------------------------
 
-export function toast(message, kind = '', ms = 3600) {
+// toast shows a message for a while. action, if given, is a link that goes
+// with it.
+export function toast(message, kind = '', ms = 3600, action = null) {
   let stack = layers().querySelector('.toasts');
   if (!stack) layers().append(stack = h('div.toasts', {role: 'status', 'aria-live': 'polite'}));
-  const node = h('div.toast' + (kind ? '.' + kind : ''), icon(kind === 'bad' ? 'warn' : kind === 'ok' ? 'check' : 'info'), h('span', message));
+  const node = h('div.toast' + (kind ? '.' + kind : ''), icon(kind === 'bad' ? 'warn' : kind === 'ok' ? 'check' : 'info'), h('span', message), action);
+  if (action) action.addEventListener('click', () => node.remove());
   // Two at most: a newer one is worth more than an older one.
   while (stack.children.length > 1) stack.firstChild.remove();
   stack.append(node);

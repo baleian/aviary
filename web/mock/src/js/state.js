@@ -2,6 +2,7 @@
 // it loads it.
 
 import {api, installation, signedInAs} from './api.js';
+import {feed} from './feed.js';
 import {emitter, prefs, shortID} from './util.js';
 
 export const ALL = ['project.view', 'agents.manage', 'connections.manage', 'sessions.run', 'sessions.view_all', 'sessions.control_all'];
@@ -48,6 +49,7 @@ function tint(list) {
 export function forget() {
   Object.assign(app, {config: installation(), me: null, shut: null, projects: null, roles: null, harnesses: null});
   contexts.clear();
+  feed.watch();
 }
 
 // enter loads the caller. It returns "in" if the caller may use the console,
@@ -178,6 +180,12 @@ export function sessionAccess(context, session) {
   const admin = app.me.admin;
   const control = admin || (own ? can(context, 'sessions.run') : can(context, 'sessions.control_all'));
   return {own, send: admin || (own && can(context, 'sessions.run')), control};
+}
+
+// controls reports whether the caller may stop a turn and answer its approval
+// requests.
+export function controls(context, turn) {
+  return app.me.admin || (turn.created_by === app.me.id ? can(context, 'sessions.run') : can(context, 'sessions.control_all'));
 }
 
 // ---- Settings of the browser ----------------------------------------------

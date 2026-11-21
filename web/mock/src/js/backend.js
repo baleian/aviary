@@ -23,6 +23,9 @@ let eventsOf;
 let watchers;
 let approvalsOf;
 let runs;
+let feeds;
+let told;
+let telling = 0;
 let serial = 0;
 
 const iso = () => new Date().toISOString();
@@ -195,8 +198,15 @@ function storeRecord(store) {
     created_at: store.created_at, updated_at: store.updated_at};
 }
 
+// sessionRecord is a session with its newest turn, as far as a list of
+// sessions shows a turn: without its text and items.
 function sessionRecord(session) {
   const {allowed: _, ...record} = session;
+  const newest = db.turns.filter((turn) => turn.session_id === session.id).sort((a, b) => b.seq - a.seq)[0];
+  if (newest) {
+    const {text: __, items: ___, ...shown} = turnRecord(newest);
+    record.last_turn = shown;
+  }
   return record;
 }
 
@@ -286,6 +296,28 @@ function emit(turnID, type, data) {
   if (!eventsOf.has(turnID)) eventsOf.set(turnID, []);
   eventsOf.get(turnID).push({id: `${Date.now()}-${serial++}`, type, data: JSON.stringify(data)});
   for (const watcher of [...(watchers.get(turnID) || [])]) queueMicrotask(watcher);
+  changed();
+}
+
+// ---- Changes --------------------------------------------------------------
+
+// changed tells the streams of changes about every session that no longer
+// is as they were told, with the session as it is now. Changes that come
+// together are told once.
+function changed() {
+  if (telling) return;
+  telling = setTimeout(() => {
+    telling = 0;
+    for (const session of db.sessions) {
+      const data = JSON.stringify(sessionRecord(session));
+      if (told.get(session.id) === data) continue;
+      told.set(session.id, data);
+      const project = db.agents.find((agent) => agent.id === session.agent_id).project_id;
+      for (const feed of [...feeds]) {
+        if (feed.project === project && feed.sees(session)) feed.onEvent({type: 'session', data});
+      }
+    }
+  }, 40);
 }
 
 // last returns the event that reports how an ended turn ended.
@@ -491,6 +523,7 @@ function run(turn, play, {answers = {}, instant = false} = {}) {
         // from the moment that it is created or woken.
         const wait = !session.sandbox || session.sandbox === 'lost' ? 1900 : session.sandbox === 'asleep' ? 1500 : 350;
         session.sandbox = 'awake';
+        changed();
         await pause(wait);
         turn.started_at = iso();
         send('turn.started', {});
@@ -531,6 +564,7 @@ function lull() {
     const last = Math.max(...turns.map((turn) => Date.parse(turn.ended_at)));
     if (Date.now() - last >= IDLE * mock.speed) session.sandbox = 'asleep';
   }
+  changed();
 }
 
 // cancel stops what a turn is doing. The requests that still wait for an
@@ -548,23 +582,29 @@ function cancel(turn) {
   state.wake?.();
 }
 
-// accept makes a message the next turn of its session, and starts it as the
-// scenario of the mock says.
-function accept(session, who, words) {
-  if (session.ended_at) refuse(409, 'session_ended', 'the session has ended');
-  const turns = db.turns.filter((turn) => turn.session_id === session.id);
-  if (turns.some((turn) => !turn.ended_at)) refuse(409, 'session_busy', 'the session has an unfinished turn');
+// chosen returns the scenario that the bar of the mock is set to, and sets
+// the bar back to "auto".
+function chosen() {
   const scenario = mock.scenario;
   if (scenario !== 'auto') {
     mock.scenario = 'auto';
     mock.changed.emit();
   }
+  return scenario;
+}
+
+// accept makes a message the next turn of its session, and starts it as the
+// scenario says.
+function accept(session, who, words, scenario) {
+  if (session.ended_at) refuse(409, 'session_ended', 'the session has ended');
+  const turns = db.turns.filter((turn) => turn.session_id === session.id);
+  if (turns.some((turn) => !turn.ended_at)) refuse(409, 'session_busy', 'the session has an unfinished turn');
   if (scenario === 'queue_full') refuse(429, 'queue_full', 'too many turns are queued; retry later', {'Retry-After': '5'});
   const turn = {id: uuid7(), session_id: session.id, seq: turns.length + 1, state: 'queued', text: words, created_by: who.id, created_at: iso()};
   db.turns.push(turn);
   db.items.set(turn.id, []);
   const play = script(scenario, words);
-  const dispatch = () => { turn.state = 'running'; run(turn, play); };
+  const dispatch = () => { turn.state = 'running'; changed(); run(turn, play); };
 
   if (scenario !== 'queue' && scenario !== 'expire') {
     queueMicrotask(dispatch);
@@ -844,7 +884,7 @@ route('POST', '/v1/sessions/{sid}/messages', ({who, body}, sid) => {
   const session = withSession(who, sid, 'sends');
   const request = decode(body, ['text']);
   if (!text(request.text)) invalid('text is required');
-  return [202, accept(session, who, request.text)];
+  return [202, accept(session, who, request.text, chosen())];
 });
 route('GET', '/v1/sessions/{sid}/turns', ({who, query}, sid) => {
   withSession(who, sid, 'reads');
@@ -888,6 +928,8 @@ route('POST', '/v1/turns/{tid}/approvals/{rid}', ({who, body}, tid, rid) => {
 });
 // The events of a turn are a stream: see open().
 route('GET', '/v1/turns/{tid}/events', ({who}, tid) => [200, withTurn(who, tid, 'reads')]);
+// The changes of a project are a stream too: see watch().
+route('GET', '/v1/projects/{pid}/events', ({who}, pid) => [200, inProject(who, pid, 'project.view')], 'proposed');
 
 route('GET', '/v1/projects/{pid}/providers', ({who}, pid) => {
   inProject(who, pid, 'project.view');
@@ -900,8 +942,10 @@ route('GET', '/v1/projects/{pid}/secret-stores', ({who}, pid) => {
 route('GET', '/v1/harnesses', () => [200, {harnesses: [...db.config.harnesses].sort().map((name) => ({name}))}]);
 
 // Fields that the mock adds to what the API returns today, as [pattern of
-// the path, "field name"]. There are none at the moment.
-const ASSUMED = [];
+// the path, "field name"].
+const ASSUMED = [
+  [/^\/v1\/(agents\/[^/]+\/sessions|sessions\/[^/]+)$/, 'field last_turn'],
+];
 
 // flagOf returns "proposed" for a request that the API does not have yet,
 // and "field x" for one whose answer has a field that the API does not have
@@ -921,6 +965,7 @@ export function request(method, path, {token = '', body = null} = {}) {
     if (plain !== '/v1/me') allowed(who);
     if (!found) notFound();
     const [status, answer] = found.candidate.handler({who, body, query: new URLSearchParams(search)}, ...found.match.slice(1).map(decodeURIComponent));
+    if (method !== 'GET') changed();
     return {status, headers: {}, body: answer == null ? null : copy(answer)};
   } catch (error) {
     if (error instanceof Refusal) return copy(error.response);
@@ -973,6 +1018,23 @@ export function open(turnID, {token = '', after = ''} = {}, onEvent, onEnd) {
   return {response: {status: 200, headers: {'Content-Type': 'text/event-stream'}, body: null}, close};
 }
 
+// watch answers GET /v1/projects/{id}/events. If the request is refused, it
+// returns the response. Otherwise it calls onEvent with a "session" event for
+// every session of the project that changes from then on and that the caller
+// may read: the session as it is after the change. The returned close() ends
+// the stream.
+export function watch(projectID, {token = ''} = {}, onEvent) {
+  const response = request('GET', `/v1/projects/${projectID}/events`, {token});
+  if (response.status !== 200) return {response};
+  const who = identify(token);
+  const held = who.admin ? PERMISSIONS : permissionsOf(projectID, who);
+  const all = held.includes('sessions.view_all');
+  const own = held.includes('sessions.run');
+  const feed = {project: projectID, sees: (session) => all || (own && session.created_by === who.id), onEvent};
+  feeds.add(feed);
+  return {response: {status: 200, headers: {'Content-Type': 'text/event-stream'}, body: null}, close: () => feeds.delete(feed)};
+}
+
 // ---- The controls of the mock ---------------------------------------------
 
 export function reset() {
@@ -981,11 +1043,43 @@ export function reset() {
   watchers = new Map();
   approvalsOf = new Map();
   runs = new Map();
+  feeds = new Set();
+  told = new Map(db.sessions.map((session) => [session.id, JSON.stringify(sessionRecord(session))]));
   for (const left of db.live) {
     const turn = db.turns.find((other) => other.id === left.turn);
     emit(turn.id, 'turn.started', {});
     run(turn, script(left.script, turn.text), {answers: left.answers, instant: true});
   }
+}
+
+// What the other member asks, in turn.
+const ASKED = ['Which tests cover the checkout total?', 'Where do we retry a failed webhook?', 'What does the bundle rule do with a quantity of zero?'];
+
+// elsewhere has another member of the project send a message to the agent, as
+// someone at another screen would. It returns the name of the member and the
+// title of the session, or null if nobody else can run a session there.
+export function elsewhere(token, projectSlug, agentSlug) {
+  const project = db.projects.find((other) => other.slug === projectSlug);
+  const agents = project ? db.agents.filter((agent) => agent.project_id === project.id) : [];
+  const agent = agents.find((other) => other.slug === agentSlug) || agents[0];
+  if (!agent || !db.config.idp) return null;
+  for (const [key, account] of Object.entries(db.accounts)) {
+    if (key === token) continue;
+    const who = identify(key);
+    if (who.admin || !permissionsOf(project.id, who).includes('sessions.run')) continue;
+    const words = ASKED[serial++ % ASKED.length];
+    const busy = (session) => db.turns.some((turn) => turn.session_id === session.id && !turn.ended_at);
+    let session = db.sessions.filter((other) => other.agent_id === agent.id && other.created_by === who.id && !other.ended_at && !busy(other))
+      .sort((a, b) => (a.id < b.id ? 1 : -1))[0];
+    if (!session) {
+      session = {id: uuid7(), agent_id: agent.id, title: words, created_by: who.id, created_at: iso()};
+      db.sessions.push(session);
+    }
+    accept(session, who, words, 'answer');
+    changed();
+    return {name: account.display_name, title: session.title};
+  }
+  return null;
 }
 
 // accounts lists the accounts of the mock's identity provider, for its

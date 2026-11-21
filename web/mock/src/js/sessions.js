@@ -1,13 +1,12 @@
 // How a session stands, for the lists of sessions.
 
 import {h, icon, clip} from './util.js';
-import {api} from './api.js';
 import {status, stateName} from './ui.js';
 
-// standing returns how a session stands: {key, turn}. key is the state of
-// its newest turn, "ended" for a session that has ended, or "none" for one
-// without turns.
-export function standing(session, turn) {
+// standing returns how a session stands: {key, turn}. turn is its newest
+// turn, which the session carries. key is the state of that turn, "ended" for
+// a session that has ended, or "none" for one without turns.
+export function standing(session, turn = session.last_turn) {
   if (turn && !turn.ended_at) return {key: status(turn), turn};
   if (session.ended_at) return {key: 'ended', turn, ended: endedText(session)};
   return {key: turn ? status(turn) : 'none', turn};
@@ -16,13 +15,6 @@ export function standing(session, turn) {
 // endedText says how a session ended: a person ended it, or it expired.
 export function endedText(session) {
   return session.end_reason === 'expired' ? 'Expired' : 'Ended';
-}
-
-// summarize reads the newest turn of a session. The list of sessions does
-// not say how each session stands, so the console asks for each one.
-export async function summarize(session) {
-  const {turns} = await api.get(`/v1/sessions/${session.id}/turns?limit=1`, 'workaround');
-  return standing(session, turns[0]);
 }
 
 export function standingText(stands) {
