@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"slices"
 
@@ -48,17 +49,39 @@ func (a *api) held(r *http.Request, projectID uuid.UUID) ([]string, error) {
 	return held, err
 }
 
-// may returns an error unless the caller has the permission in the project
-// or is an admin.
-func (a *api) may(r *http.Request, projectID uuid.UUID, permission string) error {
-	if callerOf(r).admin {
-		return nil
+// needs are the permissions that a request needs in its project: all of
+// them.
+type needs []string
+
+// heldKey is the context key of the permissions that the caller has in the
+// project of the request.
+type heldKey struct{}
+
+// admit returns the request with the permissions that its caller has in the
+// project, for holds. An admin has all of them. It returns an error if the
+// caller lacks one that the request needs, which names the first such.
+func (a *api) admit(r *http.Request, projectID uuid.UUID, needed needs) (*http.Request, error) {
+	held := permissions
+	if !callerOf(r).admin {
+		var err error
+		if held, err = a.held(r, projectID); err != nil {
+			return nil, err
+		}
+		for _, permission := range needed {
+			if !slices.Contains(held, permission) {
+				return nil, lacks(permission)
+			}
+		}
 	}
-	held, err := a.held(r, projectID)
-	if err == nil && !slices.Contains(held, permission) {
-		err = lacks(permission)
-	}
-	return err
+	return r.WithContext(context.WithValue(r.Context(), heldKey{}, held)), nil
+}
+
+// holds reports whether the caller has the permission in the project of the
+// request. It is for the handlers behind inProject and ofProject whose
+// answer depends on what else the caller may do there.
+func holds(r *http.Request, permission string) bool {
+	held, _ := r.Context().Value(heldKey{}).([]string)
+	return slices.Contains(held, permission)
 }
 
 // mayWith returns an error unless the caller may do the act on the session,
@@ -103,15 +126,15 @@ func (a *api) administrator(next handler) http.Handler {
 	})
 }
 
-// inProject passes on the requests of callers that have the permission in
-// the project named by the path value pid.
-func (a *api) inProject(permission string, next handler) http.Handler {
+// inProject passes on the requests of callers that have the needed
+// permissions in the project named by the path value pid.
+func (a *api) inProject(needed needs, next handler) http.Handler {
 	return handler(func(w http.ResponseWriter, r *http.Request) error {
 		id, err := pathID(r, "pid")
 		if err != nil {
 			return err
 		}
-		if err := a.may(r, id, permission); err != nil {
+		if r, err = a.admit(r, id, needed); err != nil {
 			return err
 		}
 		return next(w, r)
@@ -120,7 +143,7 @@ func (a *api) inProject(permission string, next handler) http.Handler {
 
 // ofProject is like inProject for a resource whose ID is the path value
 // name. project returns the ID of the resource's project.
-func (a *api) ofProject(permission, name string, project func(*http.Request, uuid.UUID) (uuid.UUID, error), next handler) http.Handler {
+func (a *api) ofProject(needed needs, name string, project func(*http.Request, uuid.UUID) (uuid.UUID, error), next handler) http.Handler {
 	return handler(func(w http.ResponseWriter, r *http.Request) error {
 		id, err := pathID(r, name)
 		if err != nil {
@@ -130,7 +153,7 @@ func (a *api) ofProject(permission, name string, project func(*http.Request, uui
 		if err != nil {
 			return err
 		}
-		if err := a.may(r, projectID, permission); err != nil {
+		if r, err = a.admit(r, projectID, needed); err != nil {
 			return err
 		}
 		return next(w, r)

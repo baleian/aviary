@@ -134,6 +134,9 @@ func TestLists(t *testing.T) {
 		{"ann", "/v1/agents/" + first + "/sessions?before=the-last", http.StatusBadRequest},
 		{"ann", "/v1/agents/" + first + "/sessions?limit=0", http.StatusBadRequest},
 		{"ann", "/v1/agents/" + first + "/sessions?limit=101", http.StatusBadRequest},
+		// Whether the caller may ask is checked before what it asks.
+		{"stranger", "/v1/agents/" + first + "/sessions?limit=0", http.StatusNotFound},
+		{"admin", "/v1/agents/" + none + "/sessions?limit=0", http.StatusNotFound},
 	} {
 		if status, _ := as(refused.caller).request("GET", refused.path, "", nil); status != refused.status {
 			t.Errorf("GET %s as %s: status %d, want %d", refused.path, refused.caller, status, refused.status)

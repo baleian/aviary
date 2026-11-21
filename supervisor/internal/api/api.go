@@ -77,38 +77,40 @@ func New(ctx context.Context, st store.Store, ev *events.Streams, dr *driver.Dri
 	go a.sendChanges(ctx)
 	mux := http.NewServeMux()
 	// Admins may do everything. Other callers have, in a project, the
-	// permissions of the members that are them or one of their groups.
+	// permissions of the members that are them or one of their groups. A
+	// route names the permissions that it needs there.
 	mux.Handle("GET /v1/roles", handler(a.listRoles))
 	mux.Handle("PUT /v1/roles/{name}", a.administrator(a.setRole))
 	mux.Handle("GET /v1/harnesses", handler(a.listHarnesses))
 	mux.Handle("POST /v1/projects", a.administrator(a.createProject))
 	mux.Handle("GET /v1/projects", handler(a.listProjects))
-	mux.Handle("GET /v1/projects/{pid}", a.inProject(projectView, a.getProject))
-	// streamChanges does its own access check, since what it sends depends
-	// on the caller.
-	mux.Handle("GET /v1/projects/{pid}/events", handler(a.streamChanges))
-	mux.Handle("GET /v1/projects/{pid}/members", a.inProject(projectView, a.listMembers))
+	mux.Handle("GET /v1/projects/{pid}", a.inProject(needs{projectView}, a.getProject))
+	// Every member may watch. What a member is sent depends on which
+	// sessions it may read.
+	mux.Handle("GET /v1/projects/{pid}/events", a.inProject(needs{projectView}, a.streamChanges))
+	mux.Handle("GET /v1/projects/{pid}/members", a.inProject(needs{projectView}, a.listMembers))
 	mux.Handle("POST /v1/projects/{pid}/members", a.administrator(a.addMember))
 	mux.Handle("PUT /v1/members/{mid}", a.administrator(a.setMember))
 	mux.Handle("DELETE /v1/members/{mid}", a.administrator(a.removeMember))
-	mux.Handle("POST /v1/projects/{pid}/secret-stores", a.inProject(connectionsManage, a.createSecretStore))
-	mux.Handle("GET /v1/projects/{pid}/secret-stores", a.inProject(projectView, a.listSecretStores))
-	mux.Handle("GET /v1/secret-stores/{store}", a.ofProject(projectView, "store", a.ofSecretStore, a.getSecretStore))
-	mux.Handle("PUT /v1/secret-stores/{store}", a.ofProject(connectionsManage, "store", a.ofSecretStore, a.replaceSecretStore))
-	mux.Handle("POST /v1/projects/{pid}/providers", a.inProject(connectionsManage, a.createProvider))
-	mux.Handle("GET /v1/projects/{pid}/providers", a.inProject(projectView, a.listProviders))
-	mux.Handle("GET /v1/providers/{provider}", a.ofProject(projectView, "provider", a.ofProvider, a.getProvider))
-	mux.Handle("PUT /v1/providers/{provider}", a.ofProject(connectionsManage, "provider", a.ofProvider, a.replaceProvider))
-	mux.Handle("POST /v1/projects/{pid}/agents", a.inProject(agentsManage, a.createAgent))
-	mux.Handle("GET /v1/projects/{pid}/agents", a.inProject(projectView, a.listAgents))
-	mux.Handle("GET /v1/agents/{aid}", a.ofProject(projectView, "aid", a.ofAgent, a.getAgent))
-	mux.Handle("PUT /v1/agents/{aid}", a.ofProject(agentsManage, "aid", a.ofAgent, a.replaceAgent))
-	// deleteAgent does its own access check, since it needs two permissions.
-	mux.Handle("DELETE /v1/agents/{aid}", handler(a.deleteAgent))
-	mux.Handle("POST /v1/agents/{aid}/sessions", a.ofProject(sessionsRun, "aid", a.ofAgent, a.createSession))
-	// listSessions does its own access check, since what it lists depends on
-	// the caller.
-	mux.Handle("GET /v1/agents/{aid}/sessions", handler(a.listSessions))
+	mux.Handle("POST /v1/projects/{pid}/secret-stores", a.inProject(needs{connectionsManage}, a.createSecretStore))
+	mux.Handle("GET /v1/projects/{pid}/secret-stores", a.inProject(needs{projectView}, a.listSecretStores))
+	mux.Handle("GET /v1/secret-stores/{store}", a.ofProject(needs{projectView}, "store", a.ofSecretStore, a.getSecretStore))
+	mux.Handle("PUT /v1/secret-stores/{store}", a.ofProject(needs{connectionsManage}, "store", a.ofSecretStore, a.replaceSecretStore))
+	mux.Handle("POST /v1/projects/{pid}/providers", a.inProject(needs{connectionsManage}, a.createProvider))
+	mux.Handle("GET /v1/projects/{pid}/providers", a.inProject(needs{projectView}, a.listProviders))
+	mux.Handle("GET /v1/providers/{provider}", a.ofProject(needs{projectView}, "provider", a.ofProvider, a.getProvider))
+	mux.Handle("PUT /v1/providers/{provider}", a.ofProject(needs{connectionsManage}, "provider", a.ofProvider, a.replaceProvider))
+	mux.Handle("POST /v1/projects/{pid}/agents", a.inProject(needs{agentsManage}, a.createAgent))
+	mux.Handle("GET /v1/projects/{pid}/agents", a.inProject(needs{projectView}, a.listAgents))
+	mux.Handle("GET /v1/agents/{aid}", a.ofProject(needs{projectView}, "aid", a.ofAgent, a.getAgent))
+	mux.Handle("PUT /v1/agents/{aid}", a.ofProject(needs{agentsManage}, "aid", a.ofAgent, a.replaceAgent))
+	// Deleting an agent ends the sessions of every member, so it also needs
+	// the permission to end them.
+	mux.Handle("DELETE /v1/agents/{aid}", a.ofProject(needs{agentsManage, sessionsControlAll}, "aid", a.ofAgent, a.deleteAgent))
+	mux.Handle("POST /v1/agents/{aid}/sessions", a.ofProject(needs{sessionsRun}, "aid", a.ofAgent, a.createSession))
+	// Every member may list them. What is listed depends on which sessions
+	// the member may read.
+	mux.Handle("GET /v1/agents/{aid}/sessions", a.ofProject(needs{projectView}, "aid", a.ofAgent, a.listSessions))
 	mux.Handle("GET /v1/sessions/{sid}", a.withSession(reads, a.getSession))
 	mux.Handle("PATCH /v1/sessions/{sid}", a.withSession(retitles, a.updateSession))
 	mux.Handle("DELETE /v1/sessions/{sid}", a.withSession(ends, a.endSession))
@@ -302,30 +304,14 @@ func (a *api) replaceAgent(w http.ResponseWriter, r *http.Request) error {
 }
 
 // deleteAgent deletes the agent: its sessions end, and their sandboxes are
-// deleted. The agent and the conversations are kept. Since the sessions of
-// every member end, the caller needs sessions.control_all besides
-// agents.manage.
+// deleted. The agent and the conversations are kept.
 func (a *api) deleteAgent(w http.ResponseWriter, r *http.Request) error {
 	id, err := pathID(r, "aid")
 	if err != nil {
 		return err
 	}
-	agent, err := a.store.Agent(r.Context(), id)
+	agent, err := a.driver.DeleteAgent(r.Context(), id)
 	if err != nil {
-		return err
-	}
-	if !callerOf(r).admin {
-		held, err := a.held(r, agent.ProjectID)
-		if err != nil {
-			return err
-		}
-		for _, permission := range []string{agentsManage, sessionsControlAll} {
-			if !slices.Contains(held, permission) {
-				return lacks(permission)
-			}
-		}
-	}
-	if agent, err = a.driver.DeleteAgent(r.Context(), id); err != nil {
 		return err
 	}
 	slog.InfoContext(r.Context(), "agent deleted", "agent", id, "by", callerOf(r).Subject)
@@ -400,19 +386,11 @@ func (a *api) listSessions(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	agent, err := a.store.Agent(r.Context(), agentID)
-	if err != nil {
-		return err
-	}
+	// A caller reads its own sessions with sessions.run, and everyone's
+	// with sessions.view_all.
 	by, readable := uuid.Nil, true
-	if who := callerOf(r); !who.admin {
-		held, err := a.held(r, agent.ProjectID)
-		if err != nil {
-			return err
-		}
-		if !slices.Contains(held, sessionsViewAll) {
-			by, readable = who.id, slices.Contains(held, sessionsRun)
-		}
+	if !holds(r, sessionsViewAll) {
+		by, readable = callerOf(r).id, holds(r, sessionsRun)
 	}
 	sessions := []store.Session{}
 	if readable {

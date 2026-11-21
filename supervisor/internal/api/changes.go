@@ -201,18 +201,15 @@ func (a *api) streamChanges(w http.ResponseWriter, r *http.Request) error {
 	if _, err := a.store.Project(r.Context(), projectID); err != nil {
 		return err
 	}
+	// A caller reads its own sessions with sessions.run, and everyone's
+	// with sessions.view_all.
 	reads := func(store.Session) bool { return true }
-	if who := callerOf(r); !who.admin {
-		held, err := a.held(r, projectID)
-		switch {
-		case err != nil:
-			return err
-		case slices.Contains(held, sessionsViewAll):
-		case slices.Contains(held, sessionsRun):
-			reads = func(session store.Session) bool { return session.CreatedBy == who.id }
-		default:
-			reads = func(store.Session) bool { return false }
-		}
+	switch who := callerOf(r); {
+	case holds(r, sessionsViewAll):
+	case holds(r, sessionsRun):
+		reads = func(session store.Session) bool { return session.CreatedBy == who.id }
+	default:
+		reads = func(store.Session) bool { return false }
 	}
 	// The stream is open before the response begins, so that it has every
 	// change that follows what the client reads next.
