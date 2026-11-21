@@ -133,8 +133,8 @@ which are directories on its nodes.
 resources, logs and events of the cluster, at http://localhost:4466.
 
 `make grafana` installs [Prometheus](https://prometheus.io), which scrapes
-the Supervisors and the Egress Proxies, and [Grafana](https://grafana.com)
-with the Aviary dashboard, at http://localhost:3000.
+the metrics of Aviary, and [Grafana](https://grafana.com) with the Aviary
+dashboard, at http://localhost:3000.
 
 ### Send a message
 

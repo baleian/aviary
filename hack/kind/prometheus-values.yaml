@@ -13,8 +13,8 @@ prometheus-node-exporter:
   enabled: false
 prometheus-pushgateway:
   enabled: false
-# Scrapes only the Supervisors and the Egress Proxies, and keeps only the
-# metrics that deploy/grafana/aviary.json charts.
+# Scrapes only the Supervisors, the state metrics and the Egress Proxies, and
+# keeps only the metrics that deploy/grafana/aviary.json charts.
 scrapeConfigs: null
 serverFiles:
   prometheus.yml:
@@ -46,6 +46,28 @@ serverFiles:
               go_goroutines|go_gc_duration_seconds(_count)?|go_memstats_heap_inuse_bytes|\
               process_(cpu_seconds_total|resident_memory_bytes|open_fds|start_time_seconds)|\
               process_network_(receive|transmit)_bytes_total"
+            action: keep
+      - job_name: aviary-state-metrics
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces: {names: [aviary-system]}
+        relabel_configs:
+          - source_labels:
+              - __meta_kubernetes_pod_label_app_kubernetes_io_name
+              - __meta_kubernetes_pod_label_app_kubernetes_io_component
+              - __meta_kubernetes_pod_container_port_name
+            regex: aviary;state-metrics;metrics
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_phase]
+            regex: Pending|Succeeded|Failed
+            action: drop
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            regex: aviary_sandboxes
             action: keep
       - job_name: aviary-egress-proxy
         kubernetes_sd_configs:

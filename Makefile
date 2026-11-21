@@ -233,8 +233,8 @@ headlamp:
 		--wait
 	@echo "Headlamp is at http://localhost:4466"
 
-# Installs Prometheus, which scrapes the Supervisors and the Egress Proxies,
-# and Grafana with the dashboard in deploy/grafana, at http://localhost:3000.
+# Installs Prometheus, which scrapes the metrics of Aviary, and Grafana with
+# the dashboard in deploy/grafana, at http://localhost:3000.
 grafana:
 	$(KUBECTL) create namespace monitoring --dry-run=client --output yaml | $(KUBECTL) apply -f -
 	$(KUBECTL) create configmap grafana-dashboards --namespace monitoring \
