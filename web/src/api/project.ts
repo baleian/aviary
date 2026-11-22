@@ -41,6 +41,7 @@ export interface ProjectContext {
 export const keys = {
   agents: (project: string) => ["agents", project],
   providers: (project: string) => ["providers", project],
+  models: (provider: string) => ["models", provider],
   stores: (project: string) => ["stores", project],
   members: (project: string) => ["members", project],
   roles: ["roles"],

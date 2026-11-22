@@ -1,10 +1,38 @@
 // @vitest-environment happy-dom
 import { screen, within } from "@testing-library/react";
 import { afterEach, beforeAll, expect, it } from "vitest";
+import { backend } from "../../api/fake.ts";
 import { fast, leave, open, titled } from "../../testing.tsx";
 
 beforeAll(fast);
 afterEach(leave);
+
+// asked sends the backend a request of Alice, an administrator, and returns
+// the body of its answer.
+async function asked<T>(method: string, path: string, body: unknown = null) {
+  const mock = await backend();
+  return mock.request(method, path, { token: "alice", body }).body as T;
+}
+
+// storefront returns the project Storefront and its model providers by name.
+async function storefront() {
+  const { projects } = await asked<{
+    projects: { id: string; slug: string }[];
+  }>("GET", "/v1/projects");
+  const project = projects.find((each) => each.slug === "storefront")!;
+  const { providers } = await asked<{
+    providers: { id: string; name: string }[];
+  }>("GET", `/v1/projects/${project.id}/providers`);
+  const ids = new Map(providers.map((each) => [each.name, each.id]));
+  return { project: project.id, providers: ids };
+}
+
+// options returns the choices of a select box.
+function options(select: HTMLElement) {
+  return within(select)
+    .getAllByRole("option")
+    .map((option) => option.textContent);
+}
 
 // card returns the card of the agent with the name, once it shows.
 async function card(name: string) {
@@ -48,11 +76,7 @@ it("creates an agent", async () => {
     "Writes the release notes.",
   );
   const harness = dialog.getByRole("combobox", { name: "Harness" });
-  expect(
-    within(harness)
-      .getAllByRole("option")
-      .map((option) => option.textContent),
-  ).toEqual(["codex", "opencode"]);
+  expect(options(harness)).toEqual(["codex", "opencode"]);
   await user.selectOptions(harness, "codex");
   await user.selectOptions(
     dialog.getByRole("combobox", { name: "Model provider" }),
@@ -62,13 +86,12 @@ it("creates an agent", async () => {
     dialog.getByRole("checkbox", { name: "Ask before it acts" }),
   );
 
+  // The provider lists no models, so the model is entered.
+  const model = await dialog.findByRole("textbox", { name: "Model" });
   const create = dialog.getByRole("button", { name: "Create agent" });
   await user.click(create);
   expect(dialog.getByRole("alert").textContent).toBe("Enter the model.");
-  await user.type(
-    dialog.getByRole("textbox", { name: "Model" }),
-    "coder-small",
-  );
+  await user.type(model, "coder-small");
   await user.click(create);
 
   // The agent is there to be talked to: its workspace opens.
@@ -101,8 +124,8 @@ it("changes an agent, but for its slug and its harness", async () => {
   const dialog = within(screen.getByRole("dialog", { name: "Edit Reviewer" }));
   expect(dialog.queryByRole("textbox", { name: /Slug/ })).toBeNull();
   expect(dialog.queryByRole("combobox", { name: "Harness" })).toBeNull();
-  const model = dialog.getByRole("textbox", { name: "Model" });
-  expect((model as HTMLInputElement).value).toBe("reasoner-mini");
+  const model = await dialog.findByRole("combobox", { name: "Model" });
+  expect((model as HTMLSelectElement).value).toBe("reasoner-mini");
 
   const description = dialog.getByRole("textbox", { name: /Description/ });
   await user.clear(description);
@@ -118,6 +141,176 @@ it("changes an agent, but for its slug and its harness", async () => {
   expect(changed.textContent).toContain("codex harness");
   expect(changed.textContent).toContain("Company gateway / reasoner-mini");
   expect(screen.getByRole("status").textContent).toContain("Saved Reviewer");
+});
+
+it("chooses the model of an agent among those that its provider lists", async () => {
+  const user = open("/p/storefront/agents", "alice");
+  await user.click(
+    (await screen.findAllByRole("button", { name: /New agent/ }))[0],
+  );
+  const dialog = within(screen.getByRole("dialog", { name: "New agent" }));
+  await user.type(dialog.getByRole("textbox", { name: /Name/ }), "Notes");
+  const model = await dialog.findByRole("combobox", { name: "Model" });
+  expect(options(model)).toEqual([
+    "coder-large",
+    "coder-small",
+    "reasoner-mini",
+  ]);
+  expect((model as HTMLSelectElement).value).toBe("coder-large");
+  expect(dialog.queryByRole("textbox", { name: "Model" })).toBeNull();
+
+  // Another provider has other models, or lists none: the choice starts
+  // again.
+  const provider = dialog.getByRole("combobox", { name: "Model provider" });
+  await user.selectOptions(model, "reasoner-mini");
+  await user.selectOptions(provider, "Local model server");
+  expect(
+    (
+      (await dialog.findByRole("textbox", {
+        name: "Model",
+      })) as HTMLInputElement
+    ).value,
+  ).toBe("");
+  expect(dialog.queryByRole("combobox", { name: "Model" })).toBeNull();
+  await user.selectOptions(provider, "Company gateway");
+  const again = await dialog.findByRole("combobox", { name: "Model" });
+  expect((again as HTMLSelectElement).value).toBe("coder-large");
+  await user.selectOptions(again, "coder-small");
+  await user.click(dialog.getByRole("button", { name: "Create agent" }));
+
+  expect(
+    await screen.findByRole("heading", { name: "New session" }),
+  ).toBeTruthy();
+  await user.click(document.querySelector(".l-ag")!);
+  const created = await screen.findByRole("link", { name: /Notes/ });
+  expect(created.textContent).toContain("Company gateway / coder-small");
+});
+
+it("keeps the model of an agent a choice if its provider no longer lists it", async () => {
+  const { project, providers } = await storefront();
+  await asked("POST", `/v1/projects/${project}/agents`, {
+    slug: "veteran",
+    name: "Veteran",
+    harness: "opencode",
+    model: { provider: providers.get("Company gateway"), name: "coder-2023" },
+  });
+  const user = open("/p/storefront/agents", "alice");
+  await user.click(
+    (await card("Veteran")).getByRole("button", { name: "More" }),
+  );
+  await user.click(screen.getByRole("menuitem", { name: "Edit agent" }));
+  const dialog = within(screen.getByRole("dialog", { name: "Edit Veteran" }));
+  const model = await dialog.findByRole("combobox", { name: "Model" });
+  expect(options(model)).toEqual([
+    "coder-2023",
+    "coder-large",
+    "coder-small",
+    "reasoner-mini",
+  ]);
+  expect((model as HTMLSelectElement).value).toBe("coder-2023");
+});
+
+it("has the model of an agent again when its provider is chosen again", async () => {
+  const { project } = await storefront();
+  await asked("POST", `/v1/projects/${project}/providers`, {
+    name: "Second",
+    url: "https://second.example.com/v1",
+  });
+  const user = open("/p/storefront/agents", "alice");
+  await user.click(
+    (await card("Reviewer")).getByRole("button", { name: "More" }),
+  );
+  await user.click(screen.getByRole("menuitem", { name: "Edit agent" }));
+  const dialog = within(screen.getByRole("dialog", { name: "Edit Reviewer" }));
+  // chosen returns the box of the models once it has the model.
+  const chosen = async (model: string) =>
+    (await dialog.findByRole("option", { name: model }))
+      .parentElement as HTMLSelectElement;
+  expect((await chosen("reasoner-mini")).value).toBe("reasoner-mini");
+
+  // At another provider the choice is among its models.
+  const provider = dialog.getByRole("combobox", { name: "Model provider" });
+  await user.selectOptions(provider, "Second");
+  const other = await chosen("model-a");
+  expect(options(other)).toEqual(["model-a", "model-b"]);
+  expect(other.value).toBe("model-a");
+  await user.selectOptions(other, "model-b");
+  await user.selectOptions(provider, "Company gateway");
+  expect((await chosen("reasoner-mini")).value).toBe("reasoner-mini");
+});
+
+it("shows why a provider is not reached where the model would be", async () => {
+  const { project, providers } = await storefront();
+  await asked("POST", `/v1/projects/${project}/providers`, {
+    name: "Gone",
+    url: "https://gone.invalid/v1",
+  });
+  let user = open("/p/storefront/agents", "alice");
+  await user.click(
+    (await screen.findAllByRole("button", { name: /New agent/ }))[0],
+  );
+  let dialog = within(screen.getByRole("dialog", { name: "New agent" }));
+  await user.type(dialog.getByRole("textbox", { name: /Name/ }), "Notes");
+  await dialog.findByRole("combobox", { name: "Model" });
+  await user.selectOptions(
+    dialog.getByRole("combobox", { name: "Model provider" }),
+    "Gone",
+  );
+  const why =
+    "Not reached: upstream connect error or disconnect/reset before headers. reset reason: connection timeout.";
+  expect((await dialog.findByRole("alert")).textContent).toBe(why);
+  expect(dialog.queryByRole("combobox", { name: "Model" })).toBeNull();
+  expect(dialog.queryByRole("textbox", { name: "Model" })).toBeNull();
+  // An agent cannot be given a model there.
+  await user.click(dialog.getByRole("button", { name: "Create agent" }));
+  expect(
+    dialog.getAllByRole("alert").map((alert) => alert.textContent),
+  ).toEqual(["The model provider is not reached.", why]);
+  await leave();
+
+  // An agent that has a model there keeps it, and the rest of it can still
+  // be changed.
+  await asked("PUT", "/v1/providers/" + providers.get("Company gateway"), {
+    name: "Company gateway",
+    url: "https://llm.invalid/v1",
+    api_key: { value: "sk-gateway" },
+  });
+  user = open("/p/storefront/agents", "alice");
+  await user.click(
+    (await card("Reviewer")).getByRole("button", { name: "More" }),
+  );
+  await user.click(screen.getByRole("menuitem", { name: "Edit agent" }));
+  dialog = within(screen.getByRole("dialog", { name: "Edit Reviewer" }));
+  expect((await dialog.findByRole("alert")).textContent).toBe(why);
+  const description = dialog.getByRole("textbox", { name: /Description/ });
+  await user.clear(description);
+  await user.type(description, "Reads every diff.");
+  await user.click(dialog.getByRole("button", { name: "Save agent" }));
+  expect(await screen.findByText("Reads every diff.")).toBeTruthy();
+  expect(screen.getByRole("link", { name: /Reviewer/ }).textContent).toContain(
+    "Company gateway / reasoner-mini",
+  );
+});
+
+it("waits for the models of a provider before the model is chosen", async () => {
+  const user = open("/p/storefront/agents", "alice");
+  const create = (
+    await screen.findAllByRole("button", { name: /New agent/ })
+  )[0];
+  // The backend takes a moment to answer, as an API does.
+  const { mock } = await backend();
+  mock.speed = 1;
+  try {
+    await user.click(create);
+    const dialog = within(screen.getByRole("dialog", { name: "New agent" }));
+    const waiting = dialog.getByRole("combobox", { name: "Model" });
+    expect((waiting as HTMLSelectElement).disabled).toBe(true);
+    expect(options(waiting)).toEqual(["Loading…"]);
+    const model = await dialog.findByRole("option", { name: "coder-large" });
+    expect((model.parentElement as HTMLSelectElement).disabled).toBe(false);
+  } finally {
+    mock.speed = 0;
+  }
 });
 
 it("deletes an agent, unless a turn of it has not ended", async () => {

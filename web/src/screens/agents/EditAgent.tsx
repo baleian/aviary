@@ -1,14 +1,81 @@
 import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { useNavigate } from "react-router";
 import { api, ApiError } from "../../api/client.ts";
 import { can, keys, type ProjectContext } from "../../api/project.ts";
-import type { Agent, Harness } from "../../api/types.ts";
+import type { Agent, Harness, ProviderModels } from "../../api/types.ts";
 import { named, text, Wrong } from "../../lib/form.ts";
-import { label } from "../../lib/format.ts";
+import { label, sentence } from "../../lib/format.ts";
 import { queryClient } from "../../query.ts";
 import { Dialog } from "../../ui/Dialog.tsx";
 import { Field, NameAndSlug, Select, Toggle } from "../../ui/fields.tsx";
+import { Icon } from "../../ui/Icon.tsx";
 import { toast } from "../../ui/toast.ts";
+
+// ModelField is where the model of an agent is given: chosen among the
+// models that the provider lists, or entered if the provider lists none. A
+// provider that is not reached has no field. Why it is not shows in its
+// place, and an agent keeps the model that it has at that provider.
+function ModelField({ provider, kept }: { provider: string; kept?: string }) {
+  const listed = useQuery({
+    queryKey: keys.models(provider),
+    queryFn: () => api.get<ProviderModels>(`/v1/providers/${provider}/models`),
+  });
+  if (listed.isPending) {
+    return (
+      <Field label="Model">
+        <Select name="model" disabled options={[["", "Loading…"]]} />
+      </Field>
+    );
+  }
+  if (listed.isError || !listed.data.reached) {
+    const why = listed.isError
+      ? listed.error.message
+      : "Not reached: " + listed.data.reason;
+    return (
+      <div className="fld">
+        <span className="lab">Model</span>
+        <div className="alert bad" role="alert">
+          <Icon name="warn" />
+          <span>{sentence(why)}</span>
+        </div>
+        <input
+          type="hidden"
+          name={kept ? "model" : "unreached"}
+          value={kept ?? "1"}
+        />
+      </div>
+    );
+  }
+  const models = listed.data.models ?? [];
+  if (!models.length) {
+    return (
+      <Field label="Model">
+        <input
+          className="inp mono"
+          name="model"
+          defaultValue={kept}
+          placeholder="coder-large"
+          autoComplete="off"
+          spellCheck={false}
+        />
+      </Field>
+    );
+  }
+  // The model of the agent stays a choice if the provider no longer lists it.
+  const choices = kept && !models.includes(kept) ? [kept, ...models] : models;
+  return (
+    <Field label="Model">
+      <Select
+        // A box of its own, which begins at the model of the agent.
+        key="listed"
+        name="model"
+        defaultValue={kept ?? models[0]}
+        options={choices.map((each) => [each, each])}
+      />
+    </Field>
+  );
+}
 
 // EditAgent is the dialog that creates an agent, or replaces one: all of it
 // but its slug and its harness, which stay as they are. A project without a
@@ -30,6 +97,9 @@ export function EditAgent({
     staleTime: Infinity,
     enabled: !existing,
   });
+  const [provider, setProvider] = useState(
+    existing?.model.provider ?? context.providers[0]?.id ?? "",
+  );
 
   if (!context.providers.length) {
     const manages = can(context, "connections.manage");
@@ -55,7 +125,13 @@ export function EditAgent({
   async function save(data: FormData): Promise<Agent> {
     const model = text(data, "model");
     const names = existing ? { name: text(data, "name") } : named(data);
-    if (!model) throw new Wrong("Enter the model.");
+    if (!model) {
+      throw new Wrong(
+        data.has("unreached")
+          ? "The model provider is not reached."
+          : "Enter the model.",
+      );
+    }
     const body = {
       ...names,
       description: text(data, "description"),
@@ -75,26 +151,24 @@ export function EditAgent({
     return saved;
   }
 
-  const provider = (
+  const provided = (
     <Field label="Model provider">
       <Select
         name="provider"
-        defaultValue={existing?.model.provider}
+        value={provider}
+        onChange={(event) => setProvider(event.target.value)}
         options={context.providers.map((each) => [each.id, each.name])}
       />
     </Field>
   );
   const model = (
-    <Field label="Model">
-      <input
-        className="inp mono"
-        name="model"
-        defaultValue={existing?.model.name}
-        placeholder="coder-large"
-        autoComplete="off"
-        spellCheck={false}
-      />
-    </Field>
+    <ModelField
+      key={provider}
+      provider={provider}
+      kept={
+        existing?.model.provider === provider ? existing.model.name : undefined
+      }
+    />
   );
   return (
     <Dialog
@@ -139,7 +213,7 @@ export function EditAgent({
       </Field>
       {existing ? (
         <div className="fld-row">
-          {provider}
+          {provided}
           {model}
         </div>
       ) : (
@@ -154,7 +228,7 @@ export function EditAgent({
                 ])}
               />
             </Field>
-            {provider}
+            {provided}
           </div>
           {model}
         </>
