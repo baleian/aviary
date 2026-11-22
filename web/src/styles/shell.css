@@ -198,10 +198,6 @@
   gap: 16px;
   margin-bottom: 24px;
 }
-.pg-h .sub {
-  margin-top: 4px;
-  max-width: 640px;
-}
 .pg-h .act {
   margin-left: auto;
   display: flex;
@@ -220,22 +216,6 @@
 }
 .sec-h > a.more {
   font: 600 13px/20px var(--sans);
-}
-.crumb {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font: 600 13px/20px var(--sans);
-  color: var(--slate);
-  margin-bottom: 4px;
-}
-.crumb a {
-  color: var(--link);
-}
-.crumb .i {
-  width: 14px;
-  height: 14px;
-  color: var(--mist);
 }
 
 /* A whole page that says one thing: not found, not allowed, loading. */

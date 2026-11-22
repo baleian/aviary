@@ -883,9 +883,6 @@ a:hover .top > .go {
   color: var(--c-ink);
   font-weight: 600;
 }
-.c-king {
-  color: var(--king);
-}
 
 .conv {
   display: flex;
@@ -1097,8 +1094,8 @@ a:hover .top > .go {
 .bub-a .code {
   max-width: 100%;
 }
-.caret,
 .bub-a.typing .md > :last-child::after {
+  content: "";
   display: inline-block;
   width: 8px;
   height: 17px;
@@ -1107,9 +1104,6 @@ a:hover .top > .go {
   vertical-align: -3px;
   margin-left: 4px;
   animation: pulse 1s steps(2) infinite;
-}
-.bub-a.typing .md > :last-child::after {
-  content: "";
 }
 .th {
   font: 500 13px/20px var(--sans);
@@ -1539,10 +1533,6 @@ a:hover .top > .go {
   color: var(--slate);
   padding-top: 2px;
 }
-.done-l .i {
-  width: 14px;
-  height: 14px;
-}
 .done-l .sep {
   color: var(--mist);
 }
@@ -1563,10 +1553,6 @@ a:hover .top > .go {
 }
 .fail b {
   font: 700 14px/22px var(--sans);
-}
-.fail p {
-  font: 500 13px/20px var(--sans);
-  color: var(--ink2);
 }
 .fail .code {
   margin-top: 6px;
@@ -1671,10 +1657,6 @@ a:hover .top > .go {
 }
 .composer .bar > .i {
   flex: none;
-}
-.composer .bar b {
-  color: var(--ink2);
-  font-weight: 600;
 }
 .composer .bar .msg {
   min-width: 0;

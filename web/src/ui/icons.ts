@@ -46,9 +46,7 @@ export const ICONS = [
   "trash",
   "refresh",
   "link",
-  "layers",
   "grid",
-  "pulse",
   "folder",
   "chat",
 ] as const;
