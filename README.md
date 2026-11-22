@@ -130,7 +130,8 @@ make images       # build the images and load them into the cluster
 make deploy       # install Aviary with its Helm chart
 ```
 
-`make cluster-up DATABASE=mysql` uses MySQL instead of PostgreSQL.
+`make cluster-up DATABASE=mysql` uses MySQL instead of PostgreSQL, and
+`EVENTS=redis` Redis instead of Valkey.
 `make cluster-down` deletes the cluster, including the session volumes,
 which are directories on its nodes. In a network that does not reach the
 public registries, see [Mirrors](#mirrors).

@@ -68,11 +68,16 @@ NODE_MIRRORS := $(filter-out docker.io=docker.io gcr.io=gcr.io ghcr.io=ghcr.io q
 	docker.io=$(DOCKER_IO) gcr.io=$(GCR_IO) ghcr.io=$(GHCR_IO) quay.io=$(QUAY_IO) registry.k8s.io=$(REGISTRY_K8S_IO))
 # Database of the cluster: postgres or mysql.
 DATABASE ?= postgres
+# Event log of the cluster: valkey or redis.
+EVENTS ?= valkey
 # The kind configuration of the cluster. The clusters of the e2e use one that
 # binds no port on the host.
 KIND_CONFIG ?= hack/kind/cluster.yaml
 ifeq ($(filter $(DATABASE),postgres mysql),)
 $(error DATABASE must be postgres or mysql, not "$(DATABASE)")
+endif
+ifeq ($(filter $(EVENTS),valkey redis),)
+$(error EVENTS must be valkey or redis, not "$(EVENTS)")
 endif
 # The e2e runs in a cluster of its own. Clusters with different names can run
 # the e2e at the same time.
@@ -277,6 +282,12 @@ else
 		sleep 3; \
 	done
 endif
+ifeq ($(EVENTS),redis)
+	$(KUBECTL) get secret redis-users --namespace aviary-data >/dev/null 2>&1 || \
+		$(KUBECTL) create secret generic redis-users --namespace aviary-data \
+			--from-literal=default=$$(openssl rand -hex 24)
+	$(KUBECTL) apply -f hack/kind/redis.yaml
+else
 	$(KUBECTL) get secret valkey-users --namespace aviary-data >/dev/null 2>&1 || \
 		$(KUBECTL) create secret generic valkey-users --namespace aviary-data \
 			--from-literal=default=$$(openssl rand -hex 24)
@@ -286,10 +297,14 @@ endif
 		--namespace aviary-data \
 		--values hack/kind/valkey-values.yaml \
 		--wait
+endif
 ifeq ($(DATABASE),mysql)
 	$(KUBECTL) --namespace aviary-data rollout status statefulset/mysql --timeout 300s
 else
 	$(KUBECTL) wait --namespace aviary-data --for=condition=Ready cluster/postgres --timeout=5m
+endif
+ifeq ($(EVENTS),redis)
+	$(KUBECTL) --namespace aviary-data rollout status deployment/redis --timeout 300s
 endif
 
 cluster-down:
@@ -383,7 +398,7 @@ images: build
 
 # Creates the Secrets that the chart reads. CloudNativePG writes its
 # connection Secret next to the database, so it is copied to the namespace of
-# the Supervisor. The URLs of MySQL and Valkey are built from their
+# the Supervisor. The URLs of MySQL and of the event log are built from their
 # passwords. The encryption key is created once: secrets encrypted with it
 # cannot be decrypted with another.
 secrets:
@@ -395,9 +410,13 @@ secrets:
 		$(KUBECTL) get secret postgres-app --namespace aviary-data --output json | \
 			jq '{apiVersion, kind, type, data, metadata: {name: "aviary-database"}}'; \
 	fi | $(KUBECTL) apply --namespace aviary-system -f -
-	$(KUBECTL) get secret valkey-users --namespace aviary-data --output json | \
-		jq '{apiVersion, kind, type, metadata: {name: "aviary-events"}, stringData: {uri: ("valkey://default:" + (.data.default | @base64d) + "@valkey.aviary-data:6379")}}' | \
-		$(KUBECTL) apply --namespace aviary-system -f -
+	if $(KUBECTL) get secret redis-users --namespace aviary-data >/dev/null 2>&1; then \
+		$(KUBECTL) get secret redis-users --namespace aviary-data --output json | \
+			jq '{apiVersion, kind, type, metadata: {name: "aviary-events"}, stringData: {uri: ("redis://default:" + (.data.default | @base64d) + "@redis.aviary-data:6379")}}'; \
+	else \
+		$(KUBECTL) get secret valkey-users --namespace aviary-data --output json | \
+			jq '{apiVersion, kind, type, metadata: {name: "aviary-events"}, stringData: {uri: ("valkey://default:" + (.data.default | @base64d) + "@valkey.aviary-data:6379")}}'; \
+	fi | $(KUBECTL) apply --namespace aviary-system -f -
 	$(KUBECTL) get secret aviary-encryption --namespace aviary-system >/dev/null 2>&1 || \
 		$(KUBECTL) create secret generic aviary-encryption --namespace aviary-system \
 			--from-literal=k1=$$(openssl rand -base64 32)

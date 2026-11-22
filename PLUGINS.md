@@ -27,7 +27,7 @@ cluster.
 | PostgreSQL | 18 | `store/postgres` | Plugin tests and the e2e |
 | MySQL | 8.4 | `store/mysql` | Plugin tests, and the e2e in a cluster created with `DATABASE=mysql` |
 | Valkey | 9.1 | `events/resp` | Plugin tests and the e2e |
-| Redis | 7.2 | `events/resp` | Plugin tests |
+| Redis | 7.2 | `events/resp` | Plugin tests, and the e2e in a cluster created with `EVENTS=redis` |
 | OpenBao | 2.7 | `secret/kv2` | Plugin tests and the e2e |
 | Keycloak | 26.8 | `identity/oidc` | The e2e in a cluster created with `IDENTITY=keycloak`. The plugin tests use an issuer of their own. |
 

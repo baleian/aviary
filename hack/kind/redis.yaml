@@ -1,0 +1,49 @@
+# Redis for the local cluster, installed by `make cluster-up EVENTS=redis`.
+# The password is in the Secret redis-users. 7.2 is the last Redis release
+# line under the BSD license.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: aviary-data
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: redis
+          image: redis:7.2.17@sha256:5b816bb37d9707a70f10ef5002ecf8ee431750d397010fc4314c93dca887962f
+          # Keeps the events in memory only.
+          args: ["--requirepass", "$(REDIS_PASSWORD)", "--save", "", "--appendonly", "no"]
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-users
+                  key: default
+          ports:
+            - name: redis
+              containerPort: 6379
+          readinessProbe:
+            tcpSocket:
+              port: redis
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: aviary-data
+spec:
+  selector:
+    app.kubernetes.io/name: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis

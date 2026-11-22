@@ -53,6 +53,7 @@ secret store, in which a test keeps a provider key.
 - `E2E_CLUSTER` names the cluster for all three targets. Defaults to
   `aviary-e2e`.
 - `DATABASE=mysql` makes `make e2e-up` install MySQL instead of PostgreSQL.
+- `EVENTS=redis` makes it install Redis instead of Valkey.
 - `IDENTITY=keycloak` makes `make e2e-up` install Keycloak as the identity
   provider that authenticates API requests. The tests then send their
   requests with the tokens of its users, and one more test checks what each
