@@ -16,15 +16,9 @@ GHCR_IO ?= ghcr.io
 QUAY_IO ?= quay.io
 REGISTRY_K8S_IO ?= registry.k8s.io
 export DOCKER_IO GCR_IO
-# Where the Helm charts come from, or their mirrors: the repository of
-# agent-sandbox, whose source has its chart, and the Helm repositories of the
-# charts of the local cluster.
+# The repository of agent-sandbox, whose source has its chart, or a mirror of
+# it.
 AGENT_SANDBOX_REPO ?= https://github.com/kubernetes-sigs/agent-sandbox
-CNPG_REPO ?= https://cloudnative-pg.github.io/charts
-VALKEY_REPO ?= https://valkey.io/valkey-helm/
-HEADLAMP_REPO ?= https://kubernetes-sigs.github.io/headlamp/
-PROMETHEUS_REPO ?= https://prometheus-community.github.io/helm-charts
-GRAFANA_REPO ?= https://grafana-community.github.io/helm-charts
 
 CLUSTER := aviary
 KIND_CONFIG ?= hack/kind/cluster.yaml
@@ -44,13 +38,6 @@ KIND_CONFIG := hack/kind/e2e-cluster.yaml
 export KUBECONFIG := $(E2E_KUBECONFIG)
 endif
 NODE_IMAGE := $(DOCKER_IO)/kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
-# The versions of the charts of the local cluster. .env, the environment or
-# the command line names others, if a mirror does not have these.
-CNPG_CHART ?= 0.29.1
-VALKEY_CHART ?= 1.0.0
-HEADLAMP_CHART ?= 0.46.0
-PROMETHEUS_CHART ?= 29.48.0
-GRAFANA_CHART ?= 14.5.0
 # The chart of agent-sandbox, which the Aviary chart installs with itself. It
 # is taken from the source of the release, verified against its checksum, and
 # is not kept in the repository.
@@ -261,19 +248,11 @@ cluster-down:
 # needs one database and one event log, for example
 # make cluster-up postgres valkey
 postgres:
-	$(HELM) upgrade --install cloudnative-pg cloudnative-pg \
-		--repo $(CNPG_REPO) \
-		--version $(CNPG_CHART) \
-		--namespace cnpg-system --create-namespace \
-		--wait
-# The webhook of the operator can refuse connections for a moment after the
-# operator's pod is ready.
-	for attempt in 1 2 3 4 5 6 7 8 9 10; do \
-		$(KUBECTL) apply -f hack/kind/postgres.yaml && break; \
-		[ $$attempt -lt 10 ] || exit 1; \
-		sleep 3; \
-	done
-	$(KUBECTL) wait --namespace aviary-data --for=condition=Ready cluster/postgres --timeout=5m
+	$(KUBECTL) get secret postgres-users --namespace aviary-data >/dev/null 2>&1 || \
+		$(KUBECTL) create secret generic postgres-users --namespace aviary-data \
+			--from-literal=aviary=$$(openssl rand -hex 24)
+	$(KUBECTL) apply -f hack/kind/postgres.yaml
+	$(KUBECTL) --namespace aviary-data rollout status statefulset/postgres --timeout 300s
 
 mysql:
 	$(KUBECTL) get secret mysql-users --namespace aviary-data >/dev/null 2>&1 || \
@@ -286,12 +265,8 @@ valkey:
 	$(KUBECTL) get secret valkey-users --namespace aviary-data >/dev/null 2>&1 || \
 		$(KUBECTL) create secret generic valkey-users --namespace aviary-data \
 			--from-literal=default=$$(openssl rand -hex 24)
-	$(HELM) upgrade --install valkey valkey \
-		--repo $(VALKEY_REPO) \
-		--version $(VALKEY_CHART) \
-		--namespace aviary-data \
-		--values hack/kind/valkey-values.yaml \
-		--wait
+	$(KUBECTL) apply -f hack/kind/valkey.yaml
+	$(KUBECTL) --namespace aviary-data rollout status deployment/valkey --timeout 300s
 
 redis:
 	$(KUBECTL) get secret redis-users --namespace aviary-data >/dev/null 2>&1 || \
@@ -320,12 +295,8 @@ keycloak:
 # Installs Headlamp in the local cluster, a web UI for its resources, logs
 # and events, at http://localhost:4466.
 headlamp:
-	$(HELM) upgrade --install headlamp headlamp \
-		--repo $(HEADLAMP_REPO) \
-		--version $(HEADLAMP_CHART) \
-		--namespace headlamp --create-namespace \
-		--values hack/kind/headlamp-values.yaml \
-		--wait
+	$(KUBECTL) apply -f hack/kind/headlamp.yaml
+	$(KUBECTL) --namespace headlamp rollout status deployment/headlamp --timeout 300s
 	@echo "Headlamp is at http://localhost:4466"
 
 # Installs Prometheus, which scrapes the metrics of Aviary, and Grafana with
@@ -335,18 +306,9 @@ grafana:
 	$(KUBECTL) create configmap grafana-dashboards --namespace monitoring \
 		--from-file deploy/grafana/aviary.json --dry-run=client --output yaml | \
 		$(KUBECTL) apply --server-side -f -
-	$(HELM) upgrade --install prometheus prometheus \
-		--repo $(PROMETHEUS_REPO) \
-		--version $(PROMETHEUS_CHART) \
-		--namespace monitoring \
-		--values hack/kind/prometheus-values.yaml \
-		--wait
-	$(HELM) upgrade --install grafana grafana \
-		--repo $(GRAFANA_REPO) \
-		--version $(GRAFANA_CHART) \
-		--namespace monitoring \
-		--values hack/kind/grafana-values.yaml \
-		--wait
+	$(KUBECTL) apply -f hack/kind/prometheus.yaml -f hack/kind/grafana.yaml
+	$(KUBECTL) --namespace monitoring rollout status deployment/prometheus --timeout 300s
+	$(KUBECTL) --namespace monitoring rollout status deployment/grafana --timeout 300s
 	@echo "Grafana is at http://localhost:3000"
 
 # Builds the web UI and installs it in the local cluster, after make deploy,
@@ -387,14 +349,12 @@ images: build
 	kind load docker-image --name $(CLUSTER) $(SUPERVISOR_IMAGE) $(OPENCODE_IMAGE) $(CODEX_IMAGE) $(MOCK_LLM_IMAGE)
 
 # Creates the Secrets that the chart reads, and fails unless the cluster has
-# one database and one event log. CloudNativePG writes its connection Secret
-# next to the database, so it is copied to the namespace of the Supervisor.
-# The URLs of MySQL and of the event log are built from their passwords. The
-# encryption key is created once: secrets encrypted with it cannot be
+# one database and one event log. Their URLs are built from their passwords.
+# The encryption key is created once: secrets encrypted with it cannot be
 # decrypted with another.
 secrets:
 	@installed() { $(KUBECTL) get secret "$$@" --namespace aviary-data --ignore-not-found --output name | wc -l; }; \
-	databases=$$(installed postgres-app mysql-users) && [ "$$databases" -eq 1 ] || \
+	databases=$$(installed postgres-users mysql-users) && [ "$$databases" -eq 1 ] || \
 		{ echo "The cluster has $$databases databases, and Aviary needs one: make postgres or make mysql installs one." >&2; exit 1; }; \
 	logs=$$(installed valkey-users redis-users) && [ "$$logs" -eq 1 ] || \
 		{ echo "The cluster has $$logs event logs, and Aviary needs one: make valkey or make redis installs one." >&2; exit 1; }
@@ -403,8 +363,8 @@ secrets:
 		$(KUBECTL) get secret mysql-users --namespace aviary-data --output json | \
 			jq '{apiVersion, kind, type, metadata: {name: "aviary-database"}, stringData: {uri: ("mysql://aviary:" + (.data.aviary | @base64d) + "@mysql.aviary-data:3306/aviary")}}'; \
 	else \
-		$(KUBECTL) get secret postgres-app --namespace aviary-data --output json | \
-			jq '{apiVersion, kind, type, data, metadata: {name: "aviary-database"}}'; \
+		$(KUBECTL) get secret postgres-users --namespace aviary-data --output json | \
+			jq '{apiVersion, kind, type, metadata: {name: "aviary-database"}, stringData: {uri: ("postgresql://aviary:" + (.data.aviary | @base64d) + "@postgres.aviary-data:5432/aviary")}}'; \
 	fi | $(KUBECTL) apply --namespace aviary-system -f -
 	if $(KUBECTL) get secret redis-users --namespace aviary-data >/dev/null 2>&1; then \
 		$(KUBECTL) get secret redis-users --namespace aviary-data --output json | \

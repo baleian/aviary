@@ -1,0 +1,48 @@
+# Valkey for the local cluster, installed by `make valkey`.
+# The password is in the Secret valkey-users.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: valkey
+  namespace: aviary-data
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: valkey
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: valkey
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: valkey
+          image: valkey/valkey:9.1.3@sha256:3add1a336a920ea54770a001ab6feb3da5fceea96a40373a3a2cd469b815f0b7
+          # Keeps the events in memory only.
+          args: ["--requirepass", "$(VALKEY_PASSWORD)", "--save", "", "--appendonly", "no"]
+          env:
+            - name: VALKEY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: valkey-users
+                  key: default
+          ports:
+            - name: valkey
+              containerPort: 6379
+          readinessProbe:
+            tcpSocket:
+              port: valkey
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey
+  namespace: aviary-data
+spec:
+  selector:
+    app.kubernetes.io/name: valkey
+  ports:
+    - name: valkey
+      port: 6379
+      targetPort: valkey

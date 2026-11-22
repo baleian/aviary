@@ -1,23 +1,45 @@
-server:
-  global:
-    scrape_interval: 15s
-  extraFlags:
-    - web.enable-lifecycle
-  persistentVolume:
-    enabled: false
-alertmanager:
-  enabled: false
-kube-state-metrics:
-  enabled: false
-prometheus-node-exporter:
-  enabled: false
-prometheus-pushgateway:
-  enabled: false
-# Scrapes only the Supervisors, the state metrics and the Egress Proxies, and
-# keeps only the metrics that deploy/grafana/aviary.json charts.
-scrapeConfigs: null
-serverFiles:
-  prometheus.yml:
+# Prometheus for the local cluster, installed by `make grafana`.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: monitoring
+---
+# Lets Prometheus find the pods that it scrapes.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: monitoring
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus
+  namespace: monitoring
+data:
+  # Scrapes only the Supervisors, the state metrics and the Egress Proxies,
+  # and keeps only the metrics that deploy/grafana/aviary.json charts.
+  # Prometheus reads the file when it starts.
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
     scrape_configs:
       - job_name: aviary-supervisor
         kubernetes_sd_configs:
@@ -107,3 +129,61 @@ serverFiles:
           - source_labels: [envoy_cluster_name]
             regex: admin
             action: drop
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: prometheus
+    spec:
+      serviceAccountName: prometheus
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+        - name: prometheus
+          image: quay.io/prometheus/prometheus:v3.16.0@sha256:9332054523223e2ddc18d8101799d54a4a8d823b030c53216f063a6c117773cd
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+          ports:
+            - name: http
+              containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: data
+              mountPath: /prometheus
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  selector:
+    app.kubernetes.io/name: prometheus
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http

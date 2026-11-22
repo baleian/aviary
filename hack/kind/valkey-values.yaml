@@ -1,7 +1,0 @@
-# The password is in the Secret valkey-users, which `make valkey` creates.
-auth:
-  enabled: true
-  usersExistingSecret: valkey-users
-  aclUsers:
-    default:
-      permissions: "~* &* +@all"
