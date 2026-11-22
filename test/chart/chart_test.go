@@ -353,6 +353,24 @@ func TestStateMetrics(t *testing.T) {
 	}
 }
 
+// The chart installs agent-sandbox in the version that the Supervisor is
+// written for, unless the cluster has it already.
+func TestAgentSandbox(t *testing.T) {
+	objects, _ := chart(t, "default")
+	controller := find(objects, "Deployment", "agent-sandbox-controller")
+	image := at(controller, "spec", "template", "spec", "containers", 0, "image")
+	if image != "registry.k8s.io/agent-sandbox/agent-sandbox-controller:v1.0.11" || at(controller, "metadata", "namespace") != "agent-sandbox-system" {
+		t.Errorf("agent-sandbox controller: image = %v, namespace = %v; want v1.0.11 in agent-sandbox-system", image, at(controller, "metadata", "namespace"))
+	}
+
+	objects, _ = chart(t, "set")
+	for _, object := range objects {
+		if name, _ := at(object, "metadata", "name").(string); strings.HasPrefix(name, "agent-sandbox") {
+			t.Errorf("chart renders the %v %s although agent-sandbox is disabled", object["kind"], name)
+		}
+	}
+}
+
 // The Egress Proxy asks the Supervisors on a dedicated port, which the
 // sandboxes cannot reach.
 func TestSupervisorAnswersTheEgressProxy(t *testing.T) {
@@ -464,9 +482,15 @@ func TestSupervisorPermissions(t *testing.T) {
 		at(binding, "subjects", 0, "name") != "aviary-supervisor" || at(binding, "subjects", 0, "namespace") != "aviary-system" {
 		t.Errorf("Supervisor RoleBinding = %v", binding)
 	}
+	// Only the controller of agent-sandbox has permissions in the whole
+	// cluster.
 	for _, object := range objects {
-		if kind := object["kind"]; kind == "ClusterRole" || kind == "ClusterRoleBinding" {
-			t.Errorf("chart renders %v %v", kind, at(object, "metadata", "name"))
+		if object["kind"] != "ClusterRoleBinding" {
+			continue
+		}
+		subjects := at(object, "subjects")
+		if count(subjects) != 1 || at(subjects, 0, "name") != "agent-sandbox-controller" || at(subjects, 0, "namespace") != "agent-sandbox-system" {
+			t.Errorf("chart binds the ClusterRole %v to %v", at(object, "roleRef", "name"), subjects)
 		}
 	}
 	// The schema is migrated once per release, before the Supervisors start.

@@ -36,6 +36,8 @@ egressProxy:
 sandboxes:
   idleSeconds: 0
   retentionSeconds: 604800
+agent-sandbox:
+  enabled: false
 runtime:
   maxConcurrentTurns: 7
   maxQueuedTurns: 11

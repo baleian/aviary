@@ -16,8 +16,10 @@ GHCR_IO ?= ghcr.io
 QUAY_IO ?= quay.io
 REGISTRY_K8S_IO ?= registry.k8s.io
 export DOCKER_IO GCR_IO
-# GitHub and the Helm repositories of the local cluster, or their mirrors.
-GITHUB_COM ?= https://github.com
+# Where the Helm charts come from, or their mirrors: the repository of
+# agent-sandbox, whose source has its chart, and the Helm repositories of the
+# charts of the local cluster.
+AGENT_SANDBOX_REPO ?= https://github.com/kubernetes-sigs/agent-sandbox
 CNPG_REPO ?= https://cloudnative-pg.github.io/charts
 VALKEY_REPO ?= https://valkey.io/valkey-helm/
 HEADLAMP_REPO ?= https://kubernetes-sigs.github.io/headlamp/
@@ -31,10 +33,13 @@ VALKEY_CHART := 1.0.0
 HEADLAMP_CHART := 0.46.0
 PROMETHEUS_CHART := 29.48.0
 GRAFANA_CHART := 14.5.0
-# The agent-sandbox release manifest, verified against its checksum.
+# The chart of agent-sandbox, which the Aviary chart installs with itself. It
+# is taken from the source of the release, verified against its checksum, and
+# is not kept in the repository.
 AGENT_SANDBOX := v1.0.11
-AGENT_SANDBOX_SHA256 := 4c54dc1284e9d34e9a00b88de2cb0f098f2dbce4ade814616fd49d44cfd5d1c2
-AGENT_SANDBOX_MANIFEST := .out/agent-sandbox-$(AGENT_SANDBOX).yaml
+AGENT_SANDBOX_SHA256 := 400b83e1d51a0cf0954c6f6e8a301a1fe816c69bca54c90870239f578fffe36a
+AGENT_SANDBOX_SOURCE := .out/agent-sandbox-$(AGENT_SANDBOX).tar.gz
+AGENT_SANDBOX_CHART := deploy/charts/aviary/charts/agent-sandbox/Chart.yaml
 GO_IMAGE := $(DOCKER_IO)/library/golang:1.27.4-trixie@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9
 SQLC_IMAGE := $(DOCKER_IO)/sqlc/sqlc:1.31.1@sha256:70f53171d27b2424e9358869975455a6e955a5aa8e58a998a270a6e34e525537
 
@@ -116,7 +121,7 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 	--env AVIARY_TEST_REDIS_URL=redis://default:test@events-redis:6379 \
 	--env AVIARY_TEST_SECRET_STORE_URL=http://secret-store:8200
 
-.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-web test-web-server test-chart test-proxy test-harness cluster-up cluster-down secret-store identity-provider headlamp grafana web web-dev build images secrets deploy e2e e2e-up e2e-run e2e-down
+.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-web test-web-server test-chart test-proxy test-harness chart cluster-up cluster-down secret-store identity-provider headlamp grafana web web-dev build images secrets deploy e2e e2e-up e2e-run e2e-down
 
 # Generates the Go code of the SQL queries. Run it after changing a query or
 # a migration.
@@ -166,7 +171,7 @@ test-web: web/node_modules/.package-lock.json
 # checks the output and that invalid values are refused, and has Envoy
 # validate its configuration.
 test-chart: TESTS ?= ./chart/...
-test-chart:
+test-chart: $(AGENT_SANDBOX_CHART)
 	helm lint --strict --quiet deploy/charts/aviary
 	mkdir -p .out/chart
 	$(RENDER) > .out/chart/default.yaml
@@ -183,7 +188,7 @@ test-chart:
 # Runs the Egress Proxy with the configuration rendered from each values file
 # in test/proxy, and sends it requests.
 test-proxy: TESTS ?= ./proxy/...
-test-proxy:
+test-proxy: $(AGENT_SANDBOX_CHART)
 	mkdir -p .out/proxy
 	$(call GO,test) run ./internal/selfsigned tls.test /src/.out/proxy/tls
 	for values in listed open closed; do \
@@ -214,19 +219,30 @@ test-harness: build
 	AVIARY_HARNESS_IMAGES="$(HARNESS_IMAGES)" $(CARGO) test --locked --package aviary-runner --test harness -- \
 		--ignored --test-threads 3 $(TESTS)
 
-$(AGENT_SANDBOX_MANIFEST):
+$(AGENT_SANDBOX_SOURCE):
 	mkdir -p $(@D)
 	curl --fail --silent --show-error --location --output $@.new \
-		$(GITHUB_COM)/kubernetes-sigs/agent-sandbox/releases/download/$(AGENT_SANDBOX)/sandbox.yaml
+		$(AGENT_SANDBOX_REPO)/archive/refs/tags/$(AGENT_SANDBOX).tar.gz
 	echo "$(AGENT_SANDBOX_SHA256)  $@.new" | sha256sum --check --quiet
 	mv $@.new $@
+
+$(AGENT_SANDBOX_CHART): $(AGENT_SANDBOX_SOURCE)
+	rm -rf $(@D)
+	mkdir -p $(@D)
+	tar --extract --gzip --touch --file $< --directory $(@D) --strip-components 2 \
+		agent-sandbox-$(AGENT_SANDBOX:v%=%)/helm
+
+# Packages the chart, with the chart of agent-sandbox in it, as
+# .out/aviary-<version>.tgz.
+chart: $(AGENT_SANDBOX_CHART)
+	helm package deploy/charts/aviary --destination .out
 
 # Installs the packages of the console in the versions that
 # web/package-lock.json names.
 web/node_modules/.package-lock.json: web/package-lock.json
 	cd web && npm ci
 
-cluster-up: $(AGENT_SANDBOX_MANIFEST)
+cluster-up:
 	kind get clusters 2>/dev/null | grep -qx $(CLUSTER) || \
 		kind create cluster --name $(CLUSTER) --image $(NODE_IMAGE) --config $(KIND_CONFIG)
 # The nodes pull the images of a registry that has a mirror from the mirror.
@@ -239,7 +255,6 @@ cluster-up: $(AGENT_SANDBOX_MANIFEST)
 				docker exec --interactive $$node tee /etc/containerd/certs.d/$$registry/hosts.toml > /dev/null || exit 1; \
 		done; \
 	done
-	$(KUBECTL) apply --server-side --filename $(AGENT_SANDBOX_MANIFEST)
 	$(KUBECTL) create namespace aviary-data --dry-run=client --output yaml | $(KUBECTL) apply -f -
 ifeq ($(DATABASE),mysql)
 	$(KUBECTL) get secret mysql-users --namespace aviary-data >/dev/null 2>&1 || \
@@ -269,7 +284,6 @@ endif
 		--namespace aviary-data \
 		--values hack/kind/valkey-values.yaml \
 		--wait
-	$(KUBECTL) --namespace agent-sandbox-system rollout status deployment/agent-sandbox-controller --timeout 300s
 ifeq ($(DATABASE),mysql)
 	$(KUBECTL) --namespace aviary-data rollout status statefulset/mysql --timeout 300s
 else
@@ -393,7 +407,7 @@ secrets:
 # values file, which can set egressProxy.localhost and
 # egressProxy.extraEgress otherwise, for example
 # make deploy VALUES=my-values.yaml
-deploy: secrets
+deploy: secrets $(AGENT_SANDBOX_CHART)
 	mkdir -p .out
 	host=$$(docker run --rm --add-host host:host-gateway --entrypoint getent $(NODE_IMAGE) ahostsv4 host | head -n 1 | cut -d ' ' -f 1) && \
 	[ -n "$$host" ] && \
@@ -422,7 +436,7 @@ e2e: e2e-up
 	$(MAKE) e2e-run
 	$(MAKE) e2e-down
 
-e2e-up:
+e2e-up: $(AGENT_SANDBOX_CHART)
 	$(MAKE) cluster-down cluster-up secret-store $(if $(IDENTITY),identity-provider) images secrets CLUSTER=$(E2E_CLUSTER) \
 		KIND_CONFIG=hack/kind/e2e-cluster.yaml
 	$(E2E_KUBECTL) apply --filename test/e2e/mock-llm.yaml --filename hack/kind/api.yaml

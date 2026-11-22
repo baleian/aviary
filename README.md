@@ -125,7 +125,7 @@ curl, openssl and bash. Tested with kind 0.33, Helm 4.3 and Docker 29 on
 Linux.
 
 ```sh
-make cluster-up   # create a kind cluster with agent-sandbox, PostgreSQL and Valkey
+make cluster-up   # create a kind cluster with PostgreSQL and Valkey
 make images       # build the images and load them into the cluster
 make deploy       # install Aviary with its Helm chart
 ```
@@ -565,14 +565,23 @@ in the secret `openbao-root` in the namespace `aviary-data`.
 
 ## Configuration
 
-Aviary is installed with the Helm chart in `deploy/charts/aviary`. The
-cluster needs:
+Aviary is installed with the Helm chart in `deploy/charts/aviary`, which
+installs agent-sandbox v1.0.11 as well, with the chart of agent-sandbox, in
+the namespace `agent-sandbox-system`. The cluster needs:
 
-- **agent-sandbox** v1.0.11, which the chart does not install.
-  `make cluster-up` installs it from its release.
-- **A database and an event log**, which the chart does not install either.
+- **A database and an event log**, which the chart does not install.
 - **A network plugin that enforces network policies.** The policies are what
   isolate the sandboxes.
+
+The chart of agent-sandbox is not in this repository. `make chart` takes it
+from the source of that release and packages the Aviary chart with it, as
+`.out/aviary-0.1.0.tgz`. `make deploy` and the tests take it the same way.
+
+A cluster runs agent-sandbox once. If yours has it already, in that version,
+set `agent-sandbox.enabled` to false. Helm installs the custom resource
+definitions of agent-sandbox with the release and leaves them alone
+afterwards: it does not upgrade them, and does not delete them with the
+release.
 
 The sandboxes run in the namespace `aviary-runtime`, which enforces the
 restricted Pod Security Standard. The local cluster runs Kubernetes 1.37,
@@ -596,6 +605,7 @@ of your own.
 | `egressProxy.allowedHosts` | Hosts that the sandboxes may reach, including those of model providers: `*` for any host, a host name for the host on the default HTTPS and HTTP ports, or a host name with a port. Subdomains are separate hosts. Default `*`. |
 | `egressProxy.insideCIDRs`, `.extraEgress` | Address ranges that a NetworkPolicy blocks the Egress Proxy from connecting to, so that the sandboxes cannot use it to reach into the cluster, and additional NetworkPolicy egress rules for the proxy. A model provider or an allowed host that is in the cluster or at a private address needs such a rule. |
 | `egressProxy.localhost` | The host that the Egress Proxy connects to for a model provider whose URL is at `localhost` or a loopback address: a host name or an IP address. Empty by default: such a provider reaches nothing. An installation on one machine can name that machine here. The host needs a rule in `egressProxy.extraEgress` if it is at a private address. |
+| `agent-sandbox.enabled` | Whether the chart installs agent-sandbox. Default true. The other values under `agent-sandbox` are those of its chart: `image.repository` for the image of its controller, `imagePullSecrets`, `resources` and others. |
 | `sandboxes.idleSeconds` | Seconds without a running turn after which a session is put to sleep: its pod is deleted and its volume is kept, and its next turn wakes it in a new pod. Default 300. 0 disables sleeping. |
 | `sandboxes.retentionSeconds` | Seconds after its last turn after which a session ends: its sandbox is deleted with its volume, and its conversation stays readable. A session that ends this way has the `end_reason` `expired`. Default 0, which keeps the sandbox until the session is ended. |
 | `runtime.maxConcurrentTurns` | Maximum number of turns that run at once. Default 50. |
@@ -782,7 +792,7 @@ repository that Git ignores, with lines of `NAME=value` without quotes:
 | `NPM_CONFIG_REGISTRY` | The npm registry. npm's own variable. |
 | `CRATES_IO` | crates.io: a registry as Cargo names one, such as `sparse+https://mirror.example.com/crates/index/`. |
 | `DEB_DEBIAN_ORG` | `http://deb.debian.org`, for the Debian packages of the harness images: an address that serves `debian` and `debian-security`, such as `https://mirror.example.com/deb`. The images keep it as the source of their packages. |
-| `GITHUB_COM` | `https://github.com`, for the release manifest of agent-sandbox. |
+| `AGENT_SANDBOX_REPO` | The repository of agent-sandbox, `https://github.com/kubernetes-sigs/agent-sandbox`, for its chart, which is in the source of its release. |
 | `CNPG_REPO`, `VALKEY_REPO`, `HEADLAMP_REPO`, `PROMETHEUS_REPO`, `GRAFANA_REPO` | The Helm repositories of the charts that `make cluster-up`, `make headlamp` and `make grafana` install. |
 
 Most images are pulled by digests that the repository pins, so a mirror has
@@ -792,8 +802,8 @@ both trust the certificate authorities of their images. rustup takes the
 Rust toolchain from the server in its own variable, `RUSTUP_DIST_SERVER`.
 
 A cluster of your own pulls the images that the values of the chart name:
-`supervisor.image`, `egressProxy.image` and the `image` of each harness in
-`runtime.harnesses`.
+`supervisor.image`, `egressProxy.image`, `agent-sandbox.image.repository`
+and the `image` of each harness in `runtime.harnesses`.
 
 ## Repository
 

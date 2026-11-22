@@ -3,3 +3,4 @@
 /.out/
 /web/dist/
 /web/node_modules/
+/deploy/charts/aviary/charts/

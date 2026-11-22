@@ -129,8 +129,7 @@ egressProxy:
 
 # Each session runs in its own sandbox in the aviary-runtime namespace: a pod
 # that runs the harness of its agent, with a volume for the session. The
-# sandboxes are managed by agent-sandbox, which must be installed in the
-# cluster.
+# sandboxes are managed by agent-sandbox.
 sandboxes:
   # Seconds without a running turn after which a session is put to sleep:
   # its pod is deleted and its volume is kept. The next turn wakes it in a
@@ -140,6 +139,15 @@ sandboxes:
   # deleted with its volume, and its conversation stays in the database. 0
   # keeps the sandbox until the session is ended.
   retentionSeconds: 0
+
+# agent-sandbox, installed by its own chart in the namespace
+# agent-sandbox-system. A cluster runs it once: set enabled to false if the
+# cluster has it already. The other values are those of its chart, such as
+# image.repository for a registry of your own.
+agent-sandbox:
+  enabled: true
+  image:
+    tag: v1.0.11
 
 runtime:
   # Maximum number of turns that run at once. Further turns are queued in
