@@ -3,7 +3,7 @@ import { createServer as createApi } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServer } from "vite";
+import { build, createServer, type Rolldown } from "vite";
 import { afterEach, expect, it, vi } from "vitest";
 
 const closing: (() => unknown)[] = [];
@@ -87,4 +87,28 @@ it("passes the headers of an event stream on before its first event", async () =
   ]);
   expect(answer?.status).toBe(200);
   expect(answer?.headers.get("content-type")).toBe("text/event-stream");
+});
+
+it("builds the license of each font in, next to the files of the font", async () => {
+  const { output } = (await build({
+    mode: "production",
+    logLevel: "silent",
+    build: { write: false },
+  })) as Rolldown.RolldownOutput;
+  const licenses = new Map<string, string>();
+  for (const file of output) {
+    const [, family] = /^(.*)-LICENSE\.txt$/.exec(file.fileName) ?? [];
+    if (family && file.type === "asset") {
+      licenses.set(family, file.source.toString());
+    }
+  }
+  const fonts = output.filter((file) => file.fileName.endsWith(".woff2"));
+  expect(fonts.length).toBeGreaterThan(0);
+  for (const { fileName } of fonts) {
+    const family = [...licenses.keys()].find((family) =>
+      fileName.startsWith(family + "-"),
+    );
+    expect(family, fileName).toBeDefined();
+    expect(licenses.get(family!)).toContain("SIL OPEN FONT LICENSE");
+  }
 });
