@@ -137,7 +137,7 @@ the metrics of Aviary, and [Grafana](https://grafana.com) with the Aviary
 dashboard, at http://localhost:3000.
 
 `make web` builds the [web UI](#web-ui) and installs it at
-http://localhost:8080, in front of the API.
+http://localhost:8082.
 
 ### Send a message
 

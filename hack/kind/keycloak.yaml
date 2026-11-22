@@ -55,7 +55,7 @@ data:
         {
           "clientId": "aviary", "publicClient": true,
           "directAccessGrantsEnabled": true, "standardFlowEnabled": true,
-          "redirectUris": ["http://localhost:8080/signin", "http://localhost:5173/signin"],
+          "redirectUris": ["http://localhost:8082/signin", "http://localhost:5173/signin"],
           "webOrigins": ["+"],
           "attributes": {"pkce.code.challenge.method": "S256"},
           "protocolMappers": [

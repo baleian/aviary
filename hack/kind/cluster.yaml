@@ -3,10 +3,12 @@ apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
   - role: control-plane
     # The Aviary API at localhost:8080, and what make identity-provider, make
-    # headlamp and make grafana install at localhost:8081, 4466 and 3000.
+    # web, make headlamp and make grafana install at localhost:8081, 8082,
+    # 4466 and 3000.
     extraPortMappings:
       - {containerPort: 30080, hostPort: 8080, listenAddress: 127.0.0.1}
       - {containerPort: 30081, hostPort: 8081, listenAddress: 127.0.0.1}
+      - {containerPort: 30082, hostPort: 8082, listenAddress: 127.0.0.1}
       - {containerPort: 30466, hostPort: 4466, listenAddress: 127.0.0.1}
       - {containerPort: 30300, hostPort: 3000, listenAddress: 127.0.0.1}
   - role: worker

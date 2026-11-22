@@ -281,10 +281,9 @@ grafana:
 		--wait
 	@echo "Grafana is at http://localhost:3000"
 
-# Builds the web UI and installs it in the local cluster, after make deploy.
-# Its server stands in front of the API: http://localhost:8080 then serves
-# the web UI, and passes the requests of /v1 on to the API. The image ID
-# restarts its pod when the image changes.
+# Builds the web UI and installs it in the local cluster, after make deploy,
+# at http://localhost:8082. Its server passes the requests of /v1 on to the
+# API. The image ID restarts its pod when the image changes.
 web:
 	docker build --file images/web/Dockerfile --tag $(WEB_IMAGE) .
 	kind load docker-image --name $(CLUSTER) $(WEB_IMAGE)
@@ -293,7 +292,7 @@ web:
 	$(KUBECTL) --namespace aviary-system patch deployment aviary-web --type merge \
 		--patch '{"spec": {"template": {"metadata": {"annotations": {"aviary.io/image-id": "'$$image'"}}}}}'
 	$(KUBECTL) --namespace aviary-system rollout status deployment/aviary-web --timeout 120s
-	@echo "The web UI is at http://localhost:8080"
+	@echo "The web UI is at http://localhost:8082"
 
 # Serves the console at http://localhost:5173 from its source in web/. A
 # change to the source shows in the browser when the file is saved. The
@@ -343,8 +342,6 @@ secrets:
 # The image ID restarts the pods that run the Supervisor image when the image
 # changes. VALUES adds a values file, for example
 # make deploy VALUES=my-values.yaml
-# The node port of the API goes to the Supervisor, unless the web UI of make
-# web is installed: it then goes on through the web UI.
 deploy: secrets
 	image=$$(docker image inspect --format '{{.Id}}' $(SUPERVISOR_IMAGE)) && \
 	$(HELM) upgrade --install aviary deploy/charts/aviary \
@@ -353,8 +350,7 @@ deploy: secrets
 		--set-string 'stateMetrics.podAnnotations.aviary\.io/image-id='$$image \
 		$(if $(VALUES),--values $(VALUES)) \
 		--wait
-	$(KUBECTL) get deployment aviary-web --namespace aviary-system >/dev/null 2>&1 || \
-		$(KUBECTL) apply --filename hack/kind/api.yaml
+	$(KUBECTL) apply --filename hack/kind/api.yaml
 	@echo "The API is at http://localhost:8080"
 
 # Runs the e2e in a new cluster of its own, which is deleted if the tests

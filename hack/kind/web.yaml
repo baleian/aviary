@@ -67,12 +67,12 @@ spec:
         - name: tmp
           emptyDir: {}
 ---
-# The Service of hack/kind/api.yaml, whose node port is localhost:8080, with
-# the web UI behind it in the place of the Supervisor.
+# Exposes the web UI on a node port, which hack/kind/cluster.yaml maps to
+# localhost:8082.
 apiVersion: v1
 kind: Service
 metadata:
-  name: aviary-api
+  name: aviary-web
   namespace: aviary-system
 spec:
   type: NodePort
@@ -83,4 +83,4 @@ spec:
     - name: http
       port: 80
       targetPort: http
-      nodePort: 30080
+      nodePort: 30082
