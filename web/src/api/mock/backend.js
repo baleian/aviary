@@ -1220,29 +1220,46 @@ route("POST", "/v1/projects/{pid}/providers", ({ who, body }, pid) => {
   db.providers.push(provider);
   return [201, providerRecord(provider)];
 });
-// A provider is tried without being kept. The endpoints of the mock answer
-// by what is asked: a host below ".invalid" is not reached, a key that
-// begins with "wrong" is refused, and a URL that ends in "/none" has no
-// models.
-route("POST", "/v1/projects/{pid}/providers/test", ({ who, body }, pid) => {
+// The models that the endpoints of the example data list, by host. Another
+// host lists two models of its own.
+const MODELS = {
+  "llm.example.com": ["coder-large", "coder-small", "reasoner-mini"],
+  "vllm.models.svc.cluster.local": ["qwen-coder-32b"],
+};
+
+// modelsAt asks the endpoint at the address for its models, with the key.
+// The endpoints of the mock answer by what is asked: a host below ".invalid"
+// is not reached, a key that begins with "wrong" is refused, a URL that ends
+// in "/none" has no models, and 10.0.0.5 answers without a list.
+function modelsAt(address, key) {
+  const at = new URL(address);
+  if (at.hostname.endsWith(".invalid"))
+    return {
+      reached: false,
+      reason:
+        "upstream connect error or disconnect/reset before headers. reset reason: connection timeout",
+      duration_ms: 5003,
+    };
+  const listed = { reached: true, status: 200, duration_ms: 120 };
+  if (text(key?.value).startsWith("wrong")) listed.status = 401;
+  else if (at.pathname.replace(/\/$/, "").endsWith("/none"))
+    listed.status = 404;
+  else if (at.hostname !== "10.0.0.5")
+    listed.models = MODELS[at.hostname] ?? ["model-a", "model-b"];
+  return listed;
+}
+
+// The models of an endpoint are listed without its provider being kept.
+route("POST", "/v1/projects/{pid}/providers/models", ({ who, body }, pid) => {
   inProject(who, pid, "connections.manage");
   const request = decode(body, ["url", "api_key"]);
   providerAt(request, pid);
-  const at = new URL(request.url);
-  if (at.hostname.endsWith(".invalid"))
-    return [
-      200,
-      {
-        reached: false,
-        reason:
-          "upstream connect error or disconnect/reset before headers. reset reason: connection timeout",
-        duration_ms: 5003,
-      },
-    ];
-  let status = 200;
-  if (text(request.api_key?.value).startsWith("wrong")) status = 401;
-  else if (at.pathname.replace(/\/$/, "").endsWith("/none")) status = 404;
-  return [200, { reached: true, status, duration_ms: 120 }];
+  return [200, modelsAt(request.url, request.api_key)];
+});
+route("GET", "/v1/providers/{id}/models", ({ who }, id) => {
+  const provider = one(db.providers, id);
+  may(who, provider.project_id, "agents.manage");
+  return [200, modelsAt(provider.url)];
 });
 route("GET", "/v1/providers/{id}", ({ who }, id) => {
   const provider = one(db.providers, id);

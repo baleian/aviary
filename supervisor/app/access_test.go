@@ -96,10 +96,12 @@ func TestWhoMayDoWhat(t *testing.T) {
 		// who may delete it get 409.
 		{"DELETE", "/v1/agents/" + agent, ``, "ppfffffffh"},
 		{"POST", "/v1/projects/" + project + "/providers", `{}`, connections},
-		{"POST", "/v1/projects/" + project + "/providers/test", `{}`, connections},
+		{"POST", "/v1/projects/" + project + "/providers/models", `{}`, connections},
 		{"GET", "/v1/projects/" + project + "/providers", ``, everyMember},
 		{"GET", "/v1/providers/" + models, ``, everyMember},
 		{"PUT", "/v1/providers/" + models, `{}`, connections},
+		// Those who set the models of agents see what a provider offers.
+		{"GET", "/v1/providers/" + models + "/models", ``, "pppfffffph"},
 		{"POST", "/v1/projects/" + project + "/secret-stores", `{}`, connections},
 		{"GET", "/v1/projects/" + project + "/secret-stores", ``, everyMember},
 		{"GET", "/v1/secret-stores/" + secrets, ``, everyMember},

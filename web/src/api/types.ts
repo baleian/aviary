@@ -65,11 +65,13 @@ export interface Provider {
   updated_at: string;
 }
 
-// What came of trying a model provider: whether its endpoint answered, with
-// which status, and if not, why.
-export interface Tried {
+// What came of asking a model provider for its models: whether its endpoint
+// answered, with which status, and if not, why. The models are those that
+// it listed, if it answered with a list.
+export interface ProviderModels {
   reached: boolean;
   status?: number;
+  models?: string[];
   reason?: string;
   duration_ms: number;
 }

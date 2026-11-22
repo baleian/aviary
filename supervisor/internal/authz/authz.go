@@ -51,26 +51,26 @@ func Token(keys *secret.Keys, session uuid.UUID) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(sealed), nil
 }
 
-// Trial is a model request with which the API tries a model provider before
-// turns use it. It goes through the Egress Proxy as the model request of a
-// turn does.
-type Trial struct {
-	// Provider is the provider to try: its ID, project, URL and key. It
-	// need not be stored.
+// Listing is the model request with which the API asks a model provider for
+// its models. It goes through the Egress Proxy as the model request of a turn
+// does.
+type Listing struct {
+	// Provider is the provider that is asked: its ID, project, URL and key.
+	// It need not be stored.
 	Provider store.Provider
-	// UserID and Subject identify the caller who tries it. They are zero if
+	// UserID and Subject identify the caller who asks. They are zero if
 	// requests to the API are not authenticated.
 	UserID  uuid.UUID
 	Subject string
-	// Until is when the trial's token stops being accepted.
+	// Until is when the listing's token stops being accepted.
 	Until time.Time
 }
 
-// trialPlace is what the tokens of trials are sealed for.
-const trialPlace = "the trial of a model provider"
+// listingPlace is what the tokens of listings are sealed for.
+const listingPlace = "the listing of a provider's models"
 
-// sealedTrial is the form in which a trial is sealed into its token.
-type sealedTrial struct {
+// sealedListing is the form in which a listing is sealed into its token.
+type sealedListing struct {
 	Project  uuid.UUID
 	Provider uuid.UUID
 	URL      string
@@ -81,19 +81,19 @@ type sealedTrial struct {
 	Until    time.Time
 }
 
-// TrialToken returns the token of a trial, which its model request carries
-// in place of the token of a session: the trial, encrypted with the keys of
-// the installation.
-func TrialToken(keys *secret.Keys, trial Trial) (string, error) {
-	encoded, err := json.Marshal(sealedTrial{
-		Project: trial.Provider.ProjectID, Provider: trial.Provider.ID, URL: trial.Provider.URL,
-		Key: trial.Provider.APIKey, KeyAt: trial.Provider.APIKeyAt,
-		User: trial.UserID, Subject: trial.Subject, Until: trial.Until,
+// ListingToken returns the token of a listing, which its model request
+// carries in place of the token of a session: the listing, encrypted with
+// the keys of the installation.
+func ListingToken(keys *secret.Keys, listing Listing) (string, error) {
+	encoded, err := json.Marshal(sealedListing{
+		Project: listing.Provider.ProjectID, Provider: listing.Provider.ID, URL: listing.Provider.URL,
+		Key: listing.Provider.APIKey, KeyAt: listing.Provider.APIKeyAt,
+		User: listing.UserID, Subject: listing.Subject, Until: listing.Until,
 	})
 	if err != nil {
 		return "", err
 	}
-	token, err := keys.Seal(string(encoded), trialPlace)
+	token, err := keys.Seal(string(encoded), listingPlace)
 	if err != nil {
 		return "", err
 	}
@@ -134,9 +134,9 @@ func New(st store.Store, keys *secret.Keys, stores *secret.Stores, localhost str
 // provider's API key. A forward proxy request goes where the pod sends it,
 // and never gets a provider's key.
 //
-// A model request may carry the token of a trial instead. It is routed to
-// the endpoint of the trial's provider, and its metadata names the project
-// and the caller of the trial.
+// A model request may carry the token of a listing instead. It is routed to
+// the endpoint of the listing's provider, and its metadata names the project
+// and the caller of the listing.
 func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*authv3.CheckResponse, error) {
 	headers := request.GetAttributes().GetRequest().GetHttp().GetHeaders()
 	forward := request.GetAttributes().GetContextExtensions()["listener"] == "forward"
@@ -186,8 +186,8 @@ func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*
 }
 
 // origin returns where the request with the token comes from: the running
-// turn of the session of a session token or, for a model request, the trial
-// of a trial token. It returns false for any other token.
+// turn of the session of a session token or, for a model request, the
+// listing of a listing token. It returns false for any other token.
 func (a *authorizer) origin(ctx context.Context, token string, forward bool) (store.Origin, bool, error) {
 	if session, known := a.session(token); known {
 		origin, err := a.store.SessionTurn(ctx, session)
@@ -199,18 +199,18 @@ func (a *authorizer) origin(ctx context.Context, token string, forward bool) (st
 		}
 		return origin, true, nil
 	}
-	trial, known := a.trial(token)
+	listing, known := a.listing(token)
 	if !known || forward {
 		return store.Origin{}, false, nil
 	}
-	origin := store.Origin{ProjectID: trial.Provider.ProjectID, UserID: trial.UserID, Subject: trial.Subject, Provider: trial.Provider}
-	if at := trial.Provider.APIKeyAt; at != nil {
+	origin := store.Origin{ProjectID: listing.Provider.ProjectID, UserID: listing.UserID, Subject: listing.Subject, Provider: listing.Provider}
+	if at := listing.Provider.APIKeyAt; at != nil {
 		in, err := a.store.SecretStore(ctx, at.Store)
 		if errors.Is(err, store.ErrNotFound) || (err == nil && in.ProjectID != origin.ProjectID) {
 			return store.Origin{}, false, nil
 		}
 		if err != nil {
-			return store.Origin{}, false, fmt.Errorf("secret store %s of a trial: %w", at.Store, err)
+			return store.Origin{}, false, fmt.Errorf("secret store %s of a listing: %w", at.Store, err)
 		}
 		origin.SecretStore = &in
 	}
@@ -337,22 +337,22 @@ func (a *authorizer) session(token string) (uuid.UUID, bool) {
 	return session, err == nil
 }
 
-// trial returns the trial of the token, or false if it is not the token of
-// a trial that is still accepted.
-func (a *authorizer) trial(token string) (Trial, bool) {
+// listing returns the listing of the token, or false if it is not the token
+// of a listing that is still accepted.
+func (a *authorizer) listing(token string) (Listing, bool) {
 	encrypted, err := base64.RawURLEncoding.DecodeString(token)
 	if err != nil || token == "" {
-		return Trial{}, false
+		return Listing{}, false
 	}
-	opened, err := a.keys.Open(encrypted, trialPlace)
+	opened, err := a.keys.Open(encrypted, listingPlace)
 	if err != nil {
-		return Trial{}, false
+		return Listing{}, false
 	}
-	var of sealedTrial
+	var of sealedListing
 	if err := json.Unmarshal([]byte(opened), &of); err != nil || !time.Now().Before(of.Until) {
-		return Trial{}, false
+		return Listing{}, false
 	}
-	return Trial{
+	return Listing{
 		Provider: store.Provider{ID: of.Provider, ProjectID: of.Project, URL: of.URL, APIKey: of.Key, APIKeyAt: of.KeyAt},
 		UserID:   of.User, Subject: of.Subject, Until: of.Until,
 	}, true

@@ -41,8 +41,9 @@ type api struct {
 	stores  *secret.Stores
 	callers Callers
 	// models is the Egress Proxy's endpoint for model requests, where the
-	// trials of model providers go. proxy sends them, and follows no
-	// redirect: the answer of the endpoint is the result.
+	// API asks the model providers for their models. proxy sends those
+	// requests, and follows no redirect: the answer of the endpoint is the
+	// result.
 	models  *url.URL
 	proxy   *http.Client
 	changes *changes
@@ -104,10 +105,11 @@ func New(ctx context.Context, st store.Store, ev *events.Streams, dr *driver.Dri
 	mux.Handle("GET /v1/secret-stores/{store}", a.ofProject(needs{projectView}, "store", a.ofSecretStore, a.getSecretStore))
 	mux.Handle("PUT /v1/secret-stores/{store}", a.ofProject(needs{connectionsManage}, "store", a.ofSecretStore, a.replaceSecretStore))
 	mux.Handle("POST /v1/projects/{pid}/providers", a.inProject(needs{connectionsManage}, a.createProvider))
-	mux.Handle("POST /v1/projects/{pid}/providers/test", a.inProject(needs{connectionsManage}, a.testProvider))
+	mux.Handle("POST /v1/projects/{pid}/providers/models", a.inProject(needs{connectionsManage}, a.endpointModels))
 	mux.Handle("GET /v1/projects/{pid}/providers", a.inProject(needs{projectView}, a.listProviders))
 	mux.Handle("GET /v1/providers/{provider}", a.ofProject(needs{projectView}, "provider", a.ofProvider, a.getProvider))
 	mux.Handle("PUT /v1/providers/{provider}", a.ofProject(needs{connectionsManage}, "provider", a.ofProvider, a.replaceProvider))
+	mux.Handle("GET /v1/providers/{provider}/models", a.ofProject(needs{agentsManage}, "provider", a.ofProvider, a.providerModels))
 	mux.Handle("POST /v1/projects/{pid}/agents", a.inProject(needs{agentsManage}, a.createAgent))
 	mux.Handle("GET /v1/projects/{pid}/agents", a.inProject(needs{projectView}, a.listAgents))
 	mux.Handle("GET /v1/agents/{aid}", a.ofProject(needs{projectView}, "aid", a.ofAgent, a.getAgent))

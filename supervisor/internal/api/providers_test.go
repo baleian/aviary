@@ -16,12 +16,12 @@ import (
 	memorystore "aviary/supervisor/store/memory"
 )
 
-// A trial does not wait longer than it may take for an endpoint that the
-// proxy reaches and that does not answer.
-func TestATrialOfAProviderThatDoesNotAnswerEnds(t *testing.T) {
-	timeout := trialTimeout
-	trialTimeout = 200 * time.Millisecond
-	t.Cleanup(func() { trialTimeout = timeout })
+// The models of an endpoint that the proxy reaches and that does not answer
+// are not waited for longer than a listing may take.
+func TestTheListingOfAnEndpointThatDoesNotAnswerEnds(t *testing.T) {
+	timeout := listTimeout
+	listTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { listTimeout = timeout })
 	// The proxy holds the request for as long as its client waits.
 	proxy := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
 	t.Cleanup(proxy.Close)
@@ -51,9 +51,16 @@ func TestATrialOfAProviderThatDoesNotAnswerEnds(t *testing.T) {
 	}
 
 	began := time.Now()
-	var got tried
-	status := post("/v1/projects/"+project.ID+"/providers/test", `{"url": "https://api.example.com/v1"}`, &got)
-	if took := time.Since(began); status != http.StatusOK || got.Reached || got.Reason != "the endpoint did not answer in 200ms" || took > 20*trialTimeout {
-		t.Errorf("trial of an endpoint that does not answer: status %d, %+v after %s", status, got, took)
+	var got listed
+	status := post("/v1/projects/"+project.ID+"/providers/models", `{"url": "https://api.example.com/v1"}`, &got)
+	if took := time.Since(began); status != http.StatusOK || got.Reached || got.Reason != "the endpoint did not answer in 200ms" || took > 20*listTimeout {
+		t.Errorf("the models of an endpoint that does not answer: status %d, %+v after %s", status, got, took)
+	}
+
+	// Nor is an endpoint reached if the proxy is not.
+	proxy.Close()
+	got = listed{}
+	if status := post("/v1/projects/"+project.ID+"/providers/models", `{"url": "https://api.example.com/v1"}`, &got); status != http.StatusOK || got.Reached || got.Reason != "the Egress Proxy did not answer" {
+		t.Errorf("the models of an endpoint without the proxy: status %d, %+v", status, got)
 	}
 }

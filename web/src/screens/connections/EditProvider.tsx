@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api } from "../../api/client.ts";
 import { keys, type ProjectContext } from "../../api/project.ts";
-import type { Provider, Tried } from "../../api/types.ts";
+import type { Provider, ProviderModels } from "../../api/types.ts";
 import { cls } from "../../lib/cls.ts";
 import { text, Wrong } from "../../lib/form.ts";
 import { sentence } from "../../lib/format.ts";
@@ -14,14 +14,18 @@ import { toast } from "../../ui/toast.ts";
 // a secret store, or none.
 type How = "value" | "store" | "none";
 
-// said puts what came of trying a provider in words.
-function said(tried: Tried): { tone: "ok" | "bad" | ""; text: string } {
-  if (!tried.reached) {
-    return { tone: "bad", text: sentence("Not reached: " + tried.reason) };
+// said puts what came of asking an endpoint for its models in words, as a
+// test of the connection to it.
+function said(asked: ProviderModels): {
+  tone: "ok" | "bad" | "";
+  text: string;
+} {
+  if (!asked.reached) {
+    return { tone: "bad", text: sentence("Not reached: " + asked.reason) };
   }
-  const status = tried.status ?? 0;
+  const status = asked.status ?? 0;
   if (status >= 200 && status < 300) {
-    return { tone: "ok", text: `Connected in ${tried.duration_ms} ms.` };
+    return { tone: "ok", text: `Connected in ${asked.duration_ms} ms.` };
   }
   if (status === 401 || status === 403) {
     return { tone: "bad", text: `The endpoint refused the key (${status}).` };
@@ -36,8 +40,9 @@ function said(tried: Tried): { tone: "ok" | "bad" | ""; text: string } {
 }
 
 // EditProvider is the dialog that adds a model provider, or replaces one:
-// its name, URL and key together, so the key is entered again. The URL and
-// the key can be tried before they are saved.
+// its name, URL and key together, so the key is entered again. The
+// connection can be tested before they are saved, by asking the endpoint for
+// its models.
 export function EditProvider({
   context,
   existing,
@@ -95,8 +100,9 @@ export function EditProvider({
     setTried(undefined);
     setTrying(true);
     try {
-      const path = `/v1/projects/${project}/providers/test`;
-      setTried(said(await api.post<Tried>(path, endpoint(new FormData(form)))));
+      const path = `/v1/projects/${project}/providers/models`;
+      const asked = endpoint(new FormData(form));
+      setTried(said(await api.post<ProviderModels>(path, asked)));
     } catch (failure) {
       const why = failure instanceof Error ? failure.message : "";
       setTried({ tone: "bad", text: sentence(why) });
