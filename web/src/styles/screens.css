@@ -1850,6 +1850,39 @@ a:hover .top > .go {
 .card + .card.sec {
   margin-top: 24px;
 }
+/* The settings of a dialog that few need, folded until they are asked for. */
+.adv {
+  margin-top: 16px;
+}
+.adv > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  list-style: none;
+  font: 600 13px/20px var(--sans);
+  color: var(--slate);
+}
+.adv > summary::-webkit-details-marker {
+  display: none;
+}
+.adv > summary:hover {
+  color: var(--link);
+}
+.adv[open] > summary .chev {
+  transform: rotate(90deg);
+}
+.adv > .fld {
+  margin-top: 12px;
+}
+/* The headers of a model provider in its dialog: a name and a value each. */
+.hdr {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) auto;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
 /* Trying a model provider in its dialog, and what came of it. */
 .try {
   display: flex;

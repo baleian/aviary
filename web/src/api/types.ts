@@ -55,11 +55,18 @@ export interface Member {
 export type ApiKey =
   { stored: true } | { store: string; path: string; key: string };
 
+// A header that the requests to the endpoint of a model provider carry.
+export interface Header {
+  name: string;
+  value: string;
+}
+
 export interface Provider {
   id: string;
   project_id: string;
   name: string;
   url: string;
+  headers?: Header[];
   api_key?: ApiKey;
   created_at: string;
   updated_at: string;

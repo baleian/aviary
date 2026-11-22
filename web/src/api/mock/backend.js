@@ -280,6 +280,7 @@ function providerRecord(provider) {
     created_at: provider.created_at,
     updated_at: provider.updated_at,
   };
+  if (provider.headers?.length) record.headers = provider.headers;
   if (provider.api_key_at) record.api_key = provider.api_key_at;
   else if (provider.api_key_sealed) record.api_key = { stored: true };
   return record;
@@ -358,17 +359,83 @@ const plainPath = (path) =>
   SEGMENTS.test(path) &&
   !path.split("/").some((segment) => segment === "." || segment === "..");
 
+const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9a-z]+$/;
+const RESERVED_HEADERS = [
+  "connection",
+  "content-length",
+  "expect",
+  "host",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "proxy-connection",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+];
+const bytes = (value) => new TextEncoder().encode(value).length;
+
+// headersOf checks the headers of a provider, and returns them as they are
+// kept: their names in lowercase, and their values without spaces at their
+// ends.
+function headersOf(given) {
+  if (given == null) return [];
+  if (!Array.isArray(given))
+    invalid("request body is not valid JSON for this endpoint");
+  if (given.length > 20) invalid("headers must be at most 20");
+  const headers = [];
+  let size = 0;
+  given.forEach((header, index) => {
+    const at = `headers[${index}]`;
+    const { name: named, value: valued } = decode(header ?? {}, [
+      "name",
+      "value",
+    ]);
+    const name = text(named).toLowerCase();
+    const value = text(valued).replace(/^[ \t]+|[ \t]+$/g, "");
+    if (!HEADER_NAME.test(name))
+      invalid(at + ".name must be the name of an HTTP header");
+    if (name === "authorization")
+      invalid(
+        at +
+          ".name must not be authorization; set the endpoint's key in api_key",
+      );
+    if (
+      RESERVED_HEADERS.includes(name) ||
+      name.startsWith("x-aviary-") ||
+      name.startsWith("x-envoy-")
+    )
+      invalid(`${at}.name must not be ${name}, which is reserved`);
+    if (headers.some((other) => other.name === name))
+      invalid(`${at}.name must not be ${name}, which another header has`);
+    const plain = [...value].every((character) => {
+      const code = character.codePointAt(0);
+      return code === 9 || (code >= 32 && code !== 127);
+    });
+    if (!value || !plain)
+      invalid(at + ".value must be the value of an HTTP header, and not empty");
+    size += bytes(name) + bytes(value);
+    headers.push({ name, value });
+  });
+  if (size > 8192)
+    invalid(
+      "the names and values of headers must be at most 8192 bytes together",
+    );
+  return headers;
+}
+
 function readProvider(body, projectID) {
-  const request = decode(body, ["name", "url", "api_key"]);
+  const request = decode(body, ["name", "url", "headers", "api_key"]);
   if (!text(request.name)) invalid("name is required");
   return { name: request.name, ...providerAt(request, projectID) };
 }
 
-// providerAt checks the URL and the key of a provider of the project, and
-// returns them as they are kept.
+// providerAt checks the URL, the headers and the key of a provider of the
+// project, and returns them as they are kept.
 function providerAt(request, projectID) {
   endpoint(text(request.url));
-  const read = { url: request.url };
+  const read = { url: request.url, headers: headersOf(request.headers) };
   const key = request.api_key;
   if (key == null) return read;
   const shape =
@@ -1227,11 +1294,13 @@ const MODELS = {
   "vllm.models.svc.cluster.local": ["qwen-coder-32b"],
 };
 
-// modelsAt asks the endpoint at the address for its models, with the key.
-// The endpoints of the mock answer by what is asked: a host below ".invalid"
-// is not reached, a key that begins with "wrong" is refused, a URL that ends
-// in "/none" has no models, and 10.0.0.5 answers without a list.
-function modelsAt(address, key) {
+// modelsAt asks the endpoint at the address for its models, with the headers
+// and the key. The endpoints of the mock answer by what is asked: a host
+// below ".invalid" is not reached, a key that begins with "wrong" is refused,
+// a host that begins with "routed." answers 400 without the header
+// x-gateway-route, a URL that ends in "/none" has no models, and 10.0.0.5
+// answers without a list.
+function modelsAt(address, key, headers = []) {
   const at = new URL(address);
   if (at.hostname.endsWith(".invalid"))
     return {
@@ -1242,6 +1311,11 @@ function modelsAt(address, key) {
     };
   const listed = { reached: true, status: 200, duration_ms: 120 };
   if (text(key?.value).startsWith("wrong")) listed.status = 401;
+  else if (
+    at.hostname.startsWith("routed.") &&
+    !headers.some((header) => header.name === "x-gateway-route")
+  )
+    listed.status = 400;
   else if (at.pathname.replace(/\/$/, "").endsWith("/none"))
     listed.status = 404;
   else if (at.hostname !== "10.0.0.5")
@@ -1252,14 +1326,14 @@ function modelsAt(address, key) {
 // The models of an endpoint are listed without its provider being kept.
 route("POST", "/v1/projects/{pid}/providers/models", ({ who, body }, pid) => {
   inProject(who, pid, "connections.manage");
-  const request = decode(body, ["url", "api_key"]);
-  providerAt(request, pid);
-  return [200, modelsAt(request.url, request.api_key)];
+  const request = decode(body, ["url", "headers", "api_key"]);
+  const { headers } = providerAt(request, pid);
+  return [200, modelsAt(request.url, request.api_key, headers)];
 });
 route("GET", "/v1/providers/{id}/models", ({ who }, id) => {
   const provider = one(db.providers, id);
   may(who, provider.project_id, "agents.manage");
-  return [200, modelsAt(provider.url)];
+  return [200, modelsAt(provider.url, undefined, provider.headers)];
 });
 route("GET", "/v1/providers/{id}", ({ who }, id) => {
   const provider = one(db.providers, id);
@@ -1270,8 +1344,8 @@ route("PUT", "/v1/providers/{id}", ({ who, body }, id) => {
   const provider = one(db.providers, id);
   may(who, provider.project_id, "connections.manage");
   const read = readProvider(body, provider.project_id);
-  // The name, the URL and the key are replaced together: a provider that is
-  // given no key has none afterwards.
+  // The name, the URL, the headers and the key are replaced together: a
+  // provider that is given no headers or no key has none afterwards.
   delete provider.api_key_sealed;
   delete provider.api_key_at;
   Object.assign(provider, read, { updated_at: iso() });

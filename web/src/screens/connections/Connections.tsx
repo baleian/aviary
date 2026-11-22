@@ -70,6 +70,11 @@ export function Connections() {
                     <div className="tx">
                       <b>{provider.name}</b>
                       <code>{provider.url}</code>
+                      {provider.headers?.map((header) => (
+                        <code key={header.name}>
+                          {header.name}: {header.value}
+                        </code>
+                      ))}
                       {key && "store" in key && (
                         <code>
                           {key.path} → {key.key}

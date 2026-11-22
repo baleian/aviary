@@ -8,11 +8,21 @@ import { sentence } from "../../lib/format.ts";
 import { queryClient } from "../../query.ts";
 import { Dialog } from "../../ui/Dialog.tsx";
 import { Field, Options, Secret, Select } from "../../ui/fields.tsx";
+import { Icon } from "../../ui/Icon.tsx";
 import { toast } from "../../ui/toast.ts";
 
 // Where a provider gets its key: entered here and kept by Aviary, read from
 // a secret store, or none.
 type How = "value" | "store" | "none";
+
+// A header of the form: the row that holds its name and its value, and what
+// they are when the row appears. A row that was added takes the focus.
+interface Row {
+  id: number;
+  name: string;
+  value: string;
+  added?: boolean;
+}
 
 // said puts what came of asking an endpoint for its models in words, as a
 // test of the connection to it.
@@ -40,7 +50,7 @@ function said(asked: ProviderModels): {
 }
 
 // EditProvider is the dialog that adds a model provider, or replaces one:
-// its name, URL and key together, so the key is entered again. The
+// its name, URL, headers and key together, so the key is entered again. The
 // connection can be tested before they are saved, by asking the endpoint for
 // its models.
 export function EditProvider({
@@ -58,13 +68,29 @@ export function EditProvider({
     !existing || (kept && !at) ? "value" : at ? "store" : "none",
   );
   const project = context.project.id;
+  const [rows, setRows] = useState<Row[]>(() =>
+    (existing?.headers ?? []).map((header, id) => ({ id, ...header })),
+  );
   const [trying, setTrying] = useState(false);
   const [tried, setTried] = useState<ReturnType<typeof said>>();
 
-  // endpoint reads the URL and the key that the form holds.
+  // endpoint reads the URL, the headers and the key that the form holds. A
+  // row that is left empty is no header.
   function endpoint(data: FormData): Record<string, unknown> {
     const body: Record<string, unknown> = { url: text(data, "url") };
     if (!body.url) throw new Wrong("Enter the URL of the model endpoint.");
+    const values = data.getAll("header-value");
+    const headers = data
+      .getAll("header")
+      .map((name, row) => ({
+        name: String(name).trim(),
+        value: String(values[row]).trim(),
+      }))
+      .filter((header) => header.name || header.value);
+    if (headers.some((header) => !header.name || !header.value)) {
+      throw new Wrong("Enter the name and the value of each header.");
+    }
+    if (headers.length) body.headers = headers;
     if (how === "value") {
       const value = data.get("value");
       if (!value) {
@@ -208,6 +234,62 @@ export function EditProvider({
           ]}
         />
       </div>
+      <details className="adv" open={!!existing?.headers?.length}>
+        <summary>
+          <Icon name="chev" className="chev" />
+          Advanced
+        </summary>
+        <div className="fld">
+          <span className="lab">Headers</span>
+          {rows.map((row) => (
+            <div className="hdr" key={row.id}>
+              <input
+                className="inp mono"
+                name="header"
+                aria-label="Header name"
+                defaultValue={row.name}
+                placeholder="x-gateway-route"
+                autoComplete="off"
+                spellCheck={false}
+                autoFocus={row.added}
+              />
+              <input
+                className="inp mono"
+                name="header-value"
+                aria-label="Header value"
+                defaultValue={row.value}
+                placeholder="team-a"
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <button
+                className="ib sm"
+                type="button"
+                title="Remove header"
+                onClick={() =>
+                  setRows(rows.filter((other) => other.id !== row.id))
+                }
+              >
+                <Icon name="x" />
+              </button>
+            </div>
+          ))}
+          <button
+            className="btn quiet sm"
+            type="button"
+            onClick={() => {
+              const id = rows.length ? rows[rows.length - 1].id + 1 : 0;
+              setRows([...rows, { id, name: "", value: "", added: true }]);
+            }}
+          >
+            <Icon name="plus" />
+            Add header
+          </button>
+          <span className="hint">
+            Members of the project can see the values.
+          </span>
+        </div>
+      </details>
       <div className="try">
         <button
           className="btn sec sm"

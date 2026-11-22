@@ -249,6 +249,87 @@ it("replaces a provider, whose key is entered again", async () => {
   expect(screen.getByRole("status").textContent).toContain("Saved Gateway");
 });
 
+it("gives a provider the headers that its endpoint needs", async () => {
+  const user = open("/p/storefront/connections", "alice");
+  const form = await dialog(user, /Add provider/, "Add a model provider");
+  await user.type(form.getByRole("textbox", { name: "Name" }), "Routed");
+  await user.type(
+    form.getByRole("textbox", { name: "URL" }),
+    "https://routed.example.com/v1",
+  );
+  await user.click(form.getByRole("radio", { name: "No key" }));
+  // tried returns what the dialog says of a try.
+  const tried = async () => {
+    await user.click(form.getByRole("button", { name: "Test connection" }));
+    return (await form.findByRole("status")).textContent;
+  };
+  // The endpoint routes its requests by a header, and refuses one without.
+  expect(await tried()).toBe("The endpoint answered 400.");
+
+  // The headers are among the settings that few providers need.
+  expect(form.queryByRole("textbox", { name: "Header name" })).toBeNull();
+  await user.click(form.getByText("Advanced"));
+  const add = form.getByRole("button", { name: "Add header" });
+  await user.click(add);
+  const name = form.getByRole("textbox", { name: "Header name" });
+  expect(document.activeElement).toBe(name);
+  await user.type(name, "X-Gateway-Route");
+  expect(await tried()).toBe("Enter the name and the value of each header.");
+  await user.type(
+    form.getByRole("textbox", { name: "Header value" }),
+    "team-a",
+  );
+  // A try carries the headers that the dialog holds.
+  expect(await tried()).toBe("Connected in 120 ms.");
+
+  // A row that is left empty is no header, and neither is one that is
+  // removed.
+  await user.click(add);
+  await user.click(add);
+  await user.type(
+    form.getAllByRole("textbox", { name: "Header name" })[2],
+    "x-other",
+  );
+  await user.type(
+    form.getAllByRole("textbox", { name: "Header value" })[2],
+    "gone",
+  );
+  await user.click(form.getAllByRole("button", { name: "Remove header" })[2]);
+  expect(form.getAllByRole("textbox", { name: "Header name" })).toHaveLength(2);
+  await user.click(form.getByRole("button", { name: "Add provider" }));
+  const routed = await row("Routed");
+  expect(routed.textContent).toContain("x-gateway-route: team-a");
+  expect(routed.textContent).not.toContain("x-other");
+
+  // A provider that is edited has its headers in the dialog, which shows
+  // them.
+  await user.click(within(routed).getByRole("button", { name: "Edit" }));
+  const edit = within(screen.getByRole("dialog", { name: "Edit Routed" }));
+  expect(document.querySelector<HTMLDetailsElement>("dialog .adv")!.open).toBe(
+    true,
+  );
+  const kept = edit.getByRole<HTMLInputElement>("textbox", {
+    name: "Header name",
+  });
+  expect(kept.value).toBe("x-gateway-route");
+  expect(
+    edit.getByRole<HTMLInputElement>("textbox", { name: "Header value" }).value,
+  ).toBe("team-a");
+  // What the API refuses of a header shows in the dialog.
+  const save = edit.getByRole("button", { name: "Save provider" });
+  await user.clear(kept);
+  await user.type(kept, "Authorization");
+  await user.click(save);
+  expect((await edit.findByRole("alert")).textContent).toBe(
+    "Headers[0].name must not be authorization; set the endpoint's key in api_key.",
+  );
+  // Saved without its header, the provider has none.
+  await user.click(edit.getByRole("button", { name: "Remove header" }));
+  await user.click(save);
+  expect(await screen.findByText(/Saved Routed/)).toBeTruthy();
+  expect((await row("Routed")).textContent).not.toContain("x-gateway-route");
+});
+
 it("opens a provider with its key in a store at that store", async () => {
   const user = open("/p/storefront/connections", "alice");
   await user.click(
