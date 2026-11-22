@@ -1,6 +1,13 @@
 // @vitest-environment happy-dom
 import { focusManager } from "@tanstack/react-query";
-import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { api, ApiError } from "../../api/client.ts";
 import { backend } from "../../api/fake.ts";
@@ -1003,6 +1010,221 @@ it("hides the details, and keeps them so", async () => {
   open(REVIEWER, "alice");
   await list();
   expect(document.querySelector(".pane.details")).toBeNull();
+});
+
+// heading returns the title of the session in view, as its head shows it.
+const heading = () => document.querySelector(".conv-h h1")!.textContent;
+
+it("renames a session where its title is", async () => {
+  const session = await talk("Before");
+  const user = open(session.path, "alice");
+  await user.click(await screen.findByTitle("Rename the session"));
+  const field = () =>
+    screen.getByRole<HTMLInputElement>("textbox", {
+      name: "Title of the session",
+    });
+  // The title is there to be written over.
+  expect(document.activeElement).toBe(field());
+  expect(field().value).toBe("Before");
+  expect([field().selectionStart, field().selectionEnd]).toEqual([0, 6]);
+  // An input method uses Enter to finish a character.
+  await user.keyboard("  After ");
+  fireEvent.keyDown(field(), { key: "Enter", isComposing: true });
+  expect(field().value).toBe("  After ");
+  // Enter keeps the title, without the spaces around it. The field that
+  // loses the focus before the API has answered does not keep it again.
+  const patched = api.patch;
+  let answer: (() => void) | undefined;
+  const patch = vi.spyOn(api, "patch").mockImplementation(async (at, body) => {
+    await new Promise<void>((resolve) => {
+      answer = resolve;
+    });
+    return patched(at, body);
+  });
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(answer).toBeTruthy());
+  fireEvent.blur(field());
+  answer!();
+  await waitFor(() => expect(heading()).toBe("After"));
+  expect(patch).toHaveBeenCalledTimes(1);
+  patch.mockRestore();
+  expect(
+    screen.queryByRole("textbox", { name: "Title of the session" }),
+  ).toBeNull();
+  const current = (await list()).getByRole("link", { current: "page" });
+  expect(current.textContent).toContain("After");
+  const read = () =>
+    (session.request("GET", "/v1/sessions/" + session.id) as { title: string })
+      .title;
+  expect(read()).toBe("After");
+
+  // Escape leaves the title as it was.
+  await user.click(screen.getByTitle("Rename the session"));
+  await user.keyboard("Not this{Escape}");
+  expect(heading()).toBe("After");
+  expect(read()).toBe("After");
+
+  // Leaving the field keeps what was written, also nothing.
+  await user.click(screen.getByTitle("Rename the session"));
+  await user.clear(field());
+  await user.click(box());
+  await waitFor(() => expect(heading()).toBe("Untitled session"));
+  expect(read()).toBe("");
+});
+
+it("says so when a session could not be renamed", async () => {
+  const session = await talk("Kept");
+  const user = open(session.path, "alice");
+  await user.click(await screen.findByTitle("Rename the session"));
+  const refusal = { code: "forbidden", message: "you may not rename this" };
+  const patch = vi
+    .spyOn(api, "patch")
+    .mockRejectedValueOnce(new ApiError(403, refusal, {}));
+  await user.keyboard("Changed{Enter}");
+  expect(await screen.findByText("You may not rename this.")).toBeTruthy();
+  await waitFor(() => expect(heading()).toBe("Kept"));
+  // A title that was not changed is not sent.
+  await user.click(screen.getByTitle("Rename the session"));
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(heading()).toBe("Kept"));
+  expect(patch).toHaveBeenCalledTimes(1);
+});
+
+// more opens the menu of the session in view, and returns what it offers.
+async function more(user: ReturnType<typeof open>) {
+  const head = document.querySelector<HTMLElement>(".conv-h")!;
+  await user.click(within(head).getByRole("button", { name: "More" }));
+  return screen.getAllByRole("menuitem").map((item) => item.textContent);
+}
+
+it("ends a session from its menu, once its turn has ended", async () => {
+  const session = await talk("To be ended");
+  const user = open(session.path, "alice");
+  await screen.findByRole("heading", { name: "To be ended" });
+  const { mock } = await backend();
+  mock.speed = 5;
+  try {
+    await user.type(box(), "Take your time.{Enter}");
+    await waitFor(() => expect(bar().textContent).toContain("Starting…"));
+    expect(await more(user)).toEqual([
+      "Rename",
+      "Copy the link",
+      "Copy the session ID",
+      "End the session…",
+    ]);
+    await user.click(
+      screen.getByRole("menuitem", { name: "End the session…" }),
+    );
+    const dialog = within(
+      screen.getByRole("dialog", { name: "End this session?" }),
+    );
+    await user.click(dialog.getByRole("button", { name: "End session" }));
+    expect((await dialog.findByRole("alert")).textContent).toBe(
+      "Stop the running turn first.",
+    );
+    await user.click(dialog.getByRole("button", { name: "Cancel" }));
+    mock.speed = 0;
+    await user.click(within(bar() as HTMLElement).getByText("Stop turn"));
+    await waitFor(() => expect(bar().textContent).toContain("Enter to send"));
+  } finally {
+    mock.speed = 0;
+  }
+  await more(user);
+  await user.click(screen.getByRole("menuitem", { name: "End the session…" }));
+  await user.click(
+    within(screen.getByRole("dialog")).getByRole("button", {
+      name: "End session",
+    }),
+  );
+  expect(await screen.findByText("The session has ended")).toBeTruthy();
+  expect(screen.queryByRole("dialog")).toBeNull();
+  // The conversation stays, and takes no more messages.
+  expect(document.querySelector(".gate")!.textContent).toBe(
+    "This session has ended.New session",
+  );
+  expect(document.querySelector(".conv-h .chip")!.textContent).toBe("Ended");
+  expect(details().rows.has("Ended")).toBe(true);
+  expect(details().rows.get("Sandbox")).toBe("Deleted");
+  expect(document.querySelectorAll(".turn").length).toBe(1);
+  const current = (await list()).getByRole("link", { current: "page" });
+  expect(current.textContent).toContain("Ended");
+  // A session ends once.
+  await more(user);
+  const end = screen.getByRole<HTMLButtonElement>("menuitem", {
+    name: "End the session…",
+  });
+  expect(end.disabled).toBe(true);
+});
+
+it("copies the link and the ID of a session", async () => {
+  const session = await talk("Copied");
+  const user = open(session.path, "alice");
+  await screen.findByRole("heading", { name: "Copied" });
+  const writeText = vi.fn((text: string) => Promise.resolve(text));
+  vi.spyOn(navigator.clipboard, "writeText").mockImplementation(
+    async (text) => {
+      await writeText(text);
+    },
+  );
+  await more(user);
+  await user.click(
+    screen.getByRole("menuitem", { name: "Copy the session ID" }),
+  );
+  expect(writeText).toHaveBeenLastCalledWith(session.id);
+  expect(await screen.findByText("Copied the session ID")).toBeTruthy();
+  await more(user);
+  await user.click(screen.getByRole("menuitem", { name: "Copy the link" }));
+  expect(writeText.mock.calls.at(-1)![0]).toMatch(
+    new RegExp(session.path + "$"),
+  );
+  expect(await screen.findByText("Copied the link")).toBeTruthy();
+});
+
+it("lets only who controls a session rename and end it", async () => {
+  // Erin reads every session of Storefront, and controls her own.
+  const path = await pathOf("Summarise the open TODOs in src/cart");
+  const user = open(path, "erin");
+  await screen.findByRole("heading", {
+    name: "Summarise the open TODOs in src/cart",
+  });
+  expect(screen.queryByTitle("Rename the session")).toBeNull();
+  expect(await more(user)).toEqual(["Copy the link", "Copy the session ID"]);
+});
+
+it("takes the title that the harness suggests, but not over a person's", async () => {
+  const user = open(REVIEWER, "alice");
+  await list();
+  const { mock } = await backend();
+  // The session is named after its first message, and then by its harness.
+  mock.scenario = "retitle";
+  await user.type(box(), "What is in the cart?{Enter}");
+  await waitFor(() => expect(heading()).toBe("A title that the harness wrote"));
+  const current = (await list()).getByRole("link", { current: "page" });
+  expect(current.textContent).toContain("A title that the harness wrote");
+  await waitFor(() => expect(bar().textContent).toContain("Enter to send"));
+
+  // A title that a person wrote stays.
+  await user.click(screen.getByTitle("Rename the session"));
+  await user.keyboard("Mine{Enter}");
+  await waitFor(() => expect(heading()).toBe("Mine"));
+  mock.scenario = "retitle";
+  await user.type(box(), "And now?{Enter}");
+  await waitFor(() =>
+    expect(document.querySelectorAll(".turn .done-l").length).toBe(2),
+  );
+  expect(heading()).toBe("Mine");
+  await leave();
+
+  // So does one that the session came with.
+  const session = await talk("Named elsewhere");
+  const again = open(session.path, "alice");
+  await screen.findByRole("heading", { name: "Named elsewhere" });
+  mock.scenario = "retitle";
+  await again.type(box(), "And this one?{Enter}");
+  await waitFor(() =>
+    expect(document.querySelectorAll(".turn .done-l").length).toBe(1),
+  );
+  expect(heading()).toBe("Named elsewhere");
 });
 
 it("keeps the head of the conversation as its session is", async () => {

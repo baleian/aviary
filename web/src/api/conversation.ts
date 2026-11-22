@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { clip } from "../lib/format.ts";
 import { queryClient } from "../query.ts";
 import { api, ApiError, isLast, type TurnEvent } from "./client.ts";
 import {
@@ -16,6 +17,14 @@ const PAGE = 20;
 
 const listKey = (agent: string) => ["sessions", agent, "list"];
 const turnsKey = (session: string) => ["turns", session];
+
+// The titles that the console gave to sessions: to one that it named after
+// its first message, and to one that took what its harness suggested. A
+// session that a person named here has false.
+const given = new Map<string, string | false>();
+
+// The longest title that the console takes from a harness.
+const SUGGESTED = 120;
 
 // useSessionList reads the sessions of an agent, newest first: a page at
 // first, and as many as olderSessions() has added since. The feed keeps
@@ -114,7 +123,35 @@ export async function startSession(
   queryClient.setQueryData<Session>(["session", session.id], session);
   queryClient.setQueryData<Turn[]>(turnsKey(session.id), []);
   take(session);
+  given.set(session.id, session.title);
   return session;
+}
+
+// renameSession gives a session the title that a person wrote.
+export async function renameSession(id: string, title: string) {
+  take(await api.patch<Session>("/v1/sessions/" + id, { title }));
+  given.set(id, false);
+}
+
+// suggestTitle takes a title that the harness of a session suggests for
+// it. It replaces no title that a person wrote: a session takes it only
+// while it has none, or the one that the console gave.
+export async function suggestTitle(id: string, title: unknown) {
+  if (typeof title !== "string" || !title.trim()) return;
+  const session = queryClient.getQueryData<Session>(["session", id]);
+  const mine = given.get(id);
+  if (!session || mine === false) return;
+  if (session.title && session.title !== mine) return;
+  const renamed = await api.patch<Session>("/v1/sessions/" + id, {
+    title: clip(title, SUGGESTED),
+  });
+  take(renamed);
+  given.set(id, renamed.title);
+}
+
+// endSession ends a session, with the files that its agent made.
+export async function endSession(id: string) {
+  take(await api.delete<Session>("/v1/sessions/" + id));
 }
 
 // sendMessage sends a message to a session, and adds the turn that it
@@ -202,12 +239,14 @@ export async function joinTurn(session: string, id: string): Promise<void> {
 // followTurn follows the events of a turn that has not ended. It keeps the
 // turn, among the turns that were read, as its events say it stands and
 // with what the agent has said and done so far, and puts the record of the
-// turn in its place once the turn has ended. It returns a function that
+// turn in its place once the turn has ended. onTitle is called with a title
+// that the harness suggests for the session. It returns a function that
 // stops following.
 export function followTurn(
   session: string,
   id: string,
   onError: (error: ApiError) => void,
+  onTitle?: (title: unknown) => void,
 ): () => void {
   const change = (next: (turn: Turn) => Turn) =>
     queryClient.setQueryData<Turn[]>(turnsKey(session), (list) =>
@@ -218,6 +257,7 @@ export function followTurn(
   let said = NOTHING;
   return api.events(id, {
     onEvent: (event) => {
+      if (event.type === "session.update") onTitle?.(event.data.title);
       const before = said;
       said = add(said, event.type, event.data);
       const now = new Date().toISOString();

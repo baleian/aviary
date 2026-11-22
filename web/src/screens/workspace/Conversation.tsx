@@ -1,5 +1,4 @@
 import {
-  type ReactNode,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -14,95 +13,27 @@ import {
   joinTurn,
   olderTurns,
   stopTurn,
+  suggestTitle,
   useSession,
   useTurns,
 } from "../../api/conversation.ts";
-import { controls, type ProjectContext } from "../../api/project.ts";
+import {
+  controls,
+  type ProjectContext,
+  sessionAccess,
+} from "../../api/project.ts";
 import type { Tinted } from "../../api/queries.ts";
 import type { Agent, Me, Session, Turn } from "../../api/types.ts";
-import { plural, sentence } from "../../lib/format.ts";
-import { followed, STATUS_NAMES } from "../../lib/sessions.ts";
-import { Avatar } from "../../ui/Avatar.tsx";
+import { sentence } from "../../lib/format.ts";
 import { Blank, Empty, Loading } from "../../ui/Blank.tsx";
-import { Chip } from "../../ui/Chip.tsx";
 import { Icon } from "../../ui/Icon.tsx";
-import { Time } from "../../ui/Time.tsx";
 import { oops, toast } from "../../ui/toast.ts";
 import { person } from "../../ui/who.ts";
 import { barred, type Compose } from "./compose.ts";
 import { Composer, Gate } from "./Composer.tsx";
 import { Details, DetailsButton } from "./Details.tsx";
-import { SandboxBadge, SessionTitle } from "./marks.tsx";
+import { SessionHead } from "./SessionHead.tsx";
 import { TurnView } from "./TurnView.tsx";
-
-// Header is the head of a conversation: its title, how it stands, and when
-// it began. actions are the buttons at its end.
-function Header({
-  context,
-  me,
-  session,
-  newest,
-  actions,
-}: {
-  context: ProjectContext;
-  me: Me;
-  session: Session;
-  newest?: Turn;
-  actions: ReactNode;
-}) {
-  const stands = newest && followed(newest);
-  const owner =
-    me.id && session.created_by !== me.id
-      ? person(me, context.members, session.created_by)
-      : null;
-  const ended = session.end_reason === "expired" ? "Expired" : "Ended";
-  return (
-    <div className="conv-h">
-      <div className="tx">
-        <h1>
-          <SessionTitle session={session} tag="span" />
-        </h1>
-        <p>
-          {session.ended_at ? (
-            <Chip tone="ended">{ended}</Chip>
-          ) : stands ? (
-            <Chip tone={stands}>
-              {stands === "waiting"
-                ? "Waiting for approval"
-                : STATUS_NAMES[stands]}
-            </Chip>
-          ) : (
-            <Chip tone="idle">No messages yet</Chip>
-          )}
-          <SandboxBadge session={session} />
-          {owner && (
-            <span
-              style={{
-                display: "inline-flex",
-                gap: "6px",
-                alignItems: "center",
-              }}
-            >
-              <Avatar who={owner} size="xs" />
-              {owner.name}
-            </span>
-          )}
-          <span>
-            Started <Time value={session.created_at} />
-            {newest && ` · ${plural(newest.seq, "turn")}`}
-            {session.ended_at && (
-              <>
-                {` · ${ended.toLowerCase()} `}
-                <Time value={session.ended_at} />
-              </>
-            )}
-          </span>
-        </p>
-      </div>
-      {actions}
-    </div>
-  );
-}
 
 // How near its end the conversation has to be scrolled to stay there as it
 // grows, in pixels.
@@ -149,9 +80,16 @@ export function Conversation({
   );
 
   const unfinished = newest && !newest.ended_at ? newest.id : undefined;
+  // A caller who may rename the session takes the title that its harness
+  // suggests.
+  const renames =
+    !!session.data && sessionAccess(context, me, session.data).control;
   useEffect(() => {
-    if (unfinished) return followTurn(id, unfinished, oops);
-  }, [id, unfinished]);
+    if (!unfinished) return;
+    const retitle = (title: unknown) =>
+      void suggestTitle(id, title).catch(() => {});
+    return followTurn(id, unfinished, oops, renames ? retitle : undefined);
+  }, [id, unfinished, renames]);
 
   // A turn that began elsewhere joins the turns that are shown.
   const last = session.data?.last_turn;
@@ -279,7 +217,7 @@ export function Conversation({
   return (
     <>
       <main className="conv">
-        <Header
+        <SessionHead
           context={context}
           me={me}
           session={session.data}

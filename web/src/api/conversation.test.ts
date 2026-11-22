@@ -8,14 +8,17 @@ import { api, ApiError, type TurnEvent } from "./client.ts";
 import {
   advance,
   answerRequest,
+  endSession,
   followTurn,
   joinTurn,
   olderSessions,
   olderTurns,
+  renameSession,
   rereadSession,
   sendMessage,
   startSession,
   stopTurn,
+  suggestTitle,
   useTurns,
 } from "./conversation.ts";
 import type { SessionPage } from "./feed.ts";
@@ -186,14 +189,14 @@ it("says where a turn is after each event that tells it", () => {
 
 // following follows the turn t2 of the turns that were read, and returns
 // how to have an event of it come.
-function following(onError = vi.fn()) {
+function following(onError = vi.fn(), onTitle?: (title: unknown) => void) {
   let tell!: (event: TurnEvent) => void;
   const stop = vi.fn();
   vi.spyOn(api, "events").mockImplementation((_turn, handlers) => {
     tell = handlers.onEvent;
     return stop;
   });
-  expect(followTurn("s1", "t2", onError)).toBe(stop);
+  expect(followTurn("s1", "t2", onError, onTitle)).toBe(stop);
   expect(api.events).toHaveBeenCalledWith("t2", expect.anything());
   return (type: string, data: Record<string, unknown> = {}) =>
     tell({ type, data });
@@ -437,4 +440,82 @@ it("answers a request for approval, unless someone else has", async () => {
   const ended = new ApiError(409, { code: "turn_ended", message: "over" }, {});
   post.mockRejectedValueOnce(ended);
   await expect(answerRequest("t2", "7", "once")).rejects.toBe(ended);
+});
+
+it("passes on the title that a harness suggests for the session", () => {
+  queryClient.setQueryData(TURNS, [turn(2, { state: "running" })]);
+  const onTitle = vi.fn();
+  const tell = following(vi.fn(), onTitle);
+  tell("message.delta", { text: "Hello" });
+  expect(onTitle).not.toHaveBeenCalled();
+  tell("session.update", { title: "A title" });
+  expect(onTitle).toHaveBeenCalledWith("A title");
+  // Nobody has to listen.
+  following()("session.update", { title: "Another" });
+});
+
+const titled = (id: string, title: string) =>
+  ({ ...session(id), title }) as Session;
+const title = (id: string) =>
+  queryClient.getQueryData<Session>(["session", id])!.title;
+
+it("gives a session the title that a person wrote", async () => {
+  queryClient.setQueryData(["session", "s9"], titled("s9", "Before"));
+  queryClient.setQueryData<SessionPage>(LIST, {
+    sessions: [titled("s9", "Before")],
+    more: false,
+  });
+  const patch = vi.spyOn(api, "patch").mockResolvedValue(titled("s9", "After"));
+  await renameSession("s9", "After");
+  expect(patch).toHaveBeenCalledWith("/v1/sessions/s9", { title: "After" });
+  expect(title("s9")).toBe("After");
+  const page = queryClient.getQueryData<SessionPage>(LIST)!;
+  expect(page.sessions[0].title).toBe("After");
+});
+
+it("takes the title that a harness suggests only in the place of none, or of its own", async () => {
+  const patch = vi
+    .spyOn(api, "patch")
+    .mockImplementation((path, body) =>
+      Promise.resolve(titled(path.split("/").pop()!, (body as Session).title)),
+    );
+  // A session without a title takes it, cut to a length.
+  queryClient.setQueryData(["session", "s1"], titled("s1", ""));
+  await suggestTitle("s1", "word ".repeat(40));
+  expect(title("s1").length).toBe(120);
+  expect(title("s1").endsWith("…")).toBe(true);
+  // And another after it: the first was not a person's.
+  await suggestTitle("s1", "Second thoughts");
+  expect(title("s1")).toBe("Second thoughts");
+
+  // A session that the console named after its first message takes it.
+  vi.spyOn(api, "post").mockResolvedValue(titled("s2", "Fix the cart"));
+  await startSession("a1", "Fix the cart");
+  await suggestTitle("s2", "Cart totals");
+  expect(title("s2")).toBe("Cart totals");
+
+  // A title that was there is someone's, and stays.
+  queryClient.setQueryData(["session", "s3"], titled("s3", "Named elsewhere"));
+  await suggestTitle("s3", "Suggested");
+  expect(title("s3")).toBe("Named elsewhere");
+
+  // So does what a person wrote here, even nothing.
+  await renameSession("s1", "");
+  expect(title("s1")).toBe("");
+  patch.mockClear();
+  await suggestTitle("s1", "Suggested");
+  await suggestTitle("s2", "  ");
+  await suggestTitle("s2", 7);
+  await suggestTitle("unread", "Suggested");
+  expect(patch).not.toHaveBeenCalled();
+  expect(title("s1")).toBe("");
+});
+
+it("keeps a session that it ends as the API then has it", async () => {
+  queryClient.setQueryData(["session", "s9"], session("s9"));
+  const ended = { ...session("s9"), ended_at: "2026-11-22T11:00:00Z" };
+  const remove = vi.spyOn(api, "delete").mockResolvedValue(ended);
+  await endSession("s9");
+  expect(remove).toHaveBeenCalledWith("/v1/sessions/s9");
+  expect(queryClient.getQueryData(["session", "s9"])).toEqual(ended);
 });
