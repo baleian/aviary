@@ -359,7 +359,7 @@ func TestEventsAreReadOn(t *testing.T) {
 		t.Fatal(err)
 	}
 	request.Header.Set("Last-Event-ID", "the last one")
-	if response, err := http.DefaultClient.Do(request); err != nil || response.StatusCode != http.StatusBadRequest {
+	if response, err := httpClient.Do(request); err != nil || response.StatusCode != http.StatusBadRequest {
 		t.Errorf("invalid Last-Event-ID: response %v, %v; want 400", response, err)
 	}
 

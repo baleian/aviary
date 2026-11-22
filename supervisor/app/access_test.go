@@ -23,7 +23,7 @@ func (s *supervisor) answered(token, method, path, body string) int {
 	if token != "" {
 		request.Header.Set("Authorization", "Bearer "+token)
 	}
-	response, err := http.DefaultClient.Do(request)
+	response, err := httpClient.Do(request)
 	if err != nil {
 		s.t.Fatal(err)
 	}

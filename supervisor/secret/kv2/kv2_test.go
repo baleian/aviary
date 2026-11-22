@@ -22,6 +22,11 @@ import (
 	"aviary/supervisor/store"
 )
 
+// client sends the requests of the tests. It has a transport of its own:
+// closing an httptest.Server closes the idle connections of the default
+// transport, which can break a request on it whose response has no body.
+var client = &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone()}
+
 // of returns the settings of a store.
 func of(address, mount, roleID string) json.RawMessage {
 	settings, _ := json.Marshal(map[string]string{"address": address, "mount": mount, "role_id": roleID})
@@ -76,7 +81,7 @@ func TestReadEscapesMount(t *testing.T) {
 		io.WriteString(w, `{"data": {"data": {"api_key": "the-value"}}}`)
 	}))
 	t.Cleanup(server.Close)
-	value, err := (Plugin{}).Read(context.Background(), http.DefaultClient, of(server.URL, "kv?x", "a-role"), "a-token", "team/model", "api_key")
+	value, err := (Plugin{}).Read(context.Background(), client, of(server.URL, "kv?x", "a-role"), "a-token", "team/model", "api_key")
 	if err != nil || value != "the-value" {
 		t.Errorf("Read = %q, %v; want the-value", value, err)
 	}
@@ -111,7 +116,7 @@ func TestLoginIsAsked(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	session, good, err := (Plugin{}).Login(ctx, http.DefaultClient, answering(http.StatusOK, `{"auth": {"client_token": "the-token", "lease_duration": 3600}}`), secretID)
+	session, good, err := (Plugin{}).Login(ctx, client, answering(http.StatusOK, `{"auth": {"client_token": "the-token", "lease_duration": 3600}}`), secretID)
 	if err != nil || session != "the-token" || good != time.Hour {
 		t.Errorf("Login = %v, %s, %v", session, good, err)
 	}
@@ -127,7 +132,7 @@ func TestLoginIsAsked(t *testing.T) {
 		{of("http://127.0.0.1:1", "secret", roleID), "connect to the store"},
 		{of("http://127.0.0.1:1", "", roleID), "mount is required"},
 	} {
-		session, _, err := (Plugin{}).Login(ctx, http.DefaultClient, refusing.store, secretID)
+		session, _, err := (Plugin{}).Login(ctx, client, refusing.store, secretID)
 		if err == nil || session != nil || !strings.Contains(err.Error(), refusing.why) || strings.Contains(err.Error(), "the-detail") || strings.Contains(err.Error(), secretID) {
 			t.Errorf("%s: Login = %v, %v; want an error without the response body or the secret ID", refusing.why, session, err)
 		}
@@ -151,7 +156,7 @@ func owner(t *testing.T, method, path string, body any, statuses ...int) map[str
 		t.Fatal(err)
 	}
 	request.Header.Set("X-Vault-Token", rootToken)
-	response, err := http.DefaultClient.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		t.Fatalf("test secret store: %v", err)
 	}
@@ -208,7 +213,7 @@ func TestLoginToAStore(t *testing.T) {
 	if err := stores.Check(ctx, Kind, of(address, "secret", roleID), secretID); err != nil {
 		t.Errorf("Check: %v", err)
 	}
-	session, good, err := (Plugin{}).Login(ctx, http.DefaultClient, of(address, "secret", other), another)
+	session, good, err := (Plugin{}).Login(ctx, client, of(address, "secret", other), another)
 	if token, _ := session.(string); err != nil || token == "" || good != time.Hour {
 		t.Errorf("Login = %v, %s, %v", session, good, err)
 	}
@@ -279,17 +284,17 @@ func TestReadFromAStore(t *testing.T) {
 	}
 
 	// The plugin itself does not cache.
-	session, _, err := (Plugin{}).Login(ctx, http.DefaultClient, registered.Settings, secretID)
+	session, _, err := (Plugin{}).Login(ctx, client, registered.Settings, secretID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	put(own+"/model", map[string]any{"api_key": "sk-the-second"})
-	if read, err := (Plugin{}).Read(ctx, http.DefaultClient, registered.Settings, session, own+"/model", "api_key"); err != nil || read != "sk-the-second" {
+	if read, err := (Plugin{}).Read(ctx, client, registered.Settings, session, own+"/model", "api_key"); err != nil || read != "sk-the-second" {
 		t.Errorf("Read after the change = %q, %v", read, err)
 	}
 	// A revoked token gives ErrSessionEnded, not a permission error.
 	owner(t, "POST", "/v1/auth/token/revoke", map[string]any{"token": session})
-	if read, err := (Plugin{}).Read(ctx, http.DefaultClient, registered.Settings, session, own+"/model", "api_key"); !errors.Is(err, secret.ErrSessionEnded) || read != "" {
+	if read, err := (Plugin{}).Read(ctx, client, registered.Settings, session, own+"/model", "api_key"); !errors.Is(err, secret.ErrSessionEnded) || read != "" {
 		t.Errorf("Read with a revoked token = %q, %v; want ErrSessionEnded", read, err)
 	}
 	// Stores still serves its cached value: the revoked token was not its

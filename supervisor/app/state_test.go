@@ -46,7 +46,7 @@ func stateMetrics(t *testing.T, st store.Store) string {
 // scrape returns the status and the lines of a scrape.
 func scrape(t *testing.T, url string) (int, []string) {
 	t.Helper()
-	response, err := http.Get(url)
+	response, err := httpClient.Get(url)
 	if err != nil {
 		t.Fatal(err)
 	}
