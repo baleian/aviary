@@ -12,6 +12,7 @@ require (
 	github.com/jellydator/ttlcache/v3 v3.4.1
 	github.com/pressly/goose/v3 v3.30.1
 	github.com/prometheus/client_golang v1.25.0
+	github.com/rs/cors v1.11.1
 	github.com/valkey-io/valkey-go v1.0.79
 	golang.org/x/sync v0.25.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261118221215-c8830f628b3f

@@ -18,6 +18,7 @@ HARNESS_BASE_IMAGE := aviary-harness-base:dev
 OPENCODE_IMAGE := aviary-harness-opencode:dev
 CODEX_IMAGE := aviary-harness-codex:dev
 MOCK_LLM_IMAGE := aviary-mock-llm:dev
+WEB_IMAGE := aviary-web:dev
 # Images that test-harness tests, for example
 # make test-harness HARNESS_IMAGES=<image>
 HARNESS_IMAGES ?= $(OPENCODE_IMAGE) $(CODEX_IMAGE)
@@ -66,6 +67,10 @@ AMONG_PROXIES := --network aviary-test-proxy_default --env AVIARY_TEST_PROXY=1 \
 	--network-alias aviary-supervisor.aviary-system --network-alias model.test \
 	--network-alias allowed.test --network-alias other.test \
 	--network-alias tls.test --network-alias unnamed.test
+NGINX_IMAGE = $(shell sed --quiet 's/^FROM \(nginxinc[^ ]*\).*/\1/p' images/web/Dockerfile)
+# The tests of the web server stand in for the API behind it.
+WEB_SERVERS = NGINX_IMAGE=$(NGINX_IMAGE) docker compose --file test/web/compose.yaml --project-name aviary-test-web
+AMONG_WEB_SERVERS := --network aviary-test-web_default --env AVIARY_TEST_WEB=1 --network-alias api.test
 SERVICES := docker compose --file test/compose.yaml --project-name aviary-test-supervisor
 IN_SERVICES := --network aviary-test-supervisor_default \
 	--env AVIARY_TEST_POSTGRES_URL=postgres://postgres:test@database-postgres:5432/postgres \
@@ -74,7 +79,7 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 	--env AVIARY_TEST_REDIS_URL=redis://default:test@events-redis:6379 \
 	--env AVIARY_TEST_SECRET_STORE_URL=http://secret-store:8200
 
-.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-chart test-proxy test-harness cluster-up cluster-down secret-store identity-provider headlamp grafana build images secrets deploy e2e e2e-up e2e-run e2e-down
+.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-web test-web-server test-chart test-proxy test-harness cluster-up cluster-down secret-store identity-provider headlamp grafana web web-dev build images secrets deploy e2e e2e-up e2e-run e2e-down
 
 # Generates the Go code of the SQL queries. Run it after changing a query or
 # a migration.
@@ -83,20 +88,21 @@ sqlc:
 
 # Checks formatting, runs the linters, and checks that the generated code is
 # up to date.
-lint:
+lint: web/node_modules/.package-lock.json
 	@files=$$($(call IN_GO) gofmt -l supervisor test) || exit 1; \
 		[ -z "$$files" ] || { echo "gofmt would change these files:"; echo "$$files"; exit 1; }
 	for module in supervisor test test/mock-llm test/plugin; do $(call GO,$$module) vet ./... || exit 1; done
 	cargo fmt --all --check
 	cargo clippy --locked --all-targets -- --deny warnings
 	$(SQLC_RUN) diff
+	cd web && npm run lint
 
 # Runs the tests that need no cluster, in parallel. TESTS narrows a single
 # target, for example
 # make test-supervisor TESTS='-run TestStore/EndTurn ./store/postgres'
 # make test-runner TESTS=cut
 test:
-	$(MAKE) --jobs --output-sync=target test-supervisor test-plugin test-runner test-mock-llm test-chart test-proxy
+	$(MAKE) --jobs --output-sync=target test-supervisor test-plugin test-runner test-mock-llm test-web test-web-server test-chart test-proxy
 
 test-supervisor: TESTS ?= ./...
 test-supervisor:
@@ -115,6 +121,9 @@ test-runner:
 test-mock-llm: TESTS ?= ./...
 test-mock-llm:
 	$(call GO,test/mock-llm) $(GO_TEST) $(TESTS)
+
+test-web: web/node_modules/.package-lock.json
+	cd web && npm test -- $(TESTS)
 
 # Renders the chart with its default values and with those in test/chart,
 # checks the output and that invalid values are refused, and has Envoy
@@ -149,6 +158,19 @@ test-proxy:
 		status=$$?; [ $$status = 0 ] || $(PROXIES) logs --no-color --tail 40; \
 		$(PROXIES) down --volumes; exit $$status
 
+# Runs the server of the web UI's image with the configuration of the image,
+# in front of an API and alone, and sends it requests. A page and a file
+# stand in for the web UI.
+test-web-server: TESTS ?= ./web/...
+test-web-server:
+	mkdir -p .out/web/assets
+	echo '<!doctype html><title>the web UI</title>' > .out/web/index.html
+	head --bytes 4096 /dev/zero | tr '\0' ' ' > .out/web/assets/app.js
+	$(WEB_SERVERS) up --detach --force-recreate
+	$(call GO,test,$(AMONG_WEB_SERVERS)) $(GO_TEST) $(TESTS); \
+		status=$$?; [ $$status = 0 ] || $(WEB_SERVERS) logs --no-color --tail 40; \
+		$(WEB_SERVERS) down --volumes; exit $$status
+
 # Tests the harness images in containers, without a cluster. Few run at a
 # time, since every harness needs memory.
 test-harness: build
@@ -161,6 +183,11 @@ $(AGENT_SANDBOX_MANIFEST):
 		https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$(AGENT_SANDBOX)/sandbox.yaml
 	echo "$(AGENT_SANDBOX_SHA256)  $@.new" | sha256sum --check --quiet
 	mv $@.new $@
+
+# Installs the packages of the console in the versions that
+# web/package-lock.json names.
+web/node_modules/.package-lock.json: web/package-lock.json
+	cd web && npm ci
 
 cluster-up: $(AGENT_SANDBOX_MANIFEST)
 	kind get clusters 2>/dev/null | grep -qx $(CLUSTER) || \
@@ -254,6 +281,33 @@ grafana:
 		--wait
 	@echo "Grafana is at http://localhost:3000"
 
+# Builds the web UI and installs it in the local cluster, after make deploy.
+# Its server stands in front of the API: http://localhost:8080 then serves
+# the web UI, and passes the requests of /v1 on to the API. The image ID
+# restarts its pod when the image changes.
+web:
+	docker build --file images/web/Dockerfile --tag $(WEB_IMAGE) .
+	kind load docker-image --name $(CLUSTER) $(WEB_IMAGE)
+	$(KUBECTL) apply --filename hack/kind/web.yaml
+	image=$$(docker image inspect --format '{{.Id}}' $(WEB_IMAGE)) && \
+	$(KUBECTL) --namespace aviary-system patch deployment aviary-web --type merge \
+		--patch '{"spec": {"template": {"metadata": {"annotations": {"aviary.io/image-id": "'$$image'"}}}}}'
+	$(KUBECTL) --namespace aviary-system rollout status deployment/aviary-web --timeout 120s
+	@echo "The web UI is at http://localhost:8080"
+
+# Serves the console at http://localhost:5173 from its source in web/. A
+# change to the source shows in the browser when the file is saved. The
+# console is answered from example data, in the browser, unless API names an
+# API for it to use, for example that of the local cluster:
+# make web-dev API=http://localhost:8080
+# If the API authenticates its callers, the environment names the OpenID
+# Connect issuer and the client that the console signs them in with, for
+# example those of make identity-provider:
+# AVIARY_OIDC_ISSUER=http://keycloak.localhost:8081/realms/aviary \
+# AVIARY_OIDC_CLIENT_ID=aviary make web-dev API=http://localhost:8080
+web-dev: web/node_modules/.package-lock.json
+	cd web && $(if $(API),AVIARY_API=$(API) )npm run dev
+
 build:
 	docker build --file images/supervisor/Dockerfile --tag $(SUPERVISOR_IMAGE) .
 	docker build --file images/runner/Dockerfile --tag $(RUNNER_IMAGE) .
@@ -289,6 +343,8 @@ secrets:
 # The image ID restarts the pods that run the Supervisor image when the image
 # changes. VALUES adds a values file, for example
 # make deploy VALUES=my-values.yaml
+# The node port of the API goes to the Supervisor, unless the web UI of make
+# web is installed: it then goes on through the web UI.
 deploy: secrets
 	image=$$(docker image inspect --format '{{.Id}}' $(SUPERVISOR_IMAGE)) && \
 	$(HELM) upgrade --install aviary deploy/charts/aviary \
@@ -297,7 +353,8 @@ deploy: secrets
 		--set-string 'stateMetrics.podAnnotations.aviary\.io/image-id='$$image \
 		$(if $(VALUES),--values $(VALUES)) \
 		--wait
-	$(KUBECTL) apply --filename hack/kind/api.yaml
+	$(KUBECTL) get deployment aviary-web --namespace aviary-system >/dev/null 2>&1 || \
+		$(KUBECTL) apply --filename hack/kind/api.yaml
 	@echo "The API is at http://localhost:8080"
 
 # Runs the e2e in a new cluster of its own, which is deleted if the tests

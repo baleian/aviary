@@ -9,6 +9,11 @@
 #     -d grant_type=password -d client_id=aviary -d username=alice -d password=alice
 # Tokens last an hour, have the audience "aviary", and carry the groups of
 # the user in the claim "groups".
+#
+# Keycloak is at http://keycloak.localhost:8081 for a browser on this machine
+# and for the cluster alike, so that its tokens name one issuer: browsers
+# take a name under "localhost" for the machine itself, and in the cluster
+# the name is the Service keycloak of the namespace localhost, below.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -49,7 +54,10 @@ data:
       "clients": [
         {
           "clientId": "aviary", "publicClient": true,
-          "directAccessGrantsEnabled": true, "standardFlowEnabled": false,
+          "directAccessGrantsEnabled": true, "standardFlowEnabled": true,
+          "redirectUris": ["http://localhost:8080/signin", "http://localhost:5173/signin"],
+          "webOrigins": ["+"],
+          "attributes": {"pkce.code.challenge.method": "S256"},
           "protocolMappers": [
             {
               "name": "groups", "protocol": "openid-connect", "protocolMapper": "oidc-group-membership-mapper",
@@ -85,10 +93,10 @@ spec:
           image: quay.io/keycloak/keycloak:26.8.2@sha256:c68e286cacd87b942ac1939a0a1481461109d6acd3a57dc496969a319a76bbf0
           args: ["start-dev", "--import-realm"]
           env:
-            # Issues every token for the address at which Aviary reaches
-            # Keycloak, however the token was requested.
+            # Issues every token for this address, however the token was
+            # requested.
             - name: KC_HOSTNAME
-              value: http://keycloak.aviary-data:8080
+              value: http://keycloak.localhost:8081
             # Otherwise the JVM sizes its heap from the memory of the node.
             - name: JAVA_OPTS_KC_HEAP
               value: -Xms64m -Xmx512m
@@ -122,3 +130,22 @@ spec:
       port: 8080
       targetPort: http
       nodePort: 30081
+    # The port of http://keycloak.localhost:8081, for the cluster.
+    - name: issuer
+      port: 8081
+      targetPort: http
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: localhost
+---
+# keycloak.localhost, in the cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: localhost
+spec:
+  type: ExternalName
+  externalName: keycloak.aviary-data.svc.cluster.local

@@ -18,6 +18,7 @@ supervisor:
         claims: {username: email}
     admins: [platform]
     users: [team-a, team-b]
+  allowedOrigins: [https://aviary.example.com]
 stateMetrics:
   enabled: false
 egressProxy:

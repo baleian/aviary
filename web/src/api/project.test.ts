@@ -1,0 +1,191 @@
+import { describe, expect, it } from "vitest";
+import {
+  controls,
+  mine,
+  PERMISSIONS,
+  permissionsIn,
+  type ProjectContext,
+  sessionAccess,
+  summary,
+} from "./project.ts";
+import type { Me, Member, Permission, Role, Session, Turn } from "./types.ts";
+
+const roles: Role[] = [
+  { name: "owner", permissions: [...PERMISSIONS] },
+  { name: "user", permissions: ["project.view", "sessions.run"] },
+  { name: "viewer", permissions: ["project.view"] },
+];
+
+const bob: Me = { id: "u-bob", groups: ["team-a"], admin: false };
+
+// member returns a member of the project: a user by ID, or else a group,
+// with a role, or else with permissions of its own.
+function member(
+  who: { user?: string; group?: string },
+  grant: string | Permission[],
+): Member {
+  return {
+    id: "m-" + (who.user ?? who.group),
+    project_id: "p",
+    user: who.user ? { id: who.user, username: who.user } : undefined,
+    group: who.group,
+    role: typeof grant === "string" ? grant : "custom",
+    permissions: typeof grant === "string" ? undefined : grant,
+    created_at: "",
+    updated_at: "",
+  };
+}
+
+describe("permissionsIn", () => {
+  it("gives an administrator everything, member or not", () => {
+    expect(permissionsIn({ admin: true }, [], roles)).toEqual(PERMISSIONS);
+  });
+
+  it("gives a member what their role allows", () => {
+    const members = [member({ user: "u-bob" }, "user")];
+    expect(permissionsIn(bob, members, roles)).toEqual([
+      "project.view",
+      "sessions.run",
+    ]);
+  });
+
+  it("gives a caller what a group of theirs is allowed", () => {
+    const members = [
+      member({ group: "team-a" }, "viewer"),
+      member({ group: "team-b" }, "owner"),
+    ];
+    expect(permissionsIn(bob, members, roles)).toEqual(["project.view"]);
+  });
+
+  it("gives a member with permissions of their own those", () => {
+    const members = [
+      member({ user: "u-bob" }, ["project.view", "sessions.view_all"]),
+    ];
+    expect(permissionsIn(bob, members, roles)).toEqual([
+      "project.view",
+      "sessions.view_all",
+    ]);
+  });
+
+  it("adds up what a caller is allowed in several ways", () => {
+    const members = [
+      member({ user: "u-bob" }, ["agents.manage"]),
+      member({ group: "team-a" }, "user"),
+      member({ user: "u-carol" }, "owner"),
+    ];
+    expect(permissionsIn(bob, members, roles)).toEqual([
+      "project.view",
+      "agents.manage",
+      "sessions.run",
+    ]);
+  });
+
+  it("gives nothing to a caller who is no member", () => {
+    const members = [
+      member({ user: "u-carol" }, "owner"),
+      // A member who has not signed in yet has no ID.
+      { ...member({ user: "dana" }, "owner"), user: { username: "dana" } },
+    ];
+    expect(permissionsIn(bob, members, roles)).toEqual([]);
+    expect(permissionsIn({ admin: false }, members, roles)).toEqual([]);
+  });
+});
+
+describe("summary", () => {
+  it("says in words what a set of permissions allows", () => {
+    expect(summary([...PERMISSIONS])).toBe("Everything in this project");
+    expect(summary(["project.view"])).toBe("See the project");
+    expect(summary(["project.view", "sessions.run", "agents.manage"])).toBe(
+      "See the project · run sessions · manage agents",
+    );
+  });
+
+  it("does not say that controlling every session includes seeing them", () => {
+    expect(
+      summary(["project.view", "sessions.view_all", "sessions.control_all"]),
+    ).toBe("See the project · control every session");
+    expect(summary(["project.view", "sessions.view_all"])).toBe(
+      "See the project · see every session",
+    );
+  });
+});
+
+describe("mine", () => {
+  it("returns the members through which the caller is in the project", () => {
+    const members = [
+      member({ user: "u-bob" }, "user"),
+      member({ user: "u-carol" }, "owner"),
+      member({ group: "team-a" }, "viewer"),
+      member({ group: "team-b" }, "viewer"),
+    ];
+    expect(mine(bob, members).map((each) => each.id)).toEqual([
+      "m-u-bob",
+      "m-team-a",
+    ]);
+  });
+});
+
+const holding = (...permissions: Permission[]) =>
+  ({ permissions }) as ProjectContext;
+const admin: Me = { id: "u-ann", admin: true };
+
+describe("sessionAccess", () => {
+  const session = (by?: string) =>
+    ({ id: "s", agent_id: "a", created_by: by }) as Session;
+
+  it("lets the caller who runs sessions send to their own, and rename and end it", () => {
+    expect(
+      sessionAccess(holding("sessions.run"), bob, session("u-bob")),
+    ).toEqual({ own: true, send: true, control: true });
+    expect(
+      sessionAccess(holding("sessions.view_all"), bob, session("u-bob")),
+    ).toEqual({ own: true, send: false, control: false });
+  });
+
+  it("lets only who controls every session rename and end someone else's", () => {
+    expect(
+      sessionAccess(holding("sessions.run"), bob, session("u-carol")),
+    ).toEqual({ own: false, send: false, control: false });
+    expect(
+      sessionAccess(
+        holding("sessions.run", "sessions.control_all"),
+        bob,
+        session("u-carol"),
+      ),
+    ).toEqual({ own: false, send: false, control: true });
+  });
+
+  it("lets an administrator do everything", () => {
+    expect(sessionAccess(holding(), admin, session("u-carol"))).toEqual({
+      own: false,
+      send: true,
+      control: true,
+    });
+  });
+
+  it("takes every session for the caller's own without an identity provider", () => {
+    const anyone: Me = { admin: false };
+    expect(sessionAccess(holding("sessions.run"), anyone, session()).own).toBe(
+      true,
+    );
+  });
+});
+
+describe("controls", () => {
+  const turn = (by?: string) => ({ id: "t", created_by: by }) as Turn;
+
+  it("lets the caller who runs sessions stop their own turn", () => {
+    expect(controls(holding("sessions.run"), bob, turn("u-bob"))).toBe(true);
+    expect(controls(holding("sessions.view_all"), bob, turn("u-bob"))).toBe(
+      false,
+    );
+  });
+
+  it("lets only who controls every session stop someone else's", () => {
+    expect(controls(holding("sessions.run"), bob, turn("u-carol"))).toBe(false);
+    expect(
+      controls(holding("sessions.control_all"), bob, turn("u-carol")),
+    ).toBe(true);
+    expect(controls(holding(), admin, turn("u-carol"))).toBe(true);
+  });
+});

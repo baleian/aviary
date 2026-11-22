@@ -1,0 +1,6 @@
+*
+!images/web
+!web
+web/dist
+web/src/api/mock
+web/node_modules

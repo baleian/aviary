@@ -1,0 +1,199 @@
+/* Design tokens. Every colour in the application is one of these, so that the
+   dark theme is one block of overrides. The theme is the data-theme of the
+   document, and a part of a page can be given the other one. */
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+
+  /* Surfaces */
+  --page: #f5f8fc;
+  --page-glow: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f5f8fc;
+  --surface-3: #edf1f5;
+  --surface-hover: #fafcff;
+  --nav: rgba(255, 255, 255, 0.9);
+  --overlay: rgba(13, 27, 46, 0.4);
+  --code: #f3f6fa;
+  --night: #0b1728;
+  --on-night: #ffffff;
+  --night-dim: #c9d6e8;
+  --night-line: transparent;
+
+  /* Text and lines */
+  --ink: #0d1b2e;
+  --ink2: #344256;
+  --slate: #5d6b82;
+  --mist: #98a4b5;
+  --line: #e3e8ef;
+  --line2: #cfd8e3;
+  --ctl: #8492a6;
+  --scroll: rgba(13, 27, 46, 0.2);
+  --scroll-h: rgba(13, 27, 46, 0.38);
+
+  /* Kingfisher: actions, selection, the running turn */
+  --king: #0b6fe0;
+  --king-h: #0a56b8;
+  --on-king: #ffffff;
+  --link: #0a56b8;
+  --k-ink: #0a4fa8;
+  --k200: #b9d6fb;
+  --k100: #dcebff;
+  --k50: #eef5ff;
+
+  /* Canary: the moments that need a person */
+  --canary: #ffc53d;
+  --on-canary: #0d1b2e;
+  --c100: #fff3cc;
+  --c50: #fff9e6;
+  --c-line: #ffd466;
+  --c-ink: #6b4700;
+  --c-dot: #f0a500;
+  --c-icon: #c98600;
+  --c-glow: rgba(214, 146, 0, 0.6);
+
+  --green: #12a866;
+  --g100: #ddf6e8;
+  --g-ink: #0a6340;
+  --coral: #f0553a;
+  --r100: #ffe8e2;
+  --r-ink: #b0290f;
+  --danger: #d93a1f;
+  --danger-h: #b0290f;
+  --dusk: #6e63e6;
+  --d100: #ecebff;
+  --d-ink: #4338a8;
+  --n100: #edf1f5;
+  --n-ink: #475467;
+
+  /* Badges that invert the page */
+  --badge: #0d1b2e;
+  --on-badge: #ffffff;
+
+  /* Avatars and project tiles */
+  --av1: #dcebff;
+  --av1-ink: #0a4fa8;
+  --av2: #d6f3ee;
+  --av2-ink: #0b6b60;
+  --av3: #e9e5ff;
+  --av3-ink: #5240b8;
+  --av4: #ffe4ec;
+  --av4-ink: #a81f52;
+
+  /* Large quiet surfaces */
+  --hero-2: #eaf3ff;
+  --sky-1: #dcebff;
+  --sky-2: #eef5ff;
+  --sky-3: #f8fbff;
+  --sky-glow: #ffffff;
+  --glass-1: rgba(255, 255, 255, 0.75);
+  --glass-2: rgba(255, 255, 255, 0.1);
+  --rib: #a9ccf8;
+  --trail: #7fb4f5;
+
+  --sh1: 0 1px 2px rgba(13, 27, 46, 0.05);
+  --sh2:
+    0 1px 2px rgba(13, 27, 46, 0.04), 0 12px 28px -16px rgba(13, 60, 130, 0.22);
+  --sh3:
+    0 2px 6px rgba(13, 27, 46, 0.05), 0 32px 72px -28px rgba(13, 60, 130, 0.38);
+  --ring: 0 0 0 3px rgba(11, 111, 224, 0.24);
+
+  --sans:
+    "Plus Jakarta Sans Variable", "Plus Jakarta Sans", "Pretendard Variable",
+    "Pretendard", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "Noto Sans KR", "Malgun Gothic", sans-serif;
+  --mono:
+    "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular,
+    Menlo, Consolas, "Liberation Mono", "Pretendard Variable", "Pretendard",
+    "Noto Sans KR", monospace;
+
+  --nav-h: 60px;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --page: #091221;
+  --page-glow: rgba(46, 144, 250, 0.09);
+  --surface: #101c30;
+  --surface-2: #0c1628;
+  --surface-3: #1a2840;
+  --surface-hover: #14223a;
+  --nav: rgba(11, 21, 37, 0.86);
+  --overlay: rgba(2, 6, 14, 0.64);
+  --code: #0a1424;
+  --night: #060c18;
+  --on-night: #e9eff8;
+  --night-dim: #9fb0c8;
+  --night-line: #1e2c45;
+
+  --ink: #e9eff8;
+  --ink2: #c5d0e0;
+  --slate: #93a1b9;
+  --mist: #64748f;
+  --line: #1e2c45;
+  --line2: #2b3c59;
+  --ctl: #51658a;
+  --scroll: rgba(233, 239, 248, 0.18);
+  --scroll-h: rgba(233, 239, 248, 0.36);
+
+  --king: #0b6fe0;
+  --king-h: #2a84ee;
+  --on-king: #ffffff;
+  --link: #7cb6ff;
+  --k-ink: #a9cfff;
+  --k200: #25497f;
+  --k100: #17325e;
+  --k50: #13264a;
+
+  --canary: #ffc53d;
+  --on-canary: #0d1b2e;
+  --c100: #3a2f10;
+  --c50: #261f0e;
+  --c-line: #7a5e14;
+  --c-ink: #ffd66e;
+  --c-dot: #ffb81f;
+  --c-icon: #f5b62e;
+  --c-glow: rgba(255, 184, 31, 0.28);
+
+  --green: #22c07a;
+  --g100: #0e3325;
+  --g-ink: #74e2b0;
+  --coral: #ff7559;
+  --r100: #3d1b16;
+  --r-ink: #ffa08d;
+  --danger: #d93a1f;
+  --danger-h: #ee5236;
+  --dusk: #9389ff;
+  --d100: #25225a;
+  --d-ink: #c0baff;
+  --n100: #1a2840;
+  --n-ink: #afbcd1;
+
+  --badge: #22314c;
+  --on-badge: #e9eff8;
+
+  --av1: #17325e;
+  --av1-ink: #a9cfff;
+  --av2: #0f3a36;
+  --av2-ink: #7fe0d1;
+  --av3: #2a2466;
+  --av3-ink: #c6bdff;
+  --av4: #4a1830;
+  --av4-ink: #ffa3c1;
+
+  --hero-2: #12294b;
+  --sky-1: #0a1630;
+  --sky-2: #0c1d3c;
+  --sky-3: #091221;
+  --sky-glow: rgba(46, 144, 250, 0.22);
+  --glass-1: rgba(84, 160, 255, 0.16);
+  --glass-2: rgba(84, 160, 255, 0);
+  --rib: #23467b;
+  --trail: #3d76c4;
+
+  --sh1: 0 1px 2px rgba(0, 0, 0, 0.32);
+  --sh2: 0 1px 2px rgba(0, 0, 0, 0.3), 0 14px 30px -16px rgba(0, 0, 0, 0.7);
+  --sh3: 0 2px 6px rgba(0, 0, 0, 0.35), 0 32px 72px -24px rgba(0, 0, 0, 0.8);
+  --ring: 0 0 0 3px rgba(84, 160, 255, 0.38);
+}

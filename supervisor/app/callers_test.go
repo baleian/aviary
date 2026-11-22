@@ -53,7 +53,7 @@ func TestCallersAreAskedWhoTheyAre(t *testing.T) {
 		if authorization != "" {
 			request.Header.Set("Authorization", authorization)
 		}
-		response, err := http.DefaultClient.Do(request)
+		response, err := httpClient.Do(request)
 		if err != nil {
 			t.Fatal(err)
 		}

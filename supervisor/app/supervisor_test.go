@@ -50,6 +50,12 @@ const (
 	soon     = 2 * time.Second
 )
 
+// httpClient sends the requests of the tests. It has a transport of its own:
+// closing an httptest.Server, as the fake sandboxes do, closes the idle
+// connections of the default transport, which can break a request on it
+// whose response has no body.
+var httpClient = &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone()}
+
 func TestMain(m *testing.M) {
 	handover = 100 * time.Millisecond
 	os.Exit(m.Run())
@@ -70,6 +76,9 @@ type installation struct {
 	log        *memorylog.Log
 	// callers has no identity provider unless a test sets one.
 	callers api.Callers
+	// origins are the origins whose pages may call the API from a browser:
+	// none unless a test sets them.
+	origins []string
 }
 
 // install returns an installation without Supervisors. changes modify the
@@ -159,7 +168,7 @@ func (i *installation) supervisor() *supervisor {
 	ctx, stop := context.WithCancel(context.Background())
 	stopped := make(chan error, 1)
 	go func() {
-		stopped <- serveOn(ctx, on, i.records, ev, i.service, i.config, i.keys, stores, i.callers)
+		stopped <- serveOn(ctx, on, i.records, ev, i.service, i.config, i.keys, stores, i.callers, i.origins)
 	}()
 	s.stop = sync.OnceFunc(func() {
 		stop()
@@ -219,7 +228,7 @@ func (s *supervisor) request(method, path, body string, into any) (int, http.Hea
 	if s.token != "" {
 		request.Header.Set("Authorization", "Bearer "+s.token)
 	}
-	response, err := http.DefaultClient.Do(request)
+	response, err := httpClient.Do(request)
 	if err != nil {
 		s.t.Fatal(err)
 	}
@@ -365,7 +374,7 @@ func (r *reader) stream(ctx context.Context, api, after string) error {
 	if r.token != "" {
 		request.Header.Set("Authorization", "Bearer "+r.token)
 	}
-	response, err := http.DefaultClient.Do(request)
+	response, err := httpClient.Do(request)
 	if err != nil {
 		return err
 	}
@@ -625,7 +634,7 @@ func (s *supervisor) origin(token string, forward bool) map[string]string {
 // start with series.
 func (s *supervisor) metric(series string) float64 {
 	s.t.Helper()
-	response, err := http.Get(s.metrics + "/metrics")
+	response, err := httpClient.Get(s.metrics + "/metrics")
 	if err != nil {
 		s.t.Fatal(err)
 	}
@@ -652,7 +661,7 @@ func (s *supervisor) metric(series string) float64 {
 // exposes reports whether the Supervisor's metrics have the line.
 func (s *supervisor) exposes(line string) bool {
 	s.t.Helper()
-	response, err := http.Get(s.metrics + "/metrics")
+	response, err := httpClient.Get(s.metrics + "/metrics")
 	if err != nil {
 		s.t.Fatal(err)
 	}

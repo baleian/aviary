@@ -193,6 +193,7 @@ func TestRunConnectsWithThePluginsOfTheBuild(t *testing.T) {
 	t.Setenv(identityProvider, `{"kind": "callers", "settings": {"of": "the test"}}`)
 	t.Setenv(adminGroups, `[]`)
 	t.Setenv(userGroups, `[]`)
+	t.Setenv(allowedOrigins, `[]`)
 	t.Setenv(harnesses, "")
 	build.asked = nil
 	err = Run(context.Background(), nil, build.plugins())

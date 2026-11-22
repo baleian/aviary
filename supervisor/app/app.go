@@ -23,6 +23,7 @@ import (
 
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	"github.com/google/uuid"
+	"github.com/rs/cors"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -49,6 +50,7 @@ const (
 	identityProvider   = "AVIARY_IDENTITY_PROVIDER"
 	adminGroups        = "AVIARY_ADMIN_GROUPS"
 	userGroups         = "AVIARY_USER_GROUPS"
+	allowedOrigins     = "AVIARY_ALLOWED_ORIGINS"
 	harnesses          = "AVIARY_HARNESSES"
 	maxConcurrentTurns = "AVIARY_MAX_CONCURRENT_TURNS"
 	maxQueuedTurns     = "AVIARY_MAX_QUEUED_TURNS"
@@ -246,6 +248,10 @@ func serve(ctx context.Context, database string, plugins Plugins) error {
 	if err != nil {
 		return err
 	}
+	origins, err := browserOrigins()
+	if err != nil {
+		return err
+	}
 	config, err := driverConfig()
 	if err != nil {
 		return err
@@ -273,20 +279,21 @@ func serve(ctx context.Context, database string, plugins Plugins) error {
 	if on.metrics, err = net.Listen("tcp", metricsAddr); err != nil {
 		return err
 	}
-	return serveOn(ctx, on, st, ev, client, config, keys, stores, callers)
+	return serveOn(ctx, on, st, ev, client, config, keys, stores, callers, origins)
 }
 
 // serveOn serves on the listeners until ctx is done. keys seal the stored
 // secrets and the session tokens, stores read the secrets kept in secret
-// stores, and callers says who may use the API.
-func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, sandboxes driver.Sandboxes, config driver.Config, keys *secret.Keys, stores *secret.Stores, callers api.Callers) error {
+// stores, callers says who may use the API, and origins are the origins
+// whose pages may call it from a browser.
+func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, sandboxes driver.Sandboxes, config driver.Config, keys *secret.Keys, stores *secret.Stores, callers api.Callers, origins []string) error {
 	m := metrics.New(slices.Sorted(maps.Keys(config.Harnesses)), stores.Kinds())
 	stores.Asked = m.SecretRead
 	config.Token = func(session uuid.UUID) (string, error) { return authz.Token(keys, session) }
 	st = announcing{Store: st, events: ev}
 	dr := driver.New(config, sandboxes, st, ev, m)
 	apiServer := &http.Server{
-		Handler:           api.New(ctx, st, ev, dr, keys, stores, callers),
+		Handler:           crossOrigin(origins, api.New(ctx, st, ev, dr, keys, stores, callers)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	// Authz checks have a port of their own, which can be closed to the
@@ -402,6 +409,49 @@ func callersOf(ctx context.Context, plugins []identity.Plugin) (api.Callers, err
 	defer cancel()
 	callers.Provider, err = identity.Open(ctx, provider.Kind, provider.Settings, plugins...)
 	return callers, err
+}
+
+// browserOrigins reads the origins whose pages may call the API from a
+// browser, a JSON list such as ["https://aviary.example.com"]. "*" is every
+// origin, and a host may have one "*" for any part of it.
+func browserOrigins() ([]string, error) {
+	encoded, err := env(allowedOrigins)
+	if err != nil {
+		return nil, err
+	}
+	var allowed []string
+	if err := json.Unmarshal([]byte(encoded), &allowed); err != nil {
+		return nil, fmt.Errorf("%s: %w", allowedOrigins, err)
+	}
+	for _, origin := range allowed {
+		if origin == "*" {
+			continue
+		}
+		parsed, err := url.Parse(origin)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" ||
+			parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return nil, fmt.Errorf("%s: %q is not an origin, such as https://aviary.example.com", allowedOrigins, origin)
+		}
+	}
+	return allowed, nil
+}
+
+// crossOrigin returns the API for browsers: pages of the origins may call
+// it, and pages of other origins may not. Without origins it is the API as
+// it is, which a browser lets only the pages of the API's own address call.
+func crossOrigin(origins []string, api http.Handler) http.Handler {
+	if len(origins) == 0 {
+		return api
+	}
+	return cors.New(cors.Options{
+		AllowedOrigins: origins,
+		AllowedMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete},
+		AllowedHeaders: []string{"Authorization", "Content-Type", "Last-Event-ID"},
+		// A page may read when to send a refused message again.
+		ExposedHeaders: []string{"Retry-After"},
+		// Seconds for which a browser remembers what it may send.
+		MaxAge: 600,
+	}).Handler(api)
 }
 
 // harnessSettings reads the harnesses, a JSON object such as {"opencode":

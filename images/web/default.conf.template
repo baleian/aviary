@@ -1,0 +1,45 @@
+server {
+    listen 8080;
+    server_tokens off;
+    root /usr/share/nginx/html;
+
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+    gzip_min_length 1024;
+
+    # The web UI loads its scripts, styles and fonts only from its own
+    # address, and is not shown in a frame. It may call the API and the
+    # issuer wherever they are.
+    add_header Content-Security-Policy "default-src 'self'; connect-src *; img-src 'self' data:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'" always;
+    add_header X-Content-Type-Options nosniff always;
+    # The address of a sign-in that comes back carries its code.
+    add_header Referrer-Policy no-referrer always;
+
+    location = /healthz {
+        access_log off;
+        return 204;
+    }
+
+    # What the installation sets for the web UI, from the environment.
+    location = /config.json {
+        alias /etc/nginx/conf.d/config.json;
+        expires -1;
+    }
+
+    location /v1/ {
+        ${AVIARY_API_LOCATION}
+        # Event streams are passed on as they come.
+        proxy_buffering off;
+    }
+
+    # Files whose names change with their contents.
+    location ~ ^/(assets|fonts)/ {
+        expires 1y;
+    }
+
+    # Every other path is a screen of the web UI.
+    location / {
+        try_files $uri /index.html;
+        expires -1;
+    }
+}

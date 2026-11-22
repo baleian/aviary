@@ -1,0 +1,9 @@
+#!/bin/sh
+# Says what the server does with the requests of /v1, for the template of
+# its configuration: it passes them on to the API that AVIARY_API names, or
+# it has no such path.
+if [ -n "${AVIARY_API:-}" ]; then
+    export AVIARY_API_LOCATION="proxy_pass ${AVIARY_API%/};"
+else
+    export AVIARY_API_LOCATION="return 404;"
+fi

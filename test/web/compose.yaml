@@ -1,0 +1,33 @@
+# The server of the web UI's image, with the configuration that the image
+# starts it with: once in front of an API, and once alone. `make
+# test-web-server` sets NGINX_IMAGE to the server of the image, and writes
+# the files that stand in for the web UI to .out/web.
+services:
+  fronting: &server
+    image: ${NGINX_IMAGE}
+    environment:
+      AVIARY_API: http://api.test:8080/
+      AVIARY_PUBLIC_API: ""
+      AVIARY_OIDC_ISSUER: https://login.example.com/realms/main
+      AVIARY_OIDC_CLIENT_ID: aviary
+      AVIARY_OIDC_SCOPES: openid profile email groups
+    # The server does not start before it can resolve the API, which the
+    # tests play.
+    restart: on-failure
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /etc/nginx/conf.d:uid=101,gid=101
+    volumes:
+      - ../../images/web/19-api.envsh:/docker-entrypoint.d/19-api.envsh:ro
+      - ../../images/web/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ../../images/web/config.json.template:/etc/nginx/templates/config.json.template:ro
+      - ../../.out/web:/usr/share/nginx/html:ro
+  alone:
+    <<: *server
+    environment:
+      AVIARY_API: ""
+      AVIARY_PUBLIC_API: https://api.example.com
+      AVIARY_OIDC_ISSUER: ""
+      AVIARY_OIDC_CLIENT_ID: ""
+      AVIARY_OIDC_SCOPES: ""
