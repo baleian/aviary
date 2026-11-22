@@ -25,7 +25,8 @@
 // Any other message gets the reply "mock".
 //
 // Requests must carry the API key given in MOCK_LLM_API_KEY. Every response
-// reports the same token usage, 11 input and 7 output tokens.
+// reports the same token usage, 11 input and 7 output tokens. GET /v1/models
+// lists one model, "mock".
 //
 // mock-llm is also the forward proxy of the harness tests that run without a
 // cluster. As a proxy it forwards nothing: it refuses each request and logs
@@ -91,6 +92,10 @@ func newMock(apiKey string) http.Handler {
 	mux.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
 	mux.HandleFunc("POST /v1/chat/completions", withKey(apiKey, m.chatCompletions))
 	mux.HandleFunc("POST /v1/responses", withKey(apiKey, m.responses))
+	mux.HandleFunc("GET /v1/models", withKey(apiKey, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"object": "list", "data": [{"id": "mock", "object": "model"}]}`+"\n")
+	}))
 	probe := wheel()
 	mux.HandleFunc("GET /packages/"+probeWheel, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/zip")

@@ -333,6 +333,23 @@ func TestRequests(t *testing.T) {
 	if response, err := http.Get(model.URL + "/healthz"); err != nil || response.StatusCode != http.StatusOK {
 		t.Errorf("GET /healthz: got %v: %v", response, err)
 	}
+	// The models are listed for a caller with the key.
+	for key, status := range map[string]int{apiKey: http.StatusOK, "a-session-token": http.StatusUnauthorized} {
+		request, err := http.NewRequest("GET", model.URL+"/v1/models", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", "Bearer "+key)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		listed, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		if response.StatusCode != status || (status == http.StatusOK && !strings.Contains(string(listed), `"id": "mock"`)) {
+			t.Errorf("GET /v1/models with key %q: got %d %s, want %d", key, response.StatusCode, listed, status)
+		}
+	}
 }
 
 // As a forward proxy, mock-llm refuses every request.

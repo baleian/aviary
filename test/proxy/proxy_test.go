@@ -66,7 +66,8 @@ type endpoint struct {
 const mistaken = "a-turn-that-the-supervisor-errs-about"
 
 // endpoints are the model endpoints that the Supervisor returns, by token.
-// Every host resolves to the tests.
+// Every host resolves to the tests, except gone.invalid, which does not
+// resolve. Nothing listens on port 9.
 var endpoints = map[string]endpoint{
 	token:                                {host: "model.test:8081", key: key},
 	"a-turn-of-a-provider":               {host: "allowed.test", key: "the-key-of-a-provider"},
@@ -75,6 +76,8 @@ var endpoints = map[string]endpoint{
 	"a-turn-of-a-provider-of-another":    {host: "unnamed.test:8443", secure: true, key: "the-key-of-a-provider"},
 	"a-turn-of-a-provider-not-on-a-list": {host: "other.test", key: "the-key-of-a-provider"},
 	"a-turn-of-a-provider-on-a-port":     {host: "model.test:8081", key: "the-key-of-a-provider"},
+	"a-turn-of-a-provider-that-is-down":  {host: "model.test:9", key: "the-key-of-a-provider"},
+	"a-turn-of-a-provider-that-is-gone":  {host: "gone.invalid", key: "the-key-of-a-provider"},
 	mistaken:                             {host: "other.test", key: "the-key-of-a-provider", mistaken: true},
 }
 
@@ -429,6 +432,31 @@ func TestModelRequestThatIsRefused(t *testing.T) {
 	notAllowed := ask(t, closed, "/v1/chat/completions", "Bearer "+token)
 	if notAllowed.status != http.StatusForbidden || !strings.Contains(notAllowed.body, "egressProxy.allowedHosts") {
 		t.Errorf("model request to a disallowed endpoint: got %d %q, want 403", notAllowed.status, notAllowed.body)
+	}
+}
+
+// The replies that the proxy makes itself carry a header that the answers of
+// a model endpoint do not, whatever their status: that tells whether a model
+// request reached its endpoint.
+func TestTheProxyMarksItsOwnReplies(t *testing.T) {
+	t.Parallel()
+	const mark = "X-Aviary-Proxy"
+	provided := "Bearer " + named("allowed.test", true)
+	for path, status := range map[string]int{"/v1/marked/answers": http.StatusOK, "/v1/marked/refuses?status=503": http.StatusServiceUnavailable} {
+		if got := ask(t, open, path, provided); got.status != status || got.header.Get(mark) != "" {
+			t.Errorf("an endpoint that answers %d: status %d with the header %q, want its answer without the header", status, got.status, got.header.Get(mark))
+		}
+	}
+	for name, got := range map[string]answer{
+		"an unknown token":                  ask(t, open, "/v1/marked/unknown", "Bearer another-token"),
+		"a turn without an endpoint":        ask(t, open, "/v1/marked/nameless", "Bearer "+nameless),
+		"an endpoint that is not allowed":   ask(t, closed, "/v1/marked/closed", "Bearer "+token),
+		"an endpoint that is down":          ask(t, open, "/v1/marked/down", "Bearer "+named("model.test:9", true)),
+		"an endpoint that does not resolve": ask(t, open, "/v1/marked/gone", "Bearer "+named("gone.invalid", true)),
+	} {
+		if got.header.Get(mark) != "true" || got.status < 400 {
+			t.Errorf("%s: status %d %q with the header %q, want a reply of the proxy with it", name, got.status, got.body, got.header.Get(mark))
+		}
 	}
 }
 

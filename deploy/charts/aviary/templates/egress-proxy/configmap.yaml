@@ -57,20 +57,31 @@ data:
                           mutations:
                             - remove: x-aviary-upstream
                             - remove: x-aviary-upstream-tls
-                    {{- if not $allowAny }}
-                    # Explains the 403 with which the RBAC filter refuses an
-                    # endpoint whose host is not allowed. Envoy replies 403 for
-                    # nothing else on this listener.
+                    # Marks the replies that Envoy makes itself, which tells
+                    # them from the answers of a model endpoint.
                     local_reply_config:
                       mappers:
+                        {{- if not $allowAny }}
+                        # Explains the 403 with which the RBAC filter refuses
+                        # an endpoint whose host is not allowed. Envoy replies
+                        # 403 for nothing else on this listener.
                         - filter:
                             status_code_filter:
                               comparison:
                                 op: EQ
                                 value: {default_value: 403, runtime_key: none}
+                          headers_to_add:
+                            - header: {key: x-aviary-proxy, value: "true"}
                           body:
                             inline_string: "the host of the model endpoint is not in egressProxy.allowedHosts\n"
-                    {{- end }}
+                        {{- end }}
+                        - filter:
+                            status_code_filter:
+                              comparison:
+                                op: GE
+                                value: {default_value: 0, runtime_key: none}
+                          headers_to_add:
+                            - header: {key: x-aviary-proxy, value: "true"}
                     {{- include "aviary.egress-proxy.access-log" "llm" | nindent 20 }}
                     route_config:
                       virtual_hosts:

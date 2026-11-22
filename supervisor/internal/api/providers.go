@@ -1,12 +1,17 @@
 package api
 
 import (
+	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
+	"aviary/supervisor/internal/authz"
 	"aviary/supervisor/store"
 )
 
@@ -49,9 +54,7 @@ func answered(from store.Provider) provider {
 }
 
 // readProvider decodes and validates a request to create or replace the
-// provider with the ID. A key given by value is encrypted for that provider.
-// A key in a secret store is read once, so that an unreadable key is
-// reported at once rather than during a turn.
+// provider with the ID.
 func (a *api) readProvider(w http.ResponseWriter, r *http.Request, id, projectID uuid.UUID) (store.Provider, error) {
 	var request struct {
 		Name   string       `json:"name"`
@@ -64,11 +67,20 @@ func (a *api) readProvider(w http.ResponseWriter, r *http.Request, id, projectID
 	if request.Name == "" {
 		return store.Provider{}, invalid("name is required")
 	}
-	if err := endpoint(request.URL); err != nil {
+	read, err := a.providerAt(r, id, projectID, request.URL, request.APIKey)
+	read.Name = request.Name
+	return read, err
+}
+
+// providerAt validates the URL and the key of the provider with the ID, and
+// returns the provider without a name. A key given by value is encrypted for
+// that provider. A key in a secret store is read once, so that an unreadable
+// key is reported at once rather than during a turn.
+func (a *api) providerAt(r *http.Request, id, projectID uuid.UUID, address string, key *secretField) (store.Provider, error) {
+	if err := endpoint(address); err != nil {
 		return store.Provider{}, err
 	}
-	read := store.Provider{ID: id, Name: request.Name, URL: request.URL}
-	key := request.APIKey
+	read := store.Provider{ID: id, URL: address}
 	switch {
 	case key == nil:
 	case key.Value != "" && key.Store == "" && key.Path == "" && key.Key == "":
@@ -150,6 +162,103 @@ func (a *api) createProvider(w http.ResponseWriter, r *http.Request) error {
 	}
 	respond(w, http.StatusCreated, answered(created))
 	return nil
+}
+
+// trialTimeout is how long the model request of a trial may take. It is a
+// variable for tests.
+var trialTimeout = 15 * time.Second
+
+// proxyReply is the header of the responses that the Egress Proxy makes
+// itself: every other response is the answer of the model endpoint.
+const proxyReply = "x-aviary-proxy"
+
+// tried is what came of trying a model provider.
+type tried struct {
+	// Reached reports whether the endpoint answered. Status is its answer,
+	// and Reason is why there was none.
+	Reached    bool   `json:"reached"`
+	Status     int    `json:"status,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+	DurationMS int64  `json:"duration_ms"`
+}
+
+// testProvider tries a model provider before it is registered or replaced.
+// It asks the endpoint for its models, with the key and through the Egress
+// Proxy, as the model requests of a turn go: the answer tells whether turns
+// will reach the endpoint. The provider is not stored.
+func (a *api) testProvider(w http.ResponseWriter, r *http.Request) error {
+	projectID, err := pathID(r, "pid")
+	if err != nil {
+		return err
+	}
+	if _, err := a.store.Project(r.Context(), projectID); err != nil {
+		return err
+	}
+	var request struct {
+		URL    string       `json:"url"`
+		APIKey *secretField `json:"api_key"`
+	}
+	if err := decode(w, r, &request); err != nil {
+		return err
+	}
+	id, err := uuid.NewV7()
+	if err != nil {
+		return err
+	}
+	provider, err := a.providerAt(r, id, projectID, request.URL, request.APIKey)
+	if err != nil {
+		return err
+	}
+	provider.ProjectID = projectID
+	who := callerOf(r)
+	token, err := authz.TrialToken(a.keys, authz.Trial{
+		Provider: provider, UserID: who.id, Subject: who.Subject, Until: time.Now().Add(trialTimeout),
+	})
+	if err != nil {
+		return err
+	}
+	result, err := a.try(r.Context(), provider.URL, token)
+	if err != nil {
+		return err
+	}
+	respond(w, http.StatusOK, result)
+	return nil
+}
+
+// try sends the model request of a trial, GET models under the URL of the
+// provider, to the Egress Proxy with the trial's token, and returns what
+// came of it.
+func (a *api) try(ctx context.Context, address, token string) (tried, error) {
+	at, err := url.Parse(address)
+	if err != nil {
+		return tried{}, err
+	}
+	target := url.URL{Scheme: a.models.Scheme, Host: a.models.Host}
+	ctx, cancel := context.WithTimeout(ctx, trialTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String()+strings.TrimSuffix(at.EscapedPath(), "/")+"/models", nil)
+	if err != nil {
+		return tried{}, err
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	began := time.Now()
+	answer, err := a.proxy.Do(request)
+	took := time.Since(began).Milliseconds()
+	if errors.Is(err, context.DeadlineExceeded) {
+		return tried{Reason: "the endpoint did not answer in " + trialTimeout.String(), DurationMS: took}, nil
+	}
+	if err != nil {
+		return tried{}, err
+	}
+	defer answer.Body.Close()
+	if answer.Header.Get(proxyReply) == "" {
+		return tried{Reached: true, Status: answer.StatusCode, DurationMS: took}, nil
+	}
+	why, err := io.ReadAll(io.LimitReader(answer.Body, 1024))
+	if err != nil {
+		return tried{}, err
+	}
+	return tried{Reason: strings.TrimSpace(string(why)), DurationMS: took}, nil
 }
 
 func (a *api) getProvider(w http.ResponseWriter, r *http.Request) error {

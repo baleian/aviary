@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -39,6 +40,11 @@ type api struct {
 	// that providers reference in them.
 	stores  *secret.Stores
 	callers Callers
+	// models is the Egress Proxy's endpoint for model requests, where the
+	// trials of model providers go. proxy sends them, and follows no
+	// redirect: the answer of the endpoint is the result.
+	models  *url.URL
+	proxy   *http.Client
 	changes *changes
 	closing <-chan struct{}
 }
@@ -72,8 +78,9 @@ var slugForm = regexp.MustCompile(`^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$`)
 
 // New returns the API handler. Event streams stay open until their clients
 // disconnect or ctx is done.
-func New(ctx context.Context, st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Keys, stores *secret.Stores, callers Callers) http.Handler {
-	a := &api{store: st, events: ev, driver: dr, keys: keys, stores: stores, callers: callers, changes: newChanges(), closing: ctx.Done()}
+func New(ctx context.Context, st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Keys, stores *secret.Stores, callers Callers, models *url.URL) http.Handler {
+	a := &api{store: st, events: ev, driver: dr, keys: keys, stores: stores, callers: callers, models: models, changes: newChanges(), closing: ctx.Done()}
+	a.proxy = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	go a.sendChanges(ctx)
 	mux := http.NewServeMux()
 	// Admins may do everything. Other callers have, in a project, the
@@ -97,6 +104,7 @@ func New(ctx context.Context, st store.Store, ev *events.Streams, dr *driver.Dri
 	mux.Handle("GET /v1/secret-stores/{store}", a.ofProject(needs{projectView}, "store", a.ofSecretStore, a.getSecretStore))
 	mux.Handle("PUT /v1/secret-stores/{store}", a.ofProject(needs{connectionsManage}, "store", a.ofSecretStore, a.replaceSecretStore))
 	mux.Handle("POST /v1/projects/{pid}/providers", a.inProject(needs{connectionsManage}, a.createProvider))
+	mux.Handle("POST /v1/projects/{pid}/providers/test", a.inProject(needs{connectionsManage}, a.testProvider))
 	mux.Handle("GET /v1/projects/{pid}/providers", a.inProject(needs{projectView}, a.listProviders))
 	mux.Handle("GET /v1/providers/{provider}", a.ofProject(needs{projectView}, "provider", a.ofProvider, a.getProvider))
 	mux.Handle("PUT /v1/providers/{provider}", a.ofProject(needs{connectionsManage}, "provider", a.ofProvider, a.replaceProvider))

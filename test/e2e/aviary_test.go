@@ -49,6 +49,7 @@ func TestAviary(t *testing.T) {
 		tests := map[string]func(*testing.T){
 			"a sandbox reaches the outside only through the proxy": egress,
 			"an agent uses its provider":                           providers,
+			"a provider is tried before it is registered":          tried,
 			"a provider keeps its key in a secret store":           secretStore,
 			"a failed turn reports its reason":                     failures,
 			"an idle session loses its sandbox":                    loses,
@@ -542,6 +543,46 @@ func providers(t *testing.T) {
 	here := run(t, agentOf(t, project, local, harness(harnesses[0])).session(t), "say done")
 	if line := logged(t, here.ID, "llm", mockHost, 200); line["provider"] != local {
 		t.Errorf("access log line for provider %s = %v", local, line)
+	}
+}
+
+// A provider is tried before turns use it: a model request goes to its
+// endpoint through the Egress Proxy, and the answer is the endpoint's status
+// or why the proxy got none.
+func tried(t *testing.T) {
+	project := newProject(t)
+	for name, test := range map[string]struct {
+		url, key string
+		reached  bool
+		// status is the answer of an endpoint that was reached, and reason
+		// is part of why another was not.
+		status int
+		reason string
+	}{
+		"with its key":                        {mockURL, mockKey, true, http.StatusOK, ""},
+		"with a key that the model refuses":   {mockURL, "a-key-that-the-model-does-not-know", true, http.StatusUnauthorized, ""},
+		"at localhost":                        {"http://localhost/v1", mockKey, true, http.StatusOK, ""},
+		"at a host that is not allowed":       {"https://model.example.com/v1", mockKey, false, 0, "egressProxy.allowedHosts"},
+		"at a port where nothing listens":     {"https://" + mockHost + "/v1", mockKey, false, 0, "upstream connect error"},
+		"under a path that the model has not": {"http://" + mockHost + "/v2", mockKey, true, http.StatusNotFound, ""},
+	} {
+		var got struct {
+			Reached bool
+			Status  int
+			Reason  string
+		}
+		body := fmt.Sprintf(`{"url": %q, "api_key": {"value": %q}}`, test.url, test.key)
+		if status := request(t, "POST", "/v1/projects/"+project+"/providers/test", body, &got); status != http.StatusOK {
+			t.Errorf("a provider %s: got status %d, want 200", name, status)
+			continue
+		}
+		if got.Reached != test.reached || got.Status != test.status || !strings.Contains(got.Reason, test.reason) || (got.Reason == "") != test.reached {
+			t.Errorf("a provider %s: %+v, want reached %t, status %d and a reason with %q", name, got, test.reached, test.status, test.reason)
+		}
+	}
+	var listed struct{ Providers []struct{ ID string } }
+	if status := request(t, "GET", "/v1/projects/"+project+"/providers", "", &listed); status != http.StatusOK || len(listed.Providers) != 0 {
+		t.Errorf("providers after the trials: status %d, %v", status, listed.Providers)
 	}
 }
 

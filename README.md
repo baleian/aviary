@@ -100,10 +100,15 @@ session:
   allows.
 - A request from a session in which no turn runs is refused.
 
+A response to a model request that the proxy makes itself, as when it does
+not reach the endpoint, has the header `x-aviary-proxy`. The answers of an
+endpoint do not.
+
 The proxy logs every request as a line of JSON on its standard output. Each
 line identifies the origin of its request on its own:
 
-- `turn`, `session`, `agent` and `project`.
+- `turn`, `session`, `agent` and `project`. The model request with which a
+  provider is [tried](#model-providers) has only the `project`.
 - With an identity provider, `user` and `subject`: who sent the turn's
   message, as the user ID that `GET /v1/me` returns and as the identity
   provider's subject, which identifies the user without Aviary's records.
@@ -196,6 +201,7 @@ a client shows the slug when the name is empty.
 | `POST /v1/projects` | Creates a project. Body: `{"slug": "...", "name": "..."}`. Returns 409 if another project has the slug. Administrators only. |
 | `POST /v1/projects/{id}/providers` | Creates a model provider in the project. Body: `{"name": "...", "url": "...", "api_key": {"value": "..."}}`. The URL is the base URL of a model endpoint, and the key is sent to it as a bearer token. A key in a secret store of the project is given by its location: `"api_key": {"store": "...", "path": "...", "key": "..."}`. An endpoint that takes no key has no `api_key`. See [Model providers](#model-providers). |
 | `PUT /v1/providers/{id}` | Replaces the name, the URL and the key of a provider together: a provider given no key has none afterwards. |
+| `POST /v1/projects/{id}/providers/test` | Tries a model provider without registering it. Body: the `url` and the `api_key` of a provider. Aviary asks the endpoint for its models, `GET models` under the URL, with the key and through the Egress Proxy, as the model requests of a turn go. Returns `{"reached": true, "status": 200, "duration_ms": 12}` with the status of the endpoint's answer, or `{"reached": false, "reason": "...", "duration_ms": 5003}` with why there was none. |
 | `POST /v1/projects/{id}/secret-stores` | Registers a secret store of the project. Body: `{"name": "...", "kind": "...", "settings": {...}, "credential": {"value": "..."}}`. See [Secret stores](#secret-stores). |
 | `PUT /v1/secret-stores/{id}` | Replaces the name, the kind, the settings and the credential of a secret store together. |
 | `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"slug": "...", "name": "...", "description": "...", "harness": "...", "model": {"provider": "...", "name": "..."}, "instructions": "...", "approval": "ask"}`. The optional description says what the agent is for, and like the name is only for display. The harness is one of those that `GET /v1/harnesses` lists. The model is a provider of the project, by ID, and the provider's name for the model. The optional instructions are given to the agent before every turn. With `"approval": "ask"`, the agent asks a person before it acts (see [Approval](#approval)); without it, it asks nobody. Returns 409 if another agent of the project has the slug. |
@@ -441,7 +447,7 @@ Everything else needs a permission in the project:
 | --- | --- |
 | `project.view` | Viewing the project and its agents, model providers and secret stores, without their secrets. Every member has it. |
 | `agents.manage` | Creating and changing agents in the project. Deleting one also needs `sessions.control_all`, since it ends the sessions of every member. |
-| `connections.manage` | Registering and replacing the project's model providers and secret stores. |
+| `connections.manage` | Registering and replacing the project's model providers and secret stores, and trying a model provider. |
 | `sessions.run` | Creating sessions, and in one's own sessions: sending messages, stopping turns, answering approval requests, reading the conversation, changing the title and ending the session. |
 | `sessions.view_all` | Reading the sessions of other members. |
 | `sessions.control_all` | Stopping the turns of other members, answering their approval requests, and changing the titles of their sessions and ending them. Includes `sessions.view_all`. |
@@ -495,6 +501,12 @@ agent's provider, for the agent's model.
   requests go.
 - **A provider can be replaced while turns use it.** Their next model
   request uses the new endpoint and key.
+- **A provider can be tried before turns use it.**
+  `POST /v1/projects/{id}/providers/test` sends a model request to its
+  endpoint the way a turn does, so an endpoint that the Egress Proxy does
+  not reach, or a key that the endpoint refuses, shows at once and not as a
+  failed turn. An endpoint that has no list of models answers 404, and was
+  reached all the same.
 - **The host of a provider is subject to `egressProxy.allowedHosts`** like
   any other host: if the list names hosts, it must allow the provider's.
 - **A provider at `localhost` reaches nothing**, since to the Egress Proxy

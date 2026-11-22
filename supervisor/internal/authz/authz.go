@@ -6,12 +6,15 @@ package authz
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
@@ -48,6 +51,55 @@ func Token(keys *secret.Keys, session uuid.UUID) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(sealed), nil
 }
 
+// Trial is a model request with which the API tries a model provider before
+// turns use it. It goes through the Egress Proxy as the model request of a
+// turn does.
+type Trial struct {
+	// Provider is the provider to try: its ID, project, URL and key. It
+	// need not be stored.
+	Provider store.Provider
+	// UserID and Subject identify the caller who tries it. They are zero if
+	// requests to the API are not authenticated.
+	UserID  uuid.UUID
+	Subject string
+	// Until is when the trial's token stops being accepted.
+	Until time.Time
+}
+
+// trialPlace is what the tokens of trials are sealed for.
+const trialPlace = "the trial of a model provider"
+
+// sealedTrial is the form in which a trial is sealed into its token.
+type sealedTrial struct {
+	Project  uuid.UUID
+	Provider uuid.UUID
+	URL      string
+	Key      []byte                 `json:",omitempty"`
+	KeyAt    *store.SecretReference `json:",omitempty"`
+	User     uuid.UUID
+	Subject  string
+	Until    time.Time
+}
+
+// TrialToken returns the token of a trial, which its model request carries
+// in place of the token of a session: the trial, encrypted with the keys of
+// the installation.
+func TrialToken(keys *secret.Keys, trial Trial) (string, error) {
+	encoded, err := json.Marshal(sealedTrial{
+		Project: trial.Provider.ProjectID, Provider: trial.Provider.ID, URL: trial.Provider.URL,
+		Key: trial.Provider.APIKey, KeyAt: trial.Provider.APIKeyAt,
+		User: trial.UserID, Subject: trial.Subject, Until: trial.Until,
+	})
+	if err != nil {
+		return "", err
+	}
+	token, err := keys.Seal(string(encoded), trialPlace)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(token), nil
+}
+
 type authorizer struct {
 	authv3.UnimplementedAuthorizationServer
 	store store.Store
@@ -81,6 +133,10 @@ func New(st store.Store, keys *secret.Keys, stores *secret.Stores, localhost str
 // A model request is routed to the endpoint of the turn's provider, with the
 // provider's API key. A forward proxy request goes where the pod sends it,
 // and never gets a provider's key.
+//
+// A model request may carry the token of a trial instead. It is routed to
+// the endpoint of the trial's provider, and its metadata names the project
+// and the caller of the trial.
 func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*authv3.CheckResponse, error) {
 	headers := request.GetAttributes().GetRequest().GetHttp().GetHeaders()
 	forward := request.GetAttributes().GetContextExtensions()["listener"] == "forward"
@@ -88,33 +144,27 @@ func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*
 	if forward {
 		token = proxyPassword(headers["proxy-authorization"])
 	}
-	session, known := a.session(token)
-	if !known {
-		return denied(forward), nil
-	}
-	origin, err := a.store.SessionTurn(ctx, session)
-	if errors.Is(err, store.ErrNotFound) {
-		return denied(forward), nil
-	}
+	origin, found, err := a.origin(ctx, token, forward)
 	if err != nil {
 		// The proxy denies a request whose check fails.
 		if ctx.Err() != nil {
 			return nil, status.FromContextError(ctx.Err()).Err()
 		}
-		slog.ErrorContext(ctx, "look up running turn", "session", session, "error", err)
+		slog.ErrorContext(ctx, "look up the origin of a request", "error", err)
 		return nil, status.Error(codes.Internal, "internal error")
 	}
-	from := map[string]any{
-		"turn":    origin.TurnID.String(),
-		"session": origin.SessionID.String(),
-		"agent":   origin.AgentID.String(),
-		"project": origin.ProjectID.String(),
+	if !found {
+		return denied(forward), nil
+	}
+	from := map[string]any{"project": origin.ProjectID.String()}
+	if origin.TurnID != uuid.Nil {
+		from["turn"], from["session"], from["agent"] = origin.TurnID.String(), origin.SessionID.String(), origin.AgentID.String()
+		if !forward {
+			from["provider"] = origin.Provider.ID.String()
+		}
 	}
 	if origin.UserID != uuid.Nil {
 		from["user"], from["subject"] = origin.UserID.String(), origin.Subject
-	}
-	if !forward {
-		from["provider"] = origin.Provider.ID.String()
 	}
 	metadata, err := structpb.NewStruct(from)
 	if err != nil {
@@ -133,6 +183,38 @@ func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*
 	}
 	allowed.HttpResponse = &authv3.CheckResponse_OkResponse{OkResponse: endpoint}
 	return allowed, nil
+}
+
+// origin returns where the request with the token comes from: the running
+// turn of the session of a session token or, for a model request, the trial
+// of a trial token. It returns false for any other token.
+func (a *authorizer) origin(ctx context.Context, token string, forward bool) (store.Origin, bool, error) {
+	if session, known := a.session(token); known {
+		origin, err := a.store.SessionTurn(ctx, session)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			return store.Origin{}, false, nil
+		case err != nil:
+			return store.Origin{}, false, fmt.Errorf("running turn of session %s: %w", session, err)
+		}
+		return origin, true, nil
+	}
+	trial, known := a.trial(token)
+	if !known || forward {
+		return store.Origin{}, false, nil
+	}
+	origin := store.Origin{ProjectID: trial.Provider.ProjectID, UserID: trial.UserID, Subject: trial.Subject, Provider: trial.Provider}
+	if at := trial.Provider.APIKeyAt; at != nil {
+		in, err := a.store.SecretStore(ctx, at.Store)
+		if errors.Is(err, store.ErrNotFound) || (err == nil && in.ProjectID != origin.ProjectID) {
+			return store.Origin{}, false, nil
+		}
+		if err != nil {
+			return store.Origin{}, false, fmt.Errorf("secret store %s of a trial: %w", at.Store, err)
+		}
+		origin.SecretStore = &in
+	}
+	return origin, true, nil
 }
 
 // endpoint returns how the proxy forwards a model request for path: to the
@@ -253,6 +335,27 @@ func (a *authorizer) session(token string) (uuid.UUID, bool) {
 	}
 	session, err := uuid.Parse(opened)
 	return session, err == nil
+}
+
+// trial returns the trial of the token, or false if it is not the token of
+// a trial that is still accepted.
+func (a *authorizer) trial(token string) (Trial, bool) {
+	encrypted, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || token == "" {
+		return Trial{}, false
+	}
+	opened, err := a.keys.Open(encrypted, trialPlace)
+	if err != nil {
+		return Trial{}, false
+	}
+	var of sealedTrial
+	if err := json.Unmarshal([]byte(opened), &of); err != nil || !time.Now().Before(of.Until) {
+		return Trial{}, false
+	}
+	return Trial{
+		Provider: store.Provider{ID: of.Provider, ProjectID: of.Project, URL: of.URL, APIKey: of.Key, APIKeyAt: of.KeyAt},
+		UserID:   of.User, Subject: of.Subject, Until: of.Until,
+	}, true
 }
 
 // bearerToken returns the token of an Authorization header.

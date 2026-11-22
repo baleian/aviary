@@ -300,7 +300,7 @@ func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, 
 	st = announcing{Store: st, events: ev}
 	dr := driver.New(config, sandboxes, st, ev, m)
 	apiServer := &http.Server{
-		Handler:           crossOrigin(origins, api.New(ctx, st, ev, dr, keys, stores, callers)),
+		Handler:           crossOrigin(origins, api.New(ctx, st, ev, dr, keys, stores, callers, config.Models)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	// Authz checks have a port of their own, which can be closed to the
