@@ -12,6 +12,8 @@ import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { api, ApiError } from "../../api/client.ts";
 import { backend } from "../../api/fake.ts";
 import { transport } from "../../api/transport.ts";
+import type { Turn } from "../../api/types.ts";
+import { queryClient } from "../../query.ts";
 import { fast, leave, open } from "../../testing.tsx";
 
 beforeAll(fast);
@@ -110,6 +112,20 @@ async function deafen() {
       ? stream(path, options, { ...handlers, onEvent: () => {} })
       : stream(path, options, handlers),
   );
+}
+
+// queuedFirst has the API tell every turn its place in the queue first, as
+// it does of a turn that waits for nothing but its start.
+async function queuedFirst() {
+  const carrier = await transport();
+  const stream = carrier.stream.bind(carrier);
+  vi.spyOn(carrier, "stream").mockImplementation((path, options, handlers) => {
+    if (path.startsWith("/v1/turns/") && !options.after) {
+      const first = { id: "", type: "turn.queued", data: '{"position":1}' };
+      queueMicrotask(() => handlers.onEvent(first));
+    }
+    return stream(path, options, handlers);
+  });
 }
 
 // refocus has the window lose the focus and get it back, at which the
@@ -666,7 +682,42 @@ it("takes the message of a turn that failed, to send it again", async () => {
   expect(document.activeElement).toBe(box());
 });
 
+it("says that a turn starts once its session says that it left the queue", async () => {
+  await queuedFirst();
+  const session = await talk("Left the queue");
+  const user = open(session.path, "alice");
+  await screen.findByRole("heading", { name: "Left the queue" });
+  const { mock } = await backend();
+  // The agent takes long enough to start to be seen at it.
+  mock.speed = 5;
+  try {
+    await user.type(box(), "Take your time.{Enter}");
+    const turn = await waitFor(() => {
+      const found = document.querySelector(".turn");
+      expect(found).toBeTruthy();
+      return found!;
+    });
+    // The events of the turn tell its place in the queue, and not that it
+    // has left the queue.
+    await waitFor(() => {
+      const [told] = queryClient.getQueryData<Turn[]>(["turns", session.id])!;
+      expect(told.position).toBe(1);
+    });
+    await waitFor(() =>
+      expect(turn.querySelector(".chip")!.textContent).toBe("Starting"),
+    );
+    expect(turn.querySelector(".state")!.textContent).toBe("Starting…");
+    expect(bar().textContent).toBe("Starting…Stop turn");
+    expect(document.querySelector(".conv-h .chip")!.textContent).toBe(
+      "Starting",
+    );
+  } finally {
+    mock.speed = 0;
+  }
+});
+
 it("says that a turn waits for a sandbox that sleeps to wake", async () => {
+  await queuedFirst();
   const user = open(
     await pathOf("Why does the checkout test flake on CI?"),
     "alice",

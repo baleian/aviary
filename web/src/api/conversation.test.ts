@@ -11,6 +11,7 @@ import {
   endSession,
   followTurn,
   joinTurn,
+  noteTurn,
   olderSessions,
   olderTurns,
   renameSession,
@@ -518,4 +519,70 @@ it("keeps a session that it ends as the API then has it", async () => {
   await endSession("s9");
   expect(remove).toHaveBeenCalledWith("/v1/sessions/s9");
   expect(queryClient.getQueryData(["session", "s9"])).toEqual(ended);
+});
+
+it("takes from its session that a turn has left the queue, and was told to stop", async () => {
+  const items = [{ type: "message" as const, text: "So far." }];
+  const ended = turn(1, { state: "completed", ended_at: "x" });
+  queryClient.setQueryData(TURNS, [
+    ended,
+    turn(2, { state: "queued", position: 1, items }),
+  ]);
+  // The turn was taken from the queue: its harness does not have the
+  // message yet.
+  await noteTurn("s1", turn(2, { state: "running" }));
+  expect(read()[1]).toEqual(turn(2, { state: "running", position: 1, items }));
+  await noteTurn(
+    "s1",
+    turn(2, { state: "running", started_at: "s", cancel_requested_at: "c" }),
+  );
+  expect(read()[1]).toEqual(
+    turn(2, {
+      state: "running",
+      started_at: "s",
+      cancel_requested_at: "c",
+      position: 1,
+      items,
+    }),
+  );
+
+  // A turn only moves on: what its events told is newer than what its
+  // session says after them.
+  await noteTurn("s1", turn(2, { state: "queued", started_at: "later" }));
+  expect(read()[1]).toMatchObject({ state: "running", started_at: "s" });
+
+  // A turn that has ended, and one that was not read, are left alone.
+  const before = read();
+  await noteTurn("s1", turn(1, { state: "running" }));
+  await noteTurn("s1", turn(9, { state: "running" }));
+  expect(read()).toBe(before);
+  expect(read()[0]).toBe(ended);
+});
+
+it("reads the record of a turn that its session says has ended, once", async () => {
+  queryClient.setQueryData(TURNS, [turn(2, { state: "running" })]);
+  const answer = answering();
+  const noted = noteTurn(
+    "s1",
+    turn(2, { state: "completed", ended_at: "2026-11-22T10:00:09Z" }),
+  );
+  expect(api.get).toHaveBeenCalledWith("/v1/turns/t2");
+  // The events of the turn say the same meanwhile.
+  following()("turn.completed", { stop_reason: "end_turn" });
+  expect(api.get).toHaveBeenCalledTimes(1);
+  const record = turn(2, {
+    state: "completed",
+    ended_at: "2026-11-22T10:00:09Z",
+    items: [{ type: "message", text: "From the record." }],
+  });
+  answer(record);
+  await noted;
+  expect(read()[0]).toEqual(record);
+  // A turn that ends later is read again.
+  queryClient.setQueryData(TURNS, [turn(2, { state: "running" })]);
+  const again = answering();
+  const later = noteTurn("s1", turn(2, { state: "failed", ended_at: "x" }));
+  again(record);
+  await later;
+  expect(read()[0]).toEqual(record);
 });

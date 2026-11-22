@@ -11,6 +11,7 @@ import {
   answerRequest,
   followTurn,
   joinTurn,
+  noteTurn,
   olderTurns,
   stopTurn,
   suggestTitle,
@@ -91,8 +92,12 @@ export function Conversation({
     return followTurn(id, unfinished, oops, renames ? retitle : undefined);
   }, [id, unfinished, renames]);
 
-  // A turn that began elsewhere joins the turns that are shown.
+  // What the session says of its newest turn shows, and a turn that began
+  // elsewhere joins the turns that are shown.
   const last = session.data?.last_turn;
+  useEffect(() => {
+    if (last) noteTurn(id, last).catch(oops);
+  }, [id, last]);
   const joins =
     turns.data && last && last.seq > (newest?.seq ?? 0) ? last.id : undefined;
   useEffect(() => {

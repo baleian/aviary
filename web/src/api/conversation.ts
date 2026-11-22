@@ -275,14 +275,59 @@ export function followTurn(
           approvals: waiting as ApprovalRequest[],
         };
       });
-      if (isLast(event.type)) {
-        api
-          .get<Turn>("/v1/turns/" + id)
-          .then((record) => change(() => record), onError);
-      }
+      if (isLast(event.type)) readEnded(session, id).catch(onError);
     },
     onError,
   });
+}
+
+// The turns whose records are being read because they have ended.
+const ending = new Map<string, Promise<void>>();
+
+// readEnded puts the record of a turn that has ended in the place of the
+// turn, among the turns that were read. A turn is read once at a time,
+// whoever asks.
+function readEnded(session: string, id: string): Promise<void> {
+  let reading = ending.get(id);
+  if (!reading) {
+    reading = api
+      .get<Turn>("/v1/turns/" + id)
+      .then((record) => {
+        queryClient.setQueryData<Turn[]>(turnsKey(session), (list) =>
+          list?.map((turn) => (turn.id === id ? record : turn)),
+        );
+      })
+      .finally(() => ending.delete(id));
+    ending.set(id, reading);
+  }
+  return reading;
+}
+
+// noteTurn takes what a session says of its newest turn, as the stream of
+// the project tells it. The events of a turn do not say when the turn
+// leaves the queue, nor that it was told to stop from elsewhere: its
+// session does. A turn only moves on: what its events told stays.
+export function noteTurn(session: string, last: Turn): Promise<void> {
+  const key = turnsKey(session);
+  const list = queryClient.getQueryData<Turn[]>(key);
+  const shown = list?.find((turn) => turn.id === last.id);
+  if (!shown || shown.ended_at) return Promise.resolve();
+  // The turn has ended, and its events have not said so yet.
+  if (last.ended_at) return readEnded(session, last.id);
+  queryClient.setQueryData<Turn[]>(key, (turns) =>
+    turns?.map((turn) =>
+      turn.id !== last.id || turn.ended_at
+        ? turn
+        : {
+            ...turn,
+            state: turn.state === "queued" ? last.state : turn.state,
+            started_at: turn.started_at ?? last.started_at,
+            cancel_requested_at:
+              turn.cancel_requested_at ?? last.cancel_requested_at,
+          },
+    ),
+  );
+  return Promise.resolve();
 }
 
 // advance returns a turn as it stands after an event that says where the
