@@ -106,6 +106,10 @@ export function EditAgent({
         onClose();
         if (!saved) return;
         toast(`${existing ? "Saved" : "Created"} ${label(saved)}`, "ok");
+        // A new agent is there to be talked to.
+        if (!existing) {
+          void navigate(`/p/${context.project.slug}/agents/${saved.slug}`);
+        }
       }}
     >
       {existing ? (

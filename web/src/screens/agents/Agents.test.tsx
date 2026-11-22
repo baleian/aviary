@@ -71,14 +71,25 @@ it("creates an agent", async () => {
   );
   await user.click(create);
 
-  const created = await screen.findByRole("link", { name: /Notes/ });
+  // The agent is there to be talked to: its workspace opens.
+  expect(
+    await screen.findByRole("heading", { name: "New session" }),
+  ).toBeTruthy();
   expect(screen.queryByRole("dialog")).toBeNull();
+  expect(document.title).toBe("Notes · Storefront · Aviary");
+  expect(document.querySelector(".welcome")!.textContent).toBe(
+    "NotesWrites the release notes.codexcoder-smallasks before it acts",
+  );
+  expect(screen.getByRole("status").textContent).toContain("Created Notes");
+
+  // And it is among the agents of the project.
+  await user.click(document.querySelector(".l-ag")!);
+  const created = await screen.findByRole("link", { name: /Notes/ });
   expect(created.getAttribute("href")).toBe("/p/storefront/agents/notes");
   expect(created.textContent).toContain("Local model server / coder-small");
   expect(created.textContent).toContain("codex harness");
   expect(created.textContent).toContain("Writes the release notes.");
   expect(created.textContent).toContain("Asks before it acts");
-  expect(screen.getByRole("status").textContent).toContain("Created Notes");
 });
 
 it("changes an agent, but for its slug and its harness", async () => {
