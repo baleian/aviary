@@ -44,8 +44,6 @@ html {
 }
 body {
   margin: 0;
-  padding-top: var(--mock-top);
-  padding-bottom: var(--mock-bottom);
   min-height: 100vh;
   background:
     radial-gradient(
@@ -1356,7 +1354,7 @@ dialog.dlg::backdrop {
   position: fixed;
   z-index: 400;
   left: 50%;
-  top: calc(var(--mock-top) + var(--nav-h) + 12px);
+  top: calc(var(--nav-h) + 12px);
   transform: translateX(-50%);
   display: grid;
   gap: 8px;

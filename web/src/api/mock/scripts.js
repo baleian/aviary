@@ -17,14 +17,11 @@ async function answer(ctx) {
   await ctx.think('A short question. No tools are needed for this.');
   await ctx.say(
     `You said: “${quote(ctx.turn.text)}”\n\n` +
-    'This is the mock of the Aviary console, so no model is behind this agent and the reply is scripted. ' +
+    'This page is answered from example data, so no model is behind this agent and the reply is scripted. ' +
     'Everything around it is what the API does: the message became a **turn**, the turn was taken from the queue, ' +
     'its events were streamed to this page, and its record was stored when it ended.\n\n' +
-    'To see more, pick a script under **Next turn** in the bar at the top:\n\n' +
-    '- *Works with tools*: a plan, tool calls and their output\n' +
-    '- *Asks for approval*: the turn waits for a person\n' +
-    '- *Queued first*, *Queue is full*, *Expires in the queue*\n' +
-    '- *Fails*, for each reason that the API reports');
+    'To see the agent work with tools, send a request of a sentence or more that is not a question. ' +
+    'An agent that asks before it acts then waits for approval.');
 }
 
 const LISTING = '.\n..\n.git\n.github\nNOTES.md\nREADME.md\npackage.json\nsrc\ntest\ntsconfig.json\n';
@@ -124,21 +121,9 @@ async function retitle(ctx) {
   await answer(ctx);
 }
 
-export const SCENARIOS = [
-  ['auto', 'Auto'],
-  ['answer', 'Plain answer'],
-  ['work', 'Works with tools'],
-  ['approval', 'Asks for approval'],
-  ['long', 'Long run (to stop it)'],
-  ['queue', 'Queued first'],
-  ['queue_full', 'Queue is full (429)'],
-  ['expire', 'Expires in the queue'],
-  ['retitle', 'Harness suggests a title'],
-  ...Object.keys(FAILURES).map((reason) => ['fail:' + reason, 'Fails: ' + reason]),
-];
-
-// script returns what a turn plays for the scenario chosen in the bar of the
-// mock. "auto" answers a question and works on anything else.
+// script returns what a turn plays for a scenario: the name of a script
+// here, or "fail:" and a reason. "auto" answers a question and works on
+// anything else.
 export function script(scenario, text) {
   if (scenario.startsWith('fail:')) return failing(scenario.slice(5));
   const named = {answer, work, long, retitle, seedPush, approval: work}[scenario];

@@ -1,10 +1,9 @@
 // Assembles the items of a turn from its events, the way the Supervisor does
-// when a turn ends (supervisor/events/items.go). The console uses it to show
-// a running turn in the same form as an ended one.
+// when a turn ends (supervisor/events/items.go).
 
 // add applies the next event to the list of items, and reports whether it
 // changed them. data is the decoded data of the event.
-export function add(items, type, data) {
+function add(items, type, data) {
   switch (type) {
     case 'message.delta':
     case 'thought.delta': {

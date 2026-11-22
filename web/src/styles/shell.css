@@ -1,7 +1,7 @@
 /* The shell: the bar at the top of every signed-in screen. */
 .nav {
   position: sticky;
-  top: var(--mock-top);
+  top: 0;
   z-index: 50;
   height: var(--nav-h);
   display: flex;
@@ -240,13 +240,13 @@
 
 /* A whole page that says one thing: not found, not allowed, loading. */
 .blank {
-  min-height: calc(100vh - var(--mock-top) - var(--mock-bottom) - var(--nav-h));
+  min-height: calc(100vh - var(--nav-h));
   display: grid;
   place-items: center;
   padding: 48px 24px;
 }
 .blank.full {
-  min-height: calc(100vh - var(--mock-top) - var(--mock-bottom));
+  min-height: 100vh;
 }
 .blank .box {
   max-width: 520px;

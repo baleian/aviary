@@ -32,7 +32,6 @@ export function seed(now) {
     // What the chart values of the installation say.
     config: {
       idp: true,
-      host: 'aviary.example.com',
       admins: ['aviary-admins'],
       users: ['aviary-users'],
       harnesses: ['opencode', 'codex'],

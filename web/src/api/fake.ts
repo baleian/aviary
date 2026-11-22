@@ -10,7 +10,7 @@ export interface Account {
   note: string;
 }
 
-// What the console uses of web/mock/src/js/backend.js.
+// What the console uses of mock/backend.js.
 interface Backend {
   // What the mock is set to do. speed is how fast it works: 1 is its usual
   // pace, and 0 is at once. scenario is what the next turn plays, such as
@@ -58,7 +58,7 @@ export function backend(): Promise<Backend> {
 
 async function load(): Promise<Backend> {
   // @ts-expect-error The mock is JavaScript, and has no types.
-  const backend: Backend = await import("../../mock/src/js/backend.js");
+  const backend: Backend = await import("./mock/backend.js");
   backend.mock.speed = Number(prefs.get("mock.speed") ?? 1);
   if (prefs.get("mock.idp") === "0") backend.setIdentityProvider(false);
   // For the scripts that check the console in a browser: the API itself, to

@@ -2,5 +2,4 @@
 /.env
 /.out/
 /web/dist/
-/web/mock/index.html
 /web/node_modules/

@@ -2,5 +2,5 @@
 !images/web
 !web
 web/dist
-web/mock
+web/src/api/mock
 web/node_modules

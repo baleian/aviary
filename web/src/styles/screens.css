@@ -1,7 +1,7 @@
 /* Sign in */
 .signin {
   position: relative;
-  height: calc(100vh - var(--mock-top) - var(--mock-bottom));
+  height: 100vh;
   min-height: 680px;
   overflow: hidden;
   display: grid;
@@ -670,7 +670,7 @@ a:hover .top > .go {
   grid-template-columns: 292px minmax(0, 1fr) 316px;
   gap: 16px;
   padding: 16px;
-  height: calc(100vh - var(--mock-top) - var(--mock-bottom) - var(--nav-h));
+  height: calc(100vh - var(--nav-h));
   min-height: 520px;
 }
 .sess.no-details {

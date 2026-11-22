@@ -1,21 +1,20 @@
 // The Supervisor of the mock. It answers the requests of the console from
 // memory, with the paths, status codes, permissions and events of the real
 // API (README.md, "API"), so that the console is written against the real
-// thing. Nothing here is part of the product: the product's api.js sends the
-// same requests over HTTP.
+// thing. Development and the tests use it. A build does not.
 
-import {uuid7, copy, emitter} from './util.js';
+import {uuid7, copy} from './util.js';
 import {seed, PERMISSIONS, IDLE} from './seed.js';
 import {script} from './scripts.js';
 import {assemble} from './items.js';
 
-// What the mock is set to do, from its bar at the top of the page.
+// What the mock is set to do.
 export const mock = {
-  // The script of the next turn. It goes back to "auto" once it is used.
+  // What the next turn plays: "auto", "queue", "queue_full", "expire" or a
+  // script of scripts.js. It goes back to "auto" once it is used.
   scenario: 'auto',
   // How fast the agents work: 1 is their usual pace, 0 is at once.
   speed: 1,
-  changed: emitter(),
 };
 
 let db;
@@ -582,14 +581,11 @@ function cancel(turn) {
   state.wake?.();
 }
 
-// chosen returns the scenario that the bar of the mock is set to, and sets
-// the bar back to "auto".
+// chosen returns the scenario that the mock is set to, and sets it back to
+// "auto".
 function chosen() {
   const scenario = mock.scenario;
-  if (scenario !== 'auto') {
-    mock.scenario = 'auto';
-    mock.changed.emit();
-  }
+  mock.scenario = 'auto';
   return scenario;
 }
 
@@ -643,9 +639,9 @@ function accept(session, who, words, scenario) {
 // ---- Routes ---------------------------------------------------------------
 
 const routes = [];
-const route = (method, path, handler, flag) => {
+const route = (method, path, handler) => {
   const pattern = new RegExp('^' + path.replace(/\{\w+\}/g, '([^/]+)') + '$');
-  routes.push({method, path, pattern, handler, flag});
+  routes.push({method, path, pattern, handler});
 };
 
 route('GET', '/v1/me', ({who}) => {
@@ -991,19 +987,6 @@ route('GET', '/v1/projects/{pid}/secret-stores', ({who}, pid) => {
 });
 route('GET', '/v1/harnesses', () => [200, {harnesses: [...db.config.harnesses].sort().map((name) => ({name}))}]);
 
-// Fields that the mock adds to what the API returns today, as [pattern of
-// the path, "field name"]. There are none at present.
-const ASSUMED = [];
-
-// flagOf returns "proposed" for a request that the API does not have yet,
-// and "field x" for one whose answer has a field that the API does not have
-// yet.
-export function flagOf(method, path) {
-  const [plain] = path.split('?');
-  const found = routes.find((candidate) => candidate.method === method && candidate.pattern.test(plain));
-  return found?.flag || ASSUMED.find(([pattern]) => pattern.test(plain))?.[1] || '';
-}
-
 // request answers one request of the API: {status, headers, body}.
 export function request(method, path, {token = '', body = null} = {}) {
   const [plain, search = ''] = path.split('?');
@@ -1121,51 +1104,14 @@ export function reset() {
   }, 0);
 }
 
-// What the other member asks, in turn.
-const ASKED = ['Which tests cover the checkout total?', 'Where do we retry a failed webhook?', 'What does the bundle rule do with a quantity of zero?'];
-
-// elsewhere has another member of the project send a message to the agent, as
-// someone at another screen would. It returns the name of the member and the
-// title of the session, or null if nobody else can run a session there.
-export function elsewhere(token, projectSlug, agentSlug) {
-  const project = db.projects.find((other) => other.slug === projectSlug);
-  const agents = project ? db.agents.filter((agent) => agent.project_id === project.id && !agent.deleted_at) : [];
-  const agent = agents.find((other) => other.slug === agentSlug) || agents[0];
-  if (!agent || !db.config.idp) return null;
-  for (const [key, account] of Object.entries(db.accounts)) {
-    if (key === token) continue;
-    const who = identify(key);
-    if (who.admin || !permissionsOf(project.id, who).includes('sessions.run')) continue;
-    const words = ASKED[serial++ % ASKED.length];
-    const busy = (session) => db.turns.some((turn) => turn.session_id === session.id && !turn.ended_at);
-    let session = db.sessions.filter((other) => other.agent_id === agent.id && other.created_by === who.id && !other.ended_at && !busy(other))
-      .sort((a, b) => (a.id < b.id ? 1 : -1))[0];
-    if (!session) {
-      session = {id: uuid7(), agent_id: agent.id, title: words, created_by: who.id, created_at: iso()};
-      db.sessions.push(session);
-    }
-    accept(session, who, words, 'answer');
-    changed();
-    return {name: account.display_name, title: session.title};
-  }
-  return null;
-}
-
 // accounts lists the accounts of the mock's identity provider, for its
 // sign-in page.
 export function accounts() {
   return Object.entries(db.accounts).map(([token, account]) => ({token, ...account}));
 }
 
-// settings returns what the console is configured with: whether the
-// installation has an identity provider, and its host.
-export function settings() {
-  return {idp: db.config.idp, host: db.config.host};
-}
-
 export function setIdentityProvider(on) {
   db.config.idp = on;
-  mock.changed.emit();
 }
 
 reset();

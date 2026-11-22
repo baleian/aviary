@@ -107,9 +107,6 @@
     Menlo, Consolas, "Liberation Mono", "Pretendard Variable", "Pretendard",
     "Noto Sans KR", monospace;
 
-  /* The room that the bars of the mock take, which the mock sets. */
-  --mock-top: 0px;
-  --mock-bottom: 0px;
   --nav-h: 60px;
 }
 
