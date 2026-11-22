@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, beforeAll, expect, it } from "vitest";
-import { fast, leave, open } from "../testing.tsx";
+import { fast, leave, open, titled } from "../testing.tsx";
 
 beforeAll(fast);
 afterEach(leave);
@@ -88,7 +88,7 @@ it("moves between the projects in the bar", async () => {
     await screen.findByRole("button", { name: /Data Platform/ }),
   ).toBeTruthy();
   expect(screen.queryByRole("menu")).toBeNull();
-  expect(document.title).toBe("Overview · Data Platform · Aviary");
+  await titled("Overview · Data Platform · Aviary");
 
   await user.click(screen.getByRole("button", { name: /Data Platform/ }));
   await user.click(screen.getByRole("menuitem", { name: "New project" }));

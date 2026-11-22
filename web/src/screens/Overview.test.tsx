@@ -5,7 +5,7 @@ import { api } from "../api/client.ts";
 import { backend } from "../api/fake.ts";
 import { transport } from "../api/transport.ts";
 import type { Session } from "../api/types.ts";
-import { fast, leave, open } from "../testing.tsx";
+import { fast, leave, open, titled } from "../testing.tsx";
 
 beforeAll(fast);
 afterEach(leave);
@@ -26,7 +26,7 @@ it("greets the caller and sums up the project", async () => {
   expect(hero.getByRole("heading", { name: /Storefront/ })).toBeTruthy();
   const facts = document.querySelector(".hero .facts")!.textContent;
   expect(facts).toBe("4agents2model providers1secret store5members");
-  expect(document.title).toBe("Overview · Storefront · Aviary");
+  await titled("Overview · Storefront · Aviary");
   expect(screen.getByRole("link", { name: "Overview" }).className).toBe("on");
 });
 

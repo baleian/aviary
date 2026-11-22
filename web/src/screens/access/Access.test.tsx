@@ -3,7 +3,7 @@ import { screen, within } from "@testing-library/react";
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { api } from "../../api/client.ts";
 import { backend } from "../../api/fake.ts";
-import { fast, leave, open } from "../../testing.tsx";
+import { fast, leave, open, titled } from "../../testing.tsx";
 
 beforeAll(fast);
 afterEach(leave);
@@ -48,7 +48,7 @@ it("shows who is in the project and what each may do", async () => {
     "project.viewsessions.runsessions.view_all",
   ]);
   expect(screen.getByText("You are an administrator")).toBeTruthy();
-  expect(document.title).toBe("Access · Storefront · Aviary");
+  await titled("Access · Storefront · Aviary");
   expect(screen.getByRole("link", { name: "Access" }).className).toBe("on");
 });
 

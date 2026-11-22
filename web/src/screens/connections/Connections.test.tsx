@@ -3,7 +3,7 @@ import { screen, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import { afterEach, beforeAll, expect, it } from "vitest";
 import { backend } from "../../api/fake.ts";
-import { fast, leave, open } from "../../testing.tsx";
+import { fast, leave, open, titled } from "../../testing.tsx";
 
 beforeAll(fast);
 afterEach(leave);
@@ -39,7 +39,7 @@ it("lists the model providers and the secret stores", async () => {
   );
   expect(store.textContent).toContain("Holds the key of Local model server");
   expect(store.textContent).toContain("kv-v2Credential stored");
-  expect(document.title).toBe("Connections · Storefront · Aviary");
+  await titled("Connections · Storefront · Aviary");
   expect(screen.getByRole("link", { name: "Connections" }).className).toBe(
     "on",
   );

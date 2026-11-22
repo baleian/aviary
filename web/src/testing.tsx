@@ -1,7 +1,8 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
+import { expect } from "vitest";
 import { backend } from "./api/fake.ts";
 import { App } from "./App.tsx";
 import { prefs } from "./lib/prefs.ts";
@@ -33,6 +34,12 @@ export function open(path: string, account = "") {
     </QueryClientProvider>,
   );
   return userEvent.setup();
+}
+
+// titled waits for the tab to be named after the screen, which happens a
+// moment after the screen is shown.
+export function titled(title: string) {
+  return waitFor(() => expect(document.title).toBe(title));
 }
 
 // leave ends a test: it takes the console away, and puts the browser and

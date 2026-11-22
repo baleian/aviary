@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { screen, within } from "@testing-library/react";
 import { afterEach, beforeAll, expect, it } from "vitest";
-import { fast, leave, open } from "../../testing.tsx";
+import { fast, leave, open, titled } from "../../testing.tsx";
 
 beforeAll(fast);
 afterEach(leave);
@@ -30,7 +30,7 @@ it("lists the agents of a project", async () => {
   // says so.
   const unnamed = screen.getByRole("link", { name: /release-helper/ });
   expect(unnamed.textContent).toContain("No description");
-  expect(document.title).toBe("Agents · Storefront · Aviary");
+  await titled("Agents · Storefront · Aviary");
   // The bar marks the screen that is in view, and no other.
   expect(screen.getByRole("link", { name: "Agents" }).className).toBe("on");
   expect(screen.getByRole("link", { name: "Overview" }).className).toBe("");
@@ -76,7 +76,7 @@ it("creates an agent", async () => {
     await screen.findByRole("heading", { name: "New session" }),
   ).toBeTruthy();
   expect(screen.queryByRole("dialog")).toBeNull();
-  expect(document.title).toBe("Notes · Storefront · Aviary");
+  await titled("Notes · Storefront · Aviary");
   expect(document.querySelector(".welcome")!.textContent).toBe(
     "NotesWrites the release notes.codexcoder-smallasks before it acts",
   );

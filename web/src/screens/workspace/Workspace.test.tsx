@@ -14,7 +14,7 @@ import { backend } from "../../api/fake.ts";
 import { transport } from "../../api/transport.ts";
 import type { Turn } from "../../api/types.ts";
 import { queryClient } from "../../query.ts";
-import { fast, leave, open } from "../../testing.tsx";
+import { fast, leave, open, titled } from "../../testing.tsx";
 
 beforeAll(fast);
 afterEach(async () => {
@@ -155,7 +155,7 @@ it("shows an agent with its sessions, and the start of a new one", async () => {
   expect(welcome).toBe(
     "Backend engineerFeatures, fixes and tests for the storefront backend.opencodecoder-largeasks before it acts",
   );
-  expect(document.title).toBe("Backend engineer · Storefront · Aviary");
+  await titled("Backend engineer · Storefront · Aviary");
   expect(
     screen.getByRole("link", { name: /New session/ }).getAttribute("href"),
   ).toBe(BACKEND);
@@ -748,9 +748,7 @@ it("leaves the workspace of an agent that was deleted meanwhile", async () => {
   session.request("DELETE", "/v1/agents/" + session.agent);
   await user.type(box(), "Anyone?{Enter}");
   expect(await screen.findByText("Reviewer was deleted.")).toBeTruthy();
-  await waitFor(() =>
-    expect(document.title).toBe("Agents · Storefront · Aviary"),
-  );
+  await titled("Agents · Storefront · Aviary");
   // The agents were read again, without the one that was deleted.
   await screen.findByText("Backend engineer");
   expect(screen.queryByText("Reviewer")).toBeNull();

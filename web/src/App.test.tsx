@@ -4,7 +4,7 @@ import { afterEach, beforeAll, expect, it } from "vitest";
 import { backend } from "./api/fake.ts";
 import { prefs } from "./lib/prefs.ts";
 import { queryClient } from "./query.ts";
-import { fast, leave, open } from "./testing.tsx";
+import { fast, leave, open, titled } from "./testing.tsx";
 
 beforeAll(fast);
 afterEach(leave);
@@ -18,7 +18,7 @@ it("asks a caller to sign in, and goes on to where they were going", async () =>
 
   expect(await screen.findByRole("heading", { name: "Bob Lee" })).toBeTruthy();
   expect(screen.getAllByText("bob@example.com").length).toBeGreaterThan(0);
-  expect(document.title).toBe("Your account · Aviary");
+  await titled("Your account · Aviary");
   expect(prefs.get("mock.token")).toBe("bob");
 
   await user.click(screen.getByRole("button", { name: "Copy the user ID" }));
@@ -35,7 +35,7 @@ it("shows the caller's projects", async () => {
   // Bob is no member of the other projects, and no administrator.
   expect(screen.queryByRole("link", { name: /Data Platform/ })).toBeNull();
   expect(screen.getByRole("button", { name: /Bob Lee$/ })).toBeTruthy();
-  expect(document.title).toBe("Projects · Aviary");
+  await titled("Projects · Aviary");
 });
 
 it("signs out from the menu of the account", async () => {
