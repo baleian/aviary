@@ -2,7 +2,7 @@ kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
   - role: control-plane
-    # The Aviary API at localhost:8080, and what make identity-provider, make
+    # The Aviary API at localhost:8080, and what make keycloak, make
     # web, make headlamp and make grafana install at localhost:8081, 8082,
     # 4466 and 3000.
     extraPortMappings:

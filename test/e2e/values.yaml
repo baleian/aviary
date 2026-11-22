@@ -2,7 +2,7 @@
 # model server as the only allowed host.
 supervisor:
   replicas: 2
-  # The cluster's secret store, which `make secret-store` installs. The short
+  # The cluster's secret store, which `make openbao` installs. The short
   # cache lets a test see a changed value soon.
   secretStores:
     allowedHosts:

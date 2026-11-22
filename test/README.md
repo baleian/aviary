@@ -52,19 +52,20 @@ secret store, in which a test keeps a provider key.
 
 - `E2E_CLUSTER` names the cluster for all three targets. Defaults to
   `aviary-e2e`.
-- `DATABASE=mysql` makes `make e2e-up` install MySQL instead of PostgreSQL.
-- `EVENTS=redis` makes it install Redis instead of Valkey.
-- `IDENTITY=keycloak` makes `make e2e-up` install Keycloak as the identity
-  provider that authenticates API requests. The tests then send their
-  requests with the tokens of its users, and one more test checks what each
-  user may do.
+- The cluster has PostgreSQL and Valkey. For another, name the targets that
+  make it before `e2e`, as for the local cluster: `make cluster-up mysql
+  redis e2e`. A run that names a target of the e2e works on the cluster of
+  the e2e with all of its targets.
+- `keycloak` among them installs Keycloak as the identity provider that
+  authenticates API requests. The tests then send their requests with the
+  tokens of its users, and one more test checks what each user may do.
 
 Clusters with different names are independent, so the e2e can run in several
 at once, each configured differently. Each cluster has its own kubeconfig, and
 yours is not changed.
 
 ```sh
-make e2e & make e2e E2E_CLUSTER=aviary-e2e-mysql DATABASE=mysql IDENTITY=keycloak & wait
+make e2e & make cluster-up mysql valkey keycloak e2e E2E_CLUSTER=aviary-e2e-mysql & wait
 ```
 
 If a test fails, the cluster is kept, and the logs of the Supervisors, the

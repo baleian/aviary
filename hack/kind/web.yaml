@@ -2,7 +2,7 @@
 # server stands in front of the API: it serves the web UI, and passes the
 # requests of /v1 on to the Supervisor.
 #
-# An installation that signs in with the Keycloak of make identity-provider
+# An installation that signs in with the Keycloak of make keycloak
 # finds the issuer and the client here. Without an identity provider they
 # are not used.
 apiVersion: apps/v1

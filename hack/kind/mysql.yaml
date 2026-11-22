@@ -1,4 +1,4 @@
-# MySQL for the local cluster, installed by `make cluster-up DATABASE=mysql`.
+# MySQL for the local cluster, installed by `make mysql`.
 # The passwords are in the Secret mysql-users.
 apiVersion: apps/v1
 kind: StatefulSet

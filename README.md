@@ -125,16 +125,17 @@ curl, openssl and bash. Tested with kind 0.33, Helm 4.3 and Docker 29 on
 Linux.
 
 ```sh
-make cluster-up   # create a kind cluster with PostgreSQL and Valkey
-make images       # build the images and load them into the cluster
-make deploy       # install Aviary with its Helm chart
+make cluster-up        # create a kind cluster
+make postgres valkey   # install a database and an event log in it
+make images            # build the images and load them into the cluster
+make deploy            # install Aviary with its Helm chart
 ```
 
-`make cluster-up DATABASE=mysql` uses MySQL instead of PostgreSQL, and
-`EVENTS=redis` Redis instead of Valkey.
-`make cluster-down` deletes the cluster, including the session volumes,
-which are directories on its nodes. In a network that does not reach the
-public registries, see [Mirrors](#mirrors).
+`make mysql` installs MySQL instead of PostgreSQL, and `make redis` Redis
+instead of Valkey. `make deploy` fails unless the cluster has one database
+and one event log. `make cluster-down` deletes the cluster, including the
+session volumes, which are directories on its nodes. In a network that does
+not reach the public registries, see [Mirrors](#mirrors).
 
 `make headlamp` installs [Headlamp](https://headlamp.dev), a web UI for the
 resources, logs and events of the cluster, at http://localhost:4466.
@@ -425,7 +426,7 @@ supervisor:
   as `realm_access.roles`. An email address is accepted as a username only
   if the token has `"email_verified": true`.
 
-To try it locally, `make identity-provider` installs Keycloak in dev mode in
+To try it locally, `make keycloak` installs Keycloak in dev mode in
 the local cluster, with the realm in `hack/kind/keycloak.yaml`. The realm
 has four users, whose passwords are their names: `alice` is an
 administrator, `bob` and `carol` may use the API, `carol` is also in the
@@ -558,7 +559,7 @@ provider=$(curl -s -X POST localhost:8080/v1/projects/$project/providers \
   a provider in the project can have any value that the role can read sent
   to an endpoint of their choice.
 
-To try it locally, `make secret-store` installs OpenBao in dev mode in the
+To try it locally, `make openbao` installs OpenBao in dev mode in the
 local cluster, which keeps its data in memory. It is at
 `http://openbao.aviary-data:8200`, a host that
 `supervisor.secretStores.allowedHosts` must then list, and its root token is
@@ -690,7 +691,7 @@ refresh token the caller signs in again. Signing out forgets the tokens in
 the browser, and does not end the session at the issuer.
 
 In the local cluster, the web UI of `make web` signs in with the Keycloak of
-`make identity-provider`, at http://keycloak.localhost:8081, once Aviary is
+`make keycloak`, at http://keycloak.localhost:8081, once Aviary is
 installed with it (see [Identity providers](#identity-providers)).
 
 ### Developing
@@ -794,7 +795,7 @@ repository that Git ignores, with lines of `NAME=value` without quotes:
 | `CRATES_IO` | crates.io: a registry as Cargo names one, such as `sparse+https://mirror.example.com/crates/index/`. |
 | `DEB_DEBIAN_ORG` | `http://deb.debian.org`, for the Debian packages of the harness images: an address that serves `debian` and `debian-security`, such as `https://mirror.example.com/deb`. The images keep it as the source of their packages. |
 | `AGENT_SANDBOX_REPO` | The repository of agent-sandbox, `https://github.com/kubernetes-sigs/agent-sandbox`, for its chart, which is in the source of its release. |
-| `CNPG_REPO`, `VALKEY_REPO`, `HEADLAMP_REPO`, `PROMETHEUS_REPO`, `GRAFANA_REPO` | The Helm repositories of the charts that `make cluster-up`, `make headlamp` and `make grafana` install. If a mirror has other versions of the charts than the Makefile names, `CNPG_CHART`, `VALKEY_CHART`, `HEADLAMP_CHART`, `PROMETHEUS_CHART` and `GRAFANA_CHART` name the versions. |
+| `CNPG_REPO`, `VALKEY_REPO`, `HEADLAMP_REPO`, `PROMETHEUS_REPO`, `GRAFANA_REPO` | The Helm repositories of the charts that `make postgres`, `make valkey`, `make headlamp` and `make grafana` install. If a mirror has other versions of the charts than the Makefile names, `CNPG_CHART`, `VALKEY_CHART`, `HEADLAMP_CHART`, `PROMETHEUS_CHART` and `GRAFANA_CHART` name the versions. |
 
 Most images are pulled by digests that the repository pins, so a mirror has
 to serve the images of its registry unchanged. The builds read the mirrors

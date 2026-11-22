@@ -54,8 +54,8 @@ var (
 	// apiURL is the Aviary API at a node port of the cluster.
 	apiURL = os.Getenv("AVIARY_E2E_API")
 	// identity reports whether the installation authenticates requests with
-	// the cluster's identity provider, as in a cluster created with
-	// `make e2e IDENTITY=keycloak`.
+	// the cluster's identity provider, as in a cluster with Keycloak, which
+	// `make keycloak` installs.
 	identity = os.Getenv("AVIARY_E2E_IDENTITY") != ""
 	// harnesses are the names of the installed harnesses. Tests that do not
 	// depend on the harness use the first.
@@ -140,7 +140,7 @@ func token(user string) (string, error) {
 		err = json.Unmarshal(raw, &answer)
 	}
 	if err != nil || answer.AccessToken == "" {
-		return "", fmt.Errorf("get token for %s from the identity provider: %v: %s (`make e2e IDENTITY=keycloak` installs the provider)", user, err, raw)
+		return "", fmt.Errorf("get token for %s from the identity provider: %v: %s (`make keycloak` installs the provider)", user, err, raw)
 	}
 	tokens.of[user] = answer.AccessToken
 	return answer.AccessToken, nil
@@ -237,7 +237,7 @@ const (
 	remembered   = 5 * time.Second
 )
 
-// rootToken is the root token of the secret store, which `make secret-store`
+// rootToken is the root token of the secret store, which `make openbao`
 // keeps in a Secret next to it.
 var rootToken = sync.OnceValues(func() (string, error) {
 	root, err := cluster.CoreV1().Secrets(data).Get(ctx, "openbao-root", metav1.GetOptions{})

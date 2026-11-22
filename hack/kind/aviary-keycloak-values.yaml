@@ -1,4 +1,4 @@
-# Authenticates API requests with the Keycloak of `make identity-provider`:
+# Authenticates API requests with the Keycloak of `make keycloak`:
 # make deploy VALUES=hack/kind/aviary-keycloak-values.yaml
 supervisor:
   auth:

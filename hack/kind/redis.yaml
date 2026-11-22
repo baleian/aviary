@@ -1,4 +1,4 @@
-# Redis for the local cluster, installed by `make cluster-up EVENTS=redis`.
+# Redis for the local cluster, installed by `make redis`.
 # The password is in the Secret redis-users. 7.2 is the last Redis release
 # line under the BSD license.
 apiVersion: apps/v1

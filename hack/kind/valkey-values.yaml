@@ -1,4 +1,4 @@
-# The password is in the Secret valkey-users, which `make cluster-up` creates.
+# The password is in the Secret valkey-users, which `make valkey` creates.
 auth:
   enabled: true
   usersExistingSecret: valkey-users

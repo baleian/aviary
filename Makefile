@@ -27,6 +27,22 @@ PROMETHEUS_REPO ?= https://prometheus-community.github.io/helm-charts
 GRAFANA_REPO ?= https://grafana-community.github.io/helm-charts
 
 CLUSTER := aviary
+KIND_CONFIG ?= hack/kind/cluster.yaml
+# The e2e runs in a cluster of its own. Clusters with different names can run
+# the e2e at the same time.
+E2E_CLUSTER ?= aviary-e2e
+E2E_OUT := .out/e2e/$(E2E_CLUSTER)
+E2E_KUBECONFIG := $(CURDIR)/$(E2E_OUT)/host.kubeconfig
+# A run that names a target of the e2e works on the cluster of the e2e with
+# all of its targets. That cluster binds no port on the host and has a
+# kubeconfig of its own: kind locks the kubeconfig that it writes, and the
+# kubeconfig of the user stays untouched.
+E2E := $(filter e2e e2e-up e2e-run e2e-down,$(MAKECMDGOALS))
+ifneq ($(E2E),)
+CLUSTER := $(E2E_CLUSTER)
+KIND_CONFIG := hack/kind/e2e-cluster.yaml
+export KUBECONFIG := $(E2E_KUBECONFIG)
+endif
 NODE_IMAGE := $(DOCKER_IO)/kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
 # The versions of the charts of the local cluster. .env, the environment or
 # the command line names others, if a mirror does not have these.
@@ -66,35 +82,9 @@ HELM := helm --kube-context kind-$(CLUSTER)
 # of the cluster.
 NODE_MIRRORS := $(filter-out docker.io=docker.io gcr.io=gcr.io ghcr.io=ghcr.io quay.io=quay.io registry.k8s.io=registry.k8s.io, \
 	docker.io=$(DOCKER_IO) gcr.io=$(GCR_IO) ghcr.io=$(GHCR_IO) quay.io=$(QUAY_IO) registry.k8s.io=$(REGISTRY_K8S_IO))
-# Database of the cluster: postgres or mysql.
-DATABASE ?= postgres
-# Event log of the cluster: valkey or redis.
-EVENTS ?= valkey
-# The kind configuration of the cluster. The clusters of the e2e use one that
-# binds no port on the host.
-KIND_CONFIG ?= hack/kind/cluster.yaml
-ifeq ($(filter $(DATABASE),postgres mysql),)
-$(error DATABASE must be postgres or mysql, not "$(DATABASE)")
-endif
-ifeq ($(filter $(EVENTS),valkey redis),)
-$(error EVENTS must be valkey or redis, not "$(EVENTS)")
-endif
-# The e2e runs in a cluster of its own. Clusters with different names can run
-# the e2e at the same time.
-E2E_CLUSTER ?= aviary-e2e
-E2E_OUT := .out/e2e/$(E2E_CLUSTER)
-# kind locks the kubeconfig that it writes, so every e2e cluster gets its own.
-# This also leaves the kubeconfig of the user untouched.
-E2E_KUBECONFIG := $(CURDIR)/$(E2E_OUT)/host.kubeconfig
-E2E_KUBECTL := kubectl --context kind-$(E2E_CLUSTER)
-# The harnesses to test. The first also runs the tests that do not depend on
-# a harness.
+# The harnesses that the e2e tests. The first also runs the tests that do not
+# depend on a harness.
 E2E_HARNESSES ?= opencode codex
-# Identity provider of the e2e cluster: keycloak, or empty for none.
-IDENTITY ?=
-ifneq ($(filter-out keycloak,$(IDENTITY)),)
-$(error IDENTITY must be keycloak or empty, not "$(IDENTITY)")
-endif
 # Runs Go in a container, so the host needs no Go toolchain. The arguments
 # are the module directory and extra docker options. The aviary-go volume
 # caches modules and builds. Go takes its module proxy from GOPROXY, if the
@@ -128,7 +118,7 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 	--env AVIARY_TEST_REDIS_URL=redis://default:test@events-redis:6379 \
 	--env AVIARY_TEST_SECRET_STORE_URL=http://secret-store:8200
 
-.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-web test-web-server test-chart test-proxy test-harness chart cluster-up cluster-down secret-store identity-provider headlamp grafana web web-dev build images secrets deploy e2e e2e-up e2e-run e2e-down
+.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-web test-web-server test-chart test-proxy test-harness chart cluster-up cluster-down postgres mysql valkey redis openbao keycloak headlamp grafana web web-dev build images secrets deploy e2e e2e-up e2e-run e2e-down
 
 # Generates the Go code of the SQL queries. Run it after changing a query or
 # a migration.
@@ -263,12 +253,14 @@ cluster-up:
 		done; \
 	done
 	$(KUBECTL) create namespace aviary-data --dry-run=client --output yaml | $(KUBECTL) apply -f -
-ifeq ($(DATABASE),mysql)
-	$(KUBECTL) get secret mysql-users --namespace aviary-data >/dev/null 2>&1 || \
-		$(KUBECTL) create secret generic mysql-users --namespace aviary-data \
-			--from-literal=root=$$(openssl rand -hex 24) --from-literal=aviary=$$(openssl rand -hex 24)
-	$(KUBECTL) apply -f hack/kind/mysql.yaml
-else
+
+cluster-down:
+	kind delete cluster --name $(CLUSTER)
+
+# The next four targets install the data layer in the local cluster. Aviary
+# needs one database and one event log, for example
+# make cluster-up postgres valkey
+postgres:
 	$(HELM) upgrade --install cloudnative-pg cloudnative-pg \
 		--repo $(CNPG_REPO) \
 		--version $(CNPG_CHART) \
@@ -281,13 +273,16 @@ else
 		[ $$attempt -lt 10 ] || exit 1; \
 		sleep 3; \
 	done
-endif
-ifeq ($(EVENTS),redis)
-	$(KUBECTL) get secret redis-users --namespace aviary-data >/dev/null 2>&1 || \
-		$(KUBECTL) create secret generic redis-users --namespace aviary-data \
-			--from-literal=default=$$(openssl rand -hex 24)
-	$(KUBECTL) apply -f hack/kind/redis.yaml
-else
+	$(KUBECTL) wait --namespace aviary-data --for=condition=Ready cluster/postgres --timeout=5m
+
+mysql:
+	$(KUBECTL) get secret mysql-users --namespace aviary-data >/dev/null 2>&1 || \
+		$(KUBECTL) create secret generic mysql-users --namespace aviary-data \
+			--from-literal=root=$$(openssl rand -hex 24) --from-literal=aviary=$$(openssl rand -hex 24)
+	$(KUBECTL) apply -f hack/kind/mysql.yaml
+	$(KUBECTL) --namespace aviary-data rollout status statefulset/mysql --timeout 300s
+
+valkey:
 	$(KUBECTL) get secret valkey-users --namespace aviary-data >/dev/null 2>&1 || \
 		$(KUBECTL) create secret generic valkey-users --namespace aviary-data \
 			--from-literal=default=$$(openssl rand -hex 24)
@@ -297,22 +292,17 @@ else
 		--namespace aviary-data \
 		--values hack/kind/valkey-values.yaml \
 		--wait
-endif
-ifeq ($(DATABASE),mysql)
-	$(KUBECTL) --namespace aviary-data rollout status statefulset/mysql --timeout 300s
-else
-	$(KUBECTL) wait --namespace aviary-data --for=condition=Ready cluster/postgres --timeout=5m
-endif
-ifeq ($(EVENTS),redis)
-	$(KUBECTL) --namespace aviary-data rollout status deployment/redis --timeout 300s
-endif
 
-cluster-down:
-	kind delete cluster --name $(CLUSTER)
+redis:
+	$(KUBECTL) get secret redis-users --namespace aviary-data >/dev/null 2>&1 || \
+		$(KUBECTL) create secret generic redis-users --namespace aviary-data \
+			--from-literal=default=$$(openssl rand -hex 24)
+	$(KUBECTL) apply -f hack/kind/redis.yaml
+	$(KUBECTL) --namespace aviary-data rollout status deployment/redis --timeout 300s
 
 # Installs OpenBao in the local cluster, for trying the secret stores of
 # projects. Aviary itself does not need one.
-secret-store:
+openbao:
 	$(KUBECTL) get secret openbao-root --namespace aviary-data >/dev/null 2>&1 || \
 		$(KUBECTL) create secret generic openbao-root --namespace aviary-data \
 			--from-literal=token=$$(openssl rand -hex 24)
@@ -322,7 +312,7 @@ secret-store:
 # Installs Keycloak in the local cluster, for trying Aviary with
 # authentication. Aviary uses it when installed with
 # make deploy VALUES=hack/kind/aviary-keycloak-values.yaml
-identity-provider:
+keycloak:
 	$(KUBECTL) apply -f hack/kind/keycloak.yaml
 	$(KUBECTL) --namespace aviary-data rollout status deployment/keycloak --timeout 300s
 	@echo "Keycloak is at http://localhost:8081"
@@ -379,7 +369,7 @@ web:
 # make web-dev API=http://localhost:8080
 # If the API authenticates its callers, the environment names the OpenID
 # Connect issuer and the client that the console signs them in with, for
-# example those of make identity-provider:
+# example those of make keycloak:
 # AVIARY_OIDC_ISSUER=http://keycloak.localhost:8081/realms/aviary \
 # AVIARY_OIDC_CLIENT_ID=aviary make web-dev API=http://localhost:8080
 web-dev: web/node_modules/.package-lock.json
@@ -396,12 +386,18 @@ build:
 images: build
 	kind load docker-image --name $(CLUSTER) $(SUPERVISOR_IMAGE) $(OPENCODE_IMAGE) $(CODEX_IMAGE) $(MOCK_LLM_IMAGE)
 
-# Creates the Secrets that the chart reads. CloudNativePG writes its
-# connection Secret next to the database, so it is copied to the namespace of
-# the Supervisor. The URLs of MySQL and of the event log are built from their
-# passwords. The encryption key is created once: secrets encrypted with it
-# cannot be decrypted with another.
+# Creates the Secrets that the chart reads, and fails unless the cluster has
+# one database and one event log. CloudNativePG writes its connection Secret
+# next to the database, so it is copied to the namespace of the Supervisor.
+# The URLs of MySQL and of the event log are built from their passwords. The
+# encryption key is created once: secrets encrypted with it cannot be
+# decrypted with another.
 secrets:
+	@installed() { $(KUBECTL) get secret "$$@" --namespace aviary-data --ignore-not-found --output name | wc -l; }; \
+	databases=$$(installed postgres-app mysql-users) && [ "$$databases" -eq 1 ] || \
+		{ echo "The cluster has $$databases databases, and Aviary needs one: make postgres or make mysql installs one." >&2; exit 1; }; \
+	logs=$$(installed valkey-users redis-users) && [ "$$logs" -eq 1 ] || \
+		{ echo "The cluster has $$logs event logs, and Aviary needs one: make valkey or make redis installs one." >&2; exit 1; }
 	$(KUBECTL) create namespace aviary-system --dry-run=client --output yaml | $(KUBECTL) apply -f -
 	if $(KUBECTL) get secret mysql-users --namespace aviary-data >/dev/null 2>&1; then \
 		$(KUBECTL) get secret mysql-users --namespace aviary-data --output json | \
@@ -448,47 +444,55 @@ deploy: secrets $(AGENT_SANDBOX_CHART)
 # pass. After a failure the cluster stays, with its logs and kubeconfig in
 # .out/e2e/<cluster>:
 # KUBECONFIG=.out/e2e/aviary-e2e/host.kubeconfig kubectl get pods --all-namespaces
-# make e2e-run reruns the tests, and make e2e-down deletes the cluster. For
-# example, with MySQL and Keycloak:
-# make e2e E2E_CLUSTER=aviary-e2e-mysql DATABASE=mysql IDENTITY=keycloak
-e2e e2e-up e2e-run e2e-down: export KUBECONFIG := $(E2E_KUBECONFIG)
-
+# make e2e-run reruns the tests, and make e2e-down deletes the cluster. The
+# cluster has PostgreSQL and Valkey, unless the targets before e2e make it,
+# for example with MySQL, Redis and Keycloak:
+# make cluster-up mysql redis keycloak e2e E2E_CLUSTER=aviary-e2e-mysql
 e2e: e2e-up
 	$(MAKE) e2e-run
 	$(MAKE) e2e-down
 
+ifneq ($(E2E),)
+# The e2e starts from a new cluster.
+cluster-up: | cluster-down
+endif
+
+# Installs Aviary in the cluster of the e2e as the tests need it, with the
+# mock model server and OpenBao, and with Keycloak if the cluster has it.
 e2e-up: $(AGENT_SANDBOX_CHART)
-	$(MAKE) cluster-down cluster-up secret-store $(if $(IDENTITY),identity-provider) images secrets CLUSTER=$(E2E_CLUSTER) \
-		KIND_CONFIG=hack/kind/e2e-cluster.yaml
-	$(E2E_KUBECTL) apply --filename test/e2e/mock-llm.yaml --filename hack/kind/api.yaml
-	helm --kube-context kind-$(E2E_CLUSTER) upgrade --install aviary deploy/charts/aviary \
+ifeq ($(filter cluster-up,$(MAKECMDGOALS)),)
+	$(MAKE) cluster-down cluster-up postgres valkey CLUSTER=$(CLUSTER) KIND_CONFIG=$(KIND_CONFIG)
+endif
+	$(MAKE) openbao images secrets CLUSTER=$(CLUSTER)
+	$(KUBECTL) apply --filename test/e2e/mock-llm.yaml --filename hack/kind/api.yaml
+	keycloak=$$($(KUBECTL) get deployment keycloak --namespace aviary-data --ignore-not-found --output name) && \
+	$(HELM) upgrade --install aviary deploy/charts/aviary \
 		--namespace aviary-system --values test/e2e/values.yaml \
-		$(if $(IDENTITY),--values hack/kind/aviary-keycloak-values.yaml) --wait
-	$(E2E_KUBECTL) --namespace aviary-e2e rollout status deployment/mock-llm --timeout 120s
+		$${keycloak:+--values hack/kind/aviary-keycloak-values.yaml} --wait
+	$(KUBECTL) --namespace aviary-e2e rollout status deployment/mock-llm --timeout 120s
 
 # The tests run on the kind network and reach the API at the node port that
-# hack/kind/api.yaml opens. Pass the IDENTITY that the cluster was made with:
-# make e2e-run E2E_CLUSTER=aviary-e2e-mysql IDENTITY=keycloak
+# hack/kind/api.yaml opens. They sign in if the cluster has Keycloak.
 e2e-run:
 	mkdir -p $(E2E_OUT)
-	kind get kubeconfig --internal --name $(E2E_CLUSTER) > $(E2E_OUT)/kubeconfig
+	kind get kubeconfig --internal --name $(CLUSTER) > $(E2E_OUT)/kubeconfig
+	keycloak=$$($(KUBECTL) get deployment keycloak --namespace aviary-data --ignore-not-found --output name) && \
 	$(call GO,test,--network kind --env AVIARY_E2E_KUBECONFIG=/src/$(E2E_OUT)/kubeconfig \
-		--env AVIARY_E2E_API=http://$(E2E_CLUSTER)-control-plane:30080 \
-		--env AVIARY_E2E_IDENTITY=$(IDENTITY) \
+		--env AVIARY_E2E_API=http://$(CLUSTER)-control-plane:30080 \
+		--env AVIARY_E2E_IDENTITY=$${keycloak:+keycloak} \
 		--env AVIARY_E2E_HARNESSES="$(E2E_HARNESSES)") test -count=1 -timeout 20m -v ./e2e/... $(TESTS); \
 		status=$$?; [ $$status = 0 ] || { \
 			for part in supervisor state-metrics egress-proxy; do \
-				$(E2E_KUBECTL) --namespace aviary-system logs --selector app.kubernetes.io/component=$$part \
+				$(KUBECTL) --namespace aviary-system logs --selector app.kubernetes.io/component=$$part \
 					--prefix --tail -1 > $(E2E_OUT)/$$part.log 2>&1; \
 			done; \
-			$(E2E_KUBECTL) --namespace agent-sandbox-system logs deployment/agent-sandbox-controller \
+			$(KUBECTL) --namespace agent-sandbox-system logs deployment/agent-sandbox-controller \
 				--tail -1 > $(E2E_OUT)/agent-sandbox.log 2>&1; \
-			$(E2E_KUBECTL) get pods,sandboxes.agents.x-k8s.io,persistentvolumeclaims --all-namespaces --output wide \
+			$(KUBECTL) get pods,sandboxes.agents.x-k8s.io,persistentvolumeclaims --all-namespaces --output wide \
 				> $(E2E_OUT)/pods.txt 2>&1; \
-			$(E2E_KUBECTL) get events --all-namespaces --sort-by .lastTimestamp > $(E2E_OUT)/events.txt 2>&1; \
-			echo "e2e failed: the cluster $(E2E_CLUSTER) is kept, and its logs are in $(E2E_OUT)"; \
+			$(KUBECTL) get events --all-namespaces --sort-by .lastTimestamp > $(E2E_OUT)/events.txt 2>&1; \
+			echo "e2e failed: the cluster $(CLUSTER) is kept, and its logs are in $(E2E_OUT)"; \
 		}; exit $$status
 
-e2e-down:
-	$(MAKE) cluster-down CLUSTER=$(E2E_CLUSTER)
+e2e-down: cluster-down
 	rm -f $(E2E_KUBECONFIG) $(E2E_OUT)/kubeconfig
