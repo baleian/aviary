@@ -1,6 +1,14 @@
+# The settings of a checkout: lines of NAME=value in .env, which Git ignores.
+# They take precedence over the environment, and the commands that make runs
+# have them in theirs.
+ifneq ($(wildcard .env),)
+include .env
+export $(shell sed --quiet 's/^\([A-Za-z_][A-Za-z0-9_]*\) *=.*/\1/p' .env)
+endif
+
 # The public registries that the images come from. In a network that does
-# not reach one, the environment or the command line names its mirror: a
-# registry, with a path if the mirror has one, such as
+# not reach one, .env, the environment or the command line names its mirror:
+# a registry, with a path if the mirror has one, such as
 # mirror.example.com/docker-hub.
 DOCKER_IO ?= docker.io
 GCR_IO ?= gcr.io

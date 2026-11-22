@@ -770,7 +770,9 @@ them checks, how to run some of the tests, and where a new test goes.
 
 `make` downloads images and packages from public registries when it builds
 the images and runs the tests. In a network that does not reach them, name
-their mirrors in the environment or on the command line of `make`:
+their mirrors in the environment, on the command line of `make`, or in
+`.env`, a file at the root of the repository that Git ignores, with lines of
+`NAME=value` without quotes:
 
 | Variable | Mirror of |
 | --- | --- |
