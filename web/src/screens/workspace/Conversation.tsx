@@ -36,9 +36,12 @@ import { Details, DetailsButton } from "./Details.tsx";
 import { SessionHead } from "./SessionHead.tsx";
 import { TurnView } from "./TurnView.tsx";
 
-// How near its end the conversation has to be scrolled to stay there as it
-// grows, in pixels.
+// How near its end the conversation has to be scrolled towards it to stay
+// there as it grows, in pixels.
 const NEAR = 96;
+
+// How far from its end the conversation still counts as at it, in pixels.
+const AT = 2;
 
 const NONE: Turn[] = [];
 
@@ -71,6 +74,8 @@ export function Conversation({
   const before = useRef<number | null>(null);
   // Whether the view stays at the end of the conversation as it grows.
   const stick = useRef(true);
+  // Where the view was when it was last looked at.
+  const top = useRef(0);
   const [away, setAway] = useState(false);
   const [loading, setLoading] = useState(false);
   const list = turns.data ?? NONE;
@@ -112,9 +117,14 @@ export function Conversation({
     if (before.current != null) {
       node.scrollTop += node.scrollHeight - before.current;
       before.current = null;
-    } else if (stick.current) {
-      node.scrollTop = node.scrollHeight;
+    } else {
+      // A view that was taken back since it was last looked at has left the
+      // end, though its scroll event has not come yet.
+      const left = node.scrollHeight - node.scrollTop - node.clientHeight;
+      if (node.scrollTop < top.current && left >= AT) stick.current = false;
+      if (stick.current) node.scrollTop = node.scrollHeight;
     }
+    top.current = node.scrollTop;
   }, [list]);
 
   const error = session.error ?? turns.error;
@@ -185,10 +195,16 @@ export function Conversation({
     setLoading(false);
   }
 
+  // Going back leaves the end, however little, so that what is written
+  // meanwhile does not pull the view to the end again. Going towards the
+  // end stays there once it is near.
   function scrolled() {
     const node = scroller.current!;
     const left = node.scrollHeight - node.scrollTop - node.clientHeight;
-    stick.current = left < NEAR;
+    if (left < AT) stick.current = true;
+    else if (node.scrollTop < top.current) stick.current = false;
+    else if (node.scrollTop > top.current && left < NEAR) stick.current = true;
+    top.current = node.scrollTop;
     setAway(!stick.current);
   }
 

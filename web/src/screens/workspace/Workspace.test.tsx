@@ -390,6 +390,149 @@ it("shows a turn that begins elsewhere, and follows it", async () => {
   expect(head.querySelector(".chip")!.textContent).toBe("Completed");
 });
 
+// sized gives the turns of the conversation a height and a window to show
+// them in, which nothing has without a layout. It returns the view, and
+// what makes the turns taller, as they are when more is written.
+function sized(turns: number, shown: number) {
+  const view = document.querySelector<HTMLElement>(".conv-s")!;
+  let top = 0;
+  Object.defineProperties(view, {
+    clientHeight: { configurable: true, get: () => shown },
+    scrollHeight: { configurable: true, get: () => turns },
+    scrollTop: {
+      configurable: true,
+      get: () => top,
+      set: (to: number) => {
+        top = Math.max(0, Math.min(to, turns - shown));
+      },
+    },
+  });
+  return {
+    view,
+    grow(by: number) {
+      turns += by;
+    },
+    // scroll takes the view to a place, as a person does.
+    scroll(to: number) {
+      view.scrollTop = to;
+      fireEvent.scroll(view);
+    },
+  };
+}
+
+it("stays at the end of a conversation as it grows, unless it was taken back", async () => {
+  const session = await talk("Grows");
+  await session.say("One");
+  open(session.path, "alice");
+  const turns = () => document.querySelectorAll(".turn").length;
+  await waitFor(() => expect(turns()).toBe(1));
+  const { view, grow, scroll } = sized(1000, 400);
+  // more has the agent answer once more, which makes the turns taller.
+  const more = async (text: string) => {
+    const before = turns();
+    grow(300);
+    await session.say(text);
+    await waitFor(() => expect(turns()).toBe(before + 1));
+  };
+  scroll(600);
+  await more("Two");
+  expect(view.scrollTop).toBe(900);
+
+  // Taken back, however little, it stays where it is.
+  scroll(890);
+  await more("Three");
+  expect(view.scrollTop).toBe(890);
+  scroll(700);
+  await more("Four");
+  expect(view.scrollTop).toBe(700);
+
+  // Taken towards the end, it stays where it is until the end is near.
+  scroll(1300);
+  await more("Five");
+  expect(view.scrollTop).toBe(1300);
+  scroll(1750);
+  await more("Six");
+  expect(view.scrollTop).toBe(2100);
+});
+
+it("stays where it was taken back to before its scroll is heard", async () => {
+  const session = await talk("Taken back");
+  await session.say("One");
+  open(session.path, "alice");
+  const turns = () => document.querySelectorAll(".turn").length;
+  await waitFor(() => expect(turns()).toBe(1));
+  const { view, grow, scroll } = sized(1000, 400);
+  const more = async (text: string, taller: number) => {
+    const before = turns();
+    grow(taller);
+    await session.say(text);
+    await waitFor(() => expect(turns()).toBe(before + 1));
+  };
+  scroll(600);
+  await more("Two", 300);
+  expect(view.scrollTop).toBe(900);
+  // The agent writes between the scroll and the event that tells of it.
+  view.scrollTop = 890;
+  await more("Three", 20);
+  expect(view.scrollTop).toBe(890);
+  // The event tells of nothing new: the view is still near the end, and
+  // was not taken there.
+  fireEvent.scroll(view);
+  await more("Four", 300);
+  expect(view.scrollTop).toBe(890);
+});
+
+it("stays at the end of a conversation that gets shorter", async () => {
+  const session = await talk("Shorter");
+  await session.say("One");
+  open(session.path, "alice");
+  const turns = () => document.querySelectorAll(".turn").length;
+  await waitFor(() => expect(turns()).toBe(1));
+  const { view, grow, scroll } = sized(1000, 400);
+  scroll(600);
+  // What folds away takes the end with it, and the view: the browser moves
+  // the view back, which is not the caller going back.
+  grow(-50);
+  view.scrollTop = 550;
+  await session.say("Two");
+  await waitFor(() => expect(turns()).toBe(2));
+  expect(view.scrollTop).toBe(550);
+  grow(300);
+  await session.say("Three");
+  await waitFor(() => expect(turns()).toBe(3));
+  expect(view.scrollTop).toBe(850);
+
+  // The same when the scroll of it is heard first.
+  grow(-50);
+  scroll(800);
+  grow(300);
+  await session.say("Four");
+  await waitFor(() => expect(turns()).toBe(4));
+  expect(view.scrollTop).toBe(1100);
+});
+
+it("offers the way to the end of a turn that goes on out of view", async () => {
+  const user = open(await pathOf(RETRY), "alice");
+  await card();
+  const { view, grow, scroll } = sized(1000, 400);
+  scroll(600);
+  expect(screen.queryByRole("button", { name: "Latest" })).toBeNull();
+  scroll(580);
+  await user.click(await screen.findByRole("button", { name: "Latest" }));
+  expect(view.scrollTop).toBe(600);
+  expect(screen.queryByRole("button", { name: "Latest" })).toBeNull();
+
+  // It is at the end again, and stays there.
+  grow(300);
+  await user.click(screen.getByRole("button", { name: "Allow once" }));
+  await waitFor(() =>
+    expect(document.querySelector(".conv-h .chip")!.textContent).toBe(
+      "Completed",
+    ),
+  );
+  expect(view.scrollTop).toBe(900);
+});
+
 it("says where a turn that waits is in the queue", async () => {
   const session = await talk("In the queue");
   const user = open(session.path, "alice");
