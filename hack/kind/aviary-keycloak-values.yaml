@@ -5,7 +5,7 @@ supervisor:
     provider:
       kind: oidc
       settings:
-        issuer: http://keycloak.aviary-data:8080/realms/aviary
+        issuer: http://keycloak.localhost:8081/realms/aviary
         audience: aviary
         claims: {username: preferred_username}
     admins: [platform-admins]
