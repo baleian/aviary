@@ -4,14 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/net/http/httpguts"
 
 	"aviary/supervisor/internal/authz"
 	"aviary/supervisor/store"
@@ -59,9 +62,10 @@ func answered(from store.Provider) provider {
 // provider with the ID.
 func (a *api) readProvider(w http.ResponseWriter, r *http.Request, id, projectID uuid.UUID) (store.Provider, error) {
 	var request struct {
-		Name   string       `json:"name"`
-		URL    string       `json:"url"`
-		APIKey *secretField `json:"api_key"`
+		Name    string         `json:"name"`
+		URL     string         `json:"url"`
+		Headers []store.Header `json:"headers"`
+		APIKey  *secretField   `json:"api_key"`
 	}
 	if err := decode(w, r, &request); err != nil {
 		return store.Provider{}, err
@@ -69,24 +73,27 @@ func (a *api) readProvider(w http.ResponseWriter, r *http.Request, id, projectID
 	if request.Name == "" {
 		return store.Provider{}, invalid("name is required")
 	}
-	read, err := a.providerAt(r, id, projectID, request.URL, request.APIKey)
+	read, err := a.providerAt(r, id, projectID, request.URL, request.Headers, request.APIKey)
 	read.Name = request.Name
 	return read, err
 }
 
-// providerAt validates the URL and the key of the provider with the ID, and
-// returns the provider without a name. A key given by value is encrypted for
-// that provider. A key in a secret store is read once, so that an unreadable
-// key is reported at once rather than during a turn.
-func (a *api) providerAt(r *http.Request, id, projectID uuid.UUID, address string, key *secretField) (store.Provider, error) {
+// providerAt validates the URL, the headers and the key of the provider with
+// the ID, and returns the provider without a name. A key given by value is
+// encrypted for that provider. A key in a secret store is read once, so that
+// an unreadable key is reported at once rather than during a turn.
+func (a *api) providerAt(r *http.Request, id, projectID uuid.UUID, address string, headers []store.Header, key *secretField) (store.Provider, error) {
 	if err := endpoint(address); err != nil {
 		return store.Provider{}, err
 	}
-	read := store.Provider{ID: id, URL: address}
+	headers, err := headersOf(headers)
+	if err != nil {
+		return store.Provider{}, err
+	}
+	read := store.Provider{ID: id, URL: address, Headers: headers}
 	switch {
 	case key == nil:
 	case key.Value != "" && key.Store == "" && key.Path == "" && key.Key == "":
-		var err error
 		if read.APIKey, err = a.keys.Seal(key.Value, store.ProviderKeyPlace(id)); err != nil {
 			return store.Provider{}, err
 		}
@@ -125,6 +132,52 @@ func (a *api) keyInStore(r *http.Request, projectID uuid.UUID, key secretField) 
 		return store.SecretReference{}, invalid("cannot read api_key from the secret store: " + err.Error())
 	}
 	return store.SecretReference{Store: id, Path: key.Path, Key: key.Key}, nil
+}
+
+// The headers of a provider are few and small: every model request carries
+// them, and so does the token of a listing.
+const (
+	maxHeaders     = 20
+	maxHeaderBytes = 8192
+)
+
+// reservedHeaders are the headers that a provider cannot have, besides those
+// of the Egress Proxy: they say where a request goes or how it is carried.
+var reservedHeaders = []string{
+	"connection", "content-length", "expect", "host", "keep-alive", "proxy-authenticate", "proxy-authorization",
+	"proxy-connection", "te", "trailer", "transfer-encoding", "upgrade",
+}
+
+// headersOf validates the headers of a model provider, and returns them with
+// their names in lowercase and their values without spaces at their ends.
+func headersOf(given []store.Header) ([]store.Header, error) {
+	if len(given) > maxHeaders {
+		return nil, invalid(fmt.Sprintf("headers must be at most %d", maxHeaders))
+	}
+	var headers []store.Header
+	size := 0
+	for i, header := range given {
+		at := fmt.Sprintf("headers[%d]", i)
+		name, value := strings.ToLower(header.Name), strings.Trim(header.Value, " \t")
+		switch {
+		case !httpguts.ValidHeaderFieldName(name):
+			return nil, invalid(at + ".name must be the name of an HTTP header")
+		case name == "authorization":
+			return nil, invalid(at + ".name must not be authorization; set the endpoint's key in api_key")
+		case slices.Contains(reservedHeaders, name) || strings.HasPrefix(name, "x-aviary-") || strings.HasPrefix(name, "x-envoy-"):
+			return nil, invalid(at + ".name must not be " + name + ", which is reserved")
+		case slices.ContainsFunc(headers, func(other store.Header) bool { return other.Name == name }):
+			return nil, invalid(at + ".name must not be " + name + ", which another header has")
+		case value == "" || !httpguts.ValidHeaderFieldValue(value):
+			return nil, invalid(at + ".value must be the value of an HTTP header, and not empty")
+		}
+		size += len(name) + len(value)
+		headers = append(headers, store.Header{Name: name, Value: value})
+	}
+	if size > maxHeaderBytes {
+		return nil, invalid(fmt.Sprintf("the names and values of headers must be at most %d bytes together", maxHeaderBytes))
+	}
+	return headers, nil
 }
 
 // endpoint validates the base URL of a model provider.
@@ -191,8 +244,8 @@ type listed struct {
 }
 
 // endpointModels lists the models of a model endpoint that need not be
-// registered: the request gives the URL and the key of a provider, which is
-// not stored.
+// registered: the request gives the URL, the headers and the key of a
+// provider, which is not stored.
 func (a *api) endpointModels(w http.ResponseWriter, r *http.Request) error {
 	projectID, err := pathID(r, "pid")
 	if err != nil {
@@ -202,8 +255,9 @@ func (a *api) endpointModels(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	var request struct {
-		URL    string       `json:"url"`
-		APIKey *secretField `json:"api_key"`
+		URL     string         `json:"url"`
+		Headers []store.Header `json:"headers"`
+		APIKey  *secretField   `json:"api_key"`
 	}
 	if err := decode(w, r, &request); err != nil {
 		return err
@@ -212,7 +266,7 @@ func (a *api) endpointModels(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	provider, err := a.providerAt(r, id, projectID, request.URL, request.APIKey)
+	provider, err := a.providerAt(r, id, projectID, request.URL, request.Headers, request.APIKey)
 	if err != nil {
 		return err
 	}
@@ -234,8 +288,9 @@ func (a *api) providerModels(w http.ResponseWriter, r *http.Request) error {
 }
 
 // listModels asks the endpoint of the provider for its models, with the
-// provider's key and through the Egress Proxy, as the model requests of a
-// turn go: the answer also tells whether turns will reach the endpoint.
+// provider's headers and key and through the Egress Proxy, as the model
+// requests of a turn go: the answer also tells whether turns will reach the
+// endpoint.
 func (a *api) listModels(w http.ResponseWriter, r *http.Request, provider store.Provider) error {
 	who := callerOf(r)
 	token, err := authz.ListingToken(a.keys, authz.Listing{
@@ -351,8 +406,8 @@ func (a *api) listProviders(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// replaceProvider replaces the name, URL and key of a provider together, so
-// that a stored key cannot be redirected to another URL.
+// replaceProvider replaces the name, URL, headers and key of a provider
+// together, so that a stored key cannot be redirected to another URL.
 func (a *api) replaceProvider(w http.ResponseWriter, r *http.Request) error {
 	id, err := pathID(r, "provider")
 	if err != nil {

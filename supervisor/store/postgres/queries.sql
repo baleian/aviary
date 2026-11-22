@@ -114,8 +114,8 @@ select * from sessions where agent_id = @agent_id and created_by = @created_by::
 order by id desc limit @count;
 
 -- name: CreateProvider :one
-insert into providers (id, project_id, name, url, api_key, api_key_store_id, api_key_path, api_key_name)
-select @id::uuid, projects.id, @name::text, @url::text, sqlc.narg(api_key)::bytea,
+insert into providers (id, project_id, name, url, headers, api_key, api_key_store_id, api_key_path, api_key_name)
+select @id::uuid, projects.id, @name::text, @url::text, sqlc.narg(headers)::jsonb, sqlc.narg(api_key)::bytea,
        sqlc.narg(api_key_store_id)::uuid, @api_key_path::text, @api_key_name::text
 from projects where projects.id = @project_id
 returning *;
@@ -127,7 +127,7 @@ select * from providers where id = @id;
 select * from providers where project_id = @project_id order by created_at, id;
 
 -- name: ReplaceProvider :one
-update providers set name = @name, url = @url, api_key = sqlc.narg(api_key),
+update providers set name = @name, url = @url, headers = sqlc.narg(headers), api_key = sqlc.narg(api_key),
        api_key_store_id = sqlc.narg(api_key_store_id), api_key_path = @api_key_path, api_key_name = @api_key_name,
        updated_at = now()
 where id = @id
@@ -255,7 +255,8 @@ where turns.id = @id;
 -- provider of its agent and the secret store of the provider's key.
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
        coalesce(users.subject, '')::text as subject,
-       agents.provider_id, providers.url as provider_url, providers.api_key as provider_api_key,
+       agents.provider_id, providers.url as provider_url, providers.headers as provider_headers,
+       providers.api_key as provider_api_key,
        providers.api_key_store_id, providers.api_key_path, providers.api_key_name,
        coalesce(secret_stores.name, '')::text as store_name, coalesce(secret_stores.kind, '')::text as store_kind,
        secret_stores.settings as store_settings, secret_stores.credential as store_credential,

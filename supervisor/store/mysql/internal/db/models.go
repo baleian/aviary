@@ -51,6 +51,7 @@ type Provider struct {
 	ProjectID     key.ID
 	Name          string
 	Url           string
+	Headers       *json.RawMessage
 	ApiKey        []byte
 	ApiKeyStoreID *key.ID
 	ApiKeyPath    string

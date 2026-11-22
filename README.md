@@ -93,9 +93,10 @@ A sandbox holds no model API key, only the token of its session. For each
 request, the proxy asks the Supervisor which turn runs in the token's
 session:
 
-- For a model request, the Supervisor also returns the endpoint and the API
-  key of the agent's provider. The proxy puts the key in place of the token
-  and forwards the request to that endpoint.
+- For a model request, the Supervisor also returns the endpoint of the
+  agent's provider, with its API key and the headers that it needs. The
+  proxy puts the key in place of the token, sets the headers, and forwards
+  the request to that endpoint.
 - Any other request is let through to the hosts that the installation
   allows.
 - A request from a session in which no turn runs is refused.
@@ -202,10 +203,10 @@ a client shows the slug when the name is empty.
 | Request | Description |
 | --- | --- |
 | `POST /v1/projects` | Creates a project. Body: `{"slug": "...", "name": "..."}`. Returns 409 if another project has the slug. Administrators only. |
-| `POST /v1/projects/{id}/providers` | Creates a model provider in the project. Body: `{"name": "...", "url": "...", "api_key": {"value": "..."}}`. The URL is the base URL of a model endpoint, and the key is sent to it as a bearer token. A key in a secret store of the project is given by its location: `"api_key": {"store": "...", "path": "...", "key": "..."}`. An endpoint that takes no key has no `api_key`. See [Model providers](#model-providers). |
-| `PUT /v1/providers/{id}` | Replaces the name, the URL and the key of a provider together: a provider given no key has none afterwards. |
-| `POST /v1/projects/{id}/providers/models` | Lists the models of a model endpoint that need not be registered. Body: the `url` and the `api_key` of a provider, which is not stored. Aviary asks the endpoint for its models, `GET models` under the URL, with the key and through the Egress Proxy, as the model requests of a turn go. Returns `{"reached": true, "status": 200, "models": ["..."], "duration_ms": 12}`: the status of the endpoint's answer, and the IDs of its models if the answer is a list of models as the OpenAI API gives it. An endpoint that did not answer returns `{"reached": false, "reason": "...", "duration_ms": 5003}`. |
-| `GET /v1/providers/{id}/models` | Lists the models of a provider in the same way, with the URL and the key that it has. |
+| `POST /v1/projects/{id}/providers` | Creates a model provider in the project. Body: `{"name": "...", "url": "...", "api_key": {"value": "..."}}`. The URL is the base URL of a model endpoint, and the key is sent to it as a bearer token. A key in a secret store of the project is given by its location: `"api_key": {"store": "...", "path": "...", "key": "..."}`. An endpoint that takes no key has no `api_key`. An endpoint that needs other headers is given them: `"headers": [{"name": "...", "value": "..."}]`. See [Model providers](#model-providers). |
+| `PUT /v1/providers/{id}` | Replaces the name, the URL, the headers and the key of a provider together: a provider given no headers or no key has none afterwards. |
+| `POST /v1/projects/{id}/providers/models` | Lists the models of a model endpoint that need not be registered. Body: the `url`, the `headers` and the `api_key` of a provider, which is not stored. Aviary asks the endpoint for its models, `GET models` under the URL, with the headers and the key and through the Egress Proxy, as the model requests of a turn go. Returns `{"reached": true, "status": 200, "models": ["..."], "duration_ms": 12}`: the status of the endpoint's answer, and the IDs of its models if the answer is a list of models as the OpenAI API gives it. An endpoint that did not answer returns `{"reached": false, "reason": "...", "duration_ms": 5003}`. |
+| `GET /v1/providers/{id}/models` | Lists the models of a provider in the same way, with the URL, the headers and the key that it has. |
 | `POST /v1/projects/{id}/secret-stores` | Registers a secret store of the project. Body: `{"name": "...", "kind": "...", "settings": {...}, "credential": {"value": "..."}}`. See [Secret stores](#secret-stores). |
 | `PUT /v1/secret-stores/{id}` | Replaces the name, the kind, the settings and the credential of a secret store together. |
 | `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"slug": "...", "name": "...", "description": "...", "harness": "...", "model": {"provider": "...", "name": "..."}, "instructions": "...", "approval": "ask"}`. The optional description says what the agent is for, and like the name is only for display. The harness is one of those that `GET /v1/harnesses` lists. The model is a provider of the project, by ID, and the provider's name for the model. The optional instructions are given to the agent before every turn. With `"approval": "ask"`, the agent asks a person before it acts (see [Approval](#approval)); without it, it asks nobody. Returns 409 if another agent of the project has the slug. |
@@ -503,8 +504,16 @@ agent's provider, for the agent's model.
   host of the provider's URL, under the URL's path. Nothing else that a
   sandbox sends carries a key, and a sandbox cannot choose where its model
   requests go.
+- **An endpoint can need headers besides its key**, as a gateway does that
+  routes its requests by a header. A provider has up to 20 of them, as
+  `"headers": [{"name": "x-gateway-route", "value": "team-a"}]`, and the
+  Egress Proxy sets them on the model requests of the turns that use the
+  provider, in place of what a sandbox sends by those names. A header that
+  says where a request goes or how it is carried, such as `host`, cannot be
+  one of them, nor can `authorization`, which carries the key. Their values
+  are not secrets: a provider is returned with its headers.
 - **A provider can be replaced while turns use it.** Their next model
-  request uses the new endpoint and key.
+  request uses the new endpoint, headers and key.
 - **The models of a provider can be listed**, before it is registered and
   after. The request goes to its endpoint the way a model request of a turn
   does, so an endpoint that the Egress Proxy does not reach, or a key that

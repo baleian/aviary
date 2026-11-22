@@ -541,25 +541,35 @@ func (s *records) Sessions(ctx context.Context, agentID, by, before uuid.UUID, l
 }
 
 func (s *records) CreateProvider(ctx context.Context, provider store.Provider) (store.Provider, error) {
+	headers, err := headersIn(provider.Headers)
+	if err != nil {
+		return store.Provider{}, err
+	}
 	params := db.CreateProviderParams{
-		ID: provider.ID, ProjectID: provider.ProjectID, Name: provider.Name, Url: provider.URL, ApiKey: provider.APIKey,
+		ID: provider.ID, ProjectID: provider.ProjectID, Name: provider.Name, Url: provider.URL, Headers: headers, ApiKey: provider.APIKey,
 	}
 	if at := provider.APIKeyAt; at != nil {
 		params.ApiKeyStoreID, params.ApiKeyPath, params.ApiKeyName = &at.Store, at.Path, at.Key
 	}
 	row, err := s.queries.CreateProvider(ctx, params)
-	if errors.Is(err, pgx.ErrNoRows) {
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
 		return store.Provider{}, store.ErrNotFound
+	case err != nil:
+		return store.Provider{}, err
 	}
-	return providerFrom(row), err
+	return providerFrom(row)
 }
 
 func (s *records) Provider(ctx context.Context, id uuid.UUID) (store.Provider, error) {
 	row, err := s.queries.GetProvider(ctx, id)
-	if errors.Is(err, pgx.ErrNoRows) {
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
 		return store.Provider{}, store.ErrNotFound
+	case err != nil:
+		return store.Provider{}, err
 	}
-	return providerFrom(row), err
+	return providerFrom(row)
 }
 
 func (s *records) Providers(ctx context.Context, projectID uuid.UUID) ([]store.Provider, error) {
@@ -569,21 +579,30 @@ func (s *records) Providers(ctx context.Context, projectID uuid.UUID) ([]store.P
 	}
 	providers := make([]store.Provider, len(rows))
 	for i, row := range rows {
-		providers[i] = providerFrom(row)
+		if providers[i], err = providerFrom(row); err != nil {
+			return nil, err
+		}
 	}
 	return providers, nil
 }
 
 func (s *records) ReplaceProvider(ctx context.Context, provider store.Provider) (store.Provider, error) {
-	params := db.ReplaceProviderParams{ID: provider.ID, Name: provider.Name, Url: provider.URL, ApiKey: provider.APIKey}
+	headers, err := headersIn(provider.Headers)
+	if err != nil {
+		return store.Provider{}, err
+	}
+	params := db.ReplaceProviderParams{ID: provider.ID, Name: provider.Name, Url: provider.URL, Headers: headers, ApiKey: provider.APIKey}
 	if at := provider.APIKeyAt; at != nil {
 		params.ApiKeyStoreID, params.ApiKeyPath, params.ApiKeyName = &at.Store, at.Path, at.Key
 	}
 	row, err := s.queries.ReplaceProvider(ctx, params)
-	if errors.Is(err, pgx.ErrNoRows) {
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
 		return store.Provider{}, store.ErrNotFound
+	case err != nil:
+		return store.Provider{}, err
 	}
-	return providerFrom(row), err
+	return providerFrom(row)
 }
 
 func (s *records) CreateSecretStore(ctx context.Context, secrets store.SecretStore) (store.SecretStore, error) {
@@ -857,16 +876,25 @@ func (s *records) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.Follo
 
 func (s *records) SessionTurn(ctx context.Context, sessionID uuid.UUID) (store.Origin, error) {
 	row, err := s.queries.SessionTurn(ctx, sessionID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
 		return store.Origin{}, store.ErrNotFound
+	case err != nil:
+		return store.Origin{}, err
 	}
-	return originOf(row), err
+	return originOf(row)
 }
 
-func originOf(row db.SessionTurnRow) store.Origin {
+func originOf(row db.SessionTurnRow) (store.Origin, error) {
+	headers, err := headersFrom(row.ProviderHeaders)
+	if err != nil {
+		return store.Origin{}, err
+	}
 	origin := store.Origin{
 		TurnID: row.TurnID, SessionID: row.SessionID, AgentID: row.AgentID, ProjectID: row.ProjectID, Subject: row.Subject,
-		Provider: store.Provider{ID: row.ProviderID, ProjectID: row.ProjectID, URL: row.ProviderUrl, APIKey: row.ProviderApiKey},
+		Provider: store.Provider{
+			ID: row.ProviderID, ProjectID: row.ProjectID, URL: row.ProviderUrl, Headers: headers, APIKey: row.ProviderApiKey,
+		},
 	}
 	if row.CreatedBy != nil {
 		origin.UserID = *row.CreatedBy
@@ -879,7 +907,7 @@ func originOf(row db.SessionTurnRow) store.Origin {
 			CreatedAt: *row.StoreCreatedAt, UpdatedAt: *row.StoreUpdatedAt,
 		}
 	}
-	return origin
+	return origin, nil
 }
 
 func (s *records) StartTurn(ctx context.Context, turnID uuid.UUID) (time.Duration, bool, error) {
@@ -1062,12 +1090,17 @@ func secretStoreFrom(row db.SecretStore) store.SecretStore {
 	}
 }
 
-func providerFrom(row db.Provider) store.Provider {
+func providerFrom(row db.Provider) (store.Provider, error) {
+	headers, err := headersFrom(row.Headers)
+	if err != nil {
+		return store.Provider{}, err
+	}
 	provider := store.Provider{
 		ID:        row.ID,
 		ProjectID: row.ProjectID,
 		Name:      row.Name,
 		URL:       row.Url,
+		Headers:   headers,
 		APIKey:    row.ApiKey,
 		CreatedAt: row.CreatedAt,
 		UpdatedAt: row.UpdatedAt,
@@ -1075,7 +1108,28 @@ func providerFrom(row db.Provider) store.Provider {
 	if row.ApiKeyStoreID != nil {
 		provider.APIKeyAt = &store.SecretReference{Store: *row.ApiKeyStoreID, Path: row.ApiKeyPath, Key: row.ApiKeyName}
 	}
-	return provider
+	return provider, nil
+}
+
+// headersIn returns the headers of a provider as their column holds them:
+// null if there are none.
+func headersIn(headers []store.Header) ([]byte, error) {
+	if len(headers) == 0 {
+		return nil, nil
+	}
+	return json.Marshal(headers)
+}
+
+// headersFrom returns the headers that the column of a provider holds.
+func headersFrom(column []byte) ([]store.Header, error) {
+	if column == nil {
+		return nil, nil
+	}
+	var headers []store.Header
+	if err := json.Unmarshal(column, &headers); err != nil {
+		return nil, fmt.Errorf("headers of a provider: %w", err)
+	}
+	return headers, nil
 }
 
 func sessionFrom(row db.Session) store.Session {

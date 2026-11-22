@@ -312,17 +312,18 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 }
 
 const createProvider = `-- name: CreateProvider :one
-insert into providers (id, project_id, name, url, api_key, api_key_store_id, api_key_path, api_key_name)
-select $1::uuid, projects.id, $2::text, $3::text, $4::bytea,
-       $5::uuid, $6::text, $7::text
-from projects where projects.id = $8
-returning id, project_id, name, url, api_key, api_key_store_id, api_key_path, api_key_name, created_at, updated_at
+insert into providers (id, project_id, name, url, headers, api_key, api_key_store_id, api_key_path, api_key_name)
+select $1::uuid, projects.id, $2::text, $3::text, $4::jsonb, $5::bytea,
+       $6::uuid, $7::text, $8::text
+from projects where projects.id = $9
+returning id, project_id, name, url, headers, api_key, api_key_store_id, api_key_path, api_key_name, created_at, updated_at
 `
 
 type CreateProviderParams struct {
 	ID            uuid.UUID
 	Name          string
 	Url           string
+	Headers       []byte
 	ApiKey        []byte
 	ApiKeyStoreID *uuid.UUID
 	ApiKeyPath    string
@@ -335,6 +336,7 @@ func (q *Queries) CreateProvider(ctx context.Context, arg CreateProviderParams) 
 		arg.ID,
 		arg.Name,
 		arg.Url,
+		arg.Headers,
 		arg.ApiKey,
 		arg.ApiKeyStoreID,
 		arg.ApiKeyPath,
@@ -347,6 +349,7 @@ func (q *Queries) CreateProvider(ctx context.Context, arg CreateProviderParams) 
 		&i.ProjectID,
 		&i.Name,
 		&i.Url,
+		&i.Headers,
 		&i.ApiKey,
 		&i.ApiKeyStoreID,
 		&i.ApiKeyPath,
@@ -946,7 +949,7 @@ func (q *Queries) GetProject(ctx context.Context, id uuid.UUID) (Project, error)
 }
 
 const getProvider = `-- name: GetProvider :one
-select id, project_id, name, url, api_key, api_key_store_id, api_key_path, api_key_name, created_at, updated_at from providers where id = $1
+select id, project_id, name, url, headers, api_key, api_key_store_id, api_key_path, api_key_name, created_at, updated_at from providers where id = $1
 `
 
 func (q *Queries) GetProvider(ctx context.Context, id uuid.UUID) (Provider, error) {
@@ -957,6 +960,7 @@ func (q *Queries) GetProvider(ctx context.Context, id uuid.UUID) (Provider, erro
 		&i.ProjectID,
 		&i.Name,
 		&i.Url,
+		&i.Headers,
 		&i.ApiKey,
 		&i.ApiKeyStoreID,
 		&i.ApiKeyPath,
@@ -1368,7 +1372,7 @@ func (q *Queries) ListProjectsOfMember(ctx context.Context, arg ListProjectsOfMe
 }
 
 const listProviders = `-- name: ListProviders :many
-select id, project_id, name, url, api_key, api_key_store_id, api_key_path, api_key_name, created_at, updated_at from providers where project_id = $1 order by created_at, id
+select id, project_id, name, url, headers, api_key, api_key_store_id, api_key_path, api_key_name, created_at, updated_at from providers where project_id = $1 order by created_at, id
 `
 
 func (q *Queries) ListProviders(ctx context.Context, projectID uuid.UUID) ([]Provider, error) {
@@ -1385,6 +1389,7 @@ func (q *Queries) ListProviders(ctx context.Context, projectID uuid.UUID) ([]Pro
 			&i.ProjectID,
 			&i.Name,
 			&i.Url,
+			&i.Headers,
 			&i.ApiKey,
 			&i.ApiKeyStoreID,
 			&i.ApiKeyPath,
@@ -1926,16 +1931,17 @@ func (q *Queries) ReplaceAgent(ctx context.Context, arg ReplaceAgentParams) (Age
 }
 
 const replaceProvider = `-- name: ReplaceProvider :one
-update providers set name = $1, url = $2, api_key = $3,
-       api_key_store_id = $4, api_key_path = $5, api_key_name = $6,
+update providers set name = $1, url = $2, headers = $3, api_key = $4,
+       api_key_store_id = $5, api_key_path = $6, api_key_name = $7,
        updated_at = now()
-where id = $7
-returning id, project_id, name, url, api_key, api_key_store_id, api_key_path, api_key_name, created_at, updated_at
+where id = $8
+returning id, project_id, name, url, headers, api_key, api_key_store_id, api_key_path, api_key_name, created_at, updated_at
 `
 
 type ReplaceProviderParams struct {
 	Name          string
 	Url           string
+	Headers       []byte
 	ApiKey        []byte
 	ApiKeyStoreID *uuid.UUID
 	ApiKeyPath    string
@@ -1947,6 +1953,7 @@ func (q *Queries) ReplaceProvider(ctx context.Context, arg ReplaceProviderParams
 	row := q.db.QueryRow(ctx, replaceProvider,
 		arg.Name,
 		arg.Url,
+		arg.Headers,
 		arg.ApiKey,
 		arg.ApiKeyStoreID,
 		arg.ApiKeyPath,
@@ -1959,6 +1966,7 @@ func (q *Queries) ReplaceProvider(ctx context.Context, arg ReplaceProviderParams
 		&i.ProjectID,
 		&i.Name,
 		&i.Url,
+		&i.Headers,
 		&i.ApiKey,
 		&i.ApiKeyStoreID,
 		&i.ApiKeyPath,
@@ -2071,7 +2079,8 @@ func (q *Queries) SeeUser(ctx context.Context, arg SeeUserParams) (User, error) 
 const sessionTurn = `-- name: SessionTurn :one
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
        coalesce(users.subject, '')::text as subject,
-       agents.provider_id, providers.url as provider_url, providers.api_key as provider_api_key,
+       agents.provider_id, providers.url as provider_url, providers.headers as provider_headers,
+       providers.api_key as provider_api_key,
        providers.api_key_store_id, providers.api_key_path, providers.api_key_name,
        coalesce(secret_stores.name, '')::text as store_name, coalesce(secret_stores.kind, '')::text as store_kind,
        secret_stores.settings as store_settings, secret_stores.credential as store_credential,
@@ -2094,6 +2103,7 @@ type SessionTurnRow struct {
 	Subject         string
 	ProviderID      uuid.UUID
 	ProviderUrl     string
+	ProviderHeaders []byte
 	ProviderApiKey  []byte
 	ApiKeyStoreID   *uuid.UUID
 	ApiKeyPath      string
@@ -2120,6 +2130,7 @@ func (q *Queries) SessionTurn(ctx context.Context, sessionID uuid.UUID) (Session
 		&i.Subject,
 		&i.ProviderID,
 		&i.ProviderUrl,
+		&i.ProviderHeaders,
 		&i.ProviderApiKey,
 		&i.ApiKeyStoreID,
 		&i.ApiKeyPath,

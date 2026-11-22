@@ -159,8 +159,18 @@ func valid(what string, given json.RawMessage) error {
 // change them in place.
 
 func providerOf(provider store.Provider) store.Provider {
+	provider.Headers = headersOf(provider.Headers)
 	provider.APIKey, provider.APIKeyAt = bytes.Clone(provider.APIKey), clone(provider.APIKeyAt)
 	return provider
+}
+
+// headersOf copies the headers of a provider. Without headers they are nil,
+// not empty.
+func headersOf(headers []store.Header) []store.Header {
+	if len(headers) == 0 {
+		return nil
+	}
+	return slices.Clone(headers)
 }
 
 func secretStoreOf(secrets store.SecretStore) store.SecretStore {
@@ -783,7 +793,7 @@ func (s *Store) ReplaceProvider(ctx context.Context, provider store.Provider) (s
 	if err := s.keyStore(provider); err != nil {
 		return store.Provider{}, err
 	}
-	replaced.Name, replaced.URL = provider.Name, provider.URL
+	replaced.Name, replaced.URL, replaced.Headers = provider.Name, provider.URL, headersOf(provider.Headers)
 	replaced.APIKey, replaced.APIKeyAt = bytes.Clone(provider.APIKey), clone(provider.APIKeyAt)
 	replaced.UpdatedAt = s.now()
 	s.providers[replaced.ID] = replaced
@@ -1147,8 +1157,8 @@ func (s *Store) originOf(turn *turn) store.Origin {
 	}
 	provider := s.providers[agent.Model.Provider]
 	origin.Provider = store.Provider{
-		ID: provider.ID, ProjectID: agent.ProjectID, URL: provider.URL, APIKey: bytes.Clone(provider.APIKey),
-		APIKeyAt: clone(provider.APIKeyAt),
+		ID: provider.ID, ProjectID: agent.ProjectID, URL: provider.URL, Headers: headersOf(provider.Headers),
+		APIKey: bytes.Clone(provider.APIKey), APIKeyAt: clone(provider.APIKeyAt),
 	}
 	if provider.APIKeyAt != nil {
 		secrets := secretStoreOf(s.secretStores[provider.APIKeyAt.Store])

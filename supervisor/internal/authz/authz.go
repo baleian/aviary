@@ -55,8 +55,8 @@ func Token(keys *secret.Keys, session uuid.UUID) (string, error) {
 // its models. It goes through the Egress Proxy as the model request of a turn
 // does.
 type Listing struct {
-	// Provider is the provider that is asked: its ID, project, URL and key.
-	// It need not be stored.
+	// Provider is the provider that is asked: its ID, project, URL, headers
+	// and key. It need not be stored.
 	Provider store.Provider
 	// UserID and Subject identify the caller who asks. They are zero if
 	// requests to the API are not authenticated.
@@ -74,6 +74,7 @@ type sealedListing struct {
 	Project  uuid.UUID
 	Provider uuid.UUID
 	URL      string
+	Headers  []store.Header         `json:",omitempty"`
 	Key      []byte                 `json:",omitempty"`
 	KeyAt    *store.SecretReference `json:",omitempty"`
 	User     uuid.UUID
@@ -87,7 +88,7 @@ type sealedListing struct {
 func ListingToken(keys *secret.Keys, listing Listing) (string, error) {
 	encoded, err := json.Marshal(sealedListing{
 		Project: listing.Provider.ProjectID, Provider: listing.Provider.ID, URL: listing.Provider.URL,
-		Key: listing.Provider.APIKey, KeyAt: listing.Provider.APIKeyAt,
+		Headers: listing.Provider.Headers, Key: listing.Provider.APIKey, KeyAt: listing.Provider.APIKeyAt,
 		User: listing.UserID, Subject: listing.Subject, Until: listing.Until,
 	})
 	if err != nil {
@@ -131,8 +132,8 @@ func New(st store.Store, keys *secret.Keys, stores *secret.Stores, localhost str
 // extension "listener" tells them apart.
 //
 // A model request is routed to the endpoint of the turn's provider, with the
-// provider's API key. A forward proxy request goes where the pod sends it,
-// and never gets a provider's key.
+// provider's headers and API key. A forward proxy request goes where the pod
+// sends it, and never gets a provider's headers or key.
 //
 // A model request may carry the token of a listing instead. It is routed to
 // the endpoint of the listing's provider, and its metadata names the project
@@ -218,10 +219,11 @@ func (a *authorizer) origin(ctx context.Context, token string, forward bool) (st
 }
 
 // endpoint returns how the proxy forwards a model request for path: to the
-// endpoint of the turn's provider, with the provider's API key in place of
-// the session token. A provider without a key gets no Authorization header.
-// A path outside the path of the provider's URL, or a key that cannot be
-// read, is refused.
+// endpoint of the turn's provider, with the provider's headers, and with its
+// API key in place of the session token. A header of the provider replaces
+// one that the request has by the same name. A provider without a key gets no
+// Authorization header. A path outside the path of the provider's URL, or a
+// key that cannot be read, is refused.
 func (a *authorizer) endpoint(ctx context.Context, origin store.Origin, path string) (*authv3.OkHttpResponse, *authv3.CheckResponse) {
 	provider := origin.Provider
 	address, err := url.Parse(provider.URL)
@@ -242,6 +244,9 @@ func (a *authorizer) endpoint(ctx context.Context, origin store.Origin, path str
 		set(upstreamHeader, a.upstream(address)),
 		set(upstreamTLSHeader, strconv.FormatBool(address.Scheme == "https")),
 	}}
+	for _, header := range provider.Headers {
+		endpoint.Headers = append(endpoint.Headers, set(header.Name, header.Value))
+	}
 	var key string
 	switch in := origin.SecretStore; {
 	case provider.APIKeyAt != nil && in != nil:
@@ -353,8 +358,10 @@ func (a *authorizer) listing(token string) (Listing, bool) {
 		return Listing{}, false
 	}
 	return Listing{
-		Provider: store.Provider{ID: of.Provider, ProjectID: of.Project, URL: of.URL, APIKey: of.Key, APIKeyAt: of.KeyAt},
-		UserID:   of.User, Subject: of.Subject, Until: of.Until,
+		Provider: store.Provider{
+			ID: of.Provider, ProjectID: of.Project, URL: of.URL, Headers: of.Headers, APIKey: of.Key, APIKeyAt: of.KeyAt,
+		},
+		UserID: of.User, Subject: of.Subject, Until: of.Until,
 	}, true
 }
 

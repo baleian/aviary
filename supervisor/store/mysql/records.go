@@ -695,9 +695,40 @@ func keyAt(provider store.Provider) (storeID *key.ID, path, name string) {
 	return nil, "", ""
 }
 
+// headersIn returns the headers of a provider as their column holds them:
+// null if there are none.
+func headersIn(headers []store.Header) (*json.RawMessage, error) {
+	if len(headers) == 0 {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(headers)
+	if err != nil {
+		return nil, err
+	}
+	column := json.RawMessage(encoded)
+	return &column, nil
+}
+
+// headersFrom returns the headers that the column of a provider holds.
+func headersFrom(column *json.RawMessage) ([]store.Header, error) {
+	if column == nil {
+		return nil, nil
+	}
+	var headers []store.Header
+	if err := json.Unmarshal(*column, &headers); err != nil {
+		return nil, fmt.Errorf("headers of a provider: %w", err)
+	}
+	return headers, nil
+}
+
 func (s *records) CreateProvider(ctx context.Context, provider store.Provider) (store.Provider, error) {
+	headers, err := headersIn(provider.Headers)
+	if err != nil {
+		return store.Provider{}, err
+	}
 	params := db.CreateProviderParams{
-		ID: key.ID(provider.ID), ProjectID: key.ID(provider.ProjectID), Name: provider.Name, Url: provider.URL, ApiKey: provider.APIKey,
+		ID: key.ID(provider.ID), ProjectID: key.ID(provider.ProjectID), Name: provider.Name, Url: provider.URL,
+		Headers: headers, ApiKey: provider.APIKey,
 	}
 	params.ApiKeyStoreID, params.ApiKeyPath, params.ApiKeyName = keyAt(provider)
 	if err := created(s.queries.CreateProvider(ctx, params)); err != nil {
@@ -711,7 +742,7 @@ func (s *records) Provider(ctx context.Context, id uuid.UUID) (store.Provider, e
 	if err != nil {
 		return store.Provider{}, found(err)
 	}
-	return providerFrom(row), nil
+	return providerFrom(row)
 }
 
 func (s *records) Providers(ctx context.Context, projectID uuid.UUID) ([]store.Provider, error) {
@@ -721,24 +752,36 @@ func (s *records) Providers(ctx context.Context, projectID uuid.UUID) ([]store.P
 	}
 	providers := make([]store.Provider, len(rows))
 	for i, row := range rows {
-		providers[i] = providerFrom(row)
+		if providers[i], err = providerFrom(row); err != nil {
+			return nil, err
+		}
 	}
 	return providers, nil
 }
 
-func providerFrom(row db.Provider) store.Provider {
+func providerFrom(row db.Provider) (store.Provider, error) {
+	headers, err := headersFrom(row.Headers)
+	if err != nil {
+		return store.Provider{}, err
+	}
 	provider := store.Provider{
-		ID: uuid.UUID(row.ID), ProjectID: uuid.UUID(row.ProjectID), Name: row.Name, URL: row.Url, APIKey: row.ApiKey,
+		ID: uuid.UUID(row.ID), ProjectID: uuid.UUID(row.ProjectID), Name: row.Name, URL: row.Url, Headers: headers, APIKey: row.ApiKey,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}
 	if row.ApiKeyStoreID != nil {
 		provider.APIKeyAt = &store.SecretReference{Store: uuid.UUID(*row.ApiKeyStoreID), Path: row.ApiKeyPath, Key: row.ApiKeyName}
 	}
-	return provider
+	return provider, nil
 }
 
 func (s *records) ReplaceProvider(ctx context.Context, provider store.Provider) (store.Provider, error) {
-	params := db.ReplaceProviderParams{ID: key.ID(provider.ID), Name: provider.Name, Url: provider.URL, ApiKey: provider.APIKey}
+	headers, err := headersIn(provider.Headers)
+	if err != nil {
+		return store.Provider{}, err
+	}
+	params := db.ReplaceProviderParams{
+		ID: key.ID(provider.ID), Name: provider.Name, Url: provider.URL, Headers: headers, ApiKey: provider.APIKey,
+	}
 	params.ApiKeyStoreID, params.ApiKeyPath, params.ApiKeyName = keyAt(provider)
 	if err := created(s.queries.ReplaceProvider(ctx, params)); err != nil {
 		return store.Provider{}, err
@@ -1070,15 +1113,20 @@ func (s *records) SessionTurn(ctx context.Context, sessionID uuid.UUID) (store.O
 	if err != nil {
 		return store.Origin{}, found(err)
 	}
-	return originOf(row), nil
+	return originOf(row)
 }
 
-func originOf(row db.SessionTurnRow) store.Origin {
+func originOf(row db.SessionTurnRow) (store.Origin, error) {
+	headers, err := headersFrom(row.ProviderHeaders)
+	if err != nil {
+		return store.Origin{}, err
+	}
 	origin := store.Origin{
 		TurnID: uuid.UUID(row.TurnID), SessionID: uuid.UUID(row.SessionID), AgentID: uuid.UUID(row.AgentID), ProjectID: uuid.UUID(row.ProjectID),
 		Subject: row.Subject,
 		Provider: store.Provider{
-			ID: uuid.UUID(row.ProviderID), ProjectID: uuid.UUID(row.ProjectID), URL: row.ProviderUrl, APIKey: row.ProviderApiKey,
+			ID: uuid.UUID(row.ProviderID), ProjectID: uuid.UUID(row.ProjectID), URL: row.ProviderUrl, Headers: headers,
+			APIKey: row.ProviderApiKey,
 		},
 	}
 	if row.CreatedBy != nil {
@@ -1093,7 +1141,7 @@ func originOf(row db.SessionTurnRow) store.Origin {
 			CreatedAt: *row.StoreCreatedAt, UpdatedAt: *row.StoreUpdatedAt,
 		}
 	}
-	return origin
+	return origin, nil
 }
 
 func (s *records) StartTurn(ctx context.Context, turnID uuid.UUID) (time.Duration, bool, error) {

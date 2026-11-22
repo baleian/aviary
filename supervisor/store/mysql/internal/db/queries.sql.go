@@ -301,9 +301,9 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) er
 }
 
 const createProvider = `-- name: CreateProvider :execrows
-insert into providers (id, project_id, name, url, api_key, api_key_store_id, api_key_path, api_key_name)
+insert into providers (id, project_id, name, url, headers, api_key, api_key_store_id, api_key_path, api_key_name)
 select ?, projects.id, ?, ?, ?, ?,
-       ?, ?
+       ?, ?, ?
 from projects where projects.id = ?
 `
 
@@ -311,6 +311,7 @@ type CreateProviderParams struct {
 	ID            key.ID
 	Name          string
 	Url           string
+	Headers       *json.RawMessage
 	ApiKey        []byte
 	ApiKeyStoreID *key.ID
 	ApiKeyPath    string
@@ -323,6 +324,7 @@ func (q *Queries) CreateProvider(ctx context.Context, arg CreateProviderParams) 
 		arg.ID,
 		arg.Name,
 		arg.Url,
+		arg.Headers,
 		arg.ApiKey,
 		arg.ApiKeyStoreID,
 		arg.ApiKeyPath,
@@ -762,7 +764,7 @@ func (q *Queries) GetProject(ctx context.Context, id key.ID) (Project, error) {
 }
 
 const getProvider = `-- name: GetProvider :one
-select id, project_id, name, url, api_key, api_key_store_id, api_key_path, api_key_name, created_at, updated_at from providers where id = ?
+select id, project_id, name, url, headers, api_key, api_key_store_id, api_key_path, api_key_name, created_at, updated_at from providers where id = ?
 `
 
 func (q *Queries) GetProvider(ctx context.Context, id key.ID) (Provider, error) {
@@ -773,6 +775,7 @@ func (q *Queries) GetProvider(ctx context.Context, id key.ID) (Provider, error) 
 		&i.ProjectID,
 		&i.Name,
 		&i.Url,
+		&i.Headers,
 		&i.ApiKey,
 		&i.ApiKeyStoreID,
 		&i.ApiKeyPath,
@@ -1266,7 +1269,7 @@ func (q *Queries) ListProjectsOfMember(ctx context.Context, arg ListProjectsOfMe
 }
 
 const listProviders = `-- name: ListProviders :many
-select id, project_id, name, url, api_key, api_key_store_id, api_key_path, api_key_name, created_at, updated_at from providers where project_id = ? order by created_at, id
+select id, project_id, name, url, headers, api_key, api_key_store_id, api_key_path, api_key_name, created_at, updated_at from providers where project_id = ? order by created_at, id
 `
 
 func (q *Queries) ListProviders(ctx context.Context, projectID key.ID) ([]Provider, error) {
@@ -1283,6 +1286,7 @@ func (q *Queries) ListProviders(ctx context.Context, projectID key.ID) ([]Provid
 			&i.ProjectID,
 			&i.Name,
 			&i.Url,
+			&i.Headers,
 			&i.ApiKey,
 			&i.ApiKeyStoreID,
 			&i.ApiKeyPath,
@@ -1967,7 +1971,8 @@ func (q *Queries) ReplaceAgent(ctx context.Context, arg ReplaceAgentParams) (int
 }
 
 const replaceProvider = `-- name: ReplaceProvider :execrows
-update providers set name = ?, url = ?, api_key = ?,
+update providers set name = ?, url = ?, headers = ?,
+       api_key = ?,
        api_key_store_id = ?, api_key_path = ?,
        api_key_name = ?, updated_at = now(6)
 where id = ?
@@ -1976,6 +1981,7 @@ where id = ?
 type ReplaceProviderParams struct {
 	Name          string
 	Url           string
+	Headers       *json.RawMessage
 	ApiKey        []byte
 	ApiKeyStoreID *key.ID
 	ApiKeyPath    string
@@ -1987,6 +1993,7 @@ func (q *Queries) ReplaceProvider(ctx context.Context, arg ReplaceProviderParams
 	result, err := q.db.ExecContext(ctx, replaceProvider,
 		arg.Name,
 		arg.Url,
+		arg.Headers,
 		arg.ApiKey,
 		arg.ApiKeyStoreID,
 		arg.ApiKeyPath,
@@ -2052,7 +2059,8 @@ func (q *Queries) ResolveApproval(ctx context.Context, arg ResolveApprovalParams
 const sessionTurn = `-- name: SessionTurn :one
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
        coalesce(users.subject, '') as subject,
-       agents.provider_id, providers.url as provider_url, providers.api_key as provider_api_key,
+       agents.provider_id, providers.url as provider_url, providers.headers as provider_headers,
+       providers.api_key as provider_api_key,
        providers.api_key_store_id, providers.api_key_path, providers.api_key_name,
        coalesce(secret_stores.name, '') as store_name, coalesce(secret_stores.kind, '') as store_kind,
        secret_stores.settings as store_settings, secret_stores.credential as store_credential,
@@ -2075,6 +2083,7 @@ type SessionTurnRow struct {
 	Subject         string
 	ProviderID      key.ID
 	ProviderUrl     string
+	ProviderHeaders *json.RawMessage
 	ProviderApiKey  []byte
 	ApiKeyStoreID   *key.ID
 	ApiKeyPath      string
@@ -2101,6 +2110,7 @@ func (q *Queries) SessionTurn(ctx context.Context, sessionID key.ID) (SessionTur
 		&i.Subject,
 		&i.ProviderID,
 		&i.ProviderUrl,
+		&i.ProviderHeaders,
 		&i.ProviderApiKey,
 		&i.ApiKeyStoreID,
 		&i.ApiKeyPath,

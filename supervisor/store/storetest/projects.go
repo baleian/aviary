@@ -1021,12 +1021,17 @@ func (suite suite) testProviders(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	project := st.project()
-	given := store.Provider{ID: uuid.New(), ProjectID: project.ID, Name: "a provider", URL: "https://api.example.com/v1", APIKey: []byte("a sealed key")}
+	// The headers of a provider stay in the order in which they are given.
+	headers := []store.Header{{Name: "x-team", Value: "a team"}, {Name: "accept-language", Value: `en;q=0.8, "*"`}}
+	given := store.Provider{
+		ID: uuid.New(), ProjectID: project.ID, Name: "a provider", URL: "https://api.example.com/v1", Headers: headers, APIKey: []byte("a sealed key"),
+	}
 	created, err := st.CreateProvider(ctx, given)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if created.ID != given.ID || created.ProjectID != project.ID || created.Name != given.Name || created.URL != given.URL ||
+		!reflect.DeepEqual(created.Headers, headers) ||
 		!bytes.Equal(created.APIKey, given.APIKey) || created.CreatedAt.IsZero() || !created.UpdatedAt.Equal(created.CreatedAt) {
 		t.Errorf("CreateProvider = %+v", created)
 	}
@@ -1034,18 +1039,22 @@ func (suite suite) testProviders(t *testing.T) {
 		t.Errorf("Provider = %+v, want %+v: %v", read, created, err)
 	}
 
-	// A provider given no key has none afterwards.
-	replaced, err := st.ReplaceProvider(ctx, store.Provider{ID: given.ID, Name: "renamed", URL: "http://model.example.com:8000", APIKey: []byte("another")})
+	// A provider given no headers or no key has none afterwards.
+	others := []store.Header{{Name: "x-team", Value: "another team"}}
+	replaced, err := st.ReplaceProvider(ctx, store.Provider{
+		ID: given.ID, Name: "renamed", URL: "http://model.example.com:8000", Headers: others, APIKey: []byte("another"),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if replaced.ID != given.ID || replaced.ProjectID != project.ID || replaced.Name != "renamed" || replaced.URL != "http://model.example.com:8000" ||
+		!reflect.DeepEqual(replaced.Headers, others) ||
 		string(replaced.APIKey) != "another" || !replaced.CreatedAt.Equal(created.CreatedAt) || !replaced.UpdatedAt.After(created.UpdatedAt) {
 		t.Errorf("ReplaceProvider = %+v, was %+v", replaced, created)
 	}
 	keyless, err := st.ReplaceProvider(ctx, store.Provider{ID: given.ID, Name: "renamed", URL: "http://model.example.com:8000"})
-	if err != nil || keyless.APIKey != nil {
-		t.Errorf("ReplaceProvider without a key = %+v: %v", keyless, err)
+	if err != nil || keyless.APIKey != nil || keyless.Headers != nil {
+		t.Errorf("ReplaceProvider without headers or a key = %+v: %v", keyless, err)
 	}
 	if read, err := st.Provider(ctx, given.ID); err != nil || !same(read, keyless) {
 		t.Errorf("Provider after ReplaceProvider = %+v, want %+v: %v", read, keyless, err)
@@ -1054,10 +1063,12 @@ func (suite suite) testProviders(t *testing.T) {
 	if _, err := st.CreateProvider(ctx, given); err == nil {
 		t.Error("second CreateProvider with the same ID succeeded")
 	}
-	// A provider without a key has a nil key, not an empty one.
-	local, err := st.CreateProvider(ctx, store.Provider{ID: uuid.New(), ProjectID: project.ID, Name: "local", URL: "http://10.0.0.5:8000/v1"})
-	if err != nil || local.APIKey != nil {
-		t.Errorf("CreateProvider without a key = %+v: %v", local, err)
+	// A provider without headers or a key has nil ones, not empty ones.
+	local, err := st.CreateProvider(ctx, store.Provider{
+		ID: uuid.New(), ProjectID: project.ID, Name: "local", URL: "http://10.0.0.5:8000/v1", Headers: []store.Header{},
+	})
+	if err != nil || local.APIKey != nil || local.Headers != nil {
+		t.Errorf("CreateProvider without headers or a key = %+v: %v", local, err)
 	}
 
 	none := uuid.New()
@@ -1078,6 +1089,7 @@ func (suite suite) testProviders(t *testing.T) {
 // same reports whether two providers have equal stored fields.
 func same(one, other store.Provider) bool {
 	return one.ID == other.ID && one.ProjectID == other.ProjectID && one.Name == other.Name && one.URL == other.URL &&
+		reflect.DeepEqual(one.Headers, other.Headers) &&
 		bytes.Equal(one.APIKey, other.APIKey) && (one.APIKey == nil) == (other.APIKey == nil) &&
 		reflect.DeepEqual(one.APIKeyAt, other.APIKeyAt) &&
 		one.CreatedAt.Equal(other.CreatedAt) && one.UpdatedAt.Equal(other.UpdatedAt)
@@ -1175,7 +1187,8 @@ func (suite suite) testSessionTurn(t *testing.T) {
 	st := suite.open(t)
 	project := st.project()
 	provider, err := st.CreateProvider(ctx, store.Provider{
-		ID: uuid.New(), ProjectID: project.ID, Name: "a provider", URL: "https://api.example.com/v1", APIKey: []byte("a sealed key"),
+		ID: uuid.New(), ProjectID: project.ID, Name: "a provider", URL: "https://api.example.com/v1",
+		Headers: []store.Header{{Name: "x-team", Value: "a team"}}, APIKey: []byte("a sealed key"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1215,12 +1228,14 @@ func (suite suite) testSessionTurn(t *testing.T) {
 	}
 	if origin.TurnID != turn.ID || origin.SessionID != session.ID || origin.AgentID != agent.ID || origin.ProjectID != project.ID ||
 		origin.UserID != sender.ID || origin.Subject != "subject-of-ann" || origin.Provider.ID != provider.ID ||
-		origin.Provider.URL != provider.URL || string(origin.Provider.APIKey) != "a sealed key" || origin.Provider.APIKeyAt != nil || origin.SecretStore != nil {
+		origin.Provider.URL != provider.URL || !reflect.DeepEqual(origin.Provider.Headers, provider.Headers) ||
+		string(origin.Provider.APIKey) != "a sealed key" || origin.Provider.APIKeyAt != nil || origin.SecretStore != nil {
 		t.Errorf("SessionTurn = %+v, provider %+v", origin, origin.Provider)
 	}
 	notFound(uuid.New(), "nonexistent session")
 
-	// The key of the provider moves to a secret store while the turn runs.
+	// The key of the provider moves to a secret store while the turn runs,
+	// and the provider no longer has headers.
 	secrets, err := st.CreateSecretStore(ctx, store.SecretStore{
 		ID: uuid.New(), ProjectID: project.ID, Name: "a store", Kind: "a kind", Settings: json.RawMessage(`{"where": "there"}`), Credential: []byte("sealed"),
 	})
@@ -1232,7 +1247,7 @@ func (suite suite) testSessionTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	origin, err = st.another().SessionTurn(ctx, session.ID)
-	if err != nil || origin.Provider.URL != "https://api.example.com/v2" || origin.Provider.APIKey != nil ||
+	if err != nil || origin.Provider.URL != "https://api.example.com/v2" || origin.Provider.Headers != nil || origin.Provider.APIKey != nil ||
 		!reflect.DeepEqual(origin.Provider.APIKeyAt, at) {
 		t.Errorf("SessionTurn provider after ReplaceProvider = %+v: %v", origin.Provider, err)
 	}

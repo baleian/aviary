@@ -104,9 +104,9 @@ select exists (select 1 from turns where session_id = ? and ended_at is null);
 update sessions set ended_at = now(6), end_reason = sqlc.narg(reason) where id = sqlc.arg(id);
 
 -- name: CreateProvider :execrows
-insert into providers (id, project_id, name, url, api_key, api_key_store_id, api_key_path, api_key_name)
-select sqlc.arg(id), projects.id, sqlc.arg(name), sqlc.arg(url), sqlc.narg(api_key), sqlc.narg(api_key_store_id),
-       sqlc.arg(api_key_path), sqlc.arg(api_key_name)
+insert into providers (id, project_id, name, url, headers, api_key, api_key_store_id, api_key_path, api_key_name)
+select sqlc.arg(id), projects.id, sqlc.arg(name), sqlc.arg(url), sqlc.narg(headers), sqlc.narg(api_key),
+       sqlc.narg(api_key_store_id), sqlc.arg(api_key_path), sqlc.arg(api_key_name)
 from projects where projects.id = sqlc.arg(project_id);
 
 -- name: GetProvider :one
@@ -116,7 +116,8 @@ select * from providers where id = ?;
 select * from providers where project_id = ? order by created_at, id;
 
 -- name: ReplaceProvider :execrows
-update providers set name = sqlc.arg(name), url = sqlc.arg(url), api_key = sqlc.narg(api_key),
+update providers set name = sqlc.arg(name), url = sqlc.arg(url), headers = sqlc.narg(headers),
+       api_key = sqlc.narg(api_key),
        api_key_store_id = sqlc.narg(api_key_store_id), api_key_path = sqlc.arg(api_key_path),
        api_key_name = sqlc.arg(api_key_name), updated_at = now(6)
 where id = sqlc.arg(id);
@@ -234,7 +235,8 @@ where turns.id = ?;
 -- provider of its agent and the secret store of the provider's key.
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
        coalesce(users.subject, '') as subject,
-       agents.provider_id, providers.url as provider_url, providers.api_key as provider_api_key,
+       agents.provider_id, providers.url as provider_url, providers.headers as provider_headers,
+       providers.api_key as provider_api_key,
        providers.api_key_store_id, providers.api_key_path, providers.api_key_name,
        coalesce(secret_stores.name, '') as store_name, coalesce(secret_stores.kind, '') as store_kind,
        secret_stores.settings as store_settings, secret_stores.credential as store_credential,

@@ -50,6 +50,7 @@ type Provider struct {
 	ProjectID     uuid.UUID
 	Name          string
 	Url           string
+	Headers       []byte
 	ApiKey        []byte
 	ApiKeyStoreID *uuid.UUID
 	ApiKeyPath    string

@@ -51,11 +51,13 @@ const (
 )
 
 // endpoint is a model endpoint that the Supervisor returns for a turn: its
-// host, whether it uses TLS, and its key, if any.
+// host, whether it uses TLS, and its key and the headers of its provider, if
+// any.
 type endpoint struct {
-	host   string
-	secure bool
-	key    string
+	host    string
+	secure  bool
+	key     string
+	headers map[string]string
 	// mistaken makes the Supervisor return the endpoint for forward proxy
 	// requests too, as if by mistake.
 	mistaken bool
@@ -64,6 +66,9 @@ type endpoint struct {
 // mistaken is the token of a turn for which the Supervisor wrongly returns a
 // model endpoint to the forward proxy.
 const mistaken = "a-turn-that-the-supervisor-errs-about"
+
+// routed is the token of a turn whose provider has headers.
+const routed = "a-turn-of-a-provider-with-headers"
 
 // endpoints are the model endpoints that the Supervisor returns, by token.
 // Every host resolves to the tests, except gone.invalid, which does not
@@ -78,14 +83,17 @@ var endpoints = map[string]endpoint{
 	"a-turn-of-a-provider-on-a-port":     {host: "model.test:8081", key: "the-key-of-a-provider"},
 	"a-turn-of-a-provider-that-is-down":  {host: "model.test:9", key: "the-key-of-a-provider"},
 	"a-turn-of-a-provider-that-is-gone":  {host: "gone.invalid", key: "the-key-of-a-provider"},
-	mistaken:                             {host: "other.test", key: "the-key-of-a-provider", mistaken: true},
+	routed: {host: "allowed.test", key: "the-key-of-a-provider", headers: map[string]string{
+		"x-gateway-route": "team-a", "accept-language": "en",
+	}},
+	mistaken: {host: "other.test", key: "the-key-of-a-provider", mistaken: true},
 }
 
 // named returns a token for which the Supervisor returns an endpoint at host,
-// with a key if key is true.
+// with a key if key is true, and without headers.
 func named(host string, key bool) string {
 	for turn, endpoint := range endpoints {
-		if endpoint.host == host && (endpoint.key != "") == key && !endpoint.mistaken && turn != token {
+		if endpoint.host == host && (endpoint.key != "") == key && endpoint.headers == nil && !endpoint.mistaken && turn != token {
 			return turn
 		}
 	}
@@ -119,8 +127,9 @@ func (s *supervisor) Check(_ context.Context, request *authv3.CheckRequest) (*au
 	case sent == nameless, provided && forward && !endpoint.mistaken:
 		return allowed, nil
 	case provided:
-		// The endpoint of the turn's provider, with its key in place of the
-		// token. A provider without a key gets no Authorization header.
+		// The endpoint of the turn's provider, with its headers, and with
+		// its key in place of the token. A provider without a key gets no
+		// Authorization header.
 		set := func(name, value string) *corev3.HeaderValueOption {
 			return &corev3.HeaderValueOption{
 				Header:       &corev3.HeaderValue{Key: name, Value: value},
@@ -131,6 +140,9 @@ func (s *supervisor) Check(_ context.Context, request *authv3.CheckRequest) (*au
 			set("x-aviary-upstream", endpoint.host),
 			set("x-aviary-upstream-tls", strconv.FormatBool(endpoint.secure)),
 		}}
+		for name, value := range endpoint.headers {
+			answer.Headers = append(answer.Headers, set(name, value))
+		}
 		if endpoint.key != "" {
 			answer.Headers = append(answer.Headers, set("authorization", "Bearer "+endpoint.key))
 		} else {
@@ -545,6 +557,28 @@ func TestModelRequestToANamedEndpoint(t *testing.T) {
 	reached("model request to a listed endpoint with a port", model, "/v1/named/listed-port", "model.test:8081", providerKey)
 	if off := ask(t, closed, "/v1/named/closed-port", "Bearer "+named("model.test:8081", true)); off.status != http.StatusForbidden {
 		t.Errorf("model request to an unlisted port: got %d %q, want 403", off.status, off.body)
+	}
+}
+
+// A model request gets the headers of the turn's provider besides its key.
+// The proxy sets them in place of what the pod sends by their names, and
+// forwards the other headers of the request as they are.
+func TestModelRequestOfAProviderWithHeaders(t *testing.T) {
+	t.Parallel()
+	for _, proxy := range []string{open, listed} {
+		path := "/api/routed/" + proxy
+		if got := ask(t, proxy, path, "Bearer "+routed, "X-Gateway-Route", "set-by-the-pod", "X-Other", "of-the-pod"); got.status != http.StatusOK {
+			t.Errorf("%s: model request of a provider with headers: got %d %q, want 200", proxy, got.status, got.body)
+		}
+		got := outside.got(path)
+		if got == nil {
+			t.Errorf("%s: model request of a provider with headers did not reach its endpoint", proxy)
+			continue
+		}
+		if route := got.Header.Values("X-Gateway-Route"); len(route) != 1 || route[0] != "team-a" || got.Header.Get("Accept-Language") != "en" ||
+			got.Header.Get("X-Other") != "of-the-pod" || got.Header.Get("Authorization") != "Bearer the-key-of-a-provider" || got.Host != "allowed.test" {
+			t.Errorf("%s: endpoint of a provider with headers got host %s and %v", proxy, got.Host, got.Header)
+		}
 	}
 }
 

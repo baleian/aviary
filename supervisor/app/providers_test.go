@@ -23,6 +23,7 @@ type provider struct {
 	ProjectID string          `json:"project_id"`
 	Name      string          `json:"name"`
 	URL       string          `json:"url"`
+	Headers   []store.Header  `json:"headers"`
 	APIKey    json.RawMessage `json:"api_key"`
 	CreatedAt time.Time       `json:"created_at"`
 	UpdatedAt time.Time       `json:"updated_at"`
@@ -136,5 +137,72 @@ func TestProviders(t *testing.T) {
 	local := answer("POST", providers, `{"name": "local", "url": "http://10.0.0.5:8000/v1", "api_key": null}`, http.StatusCreated)
 	if read := answer("GET", "/v1/providers/"+local.ID, "", http.StatusOK); read.APIKey != nil || read.URL != "http://10.0.0.5:8000/v1" {
 		t.Errorf("provider without a key = %+v", read)
+	}
+}
+
+// The headers of a provider are not secrets: a provider is returned with
+// them, as they are kept. PUT replaces them with the rest of the provider.
+func TestProviderHeaders(t *testing.T) {
+	t.Parallel()
+	aviary := install(t)
+	s := aviary.supervisor()
+	project := s.project()
+	providers := "/v1/projects/" + project + "/providers"
+	// answer sends a request, and returns the status of the response and the
+	// provider or the message in it.
+	answer := func(method, path, body string) (int, provider, string) {
+		t.Helper()
+		var got struct {
+			provider
+			Message string
+		}
+		status, _ := s.request(method, path, body, &got)
+		return status, got.provider, got.Message
+	}
+
+	// Names are kept in lowercase, and values without spaces at their ends,
+	// in the order in which they are given.
+	given := []store.Header{{Name: "x-gateway-route", Value: "team-a"}, {Name: "accept-language", Value: "en"}}
+	status, created, _ := answer("POST", providers, `{"name": "a gateway", "url": "https://gateway.example.com/v1",
+		"headers": [{"name": "X-Gateway-Route", "value": " team-a "}, {"name": "accept-language", "value": "en"}]}`)
+	if status != http.StatusCreated || !slices.Equal(created.Headers, given) {
+		t.Fatalf("created provider: status %d, headers %v, want %v", status, created.Headers, given)
+	}
+	path := "/v1/providers/" + created.ID
+	if status, read, _ := answer("GET", path, ""); status != http.StatusOK || !slices.Equal(read.Headers, given) {
+		t.Errorf("provider: status %d, headers %v, want %v", status, read.Headers, given)
+	}
+	var list struct{ Providers []provider }
+	if status, _ := s.request("GET", providers, "", &list); status != http.StatusOK || len(list.Providers) != 1 || !slices.Equal(list.Providers[0].Headers, given) {
+		t.Errorf("providers: status %d, %+v", status, list.Providers)
+	}
+
+	// A refused PUT says which header it refuses, and leaves the provider
+	// unchanged. A header is a name and a value, and nothing else.
+	const gateway = `{"name": "a gateway", "url": "https://gateway.example.com/v1"`
+	status, _, why := answer("PUT", path, gateway+`, "headers": [{"name": "x-gateway-route", "value": "team-b"}, {"name": "x-aviary-upstream", "value": "other.example.com"}]}`)
+	if status != http.StatusBadRequest || why != "headers[1].name must not be x-aviary-upstream, which is reserved" {
+		t.Errorf("PUT with a reserved header: status %d, %q", status, why)
+	}
+	if status, _, _ := answer("PUT", path, gateway+`, "headers": [{"name": "x-gateway-route", "value": "team-b", "secret": true}]}`); status != http.StatusBadRequest {
+		t.Errorf("PUT with a header that has another field: status %d, want 400", status)
+	}
+	if status, read, _ := answer("GET", path, ""); status != http.StatusOK || !slices.Equal(read.Headers, given) {
+		t.Errorf("provider after refused requests: status %d, headers %v, want %v", status, read.Headers, given)
+	}
+
+	// PUT replaces the headers, and a PUT without headers removes them.
+	if status, replaced, _ := answer("PUT", path, gateway+`, "headers": [{"name": "x-gateway-route", "value": "team-b"}]}`); status != http.StatusOK ||
+		!slices.Equal(replaced.Headers, []store.Header{{Name: "x-gateway-route", Value: "team-b"}}) {
+		t.Errorf("replaced provider: status %d, headers %v", status, replaced.Headers)
+	}
+	for _, body := range []string{gateway + `}`, gateway + `, "headers": []}`, gateway + `, "headers": null}`} {
+		var fields map[string]json.RawMessage
+		if status, _ := s.request("PUT", path, body, &fields); status != http.StatusOK || fields["headers"] != nil {
+			t.Errorf("PUT %s: status %d, headers %s, want a provider without headers", body, status, fields["headers"])
+		}
+	}
+	if record, err := aviary.records.Provider(context.Background(), uuid.MustParse(created.ID)); err != nil || record.Headers != nil {
+		t.Errorf("stored headers = %v, %v, want none", record.Headers, err)
 	}
 }

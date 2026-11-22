@@ -178,6 +178,9 @@ type Provider struct {
 	Name      string    `json:"name"`
 	// URL is the base URL of the model endpoint.
 	URL string `json:"url"`
+	// Headers are the headers that the endpoint needs besides its key.
+	// Every request to the endpoint carries them.
+	Headers []Header `json:"headers,omitempty"`
 	// APIKey is the stored API key, sealed for ProviderKeyPlace.
 	APIKey []byte `json:"-"`
 	// APIKeyAt locates the API key if it is kept in a secret store.
@@ -185,6 +188,14 @@ type Provider struct {
 	CreatedAt time.Time        `json:"created_at"`
 	// UpdatedAt is when the provider was last replaced.
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// Header is a header of the requests to a provider's endpoint. Its value is
+// not a secret.
+type Header struct {
+	// Name is the name of the header, in lowercase.
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 // SecretReference locates a value in a secret store of the project: the path
@@ -544,9 +555,9 @@ type Store interface {
 	// Providers returns the providers of the project in creation order.
 	Providers(ctx context.Context, projectID uuid.UUID) ([]Provider, error)
 
-	// ReplaceProvider replaces the name, URL and API key of the provider with
-	// the same ID; a provider given no key has none afterwards. It returns
-	// ErrNotFound if there is no such provider.
+	// ReplaceProvider replaces the name, URL, headers and API key of the
+	// provider with the same ID; a provider given no headers or no key has
+	// none afterwards. It returns ErrNotFound if there is no such provider.
 	ReplaceProvider(ctx context.Context, provider Provider) (Provider, error)
 
 	// CreateSecretStore creates the secret store with the ID that it is

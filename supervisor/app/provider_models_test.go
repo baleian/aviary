@@ -68,10 +68,14 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.mu.Lock()
 	p.got = append(p.got, passed{r.Method, to.host, r.URL.RequestURI(), to.authorization, to.secure})
 	p.mu.Unlock()
+	// The headers that the Supervisor names replace those of the request.
+	// The two that name the endpoint are for the proxy only.
 	onward := r.Clone(r.Context())
 	onward.Header.Del("Authorization")
-	if !to.keyless {
-		onward.Header.Set("Authorization", to.authorization)
+	for _, header := range answer.GetOkResponse().GetHeaders() {
+		if name := header.GetHeader().GetKey(); !strings.HasPrefix(name, "x-aviary-upstream") {
+			onward.Header.Set(name, header.GetHeader().GetValue())
+		}
 	}
 	endpoint(w, onward)
 }
@@ -148,6 +152,18 @@ func keyedEndpoint(key string) http.HandlerFunc {
 	}
 }
 
+// routedEndpoint lists a model to a request with the header, and answers 400
+// to any other, as a gateway does that routes its requests by a header.
+func routedEndpoint(name, value string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(name) != value {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		io.WriteString(w, `{"object": "list", "data": [{"id": "routed-model", "object": "model"}]}`)
+	}
+}
+
 // answers returns an endpoint that answers 200 with the body.
 func answers(body string) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, body) }
@@ -166,6 +182,7 @@ func TestTheModelsOfAnEndpointAreListedThroughTheProxy(t *testing.T) {
 	aviary, standIn := proxied(t, map[string]http.HandlerFunc{
 		"model.example.com:8000": keyedEndpoint("sk-a-key"),
 		"api.example.com":        keyedEndpoint("sk-in-the-store"),
+		"gateway.example.com":    routedEndpoint("X-Gateway-Route", "team-a"),
 		"open.example.com":       answers(""),
 		"other.example.com":      answers(`{"models": [{"name": "model-a"}]}`),
 		"none.example.com":       answers(`{"object": "list", "data": []}`),
@@ -207,7 +224,12 @@ func TestTheModelsOfAnEndpointAreListedThroughTheProxy(t *testing.T) {
 		"a key that the endpoint refuses": {`{"url": "http://model.example.com:8000/v1", "api_key": {"value": "sk-another"}}`, listed{reached: true, status: http.StatusUnauthorized}},
 		"no key for an endpoint with one": {`{"url": "http://model.example.com:8000/v1"}`, listed{reached: true, status: http.StatusUnauthorized}},
 		"a URL with a longer path":        {`{"url": "http://model.example.com:8000/custom/v2", "api_key": {"value": "sk-a-key"}}`, listed{reached: true, status: http.StatusOK, models: "model-a,model-b"}},
-		"an endpoint that redirects":      {`{"url": "https://moved.example.com/v1"}`, listed{reached: true, status: http.StatusFound}},
+		// The headers of the provider go with the request, as its key does.
+		"a header that the endpoint needs": {`{"url": "https://gateway.example.com/v1", "headers": [{"name": "X-Gateway-Route", "value": "team-a"}]}`,
+			listed{reached: true, status: http.StatusOK, models: "routed-model"}},
+		"another value of the header":        {`{"url": "https://gateway.example.com/v1", "headers": [{"name": "x-gateway-route", "value": "team-b"}]}`, listed{reached: true, status: http.StatusBadRequest}},
+		"no header for an endpoint with one": {`{"url": "https://gateway.example.com/v1"}`, listed{reached: true, status: http.StatusBadRequest}},
+		"an endpoint that redirects":         {`{"url": "https://moved.example.com/v1"}`, listed{reached: true, status: http.StatusFound}},
 		"an endpoint that is not reached": {`{"url": "https://nowhere.example.com/v1"}`,
 			listed{reason: "upstream connect error or disconnect/reset before headers. reset reason: connection timeout"}},
 		// An answer that is not a list of models as the OpenAI API gives it
@@ -252,6 +274,7 @@ func TestTheModelsOfAProviderAreListed(t *testing.T) {
 	aviary, standIn := proxied(t, map[string]http.HandlerFunc{
 		"model.example.com:8000": keyedEndpoint("sk-a-key"),
 		"api.example.com":        keyedEndpoint("sk-in-the-store"),
+		"gateway.example.com":    routedEndpoint("X-Gateway-Route", "team-a"),
 		"open.example.com":       answers(""),
 	})
 	s := aviary.supervisor()
@@ -264,6 +287,7 @@ func TestTheModelsOfAProviderAreListed(t *testing.T) {
 	stored := s.create(providers, `{"name": "stored", "url": "http://model.example.com:8000/v1", "api_key": {"value": "sk-a-key"}}`)
 	elsewhere := s.create(providers, `{"name": "elsewhere", "url": "https://api.example.com/v1", "api_key": `+in(kept, "llm/model", "api_key")+`}`)
 	keyless := s.create(providers, `{"name": "keyless", "url": "https://open.example.com/v1"}`)
+	routed := s.create(providers, `{"name": "routed", "url": "https://gateway.example.com/v1", "headers": [{"name": "x-gateway-route", "value": "team-a"}]}`)
 	gone := s.create(providers, `{"name": "gone", "url": "https://nowhere.example.com/v1"}`)
 
 	for name, test := range map[string]struct {
@@ -273,6 +297,7 @@ func TestTheModelsOfAProviderAreListed(t *testing.T) {
 		"with a key that Aviary keeps":   {stored, listed{reached: true, status: http.StatusOK, models: "model-a,model-b"}},
 		"with a key in a secret store":   {elsewhere, listed{reached: true, status: http.StatusOK, models: "model-a,model-b"}},
 		"without a key and with no list": {keyless, listed{reached: true, status: http.StatusOK}},
+		"with a header":                  {routed, listed{reached: true, status: http.StatusOK, models: "routed-model"}},
 		"that is not reached":            {gone, listed{reason: "upstream connect error or disconnect/reset before headers. reset reason: connection timeout"}},
 	} {
 		if got := s.listing("GET", "/v1/providers/"+test.provider+"/models", ""); got != test.want {
@@ -308,6 +333,7 @@ func TestAnEndpointWhoseModelsAreNotListed(t *testing.T) {
 		"a URL with a query": `{"url": "https://api.example.com/v1?a=b"}`,
 		"a key of two kinds": `{"url": "https://api.example.com/v1", "api_key": {"value": "sk-a-key", "store": "` + uuid.NewString() + `"}}`,
 		"an unknown store":   `{"url": "https://api.example.com/v1", "api_key": ` + in(uuid.NewString(), "llm/model", "api_key") + `}`,
+		"a reserved header":  `{"url": "https://api.example.com/v1", "headers": [{"name": "host", "value": "other.example.com"}]}`,
 		"a name":             `{"name": "a provider", "url": "https://api.example.com/v1"}`,
 	} {
 		var refused struct{ Code string }

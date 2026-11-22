@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -19,10 +20,11 @@ import (
 
 // endpoint is how the Supervisor has the proxy route a model request: the
 // headers that it sets, and whether it removes the Authorization header that
-// carries the session token.
+// carries the session token. headers are those of the provider, each as a
+// line "name: value".
 type endpoint struct {
-	host, secure, authorization string
-	keyless                     bool
+	host, secure, authorization, headers string
+	keyless                              bool
 }
 
 // named returns the endpoint of an allowed check, or nil if the check leaves
@@ -38,7 +40,12 @@ func named(t *testing.T, answer *authv3.CheckResponse) *endpoint {
 	}
 	found := &endpoint{keyless: slices.Contains(ok.GetHeadersToRemove(), "authorization")}
 	for _, header := range ok.GetHeaders() {
-		switch name, value := header.GetHeader().GetKey(), header.GetHeader().GetValue(); name {
+		name, value := header.GetHeader().GetKey(), header.GetHeader().GetValue()
+		// The pod cannot set a header in place of the Supervisor.
+		if header.GetAppendAction() != corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD {
+			t.Errorf("header %s is set with %v, which keeps a header of the request", name, header.GetAppendAction())
+		}
+		switch name {
 		case "x-aviary-upstream":
 			found.host = value
 		case "x-aviary-upstream-tls":
@@ -46,7 +53,7 @@ func named(t *testing.T, answer *authv3.CheckResponse) *endpoint {
 		case "authorization":
 			found.authorization = value
 		default:
-			t.Errorf("unexpected header %s: %s", name, value)
+			found.headers += name + ": " + value + "\n"
 		}
 	}
 	return found
@@ -180,6 +187,47 @@ func TestAgentNamesItsModel(t *testing.T) {
 	}
 	if status, why := refusal(s.check(token, false, "/v1/chat/completions")); status != http.StatusServiceUnavailable || why != "the model provider's URL is invalid\n" {
 		t.Errorf("request with an invalid provider URL: denied with %d %q", status, why)
+	}
+}
+
+// An endpoint may need headers besides its key, as a gateway does that
+// routes by one. The Egress Proxy gets the headers of the turn's provider for
+// model requests, and sets them in place of what the pod sends.
+func TestModelRequestsCarryTheHeadersOfTheirProvider(t *testing.T) {
+	t.Parallel()
+	aviary := install(t)
+	s := aviary.supervisor()
+	project := s.project()
+	const gateway = `{"name": "a gateway", "url": "https://gateway.example.com/v1"`
+	provider := s.create("/v1/projects/"+project+"/providers", gateway+`, "api_key": {"value": "sk-the-first-key"},
+		"headers": [{"name": "X-Gateway-Route", "value": "team-a"}, {"name": "accept-language", "value": "en"}]}`)
+	agent := s.agent(project, `{"harness": "opencode", "model": {"provider": "`+provider+`", "name": "a-model"}}`)
+	runner := aviary.given(s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID)
+	token := aviary.token(runner.Sandbox)
+
+	// Any Supervisor can answer the proxy.
+	for _, supervisor := range []*supervisor{s, aviary.supervisor()} {
+		got := named(t, supervisor.check(token, false, "/v1/chat/completions"))
+		if got == nil || *got != (endpoint{
+			host: "gateway.example.com", secure: "true", authorization: "Bearer sk-the-first-key",
+			headers: "x-gateway-route: team-a\naccept-language: en\n",
+		}) {
+			t.Errorf("model request endpoint = %+v", got)
+		}
+	}
+	// A forward proxy request goes where the pod sends it, without them.
+	if got := named(t, s.check(token, true, "/v1/chat/completions")); got != nil {
+		t.Errorf("forward proxy request endpoint = %+v, want none", got)
+	}
+
+	// Replaced headers apply from the next request of a running turn, and a
+	// provider without a key has its headers all the same.
+	if status, _ := s.request("PUT", "/v1/providers/"+provider, gateway+`, "headers": [{"name": "x-gateway-route", "value": "team-b"}]}`, nil); status != http.StatusOK {
+		t.Fatalf("PUT provider: status %d, want 200", status)
+	}
+	got := named(t, s.check(token, false, "/v1/chat/completions"))
+	if got == nil || *got != (endpoint{host: "gateway.example.com", secure: "true", keyless: true, headers: "x-gateway-route: team-b\n"}) {
+		t.Errorf("endpoint after replacing the provider = %+v", got)
 	}
 }
 
