@@ -793,7 +793,7 @@ repository that Git ignores, with lines of `NAME=value` without quotes:
 | `CRATES_IO` | crates.io: a registry as Cargo names one, such as `sparse+https://mirror.example.com/crates/index/`. |
 | `DEB_DEBIAN_ORG` | `http://deb.debian.org`, for the Debian packages of the harness images: an address that serves `debian` and `debian-security`, such as `https://mirror.example.com/deb`. The images keep it as the source of their packages. |
 | `AGENT_SANDBOX_REPO` | The repository of agent-sandbox, `https://github.com/kubernetes-sigs/agent-sandbox`, for its chart, which is in the source of its release. |
-| `CNPG_REPO`, `VALKEY_REPO`, `HEADLAMP_REPO`, `PROMETHEUS_REPO`, `GRAFANA_REPO` | The Helm repositories of the charts that `make cluster-up`, `make headlamp` and `make grafana` install. |
+| `CNPG_REPO`, `VALKEY_REPO`, `HEADLAMP_REPO`, `PROMETHEUS_REPO`, `GRAFANA_REPO` | The Helm repositories of the charts that `make cluster-up`, `make headlamp` and `make grafana` install. If a mirror has other versions of the charts than the Makefile names, `CNPG_CHART`, `VALKEY_CHART`, `HEADLAMP_CHART`, `PROMETHEUS_CHART` and `GRAFANA_CHART` name the versions. |
 
 Most images are pulled by digests that the repository pins, so a mirror has
 to serve the images of its registry unchanged. The builds read the mirrors

@@ -28,11 +28,13 @@ GRAFANA_REPO ?= https://grafana-community.github.io/helm-charts
 
 CLUSTER := aviary
 NODE_IMAGE := $(DOCKER_IO)/kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
-CNPG_CHART := 0.29.1
-VALKEY_CHART := 1.0.0
-HEADLAMP_CHART := 0.46.0
-PROMETHEUS_CHART := 29.48.0
-GRAFANA_CHART := 14.5.0
+# The versions of the charts of the local cluster. .env, the environment or
+# the command line names others, if a mirror does not have these.
+CNPG_CHART ?= 0.29.1
+VALKEY_CHART ?= 1.0.0
+HEADLAMP_CHART ?= 0.46.0
+PROMETHEUS_CHART ?= 29.48.0
+GRAFANA_CHART ?= 14.5.0
 # The chart of agent-sandbox, which the Aviary chart installs with itself. It
 # is taken from the source of the release, verified against its checksum, and
 # is not kept in the repository.
