@@ -62,6 +62,11 @@ supervisor:
     # Groups whose members may use the API, besides the admins. If empty,
     # every authenticated user may.
     users: []
+  # Origins whose pages may call the API from a browser, such as that of the
+  # web UI if it is served at another address than the API:
+  #   https://aviary.example.com
+  # "*" is every origin. Pages at the address of the API itself need none.
+  allowedOrigins: []
 
 # The state metrics of the installation, such as the number of sandboxes in
 # each state. A pod of its own serves them from the database, with the image

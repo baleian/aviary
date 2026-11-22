@@ -76,6 +76,9 @@ type installation struct {
 	log        *memorylog.Log
 	// callers has no identity provider unless a test sets one.
 	callers api.Callers
+	// origins are the origins whose pages may call the API from a browser:
+	// none unless a test sets them.
+	origins []string
 }
 
 // install returns an installation without Supervisors. changes modify the
@@ -165,7 +168,7 @@ func (i *installation) supervisor() *supervisor {
 	ctx, stop := context.WithCancel(context.Background())
 	stopped := make(chan error, 1)
 	go func() {
-		stopped <- serveOn(ctx, on, i.records, ev, i.service, i.config, i.keys, stores, i.callers)
+		stopped <- serveOn(ctx, on, i.records, ev, i.service, i.config, i.keys, stores, i.callers, i.origins)
 	}()
 	s.stop = sync.OnceFunc(func() {
 		stop()

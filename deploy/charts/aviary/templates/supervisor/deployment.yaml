@@ -54,6 +54,8 @@ spec:
               value: {{ .Values.supervisor.auth.admins | toJson | quote }}
             - name: AVIARY_USER_GROUPS
               value: {{ .Values.supervisor.auth.users | toJson | quote }}
+            - name: AVIARY_ALLOWED_ORIGINS
+              value: {{ .Values.supervisor.allowedOrigins | toJson | quote }}
             - name: AVIARY_SANDBOX_NAMESPACE
               value: aviary-runtime
             - name: AVIARY_SANDBOX_VOLUME_SIZE
