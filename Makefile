@@ -3,7 +3,7 @@
 # have them in theirs.
 ifneq ($(wildcard .env),)
 include .env
-export $(shell sed --quiet 's/^\([A-Za-z_][A-Za-z0-9_]*\) *=.*/\1/p' .env)
+export $(shell sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\) *=.*/\1/p' .env)
 endif
 
 # The public registries that the images come from. In a network that does
@@ -85,7 +85,7 @@ SQLC_RUN := docker run --rm --user $$(id -u):$$(id -g) \
 # Cargo takes the crates of crates.io from the registry in CRATES_IO, if any.
 CARGO := cargo$(if $(CRATES_IO), --config 'source.crates-io.replace-with="mirror"' --config 'source.mirror.registry="$(CRATES_IO)"')
 RENDER := helm template aviary deploy/charts/aviary --namespace aviary-system
-ENVOY_IMAGE = $(DOCKER_IO)/$(shell sed --quiet 's/^  image: \(envoyproxy.*\)/\1/p' deploy/charts/aviary/values.yaml)
+ENVOY_IMAGE = $(DOCKER_IO)/$(shell sed -n 's/^  image: \(envoyproxy.*\)/\1/p' deploy/charts/aviary/values.yaml)
 # The proxy tests stand in for the Supervisor and for the upstream hosts of
 # the proxies, under these network aliases.
 PROXIES = ENVOY_IMAGE=$(ENVOY_IMAGE) docker compose --file test/proxy/compose.yaml --project-name aviary-test-proxy
@@ -93,7 +93,7 @@ AMONG_PROXIES := --network aviary-test-proxy_default --env AVIARY_TEST_PROXY=1 \
 	--network-alias aviary-supervisor.aviary-system --network-alias model.test \
 	--network-alias allowed.test --network-alias other.test \
 	--network-alias tls.test --network-alias unnamed.test
-NGINX_IMAGE = $(DOCKER_IO)/$(shell sed --quiet 's/^FROM [^ ]*\/\(nginxinc[^ ]*\).*/\1/p' images/web/Dockerfile)
+NGINX_IMAGE = $(DOCKER_IO)/$(shell sed -n 's/^FROM [^ ]*\/\(nginxinc[^ ]*\).*/\1/p' images/web/Dockerfile)
 # The tests of the web server stand in for the API behind it.
 WEB_SERVERS = NGINX_IMAGE=$(NGINX_IMAGE) docker compose --file test/web/compose.yaml --project-name aviary-test-web
 AMONG_WEB_SERVERS := --network aviary-test-web_default --env AVIARY_TEST_WEB=1 --network-alias api.test
@@ -128,7 +128,7 @@ lint: web/node_modules/.package-lock.json
 # make test-supervisor TESTS='-run TestStore/EndTurn ./store/postgres'
 # make test-runner TESTS=cut
 test:
-	$(MAKE) --jobs --output-sync=target test-supervisor test-plugin test-runner test-mock-llm test-web test-web-server test-chart test-proxy
+	$(MAKE) --jobs $(if $(filter output-sync,$(.FEATURES)),--output-sync=target) test-supervisor test-plugin test-runner test-mock-llm test-web test-web-server test-chart test-proxy
 
 test-supervisor: TESTS ?= ./...
 test-supervisor:
@@ -191,7 +191,7 @@ test-web-server: TESTS ?= ./web/...
 test-web-server:
 	mkdir -p .out/web/assets
 	echo '<!doctype html><title>the web UI</title>' > .out/web/index.html
-	head --bytes 4096 /dev/zero | tr '\0' ' ' > .out/web/assets/app.js
+	printf '%4096s' '' > .out/web/assets/app.js
 	$(WEB_SERVERS) up --detach --force-recreate
 	$(call GO,test,$(AMONG_WEB_SERVERS)) $(GO_TEST) $(TESTS); \
 		status=$$?; [ $$status = 0 ] || $(WEB_SERVERS) logs --no-color --tail 40; \
@@ -207,13 +207,14 @@ $(AGENT_SANDBOX_SOURCE):
 	mkdir -p $(@D)
 	curl --fail --silent --show-error --location --output $@.new \
 		$(AGENT_SANDBOX_REPO)/archive/refs/tags/$(AGENT_SANDBOX).tar.gz
-	echo "$(AGENT_SANDBOX_SHA256)  $@.new" | sha256sum --check --quiet
+	openssl dgst -sha256 -r $@.new | grep -q '^$(AGENT_SANDBOX_SHA256) ' || \
+		{ echo "The checksum of $@.new is not $(AGENT_SANDBOX_SHA256)." >&2; exit 1; }
 	mv $@.new $@
 
 $(AGENT_SANDBOX_CHART): $(AGENT_SANDBOX_SOURCE)
 	rm -rf $(@D)
 	mkdir -p $(@D)
-	tar --extract --gzip --touch --file $< --directory $(@D) --strip-components 2 \
+	tar --extract --gzip -m --file $< --directory $(@D) --strip-components 2 \
 		agent-sandbox-$(AGENT_SANDBOX:v%=%)/helm
 
 # Packages the chart, with the chart of agent-sandbox in it, as
