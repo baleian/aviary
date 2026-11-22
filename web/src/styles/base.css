@@ -283,6 +283,15 @@ svg {
   outline: none;
   box-shadow: var(--ring);
 }
+.btn .ring {
+  width: 14px;
+  height: 14px;
+}
+.btn.pri .ring,
+.btn.dng .ring {
+  border-color: rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+}
 
 .ib {
   width: 36px;
