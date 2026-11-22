@@ -1091,7 +1091,8 @@ it("shows the details of a session and of its agent beside the conversation", as
     path.split("/").pop(),
   );
   expect(rows.get("Owner")).toBe("AKAlice Kim");
-  expect(rows.get("Started")).toMatch(/^Today \d\d:\d\d$/);
+  // The session began hours ago, which is yesterday soon after midnight.
+  expect(rows.get("Started")).toMatch(/^(Today|Yesterday) \d\d:\d\d$/);
   expect(rows.get("Turns")).toBe("22 completed");
   expect(rows.get("Sandbox")).toBe("Asleep");
   expect(rows.has("Ended")).toBe(false);
