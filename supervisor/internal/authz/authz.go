@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"log/slog"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -54,10 +55,16 @@ type authorizer struct {
 	keys *secret.Keys
 	// stores reads API keys kept in the projects' secret stores.
 	stores *secret.Stores
+	// localhost, if not empty, is the host that the proxy reaches in place
+	// of the local host of a provider's URL.
+	localhost string
 }
 
-func New(st store.Store, keys *secret.Keys, stores *secret.Stores) authv3.AuthorizationServer {
-	return &authorizer{store: st, keys: keys, stores: stores}
+// New returns the authorization service. The local host of a provider's URL
+// would be the proxy itself, so localhost names the host that stands in for
+// it. If it is empty, none does.
+func New(st store.Store, keys *secret.Keys, stores *secret.Stores, localhost string) authv3.AuthorizationServer {
+	return &authorizer{store: st, keys: keys, stores: stores, localhost: localhost}
 }
 
 // Check allows a request that carries the token of a session with a running
@@ -150,7 +157,7 @@ func (a *authorizer) endpoint(ctx context.Context, origin store.Origin, path str
 		}
 	}
 	endpoint := &authv3.OkHttpResponse{Headers: []*corev3.HeaderValueOption{
-		set(upstreamHeader, address.Host),
+		set(upstreamHeader, a.upstream(address)),
 		set(upstreamTLSHeader, strconv.FormatBool(address.Scheme == "https")),
 	}}
 	var key string
@@ -179,6 +186,33 @@ func (a *authorizer) endpoint(ctx context.Context, origin store.Origin, path str
 	}
 	endpoint.Headers = append(endpoint.Headers, set("authorization", "Bearer "+key))
 	return endpoint, nil
+}
+
+// upstream returns the host that the proxy connects to for a provider at the
+// address, with the port of the address if it has one: the host of the
+// address, or what stands in for it if it is the local host.
+func (a *authorizer) upstream(address *url.URL) string {
+	if a.localhost == "" || !local(address.Hostname()) {
+		return address.Host
+	}
+	host := a.localhost
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	if port := address.Port(); port != "" {
+		host += ":" + port
+	}
+	return host
+}
+
+// local reports whether the host is the local host: by that name, or as a
+// loopback address.
+func local(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	address, err := netip.ParseAddr(host)
+	return err == nil && address.IsLoopback()
 }
 
 // under reports whether the request path, which may include a query, is the

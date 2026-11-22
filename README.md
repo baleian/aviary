@@ -490,6 +490,10 @@ agent's provider, for the agent's model.
   request uses the new endpoint and key.
 - **The host of a provider is subject to `egressProxy.allowedHosts`** like
   any other host: if the list names hosts, it must allow the provider's.
+- **A provider at `localhost` reaches nothing**, since to the Egress Proxy
+  that is the proxy itself, unless `egressProxy.localhost` names the host
+  that stands in for it. The proxy then connects to that host, on the port
+  of the provider's URL.
 
 ### Secret stores
 
@@ -571,6 +575,7 @@ of your own.
 | `stateMetrics.enabled`, `.resources` | Whether the installation serves its [state metrics](#metrics), and the resource requests and limits of the pod that serves them. Default true. |
 | `egressProxy.allowedHosts` | Hosts that the sandboxes may reach, including those of model providers: `*` for any host, a host name for the host on the default HTTPS and HTTP ports, or a host name with a port. Subdomains are separate hosts. Default `*`. |
 | `egressProxy.insideCIDRs`, `.extraEgress` | Address ranges that a NetworkPolicy blocks the Egress Proxy from connecting to, so that the sandboxes cannot use it to reach into the cluster, and additional NetworkPolicy egress rules for the proxy. A model provider or an allowed host that is in the cluster or at a private address needs such a rule. |
+| `egressProxy.localhost` | The host that the Egress Proxy connects to for a model provider whose URL is at `localhost` or a loopback address: a host name or an IP address. Empty by default: such a provider reaches nothing. An installation on one machine can name that machine here. The host needs a rule in `egressProxy.extraEgress` if it is at a private address. |
 | `sandboxes.idleSeconds` | Seconds without a running turn after which a session is put to sleep: its pod is deleted and its volume is kept, and its next turn wakes it in a new pod. Default 300. 0 disables sleeping. |
 | `sandboxes.retentionSeconds` | Seconds after its last turn after which a session ends: its sandbox is deleted with its volume, and its conversation stays readable. A session that ends this way has the `end_reason` `expired`. Default 0, which keeps the sandbox until the session is ended. |
 | `runtime.maxConcurrentTurns` | Maximum number of turns that run at once. Default 50. |

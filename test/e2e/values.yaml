@@ -17,6 +17,9 @@ egressProxy:
     - to:
         - namespaceSelector:
             matchLabels: {kubernetes.io/metadata.name: aviary-e2e}
+  # A provider at localhost is the mock model server, as it is a model on
+  # the machine of an installation that names that machine.
+  localhost: mock-llm.aviary-e2e
 sandboxes:
   # Short, so that the tests see sessions sleep without a long wait.
   idleSeconds: 30

@@ -68,6 +68,8 @@ spec:
               value: {{ .Values.sandboxes.retentionSeconds | quote }}
             - name: AVIARY_LLM_BASE_URL
               value: http://aviary-egress-proxy.{{ .Release.Namespace }}:8080
+            - name: AVIARY_LLM_LOCALHOST
+              value: {{ .Values.egressProxy.localhost | quote }}
             - name: AVIARY_PROXY_URL
               value: http://aviary-egress-proxy.{{ .Release.Namespace }}:3128
             - name: AVIARY_HARNESSES

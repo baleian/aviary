@@ -535,6 +535,14 @@ func providers(t *testing.T) {
 	if next := run(t, session, "say done"); !strings.Contains(next.said(), "done") {
 		t.Errorf("after the provider key was replaced, the agent said %q", next.said())
 	}
+
+	// A provider at localhost is reached at the host that egressProxy.localhost
+	// names.
+	local := create(t, "/v1/projects/"+project+"/providers", fmt.Sprintf(`{"name": "local", "url": "http://localhost/v1", "api_key": {"value": %q}}`, mockKey))
+	here := run(t, agentOf(t, project, local, harness(harnesses[0])).session(t), "say done")
+	if line := logged(t, here.ID, "llm", mockHost, 200); line["provider"] != local {
+		t.Errorf("access log line for provider %s = %v", local, line)
+	}
 }
 
 // A provider's key may be kept in a secret store of the project. A Supervisor

@@ -13,6 +13,7 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
@@ -64,6 +65,7 @@ const (
 	sandboxIdle        = "AVIARY_SANDBOX_IDLE_SECONDS"
 	sandboxRetention   = "AVIARY_SANDBOX_RETENTION_SECONDS"
 	modelsURL          = "AVIARY_LLM_BASE_URL"
+	modelsLocalhost    = "AVIARY_LLM_LOCALHOST"
 	proxyURL           = "AVIARY_PROXY_URL"
 	apiAddr            = ":8080"
 	authzAddr          = ":9091"
@@ -252,6 +254,10 @@ func serve(ctx context.Context, database string, plugins Plugins) error {
 	if err != nil {
 		return err
 	}
+	localhost, err := localhostOfProviders()
+	if err != nil {
+		return err
+	}
 	config, err := driverConfig()
 	if err != nil {
 		return err
@@ -279,14 +285,15 @@ func serve(ctx context.Context, database string, plugins Plugins) error {
 	if on.metrics, err = net.Listen("tcp", metricsAddr); err != nil {
 		return err
 	}
-	return serveOn(ctx, on, st, ev, client, config, keys, stores, callers, origins)
+	return serveOn(ctx, on, st, ev, client, config, keys, stores, callers, origins, localhost)
 }
 
 // serveOn serves on the listeners until ctx is done. keys seal the stored
 // secrets and the session tokens, stores read the secrets kept in secret
-// stores, callers says who may use the API, and origins are the origins
-// whose pages may call it from a browser.
-func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, sandboxes driver.Sandboxes, config driver.Config, keys *secret.Keys, stores *secret.Stores, callers api.Callers, origins []string) error {
+// stores, callers says who may use the API, origins are the origins whose
+// pages may call it from a browser, and localhost is the host that stands in
+// for the local host of a model provider's URL.
+func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, sandboxes driver.Sandboxes, config driver.Config, keys *secret.Keys, stores *secret.Stores, callers api.Callers, origins []string, localhost string) error {
 	m := metrics.New(slices.Sorted(maps.Keys(config.Harnesses)), stores.Kinds())
 	stores.Asked = m.SecretRead
 	config.Token = func(session uuid.UUID) (string, error) { return authz.Token(keys, session) }
@@ -307,7 +314,7 @@ func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, 
 			PermitWithoutStream: true,
 		}),
 	)
-	authv3.RegisterAuthorizationServer(authzServer, authz.New(st, keys, stores))
+	authv3.RegisterAuthorizationServer(authzServer, authz.New(st, keys, stores, localhost))
 	// Metrics have a port of their own, so that they are not exposed with the
 	// API. They are served until serveOn returns.
 	metricsMux := http.NewServeMux()
@@ -409,6 +416,23 @@ func callersOf(ctx context.Context, plugins []identity.Plugin) (api.Callers, err
 	defer cancel()
 	callers.Provider, err = identity.Open(ctx, provider.Kind, provider.Settings, plugins...)
 	return callers, err
+}
+
+// localhostOfProviders reads the host that stands in for the local host of a
+// model provider's URL: a host name or an IP address. It is optional:
+// without it nothing stands in.
+func localhostOfProviders() (string, error) {
+	host := os.Getenv(modelsLocalhost)
+	if host == "" {
+		return "", nil
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return host, nil
+	}
+	if at, err := url.Parse("//" + host); err != nil || at.Hostname() != host {
+		return "", fmt.Errorf("%s must be a host name or an IP address, without a port", modelsLocalhost)
+	}
+	return host, nil
 }
 
 // browserOrigins reads the origins whose pages may call the API from a

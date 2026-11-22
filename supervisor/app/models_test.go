@@ -5,6 +5,8 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
@@ -178,6 +180,55 @@ func TestAgentNamesItsModel(t *testing.T) {
 	}
 	if status, why := refusal(s.check(token, false, "/v1/chat/completions")); status != http.StatusServiceUnavailable || why != "the model provider's URL is invalid\n" {
 		t.Errorf("request with an invalid provider URL: denied with %d %q", status, why)
+	}
+}
+
+// To the proxy, the local host of a provider's URL is the proxy itself. An
+// installation can name the host that stands in for it: the proxy then
+// connects there, on the port of the URL.
+func TestAProviderAtTheLocalHostIsReachedWhereTheInstallationSays(t *testing.T) {
+	t.Parallel()
+	for _, installed := range []struct {
+		localhost string
+		// upstreams are the hosts that the proxy connects to, by the URL of
+		// the provider.
+		upstreams map[string]string
+	}{
+		{"", map[string]string{
+			"http://localhost:11434/v1": "localhost:11434",
+			"http://127.0.0.1/v1":       "127.0.0.1",
+			"http://[::1]:8000/v1":      "[::1]:8000",
+		}},
+		{"host.example.com", map[string]string{
+			"http://localhost:11434/v1":        "host.example.com:11434",
+			"http://LocalHost/v1":              "host.example.com",
+			"http://127.0.0.1:8000/v1":         "host.example.com:8000",
+			"http://127.1.2.3/v1":              "host.example.com",
+			"https://[::1]:8443/v1":            "host.example.com:8443",
+			"http://localhost.example.com/v1":  "localhost.example.com",
+			"http://10.0.0.5:8000/v1":          "10.0.0.5:8000",
+			"https://api.example.com/v1":       "api.example.com",
+			"http://model.example.com:8000/v1": "model.example.com:8000",
+		}},
+		{"2001:db8::254", map[string]string{
+			"http://localhost:11434/v1": "[2001:db8::254]:11434",
+			"http://127.0.0.1/v1":       "[2001:db8::254]",
+		}},
+	} {
+		aviary := install(t)
+		aviary.localhost = installed.localhost
+		s := aviary.supervisor()
+		project := s.project()
+		for address, upstream := range installed.upstreams {
+			provider := s.create("/v1/projects/"+project+"/providers", `{"name": "`+unique("provider")+`", "url": "`+address+`"}`)
+			agent := s.agent(project, `{"harness": "opencode", "model": {"provider": "`+provider+`", "name": "a-model"}}`)
+			runner := aviary.given(s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID)
+			got := named(t, s.check(aviary.token(runner.Sandbox), false, "/v1/chat/completions"))
+			secure := strconv.FormatBool(strings.HasPrefix(address, "https://"))
+			if got == nil || *got != (endpoint{host: upstream, secure: secure, keyless: true}) {
+				t.Errorf("with %q for the local host, the endpoint of a provider at %s = %+v, want the host %s", installed.localhost, address, got, upstream)
+			}
+		}
 	}
 }
 

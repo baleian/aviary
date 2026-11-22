@@ -118,6 +118,14 @@ egressProxy:
   #   - to:
   #       - ipBlock: {cidr: 192.168.1.20/32}
   extraEgress: []
+  # The host that the proxy connects to for a model provider whose URL is at
+  # localhost or a loopback address, such as http://localhost:11434/v1: a
+  # host name or an IP address. To the proxy such a URL is the proxy itself,
+  # so without this it reaches nothing. An installation on one machine can
+  # name that machine, so that the models that run on it are registered as
+  # its users see them. The host needs a rule in extraEgress if it is at a
+  # private address.
+  localhost: ""
 
 # Each session runs in its own sandbox in the aviary-runtime namespace: a pod
 # that runs the harness of its agent, with a volume for the session. The

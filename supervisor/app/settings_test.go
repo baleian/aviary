@@ -127,6 +127,31 @@ func TestSandboxSettings(t *testing.T) {
 	}
 }
 
+// The host that stands in for the local host of a provider's URL is a host
+// name or an IP address, and is optional.
+func TestLocalhostOfProviders(t *testing.T) {
+	for _, host := range []string{"", "host.example.com", "192.0.2.10", "2001:db8::254"} {
+		t.Setenv(modelsLocalhost, host)
+		if got, err := localhostOfProviders(); err != nil || got != host {
+			t.Errorf("%q = %q, %v; want it as it is", host, got, err)
+		}
+	}
+	for _, wrong := range []string{
+		"host.example.com:8000",
+		"192.0.2.10:8000",
+		"[2001:db8::254]",
+		"http://host.example.com",
+		"host.example.com/v1",
+		"user@host.example.com",
+		"a host",
+	} {
+		t.Setenv(modelsLocalhost, wrong)
+		if got, err := localhostOfProviders(); err == nil || !strings.Contains(err.Error(), modelsLocalhost) {
+			t.Errorf("%q = %q, %v; want an error that names the setting", wrong, got, err)
+		}
+	}
+}
+
 // allowedSecretStores reads the allowed hosts and the cache duration, and
 // serves the kinds of the given plugins.
 func TestSecretStoreSettings(t *testing.T) {

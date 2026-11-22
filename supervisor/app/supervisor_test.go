@@ -79,6 +79,9 @@ type installation struct {
 	// origins are the origins whose pages may call the API from a browser:
 	// none unless a test sets them.
 	origins []string
+	// localhost is the host that stands in for the local host of a
+	// provider's URL: none unless a test sets it.
+	localhost string
 }
 
 // install returns an installation without Supervisors. changes modify the
@@ -168,7 +171,7 @@ func (i *installation) supervisor() *supervisor {
 	ctx, stop := context.WithCancel(context.Background())
 	stopped := make(chan error, 1)
 	go func() {
-		stopped <- serveOn(ctx, on, i.records, ev, i.service, i.config, i.keys, stores, i.callers, i.origins)
+		stopped <- serveOn(ctx, on, i.records, ev, i.service, i.config, i.keys, stores, i.callers, i.origins, i.localhost)
 	}()
 	s.stop = sync.OnceFunc(func() {
 		stop()
