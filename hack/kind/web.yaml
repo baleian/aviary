@@ -40,6 +40,12 @@ spec:
               value: http://keycloak.localhost:8081/realms/aviary
             - name: AVIARY_OIDC_CLIENT_ID
               value: aviary
+          # Gives the endpoints time to stop sending new connections here
+          # before the server stops.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
           ports:
             - name: http
               containerPort: 8080
