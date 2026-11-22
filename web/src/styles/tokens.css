@@ -28,6 +28,8 @@
   --line: #e3e8ef;
   --line2: #cfd8e3;
   --ctl: #8492a6;
+  --scroll: rgba(13, 27, 46, 0.2);
+  --scroll-h: rgba(13, 27, 46, 0.38);
 
   /* Kingfisher: actions, selection, the running turn */
   --king: #0b6fe0;
@@ -135,6 +137,8 @@
   --line: #1e2c45;
   --line2: #2b3c59;
   --ctl: #51658a;
+  --scroll: rgba(233, 239, 248, 0.18);
+  --scroll-h: rgba(233, 239, 248, 0.36);
 
   --king: #0b6fe0;
   --king-h: #2a84ee;

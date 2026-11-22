@@ -8,6 +8,40 @@
 html {
   -webkit-text-size-adjust: 100%;
 }
+
+/* Scrollbars are thin and in the tone of the theme, wherever something
+   scrolls. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--scroll) padding-box;
+}
+::-webkit-scrollbar-thumb:vertical {
+  min-height: 40px;
+}
+::-webkit-scrollbar-thumb:horizontal {
+  min-width: 40px;
+}
+::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:active {
+  background-color: var(--scroll-h);
+}
+/* A browser without those is given the standard properties, which one with
+   them would take over them. */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scroll) transparent;
+  }
+}
 body {
   margin: 0;
   padding-top: var(--mock-top);

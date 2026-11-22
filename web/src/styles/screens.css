@@ -974,7 +974,10 @@ a:hover .top > .go {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 0 8px 8px;
+  /* The room of the scrollbar is kept on both sides, so that the turns stay
+     in the middle and as wide when the conversation outgrows the window. */
+  scrollbar-gutter: stable both-edges;
+  padding: 0 0 8px;
   scroll-behavior: auto;
 }
 .conv-s::before {
