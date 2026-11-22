@@ -5,6 +5,7 @@ import {
   findDiff,
   inputOf,
   outputText,
+  outsideOf,
   pathOf,
 } from "./tools.ts";
 
@@ -67,4 +68,13 @@ it("reads the file that a tool call is about", () => {
   expect(pathOf({ path: 7 })).toBe("");
   expect(inputOf("text")).toEqual({});
   expect(inputOf({ command: "ls" })).toEqual({ command: "ls" });
+});
+
+it("reads the folders outside the workspace that a tool call reaches", () => {
+  expect(outsideOf({ directories: ["/tmp", 7, "/var"] })).toEqual([
+    "/tmp",
+    "/var",
+  ]);
+  expect(outsideOf({ directories: "/tmp" })).toEqual([]);
+  expect(outsideOf({ command: "ls" })).toEqual([]);
 });

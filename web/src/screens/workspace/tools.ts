@@ -67,3 +67,12 @@ export function inputOf(input: unknown): Record<string, unknown> {
     ? (input as Record<string, unknown>)
     : {};
 }
+
+// outsideOf returns the folders outside the workspace that a tool call
+// reaches, if its input names them. OpenCode asks for them before it asks
+// for the command that reaches them.
+export function outsideOf(input: Record<string, unknown>): string[] {
+  const folders = input.directories;
+  if (!Array.isArray(folders)) return [];
+  return folders.filter((folder) => typeof folder === "string");
+}

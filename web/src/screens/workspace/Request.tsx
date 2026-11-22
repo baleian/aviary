@@ -4,7 +4,7 @@ import { cls } from "../../lib/cls.ts";
 import { Icon } from "../../ui/Icon.tsx";
 import type { Who } from "../../ui/who.ts";
 import { CodeBlock } from "./Markdown.tsx";
-import { changed, findDiff, inputOf, pathOf } from "./tools.ts";
+import { changed, findDiff, inputOf, outsideOf, pathOf } from "./tools.ts";
 
 type ApprovalItem = Extract<Item, { type: "approval" }>;
 type Option = NonNullable<ApprovalItem["options"]>[number];
@@ -66,6 +66,7 @@ export function Request({
   const command = typeof input.command === "string";
   const diff = findDiff(input) ?? changed(input);
   const path = pathOf(input);
+  const outside = outsideOf(input);
   const options = item.options ?? [];
 
   async function choose(option: Option) {
@@ -83,7 +84,9 @@ export function Request({
         <div>
           <h3>
             {command
-              ? "May I run this command?"
+              ? outside.length
+                ? "May I run this command outside the workspace?"
+                : "May I run this command?"
               : call.kind === "edit"
                 ? "May I change this file?"
                 : "May I do this?"}
@@ -91,7 +94,14 @@ export function Request({
         </div>
       </div>
       {command ? (
-        <Command input={input} kind={call.kind || "execute"} />
+        <>
+          <Command input={input} kind={call.kind || "execute"} />
+          {outside.length > 0 && (
+            <p className="sub xs mono" style={{ margin: "-6px 2px 14px" }}>
+              {outside.join(", ")}
+            </p>
+          )}
+        </>
       ) : (
         <>
           <div className="cmd">

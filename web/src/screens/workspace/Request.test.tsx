@@ -50,6 +50,35 @@ it("asks to run a command, and shows the command", () => {
   expect(card.querySelector(".code")).toBeNull();
 });
 
+it("says when a command reaches outside the workspace, and where", () => {
+  // OpenCode asks for the folders before it asks for the command.
+  const { card } = show({
+    id: "c1",
+    kind: "other",
+    title: "touch /tmp/note",
+    input: {
+      command: "touch /tmp/note",
+      directories: ["/tmp", "/var/log"],
+      patterns: ["/tmp/*"],
+    },
+  });
+  expect(card.querySelector("h3")!.textContent).toBe(
+    "May I run this command outside the workspace?",
+  );
+  expect(card.querySelector(".cmd")!.textContent).toBe("$touch /tmp/noteother");
+  expect(card.querySelector("p.mono")!.textContent).toBe("/tmp, /var/log");
+  cleanup();
+  const inside = show({
+    id: "c1",
+    kind: "execute",
+    input: { command: "ls", directories: [] },
+  });
+  expect(inside.card.querySelector("h3")!.textContent).toBe(
+    "May I run this command?",
+  );
+  expect(inside.card.querySelector("p.mono")).toBeNull();
+});
+
 it("asks to change a file, and shows the change", () => {
   const { card } = show({
     id: "c1",
