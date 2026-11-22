@@ -340,12 +340,21 @@ secrets:
 			--from-literal=k1=$$(openssl rand -base64 32)
 
 # The image ID restarts the pods that run the Supervisor image when the image
-# changes. VALUES adds a values file, for example
+# changes. The cluster reaches the machine that runs it, at the address that
+# Docker gives containers for their host: the Egress Proxy may connect to it,
+# and a model provider at localhost is a model server on it. VALUES adds a
+# values file, which can set egressProxy.localhost and
+# egressProxy.extraEgress otherwise, for example
 # make deploy VALUES=my-values.yaml
 deploy: secrets
+	mkdir -p .out
+	host=$$(docker run --rm --add-host host:host-gateway --entrypoint getent $(NODE_IMAGE) ahostsv4 host | head -n 1 | cut -d ' ' -f 1) && \
+	[ -n "$$host" ] && \
+	printf 'egressProxy:\n  localhost: %s\n  extraEgress:\n    - to:\n        - ipBlock: {cidr: %s/32}\n' "$$host" "$$host" > .out/host.yaml
 	image=$$(docker image inspect --format '{{.Id}}' $(SUPERVISOR_IMAGE)) && \
 	$(HELM) upgrade --install aviary deploy/charts/aviary \
 		--namespace aviary-system \
+		--values .out/host.yaml \
 		--set-string 'supervisor.podAnnotations.aviary\.io/image-id='$$image \
 		--set-string 'stateMetrics.podAnnotations.aviary\.io/image-id='$$image \
 		$(if $(VALUES),--values $(VALUES)) \

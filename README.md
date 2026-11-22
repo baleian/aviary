@@ -143,11 +143,18 @@ http://localhost:8082.
 
 `make deploy` serves the API at http://localhost:8080. Register a model
 provider for a project, and send a message. A model provider is the base
-URL of a model endpoint and its API key. The endpoint must be reachable from
-the cluster, so `localhost` does not work, and an endpoint at a private
-address needs an entry in `egressProxy.extraEgress` (see
-[Configuration](#configuration)). OpenCode needs an endpoint with the OpenAI
-Chat Completions API, and Codex one with the Responses API.
+URL of a model endpoint and its API key. OpenCode needs an endpoint with the
+OpenAI Chat Completions API, and Codex one with the Responses API.
+
+The endpoint must be reachable from the cluster. A model server on your own
+machine is: register it at `localhost`, as in `http://localhost:11434/v1`.
+`make deploy` names the machine in `egressProxy.localhost` and lets the
+Egress Proxy connect to it with `egressProxy.extraEgress` (see
+[Configuration](#configuration)), so the sandboxes reach the machine through
+the proxy as well. A values file of your own sets the two otherwise. With
+Docker Engine on Linux the model server has to listen on more than
+`127.0.0.1`, which the containers of Docker do not reach there. Another
+endpoint at a private address needs an entry in `egressProxy.extraEgress`.
 
 ```sh
 project=$(curl -s -X POST localhost:8080/v1/projects -d '{"slug": "demo"}' | jq -r .id)
