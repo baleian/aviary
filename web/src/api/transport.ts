@@ -46,10 +46,10 @@ export interface Transport {
 
 let chosen: Promise<Transport> | undefined;
 
-// transport returns what carries the requests of the console: HTTP, and in
-// development the backend of the mock, which answers in the browser.
+// transport returns what carries the requests of the console: HTTP, or the
+// backend of the mock, which answers from example data in the browser.
 export function transport(): Promise<Transport> {
-  chosen ??= import.meta.env.DEV
+  chosen ??= __FAKE_API__
     ? import("./fake.ts").then((module) => module.fake())
     : Promise.resolve(http);
   return chosen;

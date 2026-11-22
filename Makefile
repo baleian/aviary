@@ -264,9 +264,12 @@ grafana:
 	@echo "Grafana is at http://localhost:3000"
 
 # Serves the console at http://localhost:5173 from its source in web/. A
-# change to the source shows in the browser when the file is saved.
+# change to the source shows in the browser when the file is saved. The
+# console is answered from example data, in the browser, unless API names an
+# API for it to use, for example that of the local cluster:
+# make web-dev API=http://localhost:8080
 web-dev: web/node_modules/.package-lock.json
-	cd web && npm run dev
+	cd web && $(if $(API),AVIARY_API=$(API) )npm run dev
 
 build:
 	docker build --file images/supervisor/Dockerfile --tag $(SUPERVISOR_IMAGE) .

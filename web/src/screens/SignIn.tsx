@@ -6,9 +6,10 @@ import { useTitle } from "../lib/title.ts";
 import { Unreachable, Wait } from "../shell/Signed.tsx";
 import { Icon, Use } from "../ui/Icon.tsx";
 
-// In development the accounts of the mock sign in. A build has no way to
-// sign in: the identity provider of an installation is not supported.
-const FakeAccounts = import.meta.env.DEV
+// While the backend of the mock answers, its accounts sign in. An API has
+// no way to sign in yet: the identity provider of an installation is not
+// supported.
+const FakeAccounts = __FAKE_API__
   ? lazy(() => import("./FakeAccounts.tsx"))
   : null;
 
