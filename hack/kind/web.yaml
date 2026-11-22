@@ -1,0 +1,86 @@
+# The web UI of Aviary in the local cluster: make web installs it. Its
+# server stands in front of the API: it serves the web UI, and passes the
+# requests of /v1 on to the Supervisor.
+#
+# An installation that signs in with the Keycloak of make identity-provider
+# finds the issuer and the client here. Without an identity provider they
+# are not used.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aviary-web
+  namespace: aviary-system
+  labels:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aviary
+      app.kubernetes.io/component: web
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aviary
+        app.kubernetes.io/component: web
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: web
+          image: aviary-web:dev
+          env:
+            - name: AVIARY_API
+              value: http://aviary-supervisor.aviary-system
+            - name: AVIARY_OIDC_ISSUER
+              value: http://keycloak.localhost:8081/realms/aviary
+            - name: AVIARY_OIDC_CLIENT_ID
+              value: aviary
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 64Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # The entrypoint of the image writes the configuration here.
+            - name: configuration
+              mountPath: /etc/nginx/conf.d
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: configuration
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+---
+# The Service of hack/kind/api.yaml, whose node port is localhost:8080, with
+# the web UI behind it in the place of the Supervisor.
+apiVersion: v1
+kind: Service
+metadata:
+  name: aviary-api
+  namespace: aviary-system
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: web
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      nodePort: 30080

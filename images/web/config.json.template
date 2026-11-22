@@ -1,0 +1,7 @@
+{
+  "oidc": {
+    "issuer": "${AVIARY_OIDC_ISSUER}",
+    "clientId": "${AVIARY_OIDC_CLIENT_ID}",
+    "scopes": "${AVIARY_OIDC_SCOPES}"
+  }
+}

@@ -136,6 +136,9 @@ resources, logs and events of the cluster, at http://localhost:4466.
 the metrics of Aviary, and [Grafana](https://grafana.com) with the Aviary
 dashboard, at http://localhost:3000.
 
+`make web` builds the [web UI](#web-ui) and installs it at
+http://localhost:8080, in front of the API.
+
 ### Send a message
 
 `make deploy` serves the API at http://localhost:8080. Register a model
@@ -593,6 +596,65 @@ To run a harness that is not in this repository, see
 event log or a secret store that it has no plugin for, see
 [Plugins](PLUGINS.md).
 
+## Web UI
+
+The web UI is a client of the API that runs in the browser. It shows the
+projects with their members, model providers, secret stores and agents, and
+the sessions of an agent with their conversations: it follows a turn as the
+agent works, and answers its requests for approval.
+
+The chart does not install it. Its image, built from `images/web`, is a web
+server with the files of the web UI, configured through its environment:
+
+| Variable | Description |
+| --- | --- |
+| `AVIARY_API` | The API that the server passes the requests of `/v1` on to, such as `http://aviary-supervisor.aviary-system`. Empty by default: the server then serves only the web UI. |
+| `AVIARY_OIDC_ISSUER`, `AVIARY_OIDC_CLIENT_ID` | The OpenID Connect issuer and the client that the web UI signs callers in with. Empty by default: nobody signs in, as with an API that has no identity provider. |
+| `AVIARY_OIDC_SCOPES` | The scopes that the web UI asks the issuer for, separated by spaces. Default `openid profile email`. |
+
+The browser finds the web UI and the API at one address, with the API under
+`/v1`. There are two ways to arrange that:
+
+- **The web server in front of the API.** Set `AVIARY_API`, and expose the
+  web server. `make web` installs the web UI like this in the local cluster,
+  from `hack/kind/web.yaml`.
+- **A proxy in front of both.** Leave `AVIARY_API` empty, and have a proxy or
+  an ingress route `/v1/` to the Supervisor and every other path to the web
+  server. The proxy must not buffer the responses of `/v1/`, which include
+  event streams.
+
+The server listens on port 8080 as a user that is not root. When it starts
+it writes its configuration to `/etc/nginx/conf.d` and uses `/tmp`, so with
+a read-only root file system both need a volume, as in `hack/kind/web.yaml`.
+
+### Signing in
+
+With an identity provider of the kind `oidc`, the web UI signs callers in at
+the issuer, with the authorization code flow and PKCE, and sends the ID
+token with its requests. Register a public client for it at the issuer:
+
+- Its client ID is the `audience` of the provider's settings.
+- Its redirect URI is the address of the web UI followed by `/signin`.
+- The issuer accepts requests from the origin of the web UI (CORS).
+- Its ID tokens carry the claims that the settings name, such as the groups.
+
+Browsers sign in only at an address that is served over HTTPS, or at
+`localhost`. A token that has expired is renewed with the refresh token, if
+the issuer gives one: some do only for the scope `offline_access`. Without a
+refresh token the caller signs in again. Signing out forgets the tokens in
+the browser, and does not end the session at the issuer.
+
+In the local cluster, the web UI of `make web` signs in with the Keycloak of
+`make identity-provider`, at http://keycloak.localhost:8081, once Aviary is
+installed with it (see [Identity providers](#identity-providers)).
+
+### Developing
+
+`make web-dev` serves the web UI from its source in `web/` at
+http://localhost:5173, and shows a change when its file is saved. It is
+answered from example data in the browser, or by an API:
+`make web-dev API=http://localhost:8080` uses the API of the local cluster.
+
 ## Metrics
 
 A Supervisor serves Prometheus metrics on port 9092 at `/metrics`. The port
@@ -677,7 +739,8 @@ them checks, how to run some of the tests, and where a new test goes.
 | --- | --- |
 | `supervisor/` | The Supervisor, in Go: the API, the queue, the session sandboxes and their runners, the event streams, and the authorization of Egress Proxy requests. Its plugins are in `store/`, `events/`, `secret/` and `identity/`, and `plugins.go` lists those of the build. |
 | `runner/` | The runner, in Rust. |
-| `images/` | The images of the Supervisor, the runner and the harnesses. |
+| `web/` | The web UI, in TypeScript with React. |
+| `images/` | The images of the Supervisor, the runner, the harnesses and the web UI. |
 | `deploy/charts/aviary/` | The Helm chart. |
 | `deploy/grafana/` | A Grafana dashboard of the metrics. |
 | `hack/kind/` | The local cluster. |
