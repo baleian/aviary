@@ -12,10 +12,20 @@ endif
 # mirror.example.com/docker-hub.
 DOCKER_IO ?= docker.io
 GCR_IO ?= gcr.io
+GHCR_IO ?= ghcr.io
+QUAY_IO ?= quay.io
+REGISTRY_K8S_IO ?= registry.k8s.io
 export DOCKER_IO GCR_IO
+# GitHub and the Helm repositories of the local cluster, or their mirrors.
+GITHUB_COM ?= https://github.com
+CNPG_REPO ?= https://cloudnative-pg.github.io/charts
+VALKEY_REPO ?= https://valkey.io/valkey-helm/
+HEADLAMP_REPO ?= https://kubernetes-sigs.github.io/headlamp/
+PROMETHEUS_REPO ?= https://prometheus-community.github.io/helm-charts
+GRAFANA_REPO ?= https://grafana-community.github.io/helm-charts
 
 CLUSTER := aviary
-NODE_IMAGE := kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+NODE_IMAGE := $(DOCKER_IO)/kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
 CNPG_CHART := 0.29.1
 VALKEY_CHART := 1.0.0
 HEADLAMP_CHART := 0.46.0
@@ -45,6 +55,10 @@ BUILD := docker build $(addprefix --build-arg ,DOCKER_IO GCR_IO GOPROXY NPM_CONF
 
 KUBECTL := kubectl --context kind-$(CLUSTER)
 HELM := helm --kube-context kind-$(CLUSTER)
+# The registries that have a mirror, each as registry=mirror, for the nodes
+# of the cluster.
+NODE_MIRRORS := $(filter-out docker.io=docker.io gcr.io=gcr.io ghcr.io=ghcr.io quay.io=quay.io registry.k8s.io=registry.k8s.io, \
+	docker.io=$(DOCKER_IO) gcr.io=$(GCR_IO) ghcr.io=$(GHCR_IO) quay.io=$(QUAY_IO) registry.k8s.io=$(REGISTRY_K8S_IO))
 # Database of the cluster: postgres or mysql.
 DATABASE ?= postgres
 # The kind configuration of the cluster. The clusters of the e2e use one that
@@ -203,7 +217,7 @@ test-harness: build
 $(AGENT_SANDBOX_MANIFEST):
 	mkdir -p $(@D)
 	curl --fail --silent --show-error --location --output $@.new \
-		https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$(AGENT_SANDBOX)/sandbox.yaml
+		$(GITHUB_COM)/kubernetes-sigs/agent-sandbox/releases/download/$(AGENT_SANDBOX)/sandbox.yaml
 	echo "$(AGENT_SANDBOX_SHA256)  $@.new" | sha256sum --check --quiet
 	mv $@.new $@
 
@@ -215,6 +229,16 @@ web/node_modules/.package-lock.json: web/package-lock.json
 cluster-up: $(AGENT_SANDBOX_MANIFEST)
 	kind get clusters 2>/dev/null | grep -qx $(CLUSTER) || \
 		kind create cluster --name $(CLUSTER) --image $(NODE_IMAGE) --config $(KIND_CONFIG)
+# The nodes pull the images of a registry that has a mirror from the mirror.
+	for mirror in $(NODE_MIRRORS); do \
+		registry=$${mirror%%=*}; mirror=$${mirror#*=}; \
+		case $$mirror in */*) root=$${mirror%%/*}/v2/$${mirror#*/};; *) root=$$mirror/v2;; esac; \
+		for node in $$(kind get nodes --name $(CLUSTER)); do \
+			docker exec $$node mkdir -p /etc/containerd/certs.d/$$registry && \
+			printf '[host."https://%s"]\n  capabilities = ["pull", "resolve"]\n  override_path = true\n' $$root | \
+				docker exec --interactive $$node tee /etc/containerd/certs.d/$$registry/hosts.toml > /dev/null || exit 1; \
+		done; \
+	done
 	$(KUBECTL) apply --server-side --filename $(AGENT_SANDBOX_MANIFEST)
 	$(KUBECTL) create namespace aviary-data --dry-run=client --output yaml | $(KUBECTL) apply -f -
 ifeq ($(DATABASE),mysql)
@@ -224,7 +248,7 @@ ifeq ($(DATABASE),mysql)
 	$(KUBECTL) apply -f hack/kind/mysql.yaml
 else
 	$(HELM) upgrade --install cloudnative-pg cloudnative-pg \
-		--repo https://cloudnative-pg.github.io/charts \
+		--repo $(CNPG_REPO) \
 		--version $(CNPG_CHART) \
 		--namespace cnpg-system --create-namespace \
 		--wait
@@ -240,7 +264,7 @@ endif
 		$(KUBECTL) create secret generic valkey-users --namespace aviary-data \
 			--from-literal=default=$$(openssl rand -hex 24)
 	$(HELM) upgrade --install valkey valkey \
-		--repo https://valkey.io/valkey-helm/ \
+		--repo $(VALKEY_REPO) \
 		--version $(VALKEY_CHART) \
 		--namespace aviary-data \
 		--values hack/kind/valkey-values.yaml \
@@ -276,7 +300,7 @@ identity-provider:
 # and events, at http://localhost:4466.
 headlamp:
 	$(HELM) upgrade --install headlamp headlamp \
-		--repo https://kubernetes-sigs.github.io/headlamp/ \
+		--repo $(HEADLAMP_REPO) \
 		--version $(HEADLAMP_CHART) \
 		--namespace headlamp --create-namespace \
 		--values hack/kind/headlamp-values.yaml \
@@ -291,13 +315,13 @@ grafana:
 		--from-file deploy/grafana/aviary.json --dry-run=client --output yaml | \
 		$(KUBECTL) apply --server-side -f -
 	$(HELM) upgrade --install prometheus prometheus \
-		--repo https://prometheus-community.github.io/helm-charts \
+		--repo $(PROMETHEUS_REPO) \
 		--version $(PROMETHEUS_CHART) \
 		--namespace monitoring \
 		--values hack/kind/prometheus-values.yaml \
 		--wait
 	$(HELM) upgrade --install grafana grafana \
-		--repo https://grafana-community.github.io/helm-charts \
+		--repo $(GRAFANA_REPO) \
 		--version $(GRAFANA_CHART) \
 		--namespace monitoring \
 		--values hack/kind/grafana-values.yaml \

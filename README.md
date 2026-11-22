@@ -132,7 +132,8 @@ make deploy       # install Aviary with its Helm chart
 
 `make cluster-up DATABASE=mysql` uses MySQL instead of PostgreSQL.
 `make cluster-down` deletes the cluster, including the session volumes,
-which are directories on its nodes.
+which are directories on its nodes. In a network that does not reach the
+public registries, see [Mirrors](#mirrors).
 
 `make headlamp` installs [Headlamp](https://headlamp.dev), a web UI for the
 resources, logs and events of the cluster, at http://localhost:4466.
@@ -768,25 +769,31 @@ them checks, how to run some of the tests, and where a new test goes.
 
 ## Mirrors
 
-`make` downloads images and packages from public registries when it builds
-the images and runs the tests. In a network that does not reach them, name
-their mirrors in the environment, on the command line of `make`, or in
-`.env`, a file at the root of the repository that Git ignores, with lines of
-`NAME=value` without quotes:
+`make` downloads images, packages and charts from public registries when it
+builds the images, runs the tests and creates the local cluster. In a
+network that does not reach them, name their mirrors in the environment, on
+the command line of `make`, or in `.env`, a file at the root of the
+repository that Git ignores, with lines of `NAME=value` without quotes:
 
 | Variable | Mirror of |
 | --- | --- |
-| `DOCKER_IO`, `GCR_IO` | Docker Hub and gcr.io: a registry, with a path if the mirror has one, such as `mirror.example.com/docker-hub`. |
+| `DOCKER_IO`, `GCR_IO`, `GHCR_IO`, `QUAY_IO`, `REGISTRY_K8S_IO` | The registry of that name: a registry, with a path if the mirror has one, such as `mirror.example.com/docker-hub`. The nodes of the local cluster pull the images of these registries from the mirrors as well, over HTTPS. |
 | `GOPROXY` | The Go module proxy. Go's own variable. |
 | `NPM_CONFIG_REGISTRY` | The npm registry. npm's own variable. |
 | `CRATES_IO` | crates.io: a registry as Cargo names one, such as `sparse+https://mirror.example.com/crates/index/`. |
 | `DEB_DEBIAN_ORG` | `http://deb.debian.org`, for the Debian packages of the harness images: an address that serves `debian` and `debian-security`, such as `https://mirror.example.com/deb`. The images keep it as the source of their packages. |
+| `GITHUB_COM` | `https://github.com`, for the release manifest of agent-sandbox. |
+| `CNPG_REPO`, `VALKEY_REPO`, `HEADLAMP_REPO`, `PROMETHEUS_REPO`, `GRAFANA_REPO` | The Helm repositories of the charts that `make cluster-up`, `make headlamp` and `make grafana` install. |
 
-The images are pulled by the digests that the repository pins, so a mirror
-has to serve the images of its registry unchanged. The builds read the
-mirrors of the packages without credentials, and trust the certificate
-authorities of their base images. rustup takes the Rust toolchain from the
-server in its own variable, `RUSTUP_DIST_SERVER`.
+Most images are pulled by digests that the repository pins, so a mirror has
+to serve the images of its registry unchanged. The builds read the mirrors
+of the packages, and the nodes those of the registries, without credentials;
+both trust the certificate authorities of their images. rustup takes the
+Rust toolchain from the server in its own variable, `RUSTUP_DIST_SERVER`.
+
+A cluster of your own pulls the images that the values of the chart name:
+`supervisor.image`, `egressProxy.image` and the `image` of each harness in
+`runtime.harnesses`.
 
 ## Repository
 

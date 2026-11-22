@@ -13,3 +13,9 @@ nodes:
       - {containerPort: 30300, hostPort: 3000, listenAddress: 127.0.0.1}
   - role: worker
   - role: worker
+# containerd reads the mirrors of registries from the files that
+# make cluster-up writes on the nodes.
+containerdConfigPatches:
+  - |
+    [plugins."io.containerd.grpc.v1.cri".registry]
+      config_path = "/etc/containerd/certs.d"

@@ -5,3 +5,9 @@ nodes:
   - role: control-plane
   - role: worker
   - role: worker
+# containerd reads the mirrors of registries from the files that
+# make cluster-up writes on the nodes.
+containerdConfigPatches:
+  - |
+    [plugins."io.containerd.grpc.v1.cri".registry]
+      config_path = "/etc/containerd/certs.d"
