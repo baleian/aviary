@@ -1,4 +1,7 @@
-FROM node:26.13.1-trixie-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc AS build
+ARG DOCKER_IO=docker.io
+
+FROM ${DOCKER_IO}/library/node:26.13.1-trixie-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc AS build
+ARG NPM_CONFIG_REGISTRY
 WORKDIR /src
 COPY web/package.json web/package-lock.json web/.npmrc ./
 RUN --mount=type=cache,target=/root/.npm npm ci
@@ -8,7 +11,7 @@ RUN npm run build
 # Serves the files of the web UI. The entrypoint of the image writes the
 # configuration of the server and the settings of the web UI from the
 # templates and the environment, when the container starts.
-FROM nginxinc/nginx-unprivileged:1.30.6-alpine-slim@sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6
+FROM ${DOCKER_IO}/nginxinc/nginx-unprivileged:1.30.6-alpine-slim@sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6
 # The API that the server passes the requests of /v1 on to, such as
 # http://aviary-supervisor.aviary-system. If empty, the server serves only
 # the web UI: something in front of it routes /v1 to the API, or the browser

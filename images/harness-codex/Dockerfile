@@ -2,6 +2,7 @@ FROM aviary-harness-base:dev
 RUN apt-get update && \
     apt-get install --yes --no-install-recommends jq && \
     rm -rf /var/lib/apt/lists/*
+ARG NPM_CONFIG_REGISTRY
 RUN --mount=type=cache,target=/root/.npm \
     npm install --global @agentclientprotocol/codex-acp@2.6.0
 COPY config.toml /etc/codex/config.toml

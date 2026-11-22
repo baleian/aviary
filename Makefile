@@ -1,3 +1,11 @@
+# The public registries that the images come from. In a network that does
+# not reach one, the environment or the command line names its mirror: a
+# registry, with a path if the mirror has one, such as
+# mirror.example.com/docker-hub.
+DOCKER_IO ?= docker.io
+GCR_IO ?= gcr.io
+export DOCKER_IO GCR_IO
+
 CLUSTER := aviary
 NODE_IMAGE := kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
 CNPG_CHART := 0.29.1
@@ -22,6 +30,10 @@ WEB_IMAGE := aviary-web:dev
 # Images that test-harness tests, for example
 # make test-harness HARNESS_IMAGES=<image>
 HARNESS_IMAGES ?= $(OPENCODE_IMAGE) $(CODEX_IMAGE)
+# The builds take the mirrors of the registries and, if the environment names
+# them, those of the packages: GOPROXY, NPM_CONFIG_REGISTRY, CRATES_IO for
+# crates.io and DEB_DEBIAN_ORG for http://deb.debian.org.
+BUILD := docker build $(addprefix --build-arg ,DOCKER_IO GCR_IO GOPROXY NPM_CONFIG_REGISTRY CRATES_IO DEB_DEBIAN_ORG)
 
 KUBECTL := kubectl --context kind-$(CLUSTER)
 HELM := helm --kube-context kind-$(CLUSTER)
@@ -67,7 +79,7 @@ AMONG_PROXIES := --network aviary-test-proxy_default --env AVIARY_TEST_PROXY=1 \
 	--network-alias aviary-supervisor.aviary-system --network-alias model.test \
 	--network-alias allowed.test --network-alias other.test \
 	--network-alias tls.test --network-alias unnamed.test
-NGINX_IMAGE = $(shell sed --quiet 's/^FROM \(nginxinc[^ ]*\).*/\1/p' images/web/Dockerfile)
+NGINX_IMAGE = $(DOCKER_IO)/$(shell sed --quiet 's/^FROM [^ ]*\/\(nginxinc[^ ]*\).*/\1/p' images/web/Dockerfile)
 # The tests of the web server stand in for the API behind it.
 WEB_SERVERS = NGINX_IMAGE=$(NGINX_IMAGE) docker compose --file test/web/compose.yaml --project-name aviary-test-web
 AMONG_WEB_SERVERS := --network aviary-test-web_default --env AVIARY_TEST_WEB=1 --network-alias api.test
@@ -285,7 +297,7 @@ grafana:
 # at http://localhost:8082. Its server passes the requests of /v1 on to the
 # API. The image ID restarts its pod when the image changes.
 web:
-	docker build --file images/web/Dockerfile --tag $(WEB_IMAGE) .
+	$(BUILD) --file images/web/Dockerfile --tag $(WEB_IMAGE) .
 	kind load docker-image --name $(CLUSTER) $(WEB_IMAGE)
 	$(KUBECTL) apply --filename hack/kind/web.yaml
 	image=$$(docker image inspect --format '{{.Id}}' $(WEB_IMAGE)) && \
@@ -308,12 +320,12 @@ web-dev: web/node_modules/.package-lock.json
 	cd web && $(if $(API),AVIARY_API=$(API) )npm run dev
 
 build:
-	docker build --file images/supervisor/Dockerfile --tag $(SUPERVISOR_IMAGE) .
-	docker build --file images/runner/Dockerfile --tag $(RUNNER_IMAGE) .
-	docker build --build-arg RUNNER_IMAGE=$(RUNNER_IMAGE) --tag $(HARNESS_BASE_IMAGE) images/harness-base
-	docker build --tag $(OPENCODE_IMAGE) images/harness-opencode
-	docker build --tag $(CODEX_IMAGE) images/harness-codex
-	docker build --file images/mock-llm/Dockerfile --tag $(MOCK_LLM_IMAGE) .
+	$(BUILD) --file images/supervisor/Dockerfile --tag $(SUPERVISOR_IMAGE) .
+	$(BUILD) --file images/runner/Dockerfile --tag $(RUNNER_IMAGE) .
+	$(BUILD) --build-arg RUNNER_IMAGE=$(RUNNER_IMAGE) --tag $(HARNESS_BASE_IMAGE) images/harness-base
+	$(BUILD) --tag $(OPENCODE_IMAGE) images/harness-opencode
+	$(BUILD) --tag $(CODEX_IMAGE) images/harness-codex
+	$(BUILD) --file images/mock-llm/Dockerfile --tag $(MOCK_LLM_IMAGE) .
 
 images: build
 	kind load docker-image --name $(CLUSTER) $(SUPERVISOR_IMAGE) $(OPENCODE_IMAGE) $(CODEX_IMAGE) $(MOCK_LLM_IMAGE)

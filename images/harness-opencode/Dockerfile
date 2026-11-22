@@ -2,6 +2,7 @@ FROM aviary-harness-base:dev
 RUN apt-get update && \
     apt-get install --yes --no-install-recommends ripgrep && \
     rm -rf /var/lib/apt/lists/*
+ARG NPM_CONFIG_REGISTRY
 RUN --mount=type=cache,target=/root/.npm \
     npm install --global opencode-ai@1.19.5
 COPY opencode.json /etc/xdg/opencode/opencode.json

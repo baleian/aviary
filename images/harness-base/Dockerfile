@@ -1,9 +1,18 @@
+ARG DOCKER_IO=docker.io
 ARG RUNNER_IMAGE=aviary-runner:dev
+
 FROM ${RUNNER_IMAGE} AS runner
 
-FROM node:26.13.1-trixie-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc
-RUN apt-get update && \
-    apt-get install --yes --no-install-recommends ca-certificates git python3 python3-pip python3-venv && \
+FROM ${DOCKER_IO}/library/node:26.13.1-trixie-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc
+# DEB_DEBIAN_ORG replaces the Debian archive with a mirror, also for the
+# images built from this one. The image has no CA certificates until this
+# step installs them, so apt cannot verify the certificate of a mirror here;
+# it still verifies the signatures of the packages.
+ARG DEB_DEBIAN_ORG=http://deb.debian.org
+RUN sed --in-place "s|http://deb.debian.org|$DEB_DEBIAN_ORG|" /etc/apt/sources.list.d/debian.sources && \
+    apt-get --option Acquire::https::Verify-Peer=false update && \
+    apt-get --option Acquire::https::Verify-Peer=false install --yes --no-install-recommends \
+        ca-certificates git python3 python3-pip python3-venv && \
     rm -rf /var/lib/apt/lists/*
 # Node uses the proxy in HTTP_PROXY and HTTPS_PROXY only if this is set.
 ENV NODE_USE_ENV_PROXY=1
