@@ -7,6 +7,7 @@ services:
     image: ${NGINX_IMAGE}
     environment:
       AVIARY_API: http://api.test:8080/
+      AVIARY_PUBLIC_API: ""
       AVIARY_OIDC_ISSUER: https://login.example.com/realms/main
       AVIARY_OIDC_CLIENT_ID: aviary
       AVIARY_OIDC_SCOPES: openid profile email groups
@@ -26,6 +27,7 @@ services:
     <<: *server
     environment:
       AVIARY_API: ""
+      AVIARY_PUBLIC_API: https://api.example.com
       AVIARY_OIDC_ISSUER: ""
       AVIARY_OIDC_CLIENT_ID: ""
       AVIARY_OIDC_SCOPES: ""

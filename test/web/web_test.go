@@ -212,6 +212,7 @@ func TestServesTheFilesOfABuild(t *testing.T) {
 // The settings of the web UI are what the environment of the server says.
 func TestTellsTheWebUIItsSettings(t *testing.T) {
 	type settings struct {
+		API  string `json:"api"`
 		OIDC struct {
 			Issuer   string `json:"issuer"`
 			ClientID string `json:"clientId"`
@@ -231,12 +232,12 @@ func TestTellsTheWebUIItsSettings(t *testing.T) {
 		return told
 	}
 	told := read(fronting)
-	if told.OIDC.Issuer != "https://login.example.com/realms/main" || told.OIDC.ClientID != "aviary" || told.OIDC.Scopes != "openid profile email groups" {
+	if told.API != "" || told.OIDC.Issuer != "https://login.example.com/realms/main" || told.OIDC.ClientID != "aviary" || told.OIDC.Scopes != "openid profile email groups" {
 		t.Errorf("settings = %+v", told)
 	}
-	// Without an issuer the settings name none.
-	if told := read(alone); told.OIDC.Issuer != "" || told.OIDC.ClientID != "" || told.OIDC.Scopes != "" {
-		t.Errorf("settings without an issuer = %+v, want none", told)
+	// The other server names an API for the browser to call, and no issuer.
+	if told := read(alone); told.API != "https://api.example.com" || told.OIDC.Issuer != "" || told.OIDC.ClientID != "" || told.OIDC.Scopes != "" {
+		t.Errorf("settings without an issuer = %+v, want only the API", told)
 	}
 }
 

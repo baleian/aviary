@@ -1,13 +1,21 @@
 import { EventSourceParserStream } from "eventsource-parser/stream";
 import type { StreamHandlers, Transport } from "./transport.ts";
 
-// http sends the requests to the API that serves the console's own origin.
+let address = "";
+
+// reach names the address of the API, if it is not the console's own.
+export function reach(api: string) {
+  address = api;
+}
+
+// http sends the requests to the API: at the console's own address, unless
+// another was named.
 export const http: Transport = {
   async send(method, path, { token, body }) {
     const headers: Record<string, string> = {};
     if (token) headers["Authorization"] = "Bearer " + token;
     if (body !== undefined) headers["Content-Type"] = "application/json";
-    const response = await fetch(path, {
+    const response = await fetch(address + path, {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -24,7 +32,7 @@ export const http: Transport = {
     const headers: Record<string, string> = { Accept: "text/event-stream" };
     if (token) headers["Authorization"] = "Bearer " + token;
     if (after) headers["Last-Event-ID"] = after;
-    follow(path, headers, closing.signal, handlers).catch((error) => {
+    follow(address + path, headers, closing.signal, handlers).catch((error) => {
       if (!closing.signal.aborted) handlers.onError(error);
     });
     return () => closing.abort();

@@ -57,12 +57,20 @@ it("serves the settings of the console from the environment", async () => {
   const answer = await fetch(url + "config.json");
   expect(answer.headers.get("content-type")).toBe("application/json");
   expect(await answer.json()).toEqual({
+    api: "",
     oidc: {
       issuer: "https://login.example.com/realms/main",
       clientId: "aviary",
       scopes: "",
     },
   });
+});
+
+it("tells the console of an API that the browser calls itself", async () => {
+  vi.stubEnv("AVIARY_PUBLIC_API", "https://api.example.com");
+  const url = await serving((_request, response) => response.end());
+  const answer = await fetch(url + "config.json");
+  expect(await answer.json()).toMatchObject({ api: "https://api.example.com" });
 });
 
 it("passes the headers of an event stream on before its first event", async () => {

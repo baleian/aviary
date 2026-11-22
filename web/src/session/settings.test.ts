@@ -29,12 +29,30 @@ it("reads the issuer that signs the callers in", async () => {
   expect(fetched).toHaveBeenCalledWith("/config.json", { cache: "no-store" });
 });
 
+it("reads the address of an API that is not at the console's own", async () => {
+  for (const [api, address] of [
+    ["https://api.example.com", "https://api.example.com"],
+    // The paths of the API begin with a slash.
+    ["https://api.example.com/", "https://api.example.com"],
+    ["https://example.com/aviary//", "https://example.com/aviary"],
+  ]) {
+    served(() => json({ api }));
+    expect(await readSettings()).toEqual({ api: address });
+  }
+  const oidc = { issuer: "https://login.example.com", clientId: "aviary" };
+  served(() => json({ api: "https://api.example.com", oidc }));
+  expect(await readSettings()).toEqual({
+    api: "https://api.example.com",
+    oidc,
+  });
+});
+
 it("sets nothing for an installation that names no issuer", async () => {
   // What an installation without sign-in is given leaves the names empty.
   for (const body of [
     {},
     null,
-    { oidc: { issuer: "", clientId: "", scopes: "" } },
+    { api: "", oidc: { issuer: "", clientId: "", scopes: "" } },
     { oidc: { issuer: "https://login.example.com", clientId: "" } },
   ]) {
     served(() => json(body));

@@ -11,8 +11,13 @@ RUN npm run build
 FROM nginxinc/nginx-unprivileged:1.30.6-alpine-slim@sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6
 # The API that the server passes the requests of /v1 on to, such as
 # http://aviary-supervisor.aviary-system. If empty, the server serves only
-# the web UI, and something in front of it routes /v1 to the API.
+# the web UI: something in front of it routes /v1 to the API, or the browser
+# calls the API at AVIARY_PUBLIC_API.
 ENV AVIARY_API=""
+# The address at which the browser calls the API, if it is not the address
+# of the web UI, such as https://api.example.com. The API has to allow the
+# origin of the web UI.
+ENV AVIARY_PUBLIC_API=""
 # The OpenID Connect issuer and the client that the web UI signs callers in
 # with, and the scopes that it asks for, separated by spaces: if empty,
 # "openid profile email". Without an issuer nobody signs in.

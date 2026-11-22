@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { authorize, onUnauthenticated, renewWith } from "../api/client.ts";
+import { reach } from "../api/http.ts";
 import { prefs } from "../lib/prefs.ts";
 import { queryClient } from "../query.ts";
 import type { Issuer } from "./issuer.ts";
@@ -38,11 +39,13 @@ function enter(token: string) {
   for (const listener of listeners) listener();
 }
 
-// start finds out who is signed in. The console shows after it, so that its
-// first requests carry the caller's token.
+// start reads what the installation sets for the console, and finds out who
+// is signed in. The console shows after it, so that its first requests go
+// to the API of the installation with the caller's token.
 export async function start(): Promise<void> {
   if (__FAKE_API__) return;
-  const { oidc } = await readSettings();
+  const { api, oidc } = await readSettings();
+  if (api) reach(api);
   if (!oidc) return;
   // What talks to the issuer is loaded only where there is one.
   const { openIssuer } = await import("./issuer.ts");

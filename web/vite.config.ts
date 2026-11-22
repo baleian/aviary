@@ -6,6 +6,9 @@ import { defineConfig, loadEnv, type Plugin, type ProxyOptions } from "vite";
 // of the console on to, such as http://localhost:8080. Without it the
 // console is answered from example data, in the browser.
 //
+// AVIARY_PUBLIC_API names an API that the browser calls itself, at another
+// address than the console's: one that allows the origin of the console.
+//
 // If the API authenticates its callers, AVIARY_OIDC_ISSUER and
 // AVIARY_OIDC_CLIENT_ID name the OpenID Connect issuer and the client that
 // the console signs them in with, and AVIARY_OIDC_SCOPES the scopes that it
@@ -15,7 +18,8 @@ export default defineConfig(({ command, mode }) => {
   const api = env.AVIARY_API;
   // The tests are answered from the example data, whatever API the
   // environment names. A build never is.
-  const fake = mode === "test" || (command === "serve" && !api);
+  const fake =
+    mode === "test" || (command === "serve" && !api && !env.AVIARY_PUBLIC_API);
   return {
     plugins: [react(), settings(env)],
     define: { __FAKE_API__: JSON.stringify(fake) },
@@ -31,6 +35,7 @@ export default defineConfig(({ command, mode }) => {
 // its console, at /config.json, from the environment.
 function settings(env: Record<string, string>): Plugin {
   const body = JSON.stringify({
+    api: env.AVIARY_PUBLIC_API ?? "",
     oidc: {
       issuer: env.AVIARY_OIDC_ISSUER ?? "",
       clientId: env.AVIARY_OIDC_CLIENT_ID ?? "",

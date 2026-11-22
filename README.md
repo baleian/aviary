@@ -610,19 +610,24 @@ server with the files of the web UI, configured through its environment:
 | Variable | Description |
 | --- | --- |
 | `AVIARY_API` | The API that the server passes the requests of `/v1` on to, such as `http://aviary-supervisor.aviary-system`. Empty by default: the server then serves only the web UI. |
+| `AVIARY_PUBLIC_API` | The address at which the browser calls the API, if it is not the address of the web UI, such as `https://api.example.com`. Empty by default. |
 | `AVIARY_OIDC_ISSUER`, `AVIARY_OIDC_CLIENT_ID` | The OpenID Connect issuer and the client that the web UI signs callers in with. Empty by default: nobody signs in, as with an API that has no identity provider. |
 | `AVIARY_OIDC_SCOPES` | The scopes that the web UI asks the issuer for, separated by spaces. Default `openid profile email`. |
 
-The browser finds the web UI and the API at one address, with the API under
-`/v1`. There are two ways to arrange that:
+There are three ways for the browser to find the API:
 
 - **The web server in front of the API.** Set `AVIARY_API`, and expose the
-  web server. `make web` installs the web UI like this in the local cluster,
-  from `hack/kind/web.yaml`.
+  web server: the API is under `/v1` at the address of the web UI.
+  `make web` installs the web UI like this in the local cluster, from
+  `hack/kind/web.yaml`.
 - **A proxy in front of both.** Leave `AVIARY_API` empty, and have a proxy or
   an ingress route `/v1/` to the Supervisor and every other path to the web
-  server. The proxy must not buffer the responses of `/v1/`, which include
-  event streams.
+  server, at one address. The proxy must not buffer the responses of `/v1/`,
+  which include event streams.
+- **Two addresses.** Set `AVIARY_PUBLIC_API` to the address of the API, and
+  list the origin of the web UI in `supervisor.allowedOrigins` (see
+  [Configuration](#configuration)), so that browsers let its pages call the
+  API there.
 
 The server listens on port 8080 as a user that is not root. When it starts
 it writes its configuration to `/etc/nginx/conf.d` and uses `/tmp`, so with

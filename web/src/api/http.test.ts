@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { http } from "./http.ts";
+import { http, reach } from "./http.ts";
 
 // answers has the API answer the next request, and returns what records
 // the request.
@@ -13,6 +13,7 @@ function answers(status: number, body = "", headers = {}) {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  reach("");
 });
 
 describe("http", () => {
@@ -63,6 +64,26 @@ describe("http", () => {
     answers(502, "<html>Bad Gateway</html>");
     const reply = await http.send("GET", "/v1/me", { token: "" });
     expect(reply).toMatchObject({ status: 502, body: null });
+  });
+});
+
+describe("an API at another address than the console's", () => {
+  it("is sent the requests, and asked for the streams", async () => {
+    reach("https://api.example.com");
+    const fetch = answers(200, "{}");
+    await http.send("GET", "/v1/me", { token: "t0" });
+    expect(fetch.mock.calls[0]).toEqual([
+      "https://api.example.com/v1/me",
+      expect.objectContaining({ headers: { Authorization: "Bearer t0" } }),
+    ]);
+
+    const { fetch: asked, calls, handlers } = streams(200, []);
+    http.stream("/v1/turns/t1/events", { token: "t0" }, handlers);
+    await vi.waitFor(() => expect(calls).toContain("end"));
+    expect(asked).toHaveBeenCalledWith(
+      "https://api.example.com/v1/turns/t1/events",
+      expect.anything(),
+    );
   });
 });
 
