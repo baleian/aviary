@@ -29,8 +29,12 @@ it("lists the model providers and the secret stores", async () => {
     "Used byBackend engineerReviewerrelease-helper",
   );
   expect(gateway.textContent).toContain("Key stored");
+  // A provider is listed by its name and its URL: where its key is in the
+  // store is not in the list.
   const local = await row("Local model server");
-  expect(local.textContent).toContain("aviary/llm → api_key");
+  expect(local.querySelector(".tx")!.textContent).toBe(
+    "Local model serverhttp://10.0.0.5:8000/v1",
+  );
   expect(local.textContent).toContain("Used byDocs writer");
   expect(local.textContent).toContain("Key in Platform secrets");
   const store = await row("Platform secrets");
@@ -96,8 +100,9 @@ it("adds a provider with a key from a secret store, or without a key", async () 
   await user.type(form.getByRole("textbox", { name: "Key" }), "api_key");
   await user.click(add);
   const shared = await row("Shared");
-  expect(shared.textContent).toContain("team/model → api_key");
-  expect(shared.textContent).toContain("Key in Platform secrets");
+  expect(within(shared).getByTitle("team/model → api_key").textContent).toBe(
+    "Key in Platform secrets",
+  );
   expect((await row("Platform secrets")).textContent).toContain(
     "Holds the key of Local model server, Shared",
   );
@@ -297,9 +302,9 @@ it("gives a provider the headers that its endpoint needs", async () => {
   await user.click(form.getAllByRole("button", { name: "Remove header" })[2]);
   expect(form.getAllByRole("textbox", { name: "Header name" })).toHaveLength(2);
   await user.click(form.getByRole("button", { name: "Add provider" }));
+  // The list of providers does not show their headers.
   const routed = await row("Routed");
-  expect(routed.textContent).toContain("x-gateway-route: team-a");
-  expect(routed.textContent).not.toContain("x-other");
+  expect(routed.textContent).not.toContain("x-gateway-route");
 
   // A provider that is edited has its headers in the dialog, which shows
   // them.
@@ -327,7 +332,18 @@ it("gives a provider the headers that its endpoint needs", async () => {
   await user.click(edit.getByRole("button", { name: "Remove header" }));
   await user.click(save);
   expect(await screen.findByText(/Saved Routed/)).toBeTruthy();
-  expect((await row("Routed")).textContent).not.toContain("x-gateway-route");
+  await user.click(
+    within(await row("Routed")).getByRole("button", { name: "Edit" }),
+  );
+  expect(
+    within(screen.getByRole("dialog", { name: "Edit Routed" })).queryByRole(
+      "textbox",
+      { name: "Header name" },
+    ),
+  ).toBeNull();
+  expect(document.querySelector<HTMLDetailsElement>("dialog .adv")!.open).toBe(
+    false,
+  );
 });
 
 it("opens a provider with its key in a store at that store", async () => {

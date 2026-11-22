@@ -58,7 +58,6 @@ export function Connections() {
           {providers.length ? (
             <ul className="clist">
               {providers.map((provider) => {
-                const key = provider.api_key;
                 const users = agents.filter(
                   (agent) => agent.model.provider === provider.id,
                 );
@@ -70,16 +69,6 @@ export function Connections() {
                     <div className="tx">
                       <b>{provider.name}</b>
                       <code>{provider.url}</code>
-                      {provider.headers?.map((header) => (
-                        <code key={header.name}>
-                          {header.name}: {header.value}
-                        </code>
-                      ))}
-                      {key && "store" in key && (
-                        <code>
-                          {key.path} → {key.key}
-                        </code>
-                      )}
                     </div>
                     <div className="used">
                       {users.length ? (
