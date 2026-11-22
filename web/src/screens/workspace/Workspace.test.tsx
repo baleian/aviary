@@ -724,6 +724,20 @@ it("answers a request for approval, and the turn goes on", async () => {
   expect(newest.textContent).toContain("Pushed. The branch");
 });
 
+it("shows the requests that the record of a turn lists before its events come", async () => {
+  // The events of the turn never come.
+  const carrier = await transport();
+  const stream = carrier.stream.bind(carrier);
+  vi.spyOn(carrier, "stream").mockImplementation((path, options, handlers) =>
+    path.startsWith("/v1/turns/") ? () => {} : stream(path, options, handlers),
+  );
+  open(await pathOf(RETRY), "alice");
+  const asking = await card();
+  expect(asking.querySelector(".cmd")!.textContent).toBe(
+    "$git push origin retry-backoffexecute",
+  );
+});
+
 it("refuses what an agent asks to do, one request after another", async () => {
   const session = await talk("Asked twice", "backend-engineer");
   const user = open(session.path, "alice");

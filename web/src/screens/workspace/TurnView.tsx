@@ -300,9 +300,11 @@ function Blocks({
     if (item.type === "approval") {
       if (!item.outcome) {
         close();
+        // The request stays the same one when the events of the turn come
+        // after its record.
         out.push(
           <Request
-            key={index}
+            key={"request" + (item.id ?? index)}
             item={item}
             asked={asker}
             onAnswer={onAnswer}
@@ -506,14 +508,14 @@ export const TurnView = memo(function TurnView({
   onAnswer?: (request: string, option: string) => Promise<boolean>;
 }) {
   const stands = followed(turn);
-  // The record of a turn that has not ended lists the requests that wait,
-  // which show before the events of the turn have been read.
-  const items =
-    turn.items ??
-    (turn.approvals ?? []).map((request): Item => ({
-      type: "approval",
-      ...request,
-    }));
+  // The record of a turn that has not ended has no items, and lists the
+  // requests that wait: they show before the events of the turn have come.
+  const items = turn.items?.length
+    ? turn.items
+    : (turn.approvals ?? []).map((request): Item => ({
+        type: "approval",
+        ...request,
+      }));
   const over = !!turn.ended_at;
   const headline =
     turn.ended_at && turn.started_at ? (

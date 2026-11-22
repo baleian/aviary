@@ -210,11 +210,11 @@ it("shows a request that waits, and who may answer it", async () => {
     tool_call: { id: "c1", kind: "execute", input: { command: "git push" } },
     options,
   };
-  // The record of a turn that has not ended lists the requests that wait,
-  // before its events have been read.
+  // The record of a turn that has not ended has no items, and lists the
+  // requests that wait.
   const onAnswer = vi.fn(() => Promise.resolve(true));
   const onStop = vi.fn();
-  const listed = show({ ...waits, approvals: [request] }, null, {
+  const listed = show({ ...waits, approvals: [request] }, [], {
     onAnswer,
     onStop,
   });
