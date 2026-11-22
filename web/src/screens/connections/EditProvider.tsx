@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { api } from "../../api/client.ts";
 import { keys, type ProjectContext } from "../../api/project.ts";
-import type { Provider } from "../../api/types.ts";
+import type { Provider, Tried } from "../../api/types.ts";
+import { cls } from "../../lib/cls.ts";
 import { text, Wrong } from "../../lib/form.ts";
+import { sentence } from "../../lib/format.ts";
 import { queryClient } from "../../query.ts";
 import { Dialog } from "../../ui/Dialog.tsx";
 import { Field, Options, Secret, Select } from "../../ui/fields.tsx";
@@ -12,8 +14,30 @@ import { toast } from "../../ui/toast.ts";
 // a secret store, or none.
 type How = "value" | "store" | "none";
 
+// said puts what came of trying a provider in words.
+function said(tried: Tried): { tone: "ok" | "bad" | ""; text: string } {
+  if (!tried.reached) {
+    return { tone: "bad", text: sentence("Not reached: " + tried.reason) };
+  }
+  const status = tried.status ?? 0;
+  if (status >= 200 && status < 300) {
+    return { tone: "ok", text: `Connected in ${tried.duration_ms} ms.` };
+  }
+  if (status === 401 || status === 403) {
+    return { tone: "bad", text: `The endpoint refused the key (${status}).` };
+  }
+  if (status === 404) {
+    return {
+      tone: "",
+      text: "Reached. The endpoint lists no models at this URL (404).",
+    };
+  }
+  return { tone: "bad", text: `The endpoint answered ${status}.` };
+}
+
 // EditProvider is the dialog that adds a model provider, or replaces one:
-// its name, URL and key together, so the key is entered again.
+// its name, URL and key together, so the key is entered again. The URL and
+// the key can be tried before they are saved.
 export function EditProvider({
   context,
   existing,
@@ -29,13 +53,12 @@ export function EditProvider({
     !existing || (kept && !at) ? "value" : at ? "store" : "none",
   );
   const project = context.project.id;
+  const [trying, setTrying] = useState(false);
+  const [tried, setTried] = useState<ReturnType<typeof said>>();
 
-  async function save(data: FormData): Promise<Provider> {
-    const body: Record<string, unknown> = {
-      name: text(data, "name"),
-      url: text(data, "url"),
-    };
-    if (!body.name) throw new Wrong("Enter a name.");
+  // endpoint reads the URL and the key that the form holds.
+  function endpoint(data: FormData): Record<string, unknown> {
+    const body: Record<string, unknown> = { url: text(data, "url") };
     if (!body.url) throw new Wrong("Enter the URL of the model endpoint.");
     if (how === "value") {
       const value = data.get("value");
@@ -54,11 +77,32 @@ export function EditProvider({
       }
       body.api_key = { store: text(data, "store"), path, key };
     }
+    return body;
+  }
+
+  async function save(data: FormData): Promise<Provider> {
+    const name = text(data, "name");
+    if (!name) throw new Wrong("Enter a name.");
+    const body = { name, ...endpoint(data) };
     const saved = existing
       ? await api.put<Provider>("/v1/providers/" + existing.id, body)
       : await api.post<Provider>(`/v1/projects/${project}/providers`, body);
     await queryClient.invalidateQueries({ queryKey: keys.providers(project) });
     return saved;
+  }
+
+  async function tryIt(form: HTMLFormElement) {
+    setTried(undefined);
+    setTrying(true);
+    try {
+      const path = `/v1/projects/${project}/providers/test`;
+      setTried(said(await api.post<Tried>(path, endpoint(new FormData(form)))));
+    } catch (failure) {
+      const why = failure instanceof Error ? failure.message : "";
+      setTried({ tone: "bad", text: sentence(why) });
+    } finally {
+      setTrying(false);
+    }
   }
 
   return (
@@ -157,6 +201,22 @@ export function EditProvider({
             { value: "none", title: "No key" },
           ]}
         />
+      </div>
+      <div className="try">
+        <button
+          className="btn sec sm"
+          type="button"
+          disabled={trying}
+          onClick={(event) => void tryIt(event.currentTarget.form!)}
+        >
+          {trying && <span className="ring" />}
+          Test connection
+        </button>
+        {tried && (
+          <span className={cls("try-r", tried.tone)} role="status">
+            {tried.text}
+          </span>
+        )}
       </div>
     </Dialog>
   );

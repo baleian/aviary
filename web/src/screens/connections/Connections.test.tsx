@@ -113,6 +113,117 @@ it("adds a provider with a key from a secret store, or without a key", async () 
   expect((await row("Open")).textContent).toContain("No key");
 });
 
+it("tries a provider with what its dialog holds, and adds nothing", async () => {
+  const user = open("/p/storefront/connections", "alice");
+  await row("Company gateway");
+  const listed = document.querySelectorAll(".clist li").length;
+  const form = await dialog(user, /Add provider/, "Add a model provider");
+  const test = form.getByRole("button", { name: "Test connection" });
+  // tried returns what the dialog says of the last try.
+  const tried = async () => {
+    await user.click(test);
+    return await form.findByRole("status");
+  };
+  // The endpoint is tried without a name, but not without its URL and key.
+  let said = await tried();
+  expect(said.textContent).toBe("Enter the URL of the model endpoint.");
+  expect(said.className).toBe("try-r bad");
+  const url = form.getByRole("textbox", { name: "URL" });
+  await user.type(url, "http://localhost:11434/v1");
+  expect((await tried()).textContent).toBe("Enter the key.");
+  const key = form.getByLabelText("API key");
+  await user.type(key, "sk-lab");
+  said = await tried();
+  expect(said.textContent).toBe("Connected in 120 ms.");
+  expect(said.className).toBe("try-r ok");
+
+  await user.clear(key);
+  await user.type(key, "wrong-key");
+  said = await tried();
+  expect(said.textContent).toBe("The endpoint refused the key (401).");
+  expect(said.className).toBe("try-r bad");
+
+  await user.click(form.getByRole("radio", { name: "No key" }));
+  await user.clear(url);
+  await user.type(url, "https://lab.example.com/none");
+  said = await tried();
+  expect(said.textContent).toBe(
+    "Reached. The endpoint lists no models at this URL (404).",
+  );
+  expect(said.className).toBe("try-r");
+
+  await user.clear(url);
+  await user.type(url, "https://lab.invalid/v1");
+  said = await tried();
+  expect(said.textContent).toBe(
+    "Not reached: upstream connect error or disconnect/reset before headers. reset reason: connection timeout.",
+  );
+  expect(said.className).toBe("try-r bad");
+
+  // What the API refuses of the URL shows the same way.
+  await user.clear(url);
+  await user.type(url, "lab.example.com");
+  expect((await tried()).textContent).toBe(
+    "Url must be a URL that begins with http:// or https://.",
+  );
+
+  expect(screen.getByRole("dialog")).toBeTruthy();
+  await user.click(form.getByRole("button", { name: "Cancel" }));
+  expect(document.querySelectorAll(".clist li").length).toBe(listed);
+});
+
+it("shows that a provider is being tried, without what the last try said", async () => {
+  const user = open("/p/storefront/connections", "alice");
+  const form = await dialog(user, /Add provider/, "Add a model provider");
+  const test = form.getByRole("button", { name: "Test connection" });
+  await user.type(
+    form.getByRole("textbox", { name: "URL" }),
+    "https://lab.invalid/v1",
+  );
+  await user.click(form.getByRole("radio", { name: "No key" }));
+  await user.click(test);
+  expect((await form.findByRole("status")).textContent).toContain(
+    "Not reached",
+  );
+
+  // The backend takes a moment to answer, as an API does.
+  const { mock } = await backend();
+  mock.speed = 1;
+  try {
+    await user.click(test);
+    expect(form.queryByRole("status")).toBeNull();
+    expect((test as HTMLButtonElement).disabled).toBe(true);
+    expect(test.querySelector(".ring")).toBeTruthy();
+    expect((await form.findByRole("status")).textContent).toContain(
+      "Not reached",
+    );
+    expect((test as HTMLButtonElement).disabled).toBe(false);
+    expect(test.querySelector(".ring")).toBeNull();
+  } finally {
+    mock.speed = 0;
+  }
+});
+
+it("tries a provider that is edited with the key entered again", async () => {
+  const user = open("/p/storefront/connections", "alice");
+  await user.click(
+    within(await row("Company gateway")).getByRole("button", { name: "Edit" }),
+  );
+  const form = within(
+    screen.getByRole("dialog", { name: "Edit Company gateway" }),
+  );
+  const test = form.getByRole("button", { name: "Test connection" });
+  await user.click(test);
+  expect((await form.findByRole("status")).textContent).toBe(
+    "Enter the key again.",
+  );
+  await user.type(form.getByLabelText("API key"), "sk-gateway");
+  await user.click(test);
+  expect((await form.findByText("Connected in 120 ms.")).className).toBe(
+    "try-r ok",
+  );
+});
+
 it("replaces a provider, whose key is entered again", async () => {
   const user = open("/p/storefront/connections", "alice");
   await user.click(

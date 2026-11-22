@@ -65,6 +65,15 @@ export interface Provider {
   updated_at: string;
 }
 
+// What came of trying a model provider: whether its endpoint answered, with
+// which status, and if not, why.
+export interface Tried {
+  reached: boolean;
+  status?: number;
+  reason?: string;
+  duration_ms: number;
+}
+
 export interface Agent {
   id: string;
   project_id: string;

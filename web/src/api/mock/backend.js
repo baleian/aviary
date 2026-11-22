@@ -361,8 +361,14 @@ const plainPath = (path) =>
 function readProvider(body, projectID) {
   const request = decode(body, ["name", "url", "api_key"]);
   if (!text(request.name)) invalid("name is required");
+  return { name: request.name, ...providerAt(request, projectID) };
+}
+
+// providerAt checks the URL and the key of a provider of the project, and
+// returns them as they are kept.
+function providerAt(request, projectID) {
   endpoint(text(request.url));
-  const read = { name: request.name, url: request.url };
+  const read = { url: request.url };
   const key = request.api_key;
   if (key == null) return read;
   const shape =
@@ -1213,6 +1219,30 @@ route("POST", "/v1/projects/{pid}/providers", ({ who, body }, pid) => {
   };
   db.providers.push(provider);
   return [201, providerRecord(provider)];
+});
+// A provider is tried without being kept. The endpoints of the mock answer
+// by what is asked: a host below ".invalid" is not reached, a key that
+// begins with "wrong" is refused, and a URL that ends in "/none" has no
+// models.
+route("POST", "/v1/projects/{pid}/providers/test", ({ who, body }, pid) => {
+  inProject(who, pid, "connections.manage");
+  const request = decode(body, ["url", "api_key"]);
+  providerAt(request, pid);
+  const at = new URL(request.url);
+  if (at.hostname.endsWith(".invalid"))
+    return [
+      200,
+      {
+        reached: false,
+        reason:
+          "upstream connect error or disconnect/reset before headers. reset reason: connection timeout",
+        duration_ms: 5003,
+      },
+    ];
+  let status = 200;
+  if (text(request.api_key?.value).startsWith("wrong")) status = 401;
+  else if (at.pathname.replace(/\/$/, "").endsWith("/none")) status = 404;
+  return [200, { reached: true, status, duration_ms: 120 }];
 });
 route("GET", "/v1/providers/{id}", ({ who }, id) => {
   const provider = one(db.providers, id);
