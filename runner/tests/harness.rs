@@ -37,6 +37,12 @@ const MODEL_IMAGE: &str = "aviary-mock-llm:dev";
 const FORWARDER_IMAGE: &str =
     "alpine/socat:1.8.1.3@sha256:71131702f671a88b3808a70b7330f9679cd9b9933adcafadc191508edfe55bba";
 
+/// The forwarder's image at Docker Hub, or at the mirror that DOCKER_IO names.
+fn forwarder_image() -> String {
+    let registry = std::env::var("DOCKER_IO").unwrap_or_else(|_| "docker.io".to_owned());
+    format!("{registry}/{FORWARDER_IMAGE}")
+}
+
 fn images() -> Vec<String> {
     let images = std::env::var("AVIARY_HARNESS_IMAGES")
         .expect("AVIARY_HARNESS_IMAGES is not set: run the tests with `make test-harness`");
@@ -217,7 +223,7 @@ impl Bench {
             &label,
             "--publish",
             "127.0.0.1::8700",
-            FORWARDER_IMAGE,
+            &forwarder_image(),
             "tcp-listen:8700,fork,reuseaddr",
             &format!("tcp-connect:{harness}:8700"),
         ])

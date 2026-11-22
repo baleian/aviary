@@ -768,22 +768,23 @@ them checks, how to run some of the tests, and where a new test goes.
 
 ## Mirrors
 
-`make` downloads base images and packages from public registries when it
-builds the images. In a network that does not reach them, name their mirrors
-in the environment or on the command line of `make`:
+`make` downloads images and packages from public registries when it builds
+the images and runs the tests. In a network that does not reach them, name
+their mirrors in the environment or on the command line of `make`:
 
 | Variable | Mirror of |
 | --- | --- |
-| `DOCKER_IO`, `GCR_IO` | Docker Hub and gcr.io, for the base images: a registry, with a path if the mirror has one, such as `mirror.example.com/docker-hub`. |
+| `DOCKER_IO`, `GCR_IO` | Docker Hub and gcr.io: a registry, with a path if the mirror has one, such as `mirror.example.com/docker-hub`. |
 | `GOPROXY` | The Go module proxy. Go's own variable. |
 | `NPM_CONFIG_REGISTRY` | The npm registry. npm's own variable. |
 | `CRATES_IO` | crates.io: a registry as Cargo names one, such as `sparse+https://mirror.example.com/crates/index/`. |
 | `DEB_DEBIAN_ORG` | `http://deb.debian.org`, for the Debian packages of the harness images: an address that serves `debian` and `debian-security`, such as `https://mirror.example.com/deb`. The images keep it as the source of their packages. |
 
-The base images are pulled by the digests that the Dockerfiles pin, so a
-mirror has to serve the images of its registry unchanged. The builds read
-the mirrors of the packages without credentials, and trust the certificate
-authorities of their base images.
+The images are pulled by the digests that the repository pins, so a mirror
+has to serve the images of its registry unchanged. The builds read the
+mirrors of the packages without credentials, and trust the certificate
+authorities of their base images. rustup takes the Rust toolchain from the
+server in its own variable, `RUSTUP_DIST_SERVER`.
 
 ## Repository
 

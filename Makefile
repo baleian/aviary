@@ -17,8 +17,8 @@ GRAFANA_CHART := 14.5.0
 AGENT_SANDBOX := v1.0.11
 AGENT_SANDBOX_SHA256 := 4c54dc1284e9d34e9a00b88de2cb0f098f2dbce4ade814616fd49d44cfd5d1c2
 AGENT_SANDBOX_MANIFEST := .out/agent-sandbox-$(AGENT_SANDBOX).yaml
-GO_IMAGE := golang:1.27.4-trixie@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9
-SQLC_IMAGE := sqlc/sqlc:1.31.1@sha256:70f53171d27b2424e9358869975455a6e955a5aa8e58a998a270a6e34e525537
+GO_IMAGE := $(DOCKER_IO)/library/golang:1.27.4-trixie@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9
+SQLC_IMAGE := $(DOCKER_IO)/sqlc/sqlc:1.31.1@sha256:70f53171d27b2424e9358869975455a6e955a5aa8e58a998a270a6e34e525537
 
 SUPERVISOR_IMAGE := aviary-supervisor:dev
 RUNNER_IMAGE := aviary-runner:dev
@@ -63,15 +63,18 @@ $(error IDENTITY must be keycloak or empty, not "$(IDENTITY)")
 endif
 # Runs Go in a container, so the host needs no Go toolchain. The arguments
 # are the module directory and extra docker options. The aviary-go volume
-# caches modules and builds.
-IN_GO = docker run --rm --user $$(id -u):$$(id -g) --env HOME=/tmp --env GOCACHE=/go/cache \
+# caches modules and builds. Go takes its module proxy from GOPROXY, if the
+# environment names one.
+IN_GO = docker run --rm --user $$(id -u):$$(id -g) --env HOME=/tmp --env GOCACHE=/go/cache --env GOPROXY \
 	--volume aviary-go:/go --volume $(CURDIR):/src --workdir /src/$(1) $(2) $(GO_IMAGE)
 GO = $(call IN_GO,$(1),$(2)) go
 GO_TEST := test -race -shuffle=on -count=1 -timeout 2m
 SQLC_RUN := docker run --rm --user $$(id -u):$$(id -g) \
 	--volume $(CURDIR)/supervisor:/src --workdir /src $(SQLC_IMAGE)
+# Cargo takes the crates of crates.io from the registry in CRATES_IO, if any.
+CARGO := cargo$(if $(CRATES_IO), --config 'source.crates-io.replace-with="mirror"' --config 'source.mirror.registry="$(CRATES_IO)"')
 RENDER := helm template aviary deploy/charts/aviary --namespace aviary-system
-ENVOY_IMAGE = $(shell sed --quiet 's/^  image: \(envoyproxy.*\)/\1/p' deploy/charts/aviary/values.yaml)
+ENVOY_IMAGE = $(DOCKER_IO)/$(shell sed --quiet 's/^  image: \(envoyproxy.*\)/\1/p' deploy/charts/aviary/values.yaml)
 # The proxy tests stand in for the Supervisor and for the upstream hosts of
 # the proxies, under these network aliases.
 PROXIES = ENVOY_IMAGE=$(ENVOY_IMAGE) docker compose --file test/proxy/compose.yaml --project-name aviary-test-proxy
@@ -105,7 +108,7 @@ lint: web/node_modules/.package-lock.json
 		[ -z "$$files" ] || { echo "gofmt would change these files:"; echo "$$files"; exit 1; }
 	for module in supervisor test test/mock-llm test/plugin; do $(call GO,$$module) vet ./... || exit 1; done
 	cargo fmt --all --check
-	cargo clippy --locked --all-targets -- --deny warnings
+	$(CARGO) clippy --locked --all-targets -- --deny warnings
 	$(SQLC_RUN) diff
 	cd web && npm run lint
 
@@ -128,7 +131,7 @@ test-plugin:
 	$(call GO,test/plugin) $(GO_TEST) $(TESTS)
 
 test-runner:
-	cargo test --locked --package aviary-runner $(TESTS)
+	$(CARGO) test --locked --package aviary-runner $(TESTS)
 
 test-mock-llm: TESTS ?= ./...
 test-mock-llm:
@@ -186,7 +189,7 @@ test-web-server:
 # Tests the harness images in containers, without a cluster. Few run at a
 # time, since every harness needs memory.
 test-harness: build
-	AVIARY_HARNESS_IMAGES="$(HARNESS_IMAGES)" cargo test --locked --package aviary-runner --test harness -- \
+	AVIARY_HARNESS_IMAGES="$(HARNESS_IMAGES)" $(CARGO) test --locked --package aviary-runner --test harness -- \
 		--ignored --test-threads 3 $(TESTS)
 
 $(AGENT_SANDBOX_MANIFEST):
