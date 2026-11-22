@@ -6,7 +6,7 @@ import { backend } from "./api/fake.ts";
 import { App } from "./App.tsx";
 import { prefs } from "./lib/prefs.ts";
 import { queryClient } from "./query.ts";
-import { signIn, signOut } from "./session/auth.ts";
+import { signIn, signInWith, signOut } from "./session/auth.ts";
 import { setTheme } from "./theme.ts";
 
 // What the tests of the screens share. They run the console as development
@@ -40,6 +40,7 @@ export function open(path: string, account = "") {
 export async function leave() {
   cleanup();
   signOut();
+  await signInWith(undefined);
   setTheme("system");
   prefs.set("project", null);
   prefs.set("details", null);

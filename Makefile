@@ -268,6 +268,11 @@ grafana:
 # console is answered from example data, in the browser, unless API names an
 # API for it to use, for example that of the local cluster:
 # make web-dev API=http://localhost:8080
+# If the API authenticates its callers, the environment names the OpenID
+# Connect issuer and the client that the console signs them in with, for
+# example those of make identity-provider:
+# AVIARY_OIDC_ISSUER=http://keycloak.localhost:8081/realms/aviary \
+# AVIARY_OIDC_CLIENT_ID=aviary make web-dev API=http://localhost:8080
 web-dev: web/node_modules/.package-lock.json
 	cd web && $(if $(API),AVIARY_API=$(API) )npm run dev
 

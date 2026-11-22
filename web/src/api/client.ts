@@ -32,6 +32,31 @@ export function authorize(value: string) {
   token = value;
 }
 
+let renew: (() => Promise<void>) | undefined;
+let renewing: Promise<void> | undefined;
+
+// renewWith names what renews the token that the requests carry once the API
+// has refused it: it authorizes the token that follows, if there is one. A
+// request that was refused is then sent again, once.
+export function renewWith(how: (() => Promise<void>) | undefined) {
+  renew = how;
+}
+
+// renewed reports whether the requests carry another token than the one that
+// the API refused, after having that one renewed if they do not. Requests
+// that are refused at the same time wait for the same renewal.
+async function renewed(refused: string): Promise<boolean> {
+  if (refused && token === refused && renew) {
+    renewing ??= renew()
+      .catch(() => {})
+      .finally(() => {
+        renewing = undefined;
+      });
+    await renewing;
+  }
+  return token !== "" && token !== refused;
+}
+
 const refused = new Set<() => void>();
 
 // onUnauthenticated calls the listener whenever the API refuses a request
@@ -50,7 +75,11 @@ async function send<T>(
   body?: unknown,
 ): Promise<T> {
   const carrier = await transport();
-  const reply = await carrier.send(method, path, { token, body });
+  const sent = token;
+  let reply = await carrier.send(method, path, { token: sent, body });
+  if (reply.status === 401 && (await renewed(sent))) {
+    reply = await carrier.send(method, path, { token, body });
+  }
   if (reply.status >= 400) throw refusal(reply);
   return reply.body as T;
 }
@@ -144,7 +173,9 @@ export function isLast(type: string): boolean {
 // follow keeps a stream of the API open until it is stopped. A stream whose
 // connection breaks is opened again, later each time. When the API ends the
 // stream, onEnd says when to open it again: now, later as after a break, or
-// never. If the API refuses the stream, follow gives up, with onError.
+// never. If the API refuses the stream, follow gives up, with onError: but a
+// stream that is refused for its token is opened once more if the token can
+// be renewed.
 function follow(
   path: string,
   handlers: {
@@ -160,6 +191,8 @@ function follow(
   let close = () => {};
   let waiting: ReturnType<typeof setTimeout> | undefined;
   let broken = 0;
+  // Whether the token was renewed for the stream since it last opened.
+  let retried = false;
   const again = () => {
     const ms = RETRY[Math.min(broken++, RETRY.length - 1)];
     waiting = setTimeout(() => void open(), ms);
@@ -167,12 +200,14 @@ function follow(
   const open = async () => {
     const carrier = await transport();
     if (stopped) return;
+    const sent = token;
     close = carrier.stream(
       path,
-      { token, after: handlers.after?.() },
+      { token: sent, after: handlers.after?.() },
       {
         onOpen: () => {
           broken = 0;
+          retried = false;
           handlers.onOpen?.();
         },
         onEvent: handlers.onEvent,
@@ -185,7 +220,15 @@ function follow(
           // What is in the way of the API, such as a proxy, answers for
           // it while it restarts.
           if (error instanceof Error || error.status >= 500) return again();
-          handlers.onError?.(refusal(error));
+          if (error.status !== 401 || retried) {
+            return handlers.onError?.(refusal(error));
+          }
+          retried = true;
+          void renewed(sent).then((newer) => {
+            if (stopped) return;
+            if (newer) void open();
+            else handlers.onError?.(refusal(error));
+          });
         },
       },
     );

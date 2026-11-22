@@ -2,13 +2,13 @@ import { lazy, Suspense, useState } from "react";
 import { Navigate, useLocation } from "react-router";
 import { ApiError } from "../api/client.ts";
 import { useMe } from "../api/queries.ts";
+import { sentence } from "../lib/format.ts";
 import { useTitle } from "../lib/title.ts";
+import { begin, signInFailure, signsIn } from "../session/auth.ts";
 import { Unreachable, Wait } from "../shell/Signed.tsx";
 import { Icon, Use } from "../ui/Icon.tsx";
 
-// While the backend of the mock answers, its accounts sign in. An API has
-// no way to sign in yet: the identity provider of an installation is not
-// supported.
+// While the backend of the mock answers, its accounts sign in.
 const FakeAccounts = __FAKE_API__
   ? lazy(() => import("./FakeAccounts.tsx"))
   : null;
@@ -75,20 +75,31 @@ function Art() {
 
 // SignIn is the screen of a console without a caller. Aviary does not sign
 // users in: the identity provider of the installation does, and the console
-// gets a token from it.
+// gets a token from it. The browser goes there and comes back to this
+// screen, which goes on to where the caller was going.
 export function SignIn() {
   const me = useMe();
   const location = useLocation();
   const [choosing, setChoosing] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+  const [failure, setFailure] = useState(signInFailure);
   useTitle();
+  const back = (location.state as { back?: string } | null)?.back || "/";
   if (me.isPending) return <Wait />;
-  if (me.isSuccess) {
-    const back = (location.state as { back?: string } | null)?.back;
-    return <Navigate to={back || "/"} replace />;
-  }
+  if (me.isSuccess) return <Navigate to={back} replace />;
   if (!(me.error instanceof ApiError && me.error.status === 401)) {
     return <Unreachable error={me.error} />;
   }
+
+  function go() {
+    if (!signsIn()) return setChoosing(true);
+    setLeaving(true);
+    begin(back).catch((error: Error) => {
+      setLeaving(false);
+      setFailure(error.message);
+    });
+  }
+
   return (
     <section className="signin">
       <Art />
@@ -98,12 +109,19 @@ export function SignIn() {
           Aviary
         </div>
         <p className="si-tag">Room to fly. One guarded door.</p>
-        {FakeAccounts && (
+        {failure && (
+          <div className="alert bad" role="alert">
+            <Icon name="warn" />
+            <span>{sentence(failure)}</span>
+          </div>
+        )}
+        {(FakeAccounts || signsIn()) && (
           <button
             className="btn pri lg wide"
             type="button"
             autoFocus
-            onClick={() => setChoosing(true)}
+            disabled={leaving}
+            onClick={go}
           >
             Continue with your organization
             <Icon name="arrow" className="lg" />

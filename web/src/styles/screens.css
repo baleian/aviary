@@ -72,6 +72,10 @@
   font: 500 16px/24px var(--sans);
   color: var(--slate);
 }
+.si-card .alert {
+  margin: -8px 0 16px;
+  text-align: left;
+}
 
 /* The sign-in page of the identity provider, which the mock stands in for. */
 dialog.idp {

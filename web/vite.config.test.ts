@@ -50,6 +50,21 @@ it("passes the requests of the API on to the API that is named", async () => {
   expect(await answer.json()).toEqual({ asked: "/v1/me" });
 });
 
+it("serves the settings of the console from the environment", async () => {
+  vi.stubEnv("AVIARY_OIDC_ISSUER", "https://login.example.com/realms/main");
+  vi.stubEnv("AVIARY_OIDC_CLIENT_ID", "aviary");
+  const url = await serving((_request, response) => response.end());
+  const answer = await fetch(url + "config.json");
+  expect(answer.headers.get("content-type")).toBe("application/json");
+  expect(await answer.json()).toEqual({
+    oidc: {
+      issuer: "https://login.example.com/realms/main",
+      clientId: "aviary",
+      scopes: "",
+    },
+  });
+});
+
 it("passes the headers of an event stream on before its first event", async () => {
   // The stream is open, and nothing happens in it for a long time.
   const url = await serving((_request, response) => {

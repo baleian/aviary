@@ -6,6 +6,7 @@ import {
   authorize,
   isLast,
   onUnauthenticated,
+  renewWith,
   type TurnEvent,
 } from "./client.ts";
 import { backend } from "./fake.ts";
@@ -17,6 +18,20 @@ import type { Me, Session, Turn } from "./types.ts";
 beforeAll(() => {
   prefs.set("mock.speed", "0");
 });
+
+// storefront returns the project of the example data, and one of its
+// agents, as Alice reads them.
+async function storefront() {
+  authorize("alice");
+  const { projects } = await api.get<{
+    projects: { id: string; slug: string }[];
+  }>("/v1/projects");
+  const project = projects.find((each) => each.slug === "storefront")!;
+  const { agents } = await api.get<{ agents: { id: string }[] }>(
+    `/v1/projects/${project.id}/agents`,
+  );
+  return { project: project.id, agent: agents[0].id };
+}
 
 describe("api", () => {
   it("returns the body of the answer", async () => {
@@ -61,6 +76,228 @@ describe("api", () => {
   });
 });
 
+// The API refuses a token that it does not know, as it does one that has
+// expired: "ghost" is no account of the example data.
+describe("a token that the API refuses", () => {
+  afterEach(() => {
+    renewWith(undefined);
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  // sends returns the tokens of the requests that are sent from now on.
+  async function sends() {
+    const send = vi.spyOn(await transport(), "send");
+    return () => send.mock.calls.map(([, , options]) => options.token);
+  }
+
+  it("is renewed, and the request is sent again", async () => {
+    const renew = vi.fn(async () => authorize("alice"));
+    renewWith(renew);
+    authorize("ghost");
+    const me = await api.get<Me>("/v1/me");
+    expect(me.username).toBe("alice@example.com");
+    expect(renew).toHaveBeenCalledTimes(1);
+  });
+
+  it("is renewed once for the requests that it fails together", async () => {
+    let finish = () => {};
+    const renew = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = () => {
+            authorize("alice");
+            resolve();
+          };
+        }),
+    );
+    renewWith(renew);
+    authorize("ghost");
+    const both = Promise.all([
+      api.get<Me>("/v1/me"),
+      api.get<{ projects: unknown[] }>("/v1/projects"),
+    ]);
+    await vi.waitFor(() => expect(renew).toHaveBeenCalled());
+    // The other request is refused while the token is renewed.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    finish();
+    const [me, read] = await both;
+    expect(me.username).toBe("alice@example.com");
+    expect(read.projects.length).toBeGreaterThan(0);
+    expect(renew).toHaveBeenCalledTimes(1);
+  });
+
+  it("is not renewed again for a request that it failed before it was renewed", async () => {
+    const carrier = await transport();
+    const send = carrier.send.bind(carrier);
+    // The answer to the projects comes after the token was renewed.
+    let late = () => {};
+    vi.spyOn(carrier, "send").mockImplementation(async (...sent) => {
+      const reply = await send(...sent);
+      if (sent[1] === "/v1/projects" && sent[2].token === "ghost") {
+        await new Promise<void>((resolve) => {
+          late = resolve;
+        });
+      }
+      return reply;
+    });
+    const renew = vi.fn(async () => authorize("alice"));
+    renewWith(renew);
+    authorize("ghost");
+    const projects = api.get<{ projects: unknown[] }>("/v1/projects");
+    expect((await api.get<Me>("/v1/me")).username).toBe("alice@example.com");
+    late();
+    expect((await projects).projects.length).toBeGreaterThan(0);
+    expect(renew).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails the request if it cannot be renewed", async () => {
+    const listener = vi.fn();
+    const remove = onUnauthenticated(listener);
+    const renew = vi.fn(async () => {});
+    renewWith(renew);
+    authorize("ghost");
+    const sent = await sends();
+    await expect(api.get("/v1/me")).rejects.toMatchObject({ status: 401 });
+    expect(renew).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledTimes(1);
+    // The request is not sent again with the token that was refused.
+    expect(sent()).toEqual(["ghost"]);
+    remove();
+  });
+
+  it("fails the request if the caller is signed out instead", async () => {
+    const renew = vi.fn(async () => authorize(""));
+    renewWith(renew);
+    authorize("ghost");
+    const sent = await sends();
+    await expect(api.get("/v1/me")).rejects.toMatchObject({ status: 401 });
+    expect(sent()).toEqual(["ghost"]);
+  });
+
+  it("fails the request if the token that follows is refused too", async () => {
+    const listener = vi.fn();
+    const remove = onUnauthenticated(listener);
+    const renew = vi.fn(async () => authorize("another ghost"));
+    renewWith(renew);
+    authorize("ghost");
+    const sent = await sends();
+    await expect(api.get("/v1/me")).rejects.toMatchObject({ status: 401 });
+    expect(renew).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(sent()).toEqual(["ghost", "another ghost"]);
+    remove();
+  });
+
+  it("is not renewed for a request that carried none", async () => {
+    const renew = vi.fn(async () => authorize("alice"));
+    renewWith(renew);
+    authorize("");
+    await expect(api.get("/v1/me")).rejects.toMatchObject({ status: 401 });
+    expect(renew).not.toHaveBeenCalled();
+  });
+
+  it("is renewed for a stream, which is opened again", async () => {
+    const { project } = await storefront();
+    const renew = vi.fn(async () => authorize("alice"));
+    renewWith(renew);
+    authorize("ghost");
+    const onOpen = vi.fn();
+    const onError = vi.fn();
+    const stop = api.changes(project, { onSession: () => {}, onOpen, onError });
+    await vi.waitFor(() => expect(onOpen).toHaveBeenCalledTimes(1));
+    expect(renew).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("is renewed once for a stream that stays refused", async () => {
+    const { project } = await storefront();
+    const listener = vi.fn();
+    const remove = onUnauthenticated(listener);
+    let ghosts = 0;
+    const renew = vi.fn(async () => authorize(`ghost ${++ghosts}`));
+    renewWith(renew);
+    authorize("ghost");
+    const onOpen = vi.fn();
+    const onError = vi.fn();
+    api.changes(project, { onSession: () => {}, onOpen, onError });
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+    expect(onError.mock.calls[0][0]).toMatchObject({ status: 401 });
+    expect(renew).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(onOpen).not.toHaveBeenCalled();
+    remove();
+  });
+
+  it("is renewed again for a stream that had opened since", async () => {
+    const { project } = await storefront();
+    const renew = vi.fn(async () => authorize("alice"));
+    renewWith(renew);
+    authorize("ghost");
+    vi.useFakeTimers();
+    const onOpen = vi.fn();
+    const onError = vi.fn();
+    const stop = api.changes(project, { onSession: () => {}, onOpen, onError });
+    await vi.waitFor(() => expect(onOpen).toHaveBeenCalledTimes(1));
+    // The token expires while the stream is open. The API ends a stream
+    // after a few minutes, and refuses the next one.
+    authorize("ghost");
+    await vi.advanceTimersByTimeAsync(7 * 60 * 1000);
+    await vi.waitFor(() => expect(onOpen).toHaveBeenCalledTimes(2));
+    expect(renew).toHaveBeenCalledTimes(2);
+    expect(onError).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("opens a stream once if nothing renews its token", async () => {
+    await backend();
+    const stream = vi.spyOn(await transport(), "stream");
+    authorize("ghost");
+    const onError = vi.fn();
+    api.changes("not-a-project", { onSession: () => {}, onError });
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(stream).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves a stream alone that was stopped while it was renewed", async () => {
+    const { project } = await storefront();
+    const listener = vi.fn();
+    const remove = onUnauthenticated(listener);
+    // Once the token is renewed, and once it cannot be.
+    for (const next of ["alice", "ghost"]) {
+      let finish = () => {};
+      const renew = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = () => {
+              authorize(next);
+              resolve();
+            };
+          }),
+      );
+      renewWith(renew);
+      authorize("ghost");
+      const onOpen = vi.fn();
+      const onError = vi.fn();
+      const stop = api.changes(project, {
+        onSession: () => {},
+        onOpen,
+        onError,
+      });
+      await vi.waitFor(() => expect(renew).toHaveBeenCalled());
+      stop();
+      finish();
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(onOpen).not.toHaveBeenCalled();
+      expect(onError).not.toHaveBeenCalled();
+    }
+    expect(listener).not.toHaveBeenCalled();
+    remove();
+  });
+});
+
 describe("ApiError", () => {
   it("reads when to try again", () => {
     const body = { code: "queue_full", message: "too many turns are queued" };
@@ -82,20 +319,6 @@ describe("api.changes", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
-
-  // storefront returns the project of the example data, and one of its
-  // agents, as Alice reads them.
-  async function storefront() {
-    authorize("alice");
-    const { projects } = await api.get<{
-      projects: { id: string; slug: string }[];
-    }>("/v1/projects");
-    const project = projects.find((each) => each.slug === "storefront")!;
-    const { agents } = await api.get<{ agents: { id: string }[] }>(
-      `/v1/projects/${project.id}/agents`,
-    );
-    return { project: project.id, agent: agents[0].id };
-  }
 
   it("tells of a session of the project when it changes", async () => {
     const { project, agent } = await storefront();
