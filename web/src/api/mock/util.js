@@ -5,8 +5,12 @@ let lastStamp = 0;
 let sequence = 0;
 export function uuid7(ms = Date.now(), random = Math.random) {
   if (ms === lastStamp) sequence++;
-  else { lastStamp = ms; sequence = 0; }
-  const hex = (n, width) => Math.floor(n).toString(16).padStart(width, '0').slice(-width);
+  else {
+    lastStamp = ms;
+    sequence = 0;
+  }
+  const hex = (n, width) =>
+    Math.floor(n).toString(16).padStart(width, "0").slice(-width);
   const stamp = hex(ms, 12);
   // The IDs of one millisecond are told apart by their place in it, which
   // comes before what is random.
