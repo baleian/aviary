@@ -8,11 +8,13 @@ import {
 import { slugify } from "../lib/slug.ts";
 import { Icon } from "./Icon.tsx";
 
-// Field is a control of a form with its label, and a hint below it.
+// Field is a control of a form with its label, and a hint or a warning below
+// it.
 export function Field({
   label,
   optional,
   hint,
+  warning,
   children,
 }: {
   label: string;
@@ -20,6 +22,8 @@ export function Field({
   // "optional".
   optional?: boolean | string;
   hint?: ReactNode;
+  // What may be wrong with the field, which can be filled in all the same.
+  warning?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -30,6 +34,12 @@ export function Field({
       </span>
       {children}
       {hint && <span className="hint">{hint}</span>}
+      {warning && (
+        <span className="hint warn" role="status">
+          <Icon name="warn" />
+          <span>{warning}</span>
+        </span>
+      )}
     </label>
   );
 }

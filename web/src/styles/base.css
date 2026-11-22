@@ -417,6 +417,20 @@ textarea.inp {
 .hint code {
   color: var(--ink2);
 }
+.hint.warn {
+  display: flex;
+  gap: 6px;
+  color: var(--c-ink);
+}
+.hint.warn > .i {
+  flex: none;
+  margin-top: 1.5px;
+  color: var(--c-icon);
+}
+.hint.warn > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .inp-i {
   position: relative;
   display: block;

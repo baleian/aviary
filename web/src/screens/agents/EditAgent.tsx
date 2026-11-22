@@ -9,13 +9,11 @@ import { label, sentence } from "../../lib/format.ts";
 import { queryClient } from "../../query.ts";
 import { Dialog } from "../../ui/Dialog.tsx";
 import { Field, NameAndSlug, Select, Toggle } from "../../ui/fields.tsx";
-import { Icon } from "../../ui/Icon.tsx";
 import { toast } from "../../ui/toast.ts";
 
 // ModelField is where the model of an agent is given: chosen among the
-// models that the provider lists, or entered if the provider lists none. A
-// provider that is not reached has no field. Why it is not shows in its
-// place, and an agent keeps the model that it has at that provider.
+// models that the provider lists, or entered if the provider lists none or
+// is not reached. Why it is not reached shows below the field.
 function ModelField({ provider, kept }: { provider: string; kept?: string }) {
   const listed = useQuery({
     queryKey: keys.models(provider),
@@ -28,40 +26,24 @@ function ModelField({ provider, kept }: { provider: string; kept?: string }) {
       </Field>
     );
   }
-  if (listed.isError || !listed.data.reached) {
-    const why = listed.isError
-      ? listed.error.message
-      : "Not reached: " + listed.data.reason;
-    return (
-      <div className="fld">
-        <span className="lab">Model</span>
-        <div className="alert bad" role="alert">
-          <Icon name="warn" />
-          <span>{sentence(why)}</span>
-        </div>
-        <input
-          type="hidden"
-          name={kept ? "model" : "unreached"}
-          value={kept ?? "1"}
-        />
-      </div>
-    );
+  const entered = (unreached?: string) => (
+    <Field label="Model" warning={unreached && sentence(unreached)}>
+      <input
+        className="inp mono"
+        name="model"
+        defaultValue={kept}
+        placeholder="coder-large"
+        autoComplete="off"
+        spellCheck={false}
+      />
+    </Field>
+  );
+  if (listed.isError) return entered(listed.error.message);
+  if (!listed.data.reached) {
+    return entered("Not reached: " + listed.data.reason);
   }
   const models = listed.data.models ?? [];
-  if (!models.length) {
-    return (
-      <Field label="Model">
-        <input
-          className="inp mono"
-          name="model"
-          defaultValue={kept}
-          placeholder="coder-large"
-          autoComplete="off"
-          spellCheck={false}
-        />
-      </Field>
-    );
-  }
+  if (!models.length) return entered();
   // The model of the agent stays a choice if the provider no longer lists it.
   const choices = kept && !models.includes(kept) ? [kept, ...models] : models;
   return (
@@ -125,13 +107,7 @@ export function EditAgent({
   async function save(data: FormData): Promise<Agent> {
     const model = text(data, "model");
     const names = existing ? { name: text(data, "name") } : named(data);
-    if (!model) {
-      throw new Wrong(
-        data.has("unreached")
-          ? "The model provider is not reached."
-          : "Enter the model.",
-      );
-    }
+    if (!model) throw new Wrong("Enter the model.");
     const body = {
       ...names,
       description: text(data, "description"),

@@ -239,7 +239,7 @@ it("has the model of an agent again when its provider is chosen again", async ()
   expect((await chosen("reasoner-mini")).value).toBe("reasoner-mini");
 });
 
-it("shows why a provider is not reached where the model would be", async () => {
+it("has the model entered at a provider that is not reached, and says why", async () => {
   const { project, providers } = await storefront();
   await asked("POST", `/v1/projects/${project}/providers`, {
     name: "Gone",
@@ -258,18 +258,23 @@ it("shows why a provider is not reached where the model would be", async () => {
   );
   const why =
     "Not reached: upstream connect error or disconnect/reset before headers. reset reason: connection timeout.";
-  expect((await dialog.findByRole("alert")).textContent).toBe(why);
+  expect((await dialog.findByRole("status")).textContent).toBe(why);
   expect(dialog.queryByRole("combobox", { name: "Model" })).toBeNull();
-  expect(dialog.queryByRole("textbox", { name: "Model" })).toBeNull();
-  // An agent cannot be given a model there.
-  await user.click(dialog.getByRole("button", { name: "Create agent" }));
+  // The model is entered, as at a provider that lists none.
+  const model = dialog.getByRole("textbox", { name: /^Model/ });
+  const create = dialog.getByRole("button", { name: "Create agent" });
+  await user.click(create);
+  expect(dialog.getByRole("alert").textContent).toBe("Enter the model.");
+  await user.type(model, "coder-xl");
+  await user.click(create);
+  await screen.findByRole("heading", { name: "New session" });
+  await user.click(document.querySelector(".l-ag")!);
   expect(
-    dialog.getAllByRole("alert").map((alert) => alert.textContent),
-  ).toEqual(["The model provider is not reached.", why]);
+    (await screen.findByRole("link", { name: /Notes/ })).textContent,
+  ).toContain("Gone / coder-xl");
   await leave();
 
-  // An agent that has a model there keeps it, and the rest of it can still
-  // be changed.
+  // An agent that has a model there has it in the field, and keeps it.
   await asked("PUT", "/v1/providers/" + providers.get("Company gateway"), {
     name: "Company gateway",
     url: "https://llm.invalid/v1",
@@ -281,7 +286,10 @@ it("shows why a provider is not reached where the model would be", async () => {
   );
   await user.click(screen.getByRole("menuitem", { name: "Edit agent" }));
   dialog = within(screen.getByRole("dialog", { name: "Edit Reviewer" }));
-  expect((await dialog.findByRole("alert")).textContent).toBe(why);
+  expect((await dialog.findByRole("status")).textContent).toBe(why);
+  expect(
+    dialog.getByRole<HTMLInputElement>("textbox", { name: /^Model/ }).value,
+  ).toBe("reasoner-mini");
   const description = dialog.getByRole("textbox", { name: /Description/ });
   await user.clear(description);
   await user.type(description, "Reads every diff.");
