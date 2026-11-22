@@ -14,9 +14,12 @@ type Option = NonNullable<ApprovalItem["options"]>[number];
 export function Command({
   input,
   kind,
+  exit,
 }: {
   input: Record<string, unknown>;
   kind?: string;
+  // The code that the command exited with, if it is to be said.
+  exit?: number | null;
 }) {
   return (
     <div className={cls("cmd", !kind && "in")}>
@@ -28,6 +31,9 @@ export function Command({
         )}
       </span>
       {kind && <span className="tag">{kind}</span>}
+      {exit != null && (
+        <span className={cls("tag", exit !== 0 && "bad")}>exit {exit}</span>
+      )}
     </div>
   );
 }
@@ -110,7 +116,7 @@ export function Request({
             <span className="tag">{call.kind || "tool"}</span>
           </div>
           {diff ? (
-            <CodeBlock text={diff} language="diff" />
+            <CodeBlock text={diff} language="diff" bare={!!path} />
           ) : (
             Object.keys(input).length > 0 &&
             !path && (

@@ -68,6 +68,41 @@ export function inputOf(input: unknown): Record<string, unknown> {
     : {};
 }
 
+// How many fields of an input are told of.
+const FIELDS = 6;
+
+// The fields of an input that are shown as what they are: the command, the
+// file, and the text that an edit takes out and puts in.
+const SHOWN = new Set([
+  "command",
+  "cwd",
+  "filePath",
+  "file_path",
+  "path",
+  "oldString",
+  "old_string",
+  "old_str",
+  "newString",
+  "new_string",
+  "new_str",
+]);
+
+// fieldsOf returns the other plain fields of the input of a tool call, as
+// text, such as what a search looks for. What it leaves out is in the raw
+// input.
+export function fieldsOf(input: Record<string, unknown>): [string, string][] {
+  return Object.entries(input)
+    .filter(
+      ([name, value]) =>
+        !SHOWN.has(name) &&
+        (typeof value === "string"
+          ? value !== ""
+          : typeof value === "number" || typeof value === "boolean"),
+    )
+    .slice(0, FIELDS)
+    .map(([name, value]) => [name, String(value)]);
+}
+
 // outsideOf returns the folders outside the workspace that a tool call
 // reaches, if its input names them. OpenCode asks for them before it asks
 // for the command that reaches them.

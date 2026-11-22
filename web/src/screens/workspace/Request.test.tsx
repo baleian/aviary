@@ -96,6 +96,8 @@ it("asks to change a file, and shows the change", () => {
   );
   expect(card.querySelector(".code .dl")!.textContent).toBe("- old");
   expect(card.querySelector(".code .ad")!.textContent).toBe("+ new");
+  // The card names the file, and the change is only the lines.
+  expect(card.querySelector(".code .hk")).toBeNull();
 });
 
 it("asks to do anything else, with what the tool is given", () => {

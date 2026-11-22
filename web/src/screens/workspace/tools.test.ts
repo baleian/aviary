@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   changed,
   exitCode,
+  fieldsOf,
   findDiff,
   inputOf,
   outputText,
@@ -77,4 +78,42 @@ it("reads the folders outside the workspace that a tool call reaches", () => {
   ]);
   expect(outsideOf({ directories: "/tmp" })).toEqual([]);
   expect(outsideOf({ command: "ls" })).toEqual([]);
+});
+
+it("reads the plain fields of an input that are not shown as what they are", () => {
+  expect(
+    fieldsOf({
+      pattern: "retry",
+      path: "/home/workspace/src",
+      limit: 20,
+      literal: false,
+      note: "",
+      nothing: null,
+      globs: ["*.ts"],
+      options: { deep: true },
+    }),
+  ).toEqual([
+    ["pattern", "retry"],
+    ["limit", "20"],
+    ["literal", "false"],
+  ]);
+  // The command, the file and the text of an edit have places of their own.
+  expect(
+    fieldsOf({
+      command: "ls",
+      cwd: "/home",
+      filePath: "a",
+      file_path: "a",
+      oldString: "a",
+      old_string: "a",
+      old_str: "a",
+      newString: "b",
+      new_string: "b",
+      new_str: "b",
+    }),
+  ).toEqual([]);
+  const many = Object.fromEntries(
+    "abcdefgh".split("").map((name) => [name, 1]),
+  );
+  expect(fieldsOf(many).map(([name]) => name)).toEqual("abcdef".split(""));
 });

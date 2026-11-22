@@ -132,9 +132,11 @@ it("groups the tool calls that follow each other, with what came of each", () =>
   expect(test.querySelector(".step-b > pre.code")!.textContent).toBe(
     "3 passed",
   );
+  // A command that succeeded and shows its output need not say its code.
+  expect(test.querySelector(".cmd .tag")).toBeNull();
   expect(test.textContent).not.toContain("Exited with code");
   expect(edit.querySelector(".c-fail")).toBeTruthy();
-  expect(edit.querySelector(".sub.mono")!.textContent).toBe("src/a.ts");
+  expect(edit.querySelector(".step-p")!.textContent).toBe("src/a.ts");
   expect(edit.querySelector("span.dl")!.textContent).toBe("- a");
   expect(edit.textContent).toContain("Exited with code 1.");
   // The whole of a call is there to read, as the harness gave it.
@@ -144,6 +146,172 @@ it("groups the tool calls that follow each other, with what came of each", () =>
   expect(odd.querySelector(".step-t")!.textContent).toBe("odd");
   expect(odd.querySelector('[title="Did not finish"]')).toBeTruthy();
   expect(odd.querySelector("use")!.getAttribute("href")).toBe("#i-cube");
+});
+
+// steps draws tool calls, and returns the card of each.
+function steps(...calls: Record<string, unknown>[]) {
+  const items = calls.map(
+    (call, index) =>
+      ({
+        type: "tool_call",
+        id: "c" + index,
+        status: "completed",
+        ...call,
+      }) as Item,
+  );
+  return [...show({}, items).element.querySelectorAll<HTMLElement>(".step")];
+}
+
+it("says how a command ended where it is shown", () => {
+  const [quiet, failed, running] = steps(
+    // A harness that tells only the code that a command exited with.
+    {
+      kind: "execute",
+      input: {
+        command: "git status",
+        cwd: "/home/workspace",
+        description: "Shows what has changed",
+        timeout: 120000,
+      },
+      output: { exit_code: 0 },
+    },
+    {
+      kind: "execute",
+      status: "failed",
+      input: { command: "npm run build" },
+      output: { output: "error TS2322", metadata: { exit: 2 } },
+    },
+    { kind: "execute", status: "in_progress", input: { command: "npm ci" } },
+  );
+  expect(quiet.querySelector(".cmd")!.textContent).toBe(
+    "$git statusin /home/workspaceexit 0",
+  );
+  expect(quiet.querySelector(".cmd .tag")!.className).toBe("tag");
+  // A command says what was run: what else it was given is in the raw input.
+  expect(quiet.querySelector(".step-f")).toBeNull();
+  expect(quiet.querySelector(".step-b > pre")).toBeNull();
+  expect(quiet.textContent).not.toContain("Exited with code");
+  expect(failed.querySelector(".cmd .tag")!.textContent).toBe("exit 2");
+  expect(failed.querySelector(".cmd .tag")!.className).toBe("tag bad");
+  const said = failed.querySelector(".step-b > pre")!;
+  expect(said.className).toBe("code bad");
+  expect(said.textContent).toBe("error TS2322");
+  expect(failed.textContent).not.toContain("The tool call failed");
+  // A command that has not ended has no code yet.
+  expect(running.querySelector(".cmd")!.textContent).toBe("$npm ci");
+});
+
+it("says what a tool call was given, beside its file", () => {
+  const [search, fetch, bare] = steps(
+    {
+      kind: "search",
+      title: "grep",
+      input: {
+        pattern: "retry.*backoff",
+        path: "/home/workspace/src",
+        include: "*.ts",
+        literal: false,
+        context: 2,
+        // What is not plain text is left to the raw input.
+        globs: ["a", "b"],
+        options: { deep: true },
+        note: "",
+      },
+      output: { output: "src/sender.ts:41: retry" },
+    },
+    {
+      kind: "fetch",
+      title: "webfetch",
+      input: { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7 },
+    },
+    { kind: "other", title: "task", status: "failed", input: {} },
+  );
+  expect(search.querySelector(".step-p")!.textContent).toBe(
+    "/home/workspace/src",
+  );
+  const rows = (card: HTMLElement) =>
+    [...card.querySelectorAll(".step-f > div")].map((row) => [
+      row.querySelector("dt")!.textContent,
+      row.querySelector("dd")!.textContent,
+    ]);
+  expect(rows(search)).toEqual([
+    ["pattern", "retry.*backoff"],
+    ["include", "*.ts"],
+    ["literal", "false"],
+    ["context", "2"],
+  ]);
+  expect(search.querySelector(".step-b > pre")!.textContent).toBe(
+    "src/sender.ts:41: retry",
+  );
+  // Only the first fields are told of: the rest is in the raw input.
+  expect(rows(fetch).map(([name]) => name)).toEqual("abcdef".split(""));
+  expect(fetch.querySelector(".raw pre")!.textContent).toContain('"g": 7');
+  // A call that failed without a word says only that.
+  expect(bare.querySelector(".step-f")).toBeNull();
+  expect(bare.querySelector(".step-n")!.textContent).toBe(
+    "The tool call failed.",
+  );
+});
+
+it("shows what a tool call changed, without what its card already says", () => {
+  const diff =
+    "--- a/NOTES.md\n+++ b/NOTES.md\n@@ -3,3 +3,4 @@\n ## Requests\n+- a note\n--- a rule";
+  const lines = (card: HTMLElement) =>
+    [...card.querySelectorAll(".code.diff span")].map((line) => [
+      line.className,
+      line.textContent,
+    ]);
+  const [named, unnamed, refused] = steps(
+    {
+      kind: "edit",
+      title: "NOTES.md",
+      input: { filePath: "/home/workspace/NOTES.md" },
+      output: { output: "Edit applied successfully.", metadata: { diff } },
+    },
+    // A harness that names the file only in the diff.
+    {
+      kind: "edit",
+      title: "Edit NOTES.md",
+      input: {
+        changes: { "/home/workspace/NOTES.md": { unified_diff: diff } },
+      },
+    },
+    {
+      kind: "edit",
+      title: "src/a.ts",
+      status: "failed",
+      input: { filePath: "src/a.ts", oldString: "a", newString: "b" },
+      output: { error: "The user rejected permission to use this tool." },
+    },
+  );
+  // The file is named above the change, so the change does not name it
+  // again. A line that was taken out is one, though it begins like a name.
+  expect(named.querySelector(".step-p")!.textContent).toBe(
+    "/home/workspace/NOTES.md",
+  );
+  expect(lines(named)).toEqual([
+    ["hk", "@@ -3,3 +3,4 @@"],
+    ["ad", "+- a note"],
+    ["dl", "--- a rule"],
+  ]);
+  // What a tool said of a change that it made is not shown beside it.
+  const blocks = [...named.querySelectorAll(".step-b > pre")];
+  expect(blocks.map((block) => block.className)).toEqual(["code diff"]);
+  expect(unnamed.querySelector(".step-p")).toBeNull();
+  expect(lines(unnamed).slice(0, 3)).toEqual([
+    ["hk", "--- a/NOTES.md"],
+    ["hk", "+++ b/NOTES.md"],
+    ["hk", "@@ -3,3 +3,4 @@"],
+  ]);
+  // A change that was not made says why, below what it would have been.
+  expect(lines(refused)).toEqual([
+    ["dl", "- a"],
+    ["ad", "+ b"],
+  ]);
+  const why = refused.querySelector(".step-b > pre.bad")!;
+  expect(why.textContent).toBe(
+    "The user rejected permission to use this tool.",
+  );
 });
 
 it("says how a request for approval ended, with its tool call or alone", () => {

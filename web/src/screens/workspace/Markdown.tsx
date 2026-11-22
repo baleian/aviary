@@ -6,30 +6,44 @@ import remarkGfm from "remark-gfm";
 export function CodeBlock({
   text,
   language,
+  bare,
 }: {
   text: string;
   language?: string;
+  // Whether a diff is shown without the lines that name its files.
+  bare?: boolean;
 }) {
   const diff = language === "diff" || /^(@@ |\+\+\+ |--- )/m.test(text);
   if (!diff) return <pre className="code">{text}</pre>;
+  const lines = text.split("\n");
+  // A diff names its files before its first hunk. From there on a line that
+  // begins with "-" or "+" was taken out or put in, however it goes on.
+  const first = lines.findIndex((line) => line.startsWith("@@"));
   return (
-    <pre className="code">
-      {text.split("\n").map((line, index) => {
-        const kind = /^(\+\+\+|---|@@)/.test(line)
-          ? "hk"
-          : line.startsWith("+")
-            ? "ad"
-            : line.startsWith("-")
-              ? "dl"
-              : "";
-        return kind ? (
-          <span key={index} className={kind}>
-            {line}
-          </span>
-        ) : (
-          line + "\n"
-        );
-      })}
+    <pre className="code diff">
+      <code>
+        {lines.map((line, index) => {
+          const names =
+            index < first || (first < 0 && /^(\+\+\+|---)/.test(line));
+          // A hunk that says no lines is one that the console made.
+          if (bare && (names || line === "@@")) return null;
+          const kind =
+            names || line.startsWith("@@")
+              ? "hk"
+              : line.startsWith("+")
+                ? "ad"
+                : line.startsWith("-")
+                  ? "dl"
+                  : "";
+          return kind ? (
+            <span key={index} className={kind}>
+              {line}
+            </span>
+          ) : (
+            line + "\n"
+          );
+        })}
+      </code>
     </pre>
   );
 }

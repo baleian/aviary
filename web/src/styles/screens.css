@@ -1282,14 +1282,72 @@ a:hover .top > .go {
   font: 500 12.5px/20px var(--mono);
   word-spacing: 0;
 }
+/* The inside of a tool card that is opened: a drawer below its line. What
+   is in it scrolls in its own box, and does not make the card wider. */
 .step-b {
-  padding: 2px 12px 12px 48px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
+  padding: 12px;
+  background: var(--surface-2);
+  border-top: 1px solid var(--line);
 }
-.step-b h5 {
-  margin: 4px 0 -4px;
-  font: 600 11.5px/16px var(--sans);
+.step-b .cmd {
+  padding: 9px 12px;
+  font-size: 12.5px;
+}
+.step-b .code {
+  padding: 9px 12px;
+  background: var(--surface);
+  font-size: 12px;
+  line-height: 18px;
+  max-height: 280px;
+}
+.step-b .code.bad {
+  border-color: var(--r100);
+  color: var(--r-ink);
+}
+.step-p {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font: 500 12px/18px var(--mono);
+  word-spacing: 0;
+  color: var(--ink2);
+  overflow-wrap: anywhere;
+}
+.step-p .i {
+  flex: none;
+  margin-top: 2px;
+  color: var(--mist);
+}
+.step-f {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  margin: 0;
+  font: 500 12px/18px var(--mono);
+  word-spacing: 0;
+}
+.step-f > div {
+  display: flex;
+  gap: 12px;
+}
+.step-f dt {
+  flex: none;
+  min-width: 72px;
+  color: var(--slate);
+}
+.step-f dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--ink2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.step-n {
+  font: 500 12px/18px var(--sans);
   color: var(--slate);
 }
 .raw {
@@ -1309,6 +1367,9 @@ a:hover .top > .go {
 }
 .raw .code {
   margin-top: 6px;
+  font-size: 11.5px;
+  line-height: 17px;
+  max-height: 240px;
 }
 .answer {
   display: flex;
@@ -1399,6 +1460,10 @@ a:hover .top > .go {
   margin-left: auto;
   background: rgba(255, 255, 255, 0.12);
   color: var(--night-dim);
+}
+.cmd .tag.bad {
+  background: rgba(255, 117, 89, 0.2);
+  color: #ffb3a2;
 }
 .cmd.in {
   margin: 0;

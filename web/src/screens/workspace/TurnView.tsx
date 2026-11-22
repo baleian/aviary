@@ -15,6 +15,7 @@ import { Command, Request } from "./Request.tsx";
 import {
   changed,
   exitCode,
+  fieldsOf,
   findDiff,
   inputOf,
   outputText,
@@ -162,16 +163,18 @@ const Step = memo(function Step({
   const diff = findDiff(item.output) ?? findDiff(item.input) ?? changed(input);
   const output = outputText(item.output);
   const code = exitCode(item.output);
-  const failed =
-    item.status === "failed" &&
-    !output &&
-    typeof (item.output as { error?: unknown } | undefined)?.error !== "string";
+  const failed = item.status === "failed";
   const raw = Object.fromEntries(
     (["input", "output", "meta"] as const)
       .filter((field) => item[field] !== undefined)
       .map((field) => [field, item[field]]),
   );
   const title = item.title || kind;
+  const command = typeof input.command === "string";
+  const path = pathOf(input);
+  const fields = command ? [] : fieldsOf(input);
+  // The code goes unsaid when the command succeeded and its output shows.
+  const unsaid = code === 0 && !!output;
   const mark =
     item.status === "completed" ? (
       <span className="c-ok">
@@ -212,22 +215,37 @@ const Step = memo(function Step({
       </summary>
       <div className="step-b">
         {approval && <Answered item={approval} person={person} />}
-        {typeof input.command === "string" ? (
-          <Command input={input} />
+        {command ? (
+          <Command input={input} exit={unsaid ? null : code} />
         ) : (
-          pathOf(input) && <p className="sub xs mono">{pathOf(input)}</p>
+          path && (
+            <p className="step-p">
+              <Icon name="doc" />
+              {path}
+            </p>
+          )
         )}
-        {diff ? (
-          <CodeBlock text={diff} language="diff" />
-        ) : (
-          output && <pre className="code">{output}</pre>
+        {fields.length > 0 && (
+          <dl className="step-f">
+            {fields.map(([name, value]) => (
+              <div key={name}>
+                <dt>{name}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
+          </dl>
         )}
-        {code != null && (code !== 0 || !output) && (
-          <p className="sub xs">
+        {diff && <CodeBlock text={diff} language="diff" bare={!!path} />}
+        {/* What a tool said is its change, unless it failed. */}
+        {output && (!diff || failed) && (
+          <pre className={cls("code", failed && "bad")}>{output}</pre>
+        )}
+        {!command && !unsaid && code != null && (
+          <p className="step-n">
             Exited with code <b>{code}</b>.
           </p>
         )}
-        {failed && <p className="sub xs">The tool call failed.</p>}
+        {failed && !output && <p className="step-n">The tool call failed.</p>}
         {Object.keys(raw).length > 0 && (
           <details className="raw">
             <summary>

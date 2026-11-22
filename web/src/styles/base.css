@@ -1041,6 +1041,13 @@ textarea.inp {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+/* The lines of a diff are as wide as its widest, so that their colours
+   reach as far as it scrolls. */
+.code.diff > code {
+  display: inline-block;
+  min-width: 100%;
+  font: inherit;
+}
 .code .dl,
 .code .ad,
 .code .hk {
