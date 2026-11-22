@@ -89,26 +89,25 @@ it("passes the headers of an event stream on before its first event", async () =
   expect(answer?.headers.get("content-type")).toBe("text/event-stream");
 });
 
-it("builds the license of each font in, next to the files of the font", async () => {
+it("builds the licenses of the packages that it bundles in", async () => {
   const { output } = (await build({
     mode: "production",
     logLevel: "silent",
     build: { write: false },
   })) as Rolldown.RolldownOutput;
-  const licenses = new Map<string, string>();
-  for (const file of output) {
-    const [, family] = /^(.*)-LICENSE\.txt$/.exec(file.fileName) ?? [];
-    if (family && file.type === "asset") {
-      licenses.set(family, file.source.toString());
-    }
-  }
-  const fonts = output.filter((file) => file.fileName.endsWith(".woff2"));
+  const file = output.find((file) => file.fileName === "licenses.md");
+  const licenses = file?.type === "asset" ? file.source.toString() : "";
+  expect(licenses).toMatch(/^## react - \S+ \(MIT\)$/m);
+  // The fonts too, which only the styles name.
+  const fonts = output.filter(
+    (file) => file.type === "asset" && file.fileName.endsWith(".woff2"),
+  ) as Rolldown.OutputAsset[];
   expect(fonts.length).toBeGreaterThan(0);
-  for (const { fileName } of fonts) {
-    const family = [...licenses.keys()].find((family) =>
-      fileName.startsWith(family + "-"),
-    );
-    expect(family, fileName).toBeDefined();
-    expect(licenses.get(family!)).toContain("SIL OPEN FONT LICENSE");
+  for (const font of fonts) {
+    const [, from] =
+      /node_modules\/((?:@[^/]+\/)?[^/]+)\//.exec(font.originalFileNames[0]) ??
+      [];
+    expect(licenses, font.fileName).toContain(`## ${from} - `);
   }
+  expect(licenses).toContain("SIL OPEN FONT LICENSE");
 });

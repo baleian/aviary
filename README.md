@@ -633,6 +633,9 @@ The server listens on port 8080 as a user that is not root. When it starts
 it writes its configuration to `/etc/nginx/conf.d` and uses `/tmp`, so with
 a read-only root file system both need a volume, as in `hack/kind/web.yaml`.
 
+The image has the licenses of the packages that the web UI bundles in
+`licenses.md`, which the server serves at `/licenses.md`.
+
 ### Signing in
 
 With an identity provider of the kind `oidc`, the web UI signs callers in at
