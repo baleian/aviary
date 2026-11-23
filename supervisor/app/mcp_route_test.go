@@ -8,6 +8,8 @@ import (
 
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	"google.golang.org/grpc/codes"
+
+	"aviary/supervisor/internal/sandbox/runnertest"
 )
 
 // checkMcp asks the Supervisor about a request of the model listener with the
@@ -43,6 +45,11 @@ func TestRequestsToTheMcpServersOfASession(t *testing.T) {
 	session := s.create("/v1/agents/"+agent+"/sessions", "")
 	runner := aviary.given(s.send(session, "hello").ID)
 	token := aviary.token(runner.Sandbox)
+	// The harness of a turn reaches the servers that the session has on at
+	// the proxy, under the path of each server's URL.
+	if want := []runnertest.McpServer{{ID: tracker, Name: "tracker", Transport: "http", URL: "http://127.0.0.2:8080/mcp"}}; !slices.Equal(runner.McpServers, want) {
+		t.Errorf("MCP servers of the turn = %+v, want %+v", runner.McpServers, want)
+	}
 
 	// The request goes to the server with its headers, the server's token in
 	// place of the session's, and without the header that names the server.
@@ -95,4 +102,9 @@ func TestRequestsToTheMcpServersOfASession(t *testing.T) {
 	eventually(t, patience, "the request of an ended turn is allowed", func() bool {
 		return codes.Code(s.checkMcp(token, docs, "/sse").GetStatus().GetCode()) != codes.OK
 	})
+	// The next turn has the servers that the session has on by then.
+	next := aviary.given(s.send(session, "again").ID)
+	if want := []runnertest.McpServer{{ID: docs, Name: "docs", Transport: "sse", URL: "http://127.0.0.2:8080/sse"}}; !slices.Equal(next.McpServers, want) {
+		t.Errorf("MCP servers of the next turn = %+v, want %+v", next.McpServers, want)
+	}
 }

@@ -575,6 +575,13 @@ A project registers MCP servers by their URL.
   session turns any server of the project on or off. A session keeps only
   how it differs from its agent, and follows the agent in the rest. A
   server that is deleted leaves the agents and the sessions that had it.
+- **A turn's harness reaches the servers that its session has on** through
+  the Egress Proxy, as it reaches its model. The proxy sends each request on
+  with the server's headers while the session has the server on, so a server
+  that is turned off during a turn is refused from then on. A harness has the
+  servers of its start: the turn after a change gets a new harness, which
+  resumes the session. A harness that cannot take servers of a transport is
+  not given them.
 
 ### Secret stores
 

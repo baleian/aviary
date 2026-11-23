@@ -12,10 +12,14 @@
 //! agent cannot answer its own approval requests.
 //!
 //! The harness is started for the first turn and kept for the turns after it,
-//! until a turn has another approval mode, environment or instructions: that
-//! turn gets a new harness. The runner stores the harness session ID in the
-//! home, which outlives the pod, so a new harness and the runner in the
-//! session's next pod resume the same session.
+//! until a turn has another approval mode, environment, instructions or set of
+//! MCP servers: that turn gets a new harness. The runner stores the harness
+//! session ID in the home, which outlives the pod, so a new harness and the
+//! runner in the session's next pod resume the same session.
+//!
+//! A harness reaches its MCP servers through the Egress Proxy, as it reaches
+//! its model: every request carries the session token, and names its server
+//! by ID in the `x-aviary-mcp` header.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -34,7 +38,8 @@ use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
     CancelNotification, ClientCapabilities, ClientSessionCapabilities, ContentBlock, ContentChunk,
-    InitializeRequest, NewSessionRequest, NoticeCapabilities, PermissionOptionKind, PromptRequest,
+    HttpHeader, InitializeRequest, McpCapabilities, McpServer, McpServerHttp, McpServerSse,
+    NewSessionRequest, NoticeCapabilities, PermissionOptionKind, PromptRequest,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     ResumeSessionRequest, SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate,
     TextContent, ToolCallUpdate,
@@ -63,6 +68,11 @@ const HARNESS_COMMAND: &str = "AVIARY_HARNESS_COMMAND";
 const MAX_TOOL_OUTPUT: &str = "AVIARY_MAX_TOOL_OUTPUT_BYTES";
 const INSTRUCTIONS_FILE: &str = "AVIARY_INSTRUCTIONS_FILE";
 const ADDRESS: &str = "AVIARY_RUNNER_ADDRESS";
+/// The session token, by which the Egress Proxy knows the turn.
+const TOKEN: &str = "AVIARY_LLM_API_KEY";
+
+/// The header that names the MCP server of a request to the Egress Proxy.
+const MCP_SERVER: &str = "x-aviary-mcp";
 
 /// The listen address if `AVIARY_RUNNER_ADDRESS` is not set.
 const LISTENS: &str = "0.0.0.0:8700";
@@ -201,6 +211,23 @@ struct Start {
     /// turn that has others gets a new harness.
     #[serde(default)]
     environment: BTreeMap<String, String>,
+    /// The MCP servers that the harness can use. A harness keeps those that
+    /// it started with too.
+    #[serde(default)]
+    mcp_servers: Vec<Mcp>,
+}
+
+/// An MCP server of a turn.
+#[derive(Deserialize, Clone, PartialEq)]
+struct Mcp {
+    /// Names the server to the Egress Proxy.
+    id: String,
+    /// Names the server, and its tools, to the harness.
+    name: String,
+    /// "http" for Streamable HTTP, or "sse".
+    transport: String,
+    /// The server's address at the Egress Proxy.
+    url: String,
 }
 
 /// The request body that answers an approval request.
@@ -433,9 +460,9 @@ async fn run_turns(runner: &Arc<Runner>, mut orders: mpsc::UnboundedReceiver<Ord
 }
 
 /// Starts a harness and runs turns on it, beginning with `first`, until the
-/// harness exits or a turn fails. A turn whose approval mode, environment or
-/// instructions differ from those of `first` is returned instead of run, since
-/// the harness may have them only from its start.
+/// harness exits or a turn fails. A turn whose approval mode, environment,
+/// instructions or MCP servers differ from those of `first` is returned
+/// instead of run, since the harness may have them only from its start.
 async fn run_harness(
     runner: &Arc<Runner>,
     first: Order,
@@ -447,6 +474,11 @@ async fn run_harness(
         *session = remembered()?;
     }
     instruct(&first.start.instructions)?;
+    let token = if first.start.mcp_servers.is_empty() {
+        String::new()
+    } else {
+        variable(TOKEN)?
+    };
     // Spawned here rather than by AcpAgent, to notice a harness that exits
     // between turns.
     let command = variable(HARNESS_COMMAND)?;
@@ -479,6 +511,7 @@ async fn run_harness(
     let asks = first.start.approval == "ask";
     let environment = first.start.environment.clone();
     let instructions = first.start.instructions.clone();
+    let mcp_servers = first.start.mcp_servers.clone();
     // The turn that needs a new harness.
     let mut left = None;
     // Set when session/resume fails.
@@ -537,17 +570,24 @@ async fn run_harness(
             // A harness that cannot send notices may put them in the agent's
             // messages instead.
             let notices = ClientSessionCapabilities::new().notices(NoticeCapabilities::new());
-            harness
+            let initialized = harness
                 .send_request(
                     InitializeRequest::new(ProtocolVersion::V1)
                         .client_capabilities(ClientCapabilities::new().session(notices)),
                 )
                 .block_task()
                 .await?;
+            let servers = taken(
+                &mcp_servers,
+                &token,
+                &initialized.agent_capabilities.mcp_capabilities,
+            );
             let session_id = match session.clone() {
                 Some(session_id) => {
                     harness
-                        .send_request(ResumeSessionRequest::new(session_id.clone(), cwd))
+                        .send_request(
+                            ResumeSessionRequest::new(session_id.clone(), cwd).mcp_servers(servers),
+                        )
                         .block_task()
                         .await
                         .inspect_err(|_| forgotten.set(true))?;
@@ -555,7 +595,7 @@ async fn run_harness(
                 }
                 None => {
                     let session_id = harness
-                        .send_request(NewSessionRequest::new(cwd))
+                        .send_request(NewSessionRequest::new(cwd).mcp_servers(servers))
                         .block_task()
                         .await?
                         .session_id;
@@ -587,6 +627,7 @@ async fn run_harness(
                 if (start.approval == "ask") != asks
                     || start.environment != environment
                     || start.instructions != instructions
+                    || start.mcp_servers != mcp_servers
                 {
                     left = Some(Order { start, told });
                     return Ok(());
@@ -726,6 +767,36 @@ fn instruct(instructions: &str) -> Result<(), Failure> {
         fs::create_dir_all(directory).map_err(Failure::runner)?;
     }
     fs::write(file, instructions).map_err(Failure::runner)
+}
+
+/// Returns the MCP servers of a turn as the harness takes them, with the
+/// session token and the server's ID in every request. A server of a transport
+/// that the harness does not take is left out.
+fn taken(servers: &[Mcp], token: &str, takes: &McpCapabilities) -> Vec<McpServer> {
+    servers
+        .iter()
+        .filter_map(|server| {
+            let headers = vec![
+                HttpHeader::new("authorization", format!("Bearer {token}")),
+                HttpHeader::new(MCP_SERVER, &server.id),
+            ];
+            match server.transport.as_str() {
+                "http" if takes.http => Some(McpServer::Http(
+                    McpServerHttp::new(&server.name, &server.url).headers(headers),
+                )),
+                "sse" if takes.sse => Some(McpServer::Sse(
+                    McpServerSse::new(&server.name, &server.url).headers(headers),
+                )),
+                transport => {
+                    eprintln!(
+                        "leaving out MCP server {}: the harness does not take servers of {transport}",
+                        server.name
+                    );
+                    None
+                }
+            }
+        })
+        .collect()
 }
 
 fn session_file() -> Result<PathBuf, Failure> {

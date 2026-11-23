@@ -7,7 +7,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use reqwest::StatusCode;
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time;
 
@@ -361,6 +361,20 @@ async fn misconfigured_runner_fails_the_turn() {
     let events = runner.run("t1", "say Hello").await;
     assert_eq!(names(&events), ["failed"]);
     assert_eq!(ending(&events).data["reason"], "harness_error");
+
+    // Without the session token, the harness cannot reach MCP servers.
+    let runner = start(support::runner(&home)).await;
+    let server =
+        json!({"id": "1", "name": "tracker", "transport": "http", "url": "http://proxy/mcp"});
+    runner
+        .turn_with("t1", json!({"text": "mcp", "mcp_servers": [server]}))
+        .await;
+    let events = runner.events("t1").await;
+    assert_eq!(names(&events), ["failed"]);
+    assert_eq!(
+        ending(&events).data,
+        json!({"reason": "runner_error", "message": "AVIARY_LLM_API_KEY is not set"})
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -496,6 +510,71 @@ async fn turn_with_other_settings_gets_a_new_harness() {
     assert_eq!(
         said(&back),
         "onceenv AVIARY_LLM_MODEL ; tool a\ntool b\nenv AVIARY_LLM_MODEL ; tool c\nask"
+    );
+}
+
+/// The harness reaches the MCP servers of a turn with the session token, and
+/// names the server of each request by its ID.
+#[tokio::test(flavor = "multi_thread")]
+async fn harness_starts_with_the_mcp_servers_of_the_turn() {
+    let home = Home::new();
+    let mut command = runner(&home);
+    command
+        .env("AVIARY_LLM_API_KEY", "the-token")
+        .env("FAKE_HARNESS_MCP", "http,sse");
+    let runner = start(command).await;
+    let tracker =
+        json!({"id": "1", "name": "tracker", "transport": "http", "url": "http://proxy/mcp"});
+    let docs = json!({"id": "2", "name": "docs", "transport": "sse", "url": "http://proxy/sse"});
+    let run = async |id: &str, text: &str, servers: Value| {
+        let start = json!({"text": text, "mcp_servers": servers});
+        assert_eq!(runner.turn_with(id, start).await, StatusCode::NO_CONTENT);
+        runner.events(id).await
+    };
+    // The fake harness numbers tool calls per process.
+    let call = |events: &[Event]| {
+        let call = events.iter().find(|event| event.name == "tool.call");
+        call.unwrap().data["id"].clone()
+    };
+    let first = run("t1", "mcp ; tool a", json!([tracker, docs])).await;
+    assert_eq!(
+        said(&first),
+        "http tracker http://proxy/mcp authorization=Bearer the-token x-aviary-mcp=1\n\
+         sse docs http://proxy/sse authorization=Bearer the-token x-aviary-mcp=2"
+    );
+    let same = run("t2", "tool b", json!([tracker, docs])).await;
+    assert_eq!(call(&same), "call-2");
+
+    // Other servers: a new harness, which resumes the session with them.
+    let other = run("t3", "mcp ; tool c ; say , ; recall", json!([docs])).await;
+    assert_eq!(call(&other), "call-1");
+    assert_eq!(
+        said(&other),
+        "sse docs http://proxy/sse authorization=Bearer the-token x-aviary-mcp=2,\
+         mcp ; tool a\ntool b"
+    );
+    let none = run("t4", "mcp", json!([])).await;
+    assert_eq!(said(&none), "none");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_servers_of_transports_that_the_harness_does_not_take_are_left_out() {
+    let home = Home::new();
+    let mut command = runner(&home);
+    command
+        .env("AVIARY_LLM_API_KEY", "the-token")
+        .env("FAKE_HARNESS_MCP", "http");
+    let runner = start(command).await;
+    let servers = json!([
+        {"id": "1", "name": "tracker", "transport": "http", "url": "http://proxy/mcp"},
+        {"id": "2", "name": "docs", "transport": "sse", "url": "http://proxy/sse"},
+    ]);
+    runner
+        .turn_with("t1", json!({"text": "mcp", "mcp_servers": servers}))
+        .await;
+    assert_eq!(
+        said(&runner.events("t1").await),
+        "http tracker http://proxy/mcp authorization=Bearer the-token x-aviary-mcp=1"
     );
 }
 

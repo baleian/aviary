@@ -669,3 +669,32 @@ func (d *Driver) environment(turn store.FollowedTurn) map[string]string {
 	}
 	return told
 }
+
+// mcpServers returns the MCP servers that the turn's session has on. The
+// harness reaches each of them at the model listener of the Egress Proxy,
+// under the path of the server's URL.
+func (d *Driver) mcpServers(ctx context.Context, turn store.FollowedTurn) ([]sandbox.McpServer, error) {
+	on, err := d.store.SessionMcpServers(ctx, []uuid.UUID{turn.SessionID})
+	if err != nil {
+		return nil, fmt.Errorf("get the MCP servers of the session: %w", err)
+	}
+	var servers []sandbox.McpServer
+	for _, id := range on[turn.SessionID] {
+		server, err := d.store.McpServer(ctx, id)
+		if errors.Is(err, store.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("get MCP server: %w", err)
+		}
+		// The API validated the URL.
+		address, err := url.Parse(server.URL)
+		if err != nil {
+			continue
+		}
+		at := *d.config.Models
+		at.Path, at.RawPath = address.Path, address.RawPath
+		servers = append(servers, sandbox.McpServer{ID: server.ID, Name: server.Slug, Transport: server.Transport, URL: at.String()})
+	}
+	return servers, nil
+}

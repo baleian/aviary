@@ -117,6 +117,7 @@ type Turn struct {
 	Instructions string            `json:"instructions"`
 	Approval     string            `json:"approval"`
 	Environment  map[string]string `json:"environment"`
+	McpServers   []McpServer       `json:"mcp_servers"`
 
 	closed chan struct{}
 
@@ -133,6 +134,14 @@ type Turn struct {
 	cuts int
 	// changed is closed when there is more to read.
 	changed chan struct{}
+}
+
+// McpServer is an MCP server of a turn.
+type McpServer struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Transport string `json:"transport"`
+	URL       string `json:"url"`
 }
 
 type event struct {
