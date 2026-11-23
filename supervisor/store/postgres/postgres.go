@@ -27,8 +27,9 @@ const uniqueViolation = "23505"
 
 // The unique constraints on slugs, as the schema names them.
 const (
-	projectSlug = "projects_slug"
-	agentSlug   = "agents_project_slug"
+	projectSlug   = "projects_slug"
+	agentSlug     = "agents_project_slug"
+	mcpServerSlug = "mcp_servers_project_slug"
 )
 
 // dispatchLock is the key of the advisory lock that serializes dispatching.
@@ -605,6 +606,100 @@ func (s *records) ReplaceProvider(ctx context.Context, provider store.Provider) 
 	return providerFrom(row)
 }
 
+func (s *records) CreateMcpServer(ctx context.Context, server store.McpServer) (store.McpServer, error) {
+	headers, err := headersIn(server.Headers)
+	if err != nil {
+		return store.McpServer{}, err
+	}
+	tools, err := toolsIn(server.Tools, server.ToolsListedAt)
+	if err != nil {
+		return store.McpServer{}, err
+	}
+	row, err := s.queries.CreateMcpServer(ctx, db.CreateMcpServerParams{
+		ID: server.ID, ProjectID: server.ProjectID, Slug: server.Slug, Name: server.Name, Url: server.URL, Transport: server.Transport,
+		Headers: headers, Tools: tools, ToolsListedAt: server.ToolsListedAt,
+	})
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return store.McpServer{}, store.ErrNotFound
+	case violates(err, mcpServerSlug):
+		return store.McpServer{}, store.ErrSlugTaken
+	case err != nil:
+		return store.McpServer{}, err
+	}
+	return mcpServerFrom(row)
+}
+
+func (s *records) McpServer(ctx context.Context, id uuid.UUID) (store.McpServer, error) {
+	row, err := s.queries.GetMcpServer(ctx, id)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return store.McpServer{}, store.ErrNotFound
+	case err != nil:
+		return store.McpServer{}, err
+	}
+	return mcpServerFrom(row)
+}
+
+func (s *records) McpServers(ctx context.Context, projectID uuid.UUID) ([]store.McpServer, error) {
+	rows, err := s.queries.ListMcpServers(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	servers := make([]store.McpServer, len(rows))
+	for i, row := range rows {
+		if servers[i], err = mcpServerFrom(row); err != nil {
+			return nil, err
+		}
+	}
+	return servers, nil
+}
+
+func (s *records) ReplaceMcpServer(ctx context.Context, server store.McpServer) (store.McpServer, error) {
+	headers, err := headersIn(server.Headers)
+	if err != nil {
+		return store.McpServer{}, err
+	}
+	tools, err := toolsIn(server.Tools, server.ToolsListedAt)
+	if err != nil {
+		return store.McpServer{}, err
+	}
+	row, err := s.queries.ReplaceMcpServer(ctx, db.ReplaceMcpServerParams{
+		ID: server.ID, Name: server.Name, Url: server.URL, Transport: server.Transport, Headers: headers, Tools: tools,
+		ToolsListedAt: server.ToolsListedAt,
+	})
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return store.McpServer{}, store.ErrNotFound
+	case err != nil:
+		return store.McpServer{}, err
+	}
+	return mcpServerFrom(row)
+}
+
+func (s *records) DeleteMcpServer(ctx context.Context, id uuid.UUID) error {
+	deleted, err := s.queries.DeleteMcpServer(ctx, id)
+	if err == nil && deleted == 0 {
+		return store.ErrNotFound
+	}
+	return err
+}
+
+func mcpServerFrom(row db.McpServer) (store.McpServer, error) {
+	headers, err := headersFrom(row.Headers)
+	if err != nil {
+		return store.McpServer{}, err
+	}
+	tools, err := toolsFrom(row.Tools)
+	if err != nil {
+		return store.McpServer{}, err
+	}
+	return store.McpServer{
+		ID: row.ID, ProjectID: row.ProjectID, Slug: row.Slug, Name: row.Name, URL: row.Url, Transport: row.Transport,
+		Headers: headers, Tools: tools, ToolsListedAt: row.ToolsListedAt, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+	}, nil
+}
+
 func (s *records) CreateSecretStore(ctx context.Context, secrets store.SecretStore) (store.SecretStore, error) {
 	row, err := s.queries.CreateSecretStore(ctx, db.CreateSecretStoreParams{
 		ID: secrets.ID, ProjectID: secrets.ProjectID, Name: secrets.Name, Kind: secrets.Kind,
@@ -1111,7 +1206,7 @@ func providerFrom(row db.Provider) (store.Provider, error) {
 	return provider, nil
 }
 
-// headersIn returns the headers of a provider as their column holds them:
+// headersIn returns the headers of an endpoint as their column holds them:
 // null if there are none.
 func headersIn(headers []store.Header) ([]byte, error) {
 	if len(headers) == 0 {
@@ -1120,16 +1215,40 @@ func headersIn(headers []store.Header) ([]byte, error) {
 	return json.Marshal(headers)
 }
 
-// headersFrom returns the headers that the column of a provider holds.
+// headersFrom returns the headers that the column of an endpoint holds.
 func headersFrom(column []byte) ([]store.Header, error) {
 	if column == nil {
 		return nil, nil
 	}
 	var headers []store.Header
 	if err := json.Unmarshal(column, &headers); err != nil {
-		return nil, fmt.Errorf("headers of a provider: %w", err)
+		return nil, fmt.Errorf("headers of an endpoint: %w", err)
 	}
 	return headers, nil
+}
+
+// toolsIn returns the tools of an MCP server as their column holds them:
+// null if the server has not listed them.
+func toolsIn(tools []store.Tool, listed *time.Time) ([]byte, error) {
+	if listed == nil {
+		return nil, nil
+	}
+	if tools == nil {
+		tools = []store.Tool{}
+	}
+	return json.Marshal(tools)
+}
+
+// toolsFrom returns the tools that the column of an MCP server holds.
+func toolsFrom(column []byte) ([]store.Tool, error) {
+	if column == nil {
+		return nil, nil
+	}
+	var tools []store.Tool
+	if err := json.Unmarshal(column, &tools); err != nil {
+		return nil, fmt.Errorf("tools of an MCP server: %w", err)
+	}
+	return tools, nil
 }
 
 func sessionFrom(row db.Session) store.Session {

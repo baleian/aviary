@@ -115,11 +115,7 @@ func (a *api) readProvider(w http.ResponseWriter, r *http.Request, id, projectID
 // during a turn. An existing provider keeps the secrets that it stores only
 // while its URL stays the same, so that they go to no other endpoint.
 func (a *api) providerAt(r *http.Request, id, projectID uuid.UUID, existing *store.Provider, address string, headers []headerField, key *secretField) (store.Provider, error) {
-	if err := endpoint(address); err != nil {
-		return store.Provider{}, err
-	}
-	headers, err := headersOf(headers, false)
-	if err != nil {
+	if err := endpoint(address, "set the endpoint's key in api_key"); err != nil {
 		return store.Provider{}, err
 	}
 	var had store.Provider
@@ -127,27 +123,45 @@ func (a *api) providerAt(r *http.Request, id, projectID uuid.UUID, existing *sto
 		had = *existing
 	}
 	keeps := existing != nil && existing.URL == address
-	read := store.Provider{ID: id, URL: address}
-	for i, given := range headers {
-		kept := store.Header{Name: given.Name, Value: given.Value}
-		if given.Secret != nil {
-			var before []byte
-			if at := slices.IndexFunc(had.Headers, func(other store.Header) bool { return other.Name == given.Name }); at >= 0 {
-				before = had.Headers[at].Sealed
-			}
-			where, place := fmt.Sprintf("headers[%d].secret", i), store.ProviderHeaderPlace(id, given.Name)
-			if kept.Sealed, kept.At, err = a.secretOf(r, projectID, where, place, *given.Secret, before, keeps); err != nil {
-				return store.Provider{}, err
-			}
-		}
-		read.Headers = append(read.Headers, kept)
+	kept, err := a.headersAt(r, projectID, headers, false, had.Headers, keeps, func(name string) string { return store.ProviderHeaderPlace(id, name) })
+	if err != nil {
+		return store.Provider{}, err
 	}
+	read := store.Provider{ID: id, URL: address, Headers: kept}
 	if key != nil {
 		if read.APIKey, read.APIKeyAt, err = a.secretOf(r, projectID, "api_key", store.ProviderKeyPlace(id), *key, had.APIKey, keeps); err != nil {
 			return store.Provider{}, err
 		}
 	}
 	return read, nil
+}
+
+// headersAt validates the headers of an endpoint, and returns them as they are
+// kept. authorization is as for headersOf. had are the headers that the
+// endpoint has, whose stored secrets the request can keep if keeps is true,
+// and place returns the place that the secret of a header is sealed for.
+func (a *api) headersAt(r *http.Request, projectID uuid.UUID, given []headerField, authorization bool, had []store.Header, keeps bool,
+	place func(name string) string) ([]store.Header, error) {
+	headers, err := headersOf(given, authorization)
+	if err != nil {
+		return nil, err
+	}
+	var kept []store.Header
+	for i, header := range headers {
+		keep := store.Header{Name: header.Name, Value: header.Value}
+		if header.Secret != nil {
+			var before []byte
+			if at := slices.IndexFunc(had, func(other store.Header) bool { return other.Name == header.Name }); at >= 0 {
+				before = had[at].Sealed
+			}
+			where := fmt.Sprintf("headers[%d].secret", i)
+			if keep.Sealed, keep.At, err = a.secretOf(r, projectID, where, place(header.Name), *header.Secret, before, keeps); err != nil {
+				return nil, err
+			}
+		}
+		kept = append(kept, keep)
+	}
+	return kept, nil
 }
 
 // secretOf returns a secret of a request as it is kept: sealed for the place,
@@ -266,14 +280,15 @@ func headersOf(given []headerField, authorization bool) ([]headerField, error) {
 	return headers, nil
 }
 
-// endpoint validates the base URL of a model provider.
-func endpoint(address string) error {
+// endpoint validates the base URL of an endpoint. secrets says where the
+// secrets of the endpoint go instead of the URL.
+func endpoint(address, secrets string) error {
 	parsed, err := url.Parse(address)
 	switch {
 	case err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "":
 		return invalid("url must be a URL that begins with http:// or https://")
 	case parsed.User != nil:
-		return invalid("url must not contain a user name or password; set the endpoint's key in api_key")
+		return invalid("url must not contain a user name or password; " + secrets)
 	case parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "":
 		return invalid("url must not have a query or fragment")
 	}

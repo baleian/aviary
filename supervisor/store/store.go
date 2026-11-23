@@ -204,6 +204,41 @@ type Header struct {
 	At *SecretReference `json:"at,omitempty"`
 }
 
+// Transports of MCP servers.
+const (
+	// TransportHTTP is the Streamable HTTP transport.
+	TransportHTTP = "http"
+	TransportSSE  = "sse"
+)
+
+// McpServer is an MCP server of a project, whose tools its agents can use.
+type McpServer struct {
+	ID        uuid.UUID `json:"id"`
+	ProjectID uuid.UUID `json:"project_id"`
+	// Slug names the server in the project, and its tools to a harness. It
+	// does not change.
+	Slug string `json:"slug"`
+	Name string `json:"name"`
+	URL  string `json:"url"`
+	// Transport is TransportHTTP or TransportSSE.
+	Transport string `json:"transport"`
+	// Headers are the headers that every request to the server carries.
+	Headers []Header `json:"headers,omitempty"`
+	// Tools are the tools that the server last listed, and ToolsListedAt is
+	// when. ToolsListedAt is nil if the server has not listed its tools.
+	Tools         []Tool     `json:"tools,omitempty"`
+	ToolsListedAt *time.Time `json:"tools_listed_at,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	// UpdatedAt is when the server was last replaced.
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// Tool is a tool that an MCP server lists.
+type Tool struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
 // SecretReference locates a value in a secret store of the project: the path
 // of a secret in the store and the key of the value within the secret.
 type SecretReference struct {
@@ -247,6 +282,12 @@ func ProviderKeyPlace(id uuid.UUID) string {
 // header is sealed for.
 func ProviderHeaderPlace(id uuid.UUID, name string) string {
 	return "providers/" + id.String() + "/headers/" + name
+}
+
+// McpServerHeaderPlace returns the place that the secret of an MCP server's
+// header is sealed for.
+func McpServerHeaderPlace(id uuid.UUID, name string) string {
+	return "mcp_servers/" + id.String() + "/headers/" + name
 }
 
 // Turn is a message to a session and the work that the agent does in reply.
@@ -571,6 +612,26 @@ type Store interface {
 	// provider with the same ID; a provider given no headers or no key has
 	// none afterwards. It returns ErrNotFound if there is no such provider.
 	ReplaceProvider(ctx context.Context, provider Provider) (Provider, error)
+
+	// CreateMcpServer creates the MCP server with the ID that it is given,
+	// since the secrets of its headers are sealed for that ID. It returns
+	// ErrNotFound if the project does not exist, and ErrSlugTaken if another
+	// server of the project has its slug.
+	CreateMcpServer(ctx context.Context, server McpServer) (McpServer, error)
+
+	McpServer(ctx context.Context, id uuid.UUID) (McpServer, error)
+
+	// McpServers returns the MCP servers of the project in creation order.
+	McpServers(ctx context.Context, projectID uuid.UUID) ([]McpServer, error)
+
+	// ReplaceMcpServer replaces the name, URL, transport, headers and tools
+	// of the MCP server with the same ID. It returns ErrNotFound if there is
+	// no such server.
+	ReplaceMcpServer(ctx context.Context, server McpServer) (McpServer, error)
+
+	// DeleteMcpServer deletes the MCP server. It returns ErrNotFound if there
+	// is no such server.
+	DeleteMcpServer(ctx context.Context, id uuid.UUID) error
 
 	// CreateSecretStore creates the secret store with the ID that it is
 	// given, since its credential is sealed for that ID. It returns

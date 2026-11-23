@@ -95,6 +95,30 @@ create table providers (
     updated_at timestamptz not null default now()
 );
 
+-- MCP servers: the MCP servers of a project, whose tools its agents use.
+create table mcp_servers (
+    id uuid primary key,
+    project_id uuid not null references projects (id),
+    -- Names the server in the project, and its tools to a harness. It does
+    -- not change.
+    slug text not null,
+    name text not null default '',
+    url text not null,
+    -- 'http' for Streamable HTTP, or 'sse'.
+    transport text not null,
+    -- The headers that the requests to the server carry, as those of a
+    -- provider are kept, with a secret encrypted for the server.
+    headers jsonb,
+    -- The tools that the server last listed, as a JSON array of {"name":
+    -- "...", "description": "..."}, and when. Both are null if it has not
+    -- listed them.
+    tools jsonb,
+    tools_listed_at timestamptz,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    constraint mcp_servers_project_slug unique (project_id, slug)
+);
+
 create table agents (
     id uuid primary key,
     project_id uuid not null references projects (id),
@@ -229,6 +253,7 @@ drop table turn_items;
 drop table turns;
 drop table sessions;
 drop table agents;
+drop table mcp_servers;
 drop table providers;
 drop table secret_stores;
 drop table project_members;

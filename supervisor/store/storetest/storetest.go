@@ -120,6 +120,7 @@ func Run(t *testing.T, create func(t *testing.T) Database) {
 		"SecretStores":                         suite.testSecretStores,
 		"ListSecretStores":                     suite.testListSecretStores,
 		"ProviderKeyInSecretStore":             suite.testProviderKeyInSecretStore,
+		"McpServers":                           suite.testMcpServers,
 		"AgentModel":                           suite.testAgentModel,
 		"CreateTurn":                           suite.testCreateTurn,
 		"ConcurrentCreateTurn":                 suite.testConcurrentCreateTurn,

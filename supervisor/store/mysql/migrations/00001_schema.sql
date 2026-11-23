@@ -107,6 +107,31 @@ create table providers (
     foreign key (api_key_store_id) references secret_stores (id)
 );
 
+-- MCP servers: the MCP servers of a project, whose tools its agents use.
+create table mcp_servers (
+    id binary(16) primary key,
+    project_id binary(16) not null,
+    -- Names the server in the project, and its tools to a harness. It does
+    -- not change.
+    slug varchar(63) character set utf8mb4 collate utf8mb4_bin not null,
+    name mediumtext not null default (''),
+    url mediumtext not null,
+    -- 'http' for Streamable HTTP, or 'sse'.
+    transport varchar(16) not null,
+    -- The headers that the requests to the server carry, as those of a
+    -- provider are kept, with a secret encrypted for the server.
+    headers json,
+    -- The tools that the server last listed, as a JSON array of {"name":
+    -- "...", "description": "..."}, and when. Both are null if it has not
+    -- listed them.
+    tools json,
+    tools_listed_at datetime(6),
+    created_at datetime(6) not null default (now(6)),
+    updated_at datetime(6) not null default (now(6)),
+    unique key mcp_servers_project_slug (project_id, slug),
+    foreign key (project_id) references projects (id)
+);
+
 create table agents (
     id binary(16) primary key,
     project_id binary(16) not null,
@@ -256,6 +281,7 @@ drop table turn_items;
 drop table turns;
 drop table sessions;
 drop table agents;
+drop table mcp_servers;
 drop table providers;
 drop table secret_stores;
 drop table project_members;

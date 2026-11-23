@@ -170,6 +170,11 @@ func (a *api) ofProvider(r *http.Request, id uuid.UUID) (uuid.UUID, error) {
 	return provider.ProjectID, err
 }
 
+func (a *api) ofMcpServer(r *http.Request, id uuid.UUID) (uuid.UUID, error) {
+	server, err := a.store.McpServer(r.Context(), id)
+	return server.ProjectID, err
+}
+
 func (a *api) ofSecretStore(r *http.Request, id uuid.UUID) (uuid.UUID, error) {
 	secrets, err := a.store.SecretStore(r.Context(), id)
 	return secrets.ProjectID, err

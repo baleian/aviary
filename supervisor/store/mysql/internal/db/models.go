@@ -39,6 +39,20 @@ type Approval struct {
 	ResolvedAt  *time.Time
 }
 
+type McpServer struct {
+	ID            key.ID
+	ProjectID     key.ID
+	Slug          string
+	Name          string
+	Url           string
+	Transport     string
+	Headers       *json.RawMessage
+	Tools         *json.RawMessage
+	ToolsListedAt *time.Time
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
 type Project struct {
 	ID        key.ID
 	Slug      string

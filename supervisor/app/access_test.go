@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -31,6 +32,20 @@ func (s *supervisor) answered(token, method, path, body string) int {
 	return response.StatusCode
 }
 
+// outcome returns how a request was answered: p if it passed, with neither 403
+// nor 404, f if it was forbidden, h if it was not found, and ! if it failed.
+func outcome(status int) byte {
+	switch {
+	case status == http.StatusForbidden:
+		return 'f'
+	case status == http.StatusNotFound:
+		return 'h'
+	case status == http.StatusUnauthorized || status >= 500:
+		return '!'
+	}
+	return 'p'
+}
+
 // The session and the turn belong to the member with the user role.
 func TestWhoMayDoWhat(t *testing.T) {
 	installation := install(t)
@@ -57,6 +72,9 @@ func TestWhoMayDoWhat(t *testing.T) {
 	agent := s.agent(project, `{"harness": "opencode"}`)
 	models := s.create("/v1/projects/"+project+"/providers", `{"name": "another", "url": "https://api.example.com/v1", "api_key": {"value": "sk-a-key"}}`)
 	secrets := s.create("/v1/projects/"+project+"/secret-stores", scriptedStore("a store", "https://"+storeHost, "a-credential", "a-credential"))
+	servers := "/v1/projects/" + project + "/mcp-servers"
+	tools := s.create(servers, `{"slug": "a-server", "url": "https://mcp.example.com/mcp", "transport": "http"}`)
+	admin := *s
 	s.token = "user"
 	session := s.create("/v1/agents/"+agent+"/sessions", "")
 	turn := s.send(session, "hello").ID
@@ -106,6 +124,10 @@ func TestWhoMayDoWhat(t *testing.T) {
 		{"GET", "/v1/projects/" + project + "/secret-stores", ``, everyMember},
 		{"GET", "/v1/secret-stores/" + secrets, ``, everyMember},
 		{"PUT", "/v1/secret-stores/" + secrets, `{}`, connections},
+		{"POST", servers, `{}`, connections},
+		{"GET", servers, ``, everyMember},
+		{"GET", "/v1/mcp-servers/" + tools, ``, everyMember},
+		{"PUT", "/v1/mcp-servers/" + tools, `{}`, connections},
 		{"POST", "/v1/agents/" + agent + "/sessions", ``, "ppppffpffh"},
 		// Every member gets the sessions that they may read, possibly none.
 		{"GET", "/v1/agents/" + agent + "/sessions", ``, everyMember},
@@ -124,15 +146,16 @@ func TestWhoMayDoWhat(t *testing.T) {
 	} {
 		for i, caller := range callers {
 			status := s.answered(caller, row.method, row.path, row.body)
-			answered := map[int]byte{http.StatusForbidden: 'f', http.StatusNotFound: 'h'}[status]
-			if status == http.StatusUnauthorized || status >= 500 {
-				answered = '!'
-			} else if answered == 0 {
-				answered = 'p'
-			}
-			if answered != row.may[i] {
+			if answered := outcome(status); answered != row.may[i] {
 				t.Errorf("%s: %s %s = %d (%c), want %c", caller, row.method, row.path, status, answered, row.may[i])
 			}
+		}
+	}
+	// Each caller tries to delete an MCP server of its own.
+	for i, caller := range callers {
+		path := "/v1/mcp-servers/" + admin.create(servers, fmt.Sprintf(`{"slug": "server-%d", "url": "https://mcp.example.com/mcp", "transport": "http"}`, i))
+		if status := s.answered(caller, "DELETE", path, ``); outcome(status) != connections[i] {
+			t.Errorf("%s: DELETE %s = %d, want %c", caller, path, status, connections[i])
 		}
 	}
 

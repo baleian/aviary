@@ -144,9 +144,9 @@ func TestLists(t *testing.T) {
 	}
 }
 
-// The model providers and the secret stores of a project are listed to every
-// member, in the order in which they were created and as they are read: with
-// neither the key nor the credential.
+// The model providers, the MCP servers and the secret stores of a project are
+// listed to every member, in the order in which they were created and as they
+// are read: without their secrets.
 func TestListsOfConnections(t *testing.T) {
 	aviary := install(t)
 	provider := tokens{"admin": {Subject: "admin", Groups: []string{"platform"}}}
@@ -173,6 +173,11 @@ func TestListsOfConnections(t *testing.T) {
 	located := s.create(providers(project), keyed(in(first, "llm/model", "api_key")))
 	keyless := s.create(providers(project), `{"name": "keyless", "url": "http://10.0.0.5:8000/v1"}`)
 	theirs := s.create(providers(other), keyed(`{"value": "`+key+`"}`))
+	servers := func(project string) string { return "/v1/projects/" + project + "/mcp-servers" }
+	tracker := s.create(servers(project), `{"slug": "tracker", "url": "https://tracker.example.com/mcp", "transport": "http",
+		"headers": [{"name": "authorization", "secret": {"value": "`+key+`"}}]}`)
+	docs := s.create(servers(project), `{"slug": "docs", "url": "https://docs.example.com/sse", "transport": "sse"}`)
+	theirServer := s.create(servers(other), `{"slug": "tracker", "url": "https://tracker.example.com/mcp", "transport": "http"}`)
 
 	type resources = []map[string]any
 	// list returns the resources under name at path, and fails the test if
@@ -207,6 +212,10 @@ func TestListsOfConnections(t *testing.T) {
 		{"admin", stores(project), "secret_stores", "/v1/secret-stores/", []string{first, second}},
 		{"admin", stores(other), "secret_stores", "/v1/secret-stores/", []string{theirStore}},
 		{"admin", stores(empty), "secret_stores", "/v1/secret-stores/", []string{}},
+		{"viewer", servers(project), "mcp_servers", "/v1/mcp-servers/", []string{tracker, docs}},
+		{"admin", servers(project), "mcp_servers", "/v1/mcp-servers/", []string{tracker, docs}},
+		{"admin", servers(other), "mcp_servers", "/v1/mcp-servers/", []string{theirServer}},
+		{"admin", servers(empty), "mcp_servers", "/v1/mcp-servers/", []string{}},
 	} {
 		ids := []string{}
 		for _, resource := range list(listed.caller, listed.path, listed.name) {
@@ -244,10 +253,13 @@ func TestListsOfConnections(t *testing.T) {
 	for _, refused := range []struct{ caller, path string }{
 		{"stranger", providers(project)},
 		{"stranger", stores(project)},
+		{"stranger", servers(project)},
 		{"viewer", providers(other)},
 		{"viewer", stores(other)},
+		{"viewer", servers(other)},
 		{"admin", providers(none)},
 		{"admin", stores(none)},
+		{"admin", servers(none)},
 	} {
 		if status, _ := as(refused.caller).request("GET", refused.path, "", nil); status != http.StatusNotFound {
 			t.Errorf("GET %s as %s: status %d, want 404", refused.path, refused.caller, status)

@@ -133,6 +133,28 @@ update providers set name = @name, url = @url, headers = sqlc.narg(headers), api
 where id = @id
 returning *;
 
+-- name: CreateMcpServer :one
+insert into mcp_servers (id, project_id, slug, name, url, transport, headers, tools, tools_listed_at)
+select @id::uuid, projects.id, @slug::text, @name::text, @url::text, @transport::text, sqlc.narg(headers)::jsonb,
+       sqlc.narg(tools)::jsonb, sqlc.narg(tools_listed_at)::timestamptz
+from projects where projects.id = @project_id
+returning *;
+
+-- name: GetMcpServer :one
+select * from mcp_servers where id = @id;
+
+-- name: ListMcpServers :many
+select * from mcp_servers where project_id = @project_id order by created_at, id;
+
+-- name: ReplaceMcpServer :one
+update mcp_servers set name = @name, url = @url, transport = @transport, headers = sqlc.narg(headers),
+       tools = sqlc.narg(tools), tools_listed_at = sqlc.narg(tools_listed_at), updated_at = now()
+where id = @id
+returning *;
+
+-- name: DeleteMcpServer :execrows
+delete from mcp_servers where id = @id;
+
 -- name: CreateSecretStore :one
 insert into secret_stores (id, project_id, name, kind, settings, credential)
 select @id::uuid, projects.id, @name::text, @kind::text, @settings::jsonb, @credential::bytea

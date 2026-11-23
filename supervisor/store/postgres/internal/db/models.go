@@ -38,6 +38,20 @@ type Approval struct {
 	ResolvedAt  *time.Time
 }
 
+type McpServer struct {
+	ID            uuid.UUID
+	ProjectID     uuid.UUID
+	Slug          string
+	Name          string
+	Url           string
+	Transport     string
+	Headers       []byte
+	Tools         []byte
+	ToolsListedAt *time.Time
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
 type Project struct {
 	ID        uuid.UUID
 	Slug      string

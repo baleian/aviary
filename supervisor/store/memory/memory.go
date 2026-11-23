@@ -39,6 +39,7 @@ type Store struct {
 	agents       map[uuid.UUID]store.Agent
 	sessions     map[uuid.UUID]*session
 	providers    map[uuid.UUID]store.Provider
+	mcpServers   map[uuid.UUID]store.McpServer
 	secretStores map[uuid.UUID]store.SecretStore
 	turns        map[uuid.UUID]*turn
 	// created holds the turns in creation order.
@@ -87,6 +88,7 @@ func New() *Store {
 		agents:       map[uuid.UUID]store.Agent{},
 		sessions:     map[uuid.UUID]*session{},
 		providers:    map[uuid.UUID]store.Provider{},
+		mcpServers:   map[uuid.UUID]store.McpServer{},
 		secretStores: map[uuid.UUID]store.SecretStore{},
 		turns:        map[uuid.UUID]*turn{},
 	}
@@ -164,21 +166,26 @@ func providerOf(provider store.Provider) store.Provider {
 	return provider
 }
 
-// headersOf copies the headers of a provider. Without headers they are nil,
-// not empty.
+// headersOf copies the headers of an endpoint. Without headers they are
+// nil, not empty.
 func headersOf(headers []store.Header) []store.Header {
 	if len(headers) == 0 {
 		return nil
 	}
 	headers = slices.Clone(headers)
 	for i, header := range headers {
-		headers[i].Sealed = bytes.Clone(header.Sealed)
-		if header.At != nil {
-			at := *header.At
-			headers[i].At = &at
-		}
+		headers[i].Sealed, headers[i].At = bytes.Clone(header.Sealed), clone(header.At)
 	}
 	return headers
+}
+
+func mcpServerOf(server store.McpServer) store.McpServer {
+	server.Headers = headersOf(server.Headers)
+	server.Tools, server.ToolsListedAt = slices.Clone(server.Tools), clone(server.ToolsListedAt)
+	if server.ToolsListedAt == nil {
+		server.Tools = nil
+	}
+	return server
 }
 
 func secretStoreOf(secrets store.SecretStore) store.SecretStore {
@@ -806,6 +813,87 @@ func (s *Store) ReplaceProvider(ctx context.Context, provider store.Provider) (s
 	replaced.UpdatedAt = s.now()
 	s.providers[replaced.ID] = replaced
 	return providerOf(replaced), nil
+}
+
+func (s *Store) CreateMcpServer(ctx context.Context, server store.McpServer) (store.McpServer, error) {
+	if err := s.begin(ctx); err != nil {
+		return store.McpServer{}, err
+	}
+	defer s.mu.Unlock()
+	if _, found := s.projects[server.ProjectID]; !found {
+		return store.McpServer{}, store.ErrNotFound
+	}
+	if _, found := s.mcpServers[server.ID]; found {
+		return store.McpServer{}, fmt.Errorf("MCP server %s already exists", server.ID)
+	}
+	for _, other := range s.mcpServers {
+		if other.ProjectID == server.ProjectID && other.Slug == server.Slug {
+			return store.McpServer{}, store.ErrSlugTaken
+		}
+	}
+	created := mcpServerOf(server)
+	created.CreatedAt = s.now()
+	created.UpdatedAt = created.CreatedAt
+	s.mcpServers[created.ID] = created
+	return mcpServerOf(created), nil
+}
+
+func (s *Store) McpServer(ctx context.Context, id uuid.UUID) (store.McpServer, error) {
+	if err := s.begin(ctx); err != nil {
+		return store.McpServer{}, err
+	}
+	defer s.mu.Unlock()
+	server, found := s.mcpServers[id]
+	if !found {
+		return store.McpServer{}, store.ErrNotFound
+	}
+	return mcpServerOf(server), nil
+}
+
+func (s *Store) McpServers(ctx context.Context, projectID uuid.UUID) ([]store.McpServer, error) {
+	if err := s.begin(ctx); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+	servers := []store.McpServer{}
+	for _, server := range s.mcpServers {
+		if server.ProjectID == projectID {
+			servers = append(servers, mcpServerOf(server))
+		}
+	}
+	slices.SortFunc(servers, func(one, other store.McpServer) int {
+		return cmp.Or(one.CreatedAt.Compare(other.CreatedAt), bytes.Compare(one.ID[:], other.ID[:]))
+	})
+	return servers, nil
+}
+
+func (s *Store) ReplaceMcpServer(ctx context.Context, server store.McpServer) (store.McpServer, error) {
+	if err := s.begin(ctx); err != nil {
+		return store.McpServer{}, err
+	}
+	defer s.mu.Unlock()
+	replaced, found := s.mcpServers[server.ID]
+	if !found {
+		return store.McpServer{}, store.ErrNotFound
+	}
+	given := mcpServerOf(server)
+	replaced.Name, replaced.URL, replaced.Transport, replaced.Headers = given.Name, given.URL, given.Transport, given.Headers
+	replaced.Tools, replaced.ToolsListedAt = given.Tools, given.ToolsListedAt
+	replaced.UpdatedAt = s.now()
+	s.mcpServers[replaced.ID] = replaced
+	return mcpServerOf(replaced), nil
+}
+
+func (s *Store) DeleteMcpServer(ctx context.Context, id uuid.UUID) error {
+	if err := s.begin(ctx); err != nil {
+		return err
+	}
+	defer s.mu.Unlock()
+	if _, found := s.mcpServers[id]; !found {
+		return store.ErrNotFound
+	}
+	delete(s.mcpServers, id)
+	return nil
 }
 
 func (s *Store) CreateSecretStore(ctx context.Context, secrets store.SecretStore) (store.SecretStore, error) {

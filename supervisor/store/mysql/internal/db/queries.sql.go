@@ -285,6 +285,43 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (int64
 	return result.RowsAffected()
 }
 
+const createMcpServer = `-- name: CreateMcpServer :execrows
+insert into mcp_servers (id, project_id, slug, name, url, transport, headers, tools, tools_listed_at)
+select ?, projects.id, ?, ?, ?, ?, ?,
+       ?, ?
+from projects where projects.id = ?
+`
+
+type CreateMcpServerParams struct {
+	ID            key.ID
+	Slug          string
+	Name          string
+	Url           string
+	Transport     string
+	Headers       *json.RawMessage
+	Tools         *json.RawMessage
+	ToolsListedAt *time.Time
+	ProjectID     key.ID
+}
+
+func (q *Queries) CreateMcpServer(ctx context.Context, arg CreateMcpServerParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, createMcpServer,
+		arg.ID,
+		arg.Slug,
+		arg.Name,
+		arg.Url,
+		arg.Transport,
+		arg.Headers,
+		arg.Tools,
+		arg.ToolsListedAt,
+		arg.ProjectID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const createProject = `-- name: CreateProject :exec
 insert into projects (id, slug, name) values (?, ?, ?)
 `
@@ -444,6 +481,18 @@ update agents set deleted_at = now(6) where id = ?
 func (q *Queries) DeleteAgent(ctx context.Context, id key.ID) error {
 	_, err := q.db.ExecContext(ctx, deleteAgent, id)
 	return err
+}
+
+const deleteMcpServer = `-- name: DeleteMcpServer :execrows
+delete from mcp_servers where id = ?
+`
+
+func (q *Queries) DeleteMcpServer(ctx context.Context, id key.ID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteMcpServer, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const dispatchTurn = `-- name: DispatchTurn :execrows
@@ -698,6 +747,29 @@ func (q *Queries) GetApproval(ctx context.Context, arg GetApprovalParams) (Appro
 		&i.AnsweredBy,
 		&i.Outcome,
 		&i.ResolvedAt,
+	)
+	return i, err
+}
+
+const getMcpServer = `-- name: GetMcpServer :one
+select id, project_id, slug, name, url, transport, headers, tools, tools_listed_at, created_at, updated_at from mcp_servers where id = ?
+`
+
+func (q *Queries) GetMcpServer(ctx context.Context, id key.ID) (McpServer, error) {
+	row := q.db.QueryRowContext(ctx, getMcpServer, id)
+	var i McpServer
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Slug,
+		&i.Name,
+		&i.Url,
+		&i.Transport,
+		&i.Headers,
+		&i.Tools,
+		&i.ToolsListedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -1056,6 +1128,45 @@ func (q *Queries) ListLastTurns(ctx context.Context, sessionIds []key.ID) ([]Tur
 			&i.ThoughtTokens,
 			&i.CachedReadTokens,
 			&i.CachedWriteTokens,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMcpServers = `-- name: ListMcpServers :many
+select id, project_id, slug, name, url, transport, headers, tools, tools_listed_at, created_at, updated_at from mcp_servers where project_id = ? order by created_at, id
+`
+
+func (q *Queries) ListMcpServers(ctx context.Context, projectID key.ID) ([]McpServer, error) {
+	rows, err := q.db.QueryContext(ctx, listMcpServers, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []McpServer
+	for rows.Next() {
+		var i McpServer
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Slug,
+			&i.Name,
+			&i.Url,
+			&i.Transport,
+			&i.Headers,
+			&i.Tools,
+			&i.ToolsListedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1962,6 +2073,39 @@ func (q *Queries) ReplaceAgent(ctx context.Context, arg ReplaceAgentParams) (int
 		arg.Approval,
 		arg.ProviderID,
 		arg.Model,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const replaceMcpServer = `-- name: ReplaceMcpServer :execrows
+update mcp_servers set name = ?, url = ?, transport = ?,
+       headers = ?, tools = ?, tools_listed_at = ?,
+       updated_at = now(6)
+where id = ?
+`
+
+type ReplaceMcpServerParams struct {
+	Name          string
+	Url           string
+	Transport     string
+	Headers       *json.RawMessage
+	Tools         *json.RawMessage
+	ToolsListedAt *time.Time
+	ID            key.ID
+}
+
+func (q *Queries) ReplaceMcpServer(ctx context.Context, arg ReplaceMcpServerParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, replaceMcpServer,
+		arg.Name,
+		arg.Url,
+		arg.Transport,
+		arg.Headers,
+		arg.Tools,
+		arg.ToolsListedAt,
 		arg.ID,
 	)
 	if err != nil {

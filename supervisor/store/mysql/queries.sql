@@ -122,6 +122,27 @@ update providers set name = sqlc.arg(name), url = sqlc.arg(url), headers = sqlc.
        api_key_name = sqlc.arg(api_key_name), updated_at = now(6)
 where id = sqlc.arg(id);
 
+-- name: CreateMcpServer :execrows
+insert into mcp_servers (id, project_id, slug, name, url, transport, headers, tools, tools_listed_at)
+select sqlc.arg(id), projects.id, sqlc.arg(slug), sqlc.arg(name), sqlc.arg(url), sqlc.arg(transport), sqlc.narg(headers),
+       sqlc.narg(tools), sqlc.narg(tools_listed_at)
+from projects where projects.id = sqlc.arg(project_id);
+
+-- name: GetMcpServer :one
+select * from mcp_servers where id = ?;
+
+-- name: ListMcpServers :many
+select * from mcp_servers where project_id = ? order by created_at, id;
+
+-- name: ReplaceMcpServer :execrows
+update mcp_servers set name = sqlc.arg(name), url = sqlc.arg(url), transport = sqlc.arg(transport),
+       headers = sqlc.narg(headers), tools = sqlc.narg(tools), tools_listed_at = sqlc.narg(tools_listed_at),
+       updated_at = now(6)
+where id = sqlc.arg(id);
+
+-- name: DeleteMcpServer :execrows
+delete from mcp_servers where id = ?;
+
 -- name: CreateSecretStore :execrows
 insert into secret_stores (id, project_id, name, kind, settings, credential)
 select sqlc.arg(id), projects.id, sqlc.arg(name), sqlc.arg(kind), sqlc.arg(settings), sqlc.arg(credential)

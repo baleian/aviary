@@ -12,14 +12,15 @@ import (
 
 // Permissions of project members. A role is a set of them.
 const (
-	// projectView allows reading the project and its agents, model providers
-	// and secret stores, without secrets. Every member has it.
+	// projectView allows reading the project and its agents, model
+	// providers, MCP servers and secret stores, without secrets. Every member
+	// has it.
 	projectView = "project.view"
 	// agentsManage allows creating and replacing agents and, together with
 	// sessionsControlAll, deleting them.
 	agentsManage = "agents.manage"
-	// connectionsManage allows registering and replacing model providers and
-	// secret stores.
+	// connectionsManage allows registering and replacing model providers, MCP
+	// servers and secret stores, and deleting MCP servers.
 	connectionsManage = "connections.manage"
 	// sessionsRun allows creating sessions, and in one's own sessions
 	// sending messages, cancelling turns, answering approval requests,

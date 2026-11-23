@@ -195,12 +195,13 @@ and a request that needs a permission that the caller lacks returns 403.
 Administrators may do everything. Without an identity provider, requests are
 not authenticated, and every caller is an administrator.
 
-Paths name a project or an agent by its ID. Each also has a slug, chosen
-when it is created: 1 to 63 lowercase letters, digits and hyphens, beginning
-with a letter and not ending with a hyphen. A project's slug is unique in the
-installation, and an agent's slug is unique in its project. Slugs cannot be
-changed. The name of a project or an agent is optional and only for display;
-a client shows the slug when the name is empty.
+Paths name a project, an agent or an MCP server by its ID. Each also has a
+slug, chosen when it is created: 1 to 63 lowercase letters, digits and
+hyphens, beginning with a letter and not ending with a hyphen. A project's
+slug is unique in the installation, and the slug of an agent or an MCP
+server is unique in its project. Slugs cannot be changed. The name of each
+is optional and only for display; a client shows the slug when the name is
+empty.
 
 | Request | Description |
 | --- | --- |
@@ -209,6 +210,9 @@ a client shows the slug when the name is empty.
 | `PUT /v1/providers/{id}` | Replaces the name, the URL, the headers and the key of a provider together: a provider given no headers or no key has none afterwards. While the URL stays the same, `{"stored": true}` in place of a secret keeps the one that is stored. |
 | `POST /v1/projects/{id}/providers/models` | Lists the models of a model endpoint that need not be registered. Body: the `url`, the `headers` and the `api_key` of a provider, which is not stored, and the `provider` that it would replace, if there is one: `{"stored": true}` then keeps a secret of that provider as `PUT` would. Aviary asks the endpoint for its models, `GET models` under the URL, with the headers and the key and through the Egress Proxy, as the model requests of a turn go. Returns `{"reached": true, "status": 200, "models": ["..."], "duration_ms": 12}`: the status of the endpoint's answer, and the IDs of its models if the answer is a list of models as the OpenAI API gives it. An endpoint that did not answer returns `{"reached": false, "reason": "...", "duration_ms": 5003}`. |
 | `GET /v1/providers/{id}/models` | Lists the models of a provider in the same way, with the URL, the headers and the key that it has. |
+| `POST /v1/projects/{id}/mcp-servers` | Registers an MCP server of the project. Body: `{"slug": "...", "name": "...", "url": "...", "transport": "http"}`, or `"transport": "sse"` for a server that is reached by SSE. Returns 409 if another server of the project has the slug. A server that needs headers is given them as a provider is, `authorization` among them. See [MCP servers](#mcp-servers). |
+| `PUT /v1/mcp-servers/{id}` | Replaces all of an MCP server but its slug. While the URL stays the same, `{"stored": true}` in place of a secret keeps the one that is stored. |
+| `DELETE /v1/mcp-servers/{id}` | Deletes an MCP server. |
 | `POST /v1/projects/{id}/secret-stores` | Registers a secret store of the project. Body: `{"name": "...", "kind": "...", "settings": {...}, "credential": {"value": "..."}}`. See [Secret stores](#secret-stores). |
 | `PUT /v1/secret-stores/{id}` | Replaces the name, the kind, the settings and the credential of a secret store together. |
 | `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"slug": "...", "name": "...", "description": "...", "harness": "...", "model": {"provider": "...", "name": "..."}, "instructions": "...", "approval": "ask"}`. The optional description says what the agent is for, and like the name is only for display. The harness is one of those that `GET /v1/harnesses` lists. The model is a provider of the project, by ID, and the provider's name for the model. The optional instructions are given to the agent before every turn. With `"approval": "ask"`, the agent asks a person before it acts (see [Approval](#approval)); without it, it asks nobody. Returns 409 if another agent of the project has the slug. |
@@ -540,12 +544,25 @@ agent's provider, for the agent's model.
   that stands in for it. The proxy then connects to that host, on the port
   of the provider's URL.
 
+### MCP servers
+
+A project registers MCP servers by their URL.
+
+- **A server is reached by Streamable HTTP or by SSE.** A server that runs
+  as a process of its own, over stdio, cannot be registered.
+- **Its slug names it to a harness**, which names the server's tools after
+  it, and so it does not change.
+- **Its headers are as those of a provider**, and `authorization` is one of
+  them, since a server takes its token there. A value that is a secret is
+  stored or kept in a secret store, and stays while the URL does. A header
+  of MCP itself, such as `mcp-session-id`, cannot be one of them.
+
 ### Secret stores
 
 A project that keeps its secrets in a store of its own can register the
 store, and then give the location of a secret in the store instead of the
-secret itself. The key of a model provider, and the secret of one of its
-headers, are such secrets.
+secret itself. The key of a model provider, and the secret of a header of a
+provider or an MCP server, are such secrets.
 
 ```sh
 store=$(curl -s -X POST localhost:8080/v1/projects/$project/secret-stores \
