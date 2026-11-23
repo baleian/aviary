@@ -4,6 +4,8 @@
 //!   say <text>         says the text, a word at a time
 //!   drawl <text>       says the text slowly, leaving time to cancel the turn
 //!   think <text>       sends the text as a thought
+//!   notice <text>      sends the text as a notice, or says it if the client
+//!                      does not take notices
 //!   tool <command>     calls a tool, then reports the call completed
 //!   big <bytes>        calls a tool that returns that many bytes
 //!   flood <n> <bytes>  says n chunks of that many bytes each
@@ -59,6 +61,7 @@ fn main() {
         deaf: false,
         calls: 0,
         leaving: false,
+        notices: false,
     };
     // Ends when the runner closes standard input.
     while let Ok(message) = harness.incoming.recv() {
@@ -75,6 +78,8 @@ struct Harness {
     calls: u32,
     /// Exits after answering the current prompt.
     leaving: bool,
+    /// Whether the client takes notices.
+    notices: bool,
 }
 
 enum Ending {
@@ -118,6 +123,7 @@ impl Harness {
         match message["method"].as_str() {
             Some("initialize") => {
                 thread::sleep(pause("FAKE_HARNESS_START_MS"));
+                self.notices = params["clientCapabilities"]["session"]["notices"].is_object();
                 answer(
                     id,
                     json!({"protocolVersion": params["protocolVersion"], "agentCapabilities": {}}),
@@ -235,6 +241,11 @@ impl Harness {
                     session,
                     json!({"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": rest}}),
                 ),
+                "notice" if self.notices => self.update(
+                    session,
+                    json!({"sessionUpdate": "notice", "severity": "warning", "title": rest}),
+                ),
+                "notice" => self.say(session, rest),
                 "tool" | "big" => {
                     self.calls += 1;
                     let call = format!("call-{}", self.calls);

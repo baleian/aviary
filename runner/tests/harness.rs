@@ -901,6 +901,20 @@ async fn long_answer_is_complete() {
     .await;
 }
 
+/// A harness may tell more than what the model said, such as a warning that
+/// it does not know the model, but not in the agent's message.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the harness images"]
+async fn message_is_what_the_model_said() {
+    each(|bench| async move {
+        let session = bench.session().await;
+        let turn = session.say("say Just this.").await;
+        let said = said(&turn.completed().events);
+        assert_eq!(said, "Just this.", "{}: the agent's message", turn.image);
+    })
+    .await;
+}
+
 /// A tool can return any byte. U+0000 is the character that some storage
 /// downstream cannot hold, and the runner reports it unchanged, in the tool
 /// call or in the agent's message.

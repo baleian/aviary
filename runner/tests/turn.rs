@@ -85,6 +85,15 @@ async fn session_title_of_the_harness_is_reported() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn notices_of_the_harness_are_not_in_the_turn() {
+    let home = Home::new();
+    let runner = start(runner(&home)).await;
+    let events = runner.run("t1", "notice Unknown model ; say done").await;
+    assert_eq!(names(&events), ["started", "message.delta", "finished"]);
+    assert_eq!(said(&events), "done");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn harness_is_reused_across_turns() {
     let home = Home::new();
     let runner = start(runner(&home)).await;

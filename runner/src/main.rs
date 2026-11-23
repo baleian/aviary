@@ -33,10 +33,11 @@ use std::sync::{Arc, Mutex};
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
-    CancelNotification, ContentBlock, ContentChunk, InitializeRequest, NewSessionRequest,
-    PermissionOptionKind, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, ResumeSessionRequest, SelectedPermissionOutcome, SessionId,
-    SessionNotification, SessionUpdate, TextContent, ToolCallUpdate,
+    CancelNotification, ClientCapabilities, ClientSessionCapabilities, ContentBlock, ContentChunk,
+    InitializeRequest, NewSessionRequest, NoticeCapabilities, PermissionOptionKind, PromptRequest,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    ResumeSessionRequest, SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate,
+    TextContent, ToolCallUpdate,
 };
 use agent_client_protocol::{AcpAgent, Agent, ByteStreams, Client, Responder, V1};
 use axum::extract::connect_info::Connected;
@@ -492,8 +493,26 @@ async fn run_harness(
             {
                 let runner = runner.clone();
                 async move |notification: SessionNotification, _| {
-                    if let Some((name, data)) = event(notification.update, longest) {
-                        runner.emit(name, &data);
+                    match notification.update {
+                        // Live information from the harness, such as a
+                        // warning about the model. It is not something the
+                        // agent does in the turn.
+                        SessionUpdate::Notice(notice) => {
+                            let description = notice
+                                .description
+                                .map(|description| format!(": {description}"))
+                                .unwrap_or_default();
+                            eprintln!(
+                                "harness {}: {}{description}",
+                                name(&notice.severity),
+                                notice.title
+                            );
+                        }
+                        update => {
+                            if let Some((name, data)) = event(update, longest) {
+                                runner.emit(name, &data);
+                            }
+                        }
                     }
                     Ok(())
                 }
@@ -513,8 +532,14 @@ async fn run_harness(
             agent_client_protocol::on_receive_request!(),
         )
         .connect_with(harness, async |harness: ConnectionTo<Agent>| {
+            // A harness that cannot send notices may put them in the agent's
+            // messages instead.
+            let notices = ClientSessionCapabilities::new().notices(NoticeCapabilities::new());
             harness
-                .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                .send_request(
+                    InitializeRequest::new(ProtocolVersion::V1)
+                        .client_capabilities(ClientCapabilities::new().session(notices)),
+                )
                 .block_task()
                 .await?;
             let session_id = match session.clone() {
