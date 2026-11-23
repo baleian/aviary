@@ -558,7 +558,10 @@ agent's provider, for the agent's model.
 A project registers MCP servers by their URL.
 
 - **A server is reached by Streamable HTTP or by SSE.** A server that runs
-  as a process of its own, over stdio, cannot be registered.
+  as a process of its own, over stdio, cannot be registered. A server of SSE
+  must give the address for its messages as a path: agents reach it through
+  the Egress Proxy, and cannot use a URL at the server's own host. Listing
+  the tools of such a server says so.
 - **Its slug names it to a harness**, which names the server's tools after
   it, and so it does not change.
 - **Its headers are as those of a provider**, and `authorization` is one of

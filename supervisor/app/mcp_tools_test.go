@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -88,6 +89,15 @@ func TestTheToolsOfAnMcpServerAreListedThroughTheProxy(t *testing.T) {
 		"docs.example.com":    mcpEndpoint(true, "", "search_docs"),
 		"open.example.com":    mcpEndpoint(false, "", "echo"),
 		"page.example.com":    answers("<html>a page</html>"),
+		// A server of SSE that says to send its messages to a URL at its
+		// own host, which a harness that reaches it through the proxy
+		// cannot use.
+		"far.example.com": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			io.WriteString(w, "event: endpoint\ndata: https://far.example.com/messages?session=1\n\n")
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		},
 	})
 	s := aviary.supervisor()
 	standIn.asks = s
@@ -128,6 +138,8 @@ func TestTheToolsOfAnMcpServerAreListedThroughTheProxy(t *testing.T) {
 		"a server without a token": {`{"url": "https://open.example.com/mcp", "transport": "http"}`, toolsGot{reached: true, status: http.StatusOK, tools: "echo"}},
 		"a server that is not reached": {`{"url": "https://nowhere.example.com/mcp", "transport": "http"}`,
 			toolsGot{reason: "upstream connect error or disconnect/reset before headers. reset reason: connection timeout"}},
+		"a server of SSE that gives a URL for its messages": {`{"url": "https://far.example.com/sse", "transport": "sse"}`,
+			toolsGot{reached: true, status: http.StatusOK, reason: "the server gives a URL rather than a path for its messages, which agents cannot use through the Egress Proxy"}},
 	} {
 		if got := s.toolsListing("POST", tools, test.body); got != test.want {
 			t.Errorf("%s: %+v, want %+v", name, got, test.want)

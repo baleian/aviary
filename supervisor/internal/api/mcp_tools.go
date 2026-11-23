@@ -42,8 +42,9 @@ type toolsListed struct {
 }
 
 // relay carries the requests of an MCP client to the Egress Proxy with the
-// token of a tool listing, wherever the client sends them, and keeps what the
-// first answer that was not a success said.
+// token of a tool listing, and keeps what the first answer that was not a
+// success said. As for a harness, a request elsewhere goes nowhere: a server
+// of SSE may say to send its messages to a URL at its own host.
 type relay struct {
 	proxy *url.URL
 	token string
@@ -51,15 +52,22 @@ type relay struct {
 	mu sync.Mutex
 	// answered reports whether the proxy answered. reason is what the proxy
 	// said if it answered in place of the server, and status is the status
-	// of the server's answer.
-	answered bool
-	reason   string
-	status   int
+	// of the server's answer. elsewhere is set if the client was sent to
+	// another host.
+	answered  bool
+	reason    string
+	status    int
+	elsewhere bool
 }
 
 func (r *relay) RoundTrip(request *http.Request) (*http.Response, error) {
+	if request.URL.Host != r.proxy.Host {
+		r.mu.Lock()
+		r.elsewhere = true
+		r.mu.Unlock()
+		return nil, errors.New("a request to another host than the Egress Proxy")
+	}
 	onward := request.Clone(request.Context())
-	onward.URL.Scheme, onward.URL.Host, onward.Host = r.proxy.Scheme, r.proxy.Host, ""
 	onward.Header.Set("Authorization", "Bearer "+r.token)
 	answer, err := http.DefaultTransport.RoundTrip(onward)
 	if err != nil {
@@ -98,11 +106,17 @@ func (a *api) listTools(ctx context.Context, server store.McpServer, who caller)
 	}
 	asked, cancel := context.WithTimeout(ctx, listTimeout)
 	defer cancel()
+	// The server is reached where a harness reaches it: at the proxy, under
+	// the path of the server's URL, which the API validated.
+	at := *a.models
+	if address, err := url.Parse(server.URL); err == nil {
+		at.Path, at.RawPath = address.Path, address.RawPath
+	}
 	through := &relay{proxy: a.models, token: token}
 	client := &http.Client{Transport: through, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	var transport mcp.Transport = &mcp.StreamableClientTransport{Endpoint: server.URL, HTTPClient: client, MaxRetries: -1, DisableStandaloneSSE: true}
+	var transport mcp.Transport = &mcp.StreamableClientTransport{Endpoint: at.String(), HTTPClient: client, MaxRetries: -1, DisableStandaloneSSE: true}
 	if server.Transport == store.TransportSSE {
-		transport = &mcp.SSEClientTransport{Endpoint: server.URL, HTTPClient: client}
+		transport = &mcp.SSEClientTransport{Endpoint: at.String(), HTTPClient: client}
 	}
 	began := time.Now()
 	tools, err := toolsAt(asked, transport)
@@ -120,6 +134,9 @@ func (a *api) listTools(ctx context.Context, server store.McpServer, who caller)
 		return toolsListed{Reason: "the server did not answer in " + listTimeout.String(), DurationMS: took}, nil
 	case through.reason != "":
 		return toolsListed{Reason: through.reason, DurationMS: took}, nil
+	case through.elsewhere:
+		reason := "the server gives a URL rather than a path for its messages, which agents cannot use through the Egress Proxy"
+		return toolsListed{Reached: true, Status: http.StatusOK, Reason: reason, DurationMS: took}, nil
 	case through.status != 0:
 		return toolsListed{Reached: true, Status: through.status, DurationMS: took}, nil
 	case !through.answered:
