@@ -160,6 +160,15 @@ create table agents (
     unique key agents_project_slug (project_id, (if(deleted_at is null, slug, null)))
 );
 
+-- The MCP servers that an agent begins its sessions with.
+create table agent_mcp_servers (
+    agent_id binary(16) not null,
+    mcp_server_id binary(16) not null,
+    primary key (agent_id, mcp_server_id),
+    foreign key (agent_id) references agents (id),
+    foreign key (mcp_server_id) references mcp_servers (id) on delete cascade
+);
+
 create table sessions (
     id binary(16) primary key,
     agent_id binary(16) not null,
@@ -179,6 +188,17 @@ create table sessions (
     foreign key (created_by) references users (id),
     -- For listing the sessions that have a sandbox.
     key sessions_sandbox (sandbox)
+);
+
+-- The MCP servers that a session turned on or off where it differs from its
+-- agent. Its turns have the servers of the agent but for these.
+create table session_mcp_servers (
+    session_id binary(16) not null,
+    mcp_server_id binary(16) not null,
+    enabled boolean not null,
+    primary key (session_id, mcp_server_id),
+    foreign key (session_id) references sessions (id),
+    foreign key (mcp_server_id) references mcp_servers (id) on delete cascade
 );
 
 create table turns (
@@ -279,7 +299,9 @@ drop table schema_floor;
 drop table approvals;
 drop table turn_items;
 drop table turns;
+drop table session_mcp_servers;
 drop table sessions;
+drop table agent_mcp_servers;
 drop table agents;
 drop table mcp_servers;
 drop table providers;

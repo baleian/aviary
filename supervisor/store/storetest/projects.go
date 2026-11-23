@@ -179,7 +179,7 @@ func (suite suite) testAgents(t *testing.T) {
 		t.Errorf("agent with only a slug, a harness and a model = %+v: %v", read, err)
 	}
 
-	session, err := st.CreateSession(ctx, created.ID, uuid.Nil, "")
+	session, err := st.CreateSession(ctx, created.ID, uuid.Nil, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +344,7 @@ func (suite suite) testDeleteAgent(t *testing.T) {
 	}
 	session := func(agent store.Agent) uuid.UUID {
 		t.Helper()
-		session, err := st.CreateSession(ctx, agent.ID, uuid.Nil, "")
+		session, err := st.CreateSession(ctx, agent.ID, uuid.Nil, "", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -428,7 +428,7 @@ func (suite suite) testDeleteAgent(t *testing.T) {
 	if err != nil || len(none) != 0 || again.DeletedAt == nil || !again.DeletedAt.Equal(*deleted.DeletedAt) {
 		t.Errorf("second DeleteAgent = %+v, deleted at %v, with the sessions %v: %v", again, again.DeletedAt, none, err)
 	}
-	if _, err := st.CreateSession(ctx, agent.ID, uuid.Nil, ""); !errors.Is(err, store.ErrAgentDeleted) {
+	if _, err := st.CreateSession(ctx, agent.ID, uuid.Nil, "", nil); !errors.Is(err, store.ErrAgentDeleted) {
 		t.Errorf("CreateSession of the deleted agent = %v, want ErrAgentDeleted", err)
 	}
 	if _, err := st.ReplaceAgent(ctx, agent); !errors.Is(err, store.ErrAgentDeleted) {
@@ -470,7 +470,7 @@ func (suite suite) testConcurrentDeleteAgent(t *testing.T) {
 					t.Error(err)
 				}
 			case 1:
-				if _, err := supervisors[i].CreateSession(ctx, first.AgentID, uuid.Nil, ""); err != nil && !errors.Is(err, store.ErrAgentDeleted) {
+				if _, err := supervisors[i].CreateSession(ctx, first.AgentID, uuid.Nil, "", nil); err != nil && !errors.Is(err, store.ErrAgentDeleted) {
 					t.Error(err)
 				}
 			default:
@@ -770,7 +770,7 @@ func (suite suite) testListSessions(t *testing.T) {
 	// users.
 	created := []store.Session{first}
 	for _, by := range []uuid.UUID{alice, bob, alice, uuid.Nil, alice} {
-		session, err := st.CreateSession(ctx, agent, by, "")
+		session, err := st.CreateSession(ctx, agent, by, "", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -780,7 +780,7 @@ func (suite suite) testListSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.CreateSession(ctx, elsewhere.AgentID, alice, ""); err != nil {
+	if _, err := st.CreateSession(ctx, elsewhere.AgentID, alice, "", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -832,7 +832,7 @@ func (suite suite) testSessionTitles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := st.CreateSession(ctx, untitled.AgentID, uuid.Nil, "Fix the build")
+	session, err := st.CreateSession(ctx, untitled.AgentID, uuid.Nil, "Fix the build", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1157,7 +1157,7 @@ func (suite suite) testProviderKeyInSecretStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := st.CreateSession(ctx, agent.ID, uuid.Nil, "")
+	session, err := st.CreateSession(ctx, agent.ID, uuid.Nil, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1207,7 +1207,7 @@ func (suite suite) testSessionTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := st.CreateSession(ctx, agent.ID, sender.ID, "")
+	session, err := st.CreateSession(ctx, agent.ID, sender.ID, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1429,7 +1429,7 @@ func (suite suite) testAgentModel(t *testing.T) {
 		read.Model != model || agent.Model != model {
 		t.Errorf("agent with model %+v: created %+v, read %+v: %v", model, agent, read, err)
 	}
-	session, err := st.CreateSession(ctx, agent.ID, uuid.Nil, "")
+	session, err := st.CreateSession(ctx, agent.ID, uuid.Nil, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

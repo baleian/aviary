@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"math"
@@ -132,6 +133,8 @@ func New(ctx context.Context, st store.Store, ev *events.Streams, dr *driver.Dri
 	mux.Handle("PATCH /v1/sessions/{sid}", a.withSession(retitles, a.updateSession))
 	mux.Handle("DELETE /v1/sessions/{sid}", a.withSession(ends, a.endSession))
 	mux.Handle("POST /v1/sessions/{sid}/messages", a.withSession(sends, a.createMessage))
+	mux.Handle("PUT /v1/sessions/{sid}/mcp-servers/{server}", a.withSession(sends, a.setSessionMcpServer))
+	mux.Handle("DELETE /v1/sessions/{sid}/mcp-servers", a.withSession(sends, a.resetSessionMcpServers))
 	mux.Handle("GET /v1/sessions/{sid}/turns", a.withSession(reads, a.listTurns))
 	mux.Handle("GET /v1/turns/{tid}", a.withTurn(reads, a.getTurn))
 	mux.Handle("POST /v1/turns/{tid}/cancel", a.withTurn(controls, a.cancelTurn))
@@ -223,6 +226,7 @@ type agentRequest struct {
 		Provider string `json:"provider"`
 		Name     string `json:"name"`
 	} `json:"model"`
+	McpServers []string `json:"mcp_servers"`
 }
 
 // agentFrom returns the agent that the request describes, without its slug
@@ -248,10 +252,37 @@ func (a *api) agentFrom(r *http.Request, projectID uuid.UUID, request agentReque
 	case request.Model.Name == "":
 		return store.Agent{}, invalid("model.name is required")
 	}
+	servers, err := a.mcpServersOf(r, projectID, request.McpServers)
+	if err != nil {
+		return store.Agent{}, err
+	}
 	return store.Agent{
 		Name: request.Name, Description: request.Description, Instructions: request.Instructions, Approval: request.Approval,
-		Model: store.Model{Provider: providerID, Name: request.Model.Name},
+		Model: store.Model{Provider: providerID, Name: request.Model.Name}, McpServers: servers,
 	}, nil
+}
+
+// mcpServersOf validates the MCP servers that a request names in mcp_servers,
+// which are servers of the project, and returns them without repeats.
+func (a *api) mcpServersOf(r *http.Request, projectID uuid.UUID, named []string) ([]uuid.UUID, error) {
+	if len(named) == 0 {
+		return nil, nil
+	}
+	of, err := a.store.McpServers(r.Context(), projectID)
+	if err != nil {
+		return nil, err
+	}
+	var servers []uuid.UUID
+	for i, given := range named {
+		id, err := uuid.Parse(given)
+		if err != nil || !slices.ContainsFunc(of, func(server store.McpServer) bool { return server.ID == id }) {
+			return nil, invalid(fmt.Sprintf("mcp_servers[%d] must be the ID of an MCP server of the project", i))
+		}
+		if !slices.Contains(servers, id) {
+			servers = append(servers, id)
+		}
+	}
+	return servers, nil
 }
 
 func (a *api) createAgent(w http.ResponseWriter, r *http.Request) error {
@@ -374,16 +405,45 @@ func (a *api) createSession(w http.ResponseWriter, r *http.Request) error {
 	}
 	// The body is optional.
 	var request struct {
-		Title string `json:"title"`
+		Title      string    `json:"title"`
+		McpServers *[]string `json:"mcp_servers"`
 	}
 	if err := decode(w, r, &request); err != nil && !errors.Is(err, errNoBody) {
 		return err
 	}
-	session, err := a.store.CreateSession(r.Context(), agentID, callerOf(r).id, request.Title)
+	// A session that is given its MCP servers keeps how they differ from its
+	// agent's, so that it follows the agent in the rest.
+	var mcp map[uuid.UUID]bool
+	if request.McpServers != nil {
+		agent, err := a.store.Agent(r.Context(), agentID)
+		if err != nil {
+			return err
+		}
+		on, err := a.mcpServersOf(r, agent.ProjectID, *request.McpServers)
+		if err != nil {
+			return err
+		}
+		mcp = map[uuid.UUID]bool{}
+		for _, server := range on {
+			if !slices.Contains(agent.McpServers, server) {
+				mcp[server] = true
+			}
+		}
+		for _, server := range agent.McpServers {
+			if !slices.Contains(on, server) {
+				mcp[server] = false
+			}
+		}
+	}
+	session, err := a.store.CreateSession(r.Context(), agentID, callerOf(r).id, request.Title, mcp)
 	if err != nil {
 		return err
 	}
-	respond(w, http.StatusCreated, session)
+	records, err := a.sessionRecords(r.Context(), []store.Session{session})
+	if err != nil {
+		return err
+	}
+	respond(w, http.StatusCreated, records[0])
 	return nil
 }
 
@@ -425,10 +485,12 @@ func (a *api) listSessions(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// sessionRecord is a session with its newest turn, if it has one.
+// sessionRecord is a session with its newest turn, if it has one, and the
+// MCP servers that its next turns have, while it has not ended.
 type sessionRecord struct {
 	store.Session
-	LastTurn *lastTurn `json:"last_turn,omitempty"`
+	LastTurn   *lastTurn   `json:"last_turn,omitempty"`
+	McpServers []uuid.UUID `json:"mcp_servers,omitempty"`
 }
 
 // lastTurn is a turn as its session carries it: a turn record without the
@@ -449,9 +511,13 @@ func (a *api) sessionRecords(ctx context.Context, sessions []store.Session) ([]s
 	if err != nil {
 		return nil, err
 	}
+	servers, err := a.store.SessionMcpServers(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
 	records := make([]sessionRecord, len(sessions))
 	for i, session := range sessions {
-		records[i] = sessionRecord{Session: session}
+		records[i] = sessionRecord{Session: session, McpServers: servers[session.ID]}
 		turn, found := last[session.ID]
 		if !found {
 			continue
@@ -505,6 +571,61 @@ func (a *api) updateSession(w http.ResponseWriter, r *http.Request) error {
 		return invalid("title is required")
 	}
 	session, err := a.store.SetSessionTitle(r.Context(), id, *request.Title)
+	if err != nil {
+		return err
+	}
+	return a.respondSession(w, r, session)
+}
+
+// setSessionMcpServer turns an MCP server of the project on or off for the
+// next turns of the session.
+func (a *api) setSessionMcpServer(w http.ResponseWriter, r *http.Request) error {
+	sessionID, err := pathID(r, "sid")
+	if err != nil {
+		return err
+	}
+	serverID, err := pathID(r, "server")
+	if err != nil {
+		return err
+	}
+	var request struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := decode(w, r, &request); err != nil {
+		return err
+	}
+	if request.Enabled == nil {
+		return invalid("enabled must be true or false")
+	}
+	session, err := a.store.Session(r.Context(), sessionID)
+	if err != nil {
+		return err
+	}
+	agent, err := a.store.Agent(r.Context(), session.AgentID)
+	if err != nil {
+		return err
+	}
+	server, err := a.store.McpServer(r.Context(), serverID)
+	if err != nil {
+		return err
+	}
+	if server.ProjectID != agent.ProjectID {
+		return errNotFound
+	}
+	if session, err = a.store.SetSessionMcpServer(r.Context(), sessionID, serverID, *request.Enabled); err != nil {
+		return err
+	}
+	return a.respondSession(w, r, session)
+}
+
+// resetSessionMcpServers gives the next turns of the session the MCP servers
+// of its agent again.
+func (a *api) resetSessionMcpServers(w http.ResponseWriter, r *http.Request) error {
+	id, err := pathID(r, "sid")
+	if err != nil {
+		return err
+	}
+	session, err := a.store.ResetSessionMcpServers(r.Context(), id)
 	if err != nil {
 		return err
 	}

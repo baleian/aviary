@@ -137,8 +137,11 @@ func TestWhoMayDoWhat(t *testing.T) {
 		{"GET", "/v1/sessions/" + session + "/turns", ``, reading},
 		{"GET", "/v1/turns/" + turn, ``, reading},
 		{"GET", "/v1/turns/" + turn + "/events", ``, reading},
-		// Besides admins, only the creator of the session may send messages.
+		// Besides admins, only the creator of the session may send messages,
+		// and turn MCP servers on and off for them.
 		{"POST", "/v1/sessions/" + session + "/messages", `{}`, "pffpfffffh"},
+		{"PUT", "/v1/sessions/" + session + "/mcp-servers/" + tools, `{"enabled": true}`, "pffpfffffh"},
+		{"DELETE", "/v1/sessions/" + session + "/mcp-servers", ``, "pffpfffffh"},
 		// The request does not exist, so those who may answer get 404.
 		{"POST", "/v1/turns/" + turn + "/approvals/none", `{"option_id": "allow"}`, "hhfhfffhfh"},
 		{"POST", "/v1/turns/" + turn + "/cancel", ``, "ppfpfffpfh"},

@@ -156,6 +156,51 @@ returning *;
 update mcp_servers set tools = @tools::jsonb, tools_listed_at = @tools_listed_at::timestamptz
 where id = @id;
 
+-- name: ListAgentMcpServers :many
+-- Returns the MCP servers of the agents, in the order of the project's
+-- servers.
+select agent_mcp_servers.agent_id, agent_mcp_servers.mcp_server_id
+from agent_mcp_servers join mcp_servers on mcp_servers.id = agent_mcp_servers.mcp_server_id
+where agent_mcp_servers.agent_id = any(@agent_ids::uuid[])
+order by mcp_servers.created_at, mcp_servers.id;
+
+-- name: ClearAgentMcpServers :exec
+delete from agent_mcp_servers where agent_id = @agent_id;
+
+-- name: AddAgentMcpServer :exec
+insert into agent_mcp_servers (agent_id, mcp_server_id) values (@agent_id, @mcp_server_id);
+
+-- name: IsAgentMcpServer :one
+-- Reports whether the agent of the session begins its sessions with the
+-- server.
+select exists (
+    select 1 from sessions join agent_mcp_servers on agent_mcp_servers.agent_id = sessions.agent_id
+    where sessions.id = @session_id and agent_mcp_servers.mcp_server_id = @mcp_server_id
+)::boolean;
+
+-- name: AddSessionMcpServer :exec
+insert into session_mcp_servers (session_id, mcp_server_id, enabled) values (@session_id, @mcp_server_id, @enabled);
+
+-- name: ClearSessionMcpServer :exec
+delete from session_mcp_servers where session_id = @session_id and mcp_server_id = @mcp_server_id;
+
+-- name: ClearSessionMcpServers :exec
+delete from session_mcp_servers where session_id = @session_id;
+
+-- name: ListSessionMcpServers :many
+-- Returns the MCP servers that the next turns of the sessions that have not
+-- ended have: those of their agents, but for what each session turned on or
+-- off, in the order of the project's servers.
+select sessions.id as session_id, mcp_servers.id as mcp_server_id
+from sessions
+join agents on agents.id = sessions.agent_id
+join mcp_servers on mcp_servers.project_id = agents.project_id
+left join session_mcp_servers chosen on chosen.session_id = sessions.id and chosen.mcp_server_id = mcp_servers.id
+left join agent_mcp_servers bound on bound.agent_id = sessions.agent_id and bound.mcp_server_id = mcp_servers.id
+where sessions.id = any(@session_ids::uuid[]) and sessions.ended_at is null
+  and coalesce(chosen.enabled, bound.agent_id is not null)
+order by mcp_servers.created_at, mcp_servers.id;
+
 -- name: DeleteMcpServer :execrows
 delete from mcp_servers where id = @id;
 

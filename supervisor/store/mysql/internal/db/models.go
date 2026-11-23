@@ -27,6 +27,11 @@ type Agent struct {
 	DeletedAt    *time.Time
 }
 
+type AgentMcpServer struct {
+	AgentID     key.ID
+	McpServerID key.ID
+}
+
 type Approval struct {
 	TurnID      key.ID
 	ID          string

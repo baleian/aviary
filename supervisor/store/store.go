@@ -85,6 +85,9 @@ type Agent struct {
 	// acts. If empty, the harness does not ask.
 	Approval string `json:"approval,omitempty"`
 	Model    Model  `json:"model"`
+	// McpServers are the MCP servers of the project that the agent begins
+	// its sessions with, in the order of the project's servers.
+	McpServers []uuid.UUID `json:"mcp_servers,omitempty"`
 }
 
 // Model names a model of a provider.
@@ -529,16 +532,17 @@ type Store interface {
 	// CreateAgent creates the agent in the project. It returns ErrNotFound if
 	// the project does not exist, ErrSlugTaken if another agent of the project
 	// has its slug and is not deleted, and an error if the provider of its
-	// model does not exist.
+	// model or one of its MCP servers does not exist.
 	CreateAgent(ctx context.Context, projectID uuid.UUID, agent Agent) (Agent, error)
 
 	// Agent returns the agent, also if it is deleted.
 	Agent(ctx context.Context, id uuid.UUID) (Agent, error)
 
-	// ReplaceAgent replaces the name, description, instructions, approval and
-	// model of the agent with the same ID. It returns ErrNotFound if there is
-	// no such agent, ErrAgentDeleted if it is deleted, and an error if the
-	// provider of its model does not exist.
+	// ReplaceAgent replaces the name, description, instructions, approval,
+	// model and MCP servers of the agent with the same ID. It returns
+	// ErrNotFound if there is no such agent, ErrAgentDeleted if it is
+	// deleted, and an error if the provider of its model or one of its MCP
+	// servers does not exist.
 	ReplaceAgent(ctx context.Context, agent Agent) (Agent, error)
 
 	// DeleteAgent marks the agent as deleted and ends its sessions that have
@@ -554,9 +558,27 @@ type Store interface {
 	Agents(ctx context.Context, projectID uuid.UUID) ([]Agent, error)
 
 	// CreateSession creates a session of the agent with the title, which may
-	// be empty. It returns ErrNotFound if the agent does not exist, and
-	// ErrAgentDeleted if it is deleted.
-	CreateSession(ctx context.Context, agentID, by uuid.UUID, title string) (Session, error)
+	// be empty. mcp are the MCP servers that the session turns on or off
+	// where it differs from the agent. It returns ErrNotFound if the agent
+	// does not exist, and ErrAgentDeleted if it is deleted.
+	CreateSession(ctx context.Context, agentID, by uuid.UUID, title string, mcp map[uuid.UUID]bool) (Session, error)
+
+	// SetSessionMcpServer turns the MCP server on or off for the next turns
+	// of the session. The session keeps it only where it differs from the
+	// agent. It returns ErrNotFound if there is no such session, and
+	// ErrSessionEnded if it has ended.
+	SetSessionMcpServer(ctx context.Context, sessionID, serverID uuid.UUID, enabled bool) (Session, error)
+
+	// ResetSessionMcpServers gives the next turns of the session the MCP
+	// servers of its agent again. It returns ErrNotFound if there is no such
+	// session, and ErrSessionEnded if it has ended.
+	ResetSessionMcpServers(ctx context.Context, sessionID uuid.UUID) (Session, error)
+
+	// SessionMcpServers returns the MCP servers that the next turns of the
+	// sessions have, by session: those of their agents but for what each
+	// session turned on or off, in the order of the project's servers. A
+	// session that has ended, or has none, is left out.
+	SessionMcpServers(ctx context.Context, sessionIDs []uuid.UUID) (map[uuid.UUID][]uuid.UUID, error)
 
 	Session(ctx context.Context, id uuid.UUID) (Session, error)
 

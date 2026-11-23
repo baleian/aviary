@@ -145,6 +145,15 @@ create table agents (
 -- serves listing them.
 create unique index agents_project_slug on agents (project_id, slug) where deleted_at is null;
 
+-- The MCP servers that an agent begins its sessions with.
+create table agent_mcp_servers (
+    agent_id uuid not null references agents (id),
+    mcp_server_id uuid not null references mcp_servers (id) on delete cascade,
+    primary key (agent_id, mcp_server_id)
+);
+
+create index agent_mcp_servers_server on agent_mcp_servers (mcp_server_id);
+
 create table sessions (
     id uuid primary key,
     agent_id uuid not null references agents (id),
@@ -161,6 +170,17 @@ create table sessions (
     -- ended it.
     end_reason text
 );
+
+-- The MCP servers that a session turned on or off where it differs from its
+-- agent. Its turns have the servers of the agent but for these.
+create table session_mcp_servers (
+    session_id uuid not null references sessions (id),
+    mcp_server_id uuid not null references mcp_servers (id) on delete cascade,
+    enabled boolean not null,
+    primary key (session_id, mcp_server_id)
+);
+
+create index session_mcp_servers_server on session_mcp_servers (mcp_server_id);
 
 create table turns (
     id uuid primary key,
@@ -251,7 +271,9 @@ drop table schema_floor;
 drop table approvals;
 drop table turn_items;
 drop table turns;
+drop table session_mcp_servers;
 drop table sessions;
+drop table agent_mcp_servers;
 drop table agents;
 drop table mcp_servers;
 drop table providers;

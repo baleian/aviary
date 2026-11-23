@@ -12,6 +12,20 @@ import (
 	"github.com/google/uuid"
 )
 
+const addAgentMcpServer = `-- name: AddAgentMcpServer :exec
+insert into agent_mcp_servers (agent_id, mcp_server_id) values ($1, $2)
+`
+
+type AddAgentMcpServerParams struct {
+	AgentID     uuid.UUID
+	McpServerID uuid.UUID
+}
+
+func (q *Queries) AddAgentMcpServer(ctx context.Context, arg AddAgentMcpServerParams) error {
+	_, err := q.db.Exec(ctx, addAgentMcpServer, arg.AgentID, arg.McpServerID)
+	return err
+}
+
 const addApproval = `-- name: AddApproval :exec
 insert into approvals (turn_id, id, request) values ($1, $2, $3)
 on conflict (turn_id, id) do nothing
@@ -61,6 +75,21 @@ func (q *Queries) AddMember(ctx context.Context, arg AddMemberParams) (uuid.UUID
 	var id uuid.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const addSessionMcpServer = `-- name: AddSessionMcpServer :exec
+insert into session_mcp_servers (session_id, mcp_server_id, enabled) values ($1, $2, $3)
+`
+
+type AddSessionMcpServerParams struct {
+	SessionID   uuid.UUID
+	McpServerID uuid.UUID
+	Enabled     bool
+}
+
+func (q *Queries) AddSessionMcpServer(ctx context.Context, arg AddSessionMcpServerParams) error {
+	_, err := q.db.Exec(ctx, addSessionMcpServer, arg.SessionID, arg.McpServerID, arg.Enabled)
+	return err
 }
 
 type AddTurnItemsParams struct {
@@ -183,6 +212,38 @@ where project_members.username = $1::text and users.username = $1::text
 // Gives the members awaited under the username to the user who has it.
 func (q *Queries) ClaimMembers(ctx context.Context, username string) error {
 	_, err := q.db.Exec(ctx, claimMembers, username)
+	return err
+}
+
+const clearAgentMcpServers = `-- name: ClearAgentMcpServers :exec
+delete from agent_mcp_servers where agent_id = $1
+`
+
+func (q *Queries) ClearAgentMcpServers(ctx context.Context, agentID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, clearAgentMcpServers, agentID)
+	return err
+}
+
+const clearSessionMcpServer = `-- name: ClearSessionMcpServer :exec
+delete from session_mcp_servers where session_id = $1 and mcp_server_id = $2
+`
+
+type ClearSessionMcpServerParams struct {
+	SessionID   uuid.UUID
+	McpServerID uuid.UUID
+}
+
+func (q *Queries) ClearSessionMcpServer(ctx context.Context, arg ClearSessionMcpServerParams) error {
+	_, err := q.db.Exec(ctx, clearSessionMcpServer, arg.SessionID, arg.McpServerID)
+	return err
+}
+
+const clearSessionMcpServers = `-- name: ClearSessionMcpServers :exec
+delete from session_mcp_servers where session_id = $1
+`
+
+func (q *Queries) ClearSessionMcpServers(ctx context.Context, sessionID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, clearSessionMcpServers, sessionID)
 	return err
 }
 
@@ -1187,6 +1248,27 @@ func (q *Queries) IsAgentBusy(ctx context.Context, agentID uuid.UUID) (bool, err
 	return exists, err
 }
 
+const isAgentMcpServer = `-- name: IsAgentMcpServer :one
+select exists (
+    select 1 from sessions join agent_mcp_servers on agent_mcp_servers.agent_id = sessions.agent_id
+    where sessions.id = $1 and agent_mcp_servers.mcp_server_id = $2
+)::boolean
+`
+
+type IsAgentMcpServerParams struct {
+	SessionID   uuid.UUID
+	McpServerID uuid.UUID
+}
+
+// Reports whether the agent of the session begins its sessions with the
+// server.
+func (q *Queries) IsAgentMcpServer(ctx context.Context, arg IsAgentMcpServerParams) (bool, error) {
+	row := q.db.QueryRow(ctx, isAgentMcpServer, arg.SessionID, arg.McpServerID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const isMember = `-- name: IsMember :one
 select exists (
     select 1 from project_members
@@ -1206,6 +1288,35 @@ func (q *Queries) IsMember(ctx context.Context, arg IsMemberParams) (bool, error
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const listAgentMcpServers = `-- name: ListAgentMcpServers :many
+select agent_mcp_servers.agent_id, agent_mcp_servers.mcp_server_id
+from agent_mcp_servers join mcp_servers on mcp_servers.id = agent_mcp_servers.mcp_server_id
+where agent_mcp_servers.agent_id = any($1::uuid[])
+order by mcp_servers.created_at, mcp_servers.id
+`
+
+// Returns the MCP servers of the agents, in the order of the project's
+// servers.
+func (q *Queries) ListAgentMcpServers(ctx context.Context, agentIds []uuid.UUID) ([]AgentMcpServer, error) {
+	rows, err := q.db.Query(ctx, listAgentMcpServers, agentIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AgentMcpServer
+	for rows.Next() {
+		var i AgentMcpServer
+		if err := rows.Scan(&i.AgentID, &i.McpServerID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listAgents = `-- name: ListAgents :many
@@ -1579,6 +1690,46 @@ func (q *Queries) ListSecretStores(ctx context.Context, projectID uuid.UUID) ([]
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSessionMcpServers = `-- name: ListSessionMcpServers :many
+select sessions.id as session_id, mcp_servers.id as mcp_server_id
+from sessions
+join agents on agents.id = sessions.agent_id
+join mcp_servers on mcp_servers.project_id = agents.project_id
+left join session_mcp_servers chosen on chosen.session_id = sessions.id and chosen.mcp_server_id = mcp_servers.id
+left join agent_mcp_servers bound on bound.agent_id = sessions.agent_id and bound.mcp_server_id = mcp_servers.id
+where sessions.id = any($1::uuid[]) and sessions.ended_at is null
+  and coalesce(chosen.enabled, bound.agent_id is not null)
+order by mcp_servers.created_at, mcp_servers.id
+`
+
+type ListSessionMcpServersRow struct {
+	SessionID   uuid.UUID
+	McpServerID uuid.UUID
+}
+
+// Returns the MCP servers that the next turns of the sessions that have not
+// ended have: those of their agents, but for what each session turned on or
+// off, in the order of the project's servers.
+func (q *Queries) ListSessionMcpServers(ctx context.Context, sessionIds []uuid.UUID) ([]ListSessionMcpServersRow, error) {
+	rows, err := q.db.Query(ctx, listSessionMcpServers, sessionIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListSessionMcpServersRow
+	for rows.Next() {
+		var i ListSessionMcpServersRow
+		if err := rows.Scan(&i.SessionID, &i.McpServerID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
