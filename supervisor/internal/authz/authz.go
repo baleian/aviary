@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -36,6 +37,10 @@ const (
 	upstreamHeader    = "x-aviary-upstream"
 	upstreamTLSHeader = "x-aviary-upstream-tls"
 )
+
+// mcpHeader names, by its ID, the MCP server that a request of a harness is
+// for. It goes no further than the proxy.
+const mcpHeader = "x-aviary-mcp"
 
 // place is what session tokens are sealed for. A value sealed for another
 // place does not open as a token.
@@ -172,18 +177,20 @@ func New(st store.Store, keys *secret.Keys, stores *secret.Stores, localhost str
 
 // Check allows a request that carries the token of a session with a running
 // turn. It returns, as dynamic metadata for the proxy's access log, the IDs of
-// the turn, session, agent and project, the provider of a model request, and,
-// if requests to the API are authenticated, the ID and subject of the user
-// who sent the turn's message. The subject identifies the user without
-// Aviary's records.
+// the turn, session, agent and project, the provider of a model request or
+// the MCP server of a request to one, and, if requests to the API are
+// authenticated, the ID and subject of the user who sent the turn's message.
+// The subject identifies the user without Aviary's records.
 //
 // A model request carries the token as its bearer token, in place of an API
 // key. A forward proxy request carries it as the proxy password. The context
 // extension "listener" tells them apart.
 //
 // A model request is routed to the endpoint of the turn's provider, with the
-// provider's headers and API key. A forward proxy request goes where the pod
-// sends it, and never gets a provider's headers or key.
+// provider's headers and API key. A request of the model listener that names
+// an MCP server in mcpHeader is routed to that server instead, if the session
+// has it on now. A forward proxy request goes where the pod sends it, and
+// never gets the headers or the secrets of a provider or a server.
 //
 // A model request may carry the token of a listing instead. It is routed to
 // the endpoint of the listing's provider, and its metadata names the project
@@ -210,12 +217,42 @@ func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*
 	from := map[string]any{"project": origin.ProjectID.String()}
 	if origin.TurnID != uuid.Nil {
 		from["turn"], from["session"], from["agent"] = origin.TurnID.String(), origin.SessionID.String(), origin.AgentID.String()
-		if !forward {
-			from["provider"] = origin.Provider.ID.String()
-		}
 	}
 	if origin.UserID != uuid.Nil {
 		from["user"], from["subject"] = origin.UserID.String(), origin.Subject
+	}
+	var endpoint *authv3.OkHttpResponse
+	switch named := headers[mcpHeader]; {
+	case forward:
+	case named != "" && origin.TurnID != uuid.Nil:
+		server, on, err := a.mcpServerOf(ctx, origin, named)
+		if err != nil {
+			return nil, failed(ctx, "look up the MCP server of a request", err)
+		}
+		if !on {
+			return refused(typev3.StatusCode_Forbidden, "the MCP server is not on in the session\n"), nil
+		}
+		from["mcp_server"] = server.ID.String()
+		stores, err := a.storesOf(ctx, server.ProjectID, nil, server.Headers)
+		if err != nil {
+			return nil, failed(ctx, "look up the secret stores of an MCP server", err)
+		}
+		var refusal *authv3.CheckResponse
+		if endpoint, refusal = a.mcpEndpoint(ctx, server, stores, path); refusal != nil {
+			return refusal, nil
+		}
+	default:
+		if origin.TurnID != uuid.Nil {
+			from["provider"] = origin.Provider.ID.String()
+		}
+		stores, err := a.storesOf(ctx, origin.ProjectID, origin.SecretStore, origin.Provider.Headers)
+		if err != nil {
+			return nil, failed(ctx, "look up the secret stores of a provider", err)
+		}
+		var refusal *authv3.CheckResponse
+		if endpoint, refusal = a.endpoint(ctx, origin, stores, path); refusal != nil {
+			return refusal, nil
+		}
 	}
 	metadata, err := structpb.NewStruct(from)
 	if err != nil {
@@ -225,19 +262,28 @@ func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*
 		Status:          &rpcstatus.Status{Code: int32(codes.OK)},
 		DynamicMetadata: metadata,
 	}
-	if forward {
-		return allowed, nil
+	if endpoint != nil {
+		allowed.HttpResponse = &authv3.CheckResponse_OkResponse{OkResponse: endpoint}
 	}
-	stores, err := a.storesOf(ctx, origin.ProjectID, origin.SecretStore, origin.Provider.Headers)
-	if err != nil {
-		return nil, failed(ctx, "look up the secret stores of a provider", err)
-	}
-	endpoint, refusal := a.endpoint(ctx, origin, stores, path)
-	if refusal != nil {
-		return refusal, nil
-	}
-	allowed.HttpResponse = &authv3.CheckResponse_OkResponse{OkResponse: endpoint}
 	return allowed, nil
+}
+
+// mcpServerOf returns the MCP server that a request of the origin's turn
+// names by its ID, and whether the session has it on.
+func (a *authorizer) mcpServerOf(ctx context.Context, origin store.Origin, named string) (store.McpServer, bool, error) {
+	id, err := uuid.Parse(named)
+	if err != nil {
+		return store.McpServer{}, false, nil
+	}
+	on, err := a.store.SessionMcpServers(ctx, []uuid.UUID{origin.SessionID})
+	if err != nil || !slices.Contains(on[origin.SessionID], id) {
+		return store.McpServer{}, false, err
+	}
+	server, err := a.store.McpServer(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return store.McpServer{}, false, nil
+	}
+	return server, err == nil, err
 }
 
 // failed returns the error with which a check fails, which makes the proxy
@@ -403,16 +449,18 @@ func (a *authorizer) mcpEndpoint(ctx context.Context, server store.McpServer, st
 		return nil, refused(typev3.StatusCode_NotFound, "requests to the MCP server must be under the path "+address.Path+"\n")
 	}
 	endpoint := a.to(address)
-	endpoint.HeadersToRemove = []string{"authorization"}
+	authorized := false
 	for _, header := range server.Headers {
 		value, refusal := a.valueOf(ctx, stores, header, store.McpServerHeaderPlace(server.ID, header.Name), "the MCP server's header "+header.Name)
 		if refusal != nil {
 			return nil, refusal
 		}
 		endpoint.Headers = append(endpoint.Headers, set(header.Name, value))
-		if header.Name == "authorization" {
-			endpoint.HeadersToRemove = nil
-		}
+		authorized = authorized || header.Name == "authorization"
+	}
+	endpoint.HeadersToRemove = []string{mcpHeader}
+	if !authorized {
+		endpoint.HeadersToRemove = append(endpoint.HeadersToRemove, "authorization")
 	}
 	return endpoint, nil
 }

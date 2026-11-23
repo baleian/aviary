@@ -70,6 +70,10 @@ const mistaken = "a-turn-that-the-supervisor-errs-about"
 // routed is the token of a turn whose provider has headers.
 const routed = "a-turn-of-a-provider-with-headers"
 
+// forbidden is the token of a turn whose requests the Supervisor refuses with
+// 403 and a reason, as it refuses those to an MCP server that is off.
+const forbidden = "a-turn-whose-requests-are-forbidden"
+
 // endpoints are the model endpoints that the Supervisor returns, by token.
 // Every host resolves to the tests, except gone.invalid, which does not
 // resolve. Nothing listens on port 9.
@@ -152,6 +156,14 @@ func (s *supervisor) Check(_ context.Context, request *authv3.CheckRequest) (*au
 		return allowed, nil
 	case sent == broken:
 		return nil, status.Error(codes.Internal, "internal error")
+	case sent == forbidden && !forward:
+		return &authv3.CheckResponse{
+			Status: &rpcstatus.Status{Code: int32(codes.PermissionDenied)},
+			HttpResponse: &authv3.CheckResponse_DeniedResponse{DeniedResponse: &authv3.DeniedHttpResponse{
+				Status: &typev3.HttpStatus{Code: typev3.StatusCode_Forbidden},
+				Body:   "the MCP server is not on in the session\n",
+			}},
+		}, nil
 	}
 	denied := &authv3.DeniedHttpResponse{
 		Status: &typev3.HttpStatus{Code: typev3.StatusCode_Unauthorized},
@@ -445,6 +457,13 @@ func TestModelRequestThatIsRefused(t *testing.T) {
 	if notAllowed.status != http.StatusForbidden || !strings.Contains(notAllowed.body, "egressProxy.allowedHosts") {
 		t.Errorf("model request to a disallowed endpoint: got %d %q, want 403", notAllowed.status, notAllowed.body)
 	}
+	// A request that the Supervisor refuses with 403 keeps its reason.
+	for _, proxy := range []string{open, listed, closed} {
+		refused := ask(t, proxy, "/v1/refused", "Bearer "+forbidden)
+		if refused.status != http.StatusForbidden || refused.body != "the MCP server is not on in the session\n" {
+			t.Errorf("%s: request that the Supervisor refuses: got %d %q, want 403 with its reason", proxy, refused.status, refused.body)
+		}
+	}
 }
 
 // The replies that the proxy makes itself carry a header that the answers of
@@ -465,6 +484,7 @@ func TestTheProxyMarksItsOwnReplies(t *testing.T) {
 		"an endpoint that is not allowed":   ask(t, closed, "/v1/marked/closed", "Bearer "+token),
 		"an endpoint that is down":          ask(t, open, "/v1/marked/down", "Bearer "+named("model.test:9", true)),
 		"an endpoint that does not resolve": ask(t, open, "/v1/marked/gone", "Bearer "+named("gone.invalid", true)),
+		"a request that is forbidden":       ask(t, listed, "/v1/marked/forbidden", "Bearer "+forbidden),
 	} {
 		if got.header.Get(mark) != "true" || got.status < 400 {
 			t.Errorf("%s: status %d %q with the header %q, want a reply of the proxy with it", name, got.status, got.body, got.header.Get(mark))

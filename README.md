@@ -108,12 +108,14 @@ endpoint do not.
 The proxy logs every request as a line of JSON on its standard output. Each
 line identifies the origin of its request on its own:
 
-- `turn`, `session`, `agent` and `project`. The model request that lists
-  the [models of a provider](#model-providers) has only the `project`.
+- `turn`, `session`, `agent` and `project`. The requests that list the
+  [models of a provider](#model-providers) or the
+  [tools of an MCP server](#mcp-servers) have only the `project`.
 - With an identity provider, `user` and `subject`: who sent the turn's
   message, as the user ID that `GET /v1/me` returns and as the identity
   provider's subject, which identifies the user without Aviary's records.
-- For a model request, `provider`: the model provider that it went to.
+- For a model request, `provider`: the model provider that it went to. For
+  a request to an MCP server, `mcp_server`: the server.
 - `time`, `host`, `path` (except for HTTPS URLs), `status`,
   `request_bytes`, `response_bytes` and `duration_ms`.
 
