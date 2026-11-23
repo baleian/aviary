@@ -155,8 +155,15 @@ images in this repository handle these cases:
   tool of an MCP server `server: tool`, Codex `mcp.server.tool`, and OpenCode
   `server_tool`, which is also the form of its own `apply_patch`: in a
   session with a server named `apply`, that tool would count as the
-  server's. Codex reports a server that it could not start as a failed call
-  of a tool, `mcp__server__startup`, with the error.
+  server's.
+- **MCP servers that refuse.** A harness that a server refuses, as when the
+  server's token is not valid, goes on without the server's tools. Codex
+  reports it as a failed call, `mcp__server__startup`, with the error.
+  Claude Code writes a warning to its log. OpenCode first tries to sign in
+  by OAuth, as the server's answer may suggest: through the Egress Proxy, it
+  asks for the server's metadata and tries to register as a client, and
+  cannot finish without a person in a browser. Listing the server's tools
+  shows the refusal.
 - **Refusals.** OpenCode and Codex end the turn when a person refuses an
   action: OpenCode with the stop reason `end_turn`, Codex with `cancelled`.
   Claude Code tells the model that the action was refused, and the turn goes

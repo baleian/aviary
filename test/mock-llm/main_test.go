@@ -665,3 +665,27 @@ func TestUseAfterASearch(t *testing.T) {
 		t.Errorf("after a search that found nothing: called %q", name)
 	}
 }
+
+// The locked server refuses every request, and says where its OAuth
+// metadata is.
+func TestLockedMcpServer(t *testing.T) {
+	t.Parallel()
+	model := httptest.NewServer(newMock(apiKey))
+	defer model.Close()
+	for _, path := range []string{"/locked/mcp", "/locked/sse"} {
+		request, err := http.NewRequest("POST", model.URL+path, strings.NewReader("{}"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", "Bearer "+apiKey)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		want := `Bearer resource_metadata="http://` + strings.TrimPrefix(model.URL, "http://") + `/.well-known/oauth-protected-resource` + path + `"`
+		if response.StatusCode != http.StatusUnauthorized || response.Header.Get("WWW-Authenticate") != want {
+			t.Errorf("%s: got %d with %q", path, response.StatusCode, response.Header.Get("WWW-Authenticate"))
+		}
+	}
+}

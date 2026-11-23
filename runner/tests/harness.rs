@@ -1106,3 +1106,48 @@ async fn agent_that_asks_asks_before_it_calls_a_tool_of_an_mcp_server() {
     })
     .await;
 }
+
+/// A server that refuses the harness does not hold up the turn: the harness
+/// goes on without the server's tools. A harness that reports the refusal as
+/// a failed call says why.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the harness images"]
+async fn harness_goes_on_without_a_server_that_refuses_it() {
+    each(|bench| async move {
+        let session = bench.session().await;
+        let servers = [
+            json!({"id": "11", "name": "web", "transport": "http", "url": "http://model:8080/mcp"}),
+            json!({"id": "13", "name": "locked", "transport": "http", "url": "http://model:8080/locked/mcp"}),
+        ];
+        let used = session
+            .run(Message {
+                text: r#"use web headers {"names": ["x-aviary-mcp"]}"#,
+                mcp_servers: &servers,
+                ..Message::default()
+            })
+            .await;
+        used.completed().says("x-aviary-mcp: 11");
+        let failed = used
+            .events
+            .iter()
+            .filter(|event| event.name == "tool.call" && event.data["status"] == "failed");
+        for call in failed {
+            assert!(
+                call.data["output"].as_str().is_some_and(|why| !why.is_empty()),
+                "{}: a failed call without a reason: {}",
+                used.image,
+                call.data
+            );
+        }
+        session
+            .run(Message {
+                text: r#"use locked headers {"names": ["x-aviary-mcp"]}"#,
+                mcp_servers: &servers,
+                ..Message::default()
+            })
+            .await
+            .completed()
+            .says("the harness offers no tool headers of the MCP server locked");
+    })
+    .await;
+}

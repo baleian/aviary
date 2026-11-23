@@ -40,7 +40,9 @@
 // It is also an MCP server, with the same API key, at /mcp by Streamable
 // HTTP and at /sse by SSE. Its one tool, headers, reports the values of the
 // headers that it is given by name, as the request that began the session
-// had them, so that a test can see what reached the server.
+// had them, so that a test can see what reached the server. At /locked/mcp
+// and /locked/sse, it refuses every request with 401, as a server does whose
+// token is not valid.
 //
 // It also serves a small Python package, aviary-probe, for tests to install
 // with pip: GET /packages/aviary_probe-1.0-py3-none-any.whl.
@@ -119,6 +121,15 @@ func newMock(apiKey string) http.Handler {
 	session := func(r *http.Request) *mcp.Server { return mcpServer(r.Header.Clone()) }
 	mux.HandleFunc("/mcp", withKey(apiKey, mcp.NewStreamableHTTPHandler(session, nil).ServeHTTP))
 	mux.HandleFunc("/sse", withKey(apiKey, mcp.NewSSEHandler(session, nil).ServeHTTP))
+	// A server that refuses every caller, as one does whose token is not
+	// valid, and says where its OAuth metadata is, as MCP servers do.
+	locked := func(w http.ResponseWriter, r *http.Request) {
+		slog.Info("refused MCP request", "method", r.Method, "path", r.URL.Path)
+		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata="http://%s/.well-known/oauth-protected-resource%s"`, r.Host, r.URL.Path))
+		refuse(w, http.StatusUnauthorized, "the token is not valid for this server")
+	}
+	mux.HandleFunc("/locked/mcp", locked)
+	mux.HandleFunc("/locked/sse", locked)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// A request for another host is a forward proxy request.
 		if r.Method == http.MethodConnect || r.URL.Host != "" {

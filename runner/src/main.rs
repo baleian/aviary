@@ -46,7 +46,7 @@ use agent_client_protocol::v1::schema::{
     NewSessionRequest, NoticeCapabilities, PermissionOptionKind, PromptRequest,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     ResumeSessionRequest, SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate,
-    TextContent, ToolCallUpdate,
+    TextContent, ToolCallContent, ToolCallStatus, ToolCallUpdate,
 };
 use agent_client_protocol::{AcpAgent, Agent, ByteStreams, Client, Responder, V1};
 use axum::extract::connect_info::Connected;
@@ -952,7 +952,12 @@ fn event(update: SessionUpdate, longest: Option<usize>) -> Option<(&'static str,
                 ("kind", Some(json!(name(&call.kind)))),
                 ("status", Some(json!(name(&call.status)))),
                 ("input", call.raw_input.map(cut)),
-                ("output", call.raw_output.map(cut)),
+                (
+                    "output",
+                    call.raw_output
+                        .or_else(|| failure(Some(call.status), Some(&call.content)))
+                        .map(cut),
+                ),
                 ("meta", call.meta.map(Value::Object).map(cut)),
             ]),
         )),
@@ -999,9 +1004,35 @@ fn tool_update(update: ToolCallUpdate, longest: Option<usize>) -> Value {
             update.fields.status.as_ref().map(name).map(Value::from),
         ),
         ("input", update.fields.raw_input.map(cut)),
-        ("output", update.fields.raw_output.map(cut)),
+        (
+            "output",
+            update
+                .fields
+                .raw_output
+                .or_else(|| failure(update.fields.status, update.fields.content.as_deref()))
+                .map(cut),
+        ),
         ("meta", update.meta.map(Value::Object).map(cut)),
     ])
+}
+
+/// Returns the text of the content of a tool call that failed, as its
+/// output: a harness may say why a call failed only there.
+fn failure(status: Option<ToolCallStatus>, content: Option<&[ToolCallContent]>) -> Option<Value> {
+    if status != Some(ToolCallStatus::Failed) {
+        return None;
+    }
+    let text: Vec<&str> = content?
+        .iter()
+        .filter_map(|piece| match piece {
+            ToolCallContent::Content(piece) => match &piece.content {
+                ContentBlock::Text(text) => Some(text.text.as_str()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    (!text.is_empty()).then(|| json!(text.join("\n")))
 }
 
 /// An approval request that waits for an answer.
@@ -1238,6 +1269,48 @@ mod tests {
                 })
             ))
         );
+    }
+
+    #[test]
+    fn a_failed_tool_call_says_why_in_its_output() {
+        let said =
+            json!([{"type": "content", "content": {"type": "text", "text": "the server refused"}}]);
+        let failed = update(json!({
+            "sessionUpdate": "tool_call", "toolCallId": "t1", "title": "start", "kind": "other",
+            "status": "failed", "content": said,
+        }));
+        assert_eq!(
+            event(failed, None),
+            Some((
+                "tool.call",
+                json!({
+                    "id": "t1", "title": "start", "kind": "other", "status": "failed",
+                    "output": "the server refused",
+                })
+            ))
+        );
+        let ended = update(json!({
+            "sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "failed", "content": said,
+        }));
+        assert_eq!(
+            event(ended, None),
+            Some((
+                "tool.update",
+                json!({"id": "t1", "status": "failed", "output": "the server refused"})
+            ))
+        );
+        // The content of a call that has not failed, and the content of one
+        // with raw output, are not its output.
+        for kept in [
+            json!({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "in_progress", "content": said}),
+            json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "failed", "content": said,
+                "rawOutput": {"exit_code": 1},
+            }),
+        ] {
+            let made = event(update(kept.clone()), None).unwrap().1;
+            assert_eq!(made["output"], kept["rawOutput"], "{kept}");
+        }
     }
 
     #[test]
