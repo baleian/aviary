@@ -45,6 +45,10 @@ func TestAviary(t *testing.T) {
 				t.Parallel()
 				keepsAwake(t, harness)
 			})
+			t.Run(harness+" agent uses the tools of MCP servers", func(t *testing.T) {
+				t.Parallel()
+				mcpServers(t, harness)
+			})
 		}
 		tests := map[string]func(*testing.T){
 			"a sandbox reaches the outside only through the proxy": egress,
@@ -1108,4 +1112,90 @@ func waits(t *testing.T) {
 	if kept := record(t, accepted.ID); !whole(kept, answer) {
 		t.Errorf("recorded answer = %q, want every word once and in order", kept.said())
 	}
+}
+
+// An agent uses the tools of the MCP servers that its session has on, which
+// mock-llm serves. The harness reaches them through the Egress Proxy, which
+// sends each request on with the server's headers, its token in place of the
+// session's, and without the header that names the server. A harness that
+// does not support a server's transport says so in the turn, and a server
+// that the session turns off is gone from its next turn.
+func mcpServers(t *testing.T, harness string) {
+	project := newProject(t)
+	server := func(slug, path, transport string) string {
+		return create(t, "/v1/projects/"+project+"/mcp-servers", fmt.Sprintf(`{"slug": %q, "url": %q, "transport": %q,
+			"headers": [{"name": "authorization", "secret": {"value": "Bearer %s"}}, {"name": "x-probe", "value": "from %s"}]}`,
+			slug, "http://"+mockHost+path, transport, mockKey, slug))
+	}
+	web, feed := server("web", "/mcp", "http"), server("feed", "/sse", "sse")
+	// The servers' tools were listed through the proxy as they were
+	// registered.
+	for _, id := range []string{web, feed} {
+		var registered struct{ Tools []struct{ Name string } }
+		if status := request(t, "GET", "/v1/mcp-servers/"+id, "", &registered); status != http.StatusOK || len(registered.Tools) != 1 || registered.Tools[0].Name != "headers" {
+			t.Errorf("tools of server %s: status %d, %+v", id, status, registered.Tools)
+		}
+	}
+	agent := agentOf(t, project, provider(t, project, mockKey), fmt.Sprintf(`{"harness": %q, "mcp_servers": [%q, %q]}`, harness, web, feed))
+	session := agent.session(t)
+
+	used := run(t, session, `use web headers {"names": ["x-aviary-mcp", "x-probe"]}`)
+	if said := used.said(); !strings.Contains(said, "x-aviary-mcp: none") || !strings.Contains(said, "x-probe: from web") {
+		t.Errorf("the tool of the server said %q", said)
+	}
+	if called := mcpCalls(t, used); !slices.Contains(called, web+" web headers") {
+		t.Errorf("calls of the tools of MCP servers: %v", called)
+	}
+	eventually(t, soon, "no access log line of a request to the MCP server", func() bool {
+		return slices.ContainsFunc(recorded(t, used.ID), func(line map[string]any) bool {
+			return line["mcp_server"] == web && line["status"] == float64(http.StatusOK)
+		})
+	})
+
+	fed := run(t, session, `use feed headers {"names": ["x-probe"]}`)
+	if unsupported := itemsOf(t, fed, "mcp_unsupported"); len(unsupported) > 0 {
+		if said := fed.said(); !strings.Contains(said, "offers no tool headers of the MCP server feed") {
+			t.Errorf("a harness that does not support the server: the agent said %q", said)
+		}
+	} else if said := fed.said(); !strings.Contains(said, "x-probe: from feed") {
+		t.Errorf("the tool of the server of SSE said %q", said)
+	}
+
+	if status := request(t, "PUT", "/v1/sessions/"+session+"/mcp-servers/"+web, `{"enabled": false}`, nil); status != http.StatusOK {
+		t.Fatalf("turn the server off: status %d", status)
+	}
+	// A harness may still offer the server's tool from earlier in the
+	// session, and fail the call.
+	if said := run(t, session, `use web headers {"names": ["x-probe"]}`).said(); strings.Contains(said, "x-probe: from web") {
+		t.Errorf("after the server was turned off, the turn reached it: %q", said)
+	}
+}
+
+// itemsOf returns the items of the turn of the type.
+func itemsOf(t *testing.T, of turn, kind string) []map[string]any {
+	t.Helper()
+	var found []map[string]any
+	for _, encoded := range of.Items {
+		var item map[string]any
+		if err := json.Unmarshal(encoded, &item); err != nil {
+			t.Fatal(err)
+		}
+		if item["type"] == kind {
+			found = append(found, item)
+		}
+	}
+	return found
+}
+
+// mcpCalls returns the calls of the tools of MCP servers in the turn, each as
+// the server's ID, its slug and the tool.
+func mcpCalls(t *testing.T, of turn) []string {
+	t.Helper()
+	var called []string
+	for _, item := range itemsOf(t, of, "tool_call") {
+		if mcp, found := item["mcp"].(map[string]any); found {
+			called = append(called, fmt.Sprintf("%v %v %v", mcp["server"], mcp["slug"], mcp["tool"]))
+		}
+	}
+	return called
 }

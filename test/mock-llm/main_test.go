@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const apiKey = "the-key"
@@ -495,5 +497,171 @@ func TestPackage(t *testing.T) {
 	if !slices.Equal(names, []string{"aviary_probe/__init__.py", "aviary_probe-1.0.dist-info/METADATA",
 		"aviary_probe-1.0.dist-info/WHEEL", "aviary_probe-1.0.dist-info/RECORD"}) {
 		t.Errorf("wheel files = %v", names)
+	}
+}
+
+// use calls the first tool whose name names the MCP server and ends with the
+// tool's, in each API's shape of a tool list, and replies with its output.
+func TestUse(t *testing.T) {
+	t.Parallel()
+	model := httptest.NewServer(newMock(apiKey))
+	defer model.Close()
+	shell := map[string]any{"properties": map[string]any{"command": map[string]any{}}}
+	user := func(text string) map[string]any { return map[string]any{"role": "user", "content": text} }
+	for _, test := range []struct {
+		api   string
+		tools []any
+		// The namespace and the name of the tool that is called.
+		namespace, name string
+	}{
+		{
+			api: "/v1/chat/completions", name: "web_headers",
+			tools: []any{
+				map[string]any{"type": "function", "function": map[string]any{"name": "bash", "parameters": shell}},
+				map[string]any{"type": "function", "function": map[string]any{"name": "webhooks_headers"}},
+				map[string]any{"type": "function", "function": map[string]any{"name": "webheaders"}},
+				map[string]any{"type": "function", "function": map[string]any{"name": "web_headers"}},
+			},
+		},
+		{
+			api: "/v1/responses", namespace: "mcp__web", name: "headers",
+			tools: []any{
+				map[string]any{"type": "function", "name": "shell", "parameters": shell},
+				map[string]any{"type": "namespace", "name": "mcp__webhooks", "tools": []any{
+					map[string]any{"type": "function", "name": "headers"},
+				}},
+				map[string]any{"type": "namespace", "name": "mcp__web", "tools": []any{
+					map[string]any{"type": "function", "name": "headers"},
+				}},
+			},
+		},
+		{
+			api: "/v1/messages", name: "mcp__web__headers",
+			tools: []any{
+				map[string]any{"name": "Bash", "input_schema": shell},
+				map[string]any{"name": "mcp__web__headers"},
+			},
+		},
+	} {
+		request := map[string]any{"model": "mock", "stream": true, "tools": test.tools,
+			"messages": []any{user(`use web headers {"names": ["x-aviary-mcp"]}`)},
+			"input":    []any{map[string]any{"type": "message", "role": "user", "content": `use web headers {"names": ["x-aviary-mcp"]}`}},
+		}
+		status, stream, _ := events(t, model.URL+test.api, apiKey, request)
+		var namespace, name, arguments string
+		for _, event := range stream {
+			name += str(at(event, "choices", 0, "delta", "tool_calls", 0, "function", "name")) + str(at(event, "content_block", "name"))
+			arguments += str(at(event, "choices", 0, "delta", "tool_calls", 0, "function", "arguments")) + str(at(event, "delta", "partial_json"))
+			if event["type"] == "response.output_item.done" {
+				namespace, name, arguments = str(at(event, "item", "namespace")), str(at(event, "item", "name")), str(at(event, "item", "arguments"))
+			}
+		}
+		if status != http.StatusOK || namespace != test.namespace || name != test.name || arguments != `{"names": ["x-aviary-mcp"]}` {
+			t.Errorf("%s: got %d with %q %q %q, want %q %q", test.api, status, namespace, name, arguments, test.namespace, test.name)
+		}
+	}
+
+	for said, want := range map[string]string{
+		"use web":          "mock: use takes the name of an MCP server and of its tool",
+		"use docs headers": "mock: the harness offers no tool headers of the MCP server docs, only bash",
+		"use web other":    "mock: the harness offers no tool other of the MCP server web, only bash",
+	} {
+		answer := chat(t, model.URL, sent{said: []string{said}})
+		if answer.text != want {
+			t.Errorf("%s: got %+v, want %q", said, answer, want)
+		}
+	}
+}
+
+// The MCP server answers by both transports, to callers with the key, and
+// its tool reports the headers of the request that began the session.
+func TestMcpServer(t *testing.T) {
+	t.Parallel()
+	model := httptest.NewServer(newMock(apiKey))
+	defer model.Close()
+	for _, transport := range []func(string, *http.Client) mcp.Transport{
+		func(url string, client *http.Client) mcp.Transport {
+			return &mcp.StreamableClientTransport{Endpoint: url + "/mcp", HTTPClient: client}
+		},
+		func(url string, client *http.Client) mcp.Transport {
+			return &mcp.SSEClientTransport{Endpoint: url + "/sse", HTTPClient: client}
+		},
+	} {
+		connect := func(headers map[string]string) (*mcp.ClientSession, error) {
+			client := &http.Client{Transport: headed{headers}}
+			return mcp.NewClient(&mcp.Implementation{Name: "test"}, nil).
+				Connect(t.Context(), transport(model.URL, client), nil)
+		}
+		if session, err := connect(map[string]string{"Authorization": "Bearer a-session-token"}); err == nil {
+			session.Close()
+			t.Errorf("%T: connected without the key", transport(model.URL, nil))
+		}
+		session, err := connect(map[string]string{"Authorization": "Bearer " + apiKey, "X-Aviary-Mcp": "1"})
+		if err != nil {
+			t.Fatalf("%T: connect: %v", transport(model.URL, nil), err)
+		}
+		listed, err := session.ListTools(t.Context(), nil)
+		if err != nil || len(listed.Tools) != 1 || listed.Tools[0].Name != "headers" {
+			t.Errorf("%T: tools = %+v, %v", transport(model.URL, nil), listed, err)
+		}
+		result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+			Name: "headers", Arguments: map[string]any{"names": []string{"x-aviary-mcp", "x-other"}},
+		})
+		if err != nil || len(result.Content) != 1 {
+			t.Fatalf("%T: call: %+v, %v", transport(model.URL, nil), result, err)
+		}
+		if said := result.Content[0].(*mcp.TextContent).Text; said != "x-aviary-mcp: 1\nx-other: none" {
+			t.Errorf("%T: headers said %q", transport(model.URL, nil), said)
+		}
+		session.Close()
+	}
+}
+
+// headed is a transport that adds headers to every request.
+type headed struct{ headers map[string]string }
+
+func (h headed) RoundTrip(request *http.Request) (*http.Response, error) {
+	request = request.Clone(request.Context())
+	for name, value := range h.headers {
+		request.Header.Set(name, value)
+	}
+	return http.DefaultTransport.RoundTrip(request)
+}
+
+// A harness that offers the tools of MCP servers only after a search, as
+// Claude Code does, has the model search for the tool first.
+func TestUseAfterASearch(t *testing.T) {
+	t.Parallel()
+	model := httptest.NewServer(newMock(apiKey))
+	defer model.Close()
+	use := map[string]any{"role": "user", "content": `use web headers {"names": ["x-aviary-mcp"]}`}
+	search := map[string]any{"name": "ToolSearch"}
+	// call returns the name and the arguments of the tool that the model calls.
+	call := func(messages []any, tools ...any) (string, string) {
+		t.Helper()
+		status, stream, refusal := events(t, model.URL+"/v1/messages", apiKey, map[string]any{"stream": true, "messages": messages, "tools": tools})
+		if status != http.StatusOK {
+			t.Fatalf("got %d %s", status, refusal)
+		}
+		var name, arguments string
+		for _, event := range stream {
+			name += str(at(event, "content_block", "name"))
+			arguments += str(at(event, "delta", "partial_json"))
+		}
+		return name, arguments
+	}
+	if name, arguments := call([]any{use}, search); name != "ToolSearch" || arguments != `{"query": "web headers"}` {
+		t.Errorf("before the search: called %q %q, want the search", name, arguments)
+	}
+	searched := []any{use,
+		map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "tool_use", "id": "toolu_1", "name": "ToolSearch", "input": map[string]any{}}}},
+		map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": "toolu_1", "content": "found"}}},
+	}
+	if name, arguments := call(searched, search, map[string]any{"name": "mcp__web__headers"}); name != "mcp__web__headers" || arguments != `{"names": ["x-aviary-mcp"]}` {
+		t.Errorf("after the search: called %q %q, want the tool", name, arguments)
+	}
+	// A search that did not find the tool is not done again.
+	if name, _ := call(searched, search); name != "" {
+		t.Errorf("after a search that found nothing: called %q", name)
 	}
 }
