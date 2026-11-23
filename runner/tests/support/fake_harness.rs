@@ -15,6 +15,7 @@
 //!   ask [<n>]          sends n permission requests at once (default 1), then
 //!                      says the option or outcome that each one got
 //!   instructions       says the contents of AVIARY_INSTRUCTIONS_FILE
+//!   instructed         says them as they were when the harness started
 //!   recall             says the prompts of the earlier turns of the session
 //!   sleep <ms>         waits, unless the turn is cancelled
 //!   deaf               ignores cancellation for the rest of the turn
@@ -62,6 +63,7 @@ fn main() {
         calls: 0,
         leaving: false,
         notices: false,
+        instructed: instructions(),
     };
     // Ends when the runner closes standard input.
     while let Ok(message) = harness.incoming.recv() {
@@ -80,6 +82,20 @@ struct Harness {
     leaving: bool,
     /// Whether the client takes notices.
     notices: bool,
+    /// The instructions when the process started, as `instructions` says them.
+    instructed: String,
+}
+
+/// Returns what `instructions` says about AVIARY_INSTRUCTIONS_FILE now.
+fn instructions() -> String {
+    let instructions = env::var("AVIARY_INSTRUCTIONS_FILE")
+        .map_err(|_| ())
+        .and_then(|file| fs::read_to_string(file).map_err(|_| ()));
+    match instructions {
+        Ok(instructions) if instructions.is_empty() => "no instructions".to_owned(),
+        Ok(instructions) => instructions,
+        Err(()) => "no file".to_owned(),
+    }
 }
 
 enum Ending {
@@ -339,19 +355,8 @@ impl Harness {
                     }
                     self.say(session, &given.join(" "));
                 }
-                "instructions" => {
-                    let instructions = env::var("AVIARY_INSTRUCTIONS_FILE")
-                        .map_err(|_| ())
-                        .and_then(|file| fs::read_to_string(file).map_err(|_| ()));
-                    self.say(
-                        session,
-                        match instructions.as_deref() {
-                            Ok("") => "no instructions",
-                            Ok(instructions) => instructions,
-                            Err(()) => "no file",
-                        },
-                    );
-                }
+                "instructions" => self.say(session, &instructions()),
+                "instructed" => self.say(session, &self.instructed.clone()),
                 "recall" => self.say(
                     session,
                     match before.trim_end() {

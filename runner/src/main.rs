@@ -12,10 +12,10 @@
 //! agent cannot answer its own approval requests.
 //!
 //! The harness is started for the first turn and kept for the turns after it,
-//! until a turn has another approval mode or environment: that turn gets a
-//! new harness. The runner stores the harness session ID in the home, which
-//! outlives the pod, so a new harness and the runner in the session's next
-//! pod resume the same session.
+//! until a turn has another approval mode, environment or instructions: that
+//! turn gets a new harness. The runner stores the harness session ID in the
+//! home, which outlives the pod, so a new harness and the runner in the
+//! session's next pod resume the same session.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -433,9 +433,9 @@ async fn run_turns(runner: &Arc<Runner>, mut orders: mpsc::UnboundedReceiver<Ord
 }
 
 /// Starts a harness and runs turns on it, beginning with `first`, until the
-/// harness exits or a turn fails. A turn whose approval mode or environment
-/// differ from those of `first` is returned instead of run, since the harness
-/// has them from its start.
+/// harness exits or a turn fails. A turn whose approval mode, environment or
+/// instructions differ from those of `first` is returned instead of run, since
+/// the harness may have them only from its start.
 async fn run_harness(
     runner: &Arc<Runner>,
     first: Order,
@@ -446,6 +446,7 @@ async fn run_harness(
     if session.is_none() {
         *session = remembered()?;
     }
+    instruct(&first.start.instructions)?;
     // Spawned here rather than by AcpAgent, to notice a harness that exits
     // between turns.
     let command = variable(HARNESS_COMMAND)?;
@@ -477,6 +478,7 @@ async fn run_harness(
         .filter(|bytes| *bytes > 0);
     let asks = first.start.approval == "ask";
     let environment = first.start.environment.clone();
+    let instructions = first.start.instructions.clone();
     // The turn that needs a new harness.
     let mut left = None;
     // Set when session/resume fails.
@@ -582,10 +584,14 @@ async fn run_harness(
                         }
                     },
                 };
-                if (start.approval == "ask") != asks || start.environment != environment {
+                if (start.approval == "ask") != asks
+                    || start.environment != environment
+                    || start.instructions != instructions
+                {
                     left = Some(Order { start, told });
                     return Ok(());
                 }
+                // Again for every turn, since the agent can change the file.
                 if let Err(failure) = instruct(&start.instructions) {
                     unready.set(Some(failure));
                     return Err(agent_client_protocol::Error::internal_error());

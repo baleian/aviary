@@ -11,7 +11,7 @@ use serde_json::json;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time;
 
-use support::{Home, PATIENCE, Session, ending, names, runner, said, start};
+use support::{Event, Home, PATIENCE, Session, ending, names, runner, said, start};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn turn_events_are_streamed_in_order() {
@@ -401,6 +401,34 @@ async fn instructions_file_is_written_every_turn() {
     assert_eq!(ending(&events).data["reason"], "runner_error");
     let message = ending(&events).data["message"].as_str().unwrap();
     assert!(message.contains("AVIARY_INSTRUCTIONS_FILE"), "{message}");
+}
+
+/// A harness may read the instructions only when it starts.
+#[tokio::test(flavor = "multi_thread")]
+async fn harness_starts_with_the_instructions() {
+    let home = Home::new();
+    let mut command = runner(&home);
+    command.env("AVIARY_INSTRUCTIONS_FILE", home.instructions());
+    let runner = start(command).await;
+    let run = async |id: &str, instructions: &str| {
+        let start = json!({"text": "instructed ; tool a", "instructions": instructions});
+        assert_eq!(runner.turn_with(id, start).await, StatusCode::NO_CONTENT);
+        runner.events(id).await
+    };
+    // The fake harness numbers tool calls per process.
+    let call = |events: &[Event]| {
+        let call = events.iter().find(|event| event.name == "tool.call");
+        call.unwrap().data["id"].clone()
+    };
+    let first = run("t1", "Answer in French.").await;
+    assert_eq!(said(&first), "Answer in French.");
+    let same = run("t2", "Answer in French.").await;
+    assert_eq!(call(&same), "call-2");
+
+    // Other instructions: a new harness, which has them.
+    let other = run("t3", "Answer in German.").await;
+    assert_eq!(said(&other), "Answer in German.");
+    assert_eq!(call(&other), "call-1");
 }
 
 #[tokio::test(flavor = "multi_thread")]

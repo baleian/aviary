@@ -21,7 +21,7 @@ The harness runs in this environment:
 | Working directory | `/home/workspace` |
 | Model endpoint | `AVIARY_LLM_BASE_URL`, `AVIARY_LLM_API_KEY` and `AVIARY_LLM_MODEL`. The URL points to the Egress Proxy, and the key is the session token. |
 | Approval | `AVIARY_APPROVAL=ask` if the agent must ask a person before it acts. Otherwise the variable is not set. |
-| Persistence | The home is the session volume. It is kept while the session sleeps, and the next turn finds it in a new pod. The rest of the file system comes from the image, fresh in every pod. The harness keeps running between turns for as long as its pod does, or until the agent's model or approval is changed: the next turn then gets a new harness, which resumes the session. |
+| Persistence | The home is the session volume. It is kept while the session sleeps, and the next turn finds it in a new pod. The rest of the file system comes from the image, fresh in every pod. The harness keeps running between turns for as long as its pod does, or until the agent's model, approval or instructions are changed: the next turn then gets a new harness, which resumes the session. |
 | Network | The hosts that the installation allows, through the Egress Proxy, which `HTTP_PROXY`, `HTTPS_PROXY` and their lowercase forms point to, with the session token as the password. The pod reaches nothing else and has no DNS. |
 
 The runner talks to the harness over its standard input and output with the
@@ -74,10 +74,10 @@ The runner talks to the harness over its standard input and output with the
    session.
 6. **The instructions file**, in `AVIARY_INSTRUCTIONS_FILE`: the file from
    which the harness reads instructions for every session, often named
-   `AGENTS.md`. Before every turn, the runner writes the agent's instructions
-   there, or empties the file if the agent has none, so the harness's user
-   must be able to write it. An image that names no file runs only agents
-   without instructions.
+   `AGENTS.md`. Before it starts the harness and before every turn, the
+   runner writes the agent's instructions there, or empties the file if the
+   agent has none, so the harness's user must be able to write it. An image
+   that names no file runs only agents without instructions.
 7. **Asking before acting if `AVIARY_APPROVAL` is `ask`.** The image then
    starts the harness so that it sends `session/request_permission` before
    actions that a person should approve first. Which actions is up to the
@@ -132,7 +132,8 @@ images in this repository handle these cases:
   when it is started again.
 - **Startup time.** The harness starts with the first turn of a session, and
   again with the first turn after the session sleeps or after the agent's
-  model or approval is changed, so its startup time adds to those turns.
+  model, approval or instructions are changed, so its startup time adds to
+  those turns.
 
 ## The images in this repository
 
