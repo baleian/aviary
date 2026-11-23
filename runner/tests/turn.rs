@@ -558,7 +558,7 @@ async fn harness_starts_with_the_mcp_servers_of_the_turn() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_servers_of_transports_that_the_harness_does_not_take_are_left_out() {
+async fn mcp_servers_that_the_harness_does_not_support_are_left_out() {
     let home = Home::new();
     let mut command = runner(&home);
     command
@@ -569,13 +569,22 @@ async fn mcp_servers_of_transports_that_the_harness_does_not_take_are_left_out()
         {"id": "1", "name": "tracker", "transport": "http", "url": "http://proxy/mcp"},
         {"id": "2", "name": "docs", "transport": "sse", "url": "http://proxy/sse"},
     ]);
-    runner
-        .turn_with("t1", json!({"text": "mcp", "mcp_servers": servers}))
-        .await;
-    assert_eq!(
-        said(&runner.events("t1").await),
-        "http tracker http://proxy/mcp authorization=Bearer the-token x-aviary-mcp=1"
-    );
+    // Every turn of the harness says which it goes without.
+    for id in ["t1", "t2"] {
+        runner
+            .turn_with(id, json!({"text": "mcp", "mcp_servers": servers}))
+            .await;
+        let events = runner.events(id).await;
+        assert_eq!(names(&events)[..2], ["started", "mcp.unsupported"]);
+        assert_eq!(
+            events[1].data,
+            json!({"servers": [{"id": "2", "name": "docs", "transport": "sse"}]})
+        );
+        assert_eq!(
+            said(&events),
+            "http tracker http://proxy/mcp authorization=Bearer the-token x-aviary-mcp=1"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

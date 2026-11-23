@@ -223,6 +223,12 @@ export type Item =
   | { type: "message"; text: string }
   | { type: "thought"; text: string }
   | { type: "plan"; entries?: PlanEntry[] }
+  // The MCP servers that the session had on, but whose transport the harness
+  // does not support: the turn ran without them.
+  | {
+      type: "mcp_unsupported";
+      servers?: { id: string; name: string; transport: Transport }[];
+    }
   | ({
       type: "tool_call";
       status?: string;

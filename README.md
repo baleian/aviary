@@ -259,6 +259,7 @@ empty.
 | `tool.update` | `id`, and those of `title`, `kind`, `status`, `input` and `output` that changed. Text in `input` or `output` longer than `runtime.maxToolOutputBytes` is truncated, and says so at its end. |
 | `plan.update` | `entries`: the agent's plan, each entry with `content`, `priority` and `status`. |
 | `session.update` | `title`: a title that the harness gives the session. Aviary does not set it: a client that wants it changes the title of the session. |
+| `mcp.unsupported` | `servers`: the MCP servers that the session has on but whose transport the harness does not support, each with `id`, `name` and `transport`. The turn runs without them. |
 | `approval.requested` | The harness asks a person before it acts, and waits. `id`: the request. `tool_call`: what the harness is about to do, with the fields of `tool.call`. `options`: the possible answers, each with `id`, `name` and `kind`, which is `allow_once`, `allow_always`, `reject_once` or `reject_always`. |
 | `approval.resolved` | The harness has its answer to the request `id`. `outcome`: `selected` with the chosen `option_id`, or `cancelled` if the turn was stopped before an answer came. `answered_by`: with an identity provider, the ID of the user who answered. |
 | `turn.completed` | `stop_reason`: why the harness ended the turn. `usage`: the token usage that the harness reported, if any. The last event of the turn. |
@@ -299,6 +300,7 @@ after the turn ends.
 | `message`, `thought` | `text`: consecutive pieces, joined into one text. |
 | `tool_call` | The fields of `tool.call`, with the call's updates applied. |
 | `plan` | `entries`: the plan as it last stood. |
+| `mcp_unsupported` | The fields of `mcp.unsupported`. |
 | `approval` | The fields of `approval.requested`, and how the request ended: `outcome` and, if an option was selected, `option_id`. |
 
 A turn that did not complete keeps what happened until then: the text that
@@ -580,8 +582,9 @@ A project registers MCP servers by their URL.
   with the server's headers while the session has the server on, so a server
   that is turned off during a turn is refused from then on. A harness has the
   servers of its start: the turn after a change gets a new harness, which
-  resumes the session. A harness that cannot take servers of a transport is
-  not given them.
+  resumes the session. A harness is not given servers of a transport that it
+  does not support, and each of its turns names them in an `mcp.unsupported`
+  event.
 
 ### Secret stores
 

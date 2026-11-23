@@ -17,17 +17,19 @@ const (
 	toolCall          = "tool.call"
 	toolUpdate        = "tool.update"
 	planUpdate        = "plan.update"
+	mcpUnsupported    = "mcp.unsupported"
 	approvalRequested = "approval.requested"
 	approvalResolved  = "approval.resolved"
 )
 
 // Item types.
 const (
-	itemMessage  = "message"
-	itemThought  = "thought"
-	itemToolCall = "tool_call"
-	itemPlan     = "plan"
-	itemApproval = "approval"
+	itemMessage        = "message"
+	itemThought        = "thought"
+	itemToolCall       = "tool_call"
+	itemPlan           = "plan"
+	itemMcpUnsupported = "mcp_unsupported"
+	itemApproval       = "approval"
 )
 
 // Items assembles the items of the turn from its events, in the order in
@@ -37,6 +39,7 @@ const (
 //   - tool_call holds the fields of the tool.call event, as updated by
 //     tool.update events.
 //   - plan holds the entries of the last plan.update.
+//   - mcp_unsupported holds the fields of an mcp.unsupported event.
 //   - approval holds the fields of approval.requested and, once the harness
 //     has the answer, those of approval.resolved.
 func (s *Streams) Items(ctx context.Context, turnID uuid.UUID) ([]json.RawMessage, error) {
@@ -96,6 +99,8 @@ func (r *record) add(eventType, data string) error {
 		kind = itemToolCall
 	case planUpdate:
 		kind = itemPlan
+	case mcpUnsupported:
+		kind = itemMcpUnsupported
 	case approvalRequested, approvalResolved:
 		kind = itemApproval
 	default:
@@ -121,6 +126,8 @@ func (r *record) add(eventType, data string) error {
 			r.plan = r.begin(itemPlan)
 		}
 		r.plan.fields = fields
+	case itemMcpUnsupported:
+		r.begin(itemMcpUnsupported).fields = fields
 	case itemApproval:
 		// The resolution is merged into the item of the request.
 		id := string(fields["id"])

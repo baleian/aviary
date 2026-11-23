@@ -8,7 +8,13 @@ import type {
   Turn,
 } from "../../api/types.ts";
 import { cls } from "../../lib/cls.ts";
-import { clock, duration, label, num } from "../../lib/format.ts";
+import {
+  clock,
+  duration,
+  label,
+  num,
+  transportName,
+} from "../../lib/format.ts";
 import { followed, type Status, STATUS_NAMES } from "../../lib/sessions.ts";
 import { AgentTile, Avatar } from "../../ui/Avatar.tsx";
 import { Chip } from "../../ui/Chip.tsx";
@@ -31,8 +37,12 @@ import {
 
 type ToolItem = Extract<Item, { type: "tool_call" }>;
 type ApprovalItem = Extract<Item, { type: "approval" }>;
+type UnsupportedItem = Extract<Item, { type: "mcp_unsupported" }>;
 
 const NONE: McpServer[] = [];
+
+const AND = new Intl.ListFormat("en", { type: "conjunction" });
+const OR = new Intl.ListFormat("en", { type: "disjunction" });
 
 // The icon of each kind of tool call.
 const KINDS: Record<string, IconName> = {
@@ -302,11 +312,52 @@ const Step = memo(function Step({
   );
 });
 
+// Unsupported names the MCP servers that the turn ran without, since its
+// harness does not support how they are reached.
+function Unsupported({
+  item,
+  servers,
+  harness,
+}: {
+  item: UnsupportedItem;
+  servers: McpServer[];
+  harness: string;
+}) {
+  const left = item.servers ?? [];
+  if (!left.length) return null;
+  const names = left.map((each) => {
+    const server = servers.find((other) => other.id === each.id);
+    return server ? label(server) : each.name;
+  });
+  const transports = [
+    ...new Set(left.map((each) => transportName(each.transport))),
+  ];
+  return (
+    <p className="state">
+      <span className="c-wait">
+        <Icon name="plug" className="lg" />
+      </span>
+      <span>
+        {AND.formatToParts(names).map((part, index) =>
+          part.type === "element" ? (
+            <b key={index}>{part.value}</b>
+          ) : (
+            part.value
+          ),
+        )}{" "}
+        {names.length === 1 ? "was" : "were"} left out: the {harness} harness
+        does not support {OR.format(transports)} servers.
+      </span>
+    </p>
+  );
+}
+
 // Blocks is what the agent said and did, in order. Tool calls that follow
 // each other are one list of steps.
 function Blocks({
   items,
   servers,
+  harness,
   over,
   writing,
   asker,
@@ -316,6 +367,7 @@ function Blocks({
 }: {
   items: Item[];
   servers: McpServer[];
+  harness: string;
   over: boolean;
   // Whether the agent may be writing the last item.
   writing: boolean;
@@ -411,6 +463,15 @@ function Blocks({
       );
     } else if (item.type === "plan") {
       out.push(<Plan key={index} entries={item.entries ?? []} over={over} />);
+    } else if (item.type === "mcp_unsupported") {
+      out.push(
+        <Unsupported
+          key={index}
+          item={item}
+          servers={servers}
+          harness={harness}
+        />,
+      );
     }
   });
   close();
@@ -632,6 +693,7 @@ export const TurnView = memo(function TurnView({
           <Blocks
             items={items}
             servers={servers}
+            harness={agent.harness}
             over={over}
             writing={stands === "running"}
             asker={person(turn.created_by)}

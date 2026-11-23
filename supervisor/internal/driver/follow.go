@@ -460,6 +460,7 @@ var passed = map[string]bool{
 	"tool.update":        true,
 	"plan.update":        true,
 	"session.update":     true,
+	"mcp.unsupported":    true,
 	"approval.requested": true,
 	"approval.resolved":  true,
 }

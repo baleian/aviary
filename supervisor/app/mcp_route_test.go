@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"slices"
 	"testing"
@@ -102,9 +103,20 @@ func TestRequestsToTheMcpServersOfASession(t *testing.T) {
 	eventually(t, patience, "the request of an ended turn is allowed", func() bool {
 		return codes.Code(s.checkMcp(token, docs, "/sse").GetStatus().GetCode()) != codes.OK
 	})
-	// The next turn has the servers that the session has on by then.
-	next := aviary.given(s.send(session, "again").ID)
+	// The next turn has the servers that the session has on by then. The
+	// runner names those that its harness does not support, and the turn
+	// keeps them.
+	again := s.send(session, "again")
+	next := aviary.given(again.ID)
 	if want := []runnertest.McpServer{{ID: docs, Name: "docs", Transport: "sse", URL: "http://127.0.0.2:8080/sse"}}; !slices.Equal(next.McpServers, want) {
 		t.Errorf("MCP servers of the next turn = %+v, want %+v", next.McpServers, want)
+	}
+	unsupported := map[string]any{"servers": []map[string]string{{"id": docs, "name": "docs", "transport": "sse"}}}
+	next.report(started("harness-session"))
+	next.report(message{"mcp.unsupported", unsupported})
+	next.report(finished("end_turn", nil))
+	said, err := json.Marshal(items(t, s.turn(again.ID)))
+	if want := `[{"servers":[{"id":"` + docs + `","name":"docs","transport":"sse"}],"type":"mcp_unsupported"}]`; err != nil || string(said) != want {
+		t.Errorf("items of the next turn = %s, want %s", said, want)
 	}
 }

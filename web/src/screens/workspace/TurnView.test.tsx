@@ -200,6 +200,39 @@ it("names a tool of an MCP server apart from its server", () => {
   expect(list.querySelector("summary .tag")!.textContent).toBe("errors");
 });
 
+it("names the MCP servers that the turn ran without", () => {
+  const servers = [
+    {
+      id: "m1",
+      project_id: "p1",
+      slug: "docs",
+      name: "Docs search",
+      url: "https://docs.example.com/sse",
+      transport: "sse",
+      created_at: "2026-11-22T09:00:00Z",
+      updated_at: "2026-11-22T09:00:00Z",
+    },
+  ] satisfies McpServer[];
+  const notice = (
+    left: { id: string; name: string; transport: "sse" | "http" }[],
+  ) =>
+    show({}, [{ type: "mcp_unsupported", servers: left }], {
+      servers,
+    }).element.querySelector(".state")!.textContent;
+  expect(notice([{ id: "m1", name: "docs", transport: "sse" }])).toBe(
+    "Docs search was left out: the codex harness does not support SSE servers.",
+  );
+  // A server that the project no longer has goes by its slug.
+  expect(
+    notice([
+      { id: "m1", name: "docs", transport: "sse" },
+      { id: "m2", name: "tracker", transport: "http" },
+    ]),
+  ).toBe(
+    "Docs search and tracker were left out: the codex harness does not support SSE or Streamable HTTP servers.",
+  );
+});
+
 // steps draws tool calls, and returns the card of each.
 function steps(...calls: Record<string, unknown>[]) {
   const items = calls.map(

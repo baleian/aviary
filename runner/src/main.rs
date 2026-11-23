@@ -19,7 +19,9 @@
 //!
 //! A harness reaches its MCP servers through the Egress Proxy, as it reaches
 //! its model: every request carries the session token, and names its server
-//! by ID in the `x-aviary-mcp` header.
+//! by ID in the `x-aviary-mcp` header. A server of a transport that the
+//! harness does not support is left out, and every turn of the harness names
+//! it in an `mcp.unsupported` event.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -83,6 +85,10 @@ const FAILED: &str = "failed";
 
 const REQUESTED: &str = "approval.requested";
 const RESOLVED: &str = "approval.resolved";
+
+/// Names the MCP servers of a turn whose transport the harness does not
+/// support.
+const UNSUPPORTED: &str = "mcp.unsupported";
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Not the current-thread runtime: on it, waiting for the harness process
@@ -577,11 +583,30 @@ async fn run_harness(
                 )
                 .block_task()
                 .await?;
-            let servers = taken(
-                &mcp_servers,
-                &token,
-                &initialized.agent_capabilities.mcp_capabilities,
-            );
+            let takes = &initialized.agent_capabilities.mcp_capabilities;
+            let (supported, unsupported): (Vec<&Mcp>, Vec<&Mcp>) = mcp_servers
+                .iter()
+                .partition(|server| supports(takes, server));
+            let servers = supported
+                .into_iter()
+                .map(|server| given(server, &token))
+                .collect();
+            for server in &unsupported {
+                eprintln!(
+                    "leaving out MCP server {}: the harness does not support {}",
+                    server.name, server.transport
+                );
+            }
+            // Every turn of the harness goes without them, and says so.
+            let unsupported = (!unsupported.is_empty()).then(|| {
+                let servers: Vec<Value> = unsupported
+                    .iter()
+                    .map(|server| {
+                        json!({"id": server.id, "name": server.name, "transport": server.transport})
+                    })
+                    .collect();
+                json!({ "servers": servers })
+            });
             let session_id = match session.clone() {
                 Some(session_id) => {
                     harness
@@ -641,6 +666,9 @@ async fn run_harness(
                     "started",
                     &json!({"harness_session_id": session_id.to_string()}),
                 );
+                if let Some(unsupported) = &unsupported {
+                    runner.emit(UNSUPPORTED, unsupported);
+                }
                 // A turn cancelled before its prompt is sent is never sent: a
                 // harness may fail if it is cancelled just as it receives the
                 // prompt.
@@ -769,34 +797,28 @@ fn instruct(instructions: &str) -> Result<(), Failure> {
     fs::write(file, instructions).map_err(Failure::runner)
 }
 
-/// Returns the MCP servers of a turn as the harness takes them, with the
-/// session token and the server's ID in every request. A server of a transport
-/// that the harness does not take is left out.
-fn taken(servers: &[Mcp], token: &str, takes: &McpCapabilities) -> Vec<McpServer> {
-    servers
-        .iter()
-        .filter_map(|server| {
-            let headers = vec![
-                HttpHeader::new("authorization", format!("Bearer {token}")),
-                HttpHeader::new(MCP_SERVER, &server.id),
-            ];
-            match server.transport.as_str() {
-                "http" if takes.http => Some(McpServer::Http(
-                    McpServerHttp::new(&server.name, &server.url).headers(headers),
-                )),
-                "sse" if takes.sse => Some(McpServer::Sse(
-                    McpServerSse::new(&server.name, &server.url).headers(headers),
-                )),
-                transport => {
-                    eprintln!(
-                        "leaving out MCP server {}: the harness does not take servers of {transport}",
-                        server.name
-                    );
-                    None
-                }
-            }
-        })
-        .collect()
+/// Reports whether the harness supports the transport of the MCP server, as
+/// it says in its response to `initialize`.
+fn supports(takes: &McpCapabilities, server: &Mcp) -> bool {
+    match server.transport.as_str() {
+        "http" => takes.http,
+        "sse" => takes.sse,
+        _ => false,
+    }
+}
+
+/// Returns the MCP server as the harness takes it, with the session token and
+/// the server's ID in every request.
+fn given(server: &Mcp, token: &str) -> McpServer {
+    let headers = vec![
+        HttpHeader::new("authorization", format!("Bearer {token}")),
+        HttpHeader::new(MCP_SERVER, &server.id),
+    ];
+    if server.transport == "sse" {
+        McpServer::Sse(McpServerSse::new(&server.name, &server.url).headers(headers))
+    } else {
+        McpServer::Http(McpServerHttp::new(&server.name, &server.url).headers(headers))
+    }
 }
 
 fn session_file() -> Result<PathBuf, Failure> {

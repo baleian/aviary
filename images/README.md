@@ -35,10 +35,10 @@ The runner talks to the harness over its standard input and output with the
   servers that the session has on, in `mcpServers`, as servers of `http`
   (Streamable HTTP) or `sse`. A server of a transport that the harness does
   not announce in the `mcpCapabilities` of its `initialize` response is left
-  out. Each server points to the Egress Proxy and has two headers, which
-  every request to it must carry: `authorization` with the session token, and
-  `x-aviary-mcp` with the server's ID. The harness names the server's tools
-  after the server's `name`.
+  out, and each turn says so. Each server points to the Egress Proxy and has
+  two headers, which every request to it must carry: `authorization` with
+  the session token, and `x-aviary-mcp` with the server's ID. The harness
+  names the server's tools after the server's `name`.
 - **Turns.** For each turn, the runner sends `session/prompt` with the
   message as text. The turn ends when the prompt returns, and the harness
   stays for the next turn.

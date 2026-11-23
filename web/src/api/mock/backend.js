@@ -816,6 +816,13 @@ function run(turn, play, { answers = {}, instant = false } = {}) {
   const session = db.sessions.find((other) => other.id === turn.session_id);
   const agent = db.agents.find((other) => other.id === session.agent_id);
   const harness = agent.harness === "codex" ? "codex" : "opencode";
+  // Codex does not support MCP servers of SSE, and the runner leaves them
+  // out.
+  const given = serversOf.get(turn.id) || [];
+  const supported = (server) =>
+    harness !== "codex" || server.transport !== "sse";
+  const servers = given.filter(supported);
+  const unsupported = given.filter((server) => !supported(server));
   const state = {
     cancelled: false,
     instant,
@@ -1079,7 +1086,7 @@ function run(turn, play, { answers = {}, instant = false } = {}) {
     agent,
     harness,
     // The MCP servers that the turn has, with their tools.
-    servers: serversOf.get(turn.id) || [],
+    servers,
     mcp: mcpTool,
     pause,
     emit: send,
@@ -1159,6 +1166,14 @@ function run(turn, play, { answers = {}, instant = false } = {}) {
         await pause(wait);
         turn.started_at = iso();
         send("turn.started", {});
+        if (unsupported.length)
+          send("mcp.unsupported", {
+            servers: unsupported.map(({ id, slug, transport }) => ({
+              id,
+              name: slug,
+              transport,
+            })),
+          });
         await pause(300);
       }
       await play(context);

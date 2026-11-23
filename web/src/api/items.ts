@@ -42,6 +42,10 @@ export function add(
       const items = at < 0 ? [...said.items, plan] : said.items.with(at, plan);
       return { ...said, items };
     }
+    case "mcp.unsupported": {
+      const unsupported = { ...data, type: "mcp_unsupported" } as Item;
+      return { ...said, items: [...said.items, unsupported] };
+    }
     case "approval.requested":
     case "approval.resolved":
       return { ...said, items: merge(said.items, "approval", data) };
