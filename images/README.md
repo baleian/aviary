@@ -1,9 +1,10 @@
 # Harness images
 
-A harness is the agent program, such as OpenCode or Codex, that runs the
-turns of a session. A harness image packages one harness. This page describes
-how Aviary uses a harness image and what the image must provide, so that you
-can build one for a harness that this repository does not ship.
+A harness is the agent program, such as OpenCode, Codex or Claude Code,
+that runs the turns of a session. A harness image packages one harness. This
+page describes how Aviary uses a harness image and what the image must
+provide, so that you can build one for a harness that this repository does
+not ship.
 
 ## How a session uses the image
 
@@ -107,7 +108,9 @@ images in this repository handle these cases:
   adapter has a model of its own choosing write a title for the session. It
   uses the default provider of the configuration, which is OpenAI if none is
   set. The image sets a default provider that reaches nothing, and gives each
-  session the provider of the agent's model.
+  session the provider of the agent's model. Claude Code has a model write a
+  title too, and names the models of other work by alias, as for some
+  subagents. Its image makes each alias the agent's model.
 - **Configuration written next to state.** OpenCode installs packages into
   its configuration directory, so the image keeps the configuration in the
   image, at `/etc/xdg`, not in the session home.
@@ -116,20 +119,36 @@ images in this repository handle these cases:
   full access.
 - **Settings not read from the environment.** Codex takes the model and the
   server URL from its configuration, so the image starts it through a small
-  script that puts the variables there.
+  script that puts the variables there. Claude Code reads variables of its
+  own, which the script of its image sets. Claude Code adds `/v1` to the
+  server URL itself, so the script takes off a `/v1` at the end of
+  `AVIARY_LLM_BASE_URL`, where the URLs of providers for the OpenAI APIs end.
 - **Approval tied to the harness's sandbox.** Codex asks a person only when a
   command needs to leave its sandbox, and the sandbox cannot start in a pod.
   For an agent that asks, the image still runs Codex in read-only mode: a
   command that the model tries in the sandbox fails, and runs once the model
   asks to run it outside and a person allows that. The failed attempt costs
   one more model request.
-- **Refusals.** Both harnesses here end the turn when a person refuses an
+- **A permission mode kept with the session.** Claude Code resumes a session
+  in the permission mode that the session last had, so a mode chosen for an
+  agent that does not ask would outlast a change to its approval. The image
+  starts every session in the default mode instead, in which Claude Code
+  asks before it runs a command that does more than read the workspace, or
+  before it changes a file. For an agent that does not ask, the runner
+  allows each action once.
+- **Refusals.** OpenCode and Codex end the turn when a person refuses an
   action: OpenCode with the stop reason `end_turn`, Codex with `cancelled`.
-  Aviary records the turn as the harness ends it.
+  Claude Code tells the model that the action was refused, and the turn goes
+  on. Aviary records the turn as the harness ends it.
 - **How long "always" lasts.** An `allow_always` answer lasts as long as the
   harness remembers it. OpenCode forgets it when its process exits. Codex
   writes a rule into its directory in the session home, and reads it again
-  when it is started again.
+  when it is started again. Claude Code does the same with its settings in
+  the workspace, `.claude/settings.local.json`.
+- **Requests to other services.** Claude Code sends telemetry and error
+  reports and checks for updates. Before WebFetch fetches a page, it asks
+  api.anthropic.com whether the page's host is safe, and fails if it cannot.
+  The image turns these off.
 - **Startup time.** The harness starts with the first turn of a session, and
   again with the first turn after the session sleeps or after the agent's
   model, approval or instructions are changed, so its startup time adds to
@@ -139,9 +158,10 @@ images in this repository handle these cases:
 
 | Image | Contents |
 | --- | --- |
-| `harness-base` | Node.js, git, Python with pip and venv, the `agent` user, and what the sandbox runs. The base of the other two. |
+| `harness-base` | Node.js, git, Python with pip and venv, the `agent` user, and what the sandbox runs. The base of the others. |
 | `harness-opencode` | [OpenCode](https://opencode.ai), run as `opencode acp`. It uses the Chat Completions API. For an agent that asks, it asks before it runs a command or changes a file. |
 | `harness-codex` | [Codex](https://github.com/openai/codex) through its ACP adapter, `codex-acp`. It uses the Responses API. For an agent that asks, it runs in read-only mode and asks before a command runs outside its sandbox. |
+| `harness-claude-code` | [Claude Code](https://code.claude.com) through its ACP adapter, `claude-agent-acp`. It uses the Messages API. For an agent that asks, it asks before it runs a command that does more than read the workspace, or changes a file. |
 
 ## Adding a harness
 
@@ -156,15 +176,15 @@ images in this repository handle these cases:
    The tests need no cluster. They run sessions in containers of the image,
    set up like the sandbox pods: as the agent's user, without capabilities,
    with a volume as the home. They send turns to the runner in the container
-   and use a mock model server that speaks the Chat Completions and Responses
-   APIs. The tests have the agent run shell commands, so the harness must
-   offer the model a tool with a `command` or `cmd` parameter. They fail a
-   harness that fetches anything for itself at startup, or that runs a
-   command of an agent that asks without asking. The containers reach nothing
-   but the mock server, which is also their proxy in the standard variables,
-   so the tests see what a harness fetches. git, npm, pip and curl use those
-   variables, and Node's `fetch` does with `NODE_USE_ENV_PROXY=1`, which
-   `images/harness-base` sets.
+   and use a mock model server that speaks the Chat Completions, Responses
+   and Messages APIs. The tests have the agent run shell commands, so the
+   harness must offer the model a tool with a `command` or `cmd` parameter.
+   They fail a harness that fetches anything for itself at startup, or that
+   runs a command of an agent that asks without asking. The containers reach
+   nothing but the mock server, which is also their proxy in the standard
+   variables, so the tests see what a harness fetches. git, npm, pip and curl
+   use those variables, and Node's `fetch` does with `NODE_USE_ENV_PROXY=1`,
+   which `images/harness-base` sets.
 3. Make the image available to the cluster. For the local cluster, run
    `kind load docker-image --name aviary <image>`.
 4. Add the harness to the chart values under a name of your choice:

@@ -33,3 +33,6 @@ runtime:
     codex:
       resources:
         requests: {cpu: 100m, memory: 192Mi}
+    claude-code:
+      resources:
+        requests: {cpu: 100m, memory: 256Mi}

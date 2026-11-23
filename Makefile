@@ -53,11 +53,12 @@ RUNNER_IMAGE := aviary-runner:dev
 HARNESS_BASE_IMAGE := aviary-harness-base:dev
 OPENCODE_IMAGE := aviary-harness-opencode:dev
 CODEX_IMAGE := aviary-harness-codex:dev
+CLAUDE_CODE_IMAGE := aviary-harness-claude-code:dev
 MOCK_LLM_IMAGE := aviary-mock-llm:dev
 WEB_IMAGE := aviary-web:dev
 # Images that test-harness tests, for example
 # make test-harness HARNESS_IMAGES=<image>
-HARNESS_IMAGES ?= $(OPENCODE_IMAGE) $(CODEX_IMAGE)
+HARNESS_IMAGES ?= $(OPENCODE_IMAGE) $(CODEX_IMAGE) $(CLAUDE_CODE_IMAGE)
 # The builds take the mirrors of the registries and, if the environment names
 # them, those of the packages: GOPROXY, NPM_CONFIG_REGISTRY, CRATES_IO for
 # crates.io and DEB_DEBIAN_ORG for http://deb.debian.org.
@@ -71,7 +72,7 @@ NODE_MIRRORS := $(filter-out docker.io=docker.io gcr.io=gcr.io ghcr.io=ghcr.io q
 	docker.io=$(DOCKER_IO) gcr.io=$(GCR_IO) ghcr.io=$(GHCR_IO) quay.io=$(QUAY_IO) registry.k8s.io=$(REGISTRY_K8S_IO))
 # The harnesses that the e2e tests. The first also runs the tests that do not
 # depend on a harness.
-E2E_HARNESSES ?= opencode codex
+E2E_HARNESSES ?= opencode codex claude-code
 # Runs Go in a container, so the host needs no Go toolchain. The arguments
 # are the module directory and extra docker options. The aviary-go volume
 # caches modules and builds. Go takes its module proxy from GOPROXY, if the
@@ -344,10 +345,11 @@ build:
 	$(BUILD) --build-arg RUNNER_IMAGE=$(RUNNER_IMAGE) --tag $(HARNESS_BASE_IMAGE) images/harness-base
 	$(BUILD) --tag $(OPENCODE_IMAGE) images/harness-opencode
 	$(BUILD) --tag $(CODEX_IMAGE) images/harness-codex
+	$(BUILD) --tag $(CLAUDE_CODE_IMAGE) images/harness-claude-code
 	$(BUILD) --file images/mock-llm/Dockerfile --tag $(MOCK_LLM_IMAGE) .
 
 images: build
-	kind load docker-image --name $(CLUSTER) $(SUPERVISOR_IMAGE) $(OPENCODE_IMAGE) $(CODEX_IMAGE) $(MOCK_LLM_IMAGE)
+	kind load docker-image --name $(CLUSTER) $(SUPERVISOR_IMAGE) $(OPENCODE_IMAGE) $(CODEX_IMAGE) $(CLAUDE_CODE_IMAGE) $(MOCK_LLM_IMAGE)
 
 # Creates the Secrets that the chart reads, and fails unless the cluster has
 # one database and one event log. Their URLs are built from their passwords.

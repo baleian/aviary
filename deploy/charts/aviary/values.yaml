@@ -185,6 +185,11 @@ runtime:
       resources:
         requests: {cpu: 250m, memory: 256Mi}
         limits: {memory: 4Gi}
+    claude-code:
+      image: aviary-harness-claude-code:dev
+      resources:
+        requests: {cpu: 250m, memory: 512Mi}
+        limits: {memory: 4Gi}
   # The session volume, mounted at /home. It holds the state of the harness
   # and the files of the agent, and is deleted with the sandbox. Whether its
   # data is deleted too depends on the storage class.

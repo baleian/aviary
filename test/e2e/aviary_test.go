@@ -251,7 +251,9 @@ func approval(t *testing.T, name string) {
 	allowed, refused := unique("allowed"), unique("refused")
 	answered("escalate touch "+allowed, "allow_once")
 	answered("escalate touch "+refused, "reject_once")
-	listed := answered("escalate ls", "allow_once")
+	// A harness may run a command that only reads without asking, and this
+	// one writes the listing too.
+	listed := answered("escalate ls | tee listing", "allow_once")
 	if files := listed.said() + listed.tools(); !strings.Contains(files, allowed) || strings.Contains(files, refused) {
 		t.Errorf("files after one allowed and one rejected command: %q", files)
 	}
@@ -287,7 +289,7 @@ func replaces(t *testing.T, name string) {
 	if second := run(t, session, "find "+after); !strings.Contains(second.said(), "present") {
 		t.Errorf("model was not sent the replaced instructions: said %q", second.said())
 	}
-	accepted := send(t, session, "escalate ls")
+	accepted := send(t, session, "escalate touch "+unique("replaced"))
 	events := read(t, accepted.ID)
 	var asked approvalRequest
 	events.until(t, "asked for approval", func(next event) bool {

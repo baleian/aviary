@@ -1,10 +1,10 @@
 # Aviary
 
-Aviary runs AI agent harnesses, such as OpenCode and Codex, on Kubernetes.
-Each message that a user sends is a turn, and each session runs its turns in
-a sandbox of its own: a pod that runs the agent's harness, with a volume
-that keeps the conversation and the files of the session between turns. The
-sandboxes are managed by
+Aviary runs AI agent harnesses, such as OpenCode, Codex and Claude Code, on
+Kubernetes. Each message that a user sends is a turn, and each session runs
+its turns in a sandbox of its own: a pod that runs the agent's harness, with
+a volume that keeps the conversation and the files of the session between
+turns. The sandboxes are managed by
 [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox).
 
 Aviary is meant as a reference for organizations that want to run agents for
@@ -153,7 +153,9 @@ http://localhost:8082.
 `make deploy` serves the API at http://localhost:8080. Register a model
 provider for a project, and send a message. A model provider is the base
 URL of a model endpoint and its API key. OpenCode needs an endpoint with the
-OpenAI Chat Completions API, and Codex one with the Responses API.
+OpenAI Chat Completions API, Codex one with the Responses API, and Claude
+Code one with the Anthropic Messages API, which it calls at `v1/messages`
+under the base URL, or at `messages` if the URL ends in `/v1`.
 
 The endpoint must be reachable from the cluster. A model server on your own
 machine is: register it at `localhost`, as in `http://localhost:11434/v1`.
@@ -269,8 +271,10 @@ see [`runner/src/main.rs`](runner/src/main.rs).
 
 A failed turn also has its reason and message in its `failure` field.
 Whether an error of the model endpoint fails the turn depends on the
-harness: OpenCode fails the turn, while Codex mostly ends it normally, with
-the error as the agent's reply.
+harness: OpenCode and Claude Code fail the turn, while Codex mostly ends it
+normally, with the error as the agent's reply. Claude Code first retries a
+request that the endpoint refused with 401, for about three minutes, unless
+the response has `x-should-retry: false`.
 
 ### Turn records
 
@@ -312,8 +316,9 @@ as it was.
 `usage` has `total_tokens`, `input_tokens` and `output_tokens`, and
 `thought_tokens`, `cached_read_tokens` and `cached_write_tokens` if the
 harness reports them. An ended turn has it too. It is what the harness
-reports, not a measurement, and harnesses count differently: Codex reports
-the sum over the model requests of a turn, OpenCode only the last request.
+reports, not a measurement, and harnesses count differently: Codex and
+Claude Code report the sum over the model requests of a turn, OpenCode only
+the last request.
 The Egress Proxy log is reliable: it has every model request, with its turn.
 
 ### Approval
@@ -330,8 +335,9 @@ that connects later can find it.
 - **What needs approval depends on the harness** and on how its image
   configures it. Aviary passes the requests and the answers on unchanged. In
   the images in this repository, OpenCode asks before it runs a command or
-  changes a file, and Codex before a command runs outside its sandbox: see
-  [`images/README.md`](images/README.md).
+  changes a file, Claude Code before it runs a command that does more than
+  read the workspace or changes a file, and Codex before a command runs
+  outside its sandbox: see [`images/README.md`](images/README.md).
 - **A request waits as long as its turn may run.** The time spent waiting
   counts toward `runtime.maxTurnSeconds`, because the sandbox keeps running
   and the turn keeps its place among the running turns. A turn whose time
@@ -340,9 +346,10 @@ that connects later can find it.
   as `cancelled`.
 - **What an option does depends on the harness too.** `allow_always` lasts
   as long as the harness remembers it: in OpenCode until the harness process
-  ends, for example when the session sleeps, and in Codex for the rest of
-  the session. After a refusal, both end the turn, Codex with the stop
-  reason `cancelled`.
+  ends, for example when the session sleeps, and in Codex and Claude Code for
+  the rest of the session. After a refusal, OpenCode and Codex end the turn,
+  Codex with the stop reason `cancelled`, while Claude Code tells the model
+  and goes on.
 - **Approval is not a security boundary.** The harness that asks runs in
   the sandbox, next to the agent's tools and as the same user. Approval
   keeps a well-meaning agent from acting on a mistake. What a sandbox can

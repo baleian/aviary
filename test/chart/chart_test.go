@@ -309,10 +309,12 @@ func TestSupervisorSettings(t *testing.T) {
 	if err := json.Unmarshal([]byte(settings["AVIARY_HARNESSES"]), &harnesses); err != nil {
 		t.Fatalf("parse AVIARY_HARNESSES %s: %v", settings["AVIARY_HARNESSES"], err)
 	}
-	opencode, codex := harnesses["opencode"], harnesses["codex"]
-	if len(harnesses) != 2 || opencode.Image != "aviary-harness-opencode:dev" || codex.Image != "aviary-harness-codex:dev" ||
+	opencode, codex, claude := harnesses["opencode"], harnesses["codex"], harnesses["claude-code"]
+	if len(harnesses) != 3 || opencode.Image != "aviary-harness-opencode:dev" || codex.Image != "aviary-harness-codex:dev" ||
+		claude.Image != "aviary-harness-claude-code:dev" ||
 		!reflect.DeepEqual(opencode.Resources, resources{"requests": {"cpu": "250m", "memory": "1Gi"}, "limits": {"memory": "8Gi"}}) ||
-		!reflect.DeepEqual(codex.Resources, resources{"requests": {"cpu": "250m", "memory": "256Mi"}, "limits": {"memory": "4Gi"}}) {
+		!reflect.DeepEqual(codex.Resources, resources{"requests": {"cpu": "250m", "memory": "256Mi"}, "limits": {"memory": "4Gi"}}) ||
+		!reflect.DeepEqual(claude.Resources, resources{"requests": {"cpu": "250m", "memory": "512Mi"}, "limits": {"memory": "4Gi"}}) {
 		t.Errorf("AVIARY_HARNESSES = %s", settings["AVIARY_HARNESSES"])
 	}
 }
