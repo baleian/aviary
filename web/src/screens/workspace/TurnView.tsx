@@ -380,9 +380,22 @@ function Blocks({
   const approvals = items.filter((item) => item.type === "approval");
   const asked = (call?: string) =>
     approvals.find((item) => call && item.tool_call?.id === call);
-  const tools = new Set(
-    items.filter((item) => item.type === "tool_call").map((item) => item.id),
+  const calls = new Map(
+    items.flatMap((item) =>
+      item.type === "tool_call" ? [[item.id, item]] : [],
+    ),
   );
+  // A harness may give the tool call of a request only by its ID: the call
+  // that it reported fills in the rest.
+  const described = (request: ApprovalItem): ApprovalItem => {
+    const call = calls.get(request.tool_call?.id);
+    if (!call) return request;
+    const { title, kind, input, mcp } = call;
+    return {
+      ...request,
+      tool_call: { title, kind, input, mcp, ...request.tool_call },
+    };
+  };
   const out: ReactNode[] = [];
   let steps: ReactNode[] | null = null;
   const close = () => {
@@ -415,19 +428,20 @@ function Blocks({
     if (item.type === "approval") {
       if (!item.outcome) {
         close();
+        const request = described(item);
         // The request stays the same one when the events of the turn come
         // after its record.
         out.push(
           <Request
             key={"request" + (item.id ?? index)}
-            item={item}
-            server={item.tool_call && serverOf(item.tool_call, servers)}
+            item={request}
+            server={request.tool_call && serverOf(request.tool_call, servers)}
             asked={asker}
             onAnswer={onAnswer}
             onStop={onStop}
           />,
         );
-      } else if (!tools.has(item.tool_call?.id)) {
+      } else if (!calls.has(item.tool_call?.id)) {
         // The answer to a request shows with its tool call, if it has one.
         close();
         out.push(

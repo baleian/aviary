@@ -454,6 +454,44 @@ it("leaves a tool call that waits for approval to its request", () => {
   ]);
 });
 
+it("describes a request that names its tool call only by its ID", () => {
+  const servers = [
+    {
+      id: "m1",
+      project_id: "p1",
+      slug: "web",
+      name: "Web search",
+      url: "https://web.example.com/mcp",
+      transport: "http",
+      created_at: "2026-11-22T09:00:00Z",
+      updated_at: "2026-11-22T09:00:00Z",
+    },
+  ] satisfies McpServer[];
+  const { element } = show(
+    { state: "running", ended_at: undefined },
+    [
+      {
+        type: "tool_call",
+        id: "c1",
+        kind: "execute",
+        title: "mcp.web.headers",
+        status: "in_progress",
+        mcp: { server: "m1", slug: "web", tool: "headers" },
+      },
+      {
+        type: "approval",
+        id: "r1",
+        tool_call: { id: "c1", kind: "execute" },
+        options: [],
+      },
+    ],
+    { servers },
+  );
+  const card = element.querySelector(".appr")!;
+  expect(card.querySelector(".cmd span")!.textContent).toBe("headers");
+  expect(card.querySelector(".tag.srv")!.textContent).toBe("Web search");
+});
+
 it("shows a request that waits, and who may answer it", async () => {
   const user = userEvent.setup();
   const waits = { state: "running", ended_at: undefined } as const;
