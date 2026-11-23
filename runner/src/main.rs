@@ -72,12 +72,13 @@ const HARNESS_COMMAND: &str = "AVIARY_HARNESS_COMMAND";
 const MAX_TOOL_OUTPUT: &str = "AVIARY_MAX_TOOL_OUTPUT_BYTES";
 const INSTRUCTIONS_FILE: &str = "AVIARY_INSTRUCTIONS_FILE";
 const MCP_TOOL_TITLE: &str = "AVIARY_MCP_TOOL_TITLE";
+const MCP_SERVERS: &str = "AVIARY_MCP_SERVERS";
 const ADDRESS: &str = "AVIARY_RUNNER_ADDRESS";
 /// The session token, by which the Egress Proxy knows the turn.
 const TOKEN: &str = "AVIARY_LLM_API_KEY";
 
 /// The header that names the MCP server of a request to the Egress Proxy.
-const MCP_SERVER: &str = "x-aviary-mcp";
+const MCP_SERVER_HEADER: &str = "x-aviary-mcp";
 
 /// The listen address if `AVIARY_RUNNER_ADDRESS` is not set.
 const LISTENS: &str = "0.0.0.0:8700";
@@ -498,6 +499,8 @@ async fn run_harness(
         .args(command.arguments())
         .envs(command.environment())
         .envs(&first.start.environment)
+        // For an image that sets the harness up for each server.
+        .env(MCP_SERVERS, server_names(&first.start.mcp_servers))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .kill_on_drop(true)
@@ -810,6 +813,12 @@ fn instruct(instructions: &str) -> Result<(), Failure> {
     fs::write(file, instructions).map_err(Failure::runner)
 }
 
+/// Returns the names of the MCP servers, separated by spaces.
+fn server_names(servers: &[Mcp]) -> String {
+    let names: Vec<&str> = servers.iter().map(|server| server.name.as_str()).collect();
+    names.join(" ")
+}
+
 /// Reports whether the harness supports the transport of the MCP server, as
 /// it says in its response to `initialize`.
 fn supports(takes: &McpCapabilities, server: &Mcp) -> bool {
@@ -825,7 +834,7 @@ fn supports(takes: &McpCapabilities, server: &Mcp) -> bool {
 fn given(server: &Mcp, token: &str) -> McpServer {
     let headers = vec![
         HttpHeader::new("authorization", format!("Bearer {token}")),
-        HttpHeader::new(MCP_SERVER, &server.id),
+        HttpHeader::new(MCP_SERVER_HEADER, &server.id),
     ];
     if server.transport == "sse" {
         McpServer::Sse(McpServerSse::new(&server.name, &server.url).headers(headers))

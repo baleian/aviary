@@ -555,6 +555,10 @@ async fn harness_starts_with_the_mcp_servers_of_the_turn() {
     );
     let none = run("t4", "mcp", json!([])).await;
     assert_eq!(said(&none), "none");
+
+    // The harness also has their names, from its start.
+    let named = run("t5", "env AVIARY_MCP_SERVERS", json!([tracker, docs])).await;
+    assert_eq!(said(&named), "tracker docs");
 }
 
 #[tokio::test(flavor = "multi_thread")]
