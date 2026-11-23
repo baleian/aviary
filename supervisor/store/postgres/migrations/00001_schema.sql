@@ -77,8 +77,11 @@ create table providers (
     name text not null,
     -- The base URL of the model endpoint.
     url text not null,
-    -- The headers that the requests to the endpoint carry, as a JSON array
-    -- of {"name": "...", "value": "..."}. It is null if there are none.
+    -- The headers that the requests to the endpoint carry, as a JSON array.
+    -- Each is {"name": "...", "value": "..."}, {"name": "...", "sealed":
+    -- "..."} with a secret encrypted like the API key, or {"name": "...",
+    -- "at": {"store": "...", "path": "...", "key": "..."}} for a secret in a
+    -- secret store. It is null if there are none.
     headers jsonb,
     -- The API key, encrypted with a key that the database does not hold. It
     -- is null if the endpoint takes no key, or if the key is in a secret

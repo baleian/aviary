@@ -319,6 +319,55 @@ func TestTheModelsOfAProviderAreListed(t *testing.T) {
 	}
 }
 
+// A provider is tried before it is replaced with the secrets that it stores:
+// the request names it, and they are lent as a replacement would keep them,
+// only while the URL stays the same.
+func TestAProviderIsTriedWithTheSecretsThatItStores(t *testing.T) {
+	t.Parallel()
+	aviary, standIn := proxied(t, map[string]http.HandlerFunc{
+		"model.example.com:8000": keyedEndpoint("sk-a-key"),
+		"gateway.example.com":    routedEndpoint("X-Gateway-Route", "team-a"),
+	})
+	s := aviary.supervisor()
+	standIn.asks = s
+	project := s.project()
+	providers := "/v1/projects/" + project + "/providers"
+	stored := s.create(providers, `{"name": "stored", "url": "http://model.example.com:8000/v1", "api_key": {"value": "sk-a-key"}}`)
+	routed := s.create(providers, `{"name": "routed", "url": "https://gateway.example.com/v1", "headers": [{"name": "x-gateway-route", "secret": {"value": "team-a"}}]}`)
+	theirs := s.create("/v1/projects/"+s.project()+"/providers", `{"name": "theirs", "url": "http://model.example.com:8000/v1", "api_key": {"value": "sk-a-key"}}`)
+
+	for name, test := range map[string]struct {
+		body string
+		want listed
+	}{
+		"the stored key": {`{"url": "http://model.example.com:8000/v1", "api_key": {"stored": true}, "provider": "` + stored + `"}`,
+			listed{reached: true, status: http.StatusOK, models: "model-a,model-b"}},
+		"another key in its place": {`{"url": "http://model.example.com:8000/v1", "api_key": {"value": "sk-another"}, "provider": "` + stored + `"}`,
+			listed{reached: true, status: http.StatusUnauthorized}},
+		"the stored secret of a header": {`{"url": "https://gateway.example.com/v1", "headers": [{"name": "x-gateway-route", "secret": {"stored": true}}], "provider": "` + routed + `"}`,
+			listed{reached: true, status: http.StatusOK, models: "routed-model"}},
+	} {
+		if got := s.modelsAt(project, test.body); got != test.want {
+			t.Errorf("%s: %+v, want %+v", name, got, test.want)
+		}
+	}
+	for name, test := range map[string]struct{ body, why string }{
+		"another URL":                   {`{"url": "http://model.example.com:8000/v2", "api_key": {"stored": true}, "provider": "` + stored + `"}`, "api_key must be given again: the URL changed"},
+		"no provider":                   {`{"url": "http://model.example.com:8000/v1", "api_key": {"stored": true}}`, "api_key has no stored secret to keep"},
+		"a provider of another project": {`{"url": "http://model.example.com:8000/v1", "api_key": {"stored": true}, "provider": "` + theirs + `"}`, "provider must be the ID of a model provider of the project"},
+		"an unknown provider":           {`{"url": "http://model.example.com:8000/v1", "provider": "` + uuid.NewString() + `"}`, "provider must be the ID of a model provider of the project"},
+	} {
+		var refused struct{ Message string }
+		if status, _ := s.request("POST", "/v1/projects/"+project+"/providers/models", test.body, &refused); status != http.StatusBadRequest || refused.Message != test.why {
+			t.Errorf("%s: %d %q, want 400 %q", name, status, refused.Message, test.why)
+		}
+	}
+	// A try changes nothing of the provider.
+	if got := s.listing("GET", "/v1/providers/"+stored+"/models", ""); got != (listed{reached: true, status: http.StatusOK, models: "model-a,model-b"}) {
+		t.Errorf("the provider after the tries: %+v", got)
+	}
+}
+
 // The models of an endpoint are not listed if its provider would not be
 // registered.
 func TestAnEndpointWhoseModelsAreNotListed(t *testing.T) {

@@ -190,12 +190,18 @@ type Provider struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// Header is a header of the requests to a provider's endpoint. Its value is
-// not a secret.
+// Header is a header of the requests to an endpoint. It has a value that is
+// not a secret, a secret that Aviary stores, or a secret in a secret store of
+// the project.
 type Header struct {
 	// Name is the name of the header, in lowercase.
 	Name  string `json:"name"`
-	Value string `json:"value"`
+	Value string `json:"value,omitempty"`
+	// Sealed is the stored secret, sealed for the place of the header, such
+	// as ProviderHeaderPlace.
+	Sealed []byte `json:"sealed,omitempty"`
+	// At locates the secret if it is kept in a secret store.
+	At *SecretReference `json:"at,omitempty"`
 }
 
 // SecretReference locates a value in a secret store of the project: the path
@@ -235,6 +241,12 @@ func SecretStoreCredentialPlace(id uuid.UUID) string {
 // A secret sealed for one place cannot be opened for another.
 func ProviderKeyPlace(id uuid.UUID) string {
 	return "providers/" + id.String() + "/api_key"
+}
+
+// ProviderHeaderPlace returns the place that the secret of a provider's
+// header is sealed for.
+func ProviderHeaderPlace(id uuid.UUID, name string) string {
+	return "providers/" + id.String() + "/headers/" + name
 }
 
 // Turn is a message to a session and the work that the agent does in reply.

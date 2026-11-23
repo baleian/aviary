@@ -1021,8 +1021,14 @@ func (suite suite) testProviders(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	project := st.project()
-	// The headers of a provider stay in the order in which they are given.
-	headers := []store.Header{{Name: "x-team", Value: "a team"}, {Name: "accept-language", Value: `en;q=0.8, "*"`}}
+	// The headers of a provider stay in the order in which they are given,
+	// with their secrets.
+	headers := []store.Header{
+		{Name: "x-team", Value: "a team"},
+		{Name: "x-token", Sealed: []byte("a sealed secret")},
+		{Name: "x-team-token", At: &store.SecretReference{Store: uuid.New(), Path: "team/gateway", Key: "token"}},
+		{Name: "accept-language", Value: `en;q=0.8, "*"`},
+	}
 	given := store.Provider{
 		ID: uuid.New(), ProjectID: project.ID, Name: "a provider", URL: "https://api.example.com/v1", Headers: headers, APIKey: []byte("a sealed key"),
 	}

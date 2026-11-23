@@ -170,7 +170,15 @@ func headersOf(headers []store.Header) []store.Header {
 	if len(headers) == 0 {
 		return nil
 	}
-	return slices.Clone(headers)
+	headers = slices.Clone(headers)
+	for i, header := range headers {
+		headers[i].Sealed = bytes.Clone(header.Sealed)
+		if header.At != nil {
+			at := *header.At
+			headers[i].At = &at
+		}
+	}
+	return headers
 }
 
 func secretStoreOf(secrets store.SecretStore) store.SecretStore {

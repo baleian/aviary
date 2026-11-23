@@ -20,6 +20,7 @@ import (
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/google/uuid"
+	"golang.org/x/net/http/httpguts"
 	rpcstatus "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -178,7 +179,15 @@ func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*
 	if forward {
 		return allowed, nil
 	}
-	endpoint, refusal := a.endpoint(ctx, origin, request.GetAttributes().GetRequest().GetHttp().GetPath())
+	stores, err := a.storesOf(ctx, origin)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, status.FromContextError(ctx.Err()).Err()
+		}
+		slog.ErrorContext(ctx, "look up the secret stores of a provider", "error", err)
+		return nil, status.Error(codes.Internal, "internal error")
+	}
+	endpoint, refusal := a.endpoint(ctx, origin, stores, request.GetAttributes().GetRequest().GetHttp().GetPath())
 	if refusal != nil {
 		return refusal, nil
 	}
@@ -218,13 +227,43 @@ func (a *authorizer) origin(ctx context.Context, token string, forward bool) (st
 	return origin, true, nil
 }
 
+// storesOf returns the secret stores of the project that keep the secrets of
+// the origin's provider, by ID: the store of its key, which the origin has,
+// and those of its headers.
+func (a *authorizer) storesOf(ctx context.Context, origin store.Origin) (map[uuid.UUID]store.SecretStore, error) {
+	stores := map[uuid.UUID]store.SecretStore{}
+	if in := origin.SecretStore; in != nil {
+		stores[in.ID] = *in
+	}
+	for _, header := range origin.Provider.Headers {
+		if header.At == nil {
+			continue
+		}
+		if _, known := stores[header.At.Store]; known {
+			continue
+		}
+		in, err := a.store.SecretStore(ctx, header.At.Store)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			continue
+		case err != nil:
+			return nil, fmt.Errorf("secret store %s of a header: %w", header.At.Store, err)
+		}
+		if in.ProjectID == origin.ProjectID {
+			stores[in.ID] = in
+		}
+	}
+	return stores, nil
+}
+
 // endpoint returns how the proxy forwards a model request for path: to the
 // endpoint of the turn's provider, with the provider's headers, and with its
 // API key in place of the session token. A header of the provider replaces
 // one that the request has by the same name. A provider without a key gets no
 // Authorization header. A path outside the path of the provider's URL, or a
-// key that cannot be read, is refused.
-func (a *authorizer) endpoint(ctx context.Context, origin store.Origin, path string) (*authv3.OkHttpResponse, *authv3.CheckResponse) {
+// secret that cannot be read, is refused. stores are the secret stores of
+// the provider's secrets.
+func (a *authorizer) endpoint(ctx context.Context, origin store.Origin, stores map[uuid.UUID]store.SecretStore, path string) (*authv3.OkHttpResponse, *authv3.CheckResponse) {
 	provider := origin.Provider
 	address, err := url.Parse(provider.URL)
 	if err != nil {
@@ -245,22 +284,18 @@ func (a *authorizer) endpoint(ctx context.Context, origin store.Origin, path str
 		set(upstreamTLSHeader, strconv.FormatBool(address.Scheme == "https")),
 	}}
 	for _, header := range provider.Headers {
-		endpoint.Headers = append(endpoint.Headers, set(header.Name, header.Value))
+		value, refusal := a.valueOf(ctx, provider, stores, header)
+		if refusal != nil {
+			return nil, refusal
+		}
+		endpoint.Headers = append(endpoint.Headers, set(header.Name, value))
 	}
 	var key string
 	switch in := origin.SecretStore; {
 	case provider.APIKeyAt != nil && in != nil:
-		credential, err := a.keys.Open(in.Credential, store.SecretStoreCredentialPlace(in.ID))
-		if err != nil {
-			slog.ErrorContext(ctx, "decrypt secret store credential", "store", in.ID, "error", err)
-			return nil, refused(typev3.StatusCode_ServiceUnavailable, "cannot read the credential of the model provider's secret store\n")
-		}
-		// The pod is told why the project's own store cannot be read. The
-		// error holds nothing of the key.
-		if key, err = a.stores.Read(ctx, *in, credential, provider.APIKeyAt.Path, provider.APIKeyAt.Key); err != nil {
-			slog.WarnContext(ctx, "read provider API key from secret store", "provider", provider.ID, "store", in.ID, "error", err)
-			return nil, refused(typev3.StatusCode_ServiceUnavailable,
-				"cannot read the model provider's API key from its secret store: "+err.Error()+"\n")
+		var refusal *authv3.CheckResponse
+		if key, refusal = a.read(ctx, *in, *provider.APIKeyAt, "the model provider's API key"); refusal != nil {
+			return nil, refusal
 		}
 	case provider.APIKey != nil:
 		if key, err = a.keys.Open(provider.APIKey, store.ProviderKeyPlace(provider.ID)); err != nil {
@@ -273,6 +308,55 @@ func (a *authorizer) endpoint(ctx context.Context, origin store.Origin, path str
 	}
 	endpoint.Headers = append(endpoint.Headers, set("authorization", "Bearer "+key))
 	return endpoint, nil
+}
+
+// valueOf returns the value of a header of the provider: the value that it
+// has, its stored secret, or its secret from one of the stores. A secret that
+// cannot be read refuses the request.
+func (a *authorizer) valueOf(ctx context.Context, provider store.Provider, stores map[uuid.UUID]store.SecretStore, header store.Header) (string, *authv3.CheckResponse) {
+	what := "the model provider's header " + header.Name
+	switch {
+	case header.At != nil:
+		in, found := stores[header.At.Store]
+		if !found {
+			return "", refused(typev3.StatusCode_ServiceUnavailable, "the secret store of "+what+" is not in the project\n")
+		}
+		value, refusal := a.read(ctx, in, *header.At, what)
+		if refusal != nil {
+			return "", refusal
+		}
+		// A secret that a store holds may end with a line break.
+		if value = strings.TrimSpace(value); value == "" || !httpguts.ValidHeaderFieldValue(value) {
+			return "", refused(typev3.StatusCode_ServiceUnavailable, "the secret of "+what+" in its secret store is not the value of an HTTP header\n")
+		}
+		return value, nil
+	case header.Sealed != nil:
+		value, err := a.keys.Open(header.Sealed, store.ProviderHeaderPlace(provider.ID, header.Name))
+		if err != nil {
+			slog.ErrorContext(ctx, "decrypt provider header", "provider", provider.ID, "header", header.Name, "error", err)
+			return "", refused(typev3.StatusCode_ServiceUnavailable, "cannot read "+what+"\n")
+		}
+		return value, nil
+	}
+	return header.Value, nil
+}
+
+// read returns a secret from a secret store, or the refusal of the request
+// that needs it, which says why: the pod is told why the project's own store
+// cannot be read, and the error holds nothing of the secret. what names the
+// secret.
+func (a *authorizer) read(ctx context.Context, in store.SecretStore, at store.SecretReference, what string) (string, *authv3.CheckResponse) {
+	credential, err := a.keys.Open(in.Credential, store.SecretStoreCredentialPlace(in.ID))
+	if err != nil {
+		slog.ErrorContext(ctx, "decrypt secret store credential", "store", in.ID, "error", err)
+		return "", refused(typev3.StatusCode_ServiceUnavailable, "cannot read the credential of the model provider's secret store\n")
+	}
+	value, err := a.stores.Read(ctx, in, credential, at.Path, at.Key)
+	if err != nil {
+		slog.WarnContext(ctx, "read a secret of a model provider from its secret store", "secret", what, "store", in.ID, "error", err)
+		return "", refused(typev3.StatusCode_ServiceUnavailable, "cannot read "+what+" from its secret store: "+err.Error()+"\n")
+	}
+	return value, nil
 }
 
 // upstream returns the host that the proxy connects to for a provider at the

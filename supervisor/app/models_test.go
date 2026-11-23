@@ -231,6 +231,58 @@ func TestModelRequestsCarryTheHeadersOfTheirProvider(t *testing.T) {
 	}
 }
 
+// The secret of a header is read when a model request needs it, as a key is:
+// a stored one is opened, and one in a secret store is read from the store.
+// A secret that cannot be read refuses the request with the reason.
+func TestModelRequestsCarryTheSecretsOfTheirHeaders(t *testing.T) {
+	t.Parallel()
+	aviary := install(t)
+	s := aviary.supervisor()
+	project := s.project()
+	const address = "https://" + storeHost
+	kept := s.create("/v1/projects/"+project+"/secret-stores", scriptedStore("a store", address, "a-credential", "a-credential"))
+	aviary.secrets.put(address, "team/gateway", "token", "t0ken\n")
+	provider := s.create("/v1/projects/"+project+"/providers", `{"name": "a gateway", "url": "https://gateway.example.com/v1",
+		"headers": [{"name": "x-token", "secret": {"value": "s3cret"}}, {"name": "x-team-token", "secret": `+in(kept, "team/gateway", "token")+`}]}`)
+	agent := s.agent(project, `{"harness": "opencode", "model": {"provider": "`+provider+`", "name": "a-model"}}`)
+	token := aviary.token(aviary.given(s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID).Sandbox)
+
+	// A secret that a store holds goes without the line break at its end.
+	got := named(t, s.check(token, false, "/v1/chat/completions"))
+	if got == nil || *got != (endpoint{host: "gateway.example.com", secure: "true", keyless: true, headers: "x-token: s3cret\nx-team-token: t0ken\n"}) {
+		t.Errorf("model request endpoint = %+v", got)
+	}
+	if got := named(t, s.check(token, true, "/v1/chat/completions")); got != nil {
+		t.Errorf("forward proxy request endpoint = %+v, want none", got)
+	}
+
+	// A Supervisor that has not read the secret reads it when it is needed.
+	for value, why := range map[string]string{
+		"t0ken\nx-other: a": "the secret of the model provider's header x-team-token in its secret store is not the value of an HTTP header\n",
+		"":                  "cannot read the model provider's header x-team-token from its secret store: the store has no value at the path and under the key\n",
+	} {
+		aviary.secrets.put(address, "team/gateway", "token", value)
+		if status, said := refusal(aviary.supervisor().check(token, false, "/v1/chat/completions")); status != http.StatusServiceUnavailable || said != why {
+			t.Errorf("request with the secret %q in the store: denied with %d %q", value, status, said)
+		}
+	}
+
+	// A secret sealed with the keys of another installation does not open.
+	record, err := aviary.records.Provider(context.Background(), uuid.MustParse(provider))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Headers[0].Sealed, err = testenv.Keys(t).Seal("s3cret", store.ProviderHeaderPlace(record.ID, "x-token")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := aviary.records.ReplaceProvider(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	if status, why := refusal(s.check(token, false, "/v1/chat/completions")); status != http.StatusServiceUnavailable || why != "cannot read the model provider's header x-token\n" {
+		t.Errorf("request with a secret that does not open: denied with %d %q", status, why)
+	}
+}
+
 // To the proxy, the local host of a provider's URL is the proxy itself. An
 // installation can name the host that stands in for it: the proxy then
 // connects there, on the port of the URL.

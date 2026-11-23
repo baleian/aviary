@@ -205,9 +205,9 @@ a client shows the slug when the name is empty.
 | Request | Description |
 | --- | --- |
 | `POST /v1/projects` | Creates a project. Body: `{"slug": "...", "name": "..."}`. Returns 409 if another project has the slug. Administrators only. |
-| `POST /v1/projects/{id}/providers` | Creates a model provider in the project. Body: `{"name": "...", "url": "...", "api_key": {"value": "..."}}`. The URL is the base URL of a model endpoint, and the key is sent to it as a bearer token. A key in a secret store of the project is given by its location: `"api_key": {"store": "...", "path": "...", "key": "..."}`. An endpoint that takes no key has no `api_key`. An endpoint that needs other headers is given them: `"headers": [{"name": "...", "value": "..."}]`. See [Model providers](#model-providers). |
-| `PUT /v1/providers/{id}` | Replaces the name, the URL, the headers and the key of a provider together: a provider given no headers or no key has none afterwards. |
-| `POST /v1/projects/{id}/providers/models` | Lists the models of a model endpoint that need not be registered. Body: the `url`, the `headers` and the `api_key` of a provider, which is not stored. Aviary asks the endpoint for its models, `GET models` under the URL, with the headers and the key and through the Egress Proxy, as the model requests of a turn go. Returns `{"reached": true, "status": 200, "models": ["..."], "duration_ms": 12}`: the status of the endpoint's answer, and the IDs of its models if the answer is a list of models as the OpenAI API gives it. An endpoint that did not answer returns `{"reached": false, "reason": "...", "duration_ms": 5003}`. |
+| `POST /v1/projects/{id}/providers` | Creates a model provider in the project. Body: `{"name": "...", "url": "...", "api_key": {"value": "..."}}`. The URL is the base URL of a model endpoint, and the key is sent to it as a bearer token. A key in a secret store of the project is given by its location: `"api_key": {"store": "...", "path": "...", "key": "..."}`. An endpoint that takes no key has no `api_key`. An endpoint that needs other headers is given them: `"headers": [{"name": "...", "value": "..."}]`, or with a secret in place of a value, given as a key is: `{"name": "...", "secret": {"value": "..."}}`. See [Model providers](#model-providers). |
+| `PUT /v1/providers/{id}` | Replaces the name, the URL, the headers and the key of a provider together: a provider given no headers or no key has none afterwards. While the URL stays the same, `{"stored": true}` in place of a secret keeps the one that is stored. |
+| `POST /v1/projects/{id}/providers/models` | Lists the models of a model endpoint that need not be registered. Body: the `url`, the `headers` and the `api_key` of a provider, which is not stored, and the `provider` that it would replace, if there is one: `{"stored": true}` then keeps a secret of that provider as `PUT` would. Aviary asks the endpoint for its models, `GET models` under the URL, with the headers and the key and through the Egress Proxy, as the model requests of a turn go. Returns `{"reached": true, "status": 200, "models": ["..."], "duration_ms": 12}`: the status of the endpoint's answer, and the IDs of its models if the answer is a list of models as the OpenAI API gives it. An endpoint that did not answer returns `{"reached": false, "reason": "...", "duration_ms": 5003}`. |
 | `GET /v1/providers/{id}/models` | Lists the models of a provider in the same way, with the URL, the headers and the key that it has. |
 | `POST /v1/projects/{id}/secret-stores` | Registers a secret store of the project. Body: `{"name": "...", "kind": "...", "settings": {...}, "credential": {"value": "..."}}`. See [Secret stores](#secret-stores). |
 | `PUT /v1/secret-stores/{id}` | Replaces the name, the kind, the settings and the credential of a secret store together. |
@@ -500,12 +500,16 @@ role from then on. The defaults are:
 The turns of an agent send their model requests to the endpoint of the
 agent's provider, for the agent's model.
 
-- **Keys are write-only.** A key is stored encrypted with a key of the
-  installation, which the database does not hold. A provider is returned
-  with `"api_key": {"stored": true}` in place of its key.
-- **A key can stay in a secret store of the project.** Aviary then stores
-  where the key is, not the key, and reads it from the store when a model
-  request needs it. See [Secret stores](#secret-stores).
+- **Secrets are write-only.** A key, or the secret of a header, is stored
+  encrypted with a key of the installation, which the database does not
+  hold. A provider is returned with `{"stored": true}` in its place, as
+  `"api_key": {"stored": true}`.
+- **A stored secret stays with its URL.** A provider that is replaced keeps
+  a secret that is given as `{"stored": true}`, but only if its URL stays
+  the same: a secret goes to no endpoint that it was not given for.
+- **A secret can stay in a secret store of the project.** Aviary then
+  stores where the secret is, not the secret, and reads it from the store
+  when a model request needs it. See [Secret stores](#secret-stores).
 - **A key goes only to its endpoint.** The Egress Proxy adds it to the model
   requests of the turns that use the provider, and forwards them to the
   host of the provider's URL, under the URL's path. Nothing else that a
@@ -517,8 +521,11 @@ agent's provider, for the agent's model.
   Egress Proxy sets them on the model requests of the turns that use the
   provider, in place of what a sandbox sends by those names. A header that
   says where a request goes or how it is carried, such as `host`, cannot be
-  one of them, nor can `authorization`, which carries the key. Their values
-  are not secrets: a provider is returned with its headers.
+  one of them, nor can `authorization`, which carries the key. A value that
+  is a secret is given as a key is, as
+  `{"name": "x-team-token", "secret": {"value": "..."}}` or by its location
+  in a secret store. Other values are not secrets: a provider is returned
+  with them.
 - **A provider can be replaced while turns use it.** Their next model
   request uses the new endpoint, headers and key.
 - **The models of a provider can be listed**, before it is registered and
@@ -537,7 +544,8 @@ agent's provider, for the agent's model.
 
 A project that keeps its secrets in a store of its own can register the
 store, and then give the location of a secret in the store instead of the
-secret itself. The key of a model provider is such a secret.
+secret itself. The key of a model provider, and the secret of one of its
+headers, are such secrets.
 
 ```sh
 store=$(curl -s -X POST localhost:8080/v1/projects/$project/secret-stores \
@@ -559,16 +567,16 @@ provider=$(curl -s -X POST localhost:8080/v1/projects/$project/providers \
   that `supervisor.secretStores.allowedHosts` lists. By default it lists
   none.
 - **Errors are reported at once.** The Supervisor logs in to a store before
-  it accepts the store, and reads a key from its location before it accepts
-  the provider.
+  it accepts the store, and reads a secret from its location before it
+  accepts the provider.
 - **Values are read when they are used.** A Supervisor caches a value for
   `supervisor.secretStores.cacheSeconds`, 60 by default, and never uses it
-  for longer: a key that changes in the store reaches the model requests
-  within that time, and a key that is removed from the store stops being
+  for longer: a secret that changes in the store reaches the model requests
+  within that time, and a secret that is removed from the store stops being
   used within that time too. The cache is bounded in size, and a value
   larger than 8 KiB is not accepted as a secret.
-- **A key that cannot be read fails the request.** The model request gets a
-  503 with the reason, and the turns of other providers continue.
+- **A secret that cannot be read fails the request.** The model request
+  gets a 503 with the reason, and the turns of other providers continue.
 - **The credential is stored encrypted**, like the key of a provider. A
   store is returned with `"credential": {"stored": true}`.
 - **Give the role no more access than Aviary needs.** Anyone who can create

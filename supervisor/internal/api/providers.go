@@ -25,14 +25,16 @@ type secretValue struct {
 	Value string `json:"value"`
 }
 
-// secretField is a secret in a request: either its value, which is stored
-// encrypted, or its location in one of the project's secret stores, which
-// is stored in place of the value.
+// secretField is a secret in a request: its value, which is stored
+// encrypted; its location in one of the project's secret stores, which is
+// stored in place of the value; or, for the secret that is stored,
+// {"stored": true}, which keeps it.
 type secretField struct {
-	Value string `json:"value"`
-	Store string `json:"store"`
-	Path  string `json:"path"`
-	Key   string `json:"key"`
+	Value  string `json:"value"`
+	Store  string `json:"store"`
+	Path   string `json:"path"`
+	Key    string `json:"key"`
+	Stored bool   `json:"stored"`
 }
 
 // stored stands in for a secret in responses.
@@ -40,32 +42,60 @@ type stored struct {
 	Stored bool `json:"stored"`
 }
 
-// provider is the API representation of a model provider. A stored key is
-// shown only as stored, and a key in a secret store by its location.
+// secretAnswered returns how a response shows a secret: as stored, by its
+// location, or as none.
+func secretAnswered(sealed []byte, at *store.SecretReference) any {
+	switch {
+	case at != nil:
+		return at
+	case sealed != nil:
+		return stored{Stored: true}
+	}
+	return nil
+}
+
+// headerField is a header in a request: its value, or its secret.
+type headerField struct {
+	Name   string       `json:"name"`
+	Value  string       `json:"value"`
+	Secret *secretField `json:"secret"`
+}
+
+// header is the API representation of a header: its value, or its secret.
+type header struct {
+	Name   string `json:"name"`
+	Value  string `json:"value,omitempty"`
+	Secret any    `json:"secret,omitempty"`
+}
+
+func headersAnswered(from []store.Header) []header {
+	var headers []header
+	for _, each := range from {
+		headers = append(headers, header{Name: each.Name, Value: each.Value, Secret: secretAnswered(each.Sealed, each.At)})
+	}
+	return headers
+}
+
+// provider is the API representation of a model provider. A stored secret is
+// shown only as stored, and a secret in a secret store by its location.
 type provider struct {
 	store.Provider
-	APIKey any `json:"api_key,omitempty"`
+	Headers []header `json:"headers,omitempty"`
+	APIKey  any      `json:"api_key,omitempty"`
 }
 
 func answered(from store.Provider) provider {
-	answer := provider{Provider: from}
-	switch {
-	case from.APIKeyAt != nil:
-		answer.APIKey = from.APIKeyAt
-	case from.APIKey != nil:
-		answer.APIKey = stored{Stored: true}
-	}
-	return answer
+	return provider{Provider: from, Headers: headersAnswered(from.Headers), APIKey: secretAnswered(from.APIKey, from.APIKeyAt)}
 }
 
-// readProvider decodes and validates a request to create or replace the
-// provider with the ID.
-func (a *api) readProvider(w http.ResponseWriter, r *http.Request, id, projectID uuid.UUID) (store.Provider, error) {
+// readProvider decodes and validates a request to create the provider with
+// the ID, or to replace the existing one.
+func (a *api) readProvider(w http.ResponseWriter, r *http.Request, id, projectID uuid.UUID, existing *store.Provider) (store.Provider, error) {
 	var request struct {
-		Name    string         `json:"name"`
-		URL     string         `json:"url"`
-		Headers []store.Header `json:"headers"`
-		APIKey  *secretField   `json:"api_key"`
+		Name    string        `json:"name"`
+		URL     string        `json:"url"`
+		Headers []headerField `json:"headers"`
+		APIKey  *secretField  `json:"api_key"`
 	}
 	if err := decode(w, r, &request); err != nil {
 		return store.Provider{}, err
@@ -73,54 +103,93 @@ func (a *api) readProvider(w http.ResponseWriter, r *http.Request, id, projectID
 	if request.Name == "" {
 		return store.Provider{}, invalid("name is required")
 	}
-	read, err := a.providerAt(r, id, projectID, request.URL, request.Headers, request.APIKey)
+	read, err := a.providerAt(r, id, projectID, existing, request.URL, request.Headers, request.APIKey)
 	read.Name = request.Name
 	return read, err
 }
 
 // providerAt validates the URL, the headers and the key of the provider with
-// the ID, and returns the provider without a name. A key given by value is
-// encrypted for that provider. A key in a secret store is read once, so that
-// an unreadable key is reported at once rather than during a turn.
-func (a *api) providerAt(r *http.Request, id, projectID uuid.UUID, address string, headers []store.Header, key *secretField) (store.Provider, error) {
+// the ID, and returns the provider without a name. A secret given by value is
+// sealed for its place in that provider. A secret in a secret store is read
+// once, so that one that cannot be read is reported at once rather than
+// during a turn. An existing provider keeps the secrets that it stores only
+// while its URL stays the same, so that they go to no other endpoint.
+func (a *api) providerAt(r *http.Request, id, projectID uuid.UUID, existing *store.Provider, address string, headers []headerField, key *secretField) (store.Provider, error) {
 	if err := endpoint(address); err != nil {
 		return store.Provider{}, err
 	}
-	headers, err := headersOf(headers)
+	headers, err := headersOf(headers, false)
 	if err != nil {
 		return store.Provider{}, err
 	}
-	read := store.Provider{ID: id, URL: address, Headers: headers}
-	switch {
-	case key == nil:
-	case key.Value != "" && key.Store == "" && key.Path == "" && key.Key == "":
-		if read.APIKey, err = a.keys.Seal(key.Value, store.ProviderKeyPlace(id)); err != nil {
+	var had store.Provider
+	if existing != nil {
+		had = *existing
+	}
+	keeps := existing != nil && existing.URL == address
+	read := store.Provider{ID: id, URL: address}
+	for i, given := range headers {
+		kept := store.Header{Name: given.Name, Value: given.Value}
+		if given.Secret != nil {
+			var before []byte
+			if at := slices.IndexFunc(had.Headers, func(other store.Header) bool { return other.Name == given.Name }); at >= 0 {
+				before = had.Headers[at].Sealed
+			}
+			where, place := fmt.Sprintf("headers[%d].secret", i), store.ProviderHeaderPlace(id, given.Name)
+			if kept.Sealed, kept.At, err = a.secretOf(r, projectID, where, place, *given.Secret, before, keeps); err != nil {
+				return store.Provider{}, err
+			}
+		}
+		read.Headers = append(read.Headers, kept)
+	}
+	if key != nil {
+		if read.APIKey, read.APIKeyAt, err = a.secretOf(r, projectID, "api_key", store.ProviderKeyPlace(id), *key, had.APIKey, keeps); err != nil {
 			return store.Provider{}, err
 		}
-	case key.Value == "" && key.Store != "" && key.Path != "" && key.Key != "":
-		at, err := a.keyInStore(r, projectID, *key)
-		if err != nil {
-			return store.Provider{}, err
-		}
-		read.APIKeyAt = &at
-	default:
-		return store.Provider{}, invalid(`api_key must be {"value": "…"} for a key that Aviary stores, or {"store": "…", "path": "…", "key": "…"} ` +
-			`for a key in a secret store of the project; omit it for an endpoint that takes no key`)
 	}
 	return read, nil
 }
 
-// keyInStore checks that the key is in a secret store of the project and
-// can be read.
-func (a *api) keyInStore(r *http.Request, projectID uuid.UUID, key secretField) (store.SecretReference, error) {
-	id, err := uuid.Parse(key.Store)
+// secretOf returns a secret of a request as it is kept: sealed for the place,
+// or located in a secret store of the project. had is the secret that is
+// stored in its place, if there is one, which the request can keep if keeps
+// is true. where names the secret in what is refused.
+func (a *api) secretOf(r *http.Request, projectID uuid.UUID, where, place string, given secretField, had []byte, keeps bool) ([]byte, *store.SecretReference, error) {
+	located := given.Store != "" || given.Path != "" || given.Key != ""
+	switch {
+	case given.Stored && given.Value == "" && !located:
+		switch {
+		case had == nil:
+			return nil, nil, invalid(where + " has no stored secret to keep")
+		case !keeps:
+			return nil, nil, invalid(where + " must be given again: the URL changed")
+		}
+		return had, nil, nil
+	case given.Value != "" && !located && !given.Stored:
+		sealed, err := a.keys.Seal(given.Value, place)
+		return sealed, nil, err
+	case given.Value == "" && !given.Stored && given.Store != "" && given.Path != "" && given.Key != "":
+		at, err := a.inStore(r, projectID, where, given)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, &at, nil
+	}
+	return nil, nil, invalid(where + ` must be {"value": "…"} for a secret that Aviary stores, {"store": "…", "path": "…", "key": "…"} ` +
+		`for one in a secret store of the project, or {"stored": true} for the one that is stored`)
+}
+
+// inStore checks that the secret is in a secret store of the project and can
+// be read.
+func (a *api) inStore(r *http.Request, projectID uuid.UUID, where string, secret secretField) (store.SecretReference, error) {
+	id, err := uuid.Parse(secret.Store)
 	if err != nil {
-		return store.SecretReference{}, invalid("api_key.store must be the ID of a secret store of the project")
+		return store.SecretReference{}, invalid(where + ".store must be the ID of a secret store of the project")
 	}
 	in, err := a.store.SecretStore(r.Context(), id)
 	switch {
 	case errors.Is(err, store.ErrNotFound) || (err == nil && in.ProjectID != projectID):
-		return store.SecretReference{}, invalid("api_key.store must be the ID of a secret store of the project")
+		return store.SecretReference{}, invalid(where + ".store must be the ID of a secret store of the project")
 	case err != nil:
 		return store.SecretReference{}, err
 	}
@@ -128,33 +197,38 @@ func (a *api) keyInStore(r *http.Request, projectID uuid.UUID, key secretField) 
 	if err != nil {
 		return store.SecretReference{}, err
 	}
-	if _, err := a.stores.Read(r.Context(), in, credential, key.Path, key.Key); err != nil {
-		return store.SecretReference{}, invalid("cannot read api_key from the secret store: " + err.Error())
+	if _, err := a.stores.Read(r.Context(), in, credential, secret.Path, secret.Key); err != nil {
+		return store.SecretReference{}, invalid("cannot read " + where + " from the secret store: " + err.Error())
 	}
-	return store.SecretReference{Store: id, Path: key.Path, Key: key.Key}, nil
+	return store.SecretReference{Store: id, Path: secret.Path, Key: secret.Key}, nil
 }
 
-// The headers of a provider are few and small: every model request carries
-// them, and so does the token of a listing.
+// The headers of an endpoint are few and small: every request to it carries
+// them, and so does the token of a listing. A secret whose length is not
+// known counts as secretBytes.
 const (
 	maxHeaders     = 20
 	maxHeaderBytes = 8192
+	secretBytes    = 64
 )
 
-// reservedHeaders are the headers that a provider cannot have, besides those
-// of the Egress Proxy: they say where a request goes or how it is carried.
+// reservedHeaders are the headers that an endpoint cannot have, besides
+// those of the Egress Proxy and of MCP: they say where a request goes or how
+// it is carried.
 var reservedHeaders = []string{
 	"connection", "content-length", "expect", "host", "keep-alive", "proxy-authenticate", "proxy-authorization",
 	"proxy-connection", "te", "trailer", "transfer-encoding", "upgrade",
 }
 
-// headersOf validates the headers of a model provider, and returns them with
-// their names in lowercase and their values without spaces at their ends.
-func headersOf(given []store.Header) ([]store.Header, error) {
+// headersOf validates the headers of an endpoint, and returns them with their
+// names in lowercase and their values without spaces at their ends. A header
+// has a value or a secret. authorization is one of them only for an endpoint
+// that takes no key of its own.
+func headersOf(given []headerField, authorization bool) ([]headerField, error) {
 	if len(given) > maxHeaders {
 		return nil, invalid(fmt.Sprintf("headers must be at most %d", maxHeaders))
 	}
-	var headers []store.Header
+	var headers []headerField
 	size := 0
 	for i, header := range given {
 		at := fmt.Sprintf("headers[%d]", i)
@@ -162,17 +236,29 @@ func headersOf(given []store.Header) ([]store.Header, error) {
 		switch {
 		case !httpguts.ValidHeaderFieldName(name):
 			return nil, invalid(at + ".name must be the name of an HTTP header")
-		case name == "authorization":
+		case name == "authorization" && !authorization:
 			return nil, invalid(at + ".name must not be authorization; set the endpoint's key in api_key")
-		case slices.Contains(reservedHeaders, name) || strings.HasPrefix(name, "x-aviary-") || strings.HasPrefix(name, "x-envoy-"):
+		case slices.Contains(reservedHeaders, name) || strings.HasPrefix(name, "x-aviary-") || strings.HasPrefix(name, "x-envoy-") ||
+			strings.HasPrefix(name, "mcp-"):
 			return nil, invalid(at + ".name must not be " + name + ", which is reserved")
-		case slices.ContainsFunc(headers, func(other store.Header) bool { return other.Name == name }):
+		case slices.ContainsFunc(headers, func(other headerField) bool { return other.Name == name }):
 			return nil, invalid(at + ".name must not be " + name + ", which another header has")
+		case header.Secret != nil && header.Value != "":
+			return nil, invalid(at + " must have a value or a secret")
+		case header.Secret != nil:
+			secret := *header.Secret
+			secret.Value = strings.Trim(secret.Value, " \t")
+			if !httpguts.ValidHeaderFieldValue(secret.Value) {
+				return nil, invalid(at + ".secret.value must be the value of an HTTP header")
+			}
+			size += len(name) + max(len(secret.Value), secretBytes)
+			headers = append(headers, headerField{Name: name, Secret: &secret})
+			continue
 		case value == "" || !httpguts.ValidHeaderFieldValue(value):
 			return nil, invalid(at + ".value must be the value of an HTTP header, and not empty")
 		}
 		size += len(name) + len(value)
-		headers = append(headers, store.Header{Name: name, Value: value})
+		headers = append(headers, headerField{Name: name, Value: value})
 	}
 	if size > maxHeaderBytes {
 		return nil, invalid(fmt.Sprintf("the names and values of headers must be at most %d bytes together", maxHeaderBytes))
@@ -206,7 +292,7 @@ func (a *api) createProvider(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	read, err := a.readProvider(w, r, id, projectID)
+	read, err := a.readProvider(w, r, id, projectID, nil)
 	if err != nil {
 		return err
 	}
@@ -245,7 +331,8 @@ type listed struct {
 
 // endpointModels lists the models of a model endpoint that need not be
 // registered: the request gives the URL, the headers and the key of a
-// provider, which is not stored.
+// provider, which is not stored. A provider that the request names lends the
+// secrets that it stores, as it would keep them if it were replaced.
 func (a *api) endpointModels(w http.ResponseWriter, r *http.Request) error {
 	projectID, err := pathID(r, "pid")
 	if err != nil {
@@ -255,9 +342,10 @@ func (a *api) endpointModels(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	var request struct {
-		URL     string         `json:"url"`
-		Headers []store.Header `json:"headers"`
-		APIKey  *secretField   `json:"api_key"`
+		URL      string        `json:"url"`
+		Headers  []headerField `json:"headers"`
+		APIKey   *secretField  `json:"api_key"`
+		Provider string        `json:"provider"`
 	}
 	if err := decode(w, r, &request); err != nil {
 		return err
@@ -266,7 +354,22 @@ func (a *api) endpointModels(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	provider, err := a.providerAt(r, id, projectID, request.URL, request.Headers, request.APIKey)
+	var existing *store.Provider
+	if request.Provider != "" {
+		named, err := uuid.Parse(request.Provider)
+		if err != nil {
+			return invalid("provider must be the ID of a model provider of the project")
+		}
+		found, err := a.store.Provider(r.Context(), named)
+		switch {
+		case errors.Is(err, store.ErrNotFound) || (err == nil && found.ProjectID != projectID):
+			return invalid("provider must be the ID of a model provider of the project")
+		case err != nil:
+			return err
+		}
+		existing, id = &found, found.ID
+	}
+	provider, err := a.providerAt(r, id, projectID, existing, request.URL, request.Headers, request.APIKey)
 	if err != nil {
 		return err
 	}
@@ -407,7 +510,8 @@ func (a *api) listProviders(w http.ResponseWriter, r *http.Request) error {
 }
 
 // replaceProvider replaces the name, URL, headers and key of a provider
-// together, so that a stored key cannot be redirected to another URL.
+// together. The secrets that it stores stay only with its URL, so that they
+// cannot be redirected to another endpoint.
 func (a *api) replaceProvider(w http.ResponseWriter, r *http.Request) error {
 	id, err := pathID(r, "provider")
 	if err != nil {
@@ -417,7 +521,7 @@ func (a *api) replaceProvider(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	read, err := a.readProvider(w, r, id, existing.ProjectID)
+	read, err := a.readProvider(w, r, id, existing.ProjectID, &existing)
 	if err != nil {
 		return err
 	}
