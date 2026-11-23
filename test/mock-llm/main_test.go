@@ -211,9 +211,51 @@ func respond(t *testing.T, url string, conversation sent) reply {
 	return answer
 }
 
-// The script works the same on both APIs.
+// message talks to the model as Claude Code does, with the Messages API.
+func message(t *testing.T, url string, conversation sent) reply {
+	t.Helper()
+	text := func(text string) []any { return []any{map[string]any{"type": "text", "text": text}} }
+	messages := []map[string]any{}
+	for _, said := range conversation.said {
+		messages = append(messages, map[string]any{"role": "user", "content": text(said)})
+	}
+	if conversation.toolOutput != "" {
+		messages = append(messages,
+			map[string]any{"role": "assistant", "content": []any{map[string]any{
+				"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": map[string]any{},
+			}}},
+			map[string]any{"role": "user", "content": []any{map[string]any{
+				"type": "tool_result", "tool_use_id": "toolu_1", "content": conversation.toolOutput,
+			}}})
+	}
+	request := map[string]any{"model": "mock", "stream": true, "system": text(conversation.system), "messages": messages}
+	if !conversation.noTool {
+		request["tools"] = []any{map[string]any{"name": "Bash", "input_schema": conversation.parameters("command")}}
+	}
+	status, stream, refusal := events(t, url+"/v1/messages", apiKey, request)
+	answer := reply{status: status, refusal: refusal}
+	var arguments string
+	for _, event := range stream {
+		switch event["type"] {
+		case "message_start":
+			answer.usage = map[string]float64{"input": num(at(event, "message", "usage", "input_tokens"))}
+		case "content_block_start":
+			answer.tool += str(at(event, "content_block", "name"))
+		case "content_block_delta":
+			answer.text += str(at(event, "delta", "text"))
+			arguments += str(at(event, "delta", "partial_json"))
+		case "message_delta":
+			answer.usage["output"] = num(at(event, "usage", "output_tokens"))
+			answer.usage["total"] = answer.usage["input"] + answer.usage["output"]
+		}
+	}
+	answer.called(arguments)
+	return answer
+}
+
+// The script works the same on every API.
 func TestScript(t *testing.T) {
-	for api, ask := range map[string]func(*testing.T, string, sent) reply{"chat completions": chat, "responses": respond} {
+	for api, ask := range map[string]func(*testing.T, string, sent) reply{"chat completions": chat, "responses": respond, "messages": message} {
 		t.Run(api, func(t *testing.T) {
 			t.Parallel()
 			model := httptest.NewServer(newMock(apiKey))
@@ -301,6 +343,54 @@ func TestScript(t *testing.T) {
 	}
 }
 
+// Conversations of the Messages API in the shapes that Claude Code sends.
+func TestMessages(t *testing.T) {
+	t.Parallel()
+	model := httptest.NewServer(newMock(apiKey))
+	defer model.Close()
+	toolUse := map[string]any{"role": "assistant", "content": []any{map[string]any{
+		"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": map[string]any{},
+	}}}
+	for _, test := range []struct {
+		name     string
+		messages []any
+		text     string
+	}{
+		{
+			name: "system message in the conversation",
+			messages: []any{
+				map[string]any{"role": "user", "content": "say hello"},
+				map[string]any{"role": "system", "content": []any{map[string]any{"type": "text", "text": "Today is plum day."}}},
+				map[string]any{"role": "assistant", "content": "hello"},
+				map[string]any{"role": "user", "content": "find plum"},
+			},
+			text: "present",
+		},
+		{
+			// As after a refused tool call.
+			name: "message after a tool result",
+			messages: []any{
+				map[string]any{"role": "user", "content": "run ls"},
+				toolUse,
+				map[string]any{"role": "user", "content": []any{
+					map[string]any{"type": "tool_result", "tool_use_id": "toolu_1", "content": "refused"},
+					map[string]any{"type": "text", "text": "say next"},
+				}},
+			},
+			text: "next",
+		},
+	} {
+		status, stream, _ := events(t, model.URL+"/v1/messages", apiKey, map[string]any{"stream": true, "messages": test.messages})
+		var said string
+		for _, event := range stream {
+			said += str(at(event, "delta", "text"))
+		}
+		if status != http.StatusOK || said != test.text {
+			t.Errorf("%s: got status %d with text %q, want %q", test.name, status, said, test.text)
+		}
+	}
+}
+
 func TestDrawl(t *testing.T) {
 	t.Parallel()
 	model := httptest.NewServer(newMock(apiKey))
@@ -317,7 +407,7 @@ func TestRequests(t *testing.T) {
 	model := httptest.NewServer(newMock(apiKey))
 	defer model.Close()
 	messages := []map[string]any{{"role": "user", "content": "say hello"}}
-	for _, path := range []string{"/v1/chat/completions", "/v1/responses"} {
+	for _, path := range []string{"/v1/chat/completions", "/v1/responses", "/v1/messages"} {
 		// Only the Egress Proxy holds the key. A sandbox has only its session
 		// token.
 		for _, key := range []string{"", "a-session-token"} {
@@ -329,6 +419,15 @@ func TestRequests(t *testing.T) {
 		if status, _, _ := events(t, model.URL+path, apiKey, map[string]any{"messages": messages}); status != http.StatusBadRequest {
 			t.Errorf("%s without stream: got status %d, want 400", path, status)
 		}
+	}
+	// A refused caller is told not to try again.
+	refused, err := http.Post(model.URL+"/v1/messages", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	refused.Body.Close()
+	if again := refused.Header.Get("X-Should-Retry"); refused.StatusCode != http.StatusUnauthorized || again != "false" {
+		t.Errorf("request without the key: got %d with X-Should-Retry %q, want 401 with false", refused.StatusCode, again)
 	}
 	if response, err := http.Get(model.URL + "/healthz"); err != nil || response.StatusCode != http.StatusOK {
 		t.Errorf("GET /healthz: got %v: %v", response, err)

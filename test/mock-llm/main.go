@@ -1,7 +1,7 @@
-// Command mock-llm is a model server for tests. It serves the two OpenAI
-// APIs that the harnesses use, Chat Completions and Responses, both
-// streaming. Instead of a model, a script answers: the user's last message is
-// an instruction.
+// Command mock-llm is a model server for tests. It serves the APIs that the
+// harnesses use, streaming: OpenAI's Chat Completions and Responses, and
+// Anthropic's Messages. Instead of a model, a script answers: the user's last
+// message is an instruction.
 //
 //	say <text>     replies with the text
 //	drawl <text>   replies with the text slowly, a word every half second,
@@ -92,6 +92,7 @@ func newMock(apiKey string) http.Handler {
 	mux.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
 	mux.HandleFunc("POST /v1/chat/completions", withKey(apiKey, m.chatCompletions))
 	mux.HandleFunc("POST /v1/responses", withKey(apiKey, m.responses))
+	mux.HandleFunc("POST /v1/messages", withKey(apiKey, m.messages))
 	mux.HandleFunc("GET /v1/models", withKey(apiKey, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		io.WriteString(w, `{"object": "list", "data": [{"id": "mock", "object": "model"}]}`+"\n")
@@ -252,9 +253,10 @@ func (c conversation) next() answer {
 	case word == "drawl":
 		return answer{text: rest, pause: drawlPause}
 	case word == "fail":
-		// Both harnesses report this status as an error at once. On other
-		// statuses, one of them retries for a while and the other ends the
-		// turn with the error as its answer.
+		// The harnesses report this status as an error at once, Claude Code
+		// only because the refusal says not to retry. On other statuses, a
+		// harness may retry for a while, or end the turn with the error as its
+		// answer.
 		return answer{failure: rest, status: http.StatusUnauthorized}
 	case word == "flaky":
 		return answer{text: rest, flaky: true}
@@ -292,9 +294,12 @@ func instruction(message string) (word, rest string, found bool) {
 
 type tool struct {
 	Name       string `json:"name"`
-	Parameters struct {
-		Properties map[string]json.RawMessage `json:"properties"`
-	} `json:"parameters"`
+	Parameters schema `json:"parameters"`
+}
+
+// schema is the JSON schema of a tool's parameters.
+type schema struct {
+	Properties map[string]json.RawMessage `json:"properties"`
 }
 
 // findShell returns the first tool that takes a command, or nil.
@@ -347,8 +352,8 @@ func newStream(w http.ResponseWriter) stream {
 	return stream{w}
 }
 
-// send writes one event. The Responses API names its events and the Chat
-// Completions API does not.
+// send writes one event. The Responses and Messages APIs name their events,
+// and the Chat Completions API does not.
 func (s stream) send(event string, data any) {
 	if event != "" {
 		fmt.Fprintf(s.w, "event: %s\n", event)
@@ -364,6 +369,11 @@ func (s stream) send(event string, data any) {
 
 func refuse(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
+	// A refused caller is told not to try again, in the header that the
+	// OpenAI and Anthropic clients read.
+	if status == http.StatusUnauthorized {
+		w.Header().Set("X-Should-Retry", "false")
+	}
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]string{"message": message, "type": "invalid_request_error"},
@@ -577,4 +587,110 @@ func (m *mock) responses(w http.ResponseWriter, r *http.Request) {
 		"total_tokens": inputTokens + outputTokens,
 	}
 	send("response.completed", map[string]any{"response": response})
+}
+
+// messages serves the Messages API, which Claude Code uses.
+func (m *mock) messages(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Model    string          `json:"model"`
+		Stream   bool            `json:"stream"`
+		System   json.RawMessage `json:"system"`
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+		Tools []struct {
+			Name        string `json:"name"`
+			InputSchema schema `json:"input_schema"`
+		} `json:"tools"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		refuse(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if !request.Stream {
+		refuse(w, http.StatusBadRequest, "mock-llm only streams; set stream to true")
+		return
+	}
+	c := conversation{sent: []string{text(request.System)}}
+	for i, message := range request.Messages {
+		// A harness can add instructions in the conversation, too.
+		if message.Role == "system" {
+			c.sent = append(c.sent, text(message.Content))
+		}
+		if message.Role != "user" {
+			continue
+		}
+		// The content is a string or a list of blocks, such as text and tool
+		// results.
+		var blocks []struct {
+			Type    string          `json:"type"`
+			Text    string          `json:"text"`
+			Content json.RawMessage `json:"content"`
+		}
+		if json.Unmarshal(message.Content, &blocks) != nil {
+			c.hear(text(message.Content))
+			continue
+		}
+		for _, block := range blocks {
+			switch {
+			case block.Type == "text":
+				c.hear(block.Text)
+				// The user's next message can follow a tool result in the
+				// same message, as after a refused tool call.
+				if _, _, found := instruction(block.Text); found {
+					c.toolOutput = nil
+				}
+			case block.Type == "tool_result" && i == len(request.Messages)-1:
+				output := text(block.Content)
+				c.toolOutput = &output
+			}
+		}
+	}
+	var tools []tool
+	for _, offered := range request.Tools {
+		tools = append(tools, tool{Name: offered.Name, Parameters: offered.InputSchema})
+	}
+	c.shell = findShell(tools)
+	next := m.next(c)
+	slog.Info("answered", "api", "messages", "said", len(c.said), "command", next.command, "text", next.text, "failure", next.failure)
+	if next.status != 0 {
+		refuse(w, next.status, next.failure)
+		return
+	}
+
+	out := newStream(w)
+	send := func(event string, fields map[string]any) {
+		fields["type"] = event
+		out.send(event, fields)
+	}
+	send("message_start", map[string]any{"message": map[string]any{
+		"id": newID("msg_"), "type": "message", "role": "assistant", "model": request.Model, "content": []any{},
+		"stop_reason": nil, "stop_sequence": nil, "usage": map[string]int{"input_tokens": inputTokens, "output_tokens": 0},
+	}})
+	stop := "end_turn"
+	if next.command == "" {
+		send("content_block_start", map[string]any{"index": 0, "content_block": map[string]any{"type": "text", "text": ""}})
+		for _, piece := range pieces(next.text) {
+			send("content_block_delta", map[string]any{"index": 0, "delta": map[string]any{"type": "text_delta", "text": piece}})
+			if !next.wait(r) {
+				return
+			}
+		}
+	} else {
+		stop = "tool_use"
+		send("content_block_start", map[string]any{"index": 0, "content_block": map[string]any{
+			"type": "tool_use", "id": newID("toolu_"), "name": c.shell.name, "input": map[string]any{},
+		}})
+		send("content_block_delta", map[string]any{"index": 0, "delta": map[string]any{
+			"type": "input_json_delta", "partial_json": c.shell.arguments(next),
+		}})
+	}
+	send("content_block_stop", map[string]any{"index": 0})
+	// The usage of a message_delta event is the total so far.
+	send("message_delta", map[string]any{
+		"delta": map[string]any{"stop_reason": stop, "stop_sequence": nil},
+		"usage": map[string]int{"output_tokens": outputTokens},
+	})
+	send("message_stop", map[string]any{})
 }
