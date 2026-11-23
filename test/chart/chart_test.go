@@ -91,7 +91,7 @@ func TestEgressProxy(t *testing.T) {
 }
 
 // Each access log line identifies the origin of its request on its own, and
-// for a model request the provider.
+// for a request of the model listener its provider or MCP server.
 func TestEgressProxyRecordsWhereARequestCameFrom(t *testing.T) {
 	_, envoy := chart(t, "default")
 	told := func(field string) string { return "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:" + field + ")%" }
@@ -102,8 +102,10 @@ func TestEgressProxyRecordsWhereARequestCameFrom(t *testing.T) {
 				t.Errorf("%s access log has %v for %s", name, record[field], field)
 			}
 		}
-		if provider, recorded := record["provider"]; recorded != model || (model && provider != told("provider")) {
-			t.Errorf("%s access log has %v for provider", name, provider)
+		for _, field := range []string{"provider", "mcp_server"} {
+			if value, recorded := record[field]; recorded != model || (model && value != told(field)) {
+				t.Errorf("%s access log has %v for %s", name, value, field)
+			}
 		}
 	}
 }

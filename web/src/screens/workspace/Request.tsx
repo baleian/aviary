@@ -53,11 +53,14 @@ const LONG = 26;
 // what the agent is about to do, and the answers that it offers.
 export function Request({
   item,
+  server,
   asked,
   onAnswer,
   onStop,
 }: {
   item: ApprovalItem;
+  // The MCP server of the tool call, if it calls a tool of one.
+  server?: string;
   // Who is to answer, for a caller who may not.
   asked: Who;
   // Answers the request with one of its options, for a caller who may. It
@@ -69,9 +72,11 @@ export function Request({
   const [sending, setSending] = useState<string>();
   const call = item.tool_call ?? {};
   const input = inputOf(call.input);
-  const command = typeof input.command === "string";
-  const diff = findDiff(input) ?? changed(input);
-  const path = pathOf(input);
+  // A tool of an MCP server runs on the server, and what it is given says
+  // nothing of the workspace.
+  const command = !call.mcp && typeof input.command === "string";
+  const diff = findDiff(input) ?? (call.mcp ? null : changed(input));
+  const path = call.mcp ? "" : pathOf(input);
   const outside = outsideOf(input);
   const options = item.options ?? [];
 
@@ -112,8 +117,12 @@ export function Request({
         <>
           <div className="cmd">
             <i>›</i>
-            <span>{path || call.title || call.kind}</span>
-            <span className="tag">{call.kind || "tool"}</span>
+            <span>{call.mcp?.tool ?? (path || call.title || call.kind)}</span>
+            {call.mcp ? (
+              <span className="tag srv">{server}</span>
+            ) : (
+              <span className="tag">{call.kind || "tool"}</span>
+            )}
           </div>
           {diff ? (
             <CodeBlock text={diff} language="diff" bare={!!path} />

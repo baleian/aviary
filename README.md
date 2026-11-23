@@ -108,12 +108,14 @@ endpoint do not.
 The proxy logs every request as a line of JSON on its standard output. Each
 line identifies the origin of its request on its own:
 
-- `turn`, `session`, `agent` and `project`. The model request that lists
-  the [models of a provider](#model-providers) has only the `project`.
+- `turn`, `session`, `agent` and `project`. The requests that list the
+  [models of a provider](#model-providers) or the
+  [tools of an MCP server](#mcp-servers) have only the `project`.
 - With an identity provider, `user` and `subject`: who sent the turn's
   message, as the user ID that `GET /v1/me` returns and as the identity
   provider's subject, which identifies the user without Aviary's records.
-- For a model request, `provider`: the model provider that it went to.
+- For a model request, `provider`: the model provider that it went to. For
+  a request to an MCP server, `mcp_server`: the server.
 - `time`, `host`, `path` (except for HTTPS URLs), `status`,
   `request_bytes`, `response_bytes` and `duration_ms`.
 
@@ -195,26 +197,34 @@ and a request that needs a permission that the caller lacks returns 403.
 Administrators may do everything. Without an identity provider, requests are
 not authenticated, and every caller is an administrator.
 
-Paths name a project or an agent by its ID. Each also has a slug, chosen
-when it is created: 1 to 63 lowercase letters, digits and hyphens, beginning
-with a letter and not ending with a hyphen. A project's slug is unique in the
-installation, and an agent's slug is unique in its project. Slugs cannot be
-changed. The name of a project or an agent is optional and only for display;
-a client shows the slug when the name is empty.
+Paths name a project, an agent or an MCP server by its ID. Each also has a
+slug, chosen when it is created: 1 to 63 lowercase letters, digits and
+hyphens, beginning with a letter and not ending with a hyphen. A project's
+slug is unique in the installation, and the slug of an agent or an MCP
+server is unique in its project. Slugs cannot be changed. The name of each
+is optional and only for display; a client shows the slug when the name is
+empty.
 
 | Request | Description |
 | --- | --- |
 | `POST /v1/projects` | Creates a project. Body: `{"slug": "...", "name": "..."}`. Returns 409 if another project has the slug. Administrators only. |
-| `POST /v1/projects/{id}/providers` | Creates a model provider in the project. Body: `{"name": "...", "url": "...", "api_key": {"value": "..."}}`. The URL is the base URL of a model endpoint, and the key is sent to it as a bearer token. A key in a secret store of the project is given by its location: `"api_key": {"store": "...", "path": "...", "key": "..."}`. An endpoint that takes no key has no `api_key`. An endpoint that needs other headers is given them: `"headers": [{"name": "...", "value": "..."}]`. See [Model providers](#model-providers). |
-| `PUT /v1/providers/{id}` | Replaces the name, the URL, the headers and the key of a provider together: a provider given no headers or no key has none afterwards. |
-| `POST /v1/projects/{id}/providers/models` | Lists the models of a model endpoint that need not be registered. Body: the `url`, the `headers` and the `api_key` of a provider, which is not stored. Aviary asks the endpoint for its models, `GET models` under the URL, with the headers and the key and through the Egress Proxy, as the model requests of a turn go. Returns `{"reached": true, "status": 200, "models": ["..."], "duration_ms": 12}`: the status of the endpoint's answer, and the IDs of its models if the answer is a list of models as the OpenAI API gives it. An endpoint that did not answer returns `{"reached": false, "reason": "...", "duration_ms": 5003}`. |
+| `POST /v1/projects/{id}/providers` | Creates a model provider in the project. Body: `{"name": "...", "url": "...", "api_key": {"value": "..."}}`. The URL is the base URL of a model endpoint, and the key is sent to it as a bearer token. A key in a secret store of the project is given by its location: `"api_key": {"store": "...", "path": "...", "key": "..."}`. An endpoint that takes no key has no `api_key`. An endpoint that needs other headers is given them: `"headers": [{"name": "...", "value": "..."}]`, or with a secret in place of a value, given as a key is: `{"name": "...", "secret": {"value": "..."}}`. See [Model providers](#model-providers). |
+| `PUT /v1/providers/{id}` | Replaces the name, the URL, the headers and the key of a provider together: a provider given no headers or no key has none afterwards. While the URL stays the same, `{"stored": true}` in place of a secret keeps the one that is stored. |
+| `POST /v1/projects/{id}/providers/models` | Lists the models of a model endpoint that need not be registered. Body: the `url`, the `headers` and the `api_key` of a provider, which is not stored, and the `provider` that it would replace, if there is one: `{"stored": true}` then keeps a secret of that provider as `PUT` would. Aviary asks the endpoint for its models, `GET models` under the URL, with the headers and the key and through the Egress Proxy, as the model requests of a turn go. Returns `{"reached": true, "status": 200, "models": ["..."], "duration_ms": 12}`: the status of the endpoint's answer, and the IDs of its models if the answer is a list of models as the OpenAI API gives it. An endpoint that did not answer returns `{"reached": false, "reason": "...", "duration_ms": 5003}`. |
 | `GET /v1/providers/{id}/models` | Lists the models of a provider in the same way, with the URL, the headers and the key that it has. |
+| `POST /v1/projects/{id}/mcp-servers` | Registers an MCP server of the project. Body: `{"slug": "...", "name": "...", "url": "...", "transport": "http"}`, or `"transport": "sse"` for a server that is reached by SSE. Returns 409 if another server of the project has the slug. A server that needs headers is given them as a provider is, `authorization` among them. See [MCP servers](#mcp-servers). |
+| `PUT /v1/mcp-servers/{id}` | Replaces all of an MCP server but its slug. While the URL stays the same, `{"stored": true}` in place of a secret keeps the one that is stored. |
+| `POST /v1/projects/{id}/mcp-servers/tools` | Lists the tools of an MCP server that need not be registered. Body: the `url`, the `transport` and the `headers` of a server, which is not stored, and the `server` that it would replace, if there is one: `{"stored": true}` then keeps a secret of that server as `PUT` would. Returns `{"reached": true, "status": 200, "tools": [{"name": "...", "description": "..."}], "duration_ms": 230}`, the `status` of the answer that was not a success, or `{"reached": false, "reason": "...", "duration_ms": 5003}` for a server that did not answer. |
+| `POST /v1/mcp-servers/{id}/tools` | Lists the tools of an MCP server again in the same way, and keeps them if it lists them. |
+| `DELETE /v1/mcp-servers/{id}` | Deletes an MCP server. |
 | `POST /v1/projects/{id}/secret-stores` | Registers a secret store of the project. Body: `{"name": "...", "kind": "...", "settings": {...}, "credential": {"value": "..."}}`. See [Secret stores](#secret-stores). |
 | `PUT /v1/secret-stores/{id}` | Replaces the name, the kind, the settings and the credential of a secret store together. |
-| `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"slug": "...", "name": "...", "description": "...", "harness": "...", "model": {"provider": "...", "name": "..."}, "instructions": "...", "approval": "ask"}`. The optional description says what the agent is for, and like the name is only for display. The harness is one of those that `GET /v1/harnesses` lists. The model is a provider of the project, by ID, and the provider's name for the model. The optional instructions are given to the agent before every turn. With `"approval": "ask"`, the agent asks a person before it acts (see [Approval](#approval)); without it, it asks nobody. Returns 409 if another agent of the project has the slug. |
-| `PUT /v1/agents/{id}` | Replaces the name, the description, the model, the instructions and the approval of an agent together: what the body leaves out is empty afterwards, and the model is required. The slug and the harness cannot be changed, and the body may leave them out. The agent's sessions run their next turn with the change. Returns 200 with the agent. |
+| `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"slug": "...", "name": "...", "description": "...", "harness": "...", "model": {"provider": "...", "name": "..."}, "instructions": "...", "approval": "ask", "mcp_servers": ["..."]}`. The optional description says what the agent is for, and like the name is only for display. The harness is one of those that `GET /v1/harnesses` lists. The model is a provider of the project, by ID, and the provider's name for the model. The optional instructions are given to the agent before every turn. With `"approval": "ask"`, the agent asks a person before it acts (see [Approval](#approval)); without it, it asks nobody. The optional MCP servers, by ID, are servers of the project that the agent's sessions begin with (see [MCP servers](#mcp-servers)). Returns 409 if another agent of the project has the slug. |
+| `PUT /v1/agents/{id}` | Replaces the name, the description, the model, the instructions, the approval and the MCP servers of an agent together: what the body leaves out is empty afterwards, and the model is required. The slug and the harness cannot be changed, and the body may leave them out. The agent's sessions run their next turn with the change. Returns 200 with the agent. |
 | `DELETE /v1/agents/{id}` | Deletes an agent. Returns 200 with the agent, which then has `deleted_at`. Its sessions end as when a caller ends them, with the `end_reason` `agent_deleted`: their sandboxes are deleted, and their conversations stay readable. A deleted agent is no longer listed, and changing it or creating a session of it returns 409. `GET /v1/agents/{id}` still returns it, and its slug is free for another agent. Besides `agents.manage`, the caller needs `sessions.control_all`, since the sessions of every member end. Returns 409 if a turn of one of its sessions has not ended. |
-| `POST /v1/agents/{id}/sessions` | Creates a session, which belongs to the caller. Body, which may be left out: `{"title": "..."}`. The title is optional and only for display; a session created without one has an empty title. With an identity provider, its `created_by` is the caller's user ID. A session's `sandbox` is `awake`, or `asleep` while the session sleeps. It is `lost` if the sandbox is gone although the session has not ended, as after it was deleted in the cluster: everything that the agent had in it is gone, and the next turn gets a new sandbox. What happens to a sandbox outside Aviary shows after a short delay. A session has no `sandbox` before its first turn and after it has ended. A session with turns carries the newest as `last_turn`: the turn as in [Turn records](#turn-records), without its `text` and `items`. A session that ended because it expired has the `end_reason` `expired` (see `sandboxes.retentionSeconds` in [Configuration](#configuration)), one that ended because its agent was deleted has `agent_deleted`, and a session that a caller ended has none. |
+| `POST /v1/agents/{id}/sessions` | Creates a session, which belongs to the caller. Body, which may be left out: `{"title": "...", "mcp_servers": ["..."]}`. The title is optional and only for display; a session created without one has an empty title. A session begins with the MCP servers of its agent, or with those that the body names. While it has not ended, a session's `mcp_servers` are those that it has. With an identity provider, its `created_by` is the caller's user ID. A session's `sandbox` is `awake`, or `asleep` while the session sleeps. It is `lost` if the sandbox is gone although the session has not ended, as after it was deleted in the cluster: everything that the agent had in it is gone, and the next turn gets a new sandbox. What happens to a sandbox outside Aviary shows after a short delay. A session has no `sandbox` before its first turn and after it has ended. A session with turns carries the newest as `last_turn`: the turn as in [Turn records](#turn-records), without its `text` and `items`. A session that ended because it expired has the `end_reason` `expired` (see `sandboxes.retentionSeconds` in [Configuration](#configuration)), one that ended because its agent was deleted has `agent_deleted`, and a session that a caller ended has none. |
+| `PUT /v1/sessions/{id}/mcp-servers/{server}` | Turns an MCP server of the project on or off for a session. Body: `{"enabled": true}`. Returns 200 with the session, and 409 if the session has ended. Besides admins, only the creator of the session may. |
+| `DELETE /v1/sessions/{id}/mcp-servers` | Gives a session the MCP servers of its agent again. Returns 200 with the session. |
 | `PATCH /v1/sessions/{id}` | Changes the title of a session, also of one that has ended. Body: `{"title": "..."}`, where an empty title leaves the session without one. Returns 200 with the session. |
 | `POST /v1/sessions/{id}/messages` | Sends a message. Body: `{"text": "..."}`. Returns 202 with the turn, whose `created_by` is set as for a session; 409 if a turn of the session has not ended or the session has ended; 429 with `Retry-After` if too many turns are queued. |
 | `DELETE /v1/sessions/{id}` | Ends a session. Returns 200 with the session, which then has `ended_at`. The session's sandbox is deleted with its volume and everything that the agent had in it, unless the storage class keeps the data of deleted volumes (see `runtime.volume` in [Configuration](#configuration)). The conversation stays readable, and the session accepts no more messages. Returns 409 if a turn of the session has not ended. |
@@ -245,10 +255,11 @@ a client shows the slug when the name is empty.
 | `turn.queued` | `position`: the turn's place in the queue, 1 for the turn that runs next. |
 | `turn.started` | The harness has received the message. |
 | `message.delta`, `thought.delta` | `text`: the next piece of what the agent says or thinks. Pieces with the same `message_id` belong together. |
-| `tool.call` | `id`, `title`, `kind`, `status`, `input`: the agent started to use a tool. |
+| `tool.call` | `id`, `title`, `kind`, `status`, `input`: the agent started to use a tool. A tool of an MCP server also has `mcp`: the `server` by ID, its `slug`, and the `tool`. |
 | `tool.update` | `id`, and those of `title`, `kind`, `status`, `input` and `output` that changed. Text in `input` or `output` longer than `runtime.maxToolOutputBytes` is truncated, and says so at its end. |
 | `plan.update` | `entries`: the agent's plan, each entry with `content`, `priority` and `status`. |
 | `session.update` | `title`: a title that the harness gives the session. Aviary does not set it: a client that wants it changes the title of the session. |
+| `mcp.unsupported` | `servers`: the MCP servers that the session has on but whose transport the harness does not support, each with `id`, `name` and `transport`. The turn runs without them. |
 | `approval.requested` | The harness asks a person before it acts, and waits. `id`: the request. `tool_call`: what the harness is about to do, with the fields of `tool.call`. `options`: the possible answers, each with `id`, `name` and `kind`, which is `allow_once`, `allow_always`, `reject_once` or `reject_always`. |
 | `approval.resolved` | The harness has its answer to the request `id`. `outcome`: `selected` with the chosen `option_id`, or `cancelled` if the turn was stopped before an answer came. `answered_by`: with an identity provider, the ID of the user who answered. |
 | `turn.completed` | `stop_reason`: why the harness ended the turn. `usage`: the token usage that the harness reported, if any. The last event of the turn. |
@@ -289,6 +300,7 @@ after the turn ends.
 | `message`, `thought` | `text`: consecutive pieces, joined into one text. |
 | `tool_call` | The fields of `tool.call`, with the call's updates applied. |
 | `plan` | `entries`: the plan as it last stood. |
+| `mcp_unsupported` | The fields of `mcp.unsupported`. |
 | `approval` | The fields of `approval.requested`, and how the request ended: `outcome` and, if an option was selected, `option_id`. |
 
 A turn that did not complete keeps what happened until then: the text that
@@ -367,6 +379,7 @@ over. An event has the type `session`, and its data is the session as
 `GET /v1/sessions/{id}` returns it. A session is sent when:
 
 - it is created, gets another title or ends,
+- an MCP server is turned on or off for it,
 - its sandbox wakes, sleeps or is lost,
 - its newest turn changes: a message is accepted, the turn starts, an
   approval request is made or answered, the turn is asked to stop, or it
@@ -500,12 +513,16 @@ role from then on. The defaults are:
 The turns of an agent send their model requests to the endpoint of the
 agent's provider, for the agent's model.
 
-- **Keys are write-only.** A key is stored encrypted with a key of the
-  installation, which the database does not hold. A provider is returned
-  with `"api_key": {"stored": true}` in place of its key.
-- **A key can stay in a secret store of the project.** Aviary then stores
-  where the key is, not the key, and reads it from the store when a model
-  request needs it. See [Secret stores](#secret-stores).
+- **Secrets are write-only.** A key, or the secret of a header, is stored
+  encrypted with a key of the installation, which the database does not
+  hold. A provider is returned with `{"stored": true}` in its place, as
+  `"api_key": {"stored": true}`.
+- **A stored secret stays with its URL.** A provider that is replaced keeps
+  a secret that is given as `{"stored": true}`, but only if its URL stays
+  the same: a secret goes to no endpoint that it was not given for.
+- **A secret can stay in a secret store of the project.** Aviary then
+  stores where the secret is, not the secret, and reads it from the store
+  when a model request needs it. See [Secret stores](#secret-stores).
 - **A key goes only to its endpoint.** The Egress Proxy adds it to the model
   requests of the turns that use the provider, and forwards them to the
   host of the provider's URL, under the URL's path. Nothing else that a
@@ -517,8 +534,11 @@ agent's provider, for the agent's model.
   Egress Proxy sets them on the model requests of the turns that use the
   provider, in place of what a sandbox sends by those names. A header that
   says where a request goes or how it is carried, such as `host`, cannot be
-  one of them, nor can `authorization`, which carries the key. Their values
-  are not secrets: a provider is returned with its headers.
+  one of them, nor can `authorization`, which carries the key. A value that
+  is a secret is given as a key is, as
+  `{"name": "x-team-token", "secret": {"value": "..."}}` or by its location
+  in a secret store. Other values are not secrets: a provider is returned
+  with them.
 - **A provider can be replaced while turns use it.** Their next model
   request uses the new endpoint, headers and key.
 - **The models of a provider can be listed**, before it is registered and
@@ -533,11 +553,48 @@ agent's provider, for the agent's model.
   that stands in for it. The proxy then connects to that host, on the port
   of the provider's URL.
 
+### MCP servers
+
+A project registers MCP servers by their URL.
+
+- **A server is reached by Streamable HTTP or by SSE.** A server that runs
+  as a process of its own, over stdio, cannot be registered. A server of SSE
+  must give the address for its messages as a path: agents reach it through
+  the Egress Proxy, and cannot use a URL at the server's own host. Listing
+  the tools of such a server says so.
+- **Its slug names it to a harness**, which names the server's tools after
+  it, and so it does not change.
+- **Its headers are as those of a provider**, and `authorization` is one of
+  them, since a server takes its token there. A value that is a secret is
+  stored or kept in a secret store, and stays while the URL does. A header
+  of MCP itself, such as `mcp-session-id`, cannot be one of them.
+- **Its tools are listed when it is registered and replaced**, and on
+  request. The Supervisor asks the server through the Egress Proxy, with
+  the server's headers, so a server that the proxy does not reach, or a
+  token that the server refuses, shows at once. A server is registered all
+  the same if it does not answer, and keeps the tools that it last listed
+  while its URL stays the same.
+- **The host of a server is subject to `egressProxy.allowedHosts`** like
+  that of a model provider.
+- **An agent names the servers that its sessions begin with**, and a
+  session turns any server of the project on or off. A session keeps only
+  how it differs from its agent, and follows the agent in the rest. A
+  server that is deleted leaves the agents and the sessions that had it.
+- **A turn's harness reaches the servers that its session has on** through
+  the Egress Proxy, as it reaches its model. The proxy sends each request on
+  with the server's headers while the session has the server on, so a server
+  that is turned off during a turn is refused from then on. A harness has the
+  servers of its start: the turn after a change gets a new harness, which
+  resumes the session. A harness is not given servers of a transport that it
+  does not support, and each of its turns names them in an `mcp.unsupported`
+  event.
+
 ### Secret stores
 
 A project that keeps its secrets in a store of its own can register the
 store, and then give the location of a secret in the store instead of the
-secret itself. The key of a model provider is such a secret.
+secret itself. The key of a model provider, and the secret of a header of a
+provider or an MCP server, are such secrets.
 
 ```sh
 store=$(curl -s -X POST localhost:8080/v1/projects/$project/secret-stores \
@@ -559,16 +616,16 @@ provider=$(curl -s -X POST localhost:8080/v1/projects/$project/providers \
   that `supervisor.secretStores.allowedHosts` lists. By default it lists
   none.
 - **Errors are reported at once.** The Supervisor logs in to a store before
-  it accepts the store, and reads a key from its location before it accepts
-  the provider.
+  it accepts the store, and reads a secret from its location before it
+  accepts the provider.
 - **Values are read when they are used.** A Supervisor caches a value for
   `supervisor.secretStores.cacheSeconds`, 60 by default, and never uses it
-  for longer: a key that changes in the store reaches the model requests
-  within that time, and a key that is removed from the store stops being
+  for longer: a secret that changes in the store reaches the model requests
+  within that time, and a secret that is removed from the store stops being
   used within that time too. The cache is bounded in size, and a value
   larger than 8 KiB is not accepted as a secret.
-- **A key that cannot be read fails the request.** The model request gets a
-  503 with the reason, and the turns of other providers continue.
+- **A secret that cannot be read fails the request.** The model request
+  gets a 503 with the reason, and the turns of other providers continue.
 - **The credential is stored encrypted**, like the key of a provider. A
   store is returned with `"credential": {"stored": true}`.
 - **Give the role no more access than Aviary needs.** Anyone who can create
@@ -653,9 +710,10 @@ event log or a secret store that it has no plugin for, see
 ## Web UI
 
 The web UI is a client of the API that runs in the browser. It shows the
-projects with their members, model providers, secret stores and agents, and
-the sessions of an agent with their conversations: it follows a turn as the
-agent works, and answers its requests for approval.
+projects with their members, model providers, MCP servers, secret stores and
+agents, and the sessions of an agent with their conversations and the MCP
+servers that each has on: it follows a turn as the agent works, and answers
+its requests for approval.
 
 The chart does not install it. Its image, built from `images/web`, is a web
 server with the files of the web UI, configured through its environment:

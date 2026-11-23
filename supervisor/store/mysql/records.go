@@ -27,8 +27,9 @@ const (
 
 // The unique keys on slugs, as MySQL names them in errors.
 const (
-	projectSlug = "projects.projects_slug"
-	agentSlug   = "agents.agents_project_slug"
+	projectSlug   = "projects.projects_slug"
+	agentSlug     = "agents.agents_project_slug"
+	mcpServerSlug = "mcp_servers.mcp_servers_project_slug"
 )
 
 // Rows of the locks table.
@@ -411,7 +412,13 @@ func (s *records) CreateAgent(ctx context.Context, projectID uuid.UUID, agent st
 		Harness: agent.Harness, Instructions: agent.Instructions, Approval: agent.Approval,
 		ProviderID: key.ID(agent.Model.Provider), Model: agent.Model.Name,
 	}
-	switch err := created(s.queries.CreateAgent(ctx, params)); {
+	err = s.within(ctx, func(queries *db.Queries) error {
+		if err := created(queries.CreateAgent(ctx, params)); err != nil {
+			return err
+		}
+		return setAgentServers(ctx, queries, id, agent.McpServers)
+	})
+	switch {
 	case duplicate(err, agentSlug):
 		return store.Agent{}, store.ErrSlugTaken
 	case err != nil:
@@ -425,7 +432,7 @@ func (s *records) Agent(ctx context.Context, id uuid.UUID) (store.Agent, error) 
 	if err != nil {
 		return store.Agent{}, found(err)
 	}
-	return agentFrom(row), nil
+	return withServers(ctx, s.queries, agentFrom(row))
 }
 
 func (s *records) ReplaceAgent(ctx context.Context, agent store.Agent) (store.Agent, error) {
@@ -433,12 +440,58 @@ func (s *records) ReplaceAgent(ctx context.Context, agent store.Agent) (store.Ag
 		ID: key.ID(agent.ID), Name: agent.Name, Description: agent.Description, Instructions: agent.Instructions,
 		Approval: agent.Approval, ProviderID: key.ID(agent.Model.Provider), Model: agent.Model.Name,
 	}
-	if err := created(s.queries.ReplaceAgent(ctx, params)); errors.Is(err, store.ErrNotFound) {
+	err := s.within(ctx, func(queries *db.Queries) error {
+		if err := created(queries.ReplaceAgent(ctx, params)); err != nil {
+			return err
+		}
+		return setAgentServers(ctx, queries, agent.ID, agent.McpServers)
+	})
+	if errors.Is(err, store.ErrNotFound) {
 		return store.Agent{}, s.deleted(ctx, agent.ID)
 	} else if err != nil {
 		return store.Agent{}, err
 	}
 	return s.Agent(ctx, agent.ID)
+}
+
+// setAgentServers replaces the MCP servers of the agent.
+func setAgentServers(ctx context.Context, queries *db.Queries, agentID uuid.UUID, servers []uuid.UUID) error {
+	if err := queries.ClearAgentMcpServers(ctx, key.ID(agentID)); err != nil {
+		return err
+	}
+	for _, server := range servers {
+		if err := queries.AddAgentMcpServer(ctx, db.AddAgentMcpServerParams{AgentID: key.ID(agentID), McpServerID: key.ID(server)}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// agentServers returns the MCP servers of the agents, by agent.
+func agentServers(ctx context.Context, queries *db.Queries, agentIDs ...uuid.UUID) (map[uuid.UUID][]uuid.UUID, error) {
+	servers := map[uuid.UUID][]uuid.UUID{}
+	if len(agentIDs) == 0 {
+		return servers, nil
+	}
+	of := make([]key.ID, len(agentIDs))
+	for i, id := range agentIDs {
+		of[i] = key.ID(id)
+	}
+	rows, err := queries.ListAgentMcpServers(ctx, of)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		servers[uuid.UUID(row.AgentID)] = append(servers[uuid.UUID(row.AgentID)], uuid.UUID(row.McpServerID))
+	}
+	return servers, nil
+}
+
+// withServers returns the agent with its MCP servers.
+func withServers(ctx context.Context, queries *db.Queries, agent store.Agent) (store.Agent, error) {
+	servers, err := agentServers(ctx, queries, agent.ID)
+	agent.McpServers = servers[agent.ID]
+	return agent, err
 }
 
 // deleted returns ErrAgentDeleted if the agent exists, which is why a
@@ -491,8 +544,8 @@ func (s *records) DeleteAgent(ctx context.Context, id uuid.UUID) (store.Agent, [
 				return err
 			}
 		}
-		agent = agentFrom(row)
-		return nil
+		agent, err = withServers(ctx, queries, agentFrom(row))
+		return err
 	})
 	if err != nil {
 		return store.Agent{}, nil, err
@@ -506,8 +559,16 @@ func (s *records) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agen
 		return nil, err
 	}
 	agents := make([]store.Agent, len(rows))
+	ids := make([]uuid.UUID, len(rows))
 	for i, row := range rows {
-		agents[i] = agentFrom(row)
+		agents[i], ids[i] = agentFrom(row), uuid.UUID(row.ID)
+	}
+	servers, err := agentServers(ctx, s.queries, ids...)
+	if err != nil {
+		return nil, err
+	}
+	for i := range agents {
+		agents[i].McpServers = servers[agents[i].ID]
 	}
 	return agents, nil
 }
@@ -521,7 +582,7 @@ func agentFrom(row db.Agent) store.Agent {
 	}
 }
 
-func (s *records) CreateSession(ctx context.Context, agentID, by uuid.UUID, title string) (store.Session, error) {
+func (s *records) CreateSession(ctx context.Context, agentID, by uuid.UUID, title string, mcp map[uuid.UUID]bool) (store.Session, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return store.Session{}, err
@@ -535,7 +596,16 @@ func (s *records) CreateSession(ctx context.Context, agentID, by uuid.UUID, titl
 		if _, err := queries.HoldAgent(ctx, key.ID(agentID)); err != nil {
 			return found(err)
 		}
-		return created(queries.CreateSession(ctx, params))
+		if err := created(queries.CreateSession(ctx, params)); err != nil {
+			return err
+		}
+		for server, enabled := range mcp {
+			err := queries.AddSessionMcpServer(ctx, db.AddSessionMcpServerParams{SessionID: key.ID(id), McpServerID: key.ID(server), Enabled: enabled})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	if errors.Is(err, store.ErrNotFound) {
 		return store.Session{}, s.deleted(ctx, agentID)
@@ -548,6 +618,74 @@ func (s *records) CreateSession(ctx context.Context, agentID, by uuid.UUID, titl
 func (s *records) Session(ctx context.Context, id uuid.UUID) (store.Session, error) {
 	row, err := s.queries.GetSession(ctx, key.ID(id))
 	return sessionFrom(row), found(err)
+}
+
+func (s *records) SetSessionMcpServer(ctx context.Context, sessionID, serverID uuid.UUID, enabled bool) (store.Session, error) {
+	err := s.within(ctx, func(queries *db.Queries) error {
+		if err := openSession(ctx, queries, sessionID); err != nil {
+			return err
+		}
+		agents, err := queries.IsAgentMcpServer(ctx, db.IsAgentMcpServerParams{SessionID: key.ID(sessionID), McpServerID: key.ID(serverID)})
+		if err != nil {
+			return err
+		}
+		if err := queries.ClearSessionMcpServer(ctx, db.ClearSessionMcpServerParams{SessionID: key.ID(sessionID), McpServerID: key.ID(serverID)}); err != nil {
+			return err
+		}
+		if enabled == agents {
+			return nil
+		}
+		return queries.AddSessionMcpServer(ctx, db.AddSessionMcpServerParams{SessionID: key.ID(sessionID), McpServerID: key.ID(serverID), Enabled: enabled})
+	})
+	if err != nil {
+		return store.Session{}, err
+	}
+	return s.Session(ctx, sessionID)
+}
+
+func (s *records) ResetSessionMcpServers(ctx context.Context, sessionID uuid.UUID) (store.Session, error) {
+	err := s.within(ctx, func(queries *db.Queries) error {
+		if err := openSession(ctx, queries, sessionID); err != nil {
+			return err
+		}
+		return queries.ClearSessionMcpServers(ctx, key.ID(sessionID))
+	})
+	if err != nil {
+		return store.Session{}, err
+	}
+	return s.Session(ctx, sessionID)
+}
+
+// openSession returns ErrNotFound if there is no such session, and
+// ErrSessionEnded if it has ended.
+func openSession(ctx context.Context, queries *db.Queries, id uuid.UUID) error {
+	row, err := queries.GetSession(ctx, key.ID(id))
+	switch {
+	case err != nil:
+		return found(err)
+	case row.EndedAt != nil:
+		return store.ErrSessionEnded
+	}
+	return nil
+}
+
+func (s *records) SessionMcpServers(ctx context.Context, sessionIDs []uuid.UUID) (map[uuid.UUID][]uuid.UUID, error) {
+	servers := map[uuid.UUID][]uuid.UUID{}
+	if len(sessionIDs) == 0 {
+		return servers, nil
+	}
+	of := make([]key.ID, len(sessionIDs))
+	for i, id := range sessionIDs {
+		of[i] = key.ID(id)
+	}
+	rows, err := s.queries.ListSessionMcpServers(ctx, of)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		servers[uuid.UUID(row.SessionID)] = append(servers[uuid.UUID(row.SessionID)], uuid.UUID(row.McpServerID))
+	}
+	return servers, nil
 }
 
 func (s *records) SetSessionTitle(ctx context.Context, id uuid.UUID, title string) (store.Session, error) {
@@ -695,7 +833,7 @@ func keyAt(provider store.Provider) (storeID *key.ID, path, name string) {
 	return nil, "", ""
 }
 
-// headersIn returns the headers of a provider as their column holds them:
+// headersIn returns the headers of an endpoint as their column holds them:
 // null if there are none.
 func headersIn(headers []store.Header) (*json.RawMessage, error) {
 	if len(headers) == 0 {
@@ -709,14 +847,14 @@ func headersIn(headers []store.Header) (*json.RawMessage, error) {
 	return &column, nil
 }
 
-// headersFrom returns the headers that the column of a provider holds.
+// headersFrom returns the headers that the column of an endpoint holds.
 func headersFrom(column *json.RawMessage) ([]store.Header, error) {
 	if column == nil {
 		return nil, nil
 	}
 	var headers []store.Header
 	if err := json.Unmarshal(*column, &headers); err != nil {
-		return nil, fmt.Errorf("headers of a provider: %w", err)
+		return nil, fmt.Errorf("headers of an endpoint: %w", err)
 	}
 	return headers, nil
 }
@@ -787,6 +925,125 @@ func (s *records) ReplaceProvider(ctx context.Context, provider store.Provider) 
 		return store.Provider{}, err
 	}
 	return s.Provider(ctx, provider.ID)
+}
+
+// toolsIn returns the tools of an MCP server as their column holds them:
+// null if the server has not listed them.
+func toolsIn(tools []store.Tool, listed *time.Time) (*json.RawMessage, error) {
+	if listed == nil {
+		return nil, nil
+	}
+	if tools == nil {
+		tools = []store.Tool{}
+	}
+	encoded, err := json.Marshal(tools)
+	if err != nil {
+		return nil, err
+	}
+	column := json.RawMessage(encoded)
+	return &column, nil
+}
+
+// toolsFrom returns the tools that the column of an MCP server holds.
+func toolsFrom(column *json.RawMessage) ([]store.Tool, error) {
+	if column == nil {
+		return nil, nil
+	}
+	var tools []store.Tool
+	if err := json.Unmarshal(*column, &tools); err != nil {
+		return nil, fmt.Errorf("tools of an MCP server: %w", err)
+	}
+	return tools, nil
+}
+
+func (s *records) CreateMcpServer(ctx context.Context, server store.McpServer) (store.McpServer, error) {
+	headers, err := headersIn(server.Headers)
+	if err != nil {
+		return store.McpServer{}, err
+	}
+	tools, err := toolsIn(server.Tools, server.ToolsListedAt)
+	if err != nil {
+		return store.McpServer{}, err
+	}
+	params := db.CreateMcpServerParams{
+		ID: key.ID(server.ID), ProjectID: key.ID(server.ProjectID), Slug: server.Slug, Name: server.Name, Url: server.URL,
+		Transport: server.Transport, Headers: headers, Tools: tools, ToolsListedAt: server.ToolsListedAt,
+	}
+	switch err := created(s.queries.CreateMcpServer(ctx, params)); {
+	case duplicate(err, mcpServerSlug):
+		return store.McpServer{}, store.ErrSlugTaken
+	case err != nil:
+		return store.McpServer{}, err
+	}
+	return s.McpServer(ctx, server.ID)
+}
+
+func (s *records) McpServer(ctx context.Context, id uuid.UUID) (store.McpServer, error) {
+	row, err := s.queries.GetMcpServer(ctx, key.ID(id))
+	if err != nil {
+		return store.McpServer{}, found(err)
+	}
+	return mcpServerFrom(row)
+}
+
+func (s *records) McpServers(ctx context.Context, projectID uuid.UUID) ([]store.McpServer, error) {
+	rows, err := s.queries.ListMcpServers(ctx, key.ID(projectID))
+	if err != nil {
+		return nil, err
+	}
+	servers := make([]store.McpServer, len(rows))
+	for i, row := range rows {
+		if servers[i], err = mcpServerFrom(row); err != nil {
+			return nil, err
+		}
+	}
+	return servers, nil
+}
+
+func mcpServerFrom(row db.McpServer) (store.McpServer, error) {
+	headers, err := headersFrom(row.Headers)
+	if err != nil {
+		return store.McpServer{}, err
+	}
+	tools, err := toolsFrom(row.Tools)
+	if err != nil {
+		return store.McpServer{}, err
+	}
+	return store.McpServer{
+		ID: uuid.UUID(row.ID), ProjectID: uuid.UUID(row.ProjectID), Slug: row.Slug, Name: row.Name, URL: row.Url, Transport: row.Transport,
+		Headers: headers, Tools: tools, ToolsListedAt: row.ToolsListedAt, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+	}, nil
+}
+
+func (s *records) ReplaceMcpServer(ctx context.Context, server store.McpServer) (store.McpServer, error) {
+	headers, err := headersIn(server.Headers)
+	if err != nil {
+		return store.McpServer{}, err
+	}
+	tools, err := toolsIn(server.Tools, server.ToolsListedAt)
+	if err != nil {
+		return store.McpServer{}, err
+	}
+	params := db.ReplaceMcpServerParams{
+		ID: key.ID(server.ID), Name: server.Name, Url: server.URL, Transport: server.Transport, Headers: headers, Tools: tools,
+		ToolsListedAt: server.ToolsListedAt,
+	}
+	if err := created(s.queries.ReplaceMcpServer(ctx, params)); err != nil {
+		return store.McpServer{}, err
+	}
+	return s.McpServer(ctx, server.ID)
+}
+
+func (s *records) SetMcpServerTools(ctx context.Context, id uuid.UUID, tools []store.Tool, listedAt time.Time) error {
+	column, err := toolsIn(tools, &listedAt)
+	if err != nil {
+		return err
+	}
+	return created(s.queries.SetMcpServerTools(ctx, db.SetMcpServerToolsParams{ID: key.ID(id), Tools: column, ToolsListedAt: &listedAt}))
+}
+
+func (s *records) DeleteMcpServer(ctx context.Context, id uuid.UUID) error {
+	return created(s.queries.DeleteMcpServer(ctx, key.ID(id)))
 }
 
 func (s *records) CreateSecretStore(ctx context.Context, secrets store.SecretStore) (store.SecretStore, error) {

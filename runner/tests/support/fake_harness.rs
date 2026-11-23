@@ -21,6 +21,8 @@
 //!   deaf               ignores cancellation for the rest of the turn
 //!   fail <text>        fails the prompt with the text as the error
 //!   env <name>         says the value of the environment variable
+//!   mcp                says the MCP servers that the session was started or
+//!                      resumed with, a line each
 //!   die                exits without answering the prompt
 //!   leave              exits after answering the prompt
 //!
@@ -28,7 +30,8 @@
 //! session can only be resumed in the same home.
 //!
 //! FAKE_HARNESS_START_MS delays its start, and FAKE_HARNESS_STOP_MS its stop
-//! after a cancellation.
+//! after a cancellation. FAKE_HARNESS_MCP lists the transports of the MCP
+//! servers that it takes, such as "http,sse".
 
 use std::env;
 use std::fs;
@@ -64,6 +67,7 @@ fn main() {
         leaving: false,
         notices: false,
         instructed: instructions(),
+        mcp: Vec::new(),
     };
     // Ends when the runner closes standard input.
     while let Ok(message) = harness.incoming.recv() {
@@ -84,6 +88,33 @@ struct Harness {
     notices: bool,
     /// The instructions when the process started, as `instructions` says them.
     instructed: String,
+    /// The MCP servers of the session, as `mcp` says them.
+    mcp: Vec<String>,
+}
+
+/// Returns how `mcp` says the MCP servers of session/new or session/resume.
+fn servers(params: &Value) -> Vec<String> {
+    let servers = params["mcpServers"].as_array().cloned().unwrap_or_default();
+    servers
+        .iter()
+        .map(|server| {
+            let headers = server["headers"].as_array().cloned().unwrap_or_default();
+            let headers = headers.iter().map(|header| {
+                format!(
+                    " {}={}",
+                    header["name"].as_str().unwrap_or_default(),
+                    header["value"].as_str().unwrap_or_default()
+                )
+            });
+            format!(
+                "{} {} {}{}",
+                server["type"].as_str().unwrap_or("stdio"),
+                server["name"].as_str().unwrap_or_default(),
+                server["url"].as_str().unwrap_or_default(),
+                headers.collect::<String>()
+            )
+        })
+        .collect()
 }
 
 /// Returns what `instructions` says about AVIARY_INSTRUCTIONS_FILE now.
@@ -140,9 +171,16 @@ impl Harness {
             Some("initialize") => {
                 thread::sleep(pause("FAKE_HARNESS_START_MS"));
                 self.notices = params["clientCapabilities"]["session"]["notices"].is_object();
+                let takes = env::var("FAKE_HARNESS_MCP").unwrap_or_default();
+                let takes = |transport: &str| takes.split(',').any(|taken| taken == transport);
                 answer(
                     id,
-                    json!({"protocolVersion": params["protocolVersion"], "agentCapabilities": {}}),
+                    json!({
+                        "protocolVersion": params["protocolVersion"],
+                        "agentCapabilities": {
+                            "mcpCapabilities": {"http": takes("http"), "sse": takes("sse")},
+                        },
+                    }),
                 );
             }
             Some("session/new") => {
@@ -155,11 +193,13 @@ impl Harness {
                 {
                     return refuse(id, "cannot store session");
                 }
+                self.mcp = servers(params);
                 answer(id, json!({"sessionId": session}));
             }
             Some("session/resume") => {
                 let session = params["sessionId"].as_str().unwrap_or_default();
                 if session_file(session).is_file() {
+                    self.mcp = servers(params);
                     answer(id, json!({}));
                 } else {
                     refuse(id, "unknown session");
@@ -373,6 +413,8 @@ impl Harness {
                 "deaf" => self.deaf = true,
                 "fail" => return Ending::Failed(rest.to_owned()),
                 "env" => self.say(session, &env::var(rest).unwrap_or_else(|_| "not set".to_owned())),
+                "mcp" if self.mcp.is_empty() => self.say(session, "none"),
+                "mcp" => self.say(session, &self.mcp.join("\n")),
                 "die" => process::exit(1),
                 "leave" => self.leaving = true,
                 _ => self.say(session, "fake"),

@@ -16,63 +16,78 @@ import (
 	"aviary/supervisor/events"
 	memorylog "aviary/supervisor/events/memory"
 	"aviary/supervisor/internal/testenv"
-	"aviary/supervisor/store"
 	memorystore "aviary/supervisor/store/memory"
 )
 
-// The Egress Proxy sets the headers of a provider on every model request as
-// they are kept, so they are checked when they are given: a header that would
-// send a request elsewhere, or change how it is carried, is refused.
-func TestTheHeadersOfAProviderAreChecked(t *testing.T) {
-	kept, err := headersOf([]store.Header{{Name: "X-Team", Value: " a team\t"}, {Name: "accept-language", Value: `en;q=0.8, "*"`}})
-	if want := []store.Header{{Name: "x-team", Value: "a team"}, {Name: "accept-language", Value: `en;q=0.8, "*"`}}; err != nil || !slices.Equal(kept, want) {
+// The Egress Proxy sets the headers of an endpoint on every request as they
+// are kept, so they are checked when they are given: a header that would send
+// a request elsewhere, or change how it is carried, is refused.
+func TestTheHeadersOfAnEndpointAreChecked(t *testing.T) {
+	plain := func(name, value string) headerField { return headerField{Name: name, Value: value} }
+	kept, err := headersOf([]headerField{plain("X-Team", " a team\t"), plain("accept-language", `en;q=0.8, "*"`)}, false)
+	if want := []headerField{plain("x-team", "a team"), plain("accept-language", `en;q=0.8, "*"`)}; err != nil || !slices.Equal(kept, want) {
 		t.Errorf("headersOf = %v, %v, want %v", kept, err, want)
 	}
-	if kept, err := headersOf(nil); err != nil || kept != nil {
+	if kept, err := headersOf(nil, false); err != nil || kept != nil {
 		t.Errorf("headersOf of no headers = %v, %v", kept, err)
+	}
+	// A header has a secret in place of its value.
+	kept, err = headersOf([]headerField{{Name: "X-Token", Secret: &secretField{Value: " s3cret "}}}, false)
+	if err != nil || len(kept) != 1 || kept[0].Name != "x-token" || kept[0].Value != "" || *kept[0].Secret != (secretField{Value: "s3cret"}) {
+		t.Errorf("headersOf of a secret = %+v, %v", kept, err)
+	}
+	// An endpoint that takes no key of its own can take it in authorization.
+	if kept, err := headersOf([]headerField{{Name: "Authorization", Secret: &secretField{Stored: true}}}, true); err != nil || kept[0].Name != "authorization" {
+		t.Errorf("headersOf of authorization = %+v, %v", kept, err)
 	}
 
 	// many returns that many headers with different names, each with the
 	// value.
-	many := func(count int, value string) []store.Header {
-		headers := make([]store.Header, count)
+	many := func(count int, value string) []headerField {
+		headers := make([]headerField, count)
 		for i := range headers {
-			headers[i] = store.Header{Name: fmt.Sprintf("x-%02d", i), Value: value}
+			headers[i] = plain(fmt.Sprintf("x-%02d", i), value)
 		}
 		return headers
 	}
-	if kept, err := headersOf(many(20, strings.Repeat("v", 8192/20-4))); err != nil || len(kept) != 20 {
+	if kept, err := headersOf(many(20, strings.Repeat("v", 8192/20-4)), false); err != nil || len(kept) != 20 {
 		t.Errorf("headersOf of as many and as large headers as allowed = %d headers, %v", len(kept), err)
 	}
 
 	const name, reserved = "headers[0].name must be the name of an HTTP header", ", which is reserved"
 	const value = "headers[0].value must be the value of an HTTP header, and not empty"
+	const size = "the names and values of headers must be at most 8192 bytes together"
 	for _, test := range []struct {
-		given []store.Header
+		given []headerField
 		why   string
 	}{
-		{[]store.Header{{Value: "a"}}, name},
-		{[]store.Header{{Name: "x team", Value: "a"}}, name},
-		{[]store.Header{{Name: ":path", Value: "/"}}, name},
-		{[]store.Header{{Name: "x-team:", Value: "a"}}, name},
-		{[]store.Header{{Name: "x-tëam", Value: "a"}}, name},
-		{[]store.Header{{Name: "Authorization", Value: "Bearer a"}}, "headers[0].name must not be authorization; set the endpoint's key in api_key"},
-		{[]store.Header{{Name: "Host", Value: "other.example.com"}}, "headers[0].name must not be host" + reserved},
-		{[]store.Header{{Name: "content-length", Value: "0"}}, "headers[0].name must not be content-length" + reserved},
-		{[]store.Header{{Name: "Transfer-Encoding", Value: "chunked"}}, "headers[0].name must not be transfer-encoding" + reserved},
-		{[]store.Header{{Name: "X-Aviary-Upstream", Value: "other.example.com"}}, "headers[0].name must not be x-aviary-upstream" + reserved},
-		{[]store.Header{{Name: "x-envoy-upstream-rq-timeout-ms", Value: "1"}}, "headers[0].name must not be x-envoy-upstream-rq-timeout-ms" + reserved},
-		{[]store.Header{{Name: "x-team", Value: "a"}, {Name: "X-Team", Value: "b"}}, "headers[1].name must not be x-team, which another header has"},
-		{[]store.Header{{Name: "x-team"}}, value},
-		{[]store.Header{{Name: "x-team", Value: " \t"}}, value},
-		{[]store.Header{{Name: "x-team", Value: "a\r\nx-other: b"}}, value},
-		{[]store.Header{{Name: "x-team", Value: "a\x00"}}, value},
+		{[]headerField{plain("", "a")}, name},
+		{[]headerField{plain("x team", "a")}, name},
+		{[]headerField{plain(":path", "/")}, name},
+		{[]headerField{plain("x-team:", "a")}, name},
+		{[]headerField{plain("x-tëam", "a")}, name},
+		{[]headerField{plain("Authorization", "Bearer a")}, "headers[0].name must not be authorization; set the endpoint's key in api_key"},
+		{[]headerField{plain("Host", "other.example.com")}, "headers[0].name must not be host" + reserved},
+		{[]headerField{plain("content-length", "0")}, "headers[0].name must not be content-length" + reserved},
+		{[]headerField{plain("Transfer-Encoding", "chunked")}, "headers[0].name must not be transfer-encoding" + reserved},
+		{[]headerField{plain("X-Aviary-Upstream", "other.example.com")}, "headers[0].name must not be x-aviary-upstream" + reserved},
+		{[]headerField{plain("x-envoy-upstream-rq-timeout-ms", "1")}, "headers[0].name must not be x-envoy-upstream-rq-timeout-ms" + reserved},
+		{[]headerField{plain("Mcp-Session-Id", "a")}, "headers[0].name must not be mcp-session-id" + reserved},
+		{[]headerField{plain("x-team", "a"), plain("X-Team", "b")}, "headers[1].name must not be x-team, which another header has"},
+		{[]headerField{plain("x-team", "")}, value},
+		{[]headerField{plain("x-team", " \t")}, value},
+		{[]headerField{plain("x-team", "a\r\nx-other: b")}, value},
+		{[]headerField{plain("x-team", "a\x00")}, value},
+		{[]headerField{{Name: "x-team", Value: "a", Secret: &secretField{Value: "b"}}}, "headers[0] must have a value or a secret"},
+		{[]headerField{{Name: "x-team", Secret: &secretField{Value: "a\r\nx-other: b"}}}, "headers[0].secret.value must be the value of an HTTP header"},
 		{many(21, "a"), "headers must be at most 20"},
-		{many(2, strings.Repeat("v", 4096)), "the names and values of headers must be at most 8192 bytes together"},
+		{many(2, strings.Repeat("v", 4096)), size},
+		// A secret whose length is not known counts all the same.
+		{append(many(19, strings.Repeat("v", 8192/19-4)), headerField{Name: "x-last", Secret: &secretField{Stored: true}}), size},
 	} {
 		var refused *apiError
-		if kept, err := headersOf(test.given); !errors.As(err, &refused) || refused.Message != test.why || refused.status != http.StatusBadRequest {
-			t.Errorf("headersOf(%.60q) = %v, %v, want it refused with %q", test.given, kept, err, test.why)
+		if kept, err := headersOf(test.given, false); !errors.As(err, &refused) || refused.Message != test.why || refused.status != http.StatusBadRequest {
+			t.Errorf("headersOf(%.60v) = %v, %v, want it refused with %q", test.given, kept, err, test.why)
 		}
 	}
 }

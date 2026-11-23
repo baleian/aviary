@@ -85,7 +85,7 @@ func (i *installation) session(agent store.Agent) store.Session {
 	if err != nil {
 		i.t.Fatal(err)
 	}
-	session, err := i.store.CreateSession(ctx, made.ID, uuid.Nil, "")
+	session, err := i.store.CreateSession(ctx, made.ID, uuid.Nil, "", nil)
 	if err != nil {
 		i.t.Fatal(err)
 	}

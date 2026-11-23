@@ -108,6 +108,17 @@ func TestRecord(t *testing.T) {
 			},
 		},
 		{
+			name: "unsupported MCP servers are an item",
+			events: []event{
+				{mcpUnsupported, `{"servers": [{"id": "m1", "name": "docs", "transport": "sse"}]}`},
+				{messageDelta, `{"text": "hello"}`},
+			},
+			items: []string{
+				`{"servers":[{"id":"m1","name":"docs","transport":"sse"}],"type":"mcp_unsupported"}`,
+				`{"type":"message","text":"hello"}`,
+			},
+		},
+		{
 			name: "other events are ignored",
 			events: []event{
 				{TurnQueued, `{"position": 1}`},

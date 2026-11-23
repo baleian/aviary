@@ -51,7 +51,9 @@ func (r *Runner) Address() string {
 	return r.address
 }
 
-// Turn is a turn as the runner receives it.
+// Turn is a turn as the runner receives it. A harness may have only the
+// instructions, approval mode, environment and MCP servers of its first turn,
+// so the runner starts a new one for a turn in which they differ.
 type Turn struct {
 	Text string `json:"text"`
 	// Instructions are given to the agent before every turn.
@@ -59,9 +61,21 @@ type Turn struct {
 	// Approval is "ask" if the harness asks a person before it acts.
 	Approval string `json:"approval"`
 	// Environment holds environment variables of the harness, such as the
-	// agent's model. A harness has both from its start, so the runner starts
-	// a new one for a turn in which they differ.
+	// agent's model.
 	Environment map[string]string `json:"environment"`
+	// McpServers are the MCP servers that the harness can use in the turn.
+	McpServers []McpServer `json:"mcp_servers,omitempty"`
+}
+
+// McpServer is an MCP server as a harness reaches it: through the Egress
+// Proxy, which knows it by its ID.
+type McpServer struct {
+	ID uuid.UUID `json:"id"`
+	// Name names the server, and its tools, to the harness.
+	Name string `json:"name"`
+	// Transport is "http" for Streamable HTTP, or "sse".
+	Transport string `json:"transport"`
+	URL       string `json:"url"`
 }
 
 // Event is an event of a turn as reported by the runner.

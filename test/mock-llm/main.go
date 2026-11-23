@@ -12,6 +12,11 @@
 //	               like run, and asks for the command to run outside the
 //	               harness's sandbox if its shell tool supports that. A
 //	               harness that asks for approval before it acts asks then
+//	use <server> <tool> [<arguments>]
+//	               calls a tool of an MCP server with the JSON arguments,
+//	               then replies with the tool's output. The tool is the first
+//	               that the harness offers whose name ends with the server's
+//	               and the tool's, as in "server_tool" or "mcp__server__tool"
 //	recall         replies with the user's earlier instructions, one per
 //	               line, or "nothing" if there are none
 //	find <text>    replies "present" if the harness sent the text along with
@@ -32,6 +37,13 @@
 // cluster. As a proxy it forwards nothing: it refuses each request and logs
 // the requested host, so that a test can see what went out.
 //
+// It is also an MCP server, with the same API key, at /mcp by Streamable
+// HTTP and at /sse by SSE. Its one tool, headers, reports the values of the
+// headers that it is given by name, as the request that began the session
+// had them, so that a test can see what reached the server. At /locked/mcp
+// and /locked/sse, it refuses every request with 401, as a server does whose
+// token is not valid.
+//
 // It also serves a small Python package, aviary-probe, for tests to install
 // with pip: GET /packages/aviary_probe-1.0-py3-none-any.whl.
 package main
@@ -39,6 +51,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -49,9 +62,12 @@ import (
 	"maps"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const (
@@ -102,6 +118,18 @@ func newMock(apiKey string) http.Handler {
 		w.Header().Set("Content-Type", "application/zip")
 		w.Write(probe)
 	})
+	session := func(r *http.Request) *mcp.Server { return mcpServer(r.Header.Clone()) }
+	mux.HandleFunc("/mcp", withKey(apiKey, mcp.NewStreamableHTTPHandler(session, nil).ServeHTTP))
+	mux.HandleFunc("/sse", withKey(apiKey, mcp.NewSSEHandler(session, nil).ServeHTTP))
+	// A server that refuses every caller, as one does whose token is not
+	// valid, and says where its OAuth metadata is, as MCP servers do.
+	locked := func(w http.ResponseWriter, r *http.Request) {
+		slog.Info("refused MCP request", "method", r.Method, "path", r.URL.Path)
+		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata="http://%s/.well-known/oauth-protected-resource%s"`, r.Host, r.URL.Path))
+		refuse(w, http.StatusUnauthorized, "the token is not valid for this server")
+	}
+	mux.HandleFunc("/locked/mcp", locked)
+	mux.HandleFunc("/locked/sse", locked)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// A request for another host is a forward proxy request.
 		if r.Method == http.MethodConnect || r.URL.Host != "" {
@@ -148,6 +176,33 @@ func wheel() []byte {
 	return made.Bytes()
 }
 
+// headersInput is the input of the headers tool.
+type headersInput struct {
+	Names []string `json:"names" jsonschema:"the names of the headers to report"`
+}
+
+// mcpServer returns the MCP server of a session that a request with the
+// headers began.
+func mcpServer(begun http.Header) *mcp.Server {
+	server := mcp.NewServer(&mcp.Implementation{Name: "mock-llm", Version: "1.0"}, nil)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "headers",
+		Description: "Reports the values of the headers with the given names, one per line.",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, input headersInput) (*mcp.CallToolResult, any, error) {
+		var lines []string
+		for _, name := range input.Names {
+			value := begun.Get(name)
+			if value == "" {
+				value = "none"
+			}
+			lines = append(lines, name+": "+value)
+		}
+		slog.Info("called MCP tool", "tool", "headers", "headers", lines)
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: strings.Join(lines, "\n")}}}, nil, nil
+	})
+	return server
+}
+
 // next returns the model's answer to the conversation. A flaky instruction is
 // refused the first time.
 func (m *mock) next(c conversation) answer {
@@ -171,9 +226,13 @@ type conversation struct {
 	// sent holds the text that the harness added itself: its instructions to
 	// the model, and the messages that it added to the conversation.
 	sent []string
-	// toolOutput is the tool output that ends the conversation, if any.
+	// toolOutput is the tool output that ends the conversation, if any, and
+	// searched is set if it is the output of a tool search.
 	toolOutput *string
-	// shell is the harness's shell tool, if it offers one.
+	searched   bool
+	// tools are the tools that the harness offers, and shell is the one that
+	// runs commands, if there is one.
+	tools []tool
 	shell *shellTool
 }
 
@@ -193,28 +252,41 @@ var outside = map[string]string{
 	"justification":       "the script says so",
 }
 
-// arguments returns the JSON arguments of the tool call for a.
-func (s shellTool) arguments(a answer) string {
-	arguments := map[string]string{s.argument: a.command}
-	if a.outside && s.sandboxed {
+// call returns the call that runs the command, outside the sandbox if
+// escalated is set.
+func (s shellTool) call(command string, escalated bool) *call {
+	arguments := map[string]string{s.argument: command}
+	if escalated && s.sandboxed {
 		maps.Copy(arguments, outside)
 	}
 	encoded, _ := json.Marshal(arguments)
-	return string(encoded)
+	return &call{name: s.name, arguments: string(encoded)}
 }
 
-// answer is the model's next move: a call of the shell tool with command,
-// outside the sandbox if outside is set, or else text, with pause after each
-// word. If status is set, the request is refused with status and failure
-// instead. A flaky answer is given only after it was refused once.
+// call is a call of a tool: its name, the namespace in which the harness
+// offers it, if any, and its JSON arguments.
+type call struct {
+	name, namespace, arguments string
+}
+
+// answer is the model's next move: a tool call, or else text, with pause
+// after each word. If status is set, the request is refused with status and
+// failure instead. A flaky answer is given only after it was refused once.
 type answer struct {
 	text    string
 	pause   time.Duration
-	command string
-	outside bool
+	call    *call
 	failure string
 	status  int
 	flaky   bool
+}
+
+// called says what tool call the answer is, for the log.
+func (a answer) called() string {
+	if a.call == nil {
+		return ""
+	}
+	return a.call.namespace + a.call.name + " " + a.call.arguments
 }
 
 // wait pauses after a word of the answer. It reports false if the request was
@@ -238,7 +310,8 @@ func (c *conversation) hear(message string) {
 }
 
 func (c conversation) next() answer {
-	if c.toolOutput != nil {
+	// After a tool search, the instruction is taken up again.
+	if c.toolOutput != nil && !c.searched {
 		return answer{text: *c.toolOutput}
 	}
 	if len(c.said) == 0 {
@@ -263,7 +336,9 @@ func (c conversation) next() answer {
 	case (word == "run" || word == "escalate") && c.shell == nil:
 		return answer{text: "mock: the harness offers no tool that runs a command"}
 	case word == "run" || word == "escalate":
-		return answer{command: rest, outside: word == "escalate"}
+		return answer{call: c.shell.call(rest, word == "escalate")}
+	case word == "use":
+		return c.use(rest)
 	case word == "find" && strings.Contains(strings.Join(c.sent, "\n"), rest):
 		return answer{text: "present"}
 	case word == "find":
@@ -281,20 +356,87 @@ func (c conversation) next() answer {
 	return answer{text: strings.Join(before, "\n")}
 }
 
+// use calls a tool of an MCP server. rest is the server's name, the tool's
+// name and, if the tool takes any, the JSON arguments.
+func (c conversation) use(rest string) answer {
+	server, rest, _ := strings.Cut(rest, " ")
+	name, arguments, _ := strings.Cut(strings.TrimSpace(rest), " ")
+	if server == "" || name == "" {
+		return answer{text: "mock: use takes the name of an MCP server and of its tool"}
+	}
+	called := findTool(c.tools, server, name)
+	// A harness that offers the tools of MCP servers only once the model has
+	// searched for them offers a tool that searches.
+	searches := slices.ContainsFunc(c.tools, func(offered tool) bool { return offered.Name == toolSearch })
+	if called == nil && searches && !c.searched {
+		return answer{call: &call{name: toolSearch, arguments: fmt.Sprintf(`{"query": %q}`, server+" "+name)}}
+	}
+	if called == nil {
+		var offered []string
+		for _, tool := range c.tools {
+			offered = append(offered, tool.Name)
+		}
+		return answer{text: fmt.Sprintf("mock: the harness offers no tool %s of the MCP server %s, only %s", name, server, strings.Join(offered, ", "))}
+	}
+	called.arguments = strings.TrimSpace(arguments)
+	if called.arguments == "" {
+		called.arguments = "{}"
+	}
+	return answer{call: called}
+}
+
 // instruction splits a user message into its script word and the rest. found
 // is false for other messages, such as those that harnesses add.
 func instruction(message string) (word, rest string, found bool) {
 	word, rest, _ = strings.Cut(strings.TrimSpace(message), " ")
 	switch word {
-	case "say", "drawl", "run", "escalate", "recall", "find", "fail", "flaky":
+	case "say", "drawl", "run", "escalate", "use", "recall", "find", "fail", "flaky":
 		return word, strings.TrimSpace(rest), true
 	}
 	return "", "", false
 }
 
+// tool is a tool that a harness offers. The Responses API also takes
+// namespaces, which hold tools.
 type tool struct {
+	Type       string `json:"type"`
 	Name       string `json:"name"`
 	Parameters schema `json:"parameters"`
+	Tools      []tool `json:"tools"`
+}
+
+// toolSearch is the name of the tool with which Claude Code has the model
+// search for the tools of MCP servers before it offers them.
+const toolSearch = "ToolSearch"
+
+// findTool returns a call of the first tool whose name ends with the server's
+// name and the tool's, set apart by "_", "." or ":" from each other and from
+// what comes before, or nil. The name of a tool in a namespace begins with
+// the namespace's.
+func findTool(tools []tool, server, name string) *call {
+	named := func(full string) bool {
+		before, found := strings.CutSuffix(full, name)
+		apart := strings.TrimRight(before, "_.:")
+		if !found || apart == before {
+			return false
+		}
+		before, found = strings.CutSuffix(apart, server)
+		return found && (before == "" || strings.ContainsAny(before[len(before)-1:], "_.:"))
+	}
+	for _, offered := range tools {
+		if offered.Type != "namespace" {
+			if named(offered.Name) {
+				return &call{name: offered.Name}
+			}
+			continue
+		}
+		for _, inner := range offered.Tools {
+			if named(offered.Name + "." + inner.Name) {
+				return &call{name: inner.Name, namespace: offered.Name}
+			}
+		}
+	}
+	return nil
 }
 
 // schema is the JSON schema of a tool's parameters.
@@ -431,9 +573,9 @@ func (m *mock) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	for _, offered := range request.Tools {
 		tools = append(tools, offered.Function)
 	}
-	c.shell = findShell(tools)
+	c.tools, c.shell = tools, findShell(tools)
 	next := m.next(c)
-	slog.Info("answered", "api", "chat completions", "said", len(c.said), "command", next.command, "text", next.text, "failure", next.failure)
+	slog.Info("answered", "api", "chat completions", "said", len(c.said), "call", next.called(), "text", next.text, "failure", next.failure)
 	if next.status != 0 {
 		refuse(w, next.status, next.failure)
 		return
@@ -455,7 +597,7 @@ func (m *mock) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		out.send("", data)
 	}
 	chunk(map[string]any{"role": "assistant", "content": ""}, nil)
-	if next.command == "" {
+	if next.call == nil {
 		for _, piece := range pieces(next.text) {
 			chunk(map[string]any{"content": piece}, nil)
 			if !next.wait(r) {
@@ -469,10 +611,10 @@ func (m *mock) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		chunk(call(map[string]any{
 			"index": 0, "id": newID("call_"), "type": "function",
-			"function": map[string]string{"name": c.shell.name, "arguments": ""},
+			"function": map[string]string{"name": next.call.name, "arguments": ""},
 		}), nil)
 		chunk(call(map[string]any{
-			"index": 0, "function": map[string]string{"arguments": c.shell.arguments(next)},
+			"index": 0, "function": map[string]string{"arguments": next.call.arguments},
 		}), nil)
 		chunk(map[string]any{}, "tool_calls")
 	}
@@ -519,9 +661,9 @@ func (m *mock) responses(w http.ResponseWriter, r *http.Request) {
 			c.toolOutput = &output
 		}
 	}
-	c.shell = findShell(request.Tools)
+	c.tools, c.shell = request.Tools, findShell(request.Tools)
 	next := m.next(c)
-	slog.Info("answered", "api", "responses", "said", len(c.said), "command", next.command, "text", next.text, "failure", next.failure)
+	slog.Info("answered", "api", "responses", "said", len(c.said), "call", next.called(), "text", next.text, "failure", next.failure)
 	if next.status != 0 {
 		refuse(w, next.status, next.failure)
 		return
@@ -543,7 +685,7 @@ func (m *mock) responses(w http.ResponseWriter, r *http.Request) {
 	send("response.in_progress", map[string]any{"response": response})
 
 	var item map[string]any
-	if next.command == "" {
+	if next.call == nil {
 		id := newID("msg_")
 		part := func(text string) map[string]any {
 			return map[string]any{"type": "output_text", "text": text, "annotations": []any{}}
@@ -566,17 +708,21 @@ func (m *mock) responses(w http.ResponseWriter, r *http.Request) {
 		item = map[string]any{"id": id, "type": "message", "status": "completed", "role": "assistant", "content": []any{part(next.text)}}
 	} else {
 		id, callID := newID("fc_"), newID("call_")
-		arguments := c.shell.arguments(next)
+		arguments := next.call.arguments
 		call := func(status, arguments string) map[string]any {
-			return map[string]any{
+			item := map[string]any{
 				"id": id, "type": "function_call", "status": status,
-				"call_id": callID, "name": c.shell.name, "arguments": arguments,
+				"call_id": callID, "name": next.call.name, "arguments": arguments,
 			}
+			if next.call.namespace != "" {
+				item["namespace"] = next.call.namespace
+			}
+			return item
 		}
 		item = call("completed", arguments)
 		send("response.output_item.added", map[string]any{"output_index": 0, "item": call("in_progress", "")})
 		send("response.function_call_arguments.delta", map[string]any{"item_id": id, "output_index": 0, "delta": arguments})
-		send("response.function_call_arguments.done", map[string]any{"item_id": id, "output_index": 0, "name": c.shell.name, "arguments": arguments})
+		send("response.function_call_arguments.done", map[string]any{"item_id": id, "output_index": 0, "name": next.call.name, "arguments": arguments})
 	}
 	send("response.output_item.done", map[string]any{"output_index": 0, "item": item})
 	response["status"] = "completed"
@@ -613,20 +759,32 @@ func (m *mock) messages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := conversation{sent: []string{text(request.System)}}
+	// The names of the tools that the model called, by the IDs of the calls.
+	called := map[string]string{}
 	for i, message := range request.Messages {
 		// A harness can add instructions in the conversation, too.
 		if message.Role == "system" {
 			c.sent = append(c.sent, text(message.Content))
 		}
+		// The content is a string or a list of blocks, such as text, tool
+		// calls and their results.
+		var blocks []struct {
+			Type      string          `json:"type"`
+			Text      string          `json:"text"`
+			Content   json.RawMessage `json:"content"`
+			ID        string          `json:"id"`
+			Name      string          `json:"name"`
+			ToolUseID string          `json:"tool_use_id"`
+		}
+		if message.Role == "assistant" && json.Unmarshal(message.Content, &blocks) == nil {
+			for _, block := range blocks {
+				if block.Type == "tool_use" {
+					called[block.ID] = block.Name
+				}
+			}
+		}
 		if message.Role != "user" {
 			continue
-		}
-		// The content is a string or a list of blocks, such as text and tool
-		// results.
-		var blocks []struct {
-			Type    string          `json:"type"`
-			Text    string          `json:"text"`
-			Content json.RawMessage `json:"content"`
 		}
 		if json.Unmarshal(message.Content, &blocks) != nil {
 			c.hear(text(message.Content))
@@ -643,7 +801,7 @@ func (m *mock) messages(w http.ResponseWriter, r *http.Request) {
 				}
 			case block.Type == "tool_result" && i == len(request.Messages)-1:
 				output := text(block.Content)
-				c.toolOutput = &output
+				c.toolOutput, c.searched = &output, called[block.ToolUseID] == toolSearch
 			}
 		}
 	}
@@ -651,9 +809,9 @@ func (m *mock) messages(w http.ResponseWriter, r *http.Request) {
 	for _, offered := range request.Tools {
 		tools = append(tools, tool{Name: offered.Name, Parameters: offered.InputSchema})
 	}
-	c.shell = findShell(tools)
+	c.tools, c.shell = tools, findShell(tools)
 	next := m.next(c)
-	slog.Info("answered", "api", "messages", "said", len(c.said), "command", next.command, "text", next.text, "failure", next.failure)
+	slog.Info("answered", "api", "messages", "said", len(c.said), "call", next.called(), "text", next.text, "failure", next.failure)
 	if next.status != 0 {
 		refuse(w, next.status, next.failure)
 		return
@@ -669,7 +827,7 @@ func (m *mock) messages(w http.ResponseWriter, r *http.Request) {
 		"stop_reason": nil, "stop_sequence": nil, "usage": map[string]int{"input_tokens": inputTokens, "output_tokens": 0},
 	}})
 	stop := "end_turn"
-	if next.command == "" {
+	if next.call == nil {
 		send("content_block_start", map[string]any{"index": 0, "content_block": map[string]any{"type": "text", "text": ""}})
 		for _, piece := range pieces(next.text) {
 			send("content_block_delta", map[string]any{"index": 0, "delta": map[string]any{"type": "text_delta", "text": piece}})
@@ -680,10 +838,10 @@ func (m *mock) messages(w http.ResponseWriter, r *http.Request) {
 	} else {
 		stop = "tool_use"
 		send("content_block_start", map[string]any{"index": 0, "content_block": map[string]any{
-			"type": "tool_use", "id": newID("toolu_"), "name": c.shell.name, "input": map[string]any{},
+			"type": "tool_use", "id": newID("toolu_"), "name": next.call.name, "input": map[string]any{},
 		}})
 		send("content_block_delta", map[string]any{"index": 0, "delta": map[string]any{
-			"type": "input_json_delta", "partial_json": c.shell.arguments(next),
+			"type": "input_json_delta", "partial_json": next.call.arguments,
 		}})
 	}
 	send("content_block_stop", map[string]any{"index": 0})

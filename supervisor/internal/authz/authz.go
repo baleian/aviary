@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ import (
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/google/uuid"
+	"golang.org/x/net/http/httpguts"
 	rpcstatus "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -35,6 +37,10 @@ const (
 	upstreamHeader    = "x-aviary-upstream"
 	upstreamTLSHeader = "x-aviary-upstream-tls"
 )
+
+// mcpHeader names, by its ID, the MCP server that a request of a harness is
+// for. It goes no further than the proxy.
+const mcpHeader = "x-aviary-mcp"
 
 // place is what session tokens are sealed for. A value sealed for another
 // place does not open as a token.
@@ -101,6 +107,55 @@ func ListingToken(keys *secret.Keys, listing Listing) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(token), nil
 }
 
+// ToolListing is the requests with which the API asks an MCP server for its
+// tools. They go through the Egress Proxy as the requests of a harness to the
+// server do.
+type ToolListing struct {
+	// Server is the server that is asked: its ID, project, URL, transport
+	// and headers. It need not be stored.
+	Server store.McpServer
+	// UserID and Subject identify the caller who asks. They are zero if
+	// requests to the API are not authenticated.
+	UserID  uuid.UUID
+	Subject string
+	// Until is when the listing's token stops being accepted.
+	Until time.Time
+}
+
+// toolListingPlace is what the tokens of tool listings are sealed for.
+const toolListingPlace = "the listing of an MCP server's tools"
+
+// sealedToolListing is the form in which a tool listing is sealed into its
+// token.
+type sealedToolListing struct {
+	Project   uuid.UUID
+	Server    uuid.UUID
+	URL       string
+	Transport string
+	Headers   []store.Header `json:",omitempty"`
+	User      uuid.UUID
+	Subject   string
+	Until     time.Time
+}
+
+// ToolListingToken returns the token of a tool listing, which its requests
+// carry: the listing, encrypted with the keys of the installation.
+func ToolListingToken(keys *secret.Keys, listing ToolListing) (string, error) {
+	server := listing.Server
+	encoded, err := json.Marshal(sealedToolListing{
+		Project: server.ProjectID, Server: server.ID, URL: server.URL, Transport: server.Transport, Headers: server.Headers,
+		User: listing.UserID, Subject: listing.Subject, Until: listing.Until,
+	})
+	if err != nil {
+		return "", err
+	}
+	token, err := keys.Seal(string(encoded), toolListingPlace)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(token), nil
+}
+
 type authorizer struct {
 	authv3.UnimplementedAuthorizationServer
 	store store.Store
@@ -122,37 +177,39 @@ func New(st store.Store, keys *secret.Keys, stores *secret.Stores, localhost str
 
 // Check allows a request that carries the token of a session with a running
 // turn. It returns, as dynamic metadata for the proxy's access log, the IDs of
-// the turn, session, agent and project, the provider of a model request, and,
-// if requests to the API are authenticated, the ID and subject of the user
-// who sent the turn's message. The subject identifies the user without
-// Aviary's records.
+// the turn, session, agent and project, the provider of a model request or
+// the MCP server of a request to one, and, if requests to the API are
+// authenticated, the ID and subject of the user who sent the turn's message.
+// The subject identifies the user without Aviary's records.
 //
 // A model request carries the token as its bearer token, in place of an API
 // key. A forward proxy request carries it as the proxy password. The context
 // extension "listener" tells them apart.
 //
 // A model request is routed to the endpoint of the turn's provider, with the
-// provider's headers and API key. A forward proxy request goes where the pod
-// sends it, and never gets a provider's headers or key.
+// provider's headers and API key. A request of the model listener that names
+// an MCP server in mcpHeader is routed to that server instead, if the session
+// has it on now. A forward proxy request goes where the pod sends it, and
+// never gets the headers or the secrets of a provider or a server.
 //
 // A model request may carry the token of a listing instead. It is routed to
 // the endpoint of the listing's provider, and its metadata names the project
-// and the caller of the listing.
+// and the caller of the listing. A request of a tool listing is routed to the
+// listing's MCP server in the same way.
 func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*authv3.CheckResponse, error) {
 	headers := request.GetAttributes().GetRequest().GetHttp().GetHeaders()
 	forward := request.GetAttributes().GetContextExtensions()["listener"] == "forward"
+	path := request.GetAttributes().GetRequest().GetHttp().GetPath()
 	token := bearerToken(headers["authorization"])
 	if forward {
 		token = proxyPassword(headers["proxy-authorization"])
 	}
+	if listing, known := a.toolListing(token); known && !forward {
+		return a.checkToolListing(ctx, listing, path)
+	}
 	origin, found, err := a.origin(ctx, token, forward)
 	if err != nil {
-		// The proxy denies a request whose check fails.
-		if ctx.Err() != nil {
-			return nil, status.FromContextError(ctx.Err()).Err()
-		}
-		slog.ErrorContext(ctx, "look up the origin of a request", "error", err)
-		return nil, status.Error(codes.Internal, "internal error")
+		return nil, failed(ctx, "look up the origin of a request", err)
 	}
 	if !found {
 		return denied(forward), nil
@@ -160,12 +217,42 @@ func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*
 	from := map[string]any{"project": origin.ProjectID.String()}
 	if origin.TurnID != uuid.Nil {
 		from["turn"], from["session"], from["agent"] = origin.TurnID.String(), origin.SessionID.String(), origin.AgentID.String()
-		if !forward {
-			from["provider"] = origin.Provider.ID.String()
-		}
 	}
 	if origin.UserID != uuid.Nil {
 		from["user"], from["subject"] = origin.UserID.String(), origin.Subject
+	}
+	var endpoint *authv3.OkHttpResponse
+	switch named := headers[mcpHeader]; {
+	case forward:
+	case named != "" && origin.TurnID != uuid.Nil:
+		server, on, err := a.mcpServerOf(ctx, origin, named)
+		if err != nil {
+			return nil, failed(ctx, "look up the MCP server of a request", err)
+		}
+		if !on {
+			return refused(typev3.StatusCode_Forbidden, "the MCP server is not on in the session\n"), nil
+		}
+		from["mcp_server"] = server.ID.String()
+		stores, err := a.storesOf(ctx, server.ProjectID, nil, server.Headers)
+		if err != nil {
+			return nil, failed(ctx, "look up the secret stores of an MCP server", err)
+		}
+		var refusal *authv3.CheckResponse
+		if endpoint, refusal = a.mcpEndpoint(ctx, server, stores, path); refusal != nil {
+			return refusal, nil
+		}
+	default:
+		if origin.TurnID != uuid.Nil {
+			from["provider"] = origin.Provider.ID.String()
+		}
+		stores, err := a.storesOf(ctx, origin.ProjectID, origin.SecretStore, origin.Provider.Headers)
+		if err != nil {
+			return nil, failed(ctx, "look up the secret stores of a provider", err)
+		}
+		var refusal *authv3.CheckResponse
+		if endpoint, refusal = a.endpoint(ctx, origin, stores, path); refusal != nil {
+			return refusal, nil
+		}
 	}
 	metadata, err := structpb.NewStruct(from)
 	if err != nil {
@@ -175,15 +262,65 @@ func (a *authorizer) Check(ctx context.Context, request *authv3.CheckRequest) (*
 		Status:          &rpcstatus.Status{Code: int32(codes.OK)},
 		DynamicMetadata: metadata,
 	}
-	if forward {
-		return allowed, nil
+	if endpoint != nil {
+		allowed.HttpResponse = &authv3.CheckResponse_OkResponse{OkResponse: endpoint}
 	}
-	endpoint, refusal := a.endpoint(ctx, origin, request.GetAttributes().GetRequest().GetHttp().GetPath())
+	return allowed, nil
+}
+
+// mcpServerOf returns the MCP server that a request of the origin's turn
+// names by its ID, and whether the session has it on.
+func (a *authorizer) mcpServerOf(ctx context.Context, origin store.Origin, named string) (store.McpServer, bool, error) {
+	id, err := uuid.Parse(named)
+	if err != nil {
+		return store.McpServer{}, false, nil
+	}
+	on, err := a.store.SessionMcpServers(ctx, []uuid.UUID{origin.SessionID})
+	if err != nil || !slices.Contains(on[origin.SessionID], id) {
+		return store.McpServer{}, false, err
+	}
+	server, err := a.store.McpServer(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return store.McpServer{}, false, nil
+	}
+	return server, err == nil, err
+}
+
+// failed returns the error with which a check fails, which makes the proxy
+// deny the request.
+func failed(ctx context.Context, doing string, err error) error {
+	if ctx.Err() != nil {
+		return status.FromContextError(ctx.Err()).Err()
+	}
+	slog.ErrorContext(ctx, doing, "error", err)
+	return status.Error(codes.Internal, "internal error")
+}
+
+// checkToolListing allows a request of a tool listing to its MCP server. Its
+// metadata names the project and the caller of the listing.
+func (a *authorizer) checkToolListing(ctx context.Context, listing ToolListing, path string) (*authv3.CheckResponse, error) {
+	server := listing.Server
+	from := map[string]any{"project": server.ProjectID.String()}
+	if listing.UserID != uuid.Nil {
+		from["user"], from["subject"] = listing.UserID.String(), listing.Subject
+	}
+	metadata, err := structpb.NewStruct(from)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "internal error")
+	}
+	stores, err := a.storesOf(ctx, server.ProjectID, nil, server.Headers)
+	if err != nil {
+		return nil, failed(ctx, "look up the secret stores of an MCP server", err)
+	}
+	endpoint, refusal := a.mcpEndpoint(ctx, server, stores, path)
 	if refusal != nil {
 		return refusal, nil
 	}
-	allowed.HttpResponse = &authv3.CheckResponse_OkResponse{OkResponse: endpoint}
-	return allowed, nil
+	return &authv3.CheckResponse{
+		Status:          &rpcstatus.Status{Code: int32(codes.OK)},
+		DynamicMetadata: metadata,
+		HttpResponse:    &authv3.CheckResponse_OkResponse{OkResponse: endpoint},
+	}, nil
 }
 
 // origin returns where the request with the token comes from: the running
@@ -218,13 +355,43 @@ func (a *authorizer) origin(ctx context.Context, token string, forward bool) (st
 	return origin, true, nil
 }
 
+// storesOf returns the secret stores of the project that keep the secrets of
+// an endpoint, by ID: the store of its key, if it has one there, and those of
+// its headers.
+func (a *authorizer) storesOf(ctx context.Context, projectID uuid.UUID, key *store.SecretStore, headers []store.Header) (map[uuid.UUID]store.SecretStore, error) {
+	stores := map[uuid.UUID]store.SecretStore{}
+	if key != nil {
+		stores[key.ID] = *key
+	}
+	for _, header := range headers {
+		if header.At == nil {
+			continue
+		}
+		if _, known := stores[header.At.Store]; known {
+			continue
+		}
+		in, err := a.store.SecretStore(ctx, header.At.Store)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			continue
+		case err != nil:
+			return nil, fmt.Errorf("secret store %s of a header: %w", header.At.Store, err)
+		}
+		if in.ProjectID == projectID {
+			stores[in.ID] = in
+		}
+	}
+	return stores, nil
+}
+
 // endpoint returns how the proxy forwards a model request for path: to the
 // endpoint of the turn's provider, with the provider's headers, and with its
 // API key in place of the session token. A header of the provider replaces
 // one that the request has by the same name. A provider without a key gets no
 // Authorization header. A path outside the path of the provider's URL, or a
-// key that cannot be read, is refused.
-func (a *authorizer) endpoint(ctx context.Context, origin store.Origin, path string) (*authv3.OkHttpResponse, *authv3.CheckResponse) {
+// secret that cannot be read, is refused. stores are the secret stores of
+// the provider's secrets.
+func (a *authorizer) endpoint(ctx context.Context, origin store.Origin, stores map[uuid.UUID]store.SecretStore, path string) (*authv3.OkHttpResponse, *authv3.CheckResponse) {
 	provider := origin.Provider
 	address, err := url.Parse(provider.URL)
 	if err != nil {
@@ -234,33 +401,20 @@ func (a *authorizer) endpoint(ctx context.Context, origin store.Origin, path str
 	if !under(path, address.Path) {
 		return nil, refused(typev3.StatusCode_NotFound, "model requests must be under the path "+address.Path+"\n")
 	}
-	set := func(name, value string) *corev3.HeaderValueOption {
-		return &corev3.HeaderValueOption{
-			Header:       &corev3.HeaderValue{Key: name, Value: value},
-			AppendAction: corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
-		}
-	}
-	endpoint := &authv3.OkHttpResponse{Headers: []*corev3.HeaderValueOption{
-		set(upstreamHeader, a.upstream(address)),
-		set(upstreamTLSHeader, strconv.FormatBool(address.Scheme == "https")),
-	}}
+	endpoint := a.to(address)
 	for _, header := range provider.Headers {
-		endpoint.Headers = append(endpoint.Headers, set(header.Name, header.Value))
+		value, refusal := a.valueOf(ctx, stores, header, store.ProviderHeaderPlace(provider.ID, header.Name), "the model provider's header "+header.Name)
+		if refusal != nil {
+			return nil, refusal
+		}
+		endpoint.Headers = append(endpoint.Headers, set(header.Name, value))
 	}
 	var key string
 	switch in := origin.SecretStore; {
 	case provider.APIKeyAt != nil && in != nil:
-		credential, err := a.keys.Open(in.Credential, store.SecretStoreCredentialPlace(in.ID))
-		if err != nil {
-			slog.ErrorContext(ctx, "decrypt secret store credential", "store", in.ID, "error", err)
-			return nil, refused(typev3.StatusCode_ServiceUnavailable, "cannot read the credential of the model provider's secret store\n")
-		}
-		// The pod is told why the project's own store cannot be read. The
-		// error holds nothing of the key.
-		if key, err = a.stores.Read(ctx, *in, credential, provider.APIKeyAt.Path, provider.APIKeyAt.Key); err != nil {
-			slog.WarnContext(ctx, "read provider API key from secret store", "provider", provider.ID, "store", in.ID, "error", err)
-			return nil, refused(typev3.StatusCode_ServiceUnavailable,
-				"cannot read the model provider's API key from its secret store: "+err.Error()+"\n")
+		var refusal *authv3.CheckResponse
+		if key, refusal = a.read(ctx, *in, *provider.APIKeyAt, "the model provider's API key"); refusal != nil {
+			return nil, refusal
 		}
 	case provider.APIKey != nil:
 		if key, err = a.keys.Open(provider.APIKey, store.ProviderKeyPlace(provider.ID)); err != nil {
@@ -273,6 +427,108 @@ func (a *authorizer) endpoint(ctx context.Context, origin store.Origin, path str
 	}
 	endpoint.Headers = append(endpoint.Headers, set("authorization", "Bearer "+key))
 	return endpoint, nil
+}
+
+// mcpEndpoint returns how the proxy forwards a request for path to an MCP
+// server: to the server's host, with the server's headers in place of those
+// of the request by the same names. The token of the request goes no further:
+// the server's own authorization takes its place, if it has one. A server of
+// Streamable HTTP is reached under the path of its URL. A server of SSE says
+// where it takes messages, and is reached at any path of its host.
+func (a *authorizer) mcpEndpoint(ctx context.Context, server store.McpServer, stores map[uuid.UUID]store.SecretStore, path string) (*authv3.OkHttpResponse, *authv3.CheckResponse) {
+	address, err := url.Parse(server.URL)
+	if err != nil {
+		slog.ErrorContext(ctx, "parse MCP server URL", "server", server.ID, "error", err)
+		return nil, refused(typev3.StatusCode_ServiceUnavailable, "the MCP server's URL is invalid\n")
+	}
+	root := address.Path
+	if server.Transport == store.TransportSSE {
+		root = ""
+	}
+	if !under(path, root) {
+		return nil, refused(typev3.StatusCode_NotFound, "requests to the MCP server must be under the path "+address.Path+"\n")
+	}
+	endpoint := a.to(address)
+	authorized := false
+	for _, header := range server.Headers {
+		value, refusal := a.valueOf(ctx, stores, header, store.McpServerHeaderPlace(server.ID, header.Name), "the MCP server's header "+header.Name)
+		if refusal != nil {
+			return nil, refusal
+		}
+		endpoint.Headers = append(endpoint.Headers, set(header.Name, value))
+		authorized = authorized || header.Name == "authorization"
+	}
+	endpoint.HeadersToRemove = []string{mcpHeader}
+	if !authorized {
+		endpoint.HeadersToRemove = append(endpoint.HeadersToRemove, "authorization")
+	}
+	return endpoint, nil
+}
+
+// to returns how the proxy forwards a request to the host of the address.
+func (a *authorizer) to(address *url.URL) *authv3.OkHttpResponse {
+	return &authv3.OkHttpResponse{Headers: []*corev3.HeaderValueOption{
+		set(upstreamHeader, a.upstream(address)),
+		set(upstreamTLSHeader, strconv.FormatBool(address.Scheme == "https")),
+	}}
+}
+
+// set sets a header of a request in place of what the request has by its
+// name.
+func set(name, value string) *corev3.HeaderValueOption {
+	return &corev3.HeaderValueOption{
+		Header:       &corev3.HeaderValue{Key: name, Value: value},
+		AppendAction: corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
+	}
+}
+
+// valueOf returns the value of a header: the value that it has, its stored
+// secret, which is sealed for place, or its secret from one of the stores. A
+// secret that cannot be read refuses the request, and what names the header
+// in why.
+func (a *authorizer) valueOf(ctx context.Context, stores map[uuid.UUID]store.SecretStore, header store.Header, place, what string) (string, *authv3.CheckResponse) {
+	switch {
+	case header.At != nil:
+		in, found := stores[header.At.Store]
+		if !found {
+			return "", refused(typev3.StatusCode_ServiceUnavailable, "the secret store of "+what+" is not in the project\n")
+		}
+		value, refusal := a.read(ctx, in, *header.At, what)
+		if refusal != nil {
+			return "", refusal
+		}
+		// A secret that a store holds may end with a line break.
+		if value = strings.TrimSpace(value); value == "" || !httpguts.ValidHeaderFieldValue(value) {
+			return "", refused(typev3.StatusCode_ServiceUnavailable, "the secret of "+what+" in its secret store is not the value of an HTTP header\n")
+		}
+		return value, nil
+	case header.Sealed != nil:
+		value, err := a.keys.Open(header.Sealed, place)
+		if err != nil {
+			slog.ErrorContext(ctx, "decrypt the secret of a header", "place", place, "error", err)
+			return "", refused(typev3.StatusCode_ServiceUnavailable, "cannot read "+what+"\n")
+		}
+		return value, nil
+	}
+	return header.Value, nil
+}
+
+// read returns a secret from a secret store, or the refusal of the request
+// that needs it, which says why: the pod is told why the project's own store
+// cannot be read, and the error holds nothing of the secret. what names the
+// secret.
+func (a *authorizer) read(ctx context.Context, in store.SecretStore, at store.SecretReference, what string) (string, *authv3.CheckResponse) {
+	credential, err := a.keys.Open(in.Credential, store.SecretStoreCredentialPlace(in.ID))
+	if err != nil {
+		slog.ErrorContext(ctx, "decrypt secret store credential", "store", in.ID, "error", err)
+		return "", refused(typev3.StatusCode_ServiceUnavailable, "cannot read the credential of the secret store of "+what+"\n")
+	}
+	value, err := a.stores.Read(ctx, in, credential, at.Path, at.Key)
+	if err != nil {
+		slog.WarnContext(ctx, "read a secret from its secret store", "secret", what, "store", in.ID, "error", err)
+		return "", refused(typev3.StatusCode_ServiceUnavailable, "cannot read "+what+" from its secret store: "+err.Error()+"\n")
+	}
+	return value, nil
 }
 
 // upstream returns the host that the proxy connects to for a provider at the
@@ -340,6 +596,27 @@ func (a *authorizer) session(token string) (uuid.UUID, bool) {
 	}
 	session, err := uuid.Parse(opened)
 	return session, err == nil
+}
+
+// toolListing returns the tool listing of the token, or false if it is not
+// the token of a tool listing that is still accepted.
+func (a *authorizer) toolListing(token string) (ToolListing, bool) {
+	encrypted, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || token == "" {
+		return ToolListing{}, false
+	}
+	opened, err := a.keys.Open(encrypted, toolListingPlace)
+	if err != nil {
+		return ToolListing{}, false
+	}
+	var of sealedToolListing
+	if err := json.Unmarshal([]byte(opened), &of); err != nil || !time.Now().Before(of.Until) {
+		return ToolListing{}, false
+	}
+	return ToolListing{
+		Server: store.McpServer{ID: of.Server, ProjectID: of.Project, URL: of.URL, Transport: of.Transport, Headers: of.Headers},
+		UserID: of.User, Subject: of.Subject, Until: of.Until,
+	}, true
 }
 
 // listing returns the listing of the token, or false if it is not the token

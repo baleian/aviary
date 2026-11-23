@@ -22,7 +22,8 @@ The harness runs in this environment:
 | Working directory | `/home/workspace` |
 | Model endpoint | `AVIARY_LLM_BASE_URL`, `AVIARY_LLM_API_KEY` and `AVIARY_LLM_MODEL`. The URL points to the Egress Proxy, and the key is the session token. |
 | Approval | `AVIARY_APPROVAL=ask` if the agent must ask a person before it acts. Otherwise the variable is not set. |
-| Persistence | The home is the session volume. It is kept while the session sleeps, and the next turn finds it in a new pod. The rest of the file system comes from the image, fresh in every pod. The harness keeps running between turns for as long as its pod does, or until the agent's model, approval or instructions are changed: the next turn then gets a new harness, which resumes the session. |
+| MCP servers | `AVIARY_MCP_SERVERS`: the names of the MCP servers that the harness gets when it starts, separated by spaces, so that the image can set the harness up for each. |
+| Persistence | The home is the session volume. It is kept while the session sleeps, and the next turn finds it in a new pod. The rest of the file system comes from the image, fresh in every pod. The harness keeps running between turns for as long as its pod does, or until the agent's model, approval or instructions or the session's MCP servers are changed: the next turn then gets a new harness, which resumes the session. |
 | Network | The hosts that the installation allows, through the Egress Proxy, which `HTTP_PROXY`, `HTTPS_PROXY` and their lowercase forms point to, with the session token as the password. The pod reaches nothing else and has no DNS. |
 
 The runner talks to the harness over its standard input and output with the
@@ -31,6 +32,14 @@ The runner talks to the harness over its standard input and output with the
 - **Start.** The runner sends `initialize`, then `session/new`, or
   `session/resume` if the session already has a harness session, from this
   pod or an earlier one. The runner keeps the harness session ID in the home.
+- **MCP servers.** Both `session/new` and `session/resume` carry the MCP
+  servers that the session has on, in `mcpServers`, as servers of `http`
+  (Streamable HTTP) or `sse`. A server of a transport that the harness does
+  not announce in the `mcpCapabilities` of its `initialize` response is left
+  out, and each turn says so. Each server points to the Egress Proxy and has
+  two headers, which every request to it must carry: `authorization` with
+  the session token, and `x-aviary-mcp` with the server's ID. The harness
+  names the server's tools after the server's `name`.
 - **Turns.** For each turn, the runner sends `session/prompt` with the
   message as text. The turn ends when the prompt returns, and the harness
   stays for the next turn.
@@ -84,6 +93,12 @@ The runner talks to the harness over its standard input and output with the
    actions that a person should approve first. Which actions is up to the
    image and the settings of its harness. An image that ignores the variable
    runs such an agent like any other: nobody is asked.
+8. **How the harness titles a call of a tool of an MCP server**, in
+   `AVIARY_MCP_TOOL_TITLE`, with `{server}` and `{tool}` in place of the
+   server's name and the tool's: `{server}: {tool}` for a title such as
+   `tracker: search_issues`. The runner then records the server and the tool
+   of each such call. In an image that does not set it, the calls of the
+   tools of MCP servers look like those of the harness's own tools.
 
 Environment variables that start with `AVIARY_` are reserved for Aviary. The
 harness also sees the ones that the runner uses, such as
@@ -136,6 +151,19 @@ images in this repository handle these cases:
   asks before it runs a command that does more than read the workspace, or
   before it changes a file. For an agent that does not ask, the runner
   allows each action once.
+- **Titles of the tools of MCP servers.** Claude Code titles a call of a
+  tool of an MCP server `server: tool`, Codex `mcp.server.tool`, and OpenCode
+  `server_tool`, which is also the form of its own `apply_patch`: in a
+  session with a server named `apply`, that tool would count as the
+  server's.
+- **MCP servers that refuse.** A harness that a server refuses, as when the
+  server's token is not valid, goes on without the server's tools. Codex
+  reports it as a failed call, `mcp__server__startup`, with the error.
+  Claude Code writes a warning to its log. OpenCode first tries to sign in
+  by OAuth, as the server's answer may suggest: through the Egress Proxy, it
+  asks for the server's metadata and tries to register as a client, and
+  cannot finish without a person in a browser. Listing the server's tools
+  shows the refusal.
 - **Refusals.** OpenCode and Codex end the turn when a person refuses an
   action: OpenCode with the stop reason `end_turn`, Codex with `cancelled`.
   Claude Code tells the model that the action was refused, and the turn goes
@@ -151,21 +179,21 @@ images in this repository handle these cases:
   The image turns these off.
 - **Startup time.** The harness starts with the first turn of a session, and
   again with the first turn after the session sleeps or after the agent's
-  model, approval or instructions are changed, so its startup time adds to
-  those turns.
+  model, approval or instructions or the session's MCP servers are changed,
+  so its startup time adds to those turns.
 
 ## The images in this repository
 
 | Image | Contents |
 | --- | --- |
 | `harness-base` | Node.js, git, Python with pip and venv, the `agent` user, and what the sandbox runs. The base of the others. |
-| `harness-opencode` | [OpenCode](https://opencode.ai), run as `opencode acp`. It uses the Chat Completions API. For an agent that asks, it asks before it runs a command or changes a file. |
-| `harness-codex` | [Codex](https://github.com/openai/codex) through its ACP adapter, `codex-acp`. It uses the Responses API. For an agent that asks, it runs in read-only mode and asks before a command runs outside its sandbox. |
-| `harness-claude-code` | [Claude Code](https://code.claude.com) through its ACP adapter, `claude-agent-acp`. It uses the Messages API. For an agent that asks, it asks before it runs a command that does more than read the workspace, or changes a file. |
+| `harness-opencode` | [OpenCode](https://opencode.ai), run as `opencode acp`. It uses the Chat Completions API. For an agent that asks, it asks before it runs a command, changes a file or calls a tool of an MCP server. |
+| `harness-codex` | [Codex](https://github.com/openai/codex) through its ACP adapter, `codex-acp`. It uses the Responses API. For an agent that asks, it runs in read-only mode and asks before a command runs outside its sandbox, and before it calls a tool of an MCP server. |
+| `harness-claude-code` | [Claude Code](https://code.claude.com) through its ACP adapter, `claude-agent-acp`. It uses the Messages API. For an agent that asks, it asks before it runs a command that does more than read the workspace, changes a file or calls a tool of an MCP server. |
 
 ## Adding a harness
 
-1. Write a Dockerfile that meets the seven requirements above. Building on
+1. Write a Dockerfile that meets the eight requirements above. Building on
    `aviary-harness-base` covers the second.
 2. Build the image and test it:
 

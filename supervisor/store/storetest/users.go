@@ -110,7 +110,7 @@ func (suite suite) testCreatedBy(t *testing.T) {
 	if err != nil || nobodys.CreatedBy != uuid.Nil {
 		t.Fatalf("unauthenticated session = %+v, %v", nobodys, err)
 	}
-	created, err := st.CreateSession(ctx, nobodys.AgentID, user.ID, "")
+	created, err := st.CreateSession(ctx, nobodys.AgentID, user.ID, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,6 +10,8 @@ import { Icon } from "../../ui/Icon.tsx";
 import { Time } from "../../ui/Time.tsx";
 import { person } from "../../ui/who.ts";
 import { SandboxBadge } from "./marks.tsx";
+import { McpSummary } from "./Mcp.tsx";
+import type { McpChoice } from "./servers.ts";
 
 // DetailsButton shows and hides the details beside a conversation.
 export function DetailsButton({
@@ -127,13 +129,15 @@ function Facts({
 
 // Details is the pane beside a conversation: what there is to know of the
 // session in view, and of its agent. Without a session it tells of the
-// agent, and while a session is read it is empty.
+// agent, and while a session is read it is empty. mcp are the MCP servers of
+// the session, or of the one that is about to begin.
 export function Details({
   context,
   agent,
   me,
   session,
   turns,
+  mcp,
   empty,
   onClose,
 }: {
@@ -142,12 +146,16 @@ export function Details({
   me: Me;
   session?: Session;
   turns?: Turn[];
+  mcp?: McpChoice;
   empty?: boolean;
   onClose: () => void;
 }) {
   if (empty) return <aside className="pane details" />;
   const provider = context.providers.find(
     (other) => other.id === agent.model.provider,
+  );
+  const servers = mcp && context.mcpServers.length > 0 && (
+    <McpSummary context={context} choice={mcp} />
   );
   return (
     <aside className="pane details">
@@ -168,6 +176,7 @@ export function Details({
             turns={turns ?? []}
           />
         )}
+        {session && servers}
         <div className="r-s">
           <h4>
             <AgentTile agent={agent} size="xs" />
@@ -199,6 +208,7 @@ export function Details({
           </dl>
           {agent.description && <p className="about">{agent.description}</p>}
         </div>
+        {!session && servers}
       </div>
     </aside>
   );

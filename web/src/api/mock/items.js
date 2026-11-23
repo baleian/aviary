@@ -32,6 +32,9 @@ function add(items, type, data) {
       Object.assign(plan, data);
       return true;
     }
+    case "mcp.unsupported":
+      items.push({ ...data, type: "mcp_unsupported" });
+      return true;
     case "approval.requested":
     case "approval.resolved":
       Object.assign(find(items, "approval", data.id), data);

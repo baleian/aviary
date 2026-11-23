@@ -78,6 +78,59 @@ export function KeyPill({
   );
 }
 
+// How many connections of a kind the overview shows.
+const CONNECTIONS = 3;
+
+// Kind is a kind of connection on the overview: a few of them, and the way
+// to all of them.
+function Kind({
+  to,
+  title,
+  items,
+}: {
+  to: string;
+  title: string;
+  items: {
+    id: string;
+    glyph: IconName;
+    name: string;
+    detail: string;
+    end?: ReactNode;
+  }[];
+}) {
+  return (
+    <>
+      <h4>
+        <Link to={to}>{title}</Link>
+        <span className="cnt">{items.length}</span>
+        {items.length > CONNECTIONS && (
+          <Link className="more" to={to}>
+            See all
+          </Link>
+        )}
+      </h4>
+      {items.length ? (
+        <ul>
+          {items.slice(0, CONNECTIONS).map((item) => (
+            <li key={item.id}>
+              <span className="ic">
+                <Icon name={item.glyph} className="lg" />
+              </span>
+              <span className="tx">
+                <b>{item.name}</b>
+                <code>{item.detail}</code>
+              </span>
+              {item.end}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="none">None yet</p>
+      )}
+    </>
+  );
+}
+
 // wants says in a few words what an approval request asks about.
 function wants(request: ApprovalRequest): ReactNode {
   const call = request.tool_call ?? {};
@@ -212,7 +265,7 @@ function Start({
         can(context, "connections.manage") ? (
           <Link
             className="btn pri sm"
-            to={`/p/${context.project.slug}/connections`}
+            to={`/p/${context.project.slug}/providers`}
           >
             Add a provider
           </Link>
@@ -273,7 +326,7 @@ function Face({
 export function Overview() {
   const context = useProject();
   const me = useMe().data!;
-  const { project, agents, providers, stores, members } = context;
+  const { project, agents, providers, mcpServers, stores, members } = context;
   const base = `/p/${project.slug}`;
   const recent = useRecent(context, me);
   const [creating, setCreating] = useState(false);
@@ -325,6 +378,7 @@ export function Overview() {
             <p className="facts">
               {fact(agents.length, "agent")}
               {fact(providers.length, "model provider")}
+              {fact(mcpServers.length, "MCP server")}
               {fact(stores.length, "secret store")}
               {fact(members.length, "member")}
             </p>
@@ -426,52 +480,45 @@ export function Overview() {
           <div className="card">
             <div className="sec-h">
               <h2 className="h2">Connections</h2>
-              <Link className="more" to={`${base}/connections`}>
-                {can(context, "connections.manage") ? "Manage" : "See all"}
-              </Link>
             </div>
             <div className="conn">
-              <h4>Model providers · {providers.length}</h4>
-              {providers.length ? (
-                <ul>
-                  {providers.map((provider) => (
-                    <li key={provider.id}>
-                      <span className="ic">
-                        <Icon name="spark" className="lg" />
-                      </span>
-                      <span className="tx">
-                        <b>{provider.name}</b>
-                        <code>{provider.url}</code>
-                      </span>
-                      <KeyPill context={context} provider={provider} />
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="none">None yet</p>
-              )}
-              <h4>Secret stores · {stores.length}</h4>
-              {stores.length ? (
-                <ul>
-                  {stores.map((store) => (
-                    <li key={store.id}>
-                      <span className="ic">
-                        <Icon name="db" className="lg" />
-                      </span>
-                      <span className="tx">
-                        <b>{store.name}</b>
-                        <code>
-                          {String(store.settings?.address ?? "")} · mount{" "}
-                          {String(store.settings?.mount ?? "")}
-                        </code>
-                      </span>
-                      <span className="tag">{store.kind}</span>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="none">None yet</p>
-              )}
+              <Kind
+                to={`${base}/providers`}
+                title="Model providers"
+                items={providers.map((provider) => ({
+                  id: provider.id,
+                  glyph: "spark",
+                  name: provider.name,
+                  detail: provider.url,
+                  end: <KeyPill context={context} provider={provider} />,
+                }))}
+              />
+              <Kind
+                to={`${base}/mcp-servers`}
+                title="MCP servers"
+                items={mcpServers.map((server) => ({
+                  id: server.id,
+                  glyph: "plug",
+                  name: label(server),
+                  detail: server.url,
+                  end: server.tools && (
+                    <span className="pill">
+                      {plural(server.tools.length, "tool")}
+                    </span>
+                  ),
+                }))}
+              />
+              <Kind
+                to={`${base}/secret-stores`}
+                title="Secret stores"
+                items={stores.map((store) => ({
+                  id: store.id,
+                  glyph: "db",
+                  name: store.name,
+                  detail: `${String(store.settings?.address ?? "")} · mount ${String(store.settings?.mount ?? "")}`,
+                  end: <span className="tag">{store.kind}</span>,
+                }))}
+              />
             </div>
           </div>
         </div>

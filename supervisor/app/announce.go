@@ -48,10 +48,26 @@ func (a announcing) DeleteAgent(ctx context.Context, id uuid.UUID) (store.Agent,
 	return agent, ended, err
 }
 
-func (a announcing) CreateSession(ctx context.Context, agentID, by uuid.UUID, title string) (store.Session, error) {
-	session, err := a.Store.CreateSession(ctx, agentID, by, title)
+func (a announcing) CreateSession(ctx context.Context, agentID, by uuid.UUID, title string, mcp map[uuid.UUID]bool) (store.Session, error) {
+	session, err := a.Store.CreateSession(ctx, agentID, by, title, mcp)
 	if err == nil {
 		a.changed(ctx, session.ID)
+	}
+	return session, err
+}
+
+func (a announcing) SetSessionMcpServer(ctx context.Context, sessionID, serverID uuid.UUID, enabled bool) (store.Session, error) {
+	session, err := a.Store.SetSessionMcpServer(ctx, sessionID, serverID, enabled)
+	if err == nil {
+		a.changed(ctx, sessionID)
+	}
+	return session, err
+}
+
+func (a announcing) ResetSessionMcpServers(ctx context.Context, sessionID uuid.UUID) (store.Session, error) {
+	session, err := a.Store.ResetSessionMcpServers(ctx, sessionID)
+	if err == nil {
+		a.changed(ctx, sessionID)
 	}
 	return session, err
 }

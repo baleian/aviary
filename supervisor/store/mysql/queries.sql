@@ -122,6 +122,76 @@ update providers set name = sqlc.arg(name), url = sqlc.arg(url), headers = sqlc.
        api_key_name = sqlc.arg(api_key_name), updated_at = now(6)
 where id = sqlc.arg(id);
 
+-- name: CreateMcpServer :execrows
+insert into mcp_servers (id, project_id, slug, name, url, transport, headers, tools, tools_listed_at)
+select sqlc.arg(id), projects.id, sqlc.arg(slug), sqlc.arg(name), sqlc.arg(url), sqlc.arg(transport), sqlc.narg(headers),
+       sqlc.narg(tools), sqlc.narg(tools_listed_at)
+from projects where projects.id = sqlc.arg(project_id);
+
+-- name: GetMcpServer :one
+select * from mcp_servers where id = ?;
+
+-- name: ListMcpServers :many
+select * from mcp_servers where project_id = ? order by created_at, id;
+
+-- name: ReplaceMcpServer :execrows
+update mcp_servers set name = sqlc.arg(name), url = sqlc.arg(url), transport = sqlc.arg(transport),
+       headers = sqlc.narg(headers), tools = sqlc.narg(tools), tools_listed_at = sqlc.narg(tools_listed_at),
+       updated_at = now(6)
+where id = sqlc.arg(id);
+
+-- name: SetMcpServerTools :execrows
+update mcp_servers set tools = sqlc.arg(tools), tools_listed_at = sqlc.arg(tools_listed_at)
+where id = sqlc.arg(id);
+
+-- name: ListAgentMcpServers :many
+-- Returns the MCP servers of the agents, in the order of the project's
+-- servers.
+select agent_mcp_servers.agent_id, agent_mcp_servers.mcp_server_id
+from agent_mcp_servers join mcp_servers on mcp_servers.id = agent_mcp_servers.mcp_server_id
+where agent_mcp_servers.agent_id in (sqlc.slice('agent_ids'))
+order by mcp_servers.created_at, mcp_servers.id;
+
+-- name: ClearAgentMcpServers :exec
+delete from agent_mcp_servers where agent_id = ?;
+
+-- name: AddAgentMcpServer :exec
+insert into agent_mcp_servers (agent_id, mcp_server_id) values (?, ?);
+
+-- name: IsAgentMcpServer :one
+-- Reports whether the agent of the session begins its sessions with the
+-- server.
+select exists (
+    select 1 from sessions join agent_mcp_servers on agent_mcp_servers.agent_id = sessions.agent_id
+    where sessions.id = sqlc.arg(session_id) and agent_mcp_servers.mcp_server_id = sqlc.arg(mcp_server_id)
+);
+
+-- name: AddSessionMcpServer :exec
+insert into session_mcp_servers (session_id, mcp_server_id, enabled) values (?, ?, ?);
+
+-- name: ClearSessionMcpServer :exec
+delete from session_mcp_servers where session_id = ? and mcp_server_id = ?;
+
+-- name: ClearSessionMcpServers :exec
+delete from session_mcp_servers where session_id = ?;
+
+-- name: ListSessionMcpServers :many
+-- Returns the MCP servers that the next turns of the sessions that have not
+-- ended have: those of their agents, but for what each session turned on or
+-- off, in the order of the project's servers.
+select sessions.id as session_id, mcp_servers.id as mcp_server_id
+from sessions
+join agents on agents.id = sessions.agent_id
+join mcp_servers on mcp_servers.project_id = agents.project_id
+left join session_mcp_servers chosen on chosen.session_id = sessions.id and chosen.mcp_server_id = mcp_servers.id
+left join agent_mcp_servers bound on bound.agent_id = sessions.agent_id and bound.mcp_server_id = mcp_servers.id
+where sessions.id in (sqlc.slice('session_ids')) and sessions.ended_at is null
+  and coalesce(chosen.enabled, bound.agent_id is not null)
+order by mcp_servers.created_at, mcp_servers.id;
+
+-- name: DeleteMcpServer :execrows
+delete from mcp_servers where id = ?;
+
 -- name: CreateSecretStore :execrows
 insert into secret_stores (id, project_id, name, kind, settings, credential)
 select sqlc.arg(id), projects.id, sqlc.arg(name), sqlc.arg(kind), sqlc.arg(settings), sqlc.arg(credential)

@@ -50,6 +50,34 @@ it("asks to run a command, and shows the command", () => {
   expect(card.querySelector(".code")).toBeNull();
 });
 
+it("asks for a tool of an MCP server by the tool and the server", () => {
+  render(
+    <Request
+      item={{
+        type: "approval",
+        id: "7",
+        tool_call: {
+          id: "c1",
+          kind: "execute",
+          title: "mcp.ci.run_job",
+          // What a tool of a server is given is not a command of the
+          // workspace, nor a file of it.
+          input: { command: "deploy", path: "jobs/deploy" },
+          mcp: { server: "m1", slug: "ci", tool: "run_job" },
+        },
+        options,
+      }}
+      server="Build server"
+      asked={{ name: "Bo Ra", known: true }}
+    />,
+  );
+  const card = screen.getByRole("group", { name: "Request for approval" });
+  expect(card.querySelector("h3")!.textContent).toBe("May I do this?");
+  expect(card.querySelector(".cmd")!.textContent).toBe("›run_jobBuild server");
+  expect(card.querySelector(".cmd .tag")!.className).toBe("tag srv");
+  expect(card.querySelector(".code")!.textContent).toContain('"deploy"');
+});
+
 it("says when a command reaches outside the workspace, and where", () => {
   // OpenCode asks for the folders before it asks for the command.
   const { card } = show({

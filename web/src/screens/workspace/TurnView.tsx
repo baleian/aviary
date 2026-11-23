@@ -1,8 +1,20 @@
 import { memo, type ReactNode } from "react";
 import type { Tinted } from "../../api/queries.ts";
-import type { Agent, Item, PlanEntry, Turn } from "../../api/types.ts";
+import type {
+  Agent,
+  Item,
+  McpServer,
+  PlanEntry,
+  Turn,
+} from "../../api/types.ts";
 import { cls } from "../../lib/cls.ts";
-import { clock, duration, label, num } from "../../lib/format.ts";
+import {
+  clock,
+  duration,
+  label,
+  num,
+  transportName,
+} from "../../lib/format.ts";
 import { followed, type Status, STATUS_NAMES } from "../../lib/sessions.ts";
 import { AgentTile, Avatar } from "../../ui/Avatar.tsx";
 import { Chip } from "../../ui/Chip.tsx";
@@ -20,10 +32,17 @@ import {
   inputOf,
   outputText,
   pathOf,
+  serverOf,
 } from "./tools.ts";
 
 type ToolItem = Extract<Item, { type: "tool_call" }>;
 type ApprovalItem = Extract<Item, { type: "approval" }>;
+type UnsupportedItem = Extract<Item, { type: "mcp_unsupported" }>;
+
+const NONE: McpServer[] = [];
+
+const AND = new Intl.ListFormat("en", { type: "conjunction" });
+const OR = new Intl.ListFormat("en", { type: "disjunction" });
 
 // The icon of each kind of tool call.
 const KINDS: Record<string, IconName> = {
@@ -114,10 +133,13 @@ function Plan({ entries, over }: { entries: PlanEntry[]; over: boolean }) {
 function Answered({
   item,
   alone,
+  server,
   person,
 }: {
   item: ApprovalItem;
   alone?: boolean;
+  // The MCP server of the tool call, if it calls a tool of one.
+  server?: string;
   person: (id?: string) => Who;
 }) {
   const option = item.options?.find((other) => other.id === item.option_id);
@@ -134,10 +156,17 @@ function Answered({
     <p className={cls("answer", !allowed && "no", alone && "alone")}>
       <Icon name="shield" />
       <span>
-        {alone && item.tool_call?.title && (
+        {alone && item.tool_call?.mcp ? (
           <>
-            <b>{item.tool_call.title}</b>:{" "}
+            <b>{item.tool_call.mcp.tool}</b> on {server}:{" "}
           </>
+        ) : (
+          alone &&
+          item.tool_call?.title && (
+            <>
+              <b>{item.tool_call.title}</b>:{" "}
+            </>
+          )
         )}
         <b>{option.name}</b>
         {item.answered_by && <> by {person(item.answered_by).name}</>}
@@ -150,17 +179,26 @@ function Answered({
 const Step = memo(function Step({
   item,
   approval,
+  server,
   over,
   person,
 }: {
   item: ToolItem;
   approval?: ApprovalItem;
+  // The MCP server of the tool call, if it calls a tool of one.
+  server?: string;
   over: boolean;
   person: (id?: string) => Who;
 }) {
   const input = inputOf(item.input);
   const kind = item.kind || "other";
-  const diff = findDiff(item.output) ?? findDiff(item.input) ?? changed(input);
+  // A tool of an MCP server runs on the server, and what it is given says
+  // nothing of the workspace.
+  const mcp = !!item.mcp;
+  const diff =
+    findDiff(item.output) ??
+    findDiff(item.input) ??
+    (mcp ? null : changed(input));
   const output = outputText(item.output);
   const code = exitCode(item.output);
   const failed = item.status === "failed";
@@ -169,10 +207,10 @@ const Step = memo(function Step({
       .filter((field) => item[field] !== undefined)
       .map((field) => [field, item[field]]),
   );
-  const title = item.title || kind;
-  const command = typeof input.command === "string";
-  const path = pathOf(input);
-  const fields = command ? [] : fieldsOf(input);
+  const title = item.mcp?.tool ?? (item.title || kind);
+  const command = !mcp && typeof input.command === "string";
+  const path = mcp ? "" : pathOf(input);
+  const fields = command ? [] : fieldsOf(input, mcp);
   // The code goes unsaid when the command succeeded and its output shows.
   const unsaid = code === 0 && !!output;
   const mark =
@@ -199,7 +237,15 @@ const Step = memo(function Step({
     <details className="step">
       <summary>
         <span className={cls("kd", approval && "y")}>
-          <Icon name={approval ? "shield" : (KINDS[kind] ?? "cube")} />
+          <Icon
+            name={
+              approval
+                ? "shield"
+                : item.mcp
+                  ? "plug"
+                  : (KINDS[kind] ?? "wrench")
+            }
+          />
         </span>
         <span
           className={cls(
@@ -209,12 +255,18 @@ const Step = memo(function Step({
         >
           {title}
         </span>
-        <span className="tag">{kind}</span>
+        {item.mcp ? (
+          <span className="tag srv">{server}</span>
+        ) : (
+          <span className="tag">{kind}</span>
+        )}
         {mark}
         <Icon name="chev" className="chev" />
       </summary>
       <div className="step-b">
-        {approval && <Answered item={approval} person={person} />}
+        {approval && (
+          <Answered item={approval} server={server} person={person} />
+        )}
         {command ? (
           <Command input={input} exit={unsaid ? null : code} />
         ) : (
@@ -260,10 +312,52 @@ const Step = memo(function Step({
   );
 });
 
+// Unsupported names the MCP servers that the turn ran without, since its
+// harness does not support how they are reached.
+function Unsupported({
+  item,
+  servers,
+  harness,
+}: {
+  item: UnsupportedItem;
+  servers: McpServer[];
+  harness: string;
+}) {
+  const left = item.servers ?? [];
+  if (!left.length) return null;
+  const names = left.map((each) => {
+    const server = servers.find((other) => other.id === each.id);
+    return server ? label(server) : each.name;
+  });
+  const transports = [
+    ...new Set(left.map((each) => transportName(each.transport))),
+  ];
+  return (
+    <p className="state">
+      <span className="c-wait">
+        <Icon name="plug" className="lg" />
+      </span>
+      <span>
+        {AND.formatToParts(names).map((part, index) =>
+          part.type === "element" ? (
+            <b key={index}>{part.value}</b>
+          ) : (
+            part.value
+          ),
+        )}{" "}
+        {names.length === 1 ? "was" : "were"} left out: the {harness} harness
+        does not support {OR.format(transports)} servers.
+      </span>
+    </p>
+  );
+}
+
 // Blocks is what the agent said and did, in order. Tool calls that follow
 // each other are one list of steps.
 function Blocks({
   items,
+  servers,
+  harness,
   over,
   writing,
   asker,
@@ -272,6 +366,8 @@ function Blocks({
   onStop,
 }: {
   items: Item[];
+  servers: McpServer[];
+  harness: string;
   over: boolean;
   // Whether the agent may be writing the last item.
   writing: boolean;
@@ -284,9 +380,22 @@ function Blocks({
   const approvals = items.filter((item) => item.type === "approval");
   const asked = (call?: string) =>
     approvals.find((item) => call && item.tool_call?.id === call);
-  const tools = new Set(
-    items.filter((item) => item.type === "tool_call").map((item) => item.id),
+  const calls = new Map(
+    items.flatMap((item) =>
+      item.type === "tool_call" ? [[item.id, item]] : [],
+    ),
   );
+  // A harness may give the tool call of a request only by its ID: the call
+  // that it reported fills in the rest.
+  const described = (request: ApprovalItem): ApprovalItem => {
+    const call = calls.get(request.tool_call?.id);
+    if (!call) return request;
+    const { title, kind, input, mcp } = call;
+    return {
+      ...request,
+      tool_call: { title, kind, input, mcp, ...request.tool_call },
+    };
+  };
   const out: ReactNode[] = [];
   let steps: ReactNode[] | null = null;
   const close = () => {
@@ -309,6 +418,7 @@ function Blocks({
           key={item.id ?? index}
           item={item}
           approval={approval}
+          server={serverOf(item, servers)}
           over={over}
           person={person}
         />,
@@ -318,21 +428,31 @@ function Blocks({
     if (item.type === "approval") {
       if (!item.outcome) {
         close();
+        const request = described(item);
         // The request stays the same one when the events of the turn come
         // after its record.
         out.push(
           <Request
             key={"request" + (item.id ?? index)}
-            item={item}
+            item={request}
+            server={request.tool_call && serverOf(request.tool_call, servers)}
             asked={asker}
             onAnswer={onAnswer}
             onStop={onStop}
           />,
         );
-      } else if (!tools.has(item.tool_call?.id)) {
+      } else if (!calls.has(item.tool_call?.id)) {
         // The answer to a request shows with its tool call, if it has one.
         close();
-        out.push(<Answered key={index} item={item} alone person={person} />);
+        out.push(
+          <Answered
+            key={index}
+            item={item}
+            alone
+            server={item.tool_call && serverOf(item.tool_call, servers)}
+            person={person}
+          />,
+        );
       }
       return;
     }
@@ -357,6 +477,15 @@ function Blocks({
       );
     } else if (item.type === "plan") {
       out.push(<Plan key={index} entries={item.entries ?? []} over={over} />);
+    } else if (item.type === "mcp_unsupported") {
+      out.push(
+        <Unsupported
+          key={index}
+          item={item}
+          servers={servers}
+          harness={harness}
+        />,
+      );
     }
   });
   close();
@@ -503,6 +632,7 @@ function Footer({
 export const TurnView = memo(function TurnView({
   turn,
   agent,
+  servers = NONE,
   person,
   waking,
   onStop,
@@ -511,6 +641,8 @@ export const TurnView = memo(function TurnView({
 }: {
   turn: Turn;
   agent: Tinted<Agent>;
+  // The MCP servers of the project, which name the servers of tool calls.
+  servers?: McpServer[];
   // How to show the user with an ID.
   person: (id?: string) => Who;
   // Whether the turn found the sandbox of its session asleep, and waits
@@ -574,6 +706,8 @@ export const TurnView = memo(function TurnView({
           </div>
           <Blocks
             items={items}
+            servers={servers}
+            harness={agent.harness}
             over={over}
             writing={stands === "running"}
             asker={person(turn.created_by)}

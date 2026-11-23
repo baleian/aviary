@@ -155,6 +155,20 @@ func TestSessionChangesAreStreamed(t *testing.T) {
 		return last["id"] == second.ID && last["state"] == "cancelled"
 	})
 
+	// So is which MCP servers its next turns have.
+	server := s.server(project, "tools")
+	if status, _ := s.request("PUT", path+"/mcp-servers/"+server, `{"enabled": true}`, nil); status != http.StatusOK {
+		t.Fatalf("turn an MCP server on: status %d, want 200", status)
+	}
+	sent("the session with the MCP server on", func(session, _ map[string]any) bool {
+		on, _ := session["mcp_servers"].([]any)
+		return len(on) == 1 && on[0] == server
+	})
+	if status, _ := s.request("DELETE", path+"/mcp-servers", "", nil); status != http.StatusOK {
+		t.Fatalf("go back to the MCP servers of the agent: status %d, want 200", status)
+	}
+	sent("the session with the MCP servers of its agent", func(session, _ map[string]any) bool { return session["mcp_servers"] == nil })
+
 	if status, _ := s.request("PATCH", path, `{"title": "Fix the tests"}`, nil); status != http.StatusOK {
 		t.Fatalf("PATCH %s: status %d, want 200", path, status)
 	}

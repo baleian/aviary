@@ -4,7 +4,7 @@
 // thing. Development and the tests use it. A build does not.
 
 import { uuid7, copy } from "./util.js";
-import { seed, PERMISSIONS, IDLE } from "./seed.js";
+import { seed, PERMISSIONS, IDLE, TOOLS } from "./seed.js";
 import { script } from "./scripts.js";
 import { assemble } from "./items.js";
 
@@ -21,6 +21,7 @@ let db;
 let eventsOf;
 let watchers;
 let approvalsOf;
+let serversOf;
 let runs;
 let feeds;
 let told;
@@ -271,6 +272,17 @@ function memberRecord(member) {
   return record;
 }
 
+// headerRecords returns headers as the API shows them: a value as it is, and
+// of a secret only where it is.
+const headerRecords = (headers) =>
+  headers.map((header) =>
+    header.sealed
+      ? { name: header.name, secret: { stored: true } }
+      : header.at
+        ? { name: header.name, secret: { ...header.at } }
+        : { name: header.name, value: header.value },
+  );
+
 function providerRecord(provider) {
   const record = {
     id: provider.id,
@@ -280,10 +292,46 @@ function providerRecord(provider) {
     created_at: provider.created_at,
     updated_at: provider.updated_at,
   };
-  if (provider.headers?.length) record.headers = provider.headers;
+  if (provider.headers?.length)
+    record.headers = headerRecords(provider.headers);
   if (provider.api_key_at) record.api_key = provider.api_key_at;
   else if (provider.api_key_sealed) record.api_key = { stored: true };
   return record;
+}
+
+function mcpServerRecord(server) {
+  const record = {
+    id: server.id,
+    project_id: server.project_id,
+    slug: server.slug,
+    name: server.name,
+    url: server.url,
+    transport: server.transport,
+    created_at: server.created_at,
+    updated_at: server.updated_at,
+  };
+  if (server.headers.length) record.headers = headerRecords(server.headers);
+  if (server.tools) {
+    record.tools = server.tools;
+    record.tools_listed_at = server.tools_listed_at ?? server.updated_at;
+  }
+  return record;
+}
+
+// mcpOf returns the MCP servers, by ID, that the next turn of a session has:
+// those of its agent, but for what the session turned on or off, in the
+// order of the project's servers.
+function mcpOf(session) {
+  const agent = db.agents.find((other) => other.id === session.agent_id);
+  const chosen = session.mcp || {};
+  return db.mcpServers
+    .filter((server) => server.project_id === agent.project_id)
+    .filter((server) =>
+      server.id in chosen
+        ? chosen[server.id]
+        : (agent.mcp_servers || []).includes(server.id),
+    )
+    .map((server) => server.id);
 }
 
 function storeRecord(store) {
@@ -302,7 +350,11 @@ function storeRecord(store) {
 // sessionRecord is a session with its newest turn, as far as a list of
 // sessions shows a turn: without its text and items.
 function sessionRecord(session) {
-  const { allowed: _, ...record } = session;
+  const { allowed: _, mcp: ____, ...record } = session;
+  if (!session.ended_at) {
+    const servers = mcpOf(session);
+    if (servers.length) record.mcp_servers = servers;
+  }
   const newest = db.turns
     .filter((turn) => turn.session_id === session.id)
     .sort((a, b) => b.seq - a.seq)[0];
@@ -328,7 +380,9 @@ function turnRecord(turn) {
 
 // ---- Model providers and secret stores --------------------------------------
 
-function endpoint(address) {
+// endpoint checks the URL of an endpoint. secrets says where the secrets of
+// the endpoint go instead of the URL.
+function endpoint(address, secrets) {
   let parsed;
   try {
     parsed = new URL(address);
@@ -342,9 +396,7 @@ function endpoint(address) {
   )
     invalid("url must be a URL that begins with http:// or https://");
   if (parsed.username || parsed.password)
-    invalid(
-      "url must not contain a user name or password; set the endpoint's key in api_key",
-    );
+    invalid("url must not contain a user name or password; " + secrets);
   if (
     parsed.search ||
     parsed.hash ||
@@ -376,10 +428,69 @@ const RESERVED_HEADERS = [
 ];
 const bytes = (value) => new TextEncoder().encode(value).length;
 
-// headersOf checks the headers of a provider, and returns them as they are
-// kept: their names in lowercase, and their values without spaces at their
-// ends.
-function headersOf(given) {
+// secretOf checks a secret of a request, named by where it is in the body,
+// and returns it as it is kept: {sealed} for one that Aviary keeps, {at} for
+// one in a secret store of the project. {"stored": true} keeps the secret
+// that the record had, if it had one: keeps says whether the request keeps
+// what is stored, which it does only while the URL stays the same. A secret
+// that the mock seals begins with "wrong" if it is the wrong one.
+function secretOf(secret, where, projectID, { had = false, keeps = false }) {
+  const shape =
+    `${where} must be {"value": "…"} for a secret that Aviary stores, {"store": "…", "path": "…", "key": "…"} ` +
+    `for one in a secret store of the project, or {"stored": true} for the one that is stored`;
+  if (
+    typeof secret !== "object" ||
+    Object.keys(secret).some(
+      (field) => !["value", "store", "path", "key", "stored"].includes(field),
+    )
+  )
+    invalid("request body is not valid JSON for this endpoint");
+  const fields = Object.keys(secret).filter((field) => secret[field]);
+  if (fields.length === 1 && fields[0] === "stored") {
+    if (!had) invalid(`${where} has no stored secret to keep`);
+    if (!keeps) invalid(`${where} must be given again: the URL changed`);
+    return { sealed: true };
+  }
+  if (fields.length === 1 && fields[0] === "value") {
+    return { sealed: true, wrong: text(secret.value).startsWith("wrong") };
+  }
+  if (
+    fields.length !== 3 ||
+    !fields.includes("store") ||
+    !fields.includes("path") ||
+    !fields.includes("key")
+  )
+    invalid(shape);
+  const store =
+    UUID.test(secret.store) &&
+    db.stores.find(
+      (other) => other.id === secret.store && other.project_id === projectID,
+    );
+  if (!store)
+    invalid(`${where}.store must be the ID of a secret store of the project`);
+  // The secret is read once, so that one that cannot be read is reported now
+  // and not during a turn. The store of the mock has no secret below
+  // "missing", and no key named "none".
+  const cannot = (why) =>
+    invalid(`cannot read ${where} from the secret store: ${why}`);
+  if (!plainPath(secret.path))
+    cannot(
+      "path must be a secret path below the mount, such as team/model, without empty or dot segments",
+    );
+  if (secret.path.split("/").includes("missing")) cannot("secret not found");
+  if (secret.key === "none") cannot("secret has no such key");
+  return { at: { store: secret.store, path: secret.path, key: secret.key } };
+}
+
+// headersOf checks the headers of an endpoint, and returns them as they are
+// kept: their names in lowercase, and each with its value, without spaces at
+// its ends, or its secret. had are the headers that the endpoint had, and
+// keeps says whether the request may keep their stored secrets. A provider
+// takes its key in api_key, and not in the header authorization.
+function headersOf(
+  given,
+  { projectID, had = [], keeps = false, authorization = false },
+) {
   if (given == null) return [];
   if (!Array.isArray(given))
     invalid("request body is not valid JSON for this endpoint");
@@ -388,15 +499,15 @@ function headersOf(given) {
   let size = 0;
   given.forEach((header, index) => {
     const at = `headers[${index}]`;
-    const { name: named, value: valued } = decode(header ?? {}, [
-      "name",
-      "value",
-    ]);
+    const {
+      name: named,
+      value: valued,
+      secret,
+    } = decode(header ?? {}, ["name", "value", "secret"]);
     const name = text(named).toLowerCase();
-    const value = text(valued).replace(/^[ \t]+|[ \t]+$/g, "");
     if (!HEADER_NAME.test(name))
       invalid(at + ".name must be the name of an HTTP header");
-    if (name === "authorization")
+    if (name === "authorization" && !authorization)
       invalid(
         at +
           ".name must not be authorization; set the endpoint's key in api_key",
@@ -404,11 +515,24 @@ function headersOf(given) {
     if (
       RESERVED_HEADERS.includes(name) ||
       name.startsWith("x-aviary-") ||
-      name.startsWith("x-envoy-")
+      name.startsWith("x-envoy-") ||
+      name.startsWith("mcp-")
     )
       invalid(`${at}.name must not be ${name}, which is reserved`);
     if (headers.some((other) => other.name === name))
       invalid(`${at}.name must not be ${name}, which another header has`);
+    if (secret != null) {
+      if (valued != null) invalid(`${at} must have a value or a secret`);
+      const before = had.find((other) => other.name === name);
+      const kept = secretOf(secret, `${at}.secret`, projectID, {
+        had: !!before?.sealed,
+        keeps,
+      });
+      size += bytes(name) + 64;
+      headers.push({ name, ...kept });
+      return;
+    }
+    const value = text(valued).replace(/^[ \t]+|[ \t]+$/g, "");
     const plain = [...value].every((character) => {
       const code = character.codePointAt(0);
       return code === 9 || (code >= 32 && code !== 127);
@@ -425,55 +549,98 @@ function headersOf(given) {
   return headers;
 }
 
-function readProvider(body, projectID) {
+function readProvider(body, projectID, existing) {
   const request = decode(body, ["name", "url", "headers", "api_key"]);
   if (!text(request.name)) invalid("name is required");
-  return { name: request.name, ...providerAt(request, projectID) };
+  return { name: request.name, ...providerAt(request, projectID, existing) };
 }
 
 // providerAt checks the URL, the headers and the key of a provider of the
-// project, and returns them as they are kept.
-function providerAt(request, projectID) {
-  endpoint(text(request.url));
-  const read = { url: request.url, headers: headersOf(request.headers) };
+// project, and returns them as they are kept. A provider that exists keeps
+// its stored secrets while its URL stays the same.
+function providerAt(request, projectID, existing) {
+  endpoint(text(request.url), "set the endpoint's key in api_key");
+  const keeps = !!existing && existing.url === request.url;
+  const read = {
+    url: request.url,
+    headers: headersOf(request.headers, {
+      projectID,
+      had: existing?.headers,
+      keeps,
+    }),
+  };
   const key = request.api_key;
   if (key == null) return read;
-  const shape =
-    `api_key must be {"value": "…"} for a key that Aviary stores, or {"store": "…", "path": "…", "key": "…"} ` +
-    "for a key in a secret store of the project; omit it for an endpoint that takes no key";
-  if (
-    typeof key !== "object" ||
-    Object.keys(key).some(
-      (field) => !["value", "store", "path", "key"].includes(field),
-    )
-  )
-    invalid("request body is not valid JSON for this endpoint");
-  if (key.value && !key.store && !key.path && !key.key) {
-    read.api_key_sealed = true;
-  } else if (!key.value && key.store && key.path && key.key) {
-    const store =
-      UUID.test(key.store) &&
-      db.stores.find(
-        (other) => other.id === key.store && other.project_id === projectID,
-      );
-    if (!store)
-      invalid("api_key.store must be the ID of a secret store of the project");
-    // The key is read once, so that a key that cannot be read is reported now
-    // and not during a turn. The store of the mock has no secret below
-    // "missing", and no key named "none".
-    const cannot = (why) =>
-      invalid("cannot read api_key from the secret store: " + why);
-    if (!plainPath(key.path))
-      cannot(
-        "path must be a secret path below the mount, such as team/model, without empty or dot segments",
-      );
-    if (key.path.split("/").includes("missing")) cannot("secret not found");
-    if (key.key === "none") cannot("secret has no such key");
-    read.api_key_at = { store: key.store, path: key.path, key: key.key };
-  } else {
-    invalid(shape);
-  }
+  const kept = secretOf(key, "api_key", projectID, {
+    had: !!existing?.api_key_sealed,
+    keeps,
+  });
+  if (kept.sealed) read.api_key_sealed = kept.wrong ? "wrong" : true;
+  else read.api_key_at = kept.at;
   return read;
+}
+
+const TRANSPORTS = ["http", "sse"];
+
+// mcpServerAt checks what a request sets of an MCP server of the project,
+// besides its slug, and returns it as it is kept. A server that exists keeps
+// its stored secrets while its URL stays the same.
+function mcpServerAt(request, projectID, existing) {
+  endpoint(text(request.url), "set the server's secrets in its headers");
+  if (!TRANSPORTS.includes(request.transport))
+    invalid('transport must be "http" for Streamable HTTP, or "sse"');
+  const keeps = !!existing && existing.url === request.url;
+  return {
+    name: text(request.name),
+    url: request.url,
+    transport: request.transport,
+    headers: headersOf(request.headers, {
+      projectID,
+      had: existing?.headers,
+      keeps,
+      authorization: true,
+    }),
+  };
+}
+
+// toolsAt asks the MCP server at the address for its tools, with the
+// headers. The servers of the mock answer by what is asked: a host below
+// ".invalid" is not reached, a secret that begins with "wrong" is refused, a
+// host that begins with "auth." refuses a request without authorization, a
+// host that begins with "www." answers with a page, a URL that ends in /sse
+// is not reached by Streamable HTTP, and one that ends in /mcp is not reached
+// by SSE.
+function toolsAt(address, transport, headers) {
+  const at = new URL(address);
+  if (at.hostname.endsWith(".invalid"))
+    return {
+      reached: false,
+      reason:
+        "upstream connect error or disconnect/reset before headers. reset reason: connection timeout",
+      duration_ms: 5004,
+    };
+  const answered = { reached: true, status: 200, duration_ms: 230 };
+  const path = at.pathname.replace(/\/$/, "");
+  if (headers.some((header) => header.wrong)) answered.status = 401;
+  else if (
+    at.hostname.startsWith("auth.") &&
+    !headers.some((header) => header.name === "authorization")
+  )
+    answered.status = 401;
+  else if (at.hostname.startsWith("www."))
+    answered.reason = "the server does not answer as an MCP server does";
+  else if (transport === "http" && path.endsWith("/sse")) answered.status = 405;
+  else if (transport === "sse" && path.endsWith("/mcp")) answered.status = 405;
+  else {
+    const listed = TOOLS[at.hostname] ?? [
+      ["echo", "Answer with what it is given."],
+    ];
+    answered.tools = listed.map(([name, description]) => ({
+      name,
+      description,
+    }));
+  }
+  return answered;
 }
 
 function readStore(body) {
@@ -649,6 +816,13 @@ function run(turn, play, { answers = {}, instant = false } = {}) {
   const session = db.sessions.find((other) => other.id === turn.session_id);
   const agent = db.agents.find((other) => other.id === session.agent_id);
   const harness = agent.harness === "codex" ? "codex" : "opencode";
+  // Codex does not support MCP servers of SSE, and the runner leaves them
+  // out.
+  const given = serversOf.get(turn.id) || [];
+  const supported = (server) =>
+    harness !== "codex" || server.transport !== "sse";
+  const servers = given.filter(supported);
+  const unsupported = given.filter((server) => !supported(server));
   const state = {
     cancelled: false,
     instant,
@@ -873,11 +1047,47 @@ function run(turn, play, { answers = {}, instant = false } = {}) {
     return true;
   };
 
+  // A tool of an MCP server, with the title and the kind that each harness
+  // gives it. The runner adds the server and the tool, from the servers that
+  // it gave the harness.
+  const mcpTool = async (server, tool, { input, output, asks }) => {
+    const id = callID();
+    const call = {
+      id,
+      title:
+        harness === "codex"
+          ? `mcp.${server.slug}.${tool}`
+          : `${server.slug}_${tool}`,
+      kind: harness === "codex" ? "execute" : "other",
+      status: "pending",
+      input,
+      mcp: { server: server.id, slug: server.slug, tool },
+    };
+    send("tool.call", call);
+    if (!(await approve({ asks, kind: "mcp:" + server.slug }, call))) {
+      send("tool.update", {
+        id,
+        status: "failed",
+        output: {
+          error: "The user rejected permission to use this specific tool call.",
+        },
+      });
+      return false;
+    }
+    send("tool.update", { id, status: "in_progress" });
+    await pause(700);
+    send("tool.update", { id, status: "completed", output: { output } });
+    return true;
+  };
+
   const context = {
     turn,
     session,
     agent,
     harness,
+    // The MCP servers that the turn has, with their tools.
+    servers,
+    mcp: mcpTool,
     pause,
     emit: send,
     think: (words) => write("thought.delta", words),
@@ -956,6 +1166,14 @@ function run(turn, play, { answers = {}, instant = false } = {}) {
         await pause(wait);
         turn.started_at = iso();
         send("turn.started", {});
+        if (unsupported.length)
+          send("mcp.unsupported", {
+            servers: unsupported.map(({ id, slug, transport }) => ({
+              id,
+              name: slug,
+              transport,
+            })),
+          });
         await pause(300);
       }
       await play(context);
@@ -1053,6 +1271,13 @@ function accept(session, who, words, scenario) {
   const play = script(scenario, words);
   const dispatch = () => {
     turn.state = "running";
+    // The turn has the MCP servers that its session has when it begins.
+    serversOf.set(
+      turn.id,
+      mcpOf(session).map((id) =>
+        db.mcpServers.find((other) => other.id === id),
+      ),
+    );
     changed();
     run(turn, play);
   };
@@ -1323,11 +1548,18 @@ function modelsAt(address, key, headers = []) {
   return listed;
 }
 
-// The models of an endpoint are listed without its provider being kept.
+// The models of an endpoint are listed without its provider being kept. The
+// provider that the request names, if it names one, lends the secrets that it
+// stores.
 route("POST", "/v1/projects/{pid}/providers/models", ({ who, body }, pid) => {
   inProject(who, pid, "connections.manage");
-  const request = decode(body, ["url", "headers", "api_key"]);
-  const { headers } = providerAt(request, pid);
+  const request = decode(body, ["url", "headers", "api_key", "provider"]);
+  const existing =
+    request.provider &&
+    db.providers.find(
+      (other) => other.id === request.provider && other.project_id === pid,
+    );
+  const { headers } = providerAt(request, pid, existing || undefined);
   return [200, modelsAt(request.url, request.api_key, headers)];
 });
 route("GET", "/v1/providers/{id}/models", ({ who }, id) => {
@@ -1343,13 +1575,118 @@ route("GET", "/v1/providers/{id}", ({ who }, id) => {
 route("PUT", "/v1/providers/{id}", ({ who, body }, id) => {
   const provider = one(db.providers, id);
   may(who, provider.project_id, "connections.manage");
-  const read = readProvider(body, provider.project_id);
+  const read = readProvider(body, provider.project_id, provider);
   // The name, the URL, the headers and the key are replaced together: a
   // provider that is given no headers or no key has none afterwards.
   delete provider.api_key_sealed;
   delete provider.api_key_at;
   Object.assign(provider, read, { updated_at: iso() });
   return [200, providerRecord(provider)];
+});
+
+route("GET", "/v1/projects/{pid}/mcp-servers", ({ who }, pid) => {
+  inProject(who, pid, "project.view");
+  return [
+    200,
+    {
+      mcp_servers: db.mcpServers
+        .filter((server) => server.project_id === pid)
+        .map(mcpServerRecord),
+    },
+  ];
+});
+// A server is asked for its tools when it is saved, and the tools that it
+// lists are kept with it.
+route("POST", "/v1/projects/{pid}/mcp-servers", ({ who, body }, pid) => {
+  inProject(who, pid, "connections.manage");
+  const request = decode(body, ["slug", "name", "url", "transport", "headers"]);
+  checkSlug(text(request.slug));
+  const read = mcpServerAt(request, pid);
+  if (
+    db.mcpServers.some(
+      (server) => server.project_id === pid && server.slug === request.slug,
+    )
+  )
+    refuse(409, "slug_taken", "the slug is already taken");
+  const listed = toolsAt(read.url, read.transport, read.headers);
+  const server = {
+    id: uuid7(),
+    project_id: pid,
+    slug: request.slug,
+    ...read,
+    created_at: iso(),
+    updated_at: iso(),
+  };
+  if (listed.tools) {
+    server.tools = listed.tools;
+    server.tools_listed_at = server.created_at;
+  }
+  db.mcpServers.push(server);
+  return [201, mcpServerRecord(server)];
+});
+// The tools of a server are listed without the server being kept. The server
+// that the request names, if it names one, lends the secrets that it stores.
+route("POST", "/v1/projects/{pid}/mcp-servers/tools", ({ who, body }, pid) => {
+  inProject(who, pid, "connections.manage");
+  const request = decode(body, ["url", "transport", "headers", "server"]);
+  const existing =
+    request.server &&
+    db.mcpServers.find(
+      (other) => other.id === request.server && other.project_id === pid,
+    );
+  if (request.server && !existing)
+    invalid("server must be the ID of an MCP server of the project");
+  const read = mcpServerAt(request, pid, existing || undefined);
+  return [200, toolsAt(read.url, read.transport, read.headers)];
+});
+route("GET", "/v1/mcp-servers/{id}", ({ who }, id) => {
+  const server = one(db.mcpServers, id);
+  may(who, server.project_id, "project.view");
+  return [200, mcpServerRecord(server)];
+});
+route("PUT", "/v1/mcp-servers/{id}", ({ who, body }, id) => {
+  const server = one(db.mcpServers, id);
+  may(who, server.project_id, "connections.manage");
+  const request = decode(body, ["slug", "name", "url", "transport", "headers"]);
+  if (text(request.slug) && request.slug !== server.slug)
+    invalid("slug cannot be changed");
+  const read = mcpServerAt(request, server.project_id, server);
+  const listed = toolsAt(read.url, read.transport, read.headers);
+  // The rest is replaced together, and the tools are those that the server
+  // lists now, if it answered.
+  Object.assign(server, read, { updated_at: iso() });
+  if (listed.tools) {
+    server.tools = listed.tools;
+    server.tools_listed_at = server.updated_at;
+  }
+  return [200, mcpServerRecord(server)];
+});
+// A server that is deleted leaves the agents that begin their sessions with
+// it, and the sessions that turned it on or off.
+route("DELETE", "/v1/mcp-servers/{id}", ({ who }, id) => {
+  const server = one(db.mcpServers, id);
+  may(who, server.project_id, "connections.manage");
+  db.mcpServers = db.mcpServers.filter((other) => other.id !== id);
+  for (const agent of db.agents) {
+    if (agent.mcp_servers?.includes(id))
+      agent.mcp_servers = agent.mcp_servers.filter((other) => other !== id);
+  }
+  for (const session of db.sessions) {
+    if (session.mcp && id in session.mcp) delete session.mcp[id];
+  }
+  return [204, null];
+});
+// A server is asked for its tools again, with what it stores, and keeps them
+// if it answers.
+route("POST", "/v1/mcp-servers/{id}/tools", ({ who }, id) => {
+  const server = one(db.mcpServers, id);
+  may(who, server.project_id, "connections.manage");
+  const listed = toolsAt(server.url, server.transport, server.headers);
+  if (listed.tools) {
+    server.tools = listed.tools;
+    server.tools_listed_at = iso();
+  }
+  return [200, listed];
 });
 
 // agentSettings checks what a request sets of an agent of the project,
@@ -1376,7 +1713,27 @@ function agentSettings(request, pid) {
   if (text(request.instructions)) settings.instructions = request.instructions;
   if (approval) settings.approval = approval;
   settings.model = { provider: provider.id, name: request.model.name };
+  const servers = mcpServersOf(request.mcp_servers, pid, "mcp_servers");
+  if (servers.length) settings.mcp_servers = servers;
   return settings;
+}
+
+// mcpServersOf checks a list of MCP servers of the project, by ID, named by
+// where it is in the body.
+function mcpServersOf(given, pid, where) {
+  if (given == null) return [];
+  if (!Array.isArray(given))
+    invalid("request body is not valid JSON for this endpoint");
+  given.forEach((id, index) => {
+    const known = db.mcpServers.some(
+      (server) => server.id === id && server.project_id === pid,
+    );
+    if (!known)
+      invalid(
+        `${where}[${index}] must be the ID of an MCP server of the project`,
+      );
+  });
+  return [...new Set(given)];
 }
 
 const AGENT = [
@@ -1387,6 +1744,7 @@ const AGENT = [
   "instructions",
   "approval",
   "model",
+  "mcp_servers",
 ];
 
 route("POST", "/v1/projects/{pid}/agents", ({ who, body }, pid) => {
@@ -1434,6 +1792,7 @@ route("PUT", "/v1/agents/{aid}", ({ who, body }, aid) => {
   // afterwards.
   delete agent.instructions;
   delete agent.approval;
+  delete agent.mcp_servers;
   Object.assign(agent, settings, { updated_at: iso() });
   return [200, agent];
 });
@@ -1486,7 +1845,7 @@ route("GET", "/v1/agents/{aid}", ({ who }, aid) => {
 route("POST", "/v1/agents/{aid}/sessions", ({ who, body }, aid) => {
   const agent = one(db.agents, aid);
   may(who, agent.project_id, "sessions.run");
-  const request = decode(body, ["title"], true);
+  const request = decode(body, ["title", "mcp_servers"], true);
   if (agent.deleted_at) refuse(409, "agent_deleted", "the agent is deleted");
   const session = {
     id: uuid7(),
@@ -1495,6 +1854,22 @@ route("POST", "/v1/agents/{aid}/sessions", ({ who, body }, aid) => {
     created_at: iso(),
   };
   if (who.id) session.created_by = who.id;
+  // A session that is given its MCP servers keeps how they differ from its
+  // agent's, so that it follows the agent in the rest.
+  if (request.mcp_servers != null) {
+    const on = mcpServersOf(
+      request.mcp_servers,
+      agent.project_id,
+      "mcp_servers",
+    );
+    const of = agent.mcp_servers || [];
+    session.mcp = {};
+    for (const server of db.mcpServers) {
+      if (server.project_id !== agent.project_id) continue;
+      if (on.includes(server.id) !== of.includes(server.id))
+        session.mcp[server.id] = on.includes(server.id);
+    }
+  }
   db.sessions.push(session);
   return [201, sessionRecord(session)];
 });
@@ -1560,6 +1935,37 @@ route("DELETE", "/v1/sessions/{sid}", ({ who }, sid) => {
   if (!session.ended_at) session.ended_at = iso();
   // The sandbox is deleted with the session.
   delete session.sandbox;
+  return [200, sessionRecord(session)];
+});
+// A session turns an MCP server of its project on or off for its next turns.
+// Who may send it messages may. A server that is as the agent has it follows
+// the agent from then on.
+route(
+  "PUT",
+  "/v1/sessions/{sid}/mcp-servers/{msid}",
+  ({ who, body }, sid, msid) => {
+    const session = withSession(who, sid, "sends");
+    const request = decode(body, ["enabled"]);
+    if (typeof request.enabled !== "boolean")
+      invalid("enabled must be true or false");
+    const agent = one(db.agents, session.agent_id);
+    const server = db.mcpServers.find(
+      (other) => other.id === msid && other.project_id === agent.project_id,
+    );
+    if (!server) notFound();
+    if (session.ended_at) refuse(409, "session_ended", "the session has ended");
+    session.mcp = { ...session.mcp };
+    if ((agent.mcp_servers || []).includes(msid) === request.enabled)
+      delete session.mcp[msid];
+    else session.mcp[msid] = request.enabled;
+    return [200, sessionRecord(session)];
+  },
+);
+// A session goes back to the MCP servers of its agent.
+route("DELETE", "/v1/sessions/{sid}/mcp-servers", ({ who }, sid) => {
+  const session = withSession(who, sid, "sends");
+  if (session.ended_at) refuse(409, "session_ended", "the session has ended");
+  delete session.mcp;
   return [200, sessionRecord(session)];
 });
 route("POST", "/v1/sessions/{sid}/messages", ({ who, body }, sid) => {
@@ -1819,6 +2225,7 @@ export function reset() {
   eventsOf = new Map();
   watchers = new Map();
   approvalsOf = new Map();
+  serversOf = new Map();
   runs = new Map();
   feeds = new Set();
   told = null;

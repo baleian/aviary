@@ -112,13 +112,16 @@ export async function olderTurns(session: string): Promise<void> {
 }
 
 // startSession creates a session of an agent with a title, and keeps it as
-// if it had been read: its conversation opens without a wait.
+// if it had been read: its conversation opens without a wait. servers are the
+// MCP servers that it begins with, if they are not its agent's.
 export async function startSession(
   agent: string,
   title: string,
+  servers?: string[],
 ): Promise<Session> {
   const session = await api.post<Session>(`/v1/agents/${agent}/sessions`, {
     title,
+    ...(servers && { mcp_servers: servers }),
   });
   queryClient.setQueryData<Session>(["session", session.id], session);
   queryClient.setQueryData<Turn[]>(turnsKey(session.id), []);
@@ -147,6 +150,40 @@ export async function suggestTitle(id: string, title: unknown) {
   });
   take(renamed);
   given.set(id, renamed.title);
+}
+
+// setMcpServer turns an MCP server of the project on or off for the next
+// turns of a session. What is shown changes at once, and is read again if
+// the API refuses the change.
+export async function setMcpServer(
+  session: Session,
+  server: string,
+  enabled: boolean,
+): Promise<void> {
+  const before = session.mcp_servers ?? [];
+  const after = enabled
+    ? [...before, server]
+    : before.filter((other) => other !== server);
+  queryClient.setQueryData<Session>(
+    ["session", session.id],
+    (read) => read && { ...read, mcp_servers: after },
+  );
+  try {
+    take(
+      await api.put<Session>(
+        `/v1/sessions/${session.id}/mcp-servers/${server}`,
+        { enabled },
+      ),
+    );
+  } catch (error) {
+    await rereadSession(session.id);
+    throw error;
+  }
+}
+
+// resetMcpServers has a session go back to the MCP servers of its agent.
+export async function resetMcpServers(session: Session): Promise<void> {
+  take(await api.delete<Session>(`/v1/sessions/${session.id}/mcp-servers`));
 }
 
 // endSession ends a session, with the files that its agent made.

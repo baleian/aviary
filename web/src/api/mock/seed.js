@@ -21,6 +21,189 @@ export const PERMISSIONS = [
   "sessions.control_all",
 ];
 
+// The tools that the MCP servers of the example data list, by host. Another
+// host lists one tool of its own.
+// More MCP servers of the storefront, as a project that has many: the slug,
+// the name, the host, the transport, and the names of their tools.
+export const MORE = [
+  [
+    "billing",
+    "Billing API",
+    "billing.example.com",
+    "http",
+    "invoices customers subscriptions",
+  ],
+  [
+    "feature-flags",
+    "Feature flags",
+    "flags.example.com",
+    "http",
+    "flags segments",
+  ],
+  [
+    "analytics",
+    "Product analytics",
+    "analytics.example.com",
+    "http",
+    "events funnels cohorts",
+  ],
+  [
+    "design-files",
+    "Design files",
+    "design.example.com",
+    "sse",
+    "files frames comments",
+  ],
+  [
+    "support-desk",
+    "Support desk",
+    "support.example.com",
+    "http",
+    "tickets macros",
+  ],
+  ["ci", "CI pipelines", "ci.example.com", "http", "pipelines jobs artifacts"],
+  [
+    "registry",
+    "Container registry",
+    "registry.example.com",
+    "http",
+    "images tags",
+  ],
+  [
+    "status-page",
+    "Status page",
+    "status.example.com",
+    "sse",
+    "incidents components",
+  ],
+  [
+    "on-call",
+    "On-call schedule",
+    "oncall.example.com",
+    "http",
+    "schedules escalations",
+  ],
+  ["wiki", "Team wiki", "wiki.example.com", "http", "pages spaces"],
+  ["chat", "Team chat", "chat.example.com", "http", "channels messages"],
+  ["calendar", "Calendar", "calendar.example.com", "http", "events"],
+  [
+    "translations",
+    "Translations",
+    "i18n.example.com",
+    "http",
+    "strings languages",
+  ],
+  [
+    "search-index",
+    "Search index",
+    "search.example.com",
+    "http",
+    "documents indexes",
+  ],
+  ["cloud-costs", "Cloud costs", "costs.example.com", "sse", "reports budgets"],
+  ["logs", "Logs", "logs.example.com", "http", "logs queries"],
+  [
+    "metrics",
+    "Metrics",
+    "metrics.example.com",
+    "http",
+    "series dashboards alerts",
+  ],
+  ["traces", "Traces", "traces.example.com", "http", "traces services"],
+  ["load-tests", "Load tests", "load.example.com", "http", "runs scenarios"],
+  [
+    "payments-sandbox",
+    "Payments sandbox",
+    "pay-sandbox.example.com",
+    "http",
+    "payments refunds",
+  ],
+];
+
+export const TOOLS = {
+  "tracker.example.com": [
+    ["search_issues", "Search issues by text, state, label and assignee."],
+    ["get_issue", "Get an issue with its comments."],
+    ["create_issue", "Create an issue in a project."],
+    ["add_comment", "Add a comment to an issue."],
+    ["update_issue", "Change the state, labels or assignee of an issue."],
+  ],
+  "git.example.com": [
+    ["search_code", "Search code across the repositories."],
+    ["get_file_contents", "Get a file of a repository at a ref."],
+    ["list_pull_requests", "List the pull requests of a repository."],
+    ["get_pull_request", "Get a pull request with its diff."],
+    ["create_pull_request", "Open a pull request from a branch."],
+    ["add_review_comment", "Comment on a line of a pull request."],
+    ...[
+      "list_repositories",
+      "get_repository",
+      "create_repository",
+      "fork_repository",
+      "list_branches",
+      "create_branch",
+      "delete_branch",
+      "list_tags",
+      "get_tag",
+      "list_commits",
+      "get_commit",
+      "compare_commits",
+      "create_or_update_file",
+      "delete_file",
+      "push_files",
+      "merge_pull_request",
+      "update_pull_request",
+      "update_pull_request_branch",
+      "request_reviewers",
+      "list_pull_request_files",
+      "list_pull_request_reviews",
+      "submit_review",
+      "list_workflow_runs",
+      "get_workflow_run",
+      "rerun_workflow",
+      "get_job_logs",
+      "list_releases",
+      "create_release",
+      "list_code_scanning_alerts",
+      "get_code_scanning_alert",
+      "list_secret_scanning_alerts",
+      "list_dependabot_alerts",
+      "search_repositories",
+      "search_users",
+      "get_me",
+      "list_notifications",
+      "mark_notifications_read",
+    ].map((name) => {
+      const words = name.replace(/_/g, " ");
+      return [name, words[0].toUpperCase() + words.slice(1) + "."];
+    }),
+  ],
+  "docs.example.com": [
+    ["search_docs", "Search the documentation for integrators."],
+    ["get_page", "Get a page of the documentation as Markdown."],
+  ],
+  "errors.example.com": [
+    ["list_issues", "List the error groups of a project, newest first."],
+    ["get_issue_details", "Get an error group with its latest event."],
+    ["get_event", "Get one event with its stack trace."],
+    ["resolve_issue", "Mark an error group as resolved."],
+  ],
+  "catalog.data.svc.cluster.local": [
+    ["list_tables", "List the tables of the warehouse."],
+    ["describe_table", "Describe the columns of a table."],
+    ["search_columns", "Find columns by name or description."],
+  ],
+};
+
+// A server of many lists, for each thing that it holds, a tool that lists
+// them and one that gets one of them.
+for (const [, name, host, , things] of MORE) {
+  TOOLS[host] = things.split(" ").flatMap((thing) => [
+    [`list_${thing}`, `List the ${thing} of ${name}.`],
+    [`get_${thing.replace(/s$/, "")}`, `Get one of the ${thing} of ${name}.`],
+  ]);
+}
+
 const OPENCODE_OPTIONS = [
   { id: "once", kind: "allow_once", name: "Allow once" },
   { id: "always", kind: "allow_always", name: "Always allow" },
@@ -97,6 +280,7 @@ export function seed(now) {
     members: [],
     roles: [],
     providers: [],
+    mcpServers: [],
     stores: [],
     agents: [],
     sessions: [],
@@ -244,6 +428,104 @@ export function seed(now) {
     4 * DAY - 2 * HOUR,
   );
 
+  // An MCP server, with the tools that it listed when it was saved. Its
+  // headers are as the backend keeps them: a value, {sealed}, or {at}.
+  const mcpServer = (projectID, slug, name, url, transport, headers, ago) => {
+    const record = {
+      id: id(ago),
+      project_id: projectID,
+      slug,
+      name,
+      url,
+      transport,
+      headers,
+      tools: (TOOLS[new URL(url).hostname] ?? []).map(
+        ([tool, description]) => ({ name: tool, description }),
+      ),
+      created_at: at(ago),
+      updated_at: at(ago),
+    };
+    db.mcpServers.push(record);
+    return record.id;
+  };
+  const tracker = mcpServer(
+    storefront,
+    "issue-tracker",
+    "Issue tracker",
+    "https://tracker.example.com/mcp",
+    "http",
+    [{ name: "authorization", sealed: true }],
+    8 * DAY - 2 * HOUR,
+  );
+  const codeHost = mcpServer(
+    storefront,
+    "code-host",
+    "Code host",
+    "https://git.example.com/mcp",
+    "http",
+    [
+      {
+        name: "authorization",
+        at: { store: secrets, path: "mcp/git", key: "token" },
+      },
+    ],
+    7 * DAY,
+  );
+  const docsSearch = mcpServer(
+    storefront,
+    "docs",
+    "Docs search",
+    "https://docs.example.com/sse",
+    "sse",
+    [],
+    6 * DAY - HOUR,
+  );
+  const errors = mcpServer(
+    storefront,
+    "errors",
+    "Error monitor",
+    "https://errors.example.com/mcp",
+    "http",
+    [
+      { name: "x-api-key", sealed: true },
+      { name: "x-organization", value: "storefront" },
+    ],
+    2 * DAY,
+  );
+  const catalog = mcpServer(
+    data,
+    "catalog",
+    "Warehouse catalog",
+    "http://catalog.data.svc.cluster.local:8080/mcp",
+    "http",
+    [],
+    6 * DAY,
+  );
+  const more = {};
+  MORE.forEach(([slug, name, host, transport], index) => {
+    const headers =
+      index % 5 === 4
+        ? []
+        : index % 3 === 0
+          ? [
+              {
+                name: "authorization",
+                at: { store: secrets, path: `mcp/${slug}`, key: "token" },
+              },
+            ]
+          : [{ name: "authorization", sealed: true }];
+    const path = transport === "sse" ? "/sse" : "/mcp";
+    more[slug] = mcpServer(
+      storefront,
+      slug,
+      name,
+      `https://${host}${path}`,
+      transport,
+      headers,
+      (5 * DAY * (index + 1)) / MORE.length,
+    );
+  });
+
   const agent = (
     projectID,
     slug,
@@ -356,6 +638,15 @@ export function seed(now) {
     "",
     4 * DAY - 3 * HOUR,
   );
+
+  // The MCP servers that the agents' sessions begin with.
+  const bind = (agentID, servers) => {
+    db.agents.find((other) => other.id === agentID).mcp_servers = servers;
+  };
+  bind(backend, [tracker, codeHost, more.ci, more.logs, more["feature-flags"]]);
+  bind(reviewer, [codeHost, more.ci]);
+  bind(writer, [docsSearch, more.wiki, more.translations]);
+  bind(analyst, [catalog]);
 
   // Items, as the Supervisor assembles them when a turn ends.
   const say = (text) => ({ type: "message", text });
@@ -581,6 +872,88 @@ export function seed(now) {
       turn: pushing.id,
       script: "seedPush",
       answers: { 1: { option: "once", by: alice } },
+    });
+  }
+
+  // A call of a tool of an MCP server, as OpenCode reports it and the
+  // runner records it.
+  const mcpCall = (server, tool, input, output) => {
+    const { slug } = db.mcpServers.find((other) => other.id === server);
+    return {
+      type: "tool_call",
+      id: call(),
+      title: `${slug}_${tool}`,
+      kind: "other",
+      status: "completed",
+      input,
+      output: { output },
+      mcp: { server, slug, tool },
+    };
+  };
+  const triage = session(
+    backend,
+    alice,
+    "Triage last night's checkout errors",
+    80 * MINUTE,
+  );
+  // The session has the error monitor on, which its agent does not, and the
+  // feature flags off, which its agent has.
+  triage.mcp = { [errors]: true, [more["feature-flags"]]: false };
+  {
+    turn(
+      triage,
+      "Which checkout errors came in last night, and is there an issue for each?",
+      79 * MINUTE,
+      {
+        took: 51000,
+        usage: [14210, 980],
+        items: [
+          think(
+            "I will list the unresolved errors first, then look for issues that mention them.",
+          ),
+          mcpCall(
+            errors,
+            "list_issues",
+            {
+              project: "storefront",
+              query: "is:unresolved checkout",
+              limit: 5,
+            },
+            "STOREFRONT-1F2  TypeError: Cannot read properties of undefined (reading 'total')  412 events, first seen 23:40\n" +
+              "STOREFRONT-1E9  WebhookTimeout: POST https://hooks.example.com timed out  88 events, first seen 02:10\n",
+          ),
+          mcpCall(
+            tracker,
+            "search_issues",
+            { query: "TypeError total checkout", state: "open" },
+            "#482 Checkout total is off by one cent with two coupons (open, bug, checkout)\n",
+          ),
+          say(
+            "Two checkout errors came in last night:\n\n| Error | Events | Issue |\n| --- | --- | --- |\n| `STOREFRONT-1F2` TypeError reading `total` | 412 | none |\n| `STOREFRONT-1E9` Webhook timeout | 88 | none |\n\nIssue #482 is about the cent rounding and not about either of them. The TypeError began at 23:40, which is when `price-rounding` was deployed.",
+          ),
+        ],
+      },
+    );
+    const filed = mcpCall(
+      tracker,
+      "create_issue",
+      {
+        project: "storefront",
+        title: "TypeError reading 'total' in checkout since 23:40",
+        labels: ["bug", "checkout"],
+      },
+      "Created issue #494: TypeError reading 'total' in checkout since 23:40",
+    );
+    turn(triage, "File an issue for the TypeError.", 72 * MINUTE, {
+      took: 23000,
+      usage: [16080, 412],
+      items: [
+        filed,
+        asked(1, filed, "once", alice),
+        say(
+          "Filed as **#494**, with the error group and the time it began. I left the webhook timeout alone: it looks like the receiver was down.",
+        ),
+      ],
     });
   }
 

@@ -87,8 +87,11 @@ create table providers (
     name mediumtext not null,
     -- The base URL of the model endpoint.
     url mediumtext not null,
-    -- The headers that the requests to the endpoint carry, as a JSON array
-    -- of {"name": "...", "value": "..."}. It is null if there are none.
+    -- The headers that the requests to the endpoint carry, as a JSON array.
+    -- Each is {"name": "...", "value": "..."}, {"name": "...", "sealed":
+    -- "..."} with a secret encrypted like the API key, or {"name": "...",
+    -- "at": {"store": "...", "path": "...", "key": "..."}} for a secret in a
+    -- secret store. It is null if there are none.
     headers json,
     -- The API key, encrypted with a key that the database does not hold. It
     -- is null if the endpoint takes no key, or if the key is in a secret
@@ -102,6 +105,31 @@ create table providers (
     updated_at datetime(6) not null default (now(6)),
     foreign key (project_id) references projects (id),
     foreign key (api_key_store_id) references secret_stores (id)
+);
+
+-- MCP servers: the MCP servers of a project, whose tools its agents use.
+create table mcp_servers (
+    id binary(16) primary key,
+    project_id binary(16) not null,
+    -- Names the server in the project, and its tools to a harness. It does
+    -- not change.
+    slug varchar(63) character set utf8mb4 collate utf8mb4_bin not null,
+    name mediumtext not null default (''),
+    url mediumtext not null,
+    -- 'http' for Streamable HTTP, or 'sse'.
+    transport varchar(16) not null,
+    -- The headers that the requests to the server carry, as those of a
+    -- provider are kept, with a secret encrypted for the server.
+    headers json,
+    -- The tools that the server last listed, as a JSON array of {"name":
+    -- "...", "description": "..."}, and when. Both are null if it has not
+    -- listed them.
+    tools json,
+    tools_listed_at datetime(6),
+    created_at datetime(6) not null default (now(6)),
+    updated_at datetime(6) not null default (now(6)),
+    unique key mcp_servers_project_slug (project_id, slug),
+    foreign key (project_id) references projects (id)
 );
 
 create table agents (
@@ -132,6 +160,15 @@ create table agents (
     unique key agents_project_slug (project_id, (if(deleted_at is null, slug, null)))
 );
 
+-- The MCP servers that an agent begins its sessions with.
+create table agent_mcp_servers (
+    agent_id binary(16) not null,
+    mcp_server_id binary(16) not null,
+    primary key (agent_id, mcp_server_id),
+    foreign key (agent_id) references agents (id),
+    foreign key (mcp_server_id) references mcp_servers (id) on delete cascade
+);
+
 create table sessions (
     id binary(16) primary key,
     agent_id binary(16) not null,
@@ -151,6 +188,17 @@ create table sessions (
     foreign key (created_by) references users (id),
     -- For listing the sessions that have a sandbox.
     key sessions_sandbox (sandbox)
+);
+
+-- The MCP servers that a session turned on or off where it differs from its
+-- agent. Its turns have the servers of the agent but for these.
+create table session_mcp_servers (
+    session_id binary(16) not null,
+    mcp_server_id binary(16) not null,
+    enabled boolean not null,
+    primary key (session_id, mcp_server_id),
+    foreign key (session_id) references sessions (id),
+    foreign key (mcp_server_id) references mcp_servers (id) on delete cascade
 );
 
 create table turns (
@@ -251,8 +299,11 @@ drop table schema_floor;
 drop table approvals;
 drop table turn_items;
 drop table turns;
+drop table session_mcp_servers;
 drop table sessions;
+drop table agent_mcp_servers;
 drop table agents;
+drop table mcp_servers;
 drop table providers;
 drop table secret_stores;
 drop table project_members;

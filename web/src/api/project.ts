@@ -4,6 +4,7 @@ import { api, ApiError } from "./client.ts";
 import { type Tinted, useMe, useProjects } from "./queries.ts";
 import type {
   Agent,
+  McpServer,
   Me,
   Member,
   Permission,
@@ -29,6 +30,7 @@ export interface ProjectContext {
   project: Tinted<Project>;
   agents: Tinted<Agent>[];
   providers: Provider[];
+  mcpServers: McpServer[];
   stores: SecretStore[];
   members: Member[];
   roles: Role[];
@@ -42,6 +44,7 @@ export const keys = {
   agents: (project: string) => ["agents", project],
   providers: (project: string) => ["providers", project],
   models: (provider: string) => ["models", provider],
+  mcpServers: (project: string) => ["mcp-servers", project],
   stores: (project: string) => ["stores", project],
   members: (project: string) => ["members", project],
   roles: ["roles"],
@@ -113,7 +116,7 @@ export function useProjectContext(slug: string): Found {
   const project = projects?.find((other) => other.slug === slug);
   const id = project?.id ?? "";
   const base = "/v1/projects/" + id;
-  const [agents, providers, stores, members, roles] = useQueries({
+  const [agents, providers, mcpServers, stores, members, roles] = useQueries({
     queries: [
       {
         queryKey: keys.agents(id),
@@ -126,6 +129,13 @@ export function useProjectContext(slug: string): Found {
         queryFn: async () =>
           (await api.get<{ providers: Provider[] }>(base + "/providers"))
             .providers,
+        enabled: !!project,
+      },
+      {
+        queryKey: keys.mcpServers(id),
+        queryFn: async () =>
+          (await api.get<{ mcp_servers: McpServer[] }>(base + "/mcp-servers"))
+            .mcp_servers,
         enabled: !!project,
       },
       {
@@ -156,11 +166,12 @@ export function useProjectContext(slug: string): Found {
   const context = useMemo(() => {
     if (!me || !project) return undefined;
     if (!agents.data || !providers.data || !stores.data) return undefined;
-    if (!members.data || !roles.data) return undefined;
+    if (!mcpServers.data || !members.data || !roles.data) return undefined;
     return {
       project,
       agents: agents.data.map((agent, tint) => ({ ...agent, tint })),
       providers: providers.data,
+      mcpServers: mcpServers.data,
       stores: stores.data,
       members: members.data,
       roles: roles.data,
@@ -171,6 +182,7 @@ export function useProjectContext(slug: string): Found {
     project,
     agents.data,
     providers.data,
+    mcpServers.data,
     stores.data,
     members.data,
     roles.data,
@@ -178,7 +190,7 @@ export function useProjectContext(slug: string): Found {
 
   if (!projects) return { state: "pending" };
   if (!project) return { state: "missing" };
-  const error = [agents, providers, stores, members, roles].find(
+  const error = [agents, providers, mcpServers, stores, members, roles].find(
     (query) => query.error,
   )?.error;
   if (error) {

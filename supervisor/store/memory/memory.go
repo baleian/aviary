@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -39,6 +40,7 @@ type Store struct {
 	agents       map[uuid.UUID]store.Agent
 	sessions     map[uuid.UUID]*session
 	providers    map[uuid.UUID]store.Provider
+	mcpServers   map[uuid.UUID]store.McpServer
 	secretStores map[uuid.UUID]store.SecretStore
 	turns        map[uuid.UUID]*turn
 	// created holds the turns in creation order.
@@ -49,6 +51,9 @@ type session struct {
 	store.Session
 	// turns are in sequence order.
 	turns []*turn
+	// mcp are the MCP servers that the session turned on or off where it
+	// differs from its agent.
+	mcp map[uuid.UUID]bool
 }
 
 type turn struct {
@@ -87,6 +92,7 @@ func New() *Store {
 		agents:       map[uuid.UUID]store.Agent{},
 		sessions:     map[uuid.UUID]*session{},
 		providers:    map[uuid.UUID]store.Provider{},
+		mcpServers:   map[uuid.UUID]store.McpServer{},
 		secretStores: map[uuid.UUID]store.SecretStore{},
 		turns:        map[uuid.UUID]*turn{},
 	}
@@ -164,13 +170,26 @@ func providerOf(provider store.Provider) store.Provider {
 	return provider
 }
 
-// headersOf copies the headers of a provider. Without headers they are nil,
-// not empty.
+// headersOf copies the headers of an endpoint. Without headers they are
+// nil, not empty.
 func headersOf(headers []store.Header) []store.Header {
 	if len(headers) == 0 {
 		return nil
 	}
-	return slices.Clone(headers)
+	headers = slices.Clone(headers)
+	for i, header := range headers {
+		headers[i].Sealed, headers[i].At = bytes.Clone(header.Sealed), clone(header.At)
+	}
+	return headers
+}
+
+func mcpServerOf(server store.McpServer) store.McpServer {
+	server.Headers = headersOf(server.Headers)
+	server.Tools, server.ToolsListedAt = slices.Clone(server.Tools), clone(server.ToolsListedAt)
+	if server.ToolsListedAt == nil {
+		server.Tools = nil
+	}
+	return server
 }
 
 func secretStoreOf(secrets store.SecretStore) store.SecretStore {
@@ -251,13 +270,55 @@ func (s *Store) CreateAgent(ctx context.Context, projectID uuid.UUID, agent stor
 	if _, found := s.providers[agent.Model.Provider]; !found {
 		return store.Agent{}, fmt.Errorf("provider %s does not exist", agent.Model.Provider)
 	}
+	if err := s.serversExist(agent.McpServers); err != nil {
+		return store.Agent{}, err
+	}
 	now := s.now()
 	created := store.Agent{
 		ID: id, ProjectID: projectID, Slug: agent.Slug, Name: agent.Name, Description: agent.Description, Harness: agent.Harness,
 		CreatedAt: now, UpdatedAt: now, Instructions: agent.Instructions, Approval: agent.Approval, Model: agent.Model,
+		McpServers: slices.Clone(agent.McpServers),
 	}
 	s.agents[id] = created
-	return created, nil
+	return s.agentOf(created), nil
+}
+
+// serversExist returns an error if one of the MCP servers does not exist.
+// The caller holds mu.
+func (s *Store) serversExist(servers []uuid.UUID) error {
+	for _, server := range servers {
+		if _, found := s.mcpServers[server]; !found {
+			return fmt.Errorf("MCP server %s does not exist", server)
+		}
+	}
+	return nil
+}
+
+// agentOf copies the agent, with its MCP servers in the order of the
+// project's servers. The caller holds mu.
+func (s *Store) agentOf(agent store.Agent) store.Agent {
+	agent.DeletedAt = clone(agent.DeletedAt)
+	agent.McpServers = s.ordered(func(server uuid.UUID) bool { return slices.Contains(agent.McpServers, server) })
+	return agent
+}
+
+// ordered returns the MCP servers that are chosen, in the order in which they
+// were created, or nil if none is. The caller holds mu.
+func (s *Store) ordered(chosen func(uuid.UUID) bool) []uuid.UUID {
+	var servers []store.McpServer
+	for _, server := range s.mcpServers {
+		if chosen(server.ID) {
+			servers = append(servers, server)
+		}
+	}
+	slices.SortFunc(servers, func(one, other store.McpServer) int {
+		return cmp.Or(one.CreatedAt.Compare(other.CreatedAt), bytes.Compare(one.ID[:], other.ID[:]))
+	})
+	var ids []uuid.UUID
+	for _, server := range servers {
+		ids = append(ids, server.ID)
+	}
+	return ids
 }
 
 func (s *Store) ReplaceAgent(ctx context.Context, agent store.Agent) (store.Agent, error) {
@@ -275,11 +336,15 @@ func (s *Store) ReplaceAgent(ctx context.Context, agent store.Agent) (store.Agen
 	if _, found := s.providers[agent.Model.Provider]; !found {
 		return store.Agent{}, fmt.Errorf("provider %s does not exist", agent.Model.Provider)
 	}
+	if err := s.serversExist(agent.McpServers); err != nil {
+		return store.Agent{}, err
+	}
 	replaced.Name, replaced.Description = agent.Name, agent.Description
 	replaced.Instructions, replaced.Approval, replaced.Model = agent.Instructions, agent.Approval, agent.Model
+	replaced.McpServers = slices.Clone(agent.McpServers)
 	replaced.UpdatedAt = s.now()
 	s.agents[agent.ID] = replaced
-	return replaced, nil
+	return s.agentOf(replaced), nil
 }
 
 func (s *Store) DeleteAgent(ctx context.Context, id uuid.UUID) (store.Agent, []store.Session, error) {
@@ -292,8 +357,7 @@ func (s *Store) DeleteAgent(ctx context.Context, id uuid.UUID) (store.Agent, []s
 		return store.Agent{}, nil, store.ErrNotFound
 	}
 	if agent.DeletedAt != nil {
-		agent.DeletedAt = clone(agent.DeletedAt)
-		return agent, nil, nil
+		return s.agentOf(agent), nil, nil
 	}
 	var live []*session
 	for _, session := range s.sessions {
@@ -561,8 +625,7 @@ func (s *Store) Agent(ctx context.Context, id uuid.UUID) (store.Agent, error) {
 	if !found {
 		return store.Agent{}, store.ErrNotFound
 	}
-	agent.DeletedAt = clone(agent.DeletedAt)
-	return agent, nil
+	return s.agentOf(agent), nil
 }
 
 func (s *Store) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agent, error) {
@@ -573,7 +636,7 @@ func (s *Store) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agent,
 	agents := []store.Agent{}
 	for _, agent := range s.agents {
 		if agent.ProjectID == projectID && agent.DeletedAt == nil {
-			agents = append(agents, agent)
+			agents = append(agents, s.agentOf(agent))
 		}
 	}
 	slices.SortFunc(agents, func(one, other store.Agent) int {
@@ -582,7 +645,7 @@ func (s *Store) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agent,
 	return agents, nil
 }
 
-func (s *Store) CreateSession(ctx context.Context, agentID, by uuid.UUID, title string) (store.Session, error) {
+func (s *Store) CreateSession(ctx context.Context, agentID, by uuid.UUID, title string, mcp map[uuid.UUID]bool) (store.Session, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return store.Session{}, err
@@ -598,9 +661,86 @@ func (s *Store) CreateSession(ctx context.Context, agentID, by uuid.UUID, title 
 	if agent.DeletedAt != nil {
 		return store.Session{}, store.ErrAgentDeleted
 	}
-	created := &session{Session: store.Session{ID: id, AgentID: agentID, Title: title, CreatedBy: by, CreatedAt: s.now()}}
+	if err := s.serversExist(slices.Collect(maps.Keys(mcp))); err != nil {
+		return store.Session{}, err
+	}
+	created := &session{Session: store.Session{ID: id, AgentID: agentID, Title: title, CreatedBy: by, CreatedAt: s.now()}, mcp: maps.Clone(mcp)}
 	s.sessions[id] = created
 	return created.record(), nil
+}
+
+func (s *Store) SetSessionMcpServer(ctx context.Context, sessionID, serverID uuid.UUID, enabled bool) (store.Session, error) {
+	if err := s.begin(ctx); err != nil {
+		return store.Session{}, err
+	}
+	defer s.mu.Unlock()
+	session, err := s.openSession(sessionID)
+	if err != nil {
+		return store.Session{}, err
+	}
+	if err := s.serversExist([]uuid.UUID{serverID}); err != nil {
+		return store.Session{}, err
+	}
+	session.mcp = maps.Clone(session.mcp)
+	delete(session.mcp, serverID)
+	if enabled != slices.Contains(s.agents[session.AgentID].McpServers, serverID) {
+		if session.mcp == nil {
+			session.mcp = map[uuid.UUID]bool{}
+		}
+		session.mcp[serverID] = enabled
+	}
+	return session.record(), nil
+}
+
+func (s *Store) ResetSessionMcpServers(ctx context.Context, sessionID uuid.UUID) (store.Session, error) {
+	if err := s.begin(ctx); err != nil {
+		return store.Session{}, err
+	}
+	defer s.mu.Unlock()
+	session, err := s.openSession(sessionID)
+	if err != nil {
+		return store.Session{}, err
+	}
+	session.mcp = nil
+	return session.record(), nil
+}
+
+// openSession returns the session, ErrNotFound if there is no such session,
+// and ErrSessionEnded if it has ended. The caller holds mu.
+func (s *Store) openSession(id uuid.UUID) (*session, error) {
+	session, found := s.sessions[id]
+	switch {
+	case !found:
+		return nil, store.ErrNotFound
+	case session.EndedAt != nil:
+		return nil, store.ErrSessionEnded
+	}
+	return session, nil
+}
+
+func (s *Store) SessionMcpServers(ctx context.Context, sessionIDs []uuid.UUID) (map[uuid.UUID][]uuid.UUID, error) {
+	if err := s.begin(ctx); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+	servers := map[uuid.UUID][]uuid.UUID{}
+	for _, id := range sessionIDs {
+		session, found := s.sessions[id]
+		if !found || session.EndedAt != nil {
+			continue
+		}
+		agent := s.agents[session.AgentID]
+		on := s.ordered(func(server uuid.UUID) bool {
+			if enabled, chosen := session.mcp[server]; chosen {
+				return enabled
+			}
+			return slices.Contains(agent.McpServers, server) && s.mcpServers[server].ProjectID == agent.ProjectID
+		})
+		if on != nil {
+			servers[id] = on
+		}
+	}
+	return servers, nil
 }
 
 func (s *Store) Session(ctx context.Context, id uuid.UUID) (store.Session, error) {
@@ -798,6 +938,114 @@ func (s *Store) ReplaceProvider(ctx context.Context, provider store.Provider) (s
 	replaced.UpdatedAt = s.now()
 	s.providers[replaced.ID] = replaced
 	return providerOf(replaced), nil
+}
+
+func (s *Store) CreateMcpServer(ctx context.Context, server store.McpServer) (store.McpServer, error) {
+	if err := s.begin(ctx); err != nil {
+		return store.McpServer{}, err
+	}
+	defer s.mu.Unlock()
+	if _, found := s.projects[server.ProjectID]; !found {
+		return store.McpServer{}, store.ErrNotFound
+	}
+	if _, found := s.mcpServers[server.ID]; found {
+		return store.McpServer{}, fmt.Errorf("MCP server %s already exists", server.ID)
+	}
+	for _, other := range s.mcpServers {
+		if other.ProjectID == server.ProjectID && other.Slug == server.Slug {
+			return store.McpServer{}, store.ErrSlugTaken
+		}
+	}
+	created := mcpServerOf(server)
+	created.CreatedAt = s.now()
+	created.UpdatedAt = created.CreatedAt
+	s.mcpServers[created.ID] = created
+	return mcpServerOf(created), nil
+}
+
+func (s *Store) McpServer(ctx context.Context, id uuid.UUID) (store.McpServer, error) {
+	if err := s.begin(ctx); err != nil {
+		return store.McpServer{}, err
+	}
+	defer s.mu.Unlock()
+	server, found := s.mcpServers[id]
+	if !found {
+		return store.McpServer{}, store.ErrNotFound
+	}
+	return mcpServerOf(server), nil
+}
+
+func (s *Store) McpServers(ctx context.Context, projectID uuid.UUID) ([]store.McpServer, error) {
+	if err := s.begin(ctx); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+	servers := []store.McpServer{}
+	for _, server := range s.mcpServers {
+		if server.ProjectID == projectID {
+			servers = append(servers, mcpServerOf(server))
+		}
+	}
+	slices.SortFunc(servers, func(one, other store.McpServer) int {
+		return cmp.Or(one.CreatedAt.Compare(other.CreatedAt), bytes.Compare(one.ID[:], other.ID[:]))
+	})
+	return servers, nil
+}
+
+func (s *Store) ReplaceMcpServer(ctx context.Context, server store.McpServer) (store.McpServer, error) {
+	if err := s.begin(ctx); err != nil {
+		return store.McpServer{}, err
+	}
+	defer s.mu.Unlock()
+	replaced, found := s.mcpServers[server.ID]
+	if !found {
+		return store.McpServer{}, store.ErrNotFound
+	}
+	given := mcpServerOf(server)
+	replaced.Name, replaced.URL, replaced.Transport, replaced.Headers = given.Name, given.URL, given.Transport, given.Headers
+	replaced.Tools, replaced.ToolsListedAt = given.Tools, given.ToolsListedAt
+	replaced.UpdatedAt = s.now()
+	s.mcpServers[replaced.ID] = replaced
+	return mcpServerOf(replaced), nil
+}
+
+func (s *Store) SetMcpServerTools(ctx context.Context, id uuid.UUID, tools []store.Tool, listedAt time.Time) error {
+	if err := s.begin(ctx); err != nil {
+		return err
+	}
+	defer s.mu.Unlock()
+	server, found := s.mcpServers[id]
+	if !found {
+		return store.ErrNotFound
+	}
+	server.Tools, server.ToolsListedAt = slices.Clone(tools), &listedAt
+	s.mcpServers[id] = server
+	return nil
+}
+
+func (s *Store) DeleteMcpServer(ctx context.Context, id uuid.UUID) error {
+	if err := s.begin(ctx); err != nil {
+		return err
+	}
+	defer s.mu.Unlock()
+	if _, found := s.mcpServers[id]; !found {
+		return store.ErrNotFound
+	}
+	delete(s.mcpServers, id)
+	// Agents and sessions no longer have the server.
+	for agentID, agent := range s.agents {
+		if slices.Contains(agent.McpServers, id) {
+			agent.McpServers = slices.DeleteFunc(slices.Clone(agent.McpServers), func(other uuid.UUID) bool { return other == id })
+			s.agents[agentID] = agent
+		}
+	}
+	for _, session := range s.sessions {
+		if _, chosen := session.mcp[id]; chosen {
+			session.mcp = maps.Clone(session.mcp)
+			delete(session.mcp, id)
+		}
+	}
+	return nil
 }
 
 func (s *Store) CreateSecretStore(ctx context.Context, secrets store.SecretStore) (store.SecretStore, error) {

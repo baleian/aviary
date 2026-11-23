@@ -9,12 +9,162 @@
 //   await ctx.say(text)                     message.delta events
 //   await ctx.plan([[content, status]...])  a plan.update event
 //   await ctx.tool({...})                   a tool call, with approval if the agent asks
+//   await ctx.mcp(server, tool, {...})      a call of a tool of an MCP server
+//   ctx.servers                             the MCP servers of the turn
 //   ctx.fail(reason, message)               ends the turn as failed
 
 const quote = (text) =>
   text.length > 140 ? text.slice(0, 139).trimEnd() + "…" : text;
 
+const hostOf = (server) => new URL(server.url).hostname;
+
+// tools tells which MCP servers the turn has, and their tools.
+async function tools(ctx) {
+  await ctx.think("The question is what I can use in this session.");
+  if (!ctx.servers.length) {
+    await ctx.say(
+      "This session has no MCP servers, so I have the tools of the harness only: reading and changing files, and running commands in the workspace.",
+    );
+    return;
+  }
+  const lines = ctx.servers.map(
+    (server) =>
+      `- **${server.name || server.slug}** (\`${server.slug}\`): ` +
+      (server.tools ?? []).map((tool) => `\`${tool.name}\``).join(", "),
+  );
+  await ctx.say(
+    "Besides the tools of the harness, this session gives me these MCP servers:\n\n" +
+      lines.join("\n") +
+      "\n\nAsk me to look something up in one of them.",
+  );
+}
+
+// What the agents of the mock look up in an MCP server, by its host: the
+// words of a request that call for it, and the calls that they make.
+const USES = [
+  {
+    host: "tracker.example.com",
+    found:
+      "three open checkout issues. #482, the total that is off by one cent, is the one that customers see.",
+    what: "the issue tracker",
+    words: /\b(issues?|tickets?|bugs?)\b/i,
+    async run(ctx, server) {
+      await ctx.mcp(server, "search_issues", {
+        input: { query: "checkout", state: "open", limit: 3 },
+        output:
+          "#482 Checkout total is off by one cent with two coupons (open, bug, checkout)\n" +
+          "#471 Expired coupon still applied on CI (open, flaky-test)\n" +
+          "#455 Checkout session times out after 30 minutes (open, checkout)\n",
+      });
+      if (!/\b(create|file|open|report|write)\b/i.test(ctx.turn.text)) return;
+      await ctx.mcp(server, "create_issue", {
+        asks: true,
+        input: {
+          project: "storefront",
+          title: "Checkout webhooks fail without a retry",
+          labels: ["bug", "webhooks"],
+        },
+        output: "Created issue #493: Checkout webhooks fail without a retry",
+      });
+    },
+  },
+  {
+    host: "errors.example.com",
+    found:
+      "three unresolved error groups. STOREFRONT-1F2 is the busiest, with 412 events in the last hour.",
+    what: "the error monitor",
+    words: /\b(errors?|exceptions?|crash(es)?|5\d\ds?)\b/i,
+    async run(ctx, server) {
+      await ctx.mcp(server, "list_issues", {
+        input: { project: "storefront", query: "is:unresolved", limit: 3 },
+        output:
+          "STOREFRONT-1F2  TypeError: Cannot read properties of undefined (reading 'total')  412 events, last 6 min ago\n" +
+          "STOREFRONT-1E9  WebhookTimeout: POST https://hooks.example.com timed out  88 events, last 1 h ago\n" +
+          "STOREFRONT-1C4  RangeError: Invalid time value  9 events, last 5 h ago\n",
+      });
+    },
+  },
+  {
+    host: "docs.example.com",
+    found:
+      "three pages. *Webhooks › Retries* describes what the sender does today.",
+    what: "the documentation",
+    words: /\b(docs?|documentation|guides?)\b/i,
+    async run(ctx, server) {
+      await ctx.mcp(server, "search_docs", {
+        input: { query: quote(ctx.turn.text) },
+        output:
+          "Webhooks › Retries — /webhooks/retries\nWebhooks › Signing payloads — /webhooks/signing\nCheckout › Coupons — /checkout/coupons\n",
+      });
+    },
+  },
+  {
+    host: "git.example.com",
+    found:
+      "two open pull requests. #211 adds the retry with backoff to the webhook sender.",
+    what: "the code host",
+    words: /\b(pull requests?|prs?|reviews?|branch(es)?)\b/i,
+    async run(ctx, server) {
+      await ctx.mcp(server, "list_pull_requests", {
+        input: { repository: "shop/storefront", state: "open" },
+        output:
+          "#211 Add retry with backoff to the webhook sender (retry-backoff → main)\n#207 Round prices per line (price-rounding → main)\n",
+      });
+    },
+  },
+  {
+    host: "catalog.data.svc.cluster.local",
+    found: "three tables in the `analytics` schema.",
+    what: "the warehouse catalog",
+    words: /\b(tables?|columns?|schemas?|warehouse)\b/i,
+    async run(ctx, server) {
+      await ctx.mcp(server, "list_tables", {
+        input: { schema: "analytics" },
+        output: "analytics.orders\nanalytics.order_lines\nanalytics.sessions\n",
+      });
+    },
+  },
+];
+
+// lookUp uses the MCP servers that a request calls for, if the turn has them.
+// It reports whether the request called for one.
+async function lookUp(ctx) {
+  const wanted = USES.filter((use) => use.words.test(ctx.turn.text));
+  if (!wanted.length) return false;
+  const usable = wanted
+    .map((use) => [
+      use,
+      ctx.servers.find((server) => hostOf(server) === use.host),
+    ])
+    .filter(([, server]) => server);
+  if (!usable.length) {
+    await ctx.think(
+      `The request needs ${wanted[0].what}, and no tool of this session reaches it.`,
+    );
+    await ctx.say(
+      `I have no tool that reaches ${wanted[0].what} in this session. Turn on an MCP server for it, and ask me again.`,
+    );
+    return true;
+  }
+  await ctx.think(
+    `The request needs ${usable.map(([use]) => use.what).join(" and ")}. I will look there first.`,
+  );
+  for (const [use, server] of usable) await use.run(ctx, server);
+  await ctx.say(
+    "Here is what I found:\n\n" +
+      usable
+        .map(
+          ([use, server]) =>
+            `- **${server.name || server.slug}**: ${use.found}`,
+        )
+        .join("\n") +
+      "\n\nTell me which one to work on, and I will take it from there.",
+  );
+  return true;
+}
+
 async function answer(ctx) {
+  if (/\btools?\b/i.test(ctx.turn.text)) return tools(ctx);
   await ctx.think("A short question. No tools are needed for this.");
   await ctx.say(
     `You said: “${quote(ctx.turn.text)}”\n\n` +
@@ -40,6 +190,7 @@ const TESTS =
 // work looks around, changes a file and runs the tests. If the agent asks
 // before it acts, the change and the command each wait for approval.
 async function work(ctx) {
+  if (await lookUp(ctx)) return;
   const note = `- ${new Date().toISOString().slice(0, 10)}: ${quote(ctx.turn.text)}`;
   await ctx.think(
     `The request: “${quote(ctx.turn.text)}”. I will look at the repository before I change anything.`,

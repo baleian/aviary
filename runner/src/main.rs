@@ -12,10 +12,18 @@
 //! agent cannot answer its own approval requests.
 //!
 //! The harness is started for the first turn and kept for the turns after it,
-//! until a turn has another approval mode, environment or instructions: that
-//! turn gets a new harness. The runner stores the harness session ID in the
-//! home, which outlives the pod, so a new harness and the runner in the
-//! session's next pod resume the same session.
+//! until a turn has another approval mode, environment, instructions or set of
+//! MCP servers: that turn gets a new harness. The runner stores the harness
+//! session ID in the home, which outlives the pod, so a new harness and the
+//! runner in the session's next pod resume the same session.
+//!
+//! A harness reaches its MCP servers through the Egress Proxy, as it reaches
+//! its model: every request carries the session token, and names its server
+//! by ID in the `x-aviary-mcp` header. A server of a transport that the
+//! harness does not support is left out, and every turn of the harness names
+//! it in an `mcp.unsupported` event. The calls of a server's tools name the
+//! server and the tool in `mcp`, if the image says how the harness titles
+//! them.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -34,10 +42,11 @@ use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
     CancelNotification, ClientCapabilities, ClientSessionCapabilities, ContentBlock, ContentChunk,
-    InitializeRequest, NewSessionRequest, NoticeCapabilities, PermissionOptionKind, PromptRequest,
+    HttpHeader, InitializeRequest, McpCapabilities, McpServer, McpServerHttp, McpServerSse,
+    NewSessionRequest, NoticeCapabilities, PermissionOptionKind, PromptRequest,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     ResumeSessionRequest, SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate,
-    TextContent, ToolCallUpdate,
+    TextContent, ToolCallContent, ToolCallStatus, ToolCallUpdate,
 };
 use agent_client_protocol::{AcpAgent, Agent, ByteStreams, Client, Responder, V1};
 use axum::extract::connect_info::Connected;
@@ -62,7 +71,14 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 const HARNESS_COMMAND: &str = "AVIARY_HARNESS_COMMAND";
 const MAX_TOOL_OUTPUT: &str = "AVIARY_MAX_TOOL_OUTPUT_BYTES";
 const INSTRUCTIONS_FILE: &str = "AVIARY_INSTRUCTIONS_FILE";
+const MCP_TOOL_TITLE: &str = "AVIARY_MCP_TOOL_TITLE";
+const MCP_SERVERS: &str = "AVIARY_MCP_SERVERS";
 const ADDRESS: &str = "AVIARY_RUNNER_ADDRESS";
+/// The session token, by which the Egress Proxy knows the turn.
+const TOKEN: &str = "AVIARY_LLM_API_KEY";
+
+/// The header that names the MCP server of a request to the Egress Proxy.
+const MCP_SERVER_HEADER: &str = "x-aviary-mcp";
 
 /// The listen address if `AVIARY_RUNNER_ADDRESS` is not set.
 const LISTENS: &str = "0.0.0.0:8700";
@@ -73,6 +89,10 @@ const FAILED: &str = "failed";
 
 const REQUESTED: &str = "approval.requested";
 const RESOLVED: &str = "approval.resolved";
+
+/// Names the MCP servers of a turn whose transport the harness does not
+/// support.
+const UNSUPPORTED: &str = "mcp.unsupported";
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Not the current-thread runtime: on it, waiting for the harness process
@@ -201,6 +221,23 @@ struct Start {
     /// turn that has others gets a new harness.
     #[serde(default)]
     environment: BTreeMap<String, String>,
+    /// The MCP servers that the harness can use. A harness keeps those that
+    /// it started with too.
+    #[serde(default)]
+    mcp_servers: Vec<Mcp>,
+}
+
+/// An MCP server of a turn.
+#[derive(Deserialize, Clone, PartialEq)]
+struct Mcp {
+    /// Names the server to the Egress Proxy.
+    id: String,
+    /// Names the server, and its tools, to the harness.
+    name: String,
+    /// "http" for Streamable HTTP, or "sse".
+    transport: String,
+    /// The server's address at the Egress Proxy.
+    url: String,
 }
 
 /// The request body that answers an approval request.
@@ -433,9 +470,9 @@ async fn run_turns(runner: &Arc<Runner>, mut orders: mpsc::UnboundedReceiver<Ord
 }
 
 /// Starts a harness and runs turns on it, beginning with `first`, until the
-/// harness exits or a turn fails. A turn whose approval mode, environment or
-/// instructions differ from those of `first` is returned instead of run, since
-/// the harness may have them only from its start.
+/// harness exits or a turn fails. A turn whose approval mode, environment,
+/// instructions or MCP servers differ from those of `first` is returned
+/// instead of run, since the harness may have them only from its start.
 async fn run_harness(
     runner: &Arc<Runner>,
     first: Order,
@@ -447,6 +484,11 @@ async fn run_harness(
         *session = remembered()?;
     }
     instruct(&first.start.instructions)?;
+    let token = if first.start.mcp_servers.is_empty() {
+        String::new()
+    } else {
+        variable(TOKEN)?
+    };
     // Spawned here rather than by AcpAgent, to notice a harness that exits
     // between turns.
     let command = variable(HARNESS_COMMAND)?;
@@ -457,6 +499,8 @@ async fn run_harness(
         .args(command.arguments())
         .envs(command.environment())
         .envs(&first.start.environment)
+        // For an image that sets the harness up for each server.
+        .env(MCP_SERVERS, server_names(&first.start.mcp_servers))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .kill_on_drop(true)
@@ -479,6 +523,11 @@ async fn run_harness(
     let asks = first.start.approval == "ask";
     let environment = first.start.environment.clone();
     let instructions = first.start.instructions.clone();
+    let mcp_servers = first.start.mcp_servers.clone();
+    let titles = Arc::new(McpTitles::new(
+        &env::var(MCP_TOOL_TITLE).unwrap_or_default(),
+        &mcp_servers,
+    ));
     // The turn that needs a new harness.
     let mut left = None;
     // Set when session/resume fails.
@@ -494,6 +543,7 @@ async fn run_harness(
         .on_receive_notification(
             {
                 let runner = runner.clone();
+                let titles = titles.clone();
                 async move |notification: SessionNotification, _| {
                     match notification.update {
                         // Live information from the harness, such as a
@@ -511,7 +561,10 @@ async fn run_harness(
                             );
                         }
                         update => {
-                            if let Some((name, data)) = event(update, longest) {
+                            if let Some((name, mut data)) = event(update, longest) {
+                                if name == "tool.call" || name == "tool.update" {
+                                    titles.mark(&mut data);
+                                }
                                 runner.emit(name, &data);
                             }
                         }
@@ -537,17 +590,43 @@ async fn run_harness(
             // A harness that cannot send notices may put them in the agent's
             // messages instead.
             let notices = ClientSessionCapabilities::new().notices(NoticeCapabilities::new());
-            harness
+            let initialized = harness
                 .send_request(
                     InitializeRequest::new(ProtocolVersion::V1)
                         .client_capabilities(ClientCapabilities::new().session(notices)),
                 )
                 .block_task()
                 .await?;
+            let takes = &initialized.agent_capabilities.mcp_capabilities;
+            let (supported, unsupported): (Vec<&Mcp>, Vec<&Mcp>) = mcp_servers
+                .iter()
+                .partition(|server| supports(takes, server));
+            let servers = supported
+                .into_iter()
+                .map(|server| given(server, &token))
+                .collect();
+            for server in &unsupported {
+                eprintln!(
+                    "leaving out MCP server {}: the harness does not support {}",
+                    server.name, server.transport
+                );
+            }
+            // Every turn of the harness goes without them, and says so.
+            let unsupported = (!unsupported.is_empty()).then(|| {
+                let servers: Vec<Value> = unsupported
+                    .iter()
+                    .map(|server| {
+                        json!({"id": server.id, "name": server.name, "transport": server.transport})
+                    })
+                    .collect();
+                json!({ "servers": servers })
+            });
             let session_id = match session.clone() {
                 Some(session_id) => {
                     harness
-                        .send_request(ResumeSessionRequest::new(session_id.clone(), cwd))
+                        .send_request(
+                            ResumeSessionRequest::new(session_id.clone(), cwd).mcp_servers(servers),
+                        )
                         .block_task()
                         .await
                         .inspect_err(|_| forgotten.set(true))?;
@@ -555,7 +634,7 @@ async fn run_harness(
                 }
                 None => {
                     let session_id = harness
-                        .send_request(NewSessionRequest::new(cwd))
+                        .send_request(NewSessionRequest::new(cwd).mcp_servers(servers))
                         .block_task()
                         .await?
                         .session_id;
@@ -587,6 +666,7 @@ async fn run_harness(
                 if (start.approval == "ask") != asks
                     || start.environment != environment
                     || start.instructions != instructions
+                    || start.mcp_servers != mcp_servers
                 {
                     left = Some(Order { start, told });
                     return Ok(());
@@ -600,6 +680,9 @@ async fn run_harness(
                     "started",
                     &json!({"harness_session_id": session_id.to_string()}),
                 );
+                if let Some(unsupported) = &unsupported {
+                    runner.emit(UNSUPPORTED, unsupported);
+                }
                 // A turn cancelled before its prompt is sent is never sent: a
                 // harness may fail if it is cancelled just as it receives the
                 // prompt.
@@ -671,7 +754,9 @@ async fn run_harness(
                             }
                             requests += 1;
                             let id = requests.to_string();
-                            runner.emit(REQUESTED, &requested(&id, &request, longest));
+                            let mut data = requested(&id, &request, longest);
+                            titles.mark(&mut data["tool_call"]);
+                            runner.emit(REQUESTED, &data);
                             waiting.push(Asked { id, request, responder });
                         }
                     }
@@ -726,6 +811,88 @@ fn instruct(instructions: &str) -> Result<(), Failure> {
         fs::create_dir_all(directory).map_err(Failure::runner)?;
     }
     fs::write(file, instructions).map_err(Failure::runner)
+}
+
+/// Returns the names of the MCP servers, separated by spaces.
+fn server_names(servers: &[Mcp]) -> String {
+    let names: Vec<&str> = servers.iter().map(|server| server.name.as_str()).collect();
+    names.join(" ")
+}
+
+/// Reports whether the harness supports the transport of the MCP server, as
+/// it says in its response to `initialize`.
+fn supports(takes: &McpCapabilities, server: &Mcp) -> bool {
+    match server.transport.as_str() {
+        "http" => takes.http,
+        "sse" => takes.sse,
+        _ => false,
+    }
+}
+
+/// Returns the MCP server as the harness takes it, with the session token and
+/// the server's ID in every request.
+fn given(server: &Mcp, token: &str) -> McpServer {
+    let headers = vec![
+        HttpHeader::new("authorization", format!("Bearer {token}")),
+        HttpHeader::new(MCP_SERVER_HEADER, &server.id),
+    ];
+    if server.transport == "sse" {
+        McpServer::Sse(McpServerSse::new(&server.name, &server.url).headers(headers))
+    } else {
+        McpServer::Http(McpServerHttp::new(&server.name, &server.url).headers(headers))
+    }
+}
+
+/// Tells the calls of the tools of MCP servers from those of the harness's
+/// own tools, by their titles. The image gives the form of such a title in
+/// `AVIARY_MCP_TOOL_TITLE`, with `{server}` and `{tool}` in place of the
+/// server's name and the tool's, such as `{server}: {tool}`.
+#[derive(Default)]
+struct McpTitles(Vec<McpTitle>);
+
+/// The title of a call of a tool of a server, around the tool's name.
+struct McpTitle {
+    id: String,
+    name: String,
+    before: String,
+    after: String,
+}
+
+impl McpTitles {
+    fn new(form: &str, servers: &[Mcp]) -> Self {
+        let Some((before, after)) = form.split_once("{tool}") else {
+            return Self::default();
+        };
+        Self(
+            servers
+                .iter()
+                .map(|server| McpTitle {
+                    id: server.id.clone(),
+                    name: server.name.clone(),
+                    before: before.replace("{server}", &server.name),
+                    after: after.replace("{server}", &server.name),
+                })
+                .collect(),
+        )
+    }
+
+    /// Adds `mcp` to the data of a tool call whose title is that of a tool
+    /// of an MCP server: the server's ID and name, and the tool's name.
+    fn mark(&self, call: &mut Value) {
+        let Some(title) = call.get("title").and_then(Value::as_str) else {
+            return;
+        };
+        let found = self.0.iter().find_map(|server| {
+            let tool = title
+                .strip_prefix(&server.before)?
+                .strip_suffix(&server.after)?;
+            (!tool.is_empty())
+                .then(|| json!({"server": server.id, "slug": server.name, "tool": tool}))
+        });
+        if let Some(mcp) = found {
+            call["mcp"] = mcp;
+        }
+    }
 }
 
 fn session_file() -> Result<PathBuf, Failure> {
@@ -785,7 +952,12 @@ fn event(update: SessionUpdate, longest: Option<usize>) -> Option<(&'static str,
                 ("kind", Some(json!(name(&call.kind)))),
                 ("status", Some(json!(name(&call.status)))),
                 ("input", call.raw_input.map(cut)),
-                ("output", call.raw_output.map(cut)),
+                (
+                    "output",
+                    call.raw_output
+                        .or_else(|| failure(Some(call.status), Some(&call.content)))
+                        .map(cut),
+                ),
                 ("meta", call.meta.map(Value::Object).map(cut)),
             ]),
         )),
@@ -832,9 +1004,35 @@ fn tool_update(update: ToolCallUpdate, longest: Option<usize>) -> Value {
             update.fields.status.as_ref().map(name).map(Value::from),
         ),
         ("input", update.fields.raw_input.map(cut)),
-        ("output", update.fields.raw_output.map(cut)),
+        (
+            "output",
+            update
+                .fields
+                .raw_output
+                .or_else(|| failure(update.fields.status, update.fields.content.as_deref()))
+                .map(cut),
+        ),
         ("meta", update.meta.map(Value::Object).map(cut)),
     ])
+}
+
+/// Returns the text of the content of a tool call that failed, as its
+/// output: a harness may say why a call failed only there.
+fn failure(status: Option<ToolCallStatus>, content: Option<&[ToolCallContent]>) -> Option<Value> {
+    if status != Some(ToolCallStatus::Failed) {
+        return None;
+    }
+    let text: Vec<&str> = content?
+        .iter()
+        .filter_map(|piece| match piece {
+            ToolCallContent::Content(piece) => match &piece.content {
+                ContentBlock::Text(text) => Some(text.text.as_str()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    (!text.is_empty()).then(|| json!(text.join("\n")))
 }
 
 /// An approval request that waits for an answer.
@@ -1074,6 +1272,48 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_tool_call_says_why_in_its_output() {
+        let said =
+            json!([{"type": "content", "content": {"type": "text", "text": "the server refused"}}]);
+        let failed = update(json!({
+            "sessionUpdate": "tool_call", "toolCallId": "t1", "title": "start", "kind": "other",
+            "status": "failed", "content": said,
+        }));
+        assert_eq!(
+            event(failed, None),
+            Some((
+                "tool.call",
+                json!({
+                    "id": "t1", "title": "start", "kind": "other", "status": "failed",
+                    "output": "the server refused",
+                })
+            ))
+        );
+        let ended = update(json!({
+            "sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "failed", "content": said,
+        }));
+        assert_eq!(
+            event(ended, None),
+            Some((
+                "tool.update",
+                json!({"id": "t1", "status": "failed", "output": "the server refused"})
+            ))
+        );
+        // The content of a call that has not failed, and the content of one
+        // with raw output, are not its output.
+        for kept in [
+            json!({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "in_progress", "content": said}),
+            json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "failed", "content": said,
+                "rawOutput": {"exit_code": 1},
+            }),
+        ] {
+            let made = event(update(kept.clone()), None).unwrap().1;
+            assert_eq!(made["output"], kept["rawOutput"], "{kept}");
+        }
+    }
+
+    #[test]
     fn the_plan_is_an_event() {
         let plan = update(json!({
             "sessionUpdate": "plan",
@@ -1133,6 +1373,51 @@ mod tests {
             resolved("3", "cancelled", None),
             json!({"id": "3", "outcome": "cancelled"})
         );
+    }
+
+    #[test]
+    fn calls_of_mcp_tools_name_their_server_and_tool() {
+        let servers: Vec<Mcp> = serde_json::from_value(json!([
+            {"id": "1", "name": "tracker", "transport": "http", "url": "http://proxy/mcp"},
+            {"id": "2", "name": "tracker-two", "transport": "sse", "url": "http://proxy/sse"},
+        ]))
+        .expect("parse servers");
+        // Returns what is added to a call with the title.
+        let marked = |form: &str, title: &str| {
+            let mut call = json!({"id": "t1", "title": title});
+            McpTitles::new(form, &servers).mark(&mut call);
+            call.get("mcp").cloned()
+        };
+        let mcp = |server: &str, slug: &str, tool: &str| {
+            Some(json!({"server": server, "slug": slug, "tool": tool}))
+        };
+        assert_eq!(
+            marked("{server}: {tool}", "tracker: search_issues"),
+            mcp("1", "tracker", "search_issues")
+        );
+        assert_eq!(
+            marked("mcp.{server}.{tool}", "mcp.tracker-two.search"),
+            mcp("2", "tracker-two", "search")
+        );
+        assert_eq!(
+            marked("{server}_{tool}", "tracker_list_issues"),
+            mcp("1", "tracker", "list_issues")
+        );
+        // A server whose name begins with that of another.
+        assert_eq!(
+            marked("{server}_{tool}", "tracker-two_search"),
+            mcp("2", "tracker-two", "search")
+        );
+        // The harness's own tools, and an image that gives no form.
+        for (form, title) in [
+            ("{server}: {tool}", "cat notes.txt"),
+            ("{server}: {tool}", "tracker: "),
+            ("mcp.{server}.{tool}", "mcp.docs.search"),
+            ("{server}", "tracker"),
+            ("", "tracker: search"),
+        ] {
+            assert_eq!(marked(form, title), None, "form {form:?}, title {title:?}");
+        }
     }
 
     #[test]

@@ -8,12 +8,13 @@ what needs a cluster.
 | --- | --- | --- | --- |
 | Lint | `make lint` | gofmt, go vet, rustfmt, clippy, the Go code generator, and for `web/` Prettier, oxlint and the TypeScript compiler. | The code is formatted, the linters pass, and the generated code is up to date. |
 | Unit and component | `make test` | Each part on its own, with the test playing what it talks to. | What each part does: the Supervisor, the runner, the chart, the Egress Proxy, the mock model server, the code in `web/` and the server of the web UI's image. |
-| Harness | `make test-harness` | The harness images in containers, each with the runner, against the mock model server. The tests are in `runner/tests/harness.rs`. | A harness and the runner work together: sessions, tools, cancellation, failures, what the agent installs, and what the harness requests from outside. |
-| e2e | `make e2e` | Aviary as the chart installs it, in a kind cluster that the run creates and deletes. The tests are in `test/e2e/`. | The parts work together: a turn from the API to its session's sandbox and back, sessions that sleep and wake, what a sandbox can reach through the Egress Proxy, ending a session, losing a sandbox, and turns while the Supervisors are replaced. |
+| Harness | `make test-harness` | The harness images in containers, each with the runner, against the mock model server. The tests are in `runner/tests/harness.rs`. | A harness and the runner work together: sessions, tools, the tools of MCP servers, cancellation, failures, what the agent installs, and what the harness requests from outside. |
+| e2e | `make e2e` | Aviary as the chart installs it, in a kind cluster that the run creates and deletes. The tests are in `test/e2e/`. | The parts work together: a turn from the API to its session's sandbox and back, sessions that sleep and wake, what a sandbox can reach through the Egress Proxy, the tools of MCP servers, ending a session, losing a sandbox, and turns while the Supervisors are replaced. |
 
 No test needs a model. The mock model server in `test/mock-llm` follows a
 script: each message to a session is an instruction, such as `say done` or
-`run ls`.
+`run ls`. It is also the MCP server of the tests, whose tool a message calls
+with `use`.
 
 ## `make test`
 

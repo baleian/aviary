@@ -27,6 +27,11 @@ type Agent struct {
 	DeletedAt    *time.Time
 }
 
+type AgentMcpServer struct {
+	AgentID     key.ID
+	McpServerID key.ID
+}
+
 type Approval struct {
 	TurnID      key.ID
 	ID          string
@@ -37,6 +42,20 @@ type Approval struct {
 	AnsweredBy  *key.ID
 	Outcome     *string
 	ResolvedAt  *time.Time
+}
+
+type McpServer struct {
+	ID            key.ID
+	ProjectID     key.ID
+	Slug          string
+	Name          string
+	Url           string
+	Transport     string
+	Headers       *json.RawMessage
+	Tools         *json.RawMessage
+	ToolsListedAt *time.Time
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 type Project struct {

@@ -13,6 +13,8 @@ import { Icon, Use } from "../../ui/Icon.tsx";
 import type { IconName } from "../../ui/icons.ts";
 import { person } from "../../ui/who.ts";
 import type { Barred, Compose } from "./compose.ts";
+import { McpButton } from "./Mcp.tsx";
+import type { McpChoice } from "./servers.ts";
 
 // What the bar of the composer says while a turn has not ended.
 const DOING: Record<string, string> = {
@@ -24,16 +26,21 @@ const DOING: Record<string, string> = {
 
 // Composer is the box in which a message is written and sent. While a turn
 // of the session has not ended it says what the turn is doing, and a caller
-// who may can stop it.
+// who may can stop it. The MCP servers of the session are turned on and off
+// from it, if the project has any.
 export function Composer({
+  context,
   agent,
   compose,
+  mcp,
   turn,
   onSend,
   onStop,
 }: {
+  context: ProjectContext;
   agent: Agent;
   compose: Compose;
+  mcp: McpChoice;
   // The turn of the session that has not ended, if there is one.
   turn?: Turn;
   onSend: () => void;
@@ -92,6 +99,9 @@ export function Composer({
         onKeyDown={keyed}
       />
       <div className="bar">
+        {context.mcpServers.length > 0 && (
+          <McpButton context={context} choice={mcp} />
+        )}
         {cooldown > 0 ? (
           <>
             <Icon name="warn" />

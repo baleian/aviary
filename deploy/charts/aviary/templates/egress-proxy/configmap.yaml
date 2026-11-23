@@ -61,10 +61,18 @@ data:
                     # them from the answers of a model endpoint.
                     local_reply_config:
                       mappers:
+                        # A request that the Supervisor refuses keeps the
+                        # reason that it gives, whatever its status.
+                        - filter:
+                            response_flag_filter:
+                              flags: [UAEX]
+                          headers_to_add:
+                            - header: {key: x-aviary-proxy, value: "true"}
                         {{- if not $allowAny }}
                         # Explains the 403 with which the RBAC filter refuses
-                        # an endpoint whose host is not allowed. Envoy replies
-                        # 403 for nothing else on this listener.
+                        # an endpoint, of a model or an MCP server, whose host
+                        # is not allowed. Envoy itself replies 403 for nothing
+                        # else on this listener.
                         - filter:
                             status_code_filter:
                               comparison:
@@ -73,7 +81,7 @@ data:
                           headers_to_add:
                             - header: {key: x-aviary-proxy, value: "true"}
                           body:
-                            inline_string: "the host of the model endpoint is not in egressProxy.allowedHosts\n"
+                            inline_string: "the host of the endpoint is not in egressProxy.allowedHosts\n"
                         {{- end }}
                         - filter:
                             status_code_filter:

@@ -84,6 +84,14 @@ it("keeps the plan where it began, as it last stood", () => {
   ]);
 });
 
+it("names the MCP servers that the harness does not support", () => {
+  const servers = [{ id: "m1", name: "docs", transport: "sse" }];
+  expect(said(["mcp.unsupported", { servers }], piece("Hello."))).toEqual([
+    { type: "mcp_unsupported", servers },
+    { type: "message", text: "Hello." },
+  ]);
+});
+
 it("puts how a request for approval ended into the request", () => {
   const options = [{ id: "once", name: "Allow once", kind: "allow_once" }];
   const items = said(

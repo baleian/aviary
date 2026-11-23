@@ -15,6 +15,20 @@ import (
 	"aviary/supervisor/store/mysql/internal/key"
 )
 
+const addAgentMcpServer = `-- name: AddAgentMcpServer :exec
+insert into agent_mcp_servers (agent_id, mcp_server_id) values (?, ?)
+`
+
+type AddAgentMcpServerParams struct {
+	AgentID     key.ID
+	McpServerID key.ID
+}
+
+func (q *Queries) AddAgentMcpServer(ctx context.Context, arg AddAgentMcpServerParams) error {
+	_, err := q.db.ExecContext(ctx, addAgentMcpServer, arg.AgentID, arg.McpServerID)
+	return err
+}
+
 const addApproval = `-- name: AddApproval :exec
 insert into approvals (turn_id, id, request) values (?, ?, ?)
 on duplicate key update turn_id = turn_id
@@ -64,6 +78,21 @@ func (q *Queries) AddMember(ctx context.Context, arg AddMemberParams) (int64, er
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const addSessionMcpServer = `-- name: AddSessionMcpServer :exec
+insert into session_mcp_servers (session_id, mcp_server_id, enabled) values (?, ?, ?)
+`
+
+type AddSessionMcpServerParams struct {
+	SessionID   key.ID
+	McpServerID key.ID
+	Enabled     bool
+}
+
+func (q *Queries) AddSessionMcpServer(ctx context.Context, arg AddSessionMcpServerParams) error {
+	_, err := q.db.ExecContext(ctx, addSessionMcpServer, arg.SessionID, arg.McpServerID, arg.Enabled)
+	return err
 }
 
 const addTurnItem = `-- name: AddTurnItem :exec
@@ -188,6 +217,38 @@ func (q *Queries) ClaimMembers(ctx context.Context, username *string) error {
 	return err
 }
 
+const clearAgentMcpServers = `-- name: ClearAgentMcpServers :exec
+delete from agent_mcp_servers where agent_id = ?
+`
+
+func (q *Queries) ClearAgentMcpServers(ctx context.Context, agentID key.ID) error {
+	_, err := q.db.ExecContext(ctx, clearAgentMcpServers, agentID)
+	return err
+}
+
+const clearSessionMcpServer = `-- name: ClearSessionMcpServer :exec
+delete from session_mcp_servers where session_id = ? and mcp_server_id = ?
+`
+
+type ClearSessionMcpServerParams struct {
+	SessionID   key.ID
+	McpServerID key.ID
+}
+
+func (q *Queries) ClearSessionMcpServer(ctx context.Context, arg ClearSessionMcpServerParams) error {
+	_, err := q.db.ExecContext(ctx, clearSessionMcpServer, arg.SessionID, arg.McpServerID)
+	return err
+}
+
+const clearSessionMcpServers = `-- name: ClearSessionMcpServers :exec
+delete from session_mcp_servers where session_id = ?
+`
+
+func (q *Queries) ClearSessionMcpServers(ctx context.Context, sessionID key.ID) error {
+	_, err := q.db.ExecContext(ctx, clearSessionMcpServers, sessionID)
+	return err
+}
+
 const countQueuedTurns = `-- name: CountQueuedTurns :one
 select count(*) from turns where state = 'queued'
 `
@@ -277,6 +338,43 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (int64
 		arg.Approval,
 		arg.ProviderID,
 		arg.Model,
+		arg.ProjectID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const createMcpServer = `-- name: CreateMcpServer :execrows
+insert into mcp_servers (id, project_id, slug, name, url, transport, headers, tools, tools_listed_at)
+select ?, projects.id, ?, ?, ?, ?, ?,
+       ?, ?
+from projects where projects.id = ?
+`
+
+type CreateMcpServerParams struct {
+	ID            key.ID
+	Slug          string
+	Name          string
+	Url           string
+	Transport     string
+	Headers       *json.RawMessage
+	Tools         *json.RawMessage
+	ToolsListedAt *time.Time
+	ProjectID     key.ID
+}
+
+func (q *Queries) CreateMcpServer(ctx context.Context, arg CreateMcpServerParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, createMcpServer,
+		arg.ID,
+		arg.Slug,
+		arg.Name,
+		arg.Url,
+		arg.Transport,
+		arg.Headers,
+		arg.Tools,
+		arg.ToolsListedAt,
 		arg.ProjectID,
 	)
 	if err != nil {
@@ -444,6 +542,18 @@ update agents set deleted_at = now(6) where id = ?
 func (q *Queries) DeleteAgent(ctx context.Context, id key.ID) error {
 	_, err := q.db.ExecContext(ctx, deleteAgent, id)
 	return err
+}
+
+const deleteMcpServer = `-- name: DeleteMcpServer :execrows
+delete from mcp_servers where id = ?
+`
+
+func (q *Queries) DeleteMcpServer(ctx context.Context, id key.ID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteMcpServer, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const dispatchTurn = `-- name: DispatchTurn :execrows
@@ -702,6 +812,29 @@ func (q *Queries) GetApproval(ctx context.Context, arg GetApprovalParams) (Appro
 	return i, err
 }
 
+const getMcpServer = `-- name: GetMcpServer :one
+select id, project_id, slug, name, url, transport, headers, tools, tools_listed_at, created_at, updated_at from mcp_servers where id = ?
+`
+
+func (q *Queries) GetMcpServer(ctx context.Context, id key.ID) (McpServer, error) {
+	row := q.db.QueryRowContext(ctx, getMcpServer, id)
+	var i McpServer
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Slug,
+		&i.Name,
+		&i.Url,
+		&i.Transport,
+		&i.Headers,
+		&i.Tools,
+		&i.ToolsListedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getMember = `-- name: GetMember :one
 select project_members.id, project_members.project_id, project_members.user_id, project_members.username, project_members.group_name, project_members.role, project_members.permissions, project_members.created_at, project_members.updated_at, project_members.updated_by, users.subject, users.username as user_username, users.display_name, users.created_at as user_created_at
 from project_members left join users on users.id = project_members.user_id
@@ -933,6 +1066,27 @@ func (q *Queries) IsAgentBusy(ctx context.Context, agentID key.ID) (bool, error)
 	return exists, err
 }
 
+const isAgentMcpServer = `-- name: IsAgentMcpServer :one
+select exists (
+    select 1 from sessions join agent_mcp_servers on agent_mcp_servers.agent_id = sessions.agent_id
+    where sessions.id = ? and agent_mcp_servers.mcp_server_id = ?
+)
+`
+
+type IsAgentMcpServerParams struct {
+	SessionID   key.ID
+	McpServerID key.ID
+}
+
+// Reports whether the agent of the session begins its sessions with the
+// server.
+func (q *Queries) IsAgentMcpServer(ctx context.Context, arg IsAgentMcpServerParams) (bool, error) {
+	row := q.db.QueryRowContext(ctx, isAgentMcpServer, arg.SessionID, arg.McpServerID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const isMember = `-- name: IsMember :one
 select exists (
     select 1 from project_members
@@ -964,6 +1118,48 @@ func (q *Queries) IsSessionBusy(ctx context.Context, sessionID key.ID) (bool, er
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const listAgentMcpServers = `-- name: ListAgentMcpServers :many
+select agent_mcp_servers.agent_id, agent_mcp_servers.mcp_server_id
+from agent_mcp_servers join mcp_servers on mcp_servers.id = agent_mcp_servers.mcp_server_id
+where agent_mcp_servers.agent_id in (/*SLICE:agent_ids*/?)
+order by mcp_servers.created_at, mcp_servers.id
+`
+
+// Returns the MCP servers of the agents, in the order of the project's
+// servers.
+func (q *Queries) ListAgentMcpServers(ctx context.Context, agentIds []key.ID) ([]AgentMcpServer, error) {
+	query := listAgentMcpServers
+	var queryParams []interface{}
+	if len(agentIds) > 0 {
+		for _, v := range agentIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:agent_ids*/?", strings.Repeat(",?", len(agentIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:agent_ids*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AgentMcpServer
+	for rows.Next() {
+		var i AgentMcpServer
+		if err := rows.Scan(&i.AgentID, &i.McpServerID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listAgents = `-- name: ListAgents :many
@@ -1056,6 +1252,45 @@ func (q *Queries) ListLastTurns(ctx context.Context, sessionIds []key.ID) ([]Tur
 			&i.ThoughtTokens,
 			&i.CachedReadTokens,
 			&i.CachedWriteTokens,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMcpServers = `-- name: ListMcpServers :many
+select id, project_id, slug, name, url, transport, headers, tools, tools_listed_at, created_at, updated_at from mcp_servers where project_id = ? order by created_at, id
+`
+
+func (q *Queries) ListMcpServers(ctx context.Context, projectID key.ID) ([]McpServer, error) {
+	rows, err := q.db.QueryContext(ctx, listMcpServers, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []McpServer
+	for rows.Next() {
+		var i McpServer
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Slug,
+			&i.Name,
+			&i.Url,
+			&i.Transport,
+			&i.Headers,
+			&i.Tools,
+			&i.ToolsListedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1362,6 +1597,59 @@ func (q *Queries) ListSecretStores(ctx context.Context, projectID key.ID) ([]Sec
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSessionMcpServers = `-- name: ListSessionMcpServers :many
+select sessions.id as session_id, mcp_servers.id as mcp_server_id
+from sessions
+join agents on agents.id = sessions.agent_id
+join mcp_servers on mcp_servers.project_id = agents.project_id
+left join session_mcp_servers chosen on chosen.session_id = sessions.id and chosen.mcp_server_id = mcp_servers.id
+left join agent_mcp_servers bound on bound.agent_id = sessions.agent_id and bound.mcp_server_id = mcp_servers.id
+where sessions.id in (/*SLICE:session_ids*/?) and sessions.ended_at is null
+  and coalesce(chosen.enabled, bound.agent_id is not null)
+order by mcp_servers.created_at, mcp_servers.id
+`
+
+type ListSessionMcpServersRow struct {
+	SessionID   key.ID
+	McpServerID key.ID
+}
+
+// Returns the MCP servers that the next turns of the sessions that have not
+// ended have: those of their agents, but for what each session turned on or
+// off, in the order of the project's servers.
+func (q *Queries) ListSessionMcpServers(ctx context.Context, sessionIds []key.ID) ([]ListSessionMcpServersRow, error) {
+	query := listSessionMcpServers
+	var queryParams []interface{}
+	if len(sessionIds) > 0 {
+		for _, v := range sessionIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:session_ids*/?", strings.Repeat(",?", len(sessionIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:session_ids*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListSessionMcpServersRow
+	for rows.Next() {
+		var i ListSessionMcpServersRow
+		if err := rows.Scan(&i.SessionID, &i.McpServerID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1970,6 +2258,39 @@ func (q *Queries) ReplaceAgent(ctx context.Context, arg ReplaceAgentParams) (int
 	return result.RowsAffected()
 }
 
+const replaceMcpServer = `-- name: ReplaceMcpServer :execrows
+update mcp_servers set name = ?, url = ?, transport = ?,
+       headers = ?, tools = ?, tools_listed_at = ?,
+       updated_at = now(6)
+where id = ?
+`
+
+type ReplaceMcpServerParams struct {
+	Name          string
+	Url           string
+	Transport     string
+	Headers       *json.RawMessage
+	Tools         *json.RawMessage
+	ToolsListedAt *time.Time
+	ID            key.ID
+}
+
+func (q *Queries) ReplaceMcpServer(ctx context.Context, arg ReplaceMcpServerParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, replaceMcpServer,
+		arg.Name,
+		arg.Url,
+		arg.Transport,
+		arg.Headers,
+		arg.Tools,
+		arg.ToolsListedAt,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const replaceProvider = `-- name: ReplaceProvider :execrows
 update providers set name = ?, url = ?, headers = ?,
        api_key = ?,
@@ -2156,6 +2477,25 @@ func (q *Queries) SetFinished(ctx context.Context, arg SetFinishedParams) error 
 		arg.ID,
 	)
 	return err
+}
+
+const setMcpServerTools = `-- name: SetMcpServerTools :execrows
+update mcp_servers set tools = ?, tools_listed_at = ?
+where id = ?
+`
+
+type SetMcpServerToolsParams struct {
+	Tools         *json.RawMessage
+	ToolsListedAt *time.Time
+	ID            key.ID
+}
+
+func (q *Queries) SetMcpServerTools(ctx context.Context, arg SetMcpServerToolsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setMcpServerTools, arg.Tools, arg.ToolsListedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const setMember = `-- name: SetMember :exec

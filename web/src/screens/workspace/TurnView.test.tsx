@@ -3,7 +3,7 @@ import { cleanup, render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 import type { Tinted } from "../../api/queries.ts";
-import type { Agent, Item, Turn } from "../../api/types.ts";
+import type { Agent, Item, McpServer, Turn } from "../../api/types.ts";
 import type { Who } from "../../ui/who.ts";
 import { TurnView } from "./TurnView.tsx";
 
@@ -42,6 +42,7 @@ function show(
   of: Partial<Turn>,
   items: Item[] | null = [],
   more: {
+    servers?: McpServer[];
     waking?: boolean;
     onStop?: () => void;
     onAgain?: (text: string) => void;
@@ -145,7 +146,91 @@ it("groups the tool calls that follow each other, with what came of each", () =>
   const odd = groups[1].querySelector<HTMLElement>(".step")!;
   expect(odd.querySelector(".step-t")!.textContent).toBe("odd");
   expect(odd.querySelector('[title="Did not finish"]')).toBeTruthy();
-  expect(odd.querySelector("use")!.getAttribute("href")).toBe("#i-cube");
+  expect(odd.querySelector("use")!.getAttribute("href")).toBe("#i-wrench");
+});
+
+it("names a tool of an MCP server apart from its server", () => {
+  const servers = [
+    {
+      id: "m1",
+      project_id: "p1",
+      slug: "issue-tracker",
+      name: "Issue tracker",
+      url: "https://tracker.example.com/mcp",
+      transport: "http",
+      created_at: "2026-11-22T09:00:00Z",
+      updated_at: "2026-11-22T09:00:00Z",
+    },
+  ] satisfies McpServer[];
+  const { element } = show(
+    {},
+    [
+      {
+        type: "tool_call",
+        id: "c1",
+        kind: "execute",
+        title: "mcp.issue-tracker.search_issues",
+        status: "completed",
+        input: { command: "search", query: "total" },
+        mcp: { server: "m1", slug: "issue-tracker", tool: "search_issues" },
+      },
+      // A server that the project no longer has goes by its slug.
+      {
+        type: "tool_call",
+        id: "c2",
+        kind: "other",
+        title: "errors_list_issues",
+        status: "completed",
+        mcp: { server: "m2", slug: "errors", tool: "list_issues" },
+      },
+    ],
+    { servers },
+  );
+  const [search, list] = element.querySelectorAll<HTMLElement>(".step");
+  expect(search.querySelector(".step-t")!.textContent).toBe("search_issues");
+  expect(search.querySelector("summary .tag")!.className).toBe("tag srv");
+  expect(search.querySelector("summary .tag")!.textContent).toBe(
+    "Issue tracker",
+  );
+  expect(search.querySelector("use")!.getAttribute("href")).toBe("#i-plug");
+  // What a tool of a server is given is not a command of the workspace.
+  expect(search.querySelector(".cmd")).toBeNull();
+  expect(search.querySelector(".step-f")!.textContent).toContain("search");
+  expect(list.querySelector(".step-t")!.textContent).toBe("list_issues");
+  expect(list.querySelector("summary .tag")!.textContent).toBe("errors");
+});
+
+it("names the MCP servers that the turn ran without", () => {
+  const servers = [
+    {
+      id: "m1",
+      project_id: "p1",
+      slug: "docs",
+      name: "Docs search",
+      url: "https://docs.example.com/sse",
+      transport: "sse",
+      created_at: "2026-11-22T09:00:00Z",
+      updated_at: "2026-11-22T09:00:00Z",
+    },
+  ] satisfies McpServer[];
+  const notice = (
+    left: { id: string; name: string; transport: "sse" | "http" }[],
+  ) =>
+    show({}, [{ type: "mcp_unsupported", servers: left }], {
+      servers,
+    }).element.querySelector(".state")!.textContent;
+  expect(notice([{ id: "m1", name: "docs", transport: "sse" }])).toBe(
+    "Docs search was left out: the codex harness does not support SSE servers.",
+  );
+  // A server that the project no longer has goes by its slug.
+  expect(
+    notice([
+      { id: "m1", name: "docs", transport: "sse" },
+      { id: "m2", name: "tracker", transport: "http" },
+    ]),
+  ).toBe(
+    "Docs search and tracker were left out: the codex harness does not support SSE or Streamable HTTP servers.",
+  );
 });
 
 // steps draws tool calls, and returns the card of each.
@@ -367,6 +452,44 @@ it("leaves a tool call that waits for approval to its request", () => {
     "steps",
     "appr",
   ]);
+});
+
+it("describes a request that names its tool call only by its ID", () => {
+  const servers = [
+    {
+      id: "m1",
+      project_id: "p1",
+      slug: "web",
+      name: "Web search",
+      url: "https://web.example.com/mcp",
+      transport: "http",
+      created_at: "2026-11-22T09:00:00Z",
+      updated_at: "2026-11-22T09:00:00Z",
+    },
+  ] satisfies McpServer[];
+  const { element } = show(
+    { state: "running", ended_at: undefined },
+    [
+      {
+        type: "tool_call",
+        id: "c1",
+        kind: "execute",
+        title: "mcp.web.headers",
+        status: "in_progress",
+        mcp: { server: "m1", slug: "web", tool: "headers" },
+      },
+      {
+        type: "approval",
+        id: "r1",
+        tool_call: { id: "c1", kind: "execute" },
+        options: [],
+      },
+    ],
+    { servers },
+  );
+  const card = element.querySelector(".appr")!;
+  expect(card.querySelector(".cmd span")!.textContent).toBe("headers");
+  expect(card.querySelector(".tag.srv")!.textContent).toBe("Web search");
 });
 
 it("shows a request that waits, and who may answer it", async () => {

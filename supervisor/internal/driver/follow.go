@@ -261,10 +261,15 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 	if kept.State == sandbox.Asleep {
 		return nil, errors.New("the session's sandbox was put to sleep; waking it")
 	}
+	servers, err := d.mcpServers(ctx, turn)
+	if err != nil {
+		return nil, err
+	}
 	// The runner may get the turn even if the request fails.
 	r.give()
 	err = runner.Start(following, turn.ID, sandbox.Turn{
-		Text: turn.Text, Instructions: turn.Instructions, Approval: turn.Approval, Environment: d.environment(turn),
+		Text: turn.Text, Instructions: turn.Instructions, Approval: turn.Approval,
+		Environment: d.environment(turn), McpServers: servers,
 	})
 	if errors.Is(err, sandbox.ErrBusy) {
 		// The runner still runs another turn, which the store does not
@@ -455,6 +460,7 @@ var passed = map[string]bool{
 	"tool.update":        true,
 	"plan.update":        true,
 	"session.update":     true,
+	"mcp.unsupported":    true,
 	"approval.requested": true,
 	"approval.resolved":  true,
 }

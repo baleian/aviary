@@ -5,7 +5,10 @@ import { prefs } from "./lib/prefs.ts";
 import { Access } from "./screens/access/Access.tsx";
 import { Account } from "./screens/Account.tsx";
 import { Agents } from "./screens/agents/Agents.tsx";
-import { Connections } from "./screens/connections/Connections.tsx";
+import { McpServerPage } from "./screens/connections/McpServer.tsx";
+import { McpServers } from "./screens/connections/McpServers.tsx";
+import { Providers } from "./screens/connections/Providers.tsx";
+import { Stores } from "./screens/connections/Stores.tsx";
 import { Overview } from "./screens/Overview.tsx";
 import { Projects } from "./screens/Projects.tsx";
 import { SignIn } from "./screens/SignIn.tsx";
@@ -52,7 +55,10 @@ export function App() {
                 </Suspense>
               }
             />
-            <Route path="connections" element={<Connections />} />
+            <Route path="providers" element={<Providers />} />
+            <Route path="mcp-servers" element={<McpServers />} />
+            <Route path="mcp-servers/:server" element={<McpServerPage />} />
+            <Route path="secret-stores" element={<Stores />} />
             <Route path="access" element={<Access />} />
             <Route path="*" element={<NotFound />} />
           </Route>

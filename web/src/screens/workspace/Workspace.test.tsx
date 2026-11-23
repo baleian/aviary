@@ -34,6 +34,13 @@ const box = () =>
 // bar returns what the composer says below the message.
 const bar = () => document.querySelector(".composer .bar")!;
 
+// said returns the words of the bar, without the button of the MCP servers.
+const said = () => {
+  const words = bar().cloneNode(true) as Element;
+  words.querySelector(".mcp-b")?.remove();
+  return words.textContent;
+};
+
 // pathOf returns the path of the session of the backend engineer with the
 // title.
 async function pathOf(title: string) {
@@ -556,7 +563,7 @@ it("says where a turn that waits is in the queue", async () => {
     );
     const head = document.querySelector(".conv-h .chip")!;
     expect(head.textContent).toBe("Queued");
-    expect(bar().textContent).toBe("QueuedCancel turn");
+    expect(said()).toBe("QueuedCancel turn");
     expect(turn.id).toBeTruthy();
     await user.click(within(shown as HTMLElement).getByText("Cancel"));
     await waitFor(() =>
@@ -681,7 +688,7 @@ it("waits before it sends again when the queue is full", async () => {
     .mockRejectedValueOnce(new ApiError(429, refusal, { "retry-after": "1" }));
   await user.type(box(), "Now?{Enter}");
   await waitFor(() =>
-    expect(bar().textContent).toBe("The queue is full. Try again in 1 s."),
+    expect(said()).toBe("The queue is full. Try again in 1 s."),
   );
   // The message stays, and is not sent before the wait is over.
   expect(box().value).toBe("Now?");
@@ -694,7 +701,7 @@ it("waits before it sends again when the queue is full", async () => {
   post.mockRejectedValueOnce(new ApiError(429, refusal, {}));
   await user.type(box(), "{Enter}");
   await waitFor(() =>
-    expect(bar().textContent).toBe("The queue is full. Try again in 5 s."),
+    expect(said()).toBe("The queue is full. Try again in 5 s."),
   );
   expect(document.querySelectorAll(".turn").length).toBe(0);
 });
@@ -848,7 +855,7 @@ it("says that a turn starts once its session says that it left the queue", async
       expect(turn.querySelector(".chip")!.textContent).toBe("Starting"),
     );
     expect(turn.querySelector(".state")!.textContent).toBe("Starting…");
-    expect(bar().textContent).toBe("Starting…Stop turn");
+    expect(said()).toBe("Starting…Stop turn");
     expect(document.querySelector(".conv-h .chip")!.textContent).toBe(
       "Starting",
     );
@@ -896,7 +903,7 @@ it("answers a request for approval, and the turn goes on", async () => {
   expect(asking.querySelector(".cmd")!.textContent).toBe(
     "$git push origin retry-backoffexecute",
   );
-  expect(bar().textContent).toBe("Waiting for approvalStop turn");
+  expect(said()).toBe("Waiting for approvalStop turn");
   await user.click(within(asking).getByRole("button", { name: "Allow once" }));
   // The harness has its answer, and goes on to the end of the turn.
   await waitFor(() =>
@@ -1163,6 +1170,77 @@ it("tells of the agent beside the start of a new session", async () => {
   expect(rows.get("Approval")).toBe("None");
 });
 
+// servers returns the MCP servers in the details of a session.
+const servers = () =>
+  [...document.querySelectorAll<HTMLElement>(".details .r-s")].find((part) =>
+    part.querySelector("h4")?.textContent?.startsWith("MCP servers"),
+  )!;
+
+it("begins a session with the MCP servers chosen before its first message", async () => {
+  const user = open("/p/storefront/agents/backend-engineer", "alice");
+  const button = await screen.findByRole("button", { name: "MCP servers" });
+  // A new session begins with the servers of its agent.
+  expect(button.textContent).toBe("5");
+  await user.click(button);
+  await user.type(
+    screen.getByRole("textbox", { name: "Find an MCP server" }),
+    "docs",
+  );
+  await user.click(screen.getByRole("checkbox", { name: "Docs search" }));
+  expect(button.textContent).toBe("6");
+  expect(
+    screen.getByRole("menuitem", { name: "Use the agent's servers" }),
+  ).toBeTruthy();
+  await user.keyboard("{Escape}");
+  await user.type(
+    screen.getByRole("textbox", { name: "Message" }),
+    "What tools do you have?{Enter}",
+  );
+  // The agent has the server in the turn, and the session keeps it.
+  await waitFor(() =>
+    expect(document.querySelector(".bub-a")?.textContent).toContain(
+      "Docs search",
+    ),
+  );
+  expect(servers().querySelector("h4 small")!.textContent).toBe("6 on");
+  const docs = [...servers().querySelectorAll("li")].find((item) =>
+    item.textContent!.includes("Docs search"),
+  )!;
+  expect(docs.querySelector(".tag")!.textContent).toBe("added");
+});
+
+it("turns the MCP servers of a session off and on from its details", async () => {
+  const path = await pathOf("Triage last night's checkout errors");
+  const user = open(path, "alice");
+  await waitFor(() => expect(servers()).toBeTruthy());
+  expect(servers().querySelector("h4 small")!.textContent).toBe("5 on");
+  // The session turned one server on itself, and one of its agent off.
+  const errors = [...servers().querySelectorAll("li")].find((item) =>
+    item.textContent!.includes("Error monitor"),
+  )!;
+  expect(errors.querySelector(".tag")!.textContent).toBe("added");
+  expect(servers().querySelector(".mcp-n")!.textContent).toBe(
+    "1 server of the agent is off.",
+  );
+  await user.click(
+    within(errors).getByRole("button", { name: "Turn off Error monitor" }),
+  );
+  await waitFor(() =>
+    expect(servers().querySelector("h4 small")!.textContent).toBe("4 on"),
+  );
+  expect(servers().textContent).not.toContain("Error monitor");
+
+  await user.click(within(servers()).getByRole("button", { name: "Change" }));
+  await user.click(
+    screen.getByRole("menuitem", { name: "Use the agent's servers" }),
+  );
+  await waitFor(() =>
+    expect(servers().querySelector("h4 small")!.textContent).toBe("5 on"),
+  );
+  expect(servers().querySelector(".tag")).toBeNull();
+  expect(servers().querySelector(".mcp-n")).toBeNull();
+});
+
 it("says of how many turns the details tell when not all were read", async () => {
   const session = await talk("A long one in detail");
   for (let seq = 1; seq <= 22; seq++) await session.say("Message " + seq);
@@ -1171,14 +1249,19 @@ it("says of how many turns the details tell when not all were read", async () =>
     expect(document.querySelectorAll(".turn").length).toBe(20),
   );
   expect(details().rows.get("Turns")).toBe("22of those shown: 20 completed");
-  expect(details().pane.querySelector(".r-s h4 small")!.textContent).toBe(
+  // tokens returns the heading of the tokens of the session.
+  const tokens = () =>
+    [...details().pane.querySelectorAll(".r-s h4")].find((head) =>
+      head.textContent!.startsWith("Tokens"),
+    )!;
+  expect(tokens().querySelector("small")!.textContent).toBe(
     "of the turns shown",
   );
   await user.click(screen.getByRole("button", { name: /Earlier turns/ }));
   await waitFor(() =>
     expect(details().rows.get("Turns")).toBe("2222 completed"),
   );
-  expect(details().pane.querySelector(".r-s h4 small")).toBeNull();
+  expect(tokens().querySelector("small")).toBeNull();
 });
 
 it("hides the details, and keeps them so", async () => {

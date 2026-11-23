@@ -85,6 +85,9 @@ type Agent struct {
 	// acts. If empty, the harness does not ask.
 	Approval string `json:"approval,omitempty"`
 	Model    Model  `json:"model"`
+	// McpServers are the MCP servers of the project that the agent begins
+	// its sessions with, in the order of the project's servers.
+	McpServers []uuid.UUID `json:"mcp_servers,omitempty"`
 }
 
 // Model names a model of a provider.
@@ -190,12 +193,53 @@ type Provider struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// Header is a header of the requests to a provider's endpoint. Its value is
-// not a secret.
+// Header is a header of the requests to an endpoint. It has a value that is
+// not a secret, a secret that Aviary stores, or a secret in a secret store of
+// the project.
 type Header struct {
 	// Name is the name of the header, in lowercase.
 	Name  string `json:"name"`
-	Value string `json:"value"`
+	Value string `json:"value,omitempty"`
+	// Sealed is the stored secret, sealed for the place of the header, such
+	// as ProviderHeaderPlace.
+	Sealed []byte `json:"sealed,omitempty"`
+	// At locates the secret if it is kept in a secret store.
+	At *SecretReference `json:"at,omitempty"`
+}
+
+// Transports of MCP servers.
+const (
+	// TransportHTTP is the Streamable HTTP transport.
+	TransportHTTP = "http"
+	TransportSSE  = "sse"
+)
+
+// McpServer is an MCP server of a project, whose tools its agents can use.
+type McpServer struct {
+	ID        uuid.UUID `json:"id"`
+	ProjectID uuid.UUID `json:"project_id"`
+	// Slug names the server in the project, and its tools to a harness. It
+	// does not change.
+	Slug string `json:"slug"`
+	Name string `json:"name"`
+	URL  string `json:"url"`
+	// Transport is TransportHTTP or TransportSSE.
+	Transport string `json:"transport"`
+	// Headers are the headers that every request to the server carries.
+	Headers []Header `json:"headers,omitempty"`
+	// Tools are the tools that the server last listed, and ToolsListedAt is
+	// when. ToolsListedAt is nil if the server has not listed its tools.
+	Tools         []Tool     `json:"tools,omitempty"`
+	ToolsListedAt *time.Time `json:"tools_listed_at,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	// UpdatedAt is when the server was last replaced.
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// Tool is a tool that an MCP server lists.
+type Tool struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
 }
 
 // SecretReference locates a value in a secret store of the project: the path
@@ -235,6 +279,18 @@ func SecretStoreCredentialPlace(id uuid.UUID) string {
 // A secret sealed for one place cannot be opened for another.
 func ProviderKeyPlace(id uuid.UUID) string {
 	return "providers/" + id.String() + "/api_key"
+}
+
+// ProviderHeaderPlace returns the place that the secret of a provider's
+// header is sealed for.
+func ProviderHeaderPlace(id uuid.UUID, name string) string {
+	return "providers/" + id.String() + "/headers/" + name
+}
+
+// McpServerHeaderPlace returns the place that the secret of an MCP server's
+// header is sealed for.
+func McpServerHeaderPlace(id uuid.UUID, name string) string {
+	return "mcp_servers/" + id.String() + "/headers/" + name
 }
 
 // Turn is a message to a session and the work that the agent does in reply.
@@ -476,16 +532,17 @@ type Store interface {
 	// CreateAgent creates the agent in the project. It returns ErrNotFound if
 	// the project does not exist, ErrSlugTaken if another agent of the project
 	// has its slug and is not deleted, and an error if the provider of its
-	// model does not exist.
+	// model or one of its MCP servers does not exist.
 	CreateAgent(ctx context.Context, projectID uuid.UUID, agent Agent) (Agent, error)
 
 	// Agent returns the agent, also if it is deleted.
 	Agent(ctx context.Context, id uuid.UUID) (Agent, error)
 
-	// ReplaceAgent replaces the name, description, instructions, approval and
-	// model of the agent with the same ID. It returns ErrNotFound if there is
-	// no such agent, ErrAgentDeleted if it is deleted, and an error if the
-	// provider of its model does not exist.
+	// ReplaceAgent replaces the name, description, instructions, approval,
+	// model and MCP servers of the agent with the same ID. It returns
+	// ErrNotFound if there is no such agent, ErrAgentDeleted if it is
+	// deleted, and an error if the provider of its model or one of its MCP
+	// servers does not exist.
 	ReplaceAgent(ctx context.Context, agent Agent) (Agent, error)
 
 	// DeleteAgent marks the agent as deleted and ends its sessions that have
@@ -501,9 +558,27 @@ type Store interface {
 	Agents(ctx context.Context, projectID uuid.UUID) ([]Agent, error)
 
 	// CreateSession creates a session of the agent with the title, which may
-	// be empty. It returns ErrNotFound if the agent does not exist, and
-	// ErrAgentDeleted if it is deleted.
-	CreateSession(ctx context.Context, agentID, by uuid.UUID, title string) (Session, error)
+	// be empty. mcp are the MCP servers that the session turns on or off
+	// where it differs from the agent. It returns ErrNotFound if the agent
+	// does not exist, and ErrAgentDeleted if it is deleted.
+	CreateSession(ctx context.Context, agentID, by uuid.UUID, title string, mcp map[uuid.UUID]bool) (Session, error)
+
+	// SetSessionMcpServer turns the MCP server on or off for the next turns
+	// of the session. The session keeps it only where it differs from the
+	// agent. It returns ErrNotFound if there is no such session, and
+	// ErrSessionEnded if it has ended.
+	SetSessionMcpServer(ctx context.Context, sessionID, serverID uuid.UUID, enabled bool) (Session, error)
+
+	// ResetSessionMcpServers gives the next turns of the session the MCP
+	// servers of its agent again. It returns ErrNotFound if there is no such
+	// session, and ErrSessionEnded if it has ended.
+	ResetSessionMcpServers(ctx context.Context, sessionID uuid.UUID) (Session, error)
+
+	// SessionMcpServers returns the MCP servers that the next turns of the
+	// sessions have, by session: those of their agents but for what each
+	// session turned on or off, in the order of the project's servers. A
+	// session that has ended, or has none, is left out.
+	SessionMcpServers(ctx context.Context, sessionIDs []uuid.UUID) (map[uuid.UUID][]uuid.UUID, error)
 
 	Session(ctx context.Context, id uuid.UUID) (Session, error)
 
@@ -559,6 +634,31 @@ type Store interface {
 	// provider with the same ID; a provider given no headers or no key has
 	// none afterwards. It returns ErrNotFound if there is no such provider.
 	ReplaceProvider(ctx context.Context, provider Provider) (Provider, error)
+
+	// CreateMcpServer creates the MCP server with the ID that it is given,
+	// since the secrets of its headers are sealed for that ID. It returns
+	// ErrNotFound if the project does not exist, and ErrSlugTaken if another
+	// server of the project has its slug.
+	CreateMcpServer(ctx context.Context, server McpServer) (McpServer, error)
+
+	McpServer(ctx context.Context, id uuid.UUID) (McpServer, error)
+
+	// McpServers returns the MCP servers of the project in creation order.
+	McpServers(ctx context.Context, projectID uuid.UUID) ([]McpServer, error)
+
+	// ReplaceMcpServer replaces the name, URL, transport, headers and tools
+	// of the MCP server with the same ID. It returns ErrNotFound if there is
+	// no such server.
+	ReplaceMcpServer(ctx context.Context, server McpServer) (McpServer, error)
+
+	// SetMcpServerTools sets the tools that the MCP server listed, and when,
+	// without replacing the rest of it. It returns ErrNotFound if there is no
+	// such server.
+	SetMcpServerTools(ctx context.Context, id uuid.UUID, tools []Tool, listedAt time.Time) error
+
+	// DeleteMcpServer deletes the MCP server. It returns ErrNotFound if there
+	// is no such server.
+	DeleteMcpServer(ctx context.Context, id uuid.UUID) error
 
 	// CreateSecretStore creates the secret store with the ID that it is
 	// given, since its credential is sealed for that ID. It returns

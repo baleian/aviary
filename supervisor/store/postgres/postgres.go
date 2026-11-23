@@ -27,8 +27,9 @@ const uniqueViolation = "23505"
 
 // The unique constraints on slugs, as the schema names them.
 const (
-	projectSlug = "projects_slug"
-	agentSlug   = "agents_project_slug"
+	projectSlug   = "projects_slug"
+	agentSlug     = "agents_project_slug"
+	mcpServerSlug = "mcp_servers_project_slug"
 )
 
 // dispatchLock is the key of the advisory lock that serializes dispatching.
@@ -321,33 +322,100 @@ func (s *records) CreateAgent(ctx context.Context, projectID uuid.UUID, agent st
 		ID: id, ProjectID: projectID, Slug: agent.Slug, Name: agent.Name, Description: agent.Description, Harness: agent.Harness,
 		Instructions: agent.Instructions, Approval: agent.Approval, ProviderID: agent.Model.Provider, Model: agent.Model.Name,
 	}
-	row, err := s.queries.CreateAgent(ctx, params)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.Agent{}, err
+	}
+	defer tx.Rollback(ctx)
+	queries := s.queries.WithTx(tx)
+	row, err := queries.CreateAgent(ctx, params)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return store.Agent{}, store.ErrNotFound
 	case violates(err, agentSlug):
 		return store.Agent{}, store.ErrSlugTaken
+	case err != nil:
+		return store.Agent{}, err
 	}
-	return agentFrom(row), err
+	if err := setAgentServers(ctx, queries, id, agent.McpServers); err != nil {
+		return store.Agent{}, err
+	}
+	created, err := withServers(ctx, queries, agentFrom(row))
+	if err != nil {
+		return store.Agent{}, err
+	}
+	return created, tx.Commit(ctx)
 }
 
 func (s *records) Agent(ctx context.Context, id uuid.UUID) (store.Agent, error) {
 	row, err := s.queries.GetAgent(ctx, id)
-	if errors.Is(err, pgx.ErrNoRows) {
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
 		return store.Agent{}, store.ErrNotFound
+	case err != nil:
+		return store.Agent{}, err
 	}
-	return agentFrom(row), err
+	return withServers(ctx, s.queries, agentFrom(row))
 }
 
 func (s *records) ReplaceAgent(ctx context.Context, agent store.Agent) (store.Agent, error) {
-	row, err := s.queries.ReplaceAgent(ctx, db.ReplaceAgentParams{
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.Agent{}, err
+	}
+	defer tx.Rollback(ctx)
+	queries := s.queries.WithTx(tx)
+	row, err := queries.ReplaceAgent(ctx, db.ReplaceAgentParams{
 		ID: agent.ID, Name: agent.Name, Description: agent.Description, Instructions: agent.Instructions,
 		Approval: agent.Approval, ProviderID: agent.Model.Provider, Model: agent.Model.Name,
 	})
-	if errors.Is(err, pgx.ErrNoRows) {
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
 		return store.Agent{}, s.deleted(ctx, agent.ID)
+	case err != nil:
+		return store.Agent{}, err
 	}
-	return agentFrom(row), err
+	if err := setAgentServers(ctx, queries, agent.ID, agent.McpServers); err != nil {
+		return store.Agent{}, err
+	}
+	replaced, err := withServers(ctx, queries, agentFrom(row))
+	if err != nil {
+		return store.Agent{}, err
+	}
+	return replaced, tx.Commit(ctx)
+}
+
+// setAgentServers replaces the MCP servers of the agent.
+func setAgentServers(ctx context.Context, queries *db.Queries, agentID uuid.UUID, servers []uuid.UUID) error {
+	if err := queries.ClearAgentMcpServers(ctx, agentID); err != nil {
+		return err
+	}
+	for _, server := range servers {
+		if err := queries.AddAgentMcpServer(ctx, db.AddAgentMcpServerParams{AgentID: agentID, McpServerID: server}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// agentServers returns the MCP servers of the agents, by agent.
+func agentServers(ctx context.Context, queries *db.Queries, agentIDs ...uuid.UUID) (map[uuid.UUID][]uuid.UUID, error) {
+	rows, err := queries.ListAgentMcpServers(ctx, agentIDs)
+	if err != nil {
+		return nil, err
+	}
+	servers := map[uuid.UUID][]uuid.UUID{}
+	for _, row := range rows {
+		servers[row.AgentID] = append(servers[row.AgentID], row.McpServerID)
+	}
+	return servers, nil
+}
+
+// withServers returns the agent with its MCP servers.
+func withServers(ctx context.Context, queries *db.Queries, agent store.Agent) (store.Agent, error) {
+	servers, err := agentServers(ctx, queries, agent.ID)
+	agent.McpServers = servers[agent.ID]
+	return agent, err
 }
 
 // deleted returns ErrAgentDeleted if the agent exists, which is why a
@@ -378,7 +446,8 @@ func (s *records) DeleteAgent(ctx context.Context, id uuid.UUID) (store.Agent, [
 		return store.Agent{}, nil, err
 	}
 	if row.DeletedAt != nil {
-		return agentFrom(row), nil, nil
+		agent, err := withServers(ctx, queries, agentFrom(row))
+		return agent, nil, err
 	}
 	if _, err := queries.LockAgentSessions(ctx, id); err != nil {
 		return store.Agent{}, nil, err
@@ -401,7 +470,11 @@ func (s *records) DeleteAgent(ctx context.Context, id uuid.UUID) (store.Agent, [
 	for i, row := range rows {
 		ended[i] = sessionFrom(row)
 	}
-	return agentFrom(row), ended, tx.Commit(ctx)
+	agent, err := withServers(ctx, queries, agentFrom(row))
+	if err != nil {
+		return store.Agent{}, nil, err
+	}
+	return agent, ended, tx.Commit(ctx)
 }
 
 func (s *records) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agent, error) {
@@ -410,13 +483,21 @@ func (s *records) Agents(ctx context.Context, projectID uuid.UUID) ([]store.Agen
 		return nil, err
 	}
 	agents := make([]store.Agent, len(rows))
+	ids := make([]uuid.UUID, len(rows))
 	for i, row := range rows {
-		agents[i] = agentFrom(row)
+		agents[i], ids[i] = agentFrom(row), row.ID
+	}
+	servers, err := agentServers(ctx, s.queries, ids...)
+	if err != nil {
+		return nil, err
+	}
+	for i := range agents {
+		agents[i].McpServers = servers[agents[i].ID]
 	}
 	return agents, nil
 }
 
-func (s *records) CreateSession(ctx context.Context, agentID, by uuid.UUID, title string) (store.Session, error) {
+func (s *records) CreateSession(ctx context.Context, agentID, by uuid.UUID, title string, mcp map[uuid.UUID]bool) (store.Session, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return store.Session{}, err
@@ -425,11 +506,96 @@ func (s *records) CreateSession(ctx context.Context, agentID, by uuid.UUID, titl
 	if by != uuid.Nil {
 		params.CreatedBy = &by
 	}
-	row, err := s.queries.CreateSession(ctx, params)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return store.Session{}, s.deleted(ctx, agentID)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.Session{}, err
 	}
-	return sessionFrom(row), err
+	defer tx.Rollback(ctx)
+	queries := s.queries.WithTx(tx)
+	row, err := queries.CreateSession(ctx, params)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return store.Session{}, s.deleted(ctx, agentID)
+	case err != nil:
+		return store.Session{}, err
+	}
+	for server, enabled := range mcp {
+		if err := queries.AddSessionMcpServer(ctx, db.AddSessionMcpServerParams{SessionID: id, McpServerID: server, Enabled: enabled}); err != nil {
+			return store.Session{}, err
+		}
+	}
+	return sessionFrom(row), tx.Commit(ctx)
+}
+
+func (s *records) SetSessionMcpServer(ctx context.Context, sessionID, serverID uuid.UUID, enabled bool) (store.Session, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.Session{}, err
+	}
+	defer tx.Rollback(ctx)
+	queries := s.queries.WithTx(tx)
+	session, err := openSession(ctx, queries, sessionID)
+	if err != nil {
+		return store.Session{}, err
+	}
+	agents, err := queries.IsAgentMcpServer(ctx, db.IsAgentMcpServerParams{SessionID: sessionID, McpServerID: serverID})
+	if err != nil {
+		return store.Session{}, err
+	}
+	if err := queries.ClearSessionMcpServer(ctx, db.ClearSessionMcpServerParams{SessionID: sessionID, McpServerID: serverID}); err != nil {
+		return store.Session{}, err
+	}
+	if enabled != agents {
+		err := queries.AddSessionMcpServer(ctx, db.AddSessionMcpServerParams{SessionID: sessionID, McpServerID: serverID, Enabled: enabled})
+		if err != nil {
+			return store.Session{}, err
+		}
+	}
+	return session, tx.Commit(ctx)
+}
+
+func (s *records) ResetSessionMcpServers(ctx context.Context, sessionID uuid.UUID) (store.Session, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.Session{}, err
+	}
+	defer tx.Rollback(ctx)
+	queries := s.queries.WithTx(tx)
+	session, err := openSession(ctx, queries, sessionID)
+	if err != nil {
+		return store.Session{}, err
+	}
+	if err := queries.ClearSessionMcpServers(ctx, sessionID); err != nil {
+		return store.Session{}, err
+	}
+	return session, tx.Commit(ctx)
+}
+
+// openSession returns the session, ErrNotFound if there is no such session,
+// and ErrSessionEnded if it has ended.
+func openSession(ctx context.Context, queries *db.Queries, id uuid.UUID) (store.Session, error) {
+	row, err := queries.GetSession(ctx, id)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return store.Session{}, store.ErrNotFound
+	case err != nil:
+		return store.Session{}, err
+	case row.EndedAt != nil:
+		return store.Session{}, store.ErrSessionEnded
+	}
+	return sessionFrom(row), nil
+}
+
+func (s *records) SessionMcpServers(ctx context.Context, sessionIDs []uuid.UUID) (map[uuid.UUID][]uuid.UUID, error) {
+	rows, err := s.queries.ListSessionMcpServers(ctx, sessionIDs)
+	if err != nil {
+		return nil, err
+	}
+	servers := map[uuid.UUID][]uuid.UUID{}
+	for _, row := range rows {
+		servers[row.SessionID] = append(servers[row.SessionID], row.McpServerID)
+	}
+	return servers, nil
 }
 
 func (s *records) Session(ctx context.Context, id uuid.UUID) (store.Session, error) {
@@ -603,6 +769,112 @@ func (s *records) ReplaceProvider(ctx context.Context, provider store.Provider) 
 		return store.Provider{}, err
 	}
 	return providerFrom(row)
+}
+
+func (s *records) CreateMcpServer(ctx context.Context, server store.McpServer) (store.McpServer, error) {
+	headers, err := headersIn(server.Headers)
+	if err != nil {
+		return store.McpServer{}, err
+	}
+	tools, err := toolsIn(server.Tools, server.ToolsListedAt)
+	if err != nil {
+		return store.McpServer{}, err
+	}
+	row, err := s.queries.CreateMcpServer(ctx, db.CreateMcpServerParams{
+		ID: server.ID, ProjectID: server.ProjectID, Slug: server.Slug, Name: server.Name, Url: server.URL, Transport: server.Transport,
+		Headers: headers, Tools: tools, ToolsListedAt: server.ToolsListedAt,
+	})
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return store.McpServer{}, store.ErrNotFound
+	case violates(err, mcpServerSlug):
+		return store.McpServer{}, store.ErrSlugTaken
+	case err != nil:
+		return store.McpServer{}, err
+	}
+	return mcpServerFrom(row)
+}
+
+func (s *records) McpServer(ctx context.Context, id uuid.UUID) (store.McpServer, error) {
+	row, err := s.queries.GetMcpServer(ctx, id)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return store.McpServer{}, store.ErrNotFound
+	case err != nil:
+		return store.McpServer{}, err
+	}
+	return mcpServerFrom(row)
+}
+
+func (s *records) McpServers(ctx context.Context, projectID uuid.UUID) ([]store.McpServer, error) {
+	rows, err := s.queries.ListMcpServers(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	servers := make([]store.McpServer, len(rows))
+	for i, row := range rows {
+		if servers[i], err = mcpServerFrom(row); err != nil {
+			return nil, err
+		}
+	}
+	return servers, nil
+}
+
+func (s *records) ReplaceMcpServer(ctx context.Context, server store.McpServer) (store.McpServer, error) {
+	headers, err := headersIn(server.Headers)
+	if err != nil {
+		return store.McpServer{}, err
+	}
+	tools, err := toolsIn(server.Tools, server.ToolsListedAt)
+	if err != nil {
+		return store.McpServer{}, err
+	}
+	row, err := s.queries.ReplaceMcpServer(ctx, db.ReplaceMcpServerParams{
+		ID: server.ID, Name: server.Name, Url: server.URL, Transport: server.Transport, Headers: headers, Tools: tools,
+		ToolsListedAt: server.ToolsListedAt,
+	})
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return store.McpServer{}, store.ErrNotFound
+	case err != nil:
+		return store.McpServer{}, err
+	}
+	return mcpServerFrom(row)
+}
+
+func (s *records) SetMcpServerTools(ctx context.Context, id uuid.UUID, tools []store.Tool, listedAt time.Time) error {
+	column, err := toolsIn(tools, &listedAt)
+	if err != nil {
+		return err
+	}
+	set, err := s.queries.SetMcpServerTools(ctx, db.SetMcpServerToolsParams{ID: id, Tools: column, ToolsListedAt: listedAt})
+	if err == nil && set == 0 {
+		return store.ErrNotFound
+	}
+	return err
+}
+
+func (s *records) DeleteMcpServer(ctx context.Context, id uuid.UUID) error {
+	deleted, err := s.queries.DeleteMcpServer(ctx, id)
+	if err == nil && deleted == 0 {
+		return store.ErrNotFound
+	}
+	return err
+}
+
+func mcpServerFrom(row db.McpServer) (store.McpServer, error) {
+	headers, err := headersFrom(row.Headers)
+	if err != nil {
+		return store.McpServer{}, err
+	}
+	tools, err := toolsFrom(row.Tools)
+	if err != nil {
+		return store.McpServer{}, err
+	}
+	return store.McpServer{
+		ID: row.ID, ProjectID: row.ProjectID, Slug: row.Slug, Name: row.Name, URL: row.Url, Transport: row.Transport,
+		Headers: headers, Tools: tools, ToolsListedAt: row.ToolsListedAt, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+	}, nil
 }
 
 func (s *records) CreateSecretStore(ctx context.Context, secrets store.SecretStore) (store.SecretStore, error) {
@@ -1111,7 +1383,7 @@ func providerFrom(row db.Provider) (store.Provider, error) {
 	return provider, nil
 }
 
-// headersIn returns the headers of a provider as their column holds them:
+// headersIn returns the headers of an endpoint as their column holds them:
 // null if there are none.
 func headersIn(headers []store.Header) ([]byte, error) {
 	if len(headers) == 0 {
@@ -1120,16 +1392,40 @@ func headersIn(headers []store.Header) ([]byte, error) {
 	return json.Marshal(headers)
 }
 
-// headersFrom returns the headers that the column of a provider holds.
+// headersFrom returns the headers that the column of an endpoint holds.
 func headersFrom(column []byte) ([]store.Header, error) {
 	if column == nil {
 		return nil, nil
 	}
 	var headers []store.Header
 	if err := json.Unmarshal(column, &headers); err != nil {
-		return nil, fmt.Errorf("headers of a provider: %w", err)
+		return nil, fmt.Errorf("headers of an endpoint: %w", err)
 	}
 	return headers, nil
+}
+
+// toolsIn returns the tools of an MCP server as their column holds them:
+// null if the server has not listed them.
+func toolsIn(tools []store.Tool, listed *time.Time) ([]byte, error) {
+	if listed == nil {
+		return nil, nil
+	}
+	if tools == nil {
+		tools = []store.Tool{}
+	}
+	return json.Marshal(tools)
+}
+
+// toolsFrom returns the tools that the column of an MCP server holds.
+func toolsFrom(column []byte) ([]store.Tool, error) {
+	if column == nil {
+		return nil, nil
+	}
+	var tools []store.Tool
+	if err := json.Unmarshal(column, &tools); err != nil {
+		return nil, fmt.Errorf("tools of an MCP server: %w", err)
+	}
+	return tools, nil
 }
 
 func sessionFrom(row db.Session) store.Session {

@@ -107,3 +107,8 @@ export function clip(text: string, longest: number): string {
     ? flat.slice(0, longest - 1).trimEnd() + "…"
     : flat;
 }
+
+// transportName names how an MCP server is reached.
+export function transportName(transport: "http" | "sse"): string {
+  return transport === "sse" ? "SSE" : "Streamable HTTP";
+}

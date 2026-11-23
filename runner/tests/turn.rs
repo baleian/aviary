@@ -7,7 +7,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use reqwest::StatusCode;
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time;
 
@@ -361,6 +361,20 @@ async fn misconfigured_runner_fails_the_turn() {
     let events = runner.run("t1", "say Hello").await;
     assert_eq!(names(&events), ["failed"]);
     assert_eq!(ending(&events).data["reason"], "harness_error");
+
+    // Without the session token, the harness cannot reach MCP servers.
+    let runner = start(support::runner(&home)).await;
+    let server =
+        json!({"id": "1", "name": "tracker", "transport": "http", "url": "http://proxy/mcp"});
+    runner
+        .turn_with("t1", json!({"text": "mcp", "mcp_servers": [server]}))
+        .await;
+    let events = runner.events("t1").await;
+    assert_eq!(names(&events), ["failed"]);
+    assert_eq!(
+        ending(&events).data,
+        json!({"reason": "runner_error", "message": "AVIARY_LLM_API_KEY is not set"})
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -497,6 +511,112 @@ async fn turn_with_other_settings_gets_a_new_harness() {
         said(&back),
         "onceenv AVIARY_LLM_MODEL ; tool a\ntool b\nenv AVIARY_LLM_MODEL ; tool c\nask"
     );
+}
+
+/// The harness reaches the MCP servers of a turn with the session token, and
+/// names the server of each request by its ID.
+#[tokio::test(flavor = "multi_thread")]
+async fn harness_starts_with_the_mcp_servers_of_the_turn() {
+    let home = Home::new();
+    let mut command = runner(&home);
+    command
+        .env("AVIARY_LLM_API_KEY", "the-token")
+        .env("FAKE_HARNESS_MCP", "http,sse");
+    let runner = start(command).await;
+    let tracker =
+        json!({"id": "1", "name": "tracker", "transport": "http", "url": "http://proxy/mcp"});
+    let docs = json!({"id": "2", "name": "docs", "transport": "sse", "url": "http://proxy/sse"});
+    let run = async |id: &str, text: &str, servers: Value| {
+        let start = json!({"text": text, "mcp_servers": servers});
+        assert_eq!(runner.turn_with(id, start).await, StatusCode::NO_CONTENT);
+        runner.events(id).await
+    };
+    // The fake harness numbers tool calls per process.
+    let call = |events: &[Event]| {
+        let call = events.iter().find(|event| event.name == "tool.call");
+        call.unwrap().data["id"].clone()
+    };
+    let first = run("t1", "mcp ; tool a", json!([tracker, docs])).await;
+    assert_eq!(
+        said(&first),
+        "http tracker http://proxy/mcp authorization=Bearer the-token x-aviary-mcp=1\n\
+         sse docs http://proxy/sse authorization=Bearer the-token x-aviary-mcp=2"
+    );
+    let same = run("t2", "tool b", json!([tracker, docs])).await;
+    assert_eq!(call(&same), "call-2");
+
+    // Other servers: a new harness, which resumes the session with them.
+    let other = run("t3", "mcp ; tool c ; say , ; recall", json!([docs])).await;
+    assert_eq!(call(&other), "call-1");
+    assert_eq!(
+        said(&other),
+        "sse docs http://proxy/sse authorization=Bearer the-token x-aviary-mcp=2,\
+         mcp ; tool a\ntool b"
+    );
+    let none = run("t4", "mcp", json!([])).await;
+    assert_eq!(said(&none), "none");
+
+    // The harness also has their names, from its start.
+    let named = run("t5", "env AVIARY_MCP_SERVERS", json!([tracker, docs])).await;
+    assert_eq!(said(&named), "tracker docs");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_servers_that_the_harness_does_not_support_are_left_out() {
+    let home = Home::new();
+    let mut command = runner(&home);
+    command
+        .env("AVIARY_LLM_API_KEY", "the-token")
+        .env("FAKE_HARNESS_MCP", "http");
+    let runner = start(command).await;
+    let servers = json!([
+        {"id": "1", "name": "tracker", "transport": "http", "url": "http://proxy/mcp"},
+        {"id": "2", "name": "docs", "transport": "sse", "url": "http://proxy/sse"},
+    ]);
+    // Every turn of the harness says which it goes without.
+    for id in ["t1", "t2"] {
+        runner
+            .turn_with(id, json!({"text": "mcp", "mcp_servers": servers}))
+            .await;
+        let events = runner.events(id).await;
+        assert_eq!(names(&events)[..2], ["started", "mcp.unsupported"]);
+        assert_eq!(
+            events[1].data,
+            json!({"servers": [{"id": "2", "name": "docs", "transport": "sse"}]})
+        );
+        assert_eq!(
+            said(&events),
+            "http tracker http://proxy/mcp authorization=Bearer the-token x-aviary-mcp=1"
+        );
+    }
+}
+
+/// The image says how the harness titles a call of a tool of an MCP server,
+/// and such a call names its server and its tool.
+#[tokio::test(flavor = "multi_thread")]
+async fn calls_of_mcp_tools_name_their_server() {
+    let home = Home::new();
+    let mut command = runner(&home);
+    command
+        .env("AVIARY_LLM_API_KEY", "the-token")
+        .env("FAKE_HARNESS_MCP", "http")
+        .env("AVIARY_MCP_TOOL_TITLE", "{server}: {tool}");
+    let runner = start(command).await;
+    let server =
+        json!({"id": "1", "name": "tracker", "transport": "http", "url": "http://proxy/mcp"});
+    let turn = json!({"text": "tool tracker: search ; tool ls", "mcp_servers": [server]});
+    runner.turn_with("t1", turn).await;
+    let events = runner.events("t1").await;
+    let calls: Vec<&Value> = events
+        .iter()
+        .filter(|event| event.name == "tool.call")
+        .map(|event| &event.data)
+        .collect();
+    assert_eq!(
+        calls[0]["mcp"],
+        json!({"server": "1", "slug": "tracker", "tool": "search"})
+    );
+    assert_eq!(calls[1].get("mcp"), None, "{}", calls[1]);
 }
 
 #[tokio::test(flavor = "multi_thread")]

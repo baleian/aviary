@@ -26,7 +26,10 @@ access_log:
           user: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:user)%"
           subject: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:subject)%"
           {{- if eq . "llm" }}
+          # The provider of a model request, or the MCP server of a request
+          # to one.
           provider: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:provider)%"
+          mcp_server: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:mcp_server)%"
           {{- end }}
           method: "%REQ(:METHOD)%"
           host: "%REQ(:AUTHORITY)%"

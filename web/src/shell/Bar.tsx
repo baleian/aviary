@@ -170,12 +170,29 @@ export function Bar({ me }: { me: Me }) {
           >
             Agents
           </NavLink>
+          <span className="navt-sep" />
           <NavLink
-            to={`/p/${project.slug}/connections`}
+            to={`/p/${project.slug}/providers`}
             className={({ isActive }) => (isActive ? "on" : undefined)}
           >
-            Connections
+            <span className="long">Model providers</span>
+            <span className="short">Models</span>
           </NavLink>
+          <NavLink
+            to={`/p/${project.slug}/mcp-servers`}
+            className={({ isActive }) => (isActive ? "on" : undefined)}
+          >
+            <span className="long">MCP servers</span>
+            <span className="short">MCP</span>
+          </NavLink>
+          <NavLink
+            to={`/p/${project.slug}/secret-stores`}
+            className={({ isActive }) => (isActive ? "on" : undefined)}
+          >
+            <span className="long">Secret stores</span>
+            <span className="short">Secrets</span>
+          </NavLink>
+          <span className="navt-sep" />
           <NavLink
             to={`/p/${project.slug}/access`}
             className={({ isActive }) => (isActive ? "on" : undefined)}

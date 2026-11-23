@@ -25,7 +25,7 @@ export const ICONS = [
   "up",
   "dn",
   "out",
-  "cube",
+  "wrench",
   "think",
   "list",
   "dots",
@@ -49,6 +49,7 @@ export const ICONS = [
   "grid",
   "folder",
   "chat",
+  "plug",
 ] as const;
 
 export type IconName = (typeof ICONS)[number];

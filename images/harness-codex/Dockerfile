@@ -9,7 +9,9 @@ COPY config.toml /etc/codex/config.toml
 COPY --chmod=755 codex-acp-aviary /usr/local/bin/codex-acp-aviary
 # Full access, since the pod is the sandbox: Codex's own sandbox creates
 # namespaces, which a pod does not allow. Codex reads instructions for every
-# session from AGENTS.md in its directory in the session home.
+# session from AGENTS.md in its directory in the session home. Its adapter
+# titles a call of a tool of an MCP server "mcp.server.tool".
 ENV INITIAL_AGENT_MODE=agent-full-access \
     AVIARY_HARNESS_COMMAND=codex-acp-aviary \
-    AVIARY_INSTRUCTIONS_FILE=/home/.codex/AGENTS.md
+    AVIARY_INSTRUCTIONS_FILE=/home/.codex/AGENTS.md \
+    AVIARY_MCP_TOOL_TITLE="mcp.{server}.{tool}"

@@ -66,6 +66,8 @@ func Routine(t *testing.T, st store.Store) {
 	must("Turns", err)
 	_, err = s.LastTurns(ctx, []uuid.UUID{session})
 	must("LastTurns", err)
+	_, err = s.SessionMcpServers(ctx, []uuid.UUID{session})
+	must("SessionMcpServers", err)
 
 	must("SetFinished", s.SetFinished(ctx, turn.ID, "end_turn", nil))
 	_, ended, err := s.EndTurn(ctx, turn.ID, true, store.Failure{}, func(context.Context) ([]json.RawMessage, error) {
