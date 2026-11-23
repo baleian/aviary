@@ -152,6 +152,10 @@ update mcp_servers set name = @name, url = @url, transport = @transport, headers
 where id = @id
 returning *;
 
+-- name: SetMcpServerTools :execrows
+update mcp_servers set tools = @tools::jsonb, tools_listed_at = @tools_listed_at::timestamptz
+where id = @id;
+
 -- name: DeleteMcpServer :execrows
 delete from mcp_servers where id = @id;
 

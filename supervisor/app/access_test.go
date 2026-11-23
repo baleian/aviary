@@ -128,6 +128,8 @@ func TestWhoMayDoWhat(t *testing.T) {
 		{"GET", servers, ``, everyMember},
 		{"GET", "/v1/mcp-servers/" + tools, ``, everyMember},
 		{"PUT", "/v1/mcp-servers/" + tools, `{}`, connections},
+		{"POST", servers + "/tools", `{}`, connections},
+		{"POST", "/v1/mcp-servers/" + tools + "/tools", ``, connections},
 		{"POST", "/v1/agents/" + agent + "/sessions", ``, "ppppffpffh"},
 		// Every member gets the sessions that they may read, possibly none.
 		{"GET", "/v1/agents/" + agent + "/sessions", ``, everyMember},

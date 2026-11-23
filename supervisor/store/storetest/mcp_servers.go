@@ -81,6 +81,17 @@ func (suite suite) testMcpServers(t *testing.T) {
 		t.Errorf("McpServer after ReplaceMcpServer = %+v, want %+v: %v", read, replaced, err)
 	}
 
+	// The tools of a server are set apart from the rest, which stays.
+	now := listed.Add(2 * time.Minute)
+	tools := []store.Tool{{Name: "list_issues"}}
+	if err := st.SetMcpServerTools(ctx, given.ID, tools, now); err != nil {
+		t.Fatal(err)
+	}
+	if read, err := st.McpServer(ctx, given.ID); err != nil || !reflect.DeepEqual(read.Tools, tools) || read.ToolsListedAt == nil ||
+		!read.ToolsListedAt.Equal(now) || read.Name != "Tracker" || !read.UpdatedAt.Equal(replaced.UpdatedAt) {
+		t.Errorf("McpServer after SetMcpServerTools = %+v: %v", read, err)
+	}
+
 	// A deleted server is gone, and its slug is free.
 	if err := st.DeleteMcpServer(ctx, given.ID); err != nil {
 		t.Fatal(err)
@@ -99,7 +110,8 @@ func (suite suite) testMcpServers(t *testing.T) {
 		"CreateMcpServer": second(st.CreateMcpServer(ctx, store.McpServer{
 			ID: uuid.New(), ProjectID: none, Slug: "a-server", URL: "https://a.example.com/mcp", Transport: store.TransportHTTP,
 		})),
-		"DeleteMcpServer": st.DeleteMcpServer(ctx, none),
+		"SetMcpServerTools": st.SetMcpServerTools(ctx, none, nil, listed),
+		"DeleteMcpServer":   st.DeleteMcpServer(ctx, none),
 	} {
 		if !errors.Is(err, store.ErrNotFound) {
 			t.Errorf("%s = %v, want ErrNotFound", name, err)

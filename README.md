@@ -212,6 +212,8 @@ empty.
 | `GET /v1/providers/{id}/models` | Lists the models of a provider in the same way, with the URL, the headers and the key that it has. |
 | `POST /v1/projects/{id}/mcp-servers` | Registers an MCP server of the project. Body: `{"slug": "...", "name": "...", "url": "...", "transport": "http"}`, or `"transport": "sse"` for a server that is reached by SSE. Returns 409 if another server of the project has the slug. A server that needs headers is given them as a provider is, `authorization` among them. See [MCP servers](#mcp-servers). |
 | `PUT /v1/mcp-servers/{id}` | Replaces all of an MCP server but its slug. While the URL stays the same, `{"stored": true}` in place of a secret keeps the one that is stored. |
+| `POST /v1/projects/{id}/mcp-servers/tools` | Lists the tools of an MCP server that need not be registered. Body: the `url`, the `transport` and the `headers` of a server, which is not stored, and the `server` that it would replace, if there is one: `{"stored": true}` then keeps a secret of that server as `PUT` would. Returns `{"reached": true, "status": 200, "tools": [{"name": "...", "description": "..."}], "duration_ms": 230}`, the `status` of the answer that was not a success, or `{"reached": false, "reason": "...", "duration_ms": 5003}` for a server that did not answer. |
+| `POST /v1/mcp-servers/{id}/tools` | Lists the tools of an MCP server again in the same way, and keeps them if it lists them. |
 | `DELETE /v1/mcp-servers/{id}` | Deletes an MCP server. |
 | `POST /v1/projects/{id}/secret-stores` | Registers a secret store of the project. Body: `{"name": "...", "kind": "...", "settings": {...}, "credential": {"value": "..."}}`. See [Secret stores](#secret-stores). |
 | `PUT /v1/secret-stores/{id}` | Replaces the name, the kind, the settings and the credential of a secret store together. |
@@ -556,6 +558,14 @@ A project registers MCP servers by their URL.
   them, since a server takes its token there. A value that is a secret is
   stored or kept in a secret store, and stays while the URL does. A header
   of MCP itself, such as `mcp-session-id`, cannot be one of them.
+- **Its tools are listed when it is registered and replaced**, and on
+  request. The Supervisor asks the server through the Egress Proxy, with
+  the server's headers, so a server that the proxy does not reach, or a
+  token that the server refuses, shows at once. A server is registered all
+  the same if it does not answer, and keeps the tools that it last listed
+  while its URL stays the same.
+- **The host of a server is subject to `egressProxy.allowedHosts`** like
+  that of a model provider.
 
 ### Secret stores
 

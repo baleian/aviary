@@ -629,6 +629,11 @@ type Store interface {
 	// no such server.
 	ReplaceMcpServer(ctx context.Context, server McpServer) (McpServer, error)
 
+	// SetMcpServerTools sets the tools that the MCP server listed, and when,
+	// without replacing the rest of it. It returns ErrNotFound if there is no
+	// such server.
+	SetMcpServerTools(ctx context.Context, id uuid.UUID, tools []Tool, listedAt time.Time) error
+
 	// DeleteMcpServer deletes the MCP server. It returns ErrNotFound if there
 	// is no such server.
 	DeleteMcpServer(ctx context.Context, id uuid.UUID) error

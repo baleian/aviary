@@ -884,6 +884,20 @@ func (s *Store) ReplaceMcpServer(ctx context.Context, server store.McpServer) (s
 	return mcpServerOf(replaced), nil
 }
 
+func (s *Store) SetMcpServerTools(ctx context.Context, id uuid.UUID, tools []store.Tool, listedAt time.Time) error {
+	if err := s.begin(ctx); err != nil {
+		return err
+	}
+	defer s.mu.Unlock()
+	server, found := s.mcpServers[id]
+	if !found {
+		return store.ErrNotFound
+	}
+	server.Tools, server.ToolsListedAt = slices.Clone(tools), &listedAt
+	s.mcpServers[id] = server
+	return nil
+}
+
 func (s *Store) DeleteMcpServer(ctx context.Context, id uuid.UUID) error {
 	if err := s.begin(ctx); err != nil {
 		return err

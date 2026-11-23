@@ -2341,6 +2341,25 @@ func (q *Queries) SetFinished(ctx context.Context, arg SetFinishedParams) error 
 	return err
 }
 
+const setMcpServerTools = `-- name: SetMcpServerTools :execrows
+update mcp_servers set tools = $1::jsonb, tools_listed_at = $2::timestamptz
+where id = $3
+`
+
+type SetMcpServerToolsParams struct {
+	Tools         []byte
+	ToolsListedAt time.Time
+	ID            uuid.UUID
+}
+
+func (q *Queries) SetMcpServerTools(ctx context.Context, arg SetMcpServerToolsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setMcpServerTools, arg.Tools, arg.ToolsListedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const setMember = `-- name: SetMember :execrows
 update project_members
 set role = $1, permissions = $2::text[], updated_at = now(), updated_by = $3

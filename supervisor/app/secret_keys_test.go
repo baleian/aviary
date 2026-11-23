@@ -218,7 +218,7 @@ func TestModelRequestWithAKeyFromASecretStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	if status, why := refused(s); status != http.StatusServiceUnavailable ||
-		why != "cannot read the credential of the model provider's secret store\n" {
+		why != "cannot read the credential of the secret store of the model provider's API key\n" {
 		t.Errorf("request with a store credential that does not open: denied with %d %q", status, why)
 	}
 }

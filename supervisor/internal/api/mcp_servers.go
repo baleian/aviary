@@ -43,8 +43,8 @@ type mcpServerRequest struct {
 // mcpServerAt validates what the request sets of the MCP server with the ID,
 // but its slug, and returns the server as it is kept. A secret given by value
 // is sealed for its place in that server. An existing server keeps the
-// secrets that it stores, and the tools that it listed, while its URL stays
-// the same.
+// secrets that it stores, and the tools that it last listed, while its URL
+// stays the same.
 func (a *api) mcpServerAt(r *http.Request, id, projectID uuid.UUID, existing *store.McpServer, request mcpServerRequest) (store.McpServer, error) {
 	if err := endpoint(request.URL, "set the server's secrets in its headers"); err != nil {
 		return store.McpServer{}, err
@@ -68,6 +68,8 @@ func (a *api) mcpServerAt(r *http.Request, id, projectID uuid.UUID, existing *st
 	return read, nil
 }
 
+// createMcpServer registers an MCP server with the tools that it lists. A
+// server that does not list them is registered all the same.
 func (a *api) createMcpServer(w http.ResponseWriter, r *http.Request) error {
 	projectID, err := pathID(r, "pid")
 	if err != nil {
@@ -92,6 +94,9 @@ func (a *api) createMcpServer(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	read.ProjectID, read.Slug = projectID, request.Slug
+	if read, err = a.withTools(r, read); err != nil {
+		return err
+	}
 	created, err := a.store.CreateMcpServer(r.Context(), read)
 	if err != nil {
 		return err
@@ -136,8 +141,8 @@ func (a *api) listMcpServers(w http.ResponseWriter, r *http.Request) error {
 }
 
 // replaceMcpServer replaces all of an MCP server but its slug, which names its
-// tools. The secrets that it stores stay only with its URL, so that they
-// cannot be redirected to another server.
+// tools, and lists its tools again. The secrets that it stores stay only with
+// its URL, so that they cannot be redirected to another server.
 func (a *api) replaceMcpServer(w http.ResponseWriter, r *http.Request) error {
 	id, err := pathID(r, "server")
 	if err != nil {
@@ -156,6 +161,10 @@ func (a *api) replaceMcpServer(w http.ResponseWriter, r *http.Request) error {
 	}
 	read, err := a.mcpServerAt(r, id, existing.ProjectID, &existing, request)
 	if err != nil {
+		return err
+	}
+	read.ProjectID = existing.ProjectID
+	if read, err = a.withTools(r, read); err != nil {
 		return err
 	}
 	replaced, err := a.store.ReplaceMcpServer(r.Context(), read)

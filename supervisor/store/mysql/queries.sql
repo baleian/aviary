@@ -140,6 +140,10 @@ update mcp_servers set name = sqlc.arg(name), url = sqlc.arg(url), transport = s
        updated_at = now(6)
 where id = sqlc.arg(id);
 
+-- name: SetMcpServerTools :execrows
+update mcp_servers set tools = sqlc.arg(tools), tools_listed_at = sqlc.arg(tools_listed_at)
+where id = sqlc.arg(id);
+
 -- name: DeleteMcpServer :execrows
 delete from mcp_servers where id = ?;
 

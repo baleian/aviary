@@ -897,6 +897,14 @@ func (s *records) ReplaceMcpServer(ctx context.Context, server store.McpServer) 
 	return s.McpServer(ctx, server.ID)
 }
 
+func (s *records) SetMcpServerTools(ctx context.Context, id uuid.UUID, tools []store.Tool, listedAt time.Time) error {
+	column, err := toolsIn(tools, &listedAt)
+	if err != nil {
+		return err
+	}
+	return created(s.queries.SetMcpServerTools(ctx, db.SetMcpServerToolsParams{ID: key.ID(id), Tools: column, ToolsListedAt: &listedAt}))
+}
+
 func (s *records) DeleteMcpServer(ctx context.Context, id uuid.UUID) error {
 	return created(s.queries.DeleteMcpServer(ctx, key.ID(id)))
 }
