@@ -255,7 +255,7 @@ empty.
 | `turn.queued` | `position`: the turn's place in the queue, 1 for the turn that runs next. |
 | `turn.started` | The harness has received the message. |
 | `message.delta`, `thought.delta` | `text`: the next piece of what the agent says or thinks. Pieces with the same `message_id` belong together. |
-| `tool.call` | `id`, `title`, `kind`, `status`, `input`: the agent started to use a tool. |
+| `tool.call` | `id`, `title`, `kind`, `status`, `input`: the agent started to use a tool. A tool of an MCP server also has `mcp`: the `server` by ID, its `slug`, and the `tool`. |
 | `tool.update` | `id`, and those of `title`, `kind`, `status`, `input` and `output` that changed. Text in `input` or `output` longer than `runtime.maxToolOutputBytes` is truncated, and says so at its end. |
 | `plan.update` | `entries`: the agent's plan, each entry with `content`, `priority` and `status`. |
 | `session.update` | `title`: a title that the harness gives the session. Aviary does not set it: a client that wants it changes the title of the session. |

@@ -21,7 +21,9 @@
 //! its model: every request carries the session token, and names its server
 //! by ID in the `x-aviary-mcp` header. A server of a transport that the
 //! harness does not support is left out, and every turn of the harness names
-//! it in an `mcp.unsupported` event.
+//! it in an `mcp.unsupported` event. The calls of a server's tools name the
+//! server and the tool in `mcp`, if the image says how the harness titles
+//! them.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -69,6 +71,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 const HARNESS_COMMAND: &str = "AVIARY_HARNESS_COMMAND";
 const MAX_TOOL_OUTPUT: &str = "AVIARY_MAX_TOOL_OUTPUT_BYTES";
 const INSTRUCTIONS_FILE: &str = "AVIARY_INSTRUCTIONS_FILE";
+const MCP_TOOL_TITLE: &str = "AVIARY_MCP_TOOL_TITLE";
 const ADDRESS: &str = "AVIARY_RUNNER_ADDRESS";
 /// The session token, by which the Egress Proxy knows the turn.
 const TOKEN: &str = "AVIARY_LLM_API_KEY";
@@ -518,6 +521,10 @@ async fn run_harness(
     let environment = first.start.environment.clone();
     let instructions = first.start.instructions.clone();
     let mcp_servers = first.start.mcp_servers.clone();
+    let titles = Arc::new(McpTitles::new(
+        &env::var(MCP_TOOL_TITLE).unwrap_or_default(),
+        &mcp_servers,
+    ));
     // The turn that needs a new harness.
     let mut left = None;
     // Set when session/resume fails.
@@ -533,6 +540,7 @@ async fn run_harness(
         .on_receive_notification(
             {
                 let runner = runner.clone();
+                let titles = titles.clone();
                 async move |notification: SessionNotification, _| {
                     match notification.update {
                         // Live information from the harness, such as a
@@ -550,7 +558,10 @@ async fn run_harness(
                             );
                         }
                         update => {
-                            if let Some((name, data)) = event(update, longest) {
+                            if let Some((name, mut data)) = event(update, longest) {
+                                if name == "tool.call" || name == "tool.update" {
+                                    titles.mark(&mut data);
+                                }
                                 runner.emit(name, &data);
                             }
                         }
@@ -740,7 +751,9 @@ async fn run_harness(
                             }
                             requests += 1;
                             let id = requests.to_string();
-                            runner.emit(REQUESTED, &requested(&id, &request, longest));
+                            let mut data = requested(&id, &request, longest);
+                            titles.mark(&mut data["tool_call"]);
+                            runner.emit(REQUESTED, &data);
                             waiting.push(Asked { id, request, responder });
                         }
                     }
@@ -818,6 +831,58 @@ fn given(server: &Mcp, token: &str) -> McpServer {
         McpServer::Sse(McpServerSse::new(&server.name, &server.url).headers(headers))
     } else {
         McpServer::Http(McpServerHttp::new(&server.name, &server.url).headers(headers))
+    }
+}
+
+/// Tells the calls of the tools of MCP servers from those of the harness's
+/// own tools, by their titles. The image gives the form of such a title in
+/// `AVIARY_MCP_TOOL_TITLE`, with `{server}` and `{tool}` in place of the
+/// server's name and the tool's, such as `{server}: {tool}`.
+#[derive(Default)]
+struct McpTitles(Vec<McpTitle>);
+
+/// The title of a call of a tool of a server, around the tool's name.
+struct McpTitle {
+    id: String,
+    name: String,
+    before: String,
+    after: String,
+}
+
+impl McpTitles {
+    fn new(form: &str, servers: &[Mcp]) -> Self {
+        let Some((before, after)) = form.split_once("{tool}") else {
+            return Self::default();
+        };
+        Self(
+            servers
+                .iter()
+                .map(|server| McpTitle {
+                    id: server.id.clone(),
+                    name: server.name.clone(),
+                    before: before.replace("{server}", &server.name),
+                    after: after.replace("{server}", &server.name),
+                })
+                .collect(),
+        )
+    }
+
+    /// Adds `mcp` to the data of a tool call whose title is that of a tool
+    /// of an MCP server: the server's ID and name, and the tool's name.
+    fn mark(&self, call: &mut Value) {
+        let Some(title) = call.get("title").and_then(Value::as_str) else {
+            return;
+        };
+        let found = self.0.iter().find_map(|server| {
+            let tool = title
+                .strip_prefix(&server.before)?
+                .strip_suffix(&server.after)?;
+            (!tool.is_empty())
+                .then(|| json!({"server": server.id, "slug": server.name, "tool": tool}))
+        });
+        if let Some(mcp) = found {
+            call["mcp"] = mcp;
+        }
     }
 }
 
@@ -1226,6 +1291,51 @@ mod tests {
             resolved("3", "cancelled", None),
             json!({"id": "3", "outcome": "cancelled"})
         );
+    }
+
+    #[test]
+    fn calls_of_mcp_tools_name_their_server_and_tool() {
+        let servers: Vec<Mcp> = serde_json::from_value(json!([
+            {"id": "1", "name": "tracker", "transport": "http", "url": "http://proxy/mcp"},
+            {"id": "2", "name": "tracker-two", "transport": "sse", "url": "http://proxy/sse"},
+        ]))
+        .expect("parse servers");
+        // Returns what is added to a call with the title.
+        let marked = |form: &str, title: &str| {
+            let mut call = json!({"id": "t1", "title": title});
+            McpTitles::new(form, &servers).mark(&mut call);
+            call.get("mcp").cloned()
+        };
+        let mcp = |server: &str, slug: &str, tool: &str| {
+            Some(json!({"server": server, "slug": slug, "tool": tool}))
+        };
+        assert_eq!(
+            marked("{server}: {tool}", "tracker: search_issues"),
+            mcp("1", "tracker", "search_issues")
+        );
+        assert_eq!(
+            marked("mcp.{server}.{tool}", "mcp.tracker-two.search"),
+            mcp("2", "tracker-two", "search")
+        );
+        assert_eq!(
+            marked("{server}_{tool}", "tracker_list_issues"),
+            mcp("1", "tracker", "list_issues")
+        );
+        // A server whose name begins with that of another.
+        assert_eq!(
+            marked("{server}_{tool}", "tracker-two_search"),
+            mcp("2", "tracker-two", "search")
+        );
+        // The harness's own tools, and an image that gives no form.
+        for (form, title) in [
+            ("{server}: {tool}", "cat notes.txt"),
+            ("{server}: {tool}", "tracker: "),
+            ("mcp.{server}.{tool}", "mcp.docs.search"),
+            ("{server}", "tracker"),
+            ("", "tracker: search"),
+        ] {
+            assert_eq!(marked(form, title), None, "form {form:?}, title {title:?}");
+        }
     }
 
     #[test]

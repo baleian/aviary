@@ -587,6 +587,34 @@ async fn mcp_servers_that_the_harness_does_not_support_are_left_out() {
     }
 }
 
+/// The image says how the harness titles a call of a tool of an MCP server,
+/// and such a call names its server and its tool.
+#[tokio::test(flavor = "multi_thread")]
+async fn calls_of_mcp_tools_name_their_server() {
+    let home = Home::new();
+    let mut command = runner(&home);
+    command
+        .env("AVIARY_LLM_API_KEY", "the-token")
+        .env("FAKE_HARNESS_MCP", "http")
+        .env("AVIARY_MCP_TOOL_TITLE", "{server}: {tool}");
+    let runner = start(command).await;
+    let server =
+        json!({"id": "1", "name": "tracker", "transport": "http", "url": "http://proxy/mcp"});
+    let turn = json!({"text": "tool tracker: search ; tool ls", "mcp_servers": [server]});
+    runner.turn_with("t1", turn).await;
+    let events = runner.events("t1").await;
+    let calls: Vec<&Value> = events
+        .iter()
+        .filter(|event| event.name == "tool.call")
+        .map(|event| &event.data)
+        .collect();
+    assert_eq!(
+        calls[0]["mcp"],
+        json!({"server": "1", "slug": "tracker", "tool": "search"})
+    );
+    assert_eq!(calls[1].get("mcp"), None, "{}", calls[1]);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn tool_output_is_cut_at_the_configured_limit() {
     let home = Home::new();

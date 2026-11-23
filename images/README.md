@@ -92,6 +92,12 @@ The runner talks to the harness over its standard input and output with the
    actions that a person should approve first. Which actions is up to the
    image and the settings of its harness. An image that ignores the variable
    runs such an agent like any other: nobody is asked.
+8. **How the harness titles a call of a tool of an MCP server**, in
+   `AVIARY_MCP_TOOL_TITLE`, with `{server}` and `{tool}` in place of the
+   server's name and the tool's: `{server}: {tool}` for a title such as
+   `tracker: search_issues`. The runner then records the server and the tool
+   of each such call. In an image that does not set it, the calls of the
+   tools of MCP servers look like those of the harness's own tools.
 
 Environment variables that start with `AVIARY_` are reserved for Aviary. The
 harness also sees the ones that the runner uses, such as
@@ -144,6 +150,12 @@ images in this repository handle these cases:
   asks before it runs a command that does more than read the workspace, or
   before it changes a file. For an agent that does not ask, the runner
   allows each action once.
+- **Titles of the tools of MCP servers.** Claude Code titles a call of a
+  tool of an MCP server `server: tool`, Codex `mcp.server.tool`, and OpenCode
+  `server_tool`, which is also the form of its own `apply_patch`: in a
+  session with a server named `apply`, that tool would count as the
+  server's. Codex reports a server that it could not start as a failed call
+  of a tool, `mcp__server__startup`, with the error.
 - **Refusals.** OpenCode and Codex end the turn when a person refuses an
   action: OpenCode with the stop reason `end_turn`, Codex with `cancelled`.
   Claude Code tells the model that the action was refused, and the turn goes
@@ -173,7 +185,7 @@ images in this repository handle these cases:
 
 ## Adding a harness
 
-1. Write a Dockerfile that meets the seven requirements above. Building on
+1. Write a Dockerfile that meets the eight requirements above. Building on
    `aviary-harness-base` covers the second.
 2. Build the image and test it:
 
