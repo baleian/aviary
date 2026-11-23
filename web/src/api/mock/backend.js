@@ -380,7 +380,9 @@ function turnRecord(turn) {
 
 // ---- Model providers and secret stores --------------------------------------
 
-function endpoint(address) {
+// endpoint checks the URL of an endpoint. secrets says where the secrets of
+// the endpoint go instead of the URL.
+function endpoint(address, secrets) {
   let parsed;
   try {
     parsed = new URL(address);
@@ -394,9 +396,7 @@ function endpoint(address) {
   )
     invalid("url must be a URL that begins with http:// or https://");
   if (parsed.username || parsed.password)
-    invalid(
-      "url must not contain a user name or password; set the endpoint's key in api_key",
-    );
+    invalid("url must not contain a user name or password; " + secrets);
   if (
     parsed.search ||
     parsed.hash ||
@@ -559,7 +559,7 @@ function readProvider(body, projectID, existing) {
 // project, and returns them as they are kept. A provider that exists keeps
 // its stored secrets while its URL stays the same.
 function providerAt(request, projectID, existing) {
-  endpoint(text(request.url));
+  endpoint(text(request.url), "set the endpoint's key in api_key");
   const keeps = !!existing && existing.url === request.url;
   const read = {
     url: request.url,
@@ -586,7 +586,7 @@ const TRANSPORTS = ["http", "sse"];
 // besides its slug, and returns it as it is kept. A server that exists keeps
 // its stored secrets while its URL stays the same.
 function mcpServerAt(request, projectID, existing) {
-  endpoint(text(request.url));
+  endpoint(text(request.url), "set the server's secrets in its headers");
   if (!TRANSPORTS.includes(request.transport))
     invalid('transport must be "http" for Streamable HTTP, or "sse"');
   const keeps = !!existing && existing.url === request.url;
@@ -607,8 +607,9 @@ function mcpServerAt(request, projectID, existing) {
 // headers. The servers of the mock answer by what is asked: a host below
 // ".invalid" is not reached, a secret that begins with "wrong" is refused, a
 // host that begins with "auth." refuses a request without authorization, a
-// URL that ends in /sse is not reached by Streamable HTTP, and one that ends
-// in /mcp is not reached by SSE.
+// host that begins with "www." answers with a page, a URL that ends in /sse
+// is not reached by Streamable HTTP, and one that ends in /mcp is not reached
+// by SSE.
 function toolsAt(address, transport, headers) {
   const at = new URL(address);
   if (at.hostname.endsWith(".invalid"))
@@ -626,6 +627,8 @@ function toolsAt(address, transport, headers) {
     !headers.some((header) => header.name === "authorization")
   )
     answered.status = 401;
+  else if (at.hostname.startsWith("www."))
+    answered.reason = "the server does not answer as an MCP server does";
   else if (transport === "http" && path.endsWith("/sse")) answered.status = 405;
   else if (transport === "sse" && path.endsWith("/mcp")) answered.status = 405;
   else {
@@ -1616,6 +1619,8 @@ route("POST", "/v1/projects/{pid}/mcp-servers/tools", ({ who, body }, pid) => {
     db.mcpServers.find(
       (other) => other.id === request.server && other.project_id === pid,
     );
+  if (request.server && !existing)
+    invalid("server must be the ID of an MCP server of the project");
   const read = mcpServerAt(request, pid, existing || undefined);
   return [200, toolsAt(read.url, read.transport, read.headers)];
 });
@@ -1640,6 +1645,21 @@ route("PUT", "/v1/mcp-servers/{id}", ({ who, body }, id) => {
     server.tools_listed_at = server.updated_at;
   }
   return [200, mcpServerRecord(server)];
+});
+// A server that is deleted leaves the agents that begin their sessions with
+// it, and the sessions that turned it on or off.
+route("DELETE", "/v1/mcp-servers/{id}", ({ who }, id) => {
+  const server = one(db.mcpServers, id);
+  may(who, server.project_id, "connections.manage");
+  db.mcpServers = db.mcpServers.filter((other) => other.id !== id);
+  for (const agent of db.agents) {
+    if (agent.mcp_servers?.includes(id))
+      agent.mcp_servers = agent.mcp_servers.filter((other) => other !== id);
+  }
+  for (const session of db.sessions) {
+    if (session.mcp && id in session.mcp) delete session.mcp[id];
+  }
+  return [204, null];
 });
 // A server is asked for its tools again, with what it stores, and keeps them
 // if it answers.

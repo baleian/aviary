@@ -180,6 +180,52 @@ it("keeps the secrets of a server while its URL stays the same", async () => {
   expect(await screen.findByText("Saved Issue tracker")).toBeTruthy();
 });
 
+it("says when a server answers, but not as an MCP server does", async () => {
+  const user = open("/p/storefront/mcp-servers", "alice");
+  await rows();
+  await user.click(screen.getByRole("button", { name: /Add MCP server/ }));
+  const form = within(
+    screen.getByRole("dialog", { name: "Add an MCP server" }),
+  );
+  await user.type(
+    form.getByRole("textbox", { name: "URL" }),
+    "https://www.example.com/mcp",
+  );
+  await user.click(form.getByRole("button", { name: "Test connection" }));
+  const said = await form.findByRole("status");
+  expect(said.textContent).toBe(
+    "The server does not answer as an MCP server does.",
+  );
+  expect(said.className).toBe("try-r bad");
+  expect(form.queryByRole("list", { name: "Tools" })).toBeNull();
+});
+
+it("deletes a server, which its agents no longer use", async () => {
+  const user = open("/p/storefront/mcp-servers/ci", "alice");
+  await screen.findByRole("heading", { name: /^CI pipelines/ });
+  expect(
+    [...document.querySelectorAll(".srv-side .side-list a")].map(
+      (link) => link.textContent,
+    ),
+  ).toEqual(["Backend engineer", "Reviewer"]);
+  await user.click(screen.getByRole("button", { name: "More" }));
+  await user.click(screen.getByRole("menuitem", { name: "Delete server…" }));
+  const dialog = within(
+    screen.getByRole("dialog", { name: "Delete CI pipelines?" }),
+  );
+  await user.click(dialog.getByRole("button", { name: "Delete server" }));
+  expect(await screen.findByText("23 servers")).toBeTruthy();
+  expect(screen.getByRole("status").textContent).toContain(
+    "Deleted CI pipelines",
+  );
+  expect(screen.queryByRole("link", { name: "CI pipelines" })).toBeNull();
+
+  await user.click(screen.getByRole("link", { name: /^Agents/ }));
+  const reviewer = await screen.findByRole("link", { name: /Reviewer/ });
+  expect(reviewer.textContent).toContain("Code host");
+  expect(reviewer.textContent).not.toContain("CI pipelines");
+});
+
 it("lets only those who manage connections change MCP servers", async () => {
   open("/p/storefront/mcp-servers", "bob");
   await rows();
@@ -190,4 +236,5 @@ it("lets only those who manage connections change MCP servers", async () => {
   await screen.findByRole("heading", { name: /^Issue tracker/ });
   expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Refresh tools" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "More" })).toBeNull();
 });

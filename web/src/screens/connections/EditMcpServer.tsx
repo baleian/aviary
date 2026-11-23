@@ -1,15 +1,11 @@
 import { useState } from "react";
 import { api } from "../../api/client.ts";
 import { keys, type ProjectContext } from "../../api/project.ts";
-import type {
-  McpServer,
-  McpServerTools,
-  Tool,
-  Transport,
-} from "../../api/types.ts";
+import type { McpServer, McpServerTools, Transport } from "../../api/types.ts";
 import { cls } from "../../lib/cls.ts";
 import { named, text, Wrong } from "../../lib/form.ts";
-import { label, plural, sentence, transportName } from "../../lib/format.ts";
+import { label, sentence, transportName } from "../../lib/format.ts";
+import { said } from "../../lib/mcp.ts";
 import { queryClient } from "../../query.ts";
 import { Dialog } from "../../ui/Dialog.tsx";
 import { Field, NameAndSlug } from "../../ui/fields.tsx";
@@ -19,35 +15,41 @@ import { toast } from "../../ui/toast.ts";
 import { type HeaderRow, readHeaders, rowsOf } from "./rows.ts";
 import { Headers } from "./Headers.tsx";
 
-// said puts what came of asking a server for its tools in words, as a test
-// of the connection to it.
-function said(
-  asked: McpServerTools,
-  transport: Transport,
-): { tone: "ok" | "bad" | ""; text: string; tools?: Tool[] } {
-  if (!asked.reached) {
-    return { tone: "bad", text: sentence("Not reached: " + asked.reason) };
-  }
-  const status = asked.status ?? 0;
-  if (status >= 200 && status < 300) {
-    const tools = asked.tools ?? [];
-    return {
-      tone: "ok",
-      text: `Connected in ${asked.duration_ms} ms · ${plural(tools.length, "tool")}`,
-      tools,
-    };
-  }
-  if (status === 401 || status === 403) {
-    return { tone: "bad", text: `The server refused the request (${status}).` };
-  }
-  if (status === 404 || status === 405) {
-    const other = transportName(transport === "http" ? "sse" : "http");
-    return {
-      tone: "bad",
-      text: `No MCP server answers ${transportName(transport)} at this URL (${status}). Try ${other}?`,
-    };
-  }
-  return { tone: "bad", text: `The server answered ${status}.` };
+// DeleteMcpServer asks whether to delete an MCP server, and does. Once the
+// caller has gone on, what the project has is read again.
+export function DeleteMcpServer({
+  context,
+  server,
+  onClose,
+}: {
+  context: ProjectContext;
+  server: McpServer;
+  // onClose is told whether the server was deleted.
+  onClose: (deleted: boolean) => void;
+}) {
+  return (
+    <Dialog
+      size="slim"
+      danger
+      title={`Delete ${label(server)}?`}
+      lead="Agents and sessions that use it lose its tools."
+      action="Delete server"
+      onSubmit={async () => {
+        await api.delete("/v1/mcp-servers/" + server.id);
+        return true;
+      }}
+      onClose={(deleted) => {
+        onClose(!!deleted);
+        if (!deleted) return;
+        toast(`Deleted ${label(server)}`, "ok");
+        const project = context.project.id;
+        void queryClient.invalidateQueries({
+          queryKey: keys.mcpServers(project),
+        });
+        void queryClient.invalidateQueries({ queryKey: keys.agents(project) });
+      }}
+    />
+  );
 }
 
 // EditMcpServer is the dialog that adds an MCP server to a project, or

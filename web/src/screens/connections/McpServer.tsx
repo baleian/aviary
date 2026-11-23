@@ -1,18 +1,20 @@
 import { useState } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useNavigate, useParams } from "react-router";
 import { api } from "../../api/client.ts";
 import { can, keys } from "../../api/project.ts";
 import type { McpServerTools } from "../../api/types.ts";
 import { cls } from "../../lib/cls.ts";
-import { label, plural, sentence, transportName } from "../../lib/format.ts";
+import { label, sentence, transportName } from "../../lib/format.ts";
+import { said } from "../../lib/mcp.ts";
 import { useTitle } from "../../lib/title.ts";
 import { queryClient } from "../../query.ts";
 import { useProject } from "../../shell/project.ts";
 import { Missing } from "../../shell/ProjectFrame.tsx";
 import { AgentTile } from "../../ui/Avatar.tsx";
 import { Icon } from "../../ui/Icon.tsx";
+import { Menu, MenuItem } from "../../ui/Menu.tsx";
 import { Time } from "../../ui/Time.tsx";
-import { EditMcpServer } from "./EditMcpServer.tsx";
+import { DeleteMcpServer, EditMcpServer } from "./EditMcpServer.tsx";
 import { Find, None } from "./parts.tsx";
 
 // How many tools a server lists before they can be searched.
@@ -25,7 +27,8 @@ export function McpServerPage() {
   const context = useProject();
   const { server: slug } = useParams();
   const server = context.mcpServers.find((other) => other.slug === slug);
-  const [editing, setEditing] = useState(false);
+  const navigate = useNavigate();
+  const [doing, setDoing] = useState<"edit" | "delete" | null>(null);
   const [sought, setSought] = useState("");
   const [asking, setAsking] = useState(false);
   const [asked, setAsked] = useState<{ tone: string; text: string }>();
@@ -53,17 +56,7 @@ export function McpServerPage() {
       await queryClient.invalidateQueries({
         queryKey: keys.mcpServers(context.project.id),
       });
-      const status = listed.status ?? 0;
-      setAsked(
-        !listed.reached
-          ? { tone: "bad", text: sentence("Not reached: " + listed.reason) }
-          : status >= 200 && status < 300
-            ? {
-                tone: "ok",
-                text: `Connected in ${listed.duration_ms} ms · ${plural(listed.tools?.length ?? 0, "tool")}`,
-              }
-            : { tone: "bad", text: `The server answered ${status}.` },
-      );
+      setAsked(said(listed, server!.transport));
     } catch (failure) {
       setAsked({
         tone: "bad",
@@ -111,11 +104,26 @@ export function McpServerPage() {
               <button
                 className="btn pri"
                 type="button"
-                onClick={() => setEditing(true)}
+                onClick={() => setDoing("edit")}
               >
                 <Icon name="edit" />
                 Edit
               </button>
+              <Menu
+                align="right"
+                button={(props) => (
+                  <button className="ib" type="button" title="More" {...props}>
+                    <Icon name="dots" />
+                  </button>
+                )}
+              >
+                <MenuItem
+                  glyph="trash"
+                  text="Delete server…"
+                  danger
+                  onClick={() => setDoing("delete")}
+                />
+              </Menu>
             </div>
           )}
         </div>
@@ -231,11 +239,21 @@ export function McpServerPage() {
           </div>
         </div>
       </div>
-      {editing && (
+      {doing === "edit" && (
         <EditMcpServer
           context={context}
           existing={server}
-          onClose={() => setEditing(false)}
+          onClose={() => setDoing(null)}
+        />
+      )}
+      {doing === "delete" && (
+        <DeleteMcpServer
+          context={context}
+          server={server}
+          onClose={(deleted) => {
+            setDoing(null);
+            if (deleted) void navigate(`${base}/mcp-servers`);
+          }}
         />
       )}
     </section>
