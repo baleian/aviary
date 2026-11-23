@@ -636,7 +636,9 @@ To try it locally, `make openbao` installs OpenBao in dev mode in the
 local cluster, which keeps its data in memory. It is at
 `http://openbao.aviary-data:8200`, a host that
 `supervisor.secretStores.allowedHosts` must then list, and its root token is
-in the secret `openbao-root` in the namespace `aviary-data`.
+in the secret `openbao-root` in the namespace `aviary-data`. `make vault`
+installs Vault in the same way, at `http://vault.aviary-data:8200` with its
+root token in `vault-root`.
 
 ## Configuration
 

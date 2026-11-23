@@ -106,7 +106,7 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 	--env AVIARY_TEST_REDIS_URL=redis://default:test@events-redis:6379 \
 	--env AVIARY_TEST_SECRET_STORE_URL=http://secret-store:8200
 
-.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-web test-web-server test-chart test-proxy test-harness chart cluster-up cluster-down postgres mysql valkey redis openbao keycloak headlamp grafana web web-dev build images secrets deploy e2e e2e-up e2e-run e2e-down
+.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-web test-web-server test-chart test-proxy test-harness chart cluster-up cluster-down postgres mysql valkey redis openbao vault keycloak headlamp grafana web web-dev build images secrets deploy e2e e2e-up e2e-run e2e-down
 
 # Generates the Go code of the SQL queries. Run it after changing a query or
 # a migration.
@@ -277,14 +277,21 @@ redis:
 	$(KUBECTL) apply -f hack/kind/redis.yaml
 	$(KUBECTL) --namespace aviary-data rollout status deployment/redis --timeout 300s
 
-# Installs OpenBao in the local cluster, for trying the secret stores of
-# projects. Aviary itself does not need one.
+# The next two targets install a secret store in the local cluster, for
+# trying the secret stores of projects. Aviary itself does not need one.
 openbao:
 	$(KUBECTL) get secret openbao-root --namespace aviary-data >/dev/null 2>&1 || \
 		$(KUBECTL) create secret generic openbao-root --namespace aviary-data \
 			--from-literal=token=$$(openssl rand -hex 24)
 	$(KUBECTL) apply -f hack/kind/openbao.yaml
 	$(KUBECTL) --namespace aviary-data rollout status deployment/openbao --timeout 180s
+
+vault:
+	$(KUBECTL) get secret vault-root --namespace aviary-data >/dev/null 2>&1 || \
+		$(KUBECTL) create secret generic vault-root --namespace aviary-data \
+			--from-literal=token=$$(openssl rand -hex 24)
+	$(KUBECTL) apply -f hack/kind/vault.yaml
+	$(KUBECTL) --namespace aviary-data rollout status deployment/vault --timeout 180s
 
 # Installs Keycloak in the local cluster, for trying Aviary with
 # authentication. Aviary uses it when installed with
