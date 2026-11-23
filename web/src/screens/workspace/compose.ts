@@ -36,6 +36,10 @@ export interface Compose {
   woken?: string;
   // send sends the message. The composer says when there is one to send.
   send: () => Promise<void>;
+  // The MCP servers that a new session is to begin with, if they are not
+  // those of its agent.
+  servers?: string[];
+  setServers: (servers: string[] | undefined) => void;
 }
 
 // Why a caller cannot send a message: the caller's role does not run
@@ -75,6 +79,14 @@ export function useCompose(
   const [sending, setSending] = useState(false);
   const [cooldown, setCooldown] = useState(0);
   const [woken, setWoken] = useState<string>();
+  // The choice is the agent's that it was made for.
+  const [chosen, setChosen] = useState<{ agent: string; servers: string[] }>();
+  const servers = chosen?.agent === agent.id ? chosen.servers : undefined;
+  const setServers = useCallback(
+    (list: string[] | undefined) =>
+      setChosen(list && { agent: agent.id, servers: list }),
+    [agent.id],
+  );
   const box = useRef<HTMLTextAreaElement | null>(null);
   const attach = useCallback((node: HTMLTextAreaElement | null) => {
     box.current = node;
@@ -107,7 +119,8 @@ export function useCompose(
       if (!session) {
         // The session is created with its first message, and named after
         // it. The message stays in the box until it has been accepted.
-        session = (await startSession(agent.id, suggest(message))).id;
+        session = (await startSession(agent.id, suggest(message), servers)).id;
+        setServers(undefined);
         setDraft({ sid: session, text: message });
         await navigate(`${project}/agents/${agent.slug}/s/${session}`, {
           replace: true,
@@ -141,5 +154,16 @@ export function useCompose(
     }
   }
 
-  return { text, setText, fill, attach, sending, cooldown, woken, send };
+  return {
+    text,
+    setText,
+    fill,
+    attach,
+    sending,
+    cooldown,
+    woken,
+    send,
+    servers,
+    setServers,
+  };
 }

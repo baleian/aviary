@@ -1,3 +1,6 @@
+import type { McpServer, ToolCall } from "../../api/types.ts";
+import { label } from "../../lib/format.ts";
+
 // What the console reads out of a tool call. Harnesses shape the input and
 // the output of their tools differently, and these are the fields they use.
 
@@ -88,13 +91,16 @@ const SHOWN = new Set([
 ]);
 
 // fieldsOf returns the other plain fields of the input of a tool call, as
-// text, such as what a search looks for. What it leaves out is in the raw
-// input.
-export function fieldsOf(input: Record<string, unknown>): [string, string][] {
+// text, such as what a search looks for, or every plain field. What it
+// leaves out is in the raw input.
+export function fieldsOf(
+  input: Record<string, unknown>,
+  every = false,
+): [string, string][] {
   return Object.entries(input)
     .filter(
       ([name, value]) =>
-        !SHOWN.has(name) &&
+        (every || !SHOWN.has(name)) &&
         (typeof value === "string"
           ? value !== ""
           : typeof value === "number" || typeof value === "boolean"),
@@ -110,4 +116,16 @@ export function outsideOf(input: Record<string, unknown>): string[] {
   const folders = input.directories;
   if (!Array.isArray(folders)) return [];
   return folders.filter((folder) => typeof folder === "string");
+}
+
+// serverOf names the MCP server of a tool call: as the project names it, or
+// by the slug of the call if the project no longer has the server.
+export function serverOf(
+  call: ToolCall,
+  servers: McpServer[],
+): string | undefined {
+  const mcp = call.mcp;
+  if (!mcp) return undefined;
+  const server = servers.find((each) => each.id === mcp.server);
+  return server ? label(server) : mcp.slug;
 }

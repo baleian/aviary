@@ -25,7 +25,9 @@ it("greets the caller and sums up the project", async () => {
   ).toBeTruthy();
   expect(hero.getByRole("heading", { name: /Storefront/ })).toBeTruthy();
   const facts = document.querySelector(".hero .facts")!.textContent;
-  expect(facts).toBe("4agents2model providers1secret store5members");
+  expect(facts).toBe(
+    "4agents2model providers24MCP servers1secret store5members",
+  );
   await titled("Overview · Storefront · Aviary");
   expect(screen.getByRole("link", { name: "Overview" }).className).toBe("on");
 });
@@ -61,7 +63,7 @@ it("lists the caller's newest sessions of every agent", async () => {
   const failed = rows.find((row) => row.textContent?.includes("Failed"))!;
   expect(failed.textContent).toContain("the model endpoint answered 401");
   // Sessions of two agents are in one list, newest first.
-  expect(rows[3].textContent).toContain("Reviewer");
+  expect(rows[5].textContent).toContain("Reviewer");
   expect(rows[0].getAttribute("href")).toMatch(
     /^\/p\/storefront\/agents\/backend-engineer\/s\//,
   );
@@ -166,15 +168,27 @@ it("shows only the caller's own sessions, and what their role allows", async () 
 
 it("sums up the connections and the members", async () => {
   open("/p/storefront", "alice");
-  const connections = (await part("conn")).getAllByRole("listitem");
-  expect(connections.map((item) => item.textContent)).toEqual([
-    "Company gatewayhttps://llm.example.com/v1Key stored",
-    "Local model serverhttp://10.0.0.5:8000/v1Key in Platform secrets",
-    "Platform secretshttps://secrets.example.com:8200 · mount secretkv-v2",
-  ]);
+  const conn = await part("conn");
+  // Each kind shows its first few, and leads to the rest.
+  expect(conn.getAllByRole("listitem").map((item) => item.textContent)).toEqual(
+    [
+      "Company gatewayhttps://llm.example.com/v1Key stored",
+      "Local model serverhttp://10.0.0.5:8000/v1Key in Platform secrets",
+      "Issue trackerhttps://tracker.example.com/mcp5 tools",
+      "Code hosthttps://git.example.com/mcp43 tools",
+      "Docs searchhttps://docs.example.com/sse2 tools",
+      "Platform secretshttps://secrets.example.com:8200 · mount secretkv-v2",
+    ],
+  );
   expect(
-    screen.getByRole("link", { name: "Manage" }).getAttribute("href"),
-  ).toBe("/p/storefront/connections");
+    [...document.querySelectorAll(".conn h4")].map((head) => head.textContent),
+  ).toEqual(["Model providers2", "MCP servers24See all", "Secret stores1"]);
+  expect(conn.getByRole("link", { name: "See all" }).getAttribute("href")).toBe(
+    "/p/storefront/mcp-servers",
+  );
+  expect(
+    conn.getByRole("link", { name: "Secret stores" }).getAttribute("href"),
+  ).toBe("/p/storefront/secret-stores");
 
   const members = document.querySelector(".mstrip")!;
   expect(members.querySelector("p")!.textContent).toBe(
@@ -199,12 +213,12 @@ it("says of a provider without a key that it has none", async () => {
 it("leads a project without agents through its first steps", async () => {
   open("/p/playground", "alice");
   const provider = await screen.findByRole("link", { name: "Add a provider" });
-  expect(provider.getAttribute("href")).toBe("/p/playground/connections");
+  expect(provider.getAttribute("href")).toBe("/p/playground/providers");
   // The second step waits for the first.
   expect(screen.queryByRole("button", { name: "New agent" })).toBeNull();
   expect(screen.getByText("No sessions yet")).toBeTruthy();
   expect(screen.getByText("No members yet")).toBeTruthy();
-  expect(screen.getAllByText("None yet").length).toBe(2);
+  expect(screen.getAllByText("None yet").length).toBe(3);
 
   // With a provider the second step is next, and opens the dialog.
   await leave();

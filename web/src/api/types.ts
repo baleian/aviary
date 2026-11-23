@@ -50,15 +50,19 @@ export interface Member {
   updated_by?: string;
 }
 
-// Where the key of a model provider is: kept by Aviary, or in a secret store
-// of the project.
-export type ApiKey =
+// Where a secret is: kept by Aviary, or in a secret store of the project.
+export type Secret =
   { stored: true } | { store: string; path: string; key: string };
 
-// A header that the requests to the endpoint of a model provider carry.
+// Where the key of a model provider is.
+export type ApiKey = Secret;
+
+// A header that the requests to an endpoint carry: a value that members of
+// the project can see, or a secret.
 export interface Header {
   name: string;
-  value: string;
+  value?: string;
+  secret?: Secret;
 }
 
 export interface Provider {
@@ -95,9 +99,47 @@ export interface Agent {
   instructions?: string;
   // "ask" if the agent asks a person before it acts.
   approval?: string;
+  // The MCP servers of the project, by ID, that its sessions begin with.
+  mcp_servers?: string[];
   created_at: string;
   updated_at: string;
   deleted_at?: string;
+}
+
+// How an MCP server is reached: Streamable HTTP, or HTTP with server-sent
+// events.
+export type Transport = "http" | "sse";
+
+export interface Tool {
+  name: string;
+  description?: string;
+}
+
+export interface McpServer {
+  id: string;
+  project_id: string;
+  // The name under which agents know the server and its tools.
+  slug: string;
+  // For display only, and empty if the server was given none.
+  name: string;
+  url: string;
+  transport: Transport;
+  headers?: Header[];
+  // The tools that the server listed when it was last asked, and when.
+  tools?: Tool[];
+  tools_listed_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// What came of asking an MCP server for its tools: whether it answered, with
+// which status, and if not, why.
+export interface McpServerTools {
+  reached: boolean;
+  status?: number;
+  tools?: Tool[];
+  reason?: string;
+  duration_ms: number;
 }
 
 export interface Harness {
@@ -123,6 +165,9 @@ export interface ToolCall {
   title?: string;
   kind?: string;
   input?: unknown;
+  // The MCP server and tool of a call of a tool of an MCP server, as the
+  // turn had them when the harness reported the call.
+  mcp?: { server: string; slug: string; tool: string };
 }
 
 // A request of an agent to a person, to approve what it is about to do.
@@ -210,5 +255,8 @@ export interface Session {
   end_reason?: "expired" | "agent_deleted";
   // Absent before the first turn and after the session has ended.
   sandbox?: "awake" | "asleep" | "lost";
+  // The MCP servers, by ID, that its next turn has: those of its agent, but
+  // for what the session turned on or off.
+  mcp_servers?: string[];
   last_turn?: Turn;
 }

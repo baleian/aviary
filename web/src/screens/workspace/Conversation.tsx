@@ -33,6 +33,7 @@ import { person } from "../../ui/who.ts";
 import { barred, type Compose } from "./compose.ts";
 import { Composer, Gate } from "./Composer.tsx";
 import { Details, DetailsButton } from "./Details.tsx";
+import { mcpOf } from "./servers.ts";
 import { SessionHead } from "./SessionHead.tsx";
 import { TurnView } from "./TurnView.tsx";
 
@@ -130,6 +131,9 @@ export function Conversation({
   const error = session.error ?? turns.error;
   const base = `/p/${context.project.slug}/agents/${agent.slug}`;
   const foreign = session.data && session.data.agent_id !== agent.id;
+  const mcp = (of?: Session) =>
+    of &&
+    mcpOf({ context, agent, me, compose, session: of, running: !!unfinished });
   const side = (of?: Session) =>
     details && (
       <Details
@@ -138,6 +142,7 @@ export function Conversation({
         me={me}
         session={of}
         turns={list}
+        mcp={mcp(of)}
         empty={!of}
         onClose={onDetails}
       />
@@ -265,6 +270,7 @@ export function Conversation({
                 key={turn.id}
                 turn={turn}
                 agent={agent}
+                servers={context.mcpServers}
                 person={who}
                 waking={turn.id === compose.woken}
                 onStop={turn.id === unfinished ? stop : undefined}
@@ -295,8 +301,10 @@ export function Conversation({
           />
         ) : (
           <Composer
+            context={context}
             agent={agent}
             compose={compose}
+            mcp={mcp(session.data)!}
             turn={live}
             // A message that is sent is seen: the conversation goes to its
             // end.

@@ -1,15 +1,17 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { api, ApiError } from "../../api/client.ts";
 import { can, keys, type ProjectContext } from "../../api/project.ts";
 import type { Agent, Harness, ProviderModels } from "../../api/types.ts";
 import { named, text, Wrong } from "../../lib/form.ts";
-import { label, sentence } from "../../lib/format.ts";
+import { label, plural, sentence, transportName } from "../../lib/format.ts";
 import { queryClient } from "../../query.ts";
 import { Dialog } from "../../ui/Dialog.tsx";
-import { Field, NameAndSlug, Select, Toggle } from "../../ui/fields.tsx";
+import { Check, Field, NameAndSlug, Select, Toggle } from "../../ui/fields.tsx";
+import { Icon } from "../../ui/Icon.tsx";
 import { toast } from "../../ui/toast.ts";
+import { matches } from "../../lib/mcp.ts";
 
 // ModelField is where the model of an agent is given: chosen among the
 // models that the provider lists, or entered if the provider lists none or
@@ -59,6 +61,107 @@ function ModelField({ provider, kept }: { provider: string; kept?: string }) {
   );
 }
 
+// How many MCP servers a project has before the field offers to search them.
+const SEARCHED = 6;
+
+// McpField is where the MCP servers of the project are chosen that the
+// sessions of an agent begin with. Those that are chosen come first, in the
+// order that they had when the field appeared, and a search narrows the rest
+// by name, slug or tool. A row that the search hides keeps its box in the
+// form.
+function McpField({
+  context,
+  chosen,
+}: {
+  context: ProjectContext;
+  chosen: string[];
+}) {
+  const [on, setOn] = useState(() => new Set(chosen));
+  const [sought, setSought] = useState("");
+  const [order] = useState(() => [
+    ...context.mcpServers.filter((server) => chosen.includes(server.id)),
+    ...context.mcpServers.filter((server) => !chosen.includes(server.id)),
+  ]);
+  const servers = context.mcpServers;
+  const count = servers.filter((server) => on.has(server.id)).length;
+  const shown = order.map((server) => ({
+    server,
+    match: matches(server, sought),
+  }));
+  return (
+    <div className="fld">
+      <span className="lab">
+        MCP servers
+        <em>{count ? `${count} chosen` : "optional"}</em>
+      </span>
+      {servers.length ? (
+        <div className="picks">
+          {servers.length > SEARCHED && (
+            <label className="inp-i picks-find">
+              <Icon name="search" />
+              <input
+                className="inp"
+                placeholder="Find a server or a tool"
+                aria-label="Find an MCP server"
+                value={sought}
+                onChange={(event) => setSought(event.target.value)}
+                // Enter finds; it does not send the form.
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") event.preventDefault();
+                }}
+              />
+            </label>
+          )}
+          <div className="picks-list">
+            {shown.map(({ server, match }) => (
+              <span key={server.id} hidden={!match} className="pick-r">
+                <Check
+                  name="mcp"
+                  value={server.id}
+                  checked={on.has(server.id)}
+                  onChange={(event) => {
+                    const next = new Set(on);
+                    if (event.target.checked) next.add(server.id);
+                    else next.delete(server.id);
+                    setOn(next);
+                  }}
+                >
+                  <span className="pick">
+                    <Icon name="plug" />
+                    <b>{label(server)}</b>
+                    <small>
+                      {match?.tool
+                        ? `Tool ${match.tool}`
+                        : server.tools
+                          ? plural(server.tools.length, "tool")
+                          : transportName(server.transport)}
+                    </small>
+                  </span>
+                </Check>
+              </span>
+            ))}
+            {!shown.some(({ match }) => match) && (
+              <p className="sub none-found">
+                No server or tool matches “{sought.trim()}”.
+              </p>
+            )}
+          </div>
+        </div>
+      ) : (
+        <p className="sub sm">
+          This project has no MCP servers yet.
+          {can(context, "connections.manage") && (
+            <>
+              {" "}
+              <Link to={`/p/${context.project.slug}/mcp-servers`}>Add one</Link>
+            </>
+          )}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // EditAgent is the dialog that creates an agent, or replaces one: all of it
 // but its slug and its harness, which stay as they are. A project without a
 // model provider is sent to add one first.
@@ -94,11 +197,11 @@ export function EditAgent({
             ? "An agent uses a model of one of the project’s providers."
             : "Ask someone who manages the connections of this project."
         }
-        action={manages ? "Add a model provider" : "See connections"}
+        action={manages ? "Add a model provider" : "See model providers"}
         onSubmit={() => true}
         onClose={(go) => {
           onClose();
-          if (go) void navigate(`/p/${context.project.slug}/connections`);
+          if (go) void navigate(`/p/${context.project.slug}/providers`);
         }}
       />
     );
@@ -114,6 +217,7 @@ export function EditAgent({
       model: { provider: text(data, "provider"), name: model },
       instructions: text(data, "instructions"),
       approval: data.get("approval") ? "ask" : "",
+      mcp_servers: data.getAll("mcp").map(String),
     };
     const saved = existing
       ? await api.put<Agent>("/v1/agents/" + existing.id, body)
@@ -218,6 +322,8 @@ export function EditAgent({
           placeholder="You work on the storefront backend. Keep changes small, and say which tests you ran."
         />
       </Field>
+      <h3 className="dlg-sec">Tools</h3>
+      <McpField context={context} chosen={existing?.mcp_servers ?? []} />
       <div className="fld">
         <Toggle name="approval" defaultChecked={existing?.approval === "ask"}>
           Ask before it acts

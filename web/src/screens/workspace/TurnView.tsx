@@ -1,6 +1,12 @@
 import { memo, type ReactNode } from "react";
 import type { Tinted } from "../../api/queries.ts";
-import type { Agent, Item, PlanEntry, Turn } from "../../api/types.ts";
+import type {
+  Agent,
+  Item,
+  McpServer,
+  PlanEntry,
+  Turn,
+} from "../../api/types.ts";
 import { cls } from "../../lib/cls.ts";
 import { clock, duration, label, num } from "../../lib/format.ts";
 import { followed, type Status, STATUS_NAMES } from "../../lib/sessions.ts";
@@ -20,10 +26,13 @@ import {
   inputOf,
   outputText,
   pathOf,
+  serverOf,
 } from "./tools.ts";
 
 type ToolItem = Extract<Item, { type: "tool_call" }>;
 type ApprovalItem = Extract<Item, { type: "approval" }>;
+
+const NONE: McpServer[] = [];
 
 // The icon of each kind of tool call.
 const KINDS: Record<string, IconName> = {
@@ -114,10 +123,13 @@ function Plan({ entries, over }: { entries: PlanEntry[]; over: boolean }) {
 function Answered({
   item,
   alone,
+  server,
   person,
 }: {
   item: ApprovalItem;
   alone?: boolean;
+  // The MCP server of the tool call, if it calls a tool of one.
+  server?: string;
   person: (id?: string) => Who;
 }) {
   const option = item.options?.find((other) => other.id === item.option_id);
@@ -134,10 +146,17 @@ function Answered({
     <p className={cls("answer", !allowed && "no", alone && "alone")}>
       <Icon name="shield" />
       <span>
-        {alone && item.tool_call?.title && (
+        {alone && item.tool_call?.mcp ? (
           <>
-            <b>{item.tool_call.title}</b>:{" "}
+            <b>{item.tool_call.mcp.tool}</b> on {server}:{" "}
           </>
+        ) : (
+          alone &&
+          item.tool_call?.title && (
+            <>
+              <b>{item.tool_call.title}</b>:{" "}
+            </>
+          )
         )}
         <b>{option.name}</b>
         {item.answered_by && <> by {person(item.answered_by).name}</>}
@@ -150,17 +169,26 @@ function Answered({
 const Step = memo(function Step({
   item,
   approval,
+  server,
   over,
   person,
 }: {
   item: ToolItem;
   approval?: ApprovalItem;
+  // The MCP server of the tool call, if it calls a tool of one.
+  server?: string;
   over: boolean;
   person: (id?: string) => Who;
 }) {
   const input = inputOf(item.input);
   const kind = item.kind || "other";
-  const diff = findDiff(item.output) ?? findDiff(item.input) ?? changed(input);
+  // A tool of an MCP server runs on the server, and what it is given says
+  // nothing of the workspace.
+  const mcp = !!item.mcp;
+  const diff =
+    findDiff(item.output) ??
+    findDiff(item.input) ??
+    (mcp ? null : changed(input));
   const output = outputText(item.output);
   const code = exitCode(item.output);
   const failed = item.status === "failed";
@@ -169,10 +197,10 @@ const Step = memo(function Step({
       .filter((field) => item[field] !== undefined)
       .map((field) => [field, item[field]]),
   );
-  const title = item.title || kind;
-  const command = typeof input.command === "string";
-  const path = pathOf(input);
-  const fields = command ? [] : fieldsOf(input);
+  const title = item.mcp?.tool ?? (item.title || kind);
+  const command = !mcp && typeof input.command === "string";
+  const path = mcp ? "" : pathOf(input);
+  const fields = command ? [] : fieldsOf(input, mcp);
   // The code goes unsaid when the command succeeded and its output shows.
   const unsaid = code === 0 && !!output;
   const mark =
@@ -199,7 +227,15 @@ const Step = memo(function Step({
     <details className="step">
       <summary>
         <span className={cls("kd", approval && "y")}>
-          <Icon name={approval ? "shield" : (KINDS[kind] ?? "cube")} />
+          <Icon
+            name={
+              approval
+                ? "shield"
+                : item.mcp
+                  ? "plug"
+                  : (KINDS[kind] ?? "wrench")
+            }
+          />
         </span>
         <span
           className={cls(
@@ -209,12 +245,18 @@ const Step = memo(function Step({
         >
           {title}
         </span>
-        <span className="tag">{kind}</span>
+        {item.mcp ? (
+          <span className="tag srv">{server}</span>
+        ) : (
+          <span className="tag">{kind}</span>
+        )}
         {mark}
         <Icon name="chev" className="chev" />
       </summary>
       <div className="step-b">
-        {approval && <Answered item={approval} person={person} />}
+        {approval && (
+          <Answered item={approval} server={server} person={person} />
+        )}
         {command ? (
           <Command input={input} exit={unsaid ? null : code} />
         ) : (
@@ -264,6 +306,7 @@ const Step = memo(function Step({
 // each other are one list of steps.
 function Blocks({
   items,
+  servers,
   over,
   writing,
   asker,
@@ -272,6 +315,7 @@ function Blocks({
   onStop,
 }: {
   items: Item[];
+  servers: McpServer[];
   over: boolean;
   // Whether the agent may be writing the last item.
   writing: boolean;
@@ -309,6 +353,7 @@ function Blocks({
           key={item.id ?? index}
           item={item}
           approval={approval}
+          server={serverOf(item, servers)}
           over={over}
           person={person}
         />,
@@ -324,6 +369,7 @@ function Blocks({
           <Request
             key={"request" + (item.id ?? index)}
             item={item}
+            server={item.tool_call && serverOf(item.tool_call, servers)}
             asked={asker}
             onAnswer={onAnswer}
             onStop={onStop}
@@ -332,7 +378,15 @@ function Blocks({
       } else if (!tools.has(item.tool_call?.id)) {
         // The answer to a request shows with its tool call, if it has one.
         close();
-        out.push(<Answered key={index} item={item} alone person={person} />);
+        out.push(
+          <Answered
+            key={index}
+            item={item}
+            alone
+            server={item.tool_call && serverOf(item.tool_call, servers)}
+            person={person}
+          />,
+        );
       }
       return;
     }
@@ -503,6 +557,7 @@ function Footer({
 export const TurnView = memo(function TurnView({
   turn,
   agent,
+  servers = NONE,
   person,
   waking,
   onStop,
@@ -511,6 +566,8 @@ export const TurnView = memo(function TurnView({
 }: {
   turn: Turn;
   agent: Tinted<Agent>;
+  // The MCP servers of the project, which name the servers of tool calls.
+  servers?: McpServer[];
   // How to show the user with an ID.
   person: (id?: string) => Who;
   // Whether the turn found the sandbox of its session asleep, and waits
@@ -574,6 +631,7 @@ export const TurnView = memo(function TurnView({
           </div>
           <Blocks
             items={items}
+            servers={servers}
             over={over}
             writing={stands === "running"}
             asker={person(turn.created_by)}

@@ -1280,6 +1280,24 @@ a:hover .top > .go {
   font: 500 12.5px/20px var(--mono);
   word-spacing: 0;
 }
+/* The MCP server of a tool call, in the place of its kind. On a short line
+   it gives way to the name of the tool. */
+.step-t:has(+ .srv) {
+  flex: 0 1 auto;
+}
+.tag.srv {
+  display: inline-block;
+  flex: 0 1000 auto;
+  min-width: 4em;
+  max-width: 45%;
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--sans);
+  line-height: 22px;
+  background: var(--k50);
+  color: var(--k-ink);
+}
 /* The inside of a tool card that is opened: a drawer below its line. What
    is in it scrolls in its own box, and does not make the card wider. */
 .step-b {
@@ -1462,6 +1480,10 @@ a:hover .top > .go {
 .cmd .tag.bad {
   background: rgba(255, 117, 89, 0.2);
   color: #ffb3a2;
+}
+.cmd .tag.srv {
+  background: rgba(132, 202, 255, 0.16);
+  color: #b2ddff;
 }
 .cmd.in {
   margin: 0;
@@ -1875,13 +1897,96 @@ a:hover .top > .go {
 .adv > .fld {
   margin-top: 12px;
 }
-/* The headers of a model provider in its dialog: a name and a value each. */
-.hdr {
+/* The headers of an endpoint in its dialog: a name, where the value comes
+   from, and the value. A value in a secret store takes a second line, below
+   the store. */
+.hdrs {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) auto;
-  align-items: center;
   gap: 8px;
   margin-bottom: 8px;
+}
+.hdr {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) 172px minmax(0, 1.5fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+.hdr-at {
+  grid-column: 2 / 4;
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 8px;
+}
+/* A secret that Aviary stores, where its value would be. */
+.kept {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 40px;
+  min-width: 0;
+  padding: 0 4px 0 12px;
+  border: 1px dashed var(--line2);
+  border-radius: 12px;
+  background: var(--surface-2);
+  color: var(--g-ink);
+  font: 600 13px/1 var(--sans);
+}
+.kept .btn {
+  margin-left: auto;
+}
+.kept.none {
+  color: var(--mist);
+  font-weight: 500;
+}
+.opt-body .kept {
+  max-width: 320px;
+}
+/* The URL of an MCP server and how it is reached, side by side. */
+.fld-row.url {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+}
+.fld-row.url .seg {
+  height: 40px;
+  align-items: center;
+  padding: 3px;
+}
+.fld-row.url .seg button {
+  height: 34px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+/* The tools that an MCP server listed when it was tried. */
+.tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 14px;
+  background: var(--surface-2);
+}
+.tools li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 8px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  font: 500 12px/1 var(--mono);
+  color: var(--ink2);
+  cursor: default;
+}
+.tools li .i {
+  width: 13px;
+  height: 13px;
+  color: var(--slate);
+}
+.clist .pills {
+  display: flex;
+  gap: 6px;
 }
 /* Trying a model provider in its dialog, and what came of it. */
 .try {
@@ -2158,5 +2263,524 @@ a:hover .top > .go {
   }
   .card {
     overflow-x: auto;
+  }
+}
+
+/* A heading inside a dialog, above the fields that it groups. */
+.dlg-sec {
+  margin: 22px 0 10px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  font: 700 13px/20px var(--sans);
+  color: var(--ink);
+}
+/* A choice of many in a dialog, such as the MCP servers of an agent. */
+.picks {
+  border: 1px solid var(--line2);
+  border-radius: 14px;
+  overflow: hidden;
+}
+.pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.pick .i {
+  color: var(--slate);
+}
+.pick b {
+  font: 600 14px/20px var(--sans);
+}
+.pick small {
+  font: 500 12.5px/18px var(--sans);
+  color: var(--slate);
+}
+
+/* The MCP servers of a session: in the composer, and in its details. */
+.mcp-b {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line2);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink2);
+  font: 600 12.5px/1 var(--sans);
+  cursor: pointer;
+  flex: none;
+  transition: 0.15s;
+}
+.mcp-b:hover,
+.mcp-b[aria-expanded="true"] {
+  border-color: var(--k200);
+  background: var(--k50);
+  color: var(--k-ink);
+}
+.mcp-b.off {
+  color: var(--slate);
+}
+.pop.mcp-pop {
+  width: 320px;
+  padding: 6px;
+}
+.mcp-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 8px 10px 4px;
+}
+.mcp-top b {
+  font: 700 14px/20px var(--sans);
+}
+.mcp-top small,
+.r-s h4 small.sub {
+  font: 500 12px/16px var(--sans);
+  color: var(--slate);
+}
+.r-s h4 small.sub {
+  margin-left: auto;
+}
+.mcp-g + .mcp-g {
+  margin-top: 6px;
+}
+.mcp .h {
+  display: block;
+  padding: 6px 10px 4px;
+  font: 600 11.5px/16px var(--sans);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--slate);
+}
+.mcp-r {
+  display: flex;
+  width: 100%;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 10px;
+}
+.pop .mcp-r:hover {
+  background: var(--surface-2);
+}
+.mcp-r .ic {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--k50);
+  color: var(--k-ink);
+  flex: none;
+}
+.mcp-r.off .ic {
+  background: var(--surface-3);
+  color: var(--slate);
+}
+.mcp-r .tx {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+}
+.mcp-r .tx b {
+  font: 600 13.5px/18px var(--sans);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mcp-r.off .tx b {
+  color: var(--ink2);
+}
+.mcp-r .tx small {
+  font: 500 12px/16px var(--sans);
+  color: var(--slate);
+}
+.mcp-r i {
+  order: 3;
+}
+.mcp-r input:disabled + i {
+  opacity: 0.5;
+}
+.mcp-n {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 10px 2px;
+  font: 500 12px/16px var(--sans);
+  color: var(--slate);
+}
+.r-s .mcp-n {
+  margin-left: 0;
+}
+
+/* A box that narrows a list, at the head of a card. */
+.tb-h .find {
+  width: 300px;
+}
+.tb-h .end.sub {
+  font: 500 13px/20px var(--sans);
+  white-space: nowrap;
+}
+.none-found {
+  padding: 16px 20px;
+}
+td .none-found {
+  padding: 8px 4px;
+}
+
+/* The MCP servers of a project, as a table. */
+.mcps tbody tr {
+  cursor: pointer;
+}
+.mcps tbody tr:hover td {
+  background: var(--surface-hover);
+}
+.mcps th:first-child,
+.mcps td:first-child {
+  padding-left: 20px;
+}
+.mcps th:last-child,
+.mcps td:last-child {
+  padding-right: 20px;
+  white-space: nowrap;
+}
+.mcps .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.mcps .nm {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.mcps .nm > span:last-child {
+  display: grid;
+  min-width: 0;
+}
+.mcps .nm a {
+  font: 600 14px/20px var(--sans);
+  color: var(--ink);
+}
+.mcps .nm small {
+  font: 500 12px/16px var(--mono);
+  color: var(--slate);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mcps .ic,
+.srv-h .ic,
+.mcp-r .ic,
+.mcp-on .ic {
+  display: grid;
+  place-items: center;
+  flex: none;
+  border-radius: 8px;
+  background: var(--k50);
+  color: var(--k-ink);
+}
+.mcps .ic {
+  width: 30px;
+  height: 30px;
+}
+.mcps .url {
+  display: block;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--slate);
+  background: none;
+  padding: 0;
+}
+.stack {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.stack small {
+  margin-left: 4px;
+  font: 600 12px/16px var(--sans);
+  color: var(--slate);
+}
+
+/* One MCP server: its head, its tools, and beside them who uses it and what
+   its requests carry. */
+.back {
+  margin-bottom: 12px;
+  font: 600 13px/20px var(--sans);
+}
+.back a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--slate);
+}
+.back a .i {
+  transform: rotate(180deg);
+}
+.srv-h {
+  align-items: center;
+  gap: 16px;
+}
+.srv-h .ic {
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+}
+.srv-h .h1 {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.srv-h .h1 code {
+  font: 500 14px/20px var(--mono);
+  color: var(--slate);
+}
+.srv-h .sub {
+  margin-top: 4px;
+  font: 500 13px/20px var(--sans);
+}
+.srv-h .sub code {
+  font-size: 12.5px;
+}
+.srv-h .act {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+.srv-h + .try-r {
+  display: block;
+  margin: -8px 0 16px;
+}
+.srv {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 20px;
+  align-items: start;
+}
+.srv-side {
+  display: grid;
+  gap: 20px;
+}
+.tool-list li {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.9fr) minmax(0, 2fr);
+  gap: 16px;
+  padding: 10px 20px;
+  border-top: 1px solid var(--line);
+  font: 500 13.5px/20px var(--sans);
+  color: var(--ink2);
+}
+.tool-list code {
+  font: 600 13px/20px var(--mono);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.side-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border-top: 1px solid var(--line);
+  font: 600 13.5px/20px var(--sans);
+  min-width: 0;
+}
+.side-list a {
+  color: var(--ink);
+}
+.hdr-list li {
+  justify-content: space-between;
+}
+.hdr-list code {
+  font: 500 12.5px/18px var(--mono);
+}
+.hdr-list .val {
+  font: 500 12.5px/18px var(--mono);
+  color: var(--slate);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.srv-side .none-found {
+  padding-top: 0;
+  font: 500 13px/20px var(--sans);
+}
+
+/* The overview's connections: each kind with a few of its own. */
+.conn h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.conn h4 a {
+  color: var(--slate);
+}
+.conn h4 .more {
+  margin-left: auto;
+  color: var(--link);
+}
+
+/* The picker of the MCP servers of a session. */
+.mcp-find {
+  display: block;
+  margin: 4px 6px 6px;
+}
+.mcp-find .inp {
+  height: 36px;
+  border-radius: 999px;
+}
+.mcp-find .i {
+  top: 10px;
+}
+.pop.mcp-pop {
+  width: 340px;
+}
+.mcp-list {
+  max-height: min(340px, 45vh);
+  overflow: auto;
+  margin: 0 -6px;
+  padding: 0 6px;
+}
+.mcp .h span {
+  margin-left: 6px;
+  color: var(--mist);
+}
+.mcp-r .tx b {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mcp-r .tx b em,
+.mcp-on .tag {
+  font: 600 10.5px/16px var(--sans);
+  font-style: normal;
+  letter-spacing: 0.02em;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: var(--surface-3);
+  color: var(--slate);
+}
+.mcp-on .tag {
+  height: auto;
+  background: var(--k50);
+  color: var(--k-ink);
+}
+.mcp-none {
+  padding: 10px;
+  font: 500 13px/20px var(--sans);
+  color: var(--slate);
+}
+.pop.mcp-pop hr {
+  margin: 6px 0;
+}
+
+/* The MCP servers that a session has on, in its details. */
+.mcp-on li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+}
+.mcp-on .ic {
+  width: 26px;
+  height: 26px;
+}
+.mcp-on .tx {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+}
+.mcp-on .tx b {
+  font: 600 13.5px/18px var(--sans);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mcp-on .tx small {
+  font: 500 12px/16px var(--sans);
+  color: var(--slate);
+}
+.mcp-on .ib {
+  opacity: 0.55;
+}
+.mcp-on li:hover .ib,
+.mcp-on .ib:focus-visible {
+  opacity: 1;
+}
+.r-s h4 .btn.quiet {
+  margin-left: 4px;
+}
+.r-s .btn.more {
+  margin: 4px 0 0 -12px;
+}
+
+/* The MCP servers of an agent in its dialog: a search, and the list. */
+.picks {
+  display: block;
+}
+.picks-find {
+  display: block;
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.picks-find .inp {
+  height: 36px;
+  border-radius: 999px;
+}
+.picks-find .i {
+  top: 18px;
+  left: 20px;
+}
+.picks-find .inp {
+  padding-left: 36px;
+}
+.picks-list {
+  max-height: 232px;
+  overflow: auto;
+}
+.pick-r {
+  display: block;
+}
+.pick-r[hidden] {
+  display: none;
+}
+.pick-r + .pick-r {
+  border-top: 1px solid var(--line);
+}
+.pick-r > .cb {
+  display: flex;
+  padding: 10px 14px;
+}
+.pick-r > .cb:hover {
+  background: var(--surface-hover);
+}
+
+/* The project's screens in the bar, in groups. */
+.navt-sep {
+  width: 1px;
+  height: 18px;
+  margin: auto 6px;
+  background: var(--line2);
+}
+.navt .short {
+  display: none;
+}
+/* A narrower window takes the short names of the screens, and the caller's
+   picture without the name. */
+@media (max-width: 1260px) {
+  .navt .long {
+    display: none;
+  }
+  .navt .short {
+    display: inline;
+  }
+}
+@media (max-width: 1120px) {
+  .nav .me .nm {
+    display: none;
   }
 }

@@ -33,14 +33,19 @@ function show(of: Partial<Compose> = {}, live?: Turn, stops = true) {
     sending: false,
     cooldown: 0,
     send: vi.fn(),
+    setServers: vi.fn(),
     ...of,
   };
   const onSend = vi.fn();
   const onStop = vi.fn();
+  // A project without MCP servers: the composer has no button for them.
+  const context = { mcpServers: [] } as unknown as ProjectContext;
   render(
     <Composer
+      context={context}
       agent={agent}
       compose={compose}
+      mcp={{ on: [], defaults: [], running: false }}
       turn={live}
       onSend={onSend}
       onStop={stops ? onStop : undefined}

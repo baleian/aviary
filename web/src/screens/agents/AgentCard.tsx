@@ -29,6 +29,9 @@ export function AgentCard({
   const provider = context.providers.find(
     (other) => other.id === agent.model.provider,
   );
+  const servers = context.mcpServers.filter((server) =>
+    (agent.mcp_servers ?? []).includes(server.id),
+  );
   const card = (
     <Link
       className="card agent"
@@ -63,6 +66,16 @@ export function AgentCard({
             <code>{agent.harness}</code> harness
           </span>
         </li>
+        {servers.length > 0 && (
+          <li title={servers.map((server) => label(server)).join(", ")}>
+            <Icon name="plug" />
+            <span>
+              {servers.length > 2
+                ? `${servers.length} MCP servers`
+                : servers.map((server) => label(server)).join(", ")}
+            </span>
+          </li>
+        )}
         {agent.approval === "ask" ? (
           <li className="ask">
             <Icon name="shield" />

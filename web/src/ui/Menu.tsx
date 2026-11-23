@@ -56,6 +56,8 @@ export function Menu({
     let top = box.bottom + 8;
     const above = box.top - height - 8;
     if (top + height > window.innerHeight - 8 && above > 8) top = above;
+    // A menu that fits neither below nor above stays inside the window.
+    top = Math.max(8, Math.min(top, window.innerHeight - height - 8));
     pop.current.style.left = left + "px";
     pop.current.style.top = top + "px";
   }, [open, align]);

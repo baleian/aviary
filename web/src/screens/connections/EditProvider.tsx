@@ -10,19 +10,12 @@ import { Dialog } from "../../ui/Dialog.tsx";
 import { Field, Options, Secret, Select } from "../../ui/fields.tsx";
 import { Icon } from "../../ui/Icon.tsx";
 import { toast } from "../../ui/toast.ts";
+import { type HeaderRow, readHeaders, rowsOf } from "./rows.ts";
+import { Headers } from "./Headers.tsx";
 
 // Where a provider gets its key: entered here and kept by Aviary, read from
 // a secret store, or none.
 type How = "value" | "store" | "none";
-
-// A header of the form: the row that holds its name and its value, and what
-// they are when the row appears. A row that was added takes the focus.
-interface Row {
-  id: number;
-  name: string;
-  value: string;
-  added?: boolean;
-}
 
 // said puts what came of asking an endpoint for its models in words, as a
 // test of the connection to it.
@@ -50,9 +43,9 @@ function said(asked: ProviderModels): {
 }
 
 // EditProvider is the dialog that adds a model provider, or replaces one:
-// its name, URL, headers and key together, so the key is entered again. The
-// connection can be tested before they are saved, by asking the endpoint for
-// its models.
+// its name, URL, headers and key together. The secrets that it stores stay
+// while its URL does. The connection can be tested before they are saved, by
+// asking the endpoint for its models.
 export function EditProvider({
   context,
   existing,
@@ -68,33 +61,34 @@ export function EditProvider({
     !existing || (kept && !at) ? "value" : at ? "store" : "none",
   );
   const project = context.project.id;
-  const [rows, setRows] = useState<Row[]>(() =>
-    (existing?.headers ?? []).map((header, id) => ({ id, ...header })),
+  const [url, setUrl] = useState(existing?.url ?? "");
+  const [rows, setRows] = useState<HeaderRow[]>(() =>
+    rowsOf(existing?.headers),
   );
+  // Whether the key that Aviary stores is being replaced.
+  const [replacing, setReplacing] = useState(false);
   const [trying, setTrying] = useState(false);
   const [tried, setTried] = useState<ReturnType<typeof said>>();
+  // The secrets that are stored stay while the URL is the one that they were
+  // stored for.
+  const keeps = !!existing && url.trim() === existing.url;
+  const keptKey = !!kept && !at && keeps && !replacing;
 
   // endpoint reads the URL, the headers and the key that the form holds. A
   // row that is left empty is no header.
   function endpoint(data: FormData): Record<string, unknown> {
     const body: Record<string, unknown> = { url: text(data, "url") };
     if (!body.url) throw new Wrong("Enter the URL of the model endpoint.");
-    const values = data.getAll("header-value");
-    const headers = data
-      .getAll("header")
-      .map((name, row) => ({
-        name: String(name).trim(),
-        value: String(values[row]).trim(),
-      }))
-      .filter((header) => header.name || header.value);
-    if (headers.some((header) => !header.name || !header.value)) {
-      throw new Wrong("Enter the name and the value of each header.");
-    }
+    const headers = readHeaders(data, rows, keeps);
     if (headers.length) body.headers = headers;
-    if (how === "value") {
+    if (how === "value" && keptKey) {
+      body.api_key = { stored: true };
+    } else if (how === "value") {
       const value = data.get("value");
       if (!value) {
-        throw new Wrong(existing ? "Enter the key again." : "Enter the key.");
+        throw new Wrong(
+          kept && !at ? "Enter the key again." : "Enter the key.",
+        );
       }
       body.api_key = { value };
     } else if (how === "store") {
@@ -128,6 +122,7 @@ export function EditProvider({
     try {
       const path = `/v1/projects/${project}/providers/models`;
       const asked = endpoint(new FormData(form));
+      if (existing) asked.provider = existing.id;
       setTried(said(await api.post<ProviderModels>(path, asked)));
     } catch (failure) {
       const why = failure instanceof Error ? failure.message : "";
@@ -163,7 +158,11 @@ export function EditProvider({
           <input
             className="inp mono"
             name="url"
-            defaultValue={existing?.url}
+            value={url}
+            onChange={(event) => {
+              setUrl(event.target.value);
+              setTried(undefined);
+            }}
             placeholder="https://api.example.com/v1"
             autoComplete="off"
             spellCheck={false}
@@ -180,12 +179,35 @@ export function EditProvider({
             {
               value: "value",
               title: "Store the key in Aviary",
-              body: (
-                <Secret
-                  name="value"
-                  aria-label="API key"
-                  placeholder={kept && !at ? "Enter the key again" : "API key"}
-                />
+              body: keptKey ? (
+                <span className="kept">
+                  <Icon name="lock" />
+                  Stored
+                  <button
+                    className="btn quiet sm"
+                    type="button"
+                    onClick={() => setReplacing(true)}
+                  >
+                    Replace
+                  </button>
+                </span>
+              ) : (
+                <>
+                  <Secret
+                    name="value"
+                    aria-label="API key"
+                    placeholder={
+                      kept && !at ? "Enter the key again" : "API key"
+                    }
+                    autoFocus={replacing}
+                  />
+                  {kept && !at && !keeps && (
+                    <span className="hint warn" role="status">
+                      <Icon name="warn" />
+                      <span>The URL changed: enter the key again.</span>
+                    </span>
+                  )}
+                </>
               ),
             },
             {
@@ -241,53 +263,14 @@ export function EditProvider({
         </summary>
         <div className="fld">
           <span className="lab">Headers</span>
-          {rows.map((row) => (
-            <div className="hdr" key={row.id}>
-              <input
-                className="inp mono"
-                name="header"
-                aria-label="Header name"
-                defaultValue={row.name}
-                placeholder="x-gateway-route"
-                autoComplete="off"
-                spellCheck={false}
-                autoFocus={row.added}
-              />
-              <input
-                className="inp mono"
-                name="header-value"
-                aria-label="Header value"
-                defaultValue={row.value}
-                placeholder="team-a"
-                autoComplete="off"
-                spellCheck={false}
-              />
-              <button
-                className="ib sm"
-                type="button"
-                title="Remove header"
-                onClick={() =>
-                  setRows(rows.filter((other) => other.id !== row.id))
-                }
-              >
-                <Icon name="x" />
-              </button>
-            </div>
-          ))}
-          <button
-            className="btn quiet sm"
-            type="button"
-            onClick={() => {
-              const id = rows.length ? rows[rows.length - 1].id + 1 : 0;
-              setRows([...rows, { id, name: "", value: "", added: true }]);
-            }}
-          >
-            <Icon name="plus" />
-            Add header
-          </button>
-          <span className="hint">
-            Members of the project can see the values.
-          </span>
+          <Headers
+            context={context}
+            rows={rows}
+            onRows={setRows}
+            keeps={!existing || keeps}
+            fresh="value"
+            example={{ name: "x-gateway-route", value: "team-a" }}
+          />
         </div>
       </details>
       <div className="try">

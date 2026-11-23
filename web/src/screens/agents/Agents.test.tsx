@@ -143,6 +143,48 @@ it("changes an agent, but for its slug and its harness", async () => {
   expect(screen.getByRole("status").textContent).toContain("Saved Reviewer");
 });
 
+it("chooses the MCP servers that an agent begins its sessions with", async () => {
+  const user = open("/p/storefront/agents", "alice");
+  const reviewer = await card("Reviewer");
+  expect(reviewer.getByText("Code host, CI pipelines")).toBeTruthy();
+  await user.click(reviewer.getByRole("button", { name: "More" }));
+  await user.click(screen.getByRole("menuitem", { name: "Edit agent" }));
+  const dialog = within(screen.getByRole("dialog", { name: "Edit Reviewer" }));
+  await dialog.findByRole("combobox", { name: "Model" });
+  const field = dialog
+    .getByRole("textbox", { name: "Find an MCP server" })
+    .closest<HTMLElement>(".fld")!;
+  expect(field.querySelector(".lab")!.textContent).toBe("MCP servers2 chosen");
+  // The servers that the agent has come first.
+  const boxes = () => within(field).getAllByRole<HTMLInputElement>("checkbox");
+  expect(
+    boxes()
+      .slice(0, 3)
+      .map((box) => box.checked),
+  ).toEqual([true, true, false]);
+  const find = dialog.getByRole("textbox", { name: "Find an MCP server" });
+  await user.type(find, "refund");
+  const shown = () =>
+    [...field.querySelectorAll<HTMLElement>(".pick-r")].filter(
+      (row) => !row.hidden,
+    );
+  expect(shown().map((row) => row.textContent)).toEqual([
+    "Payments sandboxTool list_refunds",
+  ]);
+  await user.click(within(field).getByRole("checkbox", { name: /Payments/ }));
+  expect(field.querySelector(".lab")!.textContent).toBe("MCP servers3 chosen");
+  await user.clear(find);
+  await user.type(find, "nothing");
+  expect(
+    within(field).getByText("No server or tool matches “nothing”."),
+  ).toBeTruthy();
+  // What a search hides stays chosen.
+  await user.click(dialog.getByRole("button", { name: "Save agent" }));
+  expect(
+    (await screen.findByRole("link", { name: /Reviewer/ })).textContent,
+  ).toContain("3 MCP servers");
+});
+
 it("chooses the model of an agent among those that its provider lists", async () => {
   const user = open("/p/storefront/agents", "alice");
   await user.click(
@@ -397,7 +439,7 @@ it("sends a project without a model provider to add one first", async () => {
     dialog.getByRole("button", { name: "Add a model provider" }),
   );
   expect(
-    await screen.findByRole("heading", { name: "Connections" }),
+    await screen.findByRole("heading", { name: "Model providers" }),
   ).toBeTruthy();
   expect(screen.getByText("No model providers yet")).toBeTruthy();
 });
