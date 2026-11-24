@@ -43,7 +43,7 @@ function show(
   items: Item[] | null = [],
   more: {
     servers?: McpServer[];
-    waking?: boolean;
+    awaits?: "wake" | "restore";
     onStop?: () => void;
     onAgain?: (text: string) => void;
     onAnswer?: (request: string, option: string) => Promise<boolean>;
@@ -642,12 +642,21 @@ it("says what a turn that has not ended is doing", () => {
   );
 });
 
-it("says that a turn waits for its sandbox to wake", () => {
-  const starts = { state: "queued", started_at: undefined } as const;
-  const waking = show({ ...starts, ended_at: undefined }, [], { waking: true });
-  expect(waking.element.querySelector(".state")!.textContent).toBe(
-    "Waking up…",
-  );
+it("says what a turn waits for before it starts", () => {
+  const starts = {
+    state: "queued",
+    started_at: undefined,
+    ended_at: undefined,
+  } as const;
+  for (const [awaits, said] of [
+    [undefined, "Starting…"],
+    ["wake", "Waking up…"],
+    ["restore", "Restoring files…"],
+  ] as const) {
+    const starting = show(starts, [], { awaits });
+    expect(starting.element.querySelector(".state")!.textContent).toBe(said);
+    cleanup();
+  }
 });
 
 it("offers to take a turn from the queue to who may", async () => {

@@ -11,6 +11,8 @@ const EPOCH = Date.UTC(2026, 0, 1);
 // How long a session may go without a running turn before its sandbox is put
 // to sleep. Short, so that it can be watched.
 export const IDLE = 90000;
+// How long a sandbox may sleep before the files of its session are archived.
+const ARCHIVE = 7 * DAY;
 
 export const PERMISSIONS = [
   "project.view",
@@ -1420,7 +1422,8 @@ export function seed(now) {
   );
 
   // The sandbox of a session is awake while a turn runs and for a while
-  // after, and asleep from then on. An ended session has none.
+  // after, and asleep from then on. After a long sleep the session is
+  // archived. An ended session has none.
   for (const record of db.sessions) {
     const turns = db.turns.filter(
       (other) => other.session_id === record.id && other.started_at,
@@ -1431,7 +1434,8 @@ export function seed(now) {
         other.ended_at ? now - Date.parse(other.ended_at) : 0,
       ),
     );
-    record.sandbox = idle < IDLE ? "awake" : "asleep";
+    record.sandbox =
+      idle < IDLE ? "awake" : idle < IDLE + ARCHIVE ? "asleep" : "archived";
   }
   return db;
 }

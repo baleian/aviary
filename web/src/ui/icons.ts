@@ -50,6 +50,7 @@ export const ICONS = [
   "folder",
   "chat",
   "plug",
+  "box",
 ] as const;
 
 export type IconName = (typeof ICONS)[number];

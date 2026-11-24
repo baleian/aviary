@@ -1154,7 +1154,14 @@ function run(turn, play, { answers = {}, instant = false } = {}) {
         // The first turn of a session waits for its sandbox to be created, as
         // does the turn after the sandbox was lost. A later one waits for it
         // to wake if it sleeps. The session says that its sandbox is awake
-        // from the moment that it is created or woken.
+        // from the moment that it is created or woken. The turn of a session
+        // that is archived first restores its files, and the session says so
+        // meanwhile.
+        if (session.sandbox === "archived") {
+          session.sandbox = "restoring";
+          changed();
+          await pause(2600);
+        }
         const wait =
           !session.sandbox || session.sandbox === "lost"
             ? 1900

@@ -497,14 +497,14 @@ function Footer({
   turn,
   stands,
   quiet,
-  waking,
+  awaits,
   onStop,
   onAgain,
 }: {
   turn: Turn;
   stands: Status;
   quiet: boolean;
-  waking?: boolean;
+  awaits?: "wake" | "restore";
   onStop?: () => void;
   onAgain?: (text: string) => void;
 }) {
@@ -534,7 +534,13 @@ function Footer({
     return (
       <p className="state">
         <span className="ring" />
-        <span>{waking ? "Waking up…" : "Starting…"}</span>
+        <span>
+          {awaits === "restore"
+            ? "Restoring files…"
+            : awaits === "wake"
+              ? "Waking up…"
+              : "Starting…"}
+        </span>
       </p>
     );
   }
@@ -634,7 +640,7 @@ export const TurnView = memo(function TurnView({
   agent,
   servers = NONE,
   person,
-  waking,
+  awaits,
   onStop,
   onAgain,
   onAnswer,
@@ -645,9 +651,10 @@ export const TurnView = memo(function TurnView({
   servers?: McpServer[];
   // How to show the user with an ID.
   person: (id?: string) => Who;
-  // Whether the turn found the sandbox of its session asleep, and waits
-  // for it to wake.
-  waking?: boolean;
+  // What the turn waits for before it starts, if its session had no
+  // sandbox that was awake: for the sandbox to wake, or for the files of
+  // the session to be restored into a new one.
+  awaits?: "wake" | "restore";
   // Stops the turn, for a caller who may while it has not ended.
   onStop?: () => void;
   // Takes the message of a turn that did not run to its end, to send it
@@ -719,7 +726,7 @@ export const TurnView = memo(function TurnView({
             turn={turn}
             stands={stands}
             quiet={!items.length}
-            waking={waking}
+            awaits={awaits}
             onStop={onStop}
             onAgain={onAgain}
           />
