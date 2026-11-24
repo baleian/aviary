@@ -34,6 +34,7 @@ import (
 	"aviary/supervisor/identity"
 	"aviary/supervisor/internal/api"
 	"aviary/supervisor/internal/authz"
+	"aviary/supervisor/internal/depot"
 	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/internal/metrics"
 	"aviary/supervisor/internal/sandbox"
@@ -67,6 +68,7 @@ const (
 	modelsURL          = "AVIARY_LLM_BASE_URL"
 	modelsLocalhost    = "AVIARY_LLM_LOCALHOST"
 	proxyURL           = "AVIARY_PROXY_URL"
+	depotDirectory     = "AVIARY_DEPOT_DIRECTORY"
 	apiAddr            = ":8080"
 	authzAddr          = ":9091"
 	metricsAddr        = ":9092"
@@ -79,8 +81,8 @@ const (
 	keepaliveInterval = 30 * time.Second
 )
 
-// handover is how long a stopping Supervisor keeps serving, since the cluster
-// may still send it new requests. It is a variable for tests.
+// handover is how long a stopping Supervisor or depot keeps serving, since
+// the cluster may still send it new requests. It is a variable for tests.
 var handover = 5 * time.Second
 
 type ports struct {
@@ -116,8 +118,13 @@ func Main(plugins Plugins) {
 // instead migrates the database schema to the latest or the given version,
 // up or down. Serving does not migrate: a release runs "migrate" once, before
 // it starts the Supervisors. With the argument "state-metrics", it instead
-// serves the state metrics of the installation until ctx is done.
+// serves the state metrics of the installation until ctx is done. With the
+// argument "depot", it instead serves the objects of a directory as a depot,
+// which needs no database.
 func Run(ctx context.Context, args []string, plugins Plugins) error {
+	if len(args) == 1 && args[0] == "depot" {
+		return serveDepot(ctx)
+	}
 	database, err := env(databaseURL)
 	if err != nil {
 		return err
@@ -136,7 +143,55 @@ func Run(ctx context.Context, args []string, plugins Plugins) error {
 	case len(args) == 1 && args[0] == "state-metrics":
 		return serveState(ctx, database, plugins)
 	}
-	return errors.New("usage: aviary-supervisor [migrate [<version>] | state-metrics]")
+	return errors.New("usage: aviary-supervisor [migrate [<version>] | state-metrics | depot]")
+}
+
+// serveDepot serves the objects in the directory of AVIARY_DEPOT_DIRECTORY.
+func serveDepot(ctx context.Context) error {
+	directory, err := env(depotDirectory)
+	if err != nil {
+		return err
+	}
+	objects, err := depot.Open(directory)
+	if err != nil {
+		return err
+	}
+	requests, err := net.Listen("tcp", apiAddr)
+	if err != nil {
+		return err
+	}
+	scrapes, err := net.Listen("tcp", metricsAddr)
+	if err != nil {
+		return err
+	}
+	return serveDepotOn(ctx, requests, scrapes, objects)
+}
+
+// serveDepotOn serves the objects to the Supervisors on requests, and the
+// metrics of the depot on scrapes, until ctx is done.
+func serveDepotOn(ctx context.Context, requests, scrapes net.Listener, objects *depot.Directory) error {
+	m := metrics.NewDepot(objects.Volume)
+	server := &http.Server{Handler: depot.Handler(objects, m.Served), ReadHeaderTimeout: 10 * time.Second}
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("GET /metrics", m.Handler())
+	metricsServer := &http.Server{Handler: metricsMux, ReadHeaderTimeout: 10 * time.Second}
+	defer metricsServer.Close()
+	failed := make(chan error, 2)
+	go func() { failed <- server.Serve(requests) }()
+	go func() { failed <- metricsServer.Serve(scrapes) }()
+	slog.Info("listening", "depot", requests.Addr().String(), "metrics", scrapes.Addr().String())
+
+	select {
+	case err := <-failed:
+		return err
+	case <-ctx.Done():
+	}
+	// The depot keeps serving for the handover, then lets the transfers that
+	// are under way finish. They have no limit here: the cluster ends a depot
+	// that takes longer than its pod is given.
+	slog.Info("stopping")
+	time.Sleep(handover)
+	return server.Shutdown(context.Background())
 }
 
 // serveState serves the state metrics, which need the database and the names
