@@ -62,14 +62,26 @@ select * from sessions where id = ?;
 update sessions set title = sqlc.arg(title) where id = sqlc.arg(id);
 
 -- name: SetSandbox :exec
--- A sandbox that is set is awake.
+-- A sandbox that is set is awake, or restoring if the session's home is
+-- archived. Without a sandbox, such a session is archived.
 update sessions
-set sandbox = sqlc.narg(sandbox), sandbox_state = if(sqlc.narg(sandbox) is null, null, 'awake')
+set sandbox_state = case when archive is not null and sqlc.narg(sandbox) is not null then 'restoring'
+                         when archive is not null then 'archived'
+                         when sqlc.narg(sandbox) is not null then 'awake' end,
+    sandbox = sqlc.narg(sandbox),
+    asleep_since = null
 where id = sqlc.arg(id);
 
 -- name: SetSandboxState :exec
--- Changes the state only while the session has the sandbox.
-update sessions set sandbox_state = sqlc.arg(state) where id = sqlc.arg(id) and sandbox = sqlc.arg(sandbox);
+-- Changes the state only while the session has the sandbox, with its home.
+-- A sandbox that is asleep keeps the time since which it is: the time is
+-- set before the state, by the state that the session had.
+update sessions
+set asleep_since = case when sqlc.arg(state) <> 'asleep' then null
+                        when sandbox_state = 'asleep' then asleep_since
+                        else now(6) end,
+    sandbox_state = sqlc.arg(state)
+where id = sqlc.arg(id) and sandbox = sqlc.arg(sandbox) and archive is null;
 
 -- name: ListSessionsWithSandbox :many
 select * from sessions where sandbox is not null;
@@ -79,6 +91,51 @@ select * from sessions where sandbox is not null;
 select sandbox_state as state, count(*) as sandboxes from sessions
 where sandbox is not null and ended_at is null
 group by sandbox_state;
+
+-- name: CountArchivedSessions :one
+-- Counts the sessions that have not ended and have an archive for a home,
+-- and no sandbox.
+select count(*) from sessions where archived_at is not null and ended_at is null and sandbox is null;
+
+-- name: CountSessionTurns :one
+-- Returns the number of the session's turns, and how many have not ended.
+select count(*) as turns, cast(coalesce(sum(ended_at is null), 0) as signed) as unfinished from turns where session_id = ?;
+
+-- name: ClaimSession :exec
+update sessions set claim = sqlc.arg(claim), claimed_at = now(6) where id = sqlc.arg(id);
+
+-- name: ArchiveSession :exec
+update sessions
+set archive = sqlc.arg(archive), archive_bytes = sqlc.arg(bytes), archived_at = now(6), claim = null,
+    sandbox = null, sandbox_state = 'archived', asleep_since = null
+where id = sqlc.arg(id);
+
+-- name: ClaimRestore :exec
+-- A sandbox that the session has from an earlier restoring is no longer its
+-- own.
+update sessions
+set claim = sqlc.arg(claim), claimed_at = now(6), sandbox = null, sandbox_state = 'archived'
+where id = sqlc.arg(id);
+
+-- name: RestoreSession :execrows
+update sessions
+set archive = null, archive_bytes = null, archived_at = null, claim = null, sandbox_state = 'awake'
+where id = sqlc.arg(id) and claim = sqlc.arg(claim) and sandbox = sqlc.arg(sandbox) and archive is not null;
+
+-- name: ListLeftArchives :many
+-- Lists the sessions that have ended and still have an archive.
+select * from sessions where archived_at is not null and ended_at is not null order by archived_at limit ?;
+
+-- name: ListOldArchives :many
+-- Lists the sessions that have not ended and were archived before before.
+select * from sessions
+where archived_at < sqlc.arg(before) and ended_at is null and sandbox is null
+order by archived_at limit ?;
+
+-- name: ForgetArchive :exec
+update sessions
+set archive = null, archive_bytes = null, archived_at = null, sandbox_state = if(sandbox is null, null, sandbox_state)
+where id = sqlc.arg(id) and archive = sqlc.arg(archive) and ended_at is not null;
 
 -- name: ListSessions :many
 -- Lists the agent's sessions with IDs below before, newest first: IDs
@@ -292,7 +349,7 @@ update turns set state = 'running' where id = ? and state in ('dispatching', 'ru
 
 -- name: FollowedTurn :one
 select sqlc.embed(turns), agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
-       agents.approval, providers.url as provider_url, agents.model, sessions.sandbox,
+       agents.approval, providers.url as provider_url, agents.model, sessions.sandbox, sessions.sandbox_state,
        cast(timestampdiff(microsecond, coalesce(turns.dispatched_at, turns.created_at), now(6)) as signed) as dispatched
 from turns
 join sessions on sessions.id = turns.session_id

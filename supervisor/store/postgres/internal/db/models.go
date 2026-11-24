@@ -106,6 +106,12 @@ type Session struct {
 	CreatedAt    time.Time
 	EndedAt      *time.Time
 	EndReason    *string
+	AsleepSince  *time.Time
+	Archive      *uuid.UUID
+	ArchiveBytes *int64
+	ArchivedAt   *time.Time
+	Claim        *uuid.UUID
+	ClaimedAt    *time.Time
 }
 
 type Turn struct {
