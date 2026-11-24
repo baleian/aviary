@@ -121,6 +121,33 @@ line identifies the origin of its request on its own:
 
 How long the lines are kept depends on the cluster's log collection.
 
+### Depot
+
+The depot is where the files that outlive a sandbox are kept, as objects in
+a volume. Its pods run the image of the Supervisor with the command `depot`,
+behind one Service. They keep nothing but the volume, which all of them
+mount: any of them serves any request, and a new one starts before the one
+that it replaces stops. A network policy lets only the Supervisors connect
+to them.
+
+An object is a file at the path of its key. It is written once, under its
+own name, and is never changed. So the depots need not coordinate, and the
+volume needs only to let files be created, read and deleted:
+
+- By default it is a volume of the cluster's default storage class that one
+  node mounts, and the depots run on that node together.
+- With `depot.volume.accessMode: ReadWriteMany` it is a volume that many
+  nodes mount at once, such as a network file system, and the depots run on
+  any node.
+- With `depot.volume.existingClaim` it is a claim of your own, such as one
+  of a bucket that a CSI driver mounts as a file system. The mount must let
+  the user of the image, 65532, write and delete files.
+
+The claim that the chart makes is kept when the chart is uninstalled. Its
+storage class and access mode cannot be changed afterwards. To move the
+objects to another volume, copy the files as they are and name the claim of
+that volume in `depot.volume.existingClaim`.
+
 ## Try it locally
 
 You need Docker, [kind](https://kind.sigs.k8s.io), kubectl, Helm, jq, make,
@@ -679,6 +706,10 @@ of your own.
 | `supervisor.auth.admins`, `.users` | Groups of the identity provider whose members administer the installation, and groups whose members may use the API besides the administrators. Both are empty by default: nobody is an administrator, and every authenticated user may use the API. |
 | `supervisor.allowedOrigins` | Origins whose pages may call the API from a browser, such as `https://aviary.example.com`. `*` is every origin. Empty by default: a browser then lets only pages at the address of the API call it. |
 | `stateMetrics.enabled`, `.resources` | Whether the installation serves its [state metrics](#metrics), and the resource requests and limits of the pod that serves them. Default true. |
+| `depot.replicas`, `.resources` | Number of [depot](#depot) replicas, and the resource requests and limits of their pods. Any replica can serve any request. Default 1. |
+| `depot.volume.size`, `.storageClass` | The volume that holds the objects of the depot. Default 30Gi, in the default storage class of the cluster. |
+| `depot.volume.accessMode` | `ReadWriteOnce`, the default, for a volume that one node mounts: the depots run on that node together. `ReadWriteMany` for a volume that many nodes mount at once: the depots run on any node. |
+| `depot.volume.existingClaim` | A claim of your own in the release namespace that holds the objects, instead of the one that the chart makes. `depot.volume.accessMode` says how it can be mounted. |
 | `egressProxy.allowedHosts` | Hosts that the sandboxes may reach, including those of model providers: `*` for any host, a host name for the host on the default HTTPS and HTTP ports, or a host name with a port. Subdomains are separate hosts. Default `*`. |
 | `egressProxy.insideCIDRs`, `.extraEgress` | Address ranges that a NetworkPolicy blocks the Egress Proxy from connecting to, so that the sandboxes cannot use it to reach into the cluster, and additional NetworkPolicy egress rules for the proxy. A model provider or an allowed host that is in the cluster or at a private address needs such a rule. |
 | `egressProxy.localhost` | The host that the Egress Proxy connects to for a model provider whose URL is at `localhost` or a loopback address: a host name or an IP address. Empty by default: such a provider reaches nothing. An installation on one machine can name that machine here. The host needs a rule in `egressProxy.extraEgress` if it is at a private address. |
@@ -702,7 +733,8 @@ ResourceQuota on `aviary-runtime`.
 Supervisors and Egress Proxies do not wait for turns when they stop, as when
 their deployment is scaled in or rolled out. Another Supervisor continues
 the turns from what was recorded, and the requests that a stopping proxy was
-forwarding fail.
+forwarding fail. A depot that stops finishes the transfers that are under
+way, for up to ten minutes.
 
 To run a harness that is not in this repository, see
 [Harness images](images/README.md). To connect Aviary to a database, an
@@ -820,6 +852,16 @@ false leaves the pod out.
 | `aviary_turns_oldest_age_seconds` | Age of the oldest turn of each `harness` and `state`: the time since its message for a queued turn, and since it left the queue for the others. 0 without such a turn. An age well beyond the limit of its state, `runtime.maxQueueWaitSeconds`, `runtime.maxStartupSeconds` or `runtime.maxTurnSeconds`, means that no Supervisor is ending the turn. |
 | `aviary_approvals_waiting` | Approval requests that wait for a person's answer, by `harness`. A turn can have several. |
 
+A depot serves its metrics on the same port and path. Each depot reports its
+own requests, and all of them report the same of the volume, which they
+share:
+
+| Metric | Description |
+| --- | --- |
+| `aviary_depot_request_duration_seconds` | Time that a depot took to serve a request for an object, by `operation`: `write`, `read` or `delete`, and by `outcome`: `done`; `refused`, if the request could not be served as it was made, as for a key that has no object; or `failed`, if the depot or its volume failed it. |
+| `aviary_depot_object_bytes_total` | Bytes of the objects that were written and read, by `operation`. |
+| `aviary_depot_volume_capacity_bytes`, `aviary_depot_volume_available_bytes` | Size of the volume that holds the objects, and how much of it is free. A scrape fails while the volume cannot be read. |
+
 An Egress Proxy serves the metrics of Envoy on the same port and path, among
 them:
 
@@ -835,8 +877,9 @@ read them too, by requesting the proxy's own address through the forward
 proxy, if `egressProxy.allowedHosts` allows that address, as the default
 does.
 
-The Grafana dashboard in `deploy/grafana/aviary.json` charts these metrics,
-and can be imported into any Grafana with a Prometheus data source.
+The Grafana dashboard in `deploy/grafana/aviary.json` charts the metrics of
+the Supervisors, of the state and of the Egress Proxies, and can be imported
+into any Grafana with a Prometheus data source.
 
 ## Tests
 
@@ -887,7 +930,7 @@ and the `image` of each harness in `runtime.harnesses`.
 
 | Path | Contents |
 | --- | --- |
-| `supervisor/` | The Supervisor, in Go: the API, the queue, the session sandboxes and their runners, the event streams, and the authorization of Egress Proxy requests. Its plugins are in `store/`, `events/`, `secret/` and `identity/`, and `plugins.go` lists those of the build. |
+| `supervisor/` | The Supervisor, in Go: the API, the queue, the session sandboxes and their runners, the event streams, and the authorization of Egress Proxy requests. Its plugins are in `store/`, `events/`, `secret/` and `identity/`, and `plugins.go` lists those of the build. The depot is a command of the same program, in `internal/depot`. |
 | `runner/` | The runner, in Rust. |
 | `web/` | The web UI, in TypeScript with React. |
 | `images/` | The images of the Supervisor, the runner, the harnesses and the web UI. |
@@ -906,7 +949,8 @@ and the `image` of each harness in `runtime.harnesses`.
   its sandbox. Aviary keeps no copy, and only a storage class that keeps the
   data of deleted volumes does.
 - **Tested only on a local cluster.** Aviary has not run on a cloud
-  provider's Kubernetes or under load.
+  provider's Kubernetes or under load, and its depot has not run on a
+  network file system or a mounted bucket.
 
 ## License
 

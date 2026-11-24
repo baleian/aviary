@@ -8,6 +8,8 @@ supervisor:
     allowedHosts:
       - openbao.aviary-data:8200
     cacheSeconds: 5
+depot:
+  replicas: 2
 egressProxy:
   replicas: 2
   allowedHosts:

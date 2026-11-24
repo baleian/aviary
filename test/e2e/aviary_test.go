@@ -62,6 +62,7 @@ func TestAviary(t *testing.T) {
 			"an agent is deleted":                                  deletes,
 			"a client watches the sessions of a project":           watches,
 			"the Supervisors report turn metrics":                  supervisorMetrics,
+			"the depots share their volume":                        depots,
 		}
 		if identity {
 			tests["the API authenticates and authorizes callers"] = callers
@@ -918,6 +919,28 @@ func supervisorMetrics(t *testing.T) {
 		eventually(t, soon, "Supervisor metrics have no "+series, func() bool {
 			return total(metrics(t, "supervisor"), series) >= 1
 		})
+	}
+}
+
+// The depots share one volume, which one node mounts: they run on that node
+// together, and each reports the volume.
+func depots(t *testing.T) {
+	serving := running(t, "depot")
+	if len(serving) != 2 {
+		t.Fatalf("%d depots run, want 2", len(serving))
+	}
+	if one, other := serving[0].Spec.NodeName, serving[1].Spec.NodeName; one != other {
+		t.Errorf("the depots run on the nodes %s and %s, want one node", one, other)
+	}
+	for _, depot := range serving {
+		read, err := cluster.CoreV1().RESTClient().Get().Namespace(system).Resource("pods").
+			Name(depot.Name + ":9092").SubResource("proxy").Suffix("metrics").Do(ctx).Raw()
+		if err != nil {
+			t.Fatalf("get metrics of %s: %v", depot.Name, err)
+		}
+		if capacity := total(string(read), "aviary_depot_volume_capacity_bytes"); capacity <= 0 {
+			t.Errorf("%s reports a volume of %v bytes", depot.Name, capacity)
+		}
 	}
 }
 

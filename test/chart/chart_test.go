@@ -504,3 +504,116 @@ func TestSupervisorPermissions(t *testing.T) {
 		t.Errorf("migration Job = %v", migrate)
 	}
 }
+
+// The depots run the image of the Supervisor with the command depot. Of the
+// Supervisor's settings they get none, and they have no access to the
+// cluster. A depot that stops is given time to finish its transfers.
+func TestDepot(t *testing.T) {
+	for values, replicas := range map[string]int{"default": 1, "set": 3} {
+		objects, _ := chart(t, values)
+		depot := find(objects, "Deployment", "aviary-depot")
+		// A new depot starts before the one that it replaces stops, also if
+		// there is only one.
+		if at(depot, "spec", "replicas") != replicas || at(depot, "spec", "strategy") != nil {
+			t.Errorf("%s: depot replicas = %v, strategy = %v; want %d and the rolling update that is the default",
+				values, at(depot, "spec", "replicas"), at(depot, "spec", "strategy"), replicas)
+		}
+		pod := at(depot, "spec", "template", "spec")
+		container := at(pod, "containers", 0)
+		supervisor := at(find(objects, "Deployment", "aviary-supervisor"), "spec", "template", "spec", "containers", 0)
+		if at(container, "image") != at(supervisor, "image") || !reflect.DeepEqual(at(container, "args"), []any{"depot"}) ||
+			at(named(at(container, "ports"), "http"), "containerPort") != 8080 ||
+			at(named(at(container, "ports"), "metrics"), "containerPort") != 9092 {
+			t.Errorf("%s: depot container = %v, want the image of the Supervisor with the command depot and the ports 8080 and 9092", values, container)
+		}
+		directory := env(depot)["AVIARY_DEPOT_DIRECTORY"]
+		if count(at(container, "env")) != 1 || directory == "" || at(container, "volumeMounts", 0, "mountPath") != directory ||
+			at(container, "volumeMounts", 0, "name") != at(pod, "volumes", 0, "name") {
+			t.Errorf("%s: depot env = %v, mounts = %v; want only the directory of the objects, where the volume is mounted",
+				values, at(container, "env"), at(container, "volumeMounts"))
+		}
+		if at(pod, "automountServiceAccountToken") != false || at(pod, "serviceAccountName") != nil {
+			t.Errorf("%s: depot pod has the service account %v, token mounted %v; want neither",
+				values, at(pod, "serviceAccountName"), at(pod, "automountServiceAccountToken"))
+		}
+		if grace, _ := at(pod, "terminationGracePeriodSeconds").(int); grace < 600 {
+			t.Errorf("%s: a stopping depot is given %v seconds for its transfers, want 600 or more", values, at(pod, "terminationGracePeriodSeconds"))
+		}
+		service := at(find(objects, "Service", "aviary-depot"), "spec")
+		if !reflect.DeepEqual(at(service, "selector"), at(depot, "spec", "selector", "matchLabels")) ||
+			!reflect.DeepEqual(at(service, "ports"), []any{map[string]any{"name": "http", "port": 8080, "targetPort": "http"}}) {
+			t.Errorf("%s: depot Service = %v, want the depots at port 8080", values, service)
+		}
+	}
+}
+
+// The objects are in one volume that every depot mounts. A volume that one
+// node mounts, as the default is, keeps the depots on that node together. A
+// volume that many nodes mount lets them run on any node. The volume is kept
+// when the chart is uninstalled, as the sessions are.
+func TestDepotVolume(t *testing.T) {
+	together := []any{map[string]any{
+		"topologyKey": "kubernetes.io/hostname",
+		"labelSelector": map[string]any{"matchLabels": map[string]any{
+			"app.kubernetes.io/name": "aviary", "app.kubernetes.io/component": "depot",
+		}},
+	}}
+	for _, test := range []struct {
+		values, claim string
+		// spec is the claim that the chart makes, or nil if it makes none.
+		spec     map[string]any
+		together bool
+	}{
+		{"default", "aviary-depot", map[string]any{
+			"accessModes": []any{"ReadWriteOnce"}, "resources": map[string]any{"requests": map[string]any{"storage": "30Gi"}},
+		}, true},
+		{"set", "aviary-depot", map[string]any{
+			"accessModes": []any{"ReadWriteMany"}, "storageClassName": "shared",
+			"resources": map[string]any{"requests": map[string]any{"storage": "100Gi"}},
+		}, false},
+		{"claim", "objects", nil, true},
+	} {
+		objects, _ := chart(t, test.values)
+		pod := at(find(objects, "Deployment", "aviary-depot"), "spec", "template", "spec")
+		if count(at(pod, "volumes")) != 1 || at(pod, "volumes", 0, "persistentVolumeClaim", "claimName") != test.claim {
+			t.Errorf("%s: depot volumes = %v, want only the claim %s", test.values, at(pod, "volumes"), test.claim)
+		}
+		affinity := at(pod, "affinity", "podAffinity", "requiredDuringSchedulingIgnoredDuringExecution")
+		if test.together && !reflect.DeepEqual(affinity, together) || !test.together && at(pod, "affinity") != nil {
+			t.Errorf("%s: depot affinity = %v, want the depots on one node: %v", test.values, at(pod, "affinity"), test.together)
+		}
+		made := find(objects, "PersistentVolumeClaim", "aviary-depot")
+		if test.spec == nil {
+			if made != nil {
+				t.Errorf("%s: chart makes the claim %v although the installation has its own", test.values, made)
+			}
+			continue
+		}
+		if !reflect.DeepEqual(at(made, "spec"), test.spec) || at(made, "metadata", "annotations", "helm.sh/resource-policy") != "keep" {
+			t.Errorf("%s: depot claim = %v, want the spec %v, kept on uninstall", test.values, made, test.spec)
+		}
+	}
+}
+
+// A depot does not ask who reads an object, so only the Supervisors can
+// connect to it. It connects to nothing itself. Its metrics can be scraped.
+func TestOnlySupervisorsReachTheDepot(t *testing.T) {
+	objects, _ := chart(t, "default")
+	policy := at(find(objects, "NetworkPolicy", "aviary-depot"), "spec")
+	depot := at(find(objects, "Deployment", "aviary-depot"), "spec", "selector", "matchLabels")
+	if !reflect.DeepEqual(at(policy, "podSelector", "matchLabels"), depot) ||
+		!reflect.DeepEqual(at(policy, "policyTypes"), []any{"Ingress", "Egress"}) || at(policy, "egress") != nil {
+		t.Errorf("depot NetworkPolicy = %v, want it to select the depots, with rules for both directions and none that lets a depot connect", policy)
+	}
+	supervisors := at(find(objects, "Deployment", "aviary-supervisor"), "spec", "selector", "matchLabels")
+	expected := []any{
+		map[string]any{
+			"from":  []any{map[string]any{"podSelector": map[string]any{"matchLabels": supervisors}}},
+			"ports": []any{map[string]any{"protocol": "TCP", "port": 8080}},
+		},
+		map[string]any{"ports": []any{map[string]any{"protocol": "TCP", "port": 9092}}},
+	}
+	if !reflect.DeepEqual(at(policy, "ingress"), expected) {
+		t.Errorf("depot ingress rules = %v, want only the Supervisors on port 8080 and anyone on the metrics port", at(policy, "ingress"))
+	}
+}
