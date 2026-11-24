@@ -42,6 +42,16 @@ func attachmentsOf(session uuid.UUID) string {
 	return "attachments/" + session.String()
 }
 
+// AttachmentLimits returns the largest size of a file that a message
+// carries, in bytes, and the largest number of files of one message. Both are
+// 0 if the installation takes no attachments.
+func (d *Driver) AttachmentLimits() (size int64, files int) {
+	if d.config.Depot == nil || d.config.MaxAttachments == 0 {
+		return 0, 0
+	}
+	return d.config.MaxAttachmentBytes, d.config.MaxAttachments
+}
+
 // Attach keeps the file for a message of the session to carry, and returns
 // its record. by is the user who uploads it, or uuid.Nil if requests are not
 // authenticated, and declared is the size that the uploader gave, or -1. It

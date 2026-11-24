@@ -27,6 +27,17 @@ var (
 // a name that it has twice.
 const maxFileName = 200
 
+// getLimits tells what the installation sets for the files that messages
+// carry, so that a client can refuse a file before it uploads it.
+func (a *api) getLimits(w http.ResponseWriter, _ *http.Request) error {
+	size, files := a.driver.AttachmentLimits()
+	respond(w, http.StatusOK, struct {
+		MaxAttachmentBytes int64 `json:"max_attachment_bytes"`
+		MaxAttachments     int   `json:"max_attachments"`
+	}{size, files})
+	return nil
+}
+
 // uploadAttachment keeps the body of the request as a file for a message of
 // the session to carry. The query parameter name is the name of the file,
 // and the Content-Type header says what the file is.

@@ -297,6 +297,15 @@ func TestAttachmentLimits(t *testing.T) {
 	s := aviary.supervisor()
 	session := s.session()
 
+	type limits struct {
+		MaxAttachmentBytes int64 `json:"max_attachment_bytes"`
+		MaxAttachments     int   `json:"max_attachments"`
+	}
+	var told limits
+	if status, _ := s.request("GET", "/v1/limits", "", &told); status != http.StatusOK || told != (limits{1 << 20, 3}) {
+		t.Errorf("GET /v1/limits = %d %+v, want a mebibyte and three files", status, told)
+	}
+
 	most := strings.Repeat("a", 1<<20)
 	if status, uploaded, refused := s.upload(session, "most.bin", "", strings.NewReader(most)); status != http.StatusCreated || uploaded.Size != 1<<20 {
 		t.Fatalf("upload of the largest file = %d %+v %+v, want 201", status, uploaded, refused)
@@ -332,6 +341,14 @@ func TestAttachmentLimits(t *testing.T) {
 	// An installation that takes no attachments says so.
 	plain := install(t).supervisor()
 	other := plain.session()
+	// Nor does one without a depot take any, whatever its limits are.
+	bare := install(t, func(config *driver.Config) { config.MaxAttachmentBytes, config.MaxAttachments = 1<<20, 3 }).supervisor()
+	for what, without := range map[string]*supervisor{"attachments": plain, "a depot": bare} {
+		told = limits{-1, -1}
+		if status, _ := without.request("GET", "/v1/limits", "", &told); status != http.StatusOK || told != (limits{}) {
+			t.Errorf("GET /v1/limits of an installation without %s = %d %+v, want zeros", what, status, told)
+		}
+	}
 	if status, _, refused := plain.upload(other, "a.txt", "text/plain", strings.NewReader("a")); status != http.StatusForbidden || refused.Code != "attachments_disabled" {
 		t.Errorf("upload to an installation without attachments = %d %+v, want 403 attachments_disabled", status, refused)
 	}

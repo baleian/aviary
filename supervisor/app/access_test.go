@@ -96,6 +96,7 @@ func TestWhoMayDoWhat(t *testing.T) {
 		{"GET", "/v1/roles", ``, "pppppppppp"},
 		{"PUT", "/v1/roles/viewer", `{}`, onlyAdmin},
 		{"GET", "/v1/harnesses", ``, "pppppppppp"},
+		{"GET", "/v1/limits", ``, "pppppppppp"},
 		{"POST", "/v1/projects", `{}`, onlyAdmin},
 		{"GET", "/v1/projects/" + project, ``, everyMember},
 		{"GET", "/v1/projects/" + other, ``, "phhhhhhhhh"},

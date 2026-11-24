@@ -289,6 +289,7 @@ empty.
 | `PUT /v1/members/{id}` | Gives a member another role, or other permissions of its own. Body: `{"role": "..."}` or `{"permissions": [...]}`. Administrators only. |
 | `DELETE /v1/members/{id}` | Removes a member from its project. Returns 204. Administrators only. |
 | `GET /v1/harnesses` | Lists the harnesses that agents can use, by name: `{"harnesses": [{"name": "codex"}, {"name": "opencode"}]}`. They are the installation's `runtime.harnesses`. |
+| `GET /v1/limits` | Returns what the installation sets for the files that messages carry: `{"max_attachment_bytes": 67108864, "max_attachments": 10}`, its `runtime.maxAttachmentBytes` and `runtime.maxAttachments`. Both are 0 if it takes no attachments. |
 | `GET /v1/roles` | Lists the roles and their permissions: `{"roles": [{"name": "editor", "permissions": [...]}, ...]}`. See [Roles](#roles). |
 | `PUT /v1/roles/{name}` | Sets the permissions of a role. Body: `{"permissions": [...]}`. Administrators only: other callers get 403. Returns 400 for an unknown permission and 404 for an unknown role. |
 

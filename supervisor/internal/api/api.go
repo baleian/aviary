@@ -92,6 +92,7 @@ func New(ctx context.Context, st store.Store, ev *events.Streams, dr *driver.Dri
 	mux.Handle("GET /v1/roles", handler(a.listRoles))
 	mux.Handle("PUT /v1/roles/{name}", a.administrator(a.setRole))
 	mux.Handle("GET /v1/harnesses", handler(a.listHarnesses))
+	mux.Handle("GET /v1/limits", handler(a.getLimits))
 	mux.Handle("POST /v1/projects", a.administrator(a.createProject))
 	mux.Handle("GET /v1/projects", handler(a.listProjects))
 	mux.Handle("GET /v1/projects/{pid}", a.inProject(needs{projectView}, a.getProject))
