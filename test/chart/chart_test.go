@@ -274,8 +274,6 @@ func TestSupervisorSettings(t *testing.T) {
 		t.Errorf("Supervisor env AVIARY_LLM_MODEL = %q, want unset", model)
 	}
 
-	// The archive time that is set is a number of a million or more, which
-	// is rendered as it is set too.
 	objects, _ = chart(t, "set")
 	supervisor := find(objects, "Deployment", "aviary-supervisor")
 	settings = env(supervisor)
@@ -326,6 +324,40 @@ func TestSupervisorSettings(t *testing.T) {
 		!reflect.DeepEqual(codex.Resources, resources{"requests": {"cpu": "250m", "memory": "256Mi"}, "limits": {"memory": "4Gi"}}) ||
 		!reflect.DeepEqual(claude.Resources, resources{"requests": {"cpu": "250m", "memory": "512Mi"}, "limits": {"memory": "4Gi"}}) {
 		t.Errorf("AVIARY_HARNESSES = %s", settings["AVIARY_HARNESSES"])
+	}
+}
+
+// A number of a million or more in a values file is rendered as it is set,
+// not in the notation of a floating-point number, which neither the
+// Supervisor nor Envoy reads.
+func TestNumbersOfAMillionOrMore(t *testing.T) {
+	objects, envoy := chart(t, "large")
+	settings := env(find(objects, "Deployment", "aviary-supervisor"))
+	for name, value := range map[string]string{
+		"AVIARY_SECRET_CACHE_SECONDS":      "1000001",
+		"AVIARY_SANDBOX_IDLE_SECONDS":      "1000002",
+		"AVIARY_SANDBOX_ARCHIVE_SECONDS":   "2592000",
+		"AVIARY_SANDBOX_RETENTION_SECONDS": "31536000",
+		"AVIARY_MAX_CONCURRENT_TURNS":      "1000003",
+		"AVIARY_MAX_QUEUED_TURNS":          "1000004",
+		"AVIARY_MAX_QUEUE_WAIT_SECONDS":    "1000005",
+		"AVIARY_MAX_STARTUP_SECONDS":       "1000006",
+		"AVIARY_MAX_RESTORE_SECONDS":       "1000007",
+		"AVIARY_MAX_TURN_SECONDS":          "1000008",
+		"AVIARY_MAX_TOOL_OUTPUT_BYTES":     "1048576",
+	} {
+		if settings[name] != value {
+			t.Errorf("Supervisor env %s = %q, want %q", name, settings[name], value)
+		}
+	}
+	for _, name := range []string{"llm", "forward"} {
+		if idle := at(listener(envoy, name), "stream_idle_timeout"); idle != "1000008s" {
+			t.Errorf("%s stream_idle_timeout = %v, want 1000008s", name, idle)
+		}
+	}
+	depot := at(find(objects, "Deployment", "aviary-depot"), "spec", "template", "spec")
+	if grace := at(depot, "terminationGracePeriodSeconds"); grace != 1000037 {
+		t.Errorf("depot terminationGracePeriodSeconds = %v, want 1000037", grace)
 	}
 }
 

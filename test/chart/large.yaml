@@ -1,0 +1,17 @@
+# Numbers of a million or more, to check that the chart renders them as they
+# are set.
+supervisor:
+  secretStores:
+    cacheSeconds: 1000001
+sandboxes:
+  idleSeconds: 1000002
+  archiveAfterSeconds: 2592000
+  retentionSeconds: 31536000
+runtime:
+  maxConcurrentTurns: 1000003
+  maxQueuedTurns: 1000004
+  maxQueueWaitSeconds: 1000005
+  maxStartupSeconds: 1000006
+  maxRestoreSeconds: 1000007
+  maxTurnSeconds: 1000008
+  maxToolOutputBytes: 1048576

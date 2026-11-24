@@ -162,11 +162,12 @@ test-chart: $(AGENT_SANDBOX_CHART)
 	$(RENDER) > .out/chart/default.yaml
 	$(RENDER) --values test/chart/set.yaml > .out/chart/set.yaml
 	$(RENDER) --values test/chart/closed.yaml > .out/chart/closed.yaml
+	$(RENDER) --values test/chart/large.yaml > .out/chart/large.yaml
 	$(RENDER) --set depot.volume.existingClaim=objects > .out/chart/claim.yaml
 	! $(RENDER) --set 'egressProxy.allowedHosts={https://example.com}' > /dev/null 2>&1
 	! $(RENDER) --set depot.volume.accessMode=ReadOnlyMany > /dev/null 2>&1
 	$(call GO,test,--env AVIARY_TEST_RENDERED=/src/.out/chart) $(GO_TEST) $(TESTS)
-	for values in default set closed; do \
+	for values in default set closed large; do \
 		$(call GO,test) run ./internal/unpack /src/.out/chart/$$values.yaml /src/.out/chart/$$values && \
 		docker run --rm --volume $(CURDIR)/.out/chart/$$values:/etc/envoy:ro \
 			$(ENVOY_IMAGE) --mode validate --log-level error --config-path /etc/envoy/envoy.yaml || exit 1; \

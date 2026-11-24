@@ -47,7 +47,7 @@ spec:
             - name: AVIARY_SECRET_STORE_HOSTS
               value: {{ .Values.supervisor.secretStores.allowedHosts | toJson | quote }}
             - name: AVIARY_SECRET_CACHE_SECONDS
-              value: {{ .Values.supervisor.secretStores.cacheSeconds | quote }}
+              value: {{ .Values.supervisor.secretStores.cacheSeconds | int64 | quote }}
             - name: AVIARY_IDENTITY_PROVIDER
               value: {{ .Values.supervisor.auth.provider | toJson | quote }}
             - name: AVIARY_ADMIN_GROUPS
@@ -63,11 +63,11 @@ spec:
             - name: AVIARY_SANDBOX_STORAGE_CLASS
               value: {{ .Values.runtime.volume.storageClass | quote }}
             - name: AVIARY_SANDBOX_IDLE_SECONDS
-              value: {{ .Values.sandboxes.idleSeconds | quote }}
+              value: {{ .Values.sandboxes.idleSeconds | int64 | quote }}
             - name: AVIARY_SANDBOX_ARCHIVE_SECONDS
               value: {{ .Values.sandboxes.archiveAfterSeconds | int64 | quote }}
             - name: AVIARY_SANDBOX_RETENTION_SECONDS
-              value: {{ .Values.sandboxes.retentionSeconds | quote }}
+              value: {{ .Values.sandboxes.retentionSeconds | int64 | quote }}
             - name: AVIARY_LLM_BASE_URL
               value: http://aviary-egress-proxy.{{ .Release.Namespace }}:8080
             - name: AVIARY_LLM_LOCALHOST
@@ -79,19 +79,19 @@ spec:
             - name: AVIARY_HARNESSES
               value: {{ .Values.runtime.harnesses | toJson | quote }}
             - name: AVIARY_MAX_CONCURRENT_TURNS
-              value: {{ .Values.runtime.maxConcurrentTurns | quote }}
+              value: {{ .Values.runtime.maxConcurrentTurns | int64 | quote }}
             - name: AVIARY_MAX_QUEUED_TURNS
-              value: {{ .Values.runtime.maxQueuedTurns | quote }}
+              value: {{ .Values.runtime.maxQueuedTurns | int64 | quote }}
             - name: AVIARY_MAX_QUEUE_WAIT_SECONDS
-              value: {{ .Values.runtime.maxQueueWaitSeconds | quote }}
+              value: {{ .Values.runtime.maxQueueWaitSeconds | int64 | quote }}
             - name: AVIARY_MAX_TOOL_OUTPUT_BYTES
-              value: {{ .Values.runtime.maxToolOutputBytes | quote }}
+              value: {{ .Values.runtime.maxToolOutputBytes | int64 | quote }}
             - name: AVIARY_MAX_STARTUP_SECONDS
-              value: {{ .Values.runtime.maxStartupSeconds | quote }}
+              value: {{ .Values.runtime.maxStartupSeconds | int64 | quote }}
             - name: AVIARY_MAX_RESTORE_SECONDS
               value: {{ .Values.runtime.maxRestoreSeconds | int64 | quote }}
             - name: AVIARY_MAX_TURN_SECONDS
-              value: {{ .Values.runtime.maxTurnSeconds | quote }}
+              value: {{ .Values.runtime.maxTurnSeconds | int64 | quote }}
           ports:
             - name: http
               containerPort: 8080
