@@ -53,6 +53,8 @@ runtime:
   maxRestoreSeconds: 1200
   maxTurnSeconds: 7200
   maxToolOutputBytes: 23
+  maxAttachmentBytes: 29
+  maxAttachments: 0
   harnesses:
     opencode:
       resources:

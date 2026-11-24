@@ -41,6 +41,9 @@ const (
 	// ArchiveAgain is the default time after which a home is archived again
 	// if archiving it failed.
 	ArchiveAgain = 6 * time.Hour
+	// UnsentFor is the default time for which an attachment is kept while no
+	// message carries it.
+	UnsentFor = time.Hour
 )
 
 // Labels that identify the agent and project of a sandbox, besides its
@@ -110,12 +113,18 @@ type Config struct {
 	// MaxRestore is added to MaxStartup for a turn that restores the home
 	// of its session.
 	MaxRestore time.Duration
-	// Sweep, CancelGrace, ArchiveTime and ArchiveAgain default to the
-	// constants of the same name.
+	// MaxAttachmentBytes limits the size of a file that a message carries.
+	MaxAttachmentBytes int64
+	// MaxAttachments limits the number of files that a message carries.
+	// Zero means that the installation takes none.
+	MaxAttachments int
+	// Sweep, CancelGrace, ArchiveTime, ArchiveAgain and UnsentFor default
+	// to the constants of the same name.
 	Sweep        time.Duration
 	CancelGrace  time.Duration
 	ArchiveTime  time.Duration
 	ArchiveAgain time.Duration
+	UnsentFor    time.Duration
 }
 
 type Driver struct {
@@ -160,6 +169,9 @@ func New(config Config, sandboxes Sandboxes, st store.Store, ev *events.Streams,
 	if config.ArchiveAgain == 0 {
 		config.ArchiveAgain = ArchiveAgain
 	}
+	if config.UnsentFor == 0 {
+		config.UnsentFor = UnsentFor
+	}
 	return &Driver{
 		config: config, id: uuid.New(), sandboxes: sandboxes, store: st, events: ev, metrics: m,
 		wake: make(chan struct{}, 1), following: map[uuid.UUID]*orders{},
@@ -191,10 +203,14 @@ func (d *Driver) Wake() {
 }
 
 // Accept queues the message as the session's next turn. by is the user who
-// sent it, or uuid.Nil if requests are not authenticated. It returns the
-// errors of store.CreateTurn.
-func (d *Driver) Accept(ctx context.Context, sessionID, by uuid.UUID, text string) (store.Turn, error) {
-	turn, waiting, err := d.store.CreateTurn(ctx, sessionID, by, text, nil, d.config.MaxQueuedTurns, d.config.MaxConcurrentTurns)
+// sent it, or uuid.Nil if requests are not authenticated, and attachments
+// are the files that it carries. It returns ErrTooManyAttachments if they
+// are more than MaxAttachments, and the errors of store.CreateTurn.
+func (d *Driver) Accept(ctx context.Context, sessionID, by uuid.UUID, text string, attachments []uuid.UUID) (store.Turn, error) {
+	if len(attachments) > d.config.MaxAttachments {
+		return store.Turn{}, ErrTooManyAttachments
+	}
+	turn, waiting, err := d.store.CreateTurn(ctx, sessionID, by, text, attachments, d.config.MaxQueuedTurns, d.config.MaxConcurrentTurns)
 	switch {
 	case err == nil:
 		d.metrics.Accepted(waiting)
@@ -416,6 +432,7 @@ func (d *Driver) look(ctx context.Context) {
 	}
 	d.shelve(ctx, due)
 	d.clear(ctx)
+	d.discardAttachments(ctx)
 }
 
 // tend brings the session's sandbox and its recorded state in line. made is

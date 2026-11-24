@@ -132,8 +132,9 @@ mount: any of them serves any request, and a new one starts before the one
 that it replaces stops. A network policy lets only the Supervisors connect
 to them.
 
-The objects are the homes of the sessions whose sandboxes have slept for
-`sandboxes.archiveAfterSeconds`. A Supervisor wakes such a sandbox, has its
+The objects are the files that messages carry, each kept from its upload
+until its session ends, and the homes of the sessions whose sandboxes have
+slept for `sandboxes.archiveAfterSeconds`. A Supervisor wakes such a sandbox, has its
 runner pack the home, writes the archive to the depot, and deletes the
 sandbox with its volume. A message that arrives meanwhile is not held up:
 its turn takes the sandbox, and the home is archived later. The next turn of
@@ -267,7 +268,9 @@ empty.
 | `PUT /v1/sessions/{id}/mcp-servers/{server}` | Turns an MCP server of the project on or off for a session. Body: `{"enabled": true}`. Returns 200 with the session, and 409 if the session has ended. Besides admins, only the creator of the session may. |
 | `DELETE /v1/sessions/{id}/mcp-servers` | Gives a session the MCP servers of its agent again. Returns 200 with the session. |
 | `PATCH /v1/sessions/{id}` | Changes the title of a session, also of one that has ended. Body: `{"title": "..."}`, where an empty title leaves the session without one. Returns 200 with the session. |
-| `POST /v1/sessions/{id}/messages` | Sends a message. Body: `{"text": "..."}`. Returns 202 with the turn, whose `created_by` is set as for a session; 409 if a turn of the session has not ended or the session has ended; 429 with `Retry-After` if too many turns are queued. |
+| `POST /v1/sessions/{id}/messages` | Sends a message. Body: `{"text": "...", "attachments": ["..."]}`, where `attachments` are the IDs of files that were uploaded for the session, and the text may be left out if there are any. Returns 202 with the turn, whose `created_by` is set as for a session; 409 if a turn of the session has not ended or the session has ended; 429 with `Retry-After` if too many turns are queued; 400 `too_many_attachments` if the message names more files than `runtime.maxAttachments`, and 400 `unknown_attachment` if one of them is not a file of the session that no message carries yet. |
+| `POST /v1/sessions/{id}/attachments?name=...` | Uploads a file for a message of the session to carry. The body is the file, `name` its name, and `Content-Type` what it is. Returns 201 with the attachment: `{"id": "...", "name": "...", "media_type": "...", "size": 0}`. The name is kept without its directories, control characters and leading dots. Besides admins, only the creator of the session may. Returns 413 `attachment_too_large` if the file is larger than `runtime.maxAttachmentBytes`, 507 `storage_full` if the [depot](#depot) has no room for it, 403 `attachments_disabled` if the installation takes no attachments, and 409 if the session has ended. A file that no message carries within an hour is deleted. |
+| `GET /v1/attachments/{id}` | Returns the file of an attachment, as a download, to those who may read its session. Returns 404 once the session has ended: the files are kept until then. |
 | `DELETE /v1/sessions/{id}` | Ends a session. Returns 200 with the session, which then has `ended_at`. The session's sandbox is deleted with its volume and everything that the agent had in it, unless the storage class keeps the data of deleted volumes (see `runtime.volume` in [Configuration](#configuration)). The conversation stays readable, and the session accepts no more messages. Returns 409 if a turn of the session has not ended. |
 | `POST /v1/turns/{id}/cancel` | Cancels a turn. A queued turn ends at once: 200 with the turn. A running turn is told to stop, and ends when its harness has stopped: 202 with the turn. Returns 409 if the turn has ended in another way. |
 | `POST /v1/turns/{id}/approvals/{request}` | Answers an approval request of the turn. Body: `{"option_id": "..."}`, the `id` of one of the request's options. Returns 202 when the answer is on its way to the harness, 400 if the request has no such option, and 409 if the request already has an answer or the turn has ended. |
@@ -331,6 +334,9 @@ the response has `x-should-retry: false`.
 ### Turn records
 
 A turn, in `GET /v1/turns/{id}` and in the session's list of turns, has
+`attachments` if its message carries files: each with its `id`, `name`,
+`media_type` and `size`, in the order of the message. Two files of one name
+have different names there: the second is `report (2).pdf`. A turn also has
 `items`: what the agent said and did, in order. The items are assembled
 from the events when the turn ends, so a turn that has not ended has none,
 and a client follows its events instead. The events are kept for an hour
@@ -738,6 +744,7 @@ of your own.
 | `runtime.maxRestoreSeconds` | Seconds more that a turn may take to reach its harness if it first restores the home of its session from the depot. Default 600. |
 | `runtime.maxTurnSeconds` | Seconds that a turn may run after it leaves the queue, including the time that it waits for approval. A turn that runs longer fails, and its sandbox is put to sleep. Default 1800. |
 | `runtime.maxToolOutputBytes` | Maximum bytes of the input or output of a tool call that turn events report. Longer text is truncated in the events. Default 65536. 0 means no limit. |
+| `runtime.maxAttachmentBytes`, `.maxAttachments` | Maximum bytes of a file that a message carries, and maximum number of files of one message. Default 67108864, which is 64 MiB, and 10. With 0 files, messages carry none and uploads are refused. A proxy in front of the API must let a request body of that size through. |
 | `runtime.harnesses` | Harnesses that agents can use, by name, each with its image and the `resources` of its sandbox pods, in the format of Kubernetes container resources. A change applies to a sandbox the next time it wakes. |
 | `runtime.volume.size`, `.storageClass` | The session volume, mounted at `/home`: the state of the harness, the files of the agent and what the agent installs with npm or pip. Default 10Gi, in the default storage class of the cluster. The volume is deleted with its sandbox when its session is ended or expires, or when its home is archived. Whether its data is deleted too depends on the storage class: the default class of the local cluster deletes it, a class with `reclaimPolicy: Retain` keeps it, and some file storage drivers keep it unless they are configured not to. |
 

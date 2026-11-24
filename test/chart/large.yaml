@@ -15,3 +15,5 @@ runtime:
   maxRestoreSeconds: 1000007
   maxTurnSeconds: 1000008
   maxToolOutputBytes: 1048576
+  maxAttachmentBytes: 1073741824
+  maxAttachments: 1000009

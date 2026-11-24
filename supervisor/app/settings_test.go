@@ -33,6 +33,8 @@ var settings = map[string]string{
 	maxStartup:         "90",
 	maxRestore:         "600",
 	maxToolOutput:      "65536",
+	maxAttachmentBytes: "67108864",
+	maxAttachments:     "10",
 	maxTurn:            "1800",
 }
 
@@ -68,18 +70,21 @@ func TestDriverConfig(t *testing.T) {
 		if config.Depot == nil || config.ArchiveAfter != 7*24*time.Hour || config.MaxRestore != 10*time.Minute {
 			t.Errorf("unexpected archiving in config %+v", config)
 		}
+		if config.MaxAttachmentBytes != 64<<20 || config.MaxAttachments != 10 {
+			t.Errorf("unexpected limits of attachments in config %+v", config)
+		}
 	})
 
 	t.Run("optional limits disabled", func(t *testing.T) {
 		set(t, map[string]string{
-			maxQueuedTurns: "0", maxQueueWait: "0", maxStartup: "0", maxRestore: "0",
+			maxQueuedTurns: "0", maxQueueWait: "0", maxStartup: "0", maxRestore: "0", maxAttachments: "0",
 			sandboxIdle: "0", sandboxArchive: "0", sandboxRetention: "1",
 		})
 		config, err := driverConfig()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if config.MaxQueuedTurns != 0 || config.MaxQueueWait != 0 || config.MaxStartup != 0 || config.MaxRestore != 0 ||
+		if config.MaxQueuedTurns != 0 || config.MaxQueueWait != 0 || config.MaxStartup != 0 || config.MaxRestore != 0 || config.MaxAttachments != 0 ||
 			config.Idle != 0 || config.ArchiveAfter != 0 || config.Retention != time.Second {
 			t.Errorf("unexpected limits in config %+v", config)
 		}
@@ -103,6 +108,8 @@ func TestDriverConfig(t *testing.T) {
 		{maxQueueWait, ""}, {maxQueueWait, "-1"}, {maxQueueWait, "2m"},
 		{maxStartup, ""}, {maxStartup, "-1"},
 		{maxRestore, ""}, {maxRestore, "-1"},
+		{maxAttachmentBytes, ""}, {maxAttachmentBytes, "0"}, {maxAttachmentBytes, "64Mi"},
+		{maxAttachments, ""}, {maxAttachments, "-1"},
 		{maxTurn, ""}, {maxTurn, "0"},
 	} {
 		t.Run(wrong.name+"="+wrong.value, func(t *testing.T) {

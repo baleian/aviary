@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"aviary/supervisor/events"
+	"aviary/supervisor/internal/depot"
 	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/secret"
 	"aviary/supervisor/store"
@@ -133,6 +134,8 @@ func New(ctx context.Context, st store.Store, ev *events.Streams, dr *driver.Dri
 	mux.Handle("PATCH /v1/sessions/{sid}", a.withSession(retitles, a.updateSession))
 	mux.Handle("DELETE /v1/sessions/{sid}", a.withSession(ends, a.endSession))
 	mux.Handle("POST /v1/sessions/{sid}/messages", a.withSession(sends, a.createMessage))
+	mux.Handle("POST /v1/sessions/{sid}/attachments", a.withSession(sends, a.uploadAttachment))
+	mux.Handle("GET /v1/attachments/{attachment}", a.withAttachment(reads, a.downloadAttachment))
 	mux.Handle("PUT /v1/sessions/{sid}/mcp-servers/{server}", a.withSession(sends, a.setSessionMcpServer))
 	mux.Handle("DELETE /v1/sessions/{sid}/mcp-servers", a.withSession(sends, a.resetSessionMcpServers))
 	mux.Handle("GET /v1/sessions/{sid}/turns", a.withSession(reads, a.listTurns))
@@ -654,17 +657,23 @@ func (a *api) createMessage(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	var request struct {
-		Text string `json:"text"`
+		Text        string      `json:"text"`
+		Attachments []uuid.UUID `json:"attachments"`
 	}
 	if err := decode(w, r, &request); err != nil {
 		return err
 	}
-	if request.Text == "" {
-		return invalid("text is required")
+	if request.Text == "" && len(request.Attachments) == 0 {
+		return invalid("text is required, unless the message carries attachments")
 	}
-	turn, err := a.driver.Accept(r.Context(), sessionID, callerOf(r).id, request.Text)
+	turn, err := a.driver.Accept(r.Context(), sessionID, callerOf(r).id, request.Text, request.Attachments)
 	if err != nil {
 		return err
+	}
+	carried, err := a.store.TurnAttachments(r.Context(), []uuid.UUID{turn.ID})
+	if err != nil {
+		// The turn is accepted, so the answer names it also without them.
+		slog.ErrorContext(r.Context(), "read attachments of turn", "turn", turn.ID, "error", err)
 	}
 	// The turn is accepted once stored, so failing to publish its position
 	// does not fail the request. A turn dispatched in the meantime has no
@@ -679,7 +688,7 @@ func (a *api) createMessage(w http.ResponseWriter, r *http.Request) error {
 		slog.ErrorContext(r.Context(), "publish turn event", "turn", turn.ID, "event", events.TurnQueued, "error", err)
 	}
 	a.driver.Wake()
-	respond(w, http.StatusAccepted, turn)
+	respond(w, http.StatusAccepted, attached(turn, carried[turn.ID]))
 	return nil
 }
 
@@ -738,8 +747,9 @@ func (a *api) listTurns(w http.ResponseWriter, r *http.Request) error {
 // approval requests of a turn that has not ended.
 type turnRecord struct {
 	store.Turn
-	Items     []json.RawMessage `json:"items"`
-	Approvals []json.RawMessage `json:"approvals,omitempty"`
+	Attachments []store.Attachment `json:"attachments,omitempty"`
+	Items       []json.RawMessage  `json:"items"`
+	Approvals   []json.RawMessage  `json:"approvals,omitempty"`
 }
 
 func (a *api) records(ctx context.Context, turns []store.Turn) ([]turnRecord, error) {
@@ -751,10 +761,14 @@ func (a *api) records(ctx context.Context, turns []store.Turn) ([]turnRecord, er
 	if err != nil {
 		return nil, err
 	}
+	carried, err := a.store.TurnAttachments(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
 	records := make([]turnRecord, len(turns))
 	for i, turn := range turns {
 		// Items is [], not null, for a turn without items.
-		records[i] = turnRecord{Turn: turn, Items: append([]json.RawMessage{}, items[turn.ID]...)}
+		records[i] = turnRecord{Turn: turn, Attachments: carried[turn.ID], Items: append([]json.RawMessage{}, items[turn.ID]...)}
 		if turn.EndedAt == nil {
 			if records[i].Approvals, err = a.store.WaitingApprovals(ctx, turn.ID); err != nil {
 				return nil, err
@@ -881,6 +895,16 @@ func (h handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		failure = errMemberExists
 	case errors.Is(err, store.ErrSlugTaken):
 		failure = errSlugTaken
+	case errors.Is(err, store.ErrUnknownAttachment):
+		failure = errUnknownAttachment
+	case errors.Is(err, driver.ErrTooManyAttachments):
+		failure = errTooManyAttachments
+	case errors.Is(err, driver.ErrAttachmentTooLarge):
+		failure = errAttachmentTooLarge
+	case errors.Is(err, driver.ErrNoAttachments):
+		failure = errNoAttachments
+	case errors.Is(err, depot.ErrFull):
+		failure = errStorageFull
 	default:
 		slog.ErrorContext(r.Context(), "request failed", "method", r.Method, "path", r.URL.Path, "error", err)
 		failure = errInternal
