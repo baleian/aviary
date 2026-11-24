@@ -505,6 +505,69 @@ func TestPackage(t *testing.T) {
 // read calls the tool of the harness that reads a file, not one that takes a
 // path for something else, with the argument by which that tool names the
 // file.
+// What a harness puts after an instruction in its message, as it does with
+// the links to the files that the message carries, is attached to the
+// instruction and not of it, on every API.
+func TestAttached(t *testing.T) {
+	t.Parallel()
+	model := httptest.NewServer(newMock(apiKey))
+	defer model.Close()
+	// Each API with how it shapes a part of a user's message, and where the
+	// model's text is in the events of its stream.
+	for api, shape := range map[string]struct {
+		part string
+		text []any
+	}{
+		"/v1/chat/completions": {"text", []any{"choices", 0, "delta", "content"}},
+		"/v1/responses":        {"input_text", []any{"delta"}},
+		"/v1/messages":         {"text", []any{"delta", "text"}},
+	} {
+		// ask sends the user's messages, each of them its parts, and returns
+		// what the model says.
+		ask := func(messages ...[]string) string {
+			var conversation []any
+			for _, parts := range messages {
+				var content []any
+				for _, part := range parts {
+					content = append(content, map[string]any{"type": shape.part, "text": part})
+				}
+				conversation = append(conversation, map[string]any{"type": "message", "role": "user", "content": content})
+			}
+			request := map[string]any{"model": "mock", "stream": true, "messages": conversation, "input": conversation}
+			status, stream, refusal := events(t, model.URL+api, apiKey, request)
+			if status != http.StatusOK {
+				t.Fatalf("%s: got status %d %s", api, status, refusal)
+			}
+			var said string
+			for _, event := range stream {
+				if api != "/v1/responses" || event["type"] == "response.output_text.delta" {
+					said += str(at(event, shape.text...))
+				}
+			}
+			return said
+		}
+		links := []string{"[@notes-k.txt](file:///home/.attachments/1/notes-k.txt)", "[@notes-a.txt](file:///home/.attachments/1/notes-a.txt)"}
+		with := func(parts ...string) []string { return append(parts, links...) }
+		for _, test := range []struct {
+			name     string
+			messages [][]string
+			text     string
+		}{
+			{"what follows the instruction", [][]string{with("attached")}, strings.Join(links, "\n")},
+			{"not what the harness puts before it", [][]string{with("<system-reminder>be kind</system-reminder>", "attached")}, strings.Join(links, "\n")},
+			{"nothing", [][]string{{"attached"}}, "nothing"},
+			{"an instruction is not what follows it", [][]string{with("say hello")}, "hello"},
+			{"a message has only what follows its own instruction", [][]string{with("say hello"), {"attached"}}, "nothing"},
+			{"what follows was sent along", [][]string{with("find notes-a.txt")}, "present"},
+			{"and is found only then", [][]string{{"find notes-a.txt"}}, "absent"},
+		} {
+			if said := ask(test.messages...); said != test.text {
+				t.Errorf("%s, %s: the model said %q, want %q", api, test.name, said, test.text)
+			}
+		}
+	}
+}
+
 func TestRead(t *testing.T) {
 	t.Parallel()
 	model := httptest.NewServer(newMock(apiKey))

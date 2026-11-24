@@ -92,6 +92,9 @@ struct Bench {
 #[derive(Default)]
 struct Message<'a> {
     text: &'a str,
+    /// The files that the message carries, by their paths below the
+    /// attachments of the home.
+    files: &'a [String],
     instructions: &'a str,
     /// "ask", or empty.
     approval: &'a str,
@@ -345,6 +348,7 @@ impl Sitting {
                 &id,
                 json!({
                     "text": message.text,
+                    "files": message.files,
                     "instructions": message.instructions,
                     "approval": message.approval,
                     "environment": environment,
@@ -879,6 +883,61 @@ async fn asking_agent_reads_the_files_of_messages_without_asking() {
             ended.image,
             ended.events
         );
+    })
+    .await;
+}
+
+/// The files of a message are linked in its prompt, and a harness tells its
+/// model of each, in the order of the message, whatever the files are named
+/// and whatever they are. A file that the model does not take leaves the
+/// session as it is: the turn ends, and so does the one after it.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the harness images"]
+async fn harness_tells_its_model_of_the_files_of_a_message_in_their_order() {
+    each(|bench| async move {
+        let session = bench.session().await;
+        // A workbook is an archive, as far as its first bytes say.
+        let workbook = [b"PK\x03\x04".as_slice(), &[7; 2000]].concat();
+        let carried = [
+            ("notes-k.txt", b"to do".to_vec()),
+            ("pixel.png", PIXEL.to_vec()),
+            ("보고서 (2).txt", "할 일".as_bytes().to_vec()),
+            ("table.xlsx", workbook),
+            ("notes-a.txt", b"done".to_vec()),
+        ];
+        let mut files = Vec::new();
+        for (name, content) in carried {
+            let path = format!("1/{name}");
+            let written = session.runner.file(&path, content).await;
+            assert_eq!(written, StatusCode::NO_CONTENT, "{}: {path}", bench.image);
+            files.push(path);
+        }
+        let told = Message {
+            text: "attached",
+            files: &files,
+            ..Message::default()
+        };
+        let ended = session.run(told).await;
+        ended.completed();
+        // The mock model says what came with its instruction, and every
+        // harness names a file by its path.
+        let said = said(&ended.events);
+        let mut after = 0;
+        for file in &files {
+            let path = format!("/home/.attachments/{file}");
+            let Some(at) = said[after..].find(&path) else {
+                panic!(
+                    "{}: the model was not told of {path} after the files before it: {said:?}",
+                    ended.image
+                );
+            };
+            after += at + path.len();
+        }
+        session
+            .say("say still here")
+            .await
+            .completed()
+            .says("still here");
     })
     .await;
 }

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -473,7 +474,8 @@ func TestAnUploadIsRefusedWhenTheDepotIsFull(t *testing.T) {
 
 // The files that a message carries are in the home of the session's sandbox
 // when its turn is given to the runner, under the number of the turn, and
-// stay there for the turns that follow.
+// stay there for the turns that follow. The runner is told of them in the
+// order of the message.
 func TestTheFilesOfAMessageAreInTheSandboxBeforeItsTurn(t *testing.T) {
 	t.Parallel()
 	attachments, _ := attaching(t)
@@ -491,6 +493,9 @@ func TestTheFilesOfAMessageAreInTheSandboxBeforeItsTurn(t *testing.T) {
 	if got := home.Files(); !maps.Equal(got, want) {
 		t.Errorf("files of the home when the runner has the turn = %q, want %q", got, want)
 	}
+	if told := []string{"1/notes.txt", "1/notes (2).txt"}; !slices.Equal(runner.Files, told) {
+		t.Errorf("files that the runner is told of = %q, want %q", runner.Files, told)
+	}
 	runner.report(finished("end_turn", nil))
 
 	// A message without files brings none.
@@ -498,17 +503,25 @@ func TestTheFilesOfAMessageAreInTheSandboxBeforeItsTurn(t *testing.T) {
 	if got := home.Files(); !maps.Equal(got, want) {
 		t.Errorf("files of the home after a message without files = %q, want %q", got, want)
 	}
+	if len(runner.Files) != 0 {
+		t.Errorf("files that the runner is told of with a message without files = %q, want none", runner.Files)
+	}
 	runner.report(finished("end_turn", nil))
 
-	report := s.attach(session, "notes.txt", "a report")
-	status, third := s.carrying(session, "", report.ID)
+	// The order of the message is neither that of the uploads nor that of
+	// the names.
+	summary, report := s.attach(session, "a summary.txt", "in short"), s.attach(session, "notes.txt", "a report")
+	status, third := s.carrying(session, "", report.ID, summary.ID)
 	if status != http.StatusAccepted {
-		t.Fatalf("message of an attachment = %d %v", status, third)
+		t.Fatalf("message of attachments = %d %v", status, third)
 	}
-	aviary.given(third["id"].(string))
-	want["3/notes.txt"] = "a report"
+	runner = aviary.given(third["id"].(string))
+	want["3/notes.txt"], want["3/a summary.txt"] = "a report", "in short"
 	if got := home.Files(); !maps.Equal(got, want) {
 		t.Errorf("files of the home after the third message = %q, want %q", got, want)
+	}
+	if told := []string{"3/notes.txt", "3/a summary.txt"}; !slices.Equal(runner.Files, told) {
+		t.Errorf("files that the runner is told of = %q, want %q", runner.Files, told)
 	}
 }
 

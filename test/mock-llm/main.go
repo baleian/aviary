@@ -19,6 +19,9 @@
 //	               then replies with the tool's output. The tool is the first
 //	               that the harness offers whose name ends with the server's
 //	               and the tool's, as in "server_tool" or "mcp__server__tool"
+//	attached       replies with what follows the instruction in its message,
+//	               as the links to the files that a message carries do, a
+//	               part per line, or "nothing" if nothing does
 //	recall         replies with the user's earlier instructions, one per
 //	               line, or "nothing" if there are none
 //	find <text>    replies "present" if the harness sent the text along with
@@ -29,7 +32,9 @@
 //	flaky <text>   refuses the request once, as an overloaded model server
 //	               does, and replies with the text when the harness retries
 //
-// Any other message gets the reply "mock".
+// Any other message gets the reply "mock". An instruction is a part of its
+// message by itself: what the harness puts before or after it in the message
+// is not of it.
 //
 // Requests must carry the API key given in MOCK_LLM_API_KEY. Every response
 // reports the same token usage, 11 input and 7 output tokens. GET /v1/models
@@ -225,6 +230,8 @@ func (m *mock) next(c conversation) answer {
 type conversation struct {
 	// said holds the user messages, oldest first.
 	said []string
+	// attached holds what followed the last instruction in its message.
+	attached []string
 	// sent holds the text that the harness added itself: its instructions to
 	// the model, and the messages that it added to the conversation.
 	sent []string
@@ -302,12 +309,25 @@ func (a answer) wait(r *http.Request) bool {
 	}
 }
 
-// hear adds a user message. A message that is not an instruction is taken to
-// be added by the harness, and also goes to sent.
-func (c *conversation) hear(message string) {
-	c.said = append(c.said, message)
-	if _, _, found := instruction(message); !found {
-		c.sent = append(c.sent, message)
+// hear adds a user message, part by part. A part that is not an instruction
+// is taken to be added by the harness, and also goes to sent. Those that
+// follow an instruction in its message are attached to it, and are no
+// messages of their own.
+func (c *conversation) hear(parts ...string) {
+	instructed := false
+	for _, part := range parts {
+		_, _, found := instruction(part)
+		switch {
+		case found:
+			instructed, c.attached = true, nil
+			c.said = append(c.said, part)
+		case instructed:
+			c.attached = append(c.attached, part)
+			c.sent = append(c.sent, part)
+		default:
+			c.said = append(c.said, part)
+			c.sent = append(c.sent, part)
+		}
 	}
 }
 
@@ -350,6 +370,10 @@ func (c conversation) next() answer {
 		return answer{text: "present"}
 	case word == "find":
 		return answer{text: "absent"}
+	case word == "attached" && len(c.attached) == 0:
+		return answer{text: "nothing"}
+	case word == "attached":
+		return answer{text: strings.Join(c.attached, "\n")}
 	}
 	var before []string
 	for _, message := range c.said[:len(c.said)-1] {
@@ -397,7 +421,7 @@ func (c conversation) use(rest string) answer {
 func instruction(message string) (word, rest string, found bool) {
 	word, rest, _ = strings.Cut(strings.TrimSpace(message), " ")
 	switch word {
-	case "say", "drawl", "run", "escalate", "read", "use", "recall", "find", "fail", "flaky":
+	case "say", "drawl", "run", "escalate", "read", "use", "attached", "recall", "find", "fail", "flaky":
 		return word, strings.TrimSpace(rest), true
 	}
 	return "", "", false
@@ -492,19 +516,25 @@ func findReader(tools []tool) *readTool {
 
 // text returns content that is either a string or a list of text parts.
 func text(content json.RawMessage) string {
+	return strings.Join(texts(content), "")
+}
+
+// texts returns the text parts of content that is either a string or a list
+// of parts.
+func texts(content json.RawMessage) []string {
 	var whole string
 	if json.Unmarshal(content, &whole) == nil {
-		return whole
+		return []string{whole}
 	}
 	var parts []struct {
 		Text string `json:"text"`
 	}
 	json.Unmarshal(content, &parts)
-	var joined strings.Builder
-	for _, part := range parts {
-		joined.WriteString(part.Text)
+	texts := make([]string, len(parts))
+	for i, part := range parts {
+		texts[i] = part.Text
 	}
-	return joined.String()
+	return texts
 }
 
 // pieces splits text into the words in which it is streamed.
@@ -592,7 +622,7 @@ func (m *mock) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	for i, message := range request.Messages {
 		switch message.Role {
 		case "user":
-			c.hear(text(message.Content))
+			c.hear(texts(message.Content)...)
 		case "system", "developer":
 			c.sent = append(c.sent, text(message.Content))
 		case "tool":
@@ -686,7 +716,7 @@ func (m *mock) responses(w http.ResponseWriter, r *http.Request) {
 	for i, item := range items {
 		switch {
 		case item.Type == "message" && item.Role == "user":
-			c.hear(text(item.Content))
+			c.hear(texts(item.Content)...)
 		case item.Type == "message" && (item.Role == "system" || item.Role == "developer"):
 			c.sent = append(c.sent, text(item.Content))
 		case item.Type == "function_call_output" && i == len(items)-1:
@@ -823,10 +853,11 @@ func (m *mock) messages(w http.ResponseWriter, r *http.Request) {
 			c.hear(text(message.Content))
 			continue
 		}
+		var parts []string
 		for _, block := range blocks {
 			switch {
 			case block.Type == "text":
-				c.hear(block.Text)
+				parts = append(parts, block.Text)
 				// The user's next message can follow a tool result in the
 				// same message, as after a refused tool call.
 				if _, _, found := instruction(block.Text); found {
@@ -837,6 +868,7 @@ func (m *mock) messages(w http.ResponseWriter, r *http.Request) {
 				c.toolOutput, c.searched = &output, called[block.ToolUseID] == toolSearch
 			}
 		}
+		c.hear(parts...)
 	}
 	var tools []tool
 	for _, offered := range request.Tools {

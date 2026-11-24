@@ -483,7 +483,8 @@ func restoresAtOnce(t *testing.T) {
 
 // A message carries files: they are uploaded for the session, and are in the
 // home of its sandbox when the turn of the message starts, whatever their
-// names and sizes. They can be downloaded as they were uploaded.
+// names and sizes. The model is told of them in the order of the message.
+// They can be downloaded as they were uploaded.
 func attaches(t *testing.T) {
 	session := newAgent(t, harness(harnesses[0])).session(t)
 	// Megabytes that do not compress, and a name that needs care.
@@ -524,6 +525,31 @@ func attaches(t *testing.T) {
 	// The files stay for the turns that follow.
 	if shown := run(t, session, `run cat "/home/.attachments/1/`+report+`"`); !strings.Contains(shown.tools(), "to do") {
 		t.Errorf("agent did not read the file of the earlier message: tool calls %s", shown.tools())
+	}
+
+	// The mock model says what came with its instruction, and a harness names
+	// a file by its path.
+	var again [2]string
+	for i, name := range []string{"second.txt", "first.txt"} {
+		var uploaded struct{ ID string }
+		if status := request(t, "POST", "/v1/sessions/"+session+"/attachments?name="+name, "a note", &uploaded); status != http.StatusCreated {
+			t.Fatalf("upload %s: got %d, want 201", name, status)
+		}
+		again[i] = uploaded.ID
+	}
+	if message, err = json.Marshal(map[string]any{"text": "attached", "attachments": again}); err != nil {
+		t.Fatal(err)
+	}
+	if status := request(t, "POST", "/v1/sessions/"+session+"/messages", string(message), &accepted); status != http.StatusAccepted {
+		t.Fatalf("second message with attachments: got status %d, want 202", status)
+	}
+	if last := read(t, accepted.ID).end(t); last.Type != "turn.completed" {
+		t.Fatalf("turn of the second message with attachments ended with %s %s, want turn.completed", last.Type, last.Data)
+	}
+	told := record(t, accepted.ID).said()
+	second, first := strings.Index(told, "/home/.attachments/3/second.txt"), strings.Index(told, "/home/.attachments/3/first.txt")
+	if second < 0 || first < second {
+		t.Errorf("the model was told %q, want the files of the message in its order", told)
 	}
 
 	response, err := call(ctx, administrator, "GET", "/v1/attachments/"+ids["data.bin"], "")

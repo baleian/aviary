@@ -134,33 +134,37 @@ func AttachmentPath(seq int, name string) string {
 }
 
 // deliver writes the files that the message of the turn carries into the
-// home of the sandbox, before the turn is given to the runner. It can be done
-// again: a file replaces the one that is there. Its error is
-// sandbox.ErrNoRoom if the home has no room for a file.
-func (d *Driver) deliver(ctx context.Context, turn store.FollowedTurn, runner *sandbox.Runner) error {
+// home of the sandbox, before the turn is given to the runner, and returns
+// their paths there in the order of the message. It can be done again: a file
+// replaces the one that is there. Its error is sandbox.ErrNoRoom if the home
+// has no room for a file.
+func (d *Driver) deliver(ctx context.Context, turn store.FollowedTurn, runner *sandbox.Runner) ([]string, error) {
 	carried, err := d.store.TurnAttachments(ctx, []uuid.UUID{turn.ID})
 	if err != nil {
-		return fmt.Errorf("read attachments of turn: %w", err)
+		return nil, fmt.Errorf("read attachments of turn: %w", err)
 	}
+	var paths []string
 	for _, attachment := range carried[turn.ID] {
 		if d.config.Depot == nil {
-			return errors.New("the installation has no depot")
+			return nil, errors.New("the installation has no depot")
 		}
 		file, size, err := d.config.Depot.Get(ctx, attachmentKey(turn.SessionID, attachment.ID))
 		if err != nil {
-			return fmt.Errorf("read attachment %s: %w", attachment.Name, err)
+			return nil, fmt.Errorf("read attachment %s: %w", attachment.Name, err)
 		}
+		path := AttachmentPath(turn.Seq, attachment.Name)
 		if size == attachment.Size {
-			err = runner.PutFile(ctx, AttachmentPath(turn.Seq, attachment.Name), file, size)
+			err = runner.PutFile(ctx, path, file, size)
 		} else {
 			err = fmt.Errorf("the depot has %d bytes of %d", size, attachment.Size)
 		}
 		file.Close()
 		if err != nil {
-			return fmt.Errorf("write attachment %s into the sandbox: %w", attachment.Name, err)
+			return nil, fmt.Errorf("write attachment %s into the sandbox: %w", attachment.Name, err)
 		}
+		paths = append(paths, path)
 	}
-	return nil
+	return paths, nil
 }
 
 // discardAttachments deletes the attachments that no message has carried

@@ -4,7 +4,8 @@
 //!   PUT /files/{path}   writes a file
 //!
 //! They are under `.attachments` in the home, where the agent reads them, and
-//! stay there for the turns that follow.
+//! stay there for the turns that follow. The prompt of a turn links those of
+//! its message.
 
 use std::env;
 use std::fs::{self, File};
@@ -12,6 +13,7 @@ use std::io::{self, BufWriter, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process;
 
+use agent_client_protocol::v1::schema::{ContentBlock, ResourceLink, TextContent};
 use axum::extract::{Path as Named, Request};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -21,6 +23,11 @@ use tokio_util::io::{StreamReader, SyncIoBridge};
 
 /// The directory of the files, in the home.
 const DIRECTORY: &str = ".attachments";
+
+/// Returns the directory of the files, if the runner has a home.
+fn directory() -> Option<PathBuf> {
+    Some(PathBuf::from(env::var_os("HOME")?).join(DIRECTORY))
+}
 
 /// Writes the body of the request as the file of the path, which is relative
 /// to the directory of the files. A file that is there is replaced, so the
@@ -33,10 +40,10 @@ pub async fn receive(Named(path): Named<String>, request: Request) -> Response {
             "the path names no file below the directory of the files",
         );
     };
-    let Some(home) = env::var_os("HOME") else {
+    let Some(directory) = directory() else {
         return refuse(StatusCode::INTERNAL_SERVER_ERROR, "HOME is not set");
     };
-    let to = PathBuf::from(home).join(DIRECTORY).join(path);
+    let to = directory.join(path);
     let body = request.into_body().into_data_stream();
     let file = SyncIoBridge::new(Box::pin(StreamReader::new(body.map_err(io::Error::other))));
     match task::spawn_blocking(move || write(file, &to)).await {
@@ -62,9 +69,53 @@ fn refuse(status: StatusCode, why: impl ToString) -> Response {
     (status, why.to_string() + "\n").into_response()
 }
 
+/// Returns the prompt of a message: its text, and after it a link to each of
+/// the files that the message carries, in the order of the message. A message
+/// of files alone has no text. The paths of the files are relative to the
+/// directory of the files.
+///
+/// A link names its file and says nothing else of it. A harness that is told
+/// what a file is may give it to its model as that, and a model that does not
+/// take it refuses the prompt, and those that follow it.
+pub fn prompt(text: String, files: &[String]) -> io::Result<Vec<ContentBlock>> {
+    let mut blocks = Vec::with_capacity(files.len() + 1);
+    if files.is_empty() || !text.is_empty() {
+        blocks.push(ContentBlock::Text(TextContent::new(text)));
+    }
+    if files.is_empty() {
+        return Ok(blocks);
+    }
+    let directory = directory().ok_or_else(|| io::Error::other("HOME is not set"))?;
+    for file in files {
+        let path = directory.join(file);
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        blocks.push(ContentBlock::ResourceLink(ResourceLink::new(
+            name,
+            address(&path),
+        )));
+    }
+    Ok(blocks)
+}
+
+/// Returns the address of the file at the path, as a `file` URI. Only what
+/// would end the path, or begin an escape, is escaped: a harness may show its
+/// model the address as it is, and the model then reads the path in it.
+fn address(path: &Path) -> String {
+    let mut address = String::from("file://");
+    for character in path.to_string_lossy().chars() {
+        match character {
+            '%' => address.push_str("%25"),
+            '#' => address.push_str("%23"),
+            '?' => address.push_str("%3F"),
+            other => address.push(other),
+        }
+    }
+    address
+}
+
 /// Returns the path if it stays below the directory that it is relative to,
 /// and names a file there.
-fn below(path: &str) -> Option<&Path> {
+pub fn below(path: &str) -> Option<&Path> {
     let path = Path::new(path);
     let stays = path
         .components()
@@ -117,6 +168,30 @@ mod tests {
             "/etc/passwd",
         ] {
             assert_eq!(below(path), None, "{path}");
+        }
+    }
+
+    #[test]
+    fn address_escapes_only_what_would_end_or_escape_the_path() {
+        for (path, address) in [
+            (
+                "/home/.attachments/3/notes.txt",
+                "file:///home/.attachments/3/notes.txt",
+            ),
+            (
+                "/home/.attachments/3/보고서 (2).pdf",
+                "file:///home/.attachments/3/보고서 (2).pdf",
+            ),
+            (
+                "/home/.attachments/3/100% #1?.txt",
+                "file:///home/.attachments/3/100%25 %231%3F.txt",
+            ),
+            (
+                "/home/.attachments/3/%41&b=[c].txt",
+                "file:///home/.attachments/3/%2541&b=[c].txt",
+            ),
+        ] {
+            assert_eq!(super::address(Path::new(path)), address, "{path}");
         }
     }
 

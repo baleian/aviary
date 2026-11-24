@@ -43,6 +43,11 @@ The runner talks to the harness over its standard input and output with the
 - **Turns.** For each turn, the runner sends `session/prompt` with the
   message as text. The turn ends when the prompt returns, and the harness
   stays for the next turn.
+- **Files.** After the text, the prompt has a `resource_link` for each file
+  that the message carries, in the order of the message: the name of the
+  file, and its `file` URI in the home. A message of files alone has no
+  text. A link does not say what the file is, and of its path only `%`, `#`
+  and `?` are escaped.
 - **Events.** From `session/update` notifications, the runner reports the
   agent's message and thought text, tool calls and their updates, plans, and
   a title that the harness gives the session. It advertises
@@ -156,6 +161,16 @@ images in this repository handle these cases:
   that messages carry are: in `/home/.attachments`. Their images allow that
   directory, so that an agent that asks reads what the user gave it without
   asking. Codex looks at such a file with its own tool without asking.
+- **Links to files.** Claude Code and Codex give their model a link as a
+  line of text, `[@name](uri)`, and the model reads the file with a tool if
+  it wants to. Claude Code takes the name from the URI, which is why the
+  runner leaves the path as it is. OpenCode reads the file as its tool for
+  reading files would, and gives its model what came of that with the
+  prompt: the text of a file, up to what that tool reads at a time, or that
+  the file cannot be read. With a link that says what the file is, OpenCode
+  gives the model the file as that, and a model that does not take it
+  refuses every prompt of the session from then on. The runner does not say
+  what a file is.
 - **Titles of the tools of MCP servers.** Claude Code titles a call of a
   tool of an MCP server `server: tool`, Codex `mcp.server.tool`, and OpenCode
   `server_tool`, which is also the form of its own `apply_patch`: in a

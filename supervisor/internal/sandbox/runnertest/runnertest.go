@@ -189,6 +189,7 @@ type Turn struct {
 	ID      string `json:"-"`
 	// The request that started the turn.
 	Text         string            `json:"text"`
+	Files        []string          `json:"files"`
 	Instructions string            `json:"instructions"`
 	Approval     string            `json:"approval"`
 	Environment  map[string]string `json:"environment"`

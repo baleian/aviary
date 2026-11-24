@@ -60,6 +60,9 @@ func (r *Runner) Address() string {
 // so the runner starts a new one for a turn in which they differ.
 type Turn struct {
 	Text string `json:"text"`
+	// Files are the files that the message carries, in its order: the paths
+	// at which PutFile wrote them. The runner links them in the prompt.
+	Files []string `json:"files,omitempty"`
 	// Instructions are given to the agent before every turn.
 	Instructions string `json:"instructions"`
 	// Approval is "ask" if the harness asks a person before it acts.
