@@ -34,8 +34,9 @@ metadata:
   name: prometheus
   namespace: monitoring
 data:
-  # Scrapes only the Supervisors, the state metrics and the Egress Proxies,
-  # and keeps only the metrics that deploy/grafana/aviary.json charts.
+  # Scrapes only the Supervisors, the state metrics, the depots and the
+  # Egress Proxies, and keeps only the metrics that deploy/grafana/aviary.json
+  # charts.
   # Prometheus reads the file when it starts.
   prometheus.yml: |
     global:

@@ -894,8 +894,8 @@ proxy, if `egressProxy.allowedHosts` allows that address, as the default
 does.
 
 The Grafana dashboard in `deploy/grafana/aviary.json` charts the metrics of
-the Supervisors, of the state and of the Egress Proxies, and can be imported
-into any Grafana with a Prometheus data source.
+the Supervisors, of the state, of the depots and of the Egress Proxies, and
+can be imported into any Grafana with a Prometheus data source.
 
 ## Tests
 
