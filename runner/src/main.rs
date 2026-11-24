@@ -8,6 +8,7 @@
 //!   PUT  /turns/{turn}/approvals/{request}   answers an approval request
 //!   GET  /home                               packs the home as an archive
 //!   PUT  /home                               unpacks an archive into the home
+//!   PUT  /files/{path}                       writes a file that a message carries
 //!
 //! Every request is idempotent, so a caller can retry one whose outcome it
 //! does not know. Requests from the runner's own pod are refused, so that the
@@ -71,6 +72,7 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+mod files;
 mod home;
 
 const HARNESS_COMMAND: &str = "AVIARY_HARNESS_COMMAND";
@@ -131,12 +133,17 @@ async fn serve() -> Result<(), Box<dyn Error>> {
         .route("/turns/{turn}/events", get(events))
         .route("/turns/{turn}/cancel", post(cancel))
         .route("/turns/{turn}/approvals/{request}", put(answer))
-        // An archive of a home is as large as the home.
+        // An archive of a home is as large as the home, and a file as large
+        // as the installation lets a message carry.
         .route(
             "/home",
             get(home::send)
                 .put(home::receive)
                 .layer(DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/files/{*path}",
+            put(files::receive).layer(DefaultBodyLimit::disable()),
         )
         .with_state(runner.clone());
     // On a loopback address, as in the tests, every caller is local.

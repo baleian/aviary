@@ -169,6 +169,12 @@ impl Session {
         format!("{}/home", self.url)
     }
 
+    /// Writes the file at the path, as a message that carries it would.
+    pub async fn file(&self, path: &str, content: impl Into<reqwest::Body>) -> StatusCode {
+        let url = format!("{}/files/{path}", self.url);
+        self.sent(self.client.put(url).body(content)).await
+    }
+
     async fn sent(&self, request: reqwest::RequestBuilder) -> StatusCode {
         time::timeout(PATIENCE, request.send())
             .await
