@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -451,4 +452,75 @@ func TestAnUploadIsRefusedWhenTheDepotIsFull(t *testing.T) {
 	if left := kept(t, dir); len(left) != 0 {
 		t.Errorf("the depot has %v after a refused upload", left)
 	}
+}
+
+// The files that a message carries are in the home of the session's sandbox
+// when its turn is given to the runner, under the number of the turn, and
+// stay there for the turns that follow.
+func TestTheFilesOfAMessageAreInTheSandboxBeforeItsTurn(t *testing.T) {
+	t.Parallel()
+	attachments, _ := attaching(t)
+	aviary := install(t, attachments)
+	s := aviary.supervisor()
+	session := s.session()
+	notes, again := s.attach(session, "notes.txt", "to do"), s.attach(session, "notes.txt", "done")
+	status, first := s.carrying(session, "look", notes.ID, again.ID)
+	if status != http.StatusAccepted {
+		t.Fatalf("message with attachments = %d %v", status, first)
+	}
+	runner := aviary.given(first["id"].(string))
+	home := aviary.service.Home(runner.Sandbox)
+	want := map[string]string{"1/notes.txt": "to do", "1/notes (2).txt": "done"}
+	if got := home.Files(); !maps.Equal(got, want) {
+		t.Errorf("files of the home when the runner has the turn = %q, want %q", got, want)
+	}
+	runner.report(finished("end_turn", nil))
+
+	// A message without files brings none.
+	runner = aviary.given(s.send(session, "and now").ID)
+	if got := home.Files(); !maps.Equal(got, want) {
+		t.Errorf("files of the home after a message without files = %q, want %q", got, want)
+	}
+	runner.report(finished("end_turn", nil))
+
+	report := s.attach(session, "notes.txt", "a report")
+	status, third := s.carrying(session, "", report.ID)
+	if status != http.StatusAccepted {
+		t.Fatalf("message of an attachment = %d %v", status, third)
+	}
+	aviary.given(third["id"].(string))
+	want["3/notes.txt"] = "a report"
+	if got := home.Files(); !maps.Equal(got, want) {
+		t.Errorf("files of the home after the third message = %q, want %q", got, want)
+	}
+}
+
+// A turn whose files do not fit into the home of its sandbox fails and says
+// so, without reaching its runner. The session takes the next message.
+func TestATurnFailsIfItsFilesDoNotFitIntoTheSandbox(t *testing.T) {
+	t.Parallel()
+	attachments, _ := attaching(t)
+	aviary := install(t, attachments)
+	s := aviary.supervisor()
+	session := s.session()
+	runner := aviary.given(s.send(session, "hello").ID)
+	runner.report(finished("end_turn", nil))
+	aviary.service.Home(runner.Sandbox).Fill()
+
+	status, accepted := s.carrying(session, "look", s.attach(session, "large.bin", "a").ID)
+	if status != http.StatusAccepted {
+		t.Fatalf("message with an attachment = %d %v", status, accepted)
+	}
+	id := accepted["id"].(string)
+	eventually(t, patience, "the turn whose file does not fit has not ended", func() bool {
+		return s.turn(id).EndedAt != nil
+	})
+	failed := s.turn(id)
+	if failed.State != "failed" || failed.Failure["reason"] != "attachment_failed" || !strings.Contains(failed.Failure["message"], "large.bin") || failed.StartedAt != nil {
+		t.Errorf("turn whose file does not fit = %+v, want it failed as attachment_failed, naming the file, before it started", failed)
+	}
+	if got := aviary.service.Home(runner.Sandbox).Files(); len(got) != 0 {
+		t.Errorf("files of the full home = %q, want none", got)
+	}
+	aviary.given(s.send(session, "and now").ID).report(finished("end_turn", nil))
 }

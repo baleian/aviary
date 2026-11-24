@@ -18,7 +18,7 @@ The harness runs in this environment:
 | | |
 | --- | --- |
 | User | `agent`, with UID 10000 and GID 10000, which cannot become root: the pod has no capabilities and meets the restricted Pod Security Standard. npm and pip install into the home, under `/home/.local`, whose programs are on the `PATH`. |
-| Home | `/home`, also in `HOME`. |
+| Home | `/home`, also in `HOME`. The files that messages carry are in `/home/.attachments/<turn>/`, under the number of the turn of their message. |
 | Working directory | `/home/workspace` |
 | Model endpoint | `AVIARY_LLM_BASE_URL`, `AVIARY_LLM_API_KEY` and `AVIARY_LLM_MODEL`. The URL points to the Egress Proxy, and the key is the session token. |
 | Approval | `AVIARY_APPROVAL=ask` if the agent must ask a person before it acts. Otherwise the variable is not set. |

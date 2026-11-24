@@ -406,6 +406,9 @@ const (
 	// the installation keeps sandboxes: its sandbox was deleted with the
 	// agent's files, and the session has ended.
 	FailureSessionExpired = "session_expired"
+	// FailureAttachment means that a file that the message carries could not
+	// be written into the session's sandbox, as when its volume is full.
+	FailureAttachment = "attachment_failed"
 	// FailureRunner means that the runner failed in some other way.
 	FailureRunner = "runner_error"
 )

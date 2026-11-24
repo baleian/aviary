@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
 
+	"aviary/supervisor/internal/sandbox"
 	"aviary/supervisor/store"
 )
 
@@ -111,6 +113,44 @@ func (d *Driver) Attachment(ctx context.Context, id uuid.UUID) (store.Attachment
 		return store.Attachment{}, nil, fmt.Errorf("the depot has %d bytes of an attachment of %d", size, attachment.Size)
 	}
 	return attachment, file, nil
+}
+
+// AttachmentPath returns where the agent finds a file that the message of a
+// turn carries: the path below the attachments of the home, by the sequence
+// number of the turn, so that the files of different messages do not replace
+// each other.
+func AttachmentPath(seq int, name string) string {
+	return strconv.Itoa(seq) + "/" + name
+}
+
+// deliver writes the files that the message of the turn carries into the
+// home of the sandbox, before the turn is given to the runner. It can be done
+// again: a file replaces the one that is there. Its error is
+// sandbox.ErrNoRoom if the home has no room for a file.
+func (d *Driver) deliver(ctx context.Context, turn store.FollowedTurn, runner *sandbox.Runner) error {
+	carried, err := d.store.TurnAttachments(ctx, []uuid.UUID{turn.ID})
+	if err != nil {
+		return fmt.Errorf("read attachments of turn: %w", err)
+	}
+	for _, attachment := range carried[turn.ID] {
+		if d.config.Depot == nil {
+			return errors.New("the installation has no depot")
+		}
+		file, size, err := d.config.Depot.Get(ctx, attachmentKey(turn.SessionID, attachment.ID))
+		if err != nil {
+			return fmt.Errorf("read attachment %s: %w", attachment.Name, err)
+		}
+		if size == attachment.Size {
+			err = runner.PutFile(ctx, AttachmentPath(turn.Seq, attachment.Name), file, size)
+		} else {
+			err = fmt.Errorf("the depot has %d bytes of %d", size, attachment.Size)
+		}
+		file.Close()
+		if err != nil {
+			return fmt.Errorf("write attachment %s into the sandbox: %w", attachment.Name, err)
+		}
+	}
+	return nil
 }
 
 // discardAttachments deletes the attachments that no message has carried

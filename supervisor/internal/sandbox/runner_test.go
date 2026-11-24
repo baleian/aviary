@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -339,5 +340,38 @@ func TestARunnerPacksTheHomeAndUnpacksAnArchiveOfIt(t *testing.T) {
 	}
 	if err := runner.Unpack(ctx, strings.NewReader("late"), 4); !errors.As(err, &refusal) || refusal.Status != http.StatusConflict {
 		t.Errorf("Unpack after a turn = %v, want a refusal with 409", err)
+	}
+}
+
+// A runner writes a file that a message carries at the path that it is given
+// below the attachments of the home, whatever the name of the file, and says
+// so if the home has no room for it.
+func TestARunnerWritesTheFilesOfAMessage(t *testing.T) {
+	runners := runnertest.New(t)
+	home := &runnertest.Home{}
+	server := httptest.NewServer(runners.Runner("a-sandbox", home))
+	t.Cleanup(server.Close)
+	runner := &Runner{address: server.URL, http: server.Client(), quiet: time.Minute}
+
+	want := map[string]string{"3/notes.txt": "to do", "3/보고서 2026 (2).pdf": "%PDF", "3/50% off?.txt": "sale", "4/notes.txt": "done"}
+	for path, content := range want {
+		if err := runner.PutFile(ctx, path, strings.NewReader(content), int64(len(content))); err != nil {
+			t.Fatalf("PutFile(%q): %v", path, err)
+		}
+	}
+	if got := home.Files(); !maps.Equal(got, want) {
+		t.Errorf("files of the home = %q, want %q", got, want)
+	}
+	// Sent again, a file replaces the one that is there.
+	if err := runner.PutFile(ctx, "3/notes.txt", strings.NewReader("done"), 4); err != nil || home.Files()["3/notes.txt"] != "done" {
+		t.Errorf("PutFile again: %v, the file is %q; want it replaced", err, home.Files()["3/notes.txt"])
+	}
+	home.Fill()
+	if err := runner.PutFile(ctx, "5/large.bin", strings.NewReader("a"), 1); !errors.Is(err, ErrNoRoom) {
+		t.Errorf("PutFile into a full home: %v, want ErrNoRoom", err)
+	}
+	server.Close()
+	if err := runner.PutFile(ctx, "5/notes.txt", strings.NewReader("a"), 1); err == nil || errors.Is(err, ErrNoRoom) {
+		t.Errorf("PutFile to a runner that is gone: %v, want another error", err)
 	}
 }

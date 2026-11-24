@@ -278,6 +278,13 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 	if err != nil {
 		return nil, err
 	}
+	switch err := d.deliver(following, turn, runner); {
+	case errors.Is(err, sandbox.ErrNoRoom):
+		r.giveUp(store.Failure{Reason: store.FailureAttachment, Message: err.Error()})
+		return nil, nil
+	case err != nil:
+		return nil, err
+	}
 	// The runner may get the turn even if the request fails.
 	r.give()
 	err = runner.Start(following, turn.ID, sandbox.Turn{

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"strconv"
 	"sync"
@@ -45,6 +46,10 @@ func (rs *Runners) Runner(sandbox string, home *Home) *Runner {
 type Home struct {
 	mu      sync.Mutex
 	content string
+	// files are the files that messages carried, by their paths below the
+	// attachments of the home. full makes the home refuse more.
+	files map[string]string
+	full  bool
 	// unpacked counts the archives that were unpacked into the home.
 	unpacked int
 	// cut makes the runner end the next archive that it packs halfway, and
@@ -67,6 +72,21 @@ func (h *Home) Content() (content string, unpacked int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.content, h.unpacked
+}
+
+// Files returns the files that messages carried into the home, by their
+// paths below its attachments.
+func (h *Home) Files() map[string]string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return maps.Clone(h.files)
+}
+
+// Fill leaves the home without room for the files of messages.
+func (h *Home) Fill() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.full = true
 }
 
 // Cut makes the runner end the next archive of the home halfway.
@@ -231,7 +251,29 @@ func (rn *Runner) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 	mux.HandleFunc("GET /home", rn.pack)
 	mux.HandleFunc("PUT /home", rn.unpack)
+	mux.HandleFunc("PUT /files/{path...}", rn.file)
 	mux.ServeHTTP(w, r)
+}
+
+// file writes the body as the file of the path, unless the home is full.
+func (rn *Runner) file(w http.ResponseWriter, r *http.Request) {
+	content, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	home := rn.home
+	home.mu.Lock()
+	defer home.mu.Unlock()
+	if home.full {
+		http.Error(w, "no space left on device", http.StatusInsufficientStorage)
+		return
+	}
+	if home.files == nil {
+		home.files = map[string]string{}
+	}
+	home.files[r.PathValue("path")] = string(content)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // pack sends the content of the home as its archive, unless a turn runs.
