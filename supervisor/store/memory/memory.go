@@ -45,6 +45,8 @@ type Store struct {
 	turns        map[uuid.UUID]*turn
 	// created holds the turns in creation order.
 	created []*turn
+	// attachments are in the order in which they were recorded.
+	attachments []*store.Attachment
 }
 
 type session struct {
@@ -57,6 +59,8 @@ type session struct {
 	// mcp are the MCP servers that the session turned on or off where it
 	// differs from its agent.
 	mcp map[uuid.UUID]bool
+	// attachments is whether the depot may have attachments of the session.
+	attachments bool
 }
 
 type turn struct {
@@ -65,6 +69,8 @@ type turn struct {
 	items        []json.RawMessage
 	// approvals are oldest first.
 	approvals []*approval
+	// attachments are those that the message carries, in its order.
+	attachments []*store.Attachment
 }
 
 type approval struct {
@@ -934,6 +940,132 @@ func (s *Store) LeftArchives(ctx context.Context, before time.Time, limit int) (
 	return left, nil
 }
 
+// open returns the session if it has not ended.
+func (s *Store) open(sessionID uuid.UUID) (*session, error) {
+	session, found := s.sessions[sessionID]
+	if !found {
+		return nil, store.ErrNotFound
+	}
+	if session.EndedAt != nil {
+		return nil, store.ErrSessionEnded
+	}
+	return session, nil
+}
+
+func (s *Store) ExpectAttachments(ctx context.Context, sessionID uuid.UUID) error {
+	if err := s.begin(ctx); err != nil {
+		return err
+	}
+	defer s.mu.Unlock()
+	session, err := s.open(sessionID)
+	if err != nil {
+		return err
+	}
+	session.attachments = true
+	return nil
+}
+
+func (s *Store) CreateAttachment(ctx context.Context, attachment store.Attachment) (store.Attachment, error) {
+	if err := s.begin(ctx); err != nil {
+		return store.Attachment{}, err
+	}
+	defer s.mu.Unlock()
+	if _, err := s.open(attachment.SessionID); err != nil {
+		return store.Attachment{}, err
+	}
+	attachment.TurnID, attachment.CreatedAt = uuid.Nil, s.now()
+	s.attachments = append(s.attachments, &attachment)
+	return attachment, nil
+}
+
+func (s *Store) Attachment(ctx context.Context, id uuid.UUID) (store.Attachment, error) {
+	if err := s.begin(ctx); err != nil {
+		return store.Attachment{}, err
+	}
+	defer s.mu.Unlock()
+	for _, attachment := range s.attachments {
+		if attachment.ID == id {
+			return *attachment, nil
+		}
+	}
+	return store.Attachment{}, store.ErrNotFound
+}
+
+func (s *Store) TurnAttachments(ctx context.Context, turnIDs []uuid.UUID) (map[uuid.UUID][]store.Attachment, error) {
+	if err := s.begin(ctx); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+	carried := map[uuid.UUID][]store.Attachment{}
+	for _, id := range turnIDs {
+		if turn, found := s.turns[id]; found {
+			for _, attachment := range turn.attachments {
+				carried[id] = append(carried[id], *attachment)
+			}
+		}
+	}
+	return carried, nil
+}
+
+func (s *Store) UnsentAttachments(ctx context.Context, before time.Time, limit int) ([]store.Attachment, error) {
+	if err := s.begin(ctx); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+	unsent := []store.Attachment{}
+	for _, attachment := range s.attachments {
+		if attachment.TurnID == uuid.Nil && attachment.CreatedAt.Before(before) && len(unsent) < limit {
+			unsent = append(unsent, *attachment)
+		}
+	}
+	return unsent, nil
+}
+
+func (s *Store) DeleteAttachment(ctx context.Context, id uuid.UUID) (bool, error) {
+	if err := s.begin(ctx); err != nil {
+		return false, err
+	}
+	defer s.mu.Unlock()
+	at := slices.IndexFunc(s.attachments, func(attachment *store.Attachment) bool {
+		return attachment.ID == id && attachment.TurnID == uuid.Nil
+	})
+	if at < 0 {
+		return false, nil
+	}
+	s.attachments = slices.Delete(s.attachments, at, at+1)
+	return true, nil
+}
+
+func (s *Store) LeftAttachments(ctx context.Context, before time.Time, limit int) ([]uuid.UUID, error) {
+	if err := s.begin(ctx); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+	var ended []*session
+	for _, session := range s.sessions {
+		if session.attachments && session.EndedAt != nil && session.EndedAt.Before(before) {
+			ended = append(ended, session)
+		}
+	}
+	slices.SortFunc(ended, func(a, b *session) int { return a.EndedAt.Compare(*b.EndedAt) })
+	left := []uuid.UUID{}
+	for _, session := range ended[:min(limit, len(ended))] {
+		left = append(left, session.ID)
+	}
+	return left, nil
+}
+
+func (s *Store) ForgetAttachments(ctx context.Context, sessionID uuid.UUID) error {
+	if err := s.begin(ctx); err != nil {
+		return err
+	}
+	defer s.mu.Unlock()
+	if session, found := s.sessions[sessionID]; found && session.EndedAt != nil {
+		session.attachments = false
+	}
+	return nil
+}
+
 func (s *Store) ForgetArchive(ctx context.Context, sessionID, archive uuid.UUID) error {
 	if err := s.begin(ctx); err != nil {
 		return err
@@ -1269,7 +1401,7 @@ func (s *Store) running() int {
 	return running
 }
 
-func (s *Store) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, maxWaiting, maxRunning int) (store.Turn, int, error) {
+func (s *Store) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, attachments []uuid.UUID, maxWaiting, maxRunning int) (store.Turn, int, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return store.Turn{}, 0, err
@@ -1288,6 +1420,18 @@ func (s *Store) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text st
 	if turns := len(session.turns); turns > 0 && session.turns[turns-1].EndedAt == nil {
 		return store.Turn{}, 0, store.ErrSessionBusy
 	}
+	carried := make([]*store.Attachment, len(attachments))
+	names := make([]string, len(attachments))
+	for i, attachment := range attachments {
+		at := slices.IndexFunc(s.attachments, func(other *store.Attachment) bool {
+			return other.ID == attachment && other.SessionID == sessionID && other.TurnID == uuid.Nil
+		})
+		// An ID that is named twice is found among those before it.
+		if at < 0 || slices.Contains(carried[:i], s.attachments[at]) {
+			return store.Turn{}, 0, store.ErrUnknownAttachment
+		}
+		carried[i], names[i] = s.attachments[at], s.attachments[at].Name
+	}
 	// Queued turns that have room to run do not wait.
 	waiting := len(s.queued()) + 1 - max(0, maxRunning-s.running())
 	if maxWaiting > 0 && waiting > maxWaiting {
@@ -1295,7 +1439,10 @@ func (s *Store) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text st
 	}
 	created := &turn{Turn: store.Turn{
 		ID: id, SessionID: sessionID, Seq: len(session.turns) + 1, State: store.TurnQueued, Text: text, CreatedBy: by, CreatedAt: s.now(),
-	}}
+	}, attachments: carried}
+	for i, name := range store.UniqueNames(names) {
+		carried[i].TurnID, carried[i].Name = id, name
+	}
 	s.turns[id], s.created, session.turns = created, append(s.created, created), append(session.turns, created)
 	return created.record(), max(waiting, 0), nil
 }

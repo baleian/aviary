@@ -129,7 +129,7 @@ func (suite suite) testCreatedBy(t *testing.T) {
 	}
 	senders := map[uuid.UUID]uuid.UUID{}
 	for session, sender := range map[uuid.UUID]uuid.UUID{created.ID: other.ID, nobodys.ID: user.ID, st.session(): uuid.Nil} {
-		sent, _, err := st.CreateTurn(ctx, session, sender, "hello", 0, 50)
+		sent, _, err := st.CreateTurn(ctx, session, sender, "hello", nil, 0, 50)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -868,6 +868,113 @@ func (s *records) ForgetArchive(ctx context.Context, sessionID, archive uuid.UUI
 	return s.queries.ForgetArchive(ctx, db.ForgetArchiveParams{ID: key.ID(sessionID), Archive: (*key.ID)(&archive)})
 }
 
+func (s *records) ExpectAttachments(ctx context.Context, sessionID uuid.UUID) error {
+	return s.within(ctx, func(queries *db.Queries) error {
+		session, err := queries.LockSession(ctx, key.ID(sessionID))
+		if err != nil {
+			return found(err)
+		}
+		if session.EndedAt != nil {
+			return store.ErrSessionEnded
+		}
+		if session.HasAttachments {
+			return nil
+		}
+		return queries.ExpectAttachments(ctx, key.ID(sessionID))
+	})
+}
+
+func (s *records) CreateAttachment(ctx context.Context, attachment store.Attachment) (store.Attachment, error) {
+	var created store.Attachment
+	err := s.within(ctx, func(queries *db.Queries) error {
+		session, err := queries.LockSession(ctx, key.ID(attachment.SessionID))
+		if err != nil {
+			return found(err)
+		}
+		if session.EndedAt != nil {
+			return store.ErrSessionEnded
+		}
+		params := db.CreateAttachmentParams{
+			ID: key.ID(attachment.ID), SessionID: key.ID(attachment.SessionID),
+			Name: attachment.Name, MediaType: attachment.MediaType, Size: attachment.Size,
+		}
+		if attachment.CreatedBy != uuid.Nil {
+			params.CreatedBy = (*key.ID)(&attachment.CreatedBy)
+		}
+		if err := queries.CreateAttachment(ctx, params); err != nil {
+			return err
+		}
+		row, err := queries.GetAttachment(ctx, key.ID(attachment.ID))
+		created = attachmentFrom(row)
+		return err
+	})
+	if err != nil {
+		return store.Attachment{}, err
+	}
+	return created, nil
+}
+
+func (s *records) Attachment(ctx context.Context, id uuid.UUID) (store.Attachment, error) {
+	row, err := s.queries.GetAttachment(ctx, key.ID(id))
+	if err != nil {
+		return store.Attachment{}, found(err)
+	}
+	return attachmentFrom(row), nil
+}
+
+func (s *records) TurnAttachments(ctx context.Context, turnIDs []uuid.UUID) (map[uuid.UUID][]store.Attachment, error) {
+	carried := map[uuid.UUID][]store.Attachment{}
+	if len(turnIDs) == 0 {
+		return carried, nil
+	}
+	of := make([]*key.ID, len(turnIDs))
+	for i := range turnIDs {
+		of[i] = (*key.ID)(&turnIDs[i])
+	}
+	rows, err := s.queries.ListTurnAttachments(ctx, of)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		turn := uuid.UUID(*row.TurnID)
+		carried[turn] = append(carried[turn], attachmentFrom(row))
+	}
+	return carried, nil
+}
+
+func (s *records) UnsentAttachments(ctx context.Context, before time.Time, limit int) ([]store.Attachment, error) {
+	rows, err := s.queries.ListUnsentAttachments(ctx, db.ListUnsentAttachmentsParams{Before: before, Limit: int32(limit)})
+	if err != nil {
+		return nil, err
+	}
+	unsent := make([]store.Attachment, 0, len(rows))
+	for _, row := range rows {
+		unsent = append(unsent, attachmentFrom(row))
+	}
+	return unsent, nil
+}
+
+func (s *records) DeleteAttachment(ctx context.Context, id uuid.UUID) (bool, error) {
+	deleted, err := s.queries.DeleteUnsentAttachment(ctx, key.ID(id))
+	return deleted > 0, err
+}
+
+func (s *records) LeftAttachments(ctx context.Context, before time.Time, limit int) ([]uuid.UUID, error) {
+	rows, err := s.queries.ListLeftAttachments(ctx, db.ListLeftAttachmentsParams{Before: &before, Limit: int32(limit)})
+	if err != nil {
+		return nil, err
+	}
+	left := make([]uuid.UUID, len(rows))
+	for i, id := range rows {
+		left[i] = uuid.UUID(id)
+	}
+	return left, nil
+}
+
+func (s *records) ForgetAttachments(ctx context.Context, sessionID uuid.UUID) error {
+	return s.queries.ForgetAttachments(ctx, key.ID(sessionID))
+}
+
 func (s *records) EndSession(ctx context.Context, id uuid.UUID, reason string) (store.Session, error) {
 	var session store.Session
 	params := db.EndSessionParams{ID: key.ID(id)}
@@ -1214,7 +1321,7 @@ func (s *records) ReplaceSecretStore(ctx context.Context, secrets store.SecretSt
 	return s.SecretStore(ctx, secrets.ID)
 }
 
-func (s *records) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, maxWaiting, maxRunning int) (store.Turn, int, error) {
+func (s *records) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, attachments []uuid.UUID, maxWaiting, maxRunning int) (store.Turn, int, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return store.Turn{}, 0, err
@@ -1250,6 +1357,9 @@ func (s *records) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text 
 			return store.ErrSessionBusy
 		}
 		if err != nil {
+			return err
+		}
+		if err := attach(ctx, queries, sessionID, id, attachments); err != nil {
 			return err
 		}
 		queued, err := queries.CountQueuedTurns(ctx)
@@ -1672,6 +1782,57 @@ func (s *records) Answers(ctx context.Context, turnID *uuid.UUID) ([]store.Answe
 		answers[i] = store.Answer{TurnID: uuid.UUID(row.TurnID), ID: row.ID, OptionID: row.OptionID}
 	}
 	return answers, nil
+}
+
+// attach has the message of the turn carry the attachments, in their order.
+// It returns store.ErrUnknownAttachment unless each is of the session and no
+// message carries it.
+func attach(ctx context.Context, queries *db.Queries, sessionID, turnID uuid.UUID, attachments []uuid.UUID) error {
+	if len(attachments) == 0 {
+		return nil
+	}
+	ids := make([]key.ID, len(attachments))
+	for i, id := range attachments {
+		ids[i] = key.ID(id)
+	}
+	rows, err := queries.LockUnsentAttachments(ctx, db.LockUnsentAttachmentsParams{Ids: ids, SessionID: key.ID(sessionID)})
+	if err != nil {
+		return err
+	}
+	// An ID that is named twice is found once.
+	if len(rows) != len(attachments) {
+		return store.ErrUnknownAttachment
+	}
+	names := make(map[uuid.UUID]string, len(rows))
+	for _, row := range rows {
+		names[uuid.UUID(row.ID)] = row.Name
+	}
+	ordered := make([]string, len(attachments))
+	for i, id := range attachments {
+		ordered[i] = names[id]
+	}
+	for i, name := range store.UniqueNames(ordered) {
+		params := db.AttachToTurnParams{
+			ID: ids[i], TurnID: (*key.ID)(&turnID), Position: sql.NullInt32{Int32: int32(i), Valid: true}, Name: name,
+		}
+		if err := queries.AttachToTurn(ctx, params); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func attachmentFrom(row db.Attachment) store.Attachment {
+	attachment := store.Attachment{
+		ID: uuid.UUID(row.ID), SessionID: uuid.UUID(row.SessionID), Name: row.Name, MediaType: row.MediaType, Size: row.Size, CreatedAt: row.CreatedAt,
+	}
+	if row.TurnID != nil {
+		attachment.TurnID = uuid.UUID(*row.TurnID)
+	}
+	if row.CreatedBy != nil {
+		attachment.CreatedBy = uuid.UUID(*row.CreatedBy)
+	}
+	return attachment
 }
 
 func turnFrom(row db.Turn) store.Turn {

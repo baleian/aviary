@@ -194,7 +194,7 @@ func (d *Driver) Wake() {
 // sent it, or uuid.Nil if requests are not authenticated. It returns the
 // errors of store.CreateTurn.
 func (d *Driver) Accept(ctx context.Context, sessionID, by uuid.UUID, text string) (store.Turn, error) {
-	turn, waiting, err := d.store.CreateTurn(ctx, sessionID, by, text, d.config.MaxQueuedTurns, d.config.MaxConcurrentTurns)
+	turn, waiting, err := d.store.CreateTurn(ctx, sessionID, by, text, nil, d.config.MaxQueuedTurns, d.config.MaxConcurrentTurns)
 	switch {
 	case err == nil:
 		d.metrics.Accepted(waiting)

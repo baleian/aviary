@@ -12,10 +12,10 @@ import (
 	"aviary/supervisor/store"
 )
 
-// Routine takes a session of its own through a turn and through the
-// archiving and restoring of its home, and does on the way what the
-// Supervisors do for every message, every request of a sandbox and every
-// sweep. A plugin's test runs it on a database with many ended sessions and
+// Routine takes a session of its own through a turn whose message carries
+// an attachment and through the archiving and restoring of its home, and
+// does on the way what the Supervisors do for every message, every request
+// of a sandbox and every sweep. A plugin's test runs it on a database with many ended sessions and
 // turns, to check that this work does not read through them.
 func Routine(t *testing.T, st store.Store) {
 	t.Helper()
@@ -28,8 +28,24 @@ func Routine(t *testing.T, st store.Store) {
 	}
 
 	session := s.session()
-	turn, _, err := s.CreateTurn(ctx, session, uuid.Nil, "hello", 500, 50)
+	must("ExpectAttachments", s.ExpectAttachments(ctx, session))
+	file, err := s.CreateAttachment(ctx, store.Attachment{ID: uuid.New(), SessionID: session, Name: "notes.txt", MediaType: "text/plain", Size: 1})
+	must("CreateAttachment", err)
+	unsent, err := s.CreateAttachment(ctx, store.Attachment{ID: uuid.New(), SessionID: session, Name: "unsent.txt", MediaType: "text/plain", Size: 1})
+	must("CreateAttachment", err)
+	turn, _, err := s.CreateTurn(ctx, session, uuid.Nil, "hello", []uuid.UUID{file.ID}, 500, 50)
 	must("CreateTurn", err)
+	_, err = s.Attachment(ctx, file.ID)
+	must("Attachment", err)
+	_, err = s.TurnAttachments(ctx, []uuid.UUID{turn.ID})
+	must("TurnAttachments", err)
+	_, err = s.UnsentAttachments(ctx, time.Now().Add(time.Hour), 100)
+	must("UnsentAttachments", err)
+	_, err = s.DeleteAttachment(ctx, unsent.ID)
+	must("DeleteAttachment", err)
+	_, err = s.LeftAttachments(ctx, time.Now(), 100)
+	must("LeftAttachments", err)
+	must("ForgetAttachments", s.ForgetAttachments(ctx, session))
 	must("AnnounceQueue", s.AnnounceQueue(ctx, func([]uuid.UUID) error { return nil }))
 	_, err = s.ExpireTurns(ctx, time.Hour)
 	must("ExpireTurns", err)

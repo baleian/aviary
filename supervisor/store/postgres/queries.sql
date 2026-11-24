@@ -303,6 +303,49 @@ returning *;
 -- name: GetTurn :one
 select * from turns where id = @id;
 
+-- name: ExpectAttachments :one
+-- Returns no row if the session does not exist or has ended.
+update sessions set has_attachments = true where id = @id and ended_at is null returning id;
+
+-- name: CreateAttachment :one
+-- Returns no row if the session does not exist or has ended.
+insert into attachments (id, session_id, name, media_type, size, created_by)
+select @id::uuid, sessions.id, @name::text, @media_type::text, @size::bigint, sqlc.narg(created_by)::uuid
+from sessions where sessions.id = @session_id and sessions.ended_at is null
+returning *;
+
+-- name: GetAttachment :one
+select * from attachments where id = @id;
+
+-- name: ListTurnAttachments :many
+select * from attachments where turn_id = any(@turn_ids::uuid[]) order by turn_id, position;
+
+-- name: LockUnsentAttachments :many
+-- Locks those of the attachments that are of the session and that no message
+-- carries, until the transaction ends.
+select * from attachments
+where id = any(@ids::uuid[]) and session_id = @session_id and turn_id is null
+for update;
+
+-- name: AttachToTurn :exec
+update attachments set turn_id = @turn_id, position = @position, name = @name where id = @id;
+
+-- name: ListUnsentAttachments :many
+select * from attachments where turn_id is null and created_at < @before order by created_at limit @count;
+
+-- name: DeleteUnsentAttachment :execrows
+delete from attachments where id = @id and turn_id is null;
+
+-- name: ListLeftAttachments :many
+-- Lists the sessions that ended before before and may have left attachments
+-- in the depot.
+select id from sessions
+where has_attachments and ended_at is not null and ended_at < @before
+order by ended_at limit @count;
+
+-- name: ForgetAttachments :exec
+update sessions set has_attachments = false where id = @id and ended_at is not null;
+
 -- name: ListTurns :many
 select * from turns where session_id = @session_id and seq < @before order by seq desc limit @count;
 

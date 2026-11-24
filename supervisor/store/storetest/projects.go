@@ -412,7 +412,7 @@ func (suite suite) testDeleteAgent(t *testing.T) {
 	if read, err := st.Session(ctx, theirs); err != nil || read.EndedAt != nil {
 		t.Errorf("session of another agent ended at %v: %v", read.EndedAt, err)
 	}
-	if _, _, err := st.CreateTurn(ctx, idle, uuid.Nil, "hello", 0, 50); !errors.Is(err, store.ErrSessionEnded) {
+	if _, _, err := st.CreateTurn(ctx, idle, uuid.Nil, "hello", nil, 0, 50); !errors.Is(err, store.ErrSessionEnded) {
 		t.Errorf("CreateTurn in a session of the deleted agent = %v, want ErrSessionEnded", err)
 	}
 
@@ -474,7 +474,7 @@ func (suite suite) testConcurrentDeleteAgent(t *testing.T) {
 					t.Error(err)
 				}
 			default:
-				switch _, _, err := supervisors[i].CreateTurn(ctx, id, uuid.Nil, "hello", 0, 50); {
+				switch _, _, err := supervisors[i].CreateTurn(ctx, id, uuid.Nil, "hello", nil, 0, 50); {
 				case err == nil:
 					accepted.Add(1)
 				case !errors.Is(err, store.ErrSessionBusy) && !errors.Is(err, store.ErrSessionEnded):
@@ -943,11 +943,11 @@ func (suite suite) testEndSession(t *testing.T) {
 	}
 
 	// It refuses messages with ErrSessionEnded, even when the queue is full.
-	if _, _, err := st.CreateTurn(ctx, id, uuid.Nil, "again", 0, 50); !errors.Is(err, store.ErrSessionEnded) {
+	if _, _, err := st.CreateTurn(ctx, id, uuid.Nil, "again", nil, 0, 50); !errors.Is(err, store.ErrSessionEnded) {
 		t.Errorf("CreateTurn on an ended session = %v, want ErrSessionEnded", err)
 	}
 	st.queue(st.session())
-	if _, _, err := st.CreateTurn(ctx, id, uuid.Nil, "again", 1, 0); !errors.Is(err, store.ErrSessionEnded) {
+	if _, _, err := st.CreateTurn(ctx, id, uuid.Nil, "again", nil, 1, 0); !errors.Is(err, store.ErrSessionEnded) {
 		t.Errorf("CreateTurn on an ended session with a full queue = %v, want ErrSessionEnded", err)
 	}
 	if turns, err := st.Turns(ctx, id, math.MaxInt32, 10); err != nil || len(turns) != 1 || turns[0].ID != dispatch.TurnID {
@@ -990,7 +990,7 @@ func (suite suite) testConcurrentEndSessionAndCreateTurn(t *testing.T) {
 				}
 				return
 			}
-			switch _, _, err := supervisors[i].CreateTurn(ctx, id, uuid.Nil, "hello", 0, 50); {
+			switch _, _, err := supervisors[i].CreateTurn(ctx, id, uuid.Nil, "hello", nil, 0, 50); {
 			case err == nil:
 				accepted.Add(1)
 			case !errors.Is(err, store.ErrSessionBusy) && !errors.Is(err, store.ErrSessionEnded):
@@ -1218,7 +1218,7 @@ func (suite suite) testSessionTurn(t *testing.T) {
 		}
 	}
 
-	turn, _, err := st.CreateTurn(ctx, session.ID, sender.ID, "hello", 0, 50)
+	turn, _, err := st.CreateTurn(ctx, session.ID, sender.ID, "hello", nil, 0, 50)
 	if err != nil {
 		t.Fatal(err)
 	}

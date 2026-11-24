@@ -43,6 +43,18 @@ type Approval struct {
 	ResolvedAt  *time.Time
 }
 
+type Attachment struct {
+	ID        uuid.UUID
+	SessionID uuid.UUID
+	TurnID    *uuid.UUID
+	Position  *int32
+	Name      string
+	MediaType string
+	Size      int64
+	CreatedBy *uuid.UUID
+	CreatedAt time.Time
+}
+
 type McpServer struct {
 	ID            uuid.UUID
 	ProjectID     uuid.UUID
@@ -97,21 +109,22 @@ type SecretStore struct {
 }
 
 type Session struct {
-	ID           uuid.UUID
-	AgentID      uuid.UUID
-	Title        string
-	CreatedBy    *uuid.UUID
-	Sandbox      *string
-	SandboxState *string
-	CreatedAt    time.Time
-	EndedAt      *time.Time
-	EndReason    *string
-	AsleepSince  *time.Time
-	Archive      *uuid.UUID
-	ArchiveBytes *int64
-	ArchivedAt   *time.Time
-	Claim        *uuid.UUID
-	ClaimedAt    *time.Time
+	ID             uuid.UUID
+	AgentID        uuid.UUID
+	Title          string
+	CreatedBy      *uuid.UUID
+	Sandbox        *string
+	SandboxState   *string
+	CreatedAt      time.Time
+	EndedAt        *time.Time
+	EndReason      *string
+	AsleepSince    *time.Time
+	Archive        *uuid.UUID
+	ArchiveBytes   *int64
+	ArchivedAt     *time.Time
+	Claim          *uuid.UUID
+	ClaimedAt      *time.Time
+	HasAttachments bool
 }
 
 type Turn struct {
