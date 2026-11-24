@@ -45,7 +45,7 @@ data:
                     # A model can be silent for minutes before it answers. A
                     # stream that is idle for as long as a turn may run has
                     # lost its pod.
-                    stream_idle_timeout: {{ .Values.runtime.maxTurnSeconds }}s
+                    stream_idle_timeout: {{ .Values.runtime.maxTurnSeconds | int64 }}s
                     generate_request_id: false
                     # The Supervisor names the endpoint in these headers. Only
                     # the Supervisor decides where a request goes, so they are
@@ -169,7 +169,7 @@ data:
                   typed_config:
                     "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                     stat_prefix: forward
-                    stream_idle_timeout: {{ .Values.runtime.maxTurnSeconds }}s
+                    stream_idle_timeout: {{ .Values.runtime.maxTurnSeconds | int64 }}s
                     generate_request_id: false
                     {{- include "aviary.egress-proxy.access-log" "forward" | nindent 20 }}
                     route_config:

@@ -71,7 +71,9 @@ many users on their own cluster:
    stay in the sandbox for the next turn. A session with no running turn is
    put to sleep after a while: its pod is deleted, and its volume is kept
    with the harness's memory of the conversation. The next message wakes the
-   session in a new pod, and the harness continues from there.
+   session in a new pod, and the harness continues from there. A session
+   that sleeps for long gives up the volume too: its home is archived in the
+   [depot](#depot), and the next message restores it into a new sandbox.
 6. Everything that the sandbox sends out goes through the
    [Egress Proxy](#egress-proxy).
 
@@ -120,6 +122,45 @@ line identifies the origin of its request on its own:
   `request_bytes`, `response_bytes` and `duration_ms`.
 
 How long the lines are kept depends on the cluster's log collection.
+
+### Depot
+
+The depot is where the files that outlive a sandbox are kept, as objects in
+a volume. Its pods run the image of the Supervisor with the command `depot`,
+behind one Service. They keep nothing but the volume, which all of them
+mount: any of them serves any request, and a new one starts before the one
+that it replaces stops. A network policy lets only the Supervisors connect
+to them.
+
+The objects are the homes of the sessions whose sandboxes have slept for
+`sandboxes.archiveAfterSeconds`. A Supervisor wakes such a sandbox, has its
+runner pack the home, writes the archive to the depot, and deletes the
+sandbox with its volume. A message that arrives meanwhile is not held up:
+its turn takes the sandbox, and the home is archived later. The next turn of
+a session whose home is archived gets a new sandbox, in which the runner
+unpacks the archive before the harness starts. The archive is then deleted.
+An archive has the directories, files and links of the home, with their
+modes and times. A home that cannot be archived stays in its volume and is
+tried again later, and an archive that cannot be unpacked stays in the depot
+while the turn fails.
+
+An object is a file at the path of its key. It is written once, under its
+own name, and is never changed. So the depots need not coordinate, and the
+volume needs only to let files be created, read and deleted:
+
+- By default it is a volume of the cluster's default storage class that one
+  node mounts, and the depots run on that node together.
+- With `depot.volume.accessMode: ReadWriteMany` it is a volume that many
+  nodes mount at once, such as a network file system, and the depots run on
+  any node.
+- With `depot.volume.existingClaim` it is a claim of your own, such as one
+  of a bucket that a CSI driver mounts as a file system. The mount must let
+  the user of the image, 65532, write and delete files.
+
+The claim that the chart makes is kept when the chart is uninstalled. Its
+storage class and access mode cannot be changed afterwards. To move the
+objects to another volume, copy the files as they are and name the claim of
+that volume in `depot.volume.existingClaim`.
 
 ## Try it locally
 
@@ -222,7 +263,7 @@ empty.
 | `POST /v1/projects/{id}/agents` | Creates an agent. Body: `{"slug": "...", "name": "...", "description": "...", "harness": "...", "model": {"provider": "...", "name": "..."}, "instructions": "...", "approval": "ask", "mcp_servers": ["..."]}`. The optional description says what the agent is for, and like the name is only for display. The harness is one of those that `GET /v1/harnesses` lists. The model is a provider of the project, by ID, and the provider's name for the model. The optional instructions are given to the agent before every turn. With `"approval": "ask"`, the agent asks a person before it acts (see [Approval](#approval)); without it, it asks nobody. The optional MCP servers, by ID, are servers of the project that the agent's sessions begin with (see [MCP servers](#mcp-servers)). Returns 409 if another agent of the project has the slug. |
 | `PUT /v1/agents/{id}` | Replaces the name, the description, the model, the instructions, the approval and the MCP servers of an agent together: what the body leaves out is empty afterwards, and the model is required. The slug and the harness cannot be changed, and the body may leave them out. The agent's sessions run their next turn with the change. Returns 200 with the agent. |
 | `DELETE /v1/agents/{id}` | Deletes an agent. Returns 200 with the agent, which then has `deleted_at`. Its sessions end as when a caller ends them, with the `end_reason` `agent_deleted`: their sandboxes are deleted, and their conversations stay readable. A deleted agent is no longer listed, and changing it or creating a session of it returns 409. `GET /v1/agents/{id}` still returns it, and its slug is free for another agent. Besides `agents.manage`, the caller needs `sessions.control_all`, since the sessions of every member end. Returns 409 if a turn of one of its sessions has not ended. |
-| `POST /v1/agents/{id}/sessions` | Creates a session, which belongs to the caller. Body, which may be left out: `{"title": "...", "mcp_servers": ["..."]}`. The title is optional and only for display; a session created without one has an empty title. A session begins with the MCP servers of its agent, or with those that the body names. While it has not ended, a session's `mcp_servers` are those that it has. With an identity provider, its `created_by` is the caller's user ID. A session's `sandbox` is `awake`, or `asleep` while the session sleeps. It is `lost` if the sandbox is gone although the session has not ended, as after it was deleted in the cluster: everything that the agent had in it is gone, and the next turn gets a new sandbox. What happens to a sandbox outside Aviary shows after a short delay. A session has no `sandbox` before its first turn and after it has ended. A session with turns carries the newest as `last_turn`: the turn as in [Turn records](#turn-records), without its `text` and `items`. A session that ended because it expired has the `end_reason` `expired` (see `sandboxes.retentionSeconds` in [Configuration](#configuration)), one that ended because its agent was deleted has `agent_deleted`, and a session that a caller ended has none. |
+| `POST /v1/agents/{id}/sessions` | Creates a session, which belongs to the caller. Body, which may be left out: `{"title": "...", "mcp_servers": ["..."]}`. The title is optional and only for display; a session created without one has an empty title. A session begins with the MCP servers of its agent, or with those that the body names. While it has not ended, a session's `mcp_servers` are those that it has. With an identity provider, its `created_by` is the caller's user ID. A session's `sandbox` is `awake`, or `asleep` while the session sleeps. It is `archived` while the session has no sandbox because its home is an archive in the [depot](#depot), and `restoring` while a turn unpacks the archive in a new sandbox. It is `lost` if the sandbox is gone although the session has not ended, as after it was deleted in the cluster: everything that the agent had in it is gone, and the next turn gets a new sandbox. What happens to a sandbox outside Aviary shows after a short delay. A session has no `sandbox` before its first turn and after it has ended. A session with turns carries the newest as `last_turn`: the turn as in [Turn records](#turn-records), without its `text` and `items`. A session that ended because it expired has the `end_reason` `expired` (see `sandboxes.retentionSeconds` in [Configuration](#configuration)), one that ended because its agent was deleted has `agent_deleted`, and a session that a caller ended has none. |
 | `PUT /v1/sessions/{id}/mcp-servers/{server}` | Turns an MCP server of the project on or off for a session. Body: `{"enabled": true}`. Returns 200 with the session, and 409 if the session has ended. Besides admins, only the creator of the session may. |
 | `DELETE /v1/sessions/{id}/mcp-servers` | Gives a session the MCP servers of its agent again. Returns 200 with the session. |
 | `PATCH /v1/sessions/{id}` | Changes the title of a session, also of one that has ended. Body: `{"title": "..."}`, where an empty title leaves the session without one. Returns 200 with the session. |
@@ -274,7 +315,7 @@ see [`runner/src/main.rs`](runner/src/main.rs).
 | --- | --- |
 | `harness_error` | The harness could not be started or returned an error. This is also how a harness reports that the model endpoint refused it. |
 | `resume_failed` | The harness could not continue the session, because its saved conversation is missing or unreadable. The next turn of the session tries again, so a session whose harness cannot recover fails every turn. |
-| `startup_timed_out` | The harness did not receive the message within `runtime.maxStartupSeconds`, for example because the sandbox could not be created. The message says what the turn waited for. A sandbox that was still being created or woken is kept with the agent's files, and the session's next turn uses it. |
+| `startup_timed_out` | The harness did not receive the message within `runtime.maxStartupSeconds`, for example because the sandbox could not be created. The message says what the turn waited for. A sandbox that was still being created or woken is kept with the agent's files, and the session's next turn uses it. A turn that first restores the home of its session has `runtime.maxRestoreSeconds` more, and if it fails, the home stays archived for the session's next turn. |
 | `timed_out` | The turn ran for longer than `runtime.maxTurnSeconds`. |
 | `sandbox_lost` | The session's sandbox is gone, with everything that the agent had in it. The next turn of the session gets a new one. |
 | `session_expired` | The session was not used for longer than `sandboxes.retentionSeconds`. Its sandbox is gone, and the session has ended. A message fails this way only if it arrives before a Supervisor has ended the session. |
@@ -679,30 +720,37 @@ of your own.
 | `supervisor.auth.admins`, `.users` | Groups of the identity provider whose members administer the installation, and groups whose members may use the API besides the administrators. Both are empty by default: nobody is an administrator, and every authenticated user may use the API. |
 | `supervisor.allowedOrigins` | Origins whose pages may call the API from a browser, such as `https://aviary.example.com`. `*` is every origin. Empty by default: a browser then lets only pages at the address of the API call it. |
 | `stateMetrics.enabled`, `.resources` | Whether the installation serves its [state metrics](#metrics), and the resource requests and limits of the pod that serves them. Default true. |
+| `depot.replicas`, `.resources` | Number of [depot](#depot) replicas, and the resource requests and limits of their pods. Any replica can serve any request. Default 1. |
+| `depot.volume.size`, `.storageClass` | The volume that holds the objects of the depot. Default 30Gi, in the default storage class of the cluster. Storage that has no limit of its own, such as a network file system, does not enforce the size. |
+| `depot.volume.accessMode` | `ReadWriteOnce`, the default, for a volume that one node mounts: the depots run on that node together. `ReadWriteMany` for a volume that many nodes mount at once: the depots run on any node. |
+| `depot.volume.existingClaim` | A claim of your own in the release namespace that holds the objects, instead of the one that the chart makes. `depot.volume.accessMode` says how it can be mounted. |
 | `egressProxy.allowedHosts` | Hosts that the sandboxes may reach, including those of model providers: `*` for any host, a host name for the host on the default HTTPS and HTTP ports, or a host name with a port. Subdomains are separate hosts. Default `*`. |
 | `egressProxy.insideCIDRs`, `.extraEgress` | Address ranges that a NetworkPolicy blocks the Egress Proxy from connecting to, so that the sandboxes cannot use it to reach into the cluster, and additional NetworkPolicy egress rules for the proxy. A model provider or an allowed host that is in the cluster or at a private address needs such a rule. |
 | `egressProxy.localhost` | The host that the Egress Proxy connects to for a model provider whose URL is at `localhost` or a loopback address: a host name or an IP address. Empty by default: such a provider reaches nothing. An installation on one machine can name that machine here. The host needs a rule in `egressProxy.extraEgress` if it is at a private address. |
 | `agent-sandbox.enabled` | Whether the chart installs agent-sandbox. Default true. The other values under `agent-sandbox` are those of its chart: `image.repository` for the image of its controller, `imagePullSecrets`, `resources` and others. |
 | `sandboxes.idleSeconds` | Seconds without a running turn after which a session is put to sleep: its pod is deleted and its volume is kept, and its next turn wakes it in a new pod. Default 300. 0 disables sleeping. |
-| `sandboxes.retentionSeconds` | Seconds after its last turn after which a session ends: its sandbox is deleted with its volume, and its conversation stays readable. A session that ends this way has the `end_reason` `expired`. Default 0, which keeps the sandbox until the session is ended. |
+| `sandboxes.archiveAfterSeconds` | Seconds of sleep after which the home of a session is archived in the [depot](#depot): its sandbox is deleted with its volume, and its next turn restores the home into a new sandbox. Default 604800, a week. 0 disables archiving, and the homes that are archived are still restored. |
+| `sandboxes.retentionSeconds` | Seconds after its last turn after which a session ends: its sandbox is deleted with its volume, or the archive of its home, and its conversation stays readable. A session that ends this way has the `end_reason` `expired`. Default 0, which keeps the sandbox until the session is ended. |
 | `runtime.maxConcurrentTurns` | Maximum number of turns that run at once. Default 50. |
 | `runtime.maxQueuedTurns` | Maximum number of queued turns. Beyond it, new messages get 429. Default 500. 0 means no limit. |
 | `runtime.maxQueueWaitSeconds` | Seconds that a turn may stay queued before it expires. Default 120. 0 means no limit. |
 | `runtime.maxStartupSeconds` | Seconds that a turn may take to reach its harness, including creating or waking the sandbox. A turn that takes longer fails. Default 120. 0 means no limit. |
+| `runtime.maxRestoreSeconds` | Seconds more that a turn may take to reach its harness if it first restores the home of its session from the depot. Default 600. |
 | `runtime.maxTurnSeconds` | Seconds that a turn may run after it leaves the queue, including the time that it waits for approval. A turn that runs longer fails, and its sandbox is put to sleep. Default 1800. |
 | `runtime.maxToolOutputBytes` | Maximum bytes of the input or output of a tool call that turn events report. Longer text is truncated in the events. Default 65536. 0 means no limit. |
 | `runtime.harnesses` | Harnesses that agents can use, by name, each with its image and the `resources` of its sandbox pods, in the format of Kubernetes container resources. A change applies to a sandbox the next time it wakes. |
-| `runtime.volume.size`, `.storageClass` | The session volume, mounted at `/home`: the state of the harness, the files of the agent and what the agent installs with npm or pip. Default 10Gi, in the default storage class of the cluster. The volume is deleted with its sandbox when its session is ended or expires. Whether its data is deleted too depends on the storage class: the default class of the local cluster deletes it, a class with `reclaimPolicy: Retain` keeps it, and some file storage drivers keep it unless they are configured not to. |
+| `runtime.volume.size`, `.storageClass` | The session volume, mounted at `/home`: the state of the harness, the files of the agent and what the agent installs with npm or pip. Default 10Gi, in the default storage class of the cluster. The volume is deleted with its sandbox when its session is ended or expires, or when its home is archived. Whether its data is deleted too depends on the storage class: the default class of the local cluster deletes it, a class with `reclaimPolicy: Retain` keeps it, and some file storage drivers keep it unless they are configured not to. |
 
 Sandbox pods exist for the running turns and for the sessions that were in
 use within the last `sandboxes.idleSeconds`. Volumes exist for the sessions
-that have not ended. Aviary sets no other limit on them; to set one, use a
-ResourceQuota on `aviary-runtime`.
+that have not ended and whose homes are not archived. Aviary sets no other
+limit on them; to set one, use a ResourceQuota on `aviary-runtime`.
 
 Supervisors and Egress Proxies do not wait for turns when they stop, as when
 their deployment is scaled in or rolled out. Another Supervisor continues
 the turns from what was recorded, and the requests that a stopping proxy was
-forwarding fail.
+forwarding fail. A depot that stops finishes the transfers that are under
+way, for as long as `runtime.maxRestoreSeconds`.
 
 To run a harness that is not in this repository, see
 [Harness images](images/README.md). To connect Aviary to a database, an
@@ -815,10 +863,20 @@ false leaves the pod out.
 
 | Metric | Description |
 | --- | --- |
-| `aviary_sandboxes` | Sandboxes of the sessions that have not ended, by `state`: `awake`, `asleep` or `lost`, as the sessions say of their `sandbox`. |
+| `aviary_sandboxes` | Sandboxes of the sessions that have not ended, by `state`: `awake`, `asleep`, `archived`, `restoring` or `lost`, as the sessions say of their `sandbox`. An `archived` one is a home in the depot, without a sandbox. |
 | `aviary_turns` | Turns that have not ended, by `harness` and `state`: `queued`; `starting`, from leaving the queue until the harness has the message; `running`; or `awaiting_approval`, while a request of the turn waits for a person. |
 | `aviary_turns_oldest_age_seconds` | Age of the oldest turn of each `harness` and `state`: the time since its message for a queued turn, and since it left the queue for the others. 0 without such a turn. An age well beyond the limit of its state, `runtime.maxQueueWaitSeconds`, `runtime.maxStartupSeconds` or `runtime.maxTurnSeconds`, means that no Supervisor is ending the turn. |
 | `aviary_approvals_waiting` | Approval requests that wait for a person's answer, by `harness`. A turn can have several. |
+
+A depot serves its metrics on the same port and path. Each depot reports its
+own requests, and all of them report the same of the volume, which they
+share:
+
+| Metric | Description |
+| --- | --- |
+| `aviary_depot_request_duration_seconds` | Time that a depot took to serve a request for an object, by `operation`: `write`, `read` or `delete`, and by `outcome`: `done`; `refused`, if the request could not be served as it was made, as for a key that has no object; or `failed`, if the depot or its volume failed it. |
+| `aviary_depot_object_bytes_total` | Bytes of the objects that were written and read, by `operation`. |
+| `aviary_depot_volume_capacity_bytes`, `aviary_depot_volume_available_bytes` | Size of the volume that holds the objects, and how much of it is free. A scrape fails while the volume cannot be read. |
 
 An Egress Proxy serves the metrics of Envoy on the same port and path, among
 them:
@@ -835,8 +893,9 @@ read them too, by requesting the proxy's own address through the forward
 proxy, if `egressProxy.allowedHosts` allows that address, as the default
 does.
 
-The Grafana dashboard in `deploy/grafana/aviary.json` charts these metrics,
-and can be imported into any Grafana with a Prometheus data source.
+The Grafana dashboard in `deploy/grafana/aviary.json` charts the metrics of
+the Supervisors, of the state, of the depots and of the Egress Proxies, and
+can be imported into any Grafana with a Prometheus data source.
 
 ## Tests
 
@@ -887,7 +946,7 @@ and the `image` of each harness in `runtime.harnesses`.
 
 | Path | Contents |
 | --- | --- |
-| `supervisor/` | The Supervisor, in Go: the API, the queue, the session sandboxes and their runners, the event streams, and the authorization of Egress Proxy requests. Its plugins are in `store/`, `events/`, `secret/` and `identity/`, and `plugins.go` lists those of the build. |
+| `supervisor/` | The Supervisor, in Go: the API, the queue, the session sandboxes and their runners, the event streams, and the authorization of Egress Proxy requests. Its plugins are in `store/`, `events/`, `secret/` and `identity/`, and `plugins.go` lists those of the build. The depot is a command of the same program, in `internal/depot`. |
 | `runner/` | The runner, in Rust. |
 | `web/` | The web UI, in TypeScript with React. |
 | `images/` | The images of the Supervisor, the runner, the harnesses and the web UI. |
@@ -903,10 +962,11 @@ and the `image` of each harness in `runtime.harnesses`.
 - **No measured token usage.** The usage of a turn is what its harness
   reports. The Egress Proxy does not count tokens.
 - **No copy of the files of an ended session.** Its volume is deleted with
-  its sandbox. Aviary keeps no copy, and only a storage class that keeps the
-  data of deleted volumes does.
+  its sandbox, and so is the archive of its home. Aviary keeps no copy, and
+  only a storage class that keeps the data of deleted volumes does.
 - **Tested only on a local cluster.** Aviary has not run on a cloud
-  provider's Kubernetes or under load.
+  provider's Kubernetes or under load, and its depot has not run on a
+  network file system or a mounted bucket.
 
 ## License
 

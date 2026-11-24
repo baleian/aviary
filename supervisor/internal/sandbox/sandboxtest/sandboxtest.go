@@ -32,6 +32,7 @@ type Service struct {
 
 type made struct {
 	request sandbox.Request
+	uid     string
 	state   sandbox.State
 	created time.Time
 	// version is incremented by every change, like a resourceVersion.
@@ -41,6 +42,8 @@ type made struct {
 	woken   int
 	// sleepy puts the sandbox to sleep right before the next Keep.
 	sleepy bool
+	// home is the volume, which outlives the runners.
+	home   *runnertest.Home
 	runner *runnertest.Runner
 }
 
@@ -74,7 +77,11 @@ func (s *Service) Create(_ context.Context, request sandbox.Request) error {
 	if s.sandboxes[name] != nil {
 		return nil
 	}
-	m := &made{request: request, state: sandbox.Starting, created: time.Now(), version: 1, runner: s.Runner(name)}
+	home := &runnertest.Home{}
+	m := &made{
+		request: request, uid: uuid.NewString(), state: sandbox.Starting, created: time.Now(), version: 1,
+		home: home, runner: s.Runner(name, home),
+	}
 	if request.Kept > 0 {
 		m.expires = time.Now().Add(request.Kept)
 	}
@@ -108,18 +115,21 @@ func (s *Service) Sandboxes(context.Context) ([]sandbox.Sandbox, error) {
 }
 
 func (s *Service) seen(name string, m *made) sandbox.Sandbox {
-	seen := sandbox.Sandbox{Name: name, Session: m.request.Session.String(), State: m.state, Created: m.created, Version: strconv.Itoa(m.version)}
+	seen := sandbox.Sandbox{
+		Name: name, UID: m.uid, Session: m.request.Session.String(), State: m.state, Created: m.created, Version: strconv.Itoa(m.version),
+	}
 	if m.state == sandbox.Running {
 		seen.Address = s.server.URL + "/" + name
 	}
 	return seen
 }
 
-// Delete deletes the sandbox, and its runner with it.
-func (s *Service) Delete(_ context.Context, name string) error {
+// Delete deletes the sandbox, with its runner and its home, if uid is empty
+// or the sandbox's.
+func (s *Service) Delete(_ context.Context, name, uid string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if m := s.sandboxes[name]; m != nil {
+	if m := s.sandboxes[name]; m != nil && (uid == "" || uid == m.uid) {
 		m.runner.Gone()
 		delete(s.sandboxes, name)
 	}
@@ -146,7 +156,7 @@ func (s *Service) suspend(name string, m *made) {
 	m.state = sandbox.Asleep
 	m.version++
 	m.runner.Gone()
-	m.runner = s.Runner(name)
+	m.runner = s.Runner(name, m.home)
 }
 
 // Resume wakes the sandbox with the pod and a runner that has no turn.
@@ -221,13 +231,33 @@ func (s *Service) Age(name string, by time.Duration) {
 func (s *Service) Restart(name string) {
 	_ = s.change(name, func(m *made) {
 		m.runner.Gone()
-		m.runner = s.Runner(name)
+		m.runner = s.Runner(name, m.home)
 	})
 }
 
 // Lose deletes the sandbox, as if it had expired.
 func (s *Service) Lose(name string) {
-	_ = s.Delete(context.Background(), name)
+	_ = s.Delete(context.Background(), name, "")
+}
+
+// Home returns the home of the sandbox, or nil if there is no such sandbox.
+func (s *Service) Home(name string) *runnertest.Home {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if m := s.sandboxes[name]; m != nil {
+		return m.home
+	}
+	return nil
+}
+
+// UID returns the UID of the sandbox, or "" if there is no such sandbox.
+func (s *Service) UID(name string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if m := s.sandboxes[name]; m != nil {
+		return m.uid
+	}
+	return ""
 }
 
 // Terminate leaves the sandbox being deleted: lost, and still listed.

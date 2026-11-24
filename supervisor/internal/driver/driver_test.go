@@ -912,7 +912,7 @@ type stuck struct {
 	*sandboxtest.Service
 }
 
-func (stuck) Delete(context.Context, string) error {
+func (stuck) Delete(context.Context, string, string) error {
 	return errors.New("the cluster does not answer")
 }
 

@@ -1,0 +1,21 @@
+{{- if not .Values.depot.volume.existingClaim }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: aviary-depot
+  labels:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: depot
+  annotations:
+    # Uninstalling the chart keeps the objects, as it keeps the sessions that
+    # they belong to.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [{{ .Values.depot.volume.accessMode | quote }}]
+  {{- with .Values.depot.volume.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.depot.volume.size | quote }}
+{{- end }}

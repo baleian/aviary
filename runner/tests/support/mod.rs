@@ -146,6 +146,29 @@ impl Session {
         .await
     }
 
+    /// Packs the home, and returns the status and the archive.
+    pub async fn packed(&self) -> (StatusCode, Vec<u8>) {
+        let answer = time::timeout(PATIENCE, self.client.get(self.home()).send())
+            .await
+            .expect("timed out waiting for the runner")
+            .unwrap();
+        let status = answer.status();
+        let archive = time::timeout(PATIENCE, answer.bytes())
+            .await
+            .expect("timed out waiting for the archive")
+            .unwrap();
+        (status, archive.to_vec())
+    }
+
+    /// Unpacks the archive into the home.
+    pub async fn unpack(&self, archive: impl Into<reqwest::Body>) -> StatusCode {
+        self.sent(self.client.put(self.home()).body(archive)).await
+    }
+
+    fn home(&self) -> String {
+        format!("{}/home", self.url)
+    }
+
     async fn sent(&self, request: reqwest::RequestBuilder) -> StatusCode {
         time::timeout(PATIENCE, request.send())
             .await

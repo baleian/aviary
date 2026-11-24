@@ -78,6 +78,31 @@ stateMetrics:
     requests: {cpu: 10m, memory: 64Mi}
     limits: {memory: 128Mi}
 
+# The depot, which keeps the files that outlive a sandbox as objects in a
+# volume. Its pods run the image of the Supervisor, and only the Supervisors
+# can connect to them.
+depot:
+  # Any replica can serve any request.
+  replicas: 1
+  podAnnotations: {}
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {memory: 512Mi}
+  # The volume that holds the objects. Every replica mounts it, and
+  # uninstalling the chart keeps it.
+  volume:
+    size: 30Gi
+    # Empty uses the default storage class of the cluster.
+    storageClass: ""
+    # ReadWriteOnce is a volume that one node mounts, such as a disk: the
+    # replicas run on that node together. ReadWriteMany is a volume that
+    # many nodes mount at once, such as a network file system or a mounted
+    # bucket: the replicas run on any node.
+    accessMode: ReadWriteOnce
+    # A claim of your own in the namespace of the release, instead of the
+    # one that the chart makes. accessMode says how it can be mounted.
+    existingClaim: ""
+
 # The Egress Proxy, which all outbound traffic of the sandboxes goes through.
 # It forwards model requests to the model provider of the turn with the
 # provider's API key, and logs every request with its turn.
@@ -135,6 +160,10 @@ sandboxes:
   # its pod is deleted and its volume is kept. The next turn wakes it in a
   # new pod. 0 disables sleeping.
   idleSeconds: 300
+  # Seconds of sleep after which the home of a session is archived in the
+  # depot: its sandbox is deleted with its volume, and the next turn restores
+  # the home into a new sandbox. 0 disables archiving.
+  archiveAfterSeconds: 604800
   # Seconds after its last turn after which a session ends: its sandbox is
   # deleted with its volume, and its conversation stays in the database. 0
   # keeps the sandbox until the session is ended.
@@ -162,6 +191,9 @@ runtime:
   # waking the sandbox and pulling the harness image onto a new node. A turn
   # that takes longer fails. 0 means no limit.
   maxStartupSeconds: 120
+  # Seconds more that a turn may take to reach its harness if it first
+  # restores the home of its session from the depot.
+  maxRestoreSeconds: 600
   # Seconds a turn may run after it leaves the queue, including the time it
   # waits for approval. A turn that runs longer fails, and its sandbox is
   # put to sleep.

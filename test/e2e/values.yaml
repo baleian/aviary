@@ -8,6 +8,8 @@ supervisor:
     allowedHosts:
       - openbao.aviary-data:8200
     cacheSeconds: 5
+depot:
+  replicas: 2
 egressProxy:
   replicas: 2
   allowedHosts:
@@ -21,8 +23,10 @@ egressProxy:
   # the machine of an installation that names that machine.
   localhost: mock-llm.aviary-e2e
 sandboxes:
-  # Short, so that the tests see sessions sleep without a long wait.
+  # Short, so that the tests see sessions sleep, and their homes archived,
+  # without a long wait.
   idleSeconds: 30
+  archiveAfterSeconds: 60
 runtime:
   harnesses:
     # Below the defaults, so that the sessions of the parallel tests fit on a

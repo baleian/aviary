@@ -1,0 +1,87 @@
+{{- $volume := .Values.depot.volume }}
+{{- if not (has $volume.accessMode (list "ReadWriteOnce" "ReadWriteMany")) }}
+{{- fail (printf "depot.volume.accessMode: %q is neither ReadWriteOnce nor ReadWriteMany" $volume.accessMode) }}
+{{- end }}
+# The depots keep the objects in one volume, which all of them mount, and
+# keep nothing else. Any of them can serve any request, and a new one starts
+# before the one that it replaces stops.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aviary-depot
+  labels:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: depot
+spec:
+  replicas: {{ .Values.depot.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aviary
+      app.kubernetes.io/component: depot
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aviary
+        app.kubernetes.io/component: depot
+      {{- with .Values.depot.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      # A depot that stops lets the transfers that are under way finish, for
+      # as long as a turn is given to restore a home.
+      terminationGracePeriodSeconds: {{ add 30 .Values.runtime.maxRestoreSeconds }}
+      {{- if eq $volume.accessMode "ReadWriteOnce" }}
+      # One node mounts the volume, so the depots run on that node together.
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: aviary
+                  app.kubernetes.io/component: depot
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        # The group that a volume of a disk is given to, so that the depot can
+        # write it.
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: depot
+          image: {{ .Values.supervisor.image }}
+          args: ["depot"]
+          env:
+            - name: AVIARY_DEPOT_DIRECTORY
+              value: /var/lib/aviary/depot
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: metrics
+              containerPort: 9092
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          resources:
+            {{- toYaml .Values.depot.resources | nindent 12 }}
+          volumeMounts:
+            - name: objects
+              mountPath: /var/lib/aviary/depot
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: objects
+          persistentVolumeClaim:
+            claimName: {{ $volume.existingClaim | default "aviary-depot" }}

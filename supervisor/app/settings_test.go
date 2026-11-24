@@ -20,15 +20,18 @@ var settings = map[string]string{
 	sandboxNamespace: "aviary-runtime",
 	sandboxVolume:    "10Gi",
 	sandboxIdle:      "300",
+	sandboxArchive:   "604800",
 	sandboxRetention: "0",
 	modelsURL:        "http://aviary-egress-proxy.aviary-system:8080",
 	proxyURL:         "http://aviary-egress-proxy.aviary-system:3128",
+	depotURL:         "http://aviary-depot.aviary-system:8080",
 	harnesses: `{"opencode": {"image": "registry.example/opencode:1",
 		"resources": {"requests": {"cpu": "250m", "memory": "1Gi"}, "limits": {"memory": "4Gi"}}}}`,
 	maxConcurrentTurns: "50",
 	maxQueuedTurns:     "500",
 	maxQueueWait:       "120",
 	maxStartup:         "90",
+	maxRestore:         "600",
 	maxToolOutput:      "65536",
 	maxTurn:            "1800",
 }
@@ -62,16 +65,27 @@ func TestDriverConfig(t *testing.T) {
 		if config.Models.String() != settings[modelsURL] {
 			t.Errorf("Models = %s, want the AVIARY_LLM_BASE_URL setting", config.Models)
 		}
+		if config.Depot == nil || config.ArchiveAfter != 7*24*time.Hour || config.MaxRestore != 10*time.Minute {
+			t.Errorf("unexpected archiving in config %+v", config)
+		}
 	})
 
 	t.Run("optional limits disabled", func(t *testing.T) {
-		set(t, map[string]string{maxQueuedTurns: "0", maxQueueWait: "0", maxStartup: "0", sandboxIdle: "0", sandboxRetention: "1"})
+		set(t, map[string]string{
+			maxQueuedTurns: "0", maxQueueWait: "0", maxStartup: "0", maxRestore: "0",
+			sandboxIdle: "0", sandboxArchive: "0", sandboxRetention: "1",
+		})
 		config, err := driverConfig()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if config.MaxQueuedTurns != 0 || config.MaxQueueWait != 0 || config.MaxStartup != 0 || config.Idle != 0 || config.Retention != time.Second {
+		if config.MaxQueuedTurns != 0 || config.MaxQueueWait != 0 || config.MaxStartup != 0 || config.MaxRestore != 0 ||
+			config.Idle != 0 || config.ArchiveAfter != 0 || config.Retention != time.Second {
 			t.Errorf("unexpected limits in config %+v", config)
+		}
+		// The homes that were archived before are still restored.
+		if config.Depot == nil {
+			t.Error("config has no depot while archiving is disabled")
 		}
 	})
 
@@ -81,11 +95,14 @@ func TestDriverConfig(t *testing.T) {
 		{harnesses, `{"opencode": {"resources": {"requests": {"cpu": "1"}}}}`},
 		{harnesses, `{"opencode": {"image": "registry.example/opencode:1", "resources": {"requests": {"cpu": "lots"}}}}`},
 		{sandboxIdle, ""}, {sandboxIdle, "-1"}, {sandboxIdle, "5m"},
+		{sandboxArchive, ""}, {sandboxArchive, "-1"}, {sandboxArchive, "7d"},
+		{depotURL, ""}, {depotURL, "aviary-depot:8080"}, {depotURL, "https://aviary-depot:8080"},
 		{sandboxRetention, ""}, {sandboxRetention, "-1"},
 		{maxConcurrentTurns, ""}, {maxConcurrentTurns, "0"}, {maxConcurrentTurns, "many"},
 		{maxQueuedTurns, ""}, {maxQueuedTurns, "-1"},
 		{maxQueueWait, ""}, {maxQueueWait, "-1"}, {maxQueueWait, "2m"},
 		{maxStartup, ""}, {maxStartup, "-1"},
+		{maxRestore, ""}, {maxRestore, "-1"},
 		{maxTurn, ""}, {maxTurn, "0"},
 	} {
 		t.Run(wrong.name+"="+wrong.value, func(t *testing.T) {

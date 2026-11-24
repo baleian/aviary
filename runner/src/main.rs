@@ -6,6 +6,8 @@
 //!   GET  /turns/{turn}/events                streams the turn's events
 //!   POST /turns/{turn}/cancel                cancels the turn
 //!   PUT  /turns/{turn}/approvals/{request}   answers an approval request
+//!   GET  /home                               packs the home as an archive
+//!   PUT  /home                               unpacks an archive into the home
 //!
 //! Every request is idempotent, so a caller can retry one whose outcome it
 //! does not know. Requests from the runner's own pod are refused, so that the
@@ -36,6 +38,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::ProtocolVersion;
@@ -50,7 +53,7 @@ use agent_client_protocol::v1::schema::{
 };
 use agent_client_protocol::{AcpAgent, Agent, ByteStreams, Client, Responder, V1};
 use axum::extract::connect_info::Connected;
-use axum::extract::{ConnectInfo, Path as Named, Request, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Path as Named, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware;
 use axum::response::sse::{self, KeepAlive, Sse};
@@ -67,6 +70,8 @@ use tokio::process::Command;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+
+mod home;
 
 const HARNESS_COMMAND: &str = "AVIARY_HARNESS_COMMAND";
 const MAX_TOOL_OUTPUT: &str = "AVIARY_MAX_TOOL_OUTPUT_BYTES";
@@ -119,12 +124,20 @@ async fn serve() -> Result<(), Box<dyn Error>> {
         turn: Mutex::new(None),
         changed: watch::Sender::new(()),
         orders,
+        unpacking: AtomicBool::new(false),
     });
     let mut routes = Router::new()
         .route("/turns/{turn}", put(start))
         .route("/turns/{turn}/events", get(events))
         .route("/turns/{turn}/cancel", post(cancel))
         .route("/turns/{turn}/approvals/{request}", put(answer))
+        // An archive of a home is as large as the home.
+        .route(
+            "/home",
+            get(home::send)
+                .put(home::receive)
+                .layer(DefaultBodyLimit::disable()),
+        )
         .with_state(runner.clone());
     // On a loopback address, as in the tests, every caller is local.
     if !listens.ip().is_loopback() {
@@ -179,6 +192,9 @@ struct Runner {
     changed: watch::Sender<()>,
     /// Sends started turns to the harness loop.
     orders: mpsc::UnboundedSender<Order>,
+    /// Whether an archive is being unpacked into the home. No turn starts
+    /// meanwhile.
+    unpacking: AtomicBool,
 }
 
 struct Turn {
@@ -253,6 +269,12 @@ enum Told {
 }
 
 impl Runner {
+    /// Reports whether a turn is running.
+    fn running(&self) -> bool {
+        let turn = self.turn.lock().expect("turn lock poisoned");
+        turn.as_ref().is_some_and(|turn| !turn.ended)
+    }
+
     /// Appends an event to the running turn, if there is one.
     fn emit(&self, name: &'static str, data: &Value) {
         let mut turn = self.turn.lock().expect("turn lock poisoned");
@@ -317,6 +339,10 @@ async fn start(
         Some(turn) if turn.id == id => return StatusCode::NO_CONTENT,
         Some(turn) if !turn.ended => return StatusCode::CONFLICT,
         _ => {}
+    }
+    // Checked under the lock, as the unpacking checks the turn.
+    if runner.unpacking.load(Ordering::SeqCst) {
+        return StatusCode::CONFLICT;
     }
     let (tell, told) = mpsc::unbounded();
     *turn = Some(Turn {

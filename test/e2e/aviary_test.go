@@ -41,6 +41,10 @@ func TestAviary(t *testing.T) {
 				t.Parallel()
 				sleeps(t, harness)
 			})
+			t.Run(harness+" session that sleeps for long has its home archived", func(t *testing.T) {
+				t.Parallel()
+				archives(t, harness)
+			})
 			t.Run(harness+" turn awaiting approval keeps its session awake", func(t *testing.T) {
 				t.Parallel()
 				keepsAwake(t, harness)
@@ -57,11 +61,13 @@ func TestAviary(t *testing.T) {
 			"a provider keeps its key in a secret store":           secretStore,
 			"a failed turn reports its reason":                     failures,
 			"an idle session loses its sandbox":                    loses,
+			"a home is restored as soon as it is archived":         restoresAtOnce,
 			"a turn is cancelled":                                  cancel,
 			"a session is ended":                                   ended,
 			"an agent is deleted":                                  deletes,
 			"a client watches the sessions of a project":           watches,
 			"the Supervisors report turn metrics":                  supervisorMetrics,
+			"the depots share their volume":                        depots,
 		}
 		if identity {
 			tests["the API authenticates and authorizes callers"] = callers
@@ -375,6 +381,97 @@ func sleeps(t *testing.T, name string) {
 	}
 	if len(woken) != 1 || woken[0].UID == awake[0].UID {
 		t.Errorf("session slept in pod %s and woke in %d pods, want one new pod", awake[0].UID, len(woken))
+	}
+}
+
+// A session that has slept for long gives up its sandbox and its volume: its
+// home is archived in the depot. The next turn restores the home into a new
+// sandbox, with the harness's memory of the conversation, the agent's files
+// and what the agent installed.
+func archives(t *testing.T, name string) {
+	session := newAgent(t, harness(name)).session(t)
+	content, file := unique("content"), unique("note")+".txt"
+	write := fmt.Sprintf("run printf %s > %s", content, file)
+	run(t, session, write)
+	if installed := run(t, session, "run pip install "+probeURL); !strings.Contains(installed.said(), "Successfully installed aviary-probe-1.0") {
+		t.Fatalf("agent did not install the package: said %q", installed.said())
+	}
+	before := sandboxesOf(t, session)
+	if len(before) != 1 {
+		t.Fatalf("session has %d sandboxes, want one", len(before))
+	}
+	// agent-sandbox names a volume claim <template>-<sandbox>.
+	volume := "home-" + before[0].Metadata.Name
+
+	// The Supervisors look at the sandboxes before the session sleeps, and
+	// again before its home is archived.
+	eventually(t, idle+look+archive+look+patience, "the session does not say that its home is archived", func() bool {
+		return sandboxState(t, session) == "archived"
+	})
+	eventually(t, soon, "the sandbox of the archived home still exists", func() bool {
+		return len(sandboxesOf(t, session)) == 0
+	})
+	eventually(t, patience, "the volume of the archived home still exists", func() bool {
+		_, err := cluster.CoreV1().PersistentVolumeClaims(runtime).Get(ctx, volume, metav1.GetOptions{})
+		return apierrors.IsNotFound(err)
+	})
+	// Other tests have homes archived too, so the state metrics are only
+	// checked to count this one.
+	if archived := total(metrics(t, "state-metrics"), `aviary_sandboxes{state="archived"}`); archived < 1 {
+		t.Errorf("state metrics count %v archived homes while the session's home is archived", archived)
+	}
+
+	if recalled := run(t, session, "recall"); !strings.Contains(recalled.said(), write) {
+		t.Errorf("session with its home restored did not recall the conversation: said %q", recalled.said())
+	}
+	if state := sandboxState(t, session); state != "awake" {
+		t.Errorf("session with its home restored says that its sandbox is %q, want awake", state)
+	}
+	if read := run(t, session, "run cat "+file); !strings.Contains(read.tools(), content) {
+		t.Errorf("session with its home restored did not read its file: tool calls %s", read.tools())
+	}
+	if shown := run(t, session, "run pip show aviary-probe"); !strings.Contains(shown.said(), "Location: /home/.local/lib/python3") {
+		t.Errorf("session with its home restored lost the installed package: said %q", shown.said())
+	}
+	if after := sandboxesOf(t, session); len(after) != 1 || after[0].Metadata.UID == before[0].Metadata.UID {
+		t.Errorf("sandbox before archiving = %s, after restoring = %v, want one new sandbox", before[0].Metadata.UID, after)
+	}
+	for _, operation := range []string{"write", "read"} {
+		if moved := total(metrics(t, "depot"), `aviary_depot_object_bytes_total{operation="`+operation+`"}`); moved <= 0 {
+			t.Errorf("the depots report %v bytes of objects that they %s", moved, operation)
+		}
+	}
+}
+
+// A message that arrives as soon as the home is archived restores it as
+// well: the new sandbox comes after the former one and gets a volume of its
+// own, although the former volume may still be there when the turn begins.
+func restoresAtOnce(t *testing.T) {
+	session := newAgent(t, harness(harnesses[0])).session(t)
+	content, file := unique("content"), unique("note")+".txt"
+	run(t, session, fmt.Sprintf("run printf %s > %s", content, file))
+	before := sandboxesOf(t, session)
+	if len(before) != 1 {
+		t.Fatalf("session has %d sandboxes, want one", len(before))
+	}
+	// agent-sandbox names a volume claim <template>-<sandbox>.
+	volume := "home-" + before[0].Metadata.Name
+	former, err := cluster.CoreV1().PersistentVolumeClaims(runtime).Get(ctx, volume, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get session volume: %v", err)
+	}
+	eventually(t, idle+look+archive+look+patience, "the session does not say that its home is archived", func() bool {
+		return sandboxState(t, session) == "archived"
+	})
+
+	if read := run(t, session, "run cat "+file); !strings.Contains(read.tools(), content) {
+		t.Errorf("session with its home restored did not read its file: tool calls %s", read.tools())
+	}
+	if after := sandboxesOf(t, session); len(after) != 1 || after[0].Metadata.UID == before[0].Metadata.UID {
+		t.Errorf("sandbox before archiving = %s, after restoring = %v, want one new sandbox", before[0].Metadata.UID, after)
+	}
+	if claimed, err := cluster.CoreV1().PersistentVolumeClaims(runtime).Get(ctx, volume, metav1.GetOptions{}); err != nil || claimed.UID == former.UID {
+		t.Errorf("volume of the restored home = %v, %v; want a new one in place of %s", claimed.UID, err, former.UID)
 	}
 }
 
@@ -918,6 +1015,28 @@ func supervisorMetrics(t *testing.T) {
 		eventually(t, soon, "Supervisor metrics have no "+series, func() bool {
 			return total(metrics(t, "supervisor"), series) >= 1
 		})
+	}
+}
+
+// The depots share one volume, which one node mounts: they run on that node
+// together, and each reports the volume.
+func depots(t *testing.T) {
+	serving := running(t, "depot")
+	if len(serving) != 2 {
+		t.Fatalf("%d depots run, want 2", len(serving))
+	}
+	if one, other := serving[0].Spec.NodeName, serving[1].Spec.NodeName; one != other {
+		t.Errorf("the depots run on the nodes %s and %s, want one node", one, other)
+	}
+	for _, depot := range serving {
+		read, err := cluster.CoreV1().RESTClient().Get().Namespace(system).Resource("pods").
+			Name(depot.Name + ":9092").SubResource("proxy").Suffix("metrics").Do(ctx).Raw()
+		if err != nil {
+			t.Fatalf("get metrics of %s: %v", depot.Name, err)
+		}
+		if capacity := total(string(read), "aviary_depot_volume_capacity_bytes"); capacity <= 0 {
+			t.Errorf("%s reports a volume of %v bytes", depot.Name, capacity)
+		}
 	}
 }
 

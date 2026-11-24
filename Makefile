@@ -152,9 +152,9 @@ test-mock-llm:
 test-web: web/node_modules/.package-lock.json
 	cd web && npm test -- $(TESTS)
 
-# Renders the chart with its default values and with those in test/chart,
-# checks the output and that invalid values are refused, and has Envoy
-# validate its configuration.
+# Renders the chart with its default values, with those in test/chart and
+# with a claim of the installation for the depot, checks the output and that
+# invalid values are refused, and has Envoy validate its configuration.
 test-chart: TESTS ?= ./chart/...
 test-chart: $(AGENT_SANDBOX_CHART)
 	helm lint --strict --quiet deploy/charts/aviary
@@ -162,9 +162,12 @@ test-chart: $(AGENT_SANDBOX_CHART)
 	$(RENDER) > .out/chart/default.yaml
 	$(RENDER) --values test/chart/set.yaml > .out/chart/set.yaml
 	$(RENDER) --values test/chart/closed.yaml > .out/chart/closed.yaml
+	$(RENDER) --values test/chart/large.yaml > .out/chart/large.yaml
+	$(RENDER) --set depot.volume.existingClaim=objects > .out/chart/claim.yaml
 	! $(RENDER) --set 'egressProxy.allowedHosts={https://example.com}' > /dev/null 2>&1
+	! $(RENDER) --set depot.volume.accessMode=ReadOnlyMany > /dev/null 2>&1
 	$(call GO,test,--env AVIARY_TEST_RENDERED=/src/.out/chart) $(GO_TEST) $(TESTS)
-	for values in default set closed; do \
+	for values in default set closed large; do \
 		$(call GO,test) run ./internal/unpack /src/.out/chart/$$values.yaml /src/.out/chart/$$values && \
 		docker run --rm --volume $(CURDIR)/.out/chart/$$values:/etc/envoy:ro \
 			$(ENVOY_IMAGE) --mode validate --log-level error --config-path /etc/envoy/envoy.yaml || exit 1; \
@@ -405,6 +408,7 @@ deploy: secrets $(AGENT_SANDBOX_CHART)
 		--values .out/host.yaml \
 		--set-string 'supervisor.podAnnotations.aviary\.io/image-id='$$image \
 		--set-string 'stateMetrics.podAnnotations.aviary\.io/image-id='$$image \
+		--set-string 'depot.podAnnotations.aviary\.io/image-id='$$image \
 		$(if $(VALUES),--values $(VALUES)) \
 		--wait
 	$(KUBECTL) apply --filename hack/kind/api.yaml
@@ -452,7 +456,7 @@ e2e-run:
 		--env AVIARY_E2E_IDENTITY=$${keycloak:+keycloak} \
 		--env AVIARY_E2E_HARNESSES="$(E2E_HARNESSES)") test -count=1 -timeout 20m -v ./e2e/... $(TESTS); \
 		status=$$?; [ $$status = 0 ] || { \
-			for part in supervisor state-metrics egress-proxy; do \
+			for part in supervisor state-metrics depot egress-proxy; do \
 				$(KUBECTL) --namespace aviary-system logs --selector app.kubernetes.io/component=$$part \
 					--prefix --tail -1 > $(E2E_OUT)/$$part.log 2>&1; \
 			done; \

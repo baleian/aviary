@@ -42,10 +42,12 @@ const (
 	patience = 3 * time.Minute
 	// soon is how long a test waits for something that should follow at once.
 	soon = 30 * time.Second
-	// idle is sandboxes.idleSeconds in values.yaml, and look how often the
-	// Supervisors look at the sandboxes.
-	idle = 30 * time.Second
-	look = time.Minute
+	// idle and archive are sandboxes.idleSeconds and .archiveAfterSeconds in
+	// values.yaml, and look is how often the Supervisors look at the
+	// sandboxes.
+	idle    = 30 * time.Second
+	archive = time.Minute
+	look    = time.Minute
 )
 
 var (
@@ -698,8 +700,8 @@ func asleep(t *testing.T, session string) {
 	})
 }
 
-// sandboxState returns what the session says of its sandbox: awake, asleep or
-// lost, or nothing if it has none.
+// sandboxState returns what the session says of its sandbox: awake, asleep,
+// archived, restoring or lost, or nothing if it has none.
 func sandboxState(t *testing.T, session string) string {
 	t.Helper()
 	var read struct{ Sandbox string }

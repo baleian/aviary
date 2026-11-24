@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"math"
@@ -34,6 +35,12 @@ const (
 	// CancelGrace is the default time that a cancelled turn has to stop by
 	// itself before its sandbox is put to sleep.
 	CancelGrace = 30 * time.Second
+	// ArchiveTime is the default time that archiving a home may take. A
+	// Supervisor that has claimed a session for longer is taken for gone.
+	ArchiveTime = time.Hour
+	// ArchiveAgain is the default time after which a home is archived again
+	// if archiving it failed.
+	ArchiveAgain = 6 * time.Hour
 )
 
 // Labels that identify the agent and project of a sandbox, besides its
@@ -52,7 +59,14 @@ type Sandboxes interface {
 	Suspend(ctx context.Context, name, version string) error
 	Resume(ctx context.Context, name string, pod sandbox.Pod) error
 	Keep(ctx context.Context, name string, turn uuid.UUID, until time.Time) (sandbox.Sandbox, error)
-	Delete(ctx context.Context, name string) error
+	Delete(ctx context.Context, name, uid string) error
+}
+
+// Depot keeps the archives of the homes. It is implemented by *depot.Client.
+type Depot interface {
+	Put(ctx context.Context, key string, body io.Reader) (int64, error)
+	Get(ctx context.Context, key string) (io.ReadCloser, int64, error)
+	Delete(ctx context.Context, key string) error
 }
 
 type Config struct {
@@ -85,9 +99,23 @@ type Config struct {
 	// MaxConcurrentTurns limits the number of running turns. Further turns
 	// are queued in the order in which they are accepted.
 	MaxConcurrentTurns int
-	// Sweep and CancelGrace default to the constants of the same name.
-	Sweep       time.Duration
-	CancelGrace time.Duration
+	// Depot keeps the archives of the homes. Without it, no home is archived
+	// or restored.
+	Depot Depot
+	// ArchiveAfter is how long a sandbox may sleep before the home of its
+	// session is archived in the depot, and the sandbox deleted with its
+	// volume. The session's next turn restores the home into a new sandbox.
+	// Zero disables archiving.
+	ArchiveAfter time.Duration
+	// MaxRestore is added to MaxStartup for a turn that restores the home
+	// of its session.
+	MaxRestore time.Duration
+	// Sweep, CancelGrace, ArchiveTime and ArchiveAgain default to the
+	// constants of the same name.
+	Sweep        time.Duration
+	CancelGrace  time.Duration
+	ArchiveTime  time.Duration
+	ArchiveAgain time.Duration
 }
 
 type Driver struct {
@@ -102,6 +130,8 @@ type Driver struct {
 	// moved is set when a turn leaves the queue without being dispatched.
 	moved  atomic.Bool
 	sweeps int
+	// archiving is set while this Supervisor archives homes.
+	archiving atomic.Bool
 
 	mu        sync.Mutex
 	following map[uuid.UUID]*orders
@@ -123,6 +153,12 @@ func New(config Config, sandboxes Sandboxes, st store.Store, ev *events.Streams,
 	}
 	if config.CancelGrace == 0 {
 		config.CancelGrace = CancelGrace
+	}
+	if config.ArchiveTime == 0 {
+		config.ArchiveTime = ArchiveTime
+	}
+	if config.ArchiveAgain == 0 {
+		config.ArchiveAgain = ArchiveAgain
 	}
 	return &Driver{
 		config: config, id: uuid.New(), sandboxes: sandboxes, store: st, events: ev, metrics: m,
@@ -170,10 +206,11 @@ func (d *Driver) Accept(ctx context.Context, sessionID, by uuid.UUID, text strin
 	return turn, err
 }
 
-// EndSession ends the session and deletes its sandbox with its volume. It
-// returns the errors of store.EndSession. If the sandbox cannot be deleted,
-// the session still ends and the error is returned. The deletion is retried
-// when the session is ended again, and at every look at the sandboxes.
+// EndSession ends the session and deletes its sandbox with its volume, or
+// the archive of its home. It returns the errors of store.EndSession. If the
+// sandbox or the archive cannot be deleted, the session still ends and the
+// error is returned. The deletion is retried when the session is ended
+// again, and at every look at the sandboxes.
 func (d *Driver) EndSession(ctx context.Context, id uuid.UUID) (store.Session, error) {
 	return d.endSession(ctx, id, "")
 }
@@ -181,30 +218,42 @@ func (d *Driver) EndSession(ctx context.Context, id uuid.UUID) (store.Session, e
 // endSession ends the session for the reason, as EndSession does.
 func (d *Driver) endSession(ctx context.Context, id uuid.UUID, reason string) (store.Session, error) {
 	session, err := d.store.EndSession(ctx, id, reason)
-	if err != nil || session.Sandbox == "" {
+	if err != nil {
 		return session, err
 	}
-	if err := d.discard(ctx, session); err != nil {
-		return session, err
+	if session.Sandbox != "" {
+		if err := d.discard(ctx, session); err != nil {
+			return session, err
+		}
 	}
-	session.Sandbox, session.SandboxState = "", ""
+	if session.Archive != nil {
+		if err := d.erase(ctx, session); err != nil {
+			return session, err
+		}
+	}
+	session.Sandbox, session.SandboxState, session.Archive = "", "", nil
 	return session, nil
 }
 
 // DeleteAgent deletes the agent, which ends its sessions, and deletes their
-// sandboxes with their volumes. It returns the errors of store.DeleteAgent. A
-// sandbox that cannot be deleted is deleted at a later look at the sandboxes.
+// sandboxes with their volumes, and the archives of their homes. It returns
+// the errors of store.DeleteAgent. What cannot be deleted is deleted at a
+// later look at the sandboxes.
 func (d *Driver) DeleteAgent(ctx context.Context, id uuid.UUID) (store.Agent, error) {
 	agent, ended, err := d.store.DeleteAgent(ctx, id)
 	if err != nil {
 		return store.Agent{}, err
 	}
 	for _, session := range ended {
-		if session.Sandbox == "" {
-			continue
+		if session.Sandbox != "" {
+			if err := d.discard(ctx, session); err != nil {
+				slog.ErrorContext(ctx, "delete sandbox of ended session", "session", session.ID, "sandbox", session.Sandbox, "error", err)
+			}
 		}
-		if err := d.discard(ctx, session); err != nil {
-			slog.ErrorContext(ctx, "delete sandbox of ended session", "session", session.ID, "sandbox", session.Sandbox, "error", err)
+		if session.Archive != nil {
+			if err := d.erase(ctx, session); err != nil {
+				slog.ErrorContext(ctx, "delete archive of ended session", "session", session.ID, "error", err)
+			}
 		}
 	}
 	return agent, nil
@@ -213,7 +262,7 @@ func (d *Driver) DeleteAgent(ctx context.Context, id uuid.UUID) (store.Agent, er
 // discard deletes the sandbox of a session that has ended, with its volume,
 // and removes it from the session.
 func (d *Driver) discard(ctx context.Context, session store.Session) error {
-	if err := d.sandboxes.Delete(ctx, session.Sandbox); err != nil {
+	if err := d.sandboxes.Delete(ctx, session.Sandbox, ""); err != nil {
 		return fmt.Errorf("delete sandbox of session %s: %w", session.ID, err)
 	}
 	_, err := d.store.SetSandbox(ctx, session.ID, session.Sandbox, "")
@@ -334,6 +383,7 @@ func (d *Driver) look(ctx context.Context) {
 	for _, session := range sessions {
 		recorded[session.Sandbox] = session
 	}
+	var due []home
 	for _, made := range sandboxes {
 		session, found := recorded[made.Name]
 		delete(recorded, made.Name)
@@ -357,10 +407,15 @@ func (d *Driver) look(ctx context.Context) {
 			}
 		}
 		d.tend(ctx, session, made)
+		if d.due(session, made) {
+			due = append(due, home{session, made})
+		}
 	}
 	for _, session := range recorded {
 		d.tend(ctx, session, sandbox.Sandbox{Name: session.Sandbox, State: sandbox.Lost})
 	}
+	d.shelve(ctx, due)
+	d.clear(ctx)
 }
 
 // tend brings the session's sandbox and its recorded state in line. made is
@@ -373,6 +428,10 @@ func (d *Driver) tend(ctx context.Context, session store.Session, made sandbox.S
 			return
 		}
 		slog.InfoContext(ctx, "sandbox of ended session deleted", "session", session.ID, "sandbox", made.Name)
+	case session.Archive != nil:
+		// The home is not in this sandbox yet: the session's turn restores
+		// it there.
+		d.abandon(ctx, session, made)
 	case made.State == sandbox.Lost:
 		d.lose(ctx, session)
 	default:
@@ -439,7 +498,9 @@ func (d *Driver) reap(ctx context.Context, sessionID uuid.UUID, made sandbox.San
 		return
 	}
 	slog.WarnContext(ctx, "deleting orphaned sandbox", "session", sessionID, "sandbox", made.Name)
-	if err := d.sandboxes.Delete(ctx, made.Name); err != nil {
+	// Only the sandbox that was listed: the session may have got another of
+	// the name meanwhile.
+	if err := d.sandboxes.Delete(ctx, made.Name, made.UID); err != nil {
 		slog.ErrorContext(ctx, "delete orphaned sandbox", "sandbox", made.Name, "error", err)
 	}
 }
@@ -455,6 +516,9 @@ func (d *Driver) lull(ctx context.Context, sessionID uuid.UUID, made sandbox.San
 		return
 	}
 	if len(last) > 0 && (last[0].EndedAt == nil || time.Since(*last[0].EndedAt) < d.config.Idle) {
+		return
+	}
+	if d.moving(ctx, sessionID) {
 		return
 	}
 	switch err := d.suspend(ctx, sessionID, made.Name, made.Version); {
@@ -501,7 +565,7 @@ func (d *Driver) correct(ctx context.Context, session store.Session, made sandbo
 		return
 	}
 	state := stateOf(seen)
-	if state == "" || state == session.SandboxState {
+	if state == "" || state == session.SandboxState || d.moving(ctx, session.ID) {
 		return
 	}
 	if err := d.store.SetSandboxState(ctx, session.ID, made.Name, state); err != nil {

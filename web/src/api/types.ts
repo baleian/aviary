@@ -259,8 +259,10 @@ export interface Session {
   ended_at?: string;
   // Why the session ended, unless a caller ended it.
   end_reason?: "expired" | "agent_deleted";
-  // Absent before the first turn and after the session has ended.
-  sandbox?: "awake" | "asleep" | "lost";
+  // Absent before the first turn and after the session has ended. A session
+  // that is archived has no sandbox, and its next turn restores its files
+  // into a new one.
+  sandbox?: "awake" | "asleep" | "archived" | "restoring" | "lost";
   // The MCP servers, by ID, that its next turn has: those of its agent, but
   // for what the session turned on or off.
   mcp_servers?: string[];

@@ -187,6 +187,45 @@ func (r *Runner) Events(ctx context.Context, turn uuid.UUID, after uint64, each 
 	return nil
 }
 
+// Home asks the runner to pack the home of its sandbox, and returns the
+// archive as the runner sends it. The caller closes it. Reading it fails if
+// the runner does not send it whole.
+func (r *Runner) Home(ctx context.Context) (io.ReadCloser, error) {
+	request, err := r.request(ctx, http.MethodGet, "/home", nil)
+	if err != nil {
+		return nil, err
+	}
+	answer, err := r.http.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("runner: %w", err)
+	}
+	if answer.StatusCode != http.StatusOK {
+		defer answer.Body.Close()
+		return nil, refused(answer, http.MethodGet+" /home")
+	}
+	return answer.Body, nil
+}
+
+// Unpack gives the runner the archive of a home, of size bytes, to unpack
+// into the home of its sandbox. The runner takes it only before its first
+// turn.
+func (r *Runner) Unpack(ctx context.Context, archive io.Reader, size int64) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPut, r.address+"/home", archive)
+	if err != nil {
+		return err
+	}
+	request.ContentLength = size
+	answer, err := r.http.Do(request)
+	if err != nil {
+		return fmt.Errorf("runner: %w", err)
+	}
+	defer answer.Body.Close()
+	if answer.StatusCode < 200 || answer.StatusCode > 299 {
+		return refused(answer, http.MethodPut+" /home")
+	}
+	return nil
+}
+
 // errSilent is the cause of abandoning an event stream that stayed silent
 // for longer than quiet.
 var errSilent = errors.New("runner sent nothing")

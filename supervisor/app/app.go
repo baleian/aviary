@@ -34,6 +34,7 @@ import (
 	"aviary/supervisor/identity"
 	"aviary/supervisor/internal/api"
 	"aviary/supervisor/internal/authz"
+	"aviary/supervisor/internal/depot"
 	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/internal/metrics"
 	"aviary/supervisor/internal/sandbox"
@@ -57,16 +58,20 @@ const (
 	maxQueuedTurns     = "AVIARY_MAX_QUEUED_TURNS"
 	maxQueueWait       = "AVIARY_MAX_QUEUE_WAIT_SECONDS"
 	maxStartup         = "AVIARY_MAX_STARTUP_SECONDS"
+	maxRestore         = "AVIARY_MAX_RESTORE_SECONDS"
 	maxToolOutput      = "AVIARY_MAX_TOOL_OUTPUT_BYTES"
 	maxTurn            = "AVIARY_MAX_TURN_SECONDS"
 	sandboxNamespace   = "AVIARY_SANDBOX_NAMESPACE"
 	sandboxVolume      = "AVIARY_SANDBOX_VOLUME_SIZE"
 	sandboxClass       = "AVIARY_SANDBOX_STORAGE_CLASS"
 	sandboxIdle        = "AVIARY_SANDBOX_IDLE_SECONDS"
+	sandboxArchive     = "AVIARY_SANDBOX_ARCHIVE_SECONDS"
 	sandboxRetention   = "AVIARY_SANDBOX_RETENTION_SECONDS"
 	modelsURL          = "AVIARY_LLM_BASE_URL"
 	modelsLocalhost    = "AVIARY_LLM_LOCALHOST"
 	proxyURL           = "AVIARY_PROXY_URL"
+	depotURL           = "AVIARY_DEPOT_URL"
+	depotDirectory     = "AVIARY_DEPOT_DIRECTORY"
 	apiAddr            = ":8080"
 	authzAddr          = ":9091"
 	metricsAddr        = ":9092"
@@ -79,8 +84,8 @@ const (
 	keepaliveInterval = 30 * time.Second
 )
 
-// handover is how long a stopping Supervisor keeps serving, since the cluster
-// may still send it new requests. It is a variable for tests.
+// handover is how long a stopping Supervisor or depot keeps serving, since
+// the cluster may still send it new requests. It is a variable for tests.
 var handover = 5 * time.Second
 
 type ports struct {
@@ -116,8 +121,13 @@ func Main(plugins Plugins) {
 // instead migrates the database schema to the latest or the given version,
 // up or down. Serving does not migrate: a release runs "migrate" once, before
 // it starts the Supervisors. With the argument "state-metrics", it instead
-// serves the state metrics of the installation until ctx is done.
+// serves the state metrics of the installation until ctx is done. With the
+// argument "depot", it instead serves the objects of a directory as a depot,
+// which needs no database.
 func Run(ctx context.Context, args []string, plugins Plugins) error {
+	if len(args) == 1 && args[0] == "depot" {
+		return serveDepot(ctx)
+	}
 	database, err := env(databaseURL)
 	if err != nil {
 		return err
@@ -136,7 +146,55 @@ func Run(ctx context.Context, args []string, plugins Plugins) error {
 	case len(args) == 1 && args[0] == "state-metrics":
 		return serveState(ctx, database, plugins)
 	}
-	return errors.New("usage: aviary-supervisor [migrate [<version>] | state-metrics]")
+	return errors.New("usage: aviary-supervisor [migrate [<version>] | state-metrics | depot]")
+}
+
+// serveDepot serves the objects in the directory of AVIARY_DEPOT_DIRECTORY.
+func serveDepot(ctx context.Context) error {
+	directory, err := env(depotDirectory)
+	if err != nil {
+		return err
+	}
+	objects, err := depot.Open(directory)
+	if err != nil {
+		return err
+	}
+	requests, err := net.Listen("tcp", apiAddr)
+	if err != nil {
+		return err
+	}
+	scrapes, err := net.Listen("tcp", metricsAddr)
+	if err != nil {
+		return err
+	}
+	return serveDepotOn(ctx, requests, scrapes, objects)
+}
+
+// serveDepotOn serves the objects to the Supervisors on requests, and the
+// metrics of the depot on scrapes, until ctx is done.
+func serveDepotOn(ctx context.Context, requests, scrapes net.Listener, objects *depot.Directory) error {
+	m := metrics.NewDepot(objects.Volume)
+	server := &http.Server{Handler: depot.Handler(objects, m.Served), ReadHeaderTimeout: 10 * time.Second}
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("GET /metrics", m.Handler())
+	metricsServer := &http.Server{Handler: metricsMux, ReadHeaderTimeout: 10 * time.Second}
+	defer metricsServer.Close()
+	failed := make(chan error, 2)
+	go func() { failed <- server.Serve(requests) }()
+	go func() { failed <- metricsServer.Serve(scrapes) }()
+	slog.Info("listening", "depot", requests.Addr().String(), "metrics", scrapes.Addr().String())
+
+	select {
+	case err := <-failed:
+		return err
+	case <-ctx.Done():
+	}
+	// The depot keeps serving for the handover, then lets the transfers that
+	// are under way finish. They have no limit here: the cluster ends a depot
+	// that takes longer than its pod is given.
+	slog.Info("stopping")
+	time.Sleep(handover)
+	return server.Shutdown(context.Background())
 }
 
 // serveState serves the state metrics, which need the database and the names
@@ -207,7 +265,8 @@ func sandboxSettings() (sandbox.Settings, error) {
 	return settings, err
 }
 
-// address reads an Egress Proxy URL from the named variable.
+// address reads the URL of a service of the installation, such as the Egress
+// Proxy, from the named variable.
 func address(name string) (*url.URL, error) {
 	value, err := env(name)
 	if err != nil {
@@ -215,7 +274,7 @@ func address(name string) (*url.URL, error) {
 	}
 	at, err := url.Parse(value)
 	if err != nil || at.Scheme != "http" || at.Hostname() == "" {
-		return nil, fmt.Errorf("%s must be a URL such as http://aviary-egress-proxy.aviary-system:8080", name)
+		return nil, fmt.Errorf("%s must be a URL such as http://name.namespace:8080", name)
 	}
 	return at, nil
 }
@@ -517,6 +576,21 @@ func driverConfig() (driver.Config, error) {
 		return config, fmt.Errorf("%s must be a number of seconds, or 0 to disable sleeping", sandboxIdle)
 	}
 	config.Idle = time.Duration(seconds) * time.Second
+	archive, err := env(sandboxArchive)
+	if err != nil {
+		return config, err
+	}
+	if seconds, err = strconv.Atoi(archive); err != nil || seconds < 0 {
+		return config, fmt.Errorf("%s must be a number of seconds, or 0 to disable archiving", sandboxArchive)
+	}
+	config.ArchiveAfter = time.Duration(seconds) * time.Second
+	// The depot is needed without archiving too: it has the homes that were
+	// archived before.
+	depots, err := address(depotURL)
+	if err != nil {
+		return config, err
+	}
+	config.Depot = depot.At(depots.String())
 	retention, err := env(sandboxRetention)
 	if err != nil {
 		return config, err
@@ -555,6 +629,14 @@ func driverConfig() (driver.Config, error) {
 		return config, fmt.Errorf("%s must be a number of seconds, or 0 for no limit", maxStartup)
 	}
 	config.MaxStartup = time.Duration(seconds) * time.Second
+	restore, err := env(maxRestore)
+	if err != nil {
+		return config, err
+	}
+	if seconds, err = strconv.Atoi(restore); err != nil || seconds < 0 {
+		return config, fmt.Errorf("%s must be a number of seconds", maxRestore)
+	}
+	config.MaxRestore = time.Duration(seconds) * time.Second
 	longest, err := env(maxTurn)
 	if err != nil {
 		return config, err

@@ -277,7 +277,7 @@ func TestASandboxSleepsWakesIsKeptAndIsDeleted(t *testing.T) {
 		t.Errorf("Sandboxes = %+v, %v", all, err)
 	}
 
-	if err := c.Delete(ctx, name); err != nil {
+	if err := c.Delete(ctx, name, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := c.Sandbox(ctx, name); !errors.Is(err, ErrNotFound) {
@@ -285,7 +285,7 @@ func TestASandboxSleepsWakesIsKeptAndIsDeleted(t *testing.T) {
 	}
 	// Deleting a missing sandbox succeeds. The other changes return
 	// ErrNotFound.
-	if err := c.Delete(ctx, name); err != nil {
+	if err := c.Delete(ctx, name, ""); err != nil {
 		t.Errorf("second Delete = %v", err)
 	}
 	for what, change := range map[string]func() error{
@@ -299,6 +299,45 @@ func TestASandboxSleepsWakesIsKeptAndIsDeleted(t *testing.T) {
 		if err := change(); !errors.Is(err, ErrNotFound) {
 			t.Errorf("%s of a deleted sandbox = %v, want ErrNotFound", what, err)
 		}
+	}
+}
+
+// A sandbox that is deleted by its UID is deleted only if it is still that
+// one: the name of a session's sandbox is always the same.
+func TestASandboxIsDeletedOnlyIfItIsTheOneThatWasSeen(t *testing.T) {
+	clients := fake.NewSimpleClientset()
+	c, _ := cluster(t, Settings{Volume: resource.MustParse("1Gi")})
+	c.sandboxes = clients.AgentsV1beta1().Sandboxes("sessions")
+	session := uuid.New()
+	if err := c.Create(ctx, Request{Session: session, Pod: opencode}); err != nil {
+		t.Fatal(err)
+	}
+	// The fake clientset ignores the precondition, so answer as the API
+	// server does for a sandbox with another UID.
+	var asked []string
+	clients.PrependReactor("delete", "sandboxes", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		options := action.(k8stesting.DeleteActionImpl).DeleteOptions
+		if options.Preconditions == nil || options.Preconditions.UID == nil {
+			asked = append(asked, "")
+			return false, nil, nil
+		}
+		asked = append(asked, string(*options.Preconditions.UID))
+		return true, nil, apierrors.NewConflict(schema.GroupResource{Group: "agents.x-k8s.io", Resource: "sandboxes"}, action.(k8stesting.DeleteAction).GetName(), errors.New("the UID in the precondition is not that of the object"))
+	})
+	if err := c.Delete(ctx, Name(session), "the-uid-of-an-earlier-sandbox"); err != nil {
+		t.Errorf("Delete of a sandbox with another UID = %v, want nothing deleted and no error", err)
+	}
+	if _, err := c.Sandbox(ctx, Name(session)); err != nil {
+		t.Errorf("the sandbox with another UID was deleted: %v", err)
+	}
+	if err := c.Delete(ctx, Name(session), ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Sandbox(ctx, Name(session)); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Sandbox after Delete = %v, want ErrNotFound", err)
+	}
+	if len(asked) != 2 || asked[0] != "the-uid-of-an-earlier-sandbox" || asked[1] != "" {
+		t.Errorf("deletions asked for the UIDs %q", asked)
 	}
 }
 

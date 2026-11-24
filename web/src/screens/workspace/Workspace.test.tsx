@@ -887,6 +887,27 @@ it("says that a turn waits for a sandbox that sleeps to wake", async () => {
   }
 });
 
+it("says that a session is archived, and that its turn restores its files", async () => {
+  await queuedFirst();
+  // A session of the example data that has slept for more than a week.
+  const user = open(await pathOf("Write a README for the fixtures"), "alice");
+  const head = () => document.querySelector(".conv-h")!.textContent;
+  await waitFor(() => expect(head()).toContain("Archived"));
+  const { mock } = await backend();
+  mock.speed = 5;
+  try {
+    await user.type(box(), "And now?{Enter}");
+    await waitFor(() =>
+      expect(
+        document.querySelector(".turn:last-of-type .state")?.textContent,
+      ).toBe("Restoring files…"),
+    );
+    await waitFor(() => expect(head()).toContain("Restoring"));
+  } finally {
+    mock.speed = 0;
+  }
+});
+
 // card returns the request for approval that waits in the conversation.
 const card = () => screen.findByRole("group", { name: "Request for approval" });
 

@@ -1,0 +1,16 @@
+# The one address of the depots.
+apiVersion: v1
+kind: Service
+metadata:
+  name: aviary-depot
+  labels:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: depot
+spec:
+  selector:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: depot
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

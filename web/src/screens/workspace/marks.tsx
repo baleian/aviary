@@ -39,8 +39,21 @@ export function SessionTitle({
   );
 }
 
-// SandboxBadge says whether the sandbox of a session is awake, asleep or
-// lost. With always, it also says that there is none: not yet, or no longer.
+// What a session says of its sandbox, each with its word and its glyph.
+const SANDBOXES: Record<
+  NonNullable<Session["sandbox"]>,
+  readonly [word: string, glyph?: IconName]
+> = {
+  awake: ["Awake"],
+  asleep: ["Asleep", "moon"],
+  archived: ["Archived", "box"],
+  restoring: ["Restoring", "box"],
+  lost: ["Lost", "warn"],
+};
+
+// SandboxBadge says whether the sandbox of a session is awake, asleep,
+// archived or lost. With always, it also says that there is none: not yet,
+// or no longer.
 export function SandboxBadge({
   session,
   always,
@@ -51,42 +64,28 @@ export function SandboxBadge({
   if (session.ended_at) {
     return always ? <span className="sb gone">Deleted</span> : null;
   }
-  if (session.sandbox === "awake") {
-    return (
-      <span className="sb awake" title="Sandbox awake">
-        Awake
-      </span>
-    );
+  if (!session.sandbox) {
+    return always ? <span className="sb gone">Not started</span> : null;
   }
-  if (session.sandbox === "asleep") {
-    return (
-      <span className="sb asleep" title="Sandbox asleep">
-        <Icon name="moon" />
-        Asleep
-      </span>
-    );
-  }
-  if (session.sandbox === "lost") {
-    return (
-      <span className="sb lost" title="Sandbox lost">
-        <Icon name="warn" />
-        Lost
-      </span>
-    );
-  }
-  return always ? <span className="sb gone">Not started</span> : null;
+  // The API may say what this build does not know.
+  const [word, glyph] = SANDBOXES[session.sandbox] ?? [session.sandbox];
+  return (
+    <span
+      className={"sb " + session.sandbox}
+      title={"Sandbox " + word.toLowerCase()}
+    >
+      {glyph && <Icon name={glyph} />}
+      {word}
+    </span>
+  );
 }
-
-const MARKS = {
-  awake: ["Sandbox awake", undefined],
-  asleep: ["Sandbox asleep", "moon"],
-  lost: ["Sandbox lost", "warn"],
-} as const;
 
 // SandboxMark is the badge of the sandbox without its word, for a list.
 export function SandboxMark({ session }: { session: Session }) {
-  if (session.ended_at || !session.sandbox) return null;
-  const [name, glyph] = MARKS[session.sandbox];
+  const mark = session.sandbox && SANDBOXES[session.sandbox];
+  if (session.ended_at || !mark) return null;
+  const [word, glyph] = mark;
+  const name = "Sandbox " + word.toLowerCase();
   return (
     <span
       className={"sbm " + session.sandbox}

@@ -185,6 +185,24 @@ func (q *Queries) Answers(ctx context.Context, arg AnswersParams) ([]AnswersRow,
 	return items, nil
 }
 
+const archiveSession = `-- name: ArchiveSession :exec
+update sessions
+set archive = ?, archive_bytes = ?, archived_at = now(6), claim = null,
+    sandbox = null, sandbox_state = 'archived', asleep_since = null
+where id = ?
+`
+
+type ArchiveSessionParams struct {
+	Archive *key.ID
+	Bytes   *int64
+	ID      key.ID
+}
+
+func (q *Queries) ArchiveSession(ctx context.Context, arg ArchiveSessionParams) error {
+	_, err := q.db.ExecContext(ctx, archiveSession, arg.Archive, arg.Bytes, arg.ID)
+	return err
+}
+
 const askTurnToStop = `-- name: AskTurnToStop :exec
 update turns set cancel_requested_at = coalesce(cancel_requested_at, now(6)) where id = ?
 `
@@ -214,6 +232,38 @@ where project_members.username = ?
 // Gives the members awaited under the username to the user who has it.
 func (q *Queries) ClaimMembers(ctx context.Context, username *string) error {
 	_, err := q.db.ExecContext(ctx, claimMembers, username)
+	return err
+}
+
+const claimRestore = `-- name: ClaimRestore :exec
+update sessions
+set claim = ?, claimed_at = now(6), sandbox = null, sandbox_state = 'archived'
+where id = ?
+`
+
+type ClaimRestoreParams struct {
+	Claim *key.ID
+	ID    key.ID
+}
+
+// A sandbox that the session has from an earlier restoring is no longer its
+// own.
+func (q *Queries) ClaimRestore(ctx context.Context, arg ClaimRestoreParams) error {
+	_, err := q.db.ExecContext(ctx, claimRestore, arg.Claim, arg.ID)
+	return err
+}
+
+const claimSession = `-- name: ClaimSession :exec
+update sessions set claim = ?, claimed_at = now(6) where id = ?
+`
+
+type ClaimSessionParams struct {
+	Claim *key.ID
+	ID    key.ID
+}
+
+func (q *Queries) ClaimSession(ctx context.Context, arg ClaimSessionParams) error {
+	_, err := q.db.ExecContext(ctx, claimSession, arg.Claim, arg.ID)
 	return err
 }
 
@@ -247,6 +297,19 @@ delete from session_mcp_servers where session_id = ?
 func (q *Queries) ClearSessionMcpServers(ctx context.Context, sessionID key.ID) error {
 	_, err := q.db.ExecContext(ctx, clearSessionMcpServers, sessionID)
 	return err
+}
+
+const countArchivedSessions = `-- name: CountArchivedSessions :one
+select count(*) from sessions where archived_at is not null and ended_at is null and sandbox is null
+`
+
+// Counts the sessions that have not ended and have an archive for a home,
+// and no sandbox.
+func (q *Queries) CountArchivedSessions(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countArchivedSessions)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const countQueuedTurns = `-- name: CountQueuedTurns :one
@@ -305,6 +368,23 @@ func (q *Queries) CountSandboxes(ctx context.Context) ([]CountSandboxesRow, erro
 		return nil, err
 	}
 	return items, nil
+}
+
+const countSessionTurns = `-- name: CountSessionTurns :one
+select count(*) as turns, cast(coalesce(sum(ended_at is null), 0) as signed) as unfinished from turns where session_id = ?
+`
+
+type CountSessionTurnsRow struct {
+	Turns      int64
+	Unfinished int64
+}
+
+// Returns the number of the session's turns, and how many have not ended.
+func (q *Queries) CountSessionTurns(ctx context.Context, sessionID key.ID) (CountSessionTurnsRow, error) {
+	row := q.db.QueryRowContext(ctx, countSessionTurns, sessionID)
+	var i CountSessionTurnsRow
+	err := row.Scan(&i.Turns, &i.Unfinished)
+	return i, err
 }
 
 const createAgent = `-- name: CreateAgent :execrows
@@ -686,7 +766,7 @@ func (q *Queries) FollowTurn(ctx context.Context, id key.ID) error {
 
 const followedTurn = `-- name: FollowedTurn :one
 select turns.id, turns.session_id, turns.seq, turns.created_by, turns.state, turns.text, turns.created_at, turns.dispatched_at, turns.started_at, turns.cancel_requested_at, turns.ended_at, turns.stop_reason, turns.failure_reason, turns.failure_message, turns.total_tokens, turns.input_tokens, turns.output_tokens, turns.thought_tokens, turns.cached_read_tokens, turns.cached_write_tokens, agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
-       agents.approval, providers.url as provider_url, agents.model, sessions.sandbox,
+       agents.approval, providers.url as provider_url, agents.model, sessions.sandbox, sessions.sandbox_state,
        cast(timestampdiff(microsecond, coalesce(turns.dispatched_at, turns.created_at), now(6)) as signed) as dispatched
 from turns
 join sessions on sessions.id = turns.session_id
@@ -705,6 +785,7 @@ type FollowedTurnRow struct {
 	ProviderUrl  string
 	Model        string
 	Sandbox      *string
+	SandboxState *string
 	Dispatched   int64
 }
 
@@ -740,9 +821,26 @@ func (q *Queries) FollowedTurn(ctx context.Context, id key.ID) (FollowedTurnRow,
 		&i.ProviderUrl,
 		&i.Model,
 		&i.Sandbox,
+		&i.SandboxState,
 		&i.Dispatched,
 	)
 	return i, err
+}
+
+const forgetArchive = `-- name: ForgetArchive :exec
+update sessions
+set archive = null, archive_bytes = null, archived_at = null, sandbox_state = if(sandbox is null, null, sandbox_state)
+where id = ? and archive = ? and ended_at is not null
+`
+
+type ForgetArchiveParams struct {
+	ID      key.ID
+	Archive *key.ID
+}
+
+func (q *Queries) ForgetArchive(ctx context.Context, arg ForgetArchiveParams) error {
+	_, err := q.db.ExecContext(ctx, forgetArchive, arg.ID, arg.Archive)
+	return err
 }
 
 const freeUsername = `-- name: FreeUsername :exec
@@ -956,7 +1054,7 @@ func (q *Queries) GetSecretStore(ctx context.Context, id key.ID) (SecretStore, e
 }
 
 const getSession = `-- name: GetSession :one
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason from sessions where id = ?
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, asleep_since, archive, archive_bytes, archived_at, claim, claimed_at from sessions where id = ?
 `
 
 func (q *Queries) GetSession(ctx context.Context, id key.ID) (Session, error) {
@@ -972,6 +1070,12 @@ func (q *Queries) GetSession(ctx context.Context, id key.ID) (Session, error) {
 		&i.CreatedAt,
 		&i.EndedAt,
 		&i.EndReason,
+		&i.AsleepSince,
+		&i.Archive,
+		&i.ArchiveBytes,
+		&i.ArchivedAt,
+		&i.Claim,
+		&i.ClaimedAt,
 	)
 	return i, err
 }
@@ -1266,6 +1370,50 @@ func (q *Queries) ListLastTurns(ctx context.Context, sessionIds []key.ID) ([]Tur
 	return items, nil
 }
 
+const listLeftArchives = `-- name: ListLeftArchives :many
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, asleep_since, archive, archive_bytes, archived_at, claim, claimed_at from sessions where archived_at is not null and ended_at is not null order by archived_at limit ?
+`
+
+// Lists the sessions that have ended and still have an archive.
+func (q *Queries) ListLeftArchives(ctx context.Context, limit int32) ([]Session, error) {
+	rows, err := q.db.QueryContext(ctx, listLeftArchives, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Session
+	for rows.Next() {
+		var i Session
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.Title,
+			&i.CreatedBy,
+			&i.Sandbox,
+			&i.SandboxState,
+			&i.CreatedAt,
+			&i.EndedAt,
+			&i.EndReason,
+			&i.AsleepSince,
+			&i.Archive,
+			&i.ArchiveBytes,
+			&i.ArchivedAt,
+			&i.Claim,
+			&i.ClaimedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMcpServers = `-- name: ListMcpServers :many
 select id, project_id, slug, name, url, transport, headers, tools, tools_listed_at, created_at, updated_at from mcp_servers where project_id = ? order by created_at, id
 `
@@ -1353,6 +1501,57 @@ func (q *Queries) ListMembers(ctx context.Context, projectID key.ID) ([]ListMemb
 			&i.UserUsername,
 			&i.DisplayName,
 			&i.UserCreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOldArchives = `-- name: ListOldArchives :many
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, asleep_since, archive, archive_bytes, archived_at, claim, claimed_at from sessions
+where archived_at < ? and ended_at is null and sandbox is null
+order by archived_at limit ?
+`
+
+type ListOldArchivesParams struct {
+	Before *time.Time
+	Limit  int32
+}
+
+// Lists the sessions that have not ended and were archived before before.
+func (q *Queries) ListOldArchives(ctx context.Context, arg ListOldArchivesParams) ([]Session, error) {
+	rows, err := q.db.QueryContext(ctx, listOldArchives, arg.Before, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Session
+	for rows.Next() {
+		var i Session
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.Title,
+			&i.CreatedBy,
+			&i.Sandbox,
+			&i.SandboxState,
+			&i.CreatedAt,
+			&i.EndedAt,
+			&i.EndReason,
+			&i.AsleepSince,
+			&i.Archive,
+			&i.ArchiveBytes,
+			&i.ArchivedAt,
+			&i.Claim,
+			&i.ClaimedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1664,7 +1863,7 @@ func (q *Queries) ListSessionMcpServers(ctx context.Context, sessionIds []key.ID
 }
 
 const listSessions = `-- name: ListSessions :many
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason from sessions where agent_id = ? and id < ? order by id desc limit ?
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, asleep_since, archive, archive_bytes, archived_at, claim, claimed_at from sessions where agent_id = ? and id < ? order by id desc limit ?
 `
 
 type ListSessionsParams struct {
@@ -1694,6 +1893,12 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 			&i.CreatedAt,
 			&i.EndedAt,
 			&i.EndReason,
+			&i.AsleepSince,
+			&i.Archive,
+			&i.ArchiveBytes,
+			&i.ArchivedAt,
+			&i.Claim,
+			&i.ClaimedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1709,7 +1914,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 }
 
 const listSessionsEndedWithAgent = `-- name: ListSessionsEndedWithAgent :many
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason from sessions where agent_id = ? and end_reason = 'agent_deleted'
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, asleep_since, archive, archive_bytes, archived_at, claim, claimed_at from sessions where agent_id = ? and end_reason = 'agent_deleted'
 `
 
 func (q *Queries) ListSessionsEndedWithAgent(ctx context.Context, agentID key.ID) ([]Session, error) {
@@ -1731,6 +1936,12 @@ func (q *Queries) ListSessionsEndedWithAgent(ctx context.Context, agentID key.ID
 			&i.CreatedAt,
 			&i.EndedAt,
 			&i.EndReason,
+			&i.AsleepSince,
+			&i.Archive,
+			&i.ArchiveBytes,
+			&i.ArchivedAt,
+			&i.Claim,
+			&i.ClaimedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1746,7 +1957,7 @@ func (q *Queries) ListSessionsEndedWithAgent(ctx context.Context, agentID key.ID
 }
 
 const listSessionsOf = `-- name: ListSessionsOf :many
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason from sessions
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, asleep_since, archive, archive_bytes, archived_at, claim, claimed_at from sessions
 where agent_id = ? and created_by = ? and id < ?
 order by id desc limit ?
 `
@@ -1783,6 +1994,12 @@ func (q *Queries) ListSessionsOf(ctx context.Context, arg ListSessionsOfParams) 
 			&i.CreatedAt,
 			&i.EndedAt,
 			&i.EndReason,
+			&i.AsleepSince,
+			&i.Archive,
+			&i.ArchiveBytes,
+			&i.ArchivedAt,
+			&i.Claim,
+			&i.ClaimedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1798,7 +2015,7 @@ func (q *Queries) ListSessionsOf(ctx context.Context, arg ListSessionsOfParams) 
 }
 
 const listSessionsWithSandbox = `-- name: ListSessionsWithSandbox :many
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason from sessions where sandbox is not null
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, asleep_since, archive, archive_bytes, archived_at, claim, claimed_at from sessions where sandbox is not null
 `
 
 func (q *Queries) ListSessionsWithSandbox(ctx context.Context) ([]Session, error) {
@@ -1820,6 +2037,12 @@ func (q *Queries) ListSessionsWithSandbox(ctx context.Context) ([]Session, error
 			&i.CreatedAt,
 			&i.EndedAt,
 			&i.EndReason,
+			&i.AsleepSince,
+			&i.Archive,
+			&i.ArchiveBytes,
+			&i.ArchivedAt,
+			&i.Claim,
+			&i.ClaimedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -2051,7 +2274,7 @@ func (q *Queries) LockAgentSessions(ctx context.Context, agentID key.ID) ([]key.
 }
 
 const lockSession = `-- name: LockSession :one
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason from sessions where id = ? for update
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, asleep_since, archive, archive_bytes, archived_at, claim, claimed_at from sessions where id = ? for update
 `
 
 // Locks the session until the transaction ends, which serializes accepting
@@ -2069,6 +2292,12 @@ func (q *Queries) LockSession(ctx context.Context, id key.ID) (Session, error) {
 		&i.CreatedAt,
 		&i.EndedAt,
 		&i.EndReason,
+		&i.AsleepSince,
+		&i.Archive,
+		&i.ArchiveBytes,
+		&i.ArchivedAt,
+		&i.Claim,
+		&i.ClaimedAt,
 	)
 	return i, err
 }
@@ -2377,6 +2606,26 @@ func (q *Queries) ResolveApproval(ctx context.Context, arg ResolveApprovalParams
 	return result.RowsAffected()
 }
 
+const restoreSession = `-- name: RestoreSession :execrows
+update sessions
+set archive = null, archive_bytes = null, archived_at = null, claim = null, sandbox_state = 'awake'
+where id = ? and claim = ? and sandbox = ? and archive is not null
+`
+
+type RestoreSessionParams struct {
+	ID      key.ID
+	Claim   *key.ID
+	Sandbox *string
+}
+
+func (q *Queries) RestoreSession(ctx context.Context, arg RestoreSessionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, restoreSession, arg.ID, arg.Claim, arg.Sandbox)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const sessionTurn = `-- name: SessionTurn :one
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
        coalesce(users.subject, '') as subject,
@@ -2539,7 +2788,11 @@ func (q *Queries) SetRole(ctx context.Context, arg SetRoleParams) error {
 
 const setSandbox = `-- name: SetSandbox :exec
 update sessions
-set sandbox = ?, sandbox_state = if(? is null, null, 'awake')
+set sandbox_state = case when archive is not null and ? is not null then 'restoring'
+                         when archive is not null then 'archived'
+                         when ? is not null then 'awake' end,
+    sandbox = ?,
+    asleep_since = null
 where id = ?
 `
 
@@ -2548,14 +2801,25 @@ type SetSandboxParams struct {
 	ID      key.ID
 }
 
-// A sandbox that is set is awake.
+// A sandbox that is set is awake, or restoring if the session's home is
+// archived. Without a sandbox, such a session is archived.
 func (q *Queries) SetSandbox(ctx context.Context, arg SetSandboxParams) error {
-	_, err := q.db.ExecContext(ctx, setSandbox, arg.Sandbox, arg.Sandbox, arg.ID)
+	_, err := q.db.ExecContext(ctx, setSandbox,
+		arg.Sandbox,
+		arg.Sandbox,
+		arg.Sandbox,
+		arg.ID,
+	)
 	return err
 }
 
 const setSandboxState = `-- name: SetSandboxState :exec
-update sessions set sandbox_state = ? where id = ? and sandbox = ?
+update sessions
+set asleep_since = case when ? <> 'asleep' then null
+                        when sandbox_state = 'asleep' then asleep_since
+                        else now(6) end,
+    sandbox_state = ?
+where id = ? and sandbox = ? and archive is null
 `
 
 type SetSandboxStateParams struct {
@@ -2564,9 +2828,16 @@ type SetSandboxStateParams struct {
 	Sandbox *string
 }
 
-// Changes the state only while the session has the sandbox.
+// Changes the state only while the session has the sandbox, with its home.
+// A sandbox that is asleep keeps the time since which it is: the time is
+// set before the state, by the state that the session had.
 func (q *Queries) SetSandboxState(ctx context.Context, arg SetSandboxStateParams) error {
-	_, err := q.db.ExecContext(ctx, setSandboxState, arg.State, arg.ID, arg.Sandbox)
+	_, err := q.db.ExecContext(ctx, setSandboxState,
+		arg.State,
+		arg.State,
+		arg.ID,
+		arg.Sandbox,
+	)
 	return err
 }
 

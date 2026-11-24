@@ -650,13 +650,120 @@ func (s *records) SandboxCounts(ctx context.Context) (map[string]int, error) {
 	if err != nil {
 		return nil, err
 	}
-	counts := make(map[string]int, len(rows))
+	counts := make(map[string]int, len(rows)+1)
 	for _, row := range rows {
 		if row.State != nil {
 			counts[*row.State] = int(row.Sandboxes)
 		}
 	}
+	archived, err := s.queries.CountArchivedSessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	counts[store.SandboxArchived] = int(archived)
 	return counts, nil
+}
+
+func (s *records) ClaimArchive(ctx context.Context, sessionID uuid.UUID, sandbox string, turns int, claim uuid.UUID, since time.Time) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	queries := s.queries.WithTx(tx)
+	// Lock the session before counting its turns, so that a concurrent
+	// message either has added its turn or comes after the claim.
+	row, err := queries.LockSession(ctx, sessionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	session := sessionFrom(row)
+	if session.EndedAt != nil || sandbox == "" || session.Sandbox != sandbox || session.SandboxState != store.SandboxAsleep ||
+		session.Archive != nil || session.ClaimedAt != nil && session.ClaimedAt.After(since) {
+		return false, nil
+	}
+	if unused, err := unused(ctx, queries, sessionID, turns); err != nil || !unused {
+		return false, err
+	}
+	if err := queries.ClaimSession(ctx, db.ClaimSessionParams{ID: sessionID, Claim: &claim}); err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
+}
+
+// unused reports whether the session has turns turns, all of which have
+// ended.
+func unused(ctx context.Context, queries *db.Queries, sessionID uuid.UUID, turns int) (bool, error) {
+	has, err := queries.CountSessionTurns(ctx, sessionID)
+	return err == nil && has.Turns == int64(turns) && has.Unfinished == 0, err
+}
+
+func (s *records) ArchiveSession(ctx context.Context, sessionID, claim uuid.UUID, turns int, archive store.Archive) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	queries := s.queries.WithTx(tx)
+	// Lock the session before counting its turns, so that a concurrent
+	// message either has added its turn or finds the home archived.
+	row, err := queries.LockSession(ctx, sessionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if row.EndedAt != nil || row.Claim == nil || *row.Claim != claim || claim == uuid.Nil {
+		return false, nil
+	}
+	if unused, err := unused(ctx, queries, sessionID, turns); err != nil || !unused {
+		return false, err
+	}
+	err = queries.ArchiveSession(ctx, db.ArchiveSessionParams{ID: sessionID, Archive: &archive.ID, Bytes: &archive.Bytes})
+	if err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
+}
+
+func (s *records) ClaimRestore(ctx context.Context, sessionID, claim uuid.UUID) (store.Archive, bool, error) {
+	row, err := s.queries.ClaimRestore(ctx, db.ClaimRestoreParams{ID: sessionID, Claim: &claim})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.Archive{}, false, nil
+	}
+	if err != nil {
+		return store.Archive{}, false, err
+	}
+	return *sessionFrom(row).Archive, true, nil
+}
+
+func (s *records) RestoreSession(ctx context.Context, sessionID, claim uuid.UUID, sandbox string) (bool, error) {
+	restored, err := s.queries.RestoreSession(ctx, db.RestoreSessionParams{ID: sessionID, Claim: &claim, Sandbox: sandbox})
+	return restored == 1, err
+}
+
+func (s *records) LeftArchives(ctx context.Context, before time.Time, limit int) ([]store.Session, error) {
+	rows, err := s.queries.ListLeftArchives(ctx, int32(limit))
+	if err != nil {
+		return nil, err
+	}
+	old, err := s.queries.ListOldArchives(ctx, db.ListOldArchivesParams{Before: &before, Count: int32(limit)})
+	if err != nil {
+		return nil, err
+	}
+	sessions := make([]store.Session, 0, len(rows)+len(old))
+	for _, row := range append(rows, old...) {
+		sessions = append(sessions, sessionFrom(row))
+	}
+	return sessions, nil
+}
+
+func (s *records) ForgetArchive(ctx context.Context, sessionID, archive uuid.UUID) error {
+	return s.queries.ForgetArchive(ctx, db.ForgetArchiveParams{ID: sessionID, Archive: &archive})
 }
 
 func (s *records) EndSession(ctx context.Context, id uuid.UUID, reason string) (store.Session, error) {
@@ -1143,6 +1250,9 @@ func (s *records) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.Follo
 	if row.Sandbox != nil {
 		followed.Sandbox = *row.Sandbox
 	}
+	if row.SandboxState != nil {
+		followed.SandboxState = *row.SandboxState
+	}
 	return followed, nil
 }
 
@@ -1441,6 +1551,10 @@ func sessionFrom(row db.Session) store.Session {
 	}
 	if row.EndReason != nil {
 		session.EndReason = *row.EndReason
+	}
+	session.AsleepSince, session.Claimed, session.ClaimedAt = row.AsleepSince, row.Claim != nil, row.ClaimedAt
+	if row.Archive != nil && row.ArchiveBytes != nil && row.ArchivedAt != nil {
+		session.Archive = &store.Archive{ID: *row.Archive, Bytes: *row.ArchiveBytes, At: *row.ArchivedAt}
 	}
 	return session
 }
