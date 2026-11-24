@@ -30,6 +30,10 @@ server {
         ${AVIARY_API_LOCATION}
         # Event streams are passed on as they come.
         proxy_buffering off;
+        # So are the files that messages carry, of whatever size: the API
+        # says how large a file may be.
+        client_max_body_size 0;
+        proxy_request_buffering off;
     }
 
     # Files whose names change with their contents.

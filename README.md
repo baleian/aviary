@@ -794,7 +794,8 @@ There are three ways for the browser to find the API:
 - **A proxy in front of both.** Leave `AVIARY_API` empty, and have a proxy or
   an ingress route `/v1/` to the Supervisor and every other path to the web
   server, at one address. The proxy must not buffer the responses of `/v1/`,
-  which include event streams.
+  which include event streams, and must take the files that messages carry:
+  request bodies of up to `runtime.maxAttachmentBytes`.
 - **Two addresses.** Set `AVIARY_PUBLIC_API` to the address of the API, and
   list the origin of the web UI in `supervisor.allowedOrigins` (see
   [Configuration](#configuration)), so that browsers let its pages call the
