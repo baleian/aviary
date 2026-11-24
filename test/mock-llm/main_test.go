@@ -502,6 +502,81 @@ func TestPackage(t *testing.T) {
 
 // use calls the first tool whose name names the MCP server and ends with the
 // tool's, in each API's shape of a tool list, and replies with its output.
+// read calls the tool of the harness that reads a file, not one that takes a
+// path for something else, with the argument by which that tool names the
+// file.
+func TestRead(t *testing.T) {
+	t.Parallel()
+	model := httptest.NewServer(newMock(apiKey))
+	defer model.Close()
+	// takes returns the parameters of a tool: those that it needs, then
+	// those that it takes besides.
+	takes := func(required []string, optional ...string) map[string]any {
+		properties := map[string]any{}
+		for _, argument := range slices.Concat(required, optional) {
+			properties[argument] = map[string]any{}
+		}
+		return map[string]any{"properties": properties, "required": required}
+	}
+	for _, test := range []struct {
+		api   string
+		tools []any
+		// The tool that is called, and its arguments.
+		name, arguments string
+	}{
+		{
+			api: "/v1/chat/completions", name: "read", arguments: `{"filePath":"/home/notes.txt"}`,
+			tools: []any{
+				map[string]any{"type": "function", "function": map[string]any{"name": "bash", "parameters": takes([]string{"command"})}},
+				map[string]any{"type": "function", "function": map[string]any{"name": "write", "parameters": takes([]string{"filePath", "content"})}},
+				map[string]any{"type": "function", "function": map[string]any{"name": "list", "parameters": takes(nil, "path", "ignore")}},
+				map[string]any{"type": "function", "function": map[string]any{"name": "read", "parameters": takes([]string{"filePath"}, "offset", "limit")}},
+			},
+		},
+		{
+			api: "/v1/responses", name: "view_image", arguments: `{"path":"/home/notes.txt"}`,
+			tools: []any{
+				map[string]any{"type": "function", "name": "exec_command", "parameters": takes([]string{"cmd"}, "workdir")},
+				map[string]any{"type": "function", "name": "view_image", "parameters": takes([]string{"path"})},
+			},
+		},
+		{
+			api: "/v1/messages", name: "Read", arguments: `{"file_path":"/home/notes.txt"}`,
+			tools: []any{
+				map[string]any{"name": "Grep", "input_schema": takes([]string{"pattern"}, "path")},
+				map[string]any{"name": "Edit", "input_schema": takes([]string{"file_path", "old_string", "new_string"})},
+				map[string]any{"name": "Read", "input_schema": takes([]string{"file_path"}, "offset", "limit", "pages", "allow_large")},
+			},
+		},
+		// A harness without such a tool is told so.
+		{
+			api:   "/v1/chat/completions",
+			tools: []any{map[string]any{"type": "function", "function": map[string]any{"name": "bash", "parameters": takes([]string{"command"})}}},
+		},
+	} {
+		request := map[string]any{"model": "mock", "stream": true, "tools": test.tools,
+			"messages": []any{map[string]any{"role": "user", "content": "read /home/notes.txt"}},
+			"input":    []any{map[string]any{"type": "message", "role": "user", "content": "read /home/notes.txt"}},
+		}
+		status, stream, _ := events(t, model.URL+test.api, apiKey, request)
+		var name, arguments, said string
+		for _, event := range stream {
+			name += str(at(event, "choices", 0, "delta", "tool_calls", 0, "function", "name")) + str(at(event, "content_block", "name"))
+			arguments += str(at(event, "choices", 0, "delta", "tool_calls", 0, "function", "arguments")) + str(at(event, "delta", "partial_json"))
+			said += str(at(event, "choices", 0, "delta", "content"))
+			if event["type"] == "response.output_item.done" {
+				name, arguments = str(at(event, "item", "name")), str(at(event, "item", "arguments"))
+			}
+		}
+		if status != http.StatusOK || name != test.name || arguments != test.arguments {
+			t.Errorf("%s: got %d with %q %q, want %q %q", test.api, status, name, arguments, test.name, test.arguments)
+		}
+		if test.name == "" && !strings.Contains(said, "no tool that reads a file") {
+			t.Errorf("%s: a harness without a tool that reads a file was told %q", test.api, said)
+		}
+	}
+}
+
 func TestUse(t *testing.T) {
 	t.Parallel()
 	model := httptest.NewServer(newMock(apiKey))

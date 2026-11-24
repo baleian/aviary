@@ -830,6 +830,59 @@ async fn approval_mode_runs_only_allowed_commands() {
     .await;
 }
 
+/// A picture of one white pixel.
+const PIXEL: [u8; 69] = [
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+    0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8, 0xff, 0xff, 0x3f,
+    0x00, 0x05, 0xfe, 0x02, 0xfe, 0x33, 0x12, 0x95, 0x14, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+    0x44, 0xae, 0x42, 0x60, 0x82,
+];
+
+/// The files that messages carry are what the user gave the agent, so an
+/// agent that asks reads them with its tool for reading files without asking.
+/// The file is a picture, which every harness has a tool to look at.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the harness images"]
+async fn asking_agent_reads_the_files_of_messages_without_asking() {
+    each(|bench| async move {
+        let session = bench.session().await;
+        let written = session.runner.file("1/pixel.png", PIXEL.to_vec()).await;
+        assert_eq!(written, StatusCode::NO_CONTENT, "{}", bench.image);
+        let read = Message {
+            text: "read /home/.attachments/1/pixel.png",
+            approval: "ask",
+            ..Message::default()
+        };
+        let mut turn = session.start(read).await;
+        turn.until("neither an approval request nor the end", |events| {
+            find(events, "approval.requested").is_some()
+                || matches!(events.last(), Some(last) if last.name == "finished" || last.name == "failed")
+        })
+        .await;
+        assert!(
+            find(&turn.events, "approval.requested").is_none(),
+            "{}: asked before it read a file of a message: {:?}",
+            bench.image,
+            turn.events
+        );
+        let ended = turn.end().await;
+        ended.completed();
+        let calls: Vec<_> = ended
+            .events
+            .iter()
+            .filter(|event| event.name.starts_with("tool."))
+            .collect();
+        assert!(
+            !calls.is_empty() && !calls.iter().any(|call| call.data["status"] == "failed"),
+            "{}: the file was not read: {:?}",
+            ended.image,
+            ended.events
+        );
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
 async fn model_error_fails_the_turn() {

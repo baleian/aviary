@@ -1,10 +1,12 @@
 #!/bin/sh
 # For an agent that asks, OpenCode asks before it runs a command, edits a file
 # or calls a tool of an MCP server, whose name begins with the server's.
-# Otherwise it asks for none of them.
+# Otherwise it asks for none of them. It asks before it reads outside the
+# workspace, but not for the files that messages carry: the user gave it
+# those.
 set -eu
 if [ "${AVIARY_APPROVAL:-}" = ask ]; then
-  permission='"bash": "ask", "edit": "ask"'
+  permission='"bash": "ask", "edit": "ask", "external_directory": {"*": "ask", "/home/.attachments/**": "allow"}'
   for server in ${AVIARY_MCP_SERVERS:-}; do
     permission="$permission, \"${server}_*\": \"ask\""
   done

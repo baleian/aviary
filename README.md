@@ -397,7 +397,8 @@ that connects later can find it.
   the images in this repository, OpenCode asks before it runs a command or
   changes a file, Claude Code before it runs a command that does more than
   read the workspace or changes a file, and Codex before a command runs
-  outside its sandbox: see [`images/README.md`](images/README.md).
+  outside its sandbox: see [`images/README.md`](images/README.md). None of
+  them asks before its own tool reads a file that a message carries.
 - **A request waits as long as its turn may run.** The time spent waiting
   counts toward `runtime.maxTurnSeconds`, because the sandbox keeps running
   and the turn keeps its place among the running turns. A turn whose time

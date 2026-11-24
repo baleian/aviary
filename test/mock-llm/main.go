@@ -12,6 +12,8 @@
 //	               like run, and asks for the command to run outside the
 //	               harness's sandbox if its shell tool supports that. A
 //	               harness that asks for approval before it acts asks then
+//	read <path>    reads the file with the harness's tool that reads files,
+//	               then replies with the tool's output
 //	use <server> <tool> [<arguments>]
 //	               calls a tool of an MCP server with the JSON arguments,
 //	               then replies with the tool's output. The tool is the first
@@ -337,6 +339,11 @@ func (c conversation) next() answer {
 		return answer{text: "mock: the harness offers no tool that runs a command"}
 	case word == "run" || word == "escalate":
 		return answer{call: c.shell.call(rest, word == "escalate")}
+	case word == "read":
+		if reader := findReader(c.tools); reader != nil {
+			return answer{call: reader.call(rest)}
+		}
+		return answer{text: "mock: the harness offers no tool that reads a file"}
 	case word == "use":
 		return c.use(rest)
 	case word == "find" && strings.Contains(strings.Join(c.sent, "\n"), rest):
@@ -390,7 +397,7 @@ func (c conversation) use(rest string) answer {
 func instruction(message string) (word, rest string, found bool) {
 	word, rest, _ = strings.Cut(strings.TrimSpace(message), " ")
 	switch word {
-	case "say", "drawl", "run", "escalate", "use", "recall", "find", "fail", "flaky":
+	case "say", "drawl", "run", "escalate", "read", "use", "recall", "find", "fail", "flaky":
 		return word, strings.TrimSpace(rest), true
 	}
 	return "", "", false
@@ -442,6 +449,7 @@ func findTool(tools []tool, server, name string) *call {
 // schema is the JSON schema of a tool's parameters.
 type schema struct {
 	Properties map[string]json.RawMessage `json:"properties"`
+	Required   []string                   `json:"required"`
 }
 
 // findShell returns the first tool that takes a command, or nil.
@@ -451,6 +459,31 @@ func findShell(tools []tool) *shellTool {
 			if _, found := tool.Parameters.Properties[argument]; found {
 				_, sandboxed := tool.Parameters.Properties["sandbox_permissions"]
 				return &shellTool{name: tool.Name, argument: argument, sandboxed: sandboxed}
+			}
+		}
+	}
+	return nil
+}
+
+// readTool is a tool that reads a file, and the argument that names the file.
+type readTool struct {
+	name, argument string
+}
+
+// call returns the call that reads the file at the path.
+func (r readTool) call(path string) *call {
+	encoded, _ := json.Marshal(map[string]string{r.argument: path})
+	return &call{name: r.name, arguments: string(encoded)}
+}
+
+// findReader returns the first tool that needs the path of a file and
+// nothing else, or nil. A tool that needs more, such as a pattern or new
+// content, does something else with the path.
+func findReader(tools []tool) *readTool {
+	for _, tool := range tools {
+		for _, argument := range []string{"file_path", "filePath", "path"} {
+			if slices.Equal(tool.Parameters.Required, []string{argument}) {
+				return &readTool{name: tool.Name, argument: argument}
 			}
 		}
 	}

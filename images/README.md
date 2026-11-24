@@ -151,6 +151,11 @@ images in this repository handle these cases:
   asks before it runs a command that does more than read the workspace, or
   before it changes a file. For an agent that does not ask, the runner
   allows each action once.
+- **Reading outside the workspace.** OpenCode and Claude Code ask before
+  they read a file outside the working directory, which is where the files
+  that messages carry are: in `/home/.attachments`. Their images allow that
+  directory, so that an agent that asks reads what the user gave it without
+  asking. Codex looks at such a file with its own tool without asking.
 - **Titles of the tools of MCP servers.** Claude Code titles a call of a
   tool of an MCP server `server: tool`, Codex `mcp.server.tool`, and OpenCode
   `server_tool`, which is also the form of its own `apply_patch`: in a
