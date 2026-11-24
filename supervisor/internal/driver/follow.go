@@ -37,6 +37,11 @@ type run struct {
 	stopping time.Time
 	// holdup is why the turn has not reached its runner yet.
 	holdup string
+	// restores is set once the turn restores the home of its session, which
+	// moves the deadline, and restored once the home is in the sandbox.
+	restores, restored bool
+	// woken is set once the session records that its sandbox is awake.
+	woken bool
 	// givenUp is why the turn was given up, if it was.
 	givenUp *store.Failure
 }
@@ -183,6 +188,11 @@ func (d *Driver) reach(ctx, following context.Context, r *run, given bool) *sand
 // attempt is a single try of reach. Its error says what the turn waits for.
 func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*sandbox.Runner, error) {
 	turn := r.turn
+	if !given && r.archived() {
+		if err := d.restore(ctx, following, r); err != nil {
+			return nil, fmt.Errorf("restore the session's home: %w", err)
+		}
+	}
 	id := r.sandboxID()
 	if id == "" && given {
 		r.giveUp(store.Failure{Reason: store.FailureSandboxLost, Message: "the session's sandbox is gone"})
@@ -225,16 +235,14 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 		r.giveUp(asleep)
 		return nil, nil
 	case seen.State == sandbox.Asleep:
-		pod, err := d.pod(turn)
+		pod, err := d.pod(turn.Harness, turn.SessionID)
 		if err != nil {
 			return nil, err
 		}
 		if err := d.sandboxes.Resume(following, id, pod); err != nil {
 			return nil, fmt.Errorf("wake sandbox: %w", err)
 		}
-		if err := d.store.SetSandboxState(ctx, turn.SessionID, id, store.SandboxAwake); err != nil {
-			slog.ErrorContext(ctx, "record sandbox state", "session", turn.SessionID, "sandbox", id, "error", err)
-		}
+		d.awaken(ctx, r, id)
 		return nil, errors.New("waking the session's sandbox")
 	case seen.State != sandbox.Running:
 		why := "the session's sandbox is not running yet"
@@ -246,6 +254,11 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 	runner := sandbox.RunnerAt(seen.Address)
 	if given {
 		return runner, nil
+	}
+	// The sandbox runs although the session records it as asleep, as when a
+	// Supervisor has woken it to archive the home.
+	if turn.SandboxState == store.SandboxAsleep {
+		d.awaken(ctx, r, id)
 	}
 	// Retention counts from the last turn given to the sandbox.
 	var until time.Time
@@ -300,14 +313,24 @@ func (d *Driver) stale(turn store.Turn) bool {
 	return d.config.Retention > 0 && time.Since(turn.CreatedAt) >= d.config.Retention
 }
 
-// pod returns the pod of the session's sandbox, with the harness as
-// currently configured.
-func (d *Driver) pod(turn store.FollowedTurn) (sandbox.Pod, error) {
-	harness, found := d.config.Harnesses[turn.Harness]
-	if !found {
-		return sandbox.Pod{}, fmt.Errorf("harness %s is not configured", turn.Harness)
+// awaken records that the session's sandbox is awake, once for the turn.
+func (d *Driver) awaken(ctx context.Context, r *run, id string) {
+	if !r.wake() {
+		return
 	}
-	token, err := d.config.Token(turn.SessionID)
+	if err := d.store.SetSandboxState(ctx, r.turn.SessionID, id, store.SandboxAwake); err != nil {
+		slog.ErrorContext(ctx, "record sandbox state", "session", r.turn.SessionID, "sandbox", id, "error", err)
+	}
+}
+
+// pod returns the pod of the session's sandbox, with the named harness as
+// currently configured.
+func (d *Driver) pod(name string, sessionID uuid.UUID) (sandbox.Pod, error) {
+	harness, found := d.config.Harnesses[name]
+	if !found {
+		return sandbox.Pod{}, fmt.Errorf("harness %s is not configured", name)
+	}
+	token, err := d.config.Token(sessionID)
 	if err != nil {
 		return sandbox.Pod{}, fmt.Errorf("create session token: %w", err)
 	}
@@ -317,7 +340,7 @@ func (d *Driver) pod(turn store.FollowedTurn) (sandbox.Pod, error) {
 // provide creates the session's sandbox and returns its name.
 func (d *Driver) provide(ctx context.Context, r *run) (string, error) {
 	turn := r.turn
-	pod, err := d.pod(turn)
+	pod, err := d.pod(turn.Harness, turn.SessionID)
 	if err != nil {
 		return "", err
 	}
@@ -343,7 +366,7 @@ func (d *Driver) provide(ctx context.Context, r *run) (string, error) {
 
 // forget deletes the sandbox and removes it from the session.
 func (d *Driver) forget(ctx context.Context, sessionID uuid.UUID, id string) {
-	if err := d.sandboxes.Delete(ctx, id); err != nil {
+	if err := d.sandboxes.Delete(ctx, id, ""); err != nil {
 		slog.ErrorContext(ctx, "delete sandbox", "session", sessionID, "sandbox", id, "error", err)
 	}
 	if _, err := d.store.SetSandbox(ctx, sessionID, id, ""); err != nil {
@@ -578,7 +601,11 @@ func (r *run) limit(config Config) (time.Time, store.Failure) {
 	failure := store.Failure{
 		Reason: store.FailureTimedOut, Message: fmt.Sprintf("the turn ran for longer than %s", config.MaxTurn),
 	}
-	if startup := r.dispatched.Add(config.MaxStartup); !r.started && config.MaxStartup > 0 && startup.Before(at) {
+	startup := r.dispatched.Add(config.MaxStartup)
+	if r.restores {
+		startup = startup.Add(config.MaxRestore)
+	}
+	if !r.started && config.MaxStartup > 0 && startup.Before(at) {
 		at = startup
 		failure = store.Failure{Reason: store.FailureStartup, Message: r.holdup}
 		if failure.Message == "" {
@@ -611,6 +638,44 @@ func (r *run) hold(why string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.holdup = why
+}
+
+// archived reports whether the home of the turn's session is an archive,
+// which is restored before the turn is given to a runner.
+func (r *run) archived() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state := r.turn.SandboxState
+	return !r.restored && (state == store.SandboxArchived || state == store.SandboxRestoring)
+}
+
+// restoring records that the turn restores the home of its session, which
+// moves the deadline.
+func (r *run) restoring() {
+	r.mu.Lock()
+	first := !r.restores
+	r.restores = true
+	r.mu.Unlock()
+	if first {
+		poke(r.changed)
+	}
+}
+
+// restore records that the home is in the session's sandbox of the name.
+func (r *run) restore(sandbox string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.restored, r.sandbox = true, sandbox
+}
+
+// wake reports whether the session is yet to record that its sandbox is
+// awake, and takes it as recorded from now on.
+func (r *run) wake() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	first := !r.woken
+	r.woken = true
+	return first
 }
 
 // reach records that the runner has the turn, and signals any cancellation

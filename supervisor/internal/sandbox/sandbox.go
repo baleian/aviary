@@ -86,7 +86,10 @@ const (
 
 // Sandbox is a Sandbox as read from the cluster.
 type Sandbox struct {
-	Name    string
+	Name string
+	// UID tells the Sandbox from others that have had its name, which is
+	// that of its session.
+	UID     string
 	Session string
 	State   State
 	// Message explains why the Sandbox is not running, if it is not.
@@ -311,7 +314,8 @@ func (c *Client) Sandboxes(ctx context.Context) ([]Sandbox, error) {
 
 func seen(found *agents.Sandbox) Sandbox {
 	sandbox := Sandbox{
-		Name: found.Name, Session: found.Labels[SessionLabel], Created: found.CreationTimestamp.Time, Version: found.ResourceVersion,
+		Name: found.Name, UID: string(found.UID), Session: found.Labels[SessionLabel],
+		Created: found.CreationTimestamp.Time, Version: found.ResourceVersion,
 	}
 	ready := meta.FindStatusCondition(found.Status.Conditions, string(agents.SandboxConditionReady))
 	// A condition observed for an older generation can still describe the
@@ -336,11 +340,16 @@ func seen(found *agents.Sandbox) Sandbox {
 	return sandbox
 }
 
-// Delete deletes the Sandbox and its volume. It is not an error if the
-// Sandbox does not exist.
-func (c *Client) Delete(ctx context.Context, name string) error {
-	err := c.sandboxes.Delete(ctx, name, metav1.DeleteOptions{})
-	if apierrors.IsNotFound(err) {
+// Delete deletes the Sandbox and its volume. If uid is not empty, it deletes
+// only the Sandbox with that UID: one that was made under the name since
+// stays. It is not an error if there is no Sandbox to delete.
+func (c *Client) Delete(ctx context.Context, name, uid string) error {
+	var options metav1.DeleteOptions
+	if uid != "" {
+		options.Preconditions = &metav1.Preconditions{UID: new(types.UID(uid))}
+	}
+	err := c.sandboxes.Delete(ctx, name, options)
+	if apierrors.IsNotFound(err) || uid != "" && apierrors.IsConflict(err) {
 		return nil
 	}
 	return err
