@@ -64,6 +64,8 @@ spec:
               value: {{ .Values.runtime.volume.storageClass | quote }}
             - name: AVIARY_SANDBOX_IDLE_SECONDS
               value: {{ .Values.sandboxes.idleSeconds | quote }}
+            - name: AVIARY_SANDBOX_ARCHIVE_SECONDS
+              value: {{ .Values.sandboxes.archiveAfterSeconds | int64 | quote }}
             - name: AVIARY_SANDBOX_RETENTION_SECONDS
               value: {{ .Values.sandboxes.retentionSeconds | quote }}
             - name: AVIARY_LLM_BASE_URL
@@ -72,6 +74,8 @@ spec:
               value: {{ .Values.egressProxy.localhost | quote }}
             - name: AVIARY_PROXY_URL
               value: http://aviary-egress-proxy.{{ .Release.Namespace }}:3128
+            - name: AVIARY_DEPOT_URL
+              value: http://aviary-depot.{{ .Release.Namespace }}:8080
             - name: AVIARY_HARNESSES
               value: {{ .Values.runtime.harnesses | toJson | quote }}
             - name: AVIARY_MAX_CONCURRENT_TURNS
@@ -84,6 +88,8 @@ spec:
               value: {{ .Values.runtime.maxToolOutputBytes | quote }}
             - name: AVIARY_MAX_STARTUP_SECONDS
               value: {{ .Values.runtime.maxStartupSeconds | quote }}
+            - name: AVIARY_MAX_RESTORE_SECONDS
+              value: {{ .Values.runtime.maxRestoreSeconds | int64 | quote }}
             - name: AVIARY_MAX_TURN_SECONDS
               value: {{ .Values.runtime.maxTurnSeconds | quote }}
           ports:

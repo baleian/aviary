@@ -58,16 +58,19 @@ const (
 	maxQueuedTurns     = "AVIARY_MAX_QUEUED_TURNS"
 	maxQueueWait       = "AVIARY_MAX_QUEUE_WAIT_SECONDS"
 	maxStartup         = "AVIARY_MAX_STARTUP_SECONDS"
+	maxRestore         = "AVIARY_MAX_RESTORE_SECONDS"
 	maxToolOutput      = "AVIARY_MAX_TOOL_OUTPUT_BYTES"
 	maxTurn            = "AVIARY_MAX_TURN_SECONDS"
 	sandboxNamespace   = "AVIARY_SANDBOX_NAMESPACE"
 	sandboxVolume      = "AVIARY_SANDBOX_VOLUME_SIZE"
 	sandboxClass       = "AVIARY_SANDBOX_STORAGE_CLASS"
 	sandboxIdle        = "AVIARY_SANDBOX_IDLE_SECONDS"
+	sandboxArchive     = "AVIARY_SANDBOX_ARCHIVE_SECONDS"
 	sandboxRetention   = "AVIARY_SANDBOX_RETENTION_SECONDS"
 	modelsURL          = "AVIARY_LLM_BASE_URL"
 	modelsLocalhost    = "AVIARY_LLM_LOCALHOST"
 	proxyURL           = "AVIARY_PROXY_URL"
+	depotURL           = "AVIARY_DEPOT_URL"
 	depotDirectory     = "AVIARY_DEPOT_DIRECTORY"
 	apiAddr            = ":8080"
 	authzAddr          = ":9091"
@@ -262,7 +265,8 @@ func sandboxSettings() (sandbox.Settings, error) {
 	return settings, err
 }
 
-// address reads an Egress Proxy URL from the named variable.
+// address reads the URL of a service of the installation, such as the Egress
+// Proxy, from the named variable.
 func address(name string) (*url.URL, error) {
 	value, err := env(name)
 	if err != nil {
@@ -270,7 +274,7 @@ func address(name string) (*url.URL, error) {
 	}
 	at, err := url.Parse(value)
 	if err != nil || at.Scheme != "http" || at.Hostname() == "" {
-		return nil, fmt.Errorf("%s must be a URL such as http://aviary-egress-proxy.aviary-system:8080", name)
+		return nil, fmt.Errorf("%s must be a URL such as http://name.namespace:8080", name)
 	}
 	return at, nil
 }
@@ -572,6 +576,21 @@ func driverConfig() (driver.Config, error) {
 		return config, fmt.Errorf("%s must be a number of seconds, or 0 to disable sleeping", sandboxIdle)
 	}
 	config.Idle = time.Duration(seconds) * time.Second
+	archive, err := env(sandboxArchive)
+	if err != nil {
+		return config, err
+	}
+	if seconds, err = strconv.Atoi(archive); err != nil || seconds < 0 {
+		return config, fmt.Errorf("%s must be a number of seconds, or 0 to disable archiving", sandboxArchive)
+	}
+	config.ArchiveAfter = time.Duration(seconds) * time.Second
+	// The depot is needed without archiving too: it has the homes that were
+	// archived before.
+	depots, err := address(depotURL)
+	if err != nil {
+		return config, err
+	}
+	config.Depot = depot.At(depots.String())
 	retention, err := env(sandboxRetention)
 	if err != nil {
 		return config, err
@@ -610,6 +629,14 @@ func driverConfig() (driver.Config, error) {
 		return config, fmt.Errorf("%s must be a number of seconds, or 0 for no limit", maxStartup)
 	}
 	config.MaxStartup = time.Duration(seconds) * time.Second
+	restore, err := env(maxRestore)
+	if err != nil {
+		return config, err
+	}
+	if seconds, err = strconv.Atoi(restore); err != nil || seconds < 0 {
+		return config, fmt.Errorf("%s must be a number of seconds", maxRestore)
+	}
+	config.MaxRestore = time.Duration(seconds) * time.Second
 	longest, err := env(maxTurn)
 	if err != nil {
 		return config, err

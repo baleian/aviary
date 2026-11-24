@@ -160,6 +160,10 @@ sandboxes:
   # its pod is deleted and its volume is kept. The next turn wakes it in a
   # new pod. 0 disables sleeping.
   idleSeconds: 300
+  # Seconds of sleep after which the home of a session is archived in the
+  # depot: its sandbox is deleted with its volume, and the next turn restores
+  # the home into a new sandbox. 0 disables archiving.
+  archiveAfterSeconds: 604800
   # Seconds after its last turn after which a session ends: its sandbox is
   # deleted with its volume, and its conversation stays in the database. 0
   # keeps the sandbox until the session is ended.
@@ -187,6 +191,9 @@ runtime:
   # waking the sandbox and pulling the harness image onto a new node. A turn
   # that takes longer fails. 0 means no limit.
   maxStartupSeconds: 120
+  # Seconds more that a turn may take to reach its harness if it first
+  # restores the home of its session from the depot.
+  maxRestoreSeconds: 600
   # Seconds a turn may run after it leaves the queue, including the time it
   # waits for approval. A turn that runs longer fails, and its sandbox is
   # put to sleep.

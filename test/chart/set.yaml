@@ -41,6 +41,7 @@ egressProxy:
   localhost: host.example.com
 sandboxes:
   idleSeconds: 0
+  archiveAfterSeconds: 2592000
   retentionSeconds: 604800
 agent-sandbox:
   enabled: false
@@ -49,6 +50,7 @@ runtime:
   maxQueuedTurns: 11
   maxQueueWaitSeconds: 13
   maxStartupSeconds: 17
+  maxRestoreSeconds: 1200
   maxTurnSeconds: 7200
   maxToolOutputBytes: 23
   harnesses:

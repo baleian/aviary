@@ -100,6 +100,41 @@ func TestMigrate(t *testing.T) {
 	}
 }
 
+// The sandboxes that slept before the time of it was recorded sleep since the
+// migration, so that their homes are archived as well. The others stay as
+// they are.
+func TestMigrateDatesTheSandboxesThatSleep(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	database := emptyDatabase(t)
+	if err := (postgres.Plugin{}).MigrateTo(ctx, database, 3); err != nil {
+		t.Fatal(err)
+	}
+	const project, provider, agent = "'00000000-0000-0000-0000-000000000001'", "'00000000-0000-0000-0000-000000000002'",
+		"'00000000-0000-0000-0000-000000000003'"
+	exec(t, database, `insert into projects (id, slug) values (`+project+`, 'project')`)
+	exec(t, database, `insert into providers (id, project_id, name, url) values (`+provider+`, `+project+`, 'provider', 'http://models.example')`)
+	exec(t, database, `insert into agents (id, project_id, slug, harness, provider_id, model)
+		values (`+agent+`, `+project+`, 'agent', 'opencode', `+provider+`, 'model')`)
+	exec(t, database, `insert into sessions (id, agent_id, sandbox, sandbox_state, asleep_since) values
+		(gen_random_uuid(), `+agent+`, 'asleep', 'asleep', null),
+		(gen_random_uuid(), `+agent+`, 'dated', 'asleep', now() - interval '1 day'),
+		(gen_random_uuid(), `+agent+`, 'awake', 'awake', null),
+		(gen_random_uuid(), `+agent+`, null, null, null)`)
+
+	if err := (postgres.Plugin{}).MigrateTo(ctx, database, 4); err != nil {
+		t.Fatal(err)
+	}
+	dated := rows(t, database, `select coalesce(sandbox, 'none') || ': ' || case
+			when asleep_since is null then 'no time'
+			when asleep_since > now() - interval '1 hour' then 'the migration'
+			else 'before' end
+		from sessions order by 1`)
+	if want := []string{"asleep: the migration", "awake: no time", "dated: before", "none: no time"}; !slices.Equal(dated, want) {
+		t.Errorf("since when the sandboxes sleep after the migration = %q, want %q", dated, want)
+	}
+}
+
 func TestOpenChecksTheSchema(t *testing.T) {
 	t.Parallel()
 	database := newDatabase(t)

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -249,14 +250,17 @@ func TestSupervisorSettings(t *testing.T) {
 		"AVIARY_SANDBOX_VOLUME_SIZE":       "10Gi",
 		"AVIARY_SANDBOX_STORAGE_CLASS":     "",
 		"AVIARY_SANDBOX_IDLE_SECONDS":      "300",
+		"AVIARY_SANDBOX_ARCHIVE_SECONDS":   "604800",
 		"AVIARY_SANDBOX_RETENTION_SECONDS": "0",
 		"AVIARY_LLM_BASE_URL":              "http://aviary-egress-proxy.aviary-system:8080",
 		"AVIARY_LLM_LOCALHOST":             "",
 		"AVIARY_PROXY_URL":                 "http://aviary-egress-proxy.aviary-system:3128",
+		"AVIARY_DEPOT_URL":                 "http://aviary-depot.aviary-system:8080",
 		"AVIARY_MAX_CONCURRENT_TURNS":      "50",
 		"AVIARY_MAX_QUEUED_TURNS":          "500",
 		"AVIARY_MAX_QUEUE_WAIT_SECONDS":    "120",
 		"AVIARY_MAX_STARTUP_SECONDS":       "120",
+		"AVIARY_MAX_RESTORE_SECONDS":       "600",
 		"AVIARY_MAX_TURN_SECONDS":          "1800",
 		"AVIARY_MAX_TOOL_OUTPUT_BYTES":     "65536",
 	} {
@@ -270,6 +274,8 @@ func TestSupervisorSettings(t *testing.T) {
 		t.Errorf("Supervisor env AVIARY_LLM_MODEL = %q, want unset", model)
 	}
 
+	// The archive time that is set is a number of a million or more, which
+	// is rendered as it is set too.
 	objects, _ = chart(t, "set")
 	supervisor := find(objects, "Deployment", "aviary-supervisor")
 	settings = env(supervisor)
@@ -284,12 +290,14 @@ func TestSupervisorSettings(t *testing.T) {
 		"AVIARY_SANDBOX_VOLUME_SIZE":       "50Gi",
 		"AVIARY_SANDBOX_STORAGE_CLASS":     "fast",
 		"AVIARY_SANDBOX_IDLE_SECONDS":      "0",
+		"AVIARY_SANDBOX_ARCHIVE_SECONDS":   "2592000",
 		"AVIARY_SANDBOX_RETENTION_SECONDS": "604800",
 		"AVIARY_LLM_LOCALHOST":             "host.example.com",
 		"AVIARY_MAX_CONCURRENT_TURNS":      "7",
 		"AVIARY_MAX_QUEUED_TURNS":          "11",
 		"AVIARY_MAX_QUEUE_WAIT_SECONDS":    "13",
 		"AVIARY_MAX_STARTUP_SECONDS":       "17",
+		"AVIARY_MAX_RESTORE_SECONDS":       "1200",
 		"AVIARY_MAX_TURN_SECONDS":          "7200",
 		"AVIARY_MAX_TOOL_OUTPUT_BYTES":     "23",
 	} {
@@ -507,7 +515,9 @@ func TestSupervisorPermissions(t *testing.T) {
 
 // The depots run the image of the Supervisor with the command depot. Of the
 // Supervisor's settings they get none, and they have no access to the
-// cluster. A depot that stops is given time to finish its transfers.
+// cluster. A depot that stops is given time to finish its transfers: as long
+// as a turn is given to restore a home. The Supervisors are told where the
+// depots are.
 func TestDepot(t *testing.T) {
 	for values, replicas := range map[string]int{"default": 1, "set": 3} {
 		objects, _ := chart(t, values)
@@ -536,13 +546,22 @@ func TestDepot(t *testing.T) {
 			t.Errorf("%s: depot pod has the service account %v, token mounted %v; want neither",
 				values, at(pod, "serviceAccountName"), at(pod, "automountServiceAccountToken"))
 		}
-		if grace, _ := at(pod, "terminationGracePeriodSeconds").(int); grace < 600 {
-			t.Errorf("%s: a stopping depot is given %v seconds for its transfers, want 600 or more", values, at(pod, "terminationGracePeriodSeconds"))
+		settings := env(find(objects, "Deployment", "aviary-supervisor"))
+		restore, err := strconv.Atoi(settings["AVIARY_MAX_RESTORE_SECONDS"])
+		if err != nil {
+			t.Fatalf("%s: Supervisor env AVIARY_MAX_RESTORE_SECONDS = %q, want a number", values, settings["AVIARY_MAX_RESTORE_SECONDS"])
+		}
+		if grace, _ := at(pod, "terminationGracePeriodSeconds").(int); grace <= restore {
+			t.Errorf("%s: a stopping depot is given %v seconds for its transfers, want more than the %d of a restore",
+				values, at(pod, "terminationGracePeriodSeconds"), restore)
 		}
 		service := at(find(objects, "Service", "aviary-depot"), "spec")
 		if !reflect.DeepEqual(at(service, "selector"), at(depot, "spec", "selector", "matchLabels")) ||
 			!reflect.DeepEqual(at(service, "ports"), []any{map[string]any{"name": "http", "port": 8080, "targetPort": "http"}}) {
 			t.Errorf("%s: depot Service = %v, want the depots at port 8080", values, service)
+		}
+		if settings["AVIARY_DEPOT_URL"] != "http://aviary-depot.aviary-system:8080" {
+			t.Errorf("%s: Supervisor env AVIARY_DEPOT_URL = %q, want the Service of the depots", values, settings["AVIARY_DEPOT_URL"])
 		}
 	}
 }
