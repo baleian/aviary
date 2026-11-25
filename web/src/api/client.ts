@@ -168,8 +168,9 @@ export const api = {
   // calls onEvent with each event, from the first of the turn to the one
   // that says how the turn ended. A stream that breaks, or that the API
   // ends before that, is opened again and goes on after the last event
-  // that came. It gives up, with onError, if the API refuses it. It returns
-  // a function that stops following.
+  // that came. After a turn.rewound, the events of the turn come again
+  // from the first. It gives up, with onError, if the API refuses it. It
+  // returns a function that stops following.
   events(
     turn: string,
     handlers: {

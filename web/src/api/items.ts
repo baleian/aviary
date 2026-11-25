@@ -11,13 +11,16 @@ export interface Said {
 export const NOTHING: Said = { items: [] };
 
 // add returns what the turn has said and done after its next event. An
-// event that is not of an item returns the same.
+// event that is not of an item returns the same, and turn.rewound nothing:
+// the events of the turn follow it again, from the first.
 export function add(
   said: Said,
   type: string,
   data: Record<string, unknown>,
 ): Said {
   switch (type) {
+    case "turn.rewound":
+      return NOTHING;
     case "message.delta":
     case "thought.delta": {
       if (typeof data.text !== "string" || !data.text) return said;

@@ -124,6 +124,24 @@ it("tells a tool call from a request with the same ID", () => {
   ]);
 });
 
+it("begins anew when the events of the turn come again", () => {
+  expect(
+    said(
+      piece("Hel", "m1"),
+      ["tool.call", { id: "1", kind: "read" }],
+      ["turn.rewound", {}],
+      ["turn.started", {}],
+      piece("Hel", "m1"),
+      piece("lo", "m1"),
+      ["tool.call", { id: "1", kind: "read" }],
+    ),
+  ).toEqual([
+    { type: "message", text: "Hello" },
+    { type: "tool_call", id: "1", kind: "read" },
+  ]);
+  expect(add(NOTHING, "turn.rewound", {})).toBe(NOTHING);
+});
+
 it("returns the same after an event that is not of an item", () => {
   const before = add(NOTHING, ...piece("Hello"));
   expect(add(before, "turn.started", {})).toBe(before);

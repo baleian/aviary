@@ -237,6 +237,23 @@ it("keeps a turn as its events say it stands, with what it has said so far", () 
   expect(read()[0]).toBe(first);
 });
 
+it("shows what a turn has said once when its events come again", () => {
+  queryClient.setQueryData(TURNS, [turn(1), turn(2, { state: "queued" })]);
+  const tell = following();
+  tell("turn.started");
+  tell("message.delta", { text: "Hel" });
+  tell("approval.requested", { id: "1", options: [] });
+  const started = read()[1].started_at;
+  tell("turn.rewound");
+  expect(read()[1]).toMatchObject({ state: "running", started_at: started });
+  expect(read()[1].items).toEqual([]);
+  expect(read()[1].approvals).toEqual([]);
+  tell("turn.started");
+  tell("message.delta", { text: "Hel" });
+  tell("message.delta", { text: "lo" });
+  expect(read()[1].items).toEqual([{ type: "message", text: "Hello" }]);
+});
+
 it("leaves a turn as its record has it once the turn has ended", () => {
   const record = turn(2, {
     state: "completed",
