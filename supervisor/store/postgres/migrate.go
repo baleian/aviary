@@ -16,7 +16,8 @@ import (
 )
 
 // Only Migrate changes the schema. Open only checks it, so that Supervisors of
-// two releases can share a database; see migrations/README.md.
+// two releases can share a database; see
+// docs/src/content/docs/operate/upgrades.md.
 
 //go:embed migrations/*.sql
 var migrations embed.FS

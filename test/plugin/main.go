@@ -1,7 +1,7 @@
 // Command plugin is a build of the Supervisor outside its module, with
 // plugins of its own, as for a database or an event log that Aviary has no
-// plugin for. PLUGINS.md describes such a build, and the tests of this module
-// keep it accurate.
+// plugin for. docs/src/content/docs/operate/plugins.md describes such a
+// build, and the tests of this module keep it accurate.
 //
 // The plugins keep everything in memory, in place of the product that a real
 // plugin connects to.

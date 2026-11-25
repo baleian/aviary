@@ -1,4 +1,5 @@
-//! Tests that the harness images meet the contract in images/README.md.
+//! Tests that the harness images meet the contract in
+//! docs/src/content/docs/operate/harness-images.md.
 //!
 //! A session runs in a container of the image, started the way a sandbox
 //! starts its pod, and the test sends turns to its runner. The containers are

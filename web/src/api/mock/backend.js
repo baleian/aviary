@@ -1,7 +1,7 @@
 // The Supervisor of the mock. It answers the requests of the console from
 // memory, with the paths, status codes, permissions and events of the real
-// API (README.md, "API"), so that the console is written against the real
-// thing. Development and the tests use it. A build does not.
+// API (docs/src/content/docs/reference/api), so that the console is written
+// against the real thing. Development and the tests use it. A build does not.
 
 import { uuid7, copy } from "./util.js";
 import { seed, PERMISSIONS, IDLE, TOOLS } from "./seed.js";
