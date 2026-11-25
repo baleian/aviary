@@ -94,4 +94,6 @@ of the gateway's bucket `depot`, as `hack/kind/versitygw.yaml` describes it:
 the mount options name the gateway, and let the user 65532 write and delete
 files. Aviary keeps its objects there when it is installed with
 `make deploy VALUES=hack/kind/aviary-versitygw-values.yaml`. Each object is
-then a file in the volume of the gateway, at `depot/<key>`.
+then a file in the volume of the gateway, at `buckets/depot/<key>`. What the
+gateway knows of an object besides its bytes, such as its ETag, is in files
+under `meta`.
