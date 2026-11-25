@@ -783,6 +783,57 @@ it("offers to stop a turn only to who may", async () => {
   }
 });
 
+it("shows the files of the messages of a session, and saves the one that is clicked", async () => {
+  let saved: { name: string; file: Blob } | undefined;
+  const files = new Map<string, Blob>();
+  vi.spyOn(URL, "createObjectURL").mockImplementation((file) => {
+    files.set("blob:" + files.size, file as Blob);
+    return "blob:" + (files.size - 1);
+  });
+  vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+  vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (
+    this: HTMLAnchorElement,
+  ) {
+    saved = {
+      name: this.download,
+      file: files.get(this.getAttribute("href")!)!,
+    };
+  });
+  const user = open(
+    await pathOf("Triage last night's checkout errors"),
+    "alice",
+  );
+  const first = await waitFor(() => {
+    const turn = document.querySelector<HTMLElement>("#turn-1 .said-u");
+    expect(turn).toBeTruthy();
+    return turn!;
+  });
+  const shown = [...first.querySelectorAll(".files .file")];
+  expect(shown.map((file) => file.textContent)).toEqual([
+    "checkout-errors.log1.8 MB",
+    "error-monitor-export.csv412 KB",
+    "image.png94 KB",
+  ]);
+  // The message of the next turn carries none.
+  expect(document.querySelector("#turn-2 .files")).toBeNull();
+  await user.click(shown[1]);
+  await waitFor(() => expect(saved?.name).toBe("error-monitor-export.csv"));
+  expect([saved!.file.size, saved!.file.type]).toEqual([421888, "text/csv"]);
+  await leave();
+
+  // The files of a session that has ended are not kept.
+  open(await pathOf("Rename the env vars to STOREFRONT_*"), "alice");
+  const gone = await waitFor(() => {
+    const file = document.querySelector("#turn-1 .files .file");
+    expect(file).toBeTruthy();
+    return file!;
+  });
+  expect([gone.tagName, gone.textContent]).toEqual([
+    "SPAN",
+    "env.example612 bytes",
+  ]);
+});
+
 it("says why a message cannot be sent, in the place of its box", async () => {
   const gate = () => document.querySelector(".gate")?.textContent;
   open(await pathOf("Rename the env vars to STOREFRONT_*"), "alice");

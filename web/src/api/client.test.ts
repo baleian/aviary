@@ -60,6 +60,37 @@ describe("api", () => {
     });
   });
 
+  it("returns the file of an attachment, to a caller that the API knows", async () => {
+    const { agent } = await storefront();
+    const { sessions } = await api.get<{ sessions: Session[] }>(
+      `/v1/agents/${agent}/sessions?limit=100`,
+    );
+    const triage = sessions.find((each) => each.title.startsWith("Triage"))!;
+    const { turns } = await api.get<{ turns: Turn[] }>(
+      `/v1/sessions/${triage.id}/turns`,
+    );
+    const [log] = turns.at(-1)!.attachments!;
+    expect(log).toMatchObject({ name: "checkout-errors.log", size: 1843200 });
+    const file = await api.download("/v1/attachments/" + log.id);
+    expect([file.size, file.type]).toEqual([1843200, "text/plain"]);
+
+    // The token is renewed for a download as for any request.
+    const renew = vi.fn(async () => authorize("alice"));
+    renewWith(renew);
+    authorize("ghost");
+    expect((await api.download("/v1/attachments/" + log.id)).size).toBe(
+      1843200,
+    );
+    expect(renew).toHaveBeenCalledTimes(1);
+    renewWith(undefined);
+
+    const none = "/v1/attachments/00000000-0000-7000-8000-000000000000";
+    await expect(api.download(none)).rejects.toMatchObject({
+      status: 404,
+      code: "not_found",
+    });
+  });
+
   it("tells its listeners that the token was refused", async () => {
     const listener = vi.fn();
     const remove = onUnauthenticated(listener);

@@ -65,6 +65,22 @@ describe("http", () => {
     const reply = await http.send("GET", "/v1/me", { token: "" });
     expect(reply).toMatchObject({ status: 502, body: null });
   });
+
+  it("returns the file of an answer, or why there is none", async () => {
+    const fetch = answers(200, "to do", { "Content-Type": "text/plain" });
+    const reply = await http.download("/v1/attachments/a1", { token: "t0" });
+    expect(fetch).toHaveBeenCalledWith("/v1/attachments/a1", {
+      headers: { Authorization: "Bearer t0" },
+    });
+    expect(reply).toMatchObject({ status: 200, body: null });
+    expect(reply.file!.type).toBe("text/plain");
+    expect(await reply.file!.text()).toBe("to do");
+
+    answers(404, '{"code": "not_found"}');
+    const refused = await http.download("/v1/attachments/a2", { token: "" });
+    expect(refused).toMatchObject({ status: 404, body: { code: "not_found" } });
+    expect(refused.file).toBeUndefined();
+  });
 });
 
 describe("an API at another address than the console's", () => {

@@ -36,6 +36,12 @@ interface Backend {
     onEvent: (event: ServerEvent) => void,
     onEnd: () => void,
   ): { response: Reply; close?: () => void };
+  // download answers GET /v1/attachments/{id}, with the file if it does not
+  // refuse.
+  download(
+    path: string,
+    options: { token: string },
+  ): { response: Reply; file?: Blob };
   accounts(): Account[];
   setIdentityProvider(on: boolean): void;
   // reset puts the example data back as it began.
@@ -74,7 +80,14 @@ const STREAMS = /^\/v1\/(projects|turns)\/([^/]+)\/events$/;
 // fake returns the transport of development, which hands the requests to the
 // backend of the mock.
 export async function fake(): Promise<Transport> {
-  const { mock, request, open, watch } = await backend();
+  const { mock, request, open, watch, download } = await backend();
+  // An answer takes a moment, unless the mock works at once.
+  const answering = async () => {
+    if (mock.speed <= 0) return;
+    const [least, most] = DELAY;
+    const ms = least + Math.random() * (most - least);
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  };
   return {
     stream(path, { token, after = "" }, handlers) {
       let closed = false;
@@ -104,12 +117,14 @@ export async function fake(): Promise<Transport> {
       };
     },
 
+    async download(path, { token }) {
+      await answering();
+      const { response, file } = download(path, { token });
+      return { ...lowercased(response), file };
+    },
+
     async send(method, path, { token, body }) {
-      if (mock.speed > 0) {
-        const [least, most] = DELAY;
-        const ms = least + Math.random() * (most - least);
-        await new Promise((resolve) => setTimeout(resolve, ms));
-      }
+      await answering();
       // The body crosses as JSON, as it would over HTTP.
       const sent = body === undefined ? null : JSON.parse(JSON.stringify(body));
       return lowercased(request(method, path, { token, body: sent }));

@@ -16,6 +16,7 @@ import {
   olderTurns,
   renameSession,
   rereadSession,
+  saveAttachment,
   sendMessage,
   startSession,
   stopTurn,
@@ -378,9 +379,12 @@ it("adds the turn of a message that it sends to the turns that were read", async
 
 it("keeps a turn that it stops as the API then has it", async () => {
   const items = [{ type: "message" as const, text: "So far." }];
+  const attachments = [
+    { id: "a1", name: "notes.txt", media_type: "text/plain", size: 5 },
+  ];
   queryClient.setQueryData(TURNS, [
     turn(1),
-    turn(2, { state: "queued", position: 2, items }),
+    turn(2, { state: "queued", position: 2, items, attachments }),
   ]);
   const [first] = read();
   const post = answered(
@@ -388,13 +392,15 @@ it("keeps a turn that it stops as the API then has it", async () => {
   );
   await stopTurn("s1", "t2");
   expect(post).toHaveBeenCalledWith("/v1/turns/t2/cancel");
-  // What its events told stays: its record does not have it.
+  // What its events told stays, and so do the files of its message: the
+  // answer does not have them.
   expect(read()[1]).toEqual(
     turn(2, {
       state: "running",
       cancel_requested_at: "now",
       position: 2,
       items,
+      attachments,
     }),
   );
   expect(read()[0]).toBe(first);
@@ -418,6 +424,39 @@ it("takes a turn that ended by itself for stopped", async () => {
   const other = new ApiError(403, { code: "forbidden", message: "no" }, {});
   post.mockRejectedValueOnce(other);
   await expect(stopTurn("s1", "t2")).rejects.toBe(other);
+});
+
+it("has the browser save the file of an attachment under its name", async () => {
+  const file = new Blob(["to do"], { type: "text/plain" });
+  const download = vi.spyOn(api, "download").mockResolvedValue(file);
+  const address = vi
+    .spyOn(URL, "createObjectURL")
+    .mockReturnValue("blob:the-file");
+  const revoke = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+  let saved: [string, string] | undefined;
+  vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (
+    this: HTMLAnchorElement,
+  ) {
+    saved = [this.getAttribute("href")!, this.download];
+  });
+  vi.useFakeTimers();
+  try {
+    await saveAttachment({
+      id: "a1",
+      name: "보고서 (2).pdf",
+      media_type: "application/pdf",
+      size: 5,
+    });
+    expect(download).toHaveBeenCalledWith("/v1/attachments/a1");
+    expect(address).toHaveBeenCalledWith(file);
+    expect(saved).toEqual(["blob:the-file", "보고서 (2).pdf"]);
+    // The address is given up once the browser has the file.
+    expect(revoke).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1000);
+    expect(revoke).toHaveBeenCalledWith("blob:the-file");
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("reads a session and its turns again", async () => {

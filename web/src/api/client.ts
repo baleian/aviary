@@ -1,4 +1,9 @@
-import { type Reply, type ServerEvent, transport } from "./transport.ts";
+import {
+  type Reply,
+  type ServerEvent,
+  type Transport,
+  transport,
+} from "./transport.ts";
 import type { Session } from "./types.ts";
 
 // ApiError is a request that the API refused.
@@ -69,18 +74,30 @@ export function onUnauthenticated(listener: () => void): () => void {
   };
 }
 
+// answered returns the answer to a request. A request that the API refuses
+// for its token is asked again, once, with the token that follows. It throws
+// an ApiError if the API refuses the request.
+async function answered<R extends Reply>(
+  ask: (carrier: Transport, token: string) => Promise<R>,
+): Promise<R> {
+  const carrier = await transport();
+  const sent = token;
+  let reply = await ask(carrier, sent);
+  if (reply.status === 401 && (await renewed(sent))) {
+    reply = await ask(carrier, token);
+  }
+  if (reply.status >= 400) throw refusal(reply);
+  return reply;
+}
+
 async function send<T>(
   method: string,
   path: string,
   body?: unknown,
 ): Promise<T> {
-  const carrier = await transport();
-  const sent = token;
-  let reply = await carrier.send(method, path, { token: sent, body });
-  if (reply.status === 401 && (await renewed(sent))) {
-    reply = await carrier.send(method, path, { token, body });
-  }
-  if (reply.status >= 400) throw refusal(reply);
+  const reply = await answered((carrier, token) =>
+    carrier.send(method, path, { token, body }),
+  );
   return reply.body as T;
 }
 
@@ -96,6 +113,14 @@ export const api = {
   put: <T>(path: string, body: unknown) => send<T>("PUT", path, body),
   patch: <T>(path: string, body: unknown) => send<T>("PATCH", path, body),
   delete: <T>(path: string) => send<T>("DELETE", path),
+
+  // download returns the file that a GET answers with.
+  async download(path: string): Promise<Blob> {
+    const reply = await answered((carrier, token) =>
+      carrier.download(path, { token }),
+    );
+    return reply.file!;
+  },
 
   // changes follows what changes in a project: GET /v1/projects/{id}/events.
   // It calls onSession with every session of the project that changes and

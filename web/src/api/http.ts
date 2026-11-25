@@ -27,6 +27,19 @@ export const http: Transport = {
     };
   },
 
+  async download(path, { token }) {
+    const headers: Record<string, string> = {};
+    if (token) headers["Authorization"] = "Bearer " + token;
+    const response = await fetch(address + path, { headers });
+    const reply = {
+      status: response.status,
+      headers: Object.fromEntries(response.headers),
+    };
+    return response.ok
+      ? { ...reply, body: null, file: await response.blob() }
+      : { ...reply, body: decode(await response.text()) };
+  },
+
   stream(path, { token, after }, handlers) {
     const closing = new AbortController();
     const headers: Record<string, string> = { Accept: "text/event-stream" };

@@ -275,6 +275,7 @@ export function Conversation({
                 agent={agent}
                 servers={context.mcpServers}
                 person={who}
+                kept={!session.data.ended_at}
                 awaits={
                   turn.id === unfinished && restoring
                     ? "restore"

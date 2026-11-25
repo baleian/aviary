@@ -22,6 +22,7 @@ import { Icon } from "../../ui/Icon.tsx";
 import type { IconName } from "../../ui/icons.ts";
 import { Time } from "../../ui/Time.tsx";
 import type { Who } from "../../ui/who.ts";
+import { Carried } from "./Files.tsx";
 import { CodeBlock, Markdown } from "./Markdown.tsx";
 import { Command, Request } from "./Request.tsx";
 import {
@@ -58,6 +59,7 @@ const KINDS: Record<string, IconName> = {
 
 // What each failure reason of the API means for the person who reads it.
 const FAILURES: Record<string, string> = {
+  attachment_failed: "The files did not fit into the sandbox",
   harness_error: "The agent ran into an error",
   resume_failed: "The agent could not pick up the conversation",
   startup_timed_out: "The agent did not start in time",
@@ -633,13 +635,15 @@ function Footer({
   );
 }
 
-// TurnView is one turn of a conversation: the message that was sent, and
-// what the agent said and did, or has said and done so far.
+// TurnView is one turn of a conversation: the message that was sent, with
+// the files that it carries, and what the agent said and did, or has said
+// and done so far.
 export const TurnView = memo(function TurnView({
   turn,
   agent,
   servers = NONE,
   person,
+  kept = true,
   awaits,
   onStop,
   onAgain,
@@ -651,6 +655,9 @@ export const TurnView = memo(function TurnView({
   servers?: McpServer[];
   // How to show the user with an ID.
   person: (id?: string) => Who;
+  // Whether the API still has the files of the message: it keeps them
+  // until the session ends.
+  kept?: boolean;
   // What the turn waits for before it starts, if its session had no
   // sandbox that was awake: for the sandbox to wake, or for the files of
   // the session to be restored into a new one.
@@ -699,7 +706,12 @@ export const TurnView = memo(function TurnView({
         {headline}
       </div>
       <div className="msg-u">
-        <div className="bub-u">{turn.text}</div>
+        <div className="said-u">
+          {turn.text && <div className="bub-u">{turn.text}</div>}
+          {!!turn.attachments?.length && (
+            <Carried files={turn.attachments} kept={kept} />
+          )}
+        </div>
         <Avatar who={person(turn.created_by)} />
       </div>
       <div className="ag">

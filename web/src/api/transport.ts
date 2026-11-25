@@ -34,6 +34,13 @@ export interface Transport {
     options: { token: string; body?: unknown },
   ): Promise<Reply>;
 
+  // download returns the answer to a GET, with the file that it carries if
+  // it does not refuse.
+  download(
+    path: string,
+    options: { token: string },
+  ): Promise<Reply & { file?: Blob }>;
+
   // stream follows the server-sent events of a path, after the event with
   // the ID if one is given. It returns a function that closes the stream,
   // after which nothing more is called.

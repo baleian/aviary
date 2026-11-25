@@ -85,6 +85,21 @@ export function num(value: number): string {
   return value.toLocaleString("en-US");
 }
 
+// size writes a number of bytes as the size of a file: "340 KB", "1.2 MB".
+export function size(bytes: number): string {
+  const units = ["bytes", "KB", "MB", "GB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  if (unit === 0) return plural(bytes, "byte");
+  // One decimal while the number is short.
+  const short = value < 10 ? Math.round(value * 10) / 10 : Math.round(value);
+  return `${short} ${units[unit]}`;
+}
+
 // plural counts things in words: "1 member", "3 members".
 export function plural(count: number, one: string, many = one + "s"): string {
   return `${num(count)} ${count === 1 ? one : many}`;

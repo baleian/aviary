@@ -25,6 +25,8 @@ let serversOf;
 let runs;
 let feeds;
 let told;
+// The files that were uploaded, by the ID of their attachment.
+let uploads;
 let telling = 0;
 let serial = 0;
 
@@ -365,10 +367,22 @@ function sessionRecord(session) {
   return record;
 }
 
-// turnRecord is a turn with its items, which exist once the turn has ended,
-// and with the approval requests that wait for an answer while it has not.
+// carried returns the files that the message of a turn carries, in its
+// order, as a turn names them.
+function carried(turn) {
+  return db.attachments
+    .filter((attachment) => attachment.turn_id === turn.id)
+    .sort((a, b) => a.position - b.position)
+    .map(({ id, name, media_type, size }) => ({ id, name, media_type, size }));
+}
+
+// turnRecord is a turn with the files of its message, with its items, which
+// exist once the turn has ended, and with the approval requests that wait
+// for an answer while it has not.
 function turnRecord(turn) {
   const record = { ...turn, items: db.items.get(turn.id) || [] };
+  const files = carried(turn);
+  if (files.length) record.attachments = files;
   if (!turn.ended_at) {
     const waiting = [...(approvalsOf.get(turn.id)?.values() || [])]
       .filter((asked) => !asked.answered && !asked.resolved)
@@ -2038,6 +2052,15 @@ route("POST", "/v1/turns/{tid}/approvals/{rid}", ({ who, body }, tid, rid) => {
   asked.settle?.();
   return [202, { id: rid, option_id: chosen.option_id }];
 });
+// The file of an attachment is a download: see download().
+route("GET", "/v1/attachments/{id}", ({ who }, id) => {
+  const attachment = one(db.attachments, id);
+  const session = one(db.sessions, attachment.session_id);
+  mayWith(who, session, attachment.created_by, "reads");
+  // The files are kept until their session ends.
+  if (session.ended_at) notFound();
+  return [200, attachment];
+});
 // The events of a turn are a stream: see open().
 route("GET", "/v1/turns/{tid}/events", ({ who }, tid) => [
   200,
@@ -2104,6 +2127,29 @@ export function request(method, path, { token = "", body = null } = {}) {
       body: { code: "internal", message: "internal error" },
     };
   }
+}
+
+// download answers GET /v1/attachments/{id}: with the answer of the API, and
+// with the file if the request is not refused. A file of the example data
+// has no bytes of its own, and is a text of its size.
+export function download(path, { token = "" } = {}) {
+  const response = request("GET", path, { token });
+  if (response.status !== 200) return { response };
+  const { id, name, media_type, size } = response.body;
+  const file =
+    uploads.get(id) ??
+    new Blob([`${name}\n`.padEnd(size, ".")], { type: media_type });
+  return {
+    response: {
+      status: 200,
+      headers: {
+        "Content-Type": media_type,
+        "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
+      },
+      body: null,
+    },
+    file,
+  };
 }
 
 // open answers GET /v1/turns/{id}/events. If the request is refused, it
@@ -2236,6 +2282,7 @@ export function reset() {
   runs = new Map();
   feeds = new Set();
   told = null;
+  uploads = new Map();
   for (const left of db.live) {
     const turn = db.turns.find((other) => other.id === left.turn);
     emit(turn.id, "turn.started", {});

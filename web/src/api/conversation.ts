@@ -10,7 +10,13 @@ import {
   useFeedReady,
 } from "./feed.ts";
 import { add, NOTHING } from "./items.ts";
-import type { ApprovalRequest, Session, Turn, Usage } from "./types.ts";
+import type {
+  ApprovalRequest,
+  Attachment,
+  Session,
+  Turn,
+  Usage,
+} from "./types.ts";
 
 // How many sessions or turns the lists read at a time.
 const PAGE = 20;
@@ -207,6 +213,20 @@ export async function sendMessage(
   return turn;
 }
 
+// saveAttachment reads the file of an attachment, and has the browser save
+// it under its name. The API gives the file only to a caller that it knows,
+// so a link to it would not do.
+export async function saveAttachment(attachment: Attachment): Promise<void> {
+  const file = await api.download("/v1/attachments/" + attachment.id);
+  const address = URL.createObjectURL(file);
+  const link = document.createElement("a");
+  link.href = address;
+  link.download = attachment.name;
+  link.click();
+  // The browser has begun to save the file by now.
+  setTimeout(() => URL.revokeObjectURL(address), 1000);
+}
+
 // stopTurn asks for a turn to be stopped, or to be taken from the queue,
 // and keeps the turn as the API then has it. A turn that runs goes on until
 // its harness has stopped: its events say when.
@@ -222,7 +242,13 @@ export async function stopTurn(session: string, id: string): Promise<void> {
   queryClient.setQueryData<Turn[]>(turnsKey(session), (list) =>
     list?.map((turn) =>
       turn.id === id && !turn.ended_at
-        ? { ...record, items: turn.items, position: turn.position }
+        ? {
+            ...record,
+            // The answer has the turn without what its record has besides.
+            attachments: turn.attachments,
+            items: turn.items,
+            position: turn.position,
+          }
         : turn,
     ),
   );
