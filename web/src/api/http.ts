@@ -52,7 +52,7 @@ export const http: Transport = {
     });
   },
 
-  async download(path, { token }) {
+  async download(path, { token, first }) {
     const headers: Record<string, string> = {};
     if (token) headers["Authorization"] = "Bearer " + token;
     const response = await fetch(address + path, { headers });
@@ -60,9 +60,12 @@ export const http: Transport = {
       status: response.status,
       headers: Object.fromEntries(response.headers),
     };
-    return response.ok
-      ? { ...reply, body: null, file: await response.blob() }
-      : { ...reply, body: decode(await response.text()) };
+    if (!response.ok) return { ...reply, body: decode(await response.text()) };
+    const file =
+      first === undefined || !response.body
+        ? await response.blob()
+        : await begin(response.body, first, reply.headers["content-type"]);
+    return { ...reply, body: null, file };
   },
 
   stream(path, { token, after }, handlers) {
@@ -107,6 +110,25 @@ async function follow(
     });
   }
   if (!signal.aborted) handlers.onEnd();
+}
+
+// begin reads the first bytes of a body, and lets go of the rest of it
+// without reading it.
+async function begin(
+  body: ReadableStream<Uint8Array<ArrayBuffer>>,
+  bytes: number,
+  type = "",
+): Promise<Blob> {
+  const reader = body.getReader();
+  const parts: Uint8Array<ArrayBuffer>[] = [];
+  for (let read = 0; read < bytes;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    parts.push(value);
+    read += value.length;
+  }
+  await reader.cancel();
+  return new Blob(parts).slice(0, bytes, type);
 }
 
 // headersOf reads the headers of an answer as an XMLHttpRequest gives them:

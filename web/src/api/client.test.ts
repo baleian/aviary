@@ -73,6 +73,10 @@ describe("api", () => {
     expect(log).toMatchObject({ name: "checkout-errors.log", size: 1843200 });
     const file = await api.download("/v1/attachments/" + log.id);
     expect([file.size, file.type]).toEqual([1843200, "text/plain"]);
+    // No more than the beginning of it, if that is asked for.
+    const begun = await api.download("/v1/attachments/" + log.id, 64);
+    expect([begun.size, begun.type]).toEqual([64, "text/plain"]);
+    expect(await begun.text()).toBe((await file.text()).slice(0, 64));
 
     // The token is renewed for a download as for any request.
     const renew = vi.fn(async () => authorize("alice"));

@@ -127,10 +127,11 @@ export const api = {
     return reply.body as T;
   },
 
-  // download returns the file that a GET answers with.
-  async download(path: string): Promise<Blob> {
+  // download returns the file that a GET answers with, or no more than its
+  // first bytes if it is told how many.
+  async download(path: string, first?: number): Promise<Blob> {
     const reply = await answered((carrier, token) =>
-      carrier.download(path, { token }),
+      carrier.download(path, { token, first }),
     );
     return reply.file!;
   },

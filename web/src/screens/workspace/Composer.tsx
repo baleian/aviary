@@ -22,6 +22,7 @@ import { FileCard } from "./Files.tsx";
 import { McpButton } from "./Mcp.tsx";
 import type { McpChoice } from "./servers.ts";
 import { chosenFile, type Shown } from "./shown.ts";
+import { Viewer } from "./Viewer.tsx";
 
 // What the bar of the composer says while a turn has not ended.
 const DOING: Record<string, string> = {
@@ -40,11 +41,13 @@ function Chosen({
   pending,
   shown,
   sending,
+  onOpen,
   onRemove,
 }: {
   pending: Pending;
   shown: Shown;
   sending: boolean;
+  onOpen?: () => void;
   onRemove: () => void;
 }) {
   const { file, sent, id } = pending;
@@ -53,6 +56,7 @@ function Chosen({
   return (
     <FileCard
       file={shown}
+      onOpen={onOpen}
       gone={going ? gone : undefined}
       note={
         going ? (
@@ -112,11 +116,15 @@ export function Composer({
   const { text, files, sending, cooldown, attach } = compose;
   // Whether a message may carry files.
   const takes = compose.carries > 0;
-  // The files as they are shown.
+  // The files as they are shown, and which of those that can be is opened:
+  // by its key, because the files change under it.
   const shown = useMemo(
     () => files.map(({ key, file }) => chosenFile(key, file)),
     [files],
   );
+  const viewed = shown.filter((file) => file.kind.view);
+  const [opened, setOpened] = useState<string>();
+  const open = viewed.findIndex((file) => file.key === opened);
 
   // The box is as tall as what is written in it, up to its limit.
   useLayoutEffect(() => {
@@ -198,11 +206,24 @@ export function Composer({
                 pending={pending}
                 shown={shown[at]}
                 sending={sending}
+                onOpen={
+                  shown[at].kind.view
+                    ? () => setOpened(shown[at].key)
+                    : undefined
+                }
                 onRemove={() => compose.remove(pending.key)}
               />
             </li>
           ))}
         </ul>
+      )}
+      {open >= 0 && (
+        <Viewer
+          files={viewed}
+          at={open}
+          onMove={(at) => setOpened(viewed[at].key)}
+          onClose={() => setOpened(undefined)}
+        />
       )}
       <textarea
         ref={(node) => {

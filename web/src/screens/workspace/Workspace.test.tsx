@@ -1048,6 +1048,25 @@ it("shows the files of the messages of a session, and saves the one that is clic
   );
   await waitFor(() => expect(saved?.name).toBe("error-monitor-export.csv"));
   expect([saved!.file.size, saved!.file.type]).toEqual([421888, "text/csv"]);
+
+  // A file that can be shown opens over the page, among those of its
+  // message.
+  await user.click(
+    within(first).getByRole("button", {
+      name: "Open error-monitor-export.csv",
+    }),
+  );
+  const viewer = screen.getByRole("dialog", {
+    name: "error-monitor-export.csv",
+  });
+  expect(viewer.querySelector(".vw-n")!.textContent).toBe("2 / 3");
+  await waitFor(() =>
+    expect(viewer.querySelector(".vw-text pre")!.textContent).toMatch(
+      /^id,plan,region,/,
+    ),
+  );
+  fireEvent(viewer, new Event("cancel", { cancelable: true }));
+  expect(screen.queryByRole("dialog")).toBeNull();
   await leave();
 
   // The files of a session that has ended are not kept.

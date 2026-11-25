@@ -47,10 +47,11 @@ export interface Transport {
   ): Promise<Reply>;
 
   // download returns the answer to a GET, with the file that it carries if
-  // it does not refuse.
+  // it does not refuse: all of the file, or no more than its first bytes if
+  // it is told how many.
   download(
     path: string,
-    options: { token: string },
+    options: { token: string; first?: number },
   ): Promise<Reply & { file?: Blob }>;
 
   // stream follows the server-sent events of a path, after the event with

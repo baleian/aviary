@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { api } from "../../api/client.ts";
 import type { Attachment } from "../../api/types.ts";
@@ -104,7 +105,7 @@ it("draws a picture of the files that have one, once they are near, and reads no
   );
   // Only what can be drawn was read, and not what is too large.
   expect(vi.mocked(api.download).mock.calls).toEqual([
-    ["/v1/attachments/image.png"],
+    ["/v1/attachments/image.png", undefined],
   ]);
   expect(vi.mocked(thumbnail).mock.calls[0][1]).toEqual({
     ext: "png",
@@ -141,4 +142,26 @@ it("does not read the files of a session that has ended, which are kept no longe
   expect(api.download).not.toHaveBeenCalled();
   expect(document.querySelector(".files button")).toBeNull();
   expect(cards[2].querySelector(".what")!.textContent).toBe("image.png1 KB");
+});
+
+it("opens a file that the web UI can show, among those of its message that it can", async () => {
+  const user = userEvent.setup();
+  const { cards } = show(FILES);
+  // A file that cannot be shown is only saved.
+  expect(within(cards[1]).queryByRole("button", { name: /^Open/ })).toBeNull();
+  expect(
+    within(cards[1]).getByRole("button", { name: "Download board.xlsx" }),
+  ).toBeTruthy();
+  expect(screen.queryByRole("dialog")).toBeNull();
+
+  await user.click(screen.getByRole("button", { name: "Open image.png" }));
+  const viewer = screen.getByRole("dialog", { name: "image.png" });
+  // The second of the three that can be shown.
+  expect(viewer.querySelector(".vw-n")!.textContent).toBe("2 / 3");
+  await user.click(within(viewer).getByRole("button", { name: "Next" }));
+  expect(screen.getByRole("dialog", { name: "poster.png" })).toBeTruthy();
+  await user.click(
+    within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }),
+  );
+  expect(screen.queryByRole("dialog")).toBeNull();
 });

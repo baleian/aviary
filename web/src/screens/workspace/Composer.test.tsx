@@ -162,6 +162,26 @@ it("shows the files that the message carries, and takes one from it", async () =
   expect(onSend).toHaveBeenCalledTimes(1);
 });
 
+it("opens a file that can be shown, which it has no need to save", async () => {
+  const user = userEvent.setup();
+  const files = [
+    pending(1, file("notes.txt", 5)),
+    pending(2, file("board.xlsx", 9)),
+    pending(3, file("image.png", 9, "image/png")),
+  ];
+  show({ carries: 10, files });
+  expect(screen.queryByRole("button", { name: "Open board.xlsx" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Open image.png" }));
+  const viewer = screen.getByRole("dialog", { name: "image.png" });
+  // The second of the two that can be shown.
+  expect(viewer.querySelector(".vw-n")!.textContent).toBe("2 / 2");
+  expect(screen.queryByRole("button", { name: "Download" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Previous" }));
+  expect(screen.getByRole("dialog", { name: "notes.txt" })).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Close" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
 it("says how far the files have gone while the message is on its way", () => {
   const files = [
     pending(1, file("gone.txt", 200), { id: "a1" }),

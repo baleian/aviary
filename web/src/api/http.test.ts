@@ -143,6 +143,37 @@ describe("http", () => {
     expect(refused).toMatchObject({ status: 404, body: { code: "not_found" } });
     expect(refused.file).toBeUndefined();
   });
+
+  it("reads no more of a file than its first bytes, if it is told how many", async () => {
+    // The file comes in parts of four bytes, until it is let go of.
+    let sent = 0;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent === 5) return controller.close();
+        controller.enqueue(new TextEncoder().encode(`${sent++}...`));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const type = { "Content-Type": "text/plain" };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(body, { status: 200, headers: type })),
+    );
+    const reply = await http.download("/a", { token: "", first: 6 });
+    expect(await reply.file!.text()).toBe("0...1.");
+    expect(reply.file!.type).toBe("text/plain");
+    // The rest of the file was not read.
+    expect(cancelled).toBe(true);
+    expect(sent).toBeLessThan(5);
+
+    // A file that is shorter comes whole.
+    answers(200, "to do", type);
+    const whole = await http.download("/a", { token: "", first: 6 });
+    expect(await whole.file!.text()).toBe("to do");
+  });
 });
 
 describe("an API at another address than the console's", () => {

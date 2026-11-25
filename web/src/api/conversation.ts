@@ -247,11 +247,18 @@ export async function sendMessage(
 // it under its name. The API gives the file only to a caller that it knows,
 // so a link to it would not do.
 export async function saveAttachment(attachment: Attachment): Promise<void> {
-  const file = await api.download("/v1/attachments/" + attachment.id);
+  saveFile(
+    attachment.name,
+    await api.download("/v1/attachments/" + attachment.id),
+  );
+}
+
+// saveFile has the browser save a file under a name.
+export function saveFile(name: string, file: Blob) {
   const address = URL.createObjectURL(file);
   const link = document.createElement("a");
   link.href = address;
-  link.download = attachment.name;
+  link.download = name;
   link.click();
   // The browser has begun to save the file by now.
   setTimeout(() => URL.revokeObjectURL(address), 1000);

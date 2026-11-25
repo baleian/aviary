@@ -14,8 +14,9 @@ export interface Shown {
   // In bytes.
   size: number;
   kind: Kind;
-  // read returns the file.
-  read: () => Promise<Blob>;
+  // read returns the file, or no more than its first bytes if it is told
+  // how many.
+  read: (first?: number) => Promise<Blob>;
 }
 
 // carriedFile returns the file of an attachment, which the API has.
@@ -25,7 +26,7 @@ export function carriedFile(attachment: Attachment): Shown {
     name: attachment.name,
     size: attachment.size,
     kind: kindOf(attachment.name, attachment.media_type),
-    read: () => api.download("/v1/attachments/" + attachment.id),
+    read: (first) => api.download("/v1/attachments/" + attachment.id, first),
   };
 }
 
@@ -40,7 +41,7 @@ export function chosenFile(key: number, file: File): Shown {
     name: file.name,
     size: file.size,
     kind: kindOf(file.name, file.type),
-    read: () => Promise.resolve(file),
+    read: (first) => Promise.resolve(file.slice(0, first, file.type)),
   };
 }
 

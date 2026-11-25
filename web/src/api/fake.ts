@@ -136,10 +136,13 @@ export async function fake(): Promise<Transport> {
       return reply;
     },
 
-    async download(path, { token }) {
+    async download(path, { token, first }) {
       await answering();
       const { response, file } = await download(path, { token });
-      return { ...lowercased(response), file };
+      return {
+        ...lowercased(response),
+        file: file?.slice(0, first, file.type),
+      };
     },
 
     async send(method, path, { token, body }) {
