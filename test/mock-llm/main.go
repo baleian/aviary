@@ -22,6 +22,10 @@
 //	attached       replies with what follows the instruction in its message,
 //	               as the links to the files that a message carries do, a
 //	               part per line, or "nothing" if nothing does
+//	pictures       replies with the media types of the pictures that the
+//	               harness gave the model in the conversation, with a
+//	               message or as what a tool read, one per line, or "none"
+//	               if it gave none
 //	recall         replies with the user's earlier instructions, one per
 //	               line, or "nothing" if there are none
 //	find <text>    replies "present" if the harness sent the text along with
@@ -232,6 +236,8 @@ type conversation struct {
 	said []string
 	// attached holds what followed the last instruction in its message.
 	attached []string
+	// pictures holds the media types of the pictures of the conversation.
+	pictures []string
 	// sent holds the text that the harness added itself: its instructions to
 	// the model, and the messages that it added to the conversation.
 	sent []string
@@ -374,6 +380,10 @@ func (c conversation) next() answer {
 		return answer{text: "nothing"}
 	case word == "attached":
 		return answer{text: strings.Join(c.attached, "\n")}
+	case word == "pictures" && len(c.pictures) == 0:
+		return answer{text: "none"}
+	case word == "pictures":
+		return answer{text: strings.Join(c.pictures, "\n")}
 	}
 	var before []string
 	for _, message := range c.said[:len(c.said)-1] {
@@ -421,7 +431,7 @@ func (c conversation) use(rest string) answer {
 func instruction(message string) (word, rest string, found bool) {
 	word, rest, _ = strings.Cut(strings.TrimSpace(message), " ")
 	switch word {
-	case "say", "drawl", "run", "escalate", "read", "use", "attached", "recall", "find", "fail", "flaky":
+	case "say", "drawl", "run", "escalate", "read", "use", "attached", "pictures", "recall", "find", "fail", "flaky":
 		return word, strings.TrimSpace(rest), true
 	}
 	return "", "", false
@@ -537,6 +547,50 @@ func texts(content json.RawMessage) []string {
 	return texts
 }
 
+// pictures returns the media types of the pictures in a part of a request,
+// in their order, in whichever shape an API has for a picture: with a
+// message or in the output of a tool, as a data URL or as its data.
+func pictures(part json.RawMessage) []string {
+	var value any
+	json.Unmarshal(part, &value)
+	var found []string
+	var walk func(value any)
+	walk = func(value any) {
+		switch value := value.(type) {
+		case []any:
+			for _, inner := range value {
+				walk(inner)
+			}
+		case map[string]any:
+			kind, _ := value["type"].(string)
+			// A data URL is the address of Chat Completions, in an object,
+			// and of Responses.
+			address, _ := value["image_url"].(string)
+			if inner, nested := value["image_url"].(map[string]any); nested {
+				address, _ = inner["url"].(string)
+			}
+			source, _ := value["source"].(map[string]any)
+			media, _ := source["media_type"].(string)
+			switch {
+			case (kind == "image_url" || kind == "input_image") && strings.HasPrefix(address, "data:"):
+				media, _, _ = strings.Cut(strings.TrimPrefix(address, "data:"), ";")
+				found = append(found, media)
+			case kind == "image" && media != "":
+				found = append(found, media)
+			default:
+				// What holds pictures deeper down, such as the result of a
+				// tool. Fields are walked by name: a list of parts is one
+				// field, and keeps its own order.
+				for _, name := range slices.Sorted(maps.Keys(value)) {
+					walk(value[name])
+				}
+			}
+		}
+	}
+	walk(value)
+	return found
+}
+
 // pieces splits text into the words in which it is streamed.
 func pieces(text string) []string {
 	return strings.SplitAfter(text, " ")
@@ -620,6 +674,7 @@ func (m *mock) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	var c conversation
 	for i, message := range request.Messages {
+		c.pictures = append(c.pictures, pictures(message.Content)...)
 		switch message.Role {
 		case "user":
 			c.hear(texts(message.Content)...)
@@ -709,7 +764,7 @@ func (m *mock) responses(w http.ResponseWriter, r *http.Request) {
 		Content json.RawMessage `json:"content"`
 		Output  json.RawMessage `json:"output"`
 	}
-	c := conversation{sent: []string{request.Instructions}}
+	c := conversation{sent: []string{request.Instructions}, pictures: pictures(request.Input)}
 	if json.Unmarshal(request.Input, &items) != nil {
 		c.said = []string{text(request.Input)}
 	}
@@ -825,6 +880,7 @@ func (m *mock) messages(w http.ResponseWriter, r *http.Request) {
 	// The names of the tools that the model called, by the IDs of the calls.
 	called := map[string]string{}
 	for i, message := range request.Messages {
+		c.pictures = append(c.pictures, pictures(message.Content)...)
 		// A harness can add instructions in the conversation, too.
 		if message.Role == "system" {
 			c.sent = append(c.sent, text(message.Content))

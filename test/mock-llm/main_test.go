@@ -568,6 +568,78 @@ func TestAttached(t *testing.T) {
 	}
 }
 
+// pictures tells which pictures the harness gave the model, in the shape
+// that each API has for a picture, with a message or as what a tool read.
+func TestPictures(t *testing.T) {
+	t.Parallel()
+	model := httptest.NewServer(newMock(apiKey))
+	defer model.Close()
+	const png, jpeg = "data:image/png;base64,iVBORw0KGgo=", "data:image/jpeg;base64,/9j/4AAQ"
+	said := func(api string, text []any, conversation ...any) string {
+		t.Helper()
+		request := map[string]any{"model": "mock", "stream": true, "messages": conversation, "input": conversation}
+		status, stream, refusal := events(t, model.URL+api, apiKey, request)
+		if status != http.StatusOK {
+			t.Fatalf("%s: got status %d %s", api, status, refusal)
+		}
+		var said string
+		for _, event := range stream {
+			if api != "/v1/responses" || event["type"] == "response.output_text.delta" {
+				said += str(at(event, text...))
+			}
+		}
+		return said
+	}
+	part := func(kind, field string, value any) map[string]any { return map[string]any{"type": kind, field: value} }
+	user := func(content ...any) map[string]any {
+		return map[string]any{"type": "message", "role": "user", "content": content}
+	}
+
+	chat := func(conversation ...any) string {
+		return said("/v1/chat/completions", []any{"choices", 0, "delta", "content"}, conversation...)
+	}
+	picture := func(address string) map[string]any {
+		return part("image_url", "image_url", map[string]any{"url": address})
+	}
+	if got := chat(user(part("text", "text", "say hello"), picture(png)), map[string]any{"role": "assistant", "content": "hello"},
+		user(picture(jpeg), part("text", "text", "pictures"))); got != "image/png\nimage/jpeg" {
+		t.Errorf("Chat Completions: the model said %q of two pictures in two messages", got)
+	}
+	if got := chat(user(part("text", "text", "pictures"))); got != "none" {
+		t.Errorf("Chat Completions: the model said %q of no picture", got)
+	}
+
+	respond := func(conversation ...any) string {
+		return said("/v1/responses", []any{"delta"}, conversation...)
+	}
+	if got := respond(user(part("input_text", "text", "read /home/shot.png")),
+		map[string]any{"type": "function_call", "name": "view_image", "arguments": "{}"},
+		map[string]any{"type": "function_call_output", "output": []any{part("input_image", "image_url", png)}},
+		user(part("input_image", "image_url", jpeg), part("input_text", "text", "pictures"))); got != "image/png\nimage/jpeg" {
+		t.Errorf("Responses: the model said %q of a picture that a tool read and one of a message", got)
+	}
+	if got := respond(user(part("input_text", "text", "pictures"))); got != "none" {
+		t.Errorf("Responses: the model said %q of no picture", got)
+	}
+
+	message := func(conversation ...any) string {
+		return said("/v1/messages", []any{"delta", "text"}, conversation...)
+	}
+	block := func(media string) map[string]any {
+		return part("image", "source", map[string]any{"type": "base64", "media_type": media, "data": "iVBORw0KGgo="})
+	}
+	if got := message(user(part("text", "text", "read /home/shot.png")),
+		map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "tool_use", "id": "toolu_1", "name": "Read", "input": map[string]any{}}}},
+		user(map[string]any{"type": "tool_result", "tool_use_id": "toolu_1", "content": []any{block("image/png")}}),
+		map[string]any{"role": "assistant", "content": []any{part("text", "text", "read")}},
+		user(block("image/webp"), part("text", "text", "pictures"))); got != "image/png\nimage/webp" {
+		t.Errorf("Messages: the model said %q of a picture that a tool read and one of a message", got)
+	}
+	if got := message(user(part("text", "text", "pictures"))); got != "none" {
+		t.Errorf("Messages: the model said %q of no picture", got)
+	}
+}
+
 func TestRead(t *testing.T) {
 	t.Parallel()
 	model := httptest.NewServer(newMock(apiKey))

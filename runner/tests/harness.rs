@@ -887,6 +887,29 @@ async fn asking_agent_reads_the_files_of_messages_without_asking() {
     .await;
 }
 
+/// A picture that a message carries reaches the model as a picture, at the
+/// latest when the model reads the file with the harness's tool, and stays
+/// in the conversation. A model server does not say whether its model takes
+/// pictures, so a harness that wants to know is told that it does.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the harness images"]
+async fn model_gets_the_picture_of_a_message_as_a_picture() {
+    each(|bench| async move {
+        let session = bench.session().await;
+        let written = session.runner.file("1/pixel.png", PIXEL.to_vec()).await;
+        assert_eq!(written, StatusCode::NO_CONTENT, "{}", bench.image);
+        let files = ["1/pixel.png".to_owned()];
+        let read = Message {
+            text: "read /home/.attachments/1/pixel.png",
+            files: &files,
+            ..Message::default()
+        };
+        session.run(read).await.completed();
+        session.say("pictures").await.completed().says("image/png");
+    })
+    .await;
+}
+
 /// The files of a message are linked in its prompt, and a harness tells its
 /// model of each, in the order of the message, whatever the files are named
 /// and whatever they are. A file that the model does not take leaves the

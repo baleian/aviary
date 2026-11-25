@@ -166,11 +166,19 @@ images in this repository handle these cases:
   it wants to. Claude Code takes the name from the URI, which is why the
   runner leaves the path as it is. OpenCode reads the file as its tool for
   reading files would, and gives its model what came of that with the
-  prompt: the text of a file, up to what that tool reads at a time, or that
-  the file cannot be read. With a link that says what the file is, OpenCode
-  gives the model the file as that, and a model that does not take it
-  refuses every prompt of the session from then on. The runner does not say
-  what a file is.
+  prompt: the text of a file, up to what that tool reads at a time, a
+  picture, or that the file cannot be read. With a link that says what the
+  file is, OpenCode gives the model the file as that, and a model that does
+  not take it refuses every prompt of the session from then on. The runner
+  does not say what a file is.
+- **Pictures.** Claude Code and Codex give their model a picture when the
+  model reads the file with their tool. OpenCode gives its model a picture
+  only if its configuration says that the model takes pictures, and tells
+  the model otherwise that the picture cannot be read. The APIs of a model
+  server do not say what a model takes, so the image says of every model
+  that it takes pictures. A model that takes none refuses the prompt with
+  the picture, and every prompt of the session after it, because the picture
+  stays in the conversation.
 - **Titles of the tools of MCP servers.** Claude Code titles a call of a
   tool of an MCP server `server: tool`, Codex `mcp.server.tool`, and OpenCode
   `server_tool`, which is also the form of its own `apply_patch`: in a

@@ -8,7 +8,9 @@
         "apiKey": "{env:AVIARY_LLM_API_KEY}"
       },
       "models": {
-        "{env:AVIARY_LLM_MODEL}": {}
+        "{env:AVIARY_LLM_MODEL}": {
+          "modalities": { "input": ["text", "image"], "output": ["text"] }
+        }
       }
     }
   },
