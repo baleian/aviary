@@ -153,8 +153,12 @@ test-mock-llm:
 test-web: web/node_modules/.package-lock.json
 	cd web && npm test -- $(TESTS)
 
-# Builds the documentation, which checks the links between its pages.
+# Builds the documentation, which checks the links between its pages, and
+# checks that its reference has the requests and the metrics of the
+# Supervisor.
+test-docs: TESTS ?= ./docs/...
 test-docs: docs
+	$(call GO,test) $(GO_TEST) $(TESTS)
 
 # Renders the chart with its default values, with those in test/chart and
 # with a claim of the installation for the depot, checks the output and that

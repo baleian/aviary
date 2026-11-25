@@ -17,7 +17,7 @@ make e2e           # all components together, in a kind cluster of its own
 | Level | Command | What runs | What it checks |
 | --- | --- | --- | --- |
 | Lint | `make lint` | gofmt, go vet, rustfmt, clippy, the Go code generator, for `web/` Prettier, oxlint and the TypeScript compiler, and Prettier for the code in `docs/`. | The code is formatted, the linters pass, and the generated code is up to date. |
-| Unit and component | `make test` | Each part on its own, with the test playing what it talks to. | What each part does: the Supervisor, the runner, the chart, the Egress Proxy, the mock model server, the code in `web/`, the server of the web UI's image and the links of the documentation. |
+| Unit and component | `make test` | Each part on its own, with the test playing what it talks to. | What each part does: the Supervisor, the runner, the chart, the Egress Proxy, the mock model server, the code in `web/`, the server of the web UI's image, and the documentation: its links, and the requests and metrics of its reference. |
 | Harness | `make test-harness` | The harness images in containers, each with the runner, against the mock model server. The tests are in `runner/tests/harness.rs`. | A harness and the runner work together: sessions, tools, the tools of MCP servers, cancellation, failures, what the agent installs, and what the harness requests from outside. |
 | e2e | `make e2e` | Aviary as the chart installs it, in a kind cluster that the run creates and deletes. The tests are in `test/e2e/`. | The parts work together: a turn from the API to its session's sandbox and back, sessions that sleep and wake, what a sandbox can reach through the Egress Proxy, the tools of MCP servers, ending a session, losing a sandbox, and turns while the Supervisors are replaced. |
 
@@ -45,7 +45,7 @@ does not touch the cluster of `make cluster-up`.
 | `test-proxy` | `test/proxy/` | Envoy with the configuration that the chart renders. The test plays the sandbox, the Supervisor, the model endpoint and the outside hosts. |
 | `test-mock-llm` | `test/mock-llm/` | The mock model server. |
 | `test-web` | `web/` | Node.js, with the API answered in memory, and the screens in a DOM without a browser. The tests are next to the code, in `*.test.ts` and `*.test.tsx`. |
-| `test-docs` | `docs/` | The pages, built into the site: the build fails if a link between them leads to a page or a heading that is not there. |
+| `test-docs` | `docs/`, `test/docs/` | The pages, built into the site: the build fails if a link between them leads to a page or a heading that is not there. The tests compare the requests and the metrics that the reference names with those of the Supervisor. |
 | `test-web-server` | `test/web/` | The server of the web UI's image, nginx, with the configuration that the image starts it with: once in front of an API and once alone. The test plays the browser and the API. |
 
 `TESTS` selects tests. It is passed to `go test`, `cargo test` or Vitest:

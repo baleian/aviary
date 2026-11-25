@@ -66,7 +66,10 @@ well.
 
 ## Checks
 
-`make test` builds the site, which checks the links. `make lint` checks
-that the configuration and the styles of the site are formatted, which
-`npm run format` in `docs/` does. The pages are not formatted by a tool, so
-that a table keeps each row on a line of its own.
+`make test` builds the site, which checks the links. It also compares the
+requests and the metrics that the reference names with those of the
+Supervisor, so a new request or metric fails it until a page has it.
+
+`make lint` checks that the configuration and the styles of the site are
+formatted, which `npm run format` in `docs/` does. The pages are not
+formatted by a tool, so that a table keeps each row on a line of its own.
