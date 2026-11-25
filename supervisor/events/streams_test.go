@@ -61,6 +61,35 @@ func words(from, to int) []string {
 	return words
 }
 
+// A turn that is rewound has only the event that says so, and takes the
+// messages of its runner from the first again.
+func TestRewind(t *testing.T) {
+	t.Parallel()
+	streams, turn := events.New(memory.New()), uuid.New()
+	for seq, text := range []string{"one", "two"} {
+		if err := streams.Receive(ctx, turn, uint64(seq+1), "message.delta", said(text)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := streams.Rewind(ctx, turn); err != nil {
+		t.Fatal(err)
+	}
+	if received, err := streams.Received(ctx, turn); err != nil || received != 0 {
+		t.Errorf("Received = %d, %v; want 0", received, err)
+	}
+	if err := streams.Receive(ctx, turn, 1, "message.delta", said("one")); err != nil {
+		t.Errorf("Receive of the first message after Rewind: %v", err)
+	}
+	expected := []string{`turn.rewound {}`, `message.delta {"text":"one"}`}
+	if recorded := all(t, streams, turn); !slices.Equal(texts(recorded), expected) {
+		t.Errorf("events = %q, want %q", texts(recorded), expected)
+	}
+	// Rewinding a turn that the log does not hold is not an error.
+	if err := streams.Rewind(ctx, uuid.New()); err != nil {
+		t.Errorf("Rewind of an unknown turn: %v", err)
+	}
+}
+
 // Events are stored as JSON, in the order of their sequence numbers.
 func TestReceive(t *testing.T) {
 	t.Parallel()

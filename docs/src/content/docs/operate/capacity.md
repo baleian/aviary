@@ -33,6 +33,13 @@ replicas as their `replicas` say, and any replica can serve any request.
 Turns do not belong to a Supervisor: if the one that follows a turn goes
 away, another one continues the turn from what was recorded.
 
+What is recorded of a running turn is in the event log until the turn ends.
+If the log loses it, as one that keeps its data in memory does when it
+starts again, the Supervisor reads the events of the turn from its runner
+again and records them, so the turn goes on with all that the agent said and
+did. A turn whose sandbox is gone as well fails with what the log has left
+of it.
+
 Supervisors and Egress Proxies do not wait for turns when they stop, as when
 their deployment is scaled in or rolled out. Another Supervisor continues
 the turns from what was recorded, and the requests that a stopping proxy was

@@ -25,6 +25,9 @@ const (
 	TurnQueued = "turn.queued"
 	// TurnStarted reports that the harness has received the message.
 	TurnStarted = "turn.started"
+	// TurnRewound reports that the events of the turn follow again, from
+	// the first: the log had lost some of them.
+	TurnRewound = "turn.rewound"
 	// TurnCompleted, TurnFailed, TurnCancelled and TurnExpired report how
 	// the turn ended. One of them is the last event of every turn.
 	TurnCompleted = "turn.completed"
@@ -113,6 +116,15 @@ func (s *Streams) Receive(ctx context.Context, turnID uuid.UUID, seq uint64, eve
 // turn's runner, or 0 if there is none.
 func (s *Streams) Received(ctx context.Context, turnID uuid.UUID) (uint64, error) {
 	return s.log.Received(ctx, turnID)
+}
+
+// Rewind deletes what the log has of the turn's events and appends
+// TurnRewound, for a turn whose events are recorded again from the first.
+func (s *Streams) Rewind(ctx context.Context, turnID uuid.UUID) error {
+	if err := s.log.Expire(ctx, turnID, 0); err != nil {
+		return err
+	}
+	return s.Append(ctx, turnID, TurnRewound, struct{}{})
 }
 
 // Follow acquires or renews follower's lease on the turn, and reports whether

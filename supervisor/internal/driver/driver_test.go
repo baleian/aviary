@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +26,7 @@ var ctx = context.Background()
 type installation struct {
 	t       *testing.T
 	store   *memorystore.Store
+	log     *memorylog.Log
 	events  *events.Streams
 	service *sandboxtest.Service
 	config  Config
@@ -33,7 +35,8 @@ type installation struct {
 // install returns an in-memory installation with the harness opencode.
 func install(t *testing.T, changes ...func(*Config)) *installation {
 	t.Helper()
-	i := &installation{t: t, store: memorystore.New(), events: events.New(memorylog.New()), service: sandboxtest.New(t)}
+	log := memorylog.New()
+	i := &installation{t: t, store: memorystore.New(), log: log, events: events.New(log), service: sandboxtest.New(t)}
 	i.config = Config{
 		Harnesses: map[string]sandbox.Harness{"opencode": {Image: "registry.example.com/opencode:1.0"}},
 		Models:    &url.URL{Scheme: "http", Host: "egress-proxy.example.com:8080"},
@@ -514,6 +517,160 @@ func TestATurnThatItsRunnerHasLostIsNotRunAgain(t *testing.T) {
 	// The sandbox is kept, with its volume.
 	if i.sandbox(session) != given.Sandbox || len(i.service.Made()) != 1 {
 		t.Errorf("session sandbox = %q, sandboxes = %v", i.sandbox(session), i.service.Made())
+	}
+}
+
+// lose has the log lose what it has of the turn's events, as a log that keeps
+// them in memory does when it starts again.
+func (i *installation) lose(turn uuid.UUID) {
+	i.t.Helper()
+	if err := i.log.Expire(ctx, turn, 0); err != nil {
+		i.t.Fatal(err)
+	}
+}
+
+// said returns the items of the turn.
+func (i *installation) said(turn uuid.UUID) []string {
+	i.t.Helper()
+	items, err := i.store.TurnItems(ctx, []uuid.UUID{turn})
+	if err != nil {
+		i.t.Fatal(err)
+	}
+	said := make([]string, len(items[turn]))
+	for at, item := range items[turn] {
+		said[at] = string(item)
+	}
+	return said
+}
+
+func TestATurnWhoseEventsTheLogLosesIsRecordedAgain(t *testing.T) {
+	i := install(t)
+	driver, _ := i.supervisor()
+	session := i.session(store.Agent{})
+	turn := i.send(driver, session, "hello")
+	given := i.service.Turn(t)
+	given.Tell("started", started)
+	given.Tell("message.delta", map[string]string{"text": "one "})
+	i.eventually("the events are recorded", func() bool { return len(i.told(turn.ID)) == 2 })
+
+	i.lose(turn.ID)
+	given.Tell("message.delta", map[string]string{"text": "two"})
+	given.Tell("finished", finished)
+	if ended := i.ended(turn.ID); ended.State != store.TurnCompleted {
+		t.Errorf("ended turn = %+v", ended)
+	}
+	// A client that follows the turn is told that its events come again, and
+	// the turn has all that the agent said.
+	want := []string{events.TurnRewound, events.TurnStarted, "message.delta", "message.delta", events.TurnCompleted}
+	if told := i.told(turn.ID); !slices.Equal(told, want) {
+		t.Errorf("events = %v", told)
+	}
+	if said := i.said(turn.ID); !slices.Equal(said, []string{`{"type":"message","text":"one two"}`}) {
+		t.Errorf("items = %v", said)
+	}
+	// The turn was given once, and the session takes its next message.
+	next := i.send(driver, session, "and then")
+	if again := i.service.Turn(t); again.ID != next.ID.String() || again.Sandbox != given.Sandbox {
+		t.Errorf("next turn = %+v", again)
+	}
+}
+
+// lacking is a log that tells when it lacks events of a turn.
+type lacking struct {
+	events.Log
+	found func()
+}
+
+func (l lacking) Receive(ctx context.Context, turn uuid.UUID, seq uint64, eventType, data string) error {
+	err := l.Log.Receive(ctx, turn, seq, eventType, data)
+	if errors.Is(err, events.ErrGap) {
+		l.found()
+	}
+	return err
+}
+
+func TestATurnThatItsRunnerHasLostKeepsWhatTheLogHasLeftOfIt(t *testing.T) {
+	i := install(t)
+	var sandboxName string
+	var once sync.Once
+	// The runner restarts as the log is found to lack events.
+	i.events = events.New(lacking{Log: i.log, found: func() {
+		once.Do(func() { i.service.Restart(sandboxName) })
+	}})
+	driver, _ := i.supervisor()
+	turn := i.send(driver, i.session(store.Agent{}), "hello")
+	given := i.service.Turn(t)
+	sandboxName = given.Sandbox
+	given.Tell("started", started)
+	given.Tell("message.delta", map[string]string{"text": "one"})
+	given.Tell("message.delta", map[string]string{"text": "two"})
+	i.eventually("the events are recorded", func() bool { return len(i.told(turn.ID)) == 3 })
+
+	// The log is left with the first two events.
+	i.lose(turn.ID)
+	if err := i.events.Receive(ctx, turn.ID, 1, events.TurnStarted, struct{}{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := i.events.Receive(ctx, turn.ID, 2, "message.delta", map[string]string{"text": "one"}); err != nil {
+		t.Fatal(err)
+	}
+	given.Tell("message.delta", map[string]string{"text": "three"})
+	ended := i.ended(turn.ID)
+	if !failed(ended, store.FailureRunner) || !strings.Contains(ended.Failure.Message, "no longer has the turn") {
+		t.Errorf("ended turn = %+v, failure = %+v", ended, ended.Failure)
+	}
+	want := []string{events.TurnStarted, "message.delta", events.TurnFailed}
+	if told := i.told(turn.ID); !slices.Equal(told, want) {
+		t.Errorf("events = %v", told)
+	}
+	if said := i.said(turn.ID); !slices.Equal(said, []string{`{"type":"message","text":"one"}`}) {
+		t.Errorf("items = %v", said)
+	}
+}
+
+// taken is a log whose leases another Supervisor holds once by is closed.
+type taken struct {
+	events.Log
+	by chan struct{}
+}
+
+func (l taken) Follow(ctx context.Context, turn, follower uuid.UUID, lease time.Duration) (bool, error) {
+	select {
+	case <-l.by:
+		return false, nil
+	default:
+		return l.Log.Follow(ctx, turn, follower, lease)
+	}
+}
+
+func TestATurnThatAnotherSupervisorHasTakenIsNotRecordedAgain(t *testing.T) {
+	i := install(t)
+	by := make(chan struct{})
+	i.events = events.New(taken{Log: i.log, by: by})
+	driver, _ := i.supervisor()
+	turn := i.send(driver, i.session(store.Agent{}), "hello")
+	given := i.service.Turn(t)
+	given.Tell("started", started)
+	given.Tell("message.delta", map[string]string{"text": "one"})
+	given.Tell("message.delta", map[string]string{"text": "two"})
+	i.eventually("the events are recorded", func() bool { return len(i.told(turn.ID)) == 3 })
+
+	// The log loses the turn, and another Supervisor takes the turn and
+	// records its first event before this one learns of the loss.
+	i.lose(turn.ID)
+	close(by)
+	if err := i.events.Receive(ctx, turn.ID, 1, events.TurnStarted, struct{}{}); err != nil {
+		t.Fatal(err)
+	}
+	given.Tell("message.delta", map[string]string{"text": "three"})
+	// This Supervisor leaves the turn to the other: what the other has
+	// recorded stays, and the turn goes on.
+	time.Sleep(10 * i.config.Sweep)
+	if told := i.told(turn.ID); !slices.Equal(told, []string{events.TurnStarted}) {
+		t.Errorf("events = %v", told)
+	}
+	if ended := i.turn(turn.ID); ended.EndedAt != nil {
+		t.Errorf("turn = %+v", ended)
 	}
 }
 

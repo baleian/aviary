@@ -414,12 +414,24 @@ func (d *Driver) giveUp(ctx context.Context, r *run, failure store.Failure) {
 }
 
 // read records the runner's events of the turn after the event numbered
-// after, until the turn ends.
+// after, until the turn ends. A log that keeps the events in memory loses
+// them when it starts again: read then records the turn's events again from
+// the first, all of which the runner still has.
 func (d *Driver) read(ctx, following context.Context, r *run, runner *sandbox.Runner, after uint64) {
 	turn := r.turn
+	// rewinding is set once the log lacks events of the turn, until the
+	// runner sends the first again. What the log has left of the turn is
+	// deleted only then, since a runner that has lost the turn sends none.
+	rewinding := false
 	for following.Err() == nil {
 		var ended *ending
 		err := runner.Events(following, turn.ID, after, func(event sandbox.Event) error {
+			if rewinding {
+				if err := d.events.Rewind(following, turn.ID); err != nil {
+					return err
+				}
+				rewinding = false
+			}
 			how, err := d.record(following, r, event)
 			if err != nil {
 				return err
@@ -440,10 +452,25 @@ func (d *Driver) read(ctx, following context.Context, r *run, runner *sandbox.Ru
 				Reason: store.FailureRunner, Message: "the session's runner no longer has the turn",
 			})
 			return
+		case errors.Is(err, events.ErrGap):
+			// Only the Supervisor that holds the lease records the turn
+			// again, so that two of them do not undo each other's work.
+			mine, err := d.events.Follow(following, turn.ID, d.id, d.lease())
+			switch {
+			case err != nil:
+				slog.WarnContext(ctx, "claim turn lease", "turn", turn.ID, "error", err)
+			case !mine:
+				slog.WarnContext(ctx, "turn taken over by another supervisor", "turn", turn.ID)
+				return
+			default:
+				slog.WarnContext(ctx, "the event log lost events of the turn", "turn", turn.ID, "recorded", after)
+				after, rewinding = 0, true
+			}
 		case err != nil:
 			slog.WarnContext(ctx, "read turn events", "turn", turn.ID, "after", after, "error", err)
 		}
-		// The stream was cut off, or the runner cannot be reached.
+		// The stream was cut off, the runner cannot be reached, or the turn's
+		// events are read again.
 		seen, gone := d.sandboxes.Sandbox(following, r.sandboxID())
 		switch {
 		case errors.Is(gone, sandbox.ErrNotFound), gone == nil && seen.State == sandbox.Lost:
@@ -463,7 +490,7 @@ func (d *Driver) read(ctx, following context.Context, r *run, runner *sandbox.Ru
 		case <-following.Done():
 		}
 		// Another Supervisor may have recorded more of the turn.
-		if recorded, err := d.events.Received(following, turn.ID); err == nil && recorded > after {
+		if recorded, err := d.events.Received(following, turn.ID); err == nil && recorded > after && !rewinding {
 			after = recorded
 		}
 	}
