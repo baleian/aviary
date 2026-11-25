@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"maps"
 	"net/http"
@@ -8,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
+	"aviary/supervisor/events"
 	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/store"
 )
@@ -136,6 +140,53 @@ func TestTurn(t *testing.T) {
 	again := aviary.given(next.ID)
 	if again.Text != "and again" || again.Sandbox != runner.Sandbox || len(aviary.service.Made()) != 1 {
 		t.Errorf("next runner turn = %+v, sandboxes %v; want the same sandbox", again.Turn, aviary.service.Made())
+	}
+}
+
+// elsewhere is an event log in which another Supervisor holds the lease on
+// every turn, so that the Supervisors of the test follow none.
+type elsewhere struct{ events.Log }
+
+func (elsewhere) Follow(context.Context, uuid.UUID, uuid.UUID, time.Duration) (bool, error) {
+	return false, nil
+}
+
+// A turn that has left the queue runs, as the API tells it, also before a
+// Supervisor follows it.
+func TestATurnThatLeftTheQueueIsRunning(t *testing.T) {
+	t.Parallel()
+	aviary := install(t)
+	aviary.log = elsewhere{aviary.log}
+	s := aviary.supervisor()
+	session := s.session()
+
+	accepted := s.send(session, "hello")
+	eventually(t, soon, "the turn is not dispatched", func() bool {
+		stored, err := aviary.records.Turn(context.Background(), uuid.MustParse(accepted.ID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return stored.State == store.TurnDispatching
+	})
+	if record := s.turn(accepted.ID); record.State != "running" || record.StartedAt != nil || record.EndedAt != nil {
+		t.Errorf("dispatched turn = %+v, want running, and neither started nor ended", record)
+	}
+	var listed struct{ Turns []turn }
+	if status, _ := s.request("GET", "/v1/sessions/"+session+"/turns", "", &listed); status != http.StatusOK ||
+		len(listed.Turns) != 1 || listed.Turns[0].State != "running" {
+		t.Errorf("turns of the session = %d %+v, want the turn as running", status, listed.Turns)
+	}
+	var read struct {
+		LastTurn turn `json:"last_turn"`
+	}
+	if status, _ := s.request("GET", "/v1/sessions/"+session, "", &read); status != http.StatusOK || read.LastTurn.State != "running" {
+		t.Errorf("newest turn of the session = %d %+v, want it as running", status, read.LastTurn)
+	}
+	// It is told to stop as a turn that runs is.
+	var stopping turn
+	if status, _ := s.request("POST", "/v1/turns/"+accepted.ID+"/cancel", "", &stopping); status != http.StatusAccepted ||
+		stopping.State != "running" || stopping.CancelRequestedAt == nil {
+		t.Errorf("cancel dispatched turn = %d %+v, want 202 with the turn as running and asked to stop", status, stopping)
 	}
 }
 

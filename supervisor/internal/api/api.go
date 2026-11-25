@@ -526,7 +526,7 @@ func (a *api) sessionRecords(ctx context.Context, sessions []store.Session) ([]s
 		if !found {
 			continue
 		}
-		records[i].LastTurn = &lastTurn{Turn: turn}
+		records[i].LastTurn = &lastTurn{Turn: reported(turn)}
 		if turn.EndedAt == nil {
 			if records[i].LastTurn.Approvals, err = a.store.WaitingApprovals(ctx, turn.ID); err != nil {
 				return nil, err
@@ -743,6 +743,15 @@ func (a *api) listTurns(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+// reported returns the turn as the API reports it. A turn that has left the
+// queue runs: when a Supervisor follows it is between the Supervisors.
+func reported(turn store.Turn) store.Turn {
+	if turn.State == store.TurnDispatching {
+		turn.State = store.TurnRunning
+	}
+	return turn
+}
+
 // turnRecord is a turn with its items, which are stored when the turn ends;
 // until then clients follow the turn's events. Approvals holds the pending
 // approval requests of a turn that has not ended.
@@ -769,7 +778,7 @@ func (a *api) records(ctx context.Context, turns []store.Turn) ([]turnRecord, er
 	records := make([]turnRecord, len(turns))
 	for i, turn := range turns {
 		// Items is [], not null, for a turn without items.
-		records[i] = turnRecord{Turn: turn, Attachments: carried[turn.ID], Items: append([]json.RawMessage{}, items[turn.ID]...)}
+		records[i] = turnRecord{Turn: reported(turn), Attachments: carried[turn.ID], Items: append([]json.RawMessage{}, items[turn.ID]...)}
 		if turn.EndedAt == nil {
 			if records[i].Approvals, err = a.store.WaitingApprovals(ctx, turn.ID); err != nil {
 				return nil, err
@@ -863,7 +872,7 @@ func (a *api) cancelTurn(w http.ResponseWriter, r *http.Request) error {
 		if err := a.events.AnnounceCancel(r.Context(), turn.ID); err != nil {
 			slog.ErrorContext(r.Context(), "announce turn cancellation", "turn", turn.ID, "error", err)
 		}
-		respond(w, http.StatusAccepted, turn)
+		respond(w, http.StatusAccepted, reported(turn))
 		return nil
 	}
 	respond(w, http.StatusOK, turn)

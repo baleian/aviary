@@ -73,7 +73,7 @@ type installation struct {
 	// secrets holds the contents of those stores.
 	storeHosts []string
 	secrets    *shelves
-	log        *memorylog.Log
+	log        events.Log
 	// callers has no identity provider unless a test sets one.
 	callers api.Callers
 	// origins are the origins whose pages may call the API from a browser:

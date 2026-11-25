@@ -56,12 +56,15 @@ after the turn ends.
 | `mcp_unsupported` | The fields of `mcp.unsupported`. |
 | `approval` | The fields of `approval.requested`, and how the request ended: `outcome` and, if an option was selected, `option_id`. |
 
+A turn is `queued` until it leaves the queue, and `running` from then until
+it ends, also while its sandbox starts: `started_at` is set once the harness
+has received the message.
+
 A turn that did not complete keeps what happened until then: the text that
 the agent had written so far, and each tool call with its last status. A
 turn's `state`, `failure` and `stop_reason` say how it ended. A turn has a
 `stop_reason` only if its harness ended it. A turn without one was stopped
-from outside, or never reached its harness: `started_at` is set once the
-harness has received the message.
+from outside, or never reached its harness.
 
 | `state` | `stop_reason` | Meaning |
 | --- | --- | --- |
