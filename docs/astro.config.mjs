@@ -51,6 +51,7 @@ export default defineConfig({
         "@fontsource-variable/jetbrains-mono",
         "./src/styles/theme.css",
       ],
+      components: { ThemeSelect: "./src/components/ThemeSelect.astro" },
       // The build fails if a link between the pages leads nowhere. The
       // pages name addresses of the local cluster, which are at localhost.
       plugins: [starlightLinksValidator({ errorOnLocalLinks: false })],

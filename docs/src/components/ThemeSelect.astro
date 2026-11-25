@@ -1,0 +1,80 @@
+---
+// The theme is switched with a button, as in the web UI: the moon leads to
+// the dark theme, and the sun back to the light one. Until a reader
+// chooses, the page has the theme of the system.
+---
+
+<button class="theme" type="button">
+  <svg class="moon" viewBox="0 0 20 20" aria-hidden="true">
+    <path d="M16 11.6A6.5 6.5 0 0 1 8.4 4a6.5 6.5 0 1 0 7.6 7.6z"></path>
+  </svg>
+  <svg class="sun" viewBox="0 0 20 20" aria-hidden="true">
+    <circle cx="10" cy="10" r="3.2"></circle>
+    <path
+      d="M10 2.8v1.7M10 15.5v1.7M2.8 10h1.7M15.5 10h1.7M4.9 4.9l1.2 1.2M13.9 13.9l1.2 1.2M4.9 15.1l1.2-1.2M13.9 6.1l1.2-1.2"
+    ></path>
+  </svg>
+</button>
+
+<script>
+  // Starlight keeps the choice under this key, and sets the theme of the
+  // page from it before the first paint.
+  const key = "starlight-theme";
+  const root = document.documentElement;
+  const system = matchMedia("(prefers-color-scheme: dark)");
+  const buttons = document.querySelectorAll("button.theme");
+
+  function show(theme) {
+    root.dataset.theme = theme;
+    const label =
+      theme === "dark" ? "Switch to the light theme" : "Switch to the dark theme";
+    for (const button of buttons) {
+      button.setAttribute("title", label);
+      button.setAttribute("aria-label", label);
+    }
+  }
+
+  for (const button of buttons) {
+    button.addEventListener("click", () => {
+      const theme = root.dataset.theme === "dark" ? "light" : "dark";
+      localStorage.setItem(key, theme);
+      show(theme);
+    });
+  }
+  system.addEventListener("change", () => {
+    if (!localStorage.getItem(key)) show(system.matches ? "dark" : "light");
+  });
+  show(root.dataset.theme === "dark" ? "dark" : "light");
+</script>
+
+<style>
+  .theme {
+    display: grid;
+    place-items: center;
+    width: 2.25rem;
+    height: 2.25rem;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--sl-color-gray-3);
+    cursor: pointer;
+    transition: 0.15s;
+  }
+  .theme:hover {
+    background: var(--sl-color-accent-low);
+    color: var(--sl-color-text-accent);
+  }
+  svg {
+    width: 1.25rem;
+    height: 1.25rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  :global([data-theme="dark"]) .moon,
+  :global([data-theme="light"]) .sun {
+    display: none;
+  }
+</style>
