@@ -158,7 +158,7 @@ func TestServesThePage(t *testing.T) {
 			t.Errorf("%s/ = %d %q (%s), want the page", server, response.StatusCode, body, response.Header.Get("Content-Type"))
 		}
 		policy := response.Header.Get("Content-Security-Policy")
-		for _, part := range []string{"default-src 'self'", "frame-ancestors 'none'", "object-src 'none'", "base-uri 'none'"} {
+		for _, part := range []string{"default-src 'self'", "img-src 'self' data: blob:", "frame-ancestors 'none'", "object-src 'none'", "base-uri 'none'"} {
 			if !strings.Contains(policy, part) {
 				t.Errorf("%s/: Content-Security-Policy %q lacks %q", server, policy, part)
 			}
