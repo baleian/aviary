@@ -12,4 +12,12 @@ if [ "${AVIARY_APPROVAL:-}" = ask ]; then
   done
   export OPENCODE_PERMISSION="{$permission}"
 fi
+# The configuration says that the model takes pictures, and OpenCode gives it
+# those of messages. A model that takes none refuses a prompt with a picture
+# and every prompt after it, so the model is asked first: if it refuses a
+# picture, OpenCode is told that it takes none, and tells the model of a
+# picture that it cannot be read.
+if [ "$(node /usr/local/lib/aviary/pictures.mjs)" = refused ]; then
+  export OPENCODE_CONFIG_CONTENT='{"provider": {"aviary": {"models": {"{env:AVIARY_LLM_MODEL}": {"modalities": {"input": ["text"], "output": ["text"]}}}}}}'
+fi
 exec opencode acp

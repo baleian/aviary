@@ -42,7 +42,8 @@
 //
 // Requests must carry the API key given in MOCK_LLM_API_KEY. Every response
 // reports the same token usage, 11 input and 7 output tokens. GET /v1/models
-// lists one model, "mock".
+// lists one model, "mock". Asked as the model "mock-text", it refuses a
+// request that carries a picture, as a model does that takes only text.
 //
 // mock-llm is also the forward proxy of the harness tests that run without a
 // cluster. As a proxy it forwards nothing: it refuses each request and logs
@@ -88,6 +89,9 @@ const (
 
 // drawlPause is the pause after each word of a drawl answer.
 const drawlPause = 500 * time.Millisecond
+
+// textOnly is the name of the model that takes no pictures.
+const textOnly = "mock-text"
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
@@ -217,6 +221,9 @@ func mcpServer(begun http.Header) *mcp.Server {
 // next returns the model's answer to the conversation. A flaky instruction is
 // refused the first time.
 func (m *mock) next(c conversation) answer {
+	if c.model == textOnly && len(c.pictures) > 0 {
+		return answer{failure: "the model takes no pictures", status: http.StatusBadRequest}
+	}
 	next := c.next()
 	if !next.flaky {
 		return next
@@ -232,6 +239,8 @@ func (m *mock) next(c conversation) answer {
 
 // conversation is a model request as the script sees it.
 type conversation struct {
+	// model is the model that the request asks.
+	model string
 	// said holds the user messages, oldest first.
 	said []string
 	// attached holds what followed the last instruction in its message.
@@ -672,7 +681,7 @@ func (m *mock) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusBadRequest, "mock-llm only streams; set stream to true")
 		return
 	}
-	var c conversation
+	c := conversation{model: request.Model}
 	for i, message := range request.Messages {
 		c.pictures = append(c.pictures, pictures(message.Content)...)
 		switch message.Role {
@@ -764,7 +773,7 @@ func (m *mock) responses(w http.ResponseWriter, r *http.Request) {
 		Content json.RawMessage `json:"content"`
 		Output  json.RawMessage `json:"output"`
 	}
-	c := conversation{sent: []string{request.Instructions}, pictures: pictures(request.Input)}
+	c := conversation{model: request.Model, sent: []string{request.Instructions}, pictures: pictures(request.Input)}
 	if json.Unmarshal(request.Input, &items) != nil {
 		c.said = []string{text(request.Input)}
 	}
@@ -876,7 +885,7 @@ func (m *mock) messages(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusBadRequest, "mock-llm only streams; set stream to true")
 		return
 	}
-	c := conversation{sent: []string{text(request.System)}}
+	c := conversation{model: request.Model, sent: []string{text(request.System)}}
 	// The names of the tools that the model called, by the IDs of the calls.
 	called := map[string]string{}
 	for i, message := range request.Messages {

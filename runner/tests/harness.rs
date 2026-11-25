@@ -99,6 +99,8 @@ struct Message<'a> {
     /// "ask", or empty.
     approval: &'a str,
     mcp_servers: &'a [Value],
+    /// The model of the turn, if not "mock".
+    model: &'a str,
 }
 
 impl Bench {
@@ -333,7 +335,7 @@ impl Sitting {
         let id = format!("t{}", self.turns.fetch_add(1, Ordering::Relaxed) + 1);
         let mut environment = json!({
             "AVIARY_LLM_BASE_URL": "http://model:8080/v1",
-            "AVIARY_LLM_MODEL": "mock",
+            "AVIARY_LLM_MODEL": if message.model.is_empty() { "mock" } else { message.model },
             // Everything else goes through the proxy.
             "HTTP_PROXY": PROXY, "HTTPS_PROXY": PROXY, "NO_PROXY": "localhost,127.0.0.1,::1,model",
             "http_proxy": PROXY, "https_proxy": PROXY, "no_proxy": "localhost,127.0.0.1,::1,model",
@@ -890,7 +892,7 @@ async fn asking_agent_reads_the_files_of_messages_without_asking() {
 /// A picture that a message carries reaches the model as a picture, at the
 /// latest when the model reads the file with the harness's tool, and stays
 /// in the conversation. A model server does not say whether its model takes
-/// pictures, so a harness that wants to know is told that it does.
+/// pictures, so the image of a harness that wants to know asks the model.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
 async fn model_gets_the_picture_of_a_message_as_a_picture() {
@@ -906,6 +908,39 @@ async fn model_gets_the_picture_of_a_message_as_a_picture() {
         };
         session.run(read).await.completed();
         session.say("pictures").await.completed().says("image/png");
+    })
+    .await;
+}
+
+/// A model that takes only text refuses a request with a picture, and a
+/// harness sends its model the whole conversation every time: a picture that
+/// it gave such a model would end the session. A message with a picture
+/// leaves the session as it is: the turn ends, and so does the one after it.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the harness images"]
+async fn picture_does_not_end_the_session_of_a_model_that_takes_none() {
+    each(|bench| async move {
+        let session = bench.session().await;
+        let written = session.runner.file("1/pixel.png", PIXEL.to_vec()).await;
+        assert_eq!(written, StatusCode::NO_CONTENT, "{}", bench.image);
+        let files = ["1/pixel.png".to_owned()];
+        let told = Message {
+            text: "attached",
+            files: &files,
+            model: "mock-text",
+            ..Message::default()
+        };
+        session
+            .run(told)
+            .await
+            .completed()
+            .says("/home/.attachments/1/pixel.png");
+        let again = Message {
+            text: "say still here",
+            model: "mock-text",
+            ..Message::default()
+        };
+        session.run(again).await.completed().says("still here");
     })
     .await;
 }

@@ -640,6 +640,39 @@ func TestPictures(t *testing.T) {
 	}
 }
 
+// Asked as the model that takes only text, the server refuses a request that
+// carries a picture, on every API, and answers every other request.
+func TestTextOnly(t *testing.T) {
+	t.Parallel()
+	model := httptest.NewServer(newMock(apiKey))
+	defer model.Close()
+	const png = "iVBORw0KGgo="
+	for api, picture := range map[string]map[string]any{
+		"/v1/chat/completions": {"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64," + png}},
+		"/v1/responses":        {"type": "input_image", "image_url": "data:image/png;base64," + png},
+		"/v1/messages":         {"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": png}},
+	} {
+		// ask sends a message of the parts to the model of the name, and
+		// returns the status and what the refusal says.
+		ask := func(name string, parts ...any) (int, string) {
+			conversation := []any{map[string]any{"type": "message", "role": "user", "content": parts}}
+			request := map[string]any{"model": name, "stream": true, "messages": conversation, "input": conversation}
+			status, _, refusal := events(t, model.URL+api, apiKey, request)
+			return status, refusal
+		}
+		words := map[string]any{"type": "text", "text": "say hello"}
+		if status, refusal := ask("mock-text", words, picture); status != http.StatusBadRequest || refusal != "the model takes no pictures" {
+			t.Errorf("%s: a picture for the model of text got %d %q", api, status, refusal)
+		}
+		if status, _ := ask("mock-text", words); status != http.StatusOK {
+			t.Errorf("%s: text for the model of text got %d", api, status)
+		}
+		if status, _ := ask("mock", words, picture); status != http.StatusOK {
+			t.Errorf("%s: a picture for the other model got %d", api, status)
+		}
+	}
+}
+
 func TestRead(t *testing.T) {
 	t.Parallel()
 	model := httptest.NewServer(newMock(apiKey))

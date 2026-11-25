@@ -7,6 +7,7 @@ RUN --mount=type=cache,target=/root/.npm \
     npm install --global opencode-ai@1.19.5
 COPY opencode.json /etc/xdg/opencode/opencode.json
 COPY --chmod=755 opencode-acp-aviary /usr/local/bin/opencode-acp-aviary
+COPY pictures.mjs /usr/local/lib/aviary/pictures.mjs
 # OpenCode reads instructions for every session from this file. The runner
 # writes it, so the agent's user owns the file, though not the directory.
 RUN install --owner 10000 --group 10000 --mode 644 /dev/null /etc/xdg/opencode/AGENTS.md

@@ -174,11 +174,16 @@ images in this repository handle these cases:
 - **Pictures.** Claude Code and Codex give their model a picture when the
   model reads the file with their tool. OpenCode gives its model a picture
   only if its configuration says that the model takes pictures, and tells
-  the model otherwise that the picture cannot be read. The APIs of a model
-  server do not say what a model takes, so the image says of every model
-  that it takes pictures. A model that takes none refuses the prompt with
-  the picture, and every prompt of the session after it, because the picture
-  stays in the conversation.
+  the model otherwise that the picture cannot be read. A model that is given
+  a picture and takes none refuses the prompt, and every prompt after it,
+  because the picture stays in the conversation. The APIs of a model server
+  do not say what a model takes, so the image asks the model each time
+  OpenCode starts: it sends a word, and the same word with a small picture,
+  and waits up to 20 seconds for the answers to begin. A model that answers
+  the word and refuses the picture takes no pictures. Of any other, the
+  image says that it takes them, so a model that could not be asked may
+  still refuse a picture. That turn fails, and OpenCode starts again for the
+  next one and asks again.
 - **Titles of the tools of MCP servers.** Claude Code titles a call of a
   tool of an MCP server `server: tool`, Codex `mcp.server.tool`, and OpenCode
   `server_tool`, which is also the form of its own `apply_patch`: in a
