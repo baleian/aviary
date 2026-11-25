@@ -13,12 +13,16 @@ endif
 DOCKER_IO ?= docker.io
 GCR_IO ?= gcr.io
 GHCR_IO ?= ghcr.io
+PUBLIC_ECR_AWS ?= public.ecr.aws
 QUAY_IO ?= quay.io
 REGISTRY_K8S_IO ?= registry.k8s.io
 export DOCKER_IO GCR_IO
 # The repository of agent-sandbox, whose source has its chart, or a mirror of
 # it.
 AGENT_SANDBOX_REPO ?= https://github.com/kubernetes-sigs/agent-sandbox
+# The repository of the Mountpoint for Amazon S3 CSI driver, whose releases
+# have its chart, or a mirror of it.
+MOUNTPOINT_S3_CSI_REPO ?= https://github.com/awslabs/mountpoint-s3-csi-driver
 
 CLUSTER := aviary
 KIND_CONFIG ?= hack/kind/cluster.yaml
@@ -51,6 +55,12 @@ AGENT_SANDBOX := v1.0.11
 AGENT_SANDBOX_SHA256 := 400b83e1d51a0cf0954c6f6e8a301a1fe816c69bca54c90870239f578fffe36a
 AGENT_SANDBOX_SOURCE := .out/agent-sandbox-$(AGENT_SANDBOX).tar.gz
 AGENT_SANDBOX_CHART := deploy/charts/aviary/charts/agent-sandbox/Chart.yaml
+# The chart of the Mountpoint for Amazon S3 CSI driver, which make versitygw
+# installs in the local cluster: the package of its release, verified against
+# its checksum. The chart in its source refuses to be installed.
+MOUNTPOINT_S3_CSI := 2.9.2
+MOUNTPOINT_S3_CSI_SHA256 := fc66f3fd2e747f5f9d4735e468329c100f9f34a87e38751f810446745ebe3d28
+MOUNTPOINT_S3_CSI_CHART := .out/aws-mountpoint-s3-csi-driver-$(MOUNTPOINT_S3_CSI).tgz
 GO_IMAGE := $(DOCKER_IO)/library/golang:1.27.4-trixie@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9
 SQLC_IMAGE := $(DOCKER_IO)/sqlc/sqlc:1.31.1@sha256:70f53171d27b2424e9358869975455a6e955a5aa8e58a998a270a6e34e525537
 
@@ -87,8 +97,8 @@ KEEP_SECRET = secret=$$($(KUBECTL) get secret $(1) --namespace $(2) --output jso
 endif
 # The registries that have a mirror, each as registry=mirror, for the nodes
 # of the cluster.
-NODE_MIRRORS := $(filter-out docker.io=docker.io gcr.io=gcr.io ghcr.io=ghcr.io quay.io=quay.io registry.k8s.io=registry.k8s.io, \
-	docker.io=$(DOCKER_IO) gcr.io=$(GCR_IO) ghcr.io=$(GHCR_IO) quay.io=$(QUAY_IO) registry.k8s.io=$(REGISTRY_K8S_IO))
+NODE_MIRRORS := $(filter-out docker.io=docker.io gcr.io=gcr.io ghcr.io=ghcr.io public.ecr.aws=public.ecr.aws quay.io=quay.io registry.k8s.io=registry.k8s.io, \
+	docker.io=$(DOCKER_IO) gcr.io=$(GCR_IO) ghcr.io=$(GHCR_IO) public.ecr.aws=$(PUBLIC_ECR_AWS) quay.io=$(QUAY_IO) registry.k8s.io=$(REGISTRY_K8S_IO))
 # The harnesses that the e2e tests. The first also runs the tests that do not
 # depend on a harness.
 E2E_HARNESSES ?= opencode codex claude-code
@@ -125,7 +135,7 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 	--env AVIARY_TEST_REDIS_URL=redis://default:test@events-redis:6379 \
 	--env AVIARY_TEST_SECRET_STORE_URL=http://secret-store:8200
 
-.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-web test-web-server test-chart test-proxy test-docs test-harness chart cluster-up cluster-down postgres mysql valkey redis openbao vault keycloak headlamp grafana web web-dev docs docs-dev build images secrets deploy e2e e2e-up e2e-run e2e-down
+.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-web test-web-server test-chart test-proxy test-docs test-harness chart cluster-up cluster-down postgres mysql valkey redis openbao vault versitygw keycloak headlamp grafana web web-dev docs docs-dev build images secrets deploy e2e e2e-up e2e-run e2e-down
 
 # Generates the Go code of the SQL queries. Run it after changing a query or
 # a migration.
@@ -248,6 +258,14 @@ $(AGENT_SANDBOX_CHART): $(AGENT_SANDBOX_SOURCE)
 	tar --extract --gzip -m --file $< --directory $(@D) --strip-components 2 \
 		agent-sandbox-$(AGENT_SANDBOX:v%=%)/helm
 
+$(MOUNTPOINT_S3_CSI_CHART):
+	mkdir -p $(@D)
+	curl --fail --silent --show-error --location --output $@.new \
+		$(MOUNTPOINT_S3_CSI_REPO)/releases/download/helm-chart-aws-mountpoint-s3-csi-driver-$(MOUNTPOINT_S3_CSI)/$(@F)
+	openssl dgst -sha256 -r $@.new | grep -q '^$(MOUNTPOINT_S3_CSI_SHA256) ' || \
+		{ echo "The checksum of $@.new is not $(MOUNTPOINT_S3_CSI_SHA256)." >&2; exit 1; }
+	mv $@.new $@
+
 # Packages the chart, with the chart of agent-sandbox in it, as
 # .out/aviary-<version>.tgz.
 chart: $(AGENT_SANDBOX_CHART)
@@ -342,6 +360,24 @@ vault:
 			--from-literal=token=$$(openssl rand -hex 24)
 	$(KUBECTL) apply -f hack/kind/vault.yaml
 	$(KUBECTL) --namespace aviary-data rollout status deployment/vault --timeout 180s
+
+# Installs the Versity S3 Gateway in the local cluster, for trying the depot
+# on a bucket, and the Mountpoint for Amazon S3 CSI driver, which mounts the
+# bucket of the gateway as a volume and signs its requests with the keys of
+# the gateway. Aviary keeps its objects in the bucket when installed with
+# make deploy VALUES=hack/kind/aviary-versitygw-values.yaml
+versitygw: $(MOUNTPOINT_S3_CSI_CHART)
+	$(KUBECTL) get secret versitygw-root --namespace aviary-data >/dev/null 2>&1 || \
+		$(KUBECTL) create secret generic versitygw-root --namespace aviary-data \
+			--from-literal=access=$$(openssl rand -hex 10) --from-literal=secret=$$(openssl rand -hex 24)
+	$(KUBECTL) get secret versitygw-root --namespace aviary-data --output json | \
+		jq '{apiVersion, kind, type, metadata: {name: "aws-secret"}, stringData: {key_id: (.data.access | @base64d), access_key: (.data.secret | @base64d)}}' | \
+		$(KUBECTL) apply --namespace kube-system -f -
+	$(HELM) upgrade --install aws-mountpoint-s3-csi-driver $(MOUNTPOINT_S3_CSI_CHART) \
+		--namespace kube-system --wait
+	$(KUBECTL) create namespace aviary-system --dry-run=client --output yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) apply -f hack/kind/versitygw.yaml
+	$(KUBECTL) --namespace aviary-data rollout status statefulset/versitygw --timeout 300s
 
 # Installs Keycloak in the local cluster, for trying Aviary with
 # authentication. Aviary uses it when installed with
@@ -453,8 +489,8 @@ secrets:
 # The image ID restarts the pods that run the Supervisor image when the image
 # changes. The cluster reaches the machine that runs it, at the address that
 # Docker gives containers for their host: the Egress Proxy may connect to it,
-# and a model provider at localhost is a model server on it. VALUES adds a
-# values file, which can set egressProxy.localhost and
+# and a model provider at localhost is a model server on it. VALUES adds
+# values files, which can set egressProxy.localhost and
 # egressProxy.extraEgress otherwise, for example
 # make deploy VALUES=my-values.yaml
 deploy: secrets $(AGENT_SANDBOX_CHART)
@@ -469,7 +505,7 @@ deploy: secrets $(AGENT_SANDBOX_CHART)
 		--set-string 'supervisor.podAnnotations.aviary\.io/image-id='$$image \
 		--set-string 'stateMetrics.podAnnotations.aviary\.io/image-id='$$image \
 		--set-string 'depot.podAnnotations.aviary\.io/image-id='$$image \
-		$(if $(VALUES),--values $(VALUES)) \
+		$(addprefix --values ,$(VALUES)) \
 		--wait
 	$(KUBECTL) apply --filename hack/kind/api.yaml
 	@echo "The API is at http://localhost:8080"

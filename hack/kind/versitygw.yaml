@@ -1,0 +1,121 @@
+# The Versity S3 Gateway for the local cluster, installed by `make versitygw`
+# with the driver that mounts its bucket for the depot. The gateway serves a
+# directory as buckets: an object is the file at <bucket>/<key>. Its keys are
+# in the Secret versitygw-root.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: versitygw
+  namespace: aviary-data
+spec:
+  serviceName: versitygw
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: versitygw
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: versitygw
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: versitygw
+          image: versity/versitygw:v1.11.0@sha256:8319a530d08d537426e2f855bae5280709795dc73a3f0c347973ef915d6343c5
+          env:
+            - name: ROOT_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: versitygw-root
+                  key: access
+            - name: ROOT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: versitygw-root
+                  key: secret
+            - name: VGW_BACKEND
+              value: posix
+            - name: VGW_BACKEND_ARG
+              value: /data
+            - name: VGW_HEALTH
+              value: /health
+          ports:
+            - name: s3
+              containerPort: 7070
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: s3
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            # A directory of the root is a bucket: the kubelet makes the
+            # directory of this mount before the gateway starts.
+            - name: data
+              mountPath: /buckets/depot
+              subPath: depot
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 30Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: versitygw
+  namespace: aviary-data
+spec:
+  selector:
+    app.kubernetes.io/name: versitygw
+  ports:
+    - name: s3
+      port: 7070
+      targetPort: s3
+---
+# The bucket as a volume that many nodes mount, for
+# depot.volume.existingClaim. The Mountpoint for Amazon S3 CSI driver mounts
+# it, with the keys in the Secret aws-secret of its namespace. The user of
+# the Supervisor image, 65532, owns the files and may delete them.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: aviary-depot-bucket
+spec:
+  accessModes: ["ReadWriteMany"]
+  # Required, and not enforced.
+  capacity:
+    storage: 30Gi
+  storageClassName: ""
+  claimRef:
+    namespace: aviary-system
+    name: aviary-depot-bucket
+  mountOptions:
+    - endpoint-url http://versitygw.aviary-data:7070
+    - force-path-style
+    - region us-east-1
+    - allow-delete
+    - allow-other
+    - uid=65532
+    - gid=65532
+  csi:
+    driver: s3.csi.aws.com
+    volumeHandle: aviary-depot-bucket
+    volumeAttributes:
+      bucketName: depot
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: aviary-depot-bucket
+  namespace: aviary-system
+spec:
+  accessModes: ["ReadWriteMany"]
+  storageClassName: ""
+  volumeName: aviary-depot-bucket
+  resources:
+    requests:
+      storage: 30Gi

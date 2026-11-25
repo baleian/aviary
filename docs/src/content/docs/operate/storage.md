@@ -82,3 +82,16 @@ The claim that the chart makes is kept when the chart is uninstalled. Its
 storage class and access mode cannot be changed afterwards. To move the
 objects to another volume, copy the files as they are and name the claim of
 that volume in `depot.volume.existingClaim`.
+
+## Try a bucket locally
+
+To try the depot on a bucket, `make versitygw` installs two things in the
+local cluster: the [Versity S3 Gateway](https://github.com/versity/versitygw),
+which serves a directory as buckets, and the
+[Mountpoint for Amazon S3 CSI driver](https://github.com/awslabs/mountpoint-s3-csi-driver),
+which mounts a bucket as a volume. It makes the claim `aviary-depot-bucket`
+of the gateway's bucket `depot`, as `hack/kind/versitygw.yaml` describes it:
+the mount options name the gateway, and let the user 65532 write and delete
+files. Aviary keeps its objects there when it is installed with
+`make deploy VALUES=hack/kind/aviary-versitygw-values.yaml`. Each object is
+then a file in the volume of the gateway, at `depot/<key>`.
