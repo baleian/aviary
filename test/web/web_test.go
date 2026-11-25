@@ -34,11 +34,12 @@ const page = "<!doctype html><title>the web UI</title>\n"
 var behind = &api{}
 
 // api answers the requests that the server passes on with answer, and keeps
-// them.
+// them. It calls begun with a request before it reads the body.
 type api struct {
 	mu     sync.Mutex
 	asked  []asked
 	answer http.HandlerFunc
+	begun  func(*http.Request)
 }
 
 // asked is a request that the API got.
@@ -47,6 +48,12 @@ type asked struct {
 }
 
 func (a *api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	begun := a.begun
+	a.mu.Unlock()
+	if begun != nil {
+		begun(r)
+	}
 	body, _ := io.ReadAll(r.Body)
 	a.mu.Lock()
 	a.asked = append(a.asked, asked{r.Method, r.URL.RequestURI(), r.Header.Get("Authorization"), string(body)})
@@ -68,7 +75,7 @@ func (a *api) answers(t *testing.T, answer http.HandlerFunc) {
 	a.mu.Unlock()
 	t.Cleanup(func() {
 		a.mu.Lock()
-		a.asked, a.answer = nil, nil
+		a.asked, a.answer, a.begun = nil, nil, nil
 		a.mu.Unlock()
 	})
 }
@@ -151,7 +158,7 @@ func TestServesThePage(t *testing.T) {
 			t.Errorf("%s/ = %d %q (%s), want the page", server, response.StatusCode, body, response.Header.Get("Content-Type"))
 		}
 		policy := response.Header.Get("Content-Security-Policy")
-		for _, part := range []string{"default-src 'self'", "frame-ancestors 'none'", "object-src 'none'", "base-uri 'none'"} {
+		for _, part := range []string{"default-src 'self'", "img-src 'self' data: blob:", "frame-ancestors 'none'", "object-src 'none'", "base-uri 'none'"} {
 			if !strings.Contains(policy, part) {
 				t.Errorf("%s/: Content-Security-Policy %q lacks %q", server, policy, part)
 			}
@@ -277,6 +284,67 @@ func TestPassesTheAPIOn(t *testing.T) {
 	}
 	if got := behind.got(); len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Errorf("the API was asked %+v, want %+v", got, want)
+	}
+}
+
+// A file that a message carries is passed on whatever its size, and reaches
+// the API while the browser still sends it: the server keeps none of it.
+func TestPassesAnUploadOnAsItComes(t *testing.T) {
+	begun := make(chan int64, 1)
+	behind.answers(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		io.WriteString(w, `{"id": "a1"}`)
+	})
+	behind.mu.Lock()
+	behind.begun = func(r *http.Request) { begun <- r.ContentLength }
+	behind.mu.Unlock()
+
+	// More megabytes than a server takes unless it is told to.
+	half := strings.Repeat("a", 2<<20)
+	file, sending := io.Pipe()
+	request, _ := http.NewRequest(http.MethodPost, fronting+"/v1/sessions/s1/attachments?name=notes.txt", file)
+	request.ContentLength = int64(2 * len(half))
+	request.Header.Set("Content-Type", "text/plain")
+	request.Header.Set("Authorization", "Bearer a-token")
+	sent := make(chan error, 1)
+	go func() {
+		_, err := io.WriteString(sending, half)
+		sent <- err
+	}()
+	answered := make(chan *http.Response, 1)
+	go func() {
+		response, err := browser.Do(request)
+		if err != nil {
+			t.Error(err)
+		}
+		answered <- response
+	}()
+	select {
+	case size := <-begun:
+		if size != request.ContentLength {
+			t.Errorf("the API was told of %d bytes, want %d", size, request.ContentLength)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("the API did not get the upload while the browser was sending it")
+	}
+	if err := <-sent; err != nil {
+		t.Fatal(err)
+	}
+	io.WriteString(sending, half)
+	sending.Close()
+	response := <-answered
+	if response == nil {
+		return
+	}
+	answer, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusCreated || string(answer) != `{"id": "a1"}` {
+		t.Errorf("upload = %d %s, want 201 from the API", response.StatusCode, answer)
+	}
+	got := behind.got()
+	if len(got) != 1 || got[0].method != http.MethodPost || got[0].path != "/v1/sessions/s1/attachments?name=notes.txt" || got[0].authorization != "Bearer a-token" || got[0].body != half+half {
+		t.Errorf("the API got %d requests, want the upload with its %d bytes", len(got), 2*len(half))
 	}
 }
 

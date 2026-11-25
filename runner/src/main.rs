@@ -8,6 +8,10 @@
 //!   PUT  /turns/{turn}/approvals/{request}   answers an approval request
 //!   GET  /home                               packs the home as an archive
 //!   PUT  /home                               unpacks an archive into the home
+//!   PUT  /files/{path}                       writes a file that a message carries
+//!
+//! The prompt of a turn is the text of its message, and after it a link to
+//! each of the files that the message carries.
 //!
 //! Every request is idempotent, so a caller can retry one whose outcome it
 //! does not know. Requests from the runner's own pod are refused, so that the
@@ -49,7 +53,7 @@ use agent_client_protocol::v1::schema::{
     NewSessionRequest, NoticeCapabilities, PermissionOptionKind, PromptRequest,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     ResumeSessionRequest, SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate,
-    TextContent, ToolCallContent, ToolCallStatus, ToolCallUpdate,
+    ToolCallContent, ToolCallStatus, ToolCallUpdate,
 };
 use agent_client_protocol::{AcpAgent, Agent, ByteStreams, Client, Responder, V1};
 use axum::extract::connect_info::Connected;
@@ -71,6 +75,7 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+mod files;
 mod home;
 
 const HARNESS_COMMAND: &str = "AVIARY_HARNESS_COMMAND";
@@ -131,12 +136,17 @@ async fn serve() -> Result<(), Box<dyn Error>> {
         .route("/turns/{turn}/events", get(events))
         .route("/turns/{turn}/cancel", post(cancel))
         .route("/turns/{turn}/approvals/{request}", put(answer))
-        // An archive of a home is as large as the home.
+        // An archive of a home is as large as the home, and a file as large
+        // as the installation lets a message carry.
         .route(
             "/home",
             get(home::send)
                 .put(home::receive)
                 .layer(DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/files/{*path}",
+            put(files::receive).layer(DefaultBodyLimit::disable()),
         )
         .with_state(runner.clone());
     // On a loopback address, as in the tests, every caller is local.
@@ -224,6 +234,10 @@ struct Order {
 struct Start {
     /// The user's message.
     text: String,
+    /// The files that the message carries, in its order: their paths below
+    /// the directory of the files, where they were written before.
+    #[serde(default)]
+    files: Vec<String>,
     /// The agent's instructions, written to the instructions file before
     /// every turn.
     #[serde(default)]
@@ -334,6 +348,9 @@ async fn start(
     Named(id): Named<String>,
     Json(start): Json<Start>,
 ) -> StatusCode {
+    if start.files.iter().any(|file| files::below(file).is_none()) {
+        return StatusCode::BAD_REQUEST;
+    }
     let mut turn = runner.turn.lock().expect("turn lock poisoned");
     match turn.as_ref() {
         Some(turn) if turn.id == id => return StatusCode::NO_CONTENT,
@@ -720,11 +737,15 @@ async fn run_harness(
                     runner.emit(FINISHED, &json!({"stop_reason": "cancelled"}));
                     continue;
                 }
+                let prompt = match files::prompt(start.text, &start.files) {
+                    Ok(prompt) => prompt,
+                    Err(error) => {
+                        unready.set(Some(Failure::runner(error)));
+                        return Err(agent_client_protocol::Error::internal_error());
+                    }
+                };
                 let prompt = harness
-                    .send_request(PromptRequest::new(
-                        session_id.clone(),
-                        vec![ContentBlock::Text(TextContent::new(start.text))],
-                    ))
+                    .send_request(PromptRequest::new(session_id.clone(), prompt))
                     .block_task()
                     .fuse();
                 futures::pin_mut!(prompt);

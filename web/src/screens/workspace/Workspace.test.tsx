@@ -652,6 +652,232 @@ it("sends a message to a session, and shows the turn that it begins", async () =
   expect(box().value).toBe("");
 });
 
+// chosen returns what the composer says of the files that its message
+// carries, and carried what the turn says of those of its message.
+const chosen = () =>
+  [...document.querySelectorAll(".composer .file .what")].map(
+    (file) => file.textContent,
+  );
+const carried = (turn: Element) =>
+  [...turn.querySelectorAll(".said-u .file .what")].map(
+    (file) => file.textContent,
+  );
+// picker returns what chooses the files of a message, once messages are
+// known to carry files.
+async function picker() {
+  await screen.findByRole("button", { name: "Attach files" });
+  return document.querySelector<HTMLInputElement>(
+    ".composer input[type=file]",
+  )!;
+}
+// toasts returns what the newest toasts say. Two show at most, and an older
+// one may be left from what happened before.
+const toasts = (newest: number) =>
+  [...document.querySelectorAll(".toast")]
+    .slice(-newest)
+    .map((toast) => toast.textContent);
+const log = () =>
+  new File(["an error\n"], "checkout-errors.log", { type: "text/plain" });
+const shot = () =>
+  new File([new Uint8Array(2048)], "image.png", { type: "image/png" });
+
+it("sends a message with the files that were attached, which its turn then shows", async () => {
+  const session = await talk("With files");
+  const user = open(session.path, "alice");
+  await screen.findByRole("heading", { name: "With files" });
+  fireEvent.change(await picker(), { target: { files: [log(), shot()] } });
+  expect(chosen()).toEqual(["checkout-errors.log9 bytes", "image.png2 KB"]);
+  // One is taken from the message again, and another is pasted into it.
+  await user.click(screen.getByRole("button", { name: "Remove image.png" }));
+  expect(chosen()).toEqual(["checkout-errors.log9 bytes"]);
+  const notes = new File(["to do"], "notes.md", { type: "text/markdown" });
+  fireEvent.paste(box(), {
+    clipboardData: { files: [notes], types: ["Files"] },
+  });
+  expect(chosen()).toEqual(["checkout-errors.log9 bytes", "notes.md5 bytes"]);
+  const upload = vi.spyOn(api, "upload");
+  await user.type(box(), "Which of these is new?{Enter}");
+  const turn = await waitFor(() => {
+    const found = document.querySelector(".turn");
+    expect(found).toBeTruthy();
+    return found!;
+  });
+  expect(turn.querySelector(".bub-u")!.textContent).toBe(
+    "Which of these is new?",
+  );
+  expect(carried(turn)).toEqual([
+    "checkout-errors.log9 bytes",
+    "notes.md5 bytes",
+  ]);
+  // The files went one after another, in their order.
+  expect(upload.mock.calls.map(([path]) => path)).toEqual([
+    `/v1/sessions/${session.id}/attachments?name=checkout-errors.log`,
+    `/v1/sessions/${session.id}/attachments?name=notes.md`,
+  ]);
+  // The box is ready for the next message, which carries none of them.
+  expect(box().value).toBe("");
+  expect(document.querySelector(".composer .files")).toBeNull();
+  // A file that the turn shows is the one that was attached.
+  const { turns } = session.request(
+    "GET",
+    `/v1/sessions/${session.id}/turns`,
+  ) as { turns: Turn[] };
+  const kept = await api.download(
+    "/v1/attachments/" + turns[0].attachments![0].id,
+  );
+  expect(await kept.text()).toBe("an error\n");
+});
+
+it("shows the picture that was drawn of a chosen file with its message, without reading the file", async () => {
+  const session = await talk("With a picture");
+  const user = open(session.path, "alice");
+  await screen.findByRole("heading", { name: "With a picture" });
+  fireEvent.change(await picker(), { target: { files: [shot()] } });
+  // What the composer drew of the file. The tests draw nothing.
+  const [drawn] = queryClient
+    .getQueryCache()
+    .findAll({ queryKey: ["thumbnail"] })
+    .filter((query) => String(query.queryKey[1]).startsWith("chosen-"));
+  queryClient.setQueryData(drawn.queryKey, "data:,drawn");
+  const picture = () =>
+    document.querySelector(".composer .file img")?.getAttribute("src");
+  await waitFor(() => expect(picture()).toBe("data:,drawn"));
+  const download = vi.spyOn(api, "download");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  const turn = await waitFor(() => {
+    const found = document.querySelector(".turn");
+    expect(found).toBeTruthy();
+    return found!;
+  });
+  expect(turn.querySelector(".file img")!.getAttribute("src")).toBe(
+    "data:,drawn",
+  );
+  expect(download).not.toHaveBeenCalled();
+});
+
+it("begins a session with files alone, which is named after the first", async () => {
+  const user = open(REVIEWER, "alice");
+  await list();
+  await picker();
+  const composer = document.querySelector(".composer")!;
+  const first = new File(["k"], "notes-k.txt", { type: "text/plain" });
+  const second = new File(["a"], "notes-a.txt", { type: "text/plain" });
+  fireEvent.drop(composer, {
+    dataTransfer: { files: [first, second], types: ["Files"] },
+  });
+  expect(chosen()).toEqual(["notes-k.txt1 byte", "notes-a.txt1 byte"]);
+  // A message of files alone can be sent.
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  expect(
+    await screen.findByRole("heading", { name: "notes-k.txt" }),
+  ).toBeTruthy();
+  const turn = await waitFor(() => {
+    const found = document.querySelector(".turn");
+    expect(found).toBeTruthy();
+    return found!;
+  });
+  expect(turn.querySelector(".bub-u")).toBeNull();
+  // In the order in which they were attached, which is not that of their
+  // names.
+  expect(carried(turn)).toEqual(["notes-k.txt1 byte", "notes-a.txt1 byte"]);
+  expect(chosen()).toEqual([]);
+});
+
+it("takes no more and no larger files than a message may carry, and says so", async () => {
+  (await backend()).setLimits(2048, 3);
+  const session = await talk("Too much");
+  open(session.path, "alice");
+  await screen.findByRole("heading", { name: "Too much" });
+  const large = new File([new Uint8Array(2049)], "large.bin");
+  const files = ["a", "b", "c", "d"].map((name) => new File([name], name));
+  fireEvent.change(await picker(), { target: { files: [large, files[0]] } });
+  expect(chosen()).toEqual(["a1 byte"]);
+  expect(toasts(1)).toEqual(["large.bin is larger than 2 KB."]);
+  fireEvent.change(await picker(), {
+    target: { files: [large, large, ...files.slice(1)] },
+  });
+  // As many as there is room for are taken, in their order.
+  expect(chosen()).toEqual(["a1 byte", "b1 byte", "c1 byte"]);
+  expect(toasts(2)).toEqual([
+    "2 files are larger than 2 KB.",
+    "A message carries up to 3 files.",
+  ]);
+  await leave();
+
+  // An installation that takes no files offers none to attach.
+  (await backend()).setLimits(2048, 0);
+  const closed = await talk("No files");
+  open(closed.path, "alice");
+  await screen.findByRole("heading", { name: "No files" });
+  await waitFor(() => expect(said()).toContain("Enter to send"));
+  expect(queryClient.getQueryData(["limits"])).toEqual({
+    max_attachment_bytes: 0,
+    max_attachments: 0,
+  });
+  expect(screen.queryByRole("button", { name: "Attach files" })).toBeNull();
+});
+
+it("keeps a message whose file could not be uploaded, and uploads only what has not gone when it is sent again", async () => {
+  const session = await talk("Half way");
+  const user = open(session.path, "alice");
+  await screen.findByRole("heading", { name: "Half way" });
+  fireEvent.change(await picker(), { target: { files: [log(), shot()] } });
+  const real = api.upload.bind(api);
+  const full = {
+    code: "storage_full",
+    message: "the installation has no room for the file",
+  };
+  const upload = vi
+    .spyOn(api, "upload")
+    .mockImplementationOnce(real)
+    .mockRejectedValueOnce(new ApiError(507, full, {}));
+  await user.type(box(), "Look{Enter}");
+  await waitFor(() =>
+    expect(toasts(1)).toEqual(["The installation has no room for the file."]),
+  );
+  // The message stays as it was, and the file that has gone says so.
+  expect(box().value).toBe("Look");
+  expect(chosen()).toEqual(["checkout-errors.log9 bytes", "image.png2 KB"]);
+  const gone = () =>
+    [...document.querySelectorAll(".composer .file")].map(
+      (file) => !!file.querySelector('small use[href="#i-check"]'),
+    );
+  expect(gone()).toEqual([true, false]);
+  expect(document.querySelectorAll(".turn").length).toBe(0);
+  expect(upload).toHaveBeenCalledTimes(2);
+
+  // The API forgets a file that no message carries for long: all go again.
+  const post = api.post.bind(api);
+  const forgotten = {
+    code: "unknown_attachment",
+    message: "an attachment is not one of the session",
+  };
+  vi.spyOn(api, "post").mockImplementation((path, body) =>
+    path.endsWith("/messages") && upload.mock.calls.length === 3
+      ? Promise.reject(new ApiError(400, forgotten, {}))
+      : post(path, body),
+  );
+  await user.type(box(), "{Enter}");
+  await waitFor(() => expect(gone()).toEqual([false, false]));
+  // Only the file that had not gone was uploaded.
+  expect(upload).toHaveBeenCalledTimes(3);
+  expect(upload.mock.calls[2][0]).toContain("name=image.png");
+  expect(box().value).toBe("Look");
+
+  await user.type(box(), "{Enter}");
+  const turn = await waitFor(() => {
+    const found = document.querySelector(".turn");
+    expect(found).toBeTruthy();
+    return found!;
+  });
+  expect(upload).toHaveBeenCalledTimes(5);
+  expect(carried(turn)).toEqual([
+    "checkout-errors.log9 bytes",
+    "image.png2 KB",
+  ]);
+  expect(chosen()).toEqual([]);
+});
+
 it("says what the turn is doing where the message is written, and stops it", async () => {
   const session = await talk("To be stopped");
   const user = open(session.path, "alice");
@@ -781,6 +1007,77 @@ it("offers to stop a turn only to who may", async () => {
     mock.speed = 0;
     mock.scenario = "auto";
   }
+});
+
+it("shows the files of the messages of a session, and saves the one that is clicked", async () => {
+  let saved: { name: string; file: Blob } | undefined;
+  const files = new Map<string, Blob>();
+  vi.spyOn(URL, "createObjectURL").mockImplementation((file) => {
+    files.set("blob:" + files.size, file as Blob);
+    return "blob:" + (files.size - 1);
+  });
+  vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+  vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (
+    this: HTMLAnchorElement,
+  ) {
+    saved = {
+      name: this.download,
+      file: files.get(this.getAttribute("href")!)!,
+    };
+  });
+  const user = open(
+    await pathOf("Triage last night's checkout errors"),
+    "alice",
+  );
+  const first = await waitFor(() => {
+    const turn = document.querySelector<HTMLElement>("#turn-1 .said-u");
+    expect(turn).toBeTruthy();
+    return turn!;
+  });
+  expect(carried(first.parentElement!)).toEqual([
+    "checkout-errors.log1.8 MB",
+    "error-monitor-export.csv412 KB",
+    "image.png94 KB",
+  ]);
+  // The message of the next turn carries none.
+  expect(document.querySelector("#turn-2 .files")).toBeNull();
+  await user.click(
+    within(first).getByRole("button", {
+      name: "Download error-monitor-export.csv",
+    }),
+  );
+  await waitFor(() => expect(saved?.name).toBe("error-monitor-export.csv"));
+  expect([saved!.file.size, saved!.file.type]).toEqual([421888, "text/csv"]);
+
+  // A file that can be shown opens over the page, among those of its
+  // message.
+  await user.click(
+    within(first).getByRole("button", {
+      name: "Open error-monitor-export.csv",
+    }),
+  );
+  const viewer = screen.getByRole("dialog", {
+    name: "error-monitor-export.csv",
+  });
+  expect(viewer.querySelector(".vw-n")!.textContent).toBe("2 / 3");
+  await waitFor(() =>
+    expect(viewer.querySelector(".vw-text pre")!.textContent).toMatch(
+      /^id,plan,region,/,
+    ),
+  );
+  fireEvent(viewer, new Event("cancel", { cancelable: true }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  await leave();
+
+  // The files of a session that has ended are not kept.
+  open(await pathOf("Rename the env vars to STOREFRONT_*"), "alice");
+  const gone = await waitFor(() => {
+    const file = document.querySelector("#turn-1 .files .file");
+    expect(file).toBeTruthy();
+    return file!;
+  });
+  expect(gone.querySelector(".what")!.textContent).toBe("env.example612 bytes");
+  expect(gone.querySelector("button")).toBeNull();
 });
 
 it("says why a message cannot be sent, in the place of its box", async () => {

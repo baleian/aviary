@@ -92,10 +92,15 @@ struct Bench {
 #[derive(Default)]
 struct Message<'a> {
     text: &'a str,
+    /// The files that the message carries, by their paths below the
+    /// attachments of the home.
+    files: &'a [String],
     instructions: &'a str,
     /// "ask", or empty.
     approval: &'a str,
     mcp_servers: &'a [Value],
+    /// The model of the turn, if not "mock".
+    model: &'a str,
 }
 
 impl Bench {
@@ -330,7 +335,7 @@ impl Sitting {
         let id = format!("t{}", self.turns.fetch_add(1, Ordering::Relaxed) + 1);
         let mut environment = json!({
             "AVIARY_LLM_BASE_URL": "http://model:8080/v1",
-            "AVIARY_LLM_MODEL": "mock",
+            "AVIARY_LLM_MODEL": if message.model.is_empty() { "mock" } else { message.model },
             // Everything else goes through the proxy.
             "HTTP_PROXY": PROXY, "HTTPS_PROXY": PROXY, "NO_PROXY": "localhost,127.0.0.1,::1,model",
             "http_proxy": PROXY, "https_proxy": PROXY, "no_proxy": "localhost,127.0.0.1,::1,model",
@@ -345,6 +350,7 @@ impl Sitting {
                 &id,
                 json!({
                     "text": message.text,
+                    "files": message.files,
                     "instructions": message.instructions,
                     "approval": message.approval,
                     "environment": environment,
@@ -826,6 +832,170 @@ async fn approval_mode_runs_only_allowed_commands() {
         );
 
         session.run(ask("recall")).await.completed().says(&allow);
+    })
+    .await;
+}
+
+/// A picture of one white pixel.
+const PIXEL: [u8; 69] = [
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+    0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8, 0xff, 0xff, 0x3f,
+    0x00, 0x05, 0xfe, 0x02, 0xfe, 0x33, 0x12, 0x95, 0x14, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+    0x44, 0xae, 0x42, 0x60, 0x82,
+];
+
+/// The files that messages carry are what the user gave the agent, so an
+/// agent that asks reads them with its tool for reading files without asking.
+/// The file is a picture, which every harness has a tool to look at.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the harness images"]
+async fn asking_agent_reads_the_files_of_messages_without_asking() {
+    each(|bench| async move {
+        let session = bench.session().await;
+        let written = session.runner.file("1/pixel.png", PIXEL.to_vec()).await;
+        assert_eq!(written, StatusCode::NO_CONTENT, "{}", bench.image);
+        let read = Message {
+            text: "read /home/.attachments/1/pixel.png",
+            approval: "ask",
+            ..Message::default()
+        };
+        let mut turn = session.start(read).await;
+        turn.until("neither an approval request nor the end", |events| {
+            find(events, "approval.requested").is_some()
+                || matches!(events.last(), Some(last) if last.name == "finished" || last.name == "failed")
+        })
+        .await;
+        assert!(
+            find(&turn.events, "approval.requested").is_none(),
+            "{}: asked before it read a file of a message: {:?}",
+            bench.image,
+            turn.events
+        );
+        let ended = turn.end().await;
+        ended.completed();
+        let calls: Vec<_> = ended
+            .events
+            .iter()
+            .filter(|event| event.name.starts_with("tool."))
+            .collect();
+        assert!(
+            !calls.is_empty() && !calls.iter().any(|call| call.data["status"] == "failed"),
+            "{}: the file was not read: {:?}",
+            ended.image,
+            ended.events
+        );
+    })
+    .await;
+}
+
+/// A picture that a message carries reaches the model as a picture, at the
+/// latest when the model reads the file with the harness's tool, and stays
+/// in the conversation. A model server does not say whether its model takes
+/// pictures, so the image of a harness that wants to know asks the model.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the harness images"]
+async fn model_gets_the_picture_of_a_message_as_a_picture() {
+    each(|bench| async move {
+        let session = bench.session().await;
+        let written = session.runner.file("1/pixel.png", PIXEL.to_vec()).await;
+        assert_eq!(written, StatusCode::NO_CONTENT, "{}", bench.image);
+        let files = ["1/pixel.png".to_owned()];
+        let read = Message {
+            text: "read /home/.attachments/1/pixel.png",
+            files: &files,
+            ..Message::default()
+        };
+        session.run(read).await.completed();
+        session.say("pictures").await.completed().says("image/png");
+    })
+    .await;
+}
+
+/// A model that takes only text refuses a request with a picture, and a
+/// harness sends its model the whole conversation every time: a picture that
+/// it gave such a model would end the session. A message with a picture
+/// leaves the session as it is: the turn ends, and so does the one after it.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the harness images"]
+async fn picture_does_not_end_the_session_of_a_model_that_takes_none() {
+    each(|bench| async move {
+        let session = bench.session().await;
+        let written = session.runner.file("1/pixel.png", PIXEL.to_vec()).await;
+        assert_eq!(written, StatusCode::NO_CONTENT, "{}", bench.image);
+        let files = ["1/pixel.png".to_owned()];
+        let told = Message {
+            text: "attached",
+            files: &files,
+            model: "mock-text",
+            ..Message::default()
+        };
+        session
+            .run(told)
+            .await
+            .completed()
+            .says("/home/.attachments/1/pixel.png");
+        let again = Message {
+            text: "say still here",
+            model: "mock-text",
+            ..Message::default()
+        };
+        session.run(again).await.completed().says("still here");
+    })
+    .await;
+}
+
+/// The files of a message are linked in its prompt, and a harness tells its
+/// model of each, in the order of the message, whatever the files are named
+/// and whatever they are. A file that the model does not take leaves the
+/// session as it is: the turn ends, and so does the one after it.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the harness images"]
+async fn harness_tells_its_model_of_the_files_of_a_message_in_their_order() {
+    each(|bench| async move {
+        let session = bench.session().await;
+        // A workbook is an archive, as far as its first bytes say.
+        let workbook = [b"PK\x03\x04".as_slice(), &[7; 2000]].concat();
+        let carried = [
+            ("notes-k.txt", b"to do".to_vec()),
+            ("pixel.png", PIXEL.to_vec()),
+            ("보고서 (2).txt", "할 일".as_bytes().to_vec()),
+            ("table.xlsx", workbook),
+            ("notes-a.txt", b"done".to_vec()),
+        ];
+        let mut files = Vec::new();
+        for (name, content) in carried {
+            let path = format!("1/{name}");
+            let written = session.runner.file(&path, content).await;
+            assert_eq!(written, StatusCode::NO_CONTENT, "{}: {path}", bench.image);
+            files.push(path);
+        }
+        let told = Message {
+            text: "attached",
+            files: &files,
+            ..Message::default()
+        };
+        let ended = session.run(told).await;
+        ended.completed();
+        // The mock model says what came with its instruction, and every
+        // harness names a file by its path.
+        let said = said(&ended.events);
+        let mut after = 0;
+        for file in &files {
+            let path = format!("/home/.attachments/{file}");
+            let Some(at) = said[after..].find(&path) else {
+                panic!(
+                    "{}: the model was not told of {path} after the files before it: {said:?}",
+                    ended.image
+                );
+            };
+            after += at + path.len();
+        }
+        session
+            .say("say still here")
+            .await
+            .completed()
+            .says("still here");
     })
     .await;
 }

@@ -1032,6 +1032,19 @@ a:hover .top > .go {
   gap: 10px;
   margin-bottom: 16px;
 }
+/* What the user sent: the text, and below it the files, which may be as
+   wide as the conversation. */
+.said-u {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.said-u .files {
+  justify-content: flex-end;
+}
 .bub-u {
   max-width: 76%;
   background: var(--king);
@@ -1649,9 +1662,26 @@ a:hover .top > .go {
     border-color 0.15s,
     box-shadow 0.15s;
 }
-.composer:focus-within {
+.composer:focus-within,
+.composer.over {
   border-color: var(--king);
   box-shadow: var(--sh2), var(--ring);
+}
+.composer.over {
+  background: var(--k50);
+}
+/* The files that the message carries, above its text: two rows of them,
+   and the rest below. */
+.composer .files {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  max-height: 102px;
+  margin: 0 6px 10px 0;
+  overflow-y: auto;
+}
+.composer .file {
+  width: auto;
+  flex: 1;
 }
 .composer textarea {
   display: block;
@@ -2295,6 +2325,340 @@ a:hover .top > .go {
 .pick small {
   font: 500 12.5px/18px var(--sans);
   color: var(--slate);
+}
+
+/* The files that a message carries: a box each, with a tile that says what
+   the file is, and that is a picture of it if there is one. */
+.files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  max-width: 100%;
+}
+.files li {
+  display: flex;
+  min-width: 0;
+}
+.file {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 228px;
+  min-width: 0;
+  height: 48px;
+  padding-right: 6px;
+  border: 1px solid var(--line2);
+  border-radius: 12px;
+  background: var(--surface);
+  overflow: hidden;
+  transition:
+    border-color 0.15s,
+    background 0.15s,
+    box-shadow 0.15s;
+}
+.file .face {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0 4px 0 3px;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+}
+.file button.face {
+  cursor: pointer;
+  outline: none;
+}
+.file:has(button.face:hover) {
+  border-color: var(--k200);
+  background: var(--k50);
+}
+.file:has(button.face:focus-visible) {
+  border-color: var(--king);
+  box-shadow: var(--ring);
+}
+.file .tile {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 9px;
+  overflow: hidden;
+  background: var(--n100);
+  color: var(--n-ink);
+  font: 800 10px/1 var(--sans);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.file .tile.image,
+.file .tile.doc {
+  background: var(--av1);
+  color: var(--av1-ink);
+}
+.file .tile.sheet {
+  background: var(--av2);
+  color: var(--av2-ink);
+}
+.file .tile.slides,
+.file .tile.media {
+  background: var(--av3);
+  color: var(--av3-ink);
+}
+.file .tile.pdf {
+  background: var(--av4);
+  color: var(--av4-ink);
+}
+.file .tile img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  animation: fade 0.2s ease-out;
+}
+/* A picture keeps its edge where it is as light as the box. */
+.file .tile:has(img)::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px var(--line2);
+}
+.file .what {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+.file .what b {
+  display: flex;
+  min-width: 0;
+  font: 600 13px/18px var(--sans);
+  color: var(--ink);
+}
+.file .what b span {
+  white-space: pre;
+}
+.file .what b span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file .what b span + span {
+  flex: none;
+}
+.file .what small {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font: 500 12px/16px var(--sans);
+  color: var(--slate);
+  white-space: nowrap;
+}
+.file .what small .i {
+  width: 14px;
+  height: 14px;
+  color: var(--green);
+}
+.file > .ib {
+  flex: none;
+}
+/* How much of a file has gone, along the foot of its box. */
+.file .gone {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--king);
+  transition: width 0.2s ease-out;
+}
+
+/* A file that is shown over the page, which is dark behind it in both
+   themes. */
+dialog.viewer {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--veil);
+  backdrop-filter: blur(14px);
+  color: var(--ink);
+  overflow: hidden;
+  outline: none;
+}
+dialog.viewer[open] {
+  display: flex;
+  flex-direction: column;
+  animation: fade 0.16s ease-out;
+}
+dialog.viewer::backdrop {
+  background: none;
+}
+.vw-h {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  height: 60px;
+  padding: 0 14px 0 24px;
+}
+.vw-t {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+.vw-t b {
+  font: 600 14px/20px var(--sans);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vw-t small {
+  font: 500 12px/16px var(--sans);
+  color: var(--slate);
+}
+.vw-n {
+  margin-right: 12px;
+  font: 600 12.5px/18px var(--sans);
+  font-variant-numeric: tabular-nums;
+  color: var(--slate);
+}
+/* What is shown is in the middle while it fits, and is scrolled once it
+   does not. */
+.vw-b {
+  display: grid;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+  padding: 4px 76px 32px;
+  overflow: auto;
+}
+.vw-b > * {
+  margin: auto;
+}
+.vw-b > .ring {
+  width: 28px;
+  height: 28px;
+  border-width: 3px;
+}
+.vw-b img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 6px;
+  /* A picture that lets through shows it. */
+  background: repeating-conic-gradient(var(--paper-2) 0 25%, var(--paper) 0 50%)
+    0 0 / 16px 16px;
+  /* A dark picture keeps its edge. */
+  box-shadow:
+    0 0 0 1px var(--line2),
+    var(--sh3);
+  animation: rise 0.16s ease-out;
+}
+.vw-b img.shrunk {
+  cursor: zoom-in;
+}
+.vw-b img.whole {
+  max-width: none;
+  max-height: none;
+  cursor: zoom-out;
+}
+.vw-pages {
+  display: grid;
+  gap: 14px;
+  width: min(880px, 100%);
+  margin-top: 0;
+  animation: rise 0.16s ease-out;
+}
+.vw-pages canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 4px;
+  background: var(--paper);
+  box-shadow: var(--sh2);
+}
+.vw-text {
+  width: min(980px, 100%);
+  max-height: 100%;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--sh3);
+  overflow: auto;
+  animation: rise 0.16s ease-out;
+}
+.vw-text pre {
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
+  padding: 18px 22px;
+  font: 500 12.5px/20px var(--mono);
+  color: var(--ink2);
+  tab-size: 4;
+}
+.vw-text p {
+  position: sticky;
+  left: 0;
+  bottom: 0;
+  padding: 9px 22px 10px;
+  border-top: 1px solid var(--line);
+  background: var(--surface-2);
+  font: 500 12.5px/18px var(--sans);
+  color: var(--slate);
+}
+.vw-no {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font: 500 14px/20px var(--sans);
+  color: var(--ink2);
+}
+.vw-no .i {
+  color: var(--c-icon);
+}
+.vw-go {
+  position: absolute;
+  top: 50%;
+  left: 16px;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-top: -22px;
+  border: 1px solid var(--line2);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--ink2);
+  box-shadow: var(--sh2);
+  cursor: pointer;
+  transition: 0.15s;
+}
+.vw-go:hover {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+.vw-go.next {
+  left: auto;
+  right: 16px;
+}
+.vw-go:not(.next) .i {
+  transform: rotate(180deg);
 }
 
 /* The MCP servers of a session: in the composer, and in its details. */

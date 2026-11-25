@@ -502,6 +502,249 @@ func TestPackage(t *testing.T) {
 
 // use calls the first tool whose name names the MCP server and ends with the
 // tool's, in each API's shape of a tool list, and replies with its output.
+// read calls the tool of the harness that reads a file, not one that takes a
+// path for something else, with the argument by which that tool names the
+// file.
+// What a harness puts after an instruction in its message, as it does with
+// the links to the files that the message carries, is attached to the
+// instruction and not of it, on every API.
+func TestAttached(t *testing.T) {
+	t.Parallel()
+	model := httptest.NewServer(newMock(apiKey))
+	defer model.Close()
+	// Each API with how it shapes a part of a user's message, and where the
+	// model's text is in the events of its stream.
+	for api, shape := range map[string]struct {
+		part string
+		text []any
+	}{
+		"/v1/chat/completions": {"text", []any{"choices", 0, "delta", "content"}},
+		"/v1/responses":        {"input_text", []any{"delta"}},
+		"/v1/messages":         {"text", []any{"delta", "text"}},
+	} {
+		// ask sends the user's messages, each of them its parts, and returns
+		// what the model says.
+		ask := func(messages ...[]string) string {
+			var conversation []any
+			for _, parts := range messages {
+				var content []any
+				for _, part := range parts {
+					content = append(content, map[string]any{"type": shape.part, "text": part})
+				}
+				conversation = append(conversation, map[string]any{"type": "message", "role": "user", "content": content})
+			}
+			request := map[string]any{"model": "mock", "stream": true, "messages": conversation, "input": conversation}
+			status, stream, refusal := events(t, model.URL+api, apiKey, request)
+			if status != http.StatusOK {
+				t.Fatalf("%s: got status %d %s", api, status, refusal)
+			}
+			var said string
+			for _, event := range stream {
+				if api != "/v1/responses" || event["type"] == "response.output_text.delta" {
+					said += str(at(event, shape.text...))
+				}
+			}
+			return said
+		}
+		links := []string{"[@notes-k.txt](file:///home/.attachments/1/notes-k.txt)", "[@notes-a.txt](file:///home/.attachments/1/notes-a.txt)"}
+		with := func(parts ...string) []string { return append(parts, links...) }
+		for _, test := range []struct {
+			name     string
+			messages [][]string
+			text     string
+		}{
+			{"what follows the instruction", [][]string{with("attached")}, strings.Join(links, "\n")},
+			{"not what the harness puts before it", [][]string{with("<system-reminder>be kind</system-reminder>", "attached")}, strings.Join(links, "\n")},
+			{"nothing", [][]string{{"attached"}}, "nothing"},
+			{"an instruction is not what follows it", [][]string{with("say hello")}, "hello"},
+			{"a message has only what follows its own instruction", [][]string{with("say hello"), {"attached"}}, "nothing"},
+			{"what follows was sent along", [][]string{with("find notes-a.txt")}, "present"},
+			{"and is found only then", [][]string{{"find notes-a.txt"}}, "absent"},
+		} {
+			if said := ask(test.messages...); said != test.text {
+				t.Errorf("%s, %s: the model said %q, want %q", api, test.name, said, test.text)
+			}
+		}
+	}
+}
+
+// pictures tells which pictures the harness gave the model, in the shape
+// that each API has for a picture, with a message or as what a tool read.
+func TestPictures(t *testing.T) {
+	t.Parallel()
+	model := httptest.NewServer(newMock(apiKey))
+	defer model.Close()
+	const png, jpeg = "data:image/png;base64,iVBORw0KGgo=", "data:image/jpeg;base64,/9j/4AAQ"
+	said := func(api string, text []any, conversation ...any) string {
+		t.Helper()
+		request := map[string]any{"model": "mock", "stream": true, "messages": conversation, "input": conversation}
+		status, stream, refusal := events(t, model.URL+api, apiKey, request)
+		if status != http.StatusOK {
+			t.Fatalf("%s: got status %d %s", api, status, refusal)
+		}
+		var said string
+		for _, event := range stream {
+			if api != "/v1/responses" || event["type"] == "response.output_text.delta" {
+				said += str(at(event, text...))
+			}
+		}
+		return said
+	}
+	part := func(kind, field string, value any) map[string]any { return map[string]any{"type": kind, field: value} }
+	user := func(content ...any) map[string]any {
+		return map[string]any{"type": "message", "role": "user", "content": content}
+	}
+
+	chat := func(conversation ...any) string {
+		return said("/v1/chat/completions", []any{"choices", 0, "delta", "content"}, conversation...)
+	}
+	picture := func(address string) map[string]any {
+		return part("image_url", "image_url", map[string]any{"url": address})
+	}
+	if got := chat(user(part("text", "text", "say hello"), picture(png)), map[string]any{"role": "assistant", "content": "hello"},
+		user(picture(jpeg), part("text", "text", "pictures"))); got != "image/png\nimage/jpeg" {
+		t.Errorf("Chat Completions: the model said %q of two pictures in two messages", got)
+	}
+	if got := chat(user(part("text", "text", "pictures"))); got != "none" {
+		t.Errorf("Chat Completions: the model said %q of no picture", got)
+	}
+
+	respond := func(conversation ...any) string {
+		return said("/v1/responses", []any{"delta"}, conversation...)
+	}
+	if got := respond(user(part("input_text", "text", "read /home/shot.png")),
+		map[string]any{"type": "function_call", "name": "view_image", "arguments": "{}"},
+		map[string]any{"type": "function_call_output", "output": []any{part("input_image", "image_url", png)}},
+		user(part("input_image", "image_url", jpeg), part("input_text", "text", "pictures"))); got != "image/png\nimage/jpeg" {
+		t.Errorf("Responses: the model said %q of a picture that a tool read and one of a message", got)
+	}
+	if got := respond(user(part("input_text", "text", "pictures"))); got != "none" {
+		t.Errorf("Responses: the model said %q of no picture", got)
+	}
+
+	message := func(conversation ...any) string {
+		return said("/v1/messages", []any{"delta", "text"}, conversation...)
+	}
+	block := func(media string) map[string]any {
+		return part("image", "source", map[string]any{"type": "base64", "media_type": media, "data": "iVBORw0KGgo="})
+	}
+	if got := message(user(part("text", "text", "read /home/shot.png")),
+		map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "tool_use", "id": "toolu_1", "name": "Read", "input": map[string]any{}}}},
+		user(map[string]any{"type": "tool_result", "tool_use_id": "toolu_1", "content": []any{block("image/png")}}),
+		map[string]any{"role": "assistant", "content": []any{part("text", "text", "read")}},
+		user(block("image/webp"), part("text", "text", "pictures"))); got != "image/png\nimage/webp" {
+		t.Errorf("Messages: the model said %q of a picture that a tool read and one of a message", got)
+	}
+	if got := message(user(part("text", "text", "pictures"))); got != "none" {
+		t.Errorf("Messages: the model said %q of no picture", got)
+	}
+}
+
+// Asked as the model that takes only text, the server refuses a request that
+// carries a picture, on every API, and answers every other request.
+func TestTextOnly(t *testing.T) {
+	t.Parallel()
+	model := httptest.NewServer(newMock(apiKey))
+	defer model.Close()
+	const png = "iVBORw0KGgo="
+	for api, picture := range map[string]map[string]any{
+		"/v1/chat/completions": {"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64," + png}},
+		"/v1/responses":        {"type": "input_image", "image_url": "data:image/png;base64," + png},
+		"/v1/messages":         {"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": png}},
+	} {
+		// ask sends a message of the parts to the model of the name, and
+		// returns the status and what the refusal says.
+		ask := func(name string, parts ...any) (int, string) {
+			conversation := []any{map[string]any{"type": "message", "role": "user", "content": parts}}
+			request := map[string]any{"model": name, "stream": true, "messages": conversation, "input": conversation}
+			status, _, refusal := events(t, model.URL+api, apiKey, request)
+			return status, refusal
+		}
+		words := map[string]any{"type": "text", "text": "say hello"}
+		if status, refusal := ask("mock-text", words, picture); status != http.StatusBadRequest || refusal != "the model takes no pictures" {
+			t.Errorf("%s: a picture for the model of text got %d %q", api, status, refusal)
+		}
+		if status, _ := ask("mock-text", words); status != http.StatusOK {
+			t.Errorf("%s: text for the model of text got %d", api, status)
+		}
+		if status, _ := ask("mock", words, picture); status != http.StatusOK {
+			t.Errorf("%s: a picture for the other model got %d", api, status)
+		}
+	}
+}
+
+func TestRead(t *testing.T) {
+	t.Parallel()
+	model := httptest.NewServer(newMock(apiKey))
+	defer model.Close()
+	// takes returns the parameters of a tool: those that it needs, then
+	// those that it takes besides.
+	takes := func(required []string, optional ...string) map[string]any {
+		properties := map[string]any{}
+		for _, argument := range slices.Concat(required, optional) {
+			properties[argument] = map[string]any{}
+		}
+		return map[string]any{"properties": properties, "required": required}
+	}
+	for _, test := range []struct {
+		api   string
+		tools []any
+		// The tool that is called, and its arguments.
+		name, arguments string
+	}{
+		{
+			api: "/v1/chat/completions", name: "read", arguments: `{"filePath":"/home/notes.txt"}`,
+			tools: []any{
+				map[string]any{"type": "function", "function": map[string]any{"name": "bash", "parameters": takes([]string{"command"})}},
+				map[string]any{"type": "function", "function": map[string]any{"name": "write", "parameters": takes([]string{"filePath", "content"})}},
+				map[string]any{"type": "function", "function": map[string]any{"name": "list", "parameters": takes(nil, "path", "ignore")}},
+				map[string]any{"type": "function", "function": map[string]any{"name": "read", "parameters": takes([]string{"filePath"}, "offset", "limit")}},
+			},
+		},
+		{
+			api: "/v1/responses", name: "view_image", arguments: `{"path":"/home/notes.txt"}`,
+			tools: []any{
+				map[string]any{"type": "function", "name": "exec_command", "parameters": takes([]string{"cmd"}, "workdir")},
+				map[string]any{"type": "function", "name": "view_image", "parameters": takes([]string{"path"})},
+			},
+		},
+		{
+			api: "/v1/messages", name: "Read", arguments: `{"file_path":"/home/notes.txt"}`,
+			tools: []any{
+				map[string]any{"name": "Grep", "input_schema": takes([]string{"pattern"}, "path")},
+				map[string]any{"name": "Edit", "input_schema": takes([]string{"file_path", "old_string", "new_string"})},
+				map[string]any{"name": "Read", "input_schema": takes([]string{"file_path"}, "offset", "limit", "pages", "allow_large")},
+			},
+		},
+		// A harness without such a tool is told so.
+		{
+			api:   "/v1/chat/completions",
+			tools: []any{map[string]any{"type": "function", "function": map[string]any{"name": "bash", "parameters": takes([]string{"command"})}}},
+		},
+	} {
+		request := map[string]any{"model": "mock", "stream": true, "tools": test.tools,
+			"messages": []any{map[string]any{"role": "user", "content": "read /home/notes.txt"}},
+			"input":    []any{map[string]any{"type": "message", "role": "user", "content": "read /home/notes.txt"}},
+		}
+		status, stream, _ := events(t, model.URL+test.api, apiKey, request)
+		var name, arguments, said string
+		for _, event := range stream {
+			name += str(at(event, "choices", 0, "delta", "tool_calls", 0, "function", "name")) + str(at(event, "content_block", "name"))
+			arguments += str(at(event, "choices", 0, "delta", "tool_calls", 0, "function", "arguments")) + str(at(event, "delta", "partial_json"))
+			said += str(at(event, "choices", 0, "delta", "content"))
+			if event["type"] == "response.output_item.done" {
+				name, arguments = str(at(event, "item", "name")), str(at(event, "item", "arguments"))
+			}
+		}
+		if status != http.StatusOK || name != test.name || arguments != test.arguments {
+			t.Errorf("%s: got %d with %q %q, want %q %q", test.api, status, name, arguments, test.name, test.arguments)
+		}
+		if test.name == "" && !strings.Contains(said, "no tool that reads a file") {
+			t.Errorf("%s: a harness without a tool that reads a file was told %q", test.api, said)
+		}
+	}
+}
+
 func TestUse(t *testing.T) {
 	t.Parallel()
 	model := httptest.NewServer(newMock(apiKey))

@@ -237,6 +237,10 @@ export function seed(now) {
         "openbao.aviary-data:8200",
       ],
       secretStoreKinds: ["kv-v2"],
+      // How large a file of a message may be, and how many a message may
+      // carry.
+      maxAttachmentBytes: 64 * 1024 * 1024,
+      maxAttachments: 10,
     },
     // The accounts of the identity provider. A token of the mock is the key
     // of an account.
@@ -287,6 +291,9 @@ export function seed(now) {
     agents: [],
     sessions: [],
     turns: [],
+    // The files that messages carry, each with its turn and its place in
+    // the message of the turn.
+    attachments: [],
     items: new Map(),
     // Turns that are left running, with the script that continues them.
     live: [],
@@ -769,6 +776,9 @@ export function seed(now) {
       failure,
       unstarted,
       by = of.created_by,
+      // The files that the message carries: the name, what it is and the
+      // size of each.
+      files = [],
     } = how;
     const record = {
       id: id(ago),
@@ -798,6 +808,19 @@ export function seed(now) {
     }
     db.turns.push(record);
     db.items.set(record.id, items);
+    files.forEach(([name, media_type, size], position) =>
+      db.attachments.push({
+        id: id(ago),
+        session_id: of.id,
+        turn_id: record.id,
+        position,
+        name,
+        media_type,
+        size,
+        created_by: by,
+        created_at: at(ago),
+      }),
+    );
     return record;
   };
 
@@ -909,6 +932,11 @@ export function seed(now) {
       {
         took: 51000,
         usage: [14210, 980],
+        files: [
+          ["checkout-errors.log", "text/plain", 1843200],
+          ["error-monitor-export.csv", "text/csv", 421888],
+          ["image.png", "image/png", 96256],
+        ],
         items: [
           think(
             "I will list the unresolved errors first, then look for issues that mention them.",
@@ -1117,6 +1145,12 @@ export function seed(now) {
     {
       took: 52000,
       usage: [17340, 902],
+      files: [
+        ["결제 웹훅 재시도 설계.pdf", "application/pdf", 2411724],
+        ["image.png", "image/png", 184320],
+        ["image (2).png", "image/png", 201728],
+        ["delivery-flow.svg", "image/svg+xml", 1024],
+      ],
       items: [
         read(
           "src/webhooks/retry.ts",
@@ -1180,6 +1214,7 @@ export function seed(now) {
     {
       took: 88000,
       usage: [22800, 1650],
+      files: [["env.example", "text/plain", 612]],
       items: [
         search(
           "process\\.env\\.",
@@ -1409,6 +1444,27 @@ export function seed(now) {
     {
       took: 73000,
       usage: [11200, 980],
+      // As many as a message carries.
+      files: [
+        ["subscriptions-2026-q3.csv", "text/csv", 48234496],
+        ["cancellations-2026-q3.csv", "text/csv", 6815744],
+        [
+          "cancellations by plan and region, export for the board (final) v3.xlsx",
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          912384,
+        ],
+        [
+          "2026년 3분기 해지 사유 설문 원본.xlsx",
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          1310720,
+        ],
+        ["plans.json", "application/json", 2048],
+        ["README.txt", "text/plain", 740],
+        ["churn-dashboard-2026-11-24-at-10.32.15.png", "image/png", 734003],
+        ["funnel.png", "image/png", 208896],
+        ["Q3 board deck.pptx", "application/octet-stream", 15728640],
+        ["notes.md", "text/markdown", 3187],
+      ],
       items: [
         bash(
           "psql -c \"select plan, date_trunc('week', cancelled_at) w, count(*) from subscriptions where cancelled_at > now() - interval '3 months' group by 1, 2 order by 2, 1\"",

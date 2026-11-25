@@ -212,6 +212,27 @@ func (q *Queries) AskTurnToStop(ctx context.Context, id key.ID) error {
 	return err
 }
 
+const attachToTurn = `-- name: AttachToTurn :exec
+update attachments set turn_id = ?, position = ?, name = ? where id = ?
+`
+
+type AttachToTurnParams struct {
+	TurnID   *key.ID
+	Position sql.NullInt32
+	Name     string
+	ID       key.ID
+}
+
+func (q *Queries) AttachToTurn(ctx context.Context, arg AttachToTurnParams) error {
+	_, err := q.db.ExecContext(ctx, attachToTurn,
+		arg.TurnID,
+		arg.Position,
+		arg.Name,
+		arg.ID,
+	)
+	return err
+}
+
 const cancelQueuedTurn = `-- name: CancelQueuedTurn :exec
 update turns set state = 'cancelled', ended_at = now(6), cancel_requested_at = coalesce(cancel_requested_at, now(6))
 where id = ?
@@ -426,6 +447,32 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (int64
 	return result.RowsAffected()
 }
 
+const createAttachment = `-- name: CreateAttachment :exec
+insert into attachments (id, session_id, name, media_type, size, created_by)
+values (?, ?, ?, ?, ?, ?)
+`
+
+type CreateAttachmentParams struct {
+	ID        key.ID
+	SessionID key.ID
+	Name      string
+	MediaType string
+	Size      int64
+	CreatedBy *key.ID
+}
+
+func (q *Queries) CreateAttachment(ctx context.Context, arg CreateAttachmentParams) error {
+	_, err := q.db.ExecContext(ctx, createAttachment,
+		arg.ID,
+		arg.SessionID,
+		arg.Name,
+		arg.MediaType,
+		arg.Size,
+		arg.CreatedBy,
+	)
+	return err
+}
+
 const createMcpServer = `-- name: CreateMcpServer :execrows
 insert into mcp_servers (id, project_id, slug, name, url, transport, headers, tools, tools_listed_at)
 select ?, projects.id, ?, ?, ?, ?, ?,
@@ -636,6 +683,18 @@ func (q *Queries) DeleteMcpServer(ctx context.Context, id key.ID) (int64, error)
 	return result.RowsAffected()
 }
 
+const deleteUnsentAttachment = `-- name: DeleteUnsentAttachment :execrows
+delete from attachments where id = ? and turn_id is null
+`
+
+func (q *Queries) DeleteUnsentAttachment(ctx context.Context, id key.ID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteUnsentAttachment, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const dispatchTurn = `-- name: DispatchTurn :execrows
 update turns set state = 'dispatching', dispatched_at = now(6) where id = ? and state = 'queued'
 `
@@ -746,6 +805,15 @@ func (q *Queries) EndTurn(ctx context.Context, arg EndTurnParams) error {
 	return err
 }
 
+const expectAttachments = `-- name: ExpectAttachments :exec
+update sessions set has_attachments = true where id = ?
+`
+
+func (q *Queries) ExpectAttachments(ctx context.Context, id key.ID) error {
+	_, err := q.db.ExecContext(ctx, expectAttachments, id)
+	return err
+}
+
 const expireTurn = `-- name: ExpireTurn :exec
 update turns set state = 'expired', ended_at = now(6) where id = ?
 `
@@ -843,6 +911,15 @@ func (q *Queries) ForgetArchive(ctx context.Context, arg ForgetArchiveParams) er
 	return err
 }
 
+const forgetAttachments = `-- name: ForgetAttachments :exec
+update sessions set has_attachments = false where id = ? and ended_at is not null
+`
+
+func (q *Queries) ForgetAttachments(ctx context.Context, id key.ID) error {
+	_, err := q.db.ExecContext(ctx, forgetAttachments, id)
+	return err
+}
+
 const freeUsername = `-- name: FreeUsername :exec
 update users set username = null where username = ? and subject <> ?
 `
@@ -906,6 +983,27 @@ func (q *Queries) GetApproval(ctx context.Context, arg GetApprovalParams) (Appro
 		&i.AnsweredBy,
 		&i.Outcome,
 		&i.ResolvedAt,
+	)
+	return i, err
+}
+
+const getAttachment = `-- name: GetAttachment :one
+select id, session_id, turn_id, position, name, media_type, size, created_by, created_at from attachments where id = ?
+`
+
+func (q *Queries) GetAttachment(ctx context.Context, id key.ID) (Attachment, error) {
+	row := q.db.QueryRowContext(ctx, getAttachment, id)
+	var i Attachment
+	err := row.Scan(
+		&i.ID,
+		&i.SessionID,
+		&i.TurnID,
+		&i.Position,
+		&i.Name,
+		&i.MediaType,
+		&i.Size,
+		&i.CreatedBy,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -1054,7 +1152,7 @@ func (q *Queries) GetSecretStore(ctx context.Context, id key.ID) (SecretStore, e
 }
 
 const getSession = `-- name: GetSession :one
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, asleep_since, archive, archive_bytes, archived_at, claim, claimed_at from sessions where id = ?
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, asleep_since, archive, archive_bytes, archived_at, claim, claimed_at, has_attachments from sessions where id = ?
 `
 
 func (q *Queries) GetSession(ctx context.Context, id key.ID) (Session, error) {
@@ -1076,6 +1174,7 @@ func (q *Queries) GetSession(ctx context.Context, id key.ID) (Session, error) {
 		&i.ArchivedAt,
 		&i.Claim,
 		&i.ClaimedAt,
+		&i.HasAttachments,
 	)
 	return i, err
 }
@@ -1371,7 +1470,7 @@ func (q *Queries) ListLastTurns(ctx context.Context, sessionIds []key.ID) ([]Tur
 }
 
 const listLeftArchives = `-- name: ListLeftArchives :many
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, asleep_since, archive, archive_bytes, archived_at, claim, claimed_at from sessions where archived_at is not null and ended_at is not null order by archived_at limit ?
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, asleep_since, archive, archive_bytes, archived_at, claim, claimed_at, has_attachments from sessions where archived_at is not null and ended_at is not null order by archived_at limit ?
 `
 
 // Lists the sessions that have ended and still have an archive.
@@ -1400,10 +1499,47 @@ func (q *Queries) ListLeftArchives(ctx context.Context, limit int32) ([]Session,
 			&i.ArchivedAt,
 			&i.Claim,
 			&i.ClaimedAt,
+			&i.HasAttachments,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLeftAttachments = `-- name: ListLeftAttachments :many
+select id from sessions
+where has_attachments = true and ended_at < ?
+order by ended_at limit ?
+`
+
+type ListLeftAttachmentsParams struct {
+	Before *time.Time
+	Limit  int32
+}
+
+// Lists the sessions that ended before before and may have left attachments
+// in the depot.
+func (q *Queries) ListLeftAttachments(ctx context.Context, arg ListLeftAttachmentsParams) ([]key.ID, error) {
+	rows, err := q.db.QueryContext(ctx, listLeftAttachments, arg.Before, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []key.ID
+	for rows.Next() {
+		var id key.ID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -1516,7 +1652,7 @@ func (q *Queries) ListMembers(ctx context.Context, projectID key.ID) ([]ListMemb
 }
 
 const listOldArchives = `-- name: ListOldArchives :many
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, asleep_since, archive, archive_bytes, archived_at, claim, claimed_at from sessions
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, asleep_since, archive, archive_bytes, archived_at, claim, claimed_at, has_attachments from sessions
 where archived_at < ? and ended_at is null and sandbox is null
 order by archived_at limit ?
 `
@@ -1552,6 +1688,7 @@ func (q *Queries) ListOldArchives(ctx context.Context, arg ListOldArchivesParams
 			&i.ArchivedAt,
 			&i.Claim,
 			&i.ClaimedAt,
+			&i.HasAttachments,
 		); err != nil {
 			return nil, err
 		}
@@ -1863,7 +2000,7 @@ func (q *Queries) ListSessionMcpServers(ctx context.Context, sessionIds []key.ID
 }
 
 const listSessions = `-- name: ListSessions :many
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, asleep_since, archive, archive_bytes, archived_at, claim, claimed_at from sessions where agent_id = ? and id < ? order by id desc limit ?
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, asleep_since, archive, archive_bytes, archived_at, claim, claimed_at, has_attachments from sessions where agent_id = ? and id < ? order by id desc limit ?
 `
 
 type ListSessionsParams struct {
@@ -1899,6 +2036,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 			&i.ArchivedAt,
 			&i.Claim,
 			&i.ClaimedAt,
+			&i.HasAttachments,
 		); err != nil {
 			return nil, err
 		}
@@ -1914,7 +2052,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 }
 
 const listSessionsEndedWithAgent = `-- name: ListSessionsEndedWithAgent :many
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, asleep_since, archive, archive_bytes, archived_at, claim, claimed_at from sessions where agent_id = ? and end_reason = 'agent_deleted'
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, asleep_since, archive, archive_bytes, archived_at, claim, claimed_at, has_attachments from sessions where agent_id = ? and end_reason = 'agent_deleted'
 `
 
 func (q *Queries) ListSessionsEndedWithAgent(ctx context.Context, agentID key.ID) ([]Session, error) {
@@ -1942,6 +2080,7 @@ func (q *Queries) ListSessionsEndedWithAgent(ctx context.Context, agentID key.ID
 			&i.ArchivedAt,
 			&i.Claim,
 			&i.ClaimedAt,
+			&i.HasAttachments,
 		); err != nil {
 			return nil, err
 		}
@@ -1957,7 +2096,7 @@ func (q *Queries) ListSessionsEndedWithAgent(ctx context.Context, agentID key.ID
 }
 
 const listSessionsOf = `-- name: ListSessionsOf :many
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, asleep_since, archive, archive_bytes, archived_at, claim, claimed_at from sessions
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, asleep_since, archive, archive_bytes, archived_at, claim, claimed_at, has_attachments from sessions
 where agent_id = ? and created_by = ? and id < ?
 order by id desc limit ?
 `
@@ -2000,6 +2139,7 @@ func (q *Queries) ListSessionsOf(ctx context.Context, arg ListSessionsOfParams) 
 			&i.ArchivedAt,
 			&i.Claim,
 			&i.ClaimedAt,
+			&i.HasAttachments,
 		); err != nil {
 			return nil, err
 		}
@@ -2015,7 +2155,7 @@ func (q *Queries) ListSessionsOf(ctx context.Context, arg ListSessionsOfParams) 
 }
 
 const listSessionsWithSandbox = `-- name: ListSessionsWithSandbox :many
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, asleep_since, archive, archive_bytes, archived_at, claim, claimed_at from sessions where sandbox is not null
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, asleep_since, archive, archive_bytes, archived_at, claim, claimed_at, has_attachments from sessions where sandbox is not null
 `
 
 func (q *Queries) ListSessionsWithSandbox(ctx context.Context) ([]Session, error) {
@@ -2043,6 +2183,54 @@ func (q *Queries) ListSessionsWithSandbox(ctx context.Context) ([]Session, error
 			&i.ArchivedAt,
 			&i.Claim,
 			&i.ClaimedAt,
+			&i.HasAttachments,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTurnAttachments = `-- name: ListTurnAttachments :many
+select id, session_id, turn_id, position, name, media_type, size, created_by, created_at from attachments where turn_id in (/*SLICE:turn_ids*/?) order by turn_id, position
+`
+
+func (q *Queries) ListTurnAttachments(ctx context.Context, turnIds []*key.ID) ([]Attachment, error) {
+	query := listTurnAttachments
+	var queryParams []interface{}
+	if len(turnIds) > 0 {
+		for _, v := range turnIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:turn_ids*/?", strings.Repeat(",?", len(turnIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:turn_ids*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Attachment
+	for rows.Next() {
+		var i Attachment
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.TurnID,
+			&i.Position,
+			&i.Name,
+			&i.MediaType,
+			&i.Size,
+			&i.CreatedBy,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -2205,6 +2393,48 @@ func (q *Queries) ListUnfinishedTurns(ctx context.Context) ([]ListUnfinishedTurn
 	return items, nil
 }
 
+const listUnsentAttachments = `-- name: ListUnsentAttachments :many
+select id, session_id, turn_id, position, name, media_type, size, created_by, created_at from attachments where turn_id is null and created_at < ? order by created_at limit ?
+`
+
+type ListUnsentAttachmentsParams struct {
+	Before time.Time
+	Limit  int32
+}
+
+func (q *Queries) ListUnsentAttachments(ctx context.Context, arg ListUnsentAttachmentsParams) ([]Attachment, error) {
+	rows, err := q.db.QueryContext(ctx, listUnsentAttachments, arg.Before, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Attachment
+	for rows.Next() {
+		var i Attachment
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.TurnID,
+			&i.Position,
+			&i.Name,
+			&i.MediaType,
+			&i.Size,
+			&i.CreatedBy,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lock = `-- name: Lock :one
 select name from locks where name = ? for update
 `
@@ -2274,7 +2504,7 @@ func (q *Queries) LockAgentSessions(ctx context.Context, agentID key.ID) ([]key.
 }
 
 const lockSession = `-- name: LockSession :one
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, asleep_since, archive, archive_bytes, archived_at, claim, claimed_at from sessions where id = ? for update
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, asleep_since, archive, archive_bytes, archived_at, claim, claimed_at, has_attachments from sessions where id = ? for update
 `
 
 // Locks the session until the transaction ends, which serializes accepting
@@ -2298,6 +2528,7 @@ func (q *Queries) LockSession(ctx context.Context, id key.ID) (Session, error) {
 		&i.ArchivedAt,
 		&i.Claim,
 		&i.ClaimedAt,
+		&i.HasAttachments,
 	)
 	return i, err
 }
@@ -2355,6 +2586,63 @@ func (q *Queries) LockTurnsToExpire(ctx context.Context, microseconds interface{
 			return nil, err
 		}
 		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockUnsentAttachments = `-- name: LockUnsentAttachments :many
+select id, session_id, turn_id, position, name, media_type, size, created_by, created_at from attachments
+where id in (/*SLICE:ids*/?) and session_id = ? and turn_id is null
+for update
+`
+
+type LockUnsentAttachmentsParams struct {
+	Ids       []key.ID
+	SessionID key.ID
+}
+
+// Locks those of the attachments that are of the session and that no message
+// carries, until the transaction ends.
+func (q *Queries) LockUnsentAttachments(ctx context.Context, arg LockUnsentAttachmentsParams) ([]Attachment, error) {
+	query := lockUnsentAttachments
+	var queryParams []interface{}
+	if len(arg.Ids) > 0 {
+		for _, v := range arg.Ids {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:ids*/?", strings.Repeat(",?", len(arg.Ids))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:ids*/?", "NULL", 1)
+	}
+	queryParams = append(queryParams, arg.SessionID)
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Attachment
+	for rows.Next() {
+		var i Attachment
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.TurnID,
+			&i.Position,
+			&i.Name,
+			&i.MediaType,
+			&i.Size,
+			&i.CreatedBy,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err

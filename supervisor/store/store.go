@@ -25,6 +25,9 @@ var (
 	ErrSlugTaken    = errors.New("slug is taken")
 	ErrTurnEnded    = errors.New("turn has ended")
 	ErrAgentDeleted = errors.New("agent is deleted")
+	// ErrUnknownAttachment means that a message names an attachment that is
+	// not of its session, or that another message carries.
+	ErrUnknownAttachment = errors.New("unknown attachment")
 )
 
 // Turn states. A queued turn waits to run, a dispatching turn waits for a
@@ -315,6 +318,44 @@ func McpServerHeaderPlace(id uuid.UUID, name string) string {
 	return "mcp_servers/" + id.String() + "/headers/" + name
 }
 
+// Attachment is a file that a message to a session carries, or that was
+// uploaded for a message to carry. Its bytes are an object of the depot.
+type Attachment struct {
+	ID        uuid.UUID `json:"id"`
+	SessionID uuid.UUID `json:"-"`
+	// TurnID is the turn of the message that carries the file, or uuid.Nil
+	// while no message does.
+	TurnID uuid.UUID `json:"-"`
+	// Name is the name of the file. The files of a message have different
+	// names.
+	Name string `json:"name"`
+	// MediaType is what the uploader said that the file is.
+	MediaType string `json:"media_type"`
+	Size      int64  `json:"size"`
+	// CreatedBy is the user who uploaded the file, or uuid.Nil if the request
+	// was not authenticated.
+	CreatedBy uuid.UUID `json:"-"`
+	CreatedAt time.Time `json:"-"`
+}
+
+// UniqueNames returns the names with those that occur again changed, so that
+// all differ: "report.pdf" a second time becomes "report (2).pdf". The files
+// of a message are written to one directory.
+func UniqueNames(names []string) []string {
+	unique, taken := make([]string, len(names)), make(map[string]bool, len(names))
+	for i, name := range names {
+		stem, extension := name, ""
+		if dot := strings.LastIndex(name, "."); dot > 0 {
+			stem, extension = name[:dot], name[dot:]
+		}
+		for n := 2; taken[name]; n++ {
+			name = fmt.Sprintf("%s (%d)%s", stem, n, extension)
+		}
+		unique[i], taken[name] = name, true
+	}
+	return unique
+}
+
 // Turn is a message to a session and the work that the agent does in reply.
 type Turn struct {
 	ID        uuid.UUID `json:"id"`
@@ -365,6 +406,9 @@ const (
 	// the installation keeps sandboxes: its sandbox was deleted with the
 	// agent's files, and the session has ended.
 	FailureSessionExpired = "session_expired"
+	// FailureAttachment means that a file that the message carries could not
+	// be written into the session's sandbox, as when its volume is full.
+	FailureAttachment = "attachment_failed"
 	// FailureRunner means that the runner failed in some other way.
 	FailureRunner = "runner_error"
 )
@@ -672,6 +716,43 @@ type Store interface {
 	// archive is another.
 	ForgetArchive(ctx context.Context, sessionID, archive uuid.UUID) error
 
+	// ExpectAttachments records that the depot may have attachments of the
+	// session. It is called before the first is written there, so that none
+	// is left when the session ends. It returns ErrNotFound if there is no
+	// such session, and ErrSessionEnded if it has ended.
+	ExpectAttachments(ctx context.Context, sessionID uuid.UUID) error
+
+	// CreateAttachment records a file that was uploaded for a message of the
+	// attachment's session to carry, with the ID that it is given, since the
+	// file is in the depot under that ID. It returns ErrNotFound if there is
+	// no such session, and ErrSessionEnded if it has ended.
+	CreateAttachment(ctx context.Context, attachment Attachment) (Attachment, error)
+
+	// Attachment returns the attachment, or ErrNotFound.
+	Attachment(ctx context.Context, id uuid.UUID) (Attachment, error)
+
+	// TurnAttachments returns the attachments that the messages of the turns
+	// carry, in the order of each message, keyed by turn ID. A turn without
+	// attachments is absent from the map.
+	TurnAttachments(ctx context.Context, turnIDs []uuid.UUID) (map[uuid.UUID][]Attachment, error)
+
+	// UnsentAttachments returns up to limit attachments that were created
+	// before before and that no message carries, oldest first.
+	UnsentAttachments(ctx context.Context, before time.Time, limit int) ([]Attachment, error)
+
+	// DeleteAttachment deletes the attachment unless a message carries it,
+	// and reports whether it did.
+	DeleteAttachment(ctx context.Context, id uuid.UUID) (bool, error)
+
+	// LeftAttachments returns up to limit sessions that ended before before
+	// and whose attachments the depot may still have, in the order in which
+	// they ended.
+	LeftAttachments(ctx context.Context, before time.Time, limit int) ([]uuid.UUID, error)
+
+	// ForgetAttachments records that the depot has no attachments of the
+	// session, which has ended.
+	ForgetAttachments(ctx context.Context, sessionID uuid.UUID) error
+
 	// EndSession ends the session, which then accepts no messages, and
 	// returns it, including its sandbox. reason is EndExpired, or empty if a
 	// caller ends the session. A session that has already ended is returned
@@ -740,13 +821,17 @@ type Store interface {
 	// such store.
 	ReplaceSecretStore(ctx context.Context, secrets SecretStore) (SecretStore, error)
 
-	// CreateTurn queues text as the session's next turn. It also returns how
-	// many turns then wait to run, including the new one; queued turns that
-	// have room among maxRunning do not wait. It returns ErrNotFound if the
-	// session does not exist, ErrSessionEnded if it has ended, ErrSessionBusy
-	// if it has an unfinished turn, and ErrQueueFull if more than maxWaiting
-	// turns would wait. A maxWaiting of 0 means no limit.
-	CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, maxWaiting, maxRunning int) (Turn, int, error)
+	// CreateTurn queues text as the session's next turn. Its message carries
+	// the attachments, in their order, and gives those with the name of an
+	// earlier one another name. It also returns how many turns then wait to
+	// run, including the new one; queued turns that have room among
+	// maxRunning do not wait. It returns ErrNotFound if the session does not
+	// exist, ErrSessionEnded if it has ended, ErrSessionBusy if it has an
+	// unfinished turn, ErrUnknownAttachment if one of the attachments is not
+	// of the session, is named twice or is carried by another message, and
+	// ErrQueueFull if more than maxWaiting turns would wait. A maxWaiting of
+	// 0 means no limit.
+	CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, attachments []uuid.UUID, maxWaiting, maxRunning int) (Turn, int, error)
 
 	// AnnounceQueue calls announce with the queued turns in the order in which
 	// they will run. Calls are serialized across Supervisors, so that queue

@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { clip, fullTime, initials, pick, sentence, when } from "./format.ts";
+import {
+  clip,
+  fullTime,
+  initials,
+  pick,
+  sentence,
+  size,
+  when,
+} from "./format.ts";
 
 describe("when", () => {
   const now = new Date(2026, 10, 22, 15, 30);
@@ -70,4 +78,17 @@ it("clips a text to one line of a length", () => {
   expect(clip("Fix the cart now", 12)).toBe("Fix the car…");
   // No space is left before the mark of the cut.
   expect(clip("Fix the cart now", 9)).toBe("Fix the…");
+});
+
+it("writes the size of a file in the unit that keeps it short", () => {
+  expect(size(0)).toBe("0 bytes");
+  expect(size(1)).toBe("1 byte");
+  expect(size(1023)).toBe("1,023 bytes");
+  expect(size(1024)).toBe("1 KB");
+  expect(size(1536)).toBe("1.5 KB");
+  expect(size(348160)).toBe("340 KB");
+  expect(size(2411724)).toBe("2.3 MB");
+  expect(size(67108864)).toBe("64 MB");
+  expect(size(5 * 1024 ** 3)).toBe("5 GB");
+  expect(size(3000 * 1024 ** 3)).toBe("3000 GB");
 });

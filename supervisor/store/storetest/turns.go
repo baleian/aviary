@@ -80,7 +80,7 @@ func (s supervisor) sessionOf(harness string) uuid.UUID {
 // queue queues a message to the session, with no queue limit.
 func (s supervisor) queue(session uuid.UUID) store.Turn {
 	s.t.Helper()
-	turn, _, err := s.CreateTurn(ctx, session, uuid.Nil, "hello", 0, 50)
+	turn, _, err := s.CreateTurn(ctx, session, uuid.Nil, "hello", nil, 0, 50)
 	if err != nil {
 		s.t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func (suite suite) testCreateTurn(t *testing.T) {
 	if first.Seq != 1 || first.State != store.TurnQueued || first.Text != "hello" {
 		t.Errorf("first turn = %+v", first)
 	}
-	if _, _, err := st.CreateTurn(ctx, session, uuid.Nil, "again", 0, 50); !errors.Is(err, store.ErrSessionBusy) {
+	if _, _, err := st.CreateTurn(ctx, session, uuid.Nil, "again", nil, 0, 50); !errors.Is(err, store.ErrSessionBusy) {
 		t.Errorf("CreateTurn with an unfinished turn = %v, want ErrSessionBusy", err)
 	}
 	if _, _, err := st.CancelTurn(ctx, first.ID); err != nil {
@@ -151,7 +151,7 @@ func (suite suite) testCreateTurn(t *testing.T) {
 	if second := st.queue(session); second.Seq != 2 {
 		t.Errorf("second turn Seq = %d, want 2", second.Seq)
 	}
-	if _, _, err := st.CreateTurn(ctx, uuid.New(), uuid.Nil, "hello", 0, 50); !errors.Is(err, store.ErrNotFound) {
+	if _, _, err := st.CreateTurn(ctx, uuid.New(), uuid.Nil, "hello", nil, 0, 50); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("CreateTurn on a nonexistent session = %v, want ErrNotFound", err)
 	}
 }
@@ -187,7 +187,7 @@ func (suite suite) testConcurrentCreateTurn(t *testing.T) {
 	session := st.session()
 	var accepted, busy atomic.Int32
 	atOnce(20, func(int) {
-		_, _, err := st.CreateTurn(ctx, session, uuid.Nil, "hello", 0, 50)
+		_, _, err := st.CreateTurn(ctx, session, uuid.Nil, "hello", nil, 0, 50)
 		switch {
 		case err == nil:
 			accepted.Add(1)
@@ -207,7 +207,7 @@ func (suite suite) testCreateTurnQueueLimit(t *testing.T) {
 	st := suite.open(t)
 	const maxWaiting, maxRunning = 2, 2
 	send := func(session uuid.UUID) (int, error) {
-		_, waiting, err := st.CreateTurn(ctx, session, uuid.Nil, "hello", maxWaiting, maxRunning)
+		_, waiting, err := st.CreateTurn(ctx, session, uuid.Nil, "hello", nil, maxWaiting, maxRunning)
 		return waiting, err
 	}
 	// The first two have room to run, so they do not wait.
@@ -248,7 +248,7 @@ func (suite suite) testConcurrentCreateTurnQueueLimit(t *testing.T) {
 	var accepted, refused atomic.Int32
 	atOnce(12, func(i int) {
 		// One turn has room to run and three may wait.
-		_, _, err := supervisors[i].CreateTurn(ctx, sessions[i], uuid.Nil, "hello", 3, 1)
+		_, _, err := supervisors[i].CreateTurn(ctx, sessions[i], uuid.Nil, "hello", nil, 3, 1)
 		switch {
 		case err == nil:
 			accepted.Add(1)
@@ -272,7 +272,7 @@ func (suite suite) testConcurrentCreateTurnWithRoomToRun(t *testing.T) {
 		sessions[i] = st.session()
 	}
 	atOnce(len(sessions), func(i int) {
-		if _, waiting, err := st.CreateTurn(ctx, sessions[i], uuid.Nil, "hello", 2, 50); err != nil || waiting != 0 {
+		if _, waiting, err := st.CreateTurn(ctx, sessions[i], uuid.Nil, "hello", nil, 2, 50); err != nil || waiting != 0 {
 			t.Errorf("waiting = %d, want 0: %v", waiting, err)
 		}
 	})
@@ -365,7 +365,7 @@ func (suite suite) testConcurrentDispatchTurnsAndCreateTurn(t *testing.T) {
 		}
 		turns := make([]uuid.UUID, len(sessions))
 		atOnce(len(sessions), func(i int) {
-			turn, _, err := st.CreateTurn(ctx, sessions[i], uuid.Nil, "hello", 0, 1)
+			turn, _, err := st.CreateTurn(ctx, sessions[i], uuid.Nil, "hello", nil, 0, 1)
 			if err != nil {
 				t.Error(err)
 			}
@@ -437,7 +437,7 @@ func (suite suite) testDispatchTurnsCountsAwaitingApproval(t *testing.T) {
 	// One turn has room to run.
 	send := func() (uuid.UUID, int) {
 		t.Helper()
-		turn, waiting, err := st.CreateTurn(ctx, st.session(), uuid.Nil, "hello", 0, 1)
+		turn, waiting, err := st.CreateTurn(ctx, st.session(), uuid.Nil, "hello", nil, 0, 1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -997,7 +997,7 @@ func (suite suite) testCancelledContext(t *testing.T) {
 	session := st.session()
 	gone, leave := context.WithCancel(ctx)
 	leave()
-	if _, _, err := st.CreateTurn(gone, session, uuid.Nil, "hello", 0, 50); err == nil {
+	if _, _, err := st.CreateTurn(gone, session, uuid.Nil, "hello", nil, 0, 50); err == nil {
 		t.Error("CreateTurn succeeded with a cancelled context")
 	}
 	if turns, err := st.Turns(ctx, session, math.MaxInt32, 10); err != nil || len(turns) != 0 {

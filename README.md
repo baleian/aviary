@@ -132,8 +132,9 @@ mount: any of them serves any request, and a new one starts before the one
 that it replaces stops. A network policy lets only the Supervisors connect
 to them.
 
-The objects are the homes of the sessions whose sandboxes have slept for
-`sandboxes.archiveAfterSeconds`. A Supervisor wakes such a sandbox, has its
+The objects are the files that messages carry, each kept from its upload
+until its session ends, and the homes of the sessions whose sandboxes have
+slept for `sandboxes.archiveAfterSeconds`. A Supervisor wakes such a sandbox, has its
 runner pack the home, writes the archive to the depot, and deletes the
 sandbox with its volume. A message that arrives meanwhile is not held up:
 its turn takes the sandbox, and the home is archived later. The next turn of
@@ -267,7 +268,9 @@ empty.
 | `PUT /v1/sessions/{id}/mcp-servers/{server}` | Turns an MCP server of the project on or off for a session. Body: `{"enabled": true}`. Returns 200 with the session, and 409 if the session has ended. Besides admins, only the creator of the session may. |
 | `DELETE /v1/sessions/{id}/mcp-servers` | Gives a session the MCP servers of its agent again. Returns 200 with the session. |
 | `PATCH /v1/sessions/{id}` | Changes the title of a session, also of one that has ended. Body: `{"title": "..."}`, where an empty title leaves the session without one. Returns 200 with the session. |
-| `POST /v1/sessions/{id}/messages` | Sends a message. Body: `{"text": "..."}`. Returns 202 with the turn, whose `created_by` is set as for a session; 409 if a turn of the session has not ended or the session has ended; 429 with `Retry-After` if too many turns are queued. |
+| `POST /v1/sessions/{id}/messages` | Sends a message. Body: `{"text": "...", "attachments": ["..."]}`, where `attachments` are the IDs of files that were uploaded for the session, and the text may be left out if there are any. Returns 202 with the turn, whose `created_by` is set as for a session; 409 if a turn of the session has not ended or the session has ended; 429 with `Retry-After` if too many turns are queued; 400 `too_many_attachments` if the message names more files than `runtime.maxAttachments`, and 400 `unknown_attachment` if one of them is not a file of the session that no message carries yet. Before the turn starts, the files are written into the session's sandbox at `/home/.attachments/<seq>/<name>`, where `seq` is that of the turn, and they stay there for the turns that follow. The harness gets the text and after it a link to each file, in the order of the message, so that the agent knows which files came with the message, and which of them is the second. |
+| `POST /v1/sessions/{id}/attachments?name=...` | Uploads a file for a message of the session to carry. The body is the file, `name` its name, and `Content-Type` what it is. Returns 201 with the attachment: `{"id": "...", "name": "...", "media_type": "...", "size": 0}`. The name is kept without its directories, control characters and leading dots. Besides admins, only the creator of the session may. Returns 413 `attachment_too_large` if the file is larger than `runtime.maxAttachmentBytes`, 507 `storage_full` if the [depot](#depot) has no room for it, 403 `attachments_disabled` if the installation takes no attachments, and 409 if the session has ended. A file that no message carries within an hour is deleted. |
+| `GET /v1/attachments/{id}` | Returns the file of an attachment, as a download, to those who may read its session. Returns 404 once the session has ended: the files are kept until then. |
 | `DELETE /v1/sessions/{id}` | Ends a session. Returns 200 with the session, which then has `ended_at`. The session's sandbox is deleted with its volume and everything that the agent had in it, unless the storage class keeps the data of deleted volumes (see `runtime.volume` in [Configuration](#configuration)). The conversation stays readable, and the session accepts no more messages. Returns 409 if a turn of the session has not ended. |
 | `POST /v1/turns/{id}/cancel` | Cancels a turn. A queued turn ends at once: 200 with the turn. A running turn is told to stop, and ends when its harness has stopped: 202 with the turn. Returns 409 if the turn has ended in another way. |
 | `POST /v1/turns/{id}/approvals/{request}` | Answers an approval request of the turn. Body: `{"option_id": "..."}`, the `id` of one of the request's options. Returns 202 when the answer is on its way to the harness, 400 if the request has no such option, and 409 if the request already has an answer or the turn has ended. |
@@ -286,6 +289,7 @@ empty.
 | `PUT /v1/members/{id}` | Gives a member another role, or other permissions of its own. Body: `{"role": "..."}` or `{"permissions": [...]}`. Administrators only. |
 | `DELETE /v1/members/{id}` | Removes a member from its project. Returns 204. Administrators only. |
 | `GET /v1/harnesses` | Lists the harnesses that agents can use, by name: `{"harnesses": [{"name": "codex"}, {"name": "opencode"}]}`. They are the installation's `runtime.harnesses`. |
+| `GET /v1/limits` | Returns what the installation sets for the files that messages carry: `{"max_attachment_bytes": 67108864, "max_attachments": 10}`, its `runtime.maxAttachmentBytes` and `runtime.maxAttachments`. Both are 0 if it takes no attachments. |
 | `GET /v1/roles` | Lists the roles and their permissions: `{"roles": [{"name": "editor", "permissions": [...]}, ...]}`. See [Roles](#roles). |
 | `PUT /v1/roles/{name}` | Sets the permissions of a role. Body: `{"permissions": [...]}`. Administrators only: other callers get 403. Returns 400 for an unknown permission and 404 for an unknown role. |
 
@@ -318,6 +322,7 @@ see [`runner/src/main.rs`](runner/src/main.rs).
 | `startup_timed_out` | The harness did not receive the message within `runtime.maxStartupSeconds`, for example because the sandbox could not be created. The message says what the turn waited for. A sandbox that was still being created or woken is kept with the agent's files, and the session's next turn uses it. A turn that first restores the home of its session has `runtime.maxRestoreSeconds` more, and if it fails, the home stays archived for the session's next turn. |
 | `timed_out` | The turn ran for longer than `runtime.maxTurnSeconds`. |
 | `sandbox_lost` | The session's sandbox is gone, with everything that the agent had in it. The next turn of the session gets a new one. |
+| `attachment_failed` | A file that the message carries could not be written into the session's sandbox, because its volume has no room. The message names the file. |
 | `session_expired` | The session was not used for longer than `sandboxes.retentionSeconds`. Its sandbox is gone, and the session has ended. A message fails this way only if it arrives before a Supervisor has ended the session. |
 | `runner_error` | The runner failed in another way. |
 
@@ -331,6 +336,9 @@ the response has `x-should-retry: false`.
 ### Turn records
 
 A turn, in `GET /v1/turns/{id}` and in the session's list of turns, has
+`attachments` if its message carries files: each with its `id`, `name`,
+`media_type` and `size`, in the order of the message. Two files of one name
+have different names there: the second is `report (2).pdf`. A turn also has
 `items`: what the agent said and did, in order. The items are assembled
 from the events when the turn ends, so a turn that has not ended has none,
 and a client follows its events instead. The events are kept for an hour
@@ -390,7 +398,8 @@ that connects later can find it.
   the images in this repository, OpenCode asks before it runs a command or
   changes a file, Claude Code before it runs a command that does more than
   read the workspace or changes a file, and Codex before a command runs
-  outside its sandbox: see [`images/README.md`](images/README.md).
+  outside its sandbox: see [`images/README.md`](images/README.md). None of
+  them asks before its own tool reads a file that a message carries.
 - **A request waits as long as its turn may run.** The time spent waiting
   counts toward `runtime.maxTurnSeconds`, because the sandbox keeps running
   and the turn keeps its place among the running turns. A turn whose time
@@ -738,6 +747,7 @@ of your own.
 | `runtime.maxRestoreSeconds` | Seconds more that a turn may take to reach its harness if it first restores the home of its session from the depot. Default 600. |
 | `runtime.maxTurnSeconds` | Seconds that a turn may run after it leaves the queue, including the time that it waits for approval. A turn that runs longer fails, and its sandbox is put to sleep. Default 1800. |
 | `runtime.maxToolOutputBytes` | Maximum bytes of the input or output of a tool call that turn events report. Longer text is truncated in the events. Default 65536. 0 means no limit. |
+| `runtime.maxAttachmentBytes`, `.maxAttachments` | Maximum bytes of a file that a message carries, and maximum number of files of one message. Default 67108864, which is 64 MiB, and 10. With 0 files, messages carry none and uploads are refused. A proxy in front of the API must let a request body of that size through. |
 | `runtime.harnesses` | Harnesses that agents can use, by name, each with its image and the `resources` of its sandbox pods, in the format of Kubernetes container resources. A change applies to a sandbox the next time it wakes. |
 | `runtime.volume.size`, `.storageClass` | The session volume, mounted at `/home`: the state of the harness, the files of the agent and what the agent installs with npm or pip. Default 10Gi, in the default storage class of the cluster. The volume is deleted with its sandbox when its session is ended or expires, or when its home is archived. Whether its data is deleted too depends on the storage class: the default class of the local cluster deletes it, a class with `reclaimPolicy: Retain` keeps it, and some file storage drivers keep it unless they are configured not to. |
 
@@ -762,8 +772,9 @@ event log or a secret store that it has no plugin for, see
 The web UI is a client of the API that runs in the browser. It shows the
 projects with their members, model providers, MCP servers, secret stores and
 agents, and the sessions of an agent with their conversations and the MCP
-servers that each has on: it follows a turn as the agent works, and answers
-its requests for approval.
+servers that each has on: it attaches files to a message, opens the
+pictures, PDFs and texts among the files of the messages, follows a turn as
+the agent works, and answers its requests for approval.
 
 The chart does not install it. Its image, built from `images/web`, is a web
 server with the files of the web UI, configured through its environment:
@@ -784,7 +795,8 @@ There are three ways for the browser to find the API:
 - **A proxy in front of both.** Leave `AVIARY_API` empty, and have a proxy or
   an ingress route `/v1/` to the Supervisor and every other path to the web
   server, at one address. The proxy must not buffer the responses of `/v1/`,
-  which include event streams.
+  which include event streams, and must take the files that messages carry:
+  request bodies of up to `runtime.maxAttachmentBytes`.
 - **Two addresses.** Set `AVIARY_PUBLIC_API` to the address of the API, and
   list the origin of the web UI in `supervisor.allowedOrigins` (see
   [Configuration](#configuration)), so that browsers let its pages call the

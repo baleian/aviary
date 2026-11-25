@@ -104,7 +104,7 @@ func (i *installation) sessionOf(id uuid.UUID) store.Session {
 // send accepts the message as the session's next turn and wakes the driver.
 func (i *installation) send(driver *Driver, session store.Session, text string) store.Turn {
 	i.t.Helper()
-	turn, err := driver.Accept(ctx, session.ID, uuid.Nil, text)
+	turn, err := driver.Accept(ctx, session.ID, uuid.Nil, text, nil)
 	if err != nil {
 		i.t.Fatal(err)
 	}
@@ -1128,7 +1128,7 @@ func TestASessionThatIsNotUsedForLongerThanItsSandboxIsKeptHasEnded(t *testing.T
 	if reason := i.sessionOf(session.ID).EndReason; reason != store.EndExpired {
 		t.Errorf("end reason of the session = %q, want expired", reason)
 	}
-	if _, err := driver.Accept(ctx, session.ID, uuid.Nil, "once more"); !errors.Is(err, store.ErrSessionEnded) {
+	if _, err := driver.Accept(ctx, session.ID, uuid.Nil, "once more", nil); !errors.Is(err, store.ErrSessionEnded) {
 		t.Errorf("Accept on an ended session = %v, want ErrSessionEnded", err)
 	}
 	if len(i.service.Made()) != 0 || len(i.service.Given()) != 2 {

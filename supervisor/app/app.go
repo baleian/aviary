@@ -60,6 +60,8 @@ const (
 	maxStartup         = "AVIARY_MAX_STARTUP_SECONDS"
 	maxRestore         = "AVIARY_MAX_RESTORE_SECONDS"
 	maxToolOutput      = "AVIARY_MAX_TOOL_OUTPUT_BYTES"
+	maxAttachmentBytes = "AVIARY_MAX_ATTACHMENT_BYTES"
+	maxAttachments     = "AVIARY_MAX_ATTACHMENTS"
 	maxTurn            = "AVIARY_MAX_TURN_SECONDS"
 	sandboxNamespace   = "AVIARY_SANDBOX_NAMESPACE"
 	sandboxVolume      = "AVIARY_SANDBOX_VOLUME_SIZE"
@@ -637,6 +639,20 @@ func driverConfig() (driver.Config, error) {
 		return config, fmt.Errorf("%s must be a number of seconds", maxRestore)
 	}
 	config.MaxRestore = time.Duration(seconds) * time.Second
+	size, err := env(maxAttachmentBytes)
+	if err != nil {
+		return config, err
+	}
+	if config.MaxAttachmentBytes, err = strconv.ParseInt(size, 10, 64); err != nil || config.MaxAttachmentBytes < 1 {
+		return config, fmt.Errorf("%s must be a positive number of bytes", maxAttachmentBytes)
+	}
+	files, err := env(maxAttachments)
+	if err != nil {
+		return config, err
+	}
+	if config.MaxAttachments, err = strconv.Atoi(files); err != nil || config.MaxAttachments < 0 {
+		return config, fmt.Errorf("%s must be a number, or 0 to take no attachments", maxAttachments)
+	}
 	longest, err := env(maxTurn)
 	if err != nil {
 		return config, err

@@ -48,7 +48,8 @@ func outcome(status int) byte {
 
 // The session and the turn belong to the member with the user role.
 func TestWhoMayDoWhat(t *testing.T) {
-	installation := install(t)
+	attachments, _ := attaching(t)
+	installation := install(t, attachments)
 	// In the order of the columns of the table below.
 	callers := []string{"admin", "owner", "editor", "user", "viewer", "auditor", "mate", "custom", "builder", "stranger"}
 	provider := tokens{"admin": {Subject: "admin", Groups: []string{"platform"}}, "mate": {Subject: "mate", Groups: []string{"team-a", "others"}}}
@@ -78,6 +79,7 @@ func TestWhoMayDoWhat(t *testing.T) {
 	s.token = "user"
 	session := s.create("/v1/agents/"+agent+"/sessions", "")
 	turn := s.send(session, "hello").ID
+	file := s.attach(session, "notes.txt", "to do").ID
 	none := "00000000-0000-0000-0000-000000000000"
 
 	// p: passes, with neither 403 nor 404. f: 403 Forbidden. h: 404 Not Found.
@@ -94,6 +96,7 @@ func TestWhoMayDoWhat(t *testing.T) {
 		{"GET", "/v1/roles", ``, "pppppppppp"},
 		{"PUT", "/v1/roles/viewer", `{}`, onlyAdmin},
 		{"GET", "/v1/harnesses", ``, "pppppppppp"},
+		{"GET", "/v1/limits", ``, "pppppppppp"},
 		{"POST", "/v1/projects", `{}`, onlyAdmin},
 		{"GET", "/v1/projects/" + project, ``, everyMember},
 		{"GET", "/v1/projects/" + other, ``, "phhhhhhhhh"},
@@ -141,6 +144,11 @@ func TestWhoMayDoWhat(t *testing.T) {
 		// and turn MCP servers on and off for them.
 		{"POST", "/v1/sessions/" + session + "/messages", `{}`, "pffpfffffh"},
 		{"PUT", "/v1/sessions/" + session + "/mcp-servers/" + tools, `{"enabled": true}`, "pffpfffffh"},
+		// So for the files that the messages carry, which are read by those
+		// who may read the session.
+		{"POST", "/v1/sessions/" + session + "/attachments?name=a.txt", `a`, "pffpfffffh"},
+		{"GET", "/v1/attachments/" + file, ``, reading},
+		{"GET", "/v1/attachments/" + none, ``, "hhhhhhhhhh"},
 		{"DELETE", "/v1/sessions/" + session + "/mcp-servers", ``, "pffpfffffh"},
 		// The request does not exist, so those who may answer get 404.
 		{"POST", "/v1/turns/" + turn + "/approvals/none", `{"option_id": "allow"}`, "hhfhfffhfh"},

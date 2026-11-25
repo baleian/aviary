@@ -65,6 +65,115 @@ describe("http", () => {
     const reply = await http.send("GET", "/v1/me", { token: "" });
     expect(reply).toMatchObject({ status: 502, body: null });
   });
+
+  it("sends a file as it is, and tells how much of it has gone", async () => {
+    // What the browser has for sending a body whose progress it tells.
+    const asked: unknown[] = [];
+    let breaks = false;
+    class Request {
+      status = 201;
+      responseText = '{"id": "a1"}';
+      upload: { onprogress?: (event: { loaded: number }) => void } = {};
+      onload?: () => void;
+      onerror?: () => void;
+      headers: Record<string, string> = {};
+      open(method: string, url: string) {
+        asked.push(method, url);
+      }
+      setRequestHeader(name: string, value: string) {
+        this.headers[name] = value;
+      }
+      getAllResponseHeaders() {
+        return "Content-Type: application/json\r\nRetry-After: 5\r\n";
+      }
+      send(body: unknown) {
+        asked.push(this.headers, body);
+        if (breaks) return this.onerror?.();
+        this.upload.onprogress?.({ loaded: 3 });
+        this.upload.onprogress?.({ loaded: 5 });
+        this.onload?.();
+      }
+    }
+    vi.stubGlobal("XMLHttpRequest", Request);
+    const file = new Blob(["to do"], { type: "text/plain" });
+    const path = "/v1/sessions/s1/attachments?name=notes.txt";
+    const gone: number[] = [];
+    const reply = await http.upload(path, {
+      token: "t0",
+      file,
+      onProgress: (sent) => gone.push(sent),
+    });
+    expect(asked).toEqual([
+      "POST",
+      path,
+      { Authorization: "Bearer t0", "Content-Type": "text/plain" },
+      file,
+    ]);
+    expect(gone).toEqual([3, 5]);
+    expect(reply).toEqual({
+      status: 201,
+      headers: { "content-type": "application/json", "retry-after": "5" },
+      body: { id: "a1" },
+    });
+
+    // A file that does not say what it is, without a token.
+    asked.length = 0;
+    await http.upload(path, { token: "", file: new Blob(["?"]) });
+    expect(asked[2]).toEqual({ "Content-Type": "application/octet-stream" });
+
+    // No answer comes if the connection breaks.
+    breaks = true;
+    await expect(http.upload(path, { token: "", file })).rejects.toThrow(
+      "the file could not be sent",
+    );
+  });
+
+  it("returns the file of an answer, or why there is none", async () => {
+    const fetch = answers(200, "to do", { "Content-Type": "text/plain" });
+    const reply = await http.download("/v1/attachments/a1", { token: "t0" });
+    expect(fetch).toHaveBeenCalledWith("/v1/attachments/a1", {
+      headers: { Authorization: "Bearer t0" },
+    });
+    expect(reply).toMatchObject({ status: 200, body: null });
+    expect(reply.file!.type).toBe("text/plain");
+    expect(await reply.file!.text()).toBe("to do");
+
+    answers(404, '{"code": "not_found"}');
+    const refused = await http.download("/v1/attachments/a2", { token: "" });
+    expect(refused).toMatchObject({ status: 404, body: { code: "not_found" } });
+    expect(refused.file).toBeUndefined();
+  });
+
+  it("reads no more of a file than its first bytes, if it is told how many", async () => {
+    // The file comes in parts of four bytes, until it is let go of.
+    let sent = 0;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent === 5) return controller.close();
+        controller.enqueue(new TextEncoder().encode(`${sent++}...`));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const type = { "Content-Type": "text/plain" };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(body, { status: 200, headers: type })),
+    );
+    const reply = await http.download("/a", { token: "", first: 6 });
+    expect(await reply.file!.text()).toBe("0...1.");
+    expect(reply.file!.type).toBe("text/plain");
+    // The rest of the file was not read.
+    expect(cancelled).toBe(true);
+    expect(sent).toBeLessThan(5);
+
+    // A file that is shorter comes whole.
+    answers(200, "to do", type);
+    const whole = await http.download("/a", { token: "", first: 6 });
+    expect(await whole.file!.text()).toBe("to do");
+  });
 });
 
 describe("an API at another address than the console's", () => {

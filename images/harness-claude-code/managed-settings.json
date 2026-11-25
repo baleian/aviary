@@ -1,6 +1,7 @@
 {
   "permissions": {
-    "defaultMode": "default"
+    "defaultMode": "default",
+    "additionalDirectories": ["/home/.attachments"]
   },
   "skipWebFetchPreflight": true
 }

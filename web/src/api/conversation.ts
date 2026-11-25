@@ -10,7 +10,14 @@ import {
   useFeedReady,
 } from "./feed.ts";
 import { add, NOTHING } from "./items.ts";
-import type { ApprovalRequest, Session, Turn, Usage } from "./types.ts";
+import type {
+  ApprovalRequest,
+  Attachment,
+  Limits,
+  Session,
+  Turn,
+  Usage,
+} from "./types.ts";
 
 // How many sessions or turns the lists read at a time.
 const PAGE = 20;
@@ -191,20 +198,70 @@ export async function endSession(id: string) {
   take(await api.delete<Session>("/v1/sessions/" + id));
 }
 
-// sendMessage sends a message to a session, and adds the turn that it
-// begins to the turns that were read.
+// useLimits reads what the installation sets for the files that messages
+// carry.
+export function useLimits() {
+  return useQuery({
+    queryKey: ["limits"],
+    queryFn: () => api.get<Limits>("/v1/limits"),
+    staleTime: Infinity,
+  });
+}
+
+// uploadAttachment uploads a file for a message of the session to carry, and
+// returns the attachment. onProgress is called with the bytes of the file
+// that have gone, as they go.
+export function uploadAttachment(
+  session: string,
+  file: File,
+  onProgress?: (sent: number) => void,
+): Promise<Attachment> {
+  const name = encodeURIComponent(file.name);
+  return api.upload<Attachment>(
+    `/v1/sessions/${session}/attachments?name=${name}`,
+    file,
+    onProgress,
+  );
+}
+
+// sendMessage sends a message to a session, with the files that were
+// uploaded for it, by the IDs of their attachments and in their order. It
+// adds the turn that the message begins to the turns that were read.
 export async function sendMessage(
   session: string,
   text: string,
+  attachments: string[] = [],
 ): Promise<Turn> {
   const turn = await api.post<Turn>(`/v1/sessions/${session}/messages`, {
     text,
+    ...(attachments.length > 0 && { attachments }),
   });
   // The session may have told of the turn already.
   queryClient.setQueryData<Turn[]>(turnsKey(session), (list = []) =>
     list.some((other) => other.id === turn.id) ? list : [...list, turn],
   );
   return turn;
+}
+
+// saveAttachment reads the file of an attachment, and has the browser save
+// it under its name. The API gives the file only to a caller that it knows,
+// so a link to it would not do.
+export async function saveAttachment(attachment: Attachment): Promise<void> {
+  saveFile(
+    attachment.name,
+    await api.download("/v1/attachments/" + attachment.id),
+  );
+}
+
+// saveFile has the browser save a file under a name.
+export function saveFile(name: string, file: Blob) {
+  const address = URL.createObjectURL(file);
+  const link = document.createElement("a");
+  link.href = address;
+  link.download = name;
+  link.click();
+  // The browser has begun to save the file by now.
+  setTimeout(() => URL.revokeObjectURL(address), 1000);
 }
 
 // stopTurn asks for a turn to be stopped, or to be taken from the queue,
@@ -222,7 +279,13 @@ export async function stopTurn(session: string, id: string): Promise<void> {
   queryClient.setQueryData<Turn[]>(turnsKey(session), (list) =>
     list?.map((turn) =>
       turn.id === id && !turn.ended_at
-        ? { ...record, items: turn.items, position: turn.position }
+        ? {
+            ...record,
+            // The answer has the turn without what its record has besides.
+            attachments: turn.attachments,
+            items: turn.items,
+            position: turn.position,
+          }
         : turn,
     ),
   );

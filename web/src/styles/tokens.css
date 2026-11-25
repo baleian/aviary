@@ -14,6 +14,11 @@
   --surface-hover: #fafcff;
   --nav: rgba(255, 255, 255, 0.9);
   --overlay: rgba(13, 27, 46, 0.4);
+  /* Behind a file that is shown over the page, and behind what a picture
+     lets through: the same in both themes. */
+  --veil: rgba(5, 10, 20, 0.84);
+  --paper: #ffffff;
+  --paper-2: #e6ebf2;
   --code: #f3f6fa;
   --night: #0b1728;
   --on-night: #ffffff;

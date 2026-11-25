@@ -1,10 +1,15 @@
 package e2e
 
 import (
+	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -62,6 +67,7 @@ func TestAviary(t *testing.T) {
 			"a failed turn reports its reason":                     failures,
 			"an idle session loses its sandbox":                    loses,
 			"a home is restored as soon as it is archived":         restoresAtOnce,
+			"a message carries files into its sandbox":             attaches,
 			"a turn is cancelled":                                  cancel,
 			"a session is ended":                                   ended,
 			"an agent is deleted":                                  deletes,
@@ -472,6 +478,88 @@ func restoresAtOnce(t *testing.T) {
 	}
 	if claimed, err := cluster.CoreV1().PersistentVolumeClaims(runtime).Get(ctx, volume, metav1.GetOptions{}); err != nil || claimed.UID == former.UID {
 		t.Errorf("volume of the restored home = %v, %v; want a new one in place of %s", claimed.UID, err, former.UID)
+	}
+}
+
+// A message carries files: they are uploaded for the session, and are in the
+// home of its sandbox when the turn of the message starts, whatever their
+// names and sizes. The model is told of them in the order of the message.
+// They can be downloaded as they were uploaded.
+func attaches(t *testing.T) {
+	session := newAgent(t, harness(harnesses[0])).session(t)
+	// Megabytes that do not compress, and a name that needs care.
+	large := make([]byte, 8<<20)
+	if _, err := rand.Read(large); err != nil {
+		t.Fatal(err)
+	}
+	const report = "보고서 2026.txt"
+	ids := map[string]string{}
+	for name, content := range map[string]string{"data.bin": string(large), report: "to do"} {
+		var uploaded struct {
+			ID   string
+			Size int64
+		}
+		path := "/v1/sessions/" + session + "/attachments?name=" + url.QueryEscape(name)
+		if status := request(t, "POST", path, content, &uploaded); status != http.StatusCreated || uploaded.Size != int64(len(content)) {
+			t.Fatalf("upload %s: got %d %+v, want 201 with its %d bytes", name, status, uploaded, len(content))
+		}
+		ids[name] = uploaded.ID
+	}
+	message, err := json.Marshal(map[string]any{
+		"text": "run sha256sum /home/.attachments/1/data.bin", "attachments": []string{ids["data.bin"], ids[report]},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var accepted turn
+	if status := request(t, "POST", "/v1/sessions/"+session+"/messages", string(message), &accepted); status != http.StatusAccepted {
+		t.Fatalf("message with attachments: got status %d, want 202", status)
+	}
+	if last := read(t, accepted.ID).end(t); last.Type != "turn.completed" {
+		t.Fatalf("turn of a message with attachments ended with %s %s, want turn.completed", last.Type, last.Data)
+	}
+	sum := sha256.Sum256(large)
+	if summed := record(t, accepted.ID); !strings.Contains(summed.tools(), hex.EncodeToString(sum[:])) {
+		t.Errorf("the file in the sandbox is not the one that was uploaded: tool calls %s", summed.tools())
+	}
+	// The files stay for the turns that follow.
+	if shown := run(t, session, `run cat "/home/.attachments/1/`+report+`"`); !strings.Contains(shown.tools(), "to do") {
+		t.Errorf("agent did not read the file of the earlier message: tool calls %s", shown.tools())
+	}
+
+	// The mock model says what came with its instruction, and a harness names
+	// a file by its path.
+	var again [2]string
+	for i, name := range []string{"second.txt", "first.txt"} {
+		var uploaded struct{ ID string }
+		if status := request(t, "POST", "/v1/sessions/"+session+"/attachments?name="+name, "a note", &uploaded); status != http.StatusCreated {
+			t.Fatalf("upload %s: got %d, want 201", name, status)
+		}
+		again[i] = uploaded.ID
+	}
+	if message, err = json.Marshal(map[string]any{"text": "attached", "attachments": again}); err != nil {
+		t.Fatal(err)
+	}
+	if status := request(t, "POST", "/v1/sessions/"+session+"/messages", string(message), &accepted); status != http.StatusAccepted {
+		t.Fatalf("second message with attachments: got status %d, want 202", status)
+	}
+	if last := read(t, accepted.ID).end(t); last.Type != "turn.completed" {
+		t.Fatalf("turn of the second message with attachments ended with %s %s, want turn.completed", last.Type, last.Data)
+	}
+	told := record(t, accepted.ID).said()
+	second, first := strings.Index(told, "/home/.attachments/3/second.txt"), strings.Index(told, "/home/.attachments/3/first.txt")
+	if second < 0 || first < second {
+		t.Errorf("the model was told %q, want the files of the message in its order", told)
+	}
+
+	response, err := call(ctx, administrator, "GET", "/v1/attachments/"+ids["data.bin"], "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	downloaded, err := io.ReadAll(response.Body)
+	if err != nil || response.StatusCode != http.StatusOK || !bytes.Equal(downloaded, large) {
+		t.Errorf("download: got %d with %d bytes, %v; want 200 with the %d that were uploaded", response.StatusCode, len(downloaded), err, len(large))
 	}
 }
 

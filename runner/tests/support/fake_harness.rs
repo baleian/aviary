@@ -23,8 +23,13 @@
 //!   env <name>         says the value of the environment variable
 //!   mcp                says the MCP servers that the session was started or
 //!                      resumed with, a line each
+//!   links              says the resource links of the prompt, a line each:
+//!                      the name, the address and, if it has one, the type
 //!   die                exits without answering the prompt
 //!   leave              exits after answering the prompt
+//!
+//! The script is the first block of the prompt. A prompt that begins with
+//! another block than a text is the script `links`.
 //!
 //! Sessions are stored in .fake-harness in the working directory, so a
 //! session can only be resumed in the same home.
@@ -68,6 +73,7 @@ fn main() {
         notices: false,
         instructed: instructions(),
         mcp: Vec::new(),
+        links: Vec::new(),
     };
     // Ends when the runner closes standard input.
     while let Ok(message) = harness.incoming.recv() {
@@ -90,6 +96,8 @@ struct Harness {
     instructed: String,
     /// The MCP servers of the session, as `mcp` says them.
     mcp: Vec<String>,
+    /// The resource links of the current prompt, as `links` says them.
+    links: Vec<String>,
 }
 
 /// Returns how `mcp` says the MCP servers of session/new or session/resume.
@@ -207,10 +215,26 @@ impl Harness {
             }
             Some("session/prompt") => {
                 let session = params["sessionId"].as_str().unwrap_or_default().to_owned();
-                let text = params["prompt"][0]["text"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_owned();
+                let blocks = params["prompt"].as_array().cloned().unwrap_or_default();
+                self.links = blocks
+                    .iter()
+                    .filter(|block| block["type"] == "resource_link")
+                    .map(|link| {
+                        let field = |name: &str| link[name].as_str().unwrap_or_default().to_owned();
+                        let mut line = format!("{} {}", field("name"), field("uri"));
+                        if !link["mimeType"].is_null() {
+                            line += &format!(" ({})", field("mimeType"));
+                        }
+                        line
+                    })
+                    .collect();
+                let text = match blocks.first() {
+                    Some(first) if first["type"] != "text" => "links".to_owned(),
+                    first => first
+                        .and_then(|first| first["text"].as_str())
+                        .unwrap_or_default()
+                        .to_owned(),
+                };
                 match self.turn(&session, &text) {
                     Ending::Stopped(reason) => answer(
                         id,
@@ -415,6 +439,8 @@ impl Harness {
                 "env" => self.say(session, &env::var(rest).unwrap_or_else(|_| "not set".to_owned())),
                 "mcp" if self.mcp.is_empty() => self.say(session, "none"),
                 "mcp" => self.say(session, &self.mcp.join("\n")),
+                "links" if self.links.is_empty() => self.say(session, "none"),
+                "links" => self.say(session, &self.links.join("\n")),
                 "die" => process::exit(1),
                 "leave" => self.leaving = true,
                 _ => self.say(session, "fake"),

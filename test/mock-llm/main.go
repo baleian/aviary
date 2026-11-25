@@ -12,11 +12,20 @@
 //	               like run, and asks for the command to run outside the
 //	               harness's sandbox if its shell tool supports that. A
 //	               harness that asks for approval before it acts asks then
+//	read <path>    reads the file with the harness's tool that reads files,
+//	               then replies with the tool's output
 //	use <server> <tool> [<arguments>]
 //	               calls a tool of an MCP server with the JSON arguments,
 //	               then replies with the tool's output. The tool is the first
 //	               that the harness offers whose name ends with the server's
 //	               and the tool's, as in "server_tool" or "mcp__server__tool"
+//	attached       replies with what follows the instruction in its message,
+//	               as the links to the files that a message carries do, a
+//	               part per line, or "nothing" if nothing does
+//	pictures       replies with the media types of the pictures that the
+//	               harness gave the model in the conversation, with a
+//	               message or as what a tool read, one per line, or "none"
+//	               if it gave none
 //	recall         replies with the user's earlier instructions, one per
 //	               line, or "nothing" if there are none
 //	find <text>    replies "present" if the harness sent the text along with
@@ -27,11 +36,14 @@
 //	flaky <text>   refuses the request once, as an overloaded model server
 //	               does, and replies with the text when the harness retries
 //
-// Any other message gets the reply "mock".
+// Any other message gets the reply "mock". An instruction is a part of its
+// message by itself: what the harness puts before or after it in the message
+// is not of it.
 //
 // Requests must carry the API key given in MOCK_LLM_API_KEY. Every response
 // reports the same token usage, 11 input and 7 output tokens. GET /v1/models
-// lists one model, "mock".
+// lists one model, "mock". Asked as the model "mock-text", it refuses a
+// request that carries a picture, as a model does that takes only text.
 //
 // mock-llm is also the forward proxy of the harness tests that run without a
 // cluster. As a proxy it forwards nothing: it refuses each request and logs
@@ -77,6 +89,9 @@ const (
 
 // drawlPause is the pause after each word of a drawl answer.
 const drawlPause = 500 * time.Millisecond
+
+// textOnly is the name of the model that takes no pictures.
+const textOnly = "mock-text"
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
@@ -206,6 +221,9 @@ func mcpServer(begun http.Header) *mcp.Server {
 // next returns the model's answer to the conversation. A flaky instruction is
 // refused the first time.
 func (m *mock) next(c conversation) answer {
+	if c.model == textOnly && len(c.pictures) > 0 {
+		return answer{failure: "the model takes no pictures", status: http.StatusBadRequest}
+	}
 	next := c.next()
 	if !next.flaky {
 		return next
@@ -221,8 +239,14 @@ func (m *mock) next(c conversation) answer {
 
 // conversation is a model request as the script sees it.
 type conversation struct {
+	// model is the model that the request asks.
+	model string
 	// said holds the user messages, oldest first.
 	said []string
+	// attached holds what followed the last instruction in its message.
+	attached []string
+	// pictures holds the media types of the pictures of the conversation.
+	pictures []string
 	// sent holds the text that the harness added itself: its instructions to
 	// the model, and the messages that it added to the conversation.
 	sent []string
@@ -300,12 +324,25 @@ func (a answer) wait(r *http.Request) bool {
 	}
 }
 
-// hear adds a user message. A message that is not an instruction is taken to
-// be added by the harness, and also goes to sent.
-func (c *conversation) hear(message string) {
-	c.said = append(c.said, message)
-	if _, _, found := instruction(message); !found {
-		c.sent = append(c.sent, message)
+// hear adds a user message, part by part. A part that is not an instruction
+// is taken to be added by the harness, and also goes to sent. Those that
+// follow an instruction in its message are attached to it, and are no
+// messages of their own.
+func (c *conversation) hear(parts ...string) {
+	instructed := false
+	for _, part := range parts {
+		_, _, found := instruction(part)
+		switch {
+		case found:
+			instructed, c.attached = true, nil
+			c.said = append(c.said, part)
+		case instructed:
+			c.attached = append(c.attached, part)
+			c.sent = append(c.sent, part)
+		default:
+			c.said = append(c.said, part)
+			c.sent = append(c.sent, part)
+		}
 	}
 }
 
@@ -337,12 +374,25 @@ func (c conversation) next() answer {
 		return answer{text: "mock: the harness offers no tool that runs a command"}
 	case word == "run" || word == "escalate":
 		return answer{call: c.shell.call(rest, word == "escalate")}
+	case word == "read":
+		if reader := findReader(c.tools); reader != nil {
+			return answer{call: reader.call(rest)}
+		}
+		return answer{text: "mock: the harness offers no tool that reads a file"}
 	case word == "use":
 		return c.use(rest)
 	case word == "find" && strings.Contains(strings.Join(c.sent, "\n"), rest):
 		return answer{text: "present"}
 	case word == "find":
 		return answer{text: "absent"}
+	case word == "attached" && len(c.attached) == 0:
+		return answer{text: "nothing"}
+	case word == "attached":
+		return answer{text: strings.Join(c.attached, "\n")}
+	case word == "pictures" && len(c.pictures) == 0:
+		return answer{text: "none"}
+	case word == "pictures":
+		return answer{text: strings.Join(c.pictures, "\n")}
 	}
 	var before []string
 	for _, message := range c.said[:len(c.said)-1] {
@@ -390,7 +440,7 @@ func (c conversation) use(rest string) answer {
 func instruction(message string) (word, rest string, found bool) {
 	word, rest, _ = strings.Cut(strings.TrimSpace(message), " ")
 	switch word {
-	case "say", "drawl", "run", "escalate", "use", "recall", "find", "fail", "flaky":
+	case "say", "drawl", "run", "escalate", "read", "use", "attached", "pictures", "recall", "find", "fail", "flaky":
 		return word, strings.TrimSpace(rest), true
 	}
 	return "", "", false
@@ -442,6 +492,7 @@ func findTool(tools []tool, server, name string) *call {
 // schema is the JSON schema of a tool's parameters.
 type schema struct {
 	Properties map[string]json.RawMessage `json:"properties"`
+	Required   []string                   `json:"required"`
 }
 
 // findShell returns the first tool that takes a command, or nil.
@@ -457,21 +508,96 @@ func findShell(tools []tool) *shellTool {
 	return nil
 }
 
+// readTool is a tool that reads a file, and the argument that names the file.
+type readTool struct {
+	name, argument string
+}
+
+// call returns the call that reads the file at the path.
+func (r readTool) call(path string) *call {
+	encoded, _ := json.Marshal(map[string]string{r.argument: path})
+	return &call{name: r.name, arguments: string(encoded)}
+}
+
+// findReader returns the first tool that needs the path of a file and
+// nothing else, or nil. A tool that needs more, such as a pattern or new
+// content, does something else with the path.
+func findReader(tools []tool) *readTool {
+	for _, tool := range tools {
+		for _, argument := range []string{"file_path", "filePath", "path"} {
+			if slices.Equal(tool.Parameters.Required, []string{argument}) {
+				return &readTool{name: tool.Name, argument: argument}
+			}
+		}
+	}
+	return nil
+}
+
 // text returns content that is either a string or a list of text parts.
 func text(content json.RawMessage) string {
+	return strings.Join(texts(content), "")
+}
+
+// texts returns the text parts of content that is either a string or a list
+// of parts.
+func texts(content json.RawMessage) []string {
 	var whole string
 	if json.Unmarshal(content, &whole) == nil {
-		return whole
+		return []string{whole}
 	}
 	var parts []struct {
 		Text string `json:"text"`
 	}
 	json.Unmarshal(content, &parts)
-	var joined strings.Builder
-	for _, part := range parts {
-		joined.WriteString(part.Text)
+	texts := make([]string, len(parts))
+	for i, part := range parts {
+		texts[i] = part.Text
 	}
-	return joined.String()
+	return texts
+}
+
+// pictures returns the media types of the pictures in a part of a request,
+// in their order, in whichever shape an API has for a picture: with a
+// message or in the output of a tool, as a data URL or as its data.
+func pictures(part json.RawMessage) []string {
+	var value any
+	json.Unmarshal(part, &value)
+	var found []string
+	var walk func(value any)
+	walk = func(value any) {
+		switch value := value.(type) {
+		case []any:
+			for _, inner := range value {
+				walk(inner)
+			}
+		case map[string]any:
+			kind, _ := value["type"].(string)
+			// A data URL is the address of Chat Completions, in an object,
+			// and of Responses.
+			address, _ := value["image_url"].(string)
+			if inner, nested := value["image_url"].(map[string]any); nested {
+				address, _ = inner["url"].(string)
+			}
+			source, _ := value["source"].(map[string]any)
+			media, _ := source["media_type"].(string)
+			switch {
+			case (kind == "image_url" || kind == "input_image") && strings.HasPrefix(address, "data:"):
+				media, _, _ = strings.Cut(strings.TrimPrefix(address, "data:"), ";")
+				found = append(found, media)
+			case kind == "image" && media != "":
+				found = append(found, media)
+			default:
+				// What holds pictures deeper down, such as the result of a
+				// tool. Fields are walked by name: a list of parts is one
+				// field, and keeps its own order.
+				for _, name := range slices.Sorted(maps.Keys(value)) {
+					walk(value[name])
+				}
+			}
+		}
+	}
+	walk(value)
+	return found
 }
 
 // pieces splits text into the words in which it is streamed.
@@ -555,11 +681,12 @@ func (m *mock) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusBadRequest, "mock-llm only streams; set stream to true")
 		return
 	}
-	var c conversation
+	c := conversation{model: request.Model}
 	for i, message := range request.Messages {
+		c.pictures = append(c.pictures, pictures(message.Content)...)
 		switch message.Role {
 		case "user":
-			c.hear(text(message.Content))
+			c.hear(texts(message.Content)...)
 		case "system", "developer":
 			c.sent = append(c.sent, text(message.Content))
 		case "tool":
@@ -646,14 +773,14 @@ func (m *mock) responses(w http.ResponseWriter, r *http.Request) {
 		Content json.RawMessage `json:"content"`
 		Output  json.RawMessage `json:"output"`
 	}
-	c := conversation{sent: []string{request.Instructions}}
+	c := conversation{model: request.Model, sent: []string{request.Instructions}, pictures: pictures(request.Input)}
 	if json.Unmarshal(request.Input, &items) != nil {
 		c.said = []string{text(request.Input)}
 	}
 	for i, item := range items {
 		switch {
 		case item.Type == "message" && item.Role == "user":
-			c.hear(text(item.Content))
+			c.hear(texts(item.Content)...)
 		case item.Type == "message" && (item.Role == "system" || item.Role == "developer"):
 			c.sent = append(c.sent, text(item.Content))
 		case item.Type == "function_call_output" && i == len(items)-1:
@@ -758,10 +885,11 @@ func (m *mock) messages(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusBadRequest, "mock-llm only streams; set stream to true")
 		return
 	}
-	c := conversation{sent: []string{text(request.System)}}
+	c := conversation{model: request.Model, sent: []string{text(request.System)}}
 	// The names of the tools that the model called, by the IDs of the calls.
 	called := map[string]string{}
 	for i, message := range request.Messages {
+		c.pictures = append(c.pictures, pictures(message.Content)...)
 		// A harness can add instructions in the conversation, too.
 		if message.Role == "system" {
 			c.sent = append(c.sent, text(message.Content))
@@ -790,10 +918,11 @@ func (m *mock) messages(w http.ResponseWriter, r *http.Request) {
 			c.hear(text(message.Content))
 			continue
 		}
+		var parts []string
 		for _, block := range blocks {
 			switch {
 			case block.Type == "text":
-				c.hear(block.Text)
+				parts = append(parts, block.Text)
 				// The user's next message can follow a tool result in the
 				// same message, as after a refused tool call.
 				if _, _, found := instruction(block.Text); found {
@@ -804,6 +933,7 @@ func (m *mock) messages(w http.ResponseWriter, r *http.Request) {
 				c.toolOutput, c.searched = &output, called[block.ToolUseID] == toolSearch
 			}
 		}
+		c.hear(parts...)
 	}
 	var tools []tool
 	for _, offered := range request.Tools {

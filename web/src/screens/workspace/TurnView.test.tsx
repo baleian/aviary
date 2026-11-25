@@ -1,13 +1,19 @@
 // @vitest-environment happy-dom
-import { cleanup, render } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { cleanup, render, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
+import * as conversation from "../../api/conversation.ts";
 import type { Tinted } from "../../api/queries.ts";
 import type { Agent, Item, McpServer, Turn } from "../../api/types.ts";
+import * as toasts from "../../ui/toast.ts";
 import type { Who } from "../../ui/who.ts";
 import { TurnView } from "./TurnView.tsx";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 const agent: Tinted<Agent> = {
   id: "a1",
@@ -43,6 +49,7 @@ function show(
   items: Item[] | null = [],
   more: {
     servers?: McpServer[];
+    kept?: boolean;
     awaits?: "wake" | "restore";
     onStop?: () => void;
     onAgain?: (text: string) => void;
@@ -51,8 +58,11 @@ function show(
 ) {
   // Without items the turn is as its record has it before it has ended.
   const drawn = items ? turn({ ...of, items }) : turn(of);
+  // The files of a message are read for their pictures.
   const { container } = render(
-    <TurnView turn={drawn} agent={agent} person={person} {...more} />,
+    <QueryClientProvider client={new QueryClient()}>
+      <TurnView turn={drawn} agent={agent} person={person} {...more} />
+    </QueryClientProvider>,
   );
   const element = container.querySelector<HTMLElement>(".turn")!;
   return { element, text: element.textContent ?? "" };
@@ -69,6 +79,94 @@ it("shows the message, who sent it, and how long the turn took", () => {
     "Alice",
   );
   expect(text).toContain("Helper");
+});
+
+it("shows the files that the message carries above its text, in its order, and saves one with its button", async () => {
+  const attachments = [
+    { id: "a2", name: "notes-k.txt", media_type: "text/plain", size: 5 },
+    {
+      id: "a1",
+      name: "결제 웹훅 재시도 설계.pdf",
+      media_type: "application/pdf",
+      size: 2411724,
+    },
+    { id: "a3", name: "image.png", media_type: "image/png", size: 96256 },
+  ];
+  let saved = () => {};
+  const save = vi.spyOn(conversation, "saveAttachment").mockReturnValue(
+    new Promise((resolve) => {
+      saved = resolve;
+    }),
+  );
+  const user = userEvent.setup();
+  const { element } = show({ attachments });
+  const files = [
+    ...element.querySelectorAll<HTMLElement>(".said-u .files .file"),
+  ];
+  expect(files.map((file) => file.querySelector(".what")!.textContent)).toEqual(
+    ["notes-k.txt5 bytes", "결제 웹훅 재시도 설계.pdf2.3 MB", "image.png94 KB"],
+  );
+  // The tile of a file says what it is.
+  expect(files.map((file) => file.querySelector(".tile")!.textContent)).toEqual(
+    ["txt", "pdf", "png"],
+  );
+  // The files come first, as they do where a message is written.
+  expect(element.querySelector(".said-u")!.lastElementChild!.className).toBe(
+    "bub-u",
+  );
+  const pdf = within(files[1]).getByRole<HTMLButtonElement>("button", {
+    name: "Download 결제 웹훅 재시도 설계.pdf",
+  });
+  await user.click(pdf);
+  expect(save).toHaveBeenCalledWith(attachments[1]);
+  // While the file comes, it is not asked for again.
+  expect(pdf.disabled).toBe(true);
+  expect(pdf.querySelector(".ring")).toBeTruthy();
+  await user.click(pdf);
+  expect(save).toHaveBeenCalledTimes(1);
+  saved();
+  await vi.waitFor(() => expect(pdf.disabled).toBe(false));
+  expect(pdf.querySelector(".ring")).toBeNull();
+  cleanup();
+
+  // A message of files alone has no text.
+  const alone = show({ text: "", attachments: attachments.slice(0, 1) });
+  expect(alone.element.querySelector(".bub-u")).toBeNull();
+  expect(alone.element.querySelectorAll(".files .file")).toHaveLength(1);
+  cleanup();
+
+  // A message without files has no list of them.
+  expect(show({}).element.querySelector(".files")).toBeNull();
+});
+
+it("shows the files of a session that has ended, which are kept no longer, without a way to save them", () => {
+  const attachments = [
+    { id: "a1", name: "env.example", media_type: "text/plain", size: 612 },
+  ];
+  const { element } = show({ attachments }, [], { kept: false });
+  const file = element.querySelector(".files .file")!;
+  expect(file.querySelector(".what")!.textContent).toBe("env.example612 bytes");
+  // Nothing can be done with it.
+  expect(element.querySelector(".files button")).toBeNull();
+});
+
+it("says that a file could not be saved", async () => {
+  vi.spyOn(conversation, "saveAttachment").mockRejectedValue(
+    new Error("no such resource"),
+  );
+  const toasted = vi.spyOn(toasts, "oops").mockImplementation(() => {});
+  const user = userEvent.setup();
+  const { element } = show({
+    attachments: [
+      { id: "a1", name: "notes.txt", media_type: "text/plain", size: 5 },
+    ],
+  });
+  const file = within(element).getByRole<HTMLButtonElement>("button", {
+    name: "Download notes.txt",
+  });
+  await user.click(file);
+  await vi.waitFor(() => expect(toasted).toHaveBeenCalledTimes(1));
+  expect(file.disabled).toBe(false);
 });
 
 it("shows what the agent said, thought and planned, in order", () => {
@@ -560,6 +658,15 @@ it("says why a turn failed, expired or was stopped", () => {
   });
   expect(failed.element.querySelector(".fail")!.textContent).toBe(
     "The sandbox was lost, with the files in itpod deleted",
+  );
+  cleanup();
+  const full = show({
+    state: "failed",
+    started_at: undefined,
+    failure: { reason: "attachment_failed", message: "no room" },
+  });
+  expect(full.element.querySelector(".fail b")!.textContent).toBe(
+    "The files did not fit into the sandbox",
   );
   cleanup();
   const unknown = show({ state: "failed", failure: { reason: "new_reason" } });

@@ -16,10 +16,12 @@ import {
   olderTurns,
   renameSession,
   rereadSession,
+  saveAttachment,
   sendMessage,
   startSession,
   stopTurn,
   suggestTitle,
+  uploadAttachment,
   useTurns,
 } from "./conversation.ts";
 import type { SessionPage } from "./feed.ts";
@@ -376,11 +378,42 @@ it("adds the turn of a message that it sends to the turns that were read", async
   expect(seqs()).toEqual([1, 2]);
 });
 
+it("uploads a file under its name, and sends a message with the files that it carries", async () => {
+  const uploaded = {
+    id: "a1",
+    name: "보고서 (2).pdf",
+    media_type: "x",
+    size: 5,
+  };
+  const upload = vi.spyOn(api, "upload").mockResolvedValue(uploaded);
+  const file = new File(["to do"], "보고서 (2).pdf");
+  const progress = () => {};
+  expect(await uploadAttachment("s1", file, progress)).toBe(uploaded);
+  expect(upload).toHaveBeenCalledWith(
+    "/v1/sessions/s1/attachments?name=%EB%B3%B4%EA%B3%A0%EC%84%9C%20(2).pdf",
+    file,
+    progress,
+  );
+
+  queryClient.setQueryData(TURNS, [turn(1)]);
+  const carried = turn(2, { state: "queued", attachments: [uploaded] });
+  const post = answered(carried);
+  expect(await sendMessage("s1", "", ["a1", "a2"])).toEqual(carried);
+  expect(post).toHaveBeenCalledWith("/v1/sessions/s1/messages", {
+    text: "",
+    attachments: ["a1", "a2"],
+  });
+  expect(read()[1].attachments).toEqual([uploaded]);
+});
+
 it("keeps a turn that it stops as the API then has it", async () => {
   const items = [{ type: "message" as const, text: "So far." }];
+  const attachments = [
+    { id: "a1", name: "notes.txt", media_type: "text/plain", size: 5 },
+  ];
   queryClient.setQueryData(TURNS, [
     turn(1),
-    turn(2, { state: "queued", position: 2, items }),
+    turn(2, { state: "queued", position: 2, items, attachments }),
   ]);
   const [first] = read();
   const post = answered(
@@ -388,13 +421,15 @@ it("keeps a turn that it stops as the API then has it", async () => {
   );
   await stopTurn("s1", "t2");
   expect(post).toHaveBeenCalledWith("/v1/turns/t2/cancel");
-  // What its events told stays: its record does not have it.
+  // What its events told stays, and so do the files of its message: the
+  // answer does not have them.
   expect(read()[1]).toEqual(
     turn(2, {
       state: "running",
       cancel_requested_at: "now",
       position: 2,
       items,
+      attachments,
     }),
   );
   expect(read()[0]).toBe(first);
@@ -418,6 +453,39 @@ it("takes a turn that ended by itself for stopped", async () => {
   const other = new ApiError(403, { code: "forbidden", message: "no" }, {});
   post.mockRejectedValueOnce(other);
   await expect(stopTurn("s1", "t2")).rejects.toBe(other);
+});
+
+it("has the browser save the file of an attachment under its name", async () => {
+  const file = new Blob(["to do"], { type: "text/plain" });
+  const download = vi.spyOn(api, "download").mockResolvedValue(file);
+  const address = vi
+    .spyOn(URL, "createObjectURL")
+    .mockReturnValue("blob:the-file");
+  const revoke = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+  let saved: [string, string] | undefined;
+  vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (
+    this: HTMLAnchorElement,
+  ) {
+    saved = [this.getAttribute("href")!, this.download];
+  });
+  vi.useFakeTimers();
+  try {
+    await saveAttachment({
+      id: "a1",
+      name: "보고서 (2).pdf",
+      media_type: "application/pdf",
+      size: 5,
+    });
+    expect(download).toHaveBeenCalledWith("/v1/attachments/a1");
+    expect(address).toHaveBeenCalledWith(file);
+    expect(saved).toEqual(["blob:the-file", "보고서 (2).pdf"]);
+    // The address is given up once the browser has the file.
+    expect(revoke).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1000);
+    expect(revoke).toHaveBeenCalledWith("blob:the-file");
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("reads a session and its turns again", async () => {

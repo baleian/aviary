@@ -7,6 +7,7 @@ import { uuid7, copy } from "./util.js";
 import { seed, PERMISSIONS, IDLE, TOOLS } from "./seed.js";
 import { script } from "./scripts.js";
 import { assemble } from "./items.js";
+import { bytesOf } from "./files.js";
 
 // What the mock is set to do.
 export const mock = {
@@ -25,6 +26,8 @@ let serversOf;
 let runs;
 let feeds;
 let told;
+// The files that were uploaded, by the ID of their attachment.
+let uploads;
 let telling = 0;
 let serial = 0;
 
@@ -365,10 +368,51 @@ function sessionRecord(session) {
   return record;
 }
 
-// turnRecord is a turn with its items, which exist once the turn has ended,
-// and with the approval requests that wait for an answer while it has not.
+// fileName returns the name under which an uploaded file is kept: the last
+// element of the given path, without control characters and leading dots.
+function fileName(given) {
+  const last = String(given ?? "")
+    .split(/[\\/]/)
+    .pop();
+  const printable = [...last].filter((character) => {
+    const code = character.codePointAt(0);
+    return code > 0x1f && (code < 0x7f || code > 0x9f);
+  });
+  return printable.join("").trim().replace(/^\.+/, "").trim();
+}
+
+// uniqueNames returns the names with those that occur again changed, so
+// that all differ: "report.pdf" a second time becomes "report (2).pdf".
+function uniqueNames(names) {
+  const taken = new Set();
+  return names.map((name) => {
+    const dot = name.lastIndexOf(".");
+    const [stem, extension] =
+      dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
+    let unique = name;
+    for (let n = 2; taken.has(unique); n++)
+      unique = `${stem} (${n})${extension}`;
+    taken.add(unique);
+    return unique;
+  });
+}
+
+// carried returns the files that the message of a turn carries, in its
+// order, as a turn names them.
+function carried(turn) {
+  return db.attachments
+    .filter((attachment) => attachment.turn_id === turn.id)
+    .sort((a, b) => a.position - b.position)
+    .map(({ id, name, media_type, size }) => ({ id, name, media_type, size }));
+}
+
+// turnRecord is a turn with the files of its message, with its items, which
+// exist once the turn has ended, and with the approval requests that wait
+// for an answer while it has not.
 function turnRecord(turn) {
   const record = { ...turn, items: db.items.get(turn.id) || [] };
+  const files = carried(turn);
+  if (files.length) record.attachments = files;
   if (!turn.ended_at) {
     const waiting = [...(approvalsOf.get(turn.id)?.values() || [])]
       .filter((asked) => !asked.answered && !asked.resolved)
@@ -1253,13 +1297,28 @@ function chosen() {
   return scenario;
 }
 
-// accept makes a message the next turn of its session, and starts it as the
-// scenario says.
-function accept(session, who, words, scenario) {
+// accept makes a message the next turn of its session, with the files that
+// were uploaded for it, and starts it as the scenario says.
+function accept(session, who, words, scenario, files = []) {
   if (session.ended_at) refuse(409, "session_ended", "the session has ended");
   const turns = db.turns.filter((turn) => turn.session_id === session.id);
   if (turns.some((turn) => !turn.ended_at))
     refuse(409, "session_busy", "the session has an unfinished turn");
+  // A message carries files of its session that no message carries yet.
+  const attached = files.map((id) =>
+    db.attachments.find(
+      (attachment) =>
+        attachment.id === id &&
+        attachment.session_id === session.id &&
+        !attachment.turn_id,
+    ),
+  );
+  if (attached.includes(undefined) || new Set(files).size !== files.length)
+    refuse(
+      400,
+      "unknown_attachment",
+      "an attachment is not one of the session that no message carries yet",
+    );
   if (scenario === "queue_full")
     refuse(429, "queue_full", "too many turns are queued; retry later", {
       "Retry-After": "5",
@@ -1275,6 +1334,14 @@ function accept(session, who, words, scenario) {
   };
   db.turns.push(turn);
   db.items.set(turn.id, []);
+  const names = uniqueNames(attached.map((attachment) => attachment.name));
+  attached.forEach((attachment, position) =>
+    Object.assign(attachment, {
+      turn_id: turn.id,
+      position,
+      name: names[position],
+    }),
+  );
   const play = script(scenario, words);
   const dispatch = () => {
     turn.state = "running";
@@ -1975,11 +2042,70 @@ route("DELETE", "/v1/sessions/{sid}/mcp-servers", ({ who }, sid) => {
   delete session.mcp;
   return [200, sessionRecord(session)];
 });
+// What the installation sets for the files that messages carry.
+route("GET", "/v1/limits", () => {
+  const { maxAttachmentBytes, maxAttachments } = db.config;
+  return [
+    200,
+    {
+      max_attachment_bytes: maxAttachments ? maxAttachmentBytes : 0,
+      max_attachments: maxAttachments,
+    },
+  ];
+});
+// The body of an upload is the file, and the query names it.
+route(
+  "POST",
+  "/v1/sessions/{sid}/attachments",
+  ({ who, body: file, query }, sid) => {
+    const session = withSession(who, sid, "sends");
+    const name = fileName(query.get("name"));
+    if (!name) invalid("name must be the name of the file");
+    if (!db.config.maxAttachments)
+      refuse(
+        403,
+        "attachments_disabled",
+        "the installation takes no attachments",
+      );
+    if (file.size > db.config.maxAttachmentBytes)
+      refuse(
+        413,
+        "attachment_too_large",
+        "the file is larger than an attachment may be",
+      );
+    if (session.ended_at) refuse(409, "session_ended", "the session has ended");
+    const attachment = {
+      id: uuid7(),
+      session_id: sid,
+      name,
+      media_type: file.type.split(";")[0].trim() || "application/octet-stream",
+      size: file.size,
+      created_by: who.id,
+      created_at: iso(),
+    };
+    db.attachments.push(attachment);
+    uploads.set(attachment.id, file);
+    const { id, media_type, size } = attachment;
+    return [201, { id, name, media_type, size }];
+  },
+);
 route("POST", "/v1/sessions/{sid}/messages", ({ who, body }, sid) => {
   const session = withSession(who, sid, "sends");
-  const request = decode(body, ["text"]);
-  if (!text(request.text)) invalid("text is required");
-  return [202, accept(session, who, request.text, chosen())];
+  const request = decode(body, ["text", "attachments"]);
+  const files = request.attachments ?? [];
+  if (!Array.isArray(files) || !files.every((id) => UUID.test(id)))
+    invalid("request body is not valid JSON for this endpoint");
+  const words = text(request.text);
+  if (!words && !files.length)
+    invalid("text is required, unless the message carries attachments");
+  if (files.length > db.config.maxAttachments)
+    refuse(
+      400,
+      "too_many_attachments",
+      "the message carries more attachments than a message may",
+    );
+  const turn = accept(session, who, words, chosen(), files);
+  return [202, files.length ? { ...turn, attachments: carried(turn) } : turn];
 });
 route("GET", "/v1/sessions/{sid}/turns", ({ who, query }, sid) => {
   withSession(who, sid, "reads");
@@ -2037,6 +2163,15 @@ route("POST", "/v1/turns/{tid}/approvals/{rid}", ({ who, body }, tid, rid) => {
   });
   asked.settle?.();
   return [202, { id: rid, option_id: chosen.option_id }];
+});
+// The file of an attachment is a download: see download().
+route("GET", "/v1/attachments/{id}", ({ who }, id) => {
+  const attachment = one(db.attachments, id);
+  const session = one(db.sessions, attachment.session_id);
+  mayWith(who, session, attachment.created_by, "reads");
+  // The files are kept until their session ends.
+  if (session.ended_at) notFound();
+  return [200, attachment];
 });
 // The events of a turn are a stream: see open().
 route("GET", "/v1/turns/{tid}/events", ({ who }, tid) => [
@@ -2104,6 +2239,27 @@ export function request(method, path, { token = "", body = null } = {}) {
       body: { code: "internal", message: "internal error" },
     };
   }
+}
+
+// download answers GET /v1/attachments/{id}: with the answer of the API, and
+// with the file if the request is not refused. A file of the example data
+// is made when it is read.
+export async function download(path, { token = "" } = {}) {
+  const response = request("GET", path, { token });
+  if (response.status !== 200) return { response };
+  const { id, name, media_type } = response.body;
+  const file = uploads.get(id) ?? (await bytesOf(response.body));
+  return {
+    response: {
+      status: 200,
+      headers: {
+        "Content-Type": media_type,
+        "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
+      },
+      body: null,
+    },
+    file,
+  };
 }
 
 // open answers GET /v1/turns/{id}/events. If the request is refused, it
@@ -2236,6 +2392,7 @@ export function reset() {
   runs = new Map();
   feeds = new Set();
   told = null;
+  uploads = new Map();
   for (const left of db.live) {
     const turn = db.turns.find((other) => other.id === left.turn);
     emit(turn.id, "turn.started", {});
@@ -2267,6 +2424,15 @@ export function accounts() {
 
 export function setIdentityProvider(on) {
   db.config.idp = on;
+}
+
+// setLimits sets how large a file of a message may be, in bytes, and how
+// many files a message may carry: 0 for an installation that takes none.
+export function setLimits(bytes, files) {
+  Object.assign(db.config, {
+    maxAttachmentBytes: bytes,
+    maxAttachments: files,
+  });
 }
 
 reset();

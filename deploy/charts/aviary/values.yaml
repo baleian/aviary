@@ -202,6 +202,10 @@ runtime:
   # report. Longer text is truncated in the events; the agent itself gets all
   # of it. 0 means no limit.
   maxToolOutputBytes: 65536
+  # Maximum bytes of a file that a message carries, and maximum number of
+  # files of one message. 0 files means that messages carry none.
+  maxAttachmentBytes: 67108864
+  maxAttachments: 10
   # Harnesses that agents can use, by name. The image contains the harness
   # and the runner, and the resources apply to the harness container. A
   # change applies to a sandbox the next time it wakes. No CPU limit is set,

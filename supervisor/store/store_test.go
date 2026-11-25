@@ -73,3 +73,16 @@ func TestPluginIsChosenByTheScheme(t *testing.T) {
 		t.Errorf("unexpected plugin calls: %q", asked)
 	}
 }
+
+// Names that occur again are changed before their extension, so that all
+// differ.
+func TestUniqueNames(t *testing.T) {
+	got := store.UniqueNames([]string{"a.png", "b", "a.png", "a (2).png", "b", "a.png", ".env", ".env", "a.tar.gz", "a.tar.gz"})
+	want := []string{"a.png", "b", "a (2).png", "a (2) (2).png", "b (2)", "a (3).png", ".env", ".env (2)", "a.tar.gz", "a.tar (2).gz"}
+	if !slices.Equal(got, want) {
+		t.Errorf("UniqueNames = %q, want %q", got, want)
+	}
+	if none := store.UniqueNames(nil); len(none) != 0 {
+		t.Errorf("UniqueNames of no names = %q", none)
+	}
+}

@@ -27,6 +27,10 @@ const (
 // ErrBusy is returned by Start when the runner is running another turn.
 var ErrBusy = errors.New("runner is busy with another turn")
 
+// ErrNoRoom means that the home of the runner's sandbox has no room for a
+// file.
+var ErrNoRoom = errors.New("the home has no room")
+
 // Runner is a client of the runner in a sandbox. Its responses come from the
 // sandbox, which the agent controls, so they are not trusted.
 type Runner struct {
@@ -56,6 +60,9 @@ func (r *Runner) Address() string {
 // so the runner starts a new one for a turn in which they differ.
 type Turn struct {
 	Text string `json:"text"`
+	// Files are the files that the message carries, in its order: the paths
+	// at which PutFile wrote them. The runner links them in the prompt.
+	Files []string `json:"files,omitempty"`
 	// Instructions are given to the agent before every turn.
 	Instructions string `json:"instructions"`
 	// Approval is "ask" if the harness asks a person before it acts.
@@ -222,6 +229,35 @@ func (r *Runner) Unpack(ctx context.Context, archive io.Reader, size int64) erro
 	defer answer.Body.Close()
 	if answer.StatusCode < 200 || answer.StatusCode > 299 {
 		return refused(answer, http.MethodPut+" /home")
+	}
+	return nil
+}
+
+// PutFile gives the runner a file that a message carries, of size bytes, to
+// write at the path below the attachments of its home. The path is relative
+// and has slashes between its elements. A file that is there is replaced. It
+// returns ErrNoRoom if the home has no room for the file.
+func (r *Runner) PutFile(ctx context.Context, path string, file io.Reader, size int64) error {
+	elements := strings.Split(path, "/")
+	for i, element := range elements {
+		elements[i] = url.PathEscape(element)
+	}
+	asked := "/files/" + strings.Join(elements, "/")
+	request, err := http.NewRequestWithContext(ctx, http.MethodPut, r.address+asked, file)
+	if err != nil {
+		return err
+	}
+	request.ContentLength = size
+	answer, err := r.http.Do(request)
+	if err != nil {
+		return fmt.Errorf("runner: %w", err)
+	}
+	defer answer.Body.Close()
+	switch {
+	case answer.StatusCode == http.StatusInsufficientStorage:
+		return ErrNoRoom
+	case answer.StatusCode < 200 || answer.StatusCode > 299:
+		return refused(answer, http.MethodPut+" "+asked)
 	}
 	return nil
 }

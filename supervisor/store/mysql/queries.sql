@@ -280,6 +280,45 @@ values (sqlc.arg(id), sqlc.arg(session_id), sqlc.arg(seq), 'queued', sqlc.arg(te
 -- name: GetTurn :one
 select * from turns where id = ?;
 
+-- name: ExpectAttachments :exec
+update sessions set has_attachments = true where id = ?;
+
+-- name: CreateAttachment :exec
+insert into attachments (id, session_id, name, media_type, size, created_by)
+values (sqlc.arg(id), sqlc.arg(session_id), sqlc.arg(name), sqlc.arg(media_type), sqlc.arg(size), sqlc.narg(created_by));
+
+-- name: GetAttachment :one
+select * from attachments where id = ?;
+
+-- name: ListTurnAttachments :many
+select * from attachments where turn_id in (sqlc.slice('turn_ids')) order by turn_id, position;
+
+-- name: LockUnsentAttachments :many
+-- Locks those of the attachments that are of the session and that no message
+-- carries, until the transaction ends.
+select * from attachments
+where id in (sqlc.slice('ids')) and session_id = sqlc.arg(session_id) and turn_id is null
+for update;
+
+-- name: AttachToTurn :exec
+update attachments set turn_id = sqlc.arg(turn_id), position = sqlc.arg(position), name = sqlc.arg(name) where id = sqlc.arg(id);
+
+-- name: ListUnsentAttachments :many
+select * from attachments where turn_id is null and created_at < sqlc.arg(before) order by created_at limit ?;
+
+-- name: DeleteUnsentAttachment :execrows
+delete from attachments where id = ? and turn_id is null;
+
+-- name: ListLeftAttachments :many
+-- Lists the sessions that ended before before and may have left attachments
+-- in the depot.
+select id from sessions
+where has_attachments = true and ended_at < sqlc.arg(before)
+order by ended_at limit ?;
+
+-- name: ForgetAttachments :exec
+update sessions set has_attachments = false where id = ? and ended_at is not null;
+
 -- name: LockTurn :one
 -- Locks the turn until the transaction ends, which serializes changes to it.
 select * from turns where id = ? for update;

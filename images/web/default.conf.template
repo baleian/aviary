@@ -9,8 +9,9 @@ server {
 
     # The web UI loads its scripts, styles and fonts only from its own
     # address, and is not shown in a frame. It may call the API and the
-    # issuer wherever they are.
-    add_header Content-Security-Policy "default-src 'self'; connect-src *; img-src 'self' data:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'" always;
+    # issuer wherever they are, and draw the pictures among the files that
+    # it has read from the API: the browser names those with blob.
+    add_header Content-Security-Policy "default-src 'self'; connect-src *; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'" always;
     add_header X-Content-Type-Options nosniff always;
     # The address of a sign-in that comes back carries its code.
     add_header Referrer-Policy no-referrer always;
@@ -30,6 +31,10 @@ server {
         ${AVIARY_API_LOCATION}
         # Event streams are passed on as they come.
         proxy_buffering off;
+        # So are the files that messages carry, of whatever size: the API
+        # says how large a file may be.
+        client_max_body_size 0;
+        proxy_request_buffering off;
     }
 
     # Files whose names change with their contents.

@@ -27,6 +27,47 @@ export const http: Transport = {
     };
   },
 
+  // fetch does not tell how much of a body has gone, so the file goes with
+  // an XMLHttpRequest.
+  upload(path, { token, file, onProgress }) {
+    return new Promise((resolve, reject) => {
+      const request = new XMLHttpRequest();
+      request.open("POST", address + path);
+      if (token) request.setRequestHeader("Authorization", "Bearer " + token);
+      request.setRequestHeader(
+        "Content-Type",
+        file.type || "application/octet-stream",
+      );
+      request.upload.onprogress = (event) => onProgress?.(event.loaded);
+      request.onload = () =>
+        resolve({
+          status: request.status,
+          headers: headersOf(request.getAllResponseHeaders()),
+          body: decode(request.responseText),
+        });
+      request.onerror = () =>
+        reject(new TypeError("the file could not be sent"));
+      request.onabort = request.onerror;
+      request.send(file);
+    });
+  },
+
+  async download(path, { token, first }) {
+    const headers: Record<string, string> = {};
+    if (token) headers["Authorization"] = "Bearer " + token;
+    const response = await fetch(address + path, { headers });
+    const reply = {
+      status: response.status,
+      headers: Object.fromEntries(response.headers),
+    };
+    if (!response.ok) return { ...reply, body: decode(await response.text()) };
+    const file =
+      first === undefined || !response.body
+        ? await response.blob()
+        : await begin(response.body, first, reply.headers["content-type"]);
+    return { ...reply, body: null, file };
+  },
+
   stream(path, { token, after }, handlers) {
     const closing = new AbortController();
     const headers: Record<string, string> = { Accept: "text/event-stream" };
@@ -69,6 +110,36 @@ async function follow(
     });
   }
   if (!signal.aborted) handlers.onEnd();
+}
+
+// begin reads the first bytes of a body, and lets go of the rest of it
+// without reading it.
+async function begin(
+  body: ReadableStream<Uint8Array<ArrayBuffer>>,
+  bytes: number,
+  type = "",
+): Promise<Blob> {
+  const reader = body.getReader();
+  const parts: Uint8Array<ArrayBuffer>[] = [];
+  for (let read = 0; read < bytes;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    parts.push(value);
+    read += value.length;
+  }
+  await reader.cancel();
+  return new Blob(parts).slice(0, bytes, type);
+}
+
+// headersOf reads the headers of an answer as an XMLHttpRequest gives them:
+// a line each, with the names in lower case.
+function headersOf(lines: string): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const line of lines.trim().split(/[\r\n]+/)) {
+    const [name, ...value] = line.split(": ");
+    if (name) headers[name.toLowerCase()] = value.join(": ");
+  }
+  return headers;
 }
 
 // decode reads the body of an answer. What is in the way of the API, such as

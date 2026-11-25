@@ -278,10 +278,18 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 	if err != nil {
 		return nil, err
 	}
+	files, err := d.deliver(following, turn, runner)
+	switch {
+	case errors.Is(err, sandbox.ErrNoRoom):
+		r.giveUp(store.Failure{Reason: store.FailureAttachment, Message: err.Error()})
+		return nil, nil
+	case err != nil:
+		return nil, err
+	}
 	// The runner may get the turn even if the request fails.
 	r.give()
 	err = runner.Start(following, turn.ID, sandbox.Turn{
-		Text: turn.Text, Instructions: turn.Instructions, Approval: turn.Approval,
+		Text: turn.Text, Files: files, Instructions: turn.Instructions, Approval: turn.Approval,
 		Environment: d.environment(turn), McpServers: servers,
 	})
 	if errors.Is(err, sandbox.ErrBusy) {

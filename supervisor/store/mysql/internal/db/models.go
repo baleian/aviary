@@ -5,6 +5,7 @@
 package db
 
 import (
+	"database/sql"
 	"encoding/json"
 	"time"
 
@@ -42,6 +43,18 @@ type Approval struct {
 	AnsweredBy  *key.ID
 	Outcome     *string
 	ResolvedAt  *time.Time
+}
+
+type Attachment struct {
+	ID        key.ID
+	SessionID key.ID
+	TurnID    *key.ID
+	Position  sql.NullInt32
+	Name      string
+	MediaType string
+	Size      int64
+	CreatedBy *key.ID
+	CreatedAt time.Time
 }
 
 type McpServer struct {
@@ -98,21 +111,22 @@ type SecretStore struct {
 }
 
 type Session struct {
-	ID           key.ID
-	AgentID      key.ID
-	Title        string
-	CreatedBy    *key.ID
-	Sandbox      *string
-	SandboxState *string
-	CreatedAt    time.Time
-	EndedAt      *time.Time
-	EndReason    *string
-	AsleepSince  *time.Time
-	Archive      *key.ID
-	ArchiveBytes *int64
-	ArchivedAt   *time.Time
-	Claim        *key.ID
-	ClaimedAt    *time.Time
+	ID             key.ID
+	AgentID        key.ID
+	Title          string
+	CreatedBy      *key.ID
+	Sandbox        *string
+	SandboxState   *string
+	CreatedAt      time.Time
+	EndedAt        *time.Time
+	EndReason      *string
+	AsleepSince    *time.Time
+	Archive        *key.ID
+	ArchiveBytes   *int64
+	ArchivedAt     *time.Time
+	Claim          *key.ID
+	ClaimedAt      *time.Time
+	HasAttachments bool
 }
 
 type Turn struct {

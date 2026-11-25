@@ -180,6 +180,24 @@ export interface ApprovalRequest {
 export type TurnState =
   "queued" | "running" | "completed" | "failed" | "cancelled" | "expired";
 
+// What the installation sets for the files that messages carry: how large
+// a file may be, in bytes, and how many files a message may carry. Both are
+// 0 if it takes none.
+export interface Limits {
+  max_attachment_bytes: number;
+  max_attachments: number;
+}
+
+// A file that a message carries.
+export interface Attachment {
+  id: string;
+  name: string;
+  // What the file is, as whoever uploaded it said: "application/pdf".
+  media_type: string;
+  // In bytes.
+  size: number;
+}
+
 // A turn: a message to a session, and what the agent did with it. A session
 // carries its newest turn without the text.
 export interface Turn {
@@ -189,6 +207,8 @@ export interface Turn {
   seq: number;
   state: TurnState;
   text?: string;
+  // The files that the message carries, in its order.
+  attachments?: Attachment[];
   created_by?: string;
   created_at: string;
   // When the harness had the message.
