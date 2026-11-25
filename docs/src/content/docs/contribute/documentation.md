@@ -53,7 +53,9 @@ in the repository, and the build turns it into the address of the page. A
 link to a page or a heading that is not there fails the build.
 
 Pictures are in `docs/src/assets` and are linked by their relative paths as
-well.
+well. The diagrams among them are SVG files, in `diagrams/`. Each has the
+colours of a light and of a dark page, and takes those of the page that
+shows it.
 
 ## Writing
 

@@ -1,0 +1,159 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 704" role="img" aria-labelledby="title desc">
+  <title id="title">The path of a turn</title>
+  <desc id="desc">A client sends a message. The Supervisor records it as a turn, has the session's sandbox created or woken, and gives the turn to the runner, which prompts the harness. The model requests of the harness go through the Egress Proxy, which asks the Supervisor whose they are and puts in the provider's key. What the agent does comes back as events until the turn ends.</desc>
+  <style>
+    svg {
+      --bg: #ffffff; --frame: #d9e0ea;
+      --zone: #f5f8fc; --zone-line: #b4c1d3;
+      --box: #ffffff; --box-line: #93a2b8;
+      --ink: #0d1b2e; --note: #55637a; --edge: #5d6b82;
+      --accent: #0b6fe0; --accent-soft: #e8f1ff;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --bg: #0b1526; --frame: #24344f;
+        --zone: #101c31; --zone-line: #3a4c6c;
+        --box: #16243d; --box-line: #4c6085;
+        --ink: #e9eff8; --note: #a3b2c9; --edge: #93a1b9;
+        --accent: #6cb2ff; --accent-soft: #14294b;
+      }
+    }
+    .bg { fill: var(--bg); stroke: var(--frame); }
+    .zone { fill: var(--zone); stroke: var(--zone-line); stroke-dasharray: 5 4; }
+    .cluster { fill: none; stroke: var(--zone-line); stroke-dasharray: 5 4; }
+    .closed { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 6 4; }
+    .box { fill: var(--box); stroke: var(--box-line); }
+    .hub { fill: var(--box); stroke: var(--ink); stroke-width: 1.5; }
+    .out { fill: var(--box); stroke: var(--accent); stroke-width: 1.5; }
+    .back { opacity: 0.55; }
+    .gone { fill: none; stroke: var(--box-line); stroke-dasharray: 3 4; }
+    .has { fill: var(--accent); stroke: var(--accent); }
+    .off { fill: var(--note); opacity: 0.75; }
+    .life { fill: none; stroke: var(--zone-line); stroke-dasharray: 2 5; }
+    .loop { fill: none; stroke: var(--zone-line); }
+    .tab { fill: var(--zone); stroke: var(--zone-line); }
+    .e { fill: none; stroke: var(--edge); stroke-width: 1.5; }
+    .e.way { stroke: var(--accent); }
+    .e.ret { stroke-dasharray: 5 4; }
+    .head { fill: var(--edge); }
+    .head.way { fill: var(--accent); }
+    .badge { fill: var(--ink); }
+    text { fill: var(--ink); }
+    .t { font-size: 16px; font-weight: 700; }
+    .n { font-size: 13.5px; font-weight: 650; }
+    .d { font-size: 12.5px; fill: var(--note); }
+    .l { font-size: 12.5px; fill: var(--note); }
+    .l.way { fill: var(--accent); }
+    .z { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; fill: var(--note); }
+    .m { font-size: 11.5px; fill: var(--note); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .b { font-size: 11.5px; font-weight: 700; fill: var(--bg); text-anchor: middle; }
+    .c { text-anchor: middle; }
+    .r { text-anchor: end; }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0 0 10 5 0 10z"/></marker>
+    <marker id="w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head way" d="M0 0 10 5 0 10z"/></marker>
+  </defs>
+
+  <rect class="bg" x="0.5" y="0.5" width="899" height="703" rx="14"/>
+
+
+  <!-- The sandbox of the session, and the lines of the parts -->
+  <rect class="closed" x="382" y="14" width="236" height="676" rx="12"/>
+  <text class="z" x="396" y="32">SESSION SANDBOX</text>
+  <path class="life" d="M60 80V680"/>
+  <path class="life" d="M210 80V680"/>
+  <path class="life" d="M440 80V620"/>
+  <path class="life" d="M560 80V620"/>
+  <path class="life" d="M745 80V680"/>
+  <path class="life" d="M850 80V680"/>
+  <rect class="box" x="20" y="40" width="80" height="40" rx="8"/>
+  <text class="n c" x="60" y="65">Client</text>
+  <rect class="hub" x="155" y="40" width="110" height="40" rx="8"/>
+  <text class="n c" x="210" y="65">Supervisor</text>
+  <rect class="box" x="400" y="40" width="80" height="40" rx="8"/>
+  <text class="n c" x="440" y="65">runner</text>
+  <rect class="box" x="520" y="40" width="80" height="40" rx="8"/>
+  <text class="n c" x="560" y="65">harness</text>
+  <rect class="out" x="689" y="40" width="112" height="40" rx="8"/>
+  <text class="n c" x="745" y="65">Egress Proxy</text>
+  <rect class="box" x="810" y="40" width="80" height="40" rx="8"/>
+  <text class="n c" x="850" y="57">Model</text>
+  <text class="n c" x="850" y="72">endpoint</text>
+
+  <!-- 1. A message -->
+  <circle class="badge" cx="24" cy="112" r="9"/>
+  <text class="b" x="24" y="116">1</text>
+  <path class="e" d="M60 112H208" marker-end="url(#a)"/>
+  <text class="l c" x="135" y="105">a message</text>
+
+  <!-- 2. The turn -->
+  <circle class="badge" cx="24" cy="146" r="9"/>
+  <text class="b" x="24" y="150">2</text>
+  <rect class="box" x="115" y="126" width="190" height="46" rx="6"/>
+  <text class="d c" x="210.0" y="144">records the turn: it runs,</text>
+  <text class="d c" x="210.0" y="159">or waits in the queue</text>
+
+  <!-- 3. The sandbox, the runner and the harness -->
+  <circle class="badge" cx="24" cy="212" r="9"/>
+  <text class="b" x="24" y="216">3</text>
+  <path class="e" d="M210 212H380" marker-end="url(#a)"/>
+  <text class="l c" x="296" y="191">has agent-sandbox</text>
+  <text class="l c" x="296" y="205">create or wake it</text>
+  <path class="e" d="M210 244H438" marker-end="url(#a)"/>
+  <text class="l c" x="296" y="237">the turn</text>
+  <path class="e" d="M440 270H558" marker-end="url(#a)"/>
+  <text class="l c" x="500" y="263">session/prompt</text>
+
+  <!-- What repeats until the turn ends -->
+  <rect class="loop" x="40" y="290" width="846" height="244" rx="8"/>
+  <rect class="tab" x="40" y="290" width="164" height="20" rx="6"/>
+  <text class="d" x="50" y="304">while the agent works</text>
+
+  <!-- 4. A request to the model -->
+  <circle class="badge" cx="24" cy="338" r="9"/>
+  <text class="b" x="24" y="342">4</text>
+  <path class="e way" d="M560 338H743" marker-end="url(#w)"/>
+  <text class="l way c" x="686" y="317">model request with</text>
+  <text class="l way c" x="686" y="331">the session token</text>
+  <path class="e" d="M745 364H212" marker-end="url(#a)"/>
+  <text class="l c" x="296" y="357">whose request is this?</text>
+  <path class="e ret" d="M210 390H743" marker-end="url(#a)"/>
+  <text class="l c" x="296" y="383">its endpoint and its key</text>
+  <rect class="box" x="120" y="408" width="180" height="46" rx="6"/>
+  <text class="d c" x="210.0" y="426">if it goes away, another</text>
+  <text class="d c" x="210.0" y="441">Supervisor continues</text>
+  <path class="e way" d="M745 416H848" marker-end="url(#w)"/>
+  <text class="l way c" x="797" y="395">with the</text>
+  <text class="l way c" x="797" y="409">provider's key</text>
+  <path class="e ret" d="M850 442H747" marker-end="url(#a)"/>
+  <path class="e ret" d="M745 442H562" marker-end="url(#a)"/>
+  <text class="l c" x="797" y="435">the answer</text>
+
+  <!-- 5. What the agent does -->
+  <circle class="badge" cx="24" cy="468" r="9"/>
+  <text class="b" x="24" y="472">5</text>
+  <path class="e" d="M560 468H442" marker-end="url(#a)"/>
+  <text class="l c" x="500" y="461">session/update</text>
+  <path class="e" d="M440 494H212" marker-end="url(#a)"/>
+  <text class="l c" x="296" y="487">events</text>
+  <path class="e" d="M210 520H62" marker-end="url(#a)"/>
+  <text class="l c" x="135" y="513">events, as they come</text>
+
+  <!-- 6. The end of the turn -->
+  <circle class="badge" cx="24" cy="566" r="9"/>
+  <text class="b" x="24" y="570">6</text>
+  <path class="e" d="M560 566H442" marker-end="url(#a)"/>
+  <text class="l c" x="500" y="559">stop reason</text>
+  <path class="e" d="M440 592H212" marker-end="url(#a)"/>
+  <text class="l c" x="296" y="585">the turn has ended</text>
+  <path class="e" d="M210 618H62" marker-end="url(#a)"/>
+  <text class="l c" x="135" y="611">the last event</text>
+  <rect class="box" x="130" y="632" width="160" height="46" rx="6"/>
+  <text class="d c" x="210.0" y="650">stores what the agent</text>
+  <text class="d c" x="210.0" y="665">said and did</text>
+  <rect class="box" x="396" y="632" width="208" height="46" rx="6"/>
+  <text class="d c" x="500.0" y="650">the harness and the files</text>
+  <text class="d c" x="500.0" y="665">stay for the next turn</text>
+</svg>

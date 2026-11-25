@@ -1,0 +1,177 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 572" role="img" aria-labelledby="title desc">
+  <title id="title">The parts of Aviary</title>
+  <desc id="desc">Clients call the Supervisor. The Supervisor has agent-sandbox make a sandbox for each session, gives the turns to the runner in it, and keeps files in the depot. A sandbox reaches the outside only through the Egress Proxy, which asks the Supervisor about each request.</desc>
+  <style>
+    svg {
+      --bg: #ffffff; --frame: #d9e0ea;
+      --zone: #f5f8fc; --zone-line: #b4c1d3;
+      --box: #ffffff; --box-line: #93a2b8;
+      --ink: #0d1b2e; --note: #55637a; --edge: #5d6b82;
+      --accent: #0b6fe0; --accent-soft: #e8f1ff;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --bg: #0b1526; --frame: #24344f;
+        --zone: #101c31; --zone-line: #3a4c6c;
+        --box: #16243d; --box-line: #4c6085;
+        --ink: #e9eff8; --note: #a3b2c9; --edge: #93a1b9;
+        --accent: #6cb2ff; --accent-soft: #14294b;
+      }
+    }
+    .bg { fill: var(--bg); stroke: var(--frame); }
+    .zone { fill: var(--zone); stroke: var(--zone-line); stroke-dasharray: 5 4; }
+    .cluster { fill: none; stroke: var(--zone-line); stroke-dasharray: 5 4; }
+    .closed { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 6 4; }
+    .box { fill: var(--box); stroke: var(--box-line); }
+    .hub { fill: var(--box); stroke: var(--ink); stroke-width: 1.5; }
+    .out { fill: var(--box); stroke: var(--accent); stroke-width: 1.5; }
+    .back { opacity: 0.55; }
+    .gone { fill: none; stroke: var(--box-line); stroke-dasharray: 3 4; }
+    .has { fill: var(--accent); stroke: var(--accent); }
+    .off { fill: var(--note); opacity: 0.75; }
+    .life { fill: none; stroke: var(--zone-line); stroke-dasharray: 2 5; }
+    .loop { fill: none; stroke: var(--zone-line); }
+    .tab { fill: var(--zone); stroke: var(--zone-line); }
+    .e { fill: none; stroke: var(--edge); stroke-width: 1.5; }
+    .e.way { stroke: var(--accent); }
+    .e.ret { stroke-dasharray: 5 4; }
+    .head { fill: var(--edge); }
+    .head.way { fill: var(--accent); }
+    .badge { fill: var(--ink); }
+    text { fill: var(--ink); }
+    .t { font-size: 16px; font-weight: 700; }
+    .n { font-size: 13.5px; font-weight: 650; }
+    .d { font-size: 12.5px; fill: var(--note); }
+    .l { font-size: 12.5px; fill: var(--note); }
+    .l.way { fill: var(--accent); }
+    .z { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; fill: var(--note); }
+    .m { font-size: 11.5px; fill: var(--note); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .b { font-size: 11.5px; font-weight: 700; fill: var(--bg); text-anchor: middle; }
+    .c { text-anchor: middle; }
+    .r { text-anchor: end; }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0 0 10 5 0 10z"/></marker>
+    <marker id="w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head way" d="M0 0 10 5 0 10z"/></marker>
+  </defs>
+
+  <rect class="bg" x="0.5" y="0.5" width="899" height="571" rx="14"/>
+
+
+  <!-- Clients -->
+  <text class="z" x="20" y="50">CLIENTS</text>
+  <rect class="box" x="20" y="60" width="116" height="46" rx="8"/>
+  <text class="n c" x="78" y="80">Web UI</text>
+  <text class="d c" x="78" y="96">in the browser</text>
+  <rect class="box" x="20" y="116" width="116" height="46" rx="8"/>
+  <text class="n c" x="78" y="136">API clients</text>
+  <text class="d c" x="78" y="152">your own tools</text>
+  <path class="e" d="M136 83H152M136 139H152M152 83V139"/>
+  <path class="e" d="M152 103H248" marker-end="url(#a)"/>
+  <text class="l c" x="189" y="96">messages</text>
+  <path class="e" d="M250 121H154" marker-end="url(#a)"/>
+  <text class="l c" x="189" y="137">events</text>
+
+  <!-- What the Supervisor is connected to -->
+  <rect class="zone" x="20" y="206" width="194" height="246" rx="12"/>
+  <text class="z" x="34" y="226">YOUR SERVICES</text>
+  <rect class="box" x="32" y="236" width="170" height="44" rx="8"/>
+  <text class="n" x="44" y="254">Database</text>
+  <text class="d" x="44" y="270">PostgreSQL, MySQL</text>
+  <rect class="box" x="32" y="288" width="170" height="44" rx="8"/>
+  <text class="n" x="44" y="306">Event log</text>
+  <text class="d" x="44" y="322">Valkey, Redis</text>
+  <rect class="box" x="32" y="340" width="170" height="44" rx="8"/>
+  <text class="n" x="44" y="358">Identity provider</text>
+  <text class="d" x="44" y="374">OpenID Connect</text>
+  <rect class="box" x="32" y="392" width="170" height="44" rx="8"/>
+  <text class="n" x="44" y="410">Secret stores</text>
+  <text class="d" x="44" y="426">of the projects</text>
+  <path class="e" d="M250 166H186V204" marker-end="url(#a)"/>
+  <text class="l r" x="178" y="192">through plugins</text>
+
+  <!-- The cluster -->
+  <rect class="cluster" x="226" y="24" width="662" height="364" rx="14"/>
+  <text class="z" x="242" y="44">KUBERNETES CLUSTER</text>
+  <rect class="hub back" x="258" y="56" width="210" height="118" rx="10"/>
+  <rect class="hub back" x="254" y="60" width="210" height="118" rx="10"/>
+  <rect class="hub" x="250" y="64" width="210" height="118" rx="10"/>
+  <text class="t" x="266" y="90">Supervisor</text>
+  <text class="d" x="266" y="113">serves the API</text>
+  <text class="d" x="266" y="131">queues and runs the turns</text>
+  <text class="d" x="266" y="149">answers the Egress Proxy</text>
+  <rect class="box" x="498" y="60" width="124" height="40" rx="8"/>
+  <text class="n c" x="560" y="85">agent-sandbox</text>
+  <path class="e" d="M468 80H496" marker-end="url(#a)"/>
+  <path class="e" d="M622 80H648" marker-end="url(#a)"/>
+  <text class="l c" x="560" y="117">creates, wakes,</text>
+  <text class="l c" x="560" y="132">puts to sleep</text>
+  <rect class="closed" x="650" y="52" width="230" height="200" rx="12"/>
+  <text class="z" x="664" y="72">SANDBOXES</text>
+  <text class="m r" x="866" y="72">aviary-runtime</text>
+  <rect class="box back" x="672" y="88" width="188" height="140" rx="10"/>
+  <rect class="box back" x="668" y="92" width="188" height="140" rx="10"/>
+  <rect class="box" x="664" y="96" width="188" height="140" rx="10"/>
+  <text class="n" x="676" y="117">Session sandbox</text>
+  <text class="d" x="676" y="133">no API keys · no DNS</text>
+  <rect class="box" x="676" y="142" width="62" height="34" rx="6"/>
+  <text class="n c" x="707" y="164">runner</text>
+  <rect class="box" x="770" y="142" width="70" height="34" rx="6"/>
+  <text class="n c" x="805" y="164">harness</text>
+  <path class="e" d="M740 159H768" marker-start="url(#a)" marker-end="url(#a)"/>
+  <text class="l c" x="754" y="190">ACP</text>
+  <rect class="box" x="676" y="198" width="164" height="28" rx="14"/>
+  <text class="n c" x="758" y="217">/home volume</text>
+  <path class="e" d="M470 159H674" marker-start="url(#a)" marker-end="url(#a)"/>
+  <text class="l c" x="560" y="152">turns down · events up</text>
+  <rect class="box back" x="266" y="292" width="144" height="64" rx="10"/>
+  <rect class="box back" x="262" y="296" width="144" height="64" rx="10"/>
+  <rect class="box" x="258" y="300" width="144" height="64" rx="10"/>
+  <text class="n c" x="330" y="326">Depot</text>
+  <text class="d c" x="330" y="344">objects in a volume</text>
+  <path class="e" d="M306 184V290" marker-start="url(#a)" marker-end="url(#a)"/>
+  <text class="l" x="314" y="238">attachments,</text>
+  <text class="l" x="314" y="253">archived homes</text>
+  <rect class="out back" x="438" y="292" width="220" height="64" rx="10"/>
+  <rect class="out back" x="434" y="296" width="220" height="64" rx="10"/>
+  <rect class="out" x="430" y="300" width="220" height="64" rx="10"/>
+  <text class="n c" x="540" y="326">Egress Proxy</text>
+  <text class="d c" x="540" y="344">Envoy: the only way out</text>
+  <path class="e" d="M444 300V184" marker-end="url(#a)"/>
+  <text class="l" x="452" y="231">asks about each request:</text>
+  <text class="l" x="452" y="246">its turn, and the key</text>
+  <text class="l" x="452" y="261">of the model provider</text>
+  <path class="e way" d="M766 252V332H660" marker-end="url(#w)"/>
+  <text class="l way" x="774" y="288">all outbound</text>
+  <text class="l way" x="774" y="303">traffic</text>
+
+  <!-- Where the Egress Proxy sends on -->
+  <rect class="zone" x="430" y="432" width="458" height="124" rx="12"/>
+  <text class="z" x="444" y="452">WHAT A SANDBOX REACHES</text>
+  <rect class="box" x="444" y="462" width="150" height="80" rx="8"/>
+  <text class="n c" x="519" y="483">Model endpoints</text>
+  <text class="d c" x="519" y="501">a provider's API,</text>
+  <text class="d c" x="519" y="516">an AI gateway,</text>
+  <text class="d c" x="519" y="531">your model server</text>
+  <rect class="box" x="604" y="462" width="124" height="80" rx="8"/>
+  <text class="n c" x="666" y="483">MCP servers</text>
+  <text class="d c" x="666" y="501">that the session</text>
+  <text class="d c" x="666" y="516">has on</text>
+  <rect class="box" x="738" y="462" width="136" height="80" rx="8"/>
+  <text class="n c" x="806" y="483">Other hosts</text>
+  <text class="d c" x="806" y="501">that the</text>
+  <text class="d c" x="806" y="516">installation allows</text>
+  <path class="e way" d="M540 364V430" marker-end="url(#w)"/>
+  <text class="l way" x="548" y="414">with the provider's key, to allowed hosts only</text>
+
+  <!-- Legend -->
+  <rect class="box back" x="250" y="470" width="26" height="16" rx="4"/>
+  <rect class="box back" x="246" y="474" width="26" height="16" rx="4"/>
+  <rect class="box" x="242" y="478" width="26" height="16" rx="4"/>
+  <text class="d" x="286" y="485">replicas, or</text>
+  <text class="d" x="286" y="500">one per session</text>
+  <rect class="closed" x="242" y="518" width="34" height="18" rx="5"/>
+  <text class="d" x="286" y="525">closed by a</text>
+  <text class="d" x="286" y="540">network policy</text>
+</svg>

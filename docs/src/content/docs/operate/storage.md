@@ -9,6 +9,8 @@ the volume of a session stay.
 
 ## The life of a sandbox
 
+![What a session has while it is awake, asleep and archived, with the default settings](../../../assets/diagrams/sandbox-life.svg)
+
 1. **Awake.** The first turn of a session creates its sandbox: a pod that
    runs the image of the agent's harness, with the session volume.
 2. **Asleep.** `sandboxes.idleSeconds` without a running turn, 300 by

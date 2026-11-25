@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 394" role="img" aria-labelledby="title desc">
+  <title id="title">What leaves a sandbox</title>
+  <desc id="desc">A sandbox sends its model and MCP requests to one port of the Egress Proxy and everything else to another, each with its session token. The proxy asks the Supervisor whose request it is. It puts the provider's key and headers into a model or MCP request, and lets other requests through to allowed hosts only.</desc>
+  <style>
+    svg {
+      --bg: #ffffff; --frame: #d9e0ea;
+      --zone: #f5f8fc; --zone-line: #b4c1d3;
+      --box: #ffffff; --box-line: #93a2b8;
+      --ink: #0d1b2e; --note: #55637a; --edge: #5d6b82;
+      --accent: #0b6fe0; --accent-soft: #e8f1ff;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --bg: #0b1526; --frame: #24344f;
+        --zone: #101c31; --zone-line: #3a4c6c;
+        --box: #16243d; --box-line: #4c6085;
+        --ink: #e9eff8; --note: #a3b2c9; --edge: #93a1b9;
+        --accent: #6cb2ff; --accent-soft: #14294b;
+      }
+    }
+    .bg { fill: var(--bg); stroke: var(--frame); }
+    .zone { fill: var(--zone); stroke: var(--zone-line); stroke-dasharray: 5 4; }
+    .cluster { fill: none; stroke: var(--zone-line); stroke-dasharray: 5 4; }
+    .closed { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 6 4; }
+    .box { fill: var(--box); stroke: var(--box-line); }
+    .hub { fill: var(--box); stroke: var(--ink); stroke-width: 1.5; }
+    .out { fill: var(--box); stroke: var(--accent); stroke-width: 1.5; }
+    .back { opacity: 0.55; }
+    .gone { fill: none; stroke: var(--box-line); stroke-dasharray: 3 4; }
+    .has { fill: var(--accent); stroke: var(--accent); }
+    .off { fill: var(--note); opacity: 0.75; }
+    .life { fill: none; stroke: var(--zone-line); stroke-dasharray: 2 5; }
+    .loop { fill: none; stroke: var(--zone-line); }
+    .tab { fill: var(--zone); stroke: var(--zone-line); }
+    .e { fill: none; stroke: var(--edge); stroke-width: 1.5; }
+    .e.way { stroke: var(--accent); }
+    .e.ret { stroke-dasharray: 5 4; }
+    .head { fill: var(--edge); }
+    .head.way { fill: var(--accent); }
+    .badge { fill: var(--ink); }
+    text { fill: var(--ink); }
+    .t { font-size: 16px; font-weight: 700; }
+    .n { font-size: 13.5px; font-weight: 650; }
+    .d { font-size: 12.5px; fill: var(--note); }
+    .l { font-size: 12.5px; fill: var(--note); }
+    .l.way { fill: var(--accent); }
+    .z { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; fill: var(--note); }
+    .m { font-size: 11.5px; fill: var(--note); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .b { font-size: 11.5px; font-weight: 700; fill: var(--bg); text-anchor: middle; }
+    .c { text-anchor: middle; }
+    .r { text-anchor: end; }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0 0 10 5 0 10z"/></marker>
+    <marker id="w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head way" d="M0 0 10 5 0 10z"/></marker>
+  </defs>
+
+  <rect class="bg" x="0.5" y="0.5" width="899" height="393" rx="14"/>
+
+
+  <!-- The Supervisor, which the proxy asks -->
+  <rect class="hub" x="400" y="16" width="200" height="44" rx="10"/>
+  <text class="t c" x="500" y="43">Supervisor</text>
+  <path class="e" d="M470 104V62" marker-end="url(#a)"/>
+  <text class="l r" x="462" y="78">whose request</text>
+  <text class="l r" x="462" y="92">is this?</text>
+  <path class="e ret" d="M530 60V102" marker-end="url(#a)"/>
+  <text class="l" x="538" y="78">its turn, and for a model or MCP</text>
+  <text class="l" x="538" y="92">request the endpoint and the key</text>
+
+  <!-- The sandbox -->
+  <rect class="closed" x="20" y="104" width="250" height="270" rx="12"/>
+  <text class="z" x="34" y="124">SESSION SANDBOX</text>
+  <rect class="box" x="34" y="140" width="222" height="70" rx="8"/>
+  <text class="n" x="46" y="162">Model and MCP requests</text>
+  <text class="d" x="46" y="180">to the proxy, with the session</text>
+  <text class="d" x="46" y="195">token in place of an API key</text>
+  <rect class="box" x="34" y="226" width="222" height="70" rx="8"/>
+  <text class="n" x="46" y="248">Everything else</text>
+  <text class="d" x="46" y="266">by the proxy variables, with</text>
+  <text class="d" x="46" y="281">the token as the password</text>
+  <text class="d" x="34" y="326">No API keys, no DNS, and no</text>
+  <text class="d" x="34" y="341">connection but to the proxy:</text>
+  <text class="d" x="34" y="356">a network policy closes the rest.</text>
+
+  <!-- The proxy -->
+  <rect class="out" x="350" y="104" width="300" height="270" rx="12"/>
+  <text class="t" x="366" y="128">Egress Proxy</text>
+  <text class="m r" x="634" y="128">Envoy</text>
+  <path class="e way" d="M256 175H364" marker-end="url(#w)"/>
+  <text class="m c" x="310" y="168">:8080</text>
+  <rect class="box" x="366" y="140" width="268" height="70" rx="8"/>
+  <text class="n" x="378" y="162">puts in the provider's key</text>
+  <text class="d" x="378" y="180">and the headers of the endpoint,</text>
+  <text class="d" x="378" y="195">in place of the token</text>
+  <path class="e way" d="M256 261H364" marker-end="url(#w)"/>
+  <text class="m c" x="310" y="254">:3128</text>
+  <rect class="box" x="366" y="226" width="268" height="70" rx="8"/>
+  <text class="n" x="378" y="248">lets allowed hosts through</text>
+  <text class="d" x="378" y="266">of HTTPS it sees only the host</text>
+  <text class="d" x="378" y="281">and the port</text>
+  <text class="d" x="366" y="326">Refuses a session in which no turn runs,</text>
+  <text class="d" x="366" y="341">and a host that is not allowed. Logs each</text>
+  <text class="d" x="366" y="356">request with its turn, session and user.</text>
+
+  <!-- Where the requests go -->
+  <rect class="zone" x="706" y="104" width="174" height="270" rx="12"/>
+  <text class="z" x="718" y="124">WHERE IT GOES</text>
+  <rect class="box" x="718" y="140" width="150" height="30" rx="8"/>
+  <text class="n c" x="793" y="160">Model endpoints</text>
+  <rect class="box" x="718" y="180" width="150" height="30" rx="8"/>
+  <text class="n c" x="793" y="200">MCP servers</text>
+  <path class="e way" d="M634 155H716" marker-end="url(#w)"/>
+  <path class="e way" d="M634 195H716" marker-end="url(#w)"/>
+  <rect class="box" x="718" y="226" width="150" height="70" rx="8"/>
+  <text class="n c" x="793" y="256">Other hosts</text>
+  <text class="d c" x="793" y="274">that are allowed</text>
+  <path class="e way" d="M634 261H716" marker-end="url(#w)"/>
+  <text class="d" x="718" y="326">Nothing else is</text>
+  <text class="d" x="718" y="341">reached from a</text>
+  <text class="d" x="718" y="356">sandbox.</text>
+</svg>

@@ -5,6 +5,8 @@ description: What a sandbox can reach, how the Egress Proxy handles its requests
 
 Everything that a sandbox sends out goes through the Egress Proxy.
 
+![What leaves a sandbox, and what the Egress Proxy does with it](../../../assets/diagrams/egress.svg)
+
 The Egress Proxy is [Envoy](https://www.envoyproxy.io), which the chart
 installs. A network policy allows a sandbox to connect only to the proxy,
 and the sandbox has no DNS.
