@@ -13,6 +13,7 @@ import { add, NOTHING } from "./items.ts";
 import type {
   ApprovalRequest,
   Attachment,
+  Limits,
   Session,
   Turn,
   Usage,
@@ -197,14 +198,43 @@ export async function endSession(id: string) {
   take(await api.delete<Session>("/v1/sessions/" + id));
 }
 
-// sendMessage sends a message to a session, and adds the turn that it
-// begins to the turns that were read.
+// useLimits reads what the installation sets for the files that messages
+// carry.
+export function useLimits() {
+  return useQuery({
+    queryKey: ["limits"],
+    queryFn: () => api.get<Limits>("/v1/limits"),
+    staleTime: Infinity,
+  });
+}
+
+// uploadAttachment uploads a file for a message of the session to carry, and
+// returns the attachment. onProgress is called with the bytes of the file
+// that have gone, as they go.
+export function uploadAttachment(
+  session: string,
+  file: File,
+  onProgress?: (sent: number) => void,
+): Promise<Attachment> {
+  const name = encodeURIComponent(file.name);
+  return api.upload<Attachment>(
+    `/v1/sessions/${session}/attachments?name=${name}`,
+    file,
+    onProgress,
+  );
+}
+
+// sendMessage sends a message to a session, with the files that were
+// uploaded for it, by the IDs of their attachments and in their order. It
+// adds the turn that the message begins to the turns that were read.
 export async function sendMessage(
   session: string,
   text: string,
+  attachments: string[] = [],
 ): Promise<Turn> {
   const turn = await api.post<Turn>(`/v1/sessions/${session}/messages`, {
     text,
+    ...(attachments.length > 0 && { attachments }),
   });
   // The session may have told of the turn already.
   queryClient.setQueryData<Turn[]>(turnsKey(session), (list = []) =>

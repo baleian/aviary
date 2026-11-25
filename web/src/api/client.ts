@@ -114,6 +114,19 @@ export const api = {
   patch: <T>(path: string, body: unknown) => send<T>("PATCH", path, body),
   delete: <T>(path: string) => send<T>("DELETE", path),
 
+  // upload sends a file as the body of a POST, and returns the body of the
+  // answer. onProgress is called with the bytes of the file that have gone.
+  async upload<T>(
+    path: string,
+    file: Blob,
+    onProgress?: (sent: number) => void,
+  ): Promise<T> {
+    const reply = await answered((carrier, token) =>
+      carrier.upload(path, { token, file, onProgress }),
+    );
+    return reply.body as T;
+  },
+
   // download returns the file that a GET answers with.
   async download(path: string): Promise<Blob> {
     const reply = await answered((carrier, token) =>

@@ -1661,9 +1661,23 @@ a:hover .top > .go {
     border-color 0.15s,
     box-shadow 0.15s;
 }
-.composer:focus-within {
+.composer:focus-within,
+.composer.over {
   border-color: var(--king);
   box-shadow: var(--sh2), var(--ring);
+}
+.composer.over {
+  background: var(--k50);
+}
+/* The files that the message carries, above its text. */
+.composer .files {
+  max-height: 108px;
+  margin: 0 6px 8px 0;
+  overflow-y: auto;
+}
+.composer .file {
+  padding-right: 4px;
+  background: var(--surface-2);
 }
 .composer textarea {
   display: block;
@@ -2366,6 +2380,29 @@ button.file:hover {
 }
 button.file[disabled] {
   cursor: progress;
+}
+/* Takes a file from the message that is written. */
+.file .x {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--slate);
+  cursor: pointer;
+  flex: none;
+  transition: 0.15s;
+}
+.file .x:hover {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+.file .x[disabled] {
+  background: transparent;
+  color: var(--mist);
+  cursor: not-allowed;
 }
 
 /* The MCP servers of a session: in the composer, and in its details. */

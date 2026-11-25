@@ -11,7 +11,7 @@ import {
 } from "./client.ts";
 import { backend } from "./fake.ts";
 import { transport } from "./transport.ts";
-import type { Me, Session, Turn } from "./types.ts";
+import type { Attachment, Limits, Me, Session, Turn } from "./types.ts";
 
 // The tests run as development does, so the backend of the mock answers. A
 // token is the name of one of its accounts, and alice is an administrator.
@@ -89,6 +89,129 @@ describe("api", () => {
       status: 404,
       code: "not_found",
     });
+  });
+
+  it("uploads the files of a message, which the message then carries in its order", async () => {
+    const { agent } = await storefront();
+    const { id } = await api.post<Session>(`/v1/agents/${agent}/sessions`, {
+      title: "With files",
+    });
+    const upload = (name: string, text: string, type = "text/plain") =>
+      api.upload<Attachment>(
+        `/v1/sessions/${id}/attachments?name=${encodeURIComponent(name)}`,
+        new File([text], name, { type }),
+      );
+    const gone: number[] = [];
+    const notes = await api.upload<Attachment>(
+      `/v1/sessions/${id}/attachments?name=notes.txt`,
+      new File(["to do"], "ignored", { type: "text/plain;charset=utf-8" }),
+      (sent) => gone.push(sent),
+    );
+    expect(notes).toMatchObject({
+      name: "notes.txt",
+      media_type: "text/plain",
+      size: 5,
+    });
+    expect(gone).toEqual([5]);
+    // A name is kept without its directories and leading dots.
+    const again = await upload("../.notes.txt", "done", "");
+    expect(again).toMatchObject({
+      name: "notes.txt",
+      media_type: "application/octet-stream",
+    });
+    const report = await upload("보고서 2026.pdf", "%PDF", "application/pdf");
+
+    const turn = await api.post<Turn>(`/v1/sessions/${id}/messages`, {
+      attachments: [report.id, notes.id, again.id],
+    });
+    // Two files of one name have different names in their message.
+    expect(turn.attachments!.map((each) => [each.id, each.name])).toEqual([
+      [report.id, "보고서 2026.pdf"],
+      [notes.id, "notes.txt"],
+      [again.id, "notes (2).txt"],
+    ]);
+    expect(turn.text).toBe("");
+    const record = await api.get<Turn>("/v1/turns/" + turn.id);
+    expect(record.attachments).toEqual(turn.attachments);
+    // A file is what was uploaded.
+    const file = await api.download("/v1/attachments/" + again.id);
+    expect(await file.text()).toBe("done");
+  });
+
+  it("refuses the files that a message may not carry", async () => {
+    const { agent } = await storefront();
+    const session = () =>
+      api.post<Session>(`/v1/agents/${agent}/sessions`, { title: "Limits" });
+    const { id } = await session();
+    const files = `/v1/sessions/${id}/attachments`;
+    const upload = (path: string, text = "a") =>
+      api.upload<Attachment>(path, new File([text], "a.txt"));
+    const send = (attachments: unknown, text = "Look") =>
+      api.post<Turn>(`/v1/sessions/${id}/messages`, { text, attachments });
+    const mock = await backend();
+    expect(await api.get<Limits>("/v1/limits")).toEqual({
+      max_attachment_bytes: 64 * 1024 * 1024,
+      max_attachments: 10,
+    });
+
+    await expect(upload(files + "?name=..")).rejects.toMatchObject({
+      status: 400,
+      code: "invalid_request",
+    });
+    mock.setLimits(4, 2);
+    expect(await api.get<Limits>("/v1/limits")).toEqual({
+      max_attachment_bytes: 4,
+      max_attachments: 2,
+    });
+    await expect(upload(files + "?name=a.txt", "12345")).rejects.toMatchObject({
+      status: 413,
+      code: "attachment_too_large",
+    });
+    const [first, second, third] = await Promise.all(
+      ["a", "b", "c"].map((name) => upload(`${files}?name=${name}.txt`)),
+    );
+    await expect(send([first.id, second.id, third.id])).rejects.toMatchObject({
+      status: 400,
+      code: "too_many_attachments",
+    });
+    // A message carries files of its session that no message carries yet.
+    const other = await session();
+    const theirs = await upload(`/v1/sessions/${other.id}/attachments?name=a`);
+    for (const unknown of [
+      [theirs.id],
+      [first.id, first.id],
+      ["00000000-0000-7000-8000-000000000000"],
+    ]) {
+      await expect(send(unknown)).rejects.toMatchObject({
+        status: 400,
+        code: "unknown_attachment",
+      });
+    }
+    await expect(send(undefined, "")).rejects.toMatchObject({
+      status: 400,
+      code: "invalid_request",
+    });
+    await send([first.id]);
+    await vi.waitFor(async () =>
+      expect(
+        (await api.get<Session>("/v1/sessions/" + id)).last_turn!.ended_at,
+      ).toBeTruthy(),
+    );
+    await expect(send([first.id])).rejects.toMatchObject({
+      code: "unknown_attachment",
+    });
+
+    // An installation that takes no files says so.
+    mock.setLimits(4, 0);
+    expect(await api.get<Limits>("/v1/limits")).toEqual({
+      max_attachment_bytes: 0,
+      max_attachments: 0,
+    });
+    await expect(upload(files + "?name=a.txt")).rejects.toMatchObject({
+      status: 403,
+      code: "attachments_disabled",
+    });
+    mock.reset();
   });
 
   it("tells its listeners that the token was refused", async () => {

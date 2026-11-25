@@ -21,6 +21,7 @@ import {
   startSession,
   stopTurn,
   suggestTitle,
+  uploadAttachment,
   useTurns,
 } from "./conversation.ts";
 import type { SessionPage } from "./feed.ts";
@@ -375,6 +376,34 @@ it("adds the turn of a message that it sends to the turns that were read", async
   // The session may have told of the turn before the answer came.
   await sendMessage("s1", "Next");
   expect(seqs()).toEqual([1, 2]);
+});
+
+it("uploads a file under its name, and sends a message with the files that it carries", async () => {
+  const uploaded = {
+    id: "a1",
+    name: "보고서 (2).pdf",
+    media_type: "x",
+    size: 5,
+  };
+  const upload = vi.spyOn(api, "upload").mockResolvedValue(uploaded);
+  const file = new File(["to do"], "보고서 (2).pdf");
+  const progress = () => {};
+  expect(await uploadAttachment("s1", file, progress)).toBe(uploaded);
+  expect(upload).toHaveBeenCalledWith(
+    "/v1/sessions/s1/attachments?name=%EB%B3%B4%EA%B3%A0%EC%84%9C%20(2).pdf",
+    file,
+    progress,
+  );
+
+  queryClient.setQueryData(TURNS, [turn(1)]);
+  const carried = turn(2, { state: "queued", attachments: [uploaded] });
+  const post = answered(carried);
+  expect(await sendMessage("s1", "", ["a1", "a2"])).toEqual(carried);
+  expect(post).toHaveBeenCalledWith("/v1/sessions/s1/messages", {
+    text: "",
+    attachments: ["a1", "a2"],
+  });
+  expect(read()[1].attachments).toEqual([uploaded]);
 });
 
 it("keeps a turn that it stops as the API then has it", async () => {

@@ -772,8 +772,8 @@ event log or a secret store that it has no plugin for, see
 The web UI is a client of the API that runs in the browser. It shows the
 projects with their members, model providers, MCP servers, secret stores and
 agents, and the sessions of an agent with their conversations and the MCP
-servers that each has on: it follows a turn as the agent works, and answers
-its requests for approval.
+servers that each has on: it attaches files to a message, follows a turn as
+the agent works, and answers its requests for approval.
 
 The chart does not install it. Its image, built from `images/web`, is a web
 server with the files of the web UI, configured through its environment:

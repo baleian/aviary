@@ -180,6 +180,14 @@ export interface ApprovalRequest {
 export type TurnState =
   "queued" | "running" | "completed" | "failed" | "cancelled" | "expired";
 
+// What the installation sets for the files that messages carry: how large
+// a file may be, in bytes, and how many files a message may carry. Both are
+// 0 if it takes none.
+export interface Limits {
+  max_attachment_bytes: number;
+  max_attachments: number;
+}
+
 // A file that a message carries.
 export interface Attachment {
   id: string;

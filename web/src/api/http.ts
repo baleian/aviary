@@ -27,6 +27,31 @@ export const http: Transport = {
     };
   },
 
+  // fetch does not tell how much of a body has gone, so the file goes with
+  // an XMLHttpRequest.
+  upload(path, { token, file, onProgress }) {
+    return new Promise((resolve, reject) => {
+      const request = new XMLHttpRequest();
+      request.open("POST", address + path);
+      if (token) request.setRequestHeader("Authorization", "Bearer " + token);
+      request.setRequestHeader(
+        "Content-Type",
+        file.type || "application/octet-stream",
+      );
+      request.upload.onprogress = (event) => onProgress?.(event.loaded);
+      request.onload = () =>
+        resolve({
+          status: request.status,
+          headers: headersOf(request.getAllResponseHeaders()),
+          body: decode(request.responseText),
+        });
+      request.onerror = () =>
+        reject(new TypeError("the file could not be sent"));
+      request.onabort = request.onerror;
+      request.send(file);
+    });
+  },
+
   async download(path, { token }) {
     const headers: Record<string, string> = {};
     if (token) headers["Authorization"] = "Bearer " + token;
@@ -82,6 +107,17 @@ async function follow(
     });
   }
   if (!signal.aborted) handlers.onEnd();
+}
+
+// headersOf reads the headers of an answer as an XMLHttpRequest gives them:
+// a line each, with the names in lower case.
+function headersOf(lines: string): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const line of lines.trim().split(/[\r\n]+/)) {
+    const [name, ...value] = line.split(": ");
+    if (name) headers[name.toLowerCase()] = value.join(": ");
+  }
+  return headers;
 }
 
 // decode reads the body of an answer. What is in the way of the API, such as

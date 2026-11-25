@@ -34,6 +34,18 @@ export interface Transport {
     options: { token: string; body?: unknown },
   ): Promise<Reply>;
 
+  // upload returns the answer to a POST whose body is the file, of the type
+  // that the file says it is. onProgress is called with the bytes of the
+  // file that have gone, as they go.
+  upload(
+    path: string,
+    options: {
+      token: string;
+      file: Blob;
+      onProgress?: (sent: number) => void;
+    },
+  ): Promise<Reply>;
+
   // download returns the answer to a GET, with the file that it carries if
   // it does not refuse.
   download(

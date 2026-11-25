@@ -51,6 +51,7 @@ export const ICONS = [
   "chat",
   "plug",
   "box",
+  "clip",
 ] as const;
 
 export type IconName = (typeof ICONS)[number];

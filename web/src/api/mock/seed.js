@@ -237,6 +237,10 @@ export function seed(now) {
         "openbao.aviary-data:8200",
       ],
       secretStoreKinds: ["kv-v2"],
+      // How large a file of a message may be, and how many a message may
+      // carry.
+      maxAttachmentBytes: 64 * 1024 * 1024,
+      maxAttachments: 10,
     },
     // The accounts of the identity provider. A token of the mock is the key
     // of an account.

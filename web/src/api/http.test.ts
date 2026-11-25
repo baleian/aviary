@@ -66,6 +66,68 @@ describe("http", () => {
     expect(reply).toMatchObject({ status: 502, body: null });
   });
 
+  it("sends a file as it is, and tells how much of it has gone", async () => {
+    // What the browser has for sending a body whose progress it tells.
+    const asked: unknown[] = [];
+    let breaks = false;
+    class Request {
+      status = 201;
+      responseText = '{"id": "a1"}';
+      upload: { onprogress?: (event: { loaded: number }) => void } = {};
+      onload?: () => void;
+      onerror?: () => void;
+      headers: Record<string, string> = {};
+      open(method: string, url: string) {
+        asked.push(method, url);
+      }
+      setRequestHeader(name: string, value: string) {
+        this.headers[name] = value;
+      }
+      getAllResponseHeaders() {
+        return "Content-Type: application/json\r\nRetry-After: 5\r\n";
+      }
+      send(body: unknown) {
+        asked.push(this.headers, body);
+        if (breaks) return this.onerror?.();
+        this.upload.onprogress?.({ loaded: 3 });
+        this.upload.onprogress?.({ loaded: 5 });
+        this.onload?.();
+      }
+    }
+    vi.stubGlobal("XMLHttpRequest", Request);
+    const file = new Blob(["to do"], { type: "text/plain" });
+    const path = "/v1/sessions/s1/attachments?name=notes.txt";
+    const gone: number[] = [];
+    const reply = await http.upload(path, {
+      token: "t0",
+      file,
+      onProgress: (sent) => gone.push(sent),
+    });
+    expect(asked).toEqual([
+      "POST",
+      path,
+      { Authorization: "Bearer t0", "Content-Type": "text/plain" },
+      file,
+    ]);
+    expect(gone).toEqual([3, 5]);
+    expect(reply).toEqual({
+      status: 201,
+      headers: { "content-type": "application/json", "retry-after": "5" },
+      body: { id: "a1" },
+    });
+
+    // A file that does not say what it is, without a token.
+    asked.length = 0;
+    await http.upload(path, { token: "", file: new Blob(["?"]) });
+    expect(asked[2]).toEqual({ "Content-Type": "application/octet-stream" });
+
+    // No answer comes if the connection breaks.
+    breaks = true;
+    await expect(http.upload(path, { token: "", file })).rejects.toThrow(
+      "the file could not be sent",
+    );
+  });
+
   it("returns the file of an answer, or why there is none", async () => {
     const fetch = answers(200, "to do", { "Content-Type": "text/plain" });
     const reply = await http.download("/v1/attachments/a1", { token: "t0" });

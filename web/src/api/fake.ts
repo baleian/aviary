@@ -44,6 +44,9 @@ interface Backend {
   ): { response: Reply; file?: Blob };
   accounts(): Account[];
   setIdentityProvider(on: boolean): void;
+  // setLimits sets how large a file of a message may be, in bytes, and how
+  // many files a message may carry.
+  setLimits(bytes: number, files: number): void;
   // reset puts the example data back as it began.
   reset(): void;
 }
@@ -115,6 +118,22 @@ export async function fake(): Promise<Transport> {
         closed = true;
         stream.close?.();
       };
+    },
+
+    // The file is the body as it is: the backend keeps it.
+    async upload(path, { token, file, onProgress }) {
+      await answering();
+      // At its usual pace the mock takes the file in a few steps, so that
+      // its progress shows.
+      if (mock.speed > 0) {
+        for (const part of [0.3, 0.7]) {
+          onProgress?.(Math.round(file.size * part));
+          await new Promise((resolve) => setTimeout(resolve, 280 * mock.speed));
+        }
+      }
+      const reply = lowercased(request("POST", path, { token, body: file }));
+      if (reply.status < 300) onProgress?.(file.size);
+      return reply;
     },
 
     async download(path, { token }) {
