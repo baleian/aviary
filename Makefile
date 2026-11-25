@@ -22,21 +22,27 @@ AGENT_SANDBOX_REPO ?= https://github.com/kubernetes-sigs/agent-sandbox
 
 CLUSTER := aviary
 KIND_CONFIG ?= hack/kind/cluster.yaml
+# A directory of this machine in which the local cluster keeps its volumes
+# and the Secrets that their data depends on, so that a new cluster continues
+# with the data of the last one. Without it, the data goes with the cluster.
+DATA ?=
 # The e2e runs in a cluster of its own. Clusters with different names can run
 # the e2e at the same time.
 E2E_CLUSTER ?= aviary-e2e
 E2E_OUT := .out/e2e/$(E2E_CLUSTER)
 E2E_KUBECONFIG := $(CURDIR)/$(E2E_OUT)/host.kubeconfig
 # A run that names a target of the e2e works on the cluster of the e2e with
-# all of its targets. That cluster binds no port on the host and has a
-# kubeconfig of its own: kind locks the kubeconfig that it writes, and the
-# kubeconfig of the user stays untouched.
+# all of its targets. That cluster binds no port on the host, keeps no data
+# and has a kubeconfig of its own: kind locks the kubeconfig that it writes,
+# and the kubeconfig of the user stays untouched.
 E2E := $(filter e2e e2e-up e2e-run e2e-down,$(MAKECMDGOALS))
 ifneq ($(E2E),)
 CLUSTER := $(E2E_CLUSTER)
 KIND_CONFIG := hack/kind/e2e-cluster.yaml
+override DATA :=
 export KUBECONFIG := $(E2E_KUBECONFIG)
 endif
+KEPT := $(abspath $(patsubst ~/%,$(HOME)/%,$(DATA)))
 NODE_IMAGE := $(DOCKER_IO)/kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
 # The chart of agent-sandbox, which the Aviary chart installs with itself. It
 # is taken from the source of the release, verified against its checksum, and
@@ -66,6 +72,19 @@ BUILD := docker build $(addprefix --build-arg ,DOCKER_IO GCR_IO GOPROXY NPM_CONF
 
 KUBECTL := kubectl --context kind-$(CLUSTER)
 HELM := helm --kube-context kind-$(CLUSTER)
+# With DATA, every node of the cluster mounts the directory of the volumes
+# where the cluster makes them, and a Secret that the data depends on is kept
+# with it. KEPT_MOUNTS adds the mount to the nodes of a kind configuration.
+# KEPT_SECRET applies the Secret of the directory, before a target would
+# create another, and KEEP_SECRET writes it there: their arguments are its
+# name and its namespace.
+ifneq ($(KEPT),)
+KEPT_MOUNTS := awk -v volumes='$(KEPT)/volumes' '{ print } /^  - role:/ { printf "    extraMounts:\n      - {hostPath: \"%s\", containerPath: /var/local-path-provisioner}\n", volumes }'
+KEPT_SECRET = [ ! -e '$(KEPT)/secrets/$(1).json' ] || $(KUBECTL) apply --filename '$(KEPT)/secrets/$(1).json'
+KEEP_SECRET = secret=$$($(KUBECTL) get secret $(1) --namespace $(2) --output json) && \
+	(umask 077 && printf '%s\n' "$$secret" | \
+		jq '{apiVersion, kind, type, data, metadata: {name: .metadata.name, namespace: .metadata.namespace}}' > '$(KEPT)/secrets/$(1).json')
+endif
 # The registries that have a mirror, each as registry=mirror, for the nodes
 # of the cluster.
 NODE_MIRRORS := $(filter-out docker.io=docker.io gcr.io=gcr.io ghcr.io=ghcr.io quay.io=quay.io registry.k8s.io=registry.k8s.io, \
@@ -245,8 +264,19 @@ docs/node_modules/.package-lock.json: docs/package-lock.json
 	cd docs && npm ci
 
 cluster-up:
+ifneq ($(KEPT),)
+	mkdir -p '$(KEPT)/volumes' '$(KEPT)/secrets' .out
+	$(KEPT_MOUNTS) $(KIND_CONFIG) > .out/cluster.yaml
+endif
 	kind get clusters 2>/dev/null | grep -qx $(CLUSTER) || \
-		kind create cluster --name $(CLUSTER) --image $(NODE_IMAGE) --config $(KIND_CONFIG)
+		kind create cluster --name $(CLUSTER) --image $(NODE_IMAGE) --config $(if $(KEPT),.out/cluster.yaml,$(KIND_CONFIG))
+ifneq ($(KEPT),)
+# A cluster that was made without the directory cannot be given it.
+	docker inspect --format '{{range .Mounts}}{{println .Type .Destination}}{{end}}' $(CLUSTER)-control-plane | \
+		grep -qx 'bind /var/local-path-provisioner' || \
+		{ echo "The cluster $(CLUSTER) keeps no data, as it was made without DATA: make cluster-down deletes it." >&2; exit 1; }
+	$(KUBECTL) replace --force --filename hack/kind/storage-class.yaml
+endif
 # The nodes pull the images of a registry that has a mirror from the mirror.
 	for mirror in $(NODE_MIRRORS); do \
 		registry=$${mirror%%=*}; mirror=$${mirror#*=}; \
@@ -266,16 +296,20 @@ cluster-down:
 # needs one database and one event log, for example
 # make cluster-up postgres valkey
 postgres:
+	$(call KEPT_SECRET,postgres-users)
 	$(KUBECTL) get secret postgres-users --namespace aviary-data >/dev/null 2>&1 || \
 		$(KUBECTL) create secret generic postgres-users --namespace aviary-data \
 			--from-literal=aviary=$$(openssl rand -hex 24)
+	$(call KEEP_SECRET,postgres-users,aviary-data)
 	$(KUBECTL) apply -f hack/kind/postgres.yaml
 	$(KUBECTL) --namespace aviary-data rollout status statefulset/postgres --timeout 300s
 
 mysql:
+	$(call KEPT_SECRET,mysql-users)
 	$(KUBECTL) get secret mysql-users --namespace aviary-data >/dev/null 2>&1 || \
 		$(KUBECTL) create secret generic mysql-users --namespace aviary-data \
 			--from-literal=root=$$(openssl rand -hex 24) --from-literal=aviary=$$(openssl rand -hex 24)
+	$(call KEEP_SECRET,mysql-users,aviary-data)
 	$(KUBECTL) apply -f hack/kind/mysql.yaml
 	$(KUBECTL) --namespace aviary-data rollout status statefulset/mysql --timeout 300s
 
@@ -410,9 +444,11 @@ secrets:
 		$(KUBECTL) get secret valkey-users --namespace aviary-data --output json | \
 			jq '{apiVersion, kind, type, metadata: {name: "aviary-events"}, stringData: {uri: ("valkey://default:" + (.data.default | @base64d) + "@valkey.aviary-data:6379")}}'; \
 	fi | $(KUBECTL) apply --namespace aviary-system -f -
+	$(call KEPT_SECRET,aviary-encryption)
 	$(KUBECTL) get secret aviary-encryption --namespace aviary-system >/dev/null 2>&1 || \
 		$(KUBECTL) create secret generic aviary-encryption --namespace aviary-system \
 			--from-literal=k1=$$(openssl rand -base64 32)
+	$(call KEEP_SECRET,aviary-encryption,aviary-system)
 
 # The image ID restarts the pods that run the Supervisor image when the image
 # changes. The cluster reaches the machine that runs it, at the address that
@@ -459,9 +495,9 @@ endif
 # mock model server and OpenBao, and with Keycloak if the cluster has it.
 e2e-up: $(AGENT_SANDBOX_CHART)
 ifeq ($(filter cluster-up,$(MAKECMDGOALS)),)
-	$(MAKE) cluster-down cluster-up postgres valkey CLUSTER=$(CLUSTER) KIND_CONFIG=$(KIND_CONFIG)
+	$(MAKE) cluster-down cluster-up postgres valkey CLUSTER=$(CLUSTER) KIND_CONFIG=$(KIND_CONFIG) DATA=
 endif
-	$(MAKE) openbao images secrets CLUSTER=$(CLUSTER)
+	$(MAKE) openbao images secrets CLUSTER=$(CLUSTER) DATA=
 	$(KUBECTL) apply --filename test/e2e/mock-llm.yaml --filename hack/kind/api.yaml
 	keycloak=$$($(KUBECTL) get deployment keycloak --namespace aviary-data --ignore-not-found --output name) && \
 	$(HELM) upgrade --install aviary deploy/charts/aviary \

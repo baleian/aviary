@@ -87,7 +87,9 @@ knows the conversation and finds the file.
 ## Stop
 
 `make cluster-down` deletes the cluster, including the session volumes,
-which are directories on its nodes.
+which are directories on its nodes. A cluster that is made with `DATA`
+[keeps its data](../contribute/development.md#keep-the-data-of-the-cluster)
+in a directory of your machine, for the next cluster.
 
 ## Next
 

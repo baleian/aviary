@@ -30,7 +30,9 @@ make deploy            # install Aviary with its Helm chart
 MySQL instead of PostgreSQL, and `make redis` Redis instead of Valkey.
 `make deploy` fails unless the cluster has one database and one event log.
 `make cluster-down` deletes the cluster, including the session volumes,
-which are directories on its nodes. The cluster runs Kubernetes 1.37.
+which are directories on its nodes, unless the cluster
+[keeps its data](#keep-the-data-of-the-cluster). The cluster runs
+Kubernetes 1.37.
 
 After a change, `make images deploy` builds the images again and installs
 them. The pods of the Supervisor's image start again if the image changed,
@@ -47,6 +49,32 @@ The cluster can have more:
 | `make openbao`, `make vault` | A secret store: see [Secret stores](../use/secret-stores.md#try-it-locally). |
 | `make grafana` | [Prometheus](https://prometheus.io), which scrapes the metrics of Aviary, and [Grafana](https://grafana.com) with the Aviary dashboard, at http://localhost:3000. |
 | `make headlamp` | [Headlamp](https://headlamp.dev), a web UI for the resources, logs and events of the cluster, at http://localhost:4466. |
+
+## Keep the data of the cluster
+
+To have a new cluster continue with the data of the last one, name a
+directory of your machine in `DATA`: in `.env`, a file at the root of the
+repository that Git ignores, or on the command line of every `make`.
+
+```sh
+DATA=/home/me/aviary-data
+```
+
+`make cluster-up` then makes a cluster whose nodes keep their volumes in the
+directory, under `volumes`: the database, the homes of the sessions and the
+objects of the depot, each in a directory named after its claim.
+`make postgres`, `make mysql` and `make deploy` keep the passwords of the
+database and the encryption key, which that data depends on, under
+`secrets`. A cluster that is made with the directory again has the projects,
+the sessions and the turns of the last one, and its sessions still know
+their conversations and have their files.
+
+Such a cluster keeps the directory of a volume that is deleted, so the home
+of a session that has ended stays in `volumes/aviary-runtime` until you
+delete it. The files belong to the users of the containers, so deleting them
+may take root. The event log is kept in memory only: a turn that runs when
+the cluster stops does not continue. A cluster that was made without `DATA`
+cannot be given it later, and the cluster of the e2e keeps nothing.
 
 ## The web UI
 

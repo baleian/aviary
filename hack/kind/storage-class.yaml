@@ -1,0 +1,17 @@
+# The default storage class of a local cluster that keeps its data, which
+# `make cluster-up` installs with DATA. The directory of a volume is named
+# after its claim, so that a claim of the same name finds the files of the
+# volume again, in a new cluster as well. Deleting a volume keeps its
+# directory: a claim that is made again at once would otherwise lose the
+# directory to the deletion of the volume before it.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: standard
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: rancher.io/local-path
+parameters:
+  pathPattern: "{{ .PVC.Namespace }}/{{ .PVC.Name }}/volume"
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer
