@@ -1,7 +1,7 @@
 // What the web UI makes of a file from its name and its media type.
 
 // How the web UI can show a file by itself.
-export type View = "image" | "text";
+export type View = "image" | "pdf" | "text";
 
 // What files of a kind have in common, which colours their tile.
 export type Family =
@@ -86,6 +86,7 @@ export function kindOf(name: string, mediaType = ""): Kind {
   if (PICTURES[ext]) {
     return { ext, family: "image", view: "image", type: PICTURES[ext] };
   }
+  if (ext === "pdf") return { ext, family: "pdf", view: "pdf" };
   const family = BY_EXT.get(ext);
   if (TEXTS.has(ext)) return { ext, family: family ?? "text", view: "text" };
   if (family) return { ext, family };
@@ -93,7 +94,7 @@ export function kindOf(name: string, mediaType = ""): Kind {
   if (Object.values(PICTURES).includes(type)) {
     return { ext, family: "image", view: "image", type };
   }
-  if (type === "application/pdf") return { ext, family: "pdf" };
+  if (type === "application/pdf") return { ext, family: "pdf", view: "pdf" };
   if (type.startsWith("text/") || type === "application/json") {
     return { ext, family: "text", view: "text" };
   }

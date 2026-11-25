@@ -101,17 +101,23 @@ it("draws a picture of the files that have one, once they are near, and reads no
 
   near();
   await vi.waitFor(() =>
-    expect(pictures()).toEqual([null, null, "data:,image.png", null, null]),
+    expect(pictures()).toEqual([
+      null,
+      null,
+      "data:,image.png",
+      "data:,design.pdf",
+      null,
+    ]),
   );
   // Only what can be drawn was read, and not what is too large.
   expect(vi.mocked(api.download).mock.calls).toEqual([
     ["/v1/attachments/image.png", undefined],
+    ["/v1/attachments/design.pdf", undefined],
   ]);
-  expect(vi.mocked(thumbnail).mock.calls[0][1]).toEqual({
-    ext: "png",
-    family: "image",
-    view: "image",
-    type: "image/png",
+  expect(vi.mocked(thumbnail).mock.calls[1][1]).toEqual({
+    ext: "pdf",
+    family: "pdf",
+    view: "pdf",
   });
   cleanup();
 
@@ -119,7 +125,7 @@ it("draws a picture of the files that have one, once they are near, and reads no
   show(FILES, true, client);
   expect(pictures()[2]).toBe("data:,image.png");
   near();
-  expect(api.download).toHaveBeenCalledTimes(1);
+  expect(api.download).toHaveBeenCalledTimes(2);
 });
 
 it("keeps the tile of a file that could not be drawn or read", async () => {
@@ -127,11 +133,11 @@ it("keeps the tile of a file that could not be drawn or read", async () => {
   vi.mocked(api.download)
     .mockResolvedValueOnce(new Blob(["not a picture"]))
     .mockRejectedValueOnce(new Error("no such resource"));
-  show([file("image.png", "image/png"), file("shot.jpg", "image/jpeg")]);
+  show(FILES);
   near();
   await vi.waitFor(() => expect(api.download).toHaveBeenCalledTimes(2));
   await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(pictures()).toEqual([null, null]);
+  expect(pictures()).toEqual([null, null, null, null, null]);
   // Neither is tried again.
   expect(api.download).toHaveBeenCalledTimes(2);
 });
@@ -156,10 +162,10 @@ it("opens a file that the web UI can show, among those of its message that it ca
 
   await user.click(screen.getByRole("button", { name: "Open image.png" }));
   const viewer = screen.getByRole("dialog", { name: "image.png" });
-  // The second of the three that can be shown.
-  expect(viewer.querySelector(".vw-n")!.textContent).toBe("2 / 3");
+  // The second of the four that can be shown.
+  expect(viewer.querySelector(".vw-n")!.textContent).toBe("2 / 4");
   await user.click(within(viewer).getByRole("button", { name: "Next" }));
-  expect(screen.getByRole("dialog", { name: "poster.png" })).toBeTruthy();
+  expect(screen.getByRole("dialog", { name: "design.pdf" })).toBeTruthy();
   await user.click(
     within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }),
   );

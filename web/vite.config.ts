@@ -1,6 +1,7 @@
 /// <reference types="vitest/config" />
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv, type Plugin, type ProxyOptions } from "vite";
+import { viteStaticCopy } from "vite-plugin-static-copy";
 
 // AVIARY_API names an API for the development server to pass the requests
 // of the console on to, such as http://localhost:8080. Without it the
@@ -21,7 +22,7 @@ export default defineConfig(({ command, mode }) => {
   const fake =
     mode === "test" || (command === "serve" && !api && !env.AVIARY_PUBLIC_API);
   return {
-    plugins: [react(), settings(env)],
+    plugins: [react(), settings(env), pdfData()],
     define: { __FAKE_API__: JSON.stringify(fake) },
     // A build carries the licenses of the packages that it bundles, fonts
     // included: most of them have to accompany every copy.
@@ -33,6 +34,26 @@ export default defineConfig(({ command, mode }) => {
     },
   };
 });
+
+// pdfData puts what PDF.js reads when a document needs it at /pdfjs, as the
+// package names it and with its licenses: the fonts and the character maps
+// that a PDF may leave out, and the decoders of pictures that browsers do
+// not have.
+function pdfData() {
+  const from = "node_modules/pdfjs-dist/";
+  const data = [
+    "cmaps/*",
+    "standard_fonts/*",
+    "wasm/*{_nowasm_fallback.js,JBIG2,OPENJPEG}",
+  ];
+  return viteStaticCopy({
+    targets: data.map((files) => ({
+      src: from + files,
+      dest: "pdfjs",
+      rename: { stripBase: 2 },
+    })),
+  });
+}
 
 // settings has the development server serve what an installation sets for
 // its console, at /config.json, from the environment.

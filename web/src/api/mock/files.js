@@ -110,6 +110,116 @@ function text(name, size) {
   return whole.slice(0, size);
 }
 
+// ---- PDF ------------------------------------------------------------------
+
+const PROSE = [
+  "A delivery that fails is tried again, up to five times. The wait before each",
+  "try doubles, from 200 ms, and is multiplied by a random factor between 0.5",
+  "and 1.5, so that the deliveries of an outage do not come back all at once.",
+  "",
+  "Only what may pass by itself is tried again: an error of the network, and an",
+  "answer of 500 or more. An answer of 400 to 499 says that the request itself",
+  "is wrong, and is not sent again. 429 is the exception: the endpoint asks for",
+  "the delivery to come later, and says when in its Retry-After header.",
+  "",
+  "The last failure is kept as the endpoint gave it, with the number of tries,",
+  "and the delivery is listed for a person to send again.",
+];
+
+// pdf returns a document of a few pages, in the fonts that every reader has.
+function pdf(name, size) {
+  const escaped = (words) => words.replace(/[()\\]/g, "\\$&");
+  const write = (x, y, points, words, bold) =>
+    `BT /${bold ? "B" : "R"} ${points} Tf ${x} ${y} Td (${escaped(words)}) Tj ET\n`;
+  const box = (x, y, width, height, grey) =>
+    `${grey} ${grey} ${grey} rg ${x} ${y} ${width} ${height} re f\n`;
+  const random = seeded(seedOf(name));
+  const headings = ["Retries", "What is tried again", "Measurements"];
+  const pages = headings.map((heading, page) => {
+    let body = box(0, 0, 595, 842, 1) + "0.05 0.11 0.18 rg\n";
+    let y = 770;
+    if (page === 0) {
+      body += write(64, y, 26, "Webhook retries", true);
+      body +=
+        "0.36 0.42 0.51 rg\n" + write(64, y - 24, 11, "Design, 2026-11-24");
+      body += "0.05 0.11 0.18 rg\n";
+      y -= 72;
+    }
+    body += write(64, y, 15, `${page + 1}. ${heading}`, true);
+    y -= 28;
+    for (const line of PROSE) {
+      if (line) body += write(64, y, 11, line);
+      y -= line ? 16 : 10;
+    }
+    y -= 14;
+    // A chart of bars, and a table below it.
+    body += box(64, y - 150, 467, 150, 0.95);
+    for (let bar = 0; bar < 12; bar++) {
+      const tall = 20 + Math.floor(random() * 110);
+      body += `0.04 0.44 0.88 rg ${84 + bar * 37} ${y - 140} 22 ${tall} re f\n`;
+    }
+    y -= 180;
+    body += box(64, y - 4, 467, 22, 0.92) + "0.05 0.11 0.18 rg\n";
+    body +=
+      write(72, y + 2, 10, "Try", true) + write(180, y + 2, 10, "Wait", true);
+    body += write(300, y + 2, 10, "Deliveries that passed", true);
+    for (let row = 1; row <= 5; row++) {
+      y -= 22;
+      body += write(72, y + 2, 10, String(row));
+      body += write(180, y + 2, 10, `${100 * 2 ** row} ms`);
+      body += write(
+        300,
+        y + 2,
+        10,
+        `${Math.floor(random() * 60 + 30 / row)} %`,
+      );
+    }
+    body +=
+      "0.36 0.42 0.51 rg\n" +
+      write(280, 40, 9, `${page + 1} / ${headings.length}`);
+    return body;
+  });
+
+  // The document with a filler of so many bytes, which makes up its size.
+  const build = (filler) => {
+    const objects = [
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      `<< /Type /Pages /Count ${pages.length} /Kids [${pages.map((_, page) => `${5 + 2 * page} 0 R`).join(" ")}] >>`,
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>",
+    ];
+    pages.forEach((body, page) => {
+      objects.push(
+        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /R 3 0 R /B 4 0 R >> >> /Contents ${6 + 2 * page} 0 R >>`,
+        `<< /Length ${body.length} >>\nstream\n${body}endstream`,
+      );
+    });
+    objects.push(
+      `<< /Length ${filler} >>\nstream\n${" ".repeat(filler)}\nendstream`,
+    );
+    let whole = "%PDF-1.4\n";
+    const offsets = objects.map((object, index) => {
+      const offset = whole.length;
+      whole += `${index + 1} 0 obj\n${object}\nendobj\n`;
+      return offset;
+    });
+    const table = whole.length;
+    whole += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+    for (const offset of offsets) {
+      whole += `${String(offset).padStart(10, "0")} 00000 n \n`;
+    }
+    return `${whole}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${table}\n%%EOF\n`;
+  };
+  let filler = 0;
+  let whole = build(filler);
+  // The filler says how long it is, in digits that count too.
+  for (let tries = 0; tries < 4 && whole.length !== size; tries++) {
+    filler = Math.max(0, filler + size - whole.length);
+    whole = build(filler);
+  }
+  return whole;
+}
+
 // ---- Pictures -------------------------------------------------------------
 
 // picture draws what a screenshot of a dashboard may look like: as wide as
@@ -266,6 +376,7 @@ const DRAWING = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 360" w
 // bytesOf returns the file of an attachment of the example data.
 export async function bytesOf({ name, media_type: type, size }) {
   const ext = name.slice(name.lastIndexOf(".") + 1).toLowerCase();
+  if (ext === "pdf") return new Blob([pdf(name, size)], { type });
   if (ext === "svg") return new Blob([DRAWING.padEnd(size)], { type });
   const drawn =
     (type === "image/png" || type === "image/jpeg") &&

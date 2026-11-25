@@ -6,7 +6,7 @@ import { split } from "../../lib/files.ts";
 import { size } from "../../lib/format.ts";
 import { Icon } from "../../ui/Icon.tsx";
 import { oops } from "../../ui/toast.ts";
-import { carriedFile, type Shown, useSeen, useThumbnail } from "./shown.ts";
+import { carriedFile, type Shown, useNear, useThumbnail } from "./shown.ts";
 import { Viewer } from "./Viewer.tsx";
 
 // FileCard is the box of a file: a tile that says what the file is, with a
@@ -31,7 +31,7 @@ export function FileCard({
   children?: ReactNode;
 }) {
   const box = useRef<HTMLDivElement>(null);
-  const seen = useSeen(box);
+  const seen = useNear(box, true);
   const picture = useThumbnail(file, reads && seen);
   const { ext, family } = file.kind;
   // A name that does not fit is cut before its end, which tells it apart.

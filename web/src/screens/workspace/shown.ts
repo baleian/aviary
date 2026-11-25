@@ -58,7 +58,10 @@ export function useThumbnail(file: Shown, reads: boolean): string | undefined {
   const { data } = useQuery({
     queryKey: thumbnailKey(file.key),
     queryFn: async () => thumbnail(await file.read(), file.kind),
-    enabled: reads && file.kind.view === "image" && file.size <= LARGEST,
+    enabled:
+      reads &&
+      (file.kind.view === "image" || file.kind.view === "pdf") &&
+      file.size <= LARGEST,
     staleTime: Infinity,
     gcTime: Infinity,
     retry: false,
@@ -66,23 +69,26 @@ export function useThumbnail(file: Shown, reads: boolean): string | undefined {
   return data ?? undefined;
 }
 
-// useSeen tells whether the element has come near what the window shows,
-// and stays true once it has.
-export function useSeen(element: RefObject<Element | null>): boolean {
-  const [seen, setSeen] = useState(typeof IntersectionObserver === "undefined");
+// useNear tells whether the element is near what the window shows. With
+// once, it stays true after the element has been near.
+export function useNear(
+  element: RefObject<Element | null>,
+  once = false,
+): boolean {
+  const [near, setNear] = useState(typeof IntersectionObserver === "undefined");
   useEffect(() => {
     const node = element.current;
     if (!node || typeof IntersectionObserver === "undefined") return;
     const observer = new IntersectionObserver(
       (entries) => {
-        if (!entries.some((entry) => entry.isIntersecting)) return;
-        observer.disconnect();
-        setSeen(true);
+        const now = entries.at(-1)!.isIntersecting;
+        if (now && once) observer.disconnect();
+        if (now || !once) setNear(now);
       },
       { rootMargin: "240px" },
     );
     observer.observe(node);
     return () => observer.disconnect();
-  }, [element]);
-  return seen;
+  }, [element, once]);
+  return near;
 }

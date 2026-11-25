@@ -1,18 +1,25 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useEffectEvent,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { saveFile } from "../../api/conversation.ts";
 import { cls } from "../../lib/cls.ts";
-import { sentence, size } from "../../lib/format.ts";
+import { plural, sentence, size } from "../../lib/format.ts";
+import type { Pages } from "../../lib/pdf.ts";
 import { Icon } from "../../ui/Icon.tsx";
 import { oops } from "../../ui/toast.ts";
-import type { Shown } from "./shown.ts";
+import { type Shown, useNear } from "./shown.ts";
 
 // How much of a text is read and shown, in bytes.
 const FIRST = 1 << 20;
 
-// Viewer shows a file over the page: a picture or a text. files are the
-// files that it goes through with its arrows, and at is the one that it
-// shows. A file that the API has can be saved from it.
+// Viewer shows a file over the page: a picture, the pages of a PDF, or a
+// text. files are the files that it goes through with its arrows, and at is
+// the one that it shows. A file that the API has can be saved from it.
 export function Viewer({
   files,
   at,
@@ -144,6 +151,13 @@ export function Viewer({
             onFact={tell}
             onBroken={() => setBroken(file.key)}
           />
+        ) : file.kind.view === "pdf" ? (
+          <Document
+            key={file.key}
+            data={data}
+            onFact={tell}
+            onBroken={() => setBroken(file.key)}
+          />
         ) : (
           <Text key={file.key} file={file} data={data} />
         )}
@@ -211,6 +225,73 @@ function Picture({
       onClick={() => (shrunk || whole) && setWhole(!whole)}
     />
   );
+}
+
+// Document shows the pages of a PDF below one another, each drawn when it
+// comes near.
+function Document({
+  data,
+  onFact,
+  onBroken,
+}: {
+  data: Blob;
+  onFact: (says: string) => void;
+  onBroken: () => void;
+}) {
+  const [pages, setPages] = useState<Pages>();
+  const tell = useEffectEvent(onFact);
+  const broke = useEffectEvent(onBroken);
+  useEffect(() => {
+    let opened: Pages | undefined;
+    let gone = false;
+    import("../../lib/pdf.ts")
+      .then(({ open }) => open(data))
+      .then((read) => {
+        if (gone) return read.close();
+        opened = read;
+        setPages(read);
+        tell(plural(read.count, "page"));
+      })
+      .catch(() => gone || broke());
+    return () => {
+      gone = true;
+      opened?.close();
+    };
+  }, [data]);
+  if (!pages) return <span className="ring" />;
+  return (
+    <div className="vw-pages">
+      {Array.from({ length: pages.count }, (_, index) => (
+        <Sheet key={index} pages={pages} number={index + 1} />
+      ))}
+    </div>
+  );
+}
+
+// Sheet is a page of a PDF, which is drawn while it is near what is shown:
+// a page that is drawn holds many megabytes.
+function Sheet({ pages, number }: { pages: Pages; number: number }) {
+  const canvas = useRef<HTMLCanvasElement>(null);
+  const near = useNear(canvas);
+  // How wide the page is for its height: that of the first page, until the
+  // page is drawn and has its own.
+  const [ratio, setRatio] = useState(pages.ratio);
+  useEffect(() => {
+    const node = canvas.current;
+    if (!near || !node) return;
+    // As many pixels as the screen has for the page.
+    const dense = Math.min(window.devicePixelRatio || 1, 2);
+    const drawing = pages.draw(number, node, node.clientWidth * dense);
+    drawing.done.then(
+      () => setRatio(node.width / node.height),
+      () => {},
+    );
+    return () => {
+      drawing.cancel();
+      node.width = node.height = 0;
+    };
+  }, [pages, number, near]);
+  return <canvas ref={canvas} style={{ aspectRatio: ratio }} />;
 }
 
 // Text shows what was read of a text, and says so if that is not all of it.

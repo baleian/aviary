@@ -2578,6 +2578,21 @@ dialog.viewer::backdrop {
   max-height: none;
   cursor: zoom-out;
 }
+.vw-pages {
+  display: grid;
+  gap: 14px;
+  width: min(880px, 100%);
+  margin-top: 0;
+  animation: rise 0.16s ease-out;
+}
+.vw-pages canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 4px;
+  background: var(--paper);
+  box-shadow: var(--sh2);
+}
 .vw-text {
   width: min(980px, 100%);
   max-height: 100%;

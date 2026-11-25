@@ -12,8 +12,12 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ApiError } from "../../api/client.ts";
 import * as conversation from "../../api/conversation.ts";
 import { kindOf } from "../../lib/files.ts";
+import * as pdf from "../../lib/pdf.ts";
 import type { Shown } from "./shown.ts";
 import { Viewer } from "./Viewer.tsx";
+
+// The browser of the tests has no workers, which PDF.js reads with.
+vi.mock("../../lib/pdf.ts", () => ({ open: vi.fn() }));
 
 // The addresses that were made for files, and those that were let go of.
 let made: Blob[] = [];
@@ -29,11 +33,29 @@ beforeEach(() => {
   vi.spyOn(URL, "revokeObjectURL").mockImplementation((address) => {
     revoked.push(address);
   });
+  // Every page of a PDF is near what is shown.
+  vi.stubGlobal(
+    "IntersectionObserver",
+    class {
+      tell: IntersectionObserverCallback;
+      constructor(tell: IntersectionObserverCallback) {
+        this.tell = tell;
+      }
+      observe() {
+        this.tell(
+          [{ isIntersecting: true } as IntersectionObserverEntry],
+          this as unknown as IntersectionObserver,
+        );
+      }
+      disconnect() {}
+    },
+  );
 });
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 // shown returns a file of the bytes, which may say that it is larger.
@@ -125,6 +147,33 @@ it("shows the beginning of a text, and says if that is not all of it", async () 
   );
 });
 
+it("shows the pages of a PDF, and lets go of the document with the viewer", async () => {
+  const drawn: number[] = [];
+  const cancel = vi.fn();
+  const pages = {
+    count: 3,
+    ratio: 0.7,
+    draw: vi.fn((page: number) => {
+      drawn.push(page);
+      return { done: Promise.resolve(), cancel };
+    }),
+    close: vi.fn(),
+  };
+  vi.mocked(pdf.open).mockResolvedValue(pages);
+  const file = shown("design.pdf", "%PDF-1.4");
+  const { viewer, says, unmount } = show([file]);
+  await waitFor(() =>
+    expect(viewer.querySelectorAll(".vw-pages canvas")).toHaveLength(3),
+  );
+  expect(vi.mocked(pdf.open).mock.calls[0][0].size).toBe(8);
+  expect(says()).toBe("8 bytes · 3 pages");
+  // The pages that are near are drawn.
+  await waitFor(() => expect(drawn).toEqual([1, 2, 3]));
+  unmount();
+  expect(cancel).toHaveBeenCalledTimes(3);
+  expect(pages.close).toHaveBeenCalledTimes(1);
+});
+
 it("says that a file cannot be shown, or why it could not be read", async () => {
   // A file that is not the picture that its name says.
   const { viewer } = show([shown("shot.png", "not a picture")]);
@@ -137,6 +186,15 @@ it("says that a file cannot be shown, or why it could not be read", async () => 
   );
   expect(viewer.querySelector(".vw-no")!.textContent).toBe(
     "This file cannot be shown.",
+  );
+  cleanup();
+
+  vi.mocked(pdf.open).mockRejectedValue(new Error("Invalid PDF structure."));
+  const broken = show([shown("design.pdf", "not a PDF")]);
+  await waitFor(() =>
+    expect(broken.viewer.querySelector(".vw-no")!.textContent).toBe(
+      "This file cannot be shown.",
+    ),
   );
   cleanup();
 

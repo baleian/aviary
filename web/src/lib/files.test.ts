@@ -10,6 +10,11 @@ it("tells what a file is from the extension of its name", () => {
   });
   expect(kindOf("photo.jpeg").type).toBe("image/jpeg");
   expect(kindOf("flow.svg").type).toBe("image/svg+xml");
+  expect(kindOf("design.pdf")).toEqual({
+    ext: "pdf",
+    family: "pdf",
+    view: "pdf",
+  });
   expect(kindOf("errors.log")).toEqual({
     ext: "log",
     family: "text",
@@ -22,7 +27,6 @@ it("tells what a file is from the extension of its name", () => {
     view: "text",
   });
   // What the web UI cannot show has no view.
-  expect(kindOf("design.pdf")).toEqual({ ext: "pdf", family: "pdf" });
   expect(kindOf("board.xlsx")).toEqual({ ext: "xlsx", family: "sheet" });
   expect(kindOf("deck.pptx")).toEqual({ ext: "pptx", family: "slides" });
   expect(kindOf("letter.docx")).toEqual({ ext: "docx", family: "doc" });
@@ -45,10 +49,7 @@ it("goes by the media type where the name does not tell", () => {
     family: "text",
     view: "text",
   });
-  expect(kindOf("report", "application/pdf")).toEqual({
-    ext: "",
-    family: "pdf",
-  });
+  expect(kindOf("report", "application/pdf").view).toBe("pdf");
   expect(kindOf(".env", "application/octet-stream")).toEqual({
     ext: "",
     family: "other",
