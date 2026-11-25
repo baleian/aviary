@@ -1149,6 +1149,7 @@ export function seed(now) {
         ["결제 웹훅 재시도 설계.pdf", "application/pdf", 2411724],
         ["image.png", "image/png", 184320],
         ["image (2).png", "image/png", 201728],
+        ["delivery-flow.svg", "image/svg+xml", 1024],
       ],
       items: [
         read(

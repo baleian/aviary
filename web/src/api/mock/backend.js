@@ -7,6 +7,7 @@ import { uuid7, copy } from "./util.js";
 import { seed, PERMISSIONS, IDLE, TOOLS } from "./seed.js";
 import { script } from "./scripts.js";
 import { assemble } from "./items.js";
+import { bytesOf } from "./files.js";
 
 // What the mock is set to do.
 export const mock = {
@@ -2242,14 +2243,12 @@ export function request(method, path, { token = "", body = null } = {}) {
 
 // download answers GET /v1/attachments/{id}: with the answer of the API, and
 // with the file if the request is not refused. A file of the example data
-// has no bytes of its own, and is a text of its size.
-export function download(path, { token = "" } = {}) {
+// is made when it is read.
+export async function download(path, { token = "" } = {}) {
   const response = request("GET", path, { token });
   if (response.status !== 200) return { response };
-  const { id, name, media_type, size } = response.body;
-  const file =
-    uploads.get(id) ??
-    new Blob([`${name}\n`.padEnd(size, ".")], { type: media_type });
+  const { id, name, media_type } = response.body;
+  const file = uploads.get(id) ?? (await bytesOf(response.body));
   return {
     response: {
       status: 200,

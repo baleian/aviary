@@ -41,7 +41,7 @@ interface Backend {
   download(
     path: string,
     options: { token: string },
-  ): { response: Reply; file?: Blob };
+  ): Promise<{ response: Reply; file?: Blob }>;
   accounts(): Account[];
   setIdentityProvider(on: boolean): void;
   // setLimits sets how large a file of a message may be, in bytes, and how
@@ -138,7 +138,7 @@ export async function fake(): Promise<Transport> {
 
     async download(path, { token }) {
       await answering();
-      const { response, file } = download(path, { token });
+      const { response, file } = await download(path, { token });
       return { ...lowercased(response), file };
     },
 

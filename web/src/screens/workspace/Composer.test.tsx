@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
@@ -45,15 +46,17 @@ function show(of: Partial<Compose> = {}, live?: Turn, stops = true) {
   // A project without MCP servers: the composer has no button for them.
   const context = { mcpServers: [] } as unknown as ProjectContext;
   render(
-    <Composer
-      context={context}
-      agent={agent}
-      compose={compose}
-      mcp={{ on: [], defaults: [], running: false }}
-      turn={live}
-      onSend={onSend}
-      onStop={stops ? onStop : undefined}
-    />,
+    <QueryClientProvider client={new QueryClient()}>
+      <Composer
+        context={context}
+        agent={agent}
+        compose={compose}
+        mcp={{ on: [], defaults: [], running: false }}
+        turn={live}
+        onSend={onSend}
+        onStop={stops ? onStop : undefined}
+      />
+    </QueryClientProvider>,
   );
   const box = screen.getByRole<HTMLTextAreaElement>("textbox", {
     name: "Message",
@@ -143,11 +146,10 @@ it("shows the files that the message carries, and takes one from it", async () =
   const { compose, send, onSend, box } = show({ carries: 10, files });
   const list = screen.getByRole("list", { name: "Files" });
   const shown = [...list.querySelectorAll(".file")];
-  expect(shown.map((each) => each.textContent)).toEqual([
-    "checkout-errors.log1.8 MB",
-    "결제 웹훅 재시도 설계.pdf2.3 MB",
-  ]);
-  expect(shown[1].getAttribute("title")).toBe("결제 웹훅 재시도 설계.pdf");
+  expect(shown.map((each) => each.querySelector(".what")!.textContent)).toEqual(
+    ["checkout-errors.log1.8 MB", "결제 웹훅 재시도 설계.pdf2.3 MB"],
+  );
+  expect(shown[1].querySelector("b")!.title).toBe("결제 웹훅 재시도 설계.pdf");
   // The files come before the text.
   expect(list.nextElementSibling).toBe(box);
   await user.click(
@@ -170,14 +172,16 @@ it("says how far the files have gone while the message is on its way", () => {
   const { box } = show({ carries: 10, files, sending: true, text: "Look" });
   const [gone, going, waiting, empty] = [
     ...document.querySelectorAll(".composer .file"),
-  ];
-  expect(gone.textContent).toBe("gone.txt200 bytes");
-  expect(gone.querySelector("use")!.getAttribute("href")).toBe("#i-check");
-  expect(going.textContent).toBe("going.bin45%");
-  expect(going.querySelector(".ring")).toBeTruthy();
-  expect(waiting.textContent).toBe("waiting.txt200 bytes");
-  expect(waiting.querySelector("use")!.getAttribute("href")).toBe("#i-doc");
-  expect(empty.textContent).toBe("empty.txt100%");
+  ].map((file) => ({
+    says: file.querySelector(".what")!.textContent,
+    // The mark of a file that has gone, and the bar of one that goes.
+    mark: file.querySelector("small use")?.getAttribute("href"),
+    bar: file.querySelector<HTMLElement>(".gone")?.style.width,
+  }));
+  expect(gone).toEqual({ says: "gone.txt200 bytes", mark: "#i-check" });
+  expect(going).toEqual({ says: "going.bin45%", bar: "45%" });
+  expect(waiting).toEqual({ says: "waiting.txt200 bytes" });
+  expect(empty).toEqual({ says: "empty.txt100%", bar: "100%" });
   // What is on its way is not changed.
   for (const remove of screen.getAllByRole<HTMLButtonElement>("button", {
     name: /^Remove /,

@@ -707,10 +707,10 @@ export const TurnView = memo(function TurnView({
       </div>
       <div className="msg-u">
         <div className="said-u">
-          {turn.text && <div className="bub-u">{turn.text}</div>}
           {!!turn.attachments?.length && (
             <Carried files={turn.attachments} kept={kept} />
           )}
+          {turn.text && <div className="bub-u">{turn.text}</div>}
         </div>
         <Avatar who={person(turn.created_by)} />
       </div>

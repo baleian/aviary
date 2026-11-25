@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
-import { cleanup, render } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { cleanup, render, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 import * as conversation from "../../api/conversation.ts";
@@ -57,8 +58,11 @@ function show(
 ) {
   // Without items the turn is as its record has it before it has ended.
   const drawn = items ? turn({ ...of, items }) : turn(of);
+  // The files of a message are read for their pictures.
   const { container } = render(
-    <TurnView turn={drawn} agent={agent} person={person} {...more} />,
+    <QueryClientProvider client={new QueryClient()}>
+      <TurnView turn={drawn} agent={agent} person={person} {...more} />
+    </QueryClientProvider>,
   );
   const element = container.querySelector<HTMLElement>(".turn")!;
   return { element, text: element.textContent ?? "" };
@@ -77,7 +81,7 @@ it("shows the message, who sent it, and how long the turn took", () => {
   expect(text).toContain("Helper");
 });
 
-it("shows the files that the message carries, in its order, and saves one that is clicked", async () => {
+it("shows the files that the message carries above its text, in its order, and saves one with its button", async () => {
   const attachments = [
     { id: "a2", name: "notes-k.txt", media_type: "text/plain", size: 5 },
     {
@@ -96,18 +100,23 @@ it("shows the files that the message carries, in its order, and saves one that i
   );
   const user = userEvent.setup();
   const { element } = show({ attachments });
-  const files = [...element.querySelectorAll(".said-u .files .file")];
-  expect(files.map((file) => file.textContent)).toEqual([
-    "notes-k.txt5 bytes",
-    "결제 웹훅 재시도 설계.pdf2.3 MB",
-    "image.png94 KB",
-  ]);
-  // The text comes first, and the files below it.
-  expect(element.querySelector(".said-u")!.firstElementChild!.className).toBe(
+  const files = [
+    ...element.querySelectorAll<HTMLElement>(".said-u .files .file"),
+  ];
+  expect(files.map((file) => file.querySelector(".what")!.textContent)).toEqual(
+    ["notes-k.txt5 bytes", "결제 웹훅 재시도 설계.pdf2.3 MB", "image.png94 KB"],
+  );
+  // The tile of a file says what it is.
+  expect(files.map((file) => file.querySelector(".tile")!.textContent)).toEqual(
+    ["txt", "pdf", "png"],
+  );
+  // The files come first, as they do where a message is written.
+  expect(element.querySelector(".said-u")!.lastElementChild!.className).toBe(
     "bub-u",
   );
-  const pdf = files[1] as HTMLButtonElement;
-  expect(pdf.title).toBe("Download 결제 웹훅 재시도 설계.pdf");
+  const pdf = within(files[1]).getByRole<HTMLButtonElement>("button", {
+    name: "Download 결제 웹훅 재시도 설계.pdf",
+  });
   await user.click(pdf);
   expect(save).toHaveBeenCalledWith(attachments[1]);
   // While the file comes, it is not asked for again.
@@ -136,8 +145,8 @@ it("shows the files of a session that has ended, which are kept no longer, witho
   ];
   const { element } = show({ attachments }, [], { kept: false });
   const file = element.querySelector(".files .file")!;
-  expect(file.tagName).toBe("SPAN");
-  expect(file.textContent).toBe("env.example612 bytes");
+  expect(file.querySelector(".what")!.textContent).toBe("env.example612 bytes");
+  // Nothing can be done with it.
   expect(element.querySelector(".files button")).toBeNull();
 });
 
@@ -152,7 +161,9 @@ it("says that a file could not be saved", async () => {
       { id: "a1", name: "notes.txt", media_type: "text/plain", size: 5 },
     ],
   });
-  const file = element.querySelector<HTMLButtonElement>(".files button")!;
+  const file = within(element).getByRole<HTMLButtonElement>("button", {
+    name: "Download notes.txt",
+  });
   await user.click(file);
   await vi.waitFor(() => expect(toasted).toHaveBeenCalledTimes(1));
   expect(file.disabled).toBe(false);

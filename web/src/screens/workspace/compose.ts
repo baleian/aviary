@@ -19,6 +19,7 @@ import { label, plural, sentence, size } from "../../lib/format.ts";
 import { suggest } from "../../lib/sessions.ts";
 import { queryClient } from "../../query.ts";
 import { oops, toast } from "../../ui/toast.ts";
+import { chosenKey, thumbnailKey } from "./shown.ts";
 
 // A file that the message being written carries. It is uploaded when the
 // message is sent.
@@ -244,6 +245,12 @@ export function useCompose(
           );
           told(key, { id: uploaded.id });
           attachments.push(uploaded.id);
+          // The picture that was drawn of the file is that of its
+          // attachment, which the message then shows without reading it.
+          queryClient.setQueryData(
+            thumbnailKey(uploaded.id),
+            queryClient.getQueryData(thumbnailKey(chosenKey(key))),
+          );
         } finally {
           told(key, { sent: undefined });
         }

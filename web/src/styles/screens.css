@@ -1032,20 +1032,21 @@ a:hover .top > .go {
   gap: 10px;
   margin-bottom: 16px;
 }
-/* What the user sent: the text, and below it the files. */
+/* What the user sent: the text, and below it the files, which may be as
+   wide as the conversation. */
 .said-u {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   gap: 8px;
-  max-width: 76%;
+  flex: 1;
   min-width: 0;
 }
 .said-u .files {
   justify-content: flex-end;
 }
 .bub-u {
-  max-width: 100%;
+  max-width: 76%;
   background: var(--king);
   color: var(--on-king);
   border-radius: 20px 20px 6px 20px;
@@ -1669,15 +1670,18 @@ a:hover .top > .go {
 .composer.over {
   background: var(--k50);
 }
-/* The files that the message carries, above its text. */
+/* The files that the message carries, above its text: two rows of them,
+   and the rest below. */
 .composer .files {
-  max-height: 108px;
-  margin: 0 6px 8px 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  max-height: 102px;
+  margin: 0 6px 10px 0;
   overflow-y: auto;
 }
 .composer .file {
-  padding-right: 4px;
-  background: var(--surface-2);
+  width: auto;
+  flex: 1;
 }
 .composer textarea {
   display: block;
@@ -2323,7 +2327,8 @@ a:hover .top > .go {
   color: var(--slate);
 }
 
-/* The files that a message carries. */
+/* The files that a message carries: a box each, with a tile that says what
+   the file is, and that is a picture of it if there is one. */
 .files {
   display: flex;
   flex-wrap: wrap;
@@ -2339,70 +2344,126 @@ a:hover .top > .go {
   min-width: 0;
 }
 .file {
-  display: inline-flex;
+  position: relative;
+  display: flex;
   align-items: center;
-  gap: 6px;
+  width: 228px;
   min-width: 0;
-  max-width: 300px;
-  height: 32px;
-  padding: 0 10px 0 8px;
+  height: 48px;
+  padding-right: 6px;
   border: 1px solid var(--line2);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--surface);
-  color: var(--ink2);
-  font: 600 12.5px/18px var(--sans);
-}
-.file > .i,
-.file > .ring {
-  flex: none;
-  color: var(--slate);
-}
-.file b {
-  min-width: 0;
-  font-weight: 600;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  transition:
+    border-color 0.15s,
+    background 0.15s,
+    box-shadow 0.15s;
 }
-.file small {
-  flex: none;
-  font: 500 12px/18px var(--sans);
-  color: var(--slate);
-}
-button.file {
-  cursor: pointer;
-  transition: 0.15s;
-}
-button.file:hover {
-  border-color: var(--k200);
-  background: var(--k50);
-  color: var(--k-ink);
-}
-button.file[disabled] {
-  cursor: progress;
-}
-/* Takes a file from the message that is written. */
-.file .x {
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--slate);
-  cursor: pointer;
-  flex: none;
-  transition: 0.15s;
-}
-.file .x:hover {
-  background: var(--surface-3);
+.file .face {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0 4px 0 3px;
   color: var(--ink);
 }
-.file .x[disabled] {
-  background: transparent;
-  color: var(--mist);
-  cursor: not-allowed;
+.file .tile {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 9px;
+  overflow: hidden;
+  background: var(--n100);
+  color: var(--n-ink);
+  font: 800 10px/1 var(--sans);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.file .tile.image,
+.file .tile.doc {
+  background: var(--av1);
+  color: var(--av1-ink);
+}
+.file .tile.sheet {
+  background: var(--av2);
+  color: var(--av2-ink);
+}
+.file .tile.slides,
+.file .tile.media {
+  background: var(--av3);
+  color: var(--av3-ink);
+}
+.file .tile.pdf {
+  background: var(--av4);
+  color: var(--av4-ink);
+}
+.file .tile img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  animation: fade 0.2s ease-out;
+}
+/* A picture keeps its edge where it is as light as the box. */
+.file .tile:has(img)::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px var(--line2);
+}
+.file .what {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+.file .what b {
+  display: flex;
+  min-width: 0;
+  font: 600 13px/18px var(--sans);
+  color: var(--ink);
+}
+.file .what b span {
+  white-space: pre;
+}
+.file .what b span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file .what b span + span {
+  flex: none;
+}
+.file .what small {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font: 500 12px/16px var(--sans);
+  color: var(--slate);
+  white-space: nowrap;
+}
+.file .what small .i {
+  width: 14px;
+  height: 14px;
+  color: var(--green);
+}
+.file > .ib {
+  flex: none;
+}
+/* How much of a file has gone, along the foot of its box. */
+.file .gone {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--king);
+  transition: width 0.2s ease-out;
 }
 
 /* The MCP servers of a session: in the composer, and in its details. */

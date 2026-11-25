@@ -4,6 +4,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -17,8 +18,10 @@ import { Icon, Use } from "../../ui/Icon.tsx";
 import type { IconName } from "../../ui/icons.ts";
 import { person } from "../../ui/who.ts";
 import type { Barred, Compose, Pending } from "./compose.ts";
+import { FileCard } from "./Files.tsx";
 import { McpButton } from "./Mcp.tsx";
 import type { McpChoice } from "./servers.ts";
+import { chosenFile, type Shown } from "./shown.ts";
 
 // What the bar of the composer says while a turn has not ended.
 const DOING: Record<string, string> = {
@@ -35,10 +38,12 @@ const holds = (event: DragEvent) => event.dataTransfer.types.includes("Files");
 // while the message is sent. It is taken from the message with its button.
 function Chosen({
   pending,
+  shown,
   sending,
   onRemove,
 }: {
   pending: Pending;
+  shown: Shown;
   sending: boolean;
   onRemove: () => void;
 }) {
@@ -46,20 +51,31 @@ function Chosen({
   const going = sent !== undefined;
   const gone = file.size ? Math.floor(((sent ?? 0) / file.size) * 100) : 100;
   return (
-    <span className="file" title={file.name}>
-      {going ? <span className="ring" /> : <Icon name={id ? "check" : "doc"} />}
-      <b>{file.name}</b>
-      <small>{going ? gone + "%" : size(file.size)}</small>
+    <FileCard
+      file={shown}
+      gone={going ? gone : undefined}
+      note={
+        going ? (
+          gone + "%"
+        ) : id ? (
+          <>
+            <Icon name="check" />
+            {size(file.size)}
+          </>
+        ) : undefined
+      }
+    >
       <button
-        className="x"
+        className="ib sm"
         type="button"
+        title="Remove"
         aria-label={"Remove " + file.name}
         disabled={sending}
         onClick={onRemove}
       >
         <Icon name="x" />
       </button>
-    </span>
+    </FileCard>
   );
 }
 
@@ -96,6 +112,11 @@ export function Composer({
   const { text, files, sending, cooldown, attach } = compose;
   // Whether a message may carry files.
   const takes = compose.carries > 0;
+  // The files as they are shown.
+  const shown = useMemo(
+    () => files.map(({ key, file }) => chosenFile(key, file)),
+    [files],
+  );
 
   // The box is as tall as what is written in it, up to its limit.
   useLayoutEffect(() => {
@@ -171,10 +192,11 @@ export function Composer({
     >
       {files.length > 0 && (
         <ul className="files" aria-label="Files">
-          {files.map((pending) => (
+          {files.map((pending, at) => (
             <li key={pending.key}>
               <Chosen
                 pending={pending}
+                shown={shown[at]}
                 sending={sending}
                 onRemove={() => compose.remove(pending.key)}
               />

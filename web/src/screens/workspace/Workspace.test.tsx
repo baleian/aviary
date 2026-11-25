@@ -655,11 +655,13 @@ it("sends a message to a session, and shows the turn that it begins", async () =
 // chosen returns what the composer says of the files that its message
 // carries, and carried what the turn says of those of its message.
 const chosen = () =>
-  [...document.querySelectorAll(".composer .file")].map(
+  [...document.querySelectorAll(".composer .file .what")].map(
     (file) => file.textContent,
   );
 const carried = (turn: Element) =>
-  [...turn.querySelectorAll(".said-u .file")].map((file) => file.textContent);
+  [...turn.querySelectorAll(".said-u .file .what")].map(
+    (file) => file.textContent,
+  );
 // picker returns what chooses the files of a message, once messages are
 // known to carry files.
 async function picker() {
@@ -724,6 +726,33 @@ it("sends a message with the files that were attached, which its turn then shows
     "/v1/attachments/" + turns[0].attachments![0].id,
   );
   expect(await kept.text()).toBe("an error\n");
+});
+
+it("shows the picture that was drawn of a chosen file with its message, without reading the file", async () => {
+  const session = await talk("With a picture");
+  const user = open(session.path, "alice");
+  await screen.findByRole("heading", { name: "With a picture" });
+  fireEvent.change(await picker(), { target: { files: [shot()] } });
+  // What the composer drew of the file. The tests draw nothing.
+  const [drawn] = queryClient
+    .getQueryCache()
+    .findAll({ queryKey: ["thumbnail"] })
+    .filter((query) => String(query.queryKey[1]).startsWith("chosen-"));
+  queryClient.setQueryData(drawn.queryKey, "data:,drawn");
+  const picture = () =>
+    document.querySelector(".composer .file img")?.getAttribute("src");
+  await waitFor(() => expect(picture()).toBe("data:,drawn"));
+  const download = vi.spyOn(api, "download");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  const turn = await waitFor(() => {
+    const found = document.querySelector(".turn");
+    expect(found).toBeTruthy();
+    return found!;
+  });
+  expect(turn.querySelector(".file img")!.getAttribute("src")).toBe(
+    "data:,drawn",
+  );
+  expect(download).not.toHaveBeenCalled();
 });
 
 it("begins a session with files alone, which is named after the first", async () => {
@@ -809,27 +838,27 @@ it("keeps a message whose file could not be uploaded, and uploads only what has 
   // The message stays as it was, and the file that has gone says so.
   expect(box().value).toBe("Look");
   expect(chosen()).toEqual(["checkout-errors.log9 bytes", "image.png2 KB"]);
-  const icons = () =>
-    [...document.querySelectorAll(".composer .file > .i use")].map((icon) =>
-      icon.getAttribute("href"),
+  const gone = () =>
+    [...document.querySelectorAll(".composer .file")].map(
+      (file) => !!file.querySelector('small use[href="#i-check"]'),
     );
-  expect(icons()).toEqual(["#i-check", "#i-doc"]);
+  expect(gone()).toEqual([true, false]);
   expect(document.querySelectorAll(".turn").length).toBe(0);
   expect(upload).toHaveBeenCalledTimes(2);
 
   // The API forgets a file that no message carries for long: all go again.
   const post = api.post.bind(api);
-  const gone = {
+  const forgotten = {
     code: "unknown_attachment",
     message: "an attachment is not one of the session",
   };
   vi.spyOn(api, "post").mockImplementation((path, body) =>
     path.endsWith("/messages") && upload.mock.calls.length === 3
-      ? Promise.reject(new ApiError(400, gone, {}))
+      ? Promise.reject(new ApiError(400, forgotten, {}))
       : post(path, body),
   );
   await user.type(box(), "{Enter}");
-  await waitFor(() => expect(icons()).toEqual(["#i-doc", "#i-doc"]));
+  await waitFor(() => expect(gone()).toEqual([false, false]));
   // Only the file that had not gone was uploaded.
   expect(upload).toHaveBeenCalledTimes(3);
   expect(upload.mock.calls[2][0]).toContain("name=image.png");
@@ -1005,15 +1034,18 @@ it("shows the files of the messages of a session, and saves the one that is clic
     expect(turn).toBeTruthy();
     return turn!;
   });
-  const shown = [...first.querySelectorAll(".files .file")];
-  expect(shown.map((file) => file.textContent)).toEqual([
+  expect(carried(first.parentElement!)).toEqual([
     "checkout-errors.log1.8 MB",
     "error-monitor-export.csv412 KB",
     "image.png94 KB",
   ]);
   // The message of the next turn carries none.
   expect(document.querySelector("#turn-2 .files")).toBeNull();
-  await user.click(shown[1]);
+  await user.click(
+    within(first).getByRole("button", {
+      name: "Download error-monitor-export.csv",
+    }),
+  );
   await waitFor(() => expect(saved?.name).toBe("error-monitor-export.csv"));
   expect([saved!.file.size, saved!.file.type]).toEqual([421888, "text/csv"]);
   await leave();
@@ -1025,10 +1057,8 @@ it("shows the files of the messages of a session, and saves the one that is clic
     expect(file).toBeTruthy();
     return file!;
   });
-  expect([gone.tagName, gone.textContent]).toEqual([
-    "SPAN",
-    "env.example612 bytes",
-  ]);
+  expect(gone.querySelector(".what")!.textContent).toBe("env.example612 bytes");
+  expect(gone.querySelector("button")).toBeNull();
 });
 
 it("says why a message cannot be sent, in the place of its box", async () => {
