@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2 2 437 176" role="img" aria-label="Aviary">
+  <!-- The name, in strokes like those of the A of the icon. The wing of the
+       icon crosses the A: it comes from behind the left leg and breaks
+       through the right one, which is cut around it. -->
+  <mask id="cut" maskUnits="userSpaceOnUse" x="-2" y="2" width="437" height="176">
+    <rect x="-2" y="2" width="437" height="176" fill="#fff"/>
+    <path d="M12.6 127.4Q34.9 92.7 99.3 86.4Q72.1 128.5 12.6 127.4Z" fill="#000" stroke="#000" stroke-width="8.8" stroke-linejoin="round"/>
+  </mask>
+  <g fill="none" stroke="#0d1b2e" stroke-width="20" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M51.3 50L92.6 130" mask="url(#cut)"/>
+    <path d="M12.6 127.4Q34.9 92.7 99.3 86.4Q72.1 128.5 12.6 127.4Z" fill="#FFC53D" stroke="none"/>
+    <path d="M10 130L51.3 50 M113.8 80L139.6 130L165.4 80 M195.4 80L195.4 130 M282.4 80L282.4 130 M322.4 80L322.4 130 M322.4 105A23 23 0 0 1 345.4 80h3 M371.4 80L397.2 130 M423 80L397.2 130L378.6 166"/>
+    <circle cx="257.4" cy="105" r="25"/>
+  </g>
+  <circle cx="195.4" cy="49" r="11.5" fill="#0d1b2e"/>
+</svg>

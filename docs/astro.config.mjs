@@ -34,7 +34,11 @@ export default defineConfig({
       title: "Aviary",
       description:
         "Aviary runs AI agent harnesses on Kubernetes, each session in a sandbox of its own.",
-      logo: { src: "./src/assets/logo.svg" },
+      logo: {
+        light: "./src/assets/wordmark.svg",
+        dark: "./src/assets/wordmark-dark.svg",
+        replacesTitle: true,
+      },
       favicon: "/favicon.svg",
       social: [
         {

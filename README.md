@@ -1,7 +1,9 @@
-<p align="center">
-  <img src="docs/src/assets/logo.svg" width="72" height="72" alt="">
-</p>
-<h1 align="center">Aviary</h1>
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/src/assets/wordmark-dark.svg">
+    <img src="docs/src/assets/wordmark.svg" alt="Aviary" height="88">
+  </picture>
+</h1>
 <p align="center">
   AI agent harnesses on Kubernetes, each session in a sandbox of its own.
 </p>
