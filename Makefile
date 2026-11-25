@@ -106,7 +106,7 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 	--env AVIARY_TEST_REDIS_URL=redis://default:test@events-redis:6379 \
 	--env AVIARY_TEST_SECRET_STORE_URL=http://secret-store:8200
 
-.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-web test-web-server test-chart test-proxy test-harness chart cluster-up cluster-down postgres mysql valkey redis openbao vault keycloak headlamp grafana web web-dev build images secrets deploy e2e e2e-up e2e-run e2e-down
+.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-web test-web-server test-chart test-proxy test-docs test-harness chart cluster-up cluster-down postgres mysql valkey redis openbao vault keycloak headlamp grafana web web-dev docs docs-dev build images secrets deploy e2e e2e-up e2e-run e2e-down
 
 # Generates the Go code of the SQL queries. Run it after changing a query or
 # a migration.
@@ -115,7 +115,7 @@ sqlc:
 
 # Checks formatting, runs the linters, and checks that the generated code is
 # up to date.
-lint: web/node_modules/.package-lock.json
+lint: web/node_modules/.package-lock.json docs/node_modules/.package-lock.json
 	@files=$$($(call IN_GO) gofmt -l supervisor test) || exit 1; \
 		[ -z "$$files" ] || { echo "gofmt would change these files:"; echo "$$files"; exit 1; }
 	for module in supervisor test test/mock-llm test/plugin; do $(call GO,$$module) vet ./... || exit 1; done
@@ -123,13 +123,14 @@ lint: web/node_modules/.package-lock.json
 	$(CARGO) clippy --locked --all-targets -- --deny warnings
 	$(SQLC_RUN) diff
 	cd web && npm run lint
+	cd docs && npm run lint
 
 # Runs the tests that need no cluster, in parallel. TESTS narrows a single
 # target, for example
 # make test-supervisor TESTS='-run TestStore/EndTurn ./store/postgres'
 # make test-runner TESTS=cut
 test:
-	$(MAKE) --jobs $(if $(filter output-sync,$(.FEATURES)),--output-sync=target) test-supervisor test-plugin test-runner test-mock-llm test-web test-web-server test-chart test-proxy
+	$(MAKE) --jobs $(if $(filter output-sync,$(.FEATURES)),--output-sync=target) test-supervisor test-plugin test-runner test-mock-llm test-web test-web-server test-chart test-proxy test-docs
 
 test-supervisor: TESTS ?= ./...
 test-supervisor:
@@ -151,6 +152,9 @@ test-mock-llm:
 
 test-web: web/node_modules/.package-lock.json
 	cd web && npm test -- $(TESTS)
+
+# Builds the documentation, which checks the links between its pages.
+test-docs: docs
 
 # Renders the chart with its default values, with those in test/chart and
 # with a claim of the installation for the depot, checks the output and that
@@ -230,6 +234,11 @@ chart: $(AGENT_SANDBOX_CHART)
 # web/package-lock.json names.
 web/node_modules/.package-lock.json: web/package-lock.json
 	cd web && npm ci
+
+# Installs the packages of the documentation in the versions that
+# docs/package-lock.json names.
+docs/node_modules/.package-lock.json: docs/package-lock.json
+	cd docs && npm ci
 
 cluster-up:
 	kind get clusters 2>/dev/null | grep -qx $(CLUSTER) || \
@@ -348,6 +357,17 @@ web:
 # AVIARY_OIDC_CLIENT_ID=aviary make web-dev API=http://localhost:8080
 web-dev: web/node_modules/.package-lock.json
 	cd web && $(if $(API),AVIARY_API=$(API) )npm run dev
+
+# Builds the documentation into docs/dist, as a site of static files. The
+# build fails if a link between its pages leads nowhere. Astro, which builds
+# the site, reports nothing of its use.
+docs: docs/node_modules/.package-lock.json
+	cd docs && ASTRO_TELEMETRY_DISABLED=1 npm run build
+
+# Serves the documentation at http://localhost:4321 from its source in
+# docs/. A change to a page shows in the browser when its file is saved.
+docs-dev: docs/node_modules/.package-lock.json
+	cd docs && ASTRO_TELEMETRY_DISABLED=1 npm run dev
 
 build:
 	$(BUILD) --file images/supervisor/Dockerfile --tag $(SUPERVISOR_IMAGE) .

@@ -1,0 +1,57 @@
+/* The colours and the typefaces of the web UI. Starlight names its greys
+   from the text to the page, so the light theme lists them from dark to
+   light. */
+:root {
+  --sl-font:
+    "Plus Jakarta Sans Variable", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --sl-font-mono:
+    "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  --sl-color-accent-low: #13264a;
+  --sl-color-accent: #2e90fa;
+  --sl-color-accent-high: #a9cfff;
+  --sl-color-white: #ffffff;
+  --sl-color-gray-1: #e9eff8;
+  --sl-color-gray-2: #c5d0e0;
+  --sl-color-gray-3: #93a1b9;
+  --sl-color-gray-4: #51658a;
+  --sl-color-gray-5: #2b3c59;
+  --sl-color-gray-6: #101c30;
+  --sl-color-black: #091221;
+}
+
+:root[data-theme="light"] {
+  --sl-color-accent-low: #dcebff;
+  --sl-color-accent: #0b6fe0;
+  --sl-color-accent-high: #0a4fa8;
+  --sl-color-white: #0d1b2e;
+  --sl-color-gray-1: #1c2b41;
+  --sl-color-gray-2: #344256;
+  --sl-color-gray-3: #5d6b82;
+  --sl-color-gray-4: #8492a6;
+  --sl-color-gray-5: #cfd8e3;
+  --sl-color-gray-6: #edf1f5;
+  --sl-color-gray-7: #f5f8fc;
+  --sl-color-black: #ffffff;
+}
+
+/* The typeface sets its words close together. */
+body {
+  word-spacing: 0.08em;
+  -webkit-font-smoothing: antialiased;
+}
+
+code,
+pre,
+kbd {
+  word-spacing: 0;
+  font-variant-ligatures: none;
+}
+
+/* Pictures of the web UI, which are light on any page. */
+.sl-markdown-content img {
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.5rem;
+}

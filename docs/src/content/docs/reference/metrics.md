@@ -1,0 +1,84 @@
+---
+title: Metrics
+description: The Prometheus metrics of the Supervisors, the state of the installation, the depots and the Egress Proxies.
+---
+
+A Supervisor serves Prometheus metrics on port 9092 at `/metrics`. The port
+is not part of the Supervisor's Service, so the metrics are scraped from
+each pod.
+
+## Supervisor
+
+| Metric | Description |
+| --- | --- |
+| `aviary_turn_queue_length` | Number of queued turns when a turn was accepted, that turn included. 0 for a turn that did not have to wait. |
+| `aviary_turns_followed` | Turns that this Supervisor follows, by `harness`. |
+| `aviary_turns_ended_total` | Ended turns, by `harness`, `state` and, for a failed turn, `reason`. |
+| `aviary_turn_queue_duration_seconds` | Time that a turn waited to run, from its message until it left the queue, by `harness`. |
+| `aviary_turn_startup_duration_seconds` | Time that a turn took to start, from leaving the queue until its harness had the message, by `harness`. |
+| `aviary_turn_run_duration_seconds` | Time that a turn ran, from its harness having the message until the turn ended, by `harness` and `state`. |
+| `aviary_turn_tokens_total` | Token usage that the harnesses reported, by `harness` and `kind`. Not a measurement: see [Turn records](./api/turns.md#turn-records). |
+| `aviary_approval_wait_seconds` | Time that an approval request waited, from the harness asking until the harness had its answer, by `harness` and `outcome`: the kind of the selected option, or `cancelled` if the turn was stopped first. |
+| `aviary_messages_refused_total` | Messages that were not accepted as turns, by `reason`: `queue_full` or `session_busy`. |
+| `aviary_secret_read_seconds` | Time that a secret store of a project took to return a value, by the store's `kind` and `outcome`: `read` or `failed`. Cached values are not read and not counted. |
+
+Each Supervisor reports its own work, so the metrics of all Supervisors add
+up. `aviary_turns_followed` shows how the turns are spread over the
+Supervisors; how many turns there are, also in the queue, is among the state
+metrics below. No Supervisor holds the queue, so `aviary_turn_queue_length`
+measures it whenever a turn is accepted. Every series of the configured
+harnesses and secret store kinds starts at zero, so that `rate()` and
+`increase()` count its first event. Go runtime and process metrics are
+served as well.
+
+## State of the installation
+
+The state of the installation, such as the number of its sandboxes, is not
+the work of one Supervisor, and every Supervisor would report the same. A
+single pod, `aviary-state-metrics`, reports it instead, on the same port and
+path, so that these metrics add up like the others. It runs the image of the
+Supervisor with the command `state-metrics` and reads the database at every
+scrape; a scrape fails while it cannot. Setting `stateMetrics.enabled` to
+false leaves the pod out.
+
+| Metric | Description |
+| --- | --- |
+| `aviary_sandboxes` | Sandboxes of the sessions that have not ended, by `state`: `awake`, `asleep`, `archived`, `restoring` or `lost`, as the sessions say of their `sandbox`. An `archived` one is a home in the depot, without a sandbox. |
+| `aviary_turns` | Turns that have not ended, by `harness` and `state`: `queued`; `starting`, from leaving the queue until the harness has the message; `running`; or `awaiting_approval`, while a request of the turn waits for a person. |
+| `aviary_turns_oldest_age_seconds` | Age of the oldest turn of each `harness` and `state`: the time since its message for a queued turn, and since it left the queue for the others. 0 without such a turn. An age well beyond the limit of its state, `runtime.maxQueueWaitSeconds`, `runtime.maxStartupSeconds` or `runtime.maxTurnSeconds`, means that no Supervisor is ending the turn. |
+| `aviary_approvals_waiting` | Approval requests that wait for a person's answer, by `harness`. A turn can have several. |
+
+## Depot
+
+A depot serves its metrics on the same port and path. Each depot reports its
+own requests, and all of them report the same of the volume, which they
+share:
+
+| Metric | Description |
+| --- | --- |
+| `aviary_depot_request_duration_seconds` | Time that a depot took to serve a request for an object, by `operation`: `write`, `read` or `delete`, and by `outcome`: `done`; `refused`, if the request could not be served as it was made, as for a key that has no object; or `failed`, if the depot or its volume failed it. |
+| `aviary_depot_object_bytes_total` | Bytes of the objects that were written and read, by `operation`. |
+| `aviary_depot_volume_capacity_bytes`, `aviary_depot_volume_available_bytes` | Size of the volume that holds the objects, and how much of it is free. A scrape fails while the volume cannot be read. |
+
+## Egress Proxy
+
+An Egress Proxy serves the metrics of Envoy on the same port and path, among
+them:
+
+| Metric | Description |
+| --- | --- |
+| `envoy_http_downstream_rq_total`, `envoy_http_downstream_rq_xx` | Requests, and the classes of their response codes. The label `envoy_http_conn_manager_prefix` is `llm` for model requests, which include the Kubernetes probes, and `forward` for all others. |
+| `envoy_http_downstream_rq_time` | Request duration in milliseconds. |
+| `envoy_http_ext_authz_ok`, `envoy_http_ext_authz_denied`, `envoy_http_ext_authz_error` | What the Supervisor answered when the proxy asked for the turn of a request. |
+| `envoy_http_rbac_denied` | Requests to hosts that `egressProxy.allowedHosts` does not allow. Present only if the list names hosts. |
+
+Of Envoy's admin interface, only the metrics can be reached. A sandbox can
+read them too, by requesting the proxy's own address through the forward
+proxy, if `egressProxy.allowedHosts` allows that address, as the default
+does.
+
+## Dashboard
+
+The Grafana dashboard in `deploy/grafana/aviary.json` charts the metrics of
+the Supervisors, of the state, of the depots and of the Egress Proxies, and
+can be imported into any Grafana with a Prometheus data source.

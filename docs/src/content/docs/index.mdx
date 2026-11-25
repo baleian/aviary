@@ -1,0 +1,80 @@
+---
+title: Aviary
+description: Aviary runs AI agent harnesses on Kubernetes, each session in a sandbox of its own.
+template: splash
+hero:
+  tagline: Run AI agent harnesses, such as OpenCode, Codex and Claude Code, on Kubernetes. Each session works in a sandbox of its own, and keeps its conversation and its files between turns.
+  image:
+    file: ../../assets/logo.svg
+  actions:
+    - text: Quick start
+      link: /start/quick-start/
+      icon: right-arrow
+    - text: What is Aviary
+      link: /start/overview/
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from "@astrojs/starlight/components";
+
+## Find your way
+
+<CardGrid>
+  <LinkCard
+    title="Use Aviary"
+    description="Connect your model providers, describe your agents, and work with them in the web UI."
+    href="/use/web-ui/"
+  />
+  <LinkCard
+    title="Operate Aviary"
+    description="Install Aviary on a cluster, connect it to your infrastructure, and decide what its sandboxes run and reach."
+    href="/operate/installation/"
+  />
+  <LinkCard
+    title="Contribute"
+    description="See how the parts fit together, build and test them, and extend them."
+    href="/contribute/overview/"
+  />
+  <LinkCard
+    title="Reference"
+    description="The API, the values of the Helm chart and the metrics."
+    href="/reference/api/overview/"
+  />
+</CardGrid>
+
+## What it does
+
+<CardGrid>
+  <Card title="Controlled egress" icon="random">
+    An agent reaches only the hosts that the installation allows, and every
+    request that leaves a sandbox is logged with the turn and the user that it
+    came from.
+  </Card>
+  <Card title="No keys in sandboxes" icon="padlock">
+    Each agent names its model at a model provider that its project registers,
+    and no sandbox holds the provider's API key.
+  </Card>
+  <Card title="Persistent sessions" icon="comment">
+    Sessions continue across turns, and their conversations can be read back
+    through the API.
+  </Card>
+  <Card title="Sleeping sessions" icon="moon">
+    A session that is not in use is put to sleep: its pod is deleted, so it uses
+    no CPU or memory, and its volume is kept. Its next turn continues in a new
+    pod.
+  </Card>
+  <Card title="A queue" icon="list-format">
+    The number of turns that run at once is a setting. Further turns wait in
+    order.
+  </Card>
+  <Card title="Approval" icon="approve-check-circle">
+    An agent can be made to ask a person before it acts.
+  </Card>
+  <Card title="Access control" icon="setting">
+    With an identity provider, callers are authenticated and limited to what
+    they may do in each project.
+  </Card>
+  <Card title="Replaceable Supervisors" icon="server">
+    Supervisors can be replaced while turns run.
+  </Card>
+</CardGrid>

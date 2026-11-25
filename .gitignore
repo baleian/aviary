@@ -4,3 +4,6 @@
 /web/dist/
 /web/node_modules/
 /deploy/charts/aviary/charts/
+/docs/.astro/
+/docs/dist/
+/docs/node_modules/

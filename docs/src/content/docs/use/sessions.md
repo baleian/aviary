@@ -1,0 +1,101 @@
+---
+title: Sessions and turns
+description: How a conversation with an agent runs, with its messages, its files and the queue, and how a session sleeps and ends.
+---
+
+A session is one conversation with an agent. It belongs to the user who
+created it, and only that user can send it messages. Each message is a
+turn.
+
+![A session in the web UI](../../../assets/screens/session.png)
+
+## Starting a session
+
+**New session**, next to the sessions of an agent, starts one. A session
+begins with the MCP servers of its agent. Its title is only for display and
+can be changed at any time, also after the session has ended.
+
+## Sending a message
+
+A message is a text, files, or both. A session runs one turn at a time: it
+takes the next message when its last turn has ended.
+
+A turn runs at once if fewer turns are running than the installation
+allows. Otherwise it is queued, and queued turns run in the order in which
+they were sent. A turn that waits for too long expires, and if too many
+turns are queued, new messages are refused for the moment. The limits are
+`runtime.maxConcurrentTurns`, `runtime.maxQueueWaitSeconds` and
+`runtime.maxQueuedTurns` in the
+[configuration](../reference/configuration.md#runtime).
+
+## Files
+
+A message carries files that are attached to it, dropped on it or pasted
+into it: by default up to 10 files of up to 64 MiB each.
+
+- **The agent finds them in its home.** Before the turn starts, the files
+  are written into the session's sandbox at `/home/.attachments/<seq>/<name>`,
+  where `seq` is the number of the turn, and they stay there for the turns
+  that follow. The harness gets the text and after it a link to each file,
+  in the order of the message, so that the agent knows which files came with
+  the message, and which of them is the second.
+- **What an agent makes of a file depends on its harness and its model.**
+  One harness gives its model the file with the message, another a link
+  that the model follows with a tool, and a picture needs a model that takes
+  pictures. See
+  [Harness images](../operate/harness-images.md#what-to-watch-for).
+- **The files are kept until the session ends.** Until then, those who may
+  read the session can download them. The web UI shows the pictures, PDFs
+  and texts among them over the page.
+
+## Following a turn
+
+While a turn runs, the conversation shows what the agent says and thinks,
+the tools that it calls with their input and output, its plan, and what it
+asks before it acts. When the turn has ended, it shows the tokens that the
+harness reported for it, which is not a measurement.
+
+**Stop turn** cancels the turn. A queued turn ends at once. A running turn
+is told to stop, and ends when its harness has stopped.
+
+A turn ends as completed, failed, cancelled or expired. A turn that did not
+complete keeps what happened until then. [Turn records](../reference/api/turns.md#turn-records)
+describes how a turn ended, and
+[Failure reasons](../reference/api/events.md#failure-reasons) why a turn
+failed.
+
+## The sandbox of a session
+
+A session works in a sandbox of its own, which the details of the session
+show as:
+
+| Sandbox | Meaning |
+| --- | --- |
+| Awake | The pod of the session runs. |
+| Asleep | The session was not in use, and its pod was deleted. The volume with the agent's files is kept, and the next message wakes the session in a new pod. |
+| Archived | The session slept for long, and its home is kept as an archive. The next message restores it into a new sandbox. |
+| Restoring | A turn unpacks the archive in a new sandbox. |
+| Lost | The sandbox is gone although the session has not ended, as after it was deleted in the cluster. Everything that the agent had in it is gone, and the next turn gets a new sandbox. |
+
+The first turn after a sleep takes longer, since a pod and the harness
+start first. See [Sessions and storage](../operate/storage.md) for when
+a session sleeps and when its home is archived.
+
+## MCP servers of a session
+
+The details of a session list the MCP servers that it has on, and turn any
+server of the project on or off for it. A change applies from the next
+message. See [MCP servers](./mcp-servers.md).
+
+## Ending a session
+
+**End session**, in the menu of a session, deletes its sandbox with its
+volume and everything that the agent had in it, unless the storage of the
+installation keeps the data of deleted volumes. The conversation stays
+readable, and the session accepts no more messages. A session cannot be
+ended while a turn of it has not ended.
+
+A session also ends when its agent is deleted and, if the installation says
+so, when it has not been used for a long time.
+
+With the API, see [Sessions and messages](../reference/api/sessions.md).

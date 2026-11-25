@@ -1,0 +1,6 @@
+.astro
+dist
+package-lock.json
+# The pages are prose, and their tables keep one row to a line.
+*.md
+*.mdx
