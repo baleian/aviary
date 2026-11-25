@@ -14,14 +14,22 @@ them work in a web UI or through an API. Each conversation is a session with
 a sandbox of its own: a pod that runs the agent's harness, with a volume
 that keeps the conversation and the files of the session between turns.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/src/assets/screens/session-dark.png">
-  <img src="docs/src/assets/screens/session.png" alt="A session in the web UI, in which an agent asks before it runs a command">
-</picture>
-
 > **Status:** Aviary is at an early stage and has only run on a local
 > cluster. See its
 > [limitations](docs/src/content/docs/start/overview.md#limitations).
+
+## How it works
+
+<p align="center">
+  <img src="docs/src/assets/diagrams/architecture.svg" width="900" alt="The parts of Aviary, and what each of them talks to">
+</p>
+
+Clients call the API of the **Supervisor**, which gives the turns of each
+session to the **runner** in the sandbox of the session. A network policy
+closes the sandboxes: a sandbox connects only to the **Egress Proxy**, which
+asks the Supervisor about each request before it lets the request through.
+[How it works](docs/src/content/docs/start/how-it-works.md) follows a
+message from the API to the sandbox and back.
 
 ## Why Aviary
 
