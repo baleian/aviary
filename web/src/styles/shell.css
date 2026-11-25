@@ -15,17 +15,12 @@
 .logo {
   display: flex;
   align-items: center;
-  gap: 9px;
-  font: 600 21px/1 var(--sans);
-  letter-spacing: -0.035em;
   color: var(--ink);
-}
-.logo:hover {
-  text-decoration: none;
+  --dot: var(--canary);
 }
 .logo svg {
-  width: 30px;
-  height: 30px;
+  width: 84px;
+  height: 34px;
 }
 .slash {
   width: 1px;

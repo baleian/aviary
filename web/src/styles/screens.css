@@ -58,14 +58,11 @@
 }
 .si-logo {
   display: inline-flex;
-  align-items: center;
-  gap: 14px;
-  font: 600 44px/1 var(--sans);
-  letter-spacing: -0.045em;
+  --dot: var(--canary);
 }
 .si-logo svg {
-  width: 56px;
-  height: 56px;
+  width: 209px;
+  height: 84px;
 }
 .si-tag {
   margin: 14px 0 32px;

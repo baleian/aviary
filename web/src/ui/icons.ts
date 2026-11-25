@@ -58,4 +58,4 @@ export const ICONS = [
 export type IconName = (typeof ICONS)[number];
 
 // The other symbols of the sprite.
-export type SymbolName = "logo" | "mark" | "wing" | "bird" | "dome";
+export type SymbolName = "wordmark" | "wing" | "bird" | "dome";

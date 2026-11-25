@@ -1,13 +1,11 @@
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
 <defs>
-<linearGradient id="sky" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2E90FA"/><stop offset="1" stop-color="#0A5FD6"/></linearGradient>
 <linearGradient id="glass" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--glass-1)"/><stop offset="1" stop-color="var(--glass-2)"/></linearGradient>
 
-<!-- The mark, in one colour, and the logo, the mark on its tile. The second colour of a mark is --dot. -->
-<!-- The mark is the letter A as a rounded chevron, and a wing that crosses it. The wing comes from
-     behind the left leg and breaks through the right one, which is cut around it. -->
-<symbol id="mark" viewBox="0 0 48 48"><mask id="mf" maskUnits="userSpaceOnUse" x="0" y="0" width="48" height="48"><rect width="48" height="48" fill="#fff"/><path d="M9 39Q18 25 44 22.5Q33 39.5 9 39Z" fill="#000" stroke="#000" stroke-width="3.4" stroke-linejoin="round"/></mask><path d="M24 9 40 40" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" mask="url(#mf)"/><path d="M9 39Q18 25 44 22.5Q33 39.5 9 39Z" fill="var(--dot,currentColor)"/><path d="M8 40 24 9" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round"/></symbol>
-<symbol id="logo" viewBox="0 0 48 48"><rect width="48" height="48" rx="13" fill="url(#sky)"/><use href="#mark" x="8.5" y="8" width="30" height="30" style="color:#fff;--dot:#FFC53D"/></symbol>
+<!-- The name, in strokes like those of the A of the icon, public/favicon.svg. The wing of the icon
+     crosses the A in the colour --dot. The letters stand in the middle of the height: there is as
+     much room over the capitals as the tail of the y takes. -->
+<symbol id="wordmark" viewBox="-2 2 437 176"><mask id="wf" maskUnits="userSpaceOnUse" x="-2" y="2" width="437" height="176"><rect x="-2" y="2" width="437" height="176" fill="#fff"/><path d="M12.6 127.4Q34.9 92.7 99.3 86.4Q72.1 128.5 12.6 127.4Z" fill="#000" stroke="#000" stroke-width="8.8" stroke-linejoin="round"/></mask><g fill="none" stroke="currentColor" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"><path d="M51.3 50L92.6 130" mask="url(#wf)"/><path d="M12.6 127.4Q34.9 92.7 99.3 86.4Q72.1 128.5 12.6 127.4Z" fill="var(--dot,currentColor)" stroke="none"/><path d="M10 130L51.3 50 M113.8 80L139.6 130L165.4 80 M195.4 80L195.4 130 M282.4 80L282.4 130 M322.4 80L322.4 130 M322.4 105A23 23 0 0 1 345.4 80h3 M371.4 80L397.2 130 M423 80L397.2 130L378.6 166"/><circle cx="257.4" cy="105" r="25"/></g><circle cx="195.4" cy="49" r="11.5" fill="currentColor"/></symbol>
 
 <symbol id="wing" viewBox="0 0 36 18"><path d="M0 17Q10 2 36 0Q24 18 0 17Z"/></symbol>
 <symbol id="bird" viewBox="0 0 40 40"><path d="M15.5 21Q10 12 15 3.5Q23 11 21 19.5Z" fill="currentColor" opacity=".55"/><path d="M4 28.5Q14 14 37 12Q26 29.5 4 28.5Z" fill="currentColor"/></symbol>

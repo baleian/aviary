@@ -17,7 +17,7 @@ export function Icon({
   );
 }
 
-// Use shows another symbol of the sprite, such as the logo.
+// Use shows another symbol of the sprite, such as the wordmark.
 export function Use({
   symbol,
   ...props

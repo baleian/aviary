@@ -104,9 +104,8 @@ export function SignIn() {
     <section className="signin">
       <Art />
       <div className="si-card">
-        <div className="si-logo">
-          <Use symbol="logo" />
-          Aviary
+        <div className="si-logo" role="img" aria-label="Aviary">
+          <Use symbol="wordmark" />
         </div>
         <p className="si-tag">Room to fly. One guarded door.</p>
         {failure && (

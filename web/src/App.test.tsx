@@ -13,6 +13,8 @@ const toSignIn = { name: /Continue with your organization/ };
 
 it("asks a caller to sign in, and goes on to where they were going", async () => {
   const user = open("/me");
+  // The name is a picture, which says it.
+  expect(await screen.findByRole("img", { name: "Aviary" })).toBeTruthy();
   await user.click(await screen.findByRole("button", toSignIn));
   await user.click(await screen.findByRole("button", { name: /Bob Lee/ }));
 
@@ -32,6 +34,8 @@ it("shows the caller's projects", async () => {
   expect(await screen.findByRole("heading", { name: "Projects" })).toBeTruthy();
   const storefront = screen.getByRole("link", { name: /Storefront/ });
   expect(storefront.getAttribute("href")).toBe("/p/storefront");
+  const home = screen.getByRole("link", { name: "Aviary" });
+  expect(home.getAttribute("href")).toBe("/projects");
   // Bob is no member of the other projects, and no administrator.
   expect(screen.queryByRole("link", { name: /Data Platform/ })).toBeNull();
   expect(screen.getByRole("button", { name: /Bob Lee$/ })).toBeTruthy();

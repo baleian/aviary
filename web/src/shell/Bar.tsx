@@ -99,10 +99,9 @@ export function Bar({ me }: { me: Me }) {
       <Link
         className="logo"
         to={project ? `/p/${project.slug}` : "/projects"}
-        title="Aviary"
+        aria-label="Aviary"
       >
-        <Use symbol="logo" />
-        Aviary
+        <Use symbol="wordmark" />
       </Link>
       <span className="slash" />
       <Menu
