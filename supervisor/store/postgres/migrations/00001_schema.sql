@@ -168,7 +168,10 @@ create table sessions (
     ended_at timestamptz,
     -- 'expired' if the session ended because it expired. Null if a caller
     -- ended it.
-    end_reason text
+    end_reason text,
+    -- Whether the object storage may hold files of the session, which are
+    -- deleted after it ends.
+    has_attachments boolean not null default false
 );
 
 -- The MCP servers that a session turned on or off where it differs from its
@@ -244,6 +247,24 @@ create table approvals (
     primary key (turn_id, id)
 );
 
+-- A file that a message to a session carries, or that was uploaded for a
+-- message to carry. Its bytes are an object in the object storage.
+create table attachments (
+    id uuid primary key,
+    session_id uuid not null references sessions (id),
+    -- The turn of the message that carries the file, and the place of the
+    -- file among those of the message. Null until a message carries it.
+    turn_id uuid references turns (id),
+    position integer,
+    -- The files of a message have different names.
+    name text not null,
+    media_type text not null,
+    size bigint not null,
+    -- Who uploaded the file. Null if the request was not authenticated.
+    created_by uuid references users (id),
+    created_at timestamptz not null default now()
+);
+
 -- The oldest schema version that a Supervisor may be built for. Older
 -- Supervisors do not start. A migration that removes something that they use
 -- raises it.
@@ -265,9 +286,16 @@ create index turns_queued on turns (created_at, id) where state = 'queued';
 -- The answers not yet delivered to their harnesses, which every Supervisor
 -- polls.
 create index approvals_answered on approvals (turn_id) where answered_at is not null and resolved_at is null;
+-- For the files of a turn.
+create index attachments_turn on attachments (turn_id) where turn_id is not null;
+-- For the files that no message carries, by their age.
+create index attachments_unsent on attachments (created_at) where turn_id is null;
+-- For listing the sessions that have left files when they ended.
+create index sessions_left_attachments on sessions (ended_at) where has_attachments and ended_at is not null;
 
 -- +goose Down
 drop table schema_floor;
+drop table attachments;
 drop table approvals;
 drop table turn_items;
 drop table turns;

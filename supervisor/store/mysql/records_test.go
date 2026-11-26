@@ -90,12 +90,14 @@ func TestRoutineSkipsEndedRecords(t *testing.T) {
 func TestDeadlock(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	st := fixture(newDatabase(t)).Open(t).(*records)
+	database := newDatabase(t)
+	exec(t, database, "insert into locks (name) values ('other')")
+	st := fixture(database).Open(t).(*records)
 	var attempts atomic.Int32
 	var holding sync.WaitGroup
 	holding.Add(2)
 	// Each transaction locks one row and then the other's, which deadlocks.
-	orders := [][2]string{{dispatchLock, queueLock}, {queueLock, dispatchLock}}
+	orders := [][2]string{{queueLock, "other"}, {"other", queueLock}}
 	var both sync.WaitGroup
 	for _, order := range orders {
 		both.Go(func() {

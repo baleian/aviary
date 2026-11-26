@@ -32,11 +32,9 @@ const (
 	mcpServerSlug = "mcp_servers.mcp_servers_project_slug"
 )
 
-// Rows of the locks table.
-const (
-	dispatchLock = "dispatch"
-	queueLock    = "queue"
-)
+// queueLock is the row of the locks table that serializes counting and
+// announcing the queue.
+const queueLock = "queue"
 
 type records struct {
 	pool    *sql.DB
