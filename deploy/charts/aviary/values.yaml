@@ -173,12 +173,18 @@ runtime:
   # files of one message. 0 files means that messages carry none.
   maxAttachmentBytes: 67108864
   maxAttachments: 10
-  # Harnesses that agents can use, by name. The image contains the harness
-  # and the runner, and Substrate takes it only by its digest. The limits of
-  # CPU and memory are the size of a sandbox of the harness on its worker.
-  # A change applies to new sessions, for example
+  # Harnesses that agents can use, by name. The image contains the harness,
+  # and Substrate takes it only by its digest. The limits of CPU and memory
+  # are the size of a sandbox of the harness on its worker. A change applies
+  # to new sessions, for example
   #   opencode:
   #     image: registry.example.com/aviary-harness-opencode@sha256:...
   #     resources:
   #       limits: {cpu: "2", memory: 2Gi}
   harnesses: {}
+  runner:
+    # The image of the runner, by its digest, as
+    # registry.example.com/aviary-runner@sha256:... Every sandbox runs the
+    # runner from it, so that the harness images do not contain it. The
+    # harnesses need it. A change applies to new sessions.
+    image: ""

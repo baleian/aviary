@@ -56,7 +56,8 @@ SUBSTRATE_CHART := deploy/charts/aviary/charts/substrate-$(shell sed -n 's/^vers
 # The values of the local cluster for Substrate: the passwords of its
 # database and the keys of the S3 gateway.
 SUBSTRATE_VALUES := .out/$(CLUSTER)-substrate.yaml
-# The harness images of the cluster, at its registry, by digest.
+# The harness images and the runner image of the cluster, at its registry,
+# by digest.
 HARNESS_VALUES := .out/$(CLUSTER)-harnesses.yaml
 GO_IMAGE := $(DOCKER_IO)/library/golang:1.27.4-trixie@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9
 SQLC_IMAGE := $(DOCKER_IO)/sqlc/sqlc:1.31.1@sha256:70f53171d27b2424e9358869975455a6e955a5aa8e58a998a270a6e34e525537
@@ -194,6 +195,7 @@ test-chart: $(SUBSTRATE_CHART)
 		--set substrate.store.volume.accessMode=ReadWriteMany > .out/chart/claim.yaml
 	! $(RENDER) --set substrate.store.volume.accessMode=ReadOnlyMany > /dev/null 2>&1
 	! $(RENDER) --set runtime.harnesses.opencode.image=aviary-harness-opencode:dev > /dev/null 2>&1
+	! $(RENDER) --set runtime.harnesses.opencode.image=registry.example.com/opencode@sha256:5555555555555555555555555555555555555555555555555555555555555555 > /dev/null 2>&1
 	! $(RENDER) --set substrate.objectStorage.location=gs://bucket/ > /dev/null 2>&1
 	$(call GO,test,--env AVIARY_TEST_RENDERED=/src/.out/chart) $(GO_TEST) $(TESTS)
 
@@ -213,7 +215,7 @@ test-web-server:
 # Tests the harness images in containers, without a cluster. Few run at a
 # time, since every harness needs memory.
 test-harness: build
-	AVIARY_HARNESS_IMAGES="$(HARNESS_IMAGES)" $(CARGO) test --locked --package aviary-runner --test harness -- \
+	AVIARY_HARNESS_IMAGES="$(HARNESS_IMAGES)" AVIARY_RUNNER_IMAGE=$(RUNNER_IMAGE) $(CARGO) test --locked --package aviary-runner --test harness -- \
 		--ignored --test-threads 3 $(TESTS)
 
 $(SUBSTRATE_SOURCE):
@@ -437,7 +439,7 @@ docs-dev: docs/node_modules/.package-lock.json
 build: $(SUBSTRATE_OUT)/source/go.mod
 	$(BUILD) --file images/supervisor/Dockerfile --tag $(SUPERVISOR_IMAGE) .
 	$(BUILD) --file images/runner/Dockerfile --tag $(RUNNER_IMAGE) .
-	$(BUILD) --build-arg RUNNER_IMAGE=$(RUNNER_IMAGE) --tag $(HARNESS_BASE_IMAGE) images/harness-base
+	$(BUILD) --tag $(HARNESS_BASE_IMAGE) images/harness-base
 	$(BUILD) --tag $(OPENCODE_IMAGE) images/harness-opencode
 	$(BUILD) --tag $(CODEX_IMAGE) images/harness-codex
 	$(BUILD) --tag $(CLAUDE_CODE_IMAGE) images/harness-claude-code
@@ -445,22 +447,25 @@ build: $(SUBSTRATE_OUT)/source/go.mod
 	$(BUILD) --file images/substrate-keys/Dockerfile --tag $(SUBSTRATE_KEYS_IMAGE) $(SUBSTRATE_OUT)/source
 
 # Loads the images into the nodes of the cluster, and puts the harness images
-# into its registry, from a node, as Substrate takes them: by digest, at
-# localhost:5001. HARNESS_VALUES names them for the chart.
+# and the runner image into its registry, from a node, as Substrate takes
+# them: by digest, at localhost:5001. HARNESS_VALUES names them for the chart.
 images: build
 	kind load docker-image --name $(CLUSTER) $(SUPERVISOR_IMAGE) $(MOCK_LLM_IMAGE) $(SUBSTRATE_KEYS_IMAGE)
-	kind load docker-image --name $(CLUSTER) --nodes $(CLUSTER)-control-plane $(OPENCODE_IMAGE) $(CODEX_IMAGE) $(CLAUDE_CODE_IMAGE)
+	kind load docker-image --name $(CLUSTER) --nodes $(CLUSTER)-control-plane $(OPENCODE_IMAGE) $(CODEX_IMAGE) $(CLAUDE_CODE_IMAGE) $(RUNNER_IMAGE)
 	mkdir -p .out
 	registry=$$($(KUBECTL) --namespace aviary-data get service kind-registry --output jsonpath='{.spec.clusterIP}'):5000 && \
 	ctr="docker exec $(CLUSTER)-control-plane ctr --namespace k8s.io" && \
 	printf 'runtime:\n  harnesses:\n' > $(HARNESS_VALUES).new && \
-	for harness in opencode codex claude-code; do \
-		image=aviary-harness-$$harness:dev; \
+	for image in $(OPENCODE_IMAGE) $(CODEX_IMAGE) $(CLAUDE_CODE_IMAGE) $(RUNNER_IMAGE); do \
 		$$ctr images tag --force docker.io/library/$$image $$registry/$$image > /dev/null && \
 		$$ctr images push --plain-http $$registry/$$image > /dev/null && \
 		digest=$$($$ctr images ls name==$$registry/$$image | awk 'NR == 2 { print $$3 }') && \
 		[ -n "$$digest" ] && \
-		printf '    %s:\n      image: localhost:5001/aviary-harness-%s@%s\n' $$harness $$harness $$digest >> $(HARNESS_VALUES).new || exit 1; \
+		name=$${image%:dev} && \
+		case $$name in \
+			aviary-harness-*) printf '    %s:\n      image: localhost:5001/%s@%s\n' $${name#aviary-harness-} $$name $$digest ;; \
+			*) printf '  runner:\n    image: localhost:5001/%s@%s\n' $$name $$digest ;; \
+		esac >> $(HARNESS_VALUES).new || exit 1; \
 	done
 	mv $(HARNESS_VALUES).new $(HARNESS_VALUES)
 

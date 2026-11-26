@@ -35,8 +35,10 @@ const (
 	// RunnerPort is the port of the runner in the sandbox, which the router
 	// of Substrate reaches.
 	RunnerPort = 80
-	// home is the volume of the session's home.
+	// home is the volume of the session's home, at /home.
 	home = "home"
+	// runnerDir holds the runner, which comes from an image of its own.
+	runnerDir = "/opt/aviary"
 	// trustDir holds, as ca.pem, the certificates that the sandbox trusts:
 	// public ones, and the egress gateway's, which answers for the hosts into
 	// whose requests it puts secrets.
@@ -47,9 +49,6 @@ const (
 	// pageSize is the number of resources that a list asks for at a time.
 	pageSize = 500
 )
-
-// session is the entrypoint that every harness image provides.
-var session = []string{"aviary-session"}
 
 var (
 	// ErrNotFound is returned for a sandbox, or a turn of a runner, that does
@@ -136,6 +135,9 @@ type Settings struct {
 	MaxToolOutputBytes int
 	// Harnesses are the harnesses that agents can use, by name.
 	Harnesses map[string]Harness
+	// Runner is the image of the runner, by its digest. A sandbox runs the
+	// runner from it, so that the image of a harness does not contain it.
+	Runner string
 }
 
 // Snapshot levels, as the settings name them.
@@ -252,7 +254,11 @@ func (c *Client) template(name string, harness Harness) (*ateapi.ActorTemplate, 
 	if cpu.IsZero() || memory.IsZero() {
 		return nil, fmt.Errorf("harness %s needs limits of cpu and memory", name)
 	}
+	if c.settings.Runner == "" {
+		return nil, fmt.Errorf("harness %s needs the image of the runner", name)
+	}
 	env := []*ateapi.EnvVar{
+		{Name: "HOME", Value: "/home"},
 		{Name: "AVIARY_RUNNER_ADDRESS", Value: "0.0.0.0:" + strconv.Itoa(RunnerPort)},
 		{Name: "AVIARY_MAX_TOOL_OUTPUT_BYTES", Value: strconv.Itoa(c.settings.MaxToolOutputBytes)},
 	}
@@ -267,16 +273,19 @@ func (c *Client) template(name string, harness Harness) (*ateapi.ActorTemplate, 
 		Containers: []*ateapi.Container{{
 			Name:    "harness",
 			Image:   harness.Image,
-			Command: session,
+			Command: []string{runnerDir + "/aviary-runner"},
 			Env:     env,
 			WakeupProbe: &ateapi.WakeupProbe{
 				HttpGet:        &ateapi.HttpGetAction{Path: "/healthz", Port: RunnerPort},
 				TimeoutSeconds: 60,
 			},
-			VolumeMounts: []*ateapi.VolumeMount{{Name: home, MountPath: "/home"}, {Name: "trust", MountPath: trustDir}},
+			VolumeMounts: []*ateapi.VolumeMount{
+				{Name: home, MountPath: "/home"}, {Name: "runner", MountPath: runnerDir}, {Name: "trust", MountPath: trustDir},
+			},
 		}},
 		Volumes: []*ateapi.Volume{
 			{Name: home, DurableDir: &ateapi.DurableDirVolumeSource{}},
+			{Name: "runner", Image: &ateapi.ImageVolumeSource{Reference: c.settings.Runner}},
 			{Name: "trust", SystemInfo: &ateapi.SystemInfoVolumeSource{DataSources: []*ateapi.SystemInfoDataSource{{
 				TrustBundle: &ateapi.TrustBundleDataSource{Names: []string{"system-roots.ate.dev", "egress-mitm.ate.dev"}, Path: "ca.pem"},
 			}}}},

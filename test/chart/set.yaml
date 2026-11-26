@@ -60,3 +60,5 @@ runtime:
       image: registry.example.com/aviary-harness-codex@sha256:3333333333333333333333333333333333333333333333333333333333333333
       resources:
         limits: {cpu: "1", memory: 1Gi}
+  runner:
+    image: registry.example.com/aviary-runner@sha256:4444444444444444444444444444444444444444444444444444444444444444

@@ -51,6 +51,12 @@ fn images() -> Vec<String> {
     images.split_whitespace().map(str::to_owned).collect()
 }
 
+/// The image of the runner, which a sandbox mounts at /opt/aviary.
+fn runner_image() -> String {
+    std::env::var("AVIARY_RUNNER_IMAGE")
+        .expect("AVIARY_RUNNER_IMAGE is not set: run the tests with `make test-harness`")
+}
+
 /// Runs docker and returns its trimmed standard output. Panics if it fails.
 async fn docker(arguments: &[&str]) -> String {
     let ran = Command::new("docker")
@@ -190,7 +196,8 @@ impl Bench {
     }
 
     /// Starts a session container on the `home` volume, run as a sandbox runs
-    /// its image: as the agent's user, who cannot become root, in /.
+    /// its image: as the agent's user, who cannot become root, in /, with the
+    /// runner from its own image.
     async fn sitting(&self, home: String) -> Sitting {
         let label = self.label();
         let harness = self.next("harness");
@@ -213,10 +220,14 @@ impl Bench {
             "/",
             "--volume",
             &format!("{home}:/home"),
+            "--mount",
+            &format!("type=image,source={},target=/opt/aviary", runner_image()),
+            "--env",
+            "HOME=/home",
             "--env",
             "AVIARY_MAX_TOOL_OUTPUT_BYTES=65536",
             &self.image,
-            "aviary-session",
+            "/opt/aviary/aviary-runner",
         ])
         .await;
         // The forwarder starts with its published port and joins the network

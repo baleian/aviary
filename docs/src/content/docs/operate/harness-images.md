@@ -12,9 +12,10 @@ not ship.
 ## How a session uses the image
 
 Each session runs in a sandbox made from the harness image. The sandbox runs
-`aviary-session`, which starts the runner, `aviary-runner`. Both come from
-`aviary-harness-base`. The runner takes the session's turns, starts the
-harness for the first one, and reports what the harness does.
+the runner, `aviary-runner`, from an image of its own, `runtime.runner.image`,
+which Substrate mounts at `/opt/aviary`: a harness image does not contain
+it. The runner takes the session's turns, starts the harness for the first
+one, and reports what the harness does.
 
 The harness runs in this environment:
 
@@ -73,11 +74,10 @@ The runner talks to the harness over its standard input and output with the
 1. **The command that starts the harness as an ACP agent**, in
    `AVIARY_HARNESS_COMMAND`. The runner runs it and speaks ACP on its
    standard input and output.
-2. **What the sandbox runs:** `aviary-session`, `aviary-runner`, and the user
-   `agent` with UID 10000 and GID 10000. An image built on
-   `images/harness-base` has them. Everything the harness reads or executes
-   must be usable by that user, and the harness must not need to write
-   anywhere but the home.
+2. **The user `agent`** with UID 10000 and GID 10000, as the image's user.
+   An image built on `images/harness-base` has it. Everything the harness
+   reads or executes must be usable by that user, and the harness must not
+   need to write anywhere but the home.
 3. **The harness's record of the conversation, in the home.** A harness that
    is started again, in the same sandbox or after it wakes, continues its
    session from there.
@@ -223,7 +223,7 @@ images in this repository handle these cases:
 
 | Image | Contents |
 | --- | --- |
-| `harness-base` | Node.js, git, Python with pip and venv, the `agent` user, and what the sandbox runs. The base of the others. |
+| `harness-base` | Node.js, git, Python with pip and venv, and the `agent` user. The base of the others. |
 | `harness-opencode` | [OpenCode](https://opencode.ai), run as `opencode acp`. It uses the Chat Completions API. For an agent that asks, it asks before it runs a command, changes a file or calls a tool of an MCP server. |
 | `harness-codex` | [Codex](https://github.com/openai/codex) through its ACP adapter, `codex-acp`. It uses the Responses API. For an agent that asks, it runs in read-only mode and asks before a command runs outside its sandbox, and before it calls a tool of an MCP server. |
 | `harness-claude-code` | [Claude Code](https://code.claude.com) through its ACP adapter, `claude-agent-acp`. It uses the Messages API. For an agent that asks, it asks before it runs a command that does more than read the workspace, changes a file or calls a tool of an MCP server. |

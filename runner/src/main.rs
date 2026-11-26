@@ -34,6 +34,7 @@ use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::env;
 use std::error::Error;
+use std::ffi::OsString;
 use std::fmt::{self, Display};
 use std::fs;
 use std::io;
@@ -107,6 +108,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 /// Serves the HTTP API and runs turns until the process is killed.
 async fn serve() -> Result<(), Box<dyn Error>> {
+    // The harness works in the workspace of the session's home, which a new
+    // session does not have yet.
+    let workspace = Path::new(&env::var("HOME")?).join("workspace");
+    fs::create_dir_all(&workspace)?;
+    env::set_current_dir(&workspace)?;
     let address = env::var(ADDRESS).unwrap_or_else(|_| LISTENS.to_owned());
     let listener = TcpListener::bind(&address).await?;
     // Whoever starts the runner on port 0 reads the address from this line.
@@ -529,6 +535,7 @@ async fn run_harness(
         .into_config();
     let mut process = Command::new(command.command())
         .args(command.arguments())
+        .envs(installing()?)
         .envs(command.environment())
         .envs(&first.start.environment)
         // For an image that sets the harness up for each server.
@@ -829,6 +836,23 @@ async fn run_harness(
             None => Failure::answered(error),
         })?;
     Ok(left)
+}
+
+/// Returns the environment in which what the agent installs goes into the
+/// session's home, which outlives the harness: npm and pip install under
+/// ~/.local, whose programs come first on the PATH. pip does so by itself
+/// where it cannot write to the system's Python, which Debian allows outside a
+/// virtual environment only with PIP_BREAK_SYSTEM_PACKAGES.
+fn installing() -> Result<[(&'static str, OsString); 3], Failure> {
+    let local = Path::new(&variable("HOME")?).join(".local");
+    let mut paths = vec![local.join("bin")];
+    paths.extend(env::split_paths(&env::var_os("PATH").unwrap_or_default()));
+    let path = env::join_paths(paths).map_err(Failure::runner)?;
+    Ok([
+        ("NPM_CONFIG_PREFIX", local.into_os_string()),
+        ("PATH", path),
+        ("PIP_BREAK_SYSTEM_PACKAGES", "1".into()),
+    ])
 }
 
 /// Writes the agent's instructions, even empty ones, to the file that the

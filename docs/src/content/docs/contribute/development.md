@@ -40,14 +40,14 @@ with the chart, from the manifests of the release, which `make` takes from
 the source of the release and renders with the patches in
 `deploy/charts/substrate/kustomize`, with its object storage in a volume. `make substrate` installs what Substrate needs in the cluster: a
 PostgreSQL of its own, with the users and the schema that the script of the
-release makes, and a registry. `make images` puts the harness images in the
-registry, and names them by their digests for `make deploy` in
-`.out/<cluster>-harnesses.yaml`, and `make substrate` writes the passwords
+release makes, and a registry. `make images` puts the harness images and
+the runner image in the registry, and names them by their digests for
+`make deploy` in `.out/<cluster>-harnesses.yaml`, and `make substrate` writes the passwords
 of Substrate's database in `.out/<cluster>-substrate.yaml`.
 
 After a change, `make images deploy` builds the images again and installs
 them. The pods of the Supervisor's image start again if the image changed,
-and a new session runs a changed harness image.
+and a new session runs a changed harness image or runner.
 `make deploy VALUES=<file>` installs the chart with a values file of your
 own, or with several, separated by spaces.
 

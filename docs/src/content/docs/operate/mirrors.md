@@ -28,10 +28,10 @@ Rust toolchain from the server in its own variable, `RUSTUP_DIST_SERVER`.
 The nodes of the local cluster pull the images of Substrate from
 `ghcr.io`, or its mirror. The workers of Substrate pull the image of a
 sandbox themselves, without the mirrors of the nodes: the local cluster
-keeps the harness images in a registry of its own. In a cluster of your
+keeps the harness images and the runner image in a registry of its own. In a cluster of your
 own, `substrate.images.registry` names a mirror of the images of Substrate.
 
 A cluster of your own pulls the images that the values of the chart name:
 `supervisor.image`, `workers.image`, `substrate.keys.image`,
-`substrate.store.image` and the `image` of each harness in
-`runtime.harnesses`.
+`substrate.store.image`, the `image` of each harness in `runtime.harnesses`
+and `runtime.runner.image`.

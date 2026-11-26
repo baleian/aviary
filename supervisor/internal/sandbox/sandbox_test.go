@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -231,8 +232,11 @@ func served(t *testing.T) (*Client, *control) {
 	}
 	t.Cleanup(func() { conn.Close() })
 	c := &Client{
-		settings: Settings{Atespace: "aviary", Pool: map[string]string{"pool": "sandboxes"}, Snapshot: "rootfs", Router: "https://router.example.com/"},
-		conn:     conn, control: ateapi.NewControlClient(conn), templates: map[string]*ateapi.ActorTemplate{}, made: map[string]bool{},
+		settings: Settings{
+			Atespace: "aviary", Pool: map[string]string{"pool": "sandboxes"}, Snapshot: "rootfs", Router: "https://router.example.com/",
+			Runner: "registry.example.com/runner@sha256:89ab",
+		},
+		conn: conn, control: ateapi.NewControlClient(conn), templates: map[string]*ateapi.ActorTemplate{}, made: map[string]bool{},
 	}
 	template, err := c.template("opencode", Harness{
 		Image:     "registry.example.com/opencode@sha256:0123",
@@ -267,6 +271,22 @@ func TestCreate(t *testing.T) {
 		template.GetSnapshotConfig().GetPreferredFidelity() != ateapi.SnapshotFidelity_SNAPSHOT_FIDELITY_ROOTFS ||
 		template.GetResources().GetLimits().GetCpuMillicores() != 2000 || template.GetWorkerSelector().GetMatchLabels()["pool"] != "sandboxes" {
 		t.Errorf("template %v of actor %v", template, api.actors[name])
+	}
+	// The sandbox runs the runner from the runner's image.
+	container := template.GetContainers()[0]
+	mounted := map[string]string{}
+	for _, mount := range container.GetVolumeMounts() {
+		mounted[mount.GetName()] = mount.GetMountPath()
+	}
+	var runner string
+	for _, volume := range template.GetVolumes() {
+		if volume.GetName() == "runner" {
+			runner = volume.GetImage().GetReference()
+		}
+	}
+	if !slices.Equal(container.GetCommand(), []string{"/opt/aviary/aviary-runner"}) || mounted["runner"] != "/opt/aviary" ||
+		runner != "registry.example.com/runner@sha256:89ab" {
+		t.Errorf("container %v of the template, with the runner %q", container, runner)
 	}
 	seen, err := c.Sandbox(ctx, name)
 	if err != nil || seen.State != Asleep || seen.Session != session.String() || seen.UID == "" {
@@ -318,9 +338,19 @@ func TestTemplateName(t *testing.T) {
 	if err != nil || first.GetMetadata().GetName() == second.GetMetadata().GetName() {
 		t.Errorf("templates of two images: %s and %s, %v", first.GetMetadata().GetName(), second.GetMetadata().GetName(), err)
 	}
+	c.settings.Runner = "registry.example.com/runner@sha256:cdef"
+	third, err := c.template("opencode", harness)
+	if err != nil || third.GetMetadata().GetName() == second.GetMetadata().GetName() {
+		t.Errorf("templates of two runners: %s and %s, %v", second.GetMetadata().GetName(), third.GetMetadata().GetName(), err)
+	}
 	harness.Resources.Limits = corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi")}
 	if _, err := c.template("opencode", harness); err == nil {
 		t.Error("a harness without a CPU limit has a template")
+	}
+	harness.Resources.Limits = corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("4Gi")}
+	c.settings.Runner = ""
+	if _, err := c.template("opencode", harness); err == nil {
+		t.Error("a harness has a template without the image of the runner")
 	}
 }
 

@@ -82,18 +82,19 @@ service account `aviary-supervisor` as an owner of every atespace.
 A cluster of your own pulls the images that the values of the chart name:
 `supervisor.image`, `workers.image`, `substrate.keys.image`, the images of
 the release of Substrate at `substrate.images.registry`, without a location
-of the snapshots `substrate.store.image`, and the `image` of each harness in
-`runtime.harnesses`. Substrate pulls the image of a sandbox
-itself, by its digest: from a registry that it reaches without credentials,
-or with those of the kubelet's credential provider, which
-`substrate.atelet.imageCredentialProvider` names.
+of the snapshots `substrate.store.image`, the `image` of each harness in
+`runtime.harnesses` and `runtime.runner.image`. Substrate pulls the images
+of a sandbox itself, by their digests: from a registry that it reaches
+without credentials, or with those of the kubelet's credential provider,
+which `substrate.atelet.imageCredentialProvider` names.
 
 `make build` builds the images of this repository: the Supervisor as
-`aviary-supervisor:dev`, each harness as `aviary-harness-<name>:dev`, and
-the image of the key Job of Substrate as `aviary-substrate-keys:dev`. Push
-them to a registry that your cluster pulls from, and name them in your
-values, each harness by its digest. In a network that does not reach the
-public registries, see [Mirrors](./mirrors.md).
+`aviary-supervisor:dev`, the runner as `aviary-runner:dev`, each harness as
+`aviary-harness-<name>:dev`, and the image of the key Job of Substrate as
+`aviary-substrate-keys:dev`. Push them to a registry that your cluster pulls
+from, and name them in your values, each harness and the runner by its
+digest. In a network that does not reach the public registries, see
+[Mirrors](./mirrors.md).
 
 To run a harness that is not in this repository, see
 [Harness images](./harness-images.md). To connect Aviary to a

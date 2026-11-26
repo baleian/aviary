@@ -69,6 +69,7 @@ func TestSupervisorSettings(t *testing.T) {
 		"AVIARY_LLM_LOCALHOST":             "",
 		"AVIARY_OBJECT_STORAGE":            "s3://aviary/",
 		"AVIARY_HARNESSES":                 "{}",
+		"AVIARY_RUNNER_IMAGE":              "",
 		"AVIARY_MAX_QUEUED_TURNS":          "500",
 		"AVIARY_MAX_QUEUE_WAIT_SECONDS":    "120",
 		"AVIARY_MAX_STARTUP_SECONDS":       "120",
@@ -114,6 +115,7 @@ func TestSupervisorSettings(t *testing.T) {
 		"AVIARY_MAX_TOOL_OUTPUT_BYTES":     "23",
 		"AVIARY_MAX_ATTACHMENT_BYTES":      "29",
 		"AVIARY_MAX_ATTACHMENTS":           "0",
+		"AVIARY_RUNNER_IMAGE":              "registry.example.com/aviary-runner@sha256:4444444444444444444444444444444444444444444444444444444444444444",
 	} {
 		if settings[name] != value {
 			t.Errorf("Supervisor env %s = %q, want %q", name, settings[name], value)

@@ -1,6 +1,6 @@
 # The workers and the harnesses of the local cluster. make images puts the
-# harness images into the registry of the cluster, and names them by digest
-# in a values file of its own. A model provider at localhost is a model
+# harness images and the runner image into the registry of the cluster, and
+# names them by digest in a values file of its own. A model provider at localhost is a model
 # server on the machine that runs the cluster, at the name that make deploy
 # gives that machine. Substrate keeps its records in the PostgreSQL that make
 # substrate installs, whose passwords make substrate writes in a values file

@@ -36,6 +36,7 @@ var settings = map[string]string{
 	objectStorage:      "s3://aviary/",
 	harnesses: `{"opencode": {"image": "registry.example/opencode@sha256:0123",
 		"resources": {"limits": {"cpu": "2", "memory": "4Gi"}}}}`,
+	runnerImage:        "registry.example/runner@sha256:4567",
 	maxQueuedTurns:     "500",
 	maxQueueWait:       "120",
 	maxStartup:         "90",
@@ -134,6 +135,7 @@ func TestSandboxSettings(t *testing.T) {
 		API: settings[substrateAPI], Authority: settings[substrateAuthority], TokenFile: settings[substrateToken], CAFile: settings[substrateCA],
 		Router: settings[substrateRouter], RouterName: settings[routerName], IdentityFile: settings[substrateIdentity],
 		Atespace: "aviary", Pool: map[string]string{"aviary.io/pool": "sandboxes"}, Snapshot: "memory", MaxToolOutputBytes: 65536, Harnesses: harnesses,
+		Runner: "registry.example/runner@sha256:4567",
 	}
 	if !reflect.DeepEqual(made, want) {
 		t.Errorf("sandboxSettings() = %+v, want %+v", made, want)

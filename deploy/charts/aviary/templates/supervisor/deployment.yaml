@@ -3,6 +3,9 @@
 {{- fail (printf "runtime.harnesses.%s.image: %q does not name a digest, as registry.example.com/harness@sha256:... does" $name (toString $harness.image)) }}
 {{- end }}
 {{- end }}
+{{- if and .Values.runtime.harnesses (not (regexMatch "@sha256:[0-9a-f]{64}$" (toString .Values.runtime.runner.image))) }}
+{{- fail (printf "runtime.runner.image: %q does not name a digest, as registry.example.com/aviary-runner@sha256:... does, which the harnesses need" (toString .Values.runtime.runner.image)) }}
+{{- end }}
 {{- $substrate := .Values.substrate.namespace }}
 apiVersion: apps/v1
 kind: Deployment
@@ -100,6 +103,8 @@ spec:
             {{- include "aviary.objectStorageEnv" . | nindent 12 }}
             - name: AVIARY_HARNESSES
               value: {{ .Values.runtime.harnesses | toJson | quote }}
+            - name: AVIARY_RUNNER_IMAGE
+              value: {{ .Values.runtime.runner.image | quote }}
             - name: AVIARY_MAX_QUEUED_TURNS
               value: {{ .Values.runtime.maxQueuedTurns | int64 | quote }}
             - name: AVIARY_MAX_QUEUE_WAIT_SECONDS

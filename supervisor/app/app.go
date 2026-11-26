@@ -56,6 +56,7 @@ const (
 	userGroups         = "AVIARY_USER_GROUPS"
 	allowedOrigins     = "AVIARY_ALLOWED_ORIGINS"
 	harnesses          = "AVIARY_HARNESSES"
+	runnerImage        = "AVIARY_RUNNER_IMAGE"
 	maxQueuedTurns     = "AVIARY_MAX_QUEUED_TURNS"
 	maxQueueWait       = "AVIARY_MAX_QUEUE_WAIT_SECONDS"
 	maxStartup         = "AVIARY_MAX_STARTUP_SECONDS"
@@ -195,7 +196,8 @@ func serveStateOn(ctx context.Context, on net.Listener, st store.Store, harnesse
 // sandboxSettings reads the settings of the sandboxes and of the Substrate
 // that runs them.
 func sandboxSettings(harnesses map[string]sandbox.Harness) (sandbox.Settings, error) {
-	settings := sandbox.Settings{Harnesses: harnesses}
+	// An installation without harnesses needs no runner.
+	settings := sandbox.Settings{Harnesses: harnesses, Runner: os.Getenv(runnerImage)}
 	var err error
 	for name, value := range map[string]*string{
 		sandboxAtespace: &settings.Atespace, sandboxSnapshot: &settings.Snapshot,
