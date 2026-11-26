@@ -2,7 +2,12 @@
 # harness images into the registry of the cluster, and names them by digest
 # in a values file of its own. A model provider at localhost is a model
 # server on the machine that runs the cluster, at the name that make deploy
-# gives that machine.
+# gives that machine. Substrate keeps its records in the PostgreSQL that make
+# substrate installs, whose passwords make substrate writes in a values file
+# of its own, and its snapshots in the store of the chart.
+substrate:
+  atelet:
+    localhostRegistry: kind-registry.aviary-data.svc.cluster.local:5000
 sandboxes:
   localhost: host.aviary-system.svc.cluster.local
 workers:

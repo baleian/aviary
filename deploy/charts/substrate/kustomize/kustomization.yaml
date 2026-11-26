@@ -1,0 +1,178 @@
+# The manifests of the Substrate release, as its installer applies them for
+# Aviary. make renders them, with upstream/ the directory manifests/ate-install
+# of the release, and kustomize/helm.awk turns AVIARY_VALUE_<name> and
+# AVIARY_INCLUDE_<name> into the templates of templates/_helpers.tpl.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - upstream/generated/role.yaml
+  - upstream/ate-api-server.yaml
+  - upstream/ate-idp-server.yaml
+  - upstream/ate-controller.yaml
+  - upstream/atelet.yaml
+  - upstream/atenet-router.yaml
+  - upstream/atenet-egress.yaml
+  - upstream/ate-system-networkpolicies.yaml
+  - upstream/pod-certificate-controller.yaml
+  - upstream/sandboxconfig-gvisor.yaml
+  - upstream/sandboxconfig-validation.yaml
+
+patches:
+  - target: {kind: Deployment, name: ate-api-server}
+    patch: |-
+      - op: test
+        path: /spec/template/spec/containers/0/name
+        value: ate-api-server
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --authz-bootstrap-owners=AVIARY_VALUE_bootstrapOwners
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: ate-api-server
+        namespace: ate-system
+      spec:
+        template:
+          metadata:
+            annotations:
+              checksum/config: AVIARY_VALUE_configChecksum
+          spec:
+            containers:
+              - name: ate-api-server
+                env:
+                  - name: AVIARY_INCLUDE_databaseEnv
+            initContainers:
+              - name: objectstore-plugin
+                env:
+                  - name: ATE_STORAGE_BACKEND
+                    value: s3
+                  - name: AVIARY_INCLUDE_objectStorageEnv
+
+  - target: {kind: Deployment, name: ate-idp-server}
+    patch: |-
+      - op: test
+        path: /spec/template/spec/containers/0/name
+        value: ate-idp-server
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --issuer=https://idp.ate-system.svc
+
+  - target: {kind: Deployment, name: atenet-router}
+    patch: |-
+      - op: test
+        path: /spec/template/spec/containers/0/name
+        value: atenet-router
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --ingress-allowed-spiffe-ids=AVIARY_VALUE_ingressAllowedSpiffeIds
+
+  # The Supervisors are the credential provider aviary.io of the egress
+  # gateway.
+  - target: {kind: Deployment, name: atenet-egress}
+    patch: |-
+      - op: test
+        path: /spec/template/spec/containers/1/name
+        value: ext-proc
+      - op: add
+        path: /spec/template/spec/containers/1/args/-
+        value: --credential-provider-name=aviary.io
+      - op: add
+        path: /spec/template/spec/containers/1/args/-
+        value: --credential-provider-address=AVIARY_VALUE_credentialProviderAddress
+      - op: add
+        path: /spec/template/spec/containers/1/args/-
+        value: --credential-provider-server-name=AVIARY_VALUE_credentialProviderServerName
+      - op: add
+        path: /spec/template/spec/containers/1/args/-
+        value: --credential-provider-ca-file=/run/servicedns.podcert.ate.dev/trust-bundle.pem
+      - op: add
+        path: /spec/template/spec/containers/1/args/-
+        value: --credential-provider-client-cert=/run/podidentity.podcert.ate.dev/credential-bundle.pem
+  # The gateway trusts the certificate authority of the actors, which it reads
+  # from the Secret of that authority without its key.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: atenet-egress
+        namespace: ate-system
+      spec:
+        template:
+          spec:
+            volumes:
+              - name: actor-id-ca-certs
+                secret:
+                  secretName: actor-id-ca-pool
+                  items:
+                    - key: tls.crt
+                      path: ca.crt
+
+  # The image credential provider of the release is that of GKE's nodes, and
+  # an installation names its own.
+  - target: {kind: DaemonSet, name: atelet}
+    patch: |-
+      - op: test
+        path: /spec/template/spec/containers/0/args/0
+        value: --image-credential-provider-config=/run/image-credential-provider/config.yaml
+      - op: remove
+        path: /spec/template/spec/containers/0/args/0
+      - op: test
+        path: /spec/template/spec/containers/0/args/0
+        value: --image-credential-provider-bin-dir=/run/image-credential-provider/bin
+      - op: remove
+        path: /spec/template/spec/containers/0/args/0
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: AVIARY_INCLUDE_ateletArgs
+  - patch: |-
+      apiVersion: apps/v1
+      kind: DaemonSet
+      metadata:
+        name: atelet
+        namespace: ate-system
+      spec:
+        template:
+          metadata:
+            annotations:
+              checksum/object-storage: AVIARY_VALUE_objectStorageChecksum
+          spec:
+            containers:
+              - name: atelet
+                volumeMounts:
+                  - mountPath: /run/image-credential-provider/bin
+                    $patch: delete
+                  - mountPath: /run/image-credential-provider/config.yaml
+                    $patch: delete
+                  - mountPath: AVIARY_INCLUDE_ateletCredentialProviderMounts
+            initContainers:
+              - name: objectstore-plugin
+                env:
+                  - name: ATE_STORAGE_BACKEND
+                    value: s3
+                  - name: AVIARY_INCLUDE_objectStorageEnv
+            volumes:
+              - name: image-credential-provider-bin
+                $patch: delete
+              - name: image-credential-provider-config
+                $patch: delete
+              - name: AVIARY_INCLUDE_ateletCredentialProviderVolumes
+
+  # The API server and atelet move the snapshots.
+  - patch: |-
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: ate-api-server
+        namespace: ate-system
+        annotations:
+          AVIARY_INCLUDE_serviceAccountAnnotations: ""
+  - patch: |-
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: atelet
+        namespace: ate-system
+        annotations:
+          AVIARY_INCLUDE_serviceAccountAnnotations: ""

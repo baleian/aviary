@@ -1,13 +1,13 @@
 # The registry of the local cluster, which holds the harness images. Substrate
-# pulls the image of a sandbox itself, by its digest, and on kind takes
-# localhost:5001 for this registry: it pulls such an image from
-# kind-registry:5000 over HTTP. The Service is in the namespace of Substrate,
-# where that name resolves. make images puts the images in from a node.
+# pulls the image of a sandbox itself, by its digest, and takes
+# localhost:5001 for the registry that substrate.atelet.localhostRegistry
+# names: it pulls such an image from this one over HTTP. make images puts the
+# images in from a node.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: kind-registry
-  namespace: ate-system
+  namespace: aviary-data
 spec:
   replicas: 1
   selector:
@@ -33,26 +33,10 @@ apiVersion: v1
 kind: Service
 metadata:
   name: kind-registry
-  namespace: ate-system
+  namespace: aviary-data
 spec:
   selector:
     app: kind-registry
   ports:
     - port: 5000
       targetPort: registry
----
-# The namespace of Substrate takes no connection that a policy does not let
-# in.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: kind-registry
-  namespace: ate-system
-spec:
-  podSelector:
-    matchLabels:
-      app: kind-registry
-  policyTypes: ["Ingress"]
-  ingress:
-    - ports:
-        - {protocol: TCP, port: 5000}

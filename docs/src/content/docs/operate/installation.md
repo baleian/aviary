@@ -14,41 +14,51 @@ your own. Aviary has only run on a local cluster so far: see
 - **A database and an event log**, which the chart does not install.
   [Plugins](./plugins.md#tested-products) lists the products
   and versions that Aviary is tested with.
-- **[Agent Substrate](#agent-substrate)**, which runs the sandboxes. The
-  chart does not install it.
-- **Storage for a volume** for the depot: see
-  [Sessions and storage](./storage.md#the-depot).
+- **What [Agent Substrate](#agent-substrate) needs**, which the chart
+  installs to run the sandboxes: a PostgreSQL database, and nodes and a
+  Kubernetes that it runs on.
+- **Storage for volumes**: one for the depot, and one for the snapshots of
+  sleeping sandboxes unless they are kept in an S3 bucket: see
+  [Sessions and storage](./storage.md).
 
 ## Agent Substrate
 
 [Agent Substrate](https://github.com/agent-substrate/substrate) runs the
 sandbox of each session as an actor, on the workers of a pool that the chart
-makes, and keeps the snapshots of the sleeping ones in its object storage.
-Aviary is written for its release v1.0.1, which its installer, `ate-setup`,
-installs in the namespace `ate-system`. Its own documentation says what it
-needs of a cluster: a recent Kubernetes with pod certificates and cluster
-trust bundles, nodes on which its workers can run gVisor, PostgreSQL and
-object storage.
+makes. The chart installs its control plane in the namespace `ate-system`,
+from the manifests of its release v1.0.1, with the values under `substrate`
+(see [Configuration](../reference/configuration.md#agent-substrate)). It
+needs:
 
-Substrate takes three settings for Aviary, which name the namespace of the
-release, `aviary-system` here:
+- **A PostgreSQL database**, in which its API server keeps its records, in a
+  schema of its own, as an owner user and a read-write user. The script
+  `pkg/postgressetup/setup.sql` of the release makes the users, their roles
+  and the schema, with `psql` variables for their names and passwords. The
+  chart takes their connection strings from a Secret in `ate-system`, under
+  the keys `owner` and `readWrite`.
+- **A store for the snapshots** of sleeping sandboxes: see
+  [Sessions and storage](./storage.md#the-snapshot). By default the chart
+  keeps them in a volume, through an S3 gateway of its own. With
+  `substrate.snapshots.location` they are kept in an S3 bucket, which the API
+  server and the agent of Substrate on the nodes, atelet, reach with an
+  access key, or with the identity of their service accounts, which
+  `substrate.serviceAccountAnnotations` can give a role.
+- **The issuer of the service account tokens** of the cluster,
+  `substrate.kubernetesIssuer`, against which its API checks the tokens of
+  the Supervisors. On EKS, it is the OpenID Connect issuer of the cluster.
+- **Nodes and a Kubernetes that it runs on**: nodes on which atelet, which
+  runs privileged, runs the sandboxes in gVisor, and a Kubernetes with pod
+  certificates and cluster trust bundles. Its own documentation says more.
+- **The image `substrate.keys.image`** of the Job that makes the signing
+  keys and certificate authorities of Substrate, each the first time:
+  `kubectl-ate` of the release. `make build` builds it as
+  `aviary-substrate-keys:dev`.
 
-```sh
-ate-setup deploy ate-system \
-  --credential-provider='{"name": "aviary.io", "address": "aviary-supervisor.aviary-system.svc:50051"}' \
-  --ingress-allowed-spiffe-ids=spiffe://cluster.local/ns/aviary-system/sa/aviary-supervisor \
-  --ateapi-authz-bootstrap-owners=system:serviceaccount:aviary-system:aviary-supervisor
-```
-
-- The Supervisors are the credential provider `aviary.io` of its egress
-  gateway, which asks them for the secrets of the sandboxes' requests: see
-  [Network and egress](./egress.md#secrets).
-- Its router lets the Supervisors reach the runners of the sandboxes.
-- The Supervisors manage the actors of their atespace, `substrate.atespace`,
-  and read the workers, to put to sleep the sandboxes of a worker that goes
-  away. An owner of every atespace may do both. In place of that, an
-  installation can make the atespace itself, and give the Supervisors an
-  access policy that makes them its owner and a viewer of the workers.
+The chart renders the same for the same values, without reading the
+cluster, so that it can be applied by a GitOps tool as well as by Helm. Its
+resources need the CRDs of Substrate, which are in the chart, before they
+can be checked: a tool that checks every resource before it applies them
+needs to skip those of the CRDs that it applies at the same time.
 
 The namespace of the release needs the label `ate.dev/api-access=true`, with
 which Substrate lets its pods reach its API:
@@ -57,17 +67,28 @@ which Substrate lets its pods reach its API:
 kubectl label namespace aviary-system ate.dev/api-access=true
 ```
 
+With `substrate.install: false` the chart leaves Substrate out, for a
+cluster that has it installed for Aviary: with the Supervisors as its
+credential provider `aviary.io` at
+`aviary-supervisor.<namespace>.svc:50051`, its router letting in
+`spiffe://cluster.local/ns/<namespace>/sa/aviary-supervisor`, and the
+service account `aviary-supervisor` as an owner of every atespace.
+
 ## Images
 
 A cluster of your own pulls the images that the values of the chart name:
-`supervisor.image`, `workers.image`, and the `image` of each harness in
-`runtime.harnesses`. Substrate pulls the image of a sandbox itself, by its
-digest: from a registry that it reaches without credentials, or with those
-of the kubelet's credential provider.
+`supervisor.image`, `workers.image`, `substrate.keys.image`, the images of
+the release of Substrate at `substrate.images.registry`, without a location
+of the snapshots `substrate.store.image`, and the `image` of each harness in
+`runtime.harnesses`. Substrate pulls the image of a sandbox
+itself, by its digest: from a registry that it reaches without credentials,
+or with those of the kubelet's credential provider, which
+`substrate.atelet.imageCredentialProvider` names.
 
-`make build` builds the images of this repository, the Supervisor as
-`aviary-supervisor:dev` and each harness as `aviary-harness-<name>:dev`.
-Push them to a registry that your cluster pulls from, and name them in your
+`make build` builds the images of this repository: the Supervisor as
+`aviary-supervisor:dev`, each harness as `aviary-harness-<name>:dev`, and
+the image of the key Job of Substrate as `aviary-substrate-keys:dev`. Push
+them to a registry that your cluster pulls from, and name them in your
 values, each harness by its digest. In a network that does not reach the
 public registries, see [Mirrors](./mirrors.md).
 
@@ -100,18 +121,25 @@ kubectl --namespace aviary-system create secret generic aviary-encryption \
 The names and the keys are values of the chart: see
 [Configuration](../reference/configuration.md#supervisor).
 
+Substrate reads its own in `ate-system`: the connection strings of its
+database, in `substrate.database.secret`, and the access key of a bucket of
+`substrate.snapshots.location`, if it uses one, in
+`substrate.objectStorage.secret`. Without these names the chart makes the
+two Secrets of the strings and the key in its values.
+
 ## Installing
 
 ```sh
 make chart
 helm upgrade --install aviary .out/aviary-0.1.0.tgz \
-  --namespace aviary-system --values my-values.yaml --wait
+  --namespace aviary-system --values my-values.yaml --wait --timeout 10m
 ```
 
-Before every install and upgrade, the chart migrates the database: see
-[Upgrades and rollbacks](./upgrades.md). The workers of the sandboxes run in
-the namespace `aviary-runtime`, which the chart creates, as pods of
-Substrate.
+`make chart` packages the chart with Substrate's, which it makes of the
+source of the release. Before every install and upgrade, the chart migrates
+the database: see [Upgrades and rollbacks](./upgrades.md). The workers of
+the sandboxes run in the namespace `aviary-runtime`, which the chart
+creates, as pods of Substrate.
 
 The Supervisors serve the API on the Service `aviary-supervisor` of the
 release namespace, on port 80. What exposes it outside the cluster must not

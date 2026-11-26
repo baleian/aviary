@@ -40,12 +40,39 @@ take the room of workers.
 | `volumes` | Its home. The harness starts again, and resumes its session from the home. |
 
 The home is the durable directory of the actor: the state of the harness,
-the files of the agent and what the agent installs with npm or pip. Substrate
-keeps the snapshots in its object storage. A sandbox that sleeps uploads its
-snapshot after a while, and one whose worker goes away, as when its node is
-drained, is put to sleep by a Supervisor first and uploads it at once. A
-sandbox that crashes is reverted to its last snapshot, and the turn that it
-ran fails.
+the files of the agent and what the agent installs with npm or pip. A
+snapshot takes about as much as the sandbox uses, not its limits, and is
+compressed when it leaves its worker.
+
+The worker that takes a snapshot keeps it, and uploads it to the store of
+the snapshots after `substrate.snapshots.uploadDelay`, 5 minutes by
+default. After `substrate.snapshots.detachDelay`, 30 minutes by default,
+the snapshot leaves the worker: a sandbox that wakes later wakes from the
+store, on any worker that has room. So the workers keep only the snapshots
+of the sessions that went to sleep lately, and the store keeps those of all
+the sessions that have not ended. A sandbox whose worker goes away, as when
+its node is drained, is put to sleep by a Supervisor first and uploads its
+snapshot at once. A sandbox that crashes is reverted to its last snapshot,
+and the turn that it ran fails.
+
+### The store
+
+By default the chart keeps the snapshots in a volume of the namespace of
+the release, through an S3 gateway of its own, the
+[Versity S3 Gateway](https://github.com/versity/versitygw): each is a few
+files under `buckets/snapshots/` of the volume. The volume can be any that
+the cluster has, under `substrate.store.volume`, as for
+[the depot](#the-depot): a disk that one node mounts, by default, with the
+gateways on that node; a volume that many nodes mount, such as a network
+file system; or a claim of your own, such as one of a directory of a node.
+Only the API server of Substrate and its agent on the nodes reach the
+gateways. Uninstalling the chart keeps the claim that it made.
+
+`substrate.snapshots.location` keeps the snapshots in an S3 bucket instead,
+such as one of Amazon S3, reached with the S3 API that
+`substrate.objectStorage` describes. A bucket that a CSI driver mounts as a
+volume cannot be the volume of the store: such a mount does not take the
+renames and the small files of the gateway's own records.
 
 A sandbox keeps the template that it was made with: a harness whose image or
 resources the installation changes applies to new sessions.

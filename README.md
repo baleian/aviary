@@ -72,10 +72,10 @@ message from the API to the sandbox and back.
 
 ```sh
 make cluster-up        # create a kind cluster
-make substrate         # install Agent Substrate, which runs the sandboxes
+make substrate         # install what Agent Substrate, which runs the sandboxes, needs
 make postgres valkey   # install a database and an event log in it
 make images            # build the images and put them in the cluster
-make deploy            # install Aviary with its Helm chart
+make deploy            # install Aviary and Agent Substrate with the Helm chart
 make web               # build the web UI and install it
 ```
 

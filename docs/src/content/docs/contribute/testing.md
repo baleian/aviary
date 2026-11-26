@@ -114,9 +114,10 @@ A test must end the sessions it creates, which `session` in
 until the session is ended, and the workers have room for a limited number.
 
 `test/e2e/values.yaml` shortens the idle time after which a session sleeps,
-so that the tests see sessions sleep and wake without a long wait. A turn
-that wakes its session waits for its sandbox to be restored from its
-snapshot.
+so that the tests see sessions sleep and wake without a long wait, and the
+time for which a snapshot stays on its worker, so that a session that sleeps
+for longer wakes from the store of the snapshots. A turn that wakes its session waits for
+its sandbox to be restored from its snapshot.
 
 ## Writing a test
 

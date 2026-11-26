@@ -17,7 +17,7 @@ name their mirrors in the environment, on the command line of `make`, or in
 | `NPM_CONFIG_REGISTRY` | The npm registry. npm's own variable. |
 | `CRATES_IO` | crates.io: a registry as Cargo names one, such as `sparse+https://mirror.example.com/crates/index/`. |
 | `DEB_DEBIAN_ORG` | `http://deb.debian.org`, for the Debian packages of the harness images: an address that serves `debian` and `debian-security`, such as `https://mirror.example.com/deb`. The images keep it as the source of their packages. |
-| `SUBSTRATE_REPO` | The repository of Agent Substrate, `https://github.com/agent-substrate/substrate`, for its installer, which is in the source of its release. |
+| `SUBSTRATE_REPO` | The repository of Agent Substrate, `https://github.com/agent-substrate/substrate`, for the source of its release, of whose manifests `make chart` makes the chart of Substrate. |
 | `MOUNTPOINT_S3_CSI_REPO` | The repository of the Mountpoint for Amazon S3 CSI driver, `https://github.com/awslabs/mountpoint-s3-csi-driver`, for its chart, which is a file of its release. Only `make versitygw` installs it. |
 
 Most images are pulled by digests that the repository pins, so a mirror has
@@ -26,11 +26,13 @@ of the packages, and the nodes those of the registries, without credentials;
 both trust the certificate authorities of their images. rustup takes the
 Rust toolchain from the server in its own variable, `RUSTUP_DIST_SERVER`.
 
-`make substrate` has the nodes pull the images of Substrate from
+The nodes of the local cluster pull the images of Substrate from
 `ghcr.io`, or its mirror. The workers of Substrate pull the image of a
 sandbox themselves, without the mirrors of the nodes: the local cluster
-keeps the harness images in a registry of its own.
+keeps the harness images in a registry of its own. In a cluster of your
+own, `substrate.images.registry` names a mirror of the images of Substrate.
 
 A cluster of your own pulls the images that the values of the chart name:
-`supervisor.image`, `workers.image` and the `image` of each harness in
+`supervisor.image`, `workers.image`, `substrate.keys.image`,
+`substrate.store.image` and the `image` of each harness in
 `runtime.harnesses`.

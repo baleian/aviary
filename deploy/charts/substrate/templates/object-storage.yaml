@@ -1,0 +1,10 @@
+{{- if and (not .Values.objectStorage.secret) .Values.objectStorage.accessKeyId }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: substrate-object-storage
+  namespace: ate-system
+stringData:
+  accessKeyId: {{ .Values.objectStorage.accessKeyId | quote }}
+  secretAccessKey: {{ required "substrate.objectStorage.secretAccessKey is required with substrate.objectStorage.accessKeyId" .Values.objectStorage.secretAccessKey | quote }}
+{{- end }}

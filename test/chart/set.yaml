@@ -27,7 +27,9 @@ depot:
     size: 100Gi
     storageClass: shared
     accessMode: ReadWriteMany
+# Substrate installed apart from Aviary.
 substrate:
+  install: false
   namespace: substrate-system
   atespace: team-a
 workers:

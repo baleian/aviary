@@ -21,10 +21,10 @@ In a network that does not reach the public registries, see
 
 ```sh
 make cluster-up        # create a kind cluster
-make substrate         # install Agent Substrate, which runs the sandboxes
+make substrate         # install what Agent Substrate, which runs the sandboxes, needs
 make postgres valkey   # install a database and an event log in it
 make images            # build the images and put them in the cluster
-make deploy            # install Aviary with its Helm chart
+make deploy            # install Aviary and Agent Substrate with the Helm chart
 ```
 
 `make deploy` serves the API at http://localhost:8080. `make mysql` installs
@@ -35,12 +35,16 @@ snapshots, unless the cluster
 [keeps its data](#keep-the-data-of-the-cluster). The cluster runs
 Kubernetes 1.37.
 
-`make substrate` installs [Agent Substrate](../operate/installation.md#agent-substrate)
-with its installer, `ate-setup`, which it builds for your machine from the
-source of the release and runs there, with the settings that Aviary needs.
-It also installs a registry in the cluster: `make images` puts the harness
-images there, and names them by their digests for `make deploy` in
-`.out/<cluster>-harnesses.yaml`.
+`make deploy` installs [Agent Substrate](../operate/installation.md#agent-substrate)
+with the chart, from the manifests of the release, which `make` takes from
+the source of the release and renders with the patches in
+`deploy/charts/substrate/kustomize`, with the store of its snapshots in a
+volume. `make substrate` installs what Substrate needs in the cluster: a
+PostgreSQL of its own, with the users and the schema that the script of the
+release makes, and a registry. `make images` puts the harness images in the
+registry, and names them by their digests for `make deploy` in
+`.out/<cluster>-harnesses.yaml`, and `make substrate` writes the passwords
+of Substrate's database in `.out/<cluster>-substrate.yaml`.
 
 After a change, `make images deploy` builds the images again and installs
 them. The pods of the Supervisor's image start again if the image changed,

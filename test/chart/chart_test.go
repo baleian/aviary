@@ -312,12 +312,22 @@ func TestStateMetrics(t *testing.T) {
 	}
 }
 
-// No component has permissions in the cluster.
+// No component of Aviary has permissions in the cluster: no binding names a
+// service account of the namespace of the release. Substrate has its own.
 func TestNoPermissions(t *testing.T) {
 	for _, object := range chart(t, "default") {
 		switch object["kind"] {
-		case "Role", "ClusterRole", "RoleBinding", "ClusterRoleBinding":
-			t.Errorf("chart renders the %v %v", object["kind"], at(object, "metadata", "name"))
+		case "RoleBinding", "ClusterRoleBinding":
+			subjects, _ := at(object, "subjects").([]any)
+			for _, subject := range subjects {
+				if at(subject, "namespace") == "aviary-system" {
+					t.Errorf("the %v %v binds %v", object["kind"], at(object, "metadata", "name"), subject)
+				}
+			}
+		case "Role", "ClusterRole":
+			if at(object, "metadata", "namespace") == "aviary-system" {
+				t.Errorf("chart renders the %v %v in the namespace of the release", object["kind"], at(object, "metadata", "name"))
+			}
 		}
 	}
 	// The schema is migrated once per release, before the Supervisors start.

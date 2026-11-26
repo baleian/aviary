@@ -103,13 +103,19 @@ depot:
     # one that the chart makes. accessMode says how it can be mounted.
     existingClaim: ""
 
-# Agent Substrate, which runs the sandboxes. Its installation names the
-# Supervisors as the credential provider aviary.io, at
-# aviary-supervisor.<namespace of the release>.svc:50051, lets them manage
+# Agent Substrate, which runs the sandboxes. The chart installs it from the
+# manifests of its release, with the values under substrate that
+# deploy/charts/substrate/values.yaml describes, of which substrate.database
+# is required. Its
+# installation names the Supervisors as the credential provider aviary.io,
+# at aviary-supervisor.<namespace of the release>.svc:50051, lets them manage
 # the actors of the atespace and read the workers, and lets their router
 # requests in. The namespace of the release has the label
 # ate.dev/api-access=true, so that the Supervisors reach the API.
 substrate:
+  # Whether the chart installs Substrate. Without it, Substrate is installed
+  # in the cluster for Aviary as above.
+  install: true
   # The namespace of the control plane of Substrate.
   namespace: ate-system
   # The atespace that holds the sandboxes and their templates.

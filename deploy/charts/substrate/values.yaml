@@ -1,0 +1,114 @@
+# The images of the release, each pinned by its digest. A mirror of the
+# registry keeps the digests.
+images:
+  registry: ghcr.io/agent-substrate/substrate
+  tag: v1.0.1
+  digests:
+    ate-idp-server: sha256:5d9302255998a3f376cbea8d8860488d20b6c030417c0c3ea7fba53a67f2c9f7
+    ateapi: sha256:5d9f6da2e1446766a48908764891cc3c66cc6ff657279415c0d3839d5e9476ee
+    atecontroller: sha256:b63519a821f4c702a689caf5b1ff549a8d6134ac3da94def30c71f914a70d614
+    atelet: sha256:f6707957b470d8a8529e65a4ec3eb1ad5182a607b313b6b1628c7fe6c0e5a9e6
+    atenet: sha256:ccfa3265be2f45d5ffa7d86ffbe32fa0976426eb1fe1bb28dffbce451c1ea5d7
+    envoy-dataplane: sha256:6f59332e4e45da4b1600cf1f0c2104c595d875b661be86b4b8c5b16603ad8191
+    objectstore-plugin: sha256:311cc9cfb9ee8c344f3ebc3e4d5cafb88468840023b62d1c47c6338ed32b0352
+    podcertcontroller: sha256:46aa01a624053c23080da41ea37937afc5b544cecf77088ab2196b4ffb734b4f
+
+# The issuer of the service account tokens of the cluster, which the API
+# server checks the tokens of its callers against: that of a cluster made
+# with kubeadm, such as kind, by default. On EKS, it is the OpenID Connect
+# issuer of the cluster.
+kubernetesIssuer: https://kubernetes.default.svc.cluster.local
+
+# The PostgreSQL database of the API server. Its two users, their roles and
+# the schema exist before the installation: the script
+# pkg/postgressetup/setup.sql of the release makes them.
+database:
+  # A Secret in ate-system with the connection strings of the owner user and
+  # of the read-write user, under the keys owner and readWrite. Empty: the
+  # chart makes the Secret of the two strings below.
+  secret: ""
+  owner: ""
+  readWrite: ""
+  schema: substrate
+  ownerRole: substrate_owner
+  readWriteRole: substrate_readwrite
+
+# The snapshots of sleeping sandboxes. A worker keeps the snapshot that it
+# took, and uploads it to the location; a sandbox that wakes on another
+# worker, or after its snapshot has left its worker, wakes from the location.
+snapshots:
+  # The S3 location of the snapshots, such as s3://bucket/ or
+  # s3://bucket/prefix/. Empty: the store below keeps them.
+  location: ""
+  # How long after it is taken a snapshot is uploaded.
+  uploadDelay: 5m
+  # How long after it is taken a snapshot leaves its worker. Until then, the
+  # sandbox wakes on that worker if it has room.
+  detachDelay: 30m
+
+# The store of the snapshots without snapshots.location, in the namespace of
+# the release: an S3 gateway that keeps each snapshot as files of its
+# volume, which can be any volume of the cluster, such as a disk, a
+# directory of the node or a network file system. Only the API server and
+# atelet reach it.
+store:
+  image: versity/versitygw:v1.11.0@sha256:8319a530d08d537426e2f855bae5280709795dc73a3f0c347973ef915d6343c5
+  replicas: 1
+  resources: {}
+  volume:
+    size: 30Gi
+    # The storage class of the volume. Empty: the default of the cluster.
+    storageClass: ""
+    # ReadWriteOnce: one node mounts the volume, and the replicas run on it.
+    # ReadWriteMany: many nodes mount it at once, and the replicas run on
+    # any node.
+    accessMode: ReadWriteOnce
+    # A claim of your own in the namespace of the release, instead of the
+    # one that the chart makes. accessMode says how it can be mounted.
+    existingClaim: ""
+
+# The S3 API of snapshots.location.
+objectStorage:
+  region: us-east-1
+  # The endpoint of a store other than Amazon S3, such as
+  # http://s3.example.com:9000.
+  endpoint: ""
+  # Whether to address buckets in the path rather than in the host name, as
+  # many stores other than Amazon S3 need.
+  pathStyle: false
+  # A Secret in ate-system with an access key, under the keys accessKeyId
+  # and secretAccessKey. Empty: the chart makes the Secret of the key below,
+  # and without one the API server and atelet use the identity of their
+  # service accounts.
+  secret: ""
+  accessKeyId: ""
+  secretAccessKey: ""
+
+# Annotations of the service accounts of the API server and of atelet, which
+# move the snapshots: for example, the role that IRSA gives them.
+serviceAccountAnnotations: {}
+
+atelet:
+  # The image credential provider of the kubelet on the nodes, with which
+  # atelet pulls the images of sandboxes from a registry that needs
+  # credentials: the directory of its plugins and its configuration file on
+  # the node. Empty: atelet pulls without credentials.
+  imageCredentialProvider:
+    binDir: ""
+    config: ""
+  # The registry that serves the images that sandboxes name at
+  # localhost:5001, for a local cluster.
+  localhostRegistry: ""
+
+# The OpenTelemetry environment of the components. Without a collector they
+# serve their metrics to be scraped and send no traces. With one, set
+# OTEL_EXPORTER_OTLP_ENDPOINT, and otlp in the exporters.
+telemetry:
+  OTEL_TRACES_EXPORTER: none
+  OTEL_METRICS_EXPORTER: prometheus
+
+# The Job that makes the signing keys and certificate authorities of
+# Substrate, each when it does not exist yet. Its image holds kubectl-ate of
+# the release and a shell.
+keys:
+  image: aviary-substrate-keys:dev

@@ -15,6 +15,7 @@ This section is for those who change Aviary. It assumes
 | `web/` | The web UI, in TypeScript with React. |
 | `images/` | The images of the Supervisor, the runner, the harnesses and the web UI. |
 | `deploy/charts/aviary/` | The Helm chart. |
+| `deploy/charts/substrate/` | The chart of Agent Substrate that the Helm chart depends on, which `make` makes of the manifests of its release. |
 | `deploy/grafana/` | A Grafana dashboard of the metrics. |
 | `hack/kind/` | The local cluster. |
 | `test/` | The tests of the chart and of all components together, the mock model server, and a Supervisor build with plugins of its own. The tests of the Supervisor and of the runner are next to their code. |

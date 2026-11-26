@@ -47,8 +47,23 @@ file of your own sets them: with `--values` when the chart is
 
 | Value | Description |
 | --- | --- |
-| `substrate.namespace` | The namespace of the control plane of [Agent Substrate](../operate/installation.md#agent-substrate), whose API, router and egress gateway the Supervisors reach. Default `ate-system`. |
+| `substrate.install` | Whether the chart installs [Agent Substrate](../operate/installation.md#agent-substrate) in `ate-system`. Default true. Without it, the cluster has Substrate installed for Aviary. |
+| `substrate.namespace` | The namespace of the control plane of Substrate, whose API, router and egress gateway the Supervisors reach. Default `ate-system`. |
 | `substrate.atespace` | The atespace that holds the sandboxes and their templates. Default `aviary`. |
+| `substrate.snapshots.location` | The S3 location of the snapshots of sleeping sandboxes, such as `s3://my-bucket/` or `s3://my-bucket/prefix/`. Without it, the chart's store keeps them in a volume. See [Sessions and storage](../operate/storage.md#the-store). |
+| `substrate.snapshots.uploadDelay` | How long after it is taken a snapshot is uploaded to the store. Default `5m`. |
+| `substrate.snapshots.detachDelay` | How long after it is taken a snapshot leaves the worker that took it. Until then, the sandbox wakes on that worker if it has room, and afterwards from the store. Default `30m`. |
+| `substrate.store.volume.size`, `.storageClass`, `.accessMode`, `.existingClaim` | The volume of the store of the snapshots without `substrate.snapshots.location`, in the namespace of the release, as for the depot: by default 30Gi of the cluster's default storage class, `ReadWriteOnce`. With `ReadWriteMany` the gateways of the store run on any node. Uninstalling the chart keeps the claim that it made. |
+| `substrate.store.replicas`, `.resources`, `.image` | The gateways of the store: their number, default 1, their resource requests and limits, and their image. |
+| `substrate.objectStorage.region`, `.endpoint`, `.pathStyle` | The S3 API of `substrate.snapshots.location`: its region, default `us-east-1`; the endpoint of a store other than Amazon S3; and whether buckets are in the path, as many such stores need. |
+| `substrate.objectStorage.secret` | A Secret in `ate-system` with an access key for the location, under `accessKeyId` and `secretAccessKey`. Without it the chart makes one of `substrate.objectStorage.accessKeyId` and `.secretAccessKey`, and without those the API server and atelet use the identity of their service accounts. |
+| `substrate.serviceAccountAnnotations` | Annotations of the service accounts of the API server and of atelet, which move the snapshots, such as the role that IRSA gives them. |
+| `substrate.database.secret` | A Secret in `ate-system` with the connection strings of the owner user and of the read-write user of Substrate's PostgreSQL database, under `owner` and `readWrite`. Without it the chart makes one of `substrate.database.owner` and `.readWrite`. `substrate.database.schema`, `.ownerRole` and `.readWriteRole` name the schema and the roles that the users have, by default those that the script of the release makes. |
+| `substrate.kubernetesIssuer` | The issuer of the service account tokens of the cluster, against which Substrate checks the tokens of its callers. Default that of a cluster made with kubeadm, `https://kubernetes.default.svc.cluster.local`. |
+| `substrate.images.registry` | The registry of the images of the release, or a mirror of it, which keeps their digests. Default `ghcr.io/agent-substrate/substrate`. |
+| `substrate.atelet.imageCredentialProvider.binDir`, `.config` | The image credential provider of the kubelet on the nodes, with which atelet pulls the images of sandboxes from a registry that needs credentials: the directory of its plugins and its configuration file. Without them, atelet pulls without credentials. |
+| `substrate.telemetry` | The OpenTelemetry environment of Substrate's components. By default they serve their metrics to be scraped and send no traces; with a collector, set `OTEL_EXPORTER_OTLP_ENDPOINT` and `otlp` in `OTEL_TRACES_EXPORTER` and `OTEL_METRICS_EXPORTER`. |
+| `substrate.keys.image` | The image of the Job that makes the signing keys and certificate authorities of Substrate, each the first time. Default `aviary-substrate-keys:dev`, which `make build` builds. |
 
 ## Workers
 

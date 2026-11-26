@@ -3,3 +3,10 @@ name: aviary
 description: Aviary runs AI agent harnesses on Kubernetes, each session in a sandbox of its own on Agent Substrate.
 type: application
 version: 0.1.0
+dependencies:
+  # Made of the manifests of a release of Agent Substrate: make chart builds
+  # it into charts/.
+  - name: substrate
+    version: 0.1.0
+    repository: file://../substrate
+    condition: substrate.install

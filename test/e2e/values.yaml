@@ -11,6 +11,14 @@ supervisor:
     cacheSeconds: 5
 depot:
   replicas: 2
+substrate:
+  atelet:
+    localhostRegistry: kind-registry.aviary-data.svc.cluster.local:5000
+  snapshots:
+    # Short, so that a session that sleeps between two tests wakes from the
+    # store of the snapshots.
+    uploadDelay: 5s
+    detachDelay: 30s
 workers:
   replicas: 2
   resources:

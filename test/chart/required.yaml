@@ -1,0 +1,5 @@
+# The values that the chart requires, with which every render of the tests
+# starts.
+substrate:
+  database:
+    secret: substrate-database

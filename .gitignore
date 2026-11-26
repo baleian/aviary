@@ -4,6 +4,8 @@
 /web/dist/
 /web/node_modules/
 /deploy/charts/aviary/charts/
+/deploy/charts/substrate/crds/
+/deploy/charts/substrate/templates/upstream.yaml
 /docs/.astro/
 /docs/dist/
 /docs/node_modules/

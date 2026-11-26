@@ -27,8 +27,8 @@ running turns, and the sessions that were in use within the last
 and holds the sandboxes whose limits fit in it, so `workers.replicas` and
 `workers.resources` bound the sessions that are awake at once, and the
 resources that they take. A sleeping sandbox takes no room: its snapshot
-is in the object storage of Substrate, and a session that exists costs only
-that. A turn whose sandbox finds no worker with room waits for one, and fails if
+is in the [store of the snapshots](./storage.md#the-store), and a session
+that exists costs only that. A turn whose sandbox finds no worker with room waits for one, and fails if
 none has room within `runtime.maxStartupSeconds`. To have more room, add
 workers, by hand or with an autoscaler of the WorkerPool.
 
