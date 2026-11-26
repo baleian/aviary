@@ -673,7 +673,9 @@ func TestATurnThatAnotherSupervisorHasTakenIsNotRecordedAgain(t *testing.T) {
 	}
 }
 
-func TestARunnerThatRunsAnotherTurnIsStopped(t *testing.T) {
+// A runner that still runs a turn that has ended for the store, as one that a
+// snapshot kept, stops it when it is given the next turn, which then runs.
+func TestARunnerStopsATurnThatWasLeftBehind(t *testing.T) {
 	i := install(t)
 	driver, _ := i.supervisor()
 	session := i.session(store.Agent{})
@@ -683,19 +685,21 @@ func TestARunnerThatRunsAnotherTurnIsStopped(t *testing.T) {
 	given.Tell("finished", finished)
 	i.ended(first.ID)
 
-	// The runner runs a turn that the store does not know.
-	if err := i.service.Runner(given.Sandbox).Start(ctx, uuid.New(), sandbox.Turn{Text: "another"}); err != nil {
+	if err := i.service.Runner(given.Sandbox).Start(ctx, uuid.New(), sandbox.Turn{Text: "left behind"}); err != nil {
 		t.Fatal(err)
 	}
-	i.service.Turn(t)
+	behind := i.service.Turn(t)
 	next := i.send(driver, session, "and then")
-	if ended := i.ended(next.ID); !failed(ended, store.FailureRunner) || !strings.Contains(ended.Failure.Message, "running another turn") {
-		t.Errorf("ended turn = %+v, failure = %+v", ended, ended.Failure)
+	behind.Stopped(t)
+	behind.Tell("finished", map[string]string{"stop_reason": "cancelled"})
+	then := i.service.Turn(t)
+	if then.ID != next.ID.String() {
+		t.Fatalf("the runner was given %s, want the next turn %s", then.ID, next.ID)
 	}
-	// Putting the sandbox to sleep stops the other turn.
-	kept := i.sessionOf(session.ID)
-	if i.service.State(given.Sandbox) != sandbox.Asleep || kept.Sandbox != given.Sandbox || kept.SandboxState != store.SandboxAsleep {
-		t.Errorf("sandbox state = %s, session sandbox = %q, recorded as %q", i.service.State(given.Sandbox), kept.Sandbox, kept.SandboxState)
+	then.Tell("started", started)
+	then.Tell("finished", finished)
+	if ended := i.ended(next.ID); ended.State != store.TurnCompleted {
+		t.Errorf("next turn = %+v, failure = %+v", ended, ended.Failure)
 	}
 }
 

@@ -261,6 +261,10 @@ func (rn *Runner) start(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case rn.turn != nil && rn.turn.ID == turn.ID:
 	case rn.turn != nil && !rn.turn.over():
+		// As the runner does, the turn is told to stop.
+		rn.turn.mu.Lock()
+		rn.turn.stops++
+		rn.turn.mu.Unlock()
 		w.WriteHeader(http.StatusConflict)
 		return
 	default:

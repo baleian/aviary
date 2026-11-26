@@ -40,7 +40,8 @@ func (r *Refusal) Is(target error) bool {
 	return target == ErrNotFound && r.Status == http.StatusNotFound
 }
 
-// ErrBusy is returned by Start when the runner is running another turn.
+// ErrBusy is returned by Start when the runner is running another turn,
+// which it is then told to stop.
 var ErrBusy = errors.New("runner is busy with another turn")
 
 // ErrNoRoom means that the home of the runner's sandbox has no room for a
@@ -118,7 +119,7 @@ type Event struct {
 }
 
 // Start gives the turn to the runner. It is idempotent, and returns ErrBusy
-// if the runner is running another turn.
+// if the runner is running another turn, which the runner then stops.
 func (r *Runner) Start(ctx context.Context, turn uuid.UUID, start Turn) error {
 	err := r.tell(ctx, http.MethodPut, "/turns/"+turn.String(), start)
 	var refusal *Refusal

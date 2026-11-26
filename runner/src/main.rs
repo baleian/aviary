@@ -346,7 +346,13 @@ async fn start(
     let mut turn = runner.turn.lock().expect("turn lock poisoned");
     match turn.as_ref() {
         Some(turn) if turn.id == id => return StatusCode::NO_CONTENT,
-        Some(turn) if !turn.ended => return StatusCode::CONFLICT,
+        Some(turn) if !turn.ended => {
+            // A turn is given only once the one before it has ended for the
+            // Supervisor, so this one was left behind, as by a snapshot taken
+            // while it ran. It is stopped, and the new turn starts once it has.
+            let _ = turn.tell.unbounded_send(Told::Stop);
+            return StatusCode::CONFLICT;
+        }
         _ => {}
     }
     let (tell, told) = mpsc::unbounded();

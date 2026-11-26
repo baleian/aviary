@@ -291,10 +291,10 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 		Environment: set.environment, McpServers: set.servers,
 	})
 	if errors.Is(err, sandbox.ErrBusy) {
-		// The runner still runs another turn, which the store does not
-		// consider running. Giving up stops the sandbox, which stops it.
-		r.giveUp(store.Failure{Reason: store.FailureRunner, Message: "the session's runner is running another turn"})
-		return nil, nil
+		// The runner still runs an earlier turn, which has ended for the
+		// store, as one that a snapshot kept. The runner stops it, and a
+		// later attempt gives this turn.
+		return nil, errors.New("the session's runner is stopping an earlier turn")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("start turn: %w", err)

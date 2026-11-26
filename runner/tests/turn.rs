@@ -129,7 +129,6 @@ async fn starting_a_turn_is_idempotent() {
         runner.turn("t1", "say once ; sleep 300").await,
         StatusCode::NO_CONTENT
     );
-    assert_eq!(runner.turn("t2", "say two").await, StatusCode::CONFLICT);
     let events = runner.events("t1").await;
     assert_eq!(names(&events), ["started", "message.delta", "finished"]);
     assert_eq!(runner.turn("t1", "say once").await, StatusCode::NO_CONTENT);
@@ -139,6 +138,23 @@ async fn starting_a_turn_is_idempotent() {
         said(&runner.run("t2", "recall").await),
         "say once ; sleep 300"
     );
+}
+
+/// A turn that runs when the next one is given was left behind, as by a
+/// snapshot taken while it ran: it is stopped, and the next turn starts once
+/// it has.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_next_turn_stops_one_left_behind() {
+    let home = Home::new();
+    let runner = start(runner(&home)).await;
+    assert_eq!(
+        runner.turn("t1", "say once ; sleep 30000").await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(runner.turn("t2", "say two").await, StatusCode::CONFLICT);
+    let events = runner.events("t1").await;
+    assert_eq!(ending(&events).data["stop_reason"], "cancelled");
+    assert_eq!(said(&runner.run("t2", "say two").await), "two");
 }
 
 #[tokio::test(flavor = "multi_thread")]
