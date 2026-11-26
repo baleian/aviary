@@ -1,5 +1,6 @@
 # Values for the e2e: more than one replica of each component, and the mock
-# model server as the only allowed host.
+# model server as the only host that sandboxes reach besides the providers
+# and the servers of their turns. make e2e-up adds the harness images.
 supervisor:
   replicas: 2
   # The cluster's secret store, which `make openbao` installs. The short
@@ -10,33 +11,27 @@ supervisor:
     cacheSeconds: 5
 depot:
   replicas: 2
-egressProxy:
+workers:
   replicas: 2
+  resources:
+    limits: {cpu: "8", memory: 12Gi}
+sandboxes:
+  # Short, so that the tests see sessions sleep without a long wait.
+  idleSeconds: 30
   allowedHosts:
-    - mock-llm.aviary-e2e
-  # The mock model server runs in the cluster.
-  extraEgress:
-    - to:
-        - namespaceSelector:
-            matchLabels: {kubernetes.io/metadata.name: aviary-e2e}
+    - http://mock-llm.aviary-e2e
   # A provider at localhost is the mock model server, as it is a model on
   # the machine of an installation that names that machine.
   localhost: mock-llm.aviary-e2e
-sandboxes:
-  # Short, so that the tests see sessions sleep, and their homes archived,
-  # without a long wait.
-  idleSeconds: 30
-  archiveAfterSeconds: 60
 runtime:
   harnesses:
-    # Below the defaults, so that the sessions of the parallel tests fit on a
-    # small cluster.
+    # Small, so that the sessions of the parallel tests fit on the workers.
     opencode:
       resources:
-        requests: {cpu: 100m, memory: 384Mi}
+        limits: {cpu: "1", memory: 1Gi}
     codex:
       resources:
-        requests: {cpu: 100m, memory: 192Mi}
+        limits: {cpu: "1", memory: 512Mi}
     claude-code:
       resources:
-        requests: {cpu: 100m, memory: 256Mi}
+        limits: {cpu: "1", memory: 1Gi}

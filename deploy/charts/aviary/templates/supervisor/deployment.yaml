@@ -1,3 +1,9 @@
+{{- range $name, $harness := .Values.runtime.harnesses }}
+{{- if not (regexMatch "@sha256:[0-9a-f]{64}$" (toString $harness.image)) }}
+{{- fail (printf "runtime.harnesses.%s.image: %q does not name a digest, as registry.example.com/harness@sha256:... does" $name (toString $harness.image)) }}
+{{- end }}
+{{- end }}
+{{- $substrate := .Values.substrate.namespace }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -22,6 +28,7 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: aviary-supervisor
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -56,24 +63,40 @@ spec:
               value: {{ .Values.supervisor.auth.users | toJson | quote }}
             - name: AVIARY_ALLOWED_ORIGINS
               value: {{ .Values.supervisor.allowedOrigins | toJson | quote }}
-            - name: AVIARY_SANDBOX_NAMESPACE
-              value: aviary-runtime
-            - name: AVIARY_SANDBOX_VOLUME_SIZE
-              value: {{ .Values.runtime.volume.size | quote }}
-            - name: AVIARY_SANDBOX_STORAGE_CLASS
-              value: {{ .Values.runtime.volume.storageClass | quote }}
+            - name: AVIARY_SANDBOX_ATESPACE
+              value: {{ .Values.substrate.atespace | quote }}
+            - name: AVIARY_SANDBOX_POOL
+              value: {{ include "aviary.pool" . | quote }}
+            - name: AVIARY_SANDBOX_SNAPSHOT
+              value: {{ .Values.sandboxes.snapshot | quote }}
+            - name: AVIARY_SANDBOX_HOSTS
+              value: {{ .Values.sandboxes.allowedHosts | toJson | quote }}
             - name: AVIARY_SANDBOX_IDLE_SECONDS
               value: {{ .Values.sandboxes.idleSeconds | int64 | quote }}
-            - name: AVIARY_SANDBOX_ARCHIVE_SECONDS
-              value: {{ .Values.sandboxes.archiveAfterSeconds | int64 | quote }}
             - name: AVIARY_SANDBOX_RETENTION_SECONDS
               value: {{ .Values.sandboxes.retentionSeconds | int64 | quote }}
-            - name: AVIARY_LLM_BASE_URL
-              value: http://aviary-egress-proxy.{{ .Release.Namespace }}:8080
             - name: AVIARY_LLM_LOCALHOST
-              value: {{ .Values.egressProxy.localhost | quote }}
-            - name: AVIARY_PROXY_URL
-              value: http://aviary-egress-proxy.{{ .Release.Namespace }}:3128
+              value: {{ .Values.sandboxes.localhost | quote }}
+            - name: AVIARY_SUBSTRATE_API
+              value: api.{{ $substrate }}.svc.cluster.local:443
+            - name: AVIARY_SUBSTRATE_AUTHORITY
+              value: api.{{ $substrate }}.svc
+            - name: AVIARY_SUBSTRATE_TOKEN_FILE
+              value: /var/run/substrate/token/token
+            - name: AVIARY_SUBSTRATE_CA_FILE
+              value: /var/run/substrate/servicedns/trust-bundle.pem
+            - name: AVIARY_SUBSTRATE_ROUTER
+              value: https://atenet-router.{{ $substrate }}.svc.cluster.local:443
+            - name: AVIARY_SUBSTRATE_ROUTER_NAME
+              value: atenet-router.{{ $substrate }}.svc
+            - name: AVIARY_SUBSTRATE_IDENTITY_FILE
+              value: /var/run/substrate/podidentity/credential-bundle.pem
+            - name: AVIARY_CREDENTIALS_CERT_FILE
+              value: /var/run/substrate/servicedns/credential-bundle.pem
+            - name: AVIARY_CREDENTIALS_CLIENT_CA_FILE
+              value: /var/run/substrate/podidentity/trust-bundle.pem
+            - name: AVIARY_SUBSTRATE_EGRESS_GATEWAY
+              value: spiffe://cluster.local/ns/{{ $substrate }}/sa/atenet-egress
             - name: AVIARY_DEPOT_URL
               value: http://aviary-depot.{{ .Release.Namespace }}:8080
             - name: AVIARY_HARNESSES
@@ -92,15 +115,13 @@ spec:
               value: {{ .Values.runtime.maxAttachments | int64 | quote }}
             - name: AVIARY_MAX_STARTUP_SECONDS
               value: {{ .Values.runtime.maxStartupSeconds | int64 | quote }}
-            - name: AVIARY_MAX_RESTORE_SECONDS
-              value: {{ .Values.runtime.maxRestoreSeconds | int64 | quote }}
             - name: AVIARY_MAX_TURN_SECONDS
               value: {{ .Values.runtime.maxTurnSeconds | int64 | quote }}
           ports:
             - name: http
               containerPort: 8080
-            - name: authz
-              containerPort: 9091
+            - name: credentials
+              containerPort: 50051
             - name: metrics
               containerPort: 9092
           readinessProbe:
@@ -117,6 +138,15 @@ spec:
             - name: encryption
               mountPath: /etc/aviary/encryption
               readOnly: true
+            - name: substrate-token
+              mountPath: /var/run/substrate/token
+              readOnly: true
+            - name: servicedns
+              mountPath: /var/run/substrate/servicedns
+              readOnly: true
+            - name: podidentity
+              mountPath: /var/run/substrate/podidentity
+              readOnly: true
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -126,3 +156,42 @@ spec:
         - name: encryption
           secret:
             secretName: {{ .Values.supervisor.encryption.secretName }}
+        # The token for the API of Substrate. The kubelet renews it.
+        - name: substrate-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: api.{{ $substrate }}.svc
+                  expirationSeconds: 3600
+                  path: token
+        # The certificate of the Supervisor's Service, which the egress
+        # gateway checks, and those that sign the certificates of the API and
+        # the router. The kubelet renews them.
+        - name: servicedns
+          projected:
+            sources:
+              - podCertificate:
+                  signerName: servicedns.podcert.ate.dev/identity
+                  keyType: ECDSAP256
+                  credentialBundlePath: credential-bundle.pem
+              - clusterTrustBundle:
+                  signerName: servicedns.podcert.ate.dev/identity
+                  labelSelector:
+                    matchLabels:
+                      podcert.ate.dev/canarying: live
+                  path: trust-bundle.pem
+        # The certificate of the Supervisor's own identity, which the router
+        # checks, and those that sign the egress gateway's.
+        - name: podidentity
+          projected:
+            sources:
+              - podCertificate:
+                  signerName: podidentity.podcert.ate.dev/identity
+                  keyType: ECDSAP256
+                  credentialBundlePath: credential-bundle.pem
+              - clusterTrustBundle:
+                  signerName: podidentity.podcert.ate.dev/identity
+                  labelSelector:
+                    matchLabels:
+                      podcert.ate.dev/canarying: live
+                  path: trust-bundle.pem

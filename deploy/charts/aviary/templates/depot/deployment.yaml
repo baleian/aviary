@@ -30,8 +30,9 @@ spec:
     spec:
       automountServiceAccountToken: false
       # A depot that stops lets the transfers that are under way finish, for
-      # as long as a turn is given to restore a home.
-      terminationGracePeriodSeconds: {{ add 30 .Values.runtime.maxRestoreSeconds }}
+      # as long as a turn is given to reach its harness with the files of its
+      # message.
+      terminationGracePeriodSeconds: {{ add 30 .Values.runtime.maxStartupSeconds }}
       {{- if eq $volume.accessMode "ReadWriteOnce" }}
       # One node mounts the volume, so the depots run on that node together.
       affinity:

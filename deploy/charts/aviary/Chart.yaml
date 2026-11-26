@@ -1,11 +1,5 @@
 apiVersion: v2
 name: aviary
-description: Aviary runs AI agent harnesses on Kubernetes, each session in a sandbox of its own.
+description: Aviary runs AI agent harnesses on Kubernetes, each session in a sandbox of its own on Agent Substrate.
 type: application
 version: 0.1.0
-dependencies:
-  # The chart of agent-sandbox v1.0.11, from its source: make puts it into
-  # charts/, which is not in the repository.
-  - name: agent-sandbox
-    version: 0.1.4
-    condition: agent-sandbox.enabled

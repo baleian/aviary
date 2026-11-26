@@ -13,7 +13,8 @@ spec:
     - name: http
       port: 80
       targetPort: http
-    # ext_authz of the Egress Proxy.
-    - name: authz
-      port: 9091
-      targetPort: authz
+    # The secrets of the sandboxes' requests, for the egress gateway of
+    # Substrate. The Supervisor's certificate is issued for this Service.
+    - name: credentials
+      port: 50051
+      targetPort: credentials

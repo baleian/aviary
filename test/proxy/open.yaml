@@ -1,3 +1,0 @@
-# Allows every host, as the chart's default values do.
-egressProxy:
-  allowedHosts: ["*"]

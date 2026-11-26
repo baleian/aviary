@@ -1,0 +1,22 @@
+# The workers and the harnesses of the local cluster. make images puts the
+# harness images into the registry of the cluster, and names them by digest
+# in a values file of its own. A model provider at localhost is a model
+# server on the machine that runs the cluster, at the name that make deploy
+# gives that machine.
+sandboxes:
+  localhost: host.aviary-system.svc.cluster.local
+workers:
+  replicas: 2
+  resources:
+    limits: {cpu: "4", memory: 8Gi}
+runtime:
+  harnesses:
+    opencode:
+      resources:
+        limits: {cpu: "2", memory: 2Gi}
+    codex:
+      resources:
+        limits: {cpu: "2", memory: 1Gi}
+    claude-code:
+      resources:
+        limits: {cpu: "2", memory: 2Gi}

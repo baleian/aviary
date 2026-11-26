@@ -172,8 +172,8 @@ func TestStoreIsAskedWithCare(t *testing.T) {
 	if err := hurried.Check(ctx, "asking", at(slow.URL), "a credential"); err == nil || time.Since(began) > 2*time.Second {
 		t.Errorf("Check of a slow store took %s: %v", time.Since(began), err)
 	}
-	// The default client times out before the Egress Proxy's authz check
-	// does, and uses no proxy.
+	// The default client times out before the egress gateway stops waiting
+	// for a secret, and uses no proxy.
 	client := stores(t, "*").client
 	if transport, ok := client.Transport.(*http.Transport); client.Timeout != timeout || timeout > 4*time.Second || !ok || transport.Proxy != nil {
 		t.Errorf("client transport = %+v, timeout = %s", client.Transport, client.Timeout)

@@ -8,17 +8,14 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strconv"
-	"strings"
 	"testing"
 
 	"aviary/test/internal/rendered"
 )
 
-// chart returns the objects rendered from the named values, and the Egress
-// Proxy's Envoy configuration among them.
-func chart(t *testing.T, values string) (objects []map[string]any, envoy map[string]any) {
+// chart returns the objects rendered from the named values.
+func chart(t *testing.T, values string) []map[string]any {
 	t.Helper()
 	directory := os.Getenv("AVIARY_TEST_RENDERED")
 	if directory == "" {
@@ -28,21 +25,10 @@ func chart(t *testing.T, values string) (objects []map[string]any, envoy map[str
 	if err != nil {
 		t.Fatal(err)
 	}
-	envoy, _, err = rendered.Envoy(objects)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return objects, envoy
+	return objects
 }
 
 var at, named, find = rendered.At, rendered.Named, rendered.Find
-
-// listener returns the HTTP connection manager settings of the named Envoy
-// listener.
-func listener(envoy map[string]any, name string) any {
-	listener := named(at(envoy, "static_resources", "listeners"), name)
-	return at(listener, "filter_chains", 0, "filters", 0, "typed_config")
-}
 
 // env returns the environment variables of a workload's first container.
 func env(workload map[string]any) map[string]string {
@@ -64,179 +50,8 @@ func count(value any) int {
 	return len(list)
 }
 
-func TestEgressProxy(t *testing.T) {
-	for values, workers := range map[string][]any{"default": {"--concurrency", "2"}, "set": {"--concurrency", "4"}, "closed": nil} {
-		objects, envoy := chart(t, values)
-		// Otherwise Envoy starts a worker for every CPU of its node.
-		args := at(find(objects, "Deployment", "aviary-egress-proxy"), "spec", "template", "spec", "containers", 0, "args")
-		if want := append([]any{"--config-path", "/etc/envoy/envoy.yaml", "--disable-hot-restart"}, workers...); !reflect.DeepEqual(args, want) {
-			t.Errorf("%s: Envoy args = %v, want %v", values, args, want)
-		}
-		for _, name := range []string{"llm", "forward"} {
-			// Otherwise Envoy answers 403 when no Supervisor can be asked,
-			// and a harness does not retry that.
-			check := named(at(listener(envoy, name), "http_filters"), "envoy.filters.http.ext_authz")
-			if code := at(check, "typed_config", "status_on_error", "code"); code != "ServiceUnavailable" {
-				t.Errorf("%s: %s ext_authz status_on_error = %v, want ServiceUnavailable", values, name, code)
-			}
-		}
-		// Envoy's admin interface can stop Envoy and dump its configuration.
-		if socket := at(envoy, "admin", "address", "socket_address"); socket != nil {
-			t.Errorf("%s: Envoy admin interface listens on %v, reachable through the forward proxy", values, socket)
-		}
-		routes := at(listener(envoy, "metrics"), "route_config", "virtual_hosts", 0, "routes")
-		if list, _ := routes.([]any); len(list) != 1 || at(routes, 0, "match", "path") != "/metrics" {
-			t.Errorf("%s: metrics listener routes = %v, want only /metrics", values, routes)
-		}
-	}
-}
-
-// Each access log line identifies the origin of its request on its own, and
-// for a request of the model listener its provider or MCP server.
-func TestEgressProxyRecordsWhereARequestCameFrom(t *testing.T) {
-	_, envoy := chart(t, "default")
-	told := func(field string) string { return "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:" + field + ")%" }
-	for name, model := range map[string]bool{"llm": true, "forward": false} {
-		record, _ := at(listener(envoy, name), "access_log", 0, "typed_config", "log_format", "json_format").(map[string]any)
-		for _, field := range []string{"turn", "session", "agent", "project", "user", "subject"} {
-			if record[field] != told(field) {
-				t.Errorf("%s access log has %v for %s", name, record[field], field)
-			}
-		}
-		for _, field := range []string{"provider", "mcp_server"} {
-			if value, recorded := record[field]; recorded != model || (model && value != told(field)) {
-				t.Errorf("%s access log has %v for %s", name, value, field)
-			}
-		}
-	}
-}
-
-// A request may be silent for as long as a turn may run, for example while a
-// model thinks or during a download.
-func TestEgressProxyKeepsARequestForAsLongAsATurn(t *testing.T) {
-	for values, longest := range map[string]string{"default": "1800s", "set": "7200s"} {
-		objects, envoy := chart(t, values)
-		for _, name := range []string{"llm", "forward"} {
-			if idle := at(listener(envoy, name), "stream_idle_timeout"); idle != longest {
-				t.Errorf("%s: %s stream_idle_timeout = %v, want %s", values, name, idle, longest)
-			}
-		}
-		// The turn's deadline ends a model request, not Envoy.
-		routes, _ := at(listener(envoy, "llm"), "route_config", "virtual_hosts", 0, "routes").([]any)
-		passed := 0
-		for _, route := range routes {
-			if at(route, "route") == nil {
-				continue
-			}
-			passed++
-			if timeout := at(route, "route", "timeout"); timeout != "0s" {
-				t.Errorf("%s: model route %v has timeout %v, want 0s", values, at(route, "match"), timeout)
-			}
-		}
-		if passed != 2 {
-			t.Errorf("%s: %d model routes forward requests, want 2 (with and without TLS)", values, passed)
-		}
-		// A terminating pod is not given extra time for the turns that use it.
-		for _, name := range []string{"aviary-egress-proxy", "aviary-supervisor"} {
-			pod := at(find(objects, "Deployment", name), "spec", "template", "spec")
-			if grace := at(pod, "terminationGracePeriodSeconds"); grace != nil {
-				t.Errorf("%s: %s terminationGracePeriodSeconds = %v, want unset", values, name, grace)
-			}
-		}
-	}
-}
-
-// A model request goes to the endpoint, and with the key, that the Supervisor
-// returns. The chart itself configures no model endpoint and holds no key.
-func TestModelRequestsGoWhereTheSupervisorSays(t *testing.T) {
-	for _, values := range []string{"default", "set", "closed"} {
-		objects, envoy := chart(t, values)
-		routes, _ := at(listener(envoy, "llm"), "route_config", "virtual_hosts", 0, "routes").([]any)
-		if len(routes) != 3 {
-			t.Fatalf("%s: model routes = %v, want 3", values, routes)
-		}
-		for i, cluster := range []string{"model-tls", "model"} {
-			route := routes[i]
-			if at(route, "route", "cluster") != cluster || at(route, "match", "headers", 0, "name") != "x-aviary-upstream-tls" ||
-				at(route, "typed_per_filter_config", "envoy.filters.http.dynamic_forward_proxy", "host_rewrite_header") != "x-aviary-upstream" {
-				t.Errorf("%s: unexpected model route %v", values, route)
-			}
-			if named(at(envoy, "static_resources", "clusters"), cluster) == nil {
-				t.Errorf("%s: no Envoy cluster %s", values, cluster)
-			}
-		}
-		// Without an endpoint from the Supervisor, a request is not forwarded.
-		if last := routes[2]; at(last, "match", "headers") != nil || at(last, "direct_response", "status") != 503 {
-			t.Errorf("%s: last model route = %v, want a direct 503 response for every request", values, last)
-		}
-		// The proxy has no key of its own to add, and mounts nothing to read
-		// one from.
-		whole, err := json.Marshal(envoy)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(string(whole), "credential_injector") {
-			t.Errorf("%s: proxy configuration has a credential_injector", values)
-		}
-		proxy := at(find(objects, "Deployment", "aviary-egress-proxy"), "spec", "template", "spec")
-		if volumes, _ := at(proxy, "volumes").([]any); len(volumes) != 1 || at(volumes[0], "configMap", "name") != "aviary-egress-proxy" {
-			t.Errorf("%s: proxy volumes = %v, want only its ConfigMap", values, at(proxy, "volumes"))
-		}
-	}
-}
-
-func TestAllowedHosts(t *testing.T) {
-	rules := func(envoy map[string]any, name string) any {
-		return at(named(at(listener(envoy, name), "http_filters"), "envoy.filters.http.rbac"), "typed_config", "rules")
-	}
-	// The forward proxy checks the host that a request names, and the model
-	// listener the host that the Supervisor named.
-	for name, header := range map[string]string{"forward": ":authority", "llm": "x-aviary-upstream"} {
-		// With every host allowed, which is the default, there are no rules.
-		if _, open := chart(t, "default"); rules(open, name) != nil {
-			t.Errorf("%s: with every host allowed, RBAC rules = %v, want none", name, rules(open, name))
-		}
-
-		_, set := chart(t, "set")
-		var hosts []string
-		permissions, _ := at(rules(set, name), "policies", "listed-hosts", "permissions").([]any)
-		for _, permission := range permissions {
-			if at(permission, "header") == nil {
-				continue
-			}
-			host, _ := at(permission, "header", "string_match", "exact").(string)
-			hosts = append(hosts, host)
-			if at(permission, "header", "string_match", "ignore_case") != true || at(permission, "header", "name") != header {
-				t.Errorf("%s: permission for host %s = %v, want a case-insensitive header match", name, host, permission)
-			}
-		}
-		// A host matches on the default HTTPS and HTTP ports, and a host with
-		// a port only on that port.
-		expected := []string{
-			"llm.example.com", "llm.example.com:443", "llm.example.com:80",
-			"packages.example.com", "packages.example.com:443", "packages.example.com:80",
-			"git.example.com:8443",
-		}
-		if !slices.Equal(hosts, expected) || at(rules(set, name), "action") != "ALLOW" {
-			t.Errorf("%s: allowed hosts = %v, want %v", name, hosts, expected)
-		}
-
-		// An empty list allows nothing.
-		_, closed := chart(t, "closed")
-		permissions, _ = at(rules(closed, name), "policies", "listed-hosts", "permissions").([]any)
-		for _, permission := range permissions {
-			if at(permission, "header") != nil {
-				t.Errorf("%s: with no host allowed, got host permission %v", name, permission)
-			}
-		}
-		if at(rules(closed, name), "action") != "ALLOW" {
-			t.Errorf("%s: with no host allowed, RBAC rules = %v, want action ALLOW", name, rules(closed, name))
-		}
-	}
-}
-
 func TestSupervisorSettings(t *testing.T) {
-	objects, _ := chart(t, "default")
+	objects := chart(t, "default")
 	settings := env(find(objects, "Deployment", "aviary-supervisor"))
 	for name, value := range map[string]string{
 		"AVIARY_ENCRYPTION_KEY":            "k1",
@@ -246,21 +61,19 @@ func TestSupervisorSettings(t *testing.T) {
 		"AVIARY_ADMIN_GROUPS":              "[]",
 		"AVIARY_USER_GROUPS":               "[]",
 		"AVIARY_ALLOWED_ORIGINS":           "[]",
-		"AVIARY_SANDBOX_NAMESPACE":         "aviary-runtime",
-		"AVIARY_SANDBOX_VOLUME_SIZE":       "10Gi",
-		"AVIARY_SANDBOX_STORAGE_CLASS":     "",
+		"AVIARY_SANDBOX_ATESPACE":          "aviary",
+		"AVIARY_SANDBOX_POOL":              `{"aviary.io/pool":"aviary-system"}`,
+		"AVIARY_SANDBOX_SNAPSHOT":          "memory",
+		"AVIARY_SANDBOX_HOSTS":             `["https://*","http://*"]`,
 		"AVIARY_SANDBOX_IDLE_SECONDS":      "300",
-		"AVIARY_SANDBOX_ARCHIVE_SECONDS":   "604800",
 		"AVIARY_SANDBOX_RETENTION_SECONDS": "0",
-		"AVIARY_LLM_BASE_URL":              "http://aviary-egress-proxy.aviary-system:8080",
 		"AVIARY_LLM_LOCALHOST":             "",
-		"AVIARY_PROXY_URL":                 "http://aviary-egress-proxy.aviary-system:3128",
 		"AVIARY_DEPOT_URL":                 "http://aviary-depot.aviary-system:8080",
+		"AVIARY_HARNESSES":                 "{}",
 		"AVIARY_MAX_CONCURRENT_TURNS":      "50",
 		"AVIARY_MAX_QUEUED_TURNS":          "500",
 		"AVIARY_MAX_QUEUE_WAIT_SECONDS":    "120",
 		"AVIARY_MAX_STARTUP_SECONDS":       "120",
-		"AVIARY_MAX_RESTORE_SECONDS":       "600",
 		"AVIARY_MAX_TURN_SECONDS":          "1800",
 		"AVIARY_MAX_TOOL_OUTPUT_BYTES":     "65536",
 		"AVIARY_MAX_ATTACHMENT_BYTES":      "67108864",
@@ -276,7 +89,7 @@ func TestSupervisorSettings(t *testing.T) {
 		t.Errorf("Supervisor env AVIARY_LLM_MODEL = %q, want unset", model)
 	}
 
-	objects, _ = chart(t, "set")
+	objects = chart(t, "set")
 	supervisor := find(objects, "Deployment", "aviary-supervisor")
 	settings = env(supervisor)
 	for name, value := range map[string]string{
@@ -287,17 +100,16 @@ func TestSupervisorSettings(t *testing.T) {
 		"AVIARY_ADMIN_GROUPS":              `["platform"]`,
 		"AVIARY_USER_GROUPS":               `["team-a","team-b"]`,
 		"AVIARY_ALLOWED_ORIGINS":           `["https://aviary.example.com"]`,
-		"AVIARY_SANDBOX_VOLUME_SIZE":       "50Gi",
-		"AVIARY_SANDBOX_STORAGE_CLASS":     "fast",
+		"AVIARY_SANDBOX_ATESPACE":          "team-a",
+		"AVIARY_SANDBOX_SNAPSHOT":          "rootfs",
+		"AVIARY_SANDBOX_HOSTS":             `["https://llm.example.com","https://*.packages.example.com","https://git.example.com:8443"]`,
 		"AVIARY_SANDBOX_IDLE_SECONDS":      "0",
-		"AVIARY_SANDBOX_ARCHIVE_SECONDS":   "2592000",
 		"AVIARY_SANDBOX_RETENTION_SECONDS": "604800",
 		"AVIARY_LLM_LOCALHOST":             "host.example.com",
 		"AVIARY_MAX_CONCURRENT_TURNS":      "7",
 		"AVIARY_MAX_QUEUED_TURNS":          "11",
 		"AVIARY_MAX_QUEUE_WAIT_SECONDS":    "13",
 		"AVIARY_MAX_STARTUP_SECONDS":       "17",
-		"AVIARY_MAX_RESTORE_SECONDS":       "1200",
 		"AVIARY_MAX_TURN_SECONDS":          "7200",
 		"AVIARY_MAX_TOOL_OUTPUT_BYTES":     "23",
 		"AVIARY_MAX_ATTACHMENT_BYTES":      "29",
@@ -310,43 +122,39 @@ func TestSupervisorSettings(t *testing.T) {
 	if replicas := at(supervisor, "spec", "replicas"); replicas != 3 {
 		t.Errorf("Supervisor replicas = %v, want 3", replicas)
 	}
-
-	// A value set for one harness leaves its other values and the other
-	// harnesses as they are.
-	type resources map[string]map[string]string
-	var harnesses map[string]struct {
+	type harness struct {
 		Image     string
-		Resources resources
+		Resources map[string]map[string]string
 	}
+	var harnesses map[string]harness
 	if err := json.Unmarshal([]byte(settings["AVIARY_HARNESSES"]), &harnesses); err != nil {
 		t.Fatalf("parse AVIARY_HARNESSES %s: %v", settings["AVIARY_HARNESSES"], err)
 	}
-	opencode, codex, claude := harnesses["opencode"], harnesses["codex"], harnesses["claude-code"]
-	if len(harnesses) != 3 || opencode.Image != "aviary-harness-opencode:dev" || codex.Image != "aviary-harness-codex:dev" ||
-		claude.Image != "aviary-harness-claude-code:dev" ||
-		!reflect.DeepEqual(opencode.Resources, resources{"requests": {"cpu": "250m", "memory": "1Gi"}, "limits": {"memory": "8Gi"}}) ||
-		!reflect.DeepEqual(codex.Resources, resources{"requests": {"cpu": "250m", "memory": "256Mi"}, "limits": {"memory": "4Gi"}}) ||
-		!reflect.DeepEqual(claude.Resources, resources{"requests": {"cpu": "250m", "memory": "512Mi"}, "limits": {"memory": "4Gi"}}) {
+	want := map[string]harness{
+		"opencode": {"registry.example.com/aviary-harness-opencode@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+			map[string]map[string]string{"limits": {"cpu": "2", "memory": "8Gi"}}},
+		"codex": {"registry.example.com/aviary-harness-codex@sha256:3333333333333333333333333333333333333333333333333333333333333333",
+			map[string]map[string]string{"limits": {"cpu": "1", "memory": "1Gi"}}},
+	}
+	if !reflect.DeepEqual(harnesses, want) {
 		t.Errorf("AVIARY_HARNESSES = %s", settings["AVIARY_HARNESSES"])
 	}
 }
 
 // A number of a million or more in a values file is rendered as it is set,
-// not in the notation of a floating-point number, which neither the
-// Supervisor nor Envoy reads.
+// not in the notation of a floating-point number, which the Supervisor does
+// not read.
 func TestNumbersOfAMillionOrMore(t *testing.T) {
-	objects, envoy := chart(t, "large")
+	objects := chart(t, "large")
 	settings := env(find(objects, "Deployment", "aviary-supervisor"))
 	for name, value := range map[string]string{
 		"AVIARY_SECRET_CACHE_SECONDS":      "1000001",
 		"AVIARY_SANDBOX_IDLE_SECONDS":      "1000002",
-		"AVIARY_SANDBOX_ARCHIVE_SECONDS":   "2592000",
 		"AVIARY_SANDBOX_RETENTION_SECONDS": "31536000",
 		"AVIARY_MAX_CONCURRENT_TURNS":      "1000003",
 		"AVIARY_MAX_QUEUED_TURNS":          "1000004",
 		"AVIARY_MAX_QUEUE_WAIT_SECONDS":    "1000005",
 		"AVIARY_MAX_STARTUP_SECONDS":       "1000006",
-		"AVIARY_MAX_RESTORE_SECONDS":       "1000007",
 		"AVIARY_MAX_TURN_SECONDS":          "1000008",
 		"AVIARY_MAX_TOOL_OUTPUT_BYTES":     "1048576",
 		"AVIARY_MAX_ATTACHMENT_BYTES":      "1073741824",
@@ -356,21 +164,122 @@ func TestNumbersOfAMillionOrMore(t *testing.T) {
 			t.Errorf("Supervisor env %s = %q, want %q", name, settings[name], value)
 		}
 	}
-	for _, name := range []string{"llm", "forward"} {
-		if idle := at(listener(envoy, name), "stream_idle_timeout"); idle != "1000008s" {
-			t.Errorf("%s stream_idle_timeout = %v, want 1000008s", name, idle)
+	depot := at(find(objects, "Deployment", "aviary-depot"), "spec", "template", "spec")
+	if grace := at(depot, "terminationGracePeriodSeconds"); grace != 1000036 {
+		t.Errorf("depot terminationGracePeriodSeconds = %v, want 1000036", grace)
+	}
+}
+
+// The Supervisor reaches Substrate in the namespace that the values name: its
+// API with a token of the Supervisor's service account, and its router with
+// the certificate of the Supervisor's identity. The egress gateway, whose
+// identity the Supervisor checks, gets secrets on a port of their own, with
+// the certificate of the Supervisor's Service. The kubelet renews the token
+// and the certificates in their files.
+func TestSupervisorReachesSubstrate(t *testing.T) {
+	for values, namespace := range map[string]string{"default": "ate-system", "set": "substrate-system"} {
+		objects := chart(t, values)
+		supervisor := find(objects, "Deployment", "aviary-supervisor")
+		settings := env(supervisor)
+		for name, value := range map[string]string{
+			"AVIARY_SUBSTRATE_API":              "api." + namespace + ".svc.cluster.local:443",
+			"AVIARY_SUBSTRATE_AUTHORITY":        "api." + namespace + ".svc",
+			"AVIARY_SUBSTRATE_ROUTER":           "https://atenet-router." + namespace + ".svc.cluster.local:443",
+			"AVIARY_SUBSTRATE_ROUTER_NAME":      "atenet-router." + namespace + ".svc",
+			"AVIARY_SUBSTRATE_EGRESS_GATEWAY":   "spiffe://cluster.local/ns/" + namespace + "/sa/atenet-egress",
+			"AVIARY_SUBSTRATE_TOKEN_FILE":       "/var/run/substrate/token/token",
+			"AVIARY_SUBSTRATE_CA_FILE":          "/var/run/substrate/servicedns/trust-bundle.pem",
+			"AVIARY_SUBSTRATE_IDENTITY_FILE":    "/var/run/substrate/podidentity/credential-bundle.pem",
+			"AVIARY_CREDENTIALS_CERT_FILE":      "/var/run/substrate/servicedns/credential-bundle.pem",
+			"AVIARY_CREDENTIALS_CLIENT_CA_FILE": "/var/run/substrate/podidentity/trust-bundle.pem",
+		} {
+			if settings[name] != value {
+				t.Errorf("%s: Supervisor env %s = %q, want %q", values, name, settings[name], value)
+			}
+		}
+		pod := at(supervisor, "spec", "template", "spec")
+		container := at(pod, "containers", 0)
+		for volume, path := range map[string]string{
+			"substrate-token": "/var/run/substrate/token", "servicedns": "/var/run/substrate/servicedns", "podidentity": "/var/run/substrate/podidentity",
+		} {
+			if mount := named(at(container, "volumeMounts"), volume); at(mount, "mountPath") != path || at(mount, "readOnly") != true {
+				t.Errorf("%s: mount of %s = %v, want it read-only at %s", values, volume, mount, path)
+			}
+		}
+		token := at(named(at(pod, "volumes"), "substrate-token"), "projected", "sources", 0, "serviceAccountToken")
+		if at(token, "audience") != "api."+namespace+".svc" || at(token, "path") != "token" {
+			t.Errorf("%s: token = %v, want one for the API of Substrate", values, token)
+		}
+		for volume, signer := range map[string]string{
+			"servicedns": "servicedns.podcert.ate.dev/identity", "podidentity": "podidentity.podcert.ate.dev/identity",
+		} {
+			sources := at(named(at(pod, "volumes"), volume), "projected", "sources")
+			if at(sources, 0, "podCertificate", "signerName") != signer || at(sources, 0, "podCertificate", "credentialBundlePath") != "credential-bundle.pem" ||
+				at(sources, 1, "clusterTrustBundle", "signerName") != signer || at(sources, 1, "clusterTrustBundle", "path") != "trust-bundle.pem" {
+				t.Errorf("%s: volume %s = %v, want the certificate and the trust bundle of %s", values, volume, sources, signer)
+			}
+		}
+		// The Supervisor has no access to the cluster itself.
+		if at(pod, "automountServiceAccountToken") != false || at(pod, "serviceAccountName") != "aviary-supervisor" {
+			t.Errorf("%s: Supervisor service account %v, token mounted %v; want aviary-supervisor, without its token",
+				values, at(pod, "serviceAccountName"), at(pod, "automountServiceAccountToken"))
+		}
+		port := named(at(find(objects, "Service", "aviary-supervisor"), "spec", "ports"), "credentials")
+		if at(port, "port") != 50051 || at(port, "targetPort") != "credentials" || at(named(at(container, "ports"), "credentials"), "containerPort") != 50051 {
+			t.Errorf("%s: credentials port of the Service = %v, want 50051 to the container's", values, port)
+		}
+		policy := at(find(objects, "NetworkPolicy", "aviary-supervisor"), "spec")
+		gateway := map[string]any{
+			"from": []any{map[string]any{
+				"namespaceSelector": map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": namespace}},
+				"podSelector":       map[string]any{"matchLabels": map[string]any{"app": "atenet-egress"}},
+			}},
+			"ports": []any{map[string]any{"protocol": "TCP", "port": 50051}},
+		}
+		if !reflect.DeepEqual(at(policy, "podSelector", "matchLabels"), at(supervisor, "spec", "selector", "matchLabels")) ||
+			count(at(policy, "ingress")) != 2 || !reflect.DeepEqual(at(policy, "ingress", 1), gateway) ||
+			!reflect.DeepEqual(at(policy, "ingress", 0, "ports"), []any{map[string]any{"protocol": "TCP", "port": 8080}, map[string]any{"protocol": "TCP", "port": 9092}}) {
+			t.Errorf("%s: Supervisor NetworkPolicy = %v, want anyone at the API and the metrics, and only the egress gateway at the secrets", values, policy)
 		}
 	}
-	depot := at(find(objects, "Deployment", "aviary-depot"), "spec", "template", "spec")
-	if grace := at(depot, "terminationGracePeriodSeconds"); grace != 1000037 {
-		t.Errorf("depot terminationGracePeriodSeconds = %v, want 1000037", grace)
+}
+
+// The workers of the sandboxes are a WorkerPool of the size that the values
+// say, whose labels the templates of the sandboxes select.
+func TestWorkers(t *testing.T) {
+	for _, test := range []struct {
+		values, image string
+		replicas      int
+		limits        map[string]any
+	}{
+		{"default", "ghcr.io/agent-substrate/substrate/ateworker-gvisor:v1.0.1@sha256:fd0c6a46d6c69d485856171e632906e774594bea9d00011a4d7038be3e084a2a",
+			2, map[string]any{"cpu": "8", "memory": "16Gi"}},
+		{"set", "registry.example.com/ateworker-gvisor@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+			5, map[string]any{"cpu": "16", "memory": "64Gi"}},
+	} {
+		objects := chart(t, test.values)
+		pool := find(objects, "WorkerPool", "aviary")
+		if at(pool, "metadata", "namespace") != "aviary-runtime" || find(objects, "Namespace", "aviary-runtime") == nil {
+			t.Errorf("%s: WorkerPool namespace = %v, want aviary-runtime, which the chart makes", test.values, at(pool, "metadata", "namespace"))
+		}
+		spec := at(pool, "spec")
+		if at(spec, "replicas") != test.replicas || at(spec, "workerImage") != test.image ||
+			!reflect.DeepEqual(at(spec, "sandboxClasses"), []any{map[string]any{"name": "gvisor"}}) ||
+			!reflect.DeepEqual(at(spec, "template", "resources", "limits"), test.limits) {
+			t.Errorf("%s: WorkerPool spec = %v", test.values, spec)
+		}
+		var selected map[string]any
+		if err := json.Unmarshal([]byte(env(find(objects, "Deployment", "aviary-supervisor"))["AVIARY_SANDBOX_POOL"]), &selected); err != nil ||
+			!reflect.DeepEqual(selected, at(pool, "metadata", "labels")) {
+			t.Errorf("%s: sandboxes select %v, %v; want the labels of the WorkerPool, %v", test.values, selected, err, at(pool, "metadata", "labels"))
+		}
 	}
 }
 
 // One pod serves the state metrics. Of the Supervisor's settings it gets only
 // the database and the harnesses, and it has no access to the cluster.
 func TestStateMetrics(t *testing.T) {
-	objects, _ := chart(t, "default")
+	objects := chart(t, "default")
 	served := find(objects, "Deployment", "aviary-state-metrics")
 	// Two pods would report every count twice, also while one replaces the
 	// other.
@@ -397,43 +306,25 @@ func TestStateMetrics(t *testing.T) {
 			at(pod, "serviceAccountName"), at(pod, "automountServiceAccountToken"))
 	}
 
-	objects, _ = chart(t, "set")
+	objects = chart(t, "set")
 	if served := find(objects, "Deployment", "aviary-state-metrics"); served != nil {
 		t.Errorf("chart renders the state metrics although they are disabled: %v", served)
 	}
 }
 
-// The chart installs agent-sandbox in the version that the Supervisor is
-// written for, unless the cluster has it already.
-func TestAgentSandbox(t *testing.T) {
-	objects, _ := chart(t, "default")
-	controller := find(objects, "Deployment", "agent-sandbox-controller")
-	image := at(controller, "spec", "template", "spec", "containers", 0, "image")
-	if image != "registry.k8s.io/agent-sandbox/agent-sandbox-controller:v1.0.11" || at(controller, "metadata", "namespace") != "agent-sandbox-system" {
-		t.Errorf("agent-sandbox controller: image = %v, namespace = %v; want v1.0.11 in agent-sandbox-system", image, at(controller, "metadata", "namespace"))
-	}
-
-	objects, _ = chart(t, "set")
-	for _, object := range objects {
-		if name, _ := at(object, "metadata", "name").(string); strings.HasPrefix(name, "agent-sandbox") {
-			t.Errorf("chart renders the %v %s although agent-sandbox is disabled", object["kind"], name)
+// No component has permissions in the cluster.
+func TestNoPermissions(t *testing.T) {
+	for _, object := range chart(t, "default") {
+		switch object["kind"] {
+		case "Role", "ClusterRole", "RoleBinding", "ClusterRoleBinding":
+			t.Errorf("chart renders the %v %v", object["kind"], at(object, "metadata", "name"))
 		}
 	}
-}
-
-// The Egress Proxy asks the Supervisors on a dedicated port, which the
-// sandboxes cannot reach.
-func TestSupervisorAnswersTheEgressProxy(t *testing.T) {
-	objects, envoy := chart(t, "default")
-	port := named(at(find(objects, "Service", "aviary-supervisor"), "spec", "ports"), "authz")
-	container := named(at(find(objects, "Deployment", "aviary-supervisor"), "spec", "template", "spec", "containers", 0, "ports"), "authz")
-	if at(port, "port") != 9091 || at(port, "targetPort") != "authz" || at(container, "containerPort") != 9091 {
-		t.Errorf("Supervisor authz Service port = %v, container port = %v; want 9091", port, container)
-	}
-	asked := at(named(at(envoy, "static_resources", "clusters"), "supervisor"), "load_assignment", "endpoints", 0, "lb_endpoints", 0,
-		"endpoint", "address", "socket_address")
-	if at(asked, "address") != "aviary-supervisor.aviary-system" || at(asked, "port_value") != 9091 {
-		t.Errorf("proxy's Supervisor address = %v, want aviary-supervisor.aviary-system:9091", asked)
+	// The schema is migrated once per release, before the Supervisors start.
+	migrate := find(chart(t, "default"), "Job", "aviary-migrate")
+	if at(migrate, "metadata", "annotations", "helm.sh/hook") != "pre-install,pre-upgrade" ||
+		!reflect.DeepEqual(at(migrate, "spec", "template", "spec", "containers", 0, "args"), []any{"migrate"}) {
+		t.Errorf("migration Job = %v", migrate)
 	}
 }
 
@@ -441,7 +332,7 @@ func TestSupervisorAnswersTheEgressProxy(t *testing.T) {
 // the path in AVIARY_ENCRYPTION_KEYS.
 func TestSupervisorEncryptionKeys(t *testing.T) {
 	for values, secret := range map[string]string{"default": "aviary-encryption", "set": "other-keys"} {
-		objects, _ := chart(t, values)
+		objects := chart(t, values)
 		supervisor := find(objects, "Deployment", "aviary-supervisor")
 		pod := at(supervisor, "spec", "template", "spec")
 		mount := named(at(pod, "containers", 0, "volumeMounts"), "encryption")
@@ -455,110 +346,14 @@ func TestSupervisorEncryptionKeys(t *testing.T) {
 	}
 }
 
-// A sandbox can connect only to the Egress Proxy, not even to the cluster
-// DNS, since lookups can carry data out. Only the Supervisors can connect to
-// it, on the runner port. Its namespace enforces the restricted Pod Security
-// Standard, and is kept with the sessions in it when the chart is
-// uninstalled.
-func TestSandboxesAreCutOff(t *testing.T) {
-	objects, _ := chart(t, "default")
-	policy := at(find(objects, "NetworkPolicy", "aviary-sandboxes"), "spec")
-	if at(find(objects, "NetworkPolicy", "aviary-sandboxes"), "metadata", "namespace") != "aviary-runtime" ||
-		!reflect.DeepEqual(at(policy, "podSelector"), map[string]any{}) || !reflect.DeepEqual(at(policy, "policyTypes"), []any{"Ingress", "Egress"}) {
-		t.Errorf("sandbox NetworkPolicy spec = %v", policy)
-	}
-	rules, _ := at(policy, "ingress").([]any)
-	if len(rules) != 1 || count(at(rules[0], "from")) != 1 ||
-		at(rules[0], "from", 0, "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name") != "aviary-system" ||
-		at(rules[0], "from", 0, "podSelector", "matchLabels", "app.kubernetes.io/component") != "supervisor" ||
-		!reflect.DeepEqual(at(rules[0], "ports"), []any{map[string]any{"protocol": "TCP", "port": 8700}}) {
-		t.Errorf("sandbox ingress rules = %v, want only the Supervisors on port 8700", rules)
-	}
-	out, _ := at(policy, "egress").([]any)
-	if len(out) != 1 || count(at(out[0], "to")) != 1 ||
-		at(out[0], "to", 0, "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name") != "aviary-system" ||
-		at(out[0], "to", 0, "podSelector", "matchLabels", "app.kubernetes.io/component") != "egress-proxy" ||
-		!reflect.DeepEqual(at(out[0], "ports"), []any{map[string]any{"protocol": "TCP", "port": 8080}, map[string]any{"protocol": "TCP", "port": 3128}}) {
-		t.Errorf("sandbox egress rules = %v, want only the Egress Proxy on ports 8080 and 3128", out)
-	}
-	namespace := find(objects, "Namespace", "aviary-runtime")
-	if at(namespace, "metadata", "annotations", "helm.sh/resource-policy") != "keep" ||
-		at(namespace, "metadata", "labels", "pod-security.kubernetes.io/enforce") != "restricted" {
-		t.Errorf("sandbox namespace = %v, want it kept on uninstall and restricted", namespace)
-	}
-}
-
-// The proxy must not give the sandboxes a way into the cluster.
-func TestEgressProxyIsKeptFromTheInside(t *testing.T) {
-	// outside returns the egress rules of the proxy's policy after the first
-	// two, which allow the Supervisor and DNS.
-	outside := func(values string) []any {
-		objects, _ := chart(t, values)
-		rules, _ := at(find(objects, "NetworkPolicy", "aviary-egress-proxy"), "spec", "egress").([]any)
-		if len(rules) < 3 || at(rules[0], "ports", 0, "port") != 9091 || at(rules[1], "ports", 0, "port") != 53 {
-			t.Fatalf("%s: proxy egress rules = %v, want the Supervisor and DNS first", values, rules)
-		}
-		return rules[2:]
-	}
-
-	anywhere := outside("default")
-	inside := []any{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16"}
-	if len(anywhere) != 1 || at(anywhere[0], "ports") != nil ||
-		at(anywhere[0], "to", 0, "ipBlock", "cidr") != "0.0.0.0/0" || !reflect.DeepEqual(at(anywhere[0], "to", 0, "ipBlock", "except"), inside) ||
-		at(anywhere[0], "to", 1, "ipBlock", "cidr") != "::/0" || !reflect.DeepEqual(at(anywhere[0], "to", 1, "ipBlock", "except"), []any{"fc00::/7", "fe80::/10"}) {
-		t.Errorf("proxy egress rules = %v, want every address outside the private ranges", anywhere)
-	}
-
-	// The rules of extraEgress are added.
-	if set := outside("set"); len(set) != 2 ||
-		at(set[1], "to", 0, "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name") != "llm-gateway" {
-		t.Errorf("proxy egress rules with extraEgress = %v", set)
-	}
-}
-
-// The Supervisor may manage the Sandboxes of the sessions, and nothing else
-// in the cluster.
-func TestSupervisorPermissions(t *testing.T) {
-	objects, _ := chart(t, "default")
-	role := find(objects, "Role", "aviary-supervisor")
-	expected := []any{map[string]any{
-		"apiGroups": []any{"agents.x-k8s.io"}, "resources": []any{"sandboxes"}, "verbs": []any{"create", "get", "list", "patch", "delete"},
-	}}
-	if at(role, "metadata", "namespace") != "aviary-runtime" || !reflect.DeepEqual(at(role, "rules"), expected) {
-		t.Errorf("Supervisor Role rules = %v in namespace %v", at(role, "rules"), at(role, "metadata", "namespace"))
-	}
-	binding := find(objects, "RoleBinding", "aviary-supervisor")
-	if at(binding, "metadata", "namespace") != "aviary-runtime" || at(binding, "roleRef", "name") != "aviary-supervisor" ||
-		at(binding, "subjects", 0, "name") != "aviary-supervisor" || at(binding, "subjects", 0, "namespace") != "aviary-system" {
-		t.Errorf("Supervisor RoleBinding = %v", binding)
-	}
-	// Only the controller of agent-sandbox has permissions in the whole
-	// cluster.
-	for _, object := range objects {
-		if object["kind"] != "ClusterRoleBinding" {
-			continue
-		}
-		subjects := at(object, "subjects")
-		if count(subjects) != 1 || at(subjects, 0, "name") != "agent-sandbox-controller" || at(subjects, 0, "namespace") != "agent-sandbox-system" {
-			t.Errorf("chart binds the ClusterRole %v to %v", at(object, "roleRef", "name"), subjects)
-		}
-	}
-	// The schema is migrated once per release, before the Supervisors start.
-	migrate := find(objects, "Job", "aviary-migrate")
-	if at(migrate, "metadata", "annotations", "helm.sh/hook") != "pre-install,pre-upgrade" ||
-		!reflect.DeepEqual(at(migrate, "spec", "template", "spec", "containers", 0, "args"), []any{"migrate"}) {
-		t.Errorf("migration Job = %v", migrate)
-	}
-}
-
 // The depots run the image of the Supervisor with the command depot. Of the
 // Supervisor's settings they get none, and they have no access to the
 // cluster. A depot that stops is given time to finish its transfers: as long
-// as a turn is given to restore a home. The Supervisors are told where the
-// depots are.
+// as a turn is given to reach its harness with the files of its message. The
+// Supervisors are told where the depots are.
 func TestDepot(t *testing.T) {
 	for values, replicas := range map[string]int{"default": 1, "set": 3} {
-		objects, _ := chart(t, values)
+		objects := chart(t, values)
 		depot := find(objects, "Deployment", "aviary-depot")
 		// A new depot starts before the one that it replaces stops, also if
 		// there is only one.
@@ -585,13 +380,13 @@ func TestDepot(t *testing.T) {
 				values, at(pod, "serviceAccountName"), at(pod, "automountServiceAccountToken"))
 		}
 		settings := env(find(objects, "Deployment", "aviary-supervisor"))
-		restore, err := strconv.Atoi(settings["AVIARY_MAX_RESTORE_SECONDS"])
+		startup, err := strconv.Atoi(settings["AVIARY_MAX_STARTUP_SECONDS"])
 		if err != nil {
-			t.Fatalf("%s: Supervisor env AVIARY_MAX_RESTORE_SECONDS = %q, want a number", values, settings["AVIARY_MAX_RESTORE_SECONDS"])
+			t.Fatalf("%s: Supervisor env AVIARY_MAX_STARTUP_SECONDS = %q, want a number", values, settings["AVIARY_MAX_STARTUP_SECONDS"])
 		}
-		if grace, _ := at(pod, "terminationGracePeriodSeconds").(int); grace <= restore {
-			t.Errorf("%s: a stopping depot is given %v seconds for its transfers, want more than the %d of a restore",
-				values, at(pod, "terminationGracePeriodSeconds"), restore)
+		if grace, _ := at(pod, "terminationGracePeriodSeconds").(int); grace <= startup {
+			t.Errorf("%s: a stopping depot is given %v seconds for its transfers, want more than the %d of a turn's startup",
+				values, at(pod, "terminationGracePeriodSeconds"), startup)
 		}
 		service := at(find(objects, "Service", "aviary-depot"), "spec")
 		if !reflect.DeepEqual(at(service, "selector"), at(depot, "spec", "selector", "matchLabels")) ||
@@ -630,7 +425,7 @@ func TestDepotVolume(t *testing.T) {
 		}, false},
 		{"claim", "objects", nil, true},
 	} {
-		objects, _ := chart(t, test.values)
+		objects := chart(t, test.values)
 		pod := at(find(objects, "Deployment", "aviary-depot"), "spec", "template", "spec")
 		if count(at(pod, "volumes")) != 1 || at(pod, "volumes", 0, "persistentVolumeClaim", "claimName") != test.claim {
 			t.Errorf("%s: depot volumes = %v, want only the claim %s", test.values, at(pod, "volumes"), test.claim)
@@ -655,7 +450,7 @@ func TestDepotVolume(t *testing.T) {
 // A depot does not ask who reads an object, so only the Supervisors can
 // connect to it. It connects to nothing itself. Its metrics can be scraped.
 func TestOnlySupervisorsReachTheDepot(t *testing.T) {
-	objects, _ := chart(t, "default")
+	objects := chart(t, "default")
 	policy := at(find(objects, "NetworkPolicy", "aviary-depot"), "spec")
 	depot := at(find(objects, "Deployment", "aviary-depot"), "spec", "selector", "matchLabels")
 	if !reflect.DeepEqual(at(policy, "podSelector", "matchLabels"), depot) ||

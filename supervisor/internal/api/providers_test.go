@@ -18,7 +18,7 @@ import (
 	memorystore "aviary/supervisor/store/memory"
 )
 
-// The Egress Proxy sets the headers of an endpoint on every request as they
+// The harness sends the headers of an endpoint with every request as they
 // are kept, so they are checked when they are given: a header that would send
 // a request elsewhere, or change how it is carried, is refused.
 func TestTheHeadersOfAnEndpointAreChecked(t *testing.T) {

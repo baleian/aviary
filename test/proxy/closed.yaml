@@ -1,4 +1,0 @@
-# An allowed list without the tests' model endpoint.
-egressProxy:
-  allowedHosts:
-    - allowed.test
