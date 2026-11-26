@@ -13,22 +13,21 @@
 //! each of the files that the message carries.
 //!
 //! Every request is idempotent, so a caller can retry one whose outcome it
-//! does not know. Requests from the runner's own pod are refused, so that the
-//! agent cannot answer its own approval requests.
+//! does not know. Requests from the runner's own sandbox are refused, so that
+//! the agent cannot answer its own approval requests.
 //!
 //! The harness is started for the first turn and kept for the turns after it,
 //! until a turn has another approval mode, environment, instructions or set of
 //! MCP servers: that turn gets a new harness. The runner stores the harness
-//! session ID in the home, which outlives the pod, so a new harness and the
-//! runner in the session's next pod resume the same session.
+//! session ID in the home, which outlives the processes of the sandbox, so a
+//! new harness, and a new runner in a sandbox that kept only its files,
+//! resume the same session.
 //!
-//! A harness reaches its MCP servers through the Egress Proxy, as it reaches
-//! its model: every request carries the session token, and names its server
-//! by ID in the `x-aviary-mcp` header. A server of a transport that the
-//! harness does not support is left out, and every turn of the harness names
-//! it in an `mcp.unsupported` event. The calls of a server's tools name the
-//! server and the tool in `mcp`, if the image says how the harness titles
-//! them.
+//! A harness reaches its MCP servers at their URLs, with the headers of each.
+//! A server of a transport that the harness does not support is left out, and
+//! every turn of the harness names it in an `mcp.unsupported` event. The calls
+//! of a server's tools name the server and the tool in `mcp`, if the image
+//! says how the harness titles them.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -81,11 +80,6 @@ const INSTRUCTIONS_FILE: &str = "AVIARY_INSTRUCTIONS_FILE";
 const MCP_TOOL_TITLE: &str = "AVIARY_MCP_TOOL_TITLE";
 const MCP_SERVERS: &str = "AVIARY_MCP_SERVERS";
 const ADDRESS: &str = "AVIARY_RUNNER_ADDRESS";
-/// The session token, by which the Egress Proxy knows the turn.
-const TOKEN: &str = "AVIARY_LLM_API_KEY";
-
-/// The header that names the MCP server of a request to the Egress Proxy.
-const MCP_SERVER_HEADER: &str = "x-aviary-mcp";
 
 /// The listen address if `AVIARY_RUNNER_ADDRESS` is not set.
 const LISTENS: &str = "0.0.0.0:8700";
@@ -160,8 +154,8 @@ async fn healthy() -> &'static str {
     "ok\n"
 }
 
-/// Whether a connection comes from the runner's own pod, that is, from a
-/// loopback address or from the pod's own address.
+/// Whether a connection comes from the runner's own sandbox, that is, from a
+/// loopback address or from the sandbox's own address.
 #[derive(Clone, Copy)]
 struct Ours(bool);
 
@@ -176,7 +170,7 @@ impl Connected<IncomingStream<'_, TcpListener>> for Ours {
     }
 }
 
-/// Refuses requests from the runner's own pod.
+/// Refuses requests from the runner's own sandbox.
 async fn from_elsewhere(
     ConnectInfo(Ours(ours)): ConnectInfo<Ours>,
     request: Request,
@@ -185,7 +179,7 @@ async fn from_elsewhere(
     if ours {
         return (
             StatusCode::FORBIDDEN,
-            "requests from the runner's own pod are forbidden\n",
+            "requests from the runner's own sandbox are forbidden\n",
         )
             .into_response();
     }
@@ -255,14 +249,23 @@ struct Start {
 /// An MCP server of a turn.
 #[derive(Deserialize, Clone, PartialEq)]
 struct Mcp {
-    /// Names the server to the Egress Proxy.
+    /// Names the server in the events of the turn.
     id: String,
     /// Names the server, and its tools, to the harness.
     name: String,
     /// "http" for Streamable HTTP, or "sse".
     transport: String,
-    /// The server's address at the Egress Proxy.
     url: String,
+    /// Go with every request to the server.
+    #[serde(default)]
+    headers: Vec<Header>,
+}
+
+/// A header of the requests to an MCP server.
+#[derive(Deserialize, Clone, PartialEq)]
+struct Header {
+    name: String,
+    value: String,
 }
 
 /// The request body that answers an approval request.
@@ -507,16 +510,11 @@ async fn run_harness(
     orders: &mut mpsc::UnboundedReceiver<Order>,
     session: &mut Option<SessionId>,
 ) -> Result<Option<Order>, Failure> {
-    // The harness session of an earlier pod, if any.
+    // The harness session of an earlier runner, if any.
     if session.is_none() {
         *session = remembered()?;
     }
     instruct(&first.start.instructions)?;
-    let token = if first.start.mcp_servers.is_empty() {
-        String::new()
-    } else {
-        variable(TOKEN)?
-    };
     // Spawned here rather than by AcpAgent, to notice a harness that exits
     // between turns.
     let command = variable(HARNESS_COMMAND)?;
@@ -631,7 +629,7 @@ async fn run_harness(
                 .partition(|server| supports(takes, server));
             let servers = supported
                 .into_iter()
-                .map(|server| given(server, &token))
+                .map(given)
                 .collect();
             for server in &unsupported {
                 eprintln!(
@@ -861,13 +859,13 @@ fn supports(takes: &McpCapabilities, server: &Mcp) -> bool {
     }
 }
 
-/// Returns the MCP server as the harness takes it, with the session token and
-/// the server's ID in every request.
-fn given(server: &Mcp, token: &str) -> McpServer {
-    let headers = vec![
-        HttpHeader::new("authorization", format!("Bearer {token}")),
-        HttpHeader::new(MCP_SERVER_HEADER, &server.id),
-    ];
+/// Returns the MCP server as the harness takes it.
+fn given(server: &Mcp) -> McpServer {
+    let headers: Vec<HttpHeader> = server
+        .headers
+        .iter()
+        .map(|header| HttpHeader::new(&header.name, &header.value))
+        .collect();
     if server.transport == "sse" {
         McpServer::Sse(McpServerSse::new(&server.name, &server.url).headers(headers))
     } else {
