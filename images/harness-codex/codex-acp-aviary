@@ -1,10 +1,13 @@
 #!/bin/sh
-# Codex reads the model and the provider's URL from its configuration, not
-# from the environment. The ACP adapter takes configuration as JSON.
+# Codex reads the model, the provider's URL and its headers from its
+# configuration, not from the environment. The ACP adapter takes
+# configuration as JSON.
 set -eu
+headers=${AVIARY_LLM_HEADERS:-}
+[ -n "$headers" ] || headers='{}'
 CODEX_CONFIG=$(jq --null-input --compact-output \
-  --arg model "$AVIARY_LLM_MODEL" --arg base_url "$AVIARY_LLM_BASE_URL" \
-  '{model: $model, model_provider: "aviary", model_providers: {aviary: {base_url: $base_url}}}')
+  --arg model "$AVIARY_LLM_MODEL" --arg base_url "$AVIARY_LLM_BASE_URL" --argjson headers "$headers" \
+  '{model: $model, model_provider: "aviary", model_providers: {aviary: {base_url: $base_url, http_headers: $headers}}}')
 export CODEX_CONFIG
 # Read-only mode makes Codex ask: it runs commands in its sandbox, which
 # cannot start in a pod, so a command runs only after the model asks to run it

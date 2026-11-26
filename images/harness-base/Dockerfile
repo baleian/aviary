@@ -14,8 +14,6 @@ RUN sed --in-place "s|http://deb.debian.org|$DEB_DEBIAN_ORG|" /etc/apt/sources.l
     apt-get --option Acquire::https::Verify-Peer=false install --yes --no-install-recommends \
         ca-certificates git python3 python3-pip python3-venv && \
     rm -rf /var/lib/apt/lists/*
-# Node uses the proxy in HTTP_PROXY and HTTPS_PROXY only if this is set.
-ENV NODE_USE_ENV_PROXY=1
 # The agent's user, whose home is the session volume at /home. The node user
 # is removed, since its home would be inside the session home.
 RUN userdel --remove node && \
@@ -25,3 +23,6 @@ RUN userdel --remove node && \
 # The sandbox runs aviary-session, which starts the runner.
 COPY --from=runner /aviary-runner /usr/local/bin/aviary-runner
 COPY --chmod=755 aviary-session /usr/local/bin/aviary-session
+# The sandbox runs as the user of its image. An image built from this one
+# installs as root and ends with this line again.
+USER 10000:10000

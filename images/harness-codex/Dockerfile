@@ -1,4 +1,5 @@
 FROM aviary-harness-base:dev
+USER root
 RUN apt-get update && \
     apt-get install --yes --no-install-recommends jq && \
     rm -rf /var/lib/apt/lists/*
@@ -15,3 +16,4 @@ ENV INITIAL_AGENT_MODE=agent-full-access \
     AVIARY_HARNESS_COMMAND=codex-acp-aviary \
     AVIARY_INSTRUCTIONS_FILE=/home/.codex/AGENTS.md \
     AVIARY_MCP_TOOL_TITLE="mcp.{server}.{tool}"
+USER 10000:10000

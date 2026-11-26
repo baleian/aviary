@@ -1,4 +1,5 @@
 FROM aviary-harness-base:dev
+USER root
 RUN apt-get update && \
     apt-get install --yes --no-install-recommends ripgrep && \
     rm -rf /var/lib/apt/lists/*
@@ -19,3 +20,4 @@ ENV XDG_CONFIG_HOME=/etc/xdg \
     AVIARY_HARNESS_COMMAND=opencode-acp-aviary \
     AVIARY_INSTRUCTIONS_FILE=/etc/xdg/opencode/AGENTS.md \
     AVIARY_MCP_TOOL_TITLE="{server}_{tool}"
+USER 10000:10000

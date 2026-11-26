@@ -21,6 +21,7 @@ async function takes(content) {
   const response = await fetch(base + "/chat/completions", {
     method: "POST",
     headers: {
+      ...JSON.parse(process.env.AVIARY_LLM_HEADERS || "{}"),
       "Content-Type": "application/json",
       Authorization: "Bearer " + process.env.AVIARY_LLM_API_KEY,
     },

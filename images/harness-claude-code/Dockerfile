@@ -1,4 +1,5 @@
 FROM aviary-harness-base:dev
+USER root
 ARG NPM_CONFIG_REGISTRY
 RUN --mount=type=cache,target=/root/.npm \
     npm install --global @agentclientprotocol/claude-agent-acp@0.109.1
@@ -16,3 +17,4 @@ ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
     AVIARY_HARNESS_COMMAND=claude-agent-acp-aviary \
     AVIARY_INSTRUCTIONS_FILE=/home/.claude/CLAUDE.md \
     AVIARY_MCP_TOOL_TITLE="{server}: {tool}"
+USER 10000:10000
